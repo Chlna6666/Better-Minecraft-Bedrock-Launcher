@@ -330,11 +330,7 @@ fn inside_cache_hysteresis(
     )
 }
 
-fn prioritize_stream_meshes(
-    loaded: &mut [ChunkPos],
-    center: (i32, i32),
-    forward_xz: [f32; 2],
-) {
+fn prioritize_stream_meshes(loaded: &mut [ChunkPos], center: (i32, i32), forward_xz: [f32; 2]) {
     // Every item already belongs to loaded. The old code rebuilt a HashSet
     // from this same slice and tested membership for each sort key, a
     // condition that was always true. Distance/direction is sufficient.
@@ -369,7 +365,10 @@ fn fully_hidden_mesh_columns(
         let value = all_hidden.entry(pos).or_insert(true);
         *value &= hidden.contains(&(pos, band));
     }
-    all_hidden.into_iter().filter_map(|(pos, skip)| skip.then_some(pos)).collect()
+    all_hidden
+        .into_iter()
+        .filter_map(|(pos, skip)| skip.then_some(pos))
+        .collect()
 }
 
 fn mesh_target_priority(
@@ -391,9 +390,7 @@ fn lazy_meshing_disabled() -> bool {
 #[inline]
 pub(super) fn portal_culling_disabled() -> bool {
     static DISABLED: OnceLock<bool> = OnceLock::new();
-    *DISABLED.get_or_init(|| {
-        std::env::var_os("BMCBL_WORLD3D_DISABLE_PORTAL_VISIBILITY").is_some()
-    })
+    *DISABLED.get_or_init(|| std::env::var_os("BMCBL_WORLD3D_DISABLE_PORTAL_VISIBILITY").is_some())
 }
 
 /// Background columns in the rear hemisphere can defer expensive
@@ -416,8 +413,7 @@ fn lazy_mesh_column(pos: ChunkPos, view: ViewState) -> bool {
         return false;
     }
     let [fx, fz] = view.forward_xz;
-    let forward_length_sq = f64::from(fx) * f64::from(fx)
-        + f64::from(fz) * f64::from(fz);
+    let forward_length_sq = f64::from(fx) * f64::from(fx) + f64::from(fz) * f64::from(fz);
     if forward_length_sq < 0.25 {
         // Looking nearly vertically: don't skip columns based on yaw.
         return false;
@@ -460,8 +456,7 @@ fn frustum_hidden_band(pos: ChunkPos, band: i32, view: ViewState) -> bool {
     const RADIUS: f64 = 48.0;
     const COS_HALF_CONE: f64 = 0.258_819_045_102_520_74; // cos(75 degrees)
     let distance = distance_sq.sqrt();
-    let dot = delta.iter().zip(forward).map(|(d, f)| d * f).sum::<f64>()
-        / forward_sq.sqrt();
+    let dot = delta.iter().zip(forward).map(|(d, f)| d * f).sum::<f64>() / forward_sq.sqrt();
     dot + RADIUS < (distance - RADIUS) * COS_HALF_CONE
 }
 
@@ -469,7 +464,9 @@ fn frustum_hidden_bands(
     candidates: &BTreeSet<(ChunkPos, i32)>,
     view: ViewState,
 ) -> BTreeSet<(ChunkPos, i32)> {
-    candidates.iter().copied()
+    candidates
+        .iter()
+        .copied()
         .filter(|&(pos, band)| frustum_hidden_band(pos, band, view))
         .collect()
 }
@@ -529,18 +526,16 @@ fn needs_unexpanded_rehydration(
 ) -> bool {
     !unexpanded.is_empty()
         && (!is_target
-            || unexpanded.iter().any(|&band| !deferred.contains(&(pos, band))))
+            || unexpanded
+                .iter()
+                .any(|&band| !deferred.contains(&(pos, band))))
 }
 
 // A deferred column still owns real neighbor geometry. It may skip its own
 // GPU mesh, but must provide a full voxel/boundary mask while an adjacent
 // target is meshed; otherwise internal seam faces become visible until the
 // delayed column is eventually promoted.
-fn needs_mesh_neighbor_hydration(
-    is_target: bool,
-    has_blocks: bool,
-    has_boundary: bool,
-) -> bool {
+fn needs_mesh_neighbor_hydration(is_target: bool, has_blocks: bool, has_boundary: bool) -> bool {
     !has_blocks && (is_target || !has_boundary)
 }
 
@@ -696,7 +691,11 @@ fn nearest_view_positions(
             nearest.push(key);
         }
     }
-    nearest.into_sorted_vec().into_iter().map(|(_, pos)| pos).collect()
+    nearest
+        .into_sorted_vec()
+        .into_iter()
+        .map(|(_, pos)| pos)
+        .collect()
 }
 
 fn take_visible_dirty_meshes(
@@ -708,7 +707,12 @@ fn take_visible_dirty_meshes(
     limit: usize,
 ) -> Vec<ChunkPos> {
     let visible = nearest_view_positions(
-        dirty.iter().copied(), dimension, center_x, center_z, radius, limit,
+        dirty.iter().copied(),
+        dimension,
+        center_x,
+        center_z,
+        radius,
+        limit,
     );
     for pos in &visible {
         dirty.remove(pos);
@@ -745,10 +749,7 @@ fn visible_dirty_meshes(
 /// forward-first sort, a remote forward chunk cannot starve a nearby side
 /// column after a fast turn. The key is deterministic and cheap to recompute
 /// when the camera changes; no persistent stale priority queue is required.
-fn renderable_dirty_priority(
-    pos: ChunkPos,
-    view: ViewState,
-) -> (u8, i64, u8, i64, ChunkPos) {
+fn renderable_dirty_priority(pos: ChunkPos, view: ViewState) -> (u8, i64, u8, i64, ChunkPos) {
     let center_x = (view.camera[0] / 16.0).floor() as i32;
     let center_z = (view.camera[2] / 16.0).floor() as i32;
     let dx = i64::from(pos.x) - i64::from(center_x);
@@ -776,13 +777,12 @@ fn renderable_dirty_priority(
     (1, (ring - 5) / 4, direction, distance_sq, pos)
 }
 
-fn renderable_dirty_meshes(
-    dirty: &BTreeSet<ChunkPos>,
-    view: ViewState,
-) -> Vec<ChunkPos> {
+fn renderable_dirty_meshes(dirty: &BTreeSet<ChunkPos>, view: ViewState) -> Vec<ChunkPos> {
     let center_x = (view.camera[0] / 16.0).floor() as i32;
     let center_z = (view.camera[2] / 16.0).floor() as i32;
-    let mut ready = dirty.iter().copied()
+    let mut ready = dirty
+        .iter()
+        .copied()
         .filter(|pos| inside_view(*pos, view.dimension, center_x, center_z, view.radius))
         .filter(|pos| !lazy_mesh_column(*pos, view))
         .collect::<Vec<_>>();
@@ -818,8 +818,11 @@ fn take_renderable_dirty_meshes(
             nearest.push(key);
         }
     }
-    let ready = nearest.into_sorted_vec().into_iter()
-        .map(|(_, _, _, _, pos)| pos).collect::<Vec<_>>();
+    let ready = nearest
+        .into_sorted_vec()
+        .into_iter()
+        .map(|(_, _, _, _, pos)| pos)
+        .collect::<Vec<_>>();
     for pos in &ready {
         dirty.remove(pos);
     }
@@ -830,8 +833,16 @@ fn take_renderable_dirty_meshes(
 /// transparent model reduces the next CPU wave, without reducing frame rate
 /// or allowing the dirty queue to stall completely.
 fn interleaved_mesh_wave_size(face_ms: u64, convert_ms: u64, send_wait_ms: u64) -> usize {
-    let work = face_ms.saturating_add(convert_ms).saturating_add(send_wait_ms);
-    if work >= 16 { 1 } else if work >= 8 { 2 } else { STREAM_MESH_BATCH_CHUNKS }
+    let work = face_ms
+        .saturating_add(convert_ms)
+        .saturating_add(send_wait_ms);
+    if work >= 16 {
+        1
+    } else if work >= 8 {
+        2
+    } else {
+        STREAM_MESH_BATCH_CHUNKS
+    }
 }
 
 fn retain_urgent_chunks(urgent: &mut BTreeSet<ChunkPos>, view: ViewState) {
@@ -851,7 +862,12 @@ fn take_visible_urgent_chunks(
     limit: usize,
 ) -> Vec<ChunkPos> {
     let visible = nearest_view_positions(
-        urgent.iter().copied(), dimension, center_x, center_z, radius, limit,
+        urgent.iter().copied(),
+        dimension,
+        center_x,
+        center_z,
+        radius,
+        limit,
     );
     for pos in &visible {
         urgent.remove(pos);
@@ -864,13 +880,12 @@ mod view_tests {
     use super::{
         ChunkCursor, ChunkServiceEvent, ChunkServiceHandle, ViewState, cached_texture_source,
         chunk_mesh_id, coarse_lod_for_view, desired_chunk_positions, downsample_texture,
-        face_band_y, face_vertex_color, forget_published_sections, grass_block_side_texture_keys,
-        inside_cache_hysteresis, inside_view, intern_face_materials,
-        fully_hidden_mesh_columns, frustum_hidden_band, needs_unexpanded_rehydration,
-        premesh_opaque_terrain, skip_premesh_subchunk,
-        is_full_grass_block_side_material, mesh_target_positions, mesh_target_priority,
-        mipmapped_texture, p3d,
-        partition_section_faces, same_chunk_render_geometry, section_priority,
+        face_band_y, face_vertex_color, forget_published_sections, frustum_hidden_band,
+        fully_hidden_mesh_columns, grass_block_side_texture_keys, inside_cache_hysteresis,
+        inside_view, intern_face_materials, is_full_grass_block_side_material,
+        mesh_target_positions, mesh_target_priority, mipmapped_texture,
+        needs_unexpanded_rehydration, p3d, partition_section_faces, premesh_opaque_terrain,
+        same_chunk_render_geometry, section_priority, skip_premesh_subchunk,
         surrounded_chunk_candidates, take_visible_dirty_meshes, take_visible_urgent_chunks,
         visible_dirty_meshes,
     };
@@ -890,17 +905,22 @@ mod view_tests {
     #[test]
     fn sealed_columns_skip_db_rehydration_but_partial_or_unknown_do_not() {
         let pos = |x| ChunkPos {
-            x, z: 0, dimension: Dimension::Overworld,
+            x,
+            z: 0,
+            dimension: Dimension::Overworld,
         };
         let candidates = BTreeSet::from([
-            (pos(0), 0), (pos(0), 1),
-            (pos(1), 0), (pos(1), 1),
+            (pos(0), 0),
+            (pos(0), 1),
+            (pos(1), 0),
+            (pos(1), 1),
             (pos(2), 0),
         ]);
-        let hidden = BTreeSet::from([
-            (pos(0), 0), (pos(0), 1), (pos(1), 1),
-        ]);
-        assert_eq!(fully_hidden_mesh_columns(&candidates, &hidden), HashSet::from([pos(0)]));
+        let hidden = BTreeSet::from([(pos(0), 0), (pos(0), 1), (pos(1), 1)]);
+        assert_eq!(
+            fully_hidden_mesh_columns(&candidates, &hidden),
+            HashSet::from([pos(0)])
+        );
         assert!(!fully_hidden_mesh_columns(&candidates, &hidden).contains(&pos(3)));
         assert!(fully_hidden_mesh_columns(&candidates, &BTreeSet::new()).is_empty());
     }
@@ -908,7 +928,9 @@ mod view_tests {
     #[test]
     fn conservative_frustum_rejects_far_back_and_above_before_meshing() {
         let pos = |x, z| ChunkPos {
-            x, z, dimension: Dimension::Overworld,
+            x,
+            z,
+            dimension: Dimension::Overworld,
         };
         let view = super::ViewState {
             generation: 1,
@@ -926,23 +948,33 @@ mod view_tests {
         // The 48-block section sphere deliberately preserves moderately
         // elevated geometry. Only very distant vertical bands are rejected.
         assert!(frustum_hidden_band(pos(0, 18), 30, view));
-        let looking_up = super::ViewState { forward_xz: [0.0, 0.0],
-            forward_y: 1.0, ..view };
+        let looking_up = super::ViewState {
+            forward_xz: [0.0, 0.0],
+            forward_y: 1.0,
+            ..view
+        };
         assert!(!frustum_hidden_band(pos(0, 0), 11, looking_up));
     }
 
     #[test]
     fn packed_palette_premesh_only_certifies_known_opaque_terrain() {
         for name in [
-            "minecraft:stone", "minecraft:deepslate", "minecraft:iron_ore",
-            "minecraft:grass_block", "minecraft:bedrock",
+            "minecraft:stone",
+            "minecraft:deepslate",
+            "minecraft:iron_ore",
+            "minecraft:grass_block",
+            "minecraft:bedrock",
         ] {
             assert!(premesh_opaque_terrain(name), "{name}");
         }
         for name in [
-            "minecraft:air", "minecraft:water", "minecraft:glass",
-            "minecraft:oak_stairs", "minecraft:oak_leaves",
-            "minecraft:grass", "custom:stone",
+            "minecraft:air",
+            "minecraft:water",
+            "minecraft:glass",
+            "minecraft:oak_stairs",
+            "minecraft:oak_leaves",
+            "minecraft:grass",
+            "custom:stone",
         ] {
             assert!(!premesh_opaque_terrain(name), "{name}");
         }
@@ -960,14 +992,27 @@ mod view_tests {
 
     #[test]
     fn promoted_underground_bands_force_complete_rehydration() {
-        let pos = ChunkPos { x: -3, z: 7, dimension: Dimension::Overworld };
+        let pos = ChunkPos {
+            x: -3,
+            z: 7,
+            dimension: Dimension::Overworld,
+        };
         let missing = BTreeSet::from([0, 1]);
         let mut deferred = BTreeSet::from([(pos, 0), (pos, 1)]);
-        assert!(!needs_unexpanded_rehydration(pos, true, &missing, &deferred));
-        assert!(needs_unexpanded_rehydration(pos, false, &missing, &deferred));
+        assert!(!needs_unexpanded_rehydration(
+            pos, true, &missing, &deferred
+        ));
+        assert!(needs_unexpanded_rehydration(
+            pos, false, &missing, &deferred
+        ));
         deferred.remove(&(pos, 0));
         assert!(needs_unexpanded_rehydration(pos, true, &missing, &deferred));
-        assert!(!needs_unexpanded_rehydration(pos, true, &BTreeSet::new(), &deferred));
+        assert!(!needs_unexpanded_rehydration(
+            pos,
+            true,
+            &BTreeSet::new(),
+            &deferred
+        ));
     }
 
     #[test]
@@ -994,10 +1039,22 @@ mod view_tests {
             view_distance: 320.0,
         };
         let rear = [
-            ChunkPos { x: -12, z: 0, dimension: view.dimension },
-            ChunkPos { x: -13, z: 0, dimension: view.dimension },
+            ChunkPos {
+                x: -12,
+                z: 0,
+                dimension: view.dimension,
+            },
+            ChunkPos {
+                x: -13,
+                z: 0,
+                dimension: view.dimension,
+            },
         ];
-        let foreground = ChunkPos { x: 12, z: 0, dimension: view.dimension };
+        let foreground = ChunkPos {
+            x: 12,
+            z: 0,
+            dimension: view.dimension,
+        };
         let full = super::ChunkLoadOptions {
             data_request: super::ChunkDataRequest::new()
                 .full_3d_indices()
@@ -1009,11 +1066,8 @@ mod view_tests {
         assert_eq!(lean.data_request.subchunks, full.data_request.subchunks);
         assert_eq!(lean.data_request.biome, super::BiomeDataRequirement::None);
         assert!(!lean.data_request.block_entities);
-        let mixed = super::request_for_stream_batch(
-            full.clone(),
-            &[rear[0], foreground],
-            Some(view),
-        );
+        let mixed =
+            super::request_for_stream_batch(full.clone(), &[rear[0], foreground], Some(view));
         assert_eq!(mixed.data_request, full.data_request);
         assert_eq!(
             super::request_for_stream_batch(full.clone(), &rear, None).data_request,
@@ -1027,7 +1081,11 @@ mod view_tests {
 
     #[test]
     fn dirty_mesh_priority_uses_near_first_then_forward_within_radial_band() {
-        let at = |x, z| ChunkPos { x, z, dimension: Dimension::Overworld };
+        let at = |x, z| ChunkPos {
+            x,
+            z,
+            dimension: Dimension::Overworld,
+        };
         let view = super::ViewState {
             generation: 1,
             dimension: Dimension::Overworld,
@@ -1037,14 +1095,20 @@ mod view_tests {
             radius: 16,
             view_distance: 320.0,
         };
-        assert!(super::renderable_dirty_priority(at(-3, 0), view)
-            < super::renderable_dirty_priority(at(7, 0), view));
-        assert!(super::renderable_dirty_priority(at(7, 0), view)
-            < super::renderable_dirty_priority(at(0, 7), view));
+        assert!(
+            super::renderable_dirty_priority(at(-3, 0), view)
+                < super::renderable_dirty_priority(at(7, 0), view)
+        );
+        assert!(
+            super::renderable_dirty_priority(at(7, 0), view)
+                < super::renderable_dirty_priority(at(0, 7), view)
+        );
         // Compare across distance groups: far forward work cannot block
         // much closer peripheral work.
-        assert!(super::renderable_dirty_priority(at(0, 5), view)
-            < super::renderable_dirty_priority(at(15, 0), view));
+        assert!(
+            super::renderable_dirty_priority(at(0, 5), view)
+                < super::renderable_dirty_priority(at(15, 0), view)
+        );
         let mut dirty = BTreeSet::from([at(-3, 0), at(0, 7), at(7, 0)]);
         let waves = super::take_renderable_dirty_meshes(&mut dirty, view, 2);
         assert_eq!(waves, [at(-3, 0), at(7, 0)]);
@@ -1055,19 +1119,33 @@ mod view_tests {
     fn changing_heading_reorders_only_unconsumed_ring_positions() {
         let mut cursor = super::ChunkCursor::default();
         // First chunk is always the origin. The next call begins ring 1.
-        let origin = cursor.next(Dimension::Overworld, 0, 0, 3, [1.0, 0.0]).unwrap();
+        let origin = cursor
+            .next(Dimension::Overworld, 0, 0, 3, [1.0, 0.0])
+            .unwrap();
         assert_eq!((origin.x, origin.z), (0, 0));
-        let first = cursor.next(Dimension::Overworld, 0, 0, 3, [1.0, 0.0]).unwrap();
+        let first = cursor
+            .next(Dimension::Overworld, 0, 0, 3, [1.0, 0.0])
+            .unwrap();
         assert_eq!(first.x, 1);
         cursor.reprioritize_remaining([-1.0, 0.0]);
-        let second = cursor.next(Dimension::Overworld, 0, 0, 3, [-1.0, 0.0]).unwrap();
+        let second = cursor
+            .next(Dimension::Overworld, 0, 0, 3, [-1.0, 0.0])
+            .unwrap();
         assert_eq!(second.x, -1);
         assert_ne!(first, second);
         let mut positions = BTreeSet::from([origin, first, second]);
         for _ in 0..6 {
-            positions.insert(cursor.next(Dimension::Overworld, 0, 0, 3, [-1.0, 0.0]).unwrap());
+            positions.insert(
+                cursor
+                    .next(Dimension::Overworld, 0, 0, 3, [-1.0, 0.0])
+                    .unwrap(),
+            );
         }
-        assert_eq!(positions.len(), 9, "heading change cannot duplicate ring positions");
+        assert_eq!(
+            positions.len(),
+            9,
+            "heading change cannot duplicate ring positions"
+        );
     }
 
     #[test]
@@ -1082,25 +1160,51 @@ mod view_tests {
     fn staged_stream_meshes_sort_front_before_rear_and_keep_every_chunk() {
         let dimension = Dimension::Overworld;
         let mut loaded = vec![
-            ChunkPos { x: -2, z: 0, dimension },
-            ChunkPos { x: 3, z: 0, dimension },
-            ChunkPos { x: -1, z: 0, dimension },
-            ChunkPos { x: 1, z: 0, dimension },
-            ChunkPos { x: 0, z: 1, dimension },
+            ChunkPos {
+                x: -2,
+                z: 0,
+                dimension,
+            },
+            ChunkPos {
+                x: 3,
+                z: 0,
+                dimension,
+            },
+            ChunkPos {
+                x: -1,
+                z: 0,
+                dimension,
+            },
+            ChunkPos {
+                x: 1,
+                z: 0,
+                dimension,
+            },
+            ChunkPos {
+                x: 0,
+                z: 1,
+                dimension,
+            },
         ];
         super::prioritize_stream_meshes(&mut loaded, (0, 0), [1.0, 0.0]);
         assert_eq!((loaded[0].x, loaded[0].z), (1, 0));
         assert_eq!((loaded[1].x, loaded[1].z), (3, 0));
         assert_eq!(loaded.len(), 5);
         assert_eq!(loaded.iter().collect::<HashSet<_>>().len(), 5);
-        assert!(loaded.chunks(super::STREAM_MESH_BATCH_CHUNKS).all(|chunk| {
-            chunk.len() <= super::STREAM_MESH_BATCH_CHUNKS
-        }));
+        assert!(
+            loaded
+                .chunks(super::STREAM_MESH_BATCH_CHUNKS)
+                .all(|chunk| { chunk.len() <= super::STREAM_MESH_BATCH_CHUNKS })
+        );
     }
 
     #[test]
     fn boundary_pairs_are_order_independent_and_rearm_after_unload() {
-        let chunk = |x| ChunkPos { x, z: 0, dimension: Dimension::Overworld };
+        let chunk = |x| ChunkPos {
+            x,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
         let (left, middle, right) = (chunk(0), chunk(1), chunk(2));
         let mut pairs = BTreeSet::new();
         assert!(super::record_boundary_pair(&mut pairs, left, middle));
@@ -1155,8 +1259,10 @@ mod view_tests {
         assert!(!same_chunk_render_geometry(&original, &changed));
         let mut changed_material = (*same).clone();
         changed_material.materials = Arc::from([Arc::new(Material::new())]);
-        assert!(same_chunk_render_geometry(&original, &changed_material),
-            "new MaterialId alone must not invalidate resident GPU geometry");
+        assert!(
+            same_chunk_render_geometry(&original, &changed_material),
+            "new MaterialId alone must not invalidate resident GPU geometry"
+        );
         let mut truly_changed = Material::new();
         truly_changed.base_color = [0.25, 0.5, 0.75, 1.0];
         changed_material.materials = Arc::from([Arc::new(truly_changed)]);
@@ -1167,7 +1273,10 @@ mod view_tests {
             faces: 63,
         }]);
         assert!(!same_chunk_render_geometry(&original, &changed_occlusion));
-        assert!(super::same_chunk_mesh_contents(&original, &changed_occlusion));
+        assert!(super::same_chunk_mesh_contents(
+            &original,
+            &changed_occlusion
+        ));
         let mut update = Arc::new(changed_occlusion);
         assert!(super::reuse_section_gpu_mesh(&original, &mut update));
         assert!(Arc::ptr_eq(&update.mesh, &original.mesh));
@@ -1257,7 +1366,9 @@ mod view_tests {
     #[test]
     fn db_reads_are_deferred_only_outside_the_near_and_forward_cones() {
         let pos = |z| ChunkPos {
-            x: 0, z, dimension: Dimension::Overworld,
+            x: 0,
+            z,
+            dimension: Dimension::Overworld,
         };
         let mut view = super::ViewState {
             generation: 1,
@@ -1281,7 +1392,9 @@ mod view_tests {
     #[test]
     fn rear_dirty_rebuilds_wait_for_camera_without_losing_dirty_state() {
         let pos = |z| ChunkPos {
-            x: 0, z, dimension: Dimension::Overworld,
+            x: 0,
+            z,
+            dimension: Dimension::Overworld,
         };
         let mut dirty = BTreeSet::from([pos(-8), pos(-1), pos(2)]);
         let mut view = super::ViewState {
@@ -1299,8 +1412,9 @@ mod view_tests {
             assert_eq!(dirty, BTreeSet::from([pos(-8)]));
         }
         view.forward_xz = [0.0, -1.0];
-        assert!(super::renderable_dirty_meshes(&dirty, view).contains(&pos(-8))
-            || dirty.is_empty());
+        assert!(
+            super::renderable_dirty_meshes(&dirty, view).contains(&pos(-8)) || dirty.is_empty()
+        );
     }
 
     #[test]
@@ -1318,16 +1432,12 @@ mod view_tests {
         for limit in [0, 1, 3, 8, 32, 256, 2048] {
             let expected = &sorted[..limit.min(sorted.len())];
             let mut dirty = positions.clone();
-            let actual = take_visible_dirty_meshes(
-                &mut dirty, dimension, 2, -3, 20, limit,
-            );
+            let actual = take_visible_dirty_meshes(&mut dirty, dimension, 2, -3, 20, limit);
             assert_eq!(actual, expected);
             assert!(actual.iter().all(|p| !dirty.contains(p)));
 
             let mut urgent = positions.clone();
-            let selected = take_visible_urgent_chunks(
-                &mut urgent, dimension, 2, -3, 20, limit,
-            );
+            let selected = take_visible_urgent_chunks(&mut urgent, dimension, 2, -3, 20, limit);
             assert_eq!(selected, expected);
             assert!(selected.iter().all(|p| !urgent.contains(p)));
         }
@@ -1335,7 +1445,11 @@ mod view_tests {
 
     #[test]
     fn deferred_mesh_candidates_do_not_enter_the_sorted_rebuild_queue() {
-        let pos = |x, z| ChunkPos { x, z, dimension: Dimension::Overworld };
+        let pos = |x, z| ChunkPos {
+            x,
+            z,
+            dimension: Dimension::Overworld,
+        };
         let view = super::ViewState {
             generation: 1,
             dimension: Dimension::Overworld,
@@ -1359,7 +1473,11 @@ mod view_tests {
 
     #[test]
     fn lazy_mesh_only_defers_distant_rear_columns_and_recovers_on_turn() {
-        let pos = |x, z| ChunkPos { x, z, dimension: Dimension::Overworld };
+        let pos = |x, z| ChunkPos {
+            x,
+            z,
+            dimension: Dimension::Overworld,
+        };
         let ahead = pos(0, 7);
         let rear = pos(0, -7);
         let near = pos(0, -2);
@@ -2115,7 +2233,11 @@ mod cache_tests {
 
     #[test]
     fn discarding_full_blocks_keeps_the_existing_neighbor_halo_arc() {
-        let pos = ChunkPos { x: 0, z: 0, dimension: Dimension::Overworld };
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
         let mut blocks = super::p3d::Preview3dChunkBlocks::test_cubes(&[[15, 64, 15]]);
         let boundary = std::sync::Arc::new(blocks.boundary_snapshot());
         let mut cached = super::CachedChunk {
@@ -2140,7 +2262,10 @@ mod cache_tests {
         assert!(cached.estimated_cpu_bytes() >= cached.bytes + extra_bytes);
         cached.discard_blocks();
         assert!(cached.blocks.is_none());
-        assert!(std::sync::Arc::ptr_eq(cached.boundary.as_ref().unwrap(), &boundary));
+        assert!(std::sync::Arc::ptr_eq(
+            cached.boundary.as_ref().unwrap(),
+            &boundary
+        ));
         assert_eq!(cached.bytes, extra_bytes);
     }
 
@@ -2466,13 +2591,13 @@ impl CachedChunk {
     fn estimated_cpu_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             .saturating_add(self.bytes)
-            .saturating_add(
-                if self.blocks.is_some() {
-                    self.boundary.as_ref().map_or(0, |halo| halo.estimated_cpu_bytes())
-                } else {
-                    0
-                },
-            )
+            .saturating_add(if self.blocks.is_some() {
+                self.boundary
+                    .as_ref()
+                    .map_or(0, |halo| halo.estimated_cpu_bytes())
+            } else {
+                0
+            })
             .saturating_add(self.probe.storage_bytes)
             .saturating_add(self.unexpanded_bands.len() * std::mem::size_of::<i32>())
             .saturating_add(self.frame_displays.capacity() * std::mem::size_of::<FrameDisplay>())
@@ -2489,7 +2614,9 @@ impl CachedChunk {
             // Neighbor-only meshing may have already extracted the same
             // immutable occupancy halo. Keep its Arc rather than decoding
             // all block classes and rebuilding boundary maps a second time.
-            let boundary = self.boundary.take()
+            let boundary = self
+                .boundary
+                .take()
                 .unwrap_or_else(|| Arc::new(blocks.boundary_snapshot()));
             self.bytes = boundary.estimated_cpu_bytes();
             self.boundary = Some(boundary);
@@ -2597,7 +2724,7 @@ fn resolve_material_source(
 ) -> Option<ObjResolvedTexture> {
     let started = trace_timings().then(Instant::now);
     let resolved = if let Some(item) = material.strip_prefix(ITEM_MATERIAL_PREFIX) {
-        resolver.item_texture_for(item).or_else(|| {
+        resolver.item_texture(item).or_else(|| {
             let block = item.strip_prefix("minecraft:").unwrap_or(item);
             resolver.texture_for(&format!("minecraft_{block}_side"), normal)
         })
@@ -2641,8 +2768,7 @@ fn request_for_stream_batch(
     view: Option<ViewState>,
 ) -> ChunkLoadOptions {
     if view.is_some_and(|view| {
-        !positions.is_empty()
-            && positions.iter().all(|pos| lazy_mesh_column(*pos, view))
+        !positions.is_empty() && positions.iter().all(|pos| lazy_mesh_column(*pos, view))
     }) {
         options.data_request = ChunkDataRequest::new().full_3d_indices();
     }
@@ -2693,9 +2819,15 @@ fn load_batch_from_world(
     let mut lazy_visibility = vec![None; chunks.len()];
     let candidates = lazy_view
         .map(|_| {
-            chunks.iter().filter(|data| data.is_loaded).flat_map(|data| {
-                data.subchunks.keys().map(move |&y| (data.pos, i32::from(y).div_euclid(4)))
-            }).collect::<BTreeSet<_>>()
+            chunks
+                .iter()
+                .filter(|data| data.is_loaded)
+                .flat_map(|data| {
+                    data.subchunks
+                        .keys()
+                        .map(move |&y| (data.pos, i32::from(y).div_euclid(4)))
+                })
+                .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
     // The first pass only decodes packed block palettes. Its conservative
@@ -2714,22 +2846,28 @@ fn load_batch_from_world(
             // Reuse these decoded masks when collecting a deferred probe or
             // retaining an omitted Section: never unpack the same palette twice.
             preflight_masks.insert(data.pos, masks);
-            probes.insert(data.pos, Arc::new(World3dChunkProbe {
-                pos: data.pos,
-                min_y: data.pos.y_range(data.version).0,
-                subchunks: BTreeMap::new(),
-                visibility,
-                state_version: None,
-                storage_bytes: 0,
-            }));
+            probes.insert(
+                data.pos,
+                Arc::new(World3dChunkProbe {
+                    pos: data.pos,
+                    min_y: data.pos.y_range(data.version).0,
+                    subchunks: BTreeMap::new(),
+                    visibility,
+                    state_version: None,
+                    storage_bytes: 0,
+                }),
+            );
         }
         let hidden = super::visibility::hidden_render_band_keys(
-            &probes, &candidates, view.dimension,
+            &probes,
+            &candidates,
+            view.dimension,
             view.camera.map(|coordinate| coordinate.floor() as i32),
             view.radius,
         );
         for (data, visibility) in chunks.iter().zip(&mut lazy_visibility) {
-            if data.is_loaded && lazy_mesh_column(data.pos, view)
+            if data.is_loaded
+                && lazy_mesh_column(data.pos, view)
                 && let Some(probe) = probes.remove(&data.pos).and_then(Arc::into_inner)
             {
                 *visibility = Some(probe.visibility);
@@ -2758,15 +2896,15 @@ fn load_batch_from_world(
     let need_mesh_data = chunks.iter().any(|data| {
         data.is_loaded
             && !lazy_view.is_some_and(|view| lazy_mesh_column(data.pos, view))
-            && data.subchunks.keys().any(|&y| {
-                !hidden_before_models.contains(&(data.pos, i32::from(y).div_euclid(4)))
-            })
+            && data
+                .subchunks
+                .keys()
+                .any(|&y| !hidden_before_models.contains(&(data.pos, i32::from(y).div_euclid(4))))
     });
     // A batch containing only deferred rear columns never touches expensive
     // biome/model collection. When any foreground column is present, keep
     // its original neighbor biomes for exact tinting at chunk boundaries.
-    let biome_blend = need_mesh_data
-        .then(|| p3d::Preview3dBiomeBlendField::from_chunks(&chunks));
+    let biome_blend = need_mesh_data.then(|| p3d::Preview3dBiomeBlendField::from_chunks(&chunks));
     let collect_started = Instant::now();
     let processed = chunks
         .into_par_iter()
@@ -2781,11 +2919,16 @@ fn load_batch_from_world(
                 if lazy_view.is_some_and(|view| lazy_mesh_column(pos, view)) {
                     collect_lazy_probe_chunk(data, visibility, preflight_masks.get(&pos))
                 } else {
-                    let hidden = hidden_before_models.range((pos, i32::MIN)..=(pos, i32::MAX))
+                    let hidden = hidden_before_models
+                        .range((pos, i32::MIN)..=(pos, i32::MAX))
                         .map(|&(_, band)| band)
                         .collect::<BTreeSet<_>>();
                     collect_cached_chunk(
-                        data, models, trace, biome_blend.as_ref(), &hidden,
+                        data,
+                        models,
+                        trace,
+                        biome_blend.as_ref(),
+                        &hidden,
                         preflight_masks.get(&pos),
                     )
                 },
@@ -3239,11 +3382,8 @@ impl Worker {
         if let Ok(command) = commands.try_recv() {
             return Some(command);
         }
-        let remesh = take_renderable_dirty_meshes(
-            &mut self.dirty_meshes,
-            self.view,
-            REMESH_BATCH_CHUNKS,
-        );
+        let remesh =
+            take_renderable_dirty_meshes(&mut self.dirty_meshes, self.view, REMESH_BATCH_CHUNKS);
         if !remesh.is_empty() {
             self.mesh_targets(tx, &remesh, false);
             if self
@@ -3283,7 +3423,9 @@ impl Worker {
                 &mut self.dirty_meshes,
                 self.view,
                 interleaved_mesh_wave_size(
-                    self.last_face_ms, self.last_convert_ms, self.last_send_wait_ms,
+                    self.last_face_ms,
+                    self.last_convert_ms,
+                    self.last_send_wait_ms,
                 ),
             );
             if !ready.is_empty() {
@@ -3350,9 +3492,8 @@ impl Worker {
                             self.visibility_index.upsert(pos, masks);
                         }
                         let deferred = chunk.blocks.is_none();
-                        self.deferred_bands.extend(
-                            chunk.unexpanded_bands.iter().map(|&band| (pos, band)),
-                        );
+                        self.deferred_bands
+                            .extend(chunk.unexpanded_bands.iter().map(|&band| (pos, band)));
                         self.cache.insert(pos, chunk);
                         self.missing.remove(&pos);
                         self.failed_positions.remove(&pos);
@@ -3417,9 +3558,8 @@ impl Worker {
                         // view preempts the current scene build. The ordinary
                         // dirty queue resumes its Section meshing when visible.
                         let done = (index + 1) * STREAM_MESH_BATCH_CHUNKS;
-                        self.dirty_meshes.extend(
-                            newly_loaded[done.min(newly_loaded.len())..].iter().copied(),
-                        );
+                        self.dirty_meshes
+                            .extend(newly_loaded[done.min(newly_loaded.len())..].iter().copied());
                         if let Some(pending) = pending_batch.take() {
                             self.urgent_chunks.extend(pending.positions.iter().copied());
                         }
@@ -3540,7 +3680,8 @@ impl Worker {
                 self.invalidate(&stale);
             }
         }
-        if !self.visibility_index.enabled() || self.visibility_index.len() == 0
+        if !self.visibility_index.enabled()
+            || self.visibility_index.len() == 0
             || portal_culling_disabled()
         {
             self.index_hidden_columns.clear();
@@ -3558,8 +3699,12 @@ impl Worker {
             (self.view.forward_xz[1] * 8.0).round() as i8,
         ];
         let key = (
-            self.view.dimension, camera[0], camera[1], camera[2],
-            self.view.radius, direction,
+            self.view.dimension,
+            camera[0],
+            camera[1],
+            camera[2],
+            self.view.radius,
+            direction,
         );
         let epoch = self.visibility_index.epoch();
         if self.index_plan_key == Some(key) {
@@ -3575,29 +3720,47 @@ impl Worker {
             }
         }
         let (center_x, center_z) = self.view_center_chunk();
-        let mut probes = self.visibility_index.probes_in_view(
-            self.view.dimension, center_x, center_z, self.view.radius,
-            |pos| !self.cache.contains_key(&pos) && !self.probe_stash.contains_key(&pos),
-        ).collect::<BTreeMap<_, _>>();
+        let mut probes = self
+            .visibility_index
+            .probes_in_view(
+                self.view.dimension,
+                center_x,
+                center_z,
+                self.view.radius,
+                |pos| !self.cache.contains_key(&pos) && !self.probe_stash.contains_key(&pos),
+            )
+            .collect::<BTreeMap<_, _>>();
         // Live decoded geometry is more precise than the conservative disk
         // snapshot. Its solid masks always come from authoritative models.
         probes.extend(
-            self.cache.iter()
+            self.cache
+                .iter()
                 .map(|(&pos, chunk)| (pos, Arc::clone(&chunk.probe))),
         );
         probes.extend(
-            self.probe_stash.iter()
+            self.probe_stash
+                .iter()
                 .map(|(&pos, (probe, ..))| (pos, Arc::clone(probe))),
         );
-        let candidates = self.visibility_index.candidate_bands()
+        let candidates = self
+            .visibility_index
+            .candidate_bands()
             .filter(|(pos, _)| {
                 inside_view(
-                    *pos, self.view.dimension, center_x, center_z, self.view.radius,
+                    *pos,
+                    self.view.dimension,
+                    center_x,
+                    center_z,
+                    self.view.radius,
                 )
             })
             .collect::<BTreeSet<_>>();
         let mut hidden = super::visibility::hidden_render_band_keys(
-            &probes, &candidates, self.view.dimension, camera, self.view.radius,
+            &probes,
+            &candidates,
+            self.view.dimension,
+            camera,
+            self.view.radius,
         );
         hidden.extend(frustum_hidden_bands(&candidates, self.view));
         self.index_hidden_columns = fully_hidden_mesh_columns(&candidates, &hidden)
@@ -3607,7 +3770,8 @@ impl Worker {
             .filter(|pos| {
                 (i64::from(pos.x) - i64::from(center_x))
                     .abs()
-                    .max((i64::from(pos.z) - i64::from(center_z)).abs()) > 3
+                    .max((i64::from(pos.z) - i64::from(center_z)).abs())
+                    > 3
             })
             .collect();
         self.index_plan_key = Some(key);
@@ -3616,8 +3780,10 @@ impl Worker {
         if trace_verbose() {
             eprintln!(
                 "world3d index_probe gen={} indexed_columns={} hidden_columns={} candidate_bands={}",
-                self.view.generation, self.visibility_index.len(),
-                self.index_hidden_columns.len(), candidates.len(),
+                self.view.generation,
+                self.visibility_index.len(),
+                self.index_hidden_columns.len(),
+                candidates.len(),
             );
         }
     }
@@ -3629,14 +3795,20 @@ impl Worker {
         let (center_x, center_z) = self.view_center_chunk();
         self.deferred_db_reads.retain(|pos| {
             inside_cache_hysteresis(
-                *pos, self.view.dimension, center_x, center_z, self.view.radius,
+                *pos,
+                self.view.dimension,
+                center_x,
+                center_z,
+                self.view.radius,
             )
         });
         self.refresh_index_plan(false);
-        let newly_visible = self.deferred_db_reads.iter().copied()
+        let newly_visible = self
+            .deferred_db_reads
+            .iter()
+            .copied()
             .filter(|&pos| {
-                !lazy_mesh_column(pos, self.view)
-                    && !self.index_hidden_columns.contains(&pos)
+                !lazy_mesh_column(pos, self.view) && !self.index_hidden_columns.contains(&pos)
             })
             .collect::<Vec<_>>();
         for pos in newly_visible {
@@ -3694,9 +3866,7 @@ impl Worker {
             // expansion. Do not issue a LevelDB query solely to construct a
             // Probe that cannot contribute to the current view. A later view
             // transition promotes this key without restarting the cursor.
-            if lazy_mesh_column(pos, self.view)
-                || self.index_hidden_columns.contains(&pos)
-            {
+            if lazy_mesh_column(pos, self.view) || self.index_hidden_columns.contains(&pos) {
                 self.deferred_db_reads.insert(pos);
                 deferred_this_wave += 1;
                 continue;
@@ -3729,7 +3899,12 @@ impl Worker {
         rayon::spawn(move || {
             let started = Instant::now();
             let loaded = load_batch_from_world(
-                &world, &models, &positions, options, Some(view), Some(probes),
+                &world,
+                &models,
+                &positions,
+                options,
+                Some(view),
+                Some(probes),
             );
             let _ = sender.send((loaded, started.elapsed()));
         });
@@ -3745,9 +3920,9 @@ impl Worker {
             self.cache.contains_key(neighbor)
         });
         self.dirty_meshes.extend(
-            neighbors.into_iter().filter(|neighbor| {
-                *neighbor != pos && !self.deferred_columns.contains(neighbor)
-            }),
+            neighbors
+                .into_iter()
+                .filter(|neighbor| *neighbor != pos && !self.deferred_columns.contains(neighbor)),
         );
     }
 
@@ -3755,11 +3930,14 @@ impl Worker {
     /// mesh exists. Cached metadata-only columns are deliberately represented
     /// as open space; they can never make another Section falsely invisible.
     fn portal_probe_snapshot(&self) -> BTreeMap<ChunkPos, Arc<World3dChunkProbe>> {
-        let mut probes = self.cache.iter()
+        let mut probes = self
+            .cache
+            .iter()
             .map(|(&pos, chunk)| (pos, Arc::clone(&chunk.probe)))
             .collect::<BTreeMap<_, _>>();
         probes.extend(
-            self.probe_stash.iter()
+            self.probe_stash
+                .iter()
                 .map(|(&pos, (probe, ..))| (pos, Arc::clone(probe))),
         );
         probes
@@ -3769,9 +3947,7 @@ impl Worker {
         &self,
         candidates: &BTreeSet<(ChunkPos, i32)>,
     ) -> BTreeSet<(ChunkPos, i32)> {
-        if candidates.is_empty()
-            || portal_culling_disabled()
-        {
+        if candidates.is_empty() || portal_culling_disabled() {
             return BTreeSet::new();
         }
         let probes = self.portal_probe_snapshot();
@@ -3854,12 +4030,18 @@ impl Worker {
         // discarded Sections back from LevelDB. In particular, a fully sealed
         // underground column does not need any DB rehydration, texture lookup,
         // biome work or GPU mesh until its portal becomes reachable.
-        let early_candidates = targets.iter().filter_map(|pos| {
-            self.cache.get(pos).map(|chunk| (pos, &chunk.probe))
-        }).flat_map(|(&pos, probe)| {
-            probe.subchunks.keys().map(move |&y| (pos, i32::from(y).div_euclid(4)))
-        }).collect::<BTreeSet<_>>();
-        let early_hidden = self.hidden_mesh_bands(&early_candidates)
+        let early_candidates = targets
+            .iter()
+            .filter_map(|pos| self.cache.get(pos).map(|chunk| (pos, &chunk.probe)))
+            .flat_map(|(&pos, probe)| {
+                probe
+                    .subchunks
+                    .keys()
+                    .map(move |&y| (pos, i32::from(y).div_euclid(4)))
+            })
+            .collect::<BTreeSet<_>>();
+        let early_hidden = self
+            .hidden_mesh_bands(&early_candidates)
             .into_iter()
             .filter(|(pos, _)| !self.retained_invalidated.contains(pos))
             .collect::<BTreeSet<_>>();
@@ -3870,7 +4052,9 @@ impl Worker {
             if trace {
                 eprintln!(
                     "world3d db_rehydrate_skip gen={} fully_hidden_columns={} pending_bands={}",
-                    self.view.generation, fully_hidden.len(), self.deferred_bands.len(),
+                    self.view.generation,
+                    fully_hidden.len(),
+                    self.deferred_bands.len(),
                 );
             }
         }
@@ -3951,9 +4135,10 @@ impl Worker {
         // opaque-block snapshot only supplies neighbor face decisions.
         for pos in local_positions {
             if !target_set.contains(&pos)
-                && !self.cache.get(&pos).is_some_and(|chunk| {
-                    !chunk.unexpanded_bands.is_empty()
-                })
+                && !self
+                    .cache
+                    .get(&pos)
+                    .is_some_and(|chunk| !chunk.unexpanded_bands.is_empty())
             {
                 // A neighboring full column is needed for occupancy and AO
                 // decisions, not for its complete model/texture expansion.
@@ -3977,14 +4162,18 @@ impl Worker {
             let Some(mut chunk) = self.cache.remove(&pos) else {
                 continue;
             };
-            let reload_incomplete = !chunk.unexpanded_bands.is_empty()
-                && rehydrate_positions.contains(&pos);
+            let reload_incomplete =
+                !chunk.unexpanded_bands.is_empty() && rehydrate_positions.contains(&pos);
             let retained_partial = if reload_incomplete {
                 chunk.blocks.take()
             } else {
                 None
             };
-            let blocks = match if reload_incomplete { None } else { chunk.blocks.take() } {
+            let blocks = match if reload_incomplete {
+                None
+            } else {
+                chunk.blocks.take()
+            } {
                 Some(blocks) => blocks,
                 None => match rehydrated.remove(&pos).unwrap_or(Ok(None)) {
                     Ok(Some(mut loaded)) => {
@@ -4046,7 +4235,10 @@ impl Worker {
         let hidden_bands = if rehydrate_positions.is_empty() {
             // All Probes were already authoritative when the preflight ran.
             // Do not traverse the same large portal graph twice in one wave.
-            early_hidden.intersection(&prospective_bands).copied().collect()
+            early_hidden
+                .intersection(&prospective_bands)
+                .copied()
+                .collect()
         } else {
             // Newly hydrated Probes may certify additional wall cells.
             self.hidden_mesh_bands(&prospective_bands)
@@ -4230,13 +4422,12 @@ impl Worker {
                     gpu_bands.insert((pos, band.section_y), band);
                 }
             }
-            let mut faces =
-                builder.build_stream_faces_with_gpu_cubes_skipping(
-                    &fine,
-                    &selections,
-                    &gpu_targets,
-                    &hidden_bands,
-                );
+            let mut faces = builder.build_stream_faces_with_gpu_cubes_skipping(
+                &fine,
+                &selections,
+                &gpu_targets,
+                &hidden_bands,
+            );
             if !coarse.is_empty() && coarse_faces_by_pos.is_none() {
                 coarse_faces_by_pos = Some(
                     builder
@@ -4296,7 +4487,8 @@ impl Worker {
                 if !targets.contains(&chunk_faces.pos) {
                     continue;
                 }
-                let Some((probe, _, _, _, frame_displays, _)) = self.probe_stash.get(&chunk_faces.pos)
+                let Some((probe, _, _, _, frame_displays, _)) =
+                    self.probe_stash.get(&chunk_faces.pos)
                 else {
                     continue;
                 };
@@ -4402,9 +4594,9 @@ impl Worker {
                     }
                 } else {
                     match light {
-                        Ok(light) => self.build_static_gpu_mesh(
-                            pos, section_y, &faces, Some(light),
-                        ),
+                        Ok(light) => {
+                            self.build_static_gpu_mesh(pos, section_y, &faces, Some(light))
+                        }
                         Err(error) => Err(error.clone()),
                     }
                 };
@@ -4420,11 +4612,8 @@ impl Worker {
                         }
                         let mut mesh = Arc::new(mesh);
                         let key = (pos, section_y);
-                        let previous = self
-                            .revisit_cache
-                            .get(&key)
-                            .cloned()
-                            .or_else(|| {
+                        let previous =
+                            self.revisit_cache.get(&key).cloned().or_else(|| {
                                 self.published_sections.get(&key).and_then(Weak::upgrade)
                             });
                         if let Some(old) = previous
@@ -4688,10 +4877,14 @@ impl Worker {
             .query_chunk_data(pos, self.chunk_load_options())
             .map_err(|error| format!("读取区块 {},{} 失败：{error}", pos.x, pos.z))?;
         let trace = trace_verbose();
-        let biome_blend =
-            p3d::Preview3dBiomeBlendField::from_chunks(std::slice::from_ref(&data));
+        let biome_blend = p3d::Preview3dBiomeBlendField::from_chunks(std::slice::from_ref(&data));
         let chunk = collect_cached_chunk(
-            data, self.models.as_ref(), trace, Some(&biome_blend), &BTreeSet::new(), None,
+            data,
+            self.models.as_ref(),
+            trace,
+            Some(&biome_blend),
+            &BTreeSet::new(),
+            None,
         )?;
         if trace {
             eprintln!(
@@ -4716,9 +4909,9 @@ impl Worker {
         light: Option<&lighting::ChunkLighting>,
     ) -> Result<Option<World3dChunkMesh>, String> {
         let mut templates = Vec::with_capacity(faces.len());
-        let Some(mut output) = self.build_chunk_mesh_with_templates(
-            pos, section_y, faces, Some(&mut templates), 0,
-        )? else {
+        let Some(mut output) =
+            self.build_chunk_mesh_with_templates(pos, section_y, faces, Some(&mut templates), 0)?
+        else {
             return Ok(None);
         };
         let source = if let Some(light) = light {
@@ -4727,7 +4920,8 @@ impl Worker {
             gpui_3d::VoxelMeshSource::new(
                 [3, 3, 3],
                 {
-                    let min = templates.iter()
+                    let min = templates
+                        .iter()
                         .flat_map(|face| face.vertices.iter())
                         .fold(Vec3::new(f32::MAX, f32::MAX, f32::MAX), |min, vertex| {
                             min.min(vertex.position)
@@ -4835,15 +5029,13 @@ impl Worker {
                         && resolved_texture
                             .as_ref()
                             .is_some_and(|texture| self.mesh_assets.is_grayscale_mask(texture));
-                    let grass_side_sources =
-                        grass_block_side_texture_keys(material_name).and_then(
-                            |(dirt_key, overlay_key)| {
-                                let (dirt, _) = self.resolve_texture_key(dirt_key)?;
-                                let (overlay, _) = self.resolve_texture_key(overlay_key)?;
-                                (dirt.dimensions() == overlay.dimensions())
-                                    .then_some((dirt, overlay))
-                            },
-                        );
+                    let grass_side_sources = grass_block_side_texture_keys(material_name).and_then(
+                        |(dirt_key, overlay_key)| {
+                            let (dirt, _) = self.resolve_texture_key(dirt_key)?;
+                            let (overlay, _) = self.resolve_texture_key(overlay_key)?;
+                            (dirt.dimensions() == overlay.dimensions()).then_some((dirt, overlay))
+                        },
+                    );
                     let result = FaceMaterialProperties {
                         texture: resolved_texture,
                         normal: normal.map(|(asset, _)| asset),
@@ -4854,22 +5046,21 @@ impl Worker {
                         grass_side_sources,
                         opaque_glass: material_name.starts_with("minecraft_glass_"),
                     };
-                    self.face_material_cache.insert(
-                        (Arc::clone(&face.material), face.normal),
-                        result.clone(),
-                    );
+                    self.face_material_cache
+                        .insert((Arc::clone(&face.material), face.normal), result.clone());
                     result
                 });
             let mut resolved_texture = properties.texture.clone();
             let mut uses_tint = properties.tint_mask;
             if face.normal[1] == 0 {
-                let composited = properties
-                    .grass_side_sources
-                    .as_ref()
-                    .and_then(|(dirt, overlay)| {
-                        self.mesh_assets
-                            .composited_grass_side(dirt, overlay, face.color)
-                    });
+                let composited =
+                    properties
+                        .grass_side_sources
+                        .as_ref()
+                        .and_then(|(dirt, overlay)| {
+                            self.mesh_assets
+                                .composited_grass_side(dirt, overlay, face.color)
+                        });
                 if let Some(composited) = composited {
                     resolved_texture = Some(composited);
                     uses_tint = false;
@@ -4988,24 +5179,27 @@ impl Worker {
                 // only the four materialized template corners. Do NOT construct
                 // a full CPU Mesh, index buffer or packed vertex array only to
                 // read its vertices back for the GPU compute mesher.
-                let material_slot = u32::try_from(slot)
-                    .map_err(|_| "区块材质过多".to_string())?;
+                let material_slot = u32::try_from(slot).map_err(|_| "区块材质过多".to_string())?;
                 templates.push(gpui_3d::VoxelFaceTemplate {
                     vertices: world3d_face_vertices(
-                        face, origin_f64, face_index < template_local_faces, color,
+                        face,
+                        origin_f64,
+                        face_index < template_local_faces,
+                        color,
                     ),
                     material_slot,
                     neighbour: face.normal,
                 });
             } else {
-                let bucket_index = *bucket_map
-                    .entry((face_band_y(face), slot))
-                    .or_insert_with(|| {
-                        let index = buckets.len();
-                        buckets.push(FaceBucket::new());
-                        bucket_material_slots.push(slot);
-                        index
-                    });
+                let bucket_index =
+                    *bucket_map
+                        .entry((face_band_y(face), slot))
+                        .or_insert_with(|| {
+                            let index = buckets.len();
+                            buckets.push(FaceBucket::new());
+                            bucket_material_slots.push(slot);
+                            index
+                        });
                 buckets[bucket_index].faces.push((face_index, color));
             }
         }
@@ -5209,7 +5403,7 @@ impl Worker {
         &mut self,
         key: &str,
     ) -> Option<(Arc<TextureAsset>, TextureAlphaContent)> {
-        let resolved = self.resolver.texture_for_key(key)?;
+        let resolved = self.resolver.texture(key)?;
         self.resolve_texture_path(resolved)
     }
 
@@ -5609,16 +5803,41 @@ fn premesh_opaque_terrain(name: &str) -> bool {
     };
     matches!(
         name,
-        "stone" | "deepslate" | "cobbled_deepslate" | "cobblestone"
-            | "bedrock" | "dirt" | "coarse_dirt" | "rooted_dirt"
-            | "grass_block" | "sand" | "red_sand"
-            | "sandstone" | "red_sandstone" | "smooth_sandstone"
-            | "smooth_red_sandstone" | "gravel" | "clay"
-            | "granite" | "polished_granite" | "diorite" | "polished_diorite"
-            | "andesite" | "polished_andesite" | "tuff" | "calcite"
-            | "dripstone_block" | "netherrack" | "end_stone"
-            | "blackstone" | "basalt" | "smooth_basalt"
-            | "magma" | "magma_block" | "obsidian" | "crying_obsidian"
+        "stone"
+            | "deepslate"
+            | "cobbled_deepslate"
+            | "cobblestone"
+            | "bedrock"
+            | "dirt"
+            | "coarse_dirt"
+            | "rooted_dirt"
+            | "grass_block"
+            | "sand"
+            | "red_sand"
+            | "sandstone"
+            | "red_sandstone"
+            | "smooth_sandstone"
+            | "smooth_red_sandstone"
+            | "gravel"
+            | "clay"
+            | "granite"
+            | "polished_granite"
+            | "diorite"
+            | "polished_diorite"
+            | "andesite"
+            | "polished_andesite"
+            | "tuff"
+            | "calcite"
+            | "dripstone_block"
+            | "netherrack"
+            | "end_stone"
+            | "blackstone"
+            | "basalt"
+            | "smooth_basalt"
+            | "magma"
+            | "magma_block"
+            | "obsidian"
+            | "crying_obsidian"
     ) || name.ends_with("_ore")
 }
 
@@ -5633,11 +5852,12 @@ fn premesh_visibility_masks(data: &ChunkData) -> BTreeMap<i8, [u64; 64]> {
 /// Persist only conservative block-state masks, never texture/model-dependent
 /// occupancy. Every decoded section key is retained, including all-air ones,
 /// so the disk directory distinguishes "known open" from "not indexed".
-fn premesh_visibility_masks_from_probe(
-    probe: &World3dChunkProbe,
-) -> BTreeMap<i8, [u64; 64]> {
+fn premesh_visibility_masks_from_probe(probe: &World3dChunkProbe) -> BTreeMap<i8, [u64; 64]> {
     let masks = premesh_visibility_masks_for_sections(
-        probe.subchunks.iter().map(|(&y, section)| (y, &section.subchunk)),
+        probe
+            .subchunks
+            .iter()
+            .map(|(&y, section)| (y, &section.subchunk)),
     );
     index_masks(probe.subchunks.keys().copied(), masks)
 }
@@ -5663,7 +5883,9 @@ fn premesh_visibility_masks_for_sections<'a>(
         let [storage] = storages.as_slice() else {
             continue;
         };
-        let opaque = storage.states.iter()
+        let opaque = storage
+            .states
+            .iter()
             .map(|state| premesh_opaque_terrain(&state.name))
             .collect::<Vec<_>>();
         if !opaque.iter().any(|&opaque| opaque) {
@@ -5677,12 +5899,15 @@ fn premesh_visibility_masks_for_sections<'a>(
         for local_y in 0u8..16 {
             for local_z in 0u8..16 {
                 for local_x in 0u8..16 {
-                    let opaque_cell = storage.palette_index_at(local_x, local_y, local_z)
+                    let opaque_cell = storage
+                        .palette_index_at(local_x, local_y, local_z)
                         .and_then(|index| opaque.get(usize::from(index)))
-                        .copied().unwrap_or(false);
+                        .copied()
+                        .unwrap_or(false);
                     if opaque_cell {
                         let cell = usize::from(local_y) * 256
-                            + usize::from(local_z) * 16 + usize::from(local_x);
+                            + usize::from(local_z) * 16
+                            + usize::from(local_x);
                         mask[cell / 64] |= 1u64 << (cell % 64);
                     }
                 }
@@ -5726,19 +5951,22 @@ fn build_probe(
         }
         subchunks.insert(y, ProbingSubChunk { subchunk, flags });
     }
-    let storage_bytes = subchunks.values().fold(
-        std::mem::size_of::<World3dChunkProbe>(),
-        |bytes, subchunk| {
-            bytes
-                .saturating_add(std::mem::size_of::<i8>())
-                .saturating_add(subchunk.estimated_cpu_bytes())
-        },
-    ).saturating_add(visibility.len().saturating_mul(
-        std::mem::size_of::<i8>()
-            + std::mem::size_of::<super::visibility::SectionVisibility>(),
-    )).saturating_add(visibility.values().fold(0usize, |total, graph| {
-        total.saturating_add(graph.heap_bytes())
-    }));
+    let storage_bytes = subchunks
+        .values()
+        .fold(
+            std::mem::size_of::<World3dChunkProbe>(),
+            |bytes, subchunk| {
+                bytes
+                    .saturating_add(std::mem::size_of::<i8>())
+                    .saturating_add(subchunk.estimated_cpu_bytes())
+            },
+        )
+        .saturating_add(visibility.len().saturating_mul(
+            std::mem::size_of::<i8>() + std::mem::size_of::<super::visibility::SectionVisibility>(),
+        ))
+        .saturating_add(visibility.values().fold(0usize, |total, graph| {
+            total.saturating_add(graph.heap_bytes())
+        }));
     World3dChunkProbe {
         pos,
         min_y,
@@ -5756,7 +5984,10 @@ fn probe_visibility(
         .into_iter()
         .filter(|(_, solid)| solid.iter().any(|&word| word != 0))
         .map(|(y, solid)| {
-            (y, Arc::new(super::visibility::SectionVisibility::from_solid_bits(solid)))
+            (
+                y,
+                Arc::new(super::visibility::SectionVisibility::from_solid_bits(solid)),
+            )
         })
         .collect()
 }
@@ -5789,7 +6020,7 @@ fn discover_capture_library(package_roots: &[PathBuf]) -> Option<PathBuf> {
         return (root.join("manifest.json").is_file()
             && root.join("blocks.json").is_file()
             && root.join("geometry_pool.bin").is_file())
-            .then_some(root);
+        .then_some(root);
     }
     // Ignore exports from unrelated installed game versions. A known
     // package root is the only installation identity available to this worker.
@@ -5890,9 +6121,7 @@ fn collect_cached_chunk(
     let pos = data.pos;
     let started = Instant::now();
     let frame_displays = FrameDisplay::collect_where(&data, |y| {
-        (-2_i32..=2).any(|offset| {
-            !hidden_bands.contains(&y.saturating_add(offset).div_euclid(64))
-        })
+        (-2_i32..=2).any(|offset| !hidden_bands.contains(&y.saturating_add(offset).div_euclid(64)))
     });
     // Keep decoded Sections in place for the probe. The model collector
     // borrows only the slices that pass the visibility and halo check.
@@ -5913,7 +6142,10 @@ fn collect_cached_chunk(
         p3d::Preview3dChunkBlocks::default()
     } else {
         p3d::preview_3d_collect_chunk_blocks_with_biome_blend(
-            &data, Some(models), biome_blend, |y| !skip_premesh_subchunk(y, hidden_bands),
+            &data,
+            Some(models),
+            biome_blend,
+            |y| !skip_premesh_subchunk(y, hidden_bands),
         )
         .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?
     };
@@ -5964,15 +6196,24 @@ fn world3d_face_vertices(
     local_template: bool,
     color: [f32; 4],
 ) -> [Vertex; 4] {
-    let normal = Vec3::new(face.normal[0] as f32, face.normal[1] as f32, face.normal[2] as f32);
-    let uv = face.uv.unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+    let normal = Vec3::new(
+        face.normal[0] as f32,
+        face.normal[1] as f32,
+        face.normal[2] as f32,
+    );
+    let uv = face
+        .uv
+        .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
     std::array::from_fn(|corner| Vertex {
         position: chunk_mesh_corner(face.corners[corner], origin, local_template),
         normal,
         uv: Vec2::new(uv[corner][0], uv[corner][1]),
         color: std::array::from_fn(|channel| {
-            if channel < 3 { color[channel] * face.ambient_light[corner] }
-            else { color[channel] }
+            if channel < 3 {
+                color[channel] * face.ambient_light[corner]
+            } else {
+                color[channel]
+            }
         }),
     })
 }
@@ -6332,7 +6573,6 @@ fn run_worker(
     }
     worker.resolver.flush_material_index();
 }
-
 
 #[cfg(test)]
 mod local_gpu_template_tests {

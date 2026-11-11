@@ -5,12 +5,12 @@ use super::tile_state::*;
 const CANVAS_PAINT_PAGE_TILES: i32 = 32;
 const CANVAS_PAINT_GUARD_TILES: i32 = 8;
 
-pub(super) fn paint_tile_bounds_for_viewport(
+pub(super) fn paint_tile_bounds(
     viewport: super::model::MapViewport,
     layout: bedrock_render::RenderLayout,
     radius: i32,
 ) -> Option<TileBounds> {
-    let bounds = raw_paint_tile_bounds_for_viewport(
+    let bounds = raw_paint_bounds(
         viewport,
         layout,
         radius.saturating_add(CANVAS_PAINT_GUARD_TILES),
@@ -41,7 +41,7 @@ pub(super) fn viewport_block_bounds(
     viewport: MapViewport,
     layout: RenderLayout,
 ) -> (i32, i32, i32, i32) {
-    if let Some(range) = region_render_range_for_viewport(viewport, layout) {
+    if let Some(range) = tile_render_range(viewport, layout) {
         return (
             range.min_chunk_x.saturating_mul(16),
             range.min_chunk_z.saturating_mul(16),
@@ -79,7 +79,7 @@ pub(super) fn draw_grid_lines(
     let mut builder = PathBuilder::stroke(width);
     let mut x = start_x;
     while x <= end_x {
-        let screen_x = screen_x_for_block(bounds, viewport, layout, x).floor();
+        let screen_x = block_screen_x(bounds, viewport, layout, x).floor();
         builder.move_to(point(px(screen_x), bounds.top()));
         builder.line_to(point(px(screen_x), bounds.bottom()));
         x = x.saturating_add(step);
@@ -89,7 +89,7 @@ pub(super) fn draw_grid_lines(
     }
     let mut z = start_z;
     while z <= end_z {
-        let screen_y = screen_y_for_block(bounds, viewport, layout, z).floor();
+        let screen_y = block_screen_y(bounds, viewport, layout, z).floor();
         builder.move_to(point(bounds.left(), px(screen_y)));
         builder.line_to(point(bounds.right(), px(screen_y)));
         z = z.saturating_add(step);
@@ -108,7 +108,7 @@ pub(super) fn draw_axes(
     layout: RenderLayout,
     window: &mut Window,
 ) {
-    let origin_x = screen_x_for_block(bounds, viewport, layout, 0);
+    let origin_x = block_screen_x(bounds, viewport, layout, 0);
     if origin_x >= bounds.left() / px(1.0) && origin_x <= bounds.right() / px(1.0) {
         let mut builder = PathBuilder::stroke(px(2.0));
         builder.move_to(point(px(origin_x), bounds.top()));
@@ -117,7 +117,7 @@ pub(super) fn draw_axes(
             window.paint_path(path, rgb(0xff5656));
         }
     }
-    let origin_y = screen_y_for_block(bounds, viewport, layout, 0);
+    let origin_y = block_screen_y(bounds, viewport, layout, 0);
     if origin_y >= bounds.top() / px(1.0) && origin_y <= bounds.bottom() / px(1.0) {
         let mut builder = PathBuilder::stroke(px(2.0));
         builder.move_to(point(bounds.left(), px(origin_y)));
@@ -179,7 +179,7 @@ pub(super) fn adjusted_grid_step(
     step
 }
 
-pub(super) fn screen_x_for_block(
+pub(super) fn block_screen_x(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -190,7 +190,7 @@ pub(super) fn screen_x_for_block(
         + block_to_map_pixel(block_x, layout) * viewport.scale
 }
 
-pub(super) fn screen_y_for_block(
+pub(super) fn block_screen_y(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -201,25 +201,20 @@ pub(super) fn screen_y_for_block(
         + block_to_map_pixel(block_z, layout) * viewport.scale
 }
 
-pub(super) fn viewport_screen_for_block(
+pub(super) fn viewport_screen_position(
     viewport: MapViewport,
     layout: RenderLayout,
     block_x: i32,
     block_z: i32,
 ) -> Option<(f32, f32)> {
-    region_render_range_for_viewport(viewport, layout).map_or_else(
+    tile_render_range(viewport, layout).map_or_else(
         || {
             Some((
                 viewport.offset_x + block_to_map_pixel(block_x, layout) * viewport.scale,
                 viewport.offset_y + block_to_map_pixel(block_z, layout) * viewport.scale,
             ))
         },
-        |range| {
-            Some((
-                range.screen_x_for_block(block_x),
-                range.screen_y_for_block(block_z),
-            ))
-        },
+        |range| Some((range.block_screen_x(block_x), range.block_screen_y(block_z))),
     )
 }
 
@@ -287,7 +282,7 @@ impl MapRenderRange {
         }
     }
 
-    fn screen_x_for_block(self, block_x: i32) -> f32 {
+    fn block_screen_x(self, block_x: i32) -> f32 {
         let chunk_x = block_x.div_euclid(16);
         let block_in_chunk = block_x - chunk_x.saturating_mul(16);
         self.render_origin_x
@@ -295,7 +290,7 @@ impl MapRenderRange {
             + block_in_chunk as f32 * self.block_screen_size
     }
 
-    fn screen_y_for_block(self, block_z: i32) -> f32 {
+    fn block_screen_y(self, block_z: i32) -> f32 {
         let chunk_z = block_z.div_euclid(16);
         let block_in_chunk = block_z - chunk_z.saturating_mul(16);
         self.render_origin_y
@@ -304,7 +299,7 @@ impl MapRenderRange {
     }
 }
 
-pub(super) fn tile_render_range_for_viewport(
+pub(super) fn tile_render_range(
     viewport: MapViewport,
     layout: RenderLayout,
 ) -> Option<MapRenderRange> {
@@ -338,13 +333,6 @@ pub(super) fn tile_render_range_for_viewport(
     })
 }
 
-pub(super) fn region_render_range_for_viewport(
-    viewport: MapViewport,
-    layout: RenderLayout,
-) -> Option<MapRenderRange> {
-    tile_render_range_for_viewport(viewport, layout)
-}
-
 pub(super) fn aligned_camera_chunk(
     offset: f32,
     camera_size: f32,
@@ -367,7 +355,7 @@ pub(super) const fn tile_paint_sort_key(coord: (i32, i32)) -> (i32, i32) {
     (coord.1, coord.0)
 }
 
-pub(super) fn tile_coords_for_paint_order(bounds: TileBounds) -> Vec<(i32, i32)> {
+pub(super) fn paint_order_tiles(bounds: TileBounds) -> Vec<(i32, i32)> {
     if bounds.min_x > bounds.max_x || bounds.min_z > bounds.max_z {
         return Vec::new();
     }
@@ -555,7 +543,7 @@ impl RetainedTileFilter {
 }
 
 #[cfg(test)]
-pub(super) fn visible_tile_bounds_for_render_range(
+pub(super) fn render_range_tile_bounds(
     render_range: MapRenderRange,
     center: (i32, i32),
 ) -> Option<TileBounds> {
@@ -571,7 +559,7 @@ pub(super) fn visible_tile_bounds_for_render_range(
     (bounds.min_x <= bounds.max_x && bounds.min_z <= bounds.max_z).then_some(bounds)
 }
 
-pub(super) fn visible_tile_bounds_for_viewport(
+pub(super) fn visible_tile_bounds(
     viewport: MapViewport,
     layout: RenderLayout,
     _center: (i32, i32),
@@ -604,13 +592,13 @@ pub(super) fn visible_tile_bounds_for_viewport(
     (bounds.min_x <= bounds.max_x && bounds.min_z <= bounds.max_z).then_some(bounds)
 }
 
-fn raw_paint_tile_bounds_for_viewport(
+fn raw_paint_bounds(
     viewport: MapViewport,
     layout: RenderLayout,
     radius: i32,
 ) -> Option<TileBounds> {
     let center = viewport.center_tile(layout);
-    let visible = visible_tile_bounds_for_viewport(viewport, layout, center)?;
+    let visible = visible_tile_bounds(viewport, layout, center)?;
     let mut paint_bounds = visible.expand(radius);
     clamp_tile_span(&mut paint_bounds.min_x, &mut paint_bounds.max_x, center.0);
     clamp_tile_span(&mut paint_bounds.min_z, &mut paint_bounds.max_z, center.1);
@@ -670,7 +658,7 @@ pub(super) fn collect_circular_tile_coords(
     }
     let radius_squared = i64::from(radius.max(0)).saturating_mul(i64::from(radius.max(0)));
     let mut coords = Vec::new();
-    for ring in 0..=max_tile_ring_for_bounds(expanded, center) {
+    for ring in 0..=max_tile_ring(expanded, center) {
         if ring == 0 {
             push_tile_if_selected(
                 &mut coords,
@@ -775,7 +763,7 @@ fn collect_tile_coords_unsorted(
     }
 }
 
-fn max_tile_ring_for_bounds(bounds: TileBounds, center: (i32, i32)) -> i32 {
+fn max_tile_ring(bounds: TileBounds, center: (i32, i32)) -> i32 {
     let min_dx = (i64::from(bounds.min_x) - i64::from(center.0)).abs();
     let max_dx = (i64::from(bounds.max_x) - i64::from(center.0)).abs();
     let min_dz = (i64::from(bounds.min_z) - i64::from(center.1)).abs();

@@ -139,8 +139,7 @@ pub async fn install_windows_app_sdk_runtime(
         "开始安装 Windows App SDK Runtime 1.8"
     );
 
-    download_windows_app_sdk_installer_if_needed(&client, &plan, &installer_name, sender.as_ref())
-        .await?;
+    download_windows_app_sdk_installer(&client, &plan, &installer_name, sender.as_ref()).await?;
     emit_windows_app_sdk_admin_notice(sender.as_ref(), &plan);
 
     emit_progress(
@@ -171,7 +170,7 @@ pub async fn install_windows_app_sdk_runtime(
     Ok(())
 }
 
-async fn download_windows_app_sdk_installer_if_needed(
+async fn download_windows_app_sdk_installer(
     client: &Client,
     plan: &WindowsAppSdkInstallPlan,
     installer_name: &str,

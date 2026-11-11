@@ -63,7 +63,10 @@ fn source_revision(world: &Path) -> Option<u64> {
             || name.starts_with("MANIFEST-")
             || name == "IDENTITY"
             || name.starts_with("OPTIONS-")
-            || matches!(path.extension().and_then(|ext| ext.to_str()), Some("ldb" | "sst"))
+            || matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("ldb" | "sst")
+            )
             || (name.chars().take_while(|ch| ch.is_ascii_digit()).count() > 0
                 && name.ends_with(".log"));
         if relevant {
@@ -83,8 +86,12 @@ fn source_revision(world: &Path) -> Option<u64> {
         if !metadata.is_file() {
             return None;
         }
-        let changed = metadata.modified().ok()?
-            .duration_since(UNIX_EPOCH).ok()?.as_nanos();
+        let changed = metadata
+            .modified()
+            .ok()?
+            .duration_since(UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
         hash = mix_bytes(hash, path.file_name()?.to_string_lossy().as_bytes());
         hash = mix_bytes(hash, &metadata.len().to_le_bytes());
         hash = mix_bytes(hash, &changed.to_le_bytes());
@@ -102,7 +109,10 @@ struct IndexedColumn {
 
 impl IndexedColumn {
     fn new(masks: BTreeMap<i8, [u64; 64]>) -> Self {
-        Self { masks, probe: OnceLock::new() }
+        Self {
+            masks,
+            probe: OnceLock::new(),
+        }
     }
 
     fn probe(&self, pos: ChunkPos) -> Arc<World3dChunkProbe> {
@@ -111,10 +121,11 @@ impl IndexedColumn {
 }
 
 fn column_probe(pos: ChunkPos, masks: &BTreeMap<i8, [u64; 64]>) -> Arc<World3dChunkProbe> {
-    let visibility = masks.iter().filter(|(_, solid)| solid.iter().any(|&s| s != 0))
-        .map(|(&y, solid)| {
-            (y, Arc::new(SectionVisibility::from_solid_bits(*solid)))
-        }).collect();
+    let visibility = masks
+        .iter()
+        .filter(|(_, solid)| solid.iter().any(|&s| s != 0))
+        .map(|(&y, solid)| (y, Arc::new(SectionVisibility::from_solid_bits(*solid))))
+        .collect();
     Arc::new(World3dChunkProbe {
         pos,
         min_y: 0,
@@ -254,16 +265,23 @@ impl VisibilityIndex {
         let file = crate::utils::file_ops::cache_subdir("world3d/section_occlusion")
             .join(format!("{:016x}.idx", stable_path_hash(world)));
         let revision = source_revision(world);
-        let entries = revision.and_then(|stamp| {
-            let metadata = fs::metadata(&file).ok()?;
-            if metadata.len() > MAX_FILE_SIZE {
-                return None;
-            }
-            parse(&fs::read(&file).ok()?, stamp)
-        }).unwrap_or_default();
+        let entries = revision
+            .and_then(|stamp| {
+                let metadata = fs::metadata(&file).ok()?;
+                if metadata.len() > MAX_FILE_SIZE {
+                    return None;
+                }
+                parse(&fs::read(&file).ok()?, stamp)
+            })
+            .unwrap_or_default();
         Self {
-            world: world.to_path_buf(), file, revision, entries,
-            epoch: 1, dirty: false, last_flush: Instant::now(),
+            world: world.to_path_buf(),
+            file,
+            revision,
+            entries,
+            epoch: 1,
+            dirty: false,
+            last_flush: Instant::now(),
             last_checked: Instant::now(),
         }
     }
@@ -291,18 +309,29 @@ impl VisibilityIndex {
         true
     }
 
-    pub(super) fn enabled(&self) -> bool { self.revision.is_some() }
-    pub(super) fn epoch(&self) -> u64 { self.epoch }
-    pub(super) fn len(&self) -> usize { self.entries.len() }
+    pub(super) fn enabled(&self) -> bool {
+        self.revision.is_some()
+    }
+    pub(super) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
+    }
 
     /// Filter by the active circular view *before* reconstructing the
     /// expensive 16³ portal graphs from their persistent compact masks.
     /// Off-screen index entries remain only a few raw words on disk/in RAM.
     pub(super) fn probes_in_view<'a>(
-        &'a self, dimension: Dimension, center_x: i32, center_z: i32, radius: i32,
+        &'a self,
+        dimension: Dimension,
+        center_x: i32,
+        center_z: i32,
+        radius: i32,
         needs_probe: impl Fn(ChunkPos) -> bool + 'a,
     ) -> impl Iterator<Item = (ChunkPos, Arc<World3dChunkProbe>)> + 'a {
-        self.entries.iter()
+        self.entries
+            .iter()
             .filter(move |entry| {
                 super::inside_view(*entry.0, dimension, center_x, center_z, radius)
                     && needs_probe(*entry.0)
@@ -312,7 +341,10 @@ impl VisibilityIndex {
 
     pub(super) fn candidate_bands(&self) -> impl Iterator<Item = (ChunkPos, i32)> + '_ {
         self.entries.iter().flat_map(|(&pos, value)| {
-            value.masks.keys().map(move |&y| (pos, i32::from(y).div_euclid(4)))
+            value
+                .masks
+                .keys()
+                .map(move |&y| (pos, i32::from(y).div_euclid(4)))
         })
     }
 
@@ -353,7 +385,9 @@ impl VisibilityIndex {
         if self.refresh() {
             return;
         }
-        let Some(revision) = self.revision else { return };
+        let Some(revision) = self.revision else {
+            return;
+        };
         let bytes = encode(&self.entries, revision);
         if bytes.len() as u64 <= MAX_FILE_SIZE && save_atomically(&self.file, &bytes).is_ok() {
             self.dirty = false;
@@ -373,7 +407,11 @@ mod tests {
     use super::*;
 
     fn pos(x: i32) -> ChunkPos {
-        ChunkPos { x, z: -9, dimension: Dimension::Overworld }
+        ChunkPos {
+            x,
+            z: -9,
+            dimension: Dimension::Overworld,
+        }
     }
 
     fn fixture() -> PathBuf {
@@ -381,7 +419,8 @@ mod tests {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let path = std::env::temp_dir().join(format!(
             "bmcbl-occlusion-index-test-{}-{}",
-            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
         ));
         fs::create_dir_all(path.join("db")).unwrap();
         fs::write(path.join("level.dat"), b"world-version-1").unwrap();
@@ -407,8 +446,12 @@ mod tests {
         let path = world.join("index.bin");
         let revision = source_revision(&world);
         let mut index = VisibilityIndex {
-            world: world.clone(), file: path.clone(), revision,
-            entries: BTreeMap::new(), epoch: 1, dirty: false,
+            world: world.clone(),
+            file: path.clone(),
+            revision,
+            entries: BTreeMap::new(),
+            epoch: 1,
+            dirty: false,
             last_flush: Instant::now(),
             last_checked: Instant::now(),
         };
@@ -434,16 +477,22 @@ mod tests {
     #[test]
     fn live_column_does_not_materialize_a_second_index_graph() {
         let mut index = VisibilityIndex {
-            world: PathBuf::new(), file: PathBuf::new(), revision: Some(1),
-            entries: BTreeMap::new(), epoch: 1, dirty: false,
-            last_flush: Instant::now(), last_checked: Instant::now(),
+            world: PathBuf::new(),
+            file: PathBuf::new(),
+            revision: Some(1),
+            entries: BTreeMap::new(),
+            epoch: 1,
+            dirty: false,
+            last_flush: Instant::now(),
+            last_checked: Instant::now(),
         };
         let live = pos(1);
         let indexed = pos(2);
         for column in [live, indexed] {
             index.upsert(column, BTreeMap::from([(0, [u64::MAX; 64])]));
         }
-        let probes = index.probes_in_view(Dimension::Overworld, 1, -9, 2, |column| column != live)
+        let probes = index
+            .probes_in_view(Dimension::Overworld, 1, -9, 2, |column| column != live)
             .collect::<Vec<_>>();
         assert_eq!(probes.len(), 1);
         assert_eq!(probes[0].0, indexed);

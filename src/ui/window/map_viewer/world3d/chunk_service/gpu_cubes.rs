@@ -87,8 +87,10 @@ mod direct_template_tests {
         let face = p3d::Preview3dStreamFace {
             ambient_light: [1.0; 4],
             corners: [
-                [0.0, 4.0, 0.0], [1.0, 4.0, 0.0],
-                [1.0, 4.0, 1.0], [0.0, 4.0, 1.0],
+                [0.0, 4.0, 0.0],
+                [1.0, 4.0, 0.0],
+                [1.0, 4.0, 1.0],
+                [0.0, 4.0, 1.0],
             ],
             color: [1.0; 4],
             shade: 1.0,
@@ -98,14 +100,13 @@ mod direct_template_tests {
             pass: p3d::Preview3dStreamPass::Opaque,
         };
         for local in [false, true] {
-            let quad = world3d_face_vertices(
-                &face, [128.0, 0.0, 256.0], local, [1.0; 4]
-            );
-            let mesh = Mesh::from_voxel_quads_without_raycast(
-                [quad], vec![MeshPart::new(0, 6, 0)],
-            ).unwrap();
+            let quad = world3d_face_vertices(&face, [128.0, 0.0, 256.0], local, [1.0; 4]);
+            let mesh = Mesh::from_voxel_quads_without_raycast([quad], vec![MeshPart::new(0, 6, 0)])
+                .unwrap();
             let template = gpui_3d::VoxelFaceTemplate {
-                vertices: quad, material_slot: 0, neighbour: face.normal,
+                vertices: quad,
+                material_slot: 0,
+                neighbour: face.normal,
             };
             assert_eq!(mesh.vertices(), template.vertices.as_slice());
             assert_eq!(mesh.parts()[0].material_slot(), template.material_slot);

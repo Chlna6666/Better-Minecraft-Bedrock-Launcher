@@ -9,6 +9,7 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 
 use super::uwp_migration::{MinecraftDataSummary, summarize_family};
+use crate::tasks::task_manager::ProgressUpdate;
 
 #[derive(Clone, Debug)]
 pub struct ManualUwpBackupResult {
@@ -85,14 +86,10 @@ pub fn start_user_data_backup_task(
     family_name: String,
     destination_directory: PathBuf,
 ) -> Result<String, String> {
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        "导出 Minecraft UWP 备份",
-        Some(destination_directory.display().to_string()),
-        "queued",
-        None,
-        false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new("导出 Minecraft UWP 备份", "queued")
+            .detail(destination_directory.display().to_string()),
+    )?;
     crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
@@ -266,9 +263,9 @@ fn export_user_data_backup_inner(
             if let Some(task_id) = task_id {
                 crate::tasks::task_manager::update_progress(
                     task_id,
-                    1,
-                    Some(source_before.0.saturating_add(1)),
-                    Some("backing_up_uwp"),
+                    ProgressUpdate::advance(1)
+                        .total(source_before.0.saturating_add(1))
+                        .stage("backing_up_uwp"),
                 );
                 crate::tasks::task_manager::set_task_message(
                     task_id,
@@ -307,9 +304,9 @@ fn export_user_data_backup_inner(
         if let Some(task_id) = task_id {
             crate::tasks::task_manager::update_progress(
                 task_id,
-                1,
-                Some(source_before.0.saturating_add(1)),
-                Some("verifying_uwp_backup"),
+                ProgressUpdate::advance(1)
+                    .total(source_before.0.saturating_add(1))
+                    .stage("verifying_uwp_backup"),
             );
             crate::tasks::task_manager::set_task_message(
                 task_id,

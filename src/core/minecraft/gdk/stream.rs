@@ -15,7 +15,8 @@ use std::os::unix::fs::FileExt;
 use std::os::windows::fs::FileExt;
 
 use crate::tasks::task_manager::{
-    TaskVisualization, is_cancelled, set_task_visualization, set_total, update_progress,
+    ProgressUpdate, TaskVisualization, is_cancelled, set_task_visualization, set_total,
+    update_progress,
 };
 
 use super::decoder::MsiXVDDecoder;
@@ -75,19 +76,19 @@ fn get_pre_release_key_bytes() -> Option<Vec<u8>> {
 // --- 基础 IO 封装 ---
 
 #[cfg(windows)]
-fn read_at_impl(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+fn read_at_native(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
     file.seek_read(buf, offset)
 }
 
 #[cfg(unix)]
-fn read_at_impl(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+fn read_at_native(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
     file.read_at(buf, offset)
 }
 
 /// 强制循环读取直到填满缓冲区
 fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
     while !buf.is_empty() {
-        match read_at_impl(file, buf, offset) {
+        match read_at_native(file, buf, offset) {
             Ok(0) => break, // EOF
             Ok(n) => {
                 let tmp = buf;
@@ -612,7 +613,10 @@ impl MsiXVDStream {
                 } else {
                     Some("extracting")
                 };
-                update_progress(task_id, pending_progress, None, stage);
+                update_progress(
+                    task_id,
+                    ProgressUpdate::advance(pending_progress).stage(stage),
+                );
                 pending_progress = 0;
                 last_progress_emit = StdInstant::now();
             }
@@ -629,7 +633,10 @@ impl MsiXVDStream {
             } else {
                 Some("extracting")
             };
-            update_progress(task_id, pending_progress, None, stage);
+            update_progress(
+                task_id,
+                ProgressUpdate::advance(pending_progress).stage(stage),
+            );
         }
 
         writer.flush()?;

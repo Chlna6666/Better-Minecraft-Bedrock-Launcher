@@ -31,7 +31,8 @@ impl Worker {
                 x: pos.x + (i % 3) as i32 - 1,
                 z: pos.z + (i / 3) as i32 - 1,
                 dimension: pos.dimension,
-            }).cloned()
+            })
+            .cloned()
         });
         let inputs = std::array::from_fn(|i| probes[i].as_ref().map(Arc::downgrade));
         if let Some(old) = self.light_fields.get(&pos)
@@ -43,7 +44,8 @@ impl Worker {
         {
             return Ok(old.clone());
         }
-        let probe = probes[4].as_ref()
+        let probe = probes[4]
+            .as_ref()
             .ok_or_else(|| "光照计算缺少目标区块".to_string())?;
         let version = if probe.min_y < 0 {
             ChunkVersion::New
@@ -56,7 +58,9 @@ impl Worker {
         let origin = [pos.x * 16 - 16, min_y, pos.z * 16 - 16];
         let mut cells = vec![LightCell::OPAQUE; (48 * height * 48) as usize];
         for (index, neighbor_probe) in probes.iter().enumerate() {
-            let Some(probe) = neighbor_probe else { continue; };
+            let Some(probe) = neighbor_probe else {
+                continue;
+            };
             let dx = index % 3;
             let dz = index / 3;
             let neighbor = ChunkPos {
@@ -105,7 +109,8 @@ impl Worker {
         height: u32,
     ) -> Arc<[LightCell]> {
         if let Some(cached) = self.light_columns.get(&pos)
-            && cached.min_y == min_y && cached.height == height
+            && cached.min_y == min_y
+            && cached.height == height
             && Weak::ptr_eq(&cached.probe, &Arc::downgrade(probe))
         {
             return Arc::clone(&cached.cells);
@@ -113,12 +118,15 @@ impl Worker {
         let mut cells = vec![LightCell::AIR; 16 * height as usize * 16];
         write_probe_cells_with_stride(&self.models, probe, &mut cells, [0, min_y, 0], 16);
         let cells: Arc<[LightCell]> = cells.into();
-        self.light_columns.insert(pos, CachedLightColumn {
-            probe: Arc::downgrade(probe),
-            min_y,
-            height,
-            cells: Arc::clone(&cells),
-        });
+        self.light_columns.insert(
+            pos,
+            CachedLightColumn {
+                probe: Arc::downgrade(probe),
+                min_y,
+                height,
+                cells: Arc::clone(&cells),
+            },
+        );
         cells
     }
 

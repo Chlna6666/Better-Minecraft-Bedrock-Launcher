@@ -4,6 +4,7 @@ use crate::core::minecraft::import::{
     import_files_batch_cancellable, inspect_archive,
 };
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, resolve_target_parent};
+use crate::tasks::task_manager::ProgressUpdate;
 use futures_util::stream::{self, StreamExt as _};
 use once_cell::sync::Lazy;
 use serde::Deserialize;
@@ -235,14 +236,10 @@ pub fn start_delete_game_assets_task(payloads: Vec<DeleteAssetPayload>) -> Resul
         return Err("没有选择要删除的资源".to_string());
     }
     let detail = format!("{} 个资源", payloads.len());
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        "删除游戏资源",
-        Some(detail),
-        "deleting_assets",
-        None,
-        false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new("删除游戏资源", "deleting_assets")
+            .detail(detail),
+    )?;
     crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
 
     let worker_task_id = task_id.clone();
@@ -307,9 +304,9 @@ pub fn start_import_assets_task(
         request.version_name,
         request.file_paths.len()
     ));
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None, title, detail, "queued", None, false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new(title, "queued").detail(detail),
+    )?;
     crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
 
@@ -538,14 +535,10 @@ pub(crate) fn start_import_inspection_task(
     }
 
     let total = file_paths.len();
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        "解析导入文件",
-        Some(format!("{total} 个文件")),
-        "queued",
-        None,
-        false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new("解析导入文件", "queued")
+            .detail(format!("{total} 个文件")),
+    )?;
     let worker_task_id = task_id.clone();
 
     let spawn_result = crate::tasks::runtime::spawn_archive_task(task_id.clone(), async move {
@@ -654,9 +647,9 @@ pub(crate) fn start_import_inspection_task(
             completed.push((index, ImportFileInspection { path, result }));
             task_manager::update_progress(
                 &worker_task_id,
-                size,
-                (total_bytes > 0).then_some(total_bytes),
-                Some("inspecting_imports"),
+                ProgressUpdate::advance(size)
+                    .total((total_bytes > 0).then_some(total_bytes))
+                    .stage("inspecting_imports"),
             );
             task_manager::set_task_message(
                 &worker_task_id,

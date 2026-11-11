@@ -6,8 +6,8 @@ use crate::downloads::single::download_file;
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::runtime::spawn_download_task;
 use crate::tasks::task_manager::{
-    create_task_with_details, finish_task, register_task_abort_handle, reset_progress,
-    task_control, update_progress,
+    ProgressUpdate, TaskOptions, create_task, finish_task, register_task_abort_handle,
+    reset_progress, task_control, update_progress,
 };
 use num_cpus;
 use reqwest::Client;
@@ -342,7 +342,7 @@ impl DownloaderManager {
         let task_control = task_control(task_id)
             .ok_or_else(|| CoreError::Other(format!("Task control missing for {task_id}")))?;
 
-        update_progress(task_id, 0, None, Some("downloading"));
+        update_progress(task_id, ProgressUpdate::advance(0).stage("downloading"));
 
         let final_dest = resolve_final_dest(&self.client, &url, &dest, options.headers.as_ref())
             .await
@@ -385,7 +385,7 @@ impl DownloaderManager {
 
             match res {
                 Ok(CoreResult::Success(_)) => {
-                    update_progress(task_id, 0, None, Some("verifying"));
+                    update_progress(task_id, ProgressUpdate::advance(0).stage("verifying"));
                     if let Err(error) = verify_temp_download(&temp_dest).await {
                         remove_file_if_exists(&temp_dest).await;
                         if is_trivial_candidate_failure(&temp_dest, &error) {
@@ -411,7 +411,7 @@ impl DownloaderManager {
                     }
 
                     if temp_dest != final_dest {
-                        update_progress(task_id, 0, None, Some("renaming"));
+                        update_progress(task_id, ProgressUpdate::advance(0).stage("renaming"));
                         match rename_overwrite(&temp_dest, &final_dest).await {
                             Ok(()) => return Ok(CoreResult::Success(final_dest.clone())),
                             Err(e) => {
@@ -572,14 +572,12 @@ impl DownloaderManager {
 
     /// manager 创建新的 task 并 spawn 后台执行，立即返回 task_id
     pub fn start_download(&self, url: String, dest: PathBuf, options: DownloadOptions) -> String {
-        let task_id = create_task_with_details(
-            None,
-            "下载任务",
-            download_task_detail(dest.as_path()),
-            "ready",
-            None,
-            true,
-        );
+        let task_id = create_task(
+            TaskOptions::new("下载任务", "ready")
+                .detail(download_task_detail(dest.as_path()))
+                .pausable(true),
+        )
+        .expect("task id must be unique");
         let client = self.client.clone();
 
         let url_clone = url.clone();
@@ -587,7 +585,7 @@ impl DownloaderManager {
         let task_id_clone = task_id.clone();
 
         let abort_handle = match spawn_download_task(task_id.clone(), async move {
-            update_progress(&task_id_clone, 0, None, Some("starting"));
+            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage("starting"));
 
             let manager = DownloaderManager::with_client(client);
 

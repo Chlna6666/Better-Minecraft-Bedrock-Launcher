@@ -5,6 +5,7 @@ use super::panels::*;
 use super::players::*;
 use super::prelude::*;
 use super::tile_state::*;
+use crate::tasks::task_manager::ProgressUpdate;
 use rayon::prelude::*;
 
 impl MapViewerWindowView {
@@ -574,14 +575,12 @@ impl MapViewerWindowView {
         let affected_chunks = selection.chunks().into_iter().collect::<BTreeSet<_>>();
         let affected_chunk_list = affected_chunks.iter().copied().collect::<Vec<_>>();
         let progress_total = affected_chunk_list.len().max(1);
-        let task_id = task_manager::create_task_with_details(
-            None,
-            "删除选区区块",
-            Some(format!("{progress_total} 个 chunk")),
-            "map_delete",
-            Some(task_progress_units(progress_total)),
-            false,
-        );
+        let task_id = task_manager::create_task(
+            task_manager::TaskOptions::new("删除选区区块", "map_delete")
+                .detail(format!("{progress_total} 个 chunk"))
+                .total(task_progress_units(progress_total)),
+        )
+        .expect("task id must be unique");
         let cancel = CancelFlag::new();
         task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -850,14 +849,10 @@ impl MapViewerWindowView {
         let task_total = progress
             .as_ref()
             .map(|progress| task_progress_units(progress.total.max(1)));
-        let task_id = task_manager::create_task_with_details(
-            None,
-            action.label(),
-            None,
-            task_stage,
-            task_total,
-            false,
-        );
+        let task_id = task_manager::create_task(
+            task_manager::TaskOptions::new(action.label(), task_stage).total(task_total),
+        )
+        .expect("task id must be unique");
         self.professional.active_write_task_id = Some(task_id.clone());
         if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
             self.task_snapshots
@@ -1008,7 +1003,10 @@ impl MapViewerWindowView {
                 };
                 let completion_message = message.clone();
                 if quick_write_defers_task_completion(status, paste_progress_total) {
-                    task_manager::update_progress(&task_id_for_task, 0, None, Some("map_refresh"));
+                    task_manager::update_progress(
+                        &task_id_for_task,
+                        ProgressUpdate::advance(0).stage("map_refresh"),
+                    );
                     probe_tokio_blocking_pool("map_paste_write_complete");
                 } else {
                     task_manager::finish_task(&task_id_for_task, status, message);

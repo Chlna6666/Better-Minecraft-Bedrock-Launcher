@@ -3,7 +3,9 @@ use tracing::debug;
 
 use crate::downloads::wu_client::protocol::{WuDownloadFile, WuProtocol};
 use crate::result::{CoreError, CoreResult};
-use crate::tasks::task_manager::{finish_task, is_cancelled, update_progress, wait_until_active};
+use crate::tasks::task_manager::{
+    ProgressUpdate, finish_task, is_cancelled, update_progress, wait_for_task_active,
+};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -109,12 +111,12 @@ impl WuClient {
         let request_xml = self.protocol.build_download_request(update_id, revision);
 
         // 把阶段标为 resolving_url
-        update_progress(task_id, 0, None, Some("resolving_url"));
+        update_progress(task_id, ProgressUpdate::advance(0).stage("resolving_url"));
 
         for attempt in 1..=3 {
             debug!("task={} 第 {} 次请求下载 URL", task_id, attempt);
 
-            if !wait_until_active(task_id).await {
+            if !wait_for_task_active(task_id).await {
                 finish_task(task_id, "cancelled", Some("user cancelled".into()));
                 return Ok(CoreResult::Cancelled);
             }
@@ -150,7 +152,10 @@ impl WuClient {
                     match resp.error_for_status() {
                         Ok(valid_resp) => {
                             // 上报阶段：reading_body
-                            update_progress(task_id, 0, None, Some("reading_body"));
+                            update_progress(
+                                task_id,
+                                ProgressUpdate::advance(0).stage("reading_body"),
+                            );
 
                             // 在读取 body 阶段也支持取消
                             let text_result = tokio::select! {
@@ -166,7 +171,7 @@ impl WuClient {
                             debug!("task={} 响应 XML: {}", task_id, xml);
 
                             // 上报阶段：parsing
-                            update_progress(task_id, 0, None, Some("parsing"));
+                            update_progress(task_id, ProgressUpdate::advance(0).stage("parsing"));
 
                             // 解析 XML（协议层函数的错误应能转为 CoreError）
                             let files = match self.protocol.parse_download_response(&xml) {
@@ -187,7 +192,10 @@ impl WuClient {
                             let files = Self::preferred_download_files(files);
                             if !files.is_empty() {
                                 // 成功：把阶段设为 url_resolved（不在这里 finish task）
-                                update_progress(task_id, 0, None, Some("url_resolved"));
+                                update_progress(
+                                    task_id,
+                                    ProgressUpdate::advance(0).stage("url_resolved"),
+                                );
                                 return Ok(CoreResult::Success(files));
                             } else {
                                 // 没有匹配的 URL

@@ -4,9 +4,8 @@ use crate::downloads::md5::{is_md5_digest, verify_md5};
 use crate::http::proxy::{apply_download_request_headers, validate_download_response_headers};
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
-    TaskControl, TaskVisualization, ThreadVisualization, is_cancelled_fast,
-    maybe_set_task_visualization, set_task_visualization, set_total, update_progress,
-    update_progress_with_visualization, wait_until_active_fast,
+    ProgressUpdate, TaskControl, TaskVisualization, ThreadVisualization, is_cancelled_fast,
+    set_task_visualization, set_total, update_progress, wait_until_active,
 };
 use futures_util::StreamExt;
 use reqwest::header::{self, HeaderMap};
@@ -69,7 +68,7 @@ pub async fn download_file(
         .unwrap_or(0);
 
     loop {
-        if !wait_until_active_fast(task_control.as_ref()).await {
+        if !wait_until_active(task_control.as_ref()).await {
             return Ok(CoreResult::Cancelled);
         }
 
@@ -140,11 +139,17 @@ pub async fn download_file(
                 };
                 set_total(&task_id, total);
                 if resume_from > 0 {
-                    update_progress(&task_id, resume_from, total, Some("downloading"));
+                    update_progress(
+                        &task_id,
+                        ProgressUpdate::advance(resume_from)
+                            .total(total)
+                            .stage("downloading"),
+                    );
                 }
-                let _ = maybe_set_task_visualization(task_id, || {
-                    Some(build_single_download_visualization(resume_from, total))
-                });
+                let _ = set_task_visualization(
+                    task_id,
+                    Some(build_single_download_visualization(resume_from, total)),
+                );
 
                 let mut open_options = TokioOpenOptions::new();
                 open_options.create(true).write(true);
@@ -164,7 +169,7 @@ pub async fn download_file(
                 let mut pending_progress = 0u64;
 
                 while let Some(item) = stream.next().await {
-                    if !wait_until_active_fast(task_control.as_ref()).await {
+                    if !wait_until_active(task_control.as_ref()).await {
                         clear_single_visualization(task_id);
                         return Ok(CoreResult::Cancelled);
                     }
@@ -194,12 +199,15 @@ pub async fn download_file(
                     downloaded_bytes = downloaded_bytes.saturating_add(len as u64);
 
                     if last_update.elapsed().as_millis() > 100 {
-                        update_progress_with_visualization(
+                        update_progress(
                             task_id,
-                            pending_progress,
-                            total,
-                            Some("downloading"),
-                            build_single_download_visualization(downloaded_bytes, total),
+                            ProgressUpdate::advance(pending_progress)
+                                .total(total)
+                                .stage("downloading")
+                                .visualization(build_single_download_visualization(
+                                    downloaded_bytes,
+                                    total,
+                                )),
                         );
                         pending_progress = 0;
                         last_update = Instant::now();
@@ -212,12 +220,15 @@ pub async fn download_file(
                 }
 
                 if pending_progress > 0 {
-                    update_progress_with_visualization(
+                    update_progress(
                         task_id,
-                        pending_progress,
-                        total,
-                        Some("downloading"),
-                        build_single_download_visualization(downloaded_bytes, total),
+                        ProgressUpdate::advance(pending_progress)
+                            .total(total)
+                            .stage("downloading")
+                            .visualization(build_single_download_visualization(
+                                downloaded_bytes,
+                                total,
+                            )),
                     );
                 }
 
@@ -254,7 +265,10 @@ pub async fn download_file(
                     .map(str::trim)
                     .filter(|value| is_md5_digest(value))
                 {
-                    update_progress(&task_id, 0, total, Some("verifying"));
+                    update_progress(
+                        &task_id,
+                        ProgressUpdate::advance(0).total(total).stage("verifying"),
+                    );
                     match verify_md5(&dest_buf, expected).await {
                         Ok(true) => debug!("MD5 OK"),
                         Ok(false) => {

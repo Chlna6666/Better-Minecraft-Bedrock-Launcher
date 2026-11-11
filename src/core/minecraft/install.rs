@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use tracing::{info, warn};
 
-use crate::tasks::task_manager::{self, TaskOptions, TaskScope, TaskSnapshot, TaskType};
+use crate::tasks::task_manager::{
+    self, ProgressUpdate, TaskOptions, TaskScope, TaskSnapshot, TaskType,
+};
 
 static NEXT_GAME_INSTALL_ID: AtomicU64 = AtomicU64::new(1);
 const INSTALL_PROGRESS_TOTAL: u64 = 10_000;
@@ -54,9 +56,7 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
     let worker_operation_id = Arc::clone(&operation_id);
     let worker_child_task = Arc::clone(&active_child_task);
     let workflow = match scope.spawn_io(async move {
-        let outcome = run_game_install(
-            &request, &worker_operation_id, &worker_child_task,
-        ).await;
+        let outcome = run_game_install(&request, &worker_operation_id, &worker_child_task).await;
         match outcome {
             Ok(local_path) => {
                 // A successful return means every child transaction crossed its commit point.
@@ -120,7 +120,11 @@ async fn run_game_install(
             .await?
     };
 
-    let download_weight = if request.levilamina_version.is_some() { 6_500 } else { 7_500 };
+    let download_weight = if request.levilamina_version.is_some() {
+        6_500
+    } else {
+        7_500
+    };
     let extract_weight = 2_500;
     let package_path = match local_path {
         Some(path) => {
@@ -140,8 +144,13 @@ async fn run_game_install(
     );
 
     let extract_snapshot = wait_for_child_progress(
-        &extract_task_id, operation_id, download_weight, extract_weight, "installing_game",
-    ).await?;
+        &extract_task_id,
+        operation_id,
+        download_weight,
+        extract_weight,
+        "installing_game",
+    )
+    .await?;
     set_active_child_task(active_child_task, None);
     require_completed(&extract_snapshot, "安装")?;
     check_cancelled(operation_id)?;
@@ -168,7 +177,8 @@ async fn run_game_install(
             download_weight + extract_weight,
             INSTALL_PROGRESS_TOTAL - download_weight - extract_weight,
             "installing_levilamina",
-        ).await?;
+        )
+        .await?;
         set_active_child_task(active_child_task, None);
         require_completed(&loader_snapshot, "LeviLamina 安装")?;
     }
@@ -227,8 +237,13 @@ async fn download_package(
     set_active_child_task(active_child_task, Some(task_id.clone()));
 
     let snapshot = wait_for_child_progress(
-        &task_id, operation_id, 0, download_weight, "downloading_game",
-    ).await?;
+        &task_id,
+        operation_id,
+        0,
+        download_weight,
+        "downloading_game",
+    )
+    .await?;
     set_active_child_task(active_child_task, None);
     require_completed(&snapshot, "下载")?;
     snapshot
@@ -277,14 +292,26 @@ fn require_completed(snapshot: &TaskSnapshot, operation: &str) -> Result<(), Str
 
 fn set_game_install_stage(operation_id: &str, stage: &'static str, message: String) {
     // Cumulative workflow progress must survive every phase transition.
-    task_manager::update_progress(operation_id, 0, Some(INSTALL_PROGRESS_TOTAL), Some(stage));
+    task_manager::update_progress(
+        operation_id,
+        ProgressUpdate::advance(0)
+            .total(INSTALL_PROGRESS_TOTAL)
+            .stage(stage),
+    );
     task_manager::set_task_message(operation_id, Some(message));
 }
 
 fn set_game_install_progress(operation_id: &str, target: u64, stage: &'static str) {
     if let Some(current) = task_manager::get_snapshot_arc(operation_id) {
-        let delta = target.min(INSTALL_PROGRESS_TOTAL).saturating_sub(current.done);
-        task_manager::update_progress(operation_id, delta, Some(INSTALL_PROGRESS_TOTAL), Some(stage));
+        let delta = target
+            .min(INSTALL_PROGRESS_TOTAL)
+            .saturating_sub(current.done);
+        task_manager::update_progress(
+            operation_id,
+            ProgressUpdate::advance(delta)
+                .total(INSTALL_PROGRESS_TOTAL)
+                .stage(stage),
+        );
     }
 }
 

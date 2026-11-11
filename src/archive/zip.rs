@@ -16,8 +16,8 @@ use tracing::{debug, info, warn};
 
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
-    TaskControl, TaskVisualization, finish_task, is_cancelled, is_cancelled_fast,
-    set_task_visualization, set_total, task_control, task_visualization_enabled, update_progress,
+    ProgressUpdate, TaskControl, TaskVisualization, finish_task, is_cancelled, is_cancelled_fast,
+    is_visualization_enabled, set_task_visualization, set_total, task_control, update_progress,
 };
 
 /// 解压进度/可视化上报节流：每累计 1MB 或每 200ms 上报一次
@@ -111,16 +111,16 @@ impl ParallelExtractContext<'_> {
         if delta > 0 {
             update_progress(
                 self.task_id,
-                delta,
-                Some(self.total_bytes),
-                Some("extracting"),
+                ProgressUpdate::advance(delta)
+                    .total(self.total_bytes)
+                    .stage("extracting"),
             );
         }
     }
 
     /// 可视化事件按 200ms 节流发送（原实现每个条目发两次）。
     fn maybe_emit_visualization(&self, current_item: &str, force: bool) {
-        if !task_visualization_enabled() {
+        if !is_visualization_enabled() {
             return;
         }
         let now = self.now_ms();
@@ -359,7 +359,7 @@ fn extract_zip_parallel_blocking(
     let control = task_control(task_id);
     let cancelled = || control.as_deref().is_some_and(is_cancelled_fast);
 
-    if task_visualization_enabled() {
+    if is_visualization_enabled() {
         set_task_visualization(
             task_id,
             Some(TaskVisualization {
@@ -466,7 +466,10 @@ fn extract_zip_parallel_blocking(
 
     // 冲刷剩余进度，并保持与旧实现一致的收尾进度事件
     context.add_progress(0, true);
-    update_progress(task_id, 0, Some(total), Some("extracting"));
+    update_progress(
+        task_id,
+        ProgressUpdate::advance(0).total(total).stage("extracting"),
+    );
 
     info!(
         "解压完成，总计 {} bytes, {} 个条目, {} 线程, 总耗时 {:.2} 秒",
@@ -705,7 +708,7 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
         // 设置 task_manager 的 total（线程安全）
         set_total(&task_id_clone_for_block, Some(total));
         let entry_total = entries.len() as u64;
-        if task_visualization_enabled() {
+        if is_visualization_enabled() {
             set_task_visualization(
                 &task_id_clone_for_block,
                 Some(TaskVisualization {
@@ -729,7 +732,7 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
         // 逐项解压
         for (idx, name, size, is_dir) in entries {
             let display_name = name.to_string_lossy().to_string();
-            if task_visualization_enabled() {
+            if is_visualization_enabled() {
                 set_task_visualization(
                     &task_id_clone_for_block,
                     Some(TaskVisualization {
@@ -792,9 +795,9 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
                     {
                         update_progress(
                             &task_id_clone_for_block,
-                            pending_progress,
-                            Some(total),
-                            Some("extracting"),
+                            ProgressUpdate::advance(pending_progress)
+                                .total(total)
+                                .stage("extracting"),
                         );
                         pending_progress = 0;
                         last_progress_emit = StdInstant::now();
@@ -842,9 +845,9 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
                 {
                     update_progress(
                         &task_id_clone_for_block,
-                        pending_progress,
-                        Some(total),
-                        Some("extracting"),
+                        ProgressUpdate::advance(pending_progress)
+                            .total(total)
+                            .stage("extracting"),
                     );
                     pending_progress = 0;
                     last_progress_emit = StdInstant::now();
@@ -855,7 +858,7 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
                 .flush()
                 .map_err(|error| format!("刷新文件失败: {} ({error})", out_path.display()))?;
             finished_entries = finished_entries.saturating_add(1);
-            if task_visualization_enabled() {
+            if is_visualization_enabled() {
                 set_task_visualization(
                     &task_id_clone_for_block,
                     Some(TaskVisualization {
@@ -875,13 +878,16 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
         if pending_progress > 0 {
             update_progress(
                 &task_id_clone_for_block,
-                pending_progress,
-                Some(total),
-                Some("extracting"),
+                ProgressUpdate::advance(pending_progress)
+                    .total(total)
+                    .stage("extracting"),
             );
         }
 
-        update_progress(&task_id_clone_for_block, 0, Some(total), Some("extracting"));
+        update_progress(
+            &task_id_clone_for_block,
+            ProgressUpdate::advance(0).total(total).stage("extracting"),
+        );
 
         info!(
             "解压完成，总计 {} bytes, 总耗时 {:.2} 秒",

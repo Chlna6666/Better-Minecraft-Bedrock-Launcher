@@ -4,7 +4,7 @@ use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
 use gpui::*;
 
-pub(super) fn refresh_gpu_adapters_if_needed(cx: &mut App) {
+pub(super) fn refresh_gpu_adapters(cx: &mut App) {
     let should_refresh = cx.read_global(|state: &SettingsPageState, _cx| {
         state.tab == SettingsTab::Launcher && state.gpu_adapter_options.is_empty()
     });

@@ -85,14 +85,9 @@ fn start_version_mutation_task<F>(
 where
     F: FnOnce(&str) -> Result<VersionMutationOutcome, String> + Send + 'static,
 {
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        title,
-        Some(detail),
-        stage,
-        None,
-        false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new(title, stage).detail(detail),
+    )?;
     crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
 
     let worker_task_id = task_id.clone();

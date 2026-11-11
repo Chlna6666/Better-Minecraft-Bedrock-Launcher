@@ -101,10 +101,7 @@ pub(super) fn render_connectivity_modal(
     connectivity::render_connectivity_modal(colors, i18n, state, window_width, window_height)
 }
 
-fn launcher_frame_rate_row(
-    colors: &ThemeColors,
-    state: &SettingsPageState,
-) -> impl IntoElement {
+fn launcher_frame_rate_row(colors: &ThemeColors, state: &SettingsPageState) -> impl IntoElement {
     let values = vec![
         SharedString::from("auto"),
         SharedString::from("vsync"),
@@ -121,9 +118,11 @@ fn launcher_frame_rate_row(
         .iter()
         .position(|v| v.as_ref() == state.frame_rate_mode.as_ref())
         .unwrap_or(0);
-    let options = labels.iter().cloned().map(
-        crate::ui::components::dropdown::DropdownOption::from
-    ).collect::<Vec<_>>();
+    let options = labels
+        .iter()
+        .cloned()
+        .map(crate::ui::components::dropdown::DropdownOption::from)
+        .collect::<Vec<_>>();
     let dropdown = crate::ui::components::dropdown::Dropdown::new(
         SharedString::from("settings-launcher-fps-mode-dropdown"),
         colors,
@@ -133,14 +132,14 @@ fn launcher_frame_rate_row(
         selected_index,
         true,
         move |index, _window, cx| {
-            let new_mode = values.get(index).cloned()
+            let new_mode = values
+                .get(index)
+                .cloned()
                 .unwrap_or_else(|| SharedString::from("auto"));
-            let snapshot = cx.update_global(
-                |settings: &mut SettingsPageState, _cx| {
-                    settings.frame_rate_mode = new_mode;
-                    super::common::snapshot_from_state(settings)
-                },
-            );
+            let snapshot = cx.update_global(|settings: &mut SettingsPageState, _cx| {
+                settings.frame_rate_mode = new_mode;
+                super::common::snapshot_from_state(settings)
+            });
             super::common::spawn_persist_settings(snapshot, cx);
         },
     );

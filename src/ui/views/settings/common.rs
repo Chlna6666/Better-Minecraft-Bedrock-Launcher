@@ -123,7 +123,8 @@ pub(super) fn spawn_persist_settings_with_success(
                 cfg.game.modify_appx_manifest = snapshot.modify_appx_manifest;
                 cfg.launcher.debug = snapshot.debug;
                 cfg.launcher.gpui_trace = snapshot.gpui_trace;
-                cfg.launcher.frame_rate_mode = crate::frame_rate::normalized_mode(&snapshot.frame_rate_mode).to_string();
+                cfg.launcher.frame_rate_mode =
+                    crate::frame_rate::normalized_mode(&snapshot.frame_rate_mode).to_string();
                 cfg.launcher.frame_rate_limit = snapshot.frame_rate_limit.clamp(1, 1000);
                 cfg.launcher.renderer_backend =
                     crate::config::config::normalize_renderer_backend(&snapshot.renderer_backend);
@@ -172,7 +173,8 @@ pub(super) fn spawn_persist_settings_with_success(
                     _ => "mirror".to_string(),
                 };
                 cfg.launcher.download.curseforge_api_base = snapshot.download_curseforge_api_base;
-                curseforge_source_changed = old_curseforge_source != cfg.launcher.download.curseforge_api_source
+                curseforge_source_changed = old_curseforge_source
+                    != cfg.launcher.download.curseforge_api_source
                     || old_curseforge_base != cfg.launcher.download.curseforge_api_base;
                 cfg.launcher.download.proxy.http_proxy_url = snapshot.download_http_proxy_url;
                 cfg.launcher.download.proxy.socks_proxy_url = snapshot.download_socks_proxy_url;
@@ -219,7 +221,9 @@ pub(super) fn spawn_persist_settings_with_success(
                 }
             }
             if curseforge_source_changed {
-                if let Err(error) = cx.update(crate::ui::views::download::curseforge::on_api_source_changed) {
+                if let Err(error) =
+                    cx.update(crate::ui::views::download::curseforge::on_api_source_changed)
+                {
                     warn!("invalidate CurseForge source state failed: {error:?}");
                 }
             }
@@ -616,14 +620,18 @@ pub(super) fn settings_sub_numeric_row(
     placeholder: &'static str,
 ) -> Div {
     let control: AnyElement = input.map_or_else(
-        || div()
-            .w_full()
-            .text_size(px(13.))
-            .text_color(colors.text_muted)
-            .child(placeholder)
-            .into_any_element(),
-        |state| crate::ui::components::numeric_field::NumericField::settings_control(state)
-            .into_any_element(),
+        || {
+            div()
+                .w_full()
+                .text_size(px(13.))
+                .text_color(colors.text_muted)
+                .child(placeholder)
+                .into_any_element()
+        },
+        |state| {
+            crate::ui::components::numeric_field::NumericField::settings_control(state)
+                .into_any_element()
+        },
     );
     settings_sub_row(
         colors,
@@ -643,35 +651,39 @@ pub(super) fn settings_sub_api_key_row(
     kind: &'static str,
 ) -> Div {
     let control: AnyElement = input.map_or_else(
-        || div().child(t!("LauncherSettings.download.key.placeholder")).into_any_element(),
-        |state| Input::new(state)
-            .appearance(false)
-            .bordered(false)
-            .focus_bordered(false)
-            .cleanable(false)
-            .w_full()
-            .h(px(30.))
-            .text_size(px(13.))
-            .into_any_element(),
-    );
-    let mut trailing = div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .child(
+        || {
             div()
-                .text_size(px(11.))
-                .text_color(colors.text_secondary)
-                .child(if configured {
-                    t!("LauncherSettings.download.key.configured")
-                } else {
-                    t!("LauncherSettings.download.key.unset")
-                }),
-        );
+                .child(t!("LauncherSettings.download.key.placeholder"))
+                .into_any_element()
+        },
+        |state| {
+            Input::new(state)
+                .appearance(false)
+                .bordered(false)
+                .focus_bordered(false)
+                .cleanable(false)
+                .w_full()
+                .h(px(30.))
+                .text_size(px(13.))
+                .into_any_element()
+        },
+    );
+    let mut trailing = div().flex().items_center().gap(px(8.)).child(
+        div()
+            .text_size(px(11.))
+            .text_color(colors.text_secondary)
+            .child(if configured {
+                t!("LauncherSettings.download.key.configured")
+            } else {
+                t!("LauncherSettings.download.key.unset")
+            }),
+    );
     if configured {
         trailing = trailing.child(
             div()
-                .id(SharedString::from(format!("settings-clear-{kind}-credential")))
+                .id(SharedString::from(format!(
+                    "settings-clear-{kind}-credential"
+                )))
                 .cursor_pointer()
                 .text_size(px(12.))
                 .text_color(colors.text_primary)
@@ -704,16 +716,15 @@ pub(crate) fn persist_download_api_key(kind: &'static str, secret: String, cx: &
                 _ => {}
             })?;
             Ok::<bool, std::io::Error>(configured)
-        }).await;
+        })
+        .await;
         match result {
             Ok(Ok(configured)) => {
                 let _ = cx.update(|cx| {
-                    cx.update_global(|state: &mut SettingsPageState, _| {
-                        match kind {
-                            "curseforge" => state.download_curseforge_key_configured = configured,
-                            "github" => state.download_github_key_configured = configured,
-                            _ => {}
-                        }
+                    cx.update_global(|state: &mut SettingsPageState, _| match kind {
+                        "curseforge" => state.download_curseforge_key_configured = configured,
+                        "github" => state.download_github_key_configured = configured,
+                        _ => {}
                     });
                     if kind == "curseforge" {
                         crate::ui::views::download::curseforge::on_api_source_changed(cx);
@@ -725,7 +736,8 @@ pub(crate) fn persist_download_api_key(kind: &'static str, secret: String, cx: &
                 let _ = cx.update(|cx| toast::error(cx, t!("Settings.save_failed")));
             }
         }
-    }).detach();
+    })
+    .detach();
 }
 
 pub(super) fn settings_sub_input_row(

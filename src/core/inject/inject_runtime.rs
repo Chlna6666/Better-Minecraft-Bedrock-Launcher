@@ -111,7 +111,7 @@ fn classify_last_error(stage: &str, pid: u32, code: u32) -> anyhow::Error {
     )
 }
 
-fn is_packaged_process(process: HANDLE, pid: u32) -> Result<bool> {
+fn check_packaged_process(process: HANDLE, pid: u32) -> Result<bool> {
     let mut family_name_len = 0u32;
     // A null output buffer intentionally probes whether the process owns package identity.
     // Packaged processes return ERROR_INSUFFICIENT_BUFFER with the required length; ordinary
@@ -274,7 +274,7 @@ pub async fn inject_existing_process(
         let process = OwnedHandle(process);
         log(&format!("已使用最小注入权限打开目标进程 PID {pid}"));
 
-        let packaged = is_packaged_process(process.raw(), pid)?;
+        let packaged = check_packaged_process(process.raw(), pid)?;
         if packaged {
             grant_all_application_packages_access(dll).map_err(|error| {
                 anyhow!(

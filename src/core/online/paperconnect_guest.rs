@@ -148,7 +148,7 @@ async fn create_guest_signaling(
         .into_iter()
         .map(|route| (route.local_ip.into(), route.broadcast))
         .collect();
-    LanSignaling::server_from_socket_with_local_routes(socket, server_data, routes).await
+    LanSignaling::server_proxy_routes(socket, server_data, routes).await
 }
 
 #[cfg(not(windows))]
@@ -201,7 +201,7 @@ pub(super) async fn bind_listener(
     );
     let socket = bind_discovery_socket(discovery_addr).await?;
     let signaling = create_guest_signaling(socket, server_data, discovery_addr.port()).await?;
-    let listener = NethernetListener::bind_with_config(
+    let listener = NethernetListener::bind(
         signaling,
         SocketAddr::from(([127, 0, 0, 1], 0)),
         GUEST_NEGOTIATION_CONFIG,

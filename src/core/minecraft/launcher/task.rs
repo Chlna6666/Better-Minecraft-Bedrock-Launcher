@@ -19,9 +19,9 @@ use crate::core::minecraft::mouse_lock::start_window_monitor;
 use crate::core::minecraft::uwp_minimize_fix::enable_debugging_for_package;
 use crate::core::version::settings::get_version_config;
 use crate::tasks::task_manager::{
-    TaskControl, append_task_log, create_task_with_details, finish_task, is_cancelled,
-    register_task_abort_handle, set_task_labels, set_task_message, set_total, task_control,
-    update_progress,
+    ProgressUpdate, TaskControl, TaskOptions, append_task_log, create_task, finish_task,
+    is_cancelled, register_task_abort_handle, set_task_labels, set_task_message, set_total,
+    task_control, update_progress,
 };
 use serde_json::{Value, json};
 use std::cmp::Ordering;
@@ -115,14 +115,12 @@ impl LaunchTask {
 pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
     let title = format!("启动 {}", request.display_name);
     let detail = Some(request.version.to_string());
-    let task_id = create_task_with_details(
-        None,
-        title,
-        detail,
-        "starting",
-        Some(LAUNCH_TOTAL_STEPS),
-        false,
-    );
+    let task_id = create_task(
+        TaskOptions::new(title, "starting")
+            .detail(detail)
+            .total(LAUNCH_TOTAL_STEPS),
+    )
+    .expect("task id must be unique");
     let _ = set_total(&task_id, Some(LAUNCH_TOTAL_STEPS));
     append_log(&task_id, format!("准备启动 {}", request.display_name));
     info!(
@@ -149,9 +147,9 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
         // The user-selected display version may be renamed or contain aliases.
         // Capture the original log sizes before launch_game can start or
         // inject the client; otherwise the earliest failure lines are lost.
-        let log_offsets = crate::core::minecraft::diagnostics::capture_log_offsets(
-            Path::new(request.package_folder.as_ref()),
-        );
+        let log_offsets = crate::core::minecraft::diagnostics::capture_log_offsets(Path::new(
+            request.package_folder.as_ref(),
+        ));
         let mut detected_platform = "unknown";
         let result = launch_game(&request, &task_id_for_task, &mut detected_platform).await;
         let mut monitor = None;
@@ -312,7 +310,12 @@ fn append_log(task_id: &str, line: impl Into<String>) {
 fn advance_step(task_id: &str, stage: &str, message: impl Into<String>) {
     let message = message.into();
     append_log(task_id, message);
-    update_progress(task_id, 1, Some(LAUNCH_TOTAL_STEPS), Some(stage));
+    update_progress(
+        task_id,
+        ProgressUpdate::advance(1)
+            .total(LAUNCH_TOTAL_STEPS)
+            .stage(stage),
+    );
 }
 
 fn check_cancelled(task_id: &str) -> Result<(), String> {
@@ -969,14 +972,21 @@ async fn launch_game(
             "Minecraft.Windows.exe"
         };
         let pfn = aumid.split('!').next().unwrap_or("").to_string();
-        let before_activation = crate::core::minecraft::launcher::start::get_pids_by_name(target_exe);
+        let before_activation =
+            crate::core::minecraft::launcher::start::get_pids_by_name(target_exe);
         let activated_pid =
             launch_uwp_command_only(&aumid, final_launch_args.as_deref().or(Some("")))
                 .await
                 .map_err(|error| format!("启动请求失败: {error:?}"))?;
         let pid = match activated_pid {
-            Some(pid) if pid > 0
-                && crate::core::minecraft::launcher::start::is_process_in_package(pid, &pfn) => pid,
+            Some(pid)
+                if pid > 0
+                    && crate::core::minecraft::launcher::start::is_process_in_package(
+                        pid, &pfn,
+                    ) =>
+            {
+                pid
+            }
             _ => wait_for_uwp_pid(target_exe, &pfn, &before_activation)
                 .await
                 .ok_or("无法确认新启动的 UWP 游戏进程；不会附着到其他实例".to_string())?,

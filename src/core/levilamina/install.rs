@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-use crate::tasks::task_manager::{self, TaskOptions, TaskScope, TaskSnapshot, TaskType};
+use crate::tasks::task_manager::{
+    self, ProgressUpdate, TaskOptions, TaskScope, TaskSnapshot, TaskType,
+};
 
 use super::archive::{install_uncompressed_asset, install_zip_asset};
 use super::installation_state::{
@@ -238,8 +240,12 @@ async fn run_install(
         Some(
             plan.iter()
                 .find(|package| package.id.path.eq_ignore_ascii_case(PRELOADER_PACKAGE))
-                .ok_or_else(|| "LeviLamina 安装计划缺少 PreLoader 依赖，已阻止不完整安装".to_string())?
-                .manifest.version.clone(),
+                .ok_or_else(|| {
+                    "LeviLamina 安装计划缺少 PreLoader 依赖，已阻止不完整安装".to_string()
+                })?
+                .manifest
+                .version
+                .clone(),
         )
     } else {
         None
@@ -251,7 +257,10 @@ async fn run_install(
     for package in ordered {
         if package.disposition == PackageDisposition::Reuse {
             if let Some(updates) = updates {
-                task_manager::update_progress(&updates.borrow().operation_id, 1, None, None);
+                task_manager::update_progress(
+                    &updates.borrow().operation_id,
+                    ProgressUpdate::advance(1),
+                );
             }
             info!(
                 package = %package.id.display(),
@@ -275,7 +284,10 @@ async fn run_install(
         }
         install_package(&game_directory, package, updates).await?;
         if let Some(updates) = updates {
-            task_manager::update_progress(&updates.borrow().operation_id, 1, None, None);
+            task_manager::update_progress(
+                &updates.borrow().operation_id,
+                ProgressUpdate::advance(1),
+            );
         }
         info!(
             package = %package.id.display(),
@@ -284,11 +296,12 @@ async fn run_install(
         );
     }
     if let Some(expected) = required_preloader {
-        let installed = validated_preloader_version(&game_directory)?
-            .ok_or_else(|| format!(
+        let installed = validated_preloader_version(&game_directory)?.ok_or_else(|| {
+            format!(
                 "LeviLamina 安装后未找到 PreLoader.dll 或有效 preloader-bootstrap Manifest: {}",
                 game_directory.join("mods/PreLoader").display()
-            ))?;
+            )
+        })?;
         if installed != expected {
             return Err(format!(
                 "PreLoader 安装版本校验失败: expected={expected} actual={installed}"
@@ -498,7 +511,7 @@ async fn download_asset(
             },
         );
     }
-    let snapshot = task_manager::wait_for_task_terminal(&task_id).await?;
+    let snapshot = task_manager::wait_for_task(&task_id).await?;
     require_download_path(&snapshot).map(PathBuf::from)
 }
 
@@ -524,15 +537,24 @@ fn publish_stage(
     let task_id = updates.borrow().operation_id.clone();
     match &stage {
         LeviLaminaInstallStage::Resolving => {
-            task_manager::update_progress(&task_id, 0, None, Some("resolving_levilamina"));
+            task_manager::update_progress(
+                &task_id,
+                ProgressUpdate::advance(0).stage("resolving_levilamina"),
+            );
             task_manager::set_task_message(&task_id, Some("正在解析依赖".to_string()));
         }
         LeviLaminaInstallStage::Downloading { package, .. } => {
-            task_manager::update_progress(&task_id, 0, None, Some("downloading_levilamina"));
+            task_manager::update_progress(
+                &task_id,
+                ProgressUpdate::advance(0).stage("downloading_levilamina"),
+            );
             task_manager::set_task_message(&task_id, Some(format!("正在下载 {package}")));
         }
         LeviLaminaInstallStage::Installing { package } => {
-            task_manager::update_progress(&task_id, 0, None, Some("installing_levilamina"));
+            task_manager::update_progress(
+                &task_id,
+                ProgressUpdate::advance(0).stage("installing_levilamina"),
+            );
             task_manager::set_task_message(&task_id, Some(format!("正在安装 {package}")));
         }
         LeviLaminaInstallStage::Completed { message } => {

@@ -71,10 +71,13 @@ impl MapViewerWindowView {
             let (event_sender, mut event_receiver) = channel::<Preview3dLoadEvent>(1);
             let mut complete_sender = event_sender.clone();
             let load_task = cx.background_spawn(async move {
-                let result = load_preview_3d_mesh_blocking_incremental(
-                    &world_path,
-                    signature.bounds,
-                    Some(preview_cancel_for_load),
+                let result = load_preview_3d_mesh(
+                    Preview3dLoadOptions {
+                        world_path: &world_path,
+                        bounds: signature.bounds,
+                        block_models: None,
+                        cancel: Some(preview_cancel_for_load),
+                    },
                     {
                         let mut event_sender = event_sender.clone();
                         move |mesh, status| {
@@ -173,14 +176,17 @@ impl MapViewerWindowView {
             let result = cx
                 .background_spawn(async move {
                     if let Some(imported_structure) = imported_structure {
-                        load_preview_3d_mesh_from_mcstructure_blocking(
-                            &imported_structure.structure,
-                            imported_structure.source_anchor,
-                            imported_structure.origin_y,
-                        )
+                        load_preview_3d_mesh_blocking(Preview3dMeshSource::Structure {
+                            structure: &imported_structure.structure,
+                            anchor_chunk: imported_structure.source_anchor,
+                            origin_y: imported_structure.origin_y,
+                        })
                         .map(Arc::new)
                     } else if let Some(copied_chunk) = copied_chunk {
-                        load_preview_3d_mesh_from_copied_chunk_blocking(&copied_chunk).map(Arc::new)
+                        load_preview_3d_mesh_blocking(Preview3dMeshSource::CopiedChunk(
+                            &copied_chunk,
+                        ))
+                        .map(Arc::new)
                     } else {
                         Err("没有可加载的导入预览".to_string())
                     }

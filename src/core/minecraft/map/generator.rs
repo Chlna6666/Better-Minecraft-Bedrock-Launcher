@@ -3,18 +3,19 @@
 use std::path::PathBuf;
 
 use bedrock_voxel::{
-    ObjVoxelOptions, default_block_candidates, voxelize_obj_with_textures_and_progress,
+    ObjVoxelOptions, VoxelizeTexturesRequest, default_block_candidates, voxelize_textured,
 };
 use bedrock_world::{structure::McStructureFile, surface::CancelFlag};
 
+use crate::tasks::task_manager::ProgressUpdate;
 use crate::tasks::{runtime, task_manager};
 
 mod image;
 mod install;
 mod map_bundle;
 mod map_image;
-mod model_import;
 mod model_export;
+mod model_import;
 mod source_obj_preview;
 mod structure_preview;
 
@@ -49,8 +50,8 @@ pub use map_image::{
     start_map_image_preview,
 };
 pub use structure_preview::{
-    StructurePreviewKind, StructurePreviewRequest, get_structure_preview,
-    get_obj_source_preview, release_structure_preview, start_structure_preview,
+    StructurePreviewKind, StructurePreviewRequest, get_obj_source_preview, get_structure_preview,
+    release_structure_preview, start_structure_preview,
 };
 
 /// Inputs for one OBJ conversion and Bedrock structure export.
@@ -78,14 +79,9 @@ pub fn start_obj_export(request: ObjExportRequest) -> Result<String, String> {
         .source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());
-    let task_id = task_manager::create_task_with_details(
-        None,
-        "OBJ 转方块并导出结构",
-        detail,
-        "解析 OBJ",
-        None,
-        false,
-    );
+    let task_id = task_manager::create_task(
+        task_manager::TaskOptions::new("OBJ 转方块并导出结构", "解析 OBJ").detail(detail),
+    )?;
     task_manager::register_task_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
     task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -120,9 +116,8 @@ async fn export_obj(
     cancel: &CancelFlag,
 ) -> Result<String, String> {
     let source = request.source;
-    let prepared = runtime::run_io_blocking(move || {
-        model_import::prepare_model_for_export(&source)
-    }).await??;
+    let prepared =
+        runtime::run_io_blocking(move || model_import::prepare_model_for_export(&source)).await??;
     let model_import::PreparedMapModel { model, decoded, .. } = prepared;
     if cancel.is_cancelled() {
         return Err("OBJ 转换已取消".to_owned());
@@ -138,18 +133,20 @@ async fn export_obj(
             return Err("没有可用的普通实心方块颜色".to_owned());
         }
         let mut previous = 0_usize;
-        let plan = voxelize_obj_with_textures_and_progress(
-            &model,
-            &decoded,
-            candidates,
-            request.voxel,
-            &worker_cancel,
+        let plan = voxelize_textured(
+            VoxelizeTexturesRequest {
+                model: &model,
+                textures: &decoded,
+                candidates,
+                options: request.voxel,
+                cancel: &worker_cancel,
+            },
             |completed, total| {
                 task_manager::update_progress(
                     &worker_id,
-                    (completed - previous) as u64,
-                    Some(total as u64),
-                    Some("体素化三角形"),
+                    ProgressUpdate::advance((completed - previous) as u64)
+                        .total(total as u64)
+                        .stage("体素化三角形"),
                 );
                 previous = completed;
             },
@@ -170,7 +167,12 @@ async fn export_obj(
     runtime::run_io_blocking(move || structure.write_to_path(&output_for_worker))
         .await?
         .map_err(|error| error.to_string())?;
-    task_manager::update_progress(task_id, 1, Some(1), Some("写入 .mcstructure"));
+    task_manager::update_progress(
+        task_id,
+        ProgressUpdate::advance(1)
+            .total(1)
+            .stage("写入 .mcstructure"),
+    );
     Ok(format!(
         "已导出 {} 个三角形、{} 个方块到 {}",
         triangle_count,
@@ -178,7 +180,6 @@ async fn export_obj(
         output.display()
     ))
 }
-
 
 /// Request to export an imported model as OBJ(+MTL), glTF or GLB.
 /// This preserves the user's original .mcstructure export option separately.
@@ -188,51 +189,74 @@ pub struct ModelFileExportRequest {
 }
 
 /// Submit cancellable model serialization through TaskManager.
-pub fn start_model_file_export(request: ModelFileExportRequest) -> Result<String,String> {
+pub fn start_model_file_export(request: ModelFileExportRequest) -> Result<String, String> {
     if !model_import::recognized_model(&request.source) {
         return Err("请选择 OBJ、glTF 或 GLB 模型文件".into());
     }
-    let supported = request.output.extension().and_then(|x|x.to_str())
-        .is_some_and(|x|matches!(x.to_ascii_lowercase().as_str(),"obj"|"gltf"|"glb"));
-    if !supported {return Err("模型只能导出 OBJ、glTF、GLB 格式".into());}
+    let supported = request
+        .output
+        .extension()
+        .and_then(|x| x.to_str())
+        .is_some_and(|x| matches!(x.to_ascii_lowercase().as_str(), "obj" | "gltf" | "glb"));
+    if !supported {
+        return Err("模型只能导出 OBJ、glTF、GLB 格式".into());
+    }
     if request.source == request.output {
         return Err("不能覆盖当前正在读取的源模型文件".into());
     }
-    let name=request.output.file_name().map(|s|s.to_string_lossy().into_owned());
-    let task_id=task_manager::create_task_with_details(
-        None,"模型格式导出",name,"读取模型",None,false,
-    );
+    let name = request
+        .output
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned());
+    let task_id = task_manager::create_task(
+        task_manager::TaskOptions::new("模型格式导出", "读取模型").detail(name),
+    )?;
     task_manager::register_task_cooperative_cancel(task_id.clone());
-    let cancel=CancelFlag::new();
+    let cancel = CancelFlag::new();
     task_manager::register_task_cancel_hook(task_id.clone(), {
-        let cancel=cancel.clone();
-        move ||cancel.cancel()
+        let cancel = cancel.clone();
+        move || cancel.cancel()
     });
-    let worker_id=task_id.clone();
-    if let Err(error)=runtime::spawn_io(async move {
-        let result=async {
-            let source=request.source;
-            let prepared=runtime::run_io_blocking(move||model_import::prepare_model_for_export(&source)).await??;
-            if cancel.is_cancelled(){return Err::<String,String>("模型导出已取消".into());}
-            task_manager::reset_progress(&worker_id,Some(1),Some("序列化模型与纹理"));
-            let output=request.output;
-            let cpu_cancel=cancel.clone();
-            runtime::run_cpu(move||{
-                model_export::write_model(&prepared.model,&prepared.decoded,&output,&cpu_cancel)?;
-                Ok::<_,String>(format!("模型导出完成：{}",output.display()))
-            }).await?
-        }.await;
-        let status=match &result {
-            Ok(_)=>"completed",
-            Err(err) if err.contains("已取消")=>"cancelled",
-            Err(_)=>"error",
+    let worker_id = task_id.clone();
+    if let Err(error) = runtime::spawn_io(async move {
+        let result = async {
+            let source = request.source;
+            let prepared =
+                runtime::run_io_blocking(move || model_import::prepare_model_for_export(&source))
+                    .await??;
+            if cancel.is_cancelled() {
+                return Err::<String, String>("模型导出已取消".into());
+            }
+            task_manager::reset_progress(&worker_id, Some(1), Some("序列化模型与纹理"));
+            let output = request.output;
+            let cpu_cancel = cancel.clone();
+            runtime::run_cpu(move || {
+                model_export::write_model(
+                    &prepared.model,
+                    &prepared.decoded,
+                    &output,
+                    &cpu_cancel,
+                )?;
+                Ok::<_, String>(format!("模型导出完成：{}", output.display()))
+            })
+            .await?
+        }
+        .await;
+        let status = match &result {
+            Ok(_) => "completed",
+            Err(err) if err.contains("已取消") => "cancelled",
+            Err(_) => "error",
         };
-        task_manager::finish_task(&worker_id,status,Some(match result {
-            Ok(message)=>message,
-            Err(error)=>error,
-        }));
+        task_manager::finish_task(
+            &worker_id,
+            status,
+            Some(match result {
+                Ok(message) => message,
+                Err(error) => error,
+            }),
+        );
     }) {
-        task_manager::finish_task(&task_id,"error",Some(error.clone()));
+        task_manager::finish_task(&task_id, "error", Some(error.clone()));
         return Err(error);
     }
     Ok(task_id)

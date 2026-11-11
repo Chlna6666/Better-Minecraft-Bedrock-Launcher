@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::json;
 
 use super::{NativeModEntry, resolve_file_url};
+use crate::tasks::task_manager::ProgressUpdate;
 
 #[derive(Clone, Debug)]
 pub struct NativeModInstallRequest {
@@ -30,17 +31,13 @@ pub struct NativeModImportRequest {
 }
 
 pub fn start_install(request: NativeModInstallRequest) -> Result<String, String> {
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        "安装原生 Mod",
-        Some(format!(
-            "{} · {}",
-            request.mod_entry.name, request.file_name
-        )),
-        "installing_native_mod",
-        None,
-        false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new("安装原生 Mod", "installing_native_mod")
+            .detail(format!(
+                "{} · {}",
+                request.mod_entry.name, request.file_name
+            )),
+    )?;
     crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
     let active_child_task = Arc::new(Mutex::new(None::<String>));
     let cancel_child = Arc::clone(&active_child_task);
@@ -99,14 +96,11 @@ pub fn start_import(request: NativeModImportRequest) -> Result<String, String> {
     }
 
     let count = request.items.len();
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        "导入 Minecraft Mod",
-        Some(format!("{} · {} 个文件", request.version_folder, count)),
-        "installing_mod",
-        Some(count as u64),
-        false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new("导入 Minecraft Mod", "installing_mod")
+            .detail(format!("{} · {} 个文件", request.version_folder, count))
+            .total(count as u64),
+    )?;
     crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
     let workflow = crate::tasks::runtime::spawn_io(async move {
@@ -168,7 +162,7 @@ async fn install(
     if let Ok(mut child) = active_child_task.lock() {
         *child = Some(download_task.clone());
     }
-    let snapshot = crate::tasks::task_manager::wait_for_task_terminal(&download_task).await?;
+    let snapshot = crate::tasks::task_manager::wait_for_task(&download_task).await?;
     if let Ok(mut child) = active_child_task.lock() {
         *child = None;
     }
@@ -400,9 +394,9 @@ async fn import_local_mods(request: NativeModImportRequest, task_id: &str) -> Re
         committed.push(target_dir.clone());
         crate::tasks::task_manager::update_progress(
             task_id,
-            1,
-            Some(total as u64),
-            Some("installing_mod"),
+            ProgressUpdate::advance(1)
+                .total(total as u64)
+                .stage("installing_mod"),
         );
     }
     Ok(())

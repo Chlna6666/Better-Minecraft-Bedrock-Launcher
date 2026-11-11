@@ -3,7 +3,7 @@ use crate::downloads::manager::{DownloadOptions, DownloaderManager};
 use crate::http::proxy::get_client_for_proxy;
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{
-    create_task_with_details, finish_task, is_cancelled, register_task_cooperative_cancel,
+    TaskOptions, create_task, finish_task, is_cancelled, register_task_cooperative_cancel,
     reset_progress, set_task_message,
 };
 use crate::utils::app_info::{self, BuildChannel};
@@ -292,14 +292,11 @@ pub async fn download_and_apply_update(
     let timeout_secs = args.timeout_secs.unwrap_or(60u64);
     let auto_quit = args.auto_quit.unwrap_or(true);
 
-    let task_id = create_task_with_details(
-        args.task_id,
-        "下载更新",
-        filename_hint.clone(),
-        "ready",
-        None,
-        false,
-    );
+    let task_id = create_task(
+        TaskOptions::new("下载更新", "ready")
+            .id(args.task_id)
+            .detail(filename_hint.clone()),
+    )?;
     register_task_cooperative_cancel(task_id.clone());
 
     info!("开始下载并应用：url={} task_id={}", url, task_id);

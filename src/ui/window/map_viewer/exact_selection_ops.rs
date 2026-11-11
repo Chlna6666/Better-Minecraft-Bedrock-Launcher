@@ -1,11 +1,7 @@
 use super::model::*;
 use super::prelude::*;
-use super::preview_3d::{
-    Preview3dMesh, load_preview_3d_mesh_blocking_incremental,
-    load_preview_3d_mesh_blocking_incremental_with_block_models, namespace_preview_3d_mesh,
-    preview_3d_scene_data,
-};
-use super::preview_3d_obj::export_preview_3d_obj_with_materials_with_progress;
+use super::preview_3d::{Preview3dMesh, namespace_preview_3d_mesh, preview_3d_scene_data};
+use crate::tasks::task_manager::ProgressUpdate;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
 use ::bedrock_world::{ExactChunkSelection, exact_selection_stats};
@@ -133,10 +129,13 @@ impl MapViewerWindowView {
             let (event_sender, mut event_receiver) = unbounded::<Preview3dLoadEvent>();
             let complete_sender = event_sender.clone();
             let load_task = cx.background_spawn(async move {
-                let result = load_preview_3d_mesh_exact_blocking_incremental(
-                    &world_path,
-                    exact_selection,
-                    Some(preview_cancel_for_load),
+                let result = load_preview_3d_mesh_exact(
+                    ExactPreview3dLoadOptions {
+                        world_path: &world_path,
+                        selection: exact_selection,
+                        block_models: None,
+                        cancel: Some(preview_cancel_for_load),
+                    },
                     {
                         let event_sender = event_sender.clone();
                         move |mesh, status| {
@@ -240,16 +239,14 @@ impl MapViewerWindowView {
         self.context_menu = None;
 
         // All persistent exports must be owned by TaskManager, not a UI future.
-        let task_id = task_manager::create_task_with_details(
-            None,
-            "精确选区导出 3D 模型",
-            output
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned()),
-            "读取区块与资源包",
-            None,
-            false,
-        );
+        let task_id = task_manager::create_task(
+            task_manager::TaskOptions::new("精确选区导出 3D 模型", "读取区块与资源包").detail(
+                output
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned()),
+            ),
+        )
+        .expect("task id must be unique");
         task_manager::register_task_cooperative_cancel(task_id.clone());
         let cancel = CancelFlag::new();
         task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -290,11 +287,13 @@ impl MapViewerWindowView {
                 )
                 .map(Arc::new)
                 .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
-                let mesh = load_preview_3d_mesh_exact_blocking_incremental_with_block_models(
-                    &world_path,
-                    exact_selection,
-                    Some(block_models),
-                    Some(cancel.clone()),
+                let mesh = load_preview_3d_mesh_exact(
+                    ExactPreview3dLoadOptions {
+                        world_path: &world_path,
+                        selection: exact_selection,
+                        block_models: Some(block_models),
+                        cancel: Some(cancel.clone()),
+                    },
                     |_mesh, _status| {},
                 )?;
                 if cancel.is_cancelled() {
@@ -327,11 +326,13 @@ impl MapViewerWindowView {
                 let result = (|| -> Result<(), String> {
                     let target = bedrock_block_model::ObjExportTarget::from_obj_path(&obj_path)
                         .map_err(|error| error.to_string())?;
-                    let export = export_preview_3d_obj_with_materials_with_progress(
-                        &mesh,
-                        &target.material_library_name,
-                        "textures",
-                        &resolved_package_paths,
+                    let export = export_preview_3d_obj(
+                        Preview3dObjOptions {
+                            mesh: &mesh,
+                            material_library_name: &target.material_library_name,
+                            texture_directory_name: "textures",
+                            game_package_paths: &resolved_package_paths,
+                        },
                         |_completed, _total| {},
                     );
                     if cancel.is_cancelled() {
@@ -362,7 +363,10 @@ impl MapViewerWindowView {
                     let _ = std::fs::remove_dir_all(temp_dir);
                 }
                 result?;
-                task_manager::update_progress(&background_id, 1, Some(1), Some("已完成"));
+                task_manager::update_progress(
+                    &background_id,
+                    ProgressUpdate::advance(1).total(1).stage("已完成"),
+                );
                 Ok::<_, String>(format!(
                     "精确选区模型已导出 · {chunk_count} chunks · {}",
                     output.display(),
@@ -399,32 +403,24 @@ impl MapViewerWindowView {
     }
 }
 
-pub(super) fn load_preview_3d_mesh_exact_blocking_incremental(
-    world_path: &Path,
-    selection: ExactChunkSelection,
-    cancel: Option<CancelFlag>,
-    update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
-) -> Result<Preview3dMesh, String> {
-    load_preview_3d_mesh_exact_impl(world_path, selection, None, cancel, update)
+/// Input for one exact-selection preview mesh build.
+pub(super) struct ExactPreview3dLoadOptions<'a> {
+    pub world_path: &'a Path,
+    pub selection: ExactChunkSelection,
+    pub block_models: Option<Arc<BlockModelRepository>>,
+    pub cancel: Option<CancelFlag>,
 }
 
-pub(super) fn load_preview_3d_mesh_exact_blocking_incremental_with_block_models(
-    world_path: &Path,
-    selection: ExactChunkSelection,
-    block_models: Option<Arc<BlockModelRepository>>,
-    cancel: Option<CancelFlag>,
+pub(super) fn load_preview_3d_mesh_exact(
+    options: ExactPreview3dLoadOptions<'_>,
     update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
 ) -> Result<Preview3dMesh, String> {
-    load_preview_3d_mesh_exact_impl(world_path, selection, block_models, cancel, update)
-}
-
-fn load_preview_3d_mesh_exact_impl(
-    world_path: &Path,
-    selection: ExactChunkSelection,
-    block_models: Option<Arc<BlockModelRepository>>,
-    cancel: Option<CancelFlag>,
-    update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
-) -> Result<Preview3dMesh, String> {
+    let ExactPreview3dLoadOptions {
+        world_path,
+        selection,
+        block_models,
+        cancel,
+    } = options;
     let plan = ExactChunkRenderPlan::new(selection);
     let chunks = Arc::new(plan.positions().to_vec());
     let rectangles = plan.rectangle_cover().to_vec();
@@ -475,22 +471,15 @@ fn load_preview_3d_mesh_exact_impl(
             }
         };
 
-        let part = if let Some(block_models) = block_models.clone() {
-            load_preview_3d_mesh_blocking_incremental_with_block_models(
+        let part = load_preview_3d_mesh(
+            Preview3dLoadOptions {
                 world_path,
                 bounds,
-                Some(block_models),
-                cancel.clone(),
-                emit_partial,
-            )?
-        } else {
-            load_preview_3d_mesh_blocking_incremental(
-                world_path,
-                bounds,
-                cancel.clone(),
-                emit_partial,
-            )?
-        };
+                block_models: block_models.clone(),
+                cancel: cancel.clone(),
+            },
+            emit_partial,
+        )?;
 
         completed_chunks = completed_chunks.saturating_add(bounds.chunk_count());
         parts.push(part);

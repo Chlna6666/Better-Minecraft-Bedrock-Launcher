@@ -219,7 +219,7 @@ fn start_export(window: &mut Window, cx: &mut App) {
     // or the onboarding surface is dropped.
     let wait_task_id = task_id.clone();
     let terminal = gpui_tokio::Tokio::spawn_result(cx, async move {
-        crate::tasks::task_manager::wait_for_task_terminal(&wait_task_id)
+        crate::tasks::task_manager::wait_for_task(&wait_task_id)
             .await
             .map_err(anyhow::Error::msg)
     });

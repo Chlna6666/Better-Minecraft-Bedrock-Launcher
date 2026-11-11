@@ -42,6 +42,7 @@ use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
 use crate::http::proxy::get_client_for_proxy;
 use crate::http::request::GLOBAL_CLIENT;
 use crate::i18n::LocalizedText;
+use crate::tasks::task_manager::ProgressUpdate;
 #[cfg(windows)]
 use crate::utils::developer_mode;
 
@@ -143,14 +144,11 @@ where
     F: FnOnce(UnboundedSender<DependencyEvent>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<()>> + Send + 'static,
 {
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        title,
-        detail,
-        "queued",
-        Some(100),
-        false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new(title, "queued")
+            .detail(detail)
+            .total(100),
+    )?;
     crate::tasks::task_manager::append_task_log(&task_id, format!("{title}：任务已提交"));
 
     // DependencyEvent is an internal producer protocol only. UI never receives this channel;
@@ -179,9 +177,9 @@ where
                     }
                     crate::tasks::task_manager::update_progress(
                         &progress_task_id,
-                        percent.saturating_sub(last_percent),
-                        Some(100),
-                        Some(progress_stage),
+                        ProgressUpdate::advance(percent.saturating_sub(last_percent))
+                            .total(100)
+                            .stage(progress_stage),
                     );
                     last_percent = percent;
 

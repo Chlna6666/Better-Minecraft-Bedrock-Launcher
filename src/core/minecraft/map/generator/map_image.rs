@@ -8,12 +8,14 @@ use std::{
 };
 
 use crate::core::minecraft::map::image::{
-    MapImageCrop, MapImageFit, MapImageOptions, MapImageTile, MapResample, tile_map_image_with_progress,
+    MapImageCrop, MapImageFit, MapImageOptions, MapImageTile, MapResample,
+    tile_map_image_with_progress,
 };
 use bedrock_world::surface::CancelFlag;
 use image::{Rgba, RgbaImage, imageops};
 
 use super::image::decode_image;
+use crate::tasks::task_manager::ProgressUpdate;
 use crate::tasks::{runtime, task_manager};
 
 const RESULT_LIMIT_BYTES: usize = 160 * 1024 * 1024;
@@ -257,14 +259,9 @@ pub fn start_map_image_preview(
     let detail = source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());
-    let task_id = task_manager::create_task_with_details(
-        None,
-        "图片转 Bedrock 地图像素预览",
-        detail,
-        "解码图片",
-        None,
-        false,
-    );
+    let task_id = task_manager::create_task(
+        task_manager::TaskOptions::new("图片转 Bedrock 地图像素预览", "解码图片").detail(detail),
+    )?;
     task_manager::register_task_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
     task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -358,9 +355,9 @@ async fn convert(
             |_| {
                 task_manager::update_progress(
                     &worker_id,
-                    1,
-                    Some(u64::from(count)),
-                    Some("逐张生成地图"),
+                    ProgressUpdate::advance(1)
+                        .total(u64::from(count))
+                        .stage("逐张生成地图"),
                 );
             },
         )
@@ -378,9 +375,9 @@ async fn convert(
                 }
                 task_manager::update_progress(
                     &worker_id,
-                    1,
-                    Some(u64::from(count)),
-                    Some("逐张合并预览"),
+                    ProgressUpdate::advance(1)
+                        .total(u64::from(count))
+                        .stage("逐张合并预览"),
                 );
                 if done <= 16 || last_frame.elapsed() >= Duration::from_millis(80) {
                     if let Ok(mut store) = previews().lock() {
@@ -668,8 +665,8 @@ mod tests {
     fn automatic_grid_uses_the_source_ratio_within_its_map_budget() {
         for (width, height) in [(1200, 640), (8192, 8192), (8192, 1), (600, 540)] {
             let (columns, rows) = fitted_grid(width, height);
-            let budget = (width.div_ceil(128).clamp(1, 64)
-                * height.div_ceil(128).clamp(1, 64)).min(1024);
+            let budget =
+                (width.div_ceil(128).clamp(1, 64) * height.div_ceil(128).clamp(1, 64)).min(1024);
             assert!((1..=64).contains(&columns));
             assert!((1..=64).contains(&rows));
             assert!(columns * rows <= budget.saturating_mul(3).div_ceil(2).max(budget + 1));
@@ -690,11 +687,21 @@ mod tests {
         image.put_pixel(5, 4, Rgba([0, 0, 255, 128]));
         assert_eq!(
             visible_alpha_crop(&image, 1),
-            Some(MapImageCrop { x: 2, y: 1, width: 4, height: 4 })
+            Some(MapImageCrop {
+                x: 2,
+                y: 1,
+                width: 4,
+                height: 4
+            })
         );
         assert_eq!(
             visible_alpha_crop(&image, 255),
-            Some(MapImageCrop { x: 2, y: 1, width: 1, height: 1 })
+            Some(MapImageCrop {
+                x: 2,
+                y: 1,
+                width: 1,
+                height: 1
+            })
         );
         assert_eq!(
             visible_alpha_crop(&RgbaImage::from_pixel(8, 6, Rgba([0, 0, 0, 0])), 1),
@@ -781,16 +788,29 @@ mod tests {
             image.put_pixel(x, 1, Rgba(color));
         }
         let crop = visible_alpha_crop(&image, 1).expect("nontransparent bounds");
-        assert_eq!(crop, MapImageCrop { x: 2, y: 1, width: 4, height: 1 });
+        assert_eq!(
+            crop,
+            MapImageCrop {
+                x: 2,
+                y: 1,
+                width: 4,
+                height: 1
+            }
+        );
         let tiles = tile_map_image(
-            image.into_raw(), 8, 3,
+            image.into_raw(),
+            8,
+            3,
             MapImageOptions {
-                crop, columns: 2, rows: 1,
+                crop,
+                columns: 2,
+                rows: 1,
                 fit: MapImageFit::Contain,
                 resample: MapResample::Nearest,
                 alpha_threshold: 1,
             },
-        ).expect("two map records");
+        )
+        .expect("two map records");
         assert_eq!(tiles.len(), 2);
         assert_eq!((tiles[0].column, tiles[0].row), (0, 0));
         assert_eq!((tiles[1].column, tiles[1].row), (1, 0));
@@ -822,9 +842,8 @@ mod tests {
             rows: 1,
             ..MapPreviewOptions::default()
         };
-        let (width, height, pixels) = build_preview(
-            &[single_tile], options, |_, _, _, _| true
-        ).expect("bounded preview");
+        let (width, height, pixels) =
+            build_preview(&[single_tile], options, |_, _, _, _| true).expect("bounded preview");
         assert!(width <= 512);
         assert!(height <= 512);
         assert_eq!(pixels.len(), (width * height * 4) as usize);
@@ -842,14 +861,20 @@ mod tests {
             2,
             1,
             MapImageOptions {
-                crop: MapImageCrop { x: 0, y: 0, width: 2, height: 1 },
+                crop: MapImageCrop {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                },
                 columns: 2,
                 rows: 1,
                 fit: MapImageFit::Stretch,
                 resample: MapResample::Nearest,
                 alpha_threshold: 1,
             },
-        ).expect("tiles");
+        )
+        .expect("tiles");
         let (width, height, rgba) = build_placement_preview(&tiles, options).expect("preview");
         assert_eq!((width, height), (256, 128));
         assert_eq!(&rgba[0..4], &[0, 0, 0, 0]);

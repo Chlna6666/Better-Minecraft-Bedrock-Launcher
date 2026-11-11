@@ -4,21 +4,19 @@ pub(super) use mesh_namespace::namespace_preview_3d_mesh;
 
 pub(super) use super::preview_3d_source::{
     IndexRange, Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState,
-    Preview3dMaterialRanges, Preview3dModelRotation, Preview3dMovementInput,
+    Preview3dMaterialRanges, Preview3dMeshSource, Preview3dModelRotation, Preview3dMovementInput,
     Preview3dSelectionSignature, Preview3dSource, Preview3dStatus, preview_3d_bounds_depth,
     preview_3d_bounds_width, preview_3d_viewport_parameters,
 };
 
-use bedrock_block_model::BlockModelRepository;
 use bedrock_render::ChunkPos;
-use bedrock_world::{CancelFlag, SlimeChunkBounds};
+use bedrock_world::CancelFlag;
 use gpui_3d::{
     AlphaMode, Camera, Material, Mesh, MeshId, MeshPart, Node, ProjectionRegion, Scene, SceneView,
     ShadingModel, Transform, Vec2, Vec3, Vertex,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::hash::Hash;
-use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
@@ -195,9 +193,8 @@ pub(super) struct Preview3dChunkMesh {
 
 impl Preview3dChunkMesh {
     fn estimated_cpu_bytes(&self) -> usize {
-        let mesh_bytes = |mesh: &Mesh| {
-            std::mem::size_of::<Mesh>().saturating_add(mesh.geometry_storage_bytes())
-        };
+        let mesh_bytes =
+            |mesh: &Mesh| std::mem::size_of::<Mesh>().saturating_add(mesh.geometry_storage_bytes());
         std::mem::size_of::<Self>()
             .saturating_add(mesh_bytes(&self.mesh))
             .saturating_add(self.lod1_mesh.as_deref().map_or(0, mesh_bytes))
@@ -384,39 +381,12 @@ fn source_mesh_signature(mesh: &super::preview_3d_source::Preview3dMesh) -> Sour
     }
 }
 
-pub(super) fn load_preview_3d_mesh_blocking_incremental(
-    world_path: &Path,
-    bounds: SlimeChunkBounds,
-    cancel: Option<CancelFlag>,
+pub(super) fn load_preview_3d_mesh(
+    options: super::preview_3d_source::Preview3dLoadOptions<'_>,
     update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
 ) -> Result<Preview3dMesh, String> {
     load_incremental_with_converter(
-        move |callback| {
-            super::preview_3d_source::load_preview_3d_mesh_blocking_incremental(
-                world_path, bounds, cancel, callback,
-            )
-        },
-        update,
-    )
-}
-
-pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
-    world_path: &Path,
-    bounds: SlimeChunkBounds,
-    block_models: Option<Arc<BlockModelRepository>>,
-    cancel: Option<CancelFlag>,
-    update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
-) -> Result<Preview3dMesh, String> {
-    load_incremental_with_converter(
-        move |callback| {
-            super::preview_3d_source::load_preview_3d_mesh_blocking_incremental_with_block_models(
-                world_path,
-                bounds,
-                block_models,
-                cancel,
-                callback,
-            )
-        },
+        move |callback| super::preview_3d_source::load_preview_3d_mesh(options, callback),
         update,
     )
 }
@@ -473,23 +443,10 @@ fn load_incremental_with_converter(
     )
 }
 
-pub(super) fn load_preview_3d_mesh_from_mcstructure_blocking(
-    structure: &bedrock_world::McStructureFile,
-    anchor_chunk: ChunkPos,
-    origin_y: i32,
+pub(super) fn load_preview_3d_mesh_blocking(
+    source: Preview3dMeshSource<'_>,
 ) -> Result<Preview3dMesh, String> {
-    super::preview_3d_source::load_preview_3d_mesh_from_mcstructure_blocking(
-        structure,
-        anchor_chunk,
-        origin_y,
-    )
-    .and_then(|mesh| convert_source_mesh(&mesh, &mut RegionMeshReuseCache::default()))
-}
-
-pub(super) fn load_preview_3d_mesh_from_copied_chunk_blocking(
-    copied_chunk: &super::model::CopiedChunkData,
-) -> Result<Preview3dMesh, String> {
-    super::preview_3d_source::load_preview_3d_mesh_from_copied_chunk_blocking(copied_chunk)
+    super::preview_3d_source::load_preview_3d_mesh_blocking(source)
         .and_then(|mesh| convert_source_mesh(&mesh, &mut RegionMeshReuseCache::default()))
 }
 
@@ -508,14 +465,26 @@ fn convert_source_mesh(
     // surface or an intentional region-spanning quad.
     let margin = 32.0f32;
     let selection_bounds = [
-        [source_mesh.min_x as f32 - margin, source_mesh.max_x as f32 + 1.0 + margin],
-        [source_mesh.min_y as f32 - margin, source_mesh.max_y as f32 + 1.0 + margin],
-        [source_mesh.min_z as f32 - margin, source_mesh.max_z as f32 + 1.0 + margin],
+        [
+            source_mesh.min_x as f32 - margin,
+            source_mesh.max_x as f32 + 1.0 + margin,
+        ],
+        [
+            source_mesh.min_y as f32 - margin,
+            source_mesh.max_y as f32 + 1.0 + margin,
+        ],
+        [
+            source_mesh.min_z as f32 - margin,
+            source_mesh.max_z as f32 + 1.0 + margin,
+        ],
     ];
     for chunk in &source_mesh.chunk_meshes {
         extract_legacy_faces(
-            chunk, selection_bounds, &mut groups,
-            &mut extracted_faces, &mut rejected_faces,
+            chunk,
+            selection_bounds,
+            &mut groups,
+            &mut extracted_faces,
+            &mut rejected_faces,
         );
     }
     if rejected_faces != 0 {
@@ -637,12 +606,17 @@ pub(super) fn preview_3d_scene_data(
     // The progressive loader publishes before LOD geometry is available.
     // Do not construct two redundant SceneGraphs containing exactly the
     // same Meshes/Nodes after every batch of newly decoded chunks.
-    let scenes = if chunks.iter().all(|chunk| {
-        chunk.lod1_mesh.is_none() && chunk.lod2_mesh.is_none()
-    }) {
+    let scenes = if chunks
+        .iter()
+        .all(|chunk| chunk.lod1_mesh.is_none() && chunk.lod2_mesh.is_none())
+    {
         [full.clone(), full.clone(), full]
     } else {
-        [full, build_map_scene(chunks, 1)?, build_map_scene(chunks, 2)?]
+        [
+            full,
+            build_map_scene(chunks, 1)?,
+            build_map_scene(chunks, 2)?,
+        ]
     };
     let scene_view = SceneView::new(
         scenes[0].clone(),
@@ -776,7 +750,7 @@ fn extract_legacy_faces(
         if indices[3] != indices[0] || indices[4] != indices[2] {
             continue;
         }
-        let pass = pass_for_legacy_range(
+        let pass = classify_pass(
             first_index,
             chunk.ranges,
             chunk.face_metadata.get(face_index),
@@ -825,10 +799,7 @@ fn extract_legacy_faces(
 /// Bound checks alone would permit a single corrupt quad to stretch across a
 /// whole selected world, so retain the existing per-chunk mesher's conservative
 /// maximal face extent as a second independent condition.
-fn preview_quad_within_selection(
-    corners: &[[f32; 3]; 4],
-    bounds: [[f32; 2]; 3],
-) -> bool {
+fn preview_quad_within_selection(corners: &[[f32; 3]; 4], bounds: [[f32; 2]; 3]) -> bool {
     let mut low = [f32::INFINITY; 3];
     let mut high = [f32::NEG_INFINITY; 3];
     for corner in corners {
@@ -845,12 +816,16 @@ fn preview_quad_within_selection(
     // spanning multiple 128-block regions is inconsistent with the chunk
     // mesher, and is the source of screen-wide stretched triangles.
     (0..3).all(|axis| {
-        let limit = if axis == 1 { REGION_BLOCKS_Y } else { REGION_BLOCKS_XZ };
+        let limit = if axis == 1 {
+            REGION_BLOCKS_Y
+        } else {
+            REGION_BLOCKS_XZ
+        };
         high[axis] - low[axis] <= (limit * 2) as f32
     })
 }
 
-fn pass_for_legacy_range(
+fn classify_pass(
     first_index: usize,
     ranges: Preview3dMaterialRanges,
     metadata: Option<&super::preview_3d_source::Preview3dFaceMetadata>,
@@ -886,34 +861,39 @@ fn material_is_cutout(material: &str) -> bool {
 /// Reconstruct only proven axis-aligned rectangles. Taking the min/max bounds
 /// of an irregular native quad used to replace its actual geometry with an
 /// invented rectangle, producing stretched transparent/water triangles.
-fn for_each_region_face(
-    face: RegionFace,
-    mut emit: impl FnMut(Preview3dRegionKey, RegionFace),
-) {
-    let key = region_key_for_face(&face);
+fn for_each_region_face(face: RegionFace, mut emit: impl FnMut(Preview3dRegionKey, RegionFace)) {
+    let key = face_region_key(&face);
     let origin = key.origin();
     // Most faces are strictly inside their 8x8x4 region. Publish them
     // unchanged without recomputing a normal, synthesizing four corners,
     // cloning the material or allocating a region-split container.
-    if face.uv.is_some() || face.corners.iter().all(|corner| {
-        [0, 1, 2].into_iter().all(|axis| {
-            let extent = if axis == 1 { REGION_BLOCKS_Y } else { REGION_BLOCKS_XZ };
-            corner[axis] >= origin[axis] as f32 - 1.0e-4
-                && corner[axis] <= (origin[axis] + extent) as f32 + 1.0e-4
+    if face.uv.is_some()
+        || face.corners.iter().all(|corner| {
+            [0, 1, 2].into_iter().all(|axis| {
+                let extent = if axis == 1 {
+                    REGION_BLOCKS_Y
+                } else {
+                    REGION_BLOCKS_XZ
+                };
+                corner[axis] >= origin[axis] as f32 - 1.0e-4
+                    && corner[axis] <= (origin[axis] + extent) as f32 + 1.0e-4
+            })
         })
-    }) {
+    {
         emit(key, face);
         return;
     }
     let normal = face_normal(&face);
     let Some(axis) = dominant_axis(normal) else {
-        emit(region_key_for_face(&face), face);
+        emit(face_region_key(&face), face);
         return;
     };
-    if normal.iter().enumerate()
+    if normal
+        .iter()
+        .enumerate()
         .any(|(index, value)| index != axis && value.abs() > 1.0e-4)
     {
-        emit(region_key_for_face(&face), face);
+        emit(face_region_key(&face), face);
         return;
     }
     let (u_axis, v_axis) = match axis {
@@ -921,38 +901,60 @@ fn for_each_region_face(
         1 => (0, 2),
         2 => (0, 1),
         _ => {
-            emit(region_key_for_face(&face), face);
+            emit(face_region_key(&face), face);
             return;
         }
     };
     let plane = face.corners[0][axis];
     if !face.corners.iter().flatten().all(|value| value.is_finite())
-        || face.corners.iter()
+        || face
+            .corners
+            .iter()
             .any(|corner| (corner[axis] - plane).abs() > 1.0e-4)
     {
-        emit(region_key_for_face(&face), face);
+        emit(face_region_key(&face), face);
         return;
     }
-    let u0 = face.corners.iter()
-        .map(|corner| corner[u_axis]).fold(f32::INFINITY, f32::min);
-    let u1 = face.corners.iter()
-        .map(|corner| corner[u_axis]).fold(f32::NEG_INFINITY, f32::max);
-    let v0 = face.corners.iter()
-        .map(|corner| corner[v_axis]).fold(f32::INFINITY, f32::min);
-    let v1 = face.corners.iter()
-        .map(|corner| corner[v_axis]).fold(f32::NEG_INFINITY, f32::max);
+    let u0 = face
+        .corners
+        .iter()
+        .map(|corner| corner[u_axis])
+        .fold(f32::INFINITY, f32::min);
+    let u1 = face
+        .corners
+        .iter()
+        .map(|corner| corner[u_axis])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let v0 = face
+        .corners
+        .iter()
+        .map(|corner| corner[v_axis])
+        .fold(f32::INFINITY, f32::min);
+    let v1 = face
+        .corners
+        .iter()
+        .map(|corner| corner[v_axis])
+        .fold(f32::NEG_INFINITY, f32::max);
     // AABB reconstruction is valid only for four distinct corner combinations.
     // Detail, fluid and custom capture quads may be sloped or irregular;
     // they must be retained without synthetic axes/vertices.
     let mut seen = [false; 4];
     let mut rectangle = u1 > u0 + 1.0e-5 && v1 > v0 + 1.0e-5;
     for corner in &face.corners {
-        let u = if (corner[u_axis] - u0).abs() < 1.0e-4 { Some(0) }
-            else if (corner[u_axis] - u1).abs() < 1.0e-4 { Some(1) }
-            else { None };
-        let v = if (corner[v_axis] - v0).abs() < 1.0e-4 { Some(0) }
-            else if (corner[v_axis] - v1).abs() < 1.0e-4 { Some(1) }
-            else { None };
+        let u = if (corner[u_axis] - u0).abs() < 1.0e-4 {
+            Some(0)
+        } else if (corner[u_axis] - u1).abs() < 1.0e-4 {
+            Some(1)
+        } else {
+            None
+        };
+        let v = if (corner[v_axis] - v0).abs() < 1.0e-4 {
+            Some(0)
+        } else if (corner[v_axis] - v1).abs() < 1.0e-4 {
+            Some(1)
+        } else {
+            None
+        };
         match (u, v) {
             (Some(u), Some(v)) if !seen[v * 2 + u] => {
                 seen[v * 2 + u] = true;
@@ -961,11 +963,19 @@ fn for_each_region_face(
         }
     }
     if !rectangle || seen.iter().any(|was_seen| !was_seen) {
-        emit(region_key_for_face(&face), face);
+        emit(face_region_key(&face), face);
         return;
     }
-    let u_span = if u_axis == 1 { REGION_BLOCKS_Y } else { REGION_BLOCKS_XZ } as f32;
-    let v_span = if v_axis == 1 { REGION_BLOCKS_Y } else { REGION_BLOCKS_XZ } as f32;
+    let u_span = if u_axis == 1 {
+        REGION_BLOCKS_Y
+    } else {
+        REGION_BLOCKS_XZ
+    } as f32;
+    let v_span = if v_axis == 1 {
+        REGION_BLOCKS_Y
+    } else {
+        REGION_BLOCKS_XZ
+    } as f32;
     let mut u = u0;
     let mut emitted = false;
     while u < u1 - 1.0e-5 {
@@ -976,17 +986,16 @@ fn for_each_region_face(
             let next_v = ((v / v_span).floor() + 1.0) * v_span;
             let end_v = v1.min(next_v.max(v + 1.0e-5));
             let mut split = face.clone();
-            split.corners = axis_aligned_face_corners(
-                axis, normal[axis] >= 0.0, plane, u, end_u, v, end_v,
-            );
-            emit(region_key_for_face(&split), split);
+            split.corners =
+                axis_aligned_face_corners(axis, normal[axis] >= 0.0, plane, u, end_u, v, end_v);
+            emit(face_region_key(&split), split);
             emitted = true;
             v = end_v;
         }
         u = end_u;
     }
     if !emitted {
-        emit(region_key_for_face(&face), face);
+        emit(face_region_key(&face), face);
     }
 }
 
@@ -1040,7 +1049,7 @@ fn axis_aligned_face_corners(
     }
 }
 
-fn region_key_for_face(face: &RegionFace) -> Preview3dRegionKey {
+fn face_region_key(face: &RegionFace) -> Preview3dRegionKey {
     let center =
         [0, 1, 2].map(|axis| face.corners.iter().map(|corner| corner[axis]).sum::<f32>() / 4.0);
     Preview3dRegionKey {
@@ -1131,7 +1140,10 @@ fn build_region_mesh(
             }
         });
         quads.push(quad);
-        metadata.push(Preview3dFaceMetadata { material_id, uv: face.uv });
+        metadata.push(Preview3dFaceMetadata {
+            material_id,
+            uv: face.uv,
+        });
     }
     let id = region_mesh_id(key, pass, lod);
     let generation = region_mesh_generation(&quads, &materials, &metadata);
@@ -1192,7 +1204,8 @@ fn region_mesh_generation(
             {
                 push(value);
             }
-            for value in [vertex.normal.x, vertex.normal.y, vertex.normal.z].map(canonical_f32_bits) {
+            for value in [vertex.normal.x, vertex.normal.y, vertex.normal.z].map(canonical_f32_bits)
+            {
                 push(value);
             }
             for value in [vertex.uv.x, vertex.uv.y].map(canonical_f32_bits) {
@@ -1294,8 +1307,10 @@ mod preview_region_geometry_tests {
     #[test]
     fn preview_region_uses_independent_quads_even_for_distant_faces() {
         let base = face([
-            [0.0, 64.0, 0.0], [1.0, 64.0, 0.0],
-            [1.0, 64.0, 1.0], [0.0, 64.0, 1.0],
+            [0.0, 64.0, 0.0],
+            [1.0, 64.0, 0.0],
+            [1.0, 64.0, 1.0],
+            [0.0, 64.0, 1.0],
         ]);
         let mut distant = base.clone();
         for point in &mut distant.corners {
@@ -1303,8 +1318,11 @@ mod preview_region_geometry_tests {
         }
         let key = Preview3dRegionKey { x: 0, y: 1, z: 0 };
         let (mesh, _, _) = build_region_mesh(
-            key, Preview3dRegionPass::Transparent, 0,
-            &[base, distant], key.origin(),
+            key,
+            Preview3dRegionPass::Transparent,
+            0,
+            &[base, distant],
+            key.origin(),
         );
         assert_eq!(mesh.vertex_count(), 8);
         assert_eq!(mesh.index_count(), 12);
@@ -1317,13 +1335,20 @@ mod preview_region_geometry_tests {
     #[test]
     fn preview_region_quad_topology_survives_u16_index_boundary() {
         let water = face([
-            [0.0, 64.0, 0.0], [1.0, 64.0, 0.0],
-            [1.0, 64.0, 1.0], [0.0, 64.0, 1.0],
+            [0.0, 64.0, 0.0],
+            [1.0, 64.0, 0.0],
+            [1.0, 64.0, 1.0],
+            [0.0, 64.0, 1.0],
         ]);
         let faces = vec![water; 16_400];
         let key = Preview3dRegionKey { x: 0, y: 1, z: 0 };
-        let (mesh, _, _) =
-            build_region_mesh(key, Preview3dRegionPass::Transparent, 0, &faces, key.origin());
+        let (mesh, _, _) = build_region_mesh(
+            key,
+            Preview3dRegionPass::Transparent,
+            0,
+            &faces,
+            key.origin(),
+        );
         assert_eq!(mesh.vertex_count(), 65_600);
         assert_eq!(mesh.index_count(), 98_400);
         assert_eq!(mesh.parts()[0].index_count(), 98_400);
@@ -1336,8 +1361,12 @@ mod preview_region_geometry_tests {
     #[test]
     fn preview_region_rejects_stray_solid_and_fluid_quad_vertices() {
         let bounds = [[-32.0, 160.0], [-64.0, 224.0], [-32.0, 160.0]];
-        let valid_water = [[0.0, 64.875, 0.0], [16.0, 64.875, 0.0],
-            [16.0, 64.875, 16.0], [0.0, 64.875, 16.0]];
+        let valid_water = [
+            [0.0, 64.875, 0.0],
+            [16.0, 64.875, 0.0],
+            [16.0, 64.875, 16.0],
+            [0.0, 64.875, 16.0],
+        ];
         assert!(preview_quad_within_selection(&valid_water, bounds));
         let mut corrupt = valid_water;
         corrupt[2][0] = 1024.0;
@@ -1348,7 +1377,6 @@ mod preview_region_geometry_tests {
         let wide_bounds = [[-2000.0, 2000.0], [-64.0, 224.0], [-32.0, 160.0]];
         assert!(!preview_quad_within_selection(&corrupt, wide_bounds));
     }
-
 
     fn face(corners: [[f32; 3]; 4]) -> RegionFace {
         RegionFace {
@@ -1363,8 +1391,10 @@ mod preview_region_geometry_tests {
     #[test]
     fn single_region_water_quad_needs_no_split_or_new_geometry() {
         let original = face([
-            [0.0, 64.0, 0.0], [2.0, 64.0, 0.0],
-            [2.0, 64.0, 2.0], [0.0, 64.0, 2.0],
+            [0.0, 64.0, 0.0],
+            [2.0, 64.0, 0.0],
+            [2.0, 64.0, 2.0],
+            [0.0, 64.0, 2.0],
         ]);
         let mut results = Vec::new();
         for_each_region_face(original.clone(), |key, quad| results.push((key, quad)));
@@ -1375,8 +1405,10 @@ mod preview_region_geometry_tests {
     #[test]
     fn axis_aligned_quad_crossing_tile_boundary_is_clipped_to_two_tiles() {
         let original = face([
-            [127.0, 64.0, 8.0], [129.0, 64.0, 8.0],
-            [129.0, 64.0, 9.0], [127.0, 64.0, 9.0],
+            [127.0, 64.0, 8.0],
+            [129.0, 64.0, 8.0],
+            [129.0, 64.0, 9.0],
+            [127.0, 64.0, 9.0],
         ]);
         let mut results = Vec::new();
         for_each_region_face(original, |key, quad| results.push((key, quad)));
@@ -1395,14 +1427,18 @@ mod preview_region_geometry_tests {
     #[test]
     fn non_rectangular_water_face_keeps_actual_corners() {
         let original = face([
-            [127.0, 64.0, 8.0], [129.0, 64.0, 8.0],
-            [129.0, 64.0, 9.0], [127.0, 64.0, 8.5],
+            [127.0, 64.0, 8.0],
+            [129.0, 64.0, 8.0],
+            [129.0, 64.0, 9.0],
+            [127.0, 64.0, 8.5],
         ]);
         let mut results = Vec::new();
         for_each_region_face(original.clone(), |key, quad| results.push((key, quad)));
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1.corners, original.corners,
-            "irregular native water geometry must not expand to its AABB");
+        assert_eq!(
+            results[0].1.corners, original.corners,
+            "irregular native water geometry must not expand to its AABB"
+        );
     }
 
     #[test]

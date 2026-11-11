@@ -236,7 +236,7 @@ impl Render for SettingsPageView {
             self.prepared_tab = Some(active_tab);
             window.on_next_frame(move |_window, cx| match active_tab {
                 SettingsTab::Launcher => {
-                    tabs::refresh_gpu_adapters_if_needed(cx);
+                    tabs::refresh_gpu_adapters(cx);
                     launcher::logs::refresh_log_stats(cx);
                 }
                 SettingsTab::Plugins => {}

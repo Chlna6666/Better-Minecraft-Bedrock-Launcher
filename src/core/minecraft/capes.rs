@@ -194,7 +194,7 @@ fn read_member(
     }
 }
 
-fn has_member(
+fn check_member(
     path: &Path,
     archive: &mut Option<ZipArchive<File>>,
     name: &str,
@@ -630,7 +630,7 @@ fn read_pack_at(
             let present = entry
                 .persona_zip
                 .as_deref()
-                .map(|name| has_member(path, archive, &member(name), MAX_PACK_BYTES))
+                .map(|name| check_member(path, archive, &member(name), MAX_PACK_BYTES))
                 .transpose()?
                 .unwrap_or(false);
             if !present {

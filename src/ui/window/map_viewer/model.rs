@@ -10,6 +10,7 @@ use super::prelude::*;
 pub(super) use super::query_cache::MapQueryBudget;
 use super::tile_state::*;
 use super::viewport::*;
+use crate::tasks::task_manager::ProgressUpdate;
 use crate::ui::components::numeric_field::NumericField;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1000,7 +1001,10 @@ pub(super) fn sync_map_operation_task_progress(
     if reset {
         task_manager::reset_progress(task_id, total, Some(stage));
     }
-    task_manager::update_progress(task_id, delta, total, Some(stage));
+    task_manager::update_progress(
+        task_id,
+        ProgressUpdate::advance(delta).total(total).stage(stage),
+    );
 }
 
 pub(super) fn map_operation_cancelled(cancel: &CancelFlag, task_id: &str) -> bool {

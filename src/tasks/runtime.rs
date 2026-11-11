@@ -11,7 +11,7 @@ use tokio::task::{AbortHandle, JoinHandle};
 use tracing::{debug, error, warn};
 
 use super::task_manager::{
-    TaskVisibility, create_task_with_details_and_visibility, finish_task, get_snapshot_arc,
+    ProgressUpdate, TaskOptions, TaskVisibility, create_task, finish_task, get_snapshot_arc,
     is_cancelled, refresh_task_telemetry, register_task_abort_handle,
     register_task_cooperative_cancel, remove_task, update_progress,
 };
@@ -261,7 +261,10 @@ where
     let task_slots = Arc::clone(&runtime.download_slots);
     let task_id_for_worker = task_id.clone();
     let join_handle = runtime.spawn_download(async move {
-        update_progress(&task_id_for_worker, 0, None, Some("queued"));
+        update_progress(
+            &task_id_for_worker,
+            ProgressUpdate::advance(0).stage("queued"),
+        );
         let Ok(_slot) = task_slots.acquire_owned().await else {
             if !is_cancelled(&task_id_for_worker) {
                 finish_task(
@@ -327,7 +330,10 @@ where
     let task_slots = Arc::clone(&runtime.archive_slots);
     let task_id_for_worker = task_id.clone();
     let join_handle = runtime.spawn_archive(async move {
-        update_progress(&task_id_for_worker, 0, None, Some("queued"));
+        update_progress(
+            &task_id_for_worker,
+            ProgressUpdate::advance(0).stage("queued"),
+        );
         let Ok(_slot) = task_slots.acquire_owned().await else {
             if !is_cancelled(&task_id_for_worker) {
                 finish_task(
@@ -449,15 +455,11 @@ where
         .acquire_owned()
         .await
         .map_err(|error| format!("后台任务队列已关闭: {error}"))?;
-    let task_id = create_task_with_details_and_visibility(
-        None,
-        options.title,
-        options.detail,
-        "running",
-        None,
-        false,
-        TaskVisibility::Hidden,
-    );
+    let task_id = create_task(
+        TaskOptions::new(options.title, "running")
+            .detail(options.detail)
+            .visibility(TaskVisibility::Hidden),
+    )?;
     let started_at = Instant::now();
     let join_handle = spawn_blocking_with_permit(runtime, permit, operation);
     let guard = HiddenTaskGuard {

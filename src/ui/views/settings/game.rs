@@ -1,8 +1,8 @@
+use crate::ui::state::game_diagnostics::GameDiagnosticsState;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::{LauncherDisplayMode, SettingsPageState};
 use gpui::*;
-use crate::ui::state::game_diagnostics::GameDiagnosticsState;
 
 use super::common::{snapshot_from_state, spawn_persist_settings};
 use super::rows::{setting_dropdown_row, setting_toggle_row, tab_title};
@@ -100,7 +100,9 @@ pub(super) fn render_game_tab(
                     cx.spawn(async move |cx| {
                         let history = crate::tasks::runtime::run_io_blocking(|| {
                             crate::core::minecraft::diagnostics::recent_reports(20, false)
-                        }).await.unwrap_or_default();
+                        })
+                        .await
+                        .unwrap_or_default();
                         let _ = cx.update_global(|state: &mut GameDiagnosticsState, _| {
                             if let Some(report) = history.first().cloned() {
                                 state.select_report(report);
@@ -109,7 +111,8 @@ pub(super) fn render_game_tab(
                             }
                             state.history = history;
                         });
-                    }).detach();
-                })
+                    })
+                    .detach();
+                }),
         )
 }

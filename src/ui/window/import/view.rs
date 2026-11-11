@@ -14,8 +14,8 @@ use crate::ui::components::minecraft_text::MinecraftFormattedText;
 use crate::ui::components::scroll::ScrollableElement;
 use crate::ui::components::toast;
 use crate::ui::hooks::use_launcher::{
-    LaunchVersionDescriptor, LauncherSnapshot, launcher_snapshot_changed,
-    read_launcher_snapshot, start_launcher, sync_launcher_state,
+    LaunchVersionDescriptor, LauncherSnapshot, launcher_snapshot_changed, read_launcher_snapshot,
+    start_launcher, sync_launcher_state,
 };
 use crate::ui::hooks::use_local_versions::{
     ensure_local_versions_loaded, read_local_versions_snapshot,
@@ -141,7 +141,7 @@ impl ImportWindowView {
         cx: &mut Context<Self>,
     ) -> Self {
         let file_paths = vec![import_context.file_path.clone()];
-        Self::new_with_paths(import_context, file_paths, target, presentation, window, cx)
+        Self::build(import_context, file_paths, target, presentation, window, cx)
     }
 
     pub fn new_batch(
@@ -158,7 +158,7 @@ impl ImportWindowView {
             .first()
             .cloned()
             .unwrap_or_else(|| PathBuf::from("unknown-import"));
-        Self::new_with_paths(
+        Self::build(
             ImportLaunchContext { file_path: primary },
             file_paths,
             target,
@@ -168,7 +168,7 @@ impl ImportWindowView {
         )
     }
 
-    fn new_with_paths(
+    fn build(
         import_context: ImportLaunchContext,
         file_paths: Vec<PathBuf>,
         target: ImportWindowTarget,
@@ -242,13 +242,13 @@ impl ImportWindowView {
                 },
             ));
             let toast_window_id = gpui::WindowId::from(owner_window_id);
-            let mut toast_revision = toast::window_content_revision(
-                toast_window_id,
-                cx.global::<toast::ToastState>(),
-            );
+            let mut toast_revision =
+                toast::window_content_revision(toast_window_id, cx.global::<toast::ToastState>());
             subscriptions.push(cx.observe_global::<toast::ToastState>(move |_, cx| {
-                let next_revision =
-                    toast::window_content_revision(toast_window_id, cx.global::<toast::ToastState>());
+                let next_revision = toast::window_content_revision(
+                    toast_window_id,
+                    cx.global::<toast::ToastState>(),
+                );
                 if toast_revision != next_revision {
                     toast_revision = next_revision;
                     cx.notify();
@@ -374,7 +374,7 @@ impl ImportWindowView {
 
         let observed_task_id = task_id.clone();
         let terminal = gpui_tokio::Tokio::spawn_result(cx, async move {
-            crate::tasks::task_manager::wait_for_task_terminal(&observed_task_id)
+            crate::tasks::task_manager::wait_for_task(&observed_task_id)
                 .await
                 .map_err(anyhow::Error::msg)
         });
@@ -508,7 +508,10 @@ impl ImportWindowView {
     }
 
     fn preview(&self) -> Option<&PackagePreview> {
-        self.batch_previews.get(self.preview_index?)?.preview.as_ref()
+        self.batch_previews
+            .get(self.preview_index?)?
+            .preview
+            .as_ref()
     }
 
     fn has_invalid_or_failed_preview(&self) -> bool {
@@ -683,7 +686,7 @@ impl ImportWindowView {
                 "Import window registered BMCBL task: files={}, task_id={}",
                 file_count, task_id
             );
-            let terminal = crate::tasks::task_manager::wait_for_task_terminal(&task_id).await;
+            let terminal = crate::tasks::task_manager::wait_for_task(&task_id).await;
 
             handle.update(cx, |this, cx| {
                 if let Ok(snapshot) = &terminal {
@@ -1086,9 +1089,7 @@ impl Render for ImportWindowView {
                                                 .flex()
                                                 .flex_col()
                                                 .gap(px(14.))
-                                                .child(render_preview_card(
-                                                    self, &colors, cx,
-                                                ))
+                                                .child(render_preview_card(self, &colors, cx))
                                                 .child(render_versions_card(
                                                     self,
                                                     &colors,
@@ -1135,13 +1136,11 @@ impl Render for ImportWindowView {
         }
 
         if self.presentation == ImportPresentation::Window && launcher_snapshot.show_modal {
-            root = root.child(
-                crate::ui::overlays::launcher::render_launcher_overlay(
-                    &launcher_snapshot,
-                    window,
-                    cx,
-                ),
-            );
+            root = root.child(crate::ui::overlays::launcher::render_launcher_overlay(
+                &launcher_snapshot,
+                window,
+                cx,
+            ));
         }
 
         #[cfg(target_os = "windows")]
@@ -1524,11 +1523,7 @@ fn image_format_for_preview_icon(format: PreviewImageFormat) -> ImageFormat {
     }
 }
 
-fn render_preview_card(
-    this: &ImportWindowView,
-    colors: &ThemeColors,
-    cx: &App,
-) -> AnyElement {
+fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) -> AnyElement {
     let _i18n = cx.global::<I18n>();
     if this.is_inspecting {
         return section_shell(colors)
@@ -3576,8 +3571,8 @@ mod batch_path_tests {
 #[cfg(test)]
 mod responsive_breakpoint_tests {
     use super::{
-        IMPORT_WINDOW_COMPACT_WIDTH_PX, IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX,
-        responsive_at_least, responsive_at_most,
+        IMPORT_WINDOW_COMPACT_WIDTH_PX, IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX, responsive_at_least,
+        responsive_at_most,
     };
 
     #[test]
@@ -3591,7 +3586,11 @@ mod responsive_breakpoint_tests {
         assert!(!columns);
         columns = responsive_at_least(906.0, IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX, columns);
         assert!(!columns);
-        assert!(responsive_at_least(908.0, IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX, columns));
+        assert!(responsive_at_least(
+            908.0,
+            IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX,
+            columns
+        ));
     }
 
     #[test]
@@ -3603,8 +3602,20 @@ mod responsive_breakpoint_tests {
         }
         compact = responsive_at_most(412.0, IMPORT_WINDOW_COMPACT_WIDTH_PX, compact);
         assert!(compact);
-        assert!(responsive_at_most(427.0, IMPORT_WINDOW_COMPACT_WIDTH_PX, compact));
-        assert!(!responsive_at_most(429.0, IMPORT_WINDOW_COMPACT_WIDTH_PX, compact));
-        assert!(responsive_at_most(f32::NAN, IMPORT_WINDOW_COMPACT_WIDTH_PX, true));
+        assert!(responsive_at_most(
+            427.0,
+            IMPORT_WINDOW_COMPACT_WIDTH_PX,
+            compact
+        ));
+        assert!(!responsive_at_most(
+            429.0,
+            IMPORT_WINDOW_COMPACT_WIDTH_PX,
+            compact
+        ));
+        assert!(responsive_at_most(
+            f32::NAN,
+            IMPORT_WINDOW_COMPACT_WIDTH_PX,
+            true
+        ));
     }
 }

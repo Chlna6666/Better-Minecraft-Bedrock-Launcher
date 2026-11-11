@@ -1,7 +1,7 @@
 use crate::downloads::manager::{DownloadOptions, DownloaderManager};
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{
-    append_task_log, create_task_with_details, finish_task, set_task_message, update_progress,
+    ProgressUpdate, TaskOptions, append_task_log, finish_task, set_task_message, update_progress,
 };
 use crate::utils::file_ops;
 use std::env;
@@ -386,14 +386,11 @@ pub(crate) fn start_proton_gdk_install_latest(source: ProtonGdkSource) -> String
         ProtonGdkSource::RoundMcDev => ROUNDMCDEV_RELEASE_TAG,
         ProtonGdkSource::WeatherOs | ProtonGdkSource::LukasPah => "latest",
     };
-    let task_id = create_task_with_details(
-        None,
-        "安装 Proton-GDK",
-        Some(format!("{} · {release_label}", source.repository())),
-        "resolving_proton_gdk",
-        None,
-        false,
-    );
+    let task_id = create_task(
+        TaskOptions::new("安装 Proton-GDK", "resolving_proton_gdk")
+            .detail(format!("{} · {release_label}", source.repository())),
+    )
+    .expect("task id must be unique");
     if source == ProtonGdkSource::RoundMcDev {
         append_task_log(
             &task_id,
@@ -521,7 +518,10 @@ async fn install_latest_proton_gdk(
     tokio::fs::create_dir_all(&staging_path)
         .await
         .map_err(|error| format!("创建 Proton-GDK 临时安装目录失败：{error}"))?;
-    update_progress(task_id, 0, None, Some("extracting_proton_gdk"));
+    update_progress(
+        task_id,
+        ProgressUpdate::advance(0).stage("extracting_proton_gdk"),
+    );
     set_task_message(task_id, Some("正在解压 Proton-GDK".to_string()));
     append_task_log(
         task_id,
@@ -649,7 +649,10 @@ async fn install_roundmcdev_bundle(
         .await
         .map_err(|error| format!("创建 RoundMCDev 临时安装目录失败：{error}"))?;
 
-    update_progress(task_id, 0, None, Some("extracting_proton_gdk"));
+    update_progress(
+        task_id,
+        ProgressUpdate::advance(0).stage("extracting_proton_gdk"),
+    );
     for (asset, archive_path) in archive_paths {
         let extraction_directory = if asset.extraction_directory == "." {
             staging_path.clone()
@@ -889,9 +892,9 @@ async fn download_proton_gdk_asset(
     {
         update_progress(
             task_id,
-            expected_size,
-            Some(expected_size),
-            Some("downloading_proton_gdk"),
+            ProgressUpdate::advance(expected_size)
+                .total(expected_size)
+                .stage("downloading_proton_gdk"),
         );
         set_task_message(task_id, Some(format!("使用缓存 {}", asset_name)));
         append_task_log(task_id, format!("使用缓存：{}", archive_path.display()));
@@ -901,9 +904,9 @@ async fn download_proton_gdk_asset(
 
     update_progress(
         task_id,
-        0,
-        (expected_size > 0).then_some(expected_size),
-        Some("downloading_proton_gdk"),
+        ProgressUpdate::advance(0)
+            .total((expected_size > 0).then_some(expected_size))
+            .stage("downloading_proton_gdk"),
     );
     set_task_message(task_id, Some(format!("正在下载 {asset_name}")));
     append_task_log(task_id, format!("下载：{asset_url}"));
@@ -1375,14 +1378,11 @@ fn infer_proton_gdk_source_from_directory(directory_name: &str) -> Option<Proton
 
 pub(crate) fn start_linux_runtime_install(plan: LinuxInstallPlan) -> String {
     let command_preview = plan.command_preview();
-    let task_id = create_task_with_details(
-        None,
-        "安装 Linux 兼容环境",
-        Some(format!("{} · {}", plan.distribution_name, command_preview)),
-        "awaiting_linux_authorization",
-        None,
-        false,
-    );
+    let task_id = create_task(
+        TaskOptions::new("安装 Linux 兼容环境", "awaiting_linux_authorization")
+            .detail(format!("{} · {}", plan.distribution_name, command_preview,)),
+    )
+    .expect("task id must be unique");
     append_task_log(&task_id, format!("将执行：{command_preview}"));
     append_task_log(
         &task_id,
@@ -1442,7 +1442,10 @@ async fn run_install_command(plan: &LinuxInstallPlan, task_id: &str) -> Result<(
     let mut child = command
         .spawn()
         .map_err(|error| format!("无法启动授权安装程序：{error}"))?;
-    update_progress(task_id, 0, None, Some("installing_linux_packages"));
+    update_progress(
+        task_id,
+        ProgressUpdate::advance(0).stage("installing_linux_packages"),
+    );
     set_task_message(task_id, Some("系统包管理器正在安装依赖".to_string()));
     let stdout_task = child
         .stdout
@@ -1492,7 +1495,7 @@ where
                 Ok(Some(line)) => {
                     let stream = if is_error { "stderr" } else { "stdout" };
                     append_task_log(&task_id, format!("{stream}: {line}"));
-                    update_progress(&task_id, 0, None, None);
+                    update_progress(&task_id, ProgressUpdate::advance(0));
                 }
                 Ok(None) => break,
                 Err(error) => {

@@ -12,8 +12,9 @@ use super::tile_render::{
     RenderTilePlan, TileBatchRequest, open_map_render_session, render_tile_batch_stream,
 };
 use super::tile_state::ReadyTile;
-use super::viewport::{coordinate_text, viewport_screen_for_block};
+use super::viewport::{coordinate_text, viewport_screen_position};
 use crate::core::version::launch_versions::LaunchVersionEntry;
+use crate::tasks::task_manager::ProgressUpdate;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
 use std::io::Cursor;
@@ -894,13 +895,13 @@ impl MapViewerWindowView {
 
     fn selection_screen_bounds(&self, selection: ChunkSelection) -> Option<SelectionScreenBounds> {
         let bounds = selection.bounds();
-        let (left, top) = viewport_screen_for_block(
+        let (left, top) = viewport_screen_position(
             self.viewport,
             self.active_layout,
             bounds.min_chunk_x.saturating_mul(16),
             bounds.min_chunk_z.saturating_mul(16),
         )?;
-        let (right, bottom) = viewport_screen_for_block(
+        let (right, bottom) = viewport_screen_position(
             self.viewport,
             self.active_layout,
             bounds.max_chunk_x.saturating_add(1).saturating_mul(16),
@@ -1993,7 +1994,7 @@ impl MapViewerWindowView {
             .entity_points
             .iter()
             .filter_map(|entity| {
-                let (screen_x, screen_y) = viewport_screen_for_block(
+                let (screen_x, screen_y) = viewport_screen_position(
                     self.viewport,
                     self.active_layout,
                     entity.block_x.floor() as i32,
@@ -2220,20 +2221,18 @@ impl MapViewerWindowView {
         let path = PathBuf::from(path);
         let chunk_count = selection.bounds().chunk_count().max(1);
         let task_total = Some(task_progress_units(chunk_count.saturating_add(2)));
-        let task_id = task_manager::create_task_with_details(
-            None,
-            "导出 OBJ",
-            Some(format!(
-                "{} 个 chunk · {}",
-                chunk_count,
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("selection.obj")
-            )),
-            "map_export",
-            task_total,
-            false,
-        );
+        let task_id = task_manager::create_task(
+            task_manager::TaskOptions::new("导出 OBJ", "map_export")
+                .detail(format!(
+                    "{} 个 chunk · {}",
+                    chunk_count,
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("selection.obj")
+                ))
+                .total(task_total),
+        )
+        .expect("task id must be unique");
         let cancel = CancelFlag::new();
         task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -2303,11 +2302,13 @@ impl MapViewerWindowView {
                     .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
 
                     let completed_chunks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                    let mesh = load_preview_3d_mesh_blocking_incremental_with_block_models(
-                        &world_path,
-                        bounds,
-                        Some(block_models),
-                        Some(cancel_for_task.clone()),
+                    let mesh = load_preview_3d_mesh(
+                        Preview3dLoadOptions {
+                            world_path: &world_path,
+                            bounds,
+                            block_models: Some(block_models),
+                            cancel: Some(cancel_for_task.clone()),
+                        },
                         {
                             let progress_sender = progress_sender.clone();
                             let completed_chunks = completed_chunks.clone();
@@ -2318,9 +2319,11 @@ impl MapViewerWindowView {
                                     .swap(completed, std::sync::atomic::Ordering::Relaxed);
                                 task_manager::update_progress(
                                     &task_id_for_progress,
-                                    task_progress_units(completed.saturating_sub(previous)),
-                                    task_total,
-                                    Some("map_export"),
+                                    ProgressUpdate::advance(task_progress_units(
+                                        completed.saturating_sub(previous),
+                                    ))
+                                    .total(task_total)
+                                    .stage("map_export"),
                                 );
                                 if progress_sender
                                     .unbounded_send(ObjExportEvent::Progress(
@@ -2343,9 +2346,11 @@ impl MapViewerWindowView {
                         completed_chunks.swap(chunk_count, std::sync::atomic::Ordering::Relaxed);
                     task_manager::update_progress(
                         &task_id_for_task,
-                        task_progress_units(chunk_count.saturating_sub(previous)),
-                        task_total,
-                        Some("map_export"),
+                        ProgressUpdate::advance(task_progress_units(
+                            chunk_count.saturating_sub(previous),
+                        ))
+                        .total(task_total)
+                        .stage("map_export"),
                     );
                     if progress_sender
                         .unbounded_send(ObjExportEvent::Progress(ChunkTransferProgress {
@@ -2361,11 +2366,13 @@ impl MapViewerWindowView {
                         .map_err(|error| error.to_string())?;
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     let texture_directory_name = "textures";
-                    let export = export_preview_3d_obj_with_materials_with_progress(
-                        &mesh,
-                        &export_target.material_library_name,
-                        texture_directory_name,
-                        &resolved_package_paths,
+                    let export = export_preview_3d_obj(
+                        Preview3dObjOptions {
+                            mesh: &mesh,
+                            material_library_name: &export_target.material_library_name,
+                            texture_directory_name,
+                            game_package_paths: &resolved_package_paths,
+                        },
                         |completed, total| {
                             let scaled = usize::from(total == 0 || completed >= total);
                             if progress_sender
@@ -2382,9 +2389,9 @@ impl MapViewerWindowView {
                     );
                     task_manager::update_progress(
                         &task_id_for_task,
-                        1,
-                        task_total,
-                        Some("map_export"),
+                        ProgressUpdate::advance(1)
+                            .total(task_total)
+                            .stage("map_export"),
                     );
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     if progress_sender
@@ -2406,9 +2413,9 @@ impl MapViewerWindowView {
                     .map_err(|error| error.to_string())?;
                     task_manager::update_progress(
                         &task_id_for_task,
-                        1,
-                        task_total,
-                        Some("map_export"),
+                        ProgressUpdate::advance(1)
+                            .total(task_total)
+                            .stage("map_export"),
                     );
                     Ok::<_, String>(ObjExportComplete {
                         export_dir: export_target.export_root,
@@ -2534,20 +2541,18 @@ impl MapViewerWindowView {
         let path = PathBuf::from(path);
         let source_anchor = chunks[0];
         let chunk_count = chunks.len();
-        let task_id = task_manager::create_task_with_details(
-            None,
-            "导出区域包",
-            Some(format!(
-                "{} 个 chunk · {}",
-                chunk_count,
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("selection.bmcblregion")
-            )),
-            "map_export",
-            Some(task_progress_units(chunk_count.max(1))),
-            false,
-        );
+        let task_id = task_manager::create_task(
+            task_manager::TaskOptions::new("导出区域包", "map_export")
+                .detail(format!(
+                    "{} 个 chunk · {}",
+                    chunk_count,
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("selection.bmcblregion")
+                ))
+                .total(task_progress_units(chunk_count.max(1))),
+        )
+        .expect("task id must be unique");
         let cancel = CancelFlag::new();
         task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -2758,19 +2763,17 @@ impl MapViewerWindowView {
         target: ChunkPos,
         cx: &mut Context<Self>,
     ) {
-        let task_id = task_manager::create_task_with_details(
-            None,
-            "导入区域包",
-            Some(
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("region.bmcblregion")
-                    .to_string(),
-            ),
-            "map_import",
-            Some(1),
-            false,
-        );
+        let task_id = task_manager::create_task(
+            task_manager::TaskOptions::new("导入区域包", "map_import")
+                .detail(
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("region.bmcblregion")
+                        .to_string(),
+                )
+                .total(1),
+        )
+        .expect("task id must be unique");
         let cancel = CancelFlag::new();
         task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -2812,7 +2815,10 @@ impl MapViewerWindowView {
                 .await;
             let status = map_operation_status_for_result(&result, &cancel, &task_id);
             if status == "completed" {
-                task_manager::update_progress(&task_id, 1, Some(1), Some("map_import"));
+                task_manager::update_progress(
+                    &task_id,
+                    ProgressUpdate::advance(1).total(1).stage("map_import"),
+                );
             }
             let message = match (&result, status) {
                 (Ok((path, copied_chunk, _, _)), "completed") => Some(format!(
@@ -2914,19 +2920,17 @@ impl MapViewerWindowView {
         open_3d_after_import: bool,
         cx: &mut Context<Self>,
     ) {
-        let task_id = task_manager::create_task_with_details(
-            None,
-            "导入结构",
-            Some(
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("structure.mcstructure")
-                    .to_string(),
-            ),
-            "map_import",
-            Some(1),
-            false,
-        );
+        let task_id = task_manager::create_task(
+            task_manager::TaskOptions::new("导入结构", "map_import")
+                .detail(
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("structure.mcstructure")
+                        .to_string(),
+                )
+                .total(1),
+        )
+        .expect("task id must be unique");
         let cancel = CancelFlag::new();
         task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -2962,7 +2966,10 @@ impl MapViewerWindowView {
                 .await;
             let status = map_operation_status_for_result(&result, &cancel, &task_id);
             if status == "completed" {
-                task_manager::update_progress(&task_id, 1, Some(1), Some("map_import"));
+                task_manager::update_progress(
+                    &task_id,
+                    ProgressUpdate::advance(1).total(1).stage("map_import"),
+                );
             }
             let message = match (&result, status) {
                 (Ok((path, import)), "completed") => Some(format!(
@@ -3073,20 +3080,18 @@ impl MapViewerWindowView {
         let path = PathBuf::from(path);
         let bounds = selection.bounds();
         let chunk_count = selection.chunks().len();
-        let task_id = task_manager::create_task_with_details(
-            None,
-            "导出结构",
-            Some(format!(
-                "{} 个 chunk · {}",
-                chunk_count,
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("selection.mcstructure")
-            )),
-            "map_export",
-            Some(task_progress_units(chunk_count.max(1))),
-            false,
-        );
+        let task_id = task_manager::create_task(
+            task_manager::TaskOptions::new("导出结构", "map_export")
+                .detail(format!(
+                    "{} 个 chunk · {}",
+                    chunk_count,
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("selection.mcstructure")
+                ))
+                .total(task_progress_units(chunk_count.max(1))),
+        )
+        .expect("task id must be unique");
         let cancel = CancelFlag::new();
         task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -3254,21 +3259,19 @@ impl MapViewerWindowView {
         let chunk_count = cached_export
             .as_ref()
             .map_or_else(|| chunks.len().max(1), |export| export.chunk_count);
-        let task_id = task_manager::create_task_with_details(
-            None,
-            "导出区块图片",
-            Some(format!(
-                "{} 个 chunk · {}",
-                chunk_count,
-                Path::new(&path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("chunk-image.png")
-            )),
-            "map_export",
-            Some(task_progress_units(chunk_count.max(1))),
-            false,
-        );
+        let task_id = task_manager::create_task(
+            task_manager::TaskOptions::new("导出区块图片", "map_export")
+                .detail(format!(
+                    "{} 个 chunk · {}",
+                    chunk_count,
+                    Path::new(&path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("chunk-image.png")
+                ))
+                .total(task_progress_units(chunk_count.max(1))),
+        )
+        .expect("task id must be unique");
         let cancel = CancelFlag::new();
         task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -3356,9 +3359,9 @@ impl MapViewerWindowView {
                         .map(|()| {
                             task_manager::update_progress(
                                 &task_id_for_task,
-                                task_progress_units(chunk_count),
-                                Some(task_progress_units(chunk_count.max(1))),
-                                Some("map_export"),
+                                ProgressUpdate::advance(task_progress_units(chunk_count))
+                                    .total(task_progress_units(chunk_count.max(1)))
+                                    .stage("map_export"),
                             );
                             path
                         })
@@ -3478,14 +3481,12 @@ impl MapViewerWindowView {
         }
         let source_anchor = chunks[0];
         let chunk_count = chunks.len();
-        let task_id = task_manager::create_task_with_details(
-            None,
-            "复制区块",
-            Some(format!("{chunk_count} 个 chunk")),
-            "map_copy",
-            Some(task_progress_units(chunk_count.max(1))),
-            false,
-        );
+        let task_id = task_manager::create_task(
+            task_manager::TaskOptions::new("复制区块", "map_copy")
+                .detail(format!("{chunk_count} 个 chunk"))
+                .total(task_progress_units(chunk_count.max(1))),
+        )
+        .expect("task id must be unique");
         let cancel = CancelFlag::new();
         task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -3596,9 +3597,9 @@ impl MapViewerWindowView {
                         };
                     task_manager::update_progress(
                         &task_id_for_task,
-                        task_progress_units(copied_chunk.chunk_count()),
-                        Some(task_progress_units(copied_chunk.chunk_count().max(1))),
-                        Some("map_copy"),
+                        ProgressUpdate::advance(task_progress_units(copied_chunk.chunk_count()))
+                            .total(task_progress_units(copied_chunk.chunk_count().max(1)))
+                            .stage("map_copy"),
                     );
                     Ok(CopyChunkComplete {
                         copied_chunk,
@@ -3816,7 +3817,7 @@ impl MapViewerWindowView {
         self.overlay_options.villages = !self.overlay_options.villages;
         if self.overlay_options.villages {
             self.professional.overlay_bounds = None;
-            self.refresh_village_index_if_needed(cx);
+            self.refresh_village_index(cx);
         }
         self.refresh_professional_overlays(cx);
         cx.notify();

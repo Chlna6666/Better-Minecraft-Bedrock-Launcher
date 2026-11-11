@@ -712,7 +712,9 @@ impl MainWindowView {
                 .pending_report
                 .as_ref()
                 .map(|report| report.id.clone()),
-            diagnostics_state.active_operation_report_id().map(str::to_owned),
+            diagnostics_state
+                .active_operation_report_id()
+                .map(str::to_owned),
             diagnostics_state.submitting_sentry,
             diagnostics_state.auto_report_attempted,
         );

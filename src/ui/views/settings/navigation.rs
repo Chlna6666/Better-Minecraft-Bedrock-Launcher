@@ -97,7 +97,7 @@ pub(super) fn render_tabs(
                     s.tab = tab;
                 });
                 if tab == SettingsTab::Launcher {
-                    super::tabs::refresh_gpu_adapters_if_needed(cx);
+                    super::tabs::refresh_gpu_adapters(cx);
                     super::launcher::logs::refresh_log_stats(cx);
                 }
             })

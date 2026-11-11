@@ -17,9 +17,8 @@ use super::selection::{
 };
 use super::tile_state::{MapRenderRange, PaintTile};
 use super::viewport::{
-    TileBounds, region_render_range_for_viewport, ruler_blocks, screen_x_for_block,
-    screen_y_for_block, tile_bounds_count, tile_coords_for_paint_order, tile_paint_rect,
-    tile_paint_sort_key, viewport_screen_for_block,
+    TileBounds, block_screen_x, block_screen_y, paint_order_tiles, ruler_blocks, tile_bounds_count,
+    tile_paint_rect, tile_paint_sort_key, tile_render_range, viewport_screen_position,
 };
 use super::world3d::camera_overlay::{CameraOverlayContext, MapCameraOverlayView};
 use super::world3d::types::{CameraOverlayMode, World3dCameraSnapshot};
@@ -224,7 +223,7 @@ fn paint_unloaded_tile_placeholders(
         a: 0.10,
         ..colors.surface
     };
-    for coord in tile_coords_for_paint_order(tile_bounds) {
+    for coord in paint_order_tiles(tile_bounds) {
         if paint_tiles
             .binary_search_by_key(&tile_paint_sort_key(coord), |tile| {
                 tile_paint_sort_key(tile.coord)
@@ -991,13 +990,13 @@ pub(super) fn selection_cursor_at(
 
 fn selection_screen_bounds(snapshot: SelectionHitSnapshot) -> Option<SelectionScreenBounds> {
     let bounds = snapshot.selection.bounds();
-    let (left, top) = viewport_screen_for_block(
+    let (left, top) = viewport_screen_position(
         snapshot.viewport,
         snapshot.layout,
         bounds.min_chunk_x.saturating_mul(16),
         bounds.min_chunk_z.saturating_mul(16),
     )?;
-    let (right, bottom) = viewport_screen_for_block(
+    let (right, bottom) = viewport_screen_position(
         snapshot.viewport,
         snapshot.layout,
         bounds.max_chunk_x.saturating_add(1).saturating_mul(16),
@@ -1290,25 +1289,25 @@ fn paste_preview_screen_rect(
         point(px(0.0), px(0.0)),
         size(px(snapshot.viewport.width), px(snapshot.viewport.height)),
     );
-    let left = screen_x_for_block(
+    let left = block_screen_x(
         canvas_bounds,
         snapshot.viewport,
         snapshot.layout,
         min_x.saturating_mul(16),
     );
-    let top = screen_y_for_block(
+    let top = block_screen_y(
         canvas_bounds,
         snapshot.viewport,
         snapshot.layout,
         min_z.saturating_mul(16),
     );
-    let right = screen_x_for_block(
+    let right = block_screen_x(
         canvas_bounds,
         snapshot.viewport,
         snapshot.layout,
         max_x.saturating_add(1).saturating_mul(16),
     );
-    let bottom = screen_y_for_block(
+    let bottom = block_screen_y(
         canvas_bounds,
         snapshot.viewport,
         snapshot.layout,
@@ -1340,7 +1339,7 @@ fn render_tile_layer(snapshot: &TileLayerSnapshot) -> Div {
         overlays.dense_grid = false;
         overlays.ruler = false;
     }
-    let render_range = region_render_range_for_viewport(viewport, layout);
+    let render_range = tile_render_range(viewport, layout);
 
     div()
         .absolute()
@@ -1583,15 +1582,15 @@ fn draw_history_visualization_overlay(
         .filter(|item| item.filtered_total(filter) > 0)
         .take(4096)
     {
-        let left = screen_x_for_block(bounds, viewport, layout, item.pos.x.saturating_mul(16));
-        let top = screen_y_for_block(bounds, viewport, layout, item.pos.z.saturating_mul(16));
-        let right = screen_x_for_block(
+        let left = block_screen_x(bounds, viewport, layout, item.pos.x.saturating_mul(16));
+        let top = block_screen_y(bounds, viewport, layout, item.pos.z.saturating_mul(16));
+        let right = block_screen_x(
             bounds,
             viewport,
             layout,
             item.pos.x.saturating_add(1).saturating_mul(16),
         );
-        let bottom = screen_y_for_block(
+        let bottom = block_screen_y(
             bounds,
             viewport,
             layout,
@@ -1697,15 +1696,15 @@ fn draw_history_operation_envelope(
         return;
     }
 
-    let left = screen_x_for_block(bounds, viewport, layout, min_x.saturating_mul(16));
-    let top = screen_y_for_block(bounds, viewport, layout, min_z.saturating_mul(16));
-    let right = screen_x_for_block(
+    let left = block_screen_x(bounds, viewport, layout, min_x.saturating_mul(16));
+    let top = block_screen_y(bounds, viewport, layout, min_z.saturating_mul(16));
+    let right = block_screen_x(
         bounds,
         viewport,
         layout,
         max_x.saturating_add(1).saturating_mul(16),
     );
-    let bottom = screen_y_for_block(
+    let bottom = block_screen_y(
         bounds,
         viewport,
         layout,
@@ -1925,7 +1924,7 @@ fn render_markers(snapshot: &MarkerLayerSnapshot, cx: &mut Context<MapMarkerLaye
             continue;
         }
         let Some((screen_x, screen_y)) =
-            viewport_screen_for_block(snapshot.viewport, snapshot.layout, marker.x, marker.z)
+            viewport_screen_position(snapshot.viewport, snapshot.layout, marker.x, marker.z)
         else {
             continue;
         };
@@ -2086,8 +2085,7 @@ pub(super) fn build_tile_paint_snapshot(
     paint_radius: i32,
     generation: u64,
 ) -> TilePaintSnapshot {
-    let paint_bounds =
-        super::viewport::paint_tile_bounds_for_viewport(viewport, layout, paint_radius);
+    let paint_bounds = super::viewport::paint_tile_bounds(viewport, layout, paint_radius);
     let paint_capacity = paint_bounds
         .map(super::viewport::tile_bounds_count)
         .unwrap_or(0)
@@ -2164,8 +2162,7 @@ pub(super) fn patch_tile_paint_snapshot(
     changed_tiles: &[(i32, i32)],
     generation: u64,
 ) -> TilePaintSnapshotPatch {
-    let paint_bounds =
-        super::viewport::paint_tile_bounds_for_viewport(viewport, layout, paint_radius);
+    let paint_bounds = super::viewport::paint_tile_bounds(viewport, layout, paint_radius);
     if current.paint_bounds != paint_bounds {
         return TilePaintSnapshotPatch::Rebuild;
     }

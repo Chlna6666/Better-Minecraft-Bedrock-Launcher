@@ -30,6 +30,7 @@ use tinywasm::{
 use tracing::{debug, error, info, warn};
 
 use crate::plugins::services::{PluginRpcCallStack, PluginServiceRegistry};
+use crate::tasks::task_manager::ProgressUpdate;
 
 pub const INIT_TIMEOUT: Duration = Duration::from_secs(1);
 pub const RENDER_WARN_THRESHOLD: Duration = Duration::from_millis(16);
@@ -3344,14 +3345,16 @@ fn handle_app_request(
             if code == abi::AppOp::CreateTask.code() =>
         {
             state.require_capability(PluginCapability::TaskProgress)?;
-            let task_id = crate::tasks::task_manager::create_task_with_details(
-                request.task_id,
-                request.title,
-                request.detail,
-                &request.stage,
-                request.total,
-                request.supports_pause,
-            );
+            let task_id = crate::tasks::task_manager::create_task(
+                crate::tasks::task_manager::TaskOptions::new(request.title, &request.stage)
+                    .id(request.task_id)
+                    .detail(request.detail)
+                    .total(request.total),
+            )
+            .map_err(|error| abi::AppError {
+                code: "task-create-failed".to_string(),
+                message: error,
+            })?;
             Ok(abi::AppResponse::TaskId(task_id))
         }
         (code, abi::AppRequest::UpdateTask { request })
@@ -3360,9 +3363,9 @@ fn handle_app_request(
             state.require_capability(PluginCapability::TaskProgress)?;
             crate::tasks::task_manager::update_progress(
                 &request.task_id,
-                request.done_delta,
-                request.total,
-                request.stage.as_deref(),
+                ProgressUpdate::advance(request.done_delta)
+                    .total(request.total)
+                    .stage(request.stage.as_deref()),
             );
             if request.message.is_some() {
                 crate::tasks::task_manager::set_task_message(&request.task_id, request.message);
@@ -5534,14 +5537,11 @@ pub fn start_uninstall_plugin_task(cx: &mut App, plugin_id: String) -> Result<St
     };
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
 
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        "卸载 BMCBL 插件",
-        Some(plugin_id.clone()),
-        "queued",
-        None,
-        false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new("卸载 BMCBL 插件", "queued")
+            .detail(plugin_id.clone()),
+    )
+    .map_err(anyhow::Error::msg)?;
     let worker_task_id = task_id.clone();
     let plugin_id_for_worker = plugin_id.clone();
     let workflow = match crate::tasks::runtime::spawn_io(async move {
@@ -5645,14 +5645,10 @@ pub fn start_import_plugin_task(cx: &mut App, source_path: PathBuf) -> Result<St
     };
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
     let detail = file_name.to_string_lossy().into_owned();
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        "导入 BMCBL 插件",
-        Some(detail),
-        "queued",
-        None,
-        false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new("导入 BMCBL 插件", "queued").detail(detail),
+    )
+    .map_err(anyhow::Error::msg)?;
     let worker_task_id = task_id.clone();
     let workflow = match crate::tasks::runtime::spawn_io(async move {
         crate::tasks::task_manager::reset_progress(

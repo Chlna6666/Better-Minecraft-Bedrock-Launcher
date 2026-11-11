@@ -11,6 +11,7 @@ use bedrock_world::{
 use indexmap::IndexMap;
 
 use super::map_image::{MapPreviewResult, get_map_preview};
+use crate::tasks::task_manager::ProgressUpdate;
 use crate::tasks::{runtime, task_manager};
 
 /// Exports exact preview tiles and labeled filled-map references as a BMCBL map bundle.
@@ -29,16 +30,15 @@ pub fn start_map_bundle_export(
 ) -> Result<String, String> {
     let preview = get_map_preview(preview_task_id)
         .ok_or_else(|| "地图预览已释放或过期，请重新转换".to_owned())?;
-    let task_id = task_manager::create_task_with_details(
-        None,
-        "导出可移植地图包",
-        output
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned()),
-        "生成地图记录",
-        Some(preview.tiles.len() as u64),
-        false,
-    );
+    let task_id = task_manager::create_task(
+        task_manager::TaskOptions::new("导出可移植地图包", "生成地图记录")
+            .detail(
+                output
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned()),
+            )
+            .total(preview.tiles.len() as u64),
+    )?;
     task_manager::register_task_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
     task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -79,7 +79,12 @@ async fn export(
     let bytes = runtime::run_cpu(move || {
         let total = preview.tiles.len() as u64;
         let bundle = build_bundle(&preview, &title, &worker_cancel, |_done| {
-            task_manager::update_progress(&worker_id, 1, Some(total), Some("生成地图记录"));
+            task_manager::update_progress(
+                &worker_id,
+                ProgressUpdate::advance(1)
+                    .total(total)
+                    .stage("生成地图记录"),
+            );
         })?;
         bundle.to_nbt_bytes().map_err(|error| error.to_string())
     })
@@ -92,7 +97,10 @@ async fn export(
     runtime::run_io_blocking(move || std::fs::write(&written, bytes))
         .await?
         .map_err(|error| error.to_string())?;
-    task_manager::update_progress(task_id, 1, Some(1), Some("写入地图包"));
+    task_manager::update_progress(
+        task_id,
+        ProgressUpdate::advance(1).total(1).stage("写入地图包"),
+    );
     Ok(format!("已导出可移植地图包：{}", output.display()))
 }
 

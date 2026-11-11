@@ -137,7 +137,10 @@ pub async fn load_external_servers(
 }
 
 fn is_bloader_mod_type(kind: &str) -> bool {
-    matches!(kind, "mod-preload" | "mod-native" | "hot-native" | "hot-inject")
+    matches!(
+        kind,
+        "mod-preload" | "mod-native" | "hot-native" | "hot-inject"
+    )
 }
 
 fn load_mods_blocking(version_folder: &str) -> Result<Vec<ManagedModInfo>, String> {
@@ -150,11 +153,12 @@ fn load_mods_blocking(version_folder: &str) -> Result<Vec<ManagedModInfo>, Strin
         if !root.is_dir() {
             continue;
         }
-        let entries = fs::read_dir(&root)
-            .map_err(|error| format!("读取 Mod 目录失败: {error}"))?;
+        let entries = fs::read_dir(&root).map_err(|error| format!("读取 Mod 目录失败: {error}"))?;
         for entry in entries.filter_map(Result::ok) {
             let folder_path = entry.path();
-            if !folder_path.is_dir() { continue }
+            if !folder_path.is_dir() {
+                continue;
+            }
             // A BLoader-specific descriptor is never registered with
             // LeviLamina's scanner. Its files stay in their original folder.
             let candidates = [
@@ -166,12 +170,15 @@ fn load_mods_blocking(version_folder: &str) -> Result<Vec<ManagedModInfo>, Strin
             let mut selected = None;
             for (name, enabled) in candidates {
                 let path = folder_path.join(name);
-                if !path.is_file() { continue }
+                if !path.is_file() {
+                    continue;
+                }
                 let manifest = match fs::read_to_string(&path)
                     .map_err(|error| error.to_string())
-                    .and_then(|content| serde_json::from_str::<ModManifest>(&content)
-                        .map_err(|error| error.to_string()))
-                {
+                    .and_then(|content| {
+                        serde_json::from_str::<ModManifest>(&content)
+                            .map_err(|error| error.to_string())
+                    }) {
                     Ok(manifest) => manifest,
                     Err(error) => {
                         warn!(path = %path.display(), %error, "mod manifest skipped");
@@ -194,14 +201,20 @@ fn load_mods_blocking(version_folder: &str) -> Result<Vec<ManagedModInfo>, Strin
                     continue;
                 }
                 let mod_owner = if bloader {
-                    if owner == "shared" { "bloader-shared" } else { "bloader" }
+                    if owner == "shared" {
+                        "bloader-shared"
+                    } else {
+                        "bloader"
+                    }
                 } else {
                     "levilamina"
                 };
                 selected = Some((enabled, manifest, mod_owner));
                 break;
             }
-            let Some((enabled, manifest, mod_owner)) = selected else { continue };
+            let Some((enabled, manifest, mod_owner)) = selected else {
+                continue;
+            };
             mods.push(ManagedModInfo {
                 folder_name: format!("{mod_owner}:{}", entry.file_name().to_string_lossy()),
                 file_path: folder_path.join(&manifest.entry),
@@ -209,7 +222,9 @@ fn load_mods_blocking(version_folder: &str) -> Result<Vec<ManagedModInfo>, Strin
                 enabled,
                 name: manifest.name,
                 mod_type: manifest.mod_type,
-                version: manifest.version.filter(|version| !version.trim().is_empty()),
+                version: manifest
+                    .version
+                    .filter(|version| !version.trim().is_empty()),
                 inject_delay_ms: manifest.inject_delay_ms.unwrap_or(0),
             });
         }
@@ -244,10 +259,10 @@ fn mod_directory(version_folder: &str, mod_id: &str) -> Result<PathBuf, String> 
 
 fn manifest_paths(version_folder: &str, mod_id: &str) -> Result<(PathBuf, PathBuf), String> {
     let dir = mod_directory(version_folder, mod_id)?;
-    let has_sidecar = dir.join("bloader.json").is_file()
-        || dir.join(".bloader.json").is_file();
-    let base = if (mod_id.starts_with("bloader-shared:")
-        || mod_id.starts_with("bloader:")) && has_sidecar {
+    let has_sidecar = dir.join("bloader.json").is_file() || dir.join(".bloader.json").is_file();
+    let base = if (mod_id.starts_with("bloader-shared:") || mod_id.starts_with("bloader:"))
+        && has_sidecar
+    {
         "bloader.json"
     } else {
         // Older BLoader Mod packages may still have manifest.json before
@@ -260,8 +275,12 @@ fn manifest_paths(version_folder: &str, mod_id: &str) -> Result<(PathBuf, PathBu
 
 fn editable_manifest_path_blocking(version_folder: &str, mod_id: &str) -> Result<PathBuf, String> {
     let (enabled, disabled) = manifest_paths(version_folder, mod_id)?;
-    if enabled.is_file() { return Ok(enabled) }
-    if disabled.is_file() { return Ok(disabled) }
+    if enabled.is_file() {
+        return Ok(enabled);
+    }
+    if disabled.is_file() {
+        return Ok(disabled);
+    }
     Err(format!("未找到对应 Mod 的启用或禁用清单: {mod_id}"))
 }
 
@@ -383,14 +402,9 @@ fn start_mod_mutation_task<F>(
 where
     F: FnOnce(&str) -> Result<String, String> + Send + 'static,
 {
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        title,
-        Some(detail),
-        stage,
-        None,
-        false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new(title, stage).detail(detail),
+    )?;
     crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
 
     let worker_task_id = task_id.clone();

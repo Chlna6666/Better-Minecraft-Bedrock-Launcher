@@ -367,7 +367,7 @@ impl MainWindowView {
 #[cfg(test)]
 mod tests {
     use super::download_snapshot_meaningfully_changed;
-    use crate::tasks::task_manager::{TaskSnapshot, TaskVisibility};
+    use crate::tasks::task_manager::{TaskSnapshot, TaskType, TaskVisibility};
     use std::sync::Arc;
 
     fn snapshot(sequence: u64, done: u64) -> Arc<TaskSnapshot> {
@@ -390,6 +390,8 @@ mod tests {
             last_update_unix: 0,
             sequence,
             visibility: TaskVisibility::Visible,
+            parent_id: None,
+            task_type: TaskType::Operation,
         })
     }
 

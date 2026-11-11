@@ -93,7 +93,7 @@ pub(crate) fn apply_results_query_change_in_state(
 }
 
 pub(crate) fn ensure_results_loaded(force_refresh: bool, cx: &mut App) {
-    ensure_results_loaded_impl(force_refresh, false, None, cx);
+    load_results(force_refresh, false, None, cx);
 }
 
 pub(crate) fn ensure_results_loaded_after_page_transition(
@@ -101,10 +101,10 @@ pub(crate) fn ensure_results_loaded_after_page_transition(
     target_page_index: usize,
     cx: &mut App,
 ) {
-    ensure_results_loaded_impl(force_refresh, true, Some(target_page_index), cx);
+    load_results(force_refresh, true, Some(target_page_index), cx);
 }
 
-fn ensure_results_loaded_impl(
+fn load_results(
     force_refresh: bool,
     state_already_invalidated: bool,
     page_index_override: Option<usize>,

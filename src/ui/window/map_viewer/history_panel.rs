@@ -575,14 +575,12 @@ impl MapViewerWindowView {
             return;
         }
         self.history.applying = true;
-        let task_id = task_manager::create_task_with_details(
-            None,
-            label,
-            Some(self.asset.display_name.to_string()),
-            "历史操作",
-            Some(task_progress_units(1)),
-            false,
-        );
+        let task_id = task_manager::create_task(
+            task_manager::TaskOptions::new(label, "历史操作")
+                .detail(self.asset.display_name.to_string())
+                .total(task_progress_units(1)),
+        )
+        .expect("task id must be unique");
         task_manager::register_task_cooperative_cancel(task_id.clone());
         let cancel = CancelFlag::new();
         task_manager::register_task_cancel_hook(task_id.clone(), {

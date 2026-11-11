@@ -140,7 +140,7 @@ impl MapViewerWindowView {
             self.professional.pending_overlay_refresh = true;
             return;
         }
-        self.refresh_village_index_if_needed(cx);
+        self.refresh_village_index(cx);
         if self.drag.is_some() && !query_scope.indexed_world {
             self.professional.pending_overlay_refresh = true;
             return;
@@ -353,7 +353,7 @@ impl MapViewerWindowView {
         .detach();
     }
 
-    pub(super) fn refresh_village_index_if_needed(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn refresh_village_index(&mut self, cx: &mut Context<Self>) {
         if self.professional.village_index.is_some() || self.professional.village_index_loading {
             return;
         }
@@ -925,7 +925,7 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn visible_slime_bounds(&self) -> Option<SlimeChunkBounds> {
-        let range = region_render_range_for_viewport(self.viewport, self.active_layout)?;
+        let range = tile_render_range(self.viewport, self.active_layout)?;
         Some(SlimeChunkBounds {
             dimension: self.dimension,
             min_chunk_x: range.min_chunk_x,

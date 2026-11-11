@@ -85,8 +85,12 @@ impl ModelPlan {
                 if skip_cell(block.key.y, false) {
                     continue;
                 }
-                let colors = FACE_DEFINITIONS
-                    .map(|face| block.colors.color_for_normal(face.normal).map(f32::to_bits));
+                let colors = FACE_DEFINITIONS.map(|face| {
+                    block
+                        .colors
+                        .color_from_normal(face.normal)
+                        .map(f32::to_bits)
+                });
                 let key = ModelKey::Cube(block.material.clone(), colors, glass);
                 let range = models
                     .entry(key)
@@ -97,8 +101,8 @@ impl ModelPlan {
                                 preview_3d_stream_cube_face(
                                     BlockKey { x: 0, y: 0, z: 0 },
                                     face,
-                                    block.colors.color_for_normal(face.normal),
-                                    preview_3d_material_name_for_face(
+                                    block.colors.color_from_normal(face.normal),
+                                    preview_3d_face_material_name(
                                         block.material.clone(),
                                         face.normal,
                                     ),
@@ -147,7 +151,7 @@ impl ModelPlan {
                         let start = plan.faces.len() as u32;
                         let inferred = query
                             .as_ref()
-                            .and_then(model_shape_for_block_state)
+                            .and_then(resolve_block_state_shape)
                             .map(preview_3d_detail_shape_from_model_shape);
                         let mut prototype = block.clone();
                         prototype.key = BlockKey { x: 0, y: 0, z: 0 };

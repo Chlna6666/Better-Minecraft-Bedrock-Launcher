@@ -39,8 +39,7 @@ pub(crate) use results::{
 /// endpoint change. The next visit to the resource tab reloads from the new host.
 pub(crate) fn on_api_source_changed(cx: &mut App) {
     cx.update_global(|state: &mut DownloadPageState, cx| {
-        state.curseforge_metadata_request_id =
-            state.curseforge_metadata_request_id.wrapping_add(1);
+        state.curseforge_metadata_request_id = state.curseforge_metadata_request_id.wrapping_add(1);
         state.curseforge_loaded = false;
         state.curseforge_loading = false;
         state.curseforge_error = None;
@@ -3517,7 +3516,7 @@ fn render_curseforge_install_modal(
 
             let observed_task_id = task_id.clone();
             let wait_task = gpui_tokio::Tokio::spawn_result(cx, async move {
-                crate::tasks::task_manager::wait_for_task_terminal(&observed_task_id)
+                crate::tasks::task_manager::wait_for_task(&observed_task_id)
                     .await
                     .map_err(anyhow::Error::msg)
             });

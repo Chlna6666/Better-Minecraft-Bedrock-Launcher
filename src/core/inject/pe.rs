@@ -50,10 +50,10 @@ pub fn is_file_patched(exe_path: &Path) -> bool {
     if read_patch_marker(&mut file).ok().flatten().is_some() {
         return true;
     }
-    has_inject_section_name(&mut file).unwrap_or(false)
+    check_inject_section(&mut file).unwrap_or(false)
 }
 
-fn has_inject_section_name(file: &mut File) -> io::Result<bool> {
+fn check_inject_section(file: &mut File) -> io::Result<bool> {
     file.seek(SeekFrom::Start(0))?;
 
     let mut cursor = io::BufReader::new(file);

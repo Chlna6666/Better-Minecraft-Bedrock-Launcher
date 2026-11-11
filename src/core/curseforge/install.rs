@@ -4,7 +4,7 @@ use crate::core::minecraft::assets::{
 };
 use crate::core::minecraft::paths::{BuildType, Edition};
 use crate::tasks::task_manager::{
-    create_task_with_details, finish_task, is_cancelled, register_task_abort_handle, reset_progress,
+    TaskOptions, create_task, finish_task, is_cancelled, register_task_abort_handle, reset_progress,
 };
 
 #[derive(Clone, Debug)]
@@ -32,17 +32,17 @@ pub struct CurseForgeInstallResult {
 }
 
 pub fn start_install(request: CurseForgeInstallRequest) -> Result<String, String> {
-    let task_id = create_task_with_details(
-        None,
-        format!("安装 CurseForge · {}", request.project_name),
-        Some(format!(
+    let task_id = create_task(
+        TaskOptions::new(
+            format!("安装 CurseForge · {}", request.project_name),
+            "ready",
+        )
+        .detail(format!(
             "{} → {}",
             request.file_name, request.target.version_name
-        )),
-        "ready",
-        None,
-        true,
-    );
+        ))
+        .pausable(true),
+    )?;
     let worker_task_id = task_id.clone();
 
     let abort_handle =

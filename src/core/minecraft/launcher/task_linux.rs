@@ -3,8 +3,8 @@ use crate::core::linux_runtime::{
     RunnerKind, resolve_runner, runner_runtime_root, validate_proton_game_runtime,
 };
 use crate::tasks::task_manager::{
-    append_task_log, create_task_with_details, finish_task, register_task_abort_handle, set_total,
-    update_progress,
+    ProgressUpdate, TaskOptions, append_task_log, finish_task, register_task_abort_handle,
+    set_total, update_progress,
 };
 use std::collections::VecDeque;
 use std::env;
@@ -124,7 +124,8 @@ async fn configure_proton_command(
         .then(|| crate::core::linux_runtime::roundmcdev_bundle_root(runner))
         .flatten();
     let steam_client_path = proton_steam_client_path(runner)?;
-    let proton_log_directory = game_log_directory.map(Path::to_path_buf)
+    let proton_log_directory = game_log_directory
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| crate::utils::file_ops::logs_dir().join("proton"));
     let gnutls_priority_file = if runner.kind == RunnerKind::Umu {
         bundle_root
@@ -197,15 +198,17 @@ async fn configure_proton_command(
             .env("GAMEID", "umu-default")
             .env("WINEDEBUG", "-all,err+seh,warn+seh,err+module");
     } else {
-        command
-            .env("STEAM_COMPAT_DATA_PATH", prefix_path);
+        command.env("STEAM_COMPAT_DATA_PATH", prefix_path);
     }
-    command.env("PROTON_LOG", "1").env("PROTON_LOG_DIR", &proton_log_directory);
+    command
+        .env("PROTON_LOG", "1")
+        .env("PROTON_LOG_DIR", &proton_log_directory);
     if game_log_directory.is_some() {
         // Official Proton crash reports also need a per-launch destination.
         // Do not enable global crash-report directories for installation steps.
         let crash_reports = proton_log_directory.join("crash-reports");
-        tokio::fs::create_dir_all(&crash_reports).await
+        tokio::fs::create_dir_all(&crash_reports)
+            .await
             .map_err(|error| format!("无法创建 Proton 崩溃日志目录：{error}"))?;
         command.env("PROTON_CRASH_REPORT_DIR", &crash_reports);
     }
@@ -527,14 +530,12 @@ impl LaunchTask {
 }
 
 pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
-    let task_id = create_task_with_details(
-        None,
-        format!("启动 {}", request.display_name),
-        Some(request.version.to_string()),
-        "resolving_runner",
-        Some(LAUNCH_TOTAL_STEPS),
-        false,
-    );
+    let task_id = create_task(
+        TaskOptions::new(format!("启动 {}", request.display_name), "resolving_runner")
+            .detail(request.version.to_string())
+            .total(LAUNCH_TOTAL_STEPS),
+    )
+    .expect("task id must be unique");
     set_total(&task_id, Some(LAUNCH_TOTAL_STEPS));
     append_task_log(&task_id, format!("准备启动 {}", request.display_name));
 
@@ -640,9 +641,9 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     );
     update_progress(
         task_id,
-        1,
-        Some(LAUNCH_TOTAL_STEPS),
-        Some("preparing_prefix"),
+        ProgressUpdate::advance(1)
+            .total(LAUNCH_TOTAL_STEPS)
+            .stage("preparing_prefix"),
     );
 
     let package_path = PathBuf::from(request.package_folder.as_ref());
@@ -703,7 +704,12 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
 
     apply_roundmcdev_game_fixes(&runner, &game_executable, task_id).await?;
 
-    update_progress(task_id, 1, Some(LAUNCH_TOTAL_STEPS), Some("launching"));
+    update_progress(
+        task_id,
+        ProgressUpdate::advance(1)
+            .total(LAUNCH_TOTAL_STEPS)
+            .stage("launching"),
+    );
 
     if !request.auto_start {
         append_task_log(task_id, "已完成环境准备，未请求启动游戏");
@@ -735,13 +741,21 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     let compat_logs = crate::utils::file_ops::state_subdir("diagnostics/game/compat-logs")
         .join(uuid::Uuid::new_v4().to_string());
     if matches!(runner.kind, RunnerKind::Proton | RunnerKind::Umu) {
-        tokio::fs::create_dir_all(&compat_logs).await
+        tokio::fs::create_dir_all(&compat_logs)
+            .await
             .map_err(|error| format!("无法创建游戏兼容层日志目录：{error}"))?;
     }
     let mut command = match runner.kind {
         RunnerKind::Proton => {
             let mut command = Command::new(&runner.executable);
-            configure_proton_command(&mut command, &runner, &prefix_path, task_id, Some(&compat_logs)).await?;
+            configure_proton_command(
+                &mut command,
+                &runner,
+                &prefix_path,
+                task_id,
+                Some(&compat_logs),
+            )
+            .await?;
             let windows_game_executable = wine_z_path(&game_executable)?;
             append_task_log(
                 task_id,
@@ -758,7 +772,14 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         }
         RunnerKind::Umu => {
             let mut command = Command::new(&runner.executable);
-            configure_proton_command(&mut command, &runner, &prefix_path, task_id, Some(&compat_logs)).await?;
+            configure_proton_command(
+                &mut command,
+                &runner,
+                &prefix_path,
+                task_id,
+                Some(&compat_logs),
+            )
+            .await?;
             append_task_log(
                 task_id,
                 format!("UMU GDK 游戏路径：{}", game_executable.display()),
@@ -808,9 +829,9 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     );
     // Preserve startup-only error lines written by the game immediately
     // after the compatibility runner creates its Windows child.
-    let log_offsets = crate::core::minecraft::diagnostics::capture_log_offsets(
-        Path::new(request.package_folder.as_ref()),
-    );
+    let log_offsets = crate::core::minecraft::diagnostics::capture_log_offsets(Path::new(
+        request.package_folder.as_ref(),
+    ));
     let mut child = command
         .spawn()
         .map_err(|error| format!("无法启动兼容环境 {}：{error}", runner.executable.display()))?;
@@ -834,8 +855,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             RunnerKind::Wine => prefix_path.clone(),
             RunnerKind::Proton | RunnerKind::Umu => prefix_path.join("pfx"),
         }),
-        matches!(runner.kind, RunnerKind::Proton | RunnerKind::Umu)
-            .then_some(compat_logs),
+        matches!(runner.kind, RunnerKind::Proton | RunnerKind::Umu).then_some(compat_logs),
         log_offsets,
     );
 
@@ -886,14 +906,15 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             use std::os::unix::process::ExitStatusExt as _;
             let mut report = crash_report;
             report.exit_signal = status.signal();
-            report.compatibility_fault = *first_fault.lock()
+            report.compatibility_fault = *first_fault
+                .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let code = status.code().map_or(
-                u32::MAX, |exit_code| exit_code as u32
-            );
+            let code = status.code().map_or(u32::MAX, |exit_code| exit_code as u32);
             match crate::tasks::runtime::run_io_blocking(move || {
                 report.finish_compatibility(Ok(code), &output, true)
-            }).await {
+            })
+            .await
+            {
                 Ok(report) => {
                     append_task_log(task_id, format!("已保存启动期兼容层诊断：{}", report.id));
                 }
@@ -906,9 +927,15 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             // Keep tracking an uncertain child instead of abandoning an
             // active process with a permanently Running diagnostics record.
             spawn_process_monitor(
-                task_id.to_string(), crash_report, child,
-                stdout_pump, stderr_pump, recent_output,
-                first_fault, launch_auth, None,
+                task_id.to_string(),
+                crash_report,
+                child,
+                stdout_pump,
+                stderr_pump,
+                recent_output,
+                first_fault,
+                launch_auth,
+                None,
             );
             return Err(format!("检查兼容运行器进程状态失败：{error}"));
         }
@@ -936,8 +963,18 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         launch_auth,
         session,
     );
-    update_progress(task_id, 1, Some(LAUNCH_TOTAL_STEPS), Some("launching"));
-    update_progress(task_id, 0, Some(LAUNCH_TOTAL_STEPS), Some("running_game"));
+    update_progress(
+        task_id,
+        ProgressUpdate::advance(1)
+            .total(LAUNCH_TOTAL_STEPS)
+            .stage("launching"),
+    );
+    update_progress(
+        task_id,
+        ProgressUpdate::advance(0)
+            .total(LAUNCH_TOTAL_STEPS)
+            .stage("running_game"),
+    );
     Ok(Some(process_id))
 }
 
@@ -2055,7 +2092,9 @@ fn spawn_output_pump<R>(
     recent_output: Arc<Mutex<VecDeque<String>>>,
     failure_sender: Option<mpsc::UnboundedSender<String>>,
     publish_to_task: Option<Arc<AtomicBool>>,
-    first_fault: Option<Arc<Mutex<Option<crate::core::minecraft::diagnostics::CompatibilityFault>>>>,
+    first_fault: Option<
+        Arc<Mutex<Option<crate::core::minecraft::diagnostics::CompatibilityFault>>>,
+    >,
 ) -> Result<tokio::task::JoinHandle<()>, String>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -2075,17 +2114,20 @@ where
                 && let Some(first_fault) = &first_fault
             {
                 let mut found = first_fault
-                    .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                if found.is_none_or(|previous|
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if found.is_none_or(|previous| {
                     kind.diagnostic_priority() > previous.diagnostic_priority()
-                ) {
+                }) {
                     *found = Some(kind);
                 }
             }
             let displayed = normalize_runner_output_line(&line)
-                .trim_end_matches('\r').to_string();
+                .trim_end_matches('\r')
+                .to_string();
             let log_line = format!("{prefix}: {displayed}");
-            if publish_to_task.as_ref()
+            if publish_to_task
+                .as_ref()
                 .is_none_or(|publish| publish.load(Ordering::Acquire))
             {
                 append_task_log(&task_id, log_line.clone());
@@ -2098,7 +2140,8 @@ where
             {
                 debug!(task_id, %error, "runner failure receiver already closed");
             }
-            let mut output = recent_output.lock()
+            let mut output = recent_output
+                .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if output.len() >= RECENT_RUNNER_OUTPUT_LIMIT {
                 output.pop_front();
@@ -2108,7 +2151,9 @@ where
         loop {
             match tokio::io::AsyncReadExt::read(&mut reader, &mut chunk).await {
                 Ok(0) => {
-                    if !line_bytes.is_empty() { record(&line_bytes); }
+                    if !line_bytes.is_empty() {
+                        record(&line_bytes);
+                    }
                     break;
                 }
                 Ok(size) => {
@@ -2231,21 +2276,34 @@ fn spawn_process_monitor(
         finish_output_pumps(&task_id, stdout_pump, stderr_pump).await;
         use std::os::unix::process::ExitStatusExt as _;
         let mut crash_report = crash_report;
-        crash_report.exit_signal = process_status.as_ref().ok().and_then(|status| status.signal());
-        crash_report.compatibility_fault = *first_fault.lock()
+        crash_report.exit_signal = process_status
+            .as_ref()
+            .ok()
+            .and_then(|status| status.signal());
+        crash_report.compatibility_fault = *first_fault
+            .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let result_for_report = process_status.as_ref()
-            .map(|status| status.code().map_or_else(
-                || status.signal().map_or(u32::MAX, |signal| 128 + signal as u32),
-                |code| code as u32,
-            ))
+        let result_for_report = process_status
+            .as_ref()
+            .map(|status| {
+                status.code().map_or_else(
+                    || {
+                        status
+                            .signal()
+                            .map_or(u32::MAX, |signal| 128 + signal as u32)
+                    },
+                    |code| code as u32,
+                )
+            })
             .map_err(ToString::to_string);
         // File writes and log redaction must not block the I/O runtime while
         // waiting for the final stdout/stderr pumps and game-time checkpoint.
         let output = recent_runner_output(&recent_output);
         match crate::tasks::runtime::run_io_blocking(move || {
             crash_report.finish_compatibility(result_for_report, &output, false)
-        }).await {
+        })
+        .await
+        {
             Ok(completed) if completed.kind.is_abnormal() => {
                 append_task_log(&task_id, completed.summary.clone());
             }

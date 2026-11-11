@@ -184,14 +184,10 @@ fn delete_screenshot_transactionally(
 
 pub fn start_delete_screenshot_task(info: McScreenshotInfo) -> Result<String, String> {
     let detail = info.file_name.clone();
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        "删除截图",
-        Some(detail),
-        "deleting_screenshot",
-        None,
-        false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new("删除截图", "deleting_screenshot")
+            .detail(detail),
+    )?;
     crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
 
     let worker_task_id = task_id.clone();
@@ -416,14 +412,11 @@ mod tests {
                 .expect("time should be valid")
                 .as_nanos()
         );
-        crate::tasks::task_manager::create_task_with_details(
-            Some(task_id.clone()),
-            "截图删除测试",
-            None,
-            "running",
-            None,
-            false,
-        );
+        crate::tasks::task_manager::create_task(
+            crate::tasks::task_manager::TaskOptions::new("截图删除测试", "running")
+                .id(Some(task_id.clone())),
+        )
+        .expect("task id must be unique");
         let outcome =
             delete_screenshot_transactionally(&info, &task_id).expect("delete screenshot");
         assert!(matches!(outcome, DeleteScreenshotOutcome::Completed(_)));

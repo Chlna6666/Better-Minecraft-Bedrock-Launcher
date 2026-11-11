@@ -45,14 +45,11 @@ impl MapViewerWindowView {
             World3dBlockEditKind::Fill { block_name } => format!("3D 填充 {block_name}"),
             World3dBlockEditKind::Clear => "3D 清除选区".into(),
         };
-        let task_id = task_manager::create_task_with_details(
-            None,
-            label.clone(),
-            Some(format!("via 2D 文档事务 · 维度 {}", request.dimension.id())),
-            "map_write",
-            None,
-            false,
-        );
+        let task_id = task_manager::create_task(
+            task_manager::TaskOptions::new(label.clone(), "map_write")
+                .detail(format!("via 2D 文档事务 · 维度 {}", request.dimension.id())),
+        )
+        .expect("task id must be unique");
         self.professional.active_write_task_id = Some(task_id.clone());
         if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
             self.task_snapshots

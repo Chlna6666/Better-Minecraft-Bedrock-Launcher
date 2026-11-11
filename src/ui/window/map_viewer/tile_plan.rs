@@ -12,7 +12,7 @@ pub(super) struct ViewportTilePlanOptions {
 
 pub(super) fn build_viewport_tile_plan(options: ViewportTilePlanOptions) -> ViewportTilePlan {
     let center = options.viewport.center_tile(options.layout);
-    let visible_bounds = visible_tile_bounds_for_viewport(options.viewport, options.layout, center);
+    let visible_bounds = visible_tile_bounds(options.viewport, options.layout, center);
     let visible = visible_bounds
         .map(|bounds| center_first_visible_tile_coords(bounds, center))
         .unwrap_or_default();
@@ -63,7 +63,7 @@ pub(super) fn retained_tile_filter_for_viewport(
     is_dragging: bool,
 ) -> Option<RetainedTileFilter> {
     let center = viewport.center_tile(layout);
-    let visible = visible_tile_bounds_for_viewport(viewport, layout, center)?;
+    let visible = visible_tile_bounds(viewport, layout, center)?;
     let radius = if is_dragging {
         DRAG_RETAIN_RADIUS
     } else {

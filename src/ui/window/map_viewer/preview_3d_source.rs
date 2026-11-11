@@ -5,12 +5,10 @@ mod lighting;
 use super::model::{CopiedChunk, CopiedChunkData};
 use bedrock_block_model::{
     BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, ModelCuboid, ModelFamily,
-    ModelPlane, ModelShape, ModelWarning, block_export_material_name_for_block,
-    block_export_material_name_for_face, block_export_material_name_for_plane,
-    block_face_for_normal, canonical_block_name_for_state,
-    detail_material_block_name_for_state,
-    is_engine_block_entity_model_block, model_family_for_block_name, model_family_has_detail_shape,
-    model_shape_for_block_state, shape_from_geometry,
+    ModelPlane, ModelShape, ModelWarning, block_face_from_normal, canonical_block_name,
+    detail_material_block_name, is_engine_block_entity_model_block, model_family,
+    model_family_has_detail_shape, obj_face_material_name, obj_material_name,
+    obj_plane_material_name, resolve_block_state_shape, shape_from_geometry,
 };
 use bedrock_render::{ChunkPos, RenderPalette, RgbaColor, SurfaceTintKind};
 use bedrock_world::NbtTag;
@@ -126,12 +124,6 @@ impl Preview3dCamera {
 
     pub(super) fn zoom_by(&mut self, factor: f32) {
         self.zoom = (self.zoom * factor).clamp(PREVIEW_3D_MIN_ZOOM, PREVIEW_3D_MAX_ZOOM);
-    }
-
-    pub(super) fn zoom_by_for_mesh(&mut self, factor: f32, mesh: &Preview3dMesh) {
-        let span = mesh.horizontal_span().max(1.0);
-        let dynamic_max = PREVIEW_3D_MAX_ZOOM.max(span / 4.0).min(4096.0);
-        self.zoom = (self.zoom * factor).clamp(PREVIEW_3D_MIN_ZOOM, dynamic_max);
     }
 
     pub(super) fn move_from_input(&mut self, input: Preview3dMovementInput, delta_seconds: f32) {
@@ -438,7 +430,7 @@ impl Preview3dBlockFaceColors {
         }
     }
 
-    const fn color_for_normal(self, normal: [i32; 3]) -> [f32; 4] {
+    const fn color_from_normal(self, normal: [i32; 3]) -> [f32; 4] {
         if normal[1] > 0 {
             self.up
         } else if normal[1] < 0 {
@@ -548,8 +540,8 @@ impl Preview3dCuboid {
         self
     }
 
-    fn material_slot_for_normal(&self, normal: [i32; 3]) -> Option<Preview3dMaterialSlot> {
-        let face = block_face_for_normal(normal);
+    fn face_material_slot(&self, normal: [i32; 3]) -> Option<Preview3dMaterialSlot> {
+        let face = block_face_from_normal(normal);
         self.face_material_slots
             .get(&face)
             .or_else(|| {
@@ -573,8 +565,8 @@ impl Preview3dCuboid {
         self
     }
 
-    fn face_uv_for_normal(&self, normal: [i32; 3]) -> Option<[[f32; 2]; 4]> {
-        let face = block_face_for_normal(normal);
+    fn face_uv(&self, normal: [i32; 3]) -> Option<[[f32; 2]; 4]> {
+        let face = block_face_from_normal(normal);
         self.face_uvs
             .get(&face)
             .or_else(|| {
@@ -648,8 +640,18 @@ struct Preview3dPlane {
 
 fn preview_3d_detail_shape_from_model_shape_ref(shape: &ModelShape) -> Preview3dDetailShape {
     Preview3dDetailShape {
-        cuboids: shape.cuboids.iter().cloned().map(preview_3d_cuboid_from_model_cuboid).collect(),
-        planes: shape.planes.iter().cloned().map(preview_3d_plane_from_model_plane).collect(),
+        cuboids: shape
+            .cuboids
+            .iter()
+            .cloned()
+            .map(preview_3d_cuboid_from_model_cuboid)
+            .collect(),
+        planes: shape
+            .planes
+            .iter()
+            .cloned()
+            .map(preview_3d_plane_from_model_plane)
+            .collect(),
     }
 }
 
@@ -857,62 +859,25 @@ pub(super) const fn preview_3d_bounds_depth(bounds: SlimeChunkBounds) -> i32 {
     bounds.max_chunk_z.saturating_sub(bounds.min_chunk_z) + 1
 }
 
-pub(super) fn load_preview_3d_mesh_blocking_incremental(
-    world_path: &Path,
-    bounds: SlimeChunkBounds,
-    cancel: Option<CancelFlag>,
-    mut update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
-) -> Result<Preview3dMesh, String> {
-    bounds.validate().map_err(|error| error.to_string())?;
-    check_preview_3d_cancelled(cancel.as_ref())?;
-    let world = World::open(world_path, bedrock_world::OpenOptions::default())
-        .map_err(|error| error.to_string())?;
-    check_preview_3d_cancelled(cancel.as_ref())?;
-    let (positions, truncated_chunk_count) = preview_3d_selection_chunk_positions(bounds);
-    let chunk_total = positions.len();
-    let mut builder = Preview3dMeshBuilder::new(bounds, truncated_chunk_count);
-    let options = preview_3d_render_chunk_load_options(chunk_total, bounds, cancel.clone());
-    let mut completed_chunks = 0;
-    while completed_chunks < chunk_total {
-        check_preview_3d_cancelled(cancel.as_ref())?;
-        let batch_size = preview_3d_incremental_batch_size(completed_chunks, chunk_total);
-        let next_completed_chunks = completed_chunks.saturating_add(batch_size).min(chunk_total);
-        let chunks = world
-            .query_chunk_data_many(
-                positions[completed_chunks..next_completed_chunks]
-                    .iter()
-                    .copied(),
-                options.clone(),
-            )
-            .map_err(|error| error.to_string())?;
-        let processed_chunks = chunks
-            .into_par_iter()
-            .map(|chunk| preview_3d_collect_chunk_blocks_result(&chunk))
-            .collect::<Result<Vec<_>, _>>()?;
-        for processed_chunk in processed_chunks {
-            builder.push_processed_chunk(processed_chunk);
-        }
-        completed_chunks = next_completed_chunks;
-        if preview_3d_should_emit_incremental_mesh(completed_chunks, chunk_total) {
-            let status = Preview3dBuildStatus::new(
-                "拼接模型",
-                format!("{completed_chunks}/{chunk_total} chunks"),
-            );
-            emit_preview_3d_mesh_update(&mut builder, &mut update, status)?;
-        }
-    }
-
-    builder.rebuild_combined_mesh()?;
-    Ok(builder.build_mesh())
+/// Configuration for one incremental preview-3D mesh load. JS/TS-style parameter
+/// object: one `load_preview_3d_mesh` entry instead of a family of `_with_*` variants.
+pub(super) struct Preview3dLoadOptions<'a> {
+    pub world_path: &'a Path,
+    pub bounds: SlimeChunkBounds,
+    pub block_models: Option<Arc<BlockModelRepository>>,
+    pub cancel: Option<CancelFlag>,
 }
 
-pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
-    world_path: &Path,
-    bounds: SlimeChunkBounds,
-    block_models: Option<Arc<BlockModelRepository>>,
-    cancel: Option<CancelFlag>,
+pub(super) fn load_preview_3d_mesh(
+    options: Preview3dLoadOptions<'_>,
     mut update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
 ) -> Result<Preview3dMesh, String> {
+    let Preview3dLoadOptions {
+        world_path,
+        bounds,
+        block_models,
+        cancel,
+    } = options;
     bounds.validate().map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
     let world = World::open(world_path, bedrock_world::OpenOptions::default())
@@ -959,7 +924,33 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
     Ok(builder.build_mesh())
 }
 
-pub(super) fn load_preview_3d_mesh_from_mcstructure_blocking(
+/// Snapshot source for one synchronous preview-3D mesh build.
+///
+/// Both variants produce the same mesh; callers pick the source they already
+/// hold instead of choosing between `from_*_blocking` function variants.
+pub(super) enum Preview3dMeshSource<'a> {
+    Structure {
+        structure: &'a bedrock_world::McStructureFile,
+        anchor_chunk: ChunkPos,
+        origin_y: i32,
+    },
+    CopiedChunk(&'a CopiedChunkData),
+}
+
+pub(super) fn load_preview_3d_mesh_blocking(
+    source: Preview3dMeshSource<'_>,
+) -> Result<Preview3dMesh, String> {
+    match source {
+        Preview3dMeshSource::Structure {
+            structure,
+            anchor_chunk,
+            origin_y,
+        } => load_structure_mesh(structure, anchor_chunk, origin_y),
+        Preview3dMeshSource::CopiedChunk(copied_chunk) => load_copied_chunk_mesh(copied_chunk),
+    }
+}
+
+fn load_structure_mesh(
     structure: &bedrock_world::McStructureFile,
     anchor_chunk: ChunkPos,
     origin_y: i32,
@@ -1035,15 +1026,14 @@ fn structure_preview_palette() -> &'static RenderPalette {
     PALETTE.get_or_init(RenderPalette::default)
 }
 
-pub(super) fn load_preview_3d_mesh_from_copied_chunk_blocking(
-    copied_chunk: &CopiedChunkData,
-) -> Result<Preview3dMesh, String> {
+fn load_copied_chunk_mesh(copied_chunk: &CopiedChunkData) -> Result<Preview3dMesh, String> {
     let bounds = copied_chunk_3d_bounds(copied_chunk)?;
     bounds.validate().map_err(|error| error.to_string())?;
     let mut builder = Preview3dMeshBuilder::new(bounds, 0);
     for snapshot in &copied_chunk.chunks {
         let chunk = render_chunk_from_copied_snapshot(snapshot);
-        let processed_chunk = preview_3d_collect_chunk_blocks_result(&chunk)?;
+        let processed_chunk =
+            preview_3d_collect_chunk_blocks_result_with_block_models(&chunk, None)?;
         builder.push_processed_chunk(processed_chunk);
     }
     builder.rebuild_combined_mesh()?;
@@ -1173,7 +1163,9 @@ fn preview_3d_incremental_batch_size(completed_chunks: usize, total_chunks: usiz
     // the remaining count. Dividing the remainder at every iteration
     // generated a long tail of 1-2 chunk batches, each triggering a full
     // mesh/LOD/spatial-region rebuild (quadratic accumulated CPU work).
-    let later_batches = PREVIEW_3D_INCREMENTAL_TARGET_UPDATES.saturating_sub(1).max(1);
+    let later_batches = PREVIEW_3D_INCREMENTAL_TARGET_UPDATES
+        .saturating_sub(1)
+        .max(1);
     let later_total = total_chunks.saturating_sub(first_batch);
     remaining.min(later_total.div_ceil(later_batches).max(1))
 }
@@ -1440,7 +1432,7 @@ impl Preview3dMeshBuilder {
                         merger.push(
                             block.key,
                             face,
-                            block.colors.color_for_normal(face.normal),
+                            block.colors.color_from_normal(face.normal),
                             block.material.clone(),
                         );
                     }
@@ -1493,7 +1485,7 @@ impl Preview3dMeshBuilder {
                         merger.push(
                             block.key,
                             face,
-                            block.colors.color_for_normal(face.normal),
+                            block.colors.color_from_normal(face.normal),
                             block.material.clone(),
                         );
                     }
@@ -1553,7 +1545,9 @@ impl Preview3dMeshBuilder {
                         // A partial-height neighbour exposes only the upper
                         // strip. Keep ordinary full cube faces in the greedy
                         // merger, but emit this strip in the exact pass below.
-                        if self.exposed_fluid_face_bottom(block, face, Preview3dBlockClass::Water) != Some(0.0) {
+                        if self.exposed_fluid_face_bottom(block, face, Preview3dBlockClass::Water)
+                            != Some(0.0)
+                        {
                             continue;
                         }
                         merger.push(
@@ -1574,9 +1568,11 @@ impl Preview3dMeshBuilder {
                     if block.surface_only && face.normal != [0, 1, 0] {
                         continue;
                     }
-                    let Some(bottom) = self.exposed_fluid_face_bottom(
-                        block, face, Preview3dBlockClass::Water,
-                    ) else { continue; };
+                    let Some(bottom) =
+                        self.exposed_fluid_face_bottom(block, face, Preview3dBlockClass::Water)
+                    else {
+                        continue;
+                    };
                     // The full-height non-seam faces were already emitted
                     // by the greedy merger. Only its revealed upper strips
                     // belong in this exact-height path.
@@ -1617,7 +1613,9 @@ impl Preview3dMeshBuilder {
                         // A partial-height neighbour exposes only the upper
                         // strip. Keep ordinary full cube faces in the greedy
                         // merger, but emit this strip in the exact pass below.
-                        if self.exposed_fluid_face_bottom(block, face, Preview3dBlockClass::Lava) != Some(0.0) {
+                        if self.exposed_fluid_face_bottom(block, face, Preview3dBlockClass::Lava)
+                            != Some(0.0)
+                        {
                             continue;
                         }
                         merger.push(
@@ -1638,9 +1636,11 @@ impl Preview3dMeshBuilder {
                     if block.surface_only && face.normal != [0, 1, 0] {
                         continue;
                     }
-                    let Some(bottom) = self.exposed_fluid_face_bottom(
-                        block, face, Preview3dBlockClass::Lava,
-                    ) else { continue; };
+                    let Some(bottom) =
+                        self.exposed_fluid_face_bottom(block, face, Preview3dBlockClass::Lava)
+                    else {
+                        continue;
+                    };
                     // The full-height non-seam faces were already emitted
                     // by the greedy merger. Only its revealed upper strips
                     // belong in this exact-height path.
@@ -1778,10 +1778,15 @@ impl Preview3dMeshBuilder {
                     return None;
                 }
                 let key = ChunkKey::from_block(neighbour);
-                let height = self.block_chunks.get(&key)
+                let height = self
+                    .block_chunks
+                    .get(&key)
                     .and_then(|chunk| chunk.partial_fluid_heights.get(&neighbour))
-                    .or_else(|| self.boundary_chunks.get(&key)
-                        .and_then(|chunk| chunk.partial_fluid_heights.get(&neighbour)))
+                    .or_else(|| {
+                        self.boundary_chunks
+                            .get(&key)
+                            .and_then(|chunk| chunk.partial_fluid_heights.get(&neighbour))
+                    })
                     .copied()
                     .unwrap_or(1.0);
                 (block.height > height + 0.0001).then_some(height)
@@ -1810,7 +1815,7 @@ impl Preview3dMeshBuilder {
         block: &Preview3dDetailBlock,
     ) -> Option<Preview3dDetailShape> {
         self.preview_3d_detail_shape_query(block)
-            .and_then(|query| model_shape_for_block_state(&query))
+            .and_then(|query| resolve_block_state_shape(&query))
             .map(preview_3d_detail_shape_from_model_shape)
     }
 
@@ -2073,12 +2078,6 @@ fn preview_3d_selection_frame(bounds: SlimeChunkBounds) -> ([f32; 3], f32, f32) 
     )
 }
 
-fn preview_3d_collect_chunk_blocks_result(
-    chunk: &ChunkData,
-) -> Result<Preview3dProcessedChunk, String> {
-    preview_3d_collect_chunk_blocks_result_with_block_models(chunk, None)
-}
-
 fn preview_3d_collect_chunk_blocks_result_with_block_models(
     chunk: &ChunkData,
     block_models: Option<&BlockModelRepository>,
@@ -2209,7 +2208,9 @@ impl Preview3dSubchunkPalette {
         let bedrock_world::SubChunkFormat::Paletted { storages, .. } = &subchunk.format else {
             // Unknown/legacy subchunk formats keep the old conservative path.
             return Self {
-                primary: Vec::new(), renderable: true, has_fluid: true,
+                primary: Vec::new(),
+                renderable: true,
+                has_fluid: true,
                 fluid_layers: Vec::new(),
             };
         };
@@ -2225,8 +2226,11 @@ impl Preview3dSubchunkPalette {
                     primary.push(class);
                 }
                 renderable |= preview_3d_block_class_is_renderable(class);
-                let fluid = matches!(class, Preview3dBlockClass::Water | Preview3dBlockClass::Lava)
-                    .then_some(class);
+                let fluid = matches!(
+                    class,
+                    Preview3dBlockClass::Water | Preview3dBlockClass::Lava
+                )
+                .then_some(class);
                 contains_fluid |= fluid.is_some();
                 classes.push(fluid);
             }
@@ -2276,8 +2280,11 @@ impl Preview3dSubchunkPalette {
         }
         subchunk.visible_block_states_at(x, y, z).find_map(|state| {
             let class = preview_3d_block_class(&state.name);
-            matches!(class, Preview3dBlockClass::Water | Preview3dBlockClass::Lava)
-                .then_some((state, class))
+            matches!(
+                class,
+                Preview3dBlockClass::Water | Preview3dBlockClass::Lava
+            )
+            .then_some((state, class))
         })
     }
 }
@@ -2291,17 +2298,23 @@ mod palette_collect_tests {
             y: 0,
             format: bedrock_world::SubChunkFormat::Paletted {
                 version: 9,
-                storages: layers.iter().map(|layer| {
-                    ::bedrock_world::block::BlockPalette::with_unpacked_indices(
-                        layer.iter().map(|name| BlockState {
-                            name: (*name).to_owned(),
-                            states: BTreeMap::new(),
-                            version: None,
-                        }).collect(),
-                        vec![0; 4096],
-                        None,
-                    )
-                }).collect(),
+                storages: layers
+                    .iter()
+                    .map(|layer| {
+                        ::bedrock_world::block::BlockPalette::with_unpacked_indices(
+                            layer
+                                .iter()
+                                .map(|name| BlockState {
+                                    name: (*name).to_owned(),
+                                    states: BTreeMap::new(),
+                                    version: None,
+                                })
+                                .collect(),
+                            vec![0; 4096],
+                            None,
+                        )
+                    })
+                    .collect(),
             },
         }
     }
@@ -2310,7 +2323,14 @@ mod palette_collect_tests {
     fn multiple_fluid_storages_use_top_layer_priority() {
         let data = section(&[&["minecraft:water"], &["minecraft:lava"]]);
         let classified = Preview3dSubchunkPalette::classify(&data);
-        assert_eq!(classified.fluid_layers.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [1, 0]);
+        assert_eq!(
+            classified
+                .fluid_layers
+                .iter()
+                .map(|(i, _)| *i)
+                .collect::<Vec<_>>(),
+            [1, 0]
+        );
         assert_eq!(
             classified.fluid_at(&data, 2, 3, 4).map(|(_, class)| class),
             Some(Preview3dBlockClass::Lava)
@@ -2319,15 +2339,17 @@ mod palette_collect_tests {
 
     #[test]
     fn skips_all_air_subchunks_without_losing_waterlogged_overlay() {
-        let air = Preview3dSubchunkPalette::classify(
-            &section(&[&["minecraft:air", "minecraft:cave_air"]])
-        );
+        let air = Preview3dSubchunkPalette::classify(&section(&[&[
+            "minecraft:air",
+            "minecraft:cave_air",
+        ]]));
         assert!(!air.renderable);
         assert!(!air.has_fluid);
 
-        let waterlogged = Preview3dSubchunkPalette::classify(
-            &section(&[&["minecraft:oak_stairs"], &["minecraft:water"]])
-        );
+        let waterlogged = Preview3dSubchunkPalette::classify(&section(&[
+            &["minecraft:oak_stairs"],
+            &["minecraft:water"],
+        ]));
         assert!(waterlogged.renderable);
         assert!(waterlogged.has_fluid);
         assert_eq!(waterlogged.primary, [Preview3dBlockClass::DetailOpaque]);
@@ -2335,14 +2357,16 @@ mod palette_collect_tests {
         assert_eq!(waterlogged.fluid_layers[0].0, 1);
         let waterlogged_data = section(&[&["minecraft:oak_stairs"], &["minecraft:water"]]);
         assert_eq!(
-            waterlogged.fluid_at(&waterlogged_data, 3, 4, 5)
+            waterlogged
+                .fluid_at(&waterlogged_data, 3, 4, 5)
                 .map(|(_, class)| class),
             Some(Preview3dBlockClass::Water)
         );
 
-        let stone = Preview3dSubchunkPalette::classify(
-            &section(&[&["minecraft:stone", "minecraft:deepslate"]])
-        );
+        let stone = Preview3dSubchunkPalette::classify(&section(&[&[
+            "minecraft:stone",
+            "minecraft:deepslate",
+        ]]));
         assert_eq!(stone.primary, [Preview3dBlockClass::Opaque; 2]);
         assert!(!stone.has_fluid);
         assert!(stone.fluid_layers.is_empty());
@@ -2428,15 +2452,17 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
                                 })
                                 .map(usize::from);
                             (
-                                storage.and_then(|storage| {
-                                    index.and_then(|i| storage.states.get(i))
-                                }),
+                                storage
+                                    .and_then(|storage| index.and_then(|i| storage.states.get(i))),
                                 index.and_then(|i| classification.primary.get(i).copied()),
                             )
                         }
                         _ => {
                             let state = subchunk.block_state_at(local_x, local_y, local_z);
-                            (state, state.map(|state| preview_3d_block_class(&state.name)))
+                            (
+                                state,
+                                state.map(|state| preview_3d_block_class(&state.name)),
+                            )
                         }
                     };
                     if let (Some(state), Some(block_class)) = (primary_state, primary_class) {
@@ -2480,8 +2506,7 @@ pub(super) fn preview_3d_collect_chunk_blocks_with_biome_blend(
                         }
                     }
 
-                    let fluid_state =
-                        classification.fluid_at(subchunk, local_x, local_y, local_z);
+                    let fluid_state = classification.fluid_at(subchunk, local_x, local_y, local_z);
                     if let Some((state, block_class)) = fluid_state {
                         if primary_class != Some(block_class) {
                             let surface_only = matches!(
@@ -2671,11 +2696,7 @@ fn preview_3d_push_collected_block(
                 }
             }
             occupied.insert(key);
-            opaque_blocks.push(Preview3dBlockRecord::new(
-                key,
-                entry_colors.face,
-                material,
-            ));
+            opaque_blocks.push(Preview3dBlockRecord::new(key, entry_colors.face, material));
         }
         Preview3dBlockClass::TransparentGlass => {
             if let Some(shape) = shape {
@@ -2837,12 +2858,14 @@ fn has_exposed_liquid_side_above_neighbor(
     same_fluid: &HashSet<BlockKey>,
     partial_heights: &HashMap<BlockKey, f32>,
 ) -> bool {
-    FACE_DEFINITIONS.into_iter()
+    FACE_DEFINITIONS
+        .into_iter()
         .filter(|face| face.normal[1] == 0)
         .any(|face| {
             let neighbour = block.key.neighbor(face);
             same_fluid.contains(&neighbour)
-                && partial_heights.get(&neighbour)
+                && partial_heights
+                    .get(&neighbour)
                     .is_some_and(|&height| block.height > height + 0.0001)
         })
 }
@@ -2986,7 +3009,7 @@ impl Preview3dFaceMerger {
             2 => (block.x, block.y),
             _ => return,
         };
-        let material = preview_3d_material_name_for_face(material, face.normal);
+        let material = preview_3d_face_material_name(material, face.normal);
         let key = Preview3dFacePlaneKey {
             axis: axis as u8,
             normal_positive,
@@ -3217,9 +3240,11 @@ impl Preview3dChunkBoundary {
             + self.coarse_lava.len();
         std::mem::size_of::<Self>()
             .saturating_add(self.classes.len().saturating_mul(2048))
-            .saturating_add(self.partial_fluid_heights.len().saturating_mul(
-                std::mem::size_of::<(BlockKey, f32)>() * 2
-            ))
+            .saturating_add(
+                self.partial_fluid_heights
+                    .len()
+                    .saturating_mul(std::mem::size_of::<(BlockKey, f32)>() * 2),
+            )
             .saturating_add(keys.saturating_mul(std::mem::size_of::<BlockKey>() * 2))
             .saturating_add(
                 self.connection_kinds
@@ -3311,8 +3336,7 @@ impl Preview3dChunkBlocks {
             let index = (key.y.rem_euclid(16) * 256
                 + key.z.rem_euclid(16) * 16
                 + key.x.rem_euclid(16)) as usize;
-            masks.entry(section_y).or_insert([0; 64])[index / 64] |=
-                1u64 << (index % 64);
+            masks.entry(section_y).or_insert([0; 64])[index / 64] |= 1u64 << (index % 64);
         }
         masks
     }
@@ -3418,7 +3442,9 @@ impl Preview3dChunkBlocks {
             classes,
             // The builder only asks a different chunk for immediate neighbor
             // cells, so discard every interior partial height in its halo.
-            partial_fluid_heights: self.partial_fluid_heights.iter()
+            partial_fluid_heights: self
+                .partial_fluid_heights
+                .iter()
                 .filter(|(key, _)| {
                     let x = key.x.rem_euclid(16);
                     let z = key.z.rem_euclid(16);
@@ -3806,38 +3832,38 @@ fn preview_3d_push_cuboid_faces(
         Preview3dPlane {
             corners: [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]],
             normal: [0, 1, 0],
-            material_slot: cuboid.material_slot_for_normal([0, 1, 0]),
-            uv: cuboid.face_uv_for_normal([0, 1, 0]),
+            material_slot: cuboid.face_material_slot([0, 1, 0]),
+            uv: cuboid.face_uv([0, 1, 0]),
         },
         Preview3dPlane {
             corners: [[x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0]],
             normal: [0, -1, 0],
-            material_slot: cuboid.material_slot_for_normal([0, -1, 0]),
-            uv: cuboid.face_uv_for_normal([0, -1, 0]),
+            material_slot: cuboid.face_material_slot([0, -1, 0]),
+            uv: cuboid.face_uv([0, -1, 0]),
         },
         Preview3dPlane {
             corners: [[x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0]],
             normal: [1, 0, 0],
-            material_slot: cuboid.material_slot_for_normal([1, 0, 0]),
-            uv: cuboid.face_uv_for_normal([1, 0, 0]),
+            material_slot: cuboid.face_material_slot([1, 0, 0]),
+            uv: cuboid.face_uv([1, 0, 0]),
         },
         Preview3dPlane {
             corners: [[x0, y0, z1], [x0, y0, z0], [x0, y1, z0], [x0, y1, z1]],
             normal: [-1, 0, 0],
-            material_slot: cuboid.material_slot_for_normal([-1, 0, 0]),
-            uv: cuboid.face_uv_for_normal([-1, 0, 0]),
+            material_slot: cuboid.face_material_slot([-1, 0, 0]),
+            uv: cuboid.face_uv([-1, 0, 0]),
         },
         Preview3dPlane {
             corners: [[x1, y0, z1], [x0, y0, z1], [x0, y1, z1], [x1, y1, z1]],
             normal: [0, 0, 1],
-            material_slot: cuboid.material_slot_for_normal([0, 0, 1]),
-            uv: cuboid.face_uv_for_normal([0, 0, 1]),
+            material_slot: cuboid.face_material_slot([0, 0, 1]),
+            uv: cuboid.face_uv([0, 0, 1]),
         },
         Preview3dPlane {
             corners: [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]],
             normal: [0, 0, -1],
-            material_slot: cuboid.material_slot_for_normal([0, 0, -1]),
-            uv: cuboid.face_uv_for_normal([0, 0, -1]),
+            material_slot: cuboid.face_material_slot([0, 0, -1]),
+            uv: cuboid.face_uv([0, 0, -1]),
         },
     ];
     for plane in planes {
@@ -3861,14 +3887,14 @@ fn preview_3d_push_plane_face(
             ]
         }),
         color,
-        shade: preview_3d_shade_for_normal(plane.normal),
+        shade: preview_3d_normal_shade(plane.normal),
         normal: plane.normal,
-        material: preview_3d_material_name_for_plane(material, &plane),
+        material: preview_3d_plane_material_name(material, &plane),
         uv: plane.uv,
     });
 }
 
-fn preview_3d_shade_for_normal(normal: [i32; 3]) -> f32 {
+fn preview_3d_normal_shade(normal: [i32; 3]) -> f32 {
     FACE_DEFINITIONS
         .iter()
         .find(|face| face.normal == normal)
@@ -4036,7 +4062,7 @@ fn preview_3d_nbt_bool(value: Option<&NbtTag>) -> Option<bool> {
     preview_3d_nbt_i32(value).map(|value| value != 0)
 }
 
-fn preview_3d_detail_shape_for_block(
+fn preview_3d_detail_shape(
     state: &BlockState,
     block_entity_state: Option<Preview3dBlockEntityModelState>,
 ) -> Option<Preview3dDetailShape> {
@@ -4048,7 +4074,7 @@ fn preview_3d_detail_shape_for_block(
             .with_state("pair_direction", pair_direction.as_str())
             .with_state("pair_lead", block_entity_state.chest_pair_lead);
     }
-    let mut shape = model_shape_for_block_state(&query)
+    let mut shape = resolve_block_state_shape(&query)
         .map(preview_3d_detail_shape_from_model_shape)
         .filter(|shape| {
             model_family_has_detail_shape(&query.name) || !preview_3d_shape_is_full_cube(shape)
@@ -4059,7 +4085,7 @@ fn preview_3d_detail_shape_for_block(
     Some(shape)
 }
 
-fn preview_3d_resolved_detail_shape_for_block(
+fn preview_3d_resolved_detail_shape(
     repository: &BlockModelRepository,
     state: &BlockState,
     block_class: Preview3dBlockClass,
@@ -4098,11 +4124,9 @@ fn preview_3d_resolved_detail_shape_for_block(
         let shaped = if preview_3d_is_bed_state(&state.name) {
             repository
                 .geometry(bedrock_block_model::BED_GEOMETRY_IDENTIFIER)
-                .and_then(|geometry| {
-                    bedrock_block_model::bed_shape_from_geometry(geometry, &query)
-                })
+                .and_then(|geometry| bedrock_block_model::bed_shape_from_geometry(geometry, &query))
         } else {
-            model_shape_for_block_state(&query)
+            resolve_block_state_shape(&query)
         };
         if let Some(shape) = shaped
             .map(preview_3d_detail_shape_from_model_shape)
@@ -4315,7 +4339,7 @@ fn preview_3d_block_face<'a>(state: &'a BlockState) -> Option<&'a str> {
 }
 
 fn preview_3d_neighbor_model(state: &BlockState) -> Preview3dNeighborModel {
-    let family = model_family_for_block_name(&state.name);
+    let family = model_family(&state.name);
     match family {
         ModelFamily::Pane if !preview_3d_has_direction_connection_state(state) => {
             Preview3dNeighborModel::Pane
@@ -4338,7 +4362,7 @@ fn preview_3d_neighbor_model(state: &BlockState) -> Preview3dNeighborModel {
 }
 
 fn preview_3d_connection_kind(state: &BlockState) -> Option<Preview3dConnectionKind> {
-    let family = model_family_for_block_name(&state.name);
+    let family = model_family(&state.name);
     match family {
         ModelFamily::Pane => Some(Preview3dConnectionKind::Pane),
         ModelFamily::Fence => Some(Preview3dConnectionKind::Fence),
@@ -4384,7 +4408,7 @@ fn preview_3d_redstone_device_connection_kind(
 }
 
 fn preview_3d_stair_state(state: &BlockState) -> Option<Preview3dStairState> {
-    if model_family_for_block_name(&state.name) != ModelFamily::Stairs {
+    if model_family(&state.name) != ModelFamily::Stairs {
         return None;
     }
     let facing = preview_3d_stair_direction(state)?;
@@ -4548,7 +4572,7 @@ impl Preview3dBiomeSample {
     }
 }
 
-fn preview_3d_color_for_block(
+fn preview_3d_block_color(
     palette: &RenderPalette,
     state: &BlockState,
     biome: Option<Preview3dBiomeSample>,
@@ -4556,10 +4580,10 @@ fn preview_3d_color_for_block(
     if state.name.strip_prefix("minecraft:").unwrap_or(&state.name) == "redstone_wire" {
         return preview_3d_redstone_wire_color(state);
     }
-    if let Some(tint) = preview_3d_texture_tint_for_block(palette, state, biome) {
+    if let Some(tint) = preview_3d_texture_tint(palette, state, biome) {
         return preview_3d_color_from_rgba(tint, 1.0);
     }
-    let color = preview_3d_surface_color_for_block(palette, state, biome).to_array();
+    let color = preview_3d_surface_color(palette, state, biome).to_array();
     [
         f32::from(color[0]) / 255.0,
         f32::from(color[1]) / 255.0,
@@ -4584,19 +4608,19 @@ fn preview_3d_redstone_wire_color(state: &BlockState) -> [f32; 4] {
     [red, green, blue, 1.0]
 }
 
-fn preview_3d_face_colors_for_block(
+fn preview_3d_block_face_colors(
     palette: &RenderPalette,
     state: &BlockState,
     biome: Option<Preview3dBiomeSample>,
 ) -> Preview3dBlockFaceColors {
     let normalized = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
     if preview_3d_is_full_grass_block(normalized) {
-        let up = preview_3d_color_for_named_block(palette, "minecraft:grass_block", biome, true);
-        let down = preview_3d_color_for_named_block(palette, "minecraft:dirt", biome, false);
-        let side = preview_3d_color_for_named_block(palette, "minecraft:grass", biome, true);
+        let up = preview_3d_named_block_color(palette, "minecraft:grass_block", biome, true);
+        let down = preview_3d_named_block_color(palette, "minecraft:dirt", biome, false);
+        let side = preview_3d_named_block_color(palette, "minecraft:grass", biome, true);
         return Preview3dBlockFaceColors { up, down, side };
     }
-    let color = preview_3d_color_for_block(palette, state, biome);
+    let color = preview_3d_block_color(palette, state, biome);
     let side = palette.block_side_color(&state.name);
     if side == palette.block_color(&state.name) {
         return Preview3dBlockFaceColors::uniform(color);
@@ -4609,7 +4633,7 @@ fn preview_3d_face_colors_for_block(
     }
 }
 
-fn preview_3d_color_for_named_block(
+fn preview_3d_named_block_color(
     palette: &RenderPalette,
     name: &str,
     biome: Option<Preview3dBiomeSample>,
@@ -4640,7 +4664,7 @@ fn preview_3d_color_for_named_block(
     preview_3d_color_from_rgba(color, 1.0)
 }
 
-fn preview_3d_surface_color_for_block(
+fn preview_3d_surface_color(
     palette: &RenderPalette,
     state: &BlockState,
     biome: Option<Preview3dBiomeSample>,
@@ -4688,9 +4712,7 @@ fn preview_3d_palette_block_name<'a>(state: &'a BlockState) -> Cow<'a, str> {
         return Cow::Borrowed("minecraft:short_grass");
     }
     if normalized == "double_plant" {
-        return Cow::Owned(canonical_block_name_for_state(
-            &preview_3d_block_state_query(state),
-        ));
+        return Cow::Owned(canonical_block_name(&preview_3d_block_state_query(state)));
     }
     Cow::Borrowed(name)
 }
@@ -4699,7 +4721,7 @@ fn preview_3d_palette_block_name<'a>(state: &'a BlockState) -> Cow<'a, str> {
 ///
 /// The palette's surface color already folds the mask average into the result; textured faces
 /// sample the mask themselves, so multiplying by that surface color would apply the mask twice.
-fn preview_3d_texture_tint_for_block(
+fn preview_3d_texture_tint(
     palette: &RenderPalette,
     state: &BlockState,
     biome: Option<Preview3dBiomeSample>,
@@ -4781,17 +4803,17 @@ fn preview_3d_color_is_washed_out(color: RgbaColor) -> bool {
     luminance > 0.78 || (maximum > 0.72 && maximum - minimum < 0.18)
 }
 
-fn preview_3d_transparent_color_for_block(
+fn preview_3d_transparent_color(
     palette: &RenderPalette,
     state: &BlockState,
     biome: Option<Preview3dBiomeSample>,
 ) -> [f32; 4] {
-    let mut color = preview_3d_color_for_block(palette, state, biome);
+    let mut color = preview_3d_block_color(palette, state, biome);
     color[3] = PREVIEW_3D_GLASS_ALPHA;
     color
 }
 
-fn preview_3d_water_color_for_block(
+fn preview_3d_water_color(
     palette: &RenderPalette,
     state: &BlockState,
     biome: Option<Preview3dBiomeSample>,
@@ -4834,24 +4856,24 @@ fn preview_3d_luminance(color: [f32; 4]) -> f32 {
     color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722
 }
 
-fn preview_3d_lava_color_for_block(
+fn preview_3d_lava_color(
     palette: &RenderPalette,
     state: &BlockState,
     biome: Option<Preview3dBiomeSample>,
 ) -> [f32; 4] {
-    let mut color = preview_3d_color_for_block(palette, state, biome);
+    let mut color = preview_3d_block_color(palette, state, biome);
     color[3] = PREVIEW_3D_LAVA_ALPHA;
     color
 }
 
-fn preview_3d_material_block_name_for_state<'a>(
+fn preview_3d_material_block_name<'a>(
     state: &'a BlockState,
     block_class: Preview3dBlockClass,
 ) -> Cow<'a, str> {
     match block_class {
         Preview3dBlockClass::Water => Cow::Borrowed("minecraft:water"),
         Preview3dBlockClass::Lava => Cow::Borrowed("minecraft:lava"),
-        _ => detail_material_block_name_for_state(&preview_3d_block_state_query(state))
+        _ => detail_material_block_name(&preview_3d_block_state_query(state))
             .unwrap_or_else(|| Cow::Borrowed(&state.name)),
     }
 }
@@ -5170,30 +5192,27 @@ fn preview_3d_weighted_channel(base: u8, target: u8, base_weight: u16, target_we
     u8::try_from(value).unwrap_or(u8::MAX)
 }
 
-fn preview_3d_material_name_for_block(
-    name: &str,
-    block_class: Preview3dBlockClass,
-) -> Preview3dMaterialName {
+fn preview_3d_material_name(name: &str, block_class: Preview3dBlockClass) -> Preview3dMaterialName {
     let block = match block_class {
         Preview3dBlockClass::Water => "minecraft:water",
         Preview3dBlockClass::Lava => "minecraft:lava",
         _ => name,
     };
-    Arc::from(block_export_material_name_for_block(block))
+    Arc::from(obj_material_name(block))
 }
 
-fn preview_3d_material_name_for_face(
+fn preview_3d_face_material_name(
     base: Preview3dMaterialName,
     normal: [i32; 3],
 ) -> Preview3dMaterialName {
-    Arc::from(block_export_material_name_for_face(base.as_ref(), normal))
+    Arc::from(obj_face_material_name(base.as_ref(), normal))
 }
 
-fn preview_3d_material_name_for_plane(
+fn preview_3d_plane_material_name(
     base: Preview3dMaterialName,
     plane: &Preview3dPlane,
 ) -> Preview3dMaterialName {
-    Arc::from(block_export_material_name_for_plane(
+    Arc::from(obj_plane_material_name(
         base.as_ref(),
         plane.normal,
         plane.material_slot.as_deref(),
@@ -5205,7 +5224,7 @@ fn preview_3d_fit_scale(horizontal_span: f32, vertical_span: f32) -> f32 {
     1.48 / fitted_span.max(1.0)
 }
 
-fn preview_3d_projection_for_zoom(zoom: f32) -> (f32, f32) {
+fn preview_3d_zoom_projection(zoom: f32) -> (f32, f32) {
     let zoom = zoom.clamp(PREVIEW_3D_MIN_ZOOM, PREVIEW_3D_MAX_ZOOM);
     let geometric_zoom = zoom.min(PREVIEW_3D_MAX_GEOMETRIC_ZOOM);
     let optical_zoom = (zoom / geometric_zoom).max(1.0);
@@ -5575,7 +5594,7 @@ fn preview_3d_view_proj_model(
     let eye = camera.position;
     let look_at = vec3_add(eye, camera.forward());
     let view = mat4_look_at(eye, look_at, preview_3d_camera_up(pitch));
-    let (geometric_zoom, vertical_fov) = preview_3d_projection_for_zoom(camera.zoom);
+    let (geometric_zoom, vertical_fov) = preview_3d_zoom_projection(camera.zoom);
     let proj = mat4_perspective(
         aspect.max(0.1),
         vertical_fov,
@@ -5620,7 +5639,7 @@ pub(super) fn preview_3d_viewport_parameters(
     let forward = camera.forward();
     let target = eye + Vec3::new(forward[0], forward[1], forward[2]);
     let up = preview_3d_camera_up(pitch);
-    let (geometric_zoom, vertical_fov) = preview_3d_projection_for_zoom(camera.zoom);
+    let (geometric_zoom, vertical_fov) = preview_3d_zoom_projection(camera.zoom);
     let camera = Camera::perspective(
         eye,
         target,
@@ -5877,8 +5896,7 @@ fn preview_3d_block_face_from_direction(direction: Preview3dCardinalDirection) -
 mod tests {
     use super::*;
     use ::bedrock_world::editor::{BlockOffset, BlockPlacementPlan, PlacementBlock};
-    use bedrock_block_model::canonical_block_name_for_state;
-
+    use bedrock_block_model::canonical_block_name;
 
     #[test]
     fn procedural_cuboids_without_uvs_get_the_full_texture_tile() {
@@ -5896,7 +5914,7 @@ mod tests {
             [1, 0, 0],
             [-1, 0, 0],
         ] {
-            assert_eq!(preview.face_uv_for_normal(normal), Some(expected), "{normal:?}");
+            assert_eq!(preview.face_uv(normal), Some(expected), "{normal:?}");
         }
     }
 
@@ -6337,7 +6355,7 @@ mod tests {
                 candidate.state.name
             );
             if candidate.top_color[3] == 255 && candidate.side_color[3] == 255 {
-                let faces = preview_3d_face_colors_for_block(palette, &candidate.state, None);
+                let faces = preview_3d_block_face_colors(palette, &candidate.state, None);
                 assert_eq!(
                     faces.up,
                     candidate
@@ -6373,7 +6391,7 @@ mod tests {
         let plan = BlockPlacementPlan::new(blocks).expect("plan");
         let structure = ::bedrock_world::structure::McStructureFile::from_placement_plan(&plan)
             .expect("structure");
-        let mesh = load_preview_3d_mesh_from_mcstructure_blocking(
+        let mesh = load_structure_mesh(
             &structure,
             ChunkPos {
                 x: 0,
@@ -6419,7 +6437,7 @@ mod tests {
             NbtTag::String("sunflower".to_string()),
         );
 
-        let shape = preview_3d_resolved_detail_shape_for_block(
+        let shape = preview_3d_resolved_detail_shape(
             &repository,
             &state,
             Preview3dBlockClass::DetailOpaque,
@@ -6427,7 +6445,7 @@ mod tests {
         .unwrap_or_else(|| panic!("sunflower geometry should resolve"));
 
         assert_eq!(
-            canonical_block_name_for_state(&preview_3d_block_state_query(&state)),
+            canonical_block_name(&preview_3d_block_state_query(&state)),
             "minecraft:sunflower"
         );
         assert_eq!(shape.cuboids.len(), 1);
@@ -6467,7 +6485,7 @@ mod tests {
             }
         }));
 
-        let shape = preview_3d_resolved_detail_shape_for_block(
+        let shape = preview_3d_resolved_detail_shape(
             &repository,
             &test_block_state("minecraft:blue_shulker_box"),
             Preview3dBlockClass::DetailOpaque,
@@ -6531,68 +6549,54 @@ mod tests {
             test_block_state_with_tag("minecraft:shulker_box", "color", NbtTag::Byte(11));
 
         assert_eq!(
-            canonical_block_name_for_state(&preview_3d_block_state_query(&red_flower)),
+            canonical_block_name(&preview_3d_block_state_query(&red_flower)),
             "minecraft:blue_orchid"
         );
         assert_eq!(
-            canonical_block_name_for_state(&preview_3d_block_state_query(&carpet)),
+            canonical_block_name(&preview_3d_block_state_query(&carpet)),
             "minecraft:red_carpet"
         );
         assert_eq!(
-            preview_3d_material_block_name_for_state(&carpet, Preview3dBlockClass::DetailOpaque)
-                .as_ref(),
+            preview_3d_material_block_name(&carpet, Preview3dBlockClass::DetailOpaque).as_ref(),
             "minecraft:red_wool"
         );
         assert_eq!(
-            canonical_block_name_for_state(&preview_3d_block_state_query(&numeric_carpet)),
+            canonical_block_name(&preview_3d_block_state_query(&numeric_carpet)),
             "minecraft:blue_carpet"
         );
         assert_eq!(
-            preview_3d_material_block_name_for_state(
-                &numeric_carpet,
-                Preview3dBlockClass::DetailOpaque
-            )
-            .as_ref(),
+            preview_3d_material_block_name(&numeric_carpet, Preview3dBlockClass::DetailOpaque)
+                .as_ref(),
             "minecraft:blue_wool"
         );
         assert_eq!(
-            canonical_block_name_for_state(&preview_3d_block_state_query(&spruce_fence)),
+            canonical_block_name(&preview_3d_block_state_query(&spruce_fence)),
             "minecraft:spruce_fence"
         );
         assert_eq!(
-            preview_3d_material_block_name_for_state(
-                &spruce_fence,
-                Preview3dBlockClass::DetailOpaque
-            )
-            .as_ref(),
+            preview_3d_material_block_name(&spruce_fence, Preview3dBlockClass::DetailOpaque)
+                .as_ref(),
             "minecraft:spruce_planks"
         );
         assert_eq!(
-            canonical_block_name_for_state(&preview_3d_block_state_query(&brick_wall)),
+            canonical_block_name(&preview_3d_block_state_query(&brick_wall)),
             "minecraft:brick_wall"
         );
         assert_eq!(
-            preview_3d_material_block_name_for_state(
-                &brick_wall,
-                Preview3dBlockClass::DetailOpaque
-            )
-            .as_ref(),
+            preview_3d_material_block_name(&brick_wall, Preview3dBlockClass::DetailOpaque).as_ref(),
             "minecraft:bricks"
         );
         assert_eq!(
-            canonical_block_name_for_state(&preview_3d_block_state_query(&end_brick_wall)),
+            canonical_block_name(&preview_3d_block_state_query(&end_brick_wall)),
             "minecraft:end_brick_wall"
         );
         assert_eq!(
-            preview_3d_material_block_name_for_state(
-                &end_brick_wall,
-                Preview3dBlockClass::DetailOpaque
-            )
-            .as_ref(),
+            preview_3d_material_block_name(&end_brick_wall, Preview3dBlockClass::DetailOpaque)
+                .as_ref(),
             "minecraft:end_bricks"
         );
         assert_eq!(
-            canonical_block_name_for_state(&preview_3d_block_state_query(&blue_shulker)),
+            canonical_block_name(&preview_3d_block_state_query(&blue_shulker)),
             "minecraft:blue_shulker_box"
         );
         assert_eq!(
@@ -6771,8 +6775,9 @@ mod tests {
             })
             .collect();
         let chunk = test_render_chunk_with_subchunks(subchunks);
-        let blocks = preview_3d_collect_chunk_blocks_with_biome_blend(&chunk, None, None, |y| y < 0)
-            .expect("selected subchunk should be collected");
+        let blocks =
+            preview_3d_collect_chunk_blocks_with_biome_blend(&chunk, None, None, |y| y < 0)
+                .expect("selected subchunk should be collected");
         assert_eq!(
             blocks.occupied,
             HashSet::from_iter([BlockKey { x: 0, y: -16, z: 0 }]),
@@ -7205,10 +7210,13 @@ mod tests {
             camera.rotate_orbit(dx, dy);
             let forward = camera.forward();
             let aimed = vec3_add(
-                camera.position, vec3_scale(forward, PREVIEW_3D_DEFAULT_DISTANCE),
+                camera.position,
+                vec3_scale(forward, PREVIEW_3D_DEFAULT_DISTANCE),
             );
-            assert!(vec3_length_squared(aimed) < 1.0e-4,
-                "orbit camera should keep the model center on its forward ray");
+            assert!(
+                vec3_length_squared(aimed) < 1.0e-4,
+                "orbit camera should keep the model center on its forward ray"
+            );
         }
     }
 
@@ -7708,7 +7716,7 @@ mod tests {
     #[test]
     fn map_viewer_preview_3d_fence_and_wall_shapes_follow_connection_state() {
         let fence = test_block_state_with_tag("minecraft:oak_fence", "north", NbtTag::Byte(1));
-        let fence_shape = preview_3d_detail_shape_for_block(&fence, None)
+        let fence_shape = preview_3d_detail_shape(&fence, None)
             .unwrap_or_else(|| panic!("fence should have detail shape"));
         assert_eq!(fence_shape.cuboids.len(), 3);
         assert!(
@@ -7733,7 +7741,7 @@ mod tests {
             states: wall_states,
             version: None,
         };
-        let wall_shape = preview_3d_detail_shape_for_block(&wall, None)
+        let wall_shape = preview_3d_detail_shape(&wall, None)
             .unwrap_or_else(|| panic!("wall should have detail shape"));
         assert_eq!(wall_shape.cuboids.len(), 2);
         assert!(
@@ -7760,7 +7768,7 @@ mod tests {
             states: inner_states,
             version: None,
         };
-        let inner_shape = preview_3d_detail_shape_for_block(&inner, None)
+        let inner_shape = preview_3d_detail_shape(&inner, None)
             .unwrap_or_else(|| panic!("inner stairs should have detail shape"));
 
         let mut outer_states = BTreeMap::new();
@@ -7777,7 +7785,7 @@ mod tests {
             states: outer_states,
             version: None,
         };
-        let outer_shape = preview_3d_detail_shape_for_block(&outer, None)
+        let outer_shape = preview_3d_detail_shape(&outer, None)
             .unwrap_or_else(|| panic!("outer stairs should have detail shape"));
 
         assert_eq!(inner_shape.cuboids.len(), 3);
@@ -7792,11 +7800,8 @@ mod tests {
 
     #[test]
     fn map_viewer_preview_3d_shulker_box_shape_is_closed_shell_without_inner_head() {
-        let shape = preview_3d_detail_shape_for_block(
-            &test_block_state("minecraft:blue_shulker_box"),
-            None,
-        )
-        .unwrap_or_else(|| panic!("shulker box should have detail shape"));
+        let shape = preview_3d_detail_shape(&test_block_state("minecraft:blue_shulker_box"), None)
+            .unwrap_or_else(|| panic!("shulker box should have detail shape"));
 
         assert_eq!(shape.cuboids.len(), 2);
         assert!(
@@ -7811,7 +7816,7 @@ mod tests {
     #[test]
     fn map_viewer_preview_3d_panes_iron_bars_and_plants_use_cutout_detail_shapes() {
         let iron_bars = test_block_state_with_tag("minecraft:iron_bars", "north", NbtTag::Byte(1));
-        let bars_shape = preview_3d_detail_shape_for_block(&iron_bars, None)
+        let bars_shape = preview_3d_detail_shape(&iron_bars, None)
             .unwrap_or_else(|| panic!("iron bars should have detail shape"));
         assert_eq!(bars_shape.cuboids.len(), 2);
         assert!(
@@ -7822,7 +7827,7 @@ mod tests {
         );
 
         let isolated_bars_shape =
-            preview_3d_detail_shape_for_block(&test_block_state("minecraft:iron_bars"), None)
+            preview_3d_detail_shape(&test_block_state("minecraft:iron_bars"), None)
                 .unwrap_or_else(|| panic!("isolated iron bars should have detail shape"));
         assert_eq!(isolated_bars_shape.cuboids.len(), 3);
         assert!(
@@ -7835,13 +7840,12 @@ mod tests {
                 == 2
         );
 
-        let plant_shape =
-            preview_3d_detail_shape_for_block(&test_block_state("minecraft:poppy"), None)
-                .unwrap_or_else(|| panic!("plant should have detail shape"));
+        let plant_shape = preview_3d_detail_shape(&test_block_state("minecraft:poppy"), None)
+            .unwrap_or_else(|| panic!("plant should have detail shape"));
         assert!(plant_shape.cuboids.is_empty());
         assert_eq!(plant_shape.planes.len(), 2);
 
-        let web_shape = preview_3d_detail_shape_for_block(&test_block_state("minecraft:web"), None)
+        let web_shape = preview_3d_detail_shape(&test_block_state("minecraft:web"), None)
             .unwrap_or_else(|| panic!("web should have detail shape"));
         assert!(web_shape.cuboids.is_empty());
         assert_eq!(web_shape.planes.len(), 2);
@@ -7860,7 +7864,7 @@ mod tests {
             states,
             version: None,
         };
-        let shape = preview_3d_detail_shape_for_block(&redstone, None)
+        let shape = preview_3d_detail_shape(&redstone, None)
             .unwrap_or_else(|| panic!("redstone wire should have detail shape"));
 
         assert!(shape.cuboids.is_empty());
@@ -7937,7 +7941,7 @@ mod tests {
 
     #[test]
     fn map_viewer_preview_3d_chest_faces_use_full_inventory_textures() {
-        let shape = preview_3d_detail_shape_for_block(&test_block_state("minecraft:chest"), None)
+        let shape = preview_3d_detail_shape(&test_block_state("minecraft:chest"), None)
             .unwrap_or_else(|| panic!("chest should have detail shape"));
         let body = shape
             .cuboids
@@ -7964,7 +7968,7 @@ mod tests {
             NbtTag::String("brick".to_string()),
         );
         assert_eq!(
-            preview_3d_material_block_name_for_state(&state, Preview3dBlockClass::Opaque).as_ref(),
+            preview_3d_material_block_name(&state, Preview3dBlockClass::Opaque).as_ref(),
             "minecraft:bricks"
         );
     }
@@ -7979,7 +7983,7 @@ mod tests {
             states: trapdoor_states,
             version: None,
         };
-        let trapdoor_shape = preview_3d_detail_shape_for_block(&trapdoor, None)
+        let trapdoor_shape = preview_3d_detail_shape(&trapdoor, None)
             .unwrap_or_else(|| panic!("trapdoor should have detail shape"));
         assert!(
             trapdoor_shape
@@ -7995,7 +7999,7 @@ mod tests {
             "minecraft:block_face",
             NbtTag::String("floor".to_string()),
         );
-        let torch_shape = preview_3d_detail_shape_for_block(&torch, None)
+        let torch_shape = preview_3d_detail_shape(&torch, None)
             .unwrap_or_else(|| panic!("torch should have detail shape"));
         assert!(torch_shape.cuboids[0].max[0] - torch_shape.cuboids[0].min[0] < 0.25);
         assert!(torch_shape.cuboids[0].max[1] <= 0.625);
@@ -8005,7 +8009,7 @@ mod tests {
             "portal_axis",
             NbtTag::String("x".to_string()),
         );
-        let portal_shape = preview_3d_detail_shape_for_block(&portal, None)
+        let portal_shape = preview_3d_detail_shape(&portal, None)
             .unwrap_or_else(|| panic!("portal should have detail shape"));
         assert!(portal_shape.cuboids[0].max[2] - portal_shape.cuboids[0].min[2] < 0.08);
     }
@@ -8062,8 +8066,8 @@ mod tests {
         let grass_state = test_block_state("minecraft:grass_block");
         let water_state = test_block_state("minecraft:water");
 
-        let grass_colors = preview_3d_face_colors_for_block(&palette, &grass_state, None);
-        let water_color = preview_3d_water_color_for_block(&palette, &water_state, None);
+        let grass_colors = preview_3d_block_face_colors(&palette, &grass_state, None);
+        let water_color = preview_3d_water_color(&palette, &water_state, None);
         let grass_tint = preview_3d_color_from_rgba(
             palette
                 .surface_block_tint("minecraft:grass_block", None)
@@ -8087,7 +8091,7 @@ mod tests {
         );
         let water_state = test_block_state("minecraft:water");
 
-        let water_color = preview_3d_water_color_for_block(&palette, &water_state, None);
+        let water_color = preview_3d_water_color(&palette, &water_state, None);
 
         assert!(water_color[2] > water_color[1]);
         assert!(water_color[1] > water_color[0]);
@@ -8130,9 +8134,9 @@ mod tests {
             version: None,
         };
 
-        let grass_color = preview_3d_color_for_block(&palette, &grass_block_state, None);
-        let legacy_grass_color = preview_3d_color_for_block(&palette, &legacy_grass_state, None);
-        let leaf_color = preview_3d_color_for_block(&palette, &leaf_state, None);
+        let grass_color = preview_3d_block_color(&palette, &grass_block_state, None);
+        let legacy_grass_color = preview_3d_block_color(&palette, &legacy_grass_state, None);
+        let leaf_color = preview_3d_block_color(&palette, &leaf_state, None);
 
         assert_eq!(
             grass_color,
@@ -8220,8 +8224,8 @@ mod tests {
         let legacy_state = test_block_state("minecraft:tallgrass");
         let short_grass_state = test_block_state("minecraft:short_grass");
 
-        let legacy_color = preview_3d_color_for_block(&palette, &legacy_state, None);
-        let short_grass_color = preview_3d_color_for_block(&palette, &short_grass_state, None);
+        let legacy_color = preview_3d_block_color(&palette, &legacy_state, None);
+        let short_grass_color = preview_3d_block_color(&palette, &short_grass_state, None);
 
         assert_eq!(legacy_color, short_grass_color);
         assert!(
@@ -8240,11 +8244,8 @@ mod tests {
         );
         let tall_grass = test_block_state("minecraft:tall_grass");
 
-        let color = preview_3d_color_for_block(&palette, &double_plant, None);
-        assert_eq!(
-            color,
-            preview_3d_color_for_block(&palette, &tall_grass, None)
-        );
+        let color = preview_3d_block_color(&palette, &double_plant, None);
+        assert_eq!(color, preview_3d_block_color(&palette, &tall_grass, None));
         assert!(
             color[1] > color[0] && color[1] > color[2],
             "double plant grass should use the biome grass tint, got {color:?}"
@@ -8361,7 +8362,7 @@ mod tests {
             states: Default::default(),
             version: None,
         };
-        let color = preview_3d_transparent_color_for_block(&palette, &state, None);
+        let color = preview_3d_transparent_color(&palette, &state, None);
         let expected = palette
             .block_color("minecraft:white_stained_glass")
             .to_array();
@@ -8673,7 +8674,7 @@ mod tests {
 
     #[test]
     fn map_viewer_preview_3d_uses_optical_zoom_before_model_enters_camera() {
-        let (geometric_zoom, vertical_fov) = preview_3d_projection_for_zoom(8.0);
+        let (geometric_zoom, vertical_fov) = preview_3d_zoom_projection(8.0);
 
         assert!(geometric_zoom <= PREVIEW_3D_MAX_GEOMETRIC_ZOOM);
         assert!(vertical_fov < PREVIEW_3D_BASE_FOV_Y_RADIANS);
@@ -8935,9 +8936,11 @@ impl Preview3dChunkBlocks {
             ))
             .saturating_add(fluids(self.water_blocks.capacity()))
             .saturating_add(fluids(self.lava_blocks.capacity()))
-            .saturating_add(self.partial_fluid_heights.capacity().saturating_mul(
-                std::mem::size_of::<(BlockKey, f32)>() * 2
-            ))
+            .saturating_add(
+                self.partial_fluid_heights
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<(BlockKey, f32)>() * 2),
+            )
     }
 }
 
@@ -9064,7 +9067,14 @@ impl Preview3dMeshBuilder {
                     return None;
                 }
                 let mut faces = Vec::new();
-                self.push_stream_cube_faces(blocks, &mut faces, selections.get(pos), true, *pos, hidden);
+                self.push_stream_cube_faces(
+                    blocks,
+                    &mut faces,
+                    selections.get(pos),
+                    true,
+                    *pos,
+                    hidden,
+                );
                 self.push_stream_detail_faces(blocks, &mut faces, *pos, hidden);
                 self.push_stream_fluid_faces(blocks, &mut faces, *pos, hidden);
                 (!faces.is_empty()).then_some(Preview3dStreamChunkFaces {
@@ -9202,11 +9212,8 @@ impl Preview3dMeshBuilder {
                             faces.push(scaled_face(
                                 key,
                                 face,
-                                block.colors.color_for_normal(face.normal),
-                                preview_3d_material_name_for_face(
-                                    block.material.clone(),
-                                    face.normal,
-                                ),
+                                block.colors.color_from_normal(face.normal),
+                                preview_3d_face_material_name(block.material.clone(), face.normal),
                                 Preview3dStreamPass::Opaque,
                             ));
                         }
@@ -9225,11 +9232,8 @@ impl Preview3dMeshBuilder {
                             faces.push(scaled_face(
                                 key,
                                 face,
-                                block.colors.color_for_normal(face.normal),
-                                preview_3d_material_name_for_face(
-                                    block.material.clone(),
-                                    face.normal,
-                                ),
+                                block.colors.color_from_normal(face.normal),
+                                preview_3d_face_material_name(block.material.clone(), face.normal),
                                 Preview3dStreamPass::Glass,
                             ));
                         }
@@ -9295,8 +9299,8 @@ impl Preview3dMeshBuilder {
                 let mut emitted = preview_3d_stream_cube_face(
                     block.key,
                     face,
-                    block.colors.color_for_normal(face.normal),
-                    preview_3d_material_name_for_face(block.material.clone(), face.normal),
+                    block.colors.color_from_normal(face.normal),
+                    preview_3d_face_material_name(block.material.clone(), face.normal),
                     Preview3dStreamPass::Opaque,
                 );
                 emitted.ambient_light = self.stream_ambient_light(block.key, face.normal);
@@ -9314,8 +9318,8 @@ impl Preview3dMeshBuilder {
                 faces.push(preview_3d_stream_cube_face(
                     block.key,
                     face,
-                    block.colors.color_for_normal(face.normal),
-                    preview_3d_material_name_for_face(block.material.clone(), face.normal),
+                    block.colors.color_from_normal(face.normal),
+                    preview_3d_face_material_name(block.material.clone(), face.normal),
                     Preview3dStreamPass::Glass,
                 ));
             }
@@ -9351,10 +9355,7 @@ impl Preview3dMeshBuilder {
                 if (block.normalized_name.starts_with("minecraft:")
                     || !block.normalized_name.contains(':'))
                     && (-2_i32..=2).all(|dy| {
-                        hidden.contains(&(
-                            pos,
-                            block.key.y.saturating_add(dy).div_euclid(64),
-                        ))
+                        hidden.contains(&(pos, block.key.y.saturating_add(dy).div_euclid(64)))
                     })
                 {
                     continue;
@@ -9363,7 +9364,7 @@ impl Preview3dMeshBuilder {
                     shared_shapes
                         .entry(gpu_models::QueryKey(query))
                         .or_insert_with_key(|key| {
-                            model_shape_for_block_state(&key.0)
+                            resolve_block_state_shape(&key.0)
                                 .map(preview_3d_detail_shape_from_model_shape)
                                 .map(Arc::new)
                         })
@@ -9498,7 +9499,11 @@ mod streaming_fluid_level_tests {
 
     #[test]
     fn unloaded_water_seam_waits_for_verified_neighbor_air() {
-        let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: bedrock_render::Dimension::Overworld,
+        };
         let neighbor = ChunkPos { x: 1, z: 0, ..pos };
         let mut water = liquid(15, 1.0);
         water.key.y = 80;
@@ -9506,12 +9511,17 @@ mod streaming_fluid_level_tests {
         blocks.water.insert(water.key);
         blocks.water_blocks.push(water.clone());
         let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
-            dimension: pos.dimension, min_chunk_x: 0, max_chunk_x: 1,
-            min_chunk_z: 0, max_chunk_z: 0,
+            dimension: pos.dimension,
+            min_chunk_x: 0,
+            max_chunk_x: 1,
+            min_chunk_z: 0,
+            max_chunk_z: 0,
         });
         builder.insert_stream_chunk(pos, blocks);
-        let east = FACE_DEFINITIONS.into_iter()
-            .find(|face| face.normal == [1, 0, 0]).unwrap();
+        let east = FACE_DEFINITIONS
+            .into_iter()
+            .find(|face| face.normal == [1, 0, 0])
+            .unwrap();
         // Unknown is neither air nor solid: don't allocate a fake water wall.
         assert_eq!(
             builder.exposed_fluid_face_bottom(&water, east, Preview3dBlockClass::Water),
@@ -9527,7 +9537,11 @@ mod streaming_fluid_level_tests {
 
     #[test]
     fn hidden_detail_sections_skip_tessellation_before_cpu_faces_exist() {
-        let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: bedrock_render::Dimension::Overworld,
+        };
         let mut blocks = Preview3dChunkBlocks::default();
         blocks.detail_blocks.push(Preview3dDetailBlock {
             key: BlockKey { x: 8, y: 90, z: 8 },
@@ -9541,48 +9555,73 @@ mod streaming_fluid_level_tests {
             material: Arc::from("minecraft:oak_fence"),
         });
         let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
-            dimension: pos.dimension, min_chunk_x: 0, max_chunk_x: 0,
-            min_chunk_z: 0, max_chunk_z: 0,
+            dimension: pos.dimension,
+            min_chunk_x: 0,
+            max_chunk_x: 0,
+            min_chunk_z: 0,
+            max_chunk_z: 0,
         });
         builder.insert_stream_chunk(pos, blocks);
         assert!(!builder.build_stream_faces(&[pos]).is_empty());
         let hidden = BTreeSet::from([(pos, 1)]);
         assert!(
-            builder.build_stream_faces_with_gpu_cubes_skipping(
-                &[pos], &std::collections::HashMap::new(),
-                &std::collections::HashSet::new(), &hidden,
-            ).is_empty(),
+            builder
+                .build_stream_faces_with_gpu_cubes_skipping(
+                    &[pos],
+                    &std::collections::HashMap::new(),
+                    &std::collections::HashSet::new(),
+                    &hidden,
+                )
+                .is_empty(),
             "hidden detailed models must not generate CPU quad vertices",
         );
     }
 
     #[test]
     fn adjacent_partial_water_keeps_only_the_exposed_upper_strip() {
-        let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: bedrock_render::Dimension::Overworld,
+        };
         let mut blocks = Preview3dChunkBlocks::default();
         for fluid in [liquid(7, 1.0), liquid(8, 0.5)] {
             blocks.water.insert(fluid.key);
             blocks.water_blocks.push(fluid);
         }
         let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
-            dimension: pos.dimension, min_chunk_x: 0, max_chunk_x: 0,
-            min_chunk_z: 0, max_chunk_z: 0,
+            dimension: pos.dimension,
+            min_chunk_x: 0,
+            max_chunk_x: 0,
+            min_chunk_z: 0,
+            max_chunk_z: 0,
         });
         builder.insert_stream_chunk(pos, blocks);
-        let face = FACE_DEFINITIONS.into_iter()
-            .find(|face| face.normal == [1, 0, 0]).unwrap();
+        let face = FACE_DEFINITIONS
+            .into_iter()
+            .find(|face| face.normal == [1, 0, 0])
+            .unwrap();
         let upper = liquid(7, 1.0);
         let lower = liquid(8, 0.5);
-        assert_eq!(builder.exposed_fluid_face_bottom(
-            &upper, face, Preview3dBlockClass::Water,
-        ), Some(0.5));
-        let reverse = FACE_DEFINITIONS.into_iter()
-            .find(|face| face.normal == [-1, 0, 0]).unwrap();
-        assert_eq!(builder.exposed_fluid_face_bottom(
-            &lower, reverse, Preview3dBlockClass::Water,
-        ), None);
+        assert_eq!(
+            builder.exposed_fluid_face_bottom(&upper, face, Preview3dBlockClass::Water,),
+            Some(0.5)
+        );
+        let reverse = FACE_DEFINITIONS
+            .into_iter()
+            .find(|face| face.normal == [-1, 0, 0])
+            .unwrap();
+        assert_eq!(
+            builder.exposed_fluid_face_bottom(&lower, reverse, Preview3dBlockClass::Water,),
+            None
+        );
         let exposed = preview_3d_fluid_face_segment(
-            upper.key, face, upper.color, upper.material.clone(), 0.5, upper.height,
+            upper.key,
+            face,
+            upper.color,
+            upper.material.clone(),
+            0.5,
+            upper.height,
         );
         let heights = exposed.corners.map(|corner| corner[1]);
         assert!(heights.contains(&64.5));
@@ -9600,14 +9639,21 @@ mod streaming_fluid_level_tests {
         // neighbour's surface; the low cell may be culled but its level is
         // still needed as neighbor metadata.
         for (dx, dy, dz) in [
-            (0, 0, 0), (1, 0, 0), (-1, 0, 0),
-            (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1),
+            (0, 0, 0),
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
         ] {
             let block = if dx == 1 && dy == 0 && dz == 0 {
                 low.clone()
             } else {
                 let mut value = high.clone();
-                value.key.x += dx; value.key.y += dy; value.key.z += dz;
+                value.key.x += dx;
+                value.key.y += dy;
+                value.key.z += dz;
                 value
             };
             blocks.water.insert(block.key);
@@ -9615,7 +9661,12 @@ mod streaming_fluid_level_tests {
         }
         blocks.rebuild_neighbor_indexes();
         preview_3d_filter_internal_block_records(&mut blocks);
-        assert!(blocks.water_blocks.iter().any(|block| block.key == high.key));
+        assert!(
+            blocks
+                .water_blocks
+                .iter()
+                .any(|block| block.key == high.key)
+        );
         assert_eq!(blocks.partial_fluid_heights.get(&low.key), Some(&0.5));
         blocks.rebuild_neighbor_indexes();
         assert_eq!(blocks.partial_fluid_heights.get(&low.key), Some(&0.5));
@@ -9623,7 +9674,11 @@ mod streaming_fluid_level_tests {
 
     #[test]
     fn boundary_halo_retains_partial_fluid_level_without_interior_duplicates() {
-        let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: bedrock_render::Dimension::Overworld,
+        };
         let mut blocks = Preview3dChunkBlocks::default();
         for fluid in [liquid(0, 0.4), liquid(7, 0.7)] {
             blocks.water.insert(fluid.key);
@@ -9631,18 +9686,27 @@ mod streaming_fluid_level_tests {
         }
         let halo = blocks.boundary_snapshot();
         assert_eq!(halo.partial_fluid_heights.len(), 1);
-        assert_eq!(halo.partial_fluid_heights.get(&liquid(0, 0.4).key), Some(&0.4));
+        assert_eq!(
+            halo.partial_fluid_heights.get(&liquid(0, 0.4).key),
+            Some(&0.4)
+        );
         let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
-            dimension: pos.dimension, min_chunk_x: -1, max_chunk_x: 0,
-            min_chunk_z: 0, max_chunk_z: 0,
+            dimension: pos.dimension,
+            min_chunk_x: -1,
+            max_chunk_x: 0,
+            min_chunk_z: 0,
+            max_chunk_z: 0,
         });
         builder.insert_stream_boundary(pos, Arc::new(halo));
         let higher = liquid(-1, 1.0);
-        let face = FACE_DEFINITIONS.into_iter()
-            .find(|face| face.normal == [1, 0, 0]).unwrap();
-        assert_eq!(builder.exposed_fluid_face_bottom(
-            &higher, face, Preview3dBlockClass::Water,
-        ), Some(0.4));
+        let face = FACE_DEFINITIONS
+            .into_iter()
+            .find(|face| face.normal == [1, 0, 0])
+            .unwrap();
+        assert_eq!(
+            builder.exposed_fluid_face_bottom(&higher, face, Preview3dBlockClass::Water,),
+            Some(0.4)
+        );
     }
 }
 
@@ -9666,16 +9730,16 @@ mod portal_face_pruning_tests {
         });
         builder.insert_stream_chunk(
             pos,
-            Preview3dChunkBlocks::test_cubes(&[
-                [-15, 8, 3], [-14, 63, 3], [-13, 70, 3],
-            ]),
+            Preview3dChunkBlocks::test_cubes(&[[-15, 8, 3], [-14, 63, 3], [-13, 70, 3]]),
         );
         let hidden = BTreeSet::from([(pos, 0)]);
         assert!(section_is_hidden_with_face_halo(&hidden, pos, 8));
         assert!(!section_is_hidden_with_face_halo(&hidden, pos, 63));
         assert!(!section_is_hidden_with_face_halo(&hidden, pos, 70));
         assert!(!section_is_hidden_with_face_halo(
-            &BTreeSet::from([(pos, -1)]), pos, -1,
+            &BTreeSet::from([(pos, -1)]),
+            pos,
+            -1,
         ));
         let ordinary = builder.build_stream_faces(&[pos]);
         let trimmed = builder.build_stream_faces_with_gpu_cubes_skipping(
@@ -9687,12 +9751,18 @@ mod portal_face_pruning_tests {
         assert_eq!(ordinary.len(), 1);
         assert_eq!(trimmed.len(), 1);
         assert!(trimmed[0].faces.len() < ordinary[0].faces.len());
-        assert!(trimmed[0].faces.iter().any(|face|
-            face.corners.iter().any(|p| p[1] >= 70.0)
-        ));
-        assert!(!trimmed[0].faces.iter().any(|face|
-            face.corners.iter().all(|p| p[1] <= 9.0)
-        ));
+        assert!(
+            trimmed[0]
+                .faces
+                .iter()
+                .any(|face| face.corners.iter().any(|p| p[1] >= 70.0))
+        );
+        assert!(
+            !trimmed[0]
+                .faces
+                .iter()
+                .any(|face| face.corners.iter().all(|p| p[1] <= 9.0))
+        );
     }
 }
 

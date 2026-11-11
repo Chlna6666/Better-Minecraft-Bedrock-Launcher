@@ -300,14 +300,9 @@ fn start_server_mutation_task(
     title: &'static str,
     detail: String,
 ) -> Result<String, String> {
-    let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        title,
-        Some(detail),
-        "updating_servers",
-        None,
-        false,
-    );
+    let task_id = crate::tasks::task_manager::create_task(
+        crate::tasks::task_manager::TaskOptions::new(title, "updating_servers").detail(detail),
+    )?;
     crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
 
     let worker_task_id = task_id.clone();

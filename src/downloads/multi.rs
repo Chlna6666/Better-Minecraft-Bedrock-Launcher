@@ -21,9 +21,9 @@ use crate::downloads::single::download_file;
 use crate::http::proxy::{apply_download_request_headers, validate_download_response_headers};
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
-    ByteRangeVisualization, TaskControl, TaskVisualization, ThreadVisualization, is_cancelled_fast,
-    set_task_visualization, set_total, task_visualization_enabled, update_progress,
-    update_progress_with_visualization, wait_until_active_fast,
+    ByteRangeVisualization, ProgressUpdate, TaskControl, TaskVisualization, ThreadVisualization,
+    is_cancelled_fast, is_visualization_enabled, set_task_visualization, set_total,
+    update_progress, wait_until_active,
 };
 
 // =========================================================================
@@ -570,7 +570,7 @@ async fn set_download_visualization(
     current_item: Option<String>,
     visualization: &Mutex<DownloadVisualizationState>,
 ) {
-    if !task_visualization_enabled() {
+    if !is_visualization_enabled() {
         return;
     }
 
@@ -630,7 +630,7 @@ async fn take_download_visualization_throttled(
     visualization: &Mutex<DownloadVisualizationState>,
     last_emit_at: &Mutex<Instant>,
 ) -> Option<TaskVisualization> {
-    if !task_visualization_enabled() {
+    if !is_visualization_enabled() {
         return None;
     }
 
@@ -671,7 +671,7 @@ async fn set_download_visualization_throttled(
     last_emit_at: &Mutex<Instant>,
     force_emit: bool,
 ) -> bool {
-    if !task_visualization_enabled() {
+    if !is_visualization_enabled() {
         return false;
     }
 
@@ -851,7 +851,7 @@ async fn download_multi_partitioned(
         Instant::now() - Duration::from_millis(VISUALIZATION_EMIT_INTERVAL_MS),
     ));
 
-    if task_visualization_enabled() {
+    if is_visualization_enabled() {
         let (total_units, _) = scheduler.partition_summary_fast();
         set_download_visualization(
             task_id,
@@ -900,7 +900,7 @@ async fn download_multi_partitioned(
             let mut straggler_recovery_used = false;
 
             loop {
-                if !wait_until_active_fast(task_control.as_ref()).await {
+                if !wait_until_active(task_control.as_ref()).await {
                     return;
                 }
 
@@ -1085,7 +1085,7 @@ async fn download_multi_partitioned(
                         }
                     };
 
-                    if !wait_until_active_fast(task_control.as_ref()).await
+                    if !wait_until_active(task_control.as_ref()).await
                         || is_cancelled_fast(task_control.as_ref())
                     {
                         break;
@@ -1171,20 +1171,9 @@ async fn download_multi_partitioned(
                         )
                         .await;
                         if let Some(visualization) = visualization {
-                            update_progress_with_visualization(
-                                &task_id,
-                                pending_progress,
-                                Some(total),
-                                Some("downloading"),
-                                visualization,
-                            );
+                            update_progress(&task_id, ProgressUpdate::advance(pending_progress).total(total).stage("downloading").visualization(visualization));
                         } else {
-                            update_progress(
-                                &task_id,
-                                pending_progress,
-                                Some(total),
-                                Some("downloading"),
-                            );
+                            update_progress(&task_id, ProgressUpdate::advance(pending_progress).total(total).stage("downloading"));
                         }
                         pending_progress = 0;
                         last_update_time = Instant::now();
@@ -1227,7 +1216,7 @@ async fn download_multi_partitioned(
                 }
 
                 if pending_progress > 0 {
-                    update_progress(&task_id, pending_progress, Some(total), Some("downloading"));
+                    update_progress(&task_id, ProgressUpdate::advance(pending_progress).total(total).stage("downloading"));
                     pending_progress = 0;
                     last_update_time = Instant::now();
                 }
@@ -1401,7 +1390,10 @@ async fn download_multi_partitioned(
         .map(str::trim)
         .filter(|value| is_md5_digest(value))
     {
-        update_progress(task_id, 0, Some(total), Some("verifying"));
+        update_progress(
+            task_id,
+            ProgressUpdate::advance(0).total(total).stage("verifying"),
+        );
         match verify_md5(dest_path.as_path(), expected).await {
             Ok(true) => {}
             Ok(false) => {
@@ -1533,7 +1525,12 @@ pub async fn download_multi(
                 "multi-thread download failed; falling back to single-thread mode: {}",
                 error
             );
-            update_progress(task_id, 0, Some(total), Some("single_thread_fallback"));
+            update_progress(
+                task_id,
+                ProgressUpdate::advance(0)
+                    .total(total)
+                    .stage("single_thread_fallback"),
+            );
             remove_download_file_if_exists(dest.as_ref()).await?;
             download_file(
                 client,
@@ -1554,7 +1551,7 @@ pub async fn download_multi(
 mod tests {
     use super::*;
     use crate::result::CoreResult;
-    use crate::tasks::task_manager::{create_task_with_options, task_control};
+    use crate::tasks::task_manager::{TaskOptions, create_task, task_control};
     use std::io::{Error as IoError, ErrorKind};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -1859,7 +1856,12 @@ mod tests {
         remove_test_file_if_exists(&dest).await;
 
         let task_id = unique_task_id("multi-range-test");
-        create_task_with_options(Some(task_id.clone()), "downloading", None, true);
+        create_task(
+            TaskOptions::new("background task", "downloading")
+                .id(Some(task_id.clone()))
+                .pausable(true),
+        )
+        .expect("task id must be unique");
         let control = task_control(&task_id).expect("task control should exist");
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -1903,7 +1905,12 @@ mod tests {
         remove_test_file_if_exists(&dest).await;
 
         let task_id = unique_task_id("multi-slow-stealing-test");
-        create_task_with_options(Some(task_id.clone()), "downloading", None, true);
+        create_task(
+            TaskOptions::new("background task", "downloading")
+                .id(Some(task_id.clone()))
+                .pausable(true),
+        )
+        .expect("task id must be unique");
         let control = task_control(&task_id).expect("task control should exist");
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -1941,7 +1948,12 @@ mod tests {
         remove_test_file_if_exists(&dest).await;
 
         let task_id = unique_task_id("multi-stall-recovery-test");
-        create_task_with_options(Some(task_id.clone()), "downloading", None, true);
+        create_task(
+            TaskOptions::new("background task", "downloading")
+                .id(Some(task_id.clone()))
+                .pausable(true),
+        )
+        .expect("task id must be unique");
         let control = task_control(&task_id).expect("task control should exist");
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -1979,7 +1991,12 @@ mod tests {
         remove_test_file_if_exists(&dest).await;
 
         let task_id = unique_task_id("multi-range-fallback-test");
-        create_task_with_options(Some(task_id.clone()), "downloading", None, true);
+        create_task(
+            TaskOptions::new("background task", "downloading")
+                .id(Some(task_id.clone()))
+                .pausable(true),
+        )
+        .expect("task id must be unique");
         let control = task_control(&task_id).expect("task control should exist");
         let client = reqwest::Client::builder()
             .no_proxy()

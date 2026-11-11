@@ -6,7 +6,7 @@ use super::prelude::*;
 use super::tile_cache::decoded_tile_byte_len;
 use super::tile_render_core as core;
 use super::tile_state::MapRenderRange;
-use super::viewport::{region_render_range_for_viewport, tile_paint_rect};
+use super::viewport::{tile_render_range, tile_paint_rect};
 use bedrock_render::RenderLayout;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -41,7 +41,7 @@ pub(super) fn render_viewport_composite_stream(
         render_cancel,
     } = request;
     core::validate_ui_render_layout(layout)?;
-    let render_range = region_render_range_for_viewport(viewport, layout)
+    let render_range = tile_render_range(viewport, layout)
         .ok_or_else(|| "视口合成范围无效".to_string())?;
     let (image_width, image_height, output_scale) = viewport_composite_image_size(viewport)?;
     let compositor = Arc::new(Mutex::new(ProgressiveViewportCompositor::new(

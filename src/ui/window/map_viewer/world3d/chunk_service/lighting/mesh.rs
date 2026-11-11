@@ -19,11 +19,7 @@ impl ChunkLighting {
         if faces.is_empty() {
             return Err("模型缺少光照范围".to_string());
         }
-        let origin = Vec3::new(
-            min.x.floor() - 1.,
-            min.y.floor() - 1.,
-            min.z.floor() - 1.,
-        );
+        let origin = Vec3::new(min.x.floor() - 1., min.y.floor() - 1., min.z.floor() - 1.);
         let size = [
             (max.x.ceil() - origin.x + 1.) as u32,
             (max.y.ceil() - origin.y + 1.) as u32,

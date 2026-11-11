@@ -1,7 +1,7 @@
 use once_cell::sync::Lazy;
-use std::future::Future;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -308,20 +308,23 @@ struct Task {
 }
 
 impl Task {
-    fn new(
-        id: Arc<str>,
-        title: Arc<str>,
-        detail: Option<Arc<str>>,
-        stage: &str,
-        total: Option<u64>,
-        supports_pause: bool,
-        visibility: TaskVisibility,
-    ) -> Self {
+    fn new(id: Arc<str>, options: TaskOptions) -> Self {
+        let TaskOptions {
+            title,
+            detail,
+            stage,
+            total,
+            supports_pause,
+            visibility,
+            kind,
+            parent_id,
+            ..
+        } = options;
         let now = Instant::now();
         Self {
             id,
-            title,
-            detail,
+            title: Arc::from(title),
+            detail: detail.map(Arc::<str>::from),
             stage: Arc::from(stage),
             total,
             done: 0,
@@ -338,8 +341,8 @@ impl Task {
             last_emit_instant: now,
             sequence: 0,
             visibility,
-            parent_id: None,
-            task_type: TaskType::Operation,
+            parent_id: parent_id.map(Arc::<str>::from),
+            task_type: kind,
         }
     }
 
@@ -405,10 +408,6 @@ impl Task {
     fn mark_emitted(&mut self, now: Instant) {
         self.last_emit_instant = now;
     }
-}
-
-fn default_task_title(_stage: &str) -> Arc<str> {
-    Arc::<str>::from("background task")
 }
 
 pub fn is_terminal_status(status: &str) -> bool {
@@ -485,7 +484,7 @@ pub fn subscribe_task_updates() -> TaskUpdateReceiver {
     }
 }
 
-pub async fn wait_for_task_terminal(task_id: &str) -> Result<Arc<TaskSnapshot>, String> {
+pub async fn wait_for_task(task_id: &str) -> Result<Arc<TaskSnapshot>, String> {
     let mut events = subscribe_task_events();
     if let Some(snapshot) = get_snapshot_arc(task_id)
         && snapshot.is_terminal()
@@ -520,7 +519,7 @@ pub async fn wait_for_task_terminal(task_id: &str) -> Result<Arc<TaskSnapshot>, 
     }
 }
 
-pub fn task_visualization_enabled() -> bool {
+pub fn is_visualization_enabled() -> bool {
     TASK_VISUALIZATION_ENABLED
 }
 
@@ -549,7 +548,7 @@ pub fn register_task_cooperative_cancel(task_id: impl Into<String>) {
         .insert(task_id.into());
 }
 
-fn task_uses_cooperative_cancel(task_id: &str) -> bool {
+fn uses_cooperative_cancel(task_id: &str) -> bool {
     TASK_COOPERATIVE_CANCEL.lock().unwrap().contains(task_id)
 }
 
@@ -614,7 +613,8 @@ fn operation_category(title: &str, stage: &str) -> &'static str {
         } else {
             "地图编辑"
         }
-    } else if title.contains("资源包") || title.contains("材质包") || title.contains("附加包") {
+    } else if title.contains("资源包") || title.contains("材质包") || title.contains("附加包")
+    {
         if title.contains("导入") || title.contains("添加") {
             "资源包导入"
         } else if title.contains("导出") {
@@ -646,7 +646,9 @@ fn operation_category(title: &str, stage: &str) -> &'static str {
 fn safe_operation_field(input: &str) -> &str {
     if input.len() <= 80
         && !input.is_empty()
-        && input.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+        && input
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
     {
         input
     } else {
@@ -752,18 +754,23 @@ impl TaskOptions {
         }
     }
 
-    pub fn id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
+    /// Accepts a value or an `Option`; `None` leaves the ID unset (generated at creation).
+    pub fn id(mut self, id: impl Into<Option<String>>) -> Self {
+        self.id = id.into();
         self
     }
 
-    pub fn detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = Some(detail.into());
+    /// Accepts a value or an `Option`; `None` leaves the detail unset rather than
+    /// storing an empty string, so no placeholder reaches the UI.
+    pub fn detail(mut self, detail: impl Into<Option<String>>) -> Self {
+        self.detail = detail.into();
         self
     }
 
-    pub fn total(mut self, total: u64) -> Self {
-        self.total = Some(total);
+    /// Accepts either a plain value or an `Option`, so callers holding an `Option` can
+    /// pass it through unchanged.
+    pub fn total(mut self, total: impl Into<Option<u64>>) -> Self {
+        self.total = total.into();
         self
     }
 
@@ -812,12 +819,14 @@ pub struct TaskScope {
 
 impl TaskScope {
     pub fn new(parent_id: &str) -> Result<Self, String> {
-        let parent = get_snapshot_arc(parent_id)
-            .ok_or_else(|| format!("父任务不存在: {parent_id}"))?;
+        let parent =
+            get_snapshot_arc(parent_id).ok_or_else(|| format!("父任务不存在: {parent_id}"))?;
         if parent.cancel_requested || parent.is_terminal() {
             return Err(format!("父任务已结束或正在取消: {parent_id}"));
         }
-        Ok(Self { parent_id: parent.id.clone() })
+        Ok(Self {
+            parent_id: parent.id.clone(),
+        })
     }
 
     pub fn create_task(&self, options: TaskOptions) -> Result<String, String> {
@@ -828,7 +837,9 @@ impl TaskScope {
     }
 
     pub async fn run<F: Future>(&self, operation: F) -> F::Output {
-        ACTIVE_TASK_SCOPE.scope(self.parent_id.clone(), operation).await
+        ACTIVE_TASK_SCOPE
+            .scope(self.parent_id.clone(), operation)
+            .await
     }
 
     /// Spawn on the shared IO runtime while explicitly carrying parent context.
@@ -844,21 +855,20 @@ impl TaskScope {
 }
 
 /// Single allocation path: the first observable snapshot already has the final kind,
-/// visibility and parent relationship. Duplicate IDs and invalid parents are errors.
+/// visibility and parent relationship.
+///
+/// # Errors
+///
+/// Returns an error when the ID already exists, when the task would be its own parent,
+/// or when the requested parent is missing or already terminal.
 pub fn create_task(options: TaskOptions) -> Result<String, String> {
-    let TaskOptions {
-        id, title, detail, stage, total, supports_pause,
-        visibility, kind, parent_id,
-    } = options;
-    let id = id.unwrap_or_else(|| {
+    let id = options.id.clone().unwrap_or_else(|| {
         let number = TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
         format!("task-{number}-{}", unix_now_seconds())
     });
-    let mut task = Task::new(
-        Arc::from(id.as_str()), Arc::from(title),
-        detail.map(Arc::<str>::from), &stage, total, supports_pause, visibility,
-    );
-    task.task_type = kind;
+    let kind = options.kind;
+    let parent_id = options.parent_id.clone();
+    let mut task = Task::new(Arc::from(id.as_str()), options);
     let snapshot = {
         let mut tasks = TASKS.lock().unwrap();
         if tasks.contains_key(&id) {
@@ -868,7 +878,8 @@ pub fn create_task(options: TaskOptions) -> Result<String, String> {
             if parent_id == id {
                 return Err("任务不能成为自身的子任务".to_owned());
             }
-            let parent = tasks.get(parent_id)
+            let parent = tasks
+                .get(parent_id)
                 .ok_or_else(|| format!("父任务不存在: {parent_id}"))?;
             if parent.cancel_requested || is_terminal_status(parent.status.as_ref()) {
                 return Err(format!("父任务已结束或正在取消: {parent_id}"));
@@ -886,54 +897,6 @@ pub fn create_task(options: TaskOptions) -> Result<String, String> {
     record_operation_event(&snapshot, "started");
     emit_task_update(snapshot);
     Ok(id)
-}
-
-/// Simple root task. Existing entry points delegate to the common options path.
-pub fn create_task_with_details(
-    id_opt: Option<String>,
-    title: impl Into<String>,
-    detail: Option<String>,
-    initial_stage: &str,
-    total: Option<u64>,
-    supports_pause: bool,
-) -> String {
-    create_task_with_details_and_visibility(
-        id_opt, title, detail, initial_stage, total, supports_pause, TaskVisibility::Visible,
-    )
-}
-
-pub fn create_task_with_details_and_visibility(
-    id_opt: Option<String>,
-    title: impl Into<String>,
-    detail: Option<String>,
-    initial_stage: &str,
-    total: Option<u64>,
-    supports_pause: bool,
-    visibility: TaskVisibility,
-) -> String {
-    let mut options = TaskOptions::new(title, initial_stage)
-        .pausable(supports_pause)
-        .visibility(visibility);
-    if let Some(id) = id_opt { options.id = Some(id); }
-    options.detail = detail;
-    options.total = total;
-    create_task(options).expect("legacy root task creation must use a unique task ID")
-}
-
-pub fn create_task_with_options(
-    id_opt: Option<String>,
-    initial_stage: &str,
-    total: Option<u64>,
-    supports_pause: bool,
-) -> String {
-    create_task_with_details(
-        id_opt,
-        default_task_title(initial_stage).to_string(),
-        None,
-        initial_stage,
-        total,
-        supports_pause,
-    )
 }
 
 pub fn set_task_labels(task_id: &str, title: impl Into<String>, detail: Option<String>) -> bool {
@@ -1013,27 +976,57 @@ pub fn task_logs(task_id: &str) -> Arc<[Arc<str>]> {
     task_logs_snapshot(task_id).logs
 }
 
-pub fn update_progress(task_id: &str, delta_bytes: u64, total: Option<u64>, stage: Option<&str>) {
-    update_progress_inner(task_id, delta_bytes, total, stage, None);
+/// One progress report. The three field groups have distinct semantics:
+/// `advanced_bytes` is a delta added to the done counter, `total` is an absolute
+/// upper bound, and `stage`/`visualization` are metadata snapshots.
+///
+/// JS/TS-style parameter object: one `update_progress` entry point instead of a
+/// family of `*_with_*` variants differing only in optional fields.
+#[derive(Clone, Debug, Default)]
+pub struct ProgressUpdate {
+    pub advanced_bytes: u64,
+    pub total: Option<u64>,
+    pub stage: Option<Arc<str>>,
+    pub visualization: Option<TaskVisualization>,
 }
 
-pub fn update_progress_with_visualization(
-    task_id: &str,
-    delta_bytes: u64,
-    total: Option<u64>,
-    stage: Option<&str>,
-    visualization: TaskVisualization,
-) {
-    update_progress_inner(task_id, delta_bytes, total, stage, Some(visualization));
+impl ProgressUpdate {
+    /// Advances the done counter by `bytes`. Use this for incremental progress;
+    /// `total` and metadata are set through the fluent setters.
+    pub fn advance(bytes: u64) -> Self {
+        Self {
+            advanced_bytes: bytes,
+            ..Self::default()
+        }
+    }
+
+    /// Sets the absolute upper bound. Accepts a value or an `Option`.
+    pub fn total(mut self, total: impl Into<Option<u64>>) -> Self {
+        self.total = total.into();
+        self
+    }
+
+    /// Sets the stage metadata. Accepts a borrowed name or an `Option<&str>`.
+    pub fn stage<'a>(mut self, stage: impl Into<Option<&'a str>>) -> Self {
+        self.stage = stage.into().map(Arc::from);
+        self
+    }
+
+    /// Sets the visualization metadata snapshot.
+    pub fn visualization(mut self, visualization: TaskVisualization) -> Self {
+        self.visualization = Some(visualization);
+        self
+    }
 }
 
-fn update_progress_inner(
-    task_id: &str,
-    delta_bytes: u64,
-    total: Option<u64>,
-    stage: Option<&str>,
-    visualization: Option<TaskVisualization>,
-) {
+/// Apply one progress update. Terminal tasks are left untouched.
+pub fn update_progress(task_id: &str, update: ProgressUpdate) {
+    let ProgressUpdate {
+        advanced_bytes,
+        total,
+        stage,
+        visualization,
+    } = update;
     let mut snapshot_to_emit: Option<TaskSnapshot> = None;
     let mut stage_changed = false;
 
@@ -1043,11 +1036,13 @@ fn update_progress_inner(
             if is_terminal_status(t.status.as_ref()) {
                 return;
             }
-            stage_changed = stage.is_some_and(|next_stage| next_stage != t.stage.as_ref());
+            stage_changed = stage
+                .as_deref()
+                .is_some_and(|next_stage| next_stage != t.stage.as_ref());
             if let Some(tt) = total {
                 t.total = Some(tt);
             }
-            if let Some(s) = stage {
+            if let Some(s) = stage.as_deref() {
                 t.stage = Arc::from(s);
             }
 
@@ -1061,7 +1056,7 @@ fn update_progress_inner(
             let now = Instant::now();
             let elapsed = now.duration_since(t.last_instant).as_secs_f64();
 
-            t.done = t.done.saturating_add(delta_bytes);
+            t.done = t.done.saturating_add(advanced_bytes);
             if let Some(tot) = t.total {
                 if t.done > tot {
                     t.done = tot;
@@ -1257,17 +1252,6 @@ pub fn set_task_visualization(task_id: &str, visualization: Option<TaskVisualiza
     changed
 }
 
-pub fn maybe_set_task_visualization(
-    task_id: &str,
-    build_visualization: impl FnOnce() -> Option<TaskVisualization>,
-) -> bool {
-    if !TASK_VISUALIZATION_ENABLED {
-        return false;
-    }
-
-    set_task_visualization(task_id, build_visualization())
-}
-
 pub fn finish_task(task_id: &str, status: &str, message: Option<String>) {
     let mut snapshot_to_emit: Option<TaskSnapshot> = None;
     let mut was_terminal = false;
@@ -1339,7 +1323,7 @@ pub fn finish_task(task_id: &str, status: &str, message: Option<String>) {
 }
 
 pub fn cancel_task(task_id: &str) {
-    let cooperative = task_uses_cooperative_cancel(task_id);
+    let cooperative = uses_cooperative_cancel(task_id);
     let snapshot_to_emit = {
         let mut map = TASKS.lock().unwrap();
         let Some(t) = map.get_mut(task_id) else {
@@ -1377,7 +1361,11 @@ pub fn cancel_task(task_id: &str) {
 
     record_operation_event(
         &snapshot_to_emit,
-        if cooperative { "cancelling" } else { "cancelled" },
+        if cooperative {
+            "cancelling"
+        } else {
+            "cancelled"
+        },
     );
     emit_task_update(snapshot_to_emit);
     if let Some(control) = task_control(task_id) {
@@ -1386,7 +1374,8 @@ pub fn cancel_task(task_id: &str) {
     // Cancellation propagates down the entire workflow tree.
     let children: Vec<String> = {
         let tasks = TASKS.lock().unwrap();
-        tasks.values()
+        tasks
+            .values()
             .filter(|task| task.parent_id.as_deref() == Some(task_id))
             .map(|task| task.id.to_string())
             .collect()
@@ -1479,16 +1468,19 @@ pub fn remove_task(task_id: &str) -> bool {
         let mut ids = vec![task_id.to_string()];
         let mut cursor = 0;
         while cursor < ids.len() {
-            let parent = ids[cursor].as_str();
+            // Clone the id so the `ids` push below does not overlap this borrow.
+            let parent = ids[cursor].clone();
             for task in tasks.values() {
-                if task.parent_id.as_deref() == Some(parent) {
+                if task.parent_id.as_deref() == Some(parent.as_str()) {
                     ids.push(task.id.to_string());
                 }
             }
             cursor += 1;
         }
         if ids.iter().skip(1).any(|id| {
-            tasks.get(id).is_some_and(|task| !is_terminal_status(task.status.as_ref()))
+            tasks
+                .get(id)
+                .is_some_and(|task| !is_terminal_status(task.status.as_ref()))
         }) {
             return false;
         }
@@ -1503,13 +1495,17 @@ pub fn remove_task(task_id: &str) -> bool {
         clear_task_cooperative_cancel(&id);
         let removed_snapshot = TASK_SNAPSHOTS.write().unwrap().remove(id.as_str());
         TASK_LOGS.lock().unwrap().remove(id.as_str());
-        let _ = TASK_CONTROLS.write().ok()
+        let _ = TASK_CONTROLS
+            .write()
+            .ok()
             .and_then(|mut controls| controls.remove(id.as_str()));
         let removed = TASKS.lock().unwrap().remove(id.as_str()).is_some();
         if id == task_id {
             removed_root = removed;
         }
-        if removed_snapshot.as_ref().is_some_and(|snapshot| snapshot.visibility == TaskVisibility::Visible)
+        if removed_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.visibility == TaskVisibility::Visible)
             && TASK_EVENTS.receiver_count() > 0
         {
             let _ = TASK_EVENTS.send(TaskEvent::Removed(Arc::from(id.as_str())));
@@ -1518,14 +1514,14 @@ pub fn remove_task(task_id: &str) -> bool {
     removed_root
 }
 
-pub async fn wait_until_active(task_id: &str) -> bool {
+pub async fn wait_for_task_active(task_id: &str) -> bool {
     match task_control(task_id) {
-        Some(control) => wait_until_active_fast(control.as_ref()).await,
+        Some(control) => wait_until_active(control.as_ref()).await,
         None => false,
     }
 }
 
-pub async fn wait_until_active_fast(control: &TaskControl) -> bool {
+pub async fn wait_until_active(control: &TaskControl) -> bool {
     loop {
         if control.cancelled.load(Ordering::Relaxed) {
             return false;
@@ -1768,13 +1764,28 @@ mod tests {
 
     #[test]
     fn operation_category_classifies_map_and_resource_tasks_without_names() {
-        assert_eq!(operation_category("导出 OBJ", "map_export"), "地图/模型导出");
-        assert_eq!(operation_category("导入结构", "map_import"), "地图/结构导入");
-        assert_eq!(operation_category("导入资源包", "initializing"), "资源包导入");
+        assert_eq!(
+            operation_category("导出 OBJ", "map_export"),
+            "地图/模型导出"
+        );
+        assert_eq!(
+            operation_category("导入结构", "map_import"),
+            "地图/结构导入"
+        );
+        assert_eq!(
+            operation_category("导入资源包", "initializing"),
+            "资源包导入"
+        );
         assert_eq!(operation_category("安装 Minecraft", "installing"), "安装");
         assert_eq!(safe_operation_field("task-123"), "task-123");
-        assert_eq!(safe_operation_field(r"C:\\Users\\Alice\\secret"), "[已隐藏]");
-        assert_eq!(task_chunk_count(Some("48 个 chunk · private.mcstructure")), Some(48));
+        assert_eq!(
+            safe_operation_field(r"C:\\Users\\Alice\\secret"),
+            "[已隐藏]"
+        );
+        assert_eq!(
+            task_chunk_count(Some("48 个 chunk · private.mcstructure")),
+            Some(48)
+        );
         assert_eq!(task_chunk_count(Some("private world")), None);
     }
 
@@ -1877,14 +1888,8 @@ mod tests {
             "task-manager-render-active-test-{}",
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        create_task_with_details(
-            Some(task_id.clone()),
-            "活动状态渲染测试",
-            None,
-            "ready",
-            None,
-            false,
-        );
+        create_task(TaskOptions::new("活动状态渲染测试", "ready").id(Some(task_id.clone())))
+            .expect("task id must be unique");
         {
             let mut tasks = TASKS.lock().expect("task map lock");
             let task = tasks.get_mut(&task_id).expect("test task");
@@ -1909,17 +1914,11 @@ mod tests {
             "task-manager-terminal-wait-test-{}",
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        create_task_with_details(
-            Some(task_id.clone()),
-            "终态等待测试",
-            None,
-            "queued",
-            None,
-            false,
-        );
+        create_task(TaskOptions::new("终态等待测试", "queued").id(Some(task_id.clone())))
+            .expect("task id must be unique");
 
         let task_id_for_waiter = task_id.clone();
-        let waiter = tokio::spawn(async move { wait_for_task_terminal(&task_id_for_waiter).await });
+        let waiter = tokio::spawn(async move { wait_for_task(&task_id_for_waiter).await });
         tokio::task::yield_now().await;
         assert!(!waiter.is_finished(), "queued task returned as terminal");
 
@@ -1938,15 +1937,16 @@ mod tests {
             "task-manager-complete-progress-test-{}",
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        create_task_with_details(
-            Some(task_id.clone()),
-            "完成进度测试",
-            None,
-            "testing",
-            Some(672),
-            false,
+        create_task(
+            TaskOptions::new("完成进度测试", "testing")
+                .id(Some(task_id.clone()))
+                .total(672),
+        )
+        .expect("task id must be unique");
+        update_progress(
+            &task_id,
+            ProgressUpdate::advance(671).total(672).stage("testing"),
         );
-        update_progress(&task_id, 671, Some(672), Some("testing"));
 
         finish_task(&task_id, "completed", None);
 
@@ -1965,14 +1965,9 @@ mod tests {
         );
         let hook_ran = Arc::new(AtomicBool::new(false));
         let hook_ran_for_hook = hook_ran.clone();
-        let created_task_id = create_task_with_details(
-            Some(task_id.clone()),
-            "取消 Hook 测试",
-            None,
-            "starting",
-            None,
-            false,
-        );
+        let created_task_id =
+            create_task(TaskOptions::new("取消 Hook 测试", "starting").id(Some(task_id.clone())))
+                .expect("task id must be unique");
         assert_eq!(created_task_id, task_id);
 
         register_task_cancel_hook(task_id.clone(), move || {
@@ -1999,14 +1994,8 @@ mod tests {
             "task-manager-cooperative-cancel-test-{}",
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        create_task_with_details(
-            Some(task_id.clone()),
-            "协作取消测试",
-            None,
-            "running",
-            None,
-            false,
-        );
+        create_task(TaskOptions::new("协作取消测试", "running").id(Some(task_id.clone())))
+            .expect("task id must be unique");
         register_task_cooperative_cancel(task_id.clone());
 
         cancel_task(&task_id);
@@ -2031,14 +2020,8 @@ mod tests {
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         let mut events = subscribe_task_events();
-        create_task_with_details(
-            Some(task_id.clone()),
-            "取消事件测试",
-            None,
-            "running",
-            None,
-            false,
-        );
+        create_task(TaskOptions::new("取消事件测试", "running").id(Some(task_id.clone())))
+            .expect("task id must be unique");
 
         cancel_task(&task_id);
 
@@ -2071,14 +2054,9 @@ mod tests {
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         let stage = "task_manager_registered_stage_label_test";
-        let created_task_id = create_task_with_details(
-            Some(task_id.clone()),
-            "阶段文案测试",
-            None,
-            stage,
-            None,
-            false,
-        );
+        let created_task_id =
+            create_task(TaskOptions::new("阶段文案测试", stage).id(Some(task_id.clone())))
+                .expect("task id must be unique");
         assert_eq!(created_task_id, task_id);
         assert_eq!(
             get_snapshot_arc(&task_id)
@@ -2094,21 +2072,35 @@ mod tests {
     fn workflow_parentage_is_recorded_before_child_is_visible() {
         let root = create_task(
             TaskOptions::new("安装 Minecraft", "installing_game")
-                .kind(TaskType::Workflow).total(100),
-        ).expect("root task");
+                .kind(TaskType::Workflow)
+                .total(100),
+        )
+        .expect("root task");
         let scope = TaskScope::new(&root).expect("root scope");
-        let child = scope.create_task(
-            TaskOptions::new("安装 LeviLamina", "resolving_levilamina")
-                .kind(TaskType::Workflow),
-        ).expect("child task");
+        let child = scope
+            .create_task(
+                TaskOptions::new("安装 LeviLamina", "resolving_levilamina")
+                    .kind(TaskType::Workflow),
+            )
+            .expect("child task");
         let root_snapshot = get_snapshot_arc(&root).expect("root snapshot");
         let child_snapshot = get_snapshot_arc(&child).expect("child snapshot");
         assert_eq!(root_snapshot.parent_id, None);
         assert_eq!(child_snapshot.parent_id.as_deref(), Some(root.as_str()));
         assert_eq!(child_snapshot.task_type, TaskType::Workflow);
         let visible = render_snapshots_limited(usize::MAX, usize::MAX, usize::MAX);
-        assert!(visible.active.iter().any(|snapshot| snapshot.id.as_ref() == root));
-        assert!(!visible.active.iter().any(|snapshot| snapshot.id.as_ref() == child));
+        assert!(
+            visible
+                .active
+                .iter()
+                .any(|snapshot| snapshot.id.as_ref() == root)
+        );
+        assert!(
+            !visible
+                .active
+                .iter()
+                .any(|snapshot| snapshot.id.as_ref() == child)
+        );
         finish_task(&child, "completed", None);
         finish_task(&root, "completed", None);
         remove_task(&child);
@@ -2117,18 +2109,18 @@ mod tests {
 
     #[tokio::test]
     async fn task_scope_is_explicit_and_does_not_change_root_creation() {
-        let parent = create_task(
-            TaskOptions::new("parent", "running").kind(TaskType::Workflow),
-        ).expect("parent");
+        let parent = create_task(TaskOptions::new("parent", "running").kind(TaskType::Workflow))
+            .expect("parent");
         let scope = TaskScope::new(&parent).expect("scope");
-        let (nested, unrelated) = scope.run(async {
-            let nested = create_task(
-                TaskOptions::new("child", "running").in_current_scope(),
-            ).expect("nested");
-            let unrelated = create_task(TaskOptions::new("unrelated", "running"))
-                .expect("independent root");
-            (nested, unrelated)
-        }).await;
+        let (nested, unrelated) = scope
+            .run(async {
+                let nested = create_task(TaskOptions::new("child", "running").in_current_scope())
+                    .expect("nested");
+                let unrelated = create_task(TaskOptions::new("unrelated", "running"))
+                    .expect("independent root");
+                (nested, unrelated)
+            })
+            .await;
         assert_eq!(
             get_snapshot_arc(&nested).unwrap().parent_id.as_deref(),
             Some(parent.as_str()),
@@ -2144,30 +2136,42 @@ mod tests {
 
     #[tokio::test]
     async fn nested_scope_restores_outer_parent_after_return() {
-        let parent = create_task(
-            TaskOptions::new("parent", "running").kind(TaskType::Workflow),
-        ).expect("parent");
+        let parent = create_task(TaskOptions::new("parent", "running").kind(TaskType::Workflow))
+            .expect("parent");
         let scope = TaskScope::new(&parent).expect("outer scope");
-        let (middle, inner, sibling) = scope.run(async {
-            let middle = create_task(
-                TaskOptions::new("middle", "running")
-                    .kind(TaskType::Workflow)
-                    .in_current_scope(),
-            ).expect("middle");
-            let inner_scope = TaskScope::new(&middle).expect("inner scope");
-            let inner = inner_scope.run(async {
-                create_task(
-                    TaskOptions::new("inner", "running").in_current_scope(),
-                ).expect("inner")
-            }).await;
-            let sibling = create_task(
-                TaskOptions::new("sibling", "running").in_current_scope(),
-            ).expect("sibling");
-            (middle, inner, sibling)
-        }).await;
-        assert_eq!(get_snapshot_arc(&middle).unwrap().parent_id.as_deref(), Some(parent.as_str()));
-        assert_eq!(get_snapshot_arc(&inner).unwrap().parent_id.as_deref(), Some(middle.as_str()));
-        assert_eq!(get_snapshot_arc(&sibling).unwrap().parent_id.as_deref(), Some(parent.as_str()));
+        let (middle, inner, sibling) = scope
+            .run(async {
+                let middle = create_task(
+                    TaskOptions::new("middle", "running")
+                        .kind(TaskType::Workflow)
+                        .in_current_scope(),
+                )
+                .expect("middle");
+                let inner_scope = TaskScope::new(&middle).expect("inner scope");
+                let inner = inner_scope
+                    .run(async {
+                        create_task(TaskOptions::new("inner", "running").in_current_scope())
+                            .expect("inner")
+                    })
+                    .await;
+                let sibling =
+                    create_task(TaskOptions::new("sibling", "running").in_current_scope())
+                        .expect("sibling");
+                (middle, inner, sibling)
+            })
+            .await;
+        assert_eq!(
+            get_snapshot_arc(&middle).unwrap().parent_id.as_deref(),
+            Some(parent.as_str())
+        );
+        assert_eq!(
+            get_snapshot_arc(&inner).unwrap().parent_id.as_deref(),
+            Some(middle.as_str())
+        );
+        assert_eq!(
+            get_snapshot_arc(&sibling).unwrap().parent_id.as_deref(),
+            Some(parent.as_str())
+        );
         for id in [&inner, &sibling, &middle, &parent] {
             finish_task(id, "completed", None);
         }
@@ -2178,15 +2182,15 @@ mod tests {
 
     #[test]
     fn removing_workflow_cleans_descendants_and_logs() {
-        let root = create_task(
-            TaskOptions::new("root", "running").kind(TaskType::Workflow),
-        ).expect("root");
-        let child = create_task(
-            TaskOptions::new("child", "running").parent(&root),
-        ).expect("child");
+        let root = create_task(TaskOptions::new("root", "running").kind(TaskType::Workflow))
+            .expect("root");
+        let child = create_task(TaskOptions::new("child", "running").parent(&root)).expect("child");
         append_task_log(&child, "child-log");
         finish_task(&root, "completed", None);
-        assert!(!remove_task(&root), "active child must block removing the workflow");
+        assert!(
+            !remove_task(&root),
+            "active child must block removing the workflow"
+        );
         assert!(get_snapshot_arc(&child).is_some());
         finish_task(&child, "completed", None);
         assert!(remove_task(&root));
@@ -2199,7 +2203,8 @@ mod tests {
     fn nested_task_rejects_missing_parent_without_publishing_a_root_card() {
         let result = create_task(
             TaskOptions::new("安装 LeviLamina", "resolving_levilamina")
-                .kind(TaskType::Workflow).parent("nonexistent-workflow"),
+                .kind(TaskType::Workflow)
+                .parent("nonexistent-workflow"),
         );
         assert!(result.is_err());
     }
@@ -2210,15 +2215,12 @@ mod tests {
             "task-manager-hidden-test-{}",
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        create_task_with_details_and_visibility(
-            Some(task_id.clone()),
-            "隐藏任务",
-            None,
-            "running",
-            None,
-            false,
-            TaskVisibility::Hidden,
-        );
+        create_task(
+            TaskOptions::new("隐藏任务", "running")
+                .id(Some(task_id.clone()))
+                .visibility(TaskVisibility::Hidden),
+        )
+        .expect("task id must be unique");
 
         let snapshots = render_snapshots_limited(64, 64, 64);
 

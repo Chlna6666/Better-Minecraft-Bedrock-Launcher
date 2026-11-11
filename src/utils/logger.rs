@@ -59,7 +59,7 @@ struct LogThrottleEntry {
 }
 
 impl LogThrottleState {
-    fn cleanup_if_needed(&mut self, now: Instant) {
+    fn cleanup(&mut self, now: Instant) {
         let should_cleanup = match self.last_cleanup {
             Some(last_cleanup) => now.duration_since(last_cleanup) >= LOG_THROTTLE_CLEANUP_INTERVAL,
             None => true,
@@ -173,7 +173,7 @@ where
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        state.cleanup_if_needed(now);
+        state.cleanup(now);
 
         match state.entries.get_mut(&key) {
             Some(entry) => {

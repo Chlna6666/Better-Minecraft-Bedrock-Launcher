@@ -8,7 +8,7 @@ use crate::core::minecraft::key_patcher::{PatchResult, patch_path};
 use crate::result::CoreResult;
 use crate::tasks::runtime::spawn_archive_task;
 use crate::tasks::task_manager::{
-    create_task, finish_task, update_progress, TaskOptions, TaskType,
+    ProgressUpdate, TaskOptions, TaskType, create_task, finish_task, update_progress,
 };
 use crate::utils::file_ops;
 use std::fs;
@@ -74,7 +74,7 @@ pub async fn import_appx(source_path: String, file_name: Option<String>) -> Resu
 }
 
 async fn run_import_appx_task(task_id: String, source_path: String, file_name: Option<String>) {
-    update_progress(&task_id, 0, None, Some("starting"));
+    update_progress(&task_id, ProgressUpdate::advance(0).stage("starting"));
 
     let source = Path::new(&source_path);
     if !source.exists() || !source.is_file() {
@@ -128,7 +128,10 @@ async fn run_import_appx_task(task_id: String, source_path: String, file_name: O
 
     match extract_zip_from_path(source, &extract_to_str, true, task_id.clone()).await {
         Ok(CoreResult::Success(())) => {
-            update_progress(&task_id, 0, None, Some("preparing_files"));
+            update_progress(
+                &task_id,
+                ProgressUpdate::advance(0).stage("preparing_files"),
+            );
             let signature_path = extract_to.join("AppxSignature.p7x");
             remove_file_if_exists(&signature_path, "删除 AppxSignature.p7x 失败");
             if let Err(error) = fs::create_dir_all(extract_to.join("mods")) {
@@ -199,7 +202,7 @@ async fn run_extract_zip_appx_task(
     force_replace: bool,
     delete_signature: bool,
 ) {
-    update_progress(&task_id, 0, None, Some("starting"));
+    update_progress(&task_id, ProgressUpdate::advance(0).stage("starting"));
 
     let versions_root = file_ops::bmcbl_subdir("versions");
     if let Err(error) = fs::create_dir_all(&versions_root) {
@@ -285,7 +288,7 @@ async fn run_extract_zip_appx_task(
 }
 
 async fn finish_appx_install(task_id: &str, extract_to: &Path, delete_signature: bool) -> bool {
-    update_progress(task_id, 0, None, Some("preparing_files"));
+    update_progress(task_id, ProgressUpdate::advance(0).stage("preparing_files"));
 
     if delete_signature {
         let signature_path = extract_to.join("AppxSignature.p7x");
@@ -302,7 +305,7 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, delete_signature:
 
     if let Ok(config) = read_config() {
         if config.game.modify_appx_manifest {
-            update_progress(task_id, 0, None, Some("patching"));
+            update_progress(task_id, ProgressUpdate::advance(0).stage("patching"));
             match patch_manifest(extract_to) {
                 Ok(true) => debug!("Manifest 修改成功: {}", extract_to.display()),
                 Ok(false) => debug!("未找到 Manifest，跳过修改: {}", extract_to.display()),
@@ -334,7 +337,7 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, delete_signature:
         return true;
     }
 
-    update_progress(task_id, 0, None, Some("patching"));
+    update_progress(task_id, ProgressUpdate::advance(0).stage("patching"));
     let extract_clone = extract_to.to_path_buf();
     match crate::tasks::runtime::run_archive_blocking(move || patch_path(&extract_clone)).await {
         Ok(Ok(PatchResult::Patched(backup_path))) => {

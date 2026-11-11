@@ -4,12 +4,13 @@ use std::path::{Path, PathBuf};
 
 use bedrock_voxel::{
     FlatImageInput, FlatImageOptions, ReliefImageOptions, default_block_candidates,
-    flat_block_plan_with_progress, relief_block_plan_with_progress,
+    flat_block_plan_tracked, relief_block_plan_tracked,
 };
 use bedrock_world::{editor::BlockPlacementPlan, structure::McStructureFile, surface::CancelFlag};
 use image::{ImageReader, Limits, RgbaImage, imageops};
 
 use crate::core::minecraft::map::image::MapResample;
+use crate::tasks::task_manager::ProgressUpdate;
 use crate::tasks::{runtime, task_manager};
 
 pub use bedrock_voxel::Dithering;
@@ -124,8 +125,9 @@ pub fn start_image_block_export(request: ImageBlockExportRequest) -> Result<Stri
         ImageBlockHeight::Flat => "图片转 Flat 方块并导出结构",
         ImageBlockHeight::LuminanceRelief { .. } => "图片转亮度阶梯并导出结构",
     };
-    let task_id =
-        task_manager::create_task_with_details(None, title, detail, "解码图片", None, false);
+    let task_id = task_manager::create_task(
+        task_manager::TaskOptions::new(title, "解码图片").detail(detail),
+    )?;
     task_manager::register_task_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
     task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -197,9 +199,9 @@ async fn export_image(
                 if done > reported {
                     task_manager::update_progress(
                         &worker_id,
-                        done - reported,
-                        Some(progress_total),
-                        Some(stage),
+                        ProgressUpdate::advance(done - reported)
+                            .total(progress_total)
+                            .stage(stage),
                     );
                     reported = done;
                 }
@@ -223,7 +225,12 @@ async fn export_image(
     runtime::run_io_blocking(move || structure.write_to_path(&worker_output))
         .await?
         .map_err(|error| error.to_string())?;
-    task_manager::update_progress(task_id, 1, Some(1), Some("写入 .mcstructure"));
+    task_manager::update_progress(
+        task_id,
+        ProgressUpdate::advance(1)
+            .total(1)
+            .stage("写入 .mcstructure"),
+    );
     Ok(format!(
         "已生成 {}×{} {} 图片、{} 个方块到 {}",
         width,
@@ -276,15 +283,13 @@ pub(super) fn image_block_plan_with_progress(
         height: options.height,
     };
     match options.depth {
-        ImageBlockHeight::Flat => flat_block_plan_with_progress(
-            input,
-            candidates,
-            image_options,
-            cancel,
-            |done, total| progress(u64::from(done), u64::from(total)),
-        )
-        .map_err(|error| error.to_string()),
-        ImageBlockHeight::LuminanceRelief { max_height, fill } => relief_block_plan_with_progress(
+        ImageBlockHeight::Flat => {
+            flat_block_plan_tracked(input, candidates, image_options, cancel, |done, total| {
+                progress(u64::from(done), u64::from(total))
+            })
+            .map_err(|error| error.to_string())
+        }
+        ImageBlockHeight::LuminanceRelief { max_height, fill } => relief_block_plan_tracked(
             input,
             candidates,
             image_options,

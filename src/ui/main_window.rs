@@ -302,9 +302,11 @@ impl MainWindowView {
             });
         self._reactor_subscriptions.push(subscription);
         self._reactor_subscriptions.push(
-            cx.observe_global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>(|_, cx| {
-                cx.notify();
-            }),
+            cx.observe_global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>(
+                |_, cx| {
+                    cx.notify();
+                },
+            ),
         );
 
         // Subscribe to game lifecycle events independently of the launch-task modal.
@@ -389,8 +391,12 @@ impl MainWindowView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(task_id) = snapshot.task_id.as_deref() else { return };
-        let Some(task) = snapshot.last_snapshot.as_ref() else { return };
+        let Some(task_id) = snapshot.task_id.as_deref() else {
+            return;
+        };
+        let Some(task) = snapshot.last_snapshot.as_ref() else {
+            return;
+        };
         if task.status.as_ref() != "completed"
             || !matches!(task.stage.as_ref(), "launching" | "running_game")
             || self.last_handled_game_launch.as_deref() == Some(task_id)
@@ -401,13 +407,17 @@ impl MainWindowView {
         let mode = crate::config::config::read_config()
             .map(|config| config.game.launcher_visibility)
             .unwrap_or_else(|_| "keep".to_string());
-        if mode == "keep" { return; }
+        if mode == "keep" {
+            return;
+        }
         let main_window = window.window_handle();
         cx.spawn(async move |_, cx| {
             Timer::after(Duration::from_millis(950)).await;
             let _ = main_window.update(cx, |_, window, cx| {
-                if cx.global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>()
-                    .pending.is_some()
+                if cx
+                    .global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>()
+                    .pending
+                    .is_some()
                 {
                     return;
                 }
@@ -422,7 +432,8 @@ impl MainWindowView {
                     }
                 }
             });
-        }).detach();
+        })
+        .detach();
     }
 
     fn ensure_chrome_view_loaded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -732,7 +743,7 @@ impl MainWindowView {
         }
 
         if !model.agreement_render_state.visible && model.diagnostics_visible {
-            crate::ui::overlays::diagnostics::trigger_auto_sentry_submit_if_needed(cx);
+            crate::ui::overlays::diagnostics::trigger_auto_sentry_submit(cx);
         }
 
         if !model.agreement_render_state.visible

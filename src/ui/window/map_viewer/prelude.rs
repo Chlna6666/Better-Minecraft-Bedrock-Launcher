@@ -31,14 +31,12 @@ pub(super) use super::player_workspace::{
 };
 pub(super) use super::preview_3d::{
     Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState, Preview3dMesh,
-    Preview3dModelRotation, Preview3dSelectionSignature, Preview3dSource, Preview3dState,
-    Preview3dStatus, load_preview_3d_mesh_blocking_incremental,
-    load_preview_3d_mesh_blocking_incremental_with_block_models,
-    load_preview_3d_mesh_from_copied_chunk_blocking,
-    load_preview_3d_mesh_from_mcstructure_blocking, preview_3d_bounds_depth,
-    preview_3d_bounds_width,
+    Preview3dMeshSource, Preview3dModelRotation, Preview3dSelectionSignature, Preview3dSource,
+    Preview3dState, Preview3dStatus, load_preview_3d_mesh, load_preview_3d_mesh_blocking,
+    preview_3d_bounds_depth, preview_3d_bounds_width,
 };
-pub(super) use super::preview_3d_obj::export_preview_3d_obj_with_materials_with_progress;
+pub(super) use super::preview_3d_obj::{Preview3dObjOptions, export_preview_3d_obj};
+pub(super) use super::preview_3d_source::Preview3dLoadOptions;
 pub(super) use super::selection::{
     ChunkSelection, ExistingSelectionTarget, RightSelectionDrag, RightSelectionReleaseAction,
     SelectionPointerButton, SelectionScreenBounds, chunk_from_block, existing_selection_target,

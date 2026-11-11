@@ -205,24 +205,22 @@ impl MainWindowView {
         }
     }
 
-    pub(super) fn persist_frame_rate_limit(
-        &mut self,
-        limit: u32,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn persist_frame_rate_limit(&mut self, limit: u32, cx: &mut Context<Self>) {
         cx.spawn(async move |_this, cx| {
             let result = crate::tasks::runtime::run_io_blocking(move || {
                 crate::config::config::update_config(|cfg| {
                     cfg.launcher.frame_rate_limit = limit;
                 })?;
                 Ok::<(), std::io::Error>(())
-            }).await;
+            })
+            .await;
             match result {
                 Ok(Ok(())) => {
                     if crate::startup_args::frame_rate_override().is_none() {
                         let _ = cx.update(|cx| {
                             let mode = cx.read_global(
-                                |state: &crate::ui::views::settings::state::SettingsPageState, _| {
+                                |state: &crate::ui::views::settings::state::SettingsPageState,
+                                 _| {
                                     state.frame_rate_mode.to_string()
                                 },
                             );
@@ -233,7 +231,8 @@ impl MainWindowView {
                 Ok(Err(error)) => tracing::warn!("保存自定义 UI 帧率失败：{error}"),
                 Err(error) => tracing::warn!("保存 UI 帧率任务失败：{error}"),
             }
-        }).detach();
+        })
+        .detach();
     }
 
     pub(super) fn persist_settings_launcher_download_texts(
@@ -259,8 +258,12 @@ impl MainWindowView {
 
             match res {
                 Ok(Ok(true)) => {
-                    if let Err(error) = cx.update(crate::ui::views::download::curseforge::on_api_source_changed) {
-                        tracing::warn!("invalidate CurseForge source after URL edit failed: {error:?}");
+                    if let Err(error) =
+                        cx.update(crate::ui::views::download::curseforge::on_api_source_changed)
+                    {
+                        tracing::warn!(
+                            "invalidate CurseForge source after URL edit failed: {error:?}"
+                        );
                     }
                 }
                 Ok(Ok(false)) => {}
@@ -328,147 +331,145 @@ impl MainWindowView {
         self.settings_controls_initialized = true;
         self.ensure_settings_github_control(window, cx);
 
-        let (frame_input, base_input, curseforge_key_input, github_key_input, http_input, socks_input, theme_input, local_input, network_input) = cx
-            .update_global(
-                |s: &mut crate::ui::views::settings::state::SettingsPageState, cx| {
-                    if s.frame_rate_limit_input.is_none() {
-                        let initial = s.frame_rate_limit.to_string();
-                        let input = cx.new(|cx| {
-                            let mut st = InputState::new(window, cx);
-                            st.set_placeholder(SharedString::from("120"), window, cx);
+        let (
+            frame_input,
+            base_input,
+            curseforge_key_input,
+            github_key_input,
+            http_input,
+            socks_input,
+            theme_input,
+            local_input,
+            network_input,
+        ) = cx.update_global(
+            |s: &mut crate::ui::views::settings::state::SettingsPageState, cx| {
+                if s.frame_rate_limit_input.is_none() {
+                    let initial = s.frame_rate_limit.to_string();
+                    let input = cx.new(|cx| {
+                        let mut st = InputState::new(window, cx);
+                        st.set_placeholder(SharedString::from("120"), window, cx);
+                        st.set_value(SharedString::from(initial), window, cx);
+                        st
+                    });
+                    s.frame_rate_limit_input = Some(input);
+                }
+                for kind in ["curseforge", "github"] {
+                    let slot = if kind == "curseforge" {
+                        &mut s.download_curseforge_key_input
+                    } else {
+                        &mut s.download_github_key_input
+                    };
+                    if slot.is_none() {
+                        *slot = Some(cx.new(|cx| {
+                            let mut input = InputState::new(window, cx);
+                            input.set_placeholder(
+                                SharedString::from("Paste API key / token"),
+                                window,
+                                cx,
+                            );
+                            input
+                        }));
+                    }
+                }
+                if s.download_curseforge_api_base_input.is_none() {
+                    let initial = s.download_curseforge_api_base.to_string();
+                    let input = cx.new(|cx| {
+                        let mut st = InputState::new(window, cx);
+                        st.set_placeholder(
+                            SharedString::from("https://mod.mcimirror.top/curseforge"),
+                            window,
+                            cx,
+                        );
+                        if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
-                            st
-                        });
-                        s.frame_rate_limit_input = Some(input);
-                    }
-                    for kind in ["curseforge", "github"] {
-                        let slot = if kind == "curseforge" {
-                            &mut s.download_curseforge_key_input
-                        } else {
-                            &mut s.download_github_key_input
-                        };
-                        if slot.is_none() {
-                            *slot = Some(cx.new(|cx| {
-                                let mut input = InputState::new(window, cx);
-                                input.set_placeholder(
-                                    SharedString::from("Paste API key / token"),
-                                    window, cx,
-                                );
-                                input
-                            }));
                         }
-                    }
-                    if s.download_curseforge_api_base_input.is_none() {
-                        let initial = s.download_curseforge_api_base.to_string();
-                        let input = cx.new(|cx| {
-                            let mut st = InputState::new(window, cx);
-                            st.set_placeholder(
-                                SharedString::from("https://mod.mcimirror.top/curseforge"),
-                                window,
-                                cx,
-                            );
-                            if !initial.trim().is_empty() {
-                                st.set_value(SharedString::from(initial), window, cx);
-                            }
-                            st
-                        });
-                        s.download_curseforge_api_base_input = Some(input);
-                    }
+                        st
+                    });
+                    s.download_curseforge_api_base_input = Some(input);
+                }
 
-                    if s.download_http_proxy_url_input.is_none() {
-                        let initial = s.download_http_proxy_url.to_string();
-                        let input = cx.new(|cx| {
-                            let mut st = InputState::new(window, cx);
-                            st.set_placeholder(
-                                SharedString::from("http(s)://host:port"),
-                                window,
-                                cx,
-                            );
-                            if !initial.trim().is_empty() {
-                                st.set_value(SharedString::from(initial), window, cx);
-                            }
-                            st
-                        });
-                        s.download_http_proxy_url_input = Some(input);
-                    }
+                if s.download_http_proxy_url_input.is_none() {
+                    let initial = s.download_http_proxy_url.to_string();
+                    let input = cx.new(|cx| {
+                        let mut st = InputState::new(window, cx);
+                        st.set_placeholder(SharedString::from("http(s)://host:port"), window, cx);
+                        if !initial.trim().is_empty() {
+                            st.set_value(SharedString::from(initial), window, cx);
+                        }
+                        st
+                    });
+                    s.download_http_proxy_url_input = Some(input);
+                }
 
-                    if s.download_socks_proxy_url_input.is_none() {
-                        let initial = s.download_socks_proxy_url.to_string();
-                        let input = cx.new(|cx| {
-                            let mut st = InputState::new(window, cx);
-                            st.set_placeholder(
-                                SharedString::from("socks5://host:port"),
-                                window,
-                                cx,
-                            );
-                            if !initial.trim().is_empty() {
-                                st.set_value(SharedString::from(initial), window, cx);
-                            }
-                            st
-                        });
-                        s.download_socks_proxy_url_input = Some(input);
-                    }
+                if s.download_socks_proxy_url_input.is_none() {
+                    let initial = s.download_socks_proxy_url.to_string();
+                    let input = cx.new(|cx| {
+                        let mut st = InputState::new(window, cx);
+                        st.set_placeholder(SharedString::from("socks5://host:port"), window, cx);
+                        if !initial.trim().is_empty() {
+                            st.set_value(SharedString::from(initial), window, cx);
+                        }
+                        st
+                    });
+                    s.download_socks_proxy_url_input = Some(input);
+                }
 
-                    if s.theme_color_input.is_none() {
-                        let initial = s.theme_color.to_string();
-                        let input = cx.new(|cx| {
-                            let mut st = InputState::new(window, cx);
-                            st.set_placeholder(
-                                SharedString::from("#a0d9b6 / rgba(59,130,246,0.6)"),
-                                window,
-                                cx,
-                            );
-                            if !initial.trim().is_empty() {
-                                st.set_value(SharedString::from(initial), window, cx);
-                            }
-                            st
-                        });
-                        s.theme_color_input = Some(input);
-                    }
+                if s.theme_color_input.is_none() {
+                    let initial = s.theme_color.to_string();
+                    let input = cx.new(|cx| {
+                        let mut st = InputState::new(window, cx);
+                        st.set_placeholder(
+                            SharedString::from("#a0d9b6 / rgba(59,130,246,0.6)"),
+                            window,
+                            cx,
+                        );
+                        if !initial.trim().is_empty() {
+                            st.set_value(SharedString::from(initial), window, cx);
+                        }
+                        st
+                    });
+                    s.theme_color_input = Some(input);
+                }
 
-                    if s.local_image_path_input.is_none() {
-                        let initial = s.local_image_path.to_string();
-                        let input = cx.new(|cx| {
-                            let mut st = InputState::new(window, cx);
-                            st.set_placeholder(SharedString::from("C:/.../image.webp"), window, cx);
-                            if !initial.trim().is_empty() {
-                                st.set_value(SharedString::from(initial), window, cx);
-                            }
-                            st
-                        });
-                        s.local_image_path_input = Some(input);
-                    }
+                if s.local_image_path_input.is_none() {
+                    let initial = s.local_image_path.to_string();
+                    let input = cx.new(|cx| {
+                        let mut st = InputState::new(window, cx);
+                        st.set_placeholder(SharedString::from("C:/.../image.webp"), window, cx);
+                        if !initial.trim().is_empty() {
+                            st.set_value(SharedString::from(initial), window, cx);
+                        }
+                        st
+                    });
+                    s.local_image_path_input = Some(input);
+                }
 
-                    if s.network_image_url_input.is_none() {
-                        let initial = s.network_image_url.to_string();
-                        let input = cx.new(|cx| {
-                            let mut st = InputState::new(window, cx);
-                            st.set_placeholder(
-                                SharedString::from("https://host/bg.webp"),
-                                window,
-                                cx,
-                            );
-                            if !initial.trim().is_empty() {
-                                st.set_value(SharedString::from(initial), window, cx);
-                            }
-                            st
-                        });
-                        s.network_image_url_input = Some(input);
-                    }
+                if s.network_image_url_input.is_none() {
+                    let initial = s.network_image_url.to_string();
+                    let input = cx.new(|cx| {
+                        let mut st = InputState::new(window, cx);
+                        st.set_placeholder(SharedString::from("https://host/bg.webp"), window, cx);
+                        if !initial.trim().is_empty() {
+                            st.set_value(SharedString::from(initial), window, cx);
+                        }
+                        st
+                    });
+                    s.network_image_url_input = Some(input);
+                }
 
-                    (
-                        s.frame_rate_limit_input.clone(),
-                        s.download_curseforge_api_base_input.clone(),
-                        s.download_curseforge_key_input.clone(),
-                        s.download_github_key_input.clone(),
-                        s.download_http_proxy_url_input.clone(),
-                        s.download_socks_proxy_url_input.clone(),
-                        s.theme_color_input.clone(),
-                        s.local_image_path_input.clone(),
-                        s.network_image_url_input.clone(),
-                    )
-                },
-            );
+                (
+                    s.frame_rate_limit_input.clone(),
+                    s.download_curseforge_api_base_input.clone(),
+                    s.download_curseforge_key_input.clone(),
+                    s.download_github_key_input.clone(),
+                    s.download_http_proxy_url_input.clone(),
+                    s.download_socks_proxy_url_input.clone(),
+                    s.theme_color_input.clone(),
+                    s.local_image_path_input.clone(),
+                    s.network_image_url_input.clone(),
+                )
+            },
+        );
 
         if let Some(input) = frame_input {
             let sub = cx.subscribe(

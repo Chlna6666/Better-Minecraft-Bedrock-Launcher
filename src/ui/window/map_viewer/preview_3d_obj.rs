@@ -1,27 +1,39 @@
 use std::path::PathBuf;
 
 use bedrock_block_model::{
-    ObjExport, ObjMeshFaceSource, export_obj_from_face_sources_with_package_roots,
+    ObjDocumentHeader, ObjExport, ObjMeshFaceSource, ObjTextureResolver, export_face_sources,
 };
 
 use super::preview_3d::{Preview3dChunkMesh, Preview3dMesh};
 
 pub(super) type Preview3dObjExport = ObjExport;
 
-pub(super) fn export_preview_3d_obj_with_materials_with_progress(
-    mesh: &Preview3dMesh,
-    material_library_name: &str,
-    texture_directory_name: &str,
-    game_package_paths: &[PathBuf],
+/// Configuration for one preview-3D OBJ export. Grouped so the entry point stays
+/// a short action with a typed parameter object instead of a positional chain.
+pub(super) struct Preview3dObjOptions<'a> {
+    pub mesh: &'a Preview3dMesh,
+    pub material_library_name: &'a str,
+    pub texture_directory_name: &'a str,
+    pub game_package_paths: &'a [PathBuf],
+}
+
+pub(super) fn export_preview_3d_obj(
+    options: Preview3dObjOptions<'_>,
     progress: impl FnMut(usize, usize),
 ) -> Preview3dObjExport {
-    export_obj_from_face_sources_with_package_roots(
-        "BMCBL preview_3d OBJ export",
-        material_library_name,
-        "bmcb_preview_selection",
-        mesh.chunk_meshes.iter(),
-        game_package_paths,
-        texture_directory_name,
+    let header = ObjDocumentHeader {
+        comment: "BMCBL preview_3d OBJ export",
+        material_library_name: options.material_library_name,
+        object_name: "bmcb_preview_selection",
+    };
+    let resolver = ObjTextureResolver::with_package_roots(
+        options.game_package_paths,
+        options.texture_directory_name,
+    );
+    export_face_sources(
+        &header,
+        options.mesh.chunk_meshes.iter(),
+        &resolver,
         progress,
     )
 }

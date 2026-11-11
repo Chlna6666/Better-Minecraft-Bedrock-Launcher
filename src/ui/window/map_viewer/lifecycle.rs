@@ -1,11 +1,3 @@
-fn paint_tile_bounds_for_viewport(
-    viewport: super::model::MapViewport,
-    layout: bedrock_render::RenderLayout,
-    radius: i32,
-) -> Option<super::viewport::TileBounds> {
-    super::viewport::paint_tile_bounds_for_viewport(viewport, layout, radius)
-}
-
 fn screen_image_bounds(
     _bounds: gpui::Bounds<gpui::Pixels>,
     _viewport: super::model::MapViewport,
@@ -670,7 +662,7 @@ impl MapViewerWindowView {
     pub(super) fn sync_canvas_snapshot(&mut self, colors: ThemeColors, cx: &mut Context<Self>) {
         if !self.viewport_interaction_active() {
             self.flush_pending_interaction_ready_tiles_if_due(colors, cx);
-            self.refresh_canvas_tiles_for_current_viewport_if_needed(cx);
+            self.refresh_canvas_tiles_for_current_viewport(cx);
         }
         let snapshot_key = self.canvas_snapshot_key(colors);
         if self.last_synced_canvas_snapshot_key.as_ref() == Some(&snapshot_key) {
@@ -692,7 +684,7 @@ impl MapViewerWindowView {
 
     pub(super) fn sync_tile_layer_snapshot(&mut self, colors: ThemeColors, cx: &mut Context<Self>) {
         if !self.viewport_interaction_active() {
-            self.refresh_canvas_tiles_for_current_viewport_if_needed(cx);
+            self.refresh_canvas_tiles_for_current_viewport(cx);
         }
         self.commit_tile_layer_snapshot(colors, cx);
     }
@@ -706,7 +698,7 @@ impl MapViewerWindowView {
         // retained paint snapshot when its tile bounds no longer cover the camera;
         // otherwise the canvas keeps drawing the pre-zoom snapshot and exposes
         // transparent gaps until the next completed render batch.
-        self.refresh_canvas_tiles_for_current_viewport_if_needed(cx);
+        self.refresh_canvas_tiles_for_current_viewport(cx);
         let canvas_view = self.canvas_view.clone();
         let snapshot = self.canvas_snapshot(colors);
         canvas_view.update(cx, |view, cx| view.set_interaction_snapshot(snapshot, cx));
@@ -743,23 +735,18 @@ impl MapViewerWindowView {
     }
 
     fn current_canvas_paint_bounds(&self) -> Option<TileBounds> {
-        paint_tile_bounds_for_viewport(
+        paint_tile_bounds(
             self.viewport,
             self.active_layout,
             self.canvas_paint_radius(),
         )
     }
 
-    fn refresh_canvas_tiles_for_current_viewport_if_needed(&mut self, cx: &mut Context<Self>) {
-        self.refresh_canvas_tiles_for_current_viewport_if_needed_impl(
-            self.toolbar_state.diagnostics_open,
-            true,
-            false,
-            cx,
-        );
+    fn refresh_canvas_tiles_for_current_viewport(&mut self, cx: &mut Context<Self>) {
+        self.rebuild_canvas_tiles(self.toolbar_state.diagnostics_open, true, false, cx);
     }
 
-    fn refresh_canvas_tiles_for_current_viewport_if_needed_impl(
+    fn rebuild_canvas_tiles(
         &mut self,
         include_debug_overlays: bool,
         rebuild_paste_preview_images: bool,
@@ -1076,12 +1063,7 @@ impl MapViewerWindowView {
                     // A cache hit can arrive before the initial canvas snapshot is published.
                     // Rebuild from the current viewport once instead of retaining a partial
                     // incremental patch from the first ready batch.
-                    self.refresh_canvas_tiles_for_current_viewport_if_needed_impl(
-                        self.toolbar_state.diagnostics_open,
-                        false,
-                        true,
-                        cx,
-                    );
+                    self.rebuild_canvas_tiles(self.toolbar_state.diagnostics_open, false, true, cx);
                     self.sync_canvas_snapshot(colors, cx);
                 } else {
                     self.sync_tile_layer_snapshot(colors, cx);
@@ -2137,8 +2119,7 @@ impl MapViewerWindowView {
         }
 
         let center = self.viewport.center_tile(self.active_layout);
-        let Some(visible_bounds) =
-            visible_tile_bounds_for_viewport(self.viewport, self.active_layout, center)
+        let Some(visible_bounds) = visible_tile_bounds(self.viewport, self.active_layout, center)
         else {
             return;
         };
@@ -2287,9 +2268,7 @@ impl MapViewerWindowView {
 
     pub(super) fn tile_coords_for_viewport(&self, radius: i32) -> Vec<(i32, i32)> {
         let center = self.viewport.center_tile(self.active_layout);
-        let Some(visible) =
-            visible_tile_bounds_for_viewport(self.viewport, self.active_layout, center)
-        else {
+        let Some(visible) = visible_tile_bounds(self.viewport, self.active_layout, center) else {
             return Vec::new();
         };
         if radius <= 0 {
@@ -2329,7 +2308,7 @@ impl MapViewerWindowView {
         let composite_viewport = viewport_with_composite_overscan(self.viewport);
         let center_tile = composite_viewport.center_tile(self.active_layout);
         let visible_tiles =
-            visible_tile_bounds_for_viewport(composite_viewport, self.active_layout, center_tile)
+            visible_tile_bounds(composite_viewport, self.active_layout, center_tile)
                 .map(|bounds| tile_coords_for_visible_bounds(bounds, center_tile))
                 .unwrap_or_default();
         let signature = ViewportCompositeSignature {

@@ -8,8 +8,8 @@ use crate::downloads::wu_client::client::WuClient;
 use crate::http::proxy::get_download_client_for_proxy;
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{
-    create_task, finish_task, is_cancelled, register_task_abort_handle,
-    update_progress, TaskOptions, TaskType,
+    ProgressUpdate, TaskOptions, TaskType, create_task, finish_task, is_cancelled,
+    register_task_abort_handle, update_progress,
 };
 use crate::utils::file_ops;
 
@@ -230,7 +230,7 @@ pub async fn download_appx(
                 return;
             }
 
-            update_progress(&task_id_clone, 0, None, Some("starting"));
+            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage("starting"));
             let mut options = download_options.unwrap_or_default();
             if options.md5_expected.is_none() {
                 options.md5_expected = md5;
@@ -374,7 +374,7 @@ async fn download_resource_to_dir(
                 return;
             }
 
-            update_progress(&task_id_clone, 0, None, Some("starting"));
+            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage("starting"));
 
             let mut options = download_options.unwrap_or_default();
             if options.md5_expected.is_none() {
@@ -495,7 +495,7 @@ pub async fn download_resource_to_cache(
                 return;
             }
 
-            update_progress(&task_id_clone, 0, None, Some("starting"));
+            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage("starting"));
 
             let mut options = download_options.unwrap_or_default();
             if options.md5_expected.is_none() {

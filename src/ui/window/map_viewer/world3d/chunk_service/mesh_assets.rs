@@ -47,7 +47,10 @@ impl MeshAssets {
         (texture.color_space() as u8).hash(&mut hash);
         (texture.sampling() as u8).hash(&mut hash);
         for level in 0..texture.mip_level_count() {
-            texture.mip_pixels(level).expect("validated texture mip").hash(&mut hash);
+            texture
+                .mip_pixels(level)
+                .expect("validated texture mip")
+                .hash(&mut hash);
         }
         hash.finish()
     }
@@ -66,7 +69,9 @@ impl MeshAssets {
         // Opportunistic cleanup avoids an unbounded weak list if images are
         // frequently unloaded and reloaded before the periodic prune pass.
         candidates.retain(|old| old.strong_count() > 0);
-        if let Some(existing) = candidates.iter().filter_map(Weak::upgrade)
+        if let Some(existing) = candidates
+            .iter()
+            .filter_map(Weak::upgrade)
             .find(|old| Self::identical_texels(old, &texture))
         {
             return existing;
@@ -291,16 +296,15 @@ mod tests {
         let rgba = [20, 40, 60, 255];
         let srgb = assets.intern_texture(TextureAsset::rgba8(1, 1, rgba.to_vec()).unwrap());
         let point = assets.intern_texture(
-            TextureAsset::rgba8(1, 1, rgba.to_vec()).unwrap().with_point_sampling(),
+            TextureAsset::rgba8(1, 1, rgba.to_vec())
+                .unwrap()
+                .with_point_sampling(),
         );
-        let linear = assets.intern_texture(
-            TextureAsset::linear_rgba8(1, 1, rgba.to_vec()).unwrap(),
-        );
+        let linear =
+            assets.intern_texture(TextureAsset::linear_rgba8(1, 1, rgba.to_vec()).unwrap());
         let mip = assets.intern_texture(
-            TextureAsset::rgba8_mip_chain(2, 2, [
-                vec![20, 40, 60, 255].repeat(4),
-                rgba.to_vec(),
-            ]).unwrap(),
+            TextureAsset::rgba8_mip_chain(2, 2, [vec![20, 40, 60, 255].repeat(4), rgba.to_vec()])
+                .unwrap(),
         );
         assert_ne!(srgb.id(), point.id());
         assert_ne!(srgb.id(), linear.id());
@@ -376,9 +380,8 @@ mod tests {
         );
         assert!(assets.is_grayscale_mask(&mask));
         // Jungle leaves: near-neutral mask with faint yellow spots, chroma 14.
-        let jungle = Arc::new(
-            TextureAsset::rgba8(1, 1, Arc::<[u8]>::from([157, 154, 143, 255])).unwrap(),
-        );
+        let jungle =
+            Arc::new(TextureAsset::rgba8(1, 1, Arc::<[u8]>::from([157, 154, 143, 255])).unwrap());
         assert!(assets.is_grayscale_mask(&jungle));
         let colored =
             Arc::new(TextureAsset::rgba8(1, 1, Arc::<[u8]>::from([51, 127, 8, 255])).unwrap());
@@ -420,8 +423,7 @@ mod tests {
                 .unwrap(),
         );
         let overlay = Arc::new(
-            TextureAsset::rgba8(2, 1, Arc::<[u8]>::from([155, 155, 155, 255, 0, 0, 0, 0]))
-                .unwrap(),
+            TextureAsset::rgba8(2, 1, Arc::<[u8]>::from([155, 155, 155, 255, 0, 0, 0, 0])).unwrap(),
         );
         let tint = [123.0 / 255.0, 191.0 / 255.0, 91.0 / 255.0, 1.0];
         let first = assets.composited_grass_side(&dirt, &overlay, tint).unwrap();

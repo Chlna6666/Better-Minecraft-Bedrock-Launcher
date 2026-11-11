@@ -8,15 +8,16 @@ use std::{
 };
 
 use bedrock_voxel::{
-    ObjVoxelOptions, default_block_candidates, voxelize_obj_with_textures_and_progress,
+    ObjVoxelOptions, VoxelizeTexturesRequest, default_block_candidates, voxelize_textured,
 };
 use bedrock_world::{structure::McStructureFile, surface::CancelFlag};
 
-use super::model_import::prepare_map_model;
-use super::source_obj_preview::ObjSourcePreview;
 use super::image::{
     ImageBlockHeight, ImageBlockOptions, decode_image, image_block_plan_with_progress,
 };
+use super::model_import::prepare_map_model;
+use super::source_obj_preview::ObjSourcePreview;
+use crate::tasks::task_manager::ProgressUpdate;
 use crate::tasks::{runtime, task_manager};
 
 const PREVIEW_LIMIT_BYTES: usize = 128 * 1024 * 1024;
@@ -57,7 +58,8 @@ impl PreviewStore {
         self.entries
             .retain(|_, (_, at)| at.elapsed() <= PREVIEW_TTL);
         self.discarded.retain(|_, at| at.elapsed() <= PREVIEW_TTL);
-        self.original_obj.retain(|_, (_, at)| at.elapsed() <= PREVIEW_TTL);
+        self.original_obj
+            .retain(|_, (_, at)| at.elapsed() <= PREVIEW_TTL);
     }
 
     fn insert_original_obj(&mut self, id: &str, preview: Arc<ObjSourcePreview>) {
@@ -66,12 +68,16 @@ impl PreviewStore {
             return;
         }
         if self.original_obj.len() >= 2
-            && let Some(old) = self.original_obj.iter()
-                .min_by_key(|(_, (_, at))| at).map(|(key, _)| key.clone())
+            && let Some(old) = self
+                .original_obj
+                .iter()
+                .min_by_key(|(_, (_, at))| at)
+                .map(|(key, _)| key.clone())
         {
             self.original_obj.remove(&old);
         }
-        self.original_obj.insert(id.to_owned(), (preview, Instant::now()));
+        self.original_obj
+            .insert(id.to_owned(), (preview, Instant::now()));
     }
 
     fn insert(&mut self, id: &str, bytes: Vec<u8>) -> Result<(), String> {
@@ -122,7 +128,10 @@ pub fn get_structure_preview(task_id: &str) -> Option<Arc<Vec<u8>>> {
 pub fn get_obj_source_preview(task_id: &str) -> Option<Arc<ObjSourcePreview>> {
     let mut store = previews().lock().ok()?;
     store.expire();
-    store.original_obj.get(task_id).map(|(scene, _)| scene.clone())
+    store
+        .original_obj
+        .get(task_id)
+        .map(|(scene, _)| scene.clone())
 }
 
 /// Drops a superseded result and prevents its running task from publishing later.
@@ -155,8 +164,9 @@ pub fn start_structure_preview(request: StructurePreviewRequest) -> Result<Strin
         .source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());
-    let task_id =
-        task_manager::create_task_with_details(None, name, detail, "读取源文件", None, false);
+    let task_id = task_manager::create_task(
+        task_manager::TaskOptions::new(name, "读取源文件").detail(detail),
+    )?;
     task_manager::register_task_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
     task_manager::register_task_cancel_hook(task_id.clone(), {
@@ -225,9 +235,9 @@ async fn generate_preview(
                         if done > previous {
                             task_manager::update_progress(
                                 &worker_id,
-                                done - previous,
-                                Some(progress_total),
-                                Some(stage),
+                                ProgressUpdate::advance(done - previous)
+                                    .total(progress_total)
+                                    .stage(stage),
                             );
                             previous = done;
                         }
@@ -240,10 +250,13 @@ async fn generate_preview(
         }
         StructurePreviewKind::Obj(options) => {
             let source = request.source;
-            let prepared = runtime::run_io_blocking(move || {
-                prepare_map_model(&source)
-            }).await??;
-            let super::model_import::PreparedMapModel { model, decoded, preview, .. } = prepared;
+            let prepared = runtime::run_io_blocking(move || prepare_map_model(&source)).await??;
+            let super::model_import::PreparedMapModel {
+                model,
+                decoded,
+                preview,
+                ..
+            } = prepared;
             if cancel.is_cancelled() {
                 return Err("OBJ 预览已取消".to_owned());
             }
@@ -265,18 +278,20 @@ async fn generate_preview(
                 }
                 let candidates = default_block_candidates();
                 let mut previous = 0;
-                let plan = voxelize_obj_with_textures_and_progress(
-                    &model,
-                    &decoded,
-                    candidates,
-                    options,
-                    &worker_cancel,
+                let plan = voxelize_textured(
+                    VoxelizeTexturesRequest {
+                        model: &model,
+                        textures: &decoded,
+                        candidates,
+                        options,
+                        cancel: &worker_cancel,
+                    },
                     |done, total| {
                         task_manager::update_progress(
                             &worker_id,
-                            (done - previous) as u64,
-                            Some(total as u64),
-                            Some("体素化三角形"),
+                            ProgressUpdate::advance((done - previous) as u64)
+                                .total(total as u64)
+                                .stage("体素化三角形"),
                         );
                         previous = done;
                     },
@@ -300,13 +315,17 @@ async fn generate_preview(
         return Err("结构预览已取消".to_owned());
     }
     let size = bytes.len();
-    let mut store = previews().lock()
+    let mut store = previews()
+        .lock()
         .map_err(|_| "结构预览存储不可用".to_owned())?;
     store.insert(task_id, bytes)?;
     if let Some(original) = original_obj {
         store.insert_original_obj(task_id, original);
     }
-    task_manager::update_progress(task_id, 1, Some(1), Some("保存预览结果"));
+    task_manager::update_progress(
+        task_id,
+        ProgressUpdate::advance(1).total(1).stage("保存预览结果"),
+    );
     Ok(format!("方块预览已生成（{} KiB）", size.div_ceil(1024)))
 }
 

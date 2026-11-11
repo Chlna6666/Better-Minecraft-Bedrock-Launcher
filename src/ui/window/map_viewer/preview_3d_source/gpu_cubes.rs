@@ -101,15 +101,16 @@ mod tests {
                 .collect();
             let mut templates: Vec<gpui_3d::VoxelFaceTemplate> = templates;
             let instance_templates = templates.split_off(band.model_faces);
-            let source = gpui_3d::VoxelMeshSource::new(band.size, band.origin, band.cells, templates)
-                .unwrap()
-                .with_instances(band.classes, instance_templates, band.instances)
-                .unwrap()
-                .with_y_range(
-                    (band.section_y * 64) as f32,
-                    ((band.section_y + 1) * 64) as f32,
-                )
-                .unwrap();
+            let source =
+                gpui_3d::VoxelMeshSource::new(band.size, band.origin, band.cells, templates)
+                    .unwrap()
+                    .with_instances(band.classes, instance_templates, band.instances)
+                    .unwrap()
+                    .with_y_range(
+                        (band.section_y * 64) as f32,
+                        ((band.section_y + 1) * 64) as f32,
+                    )
+                    .unwrap();
             let mesh = Mesh::from_gpu_voxels(source);
             actual.extend(
                 mesh.vertices()
@@ -132,20 +133,29 @@ mod tests {
     }
     #[test]
     fn gpu_model_plan_filters_hidden_instances_before_face_templates() {
-        let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: bedrock_render::Dimension::Overworld,
+        };
         let mut blocks = Preview3dChunkBlocks::default();
         for y in [90, 150] {
             let key = BlockKey { x: 8, y, z: 8 };
             blocks.water.insert(key);
             blocks.water_blocks.push(Preview3dFluidBlock {
-                key, color: [0.4, 0.6, 0.8, 0.5],
+                key,
+                color: [0.4, 0.6, 0.8, 0.5],
                 material: Arc::from("minecraft:water"),
-                surface_only: false, height: 1.0,
+                surface_only: false,
+                height: 1.0,
             });
         }
         let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
-            dimension: pos.dimension, min_chunk_x: 0, max_chunk_x: 0,
-            min_chunk_z: 0, max_chunk_z: 0,
+            dimension: pos.dimension,
+            min_chunk_x: 0,
+            max_chunk_x: 0,
+            min_chunk_z: 0,
+            max_chunk_z: 0,
         });
         builder.insert_stream_chunk(pos, blocks);
         let stored = builder.block_chunks.get(&ChunkKey::from_pos(pos)).unwrap();
@@ -155,33 +165,46 @@ mod tests {
         assert_eq!(reduced.records.len(), 1);
         assert_eq!(reduced.records[0].key.y, 150);
         assert!(reduced.faces.len() <= full.faces.len());
-        let bands = builder.gpu_cube_bands_skipping(
-            pos, None, &std::collections::BTreeSet::from([1]),
-        ).unwrap();
+        let bands = builder
+            .gpu_cube_bands_skipping(pos, None, &std::collections::BTreeSet::from([1]))
+            .unwrap();
         assert!(!bands.iter().any(|band| band.section_y == 1));
         assert!(bands.iter().any(|band| band.section_y == 2));
     }
 
     #[test]
     fn gpu_fluid_halo_defers_unknown_seams_but_retains_known_air() {
-        let pos = ChunkPos { x: 0, z: 0, dimension: bedrock_render::Dimension::Overworld };
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: bedrock_render::Dimension::Overworld,
+        };
         let neighbor = ChunkPos { x: 1, z: 0, ..pos };
         let mut blocks = Preview3dChunkBlocks::default();
         let key = BlockKey { x: 15, y: 88, z: 8 };
         blocks.water.insert(key);
         blocks.water_blocks.push(Preview3dFluidBlock {
-            key, color: [0.4, 0.6, 0.8, 0.5],
+            key,
+            color: [0.4, 0.6, 0.8, 0.5],
             material: Arc::from("minecraft:water"),
-            surface_only: false, height: 1.0,
+            surface_only: false,
+            height: 1.0,
         });
         let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
-            dimension: pos.dimension, min_chunk_x: 0, max_chunk_x: 1,
-            min_chunk_z: 0, max_chunk_z: 0,
+            dimension: pos.dimension,
+            min_chunk_x: 0,
+            max_chunk_x: 1,
+            min_chunk_z: 0,
+            max_chunk_z: 0,
         });
         builder.insert_stream_chunk(pos, blocks);
         let halo_class = |builder: &Preview3dMeshBuilder| {
-            let band = builder.gpu_cube_bands(pos, None).unwrap()
-                .into_iter().find(|band| band.section_y == 1).unwrap();
+            let band = builder
+                .gpu_cube_bands(pos, None)
+                .unwrap()
+                .into_iter()
+                .find(|band| band.section_y == 1)
+                .unwrap();
             let x = (16 - band.origin.x as i32) as usize;
             let y = (88 - band.origin.y as i32) as usize;
             let z = (8 - band.origin.z as i32) as usize;
@@ -201,8 +224,10 @@ mod tests {
         };
         let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
             dimension: pos.dimension,
-            min_chunk_x: 0, max_chunk_x: 0,
-            min_chunk_z: 0, max_chunk_z: 0,
+            min_chunk_x: 0,
+            max_chunk_x: 0,
+            min_chunk_z: 0,
+            max_chunk_z: 0,
         });
         builder.insert_stream_chunk(
             pos,
@@ -210,7 +235,12 @@ mod tests {
         );
         assert!(!builder.gpu_cube_bands(pos, None).unwrap().is_empty());
         let hidden = std::collections::BTreeSet::from([0, 1, 2]);
-        assert!(builder.gpu_cube_bands_skipping(pos, None, &hidden).unwrap().is_empty());
+        assert!(
+            builder
+                .gpu_cube_bands_skipping(pos, None, &hidden)
+                .unwrap()
+                .is_empty()
+        );
         // A hole in the one-block halo forces regular model planning so no
         // visible boundary face is ever skipped by this shortcut.
         let visible_halo = std::collections::BTreeSet::from([1]);
@@ -276,8 +306,11 @@ mod tests {
         builder.insert_stream_chunk(
             pos,
             Preview3dChunkBlocks::test_cubes(&[
-                [-16, 63, 5], [-15, 63, 5], [-1, 63, 5],
-                [-1, 64, 5], [-8, 65, 6],
+                [-16, 63, 5],
+                [-15, 63, 5],
+                [-1, 63, 5],
+                [-1, 64, 5],
+                [-8, 65, 6],
             ]),
         );
         builder.insert_stream_chunk(
@@ -285,7 +318,10 @@ mod tests {
             Preview3dChunkBlocks::test_cubes(&[[0, 63, 5], [0, 64, 5]]),
         );
         for band in builder.gpu_cube_bands(pos, None).unwrap() {
-            assert!(band.model_faces > 0, "opaque cubes must use native GPU cells");
+            assert!(
+                band.model_faces > 0,
+                "opaque cubes must use native GPU cells"
+            );
             assert!(
                 band.cells.iter().any(|&cell| cell != 0 && cell != u32::MAX),
                 "cube geometry must not be sent through six-face instance jobs"
@@ -304,7 +340,11 @@ mod tests {
                             Some(Preview3dBlockClass::Water) => 4,
                             Some(Preview3dBlockClass::Lava) => 8,
                             _ => 0,
-                        } | if builder.ambient_occludes_at(key) { 16 } else { 0 };
+                        } | if builder.ambient_occludes_at(key) {
+                            16
+                        } else {
+                            0
+                        };
                         let index = ((z * band.size[1] + y) * band.size[0] + x) as usize;
                         assert_eq!(band.classes[index], expected, "cell {key:?}");
                         // Opaque cells either contain a model index or the
@@ -369,15 +409,16 @@ mod tests {
                 .collect();
             let mut templates: Vec<gpui_3d::VoxelFaceTemplate> = templates;
             let instance_templates = templates.split_off(band.model_faces);
-            let source = gpui_3d::VoxelMeshSource::new(band.size, band.origin, band.cells, templates)
-                .unwrap()
-                .with_instances(band.classes, instance_templates, band.instances)
-                .unwrap()
-                .with_y_range(
-                    (band.section_y * 64) as f32,
-                    ((band.section_y + 1) * 64) as f32,
-                )
-                .unwrap();
+            let source =
+                gpui_3d::VoxelMeshSource::new(band.size, band.origin, band.cells, templates)
+                    .unwrap()
+                    .with_instances(band.classes, instance_templates, band.instances)
+                    .unwrap()
+                    .with_y_range(
+                        (band.section_y * 64) as f32,
+                        ((band.section_y + 1) * 64) as f32,
+                    )
+                    .unwrap();
             let mesh = Mesh::from_gpu_voxels(source);
             actual.extend(
                 mesh.vertices()
@@ -468,9 +509,7 @@ impl Preview3dMeshBuilder {
         // record first, then dropped the hidden bands afterward.
         let plan = super::gpu_models::ModelPlan::new(self, blocks, |y, detail| {
             let halo = if detail { 2_i32 } else { 1_i32 };
-            (-halo..=halo).all(|dy| {
-                hidden.contains(&y.saturating_add(dy).div_euclid(64))
-            })
+            (-halo..=halo).all(|dy| hidden.contains(&y.saturating_add(dy).div_euclid(64)))
         });
         let mut bands = std::collections::BTreeMap::<i32, Vec<_>>::new();
         for record in &plan.records {

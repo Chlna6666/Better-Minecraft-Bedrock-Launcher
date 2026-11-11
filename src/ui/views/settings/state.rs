@@ -436,7 +436,8 @@ impl SettingsPageState {
         );
         self.download_curseforge_api_base =
             SharedString::from(config.launcher.download.curseforge_api_base.clone());
-        self.download_curseforge_key_configured = !config.launcher.download.curseforge_api_key.is_empty();
+        self.download_curseforge_key_configured =
+            !config.launcher.download.curseforge_api_key.is_empty();
         self.download_http_proxy_url =
             SharedString::from(config.launcher.download.proxy.http_proxy_url.clone());
         self.download_socks_proxy_url =

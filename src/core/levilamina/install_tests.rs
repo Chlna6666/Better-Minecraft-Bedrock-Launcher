@@ -25,9 +25,7 @@ fn preloader_placement_preserves_original_mod_directory() {
 
 #[test]
 fn preloader_validity_requires_bootstrap_manifest_and_dll() {
-    let root = std::env::temp_dir().join(format!(
-        "bmcbl-preloader-test-{}", std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("bmcbl-preloader-test-{}", std::process::id()));
     let dir = root.join("mods").join("PreLoader");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("PreLoader.dll"), b"test").unwrap();
@@ -51,7 +49,8 @@ fn preloader_validity_requires_bootstrap_manifest_and_dll() {
 #[test]
 fn manifest_type_is_repaired_in_place_without_touching_preloader_dll() {
     let root = std::env::temp_dir().join(format!(
-        "bmcbl-preloader-manifest-repair-{}", std::process::id()
+        "bmcbl-preloader-manifest-repair-{}",
+        std::process::id()
     ));
     let dir = root.join("mods").join("PreLoader");
     std::fs::create_dir_all(&dir).unwrap();
@@ -65,9 +64,8 @@ fn manifest_type_is_repaired_in_place_without_touching_preloader_dll() {
 
     super::super::installation_state::repair_preloader_manifest_type(&root).unwrap();
     assert!(!dir.join("manifest.json").exists());
-    let manifest: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(dir.join("bloader.json")).unwrap()
-    ).unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("bloader.json")).unwrap()).unwrap();
     assert_eq!(manifest["name"], "PreLoader");
     assert_eq!(manifest["type"], "preloader-bootstrap");
     assert_eq!(manifest["version"], "1.16.8");

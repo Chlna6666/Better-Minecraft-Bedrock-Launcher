@@ -1,7 +1,7 @@
 use crate::core::minecraft::gdk::stream::MsiXVDStream;
 use crate::tasks::runtime::{run_archive_blocking, spawn_archive_task};
 use crate::tasks::task_manager::{
-    create_task, finish_task, is_cancelled, update_progress, TaskOptions, TaskType,
+    ProgressUpdate, TaskOptions, TaskType, create_task, finish_task, is_cancelled, update_progress,
 };
 use crate::utils::file_ops;
 use std::path::PathBuf;
@@ -48,12 +48,8 @@ pub fn start_unpack_gdk_task(
     Ok(task_id)
 }
 
-fn run_unpack_gdk_task(
-    task_id: String,
-    input_path: PathBuf,
-    version_dir: PathBuf,
-) {
-    update_progress(&task_id, 0, None, Some("initializing"));
+fn run_unpack_gdk_task(task_id: String, input_path: PathBuf, version_dir: PathBuf) {
+    update_progress(&task_id, ProgressUpdate::advance(0).stage("initializing"));
 
     if is_cancelled(&task_id) {
         finish_task(&task_id, "cancelled", Some("cancelled before start".into()));
@@ -70,7 +66,7 @@ fn run_unpack_gdk_task(
         }
     };
 
-    update_progress(&task_id, 0, None, Some("extracting"));
+    update_progress(&task_id, ProgressUpdate::advance(0).stage("extracting"));
 
     match stream.extract_to(&version_dir, task_id.clone()) {
         Ok(()) => {

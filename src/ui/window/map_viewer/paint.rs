@@ -589,7 +589,7 @@ pub(super) fn draw_professional_overlay_canvas(
     colors: ThemeColors,
     window: &mut Window,
 ) {
-    let Some(range) = region_render_range_for_viewport(viewport, layout) else {
+    let Some(range) = tile_render_range(viewport, layout) else {
         return;
     };
     if overlays.slime_chunks {
@@ -792,10 +792,10 @@ fn paint_frame_grid_preview(
     // Project the already-generated mosaic into the exact world-space grid.
     // This does not rebuild the preview or allocate per-tile textures during pan/zoom.
     if let Some(image) = preview.image.as_deref() {
-        let left = screen_x_for_block(bounds, viewport, layout, preview.min_block_x);
-        let right = screen_x_for_block(bounds, viewport, layout, max_block_x);
-        let top = screen_y_for_block(bounds, viewport, layout, preview.min_block_z);
-        let bottom = screen_y_for_block(bounds, viewport, layout, max_block_z);
+        let left = block_screen_x(bounds, viewport, layout, preview.min_block_x);
+        let right = block_screen_x(bounds, viewport, layout, max_block_x);
+        let top = block_screen_y(bounds, viewport, layout, preview.min_block_z);
+        let bottom = block_screen_y(bounds, viewport, layout, max_block_z);
         if right > left && bottom > top {
             let rect = Bounds {
                 origin: point(px(left.floor()), px(top.floor())),
@@ -821,10 +821,10 @@ fn paint_frame_grid_preview(
         Some(Hsla { a: 0.95, ..color }),
         window,
     );
-    let top = screen_y_for_block(bounds, viewport, layout, preview.min_block_z);
-    let bottom = screen_y_for_block(bounds, viewport, layout, max_block_z);
+    let top = block_screen_y(bounds, viewport, layout, preview.min_block_z);
+    let bottom = block_screen_y(bounds, viewport, layout, max_block_z);
     for column in 1..preview.columns {
-        let x = screen_x_for_block(
+        let x = block_screen_x(
             bounds,
             viewport,
             layout,
@@ -838,10 +838,10 @@ fn paint_frame_grid_preview(
             Hsla { a: 0.75, ..color },
         ));
     }
-    let left = screen_x_for_block(bounds, viewport, layout, preview.min_block_x);
-    let right = screen_x_for_block(bounds, viewport, layout, max_block_x);
+    let left = block_screen_x(bounds, viewport, layout, preview.min_block_x);
+    let right = block_screen_x(bounds, viewport, layout, max_block_x);
     for row in 1..preview.rows {
-        let y = screen_y_for_block(
+        let y = block_screen_y(
             bounds,
             viewport,
             layout,
@@ -890,15 +890,15 @@ fn paint_slime_farm_candidate(
     }
 
     for chunk in &selected {
-        let left = screen_x_for_block(bounds, viewport, layout, chunk.x.saturating_mul(16));
-        let right = screen_x_for_block(
+        let left = block_screen_x(bounds, viewport, layout, chunk.x.saturating_mul(16));
+        let right = block_screen_x(
             bounds,
             viewport,
             layout,
             chunk.x.saturating_add(1).saturating_mul(16),
         );
-        let top = screen_y_for_block(bounds, viewport, layout, chunk.z.saturating_mul(16));
-        let bottom = screen_y_for_block(
+        let top = block_screen_y(bounds, viewport, layout, chunk.z.saturating_mul(16));
+        let bottom = block_screen_y(
             bounds,
             viewport,
             layout,
@@ -957,25 +957,25 @@ fn paint_selection_resize_handles(
     colors: ThemeColors,
     window: &mut Window,
 ) {
-    let left = screen_x_for_block(
+    let left = block_screen_x(
         bounds,
         viewport,
         layout,
         selection.min_chunk_x.saturating_mul(16),
     );
-    let right = screen_x_for_block(
+    let right = block_screen_x(
         bounds,
         viewport,
         layout,
         selection.max_chunk_x.saturating_add(1).saturating_mul(16),
     );
-    let top = screen_y_for_block(
+    let top = block_screen_y(
         bounds,
         viewport,
         layout,
         selection.min_chunk_z.saturating_mul(16),
     );
-    let bottom = screen_y_for_block(
+    let bottom = block_screen_y(
         bounds,
         viewport,
         layout,
@@ -1047,15 +1047,15 @@ fn paint_exact_chunk_selection(
         ..colors.accent
     };
     for chunk in &selected {
-        let left = screen_x_for_block(bounds, viewport, layout, chunk.x.saturating_mul(16));
-        let right = screen_x_for_block(
+        let left = block_screen_x(bounds, viewport, layout, chunk.x.saturating_mul(16));
+        let right = block_screen_x(
             bounds,
             viewport,
             layout,
             chunk.x.saturating_add(1).saturating_mul(16),
         );
-        let top = screen_y_for_block(bounds, viewport, layout, chunk.z.saturating_mul(16));
-        let bottom = screen_y_for_block(
+        let top = block_screen_y(bounds, viewport, layout, chunk.z.saturating_mul(16));
+        let bottom = block_screen_y(
             bounds,
             viewport,
             layout,
@@ -1325,15 +1325,15 @@ fn paint_paste_preview_images(
     window: &mut Window,
 ) {
     let requests = images.iter().filter_map(|image| {
-        let left = screen_x_for_block(bounds, viewport, layout, image.target.x.saturating_mul(16));
-        let top = screen_y_for_block(bounds, viewport, layout, image.target.z.saturating_mul(16));
-        let right = screen_x_for_block(
+        let left = block_screen_x(bounds, viewport, layout, image.target.x.saturating_mul(16));
+        let top = block_screen_y(bounds, viewport, layout, image.target.z.saturating_mul(16));
+        let right = block_screen_x(
             bounds,
             viewport,
             layout,
             image.target.x.saturating_add(1).saturating_mul(16),
         );
-        let bottom = screen_y_for_block(
+        let bottom = block_screen_y(
             bounds,
             viewport,
             layout,
@@ -1420,10 +1420,10 @@ pub(super) fn paint_block_rect(
     stroke_color: Option<Hsla>,
     window: &mut Window,
 ) {
-    let left = screen_x_for_block(bounds, viewport, layout, min_block_x);
-    let top = screen_y_for_block(bounds, viewport, layout, min_block_z);
-    let right = screen_x_for_block(bounds, viewport, layout, max_block_x);
-    let bottom = screen_y_for_block(bounds, viewport, layout, max_block_z);
+    let left = block_screen_x(bounds, viewport, layout, min_block_x);
+    let top = block_screen_y(bounds, viewport, layout, min_block_z);
+    let right = block_screen_x(bounds, viewport, layout, max_block_x);
+    let bottom = block_screen_y(bounds, viewport, layout, max_block_z);
     if right <= left || bottom <= top {
         return;
     }
@@ -1479,7 +1479,7 @@ pub(super) fn overlay_marker_screen_x(
     block_x: f32,
 ) -> f32 {
     bounds.left() / px(1.0)
-        + region_render_range_for_viewport(viewport, layout).map_or_else(
+        + tile_render_range(viewport, layout).map_or_else(
             || {
                 viewport.offset_x
                     + block_x * layout.pixels_per_block as f32 / layout.blocks_per_pixel as f32
@@ -1499,7 +1499,7 @@ pub(super) fn overlay_marker_screen_y(
     block_z: f32,
 ) -> f32 {
     bounds.top() / px(1.0)
-        + region_render_range_for_viewport(viewport, layout).map_or_else(
+        + tile_render_range(viewport, layout).map_or_else(
             || {
                 viewport.offset_y
                     + block_z * layout.pixels_per_block as f32 / layout.blocks_per_pixel as f32
@@ -1523,7 +1523,7 @@ pub(super) fn paint_chunk_marker(
     let block_x = marker.chunk_x as f32 * 16.0 + 8.0;
     let block_z = marker.chunk_z as f32 * 16.0 + 8.0;
     let x = bounds.left() / px(1.0)
-        + region_render_range_for_viewport(viewport, layout).map_or_else(
+        + tile_render_range(viewport, layout).map_or_else(
             || {
                 viewport.offset_x
                     + block_x * layout.pixels_per_block as f32 / layout.blocks_per_pixel as f32
@@ -1535,7 +1535,7 @@ pub(super) fn paint_chunk_marker(
             },
         );
     let y = bounds.top() / px(1.0)
-        + region_render_range_for_viewport(viewport, layout).map_or_else(
+        + tile_render_range(viewport, layout).map_or_else(
             || {
                 viewport.offset_y
                     + block_z * layout.pixels_per_block as f32 / layout.blocks_per_pixel as f32

@@ -493,7 +493,7 @@ pub(super) fn watch_server_mutation_task(
 
 pub(super) fn watch_levilamina_install_task(task_id: String, cx: &mut App) {
     let wait_task = gpui_tokio::Tokio::spawn_result(cx, async move {
-        task_manager::wait_for_task_terminal(&task_id)
+        task_manager::wait_for_task(&task_id)
             .await
             .map_err(anyhow::Error::msg)
     });

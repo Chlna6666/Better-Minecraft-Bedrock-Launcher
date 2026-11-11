@@ -268,6 +268,8 @@ mod tests {
             last_update_unix: 0,
             sequence: 0,
             visibility: crate::tasks::task_manager::TaskVisibility::Visible,
+            parent_id: None,
+            task_type: crate::tasks::task_manager::TaskType::Operation,
         })
     }
 }

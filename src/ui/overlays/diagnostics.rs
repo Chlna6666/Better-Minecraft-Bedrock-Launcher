@@ -62,7 +62,10 @@ pub fn render_diagnostics_overlay(
         t!("Diagnostics.modal.sentry")
     };
     let sentry_status = if let Some(sent_at) = report.sentry_submitted_at.as_deref() {
-        format!("{}: {sent_at}", t!("Diagnostics.modal.sentry_status_submitted"))
+        format!(
+            "{}: {sent_at}",
+            t!("Diagnostics.modal.sentry_status_submitted")
+        )
     } else if state.submitting_sentry {
         t!("Diagnostics.modal.sentry_status_sending").to_string()
     } else if state.sentry_submission_failed {
@@ -73,8 +76,9 @@ pub fn render_diagnostics_overlay(
     let dismiss_label = t!("Diagnostics.modal.dismiss");
 
     let detail_text = crate::utils::log_privacy::redact_log_text(
-        &serde_json::to_string_pretty(&report.detail).unwrap_or_else(|_| "{}".to_string())
-    ).into_owned();
+        &serde_json::to_string_pretty(&report.detail).unwrap_or_else(|_| "{}".to_string()),
+    )
+    .into_owned();
     let code_panel = |heading: SharedString, body: String| {
         div()
             .flex()
@@ -114,7 +118,7 @@ pub fn render_diagnostics_overlay(
 
     let detail_summary = SharedString::from(
         crate::utils::log_privacy::redact_log_text(report_detail_summary(&report).as_ref())
-            .into_owned()
+            .into_owned(),
     );
     let modal_body = div()
         .w(card_width)
@@ -438,7 +442,7 @@ pub fn render_diagnostics_overlay(
     Some(modal::modal_layer(modal_body, overlay_bg).into_any_element())
 }
 
-pub fn trigger_auto_sentry_submit_if_needed(cx: &mut App) {
+pub fn trigger_auto_sentry_submit(cx: &mut App) {
     let auto_enabled = cx
         .global::<crate::ui::views::settings::state::SettingsPageState>()
         .error_report_sentry_auto;
@@ -450,7 +454,8 @@ pub fn trigger_auto_sentry_submit_if_needed(cx: &mut App) {
         if state.auto_report_attempted || state.submitting_sentry {
             None
         } else {
-            state.pending_report
+            state
+                .pending_report
                 .as_ref()
                 .filter(|report| report.is_fatal_incident() && report.sentry_submitted_at.is_none())
                 .cloned()
@@ -496,13 +501,11 @@ fn spawn_sentry_submission(cx: &mut App, report: DiagnosticsReport, dsn: String,
         }).await;
 
         let _ = cx.update(move |cx| {
-            let updated = cx.update_global(|state: &mut DiagnosticsState, _cx| {
-                match &result {
-                    Ok((sent_at, _)) => {
-                        state.finish_sentry_submission(&report_id, Some(sent_at.clone()))
-                    }
-                    Err(_) => state.finish_sentry_submission(&report_id, None),
+            let updated = cx.update_global(|state: &mut DiagnosticsState, _cx| match &result {
+                Ok((sent_at, _)) => {
+                    state.finish_sentry_submission(&report_id, Some(sent_at.clone()))
                 }
+                Err(_) => state.finish_sentry_submission(&report_id, None),
             });
             // Ignore callbacks from reports that were dismissed or replaced.
             if !updated {
@@ -516,9 +519,8 @@ fn spawn_sentry_submission(cx: &mut App, report: DiagnosticsReport, dsn: String,
                     }
                 }
                 Err(error) => {
-                    let safe = crate::utils::log_privacy::redact_log_text(
-                        &error.to_string()
-                    ).into_owned();
+                    let safe =
+                        crate::utils::log_privacy::redact_log_text(&error.to_string()).into_owned();
                     tracing::warn!(
                         target: "bmcbl::diagnostics",
                         reason = %safe,
@@ -535,7 +537,8 @@ fn spawn_sentry_submission(cx: &mut App, report: DiagnosticsReport, dsn: String,
             }
         });
         Ok::<(), anyhow::Error>(())
-    }).detach();
+    })
+    .detach();
 }
 
 fn clear_diagnostics_marker_files() {

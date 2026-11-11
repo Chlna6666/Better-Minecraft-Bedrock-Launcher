@@ -508,7 +508,7 @@ fn start_latest_install(cx: &mut App) {
     );
     let terminal_task_id = task_id.clone();
     let terminal_task = gpui_tokio::Tokio::spawn_result(cx, async move {
-        crate::tasks::task_manager::wait_for_task_terminal(&terminal_task_id)
+        crate::tasks::task_manager::wait_for_task(&terminal_task_id)
             .await
             .map_err(anyhow::Error::msg)
     });

@@ -29,9 +29,19 @@ pub(super) fn face_proxy_with_template_origin(
     let (min, max, axis) = quad_bounds(face.corners, face.normal, gpui_3d::FrontFace::Cw)?;
     let local = |p: [f64; 3]| {
         Vec3::new(
-            (p[0] - if local_template { 0. } else { f64::from(origin[0]) }) as f32,
+            (p[0]
+                - if local_template {
+                    0.
+                } else {
+                    f64::from(origin[0])
+                }) as f32,
             (p[1] - f64::from(origin[1])) as f32,
-            (p[2] - if local_template { 0. } else { f64::from(origin[2]) }) as f32,
+            (p[2]
+                - if local_template {
+                    0.
+                } else {
+                    f64::from(origin[2])
+                }) as f32,
         )
     };
     Some(gpui_3d::Occluder {
@@ -426,7 +436,11 @@ pub(super) fn gpu_boxes(
             }
             let (cell, side) = full_face(
                 face.vertices.map(|v| {
-                    [v.position.x as f64, v.position.y as f64, v.position.z as f64]
+                    [
+                        v.position.x as f64,
+                        v.position.y as f64,
+                        v.position.z as f64,
+                    ]
                 }),
                 face.neighbour,
                 material.front_face,

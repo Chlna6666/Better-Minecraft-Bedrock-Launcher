@@ -433,7 +433,7 @@ fn test_viewport(offset_x: f32, offset_y: f32, width: f32, height: f32) -> MapVi
 fn render_range_aligns_camera_to_chunk_grid() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(0.0, 0.0, 128.0, 128.0);
-    let range = tile_render_range_for_viewport(viewport, layout).expect("render range");
+    let range = tile_render_range(viewport, layout).expect("render range");
 
     assert_eq!(range.min_chunk_x, -1);
     assert_eq!(range.min_chunk_z, -1);
@@ -456,9 +456,9 @@ fn render_range_aligns_camera_to_chunk_grid() {
 fn visible_tile_bounds_do_not_use_partial_manifest_bounds() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(0.0, 0.0, 4160.0, 4160.0);
-    let range = region_render_range_for_viewport(viewport, layout).expect("render range");
+    let range = tile_render_range(viewport, layout).expect("render range");
     let bounds =
-        visible_tile_bounds_for_render_range(range, viewport.center_tile(layout)).expect("bounds");
+        render_range_tile_bounds(range, viewport.center_tile(layout)).expect("bounds");
     let partial_manifest_bounds = ChunkBounds {
         dimension: Dimension::Overworld,
         min_chunk_x: 0,
@@ -493,10 +493,10 @@ fn precise_visible_tile_bounds_do_not_include_chunk_alignment_padding() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(0.0, 0.0, 128.0, 128.0);
     let center = viewport.center_tile(layout);
-    let range = region_render_range_for_viewport(viewport, layout).expect("render range");
-    let coarse_bounds = visible_tile_bounds_for_render_range(range, center).expect("coarse bounds");
+    let range = tile_render_range(viewport, layout).expect("render range");
+    let coarse_bounds = render_range_tile_bounds(range, center).expect("coarse bounds");
     let precise_bounds =
-        visible_tile_bounds_for_viewport(viewport, layout, center).expect("precise bounds");
+        visible_tile_bounds(viewport, layout, center).expect("precise bounds");
 
     assert_eq!(
         coarse_bounds,
@@ -524,7 +524,7 @@ fn minimum_zoom_visible_bounds_cover_full_viewport() {
     let mut viewport = test_viewport(4096.0, 4096.0, 1920.0, 1080.0);
     viewport.scale = MIN_VIEWPORT_SCALE;
     let center = viewport.center_tile(layout);
-    let bounds = visible_tile_bounds_for_viewport(viewport, layout, center).expect("bounds");
+    let bounds = visible_tile_bounds(viewport, layout, center).expect("bounds");
     let width = bounds.max_x - bounds.min_x + 1;
     let height = bounds.max_z - bounds.min_z + 1;
     let visible_count = tile_bounds_area(bounds);
@@ -552,9 +552,9 @@ fn low_zoom_paint_bounds_remain_span_limited_when_visible_bounds_are_large() {
     let mut viewport = test_viewport(4096.0, 4096.0, 1920.0, 1080.0);
     viewport.scale = MIN_VIEWPORT_SCALE;
     let center = viewport.center_tile(layout);
-    let visible = visible_tile_bounds_for_viewport(viewport, layout, center).expect("visible");
+    let visible = visible_tile_bounds(viewport, layout, center).expect("visible");
     let paint_bounds =
-        paint_tile_bounds_for_viewport(viewport, layout, DRAG_RETAIN_RADIUS).expect("paint bounds");
+        paint_tile_bounds(viewport, layout, DRAG_RETAIN_RADIUS).expect("paint bounds");
 
     assert!(tile_bounds_area(paint_bounds) < tile_bounds_area(visible.expand(DRAG_RETAIN_RADIUS)));
     assert!(tile_bounds_contains(paint_bounds, center));
@@ -566,11 +566,11 @@ fn low_zoom_paint_bounds_are_not_capped_by_canvas_image_limit() {
     let mut viewport = test_viewport(4096.0, 4096.0, 520.0, 342.0);
     viewport.scale = MIN_VIEWPORT_SCALE;
     let center = viewport.center_tile(layout);
-    let visible = visible_tile_bounds_for_viewport(viewport, layout, center).expect("visible");
+    let visible = visible_tile_bounds(viewport, layout, center).expect("visible");
     let canvas_budget = canvas_tile_image_budget(viewport, layout);
 
     let paint_bounds =
-        paint_tile_bounds_for_viewport(viewport, layout, DRAG_RETAIN_RADIUS).expect("paint bounds");
+        paint_tile_bounds(viewport, layout, DRAG_RETAIN_RADIUS).expect("paint bounds");
     let retained = retained_tile_filter_for_viewport(viewport, layout, true).expect("retained");
 
     assert_eq!(canvas_budget, usize::MAX);
@@ -746,7 +746,7 @@ fn paste_completion_ignores_unrelated_render_batches() {
 fn tile_rect_stays_within_its_chunk_aligned_world_bounds() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(0.0, 0.0, 128.0, 128.0);
-    let range = tile_render_range_for_viewport(viewport, layout).expect("render range");
+    let range = tile_render_range(viewport, layout).expect("render range");
     let rect = tile_paint_rect(viewport, layout, range, 0, 0).expect("visible tile");
 
     assert_eq!(rect.left, 0.0);
@@ -762,8 +762,8 @@ fn tile_rect_tracks_viewport_after_drag_without_rebuilding_tile_snapshot() {
     let mut dragged = viewport;
     dragged.offset_x += 48.0;
     dragged.offset_y -= 24.0;
-    let initial_range = tile_render_range_for_viewport(viewport, layout).expect("initial range");
-    let dragged_range = tile_render_range_for_viewport(dragged, layout).expect("dragged range");
+    let initial_range = tile_render_range(viewport, layout).expect("initial range");
+    let dragged_range = tile_render_range(dragged, layout).expect("dragged range");
     let initial_rect =
         tile_paint_rect(viewport, layout, initial_range, 0, 0).expect("initial rect");
     let dragged_rect = tile_paint_rect(dragged, layout, dragged_range, 0, 0).expect("dragged rect");
@@ -778,7 +778,7 @@ fn dragged_tile_rect_edges_stay_bound_to_grid_lines() {
     let mut viewport = test_viewport(0.0, 0.0, 1024.0, 1024.0);
     viewport.offset_x += 37.5;
     viewport.offset_y -= 19.25;
-    let range = tile_render_range_for_viewport(viewport, layout).expect("render range");
+    let range = tile_render_range(viewport, layout).expect("render range");
     let rect = tile_paint_rect(viewport, layout, range, 0, 0).expect("visible tile");
     let next_x_rect = tile_paint_rect(viewport, layout, range, 1, 0).expect("next x tile");
     let next_z_rect = tile_paint_rect(viewport, layout, range, 0, 1).expect("next z tile");
@@ -786,10 +786,10 @@ fn dragged_tile_rect_edges_stay_bound_to_grid_lines() {
     let tile_blocks = i32::try_from(layout.chunks_per_tile)
         .expect("chunks per tile should fit i32")
         .saturating_mul(16);
-    let left_grid = screen_x_for_block(bounds, viewport, layout, 0);
-    let top_grid = screen_y_for_block(bounds, viewport, layout, 0);
-    let next_x_grid = screen_x_for_block(bounds, viewport, layout, tile_blocks);
-    let next_z_grid = screen_y_for_block(bounds, viewport, layout, tile_blocks);
+    let left_grid = block_screen_x(bounds, viewport, layout, 0);
+    let top_grid = block_screen_y(bounds, viewport, layout, 0);
+    let next_x_grid = block_screen_x(bounds, viewport, layout, tile_blocks);
+    let next_z_grid = block_screen_y(bounds, viewport, layout, tile_blocks);
 
     assert!((rect.left - left_grid).abs() < 0.001);
     assert!((rect.top - top_grid).abs() < 0.001);
@@ -804,8 +804,8 @@ fn tile_rect_preserves_subpixel_drag_delta() {
     let mut dragged = viewport;
     dragged.offset_x += 0.25;
     dragged.offset_y -= 0.375;
-    let initial_range = tile_render_range_for_viewport(viewport, layout).expect("initial range");
-    let dragged_range = tile_render_range_for_viewport(dragged, layout).expect("dragged range");
+    let initial_range = tile_render_range(viewport, layout).expect("initial range");
+    let dragged_range = tile_render_range(dragged, layout).expect("dragged range");
     let initial_rect =
         tile_paint_rect(viewport, layout, initial_range, 0, 0).expect("initial tile");
     let dragged_rect = tile_paint_rect(dragged, layout, dragged_range, 0, 0).expect("dragged tile");
@@ -845,7 +845,7 @@ fn retained_tile_filter_matches_circular_retain_tiles() {
     let mut viewport = test_viewport(37.5, -19.25, 1536.0, 960.0);
     viewport.scale = 0.75;
     let center = viewport.center_tile(layout);
-    let visible = visible_tile_bounds_for_viewport(viewport, layout, center).expect("visible");
+    let visible = visible_tile_bounds(viewport, layout, center).expect("visible");
     let mut expanded = visible.expand(DRAG_RETAIN_RADIUS);
     clamp_tile_span(&mut expanded.min_x, &mut expanded.max_x, center.0);
     clamp_tile_span(&mut expanded.min_z, &mut expanded.max_z, center.1);
@@ -955,7 +955,7 @@ fn tile_paint_snapshot_records_current_paint_bounds() {
 
     assert_eq!(
         snapshot.paint_bounds,
-        paint_tile_bounds_for_viewport(viewport, layout, RETAIN_RADIUS)
+        paint_tile_bounds(viewport, layout, RETAIN_RADIUS)
     );
 }
 
@@ -1093,7 +1093,7 @@ fn tile_paint_snapshot_patch_keeps_composite_underlay_across_drag_bounds() {
         debug_overlays: Arc::new(Vec::new()),
         generation: 1,
         estimated_bytes: frame.estimated_bytes,
-        paint_bounds: paint_tile_bounds_for_viewport(viewport, layout, RETAIN_RADIUS),
+        paint_bounds: paint_tile_bounds(viewport, layout, RETAIN_RADIUS),
     };
     viewport.offset_x = -512.0;
     let coord = viewport.center_tile(layout);
@@ -1128,7 +1128,7 @@ fn tile_paint_snapshot_patch_replaces_existing_coord_without_duplicate() {
     let mut manager = RegionManager::default();
     manager.mark_loaded((0, 0), test_tile([3, 3, 3, 255]));
     manager.mark_loaded((1, 0), test_tile([4, 4, 4, 255]));
-    let paint_bounds = paint_tile_bounds_for_viewport(viewport, layout, RETAIN_RADIUS);
+    let paint_bounds = paint_tile_bounds(viewport, layout, RETAIN_RADIUS);
     let old_tile = test_tile([1, 1, 1, 255]);
     let one_tile = manager
         .entries
@@ -1228,8 +1228,8 @@ fn paste_preview_image_set_replacement_updates_current_images() {
 fn canvas_tile_change_visibility_uses_visible_bleed_bounds() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
-    let range = region_render_range_for_viewport(viewport, layout).expect("range");
-    let bounds = visible_tile_bounds_for_render_range(range, viewport.center_tile(layout))
+    let range = tile_render_range(viewport, layout).expect("range");
+    let bounds = render_range_tile_bounds(range, viewport.center_tile(layout))
         .expect("visible bounds")
         .expand(1);
 
@@ -1242,7 +1242,7 @@ fn block_screen_position_matches_negative_block_math() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(17.0, -23.0, 300.0, 240.0);
     let (screen_x, screen_y) =
-        viewport_screen_for_block(viewport, layout, -17, -33).expect("screen position");
+        viewport_screen_position(viewport, layout, -17, -33).expect("screen position");
 
     assert_eq!(
         screen_x,
@@ -2051,8 +2051,8 @@ fn retained_paint_bounds_absorb_small_viewport_movements() {
     let layout = web_relief_render_layout();
 
     assert_eq!(
-        paint_tile_bounds_for_viewport(viewport, layout, RETAIN_RADIUS),
-        paint_tile_bounds_for_viewport(panned, layout, RETAIN_RADIUS),
+        paint_tile_bounds(viewport, layout, RETAIN_RADIUS),
+        paint_tile_bounds(panned, layout, RETAIN_RADIUS),
     );
 }
 
@@ -2310,8 +2310,8 @@ fn paint_order_is_stable_spatial_order() {
 fn paint_order_matches_visible_range_traversal() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(0.0, 0.0, 128.0, 128.0);
-    let range = tile_render_range_for_viewport(viewport, layout).expect("render range");
-    let mut coords = tile_coords_for_paint_order(range.tile_bounds());
+    let range = tile_render_range(viewport, layout).expect("render range");
+    let mut coords = paint_order_tiles(range.tile_bounds());
     let expected = coords.clone();
 
     coords.reverse();
