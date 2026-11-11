@@ -405,8 +405,8 @@ fn start_install(options: InstallOptions) -> Result<InstallHandle, InstallError>
 
 本规范覆盖**所有新增或本次实际触及的 Rust 声明与绑定**：自由函数、固有方法、
 trait 声明与 impl 方法、参数模式、返回类型、struct/enum/union 字段、关联项、
-类型别名、泛型与生命周期、常量与静态变量、闭包参数、局部 \`let\`/\`for\`/
-\`match\`/\`if let\` 绑定、模块、文件及宏生成的可维护代码。不得只检查 \`pub fn\`。
+类型别名、泛型与生命周期、常量与静态变量、闭包参数、局部 `let`/`for`/
+`match`/`if let` 绑定、模块、文件及宏生成的可维护代码。不得只检查 `pub fn`。
 
 以下标记在本节及后续审查中具有确定含义：
 
@@ -420,109 +420,109 @@ trait 声明与 impl 方法、参数模式、返回类型、struct/enum/union �
   外部契约、API 职责、是否机械改名、线程/GPU 资源生命周期；需要阅读实现和调用方，
   不通过就不能将命名变更称为完成。
 - **[A] 审查建议/启发式告警**：词数、长度阈值、位置参数数量、疑似冗余词、
-  \`frame\`/\`data\`/\`context\`、同类型参数、模式 \`bool\` 等。触发时需要解释、
+  `frame`/`data`/`context`、同类型参数、模式 `bool` 等。触发时需要解释、
   拆职责或修改；**并非自动改名指令，也不是可无条件阻断的语法错误**。
 
 **适用边界**：规则只对新增、修改的符号及其依赖调用链强制生效；历史未触及代码
 先报告，不自动全局重命名。Rust 标准库约定、第三方 trait 强制签名、
-\`extern\`/ABI、FFI、序列化字段、协议字段、宏生成代码、测试中的描述性长名称
+`extern`/ABI、FFI、序列化字段、协议字段、宏生成代码、测试中的描述性长名称
 及上游代码可保留，但必须区分「不可更改的外部契约」与「可修的内部命名」。
-允许 \`self\`、\`Self\`、合法的原始标识符 \`r#type\`、匿名占位 \`_\`、
-短作用域的 \`x\`/\`y\`/\`z\`/\`i\`、惯用类型参数 \`T\`/\`E\`/\`K\`/\`V\`、
-忽略值的 \`_name\`；不得靠格式规则将它们批量替换。
+允许 `self`、`Self`、合法的原始标识符 `r#type`、匿名占位 `_`、
+短作用域的 `x`/`y`/`z`/`i`、惯用类型参数 `T`/`E`/`K`/`V`、
+忽略值的 `_name`；不得靠格式规则将它们批量替换。
 
 ### 6.11 标识符、参数及返回契约的强制规则
 
 | 对象 | 强制验收 | 需语义审查的告警 |
 | --- | --- | --- |
-| 函数/方法名 | **[H-SYNTAX]** 遵循 \`snake_case\`；**[H-REVIEW]** 名称描述实际动作、对象和副作用，不用假 \`from_*\`、\`*_frame\`、\`*_inner\` 或 \`*_with_*\` 规避设计问题 | **[A]** 超过约 32 字符、4 个以上语义单词或超过 40 字符，检查是否重复所属模块/类型上下文 |
-| 函数参数/接收者 | **[H-SYNTAX]** 声明及借用/所有权合法；**[H-AST]** 新增 API 不使用 \`arg1\`/\`arg2\`、\`param1\`/\`param2\`、\`foo\`/\`bar\` 等无角色的编号占位名；**[H-REVIEW]** 名称与实际角色一致 | **[A]** 显式参数 ≥5（不计 \`self\`）、重复同类型参数、\`bool\` 模式、\`id_opt\` 等把类型信息写进名字 |
-| 返回类型及返回值 | **[H-SYNTAX]** 类型与所有路径、trait 签名匹配；**[H-REVIEW]** \`Option\`、\`Result\`、引用/所有权、错误和异步完成语义真实 | **[A]** 多成员无名元组、\`String\`/裸数字承载多种领域含义、靠 \`*_result\`/\`*_id\` 后缀区分相同动作 |
-| struct/enum/union | **[H-SYNTAX]** 类型与 enum 变体 \`UpperCamelCase\`，字段 \`snake_case\`；**[H-REVIEW]** 表示稳定领域概念 | **[A]** \`Info\`/\`Data\`/\`Context\`/\`Manager\` 作为无职责后缀、类型与字段重复命名 |
-| trait/impl/关联类型 | **[H-SYNTAX]** 实现与 trait 契约匹配；**[H-REVIEW]** trait 是明确能力，方法名跨实现一致，关联类型如 \`Item\`/\`Error\`/\`Output\` 与用途一致 | **[A]** 人为创建 \`I*\`/\`*Interface\`/\`*Base\`、为缩短名称引入空转发 trait |
-| 闭包/模式绑定 | **[H-SYNTAX]** 标识符合法；**[H-REVIEW]** 闭包入参与捕获状态、解构别名清楚，避免变量遮蔽导致值来源混淆 | **[A]** 长闭包中仍用 \`a\`/\`b\`/\`res\`，或把每个 \`item\` 强行扩写成长句 |
-| 局部变量/字段 | **[H-SYNTAX]** \`snake_case\`；**[H-REVIEW]** 变量表达状态角色、单位和生命周期；布尔字段明确是状态还是策略 | **[A]** \`temp_data\`、\`current_new_*\`、不必要的 \`_frame\`、过长的流程描述 |
-| const/static、模块/文件 | **[H-SYNTAX]** 常量/静态变量 \`SCREAMING_SNAKE_CASE\`，模块 \`snake_case\`；**[H-REVIEW]** 模块名描述职责，不以临时步骤或版本名命名 | **[A]** 技术术语重复、阶段性 \`new_v2\`、和父模块完全同义 |
-| 泛型/生命周期 | **[H-SYNTAX]** 符合 Rust 类型/生命周期规则；**[H-REVIEW]** 多个同类参数和生命周期要能区分契约 | **[A]** 只有一个惯用 \`T\` 却改成冗长名，或复杂泛型仍使用无法区分的连续单字母 |
+| 函数/方法名 | **[H-SYNTAX]** 遵循 `snake_case`；**[H-REVIEW]** 名称描述实际动作、对象和副作用，不用假 `from_*`、`*_frame`、`*_inner` 或 `*_with_*` 规避设计问题 | **[A]** 超过约 32 字符、4 个以上语义单词或超过 40 字符，检查是否重复所属模块/类型上下文 |
+| 函数参数/接收者 | **[H-SYNTAX]** 声明及借用/所有权合法；**[H-AST]** 新增 API 不使用 `arg1`/`arg2`、`param1`/`param2`、`foo`/`bar` 等无角色的编号占位名；**[H-REVIEW]** 名称与实际角色一致 | **[A]** 显式参数 ≥5（不计 `self`）、重复同类型参数、`bool` 模式、`id_opt` 等把类型信息写进名字 |
+| 返回类型及返回值 | **[H-SYNTAX]** 类型与所有路径、trait 签名匹配；**[H-REVIEW]** `Option`、`Result`、引用/所有权、错误和异步完成语义真实 | **[A]** 多成员无名元组、`String`/裸数字承载多种领域含义、靠 `*_result`/`*_id` 后缀区分相同动作 |
+| struct/enum/union | **[H-SYNTAX]** 类型与 enum 变体 `UpperCamelCase`，字段 `snake_case`；**[H-REVIEW]** 表示稳定领域概念 | **[A]** `Info`/`Data`/`Context`/`Manager` 作为无职责后缀、类型与字段重复命名 |
+| trait/impl/关联类型 | **[H-SYNTAX]** 实现与 trait 契约匹配；**[H-REVIEW]** trait 是明确能力，方法名跨实现一致，关联类型如 `Item`/`Error`/`Output` 与用途一致 | **[A]** 人为创建 `I*`/`*Interface`/`*Base`、为缩短名称引入空转发 trait |
+| 闭包/模式绑定 | **[H-SYNTAX]** 标识符合法；**[H-REVIEW]** 闭包入参与捕获状态、解构别名清楚，避免变量遮蔽导致值来源混淆 | **[A]** 长闭包中仍用 `a`/`b`/`res`，或把每个 `item` 强行扩写成长句 |
+| 局部变量/字段 | **[H-SYNTAX]** `snake_case`；**[H-REVIEW]** 变量表达状态角色、单位和生命周期；布尔字段明确是状态还是策略 | **[A]** `temp_data`、`current_new_*`、不必要的 `_frame`、过长的流程描述 |
+| const/static、模块/文件 | **[H-SYNTAX]** 常量/静态变量 `SCREAMING_SNAKE_CASE`，模块 `snake_case`；**[H-REVIEW]** 模块名描述职责，不以临时步骤或版本名命名 | **[A]** 技术术语重复、阶段性 `new_v2`、和父模块完全同义 |
+| 泛型/生命周期 | **[H-SYNTAX]** 符合 Rust 类型/生命周期规则；**[H-REVIEW]** 多个同类参数和生命周期要能区分契约 | **[A]** 只有一个惯用 `T` 却改成冗长名，或复杂泛型仍使用无法区分的连续单字母 |
 
-**关于“返回类型命名”**：Rust 函数的 \`-> T\` 并没有独立的「返回参数名」。
+**关于“返回类型命名”**：Rust 函数的 `-> T` 并没有独立的「返回参数名」。
 需要规范的是返回类型及其领域名称、关联类型名称、错误类型、返回的生命周期/所有权，
-以及 \`Result<T, E>\` 与 \`Option<T>\` 的选择。不得虚构 Java 式命名返回参数。
+以及 `Result<T, E>` 与 `Option<T>` 的选择。不得虚构 Java 式命名返回参数。
 
 **函数参数声明具体要求**：
 
-1. **[H-REVIEW]** 同一函数中 \`id\`、\`parent_id\`、\`source\`、\`destination\`
-   等必须能唯一表明角色；\`old\`/\`new\`、\`previous\`/\`next\` 取决于真实状态阶段。
+1. **[H-REVIEW]** 同一函数中 `id`、`parent_id`、`source`、`destination`
+   等必须能唯一表明角色；`old`/`new`、`previous`/`next` 取决于真实状态阶段。
    数值需要区分数量、累计量、偏移、索引、容量、限额和时间；例如
-   \`bytes_written\`、\`total_bytes\`、\`offset_bytes\`，不能仅因都为 \`u64\`
-   就重命名成 \`count\`、\`value\`。
-2. **[H-AST]** 新引入的公共接口参数不以 \`arg[0-9]+\`、
-   \`param[0-9]+\`、\`value[0-9]+\`、\`foo\`、\`bar\` 命名；有外部 ABI
-   或 trait 强制契约时可记录豁免。普通单个 \`value\`、\`input\`、\`output\`
-   只有在所属方法与作用域能明确意义时允许；不要把所有 \`value\` 无条件报错。
+   `bytes_written`、`total_bytes`、`offset_bytes`，不能仅因都为 `u64`
+   就重命名成 `count`、`value`。
+2. **[H-AST]** 新引入的公共接口参数不以 `arg[0-9]+`、
+   `param[0-9]+`、`value[0-9]+`、`foo`、`bar` 命名；有外部 ABI
+   或 trait 强制契约时可记录豁免。普通单个 `value`、`input`、`output`
+   只有在所属方法与作用域能明确意义时允许；不要把所有 `value` 无条件报错。
 3. **[A]** 显式参数 ≥5，或者两个以上同类型位置参数容易传反时，提出具名
-   \`Options\`/\`Descriptor\`/\`Request\`/\`Update\` 或领域类型的方案；
+   `Options`/`Descriptor`/`Request`/`Update` 或领域类型的方案；
    只有确实属于同一职责且不引入不必要拷贝/分配才采用，不能通过
-   \`from_parts(a, b, c, d, e, f)\` 继续传递位置参数。
-4. **[H-REVIEW]** 多个 \`bool\` 如果代表互斥模式/执行策略，使用 enum；
-   \`enabled: bool\`、\`visible: bool\` 等自然状态值可以保留。
-   \`Option<T>\` 与 \`Result<T, E>\` 不能只凭名字判断；参数名不必加 \`_opt\`
-   或 \`_result\`。数字单位以类型和真实意义为准，避免同单位重复后缀。
-5. **[H-REVIEW]** 回调的 \`move\` 捕获、参数借用、\`Arc\`/\`Rc\`、可变引用、
+   `from_parts(a, b, c, d, e, f)` 继续传递位置参数。
+4. **[H-REVIEW]** 多个 `bool` 如果代表互斥模式/执行策略，使用 enum；
+   `enabled: bool`、`visible: bool` 等自然状态值可以保留。
+   `Option<T>` 与 `Result<T, E>` 不能只凭名字判断；参数名不必加 `_opt`
+   或 `_result`。数字单位以类型和真实意义为准，避免同单位重复后缀。
+5. **[H-REVIEW]** 回调的 `move` 捕获、参数借用、`Arc`/`Rc`、可变引用、
    生命周期与错误传递不得因重命名或改用参数对象而改变；
-   \`self\`/\`&self\`/\`&mut self\` 应反映实际状态权限与方法职责。
+   `self`/`&self`/`&mut self` 应反映实际状态权限与方法职责。
 
 **返回值与命名的对应关系**：
 
-- 查询可能缺失 → 通常 \`Option<T>\`；操作可失败 → \`Result<T, E>\`；
-  两者可同时存在（如 \`Result<Option<T>, E>\`）；不要把错误伪装成 \`None\`
-  或 \`false\`。返回 \`bool\` 的 \`is_*\`/\`has_*\` 等只能表示可判断的谓词。
-- 使用 \`&T\`/\`&mut T\`、\`Arc<T>\`、\`Cow<'_, T>\`、\`T\` 时明确借用、
-  共享和消费关系；\`as_*\`/\`to_*\`/\`into_*\` 选择与成本和所有权一致。
-  \`async fn\` 的返回值是 Future 完成后的输出，不能用 \`_async\`
+- 查询可能缺失 → 通常 `Option<T>`；操作可失败 → `Result<T, E>`；
+  两者可同时存在（如 `Result<Option<T>, E>`）；不要把错误伪装成 `None`
+  或 `false`。返回 `bool` 的 `is_*`/`has_*` 等只能表示可判断的谓词。
+- 使用 `&T`/`&mut T`、`Arc<T>`、`Cow<'_, T>`、`T` 时明确借用、
+  共享和消费关系；`as_*`/`to_*`/`into_*` 选择与成本和所有权一致。
+  `async fn` 的返回值是 Future 完成后的输出，不能用 `_async`
   后缀假装已完成 I/O 或 GPU 提交。
 - 多个需共同使用的返回值优先命名领域结果 struct，简单标准元组可以保留；
-  避免为规避长函数名发明 \`SomethingResultData\` 空壳，也不要用
-  \`Result<String, String>\` 取代已有适当的错误/ID 类型而损失语义。
+  避免为规避长函数名发明 `SomethingResultData` 空壳，也不要用
+  `Result<String, String>` 取代已有适当的错误/ID 类型而损失语义。
 
 ### 6.12 自动验收契约与现有工具边界
 
 **不得将“写在 AGENTS.md”误称为“已由脚本自动强制执行”。**
 
-- **现状**：\`scripts/check-naming.ps1\` 以逐行正则检查一部分
-  \`nova-gfx\`/GPUI 的**公开函数名**、长名称和部分词汇；不会完整解析
+- **现状**：`scripts/check-naming.ps1` 以逐行正则检查一部分
+  `nova-gfx`/GPUI 的**公开函数名**、长名称和部分词汇；不会完整解析
   多行函数签名、模式解构、trait 方法/参数、泛型、闭包、返回类型或局部变量。
   脚本不覆盖整个 BMCBL Rust workspace，且原有未触及代码可能存在告警。
   因此运行成功**不能证明**本节所有标识符检查通过。
 - **[H-SYNTAX] 立即执行**：对本次实际修改的 Rust 代码运行
-  \`cargo fmt --check\` / \`rustfmt --check\`（按项目适用范围）、
-  对受影响 crate 执行 \`cargo check\`，并按需要运行
-  \`cargo clippy\`；检查 rustc 的 \`non_snake_case\`、
-  \`non_camel_case_types\`、\`non_upper_case_globals\` 等命名 lint。
-  不在未审查的整个 workspace 上临时添加 \`deny(warnings)\` 制造无关失败。
+  `cargo fmt --check` / `rustfmt --check`（按项目适用范围）、
+  对受影响 crate 执行 `cargo check`，并按需要运行
+  `cargo clippy`；检查 rustc 的 `non_snake_case`、
+  `non_camel_case_types`、`non_upper_case_globals` 等命名 lint。
+  不在未审查的整个 workspace 上临时添加 `deny(warnings)` 制造无关失败。
   修改纯 Markdown 时不需要伪造 Rust 编译检查。
 - **[H-AST] 未来自动检查器的实现合同**：必须以 Rust AST/HIR
-  （如 \`syn\`、rust-analyzer 解析信息或等价可靠解析器）识别声明和绑定；
+  （如 `syn`、rust-analyzer 解析信息或等价可靠解析器）识别声明和绑定；
   按 Git Diff 范围定位新增/修改的符号，并保留所属文件、行、列、模块、可见性、
   属性、参数类型与函数签名。不得用全局文本替换或简单正则来“修复”语义问题。
   若解析宏展开、条件编译、外部生成文件不可确定，给出
-  \`manual-review\`，不可假报 \`pass\`。
+  `manual-review`，不可假报 `pass`。
 - **[H-AST] 最小自动规则集**：
-  1. 收集 \`fn\`（自由、固有、trait、impl）、接收者与参数模式
+  1. 收集 `fn`（自由、固有、trait、impl）、接收者与参数模式
      （含多行和解构）、返回类型语法、struct/enum 字段、
-     关联项、\`let\`/\`for\`/\`match\` 绑定、闭包参数；
+     关联项、`let`/`for`/`match` 绑定、闭包参数；
   2. 校验约定命名风格与可识别的无角色编号占位参数；
   3. 对 >32/>40 字符、显式参数 ≥5、多个同类型位置参数、
-     \`*_frame\`、\`from_parts\`、\`new_with_*\`、\`*_inner\`、
-     \`supports_*\`、\`*_enabled\`、\`bool\` 模式参数、冗余
-     \`Option\` 后缀等**只报语义审查候选**，不能直接决定改名；
-  4. 输出 \`path:line:column\`、symbol、规则编号、\`error\`/\`warning\`/
-     \`manual-review\`、原因；仅确定性违规或人工确认的语义违规才能阻断；
+     `*_frame`、`from_parts`、`new_with_*`、`*_inner`、
+     `supports_*`、`*_enabled`、`bool` 模式参数、冗余
+     `Option` 后缀等**只报语义审查候选**，不能直接决定改名；
+  4. 输出 `path:line:column`、symbol、规则编号、`error`/`warning`/
+     `manual-review`、原因；仅确定性违规或人工确认的语义违规才能阻断；
   5. 测试、宏、第三方实现、协议/FFI、工具生成、已有未触及命名必须
      具有明确作用域和豁免记录，不能静默忽略，也不能仅因名称长而阻断。
-- **验收状态分离**：\`syntax-pass\`、\`ast-pass\`、\`semantic-reviewed\`
+- **验收状态分离**：`syntax-pass`、`ast-pass`、`semantic-reviewed`
   分别报告；当前没有 AST 检查器时必须写
-  \`ast-not-implemented / manually-reviewed\`，**禁止输出“全量自动通过”**。
+  `ast-not-implemented / manually-reviewed`，**禁止输出“全量自动通过”**。
   只有脚本真的存在并运行成功，才能在改动说明中宣称相应自动检查通过。
 
 ### 6.13 禁止机械重命名的验收流程
@@ -530,10 +530,10 @@ trait 声明与 impl 方法、参数模式、返回类型、struct/enum/union �
 1. **先审调用语义再审名字**：读取原实现、所有调用方、trait 实现、
    类型定义、宏/FFI/序列化边界；写出“原职责 → 目标职责”和必须保持的
    状态、错误、返回值、线程/异步/资源生命周期、不变量。
-2. **先复用后抽象**：工作区存在 \`TaskOptions::new(...)\`、
-   \`create_task(options)\` 等正确入口时，应复用；**不通过**
-   \`from_parts(...).create()\`、\`from_backend(...)\` 或
-   \`supports_visualization()\` 等词汇替换掩盖相同位置参数、隐藏副作用、
+2. **先复用后抽象**：工作区存在 `TaskOptions::new(...)`、
+   `create_task(options)` 等正确入口时，应复用；**不通过**
+   `from_parts(...).create()`、`from_backend(...)` 或
+   `supports_visualization()` 等词汇替换掩盖相同位置参数、隐藏副作用、
    错误传播变化或“开关状态与能力”语义不一致。
 3. **只触及本次工作范围**：不能因一次修改匹配到 100+ 个符号而批量改名。
    发现历史问题时以评审意见记录；只有此次明确要求全项目治理，
@@ -541,7 +541,7 @@ trait 声明与 impl 方法、参数模式、返回类型、struct/enum/union �
    3 个同义 wrapper、2 个冗余配置类型或层层转发。
 4. **变更后验证**：检查受影响调用方、trait impl、泛型约束、UI 调用、
    错误分支、线程/回调、GPU 提交顺序及执行成本；做适用的编译和测试。
-   单纯 \`cargo fmt\` 通过、长名称减少、正则检查通过都不足以证明语义正确。
+   单纯 `cargo fmt` 通过、长名称减少、正则检查通过都不足以证明语义正确。
 5. **AI 的完成说明必须分开报告**：
    - 改了哪些标识符、为什么必须改、对应职责有何改善；
    - 保留了哪些名称、为什么符合 Rust 惯例或外部契约；
