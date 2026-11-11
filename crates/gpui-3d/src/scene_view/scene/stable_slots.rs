@@ -115,12 +115,18 @@ impl StableDrawSlots {
         let Some((&min_slot, &max_slot)) = slots.iter().min().zip(slots.iter().max()) else {
             return Default::default();
         };
-        let regions = self.resident_buffers.iter().filter_map(|&(buffer, stride)| {
-            let start = (min_slot as u64).checked_mul(stride)?;
-            let length = (max_slot as u64).checked_sub(min_slot as u64)?
-                .checked_add(1)?.checked_mul(stride)?;
-            gfx_core::GpuResourceSpan::buffer(buffer, start, length).ok()
-        }).collect::<Vec<_>>();
+        let regions = self
+            .resident_buffers
+            .iter()
+            .filter_map(|&(buffer, stride)| {
+                let start = (min_slot as u64).checked_mul(stride)?;
+                let length = (max_slot as u64)
+                    .checked_sub(min_slot as u64)?
+                    .checked_add(1)?
+                    .checked_mul(stride)?;
+                gfx_core::GpuResourceSpan::buffer(buffer, start, length).ok()
+            })
+            .collect::<Vec<_>>();
         // A malformed/overflowed span cannot establish an early-release
         // proof. All buffers are validated and u32-addressed at allocation.
         self.gpu_dependencies.retirement(&regions)
@@ -145,7 +151,11 @@ impl StableDrawSlots {
     ) {
         if let Some(submission) = submission {
             self.submission_epoch = self.submission_epoch.saturating_add(1);
-            if !self.in_flight_draws.iter().any(|reader| reader.submission == submission) {
+            if !self
+                .in_flight_draws
+                .iter()
+                .any(|reader| reader.submission == submission)
+            {
                 self.in_flight_draws.push(NativeDrawUse {
                     submission,
                     epoch: self.submission_epoch,
@@ -160,10 +170,15 @@ impl StableDrawSlots {
                 // DrawIndirect reader merely because it shares BufferId.
                 // Register an ordering-only queue submission in the generic
                 // graph; per-slot Graphics readers remain in in_flight_draws.
-                if self.register_native_access(gfx_core::GpuSubmissionRecord::new(
-                    submission, gfx_core::GpuQueueId::PRIMARY,
-                    gfx_core::GpuWorkStage::Graphics, Vec::new(),
-                )).is_err() {
+                if self
+                    .register_native_access(gfx_core::GpuSubmissionRecord::new(
+                        submission,
+                        gfx_core::GpuQueueId::PRIMARY,
+                        gfx_core::GpuWorkStage::Graphics,
+                        Vec::new(),
+                    ))
+                    .is_err()
+                {
                     // Fail closed rather than publish a corrupt native proof.
                     self.untracked_gpu_access_submitted();
                 }
@@ -201,7 +216,8 @@ impl StableDrawSlots {
         let mut groups = HashMap::<Vec<gfx_core::SubmissionId>, Vec<usize>>::new();
         for slot in slots {
             let first_use = self.slot_first_use_epoch.get(slot).copied().unwrap_or(0);
-            let pending = self.in_flight_draws
+            let pending = self
+                .in_flight_draws
                 .iter()
                 .filter(|reader| reader.epoch >= first_use)
                 .map(|reader| reader.submission)
@@ -233,26 +249,34 @@ impl StableDrawSlots {
     /// fallback (the Sidecar uses its primary queue). A separate physical
     /// queue would instead require an explicit native semaphore dependency
     /// or GPU-global completion, never a coincidental consumer fence.
-    pub(in crate::scene_view) fn submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+    pub(in crate::scene_view) fn submission_accepted(
+        &mut self,
+        submission: gfx_core::SubmissionId,
+    ) {
         if !self.resident_buffers.is_empty()
             && !self.gpu_dependencies.contains_submission(submission)
             && (self.untracked_draw_use
                 || !self.retired_unbound.is_empty()
-                || self.retired_by_submission.iter().any(|cohort|
-                    !cohort.gpu_dependency.untracked_queues().is_empty()
-                ))
+                || self
+                    .retired_by_submission
+                    .iter()
+                    .any(|cohort| !cohort.gpu_dependency.untracked_queues().is_empty()))
         {
             // An accepted primary-queue consumer is an ordered checkpoint,
             // not a new DrawParams read. The owner alone guarantees this queue.
-            let _ = self.gpu_dependencies.register(gfx_core::GpuSubmissionRecord::new(
-                submission, gfx_core::GpuQueueId::PRIMARY,
-                gfx_core::GpuWorkStage::Graphics, Vec::new(),
-            ));
+            let _ = self
+                .gpu_dependencies
+                .register(gfx_core::GpuSubmissionRecord::new(
+                    submission,
+                    gfx_core::GpuQueueId::PRIMARY,
+                    gfx_core::GpuWorkStage::Graphics,
+                    Vec::new(),
+                ));
         }
         if self.gpu_dependencies.contains_submission(submission) {
-            let _ = self.gpu_dependencies.seal_untracked_queue(
-                gfx_core::GpuQueueId::PRIMARY, submission,
-            );
+            let _ = self
+                .gpu_dependencies
+                .seal_untracked_queue(gfx_core::GpuQueueId::PRIMARY, submission);
         }
         if !self.retired_unbound.is_empty() {
             let slots = std::mem::take(&mut self.retired_unbound);
@@ -266,7 +290,9 @@ impl StableDrawSlots {
         }
         for cohort in &mut self.retired_by_submission {
             let _ = cohort.gpu_dependency.seal_ordered_queue(
-                &self.gpu_dependencies, gfx_core::GpuQueueId::PRIMARY, submission,
+                &self.gpu_dependencies,
+                gfx_core::GpuQueueId::PRIMARY,
+                submission,
             );
             if cohort.needs_ordered_fallback {
                 if !cohort.pending.contains(&submission) {
@@ -280,22 +306,33 @@ impl StableDrawSlots {
 
     /// Out-of-order GPU completions are legal; a row cannot be recycled until
     /// every snapshotted native reader AND any required fallback is finished.
-    pub(in crate::scene_view) fn submission_completed(&mut self, submission: gfx_core::SubmissionId) {
+    pub(in crate::scene_view) fn submission_completed(
+        &mut self,
+        submission: gfx_core::SubmissionId,
+    ) {
         let proof = self.gpu_dependencies.complete(submission).ok();
-        self.in_flight_draws.retain(|reader| reader.submission != submission
-            && !proof.as_ref().is_some_and(|done| done.finished().contains(&reader.submission))
-        );
+        self.in_flight_draws.retain(|reader| {
+            reader.submission != submission
+                && !proof
+                    .as_ref()
+                    .is_some_and(|done| done.finished().contains(&reader.submission))
+        });
         let mut index = 0;
         while index < self.retired_by_submission.len() {
             let cohort = &mut self.retired_by_submission[index];
             if let Some(proof) = &proof {
-                cohort.gpu_dependency.complete_with_proof(proof);
+                cohort.gpu_dependency.mark_finished(proof);
             }
-            cohort.pending.retain(|pending| *pending != submission
-                && !proof.as_ref().is_some_and(|done| done.finished().contains(pending))
-            );
-            if cohort.pending.is_empty() && !cohort.needs_ordered_fallback
-                && cohort.gpu_dependency.safe_to_reuse() {
+            cohort.pending.retain(|pending| {
+                *pending != submission
+                    && !proof
+                        .as_ref()
+                        .is_some_and(|done| done.finished().contains(pending))
+            });
+            if cohort.pending.is_empty()
+                && !cohort.needs_ordered_fallback
+                && cohort.gpu_dependency.safe_to_reuse()
+            {
                 let completed = self.retired_by_submission.swap_remove(index);
                 self.free.extend(completed.slots.iter().copied());
             } else {
@@ -345,9 +382,7 @@ impl StableDrawSlots {
     /// ordinary camera streaming. The backing GPU buffer is not destroyed here.
     pub(in crate::scene_view) fn trim_unused_tail(&mut self) -> usize {
         let previous = self.identities.len();
-        if previous < 256
-            || previous <= self.occupied.len().saturating_mul(2)
-        {
+        if previous < 256 || previous <= self.occupied.len().saturating_mul(2) {
             return previous;
         }
         // The physical tail cannot shrink while any retired row still has
@@ -358,7 +393,9 @@ impl StableDrawSlots {
         if self.has_retired_slots() {
             return previous;
         }
-        let next = self.identities.iter()
+        let next = self
+            .identities
+            .iter()
             .rposition(Option::is_some)
             .map_or(0, |last| last + 1);
         if next < previous {
@@ -490,21 +527,31 @@ impl StructuralSlotPlan {
     pub(in crate::scene_view) fn retired_node_slots(
         &self,
     ) -> impl Iterator<Item = (NodeId, usize)> + '_ {
-        self.retired.iter().map(|(identity, slot)| (identity.base.node, *slot))
+        self.retired
+            .iter()
+            .map(|(identity, slot)| (identity.base.node, *slot))
     }
 
     pub(in crate::scene_view) fn added_node_slots(
         &self,
     ) -> impl Iterator<Item = (NodeId, usize)> + '_ {
-        self.added.iter().map(|(identity, slot, _)| (identity.base.node, *slot))
+        self.added
+            .iter()
+            .map(|(identity, slot, _)| (identity.base.node, *slot))
     }
 
     /// Called only after the GPU mapping and bounds writes have succeeded.
     pub(in crate::scene_view) fn commit(self, slots: &mut StableDrawSlots) {
         // Keep identities that merely changed logical index in their
         // original physical location; quarantine only genuinely unused rows.
-        let retired = self.retired.iter().map(|(_, slot)| *slot).collect::<Vec<_>>();
-        let old_identities = self.retired.iter()
+        let retired = self
+            .retired
+            .iter()
+            .map(|(_, slot)| *slot)
+            .collect::<Vec<_>>();
+        let old_identities = self
+            .retired
+            .iter()
             .map(|(identity, slot)| (*slot, *identity))
             .collect::<HashMap<_, _>>();
         for (identity, slot) in self.retired {
@@ -512,10 +559,9 @@ impl StructuralSlotPlan {
             slots.identities[slot] = None;
         }
         slots.identities.resize(self.high_water, None);
-        slots.slot_first_use_epoch.resize(
-            self.high_water,
-            slots.submission_epoch.saturating_add(1),
-        );
+        slots
+            .slot_first_use_epoch
+            .resize(self.high_water, slots.submission_epoch.saturating_add(1));
         for (identity, slot, _) in self.added {
             debug_assert!(slots.identities[slot].is_none());
             if old_identities.get(&slot) != Some(&identity) {
@@ -524,9 +570,10 @@ impl StructuralSlotPlan {
             slots.identities[slot] = Some(identity);
             debug_assert!(slots.occupied.insert(identity, slot).is_none());
         }
-        let genuinely_removed = retired.into_iter().filter(|&slot| {
-            slots.identities[slot].is_none()
-        }).collect::<Vec<_>>();
+        let genuinely_removed = retired
+            .into_iter()
+            .filter(|&slot| slots.identities[slot].is_none())
+            .collect::<Vec<_>>();
         slots.quarantine(genuinely_removed);
         slots.free = self.free;
     }
@@ -835,17 +882,18 @@ mod tests {
         slots.draw_producer_submitted(Some(producer));
         let mut edited = original.clone();
         let prior_mesh = &original[0].mesh;
-        edited[0].mesh = Arc::new(
-            Mesh::cube().with_identity(
-                prior_mesh.id(),
-                prior_mesh.generation().checked_add(1).unwrap(),
-            )
-        );
+        edited[0].mesh = Arc::new(Mesh::cube().with_identity(
+            prior_mesh.id(),
+            prior_mesh.generation().checked_add(1).unwrap(),
+        ));
         let (mut next, remapped) = slots.plan(&edited).unwrap();
         assert_ne!(mapping, remapped);
         assert_eq!(next.high_water(), 2);
         assert!(next.free.is_empty());
-        assert_eq!(next.retired_by_submission[0].pending.as_slice(), &[producer]);
+        assert_eq!(
+            next.retired_by_submission[0].pending.as_slice(),
+            &[producer]
+        );
         next.submission_completed(producer);
         assert_eq!(next.free, vec![mapping[0] as usize]);
         assert_eq!(next.occupied.len(), 1);
@@ -861,8 +909,14 @@ mod tests {
         let (mut slots, _) = slots.plan(&original[1..]).unwrap();
         assert!(slots.retired_unbound.is_empty());
         assert_eq!(slots.retired_by_submission.len(), 1);
-        assert_eq!(slots.retired_by_submission[0].pending.as_slice(), &[producer]);
-        assert_eq!(slots.retired_by_submission[0].slots.as_ref(), &[mapping[0] as usize]);
+        assert_eq!(
+            slots.retired_by_submission[0].pending.as_slice(),
+            &[producer]
+        );
+        assert_eq!(
+            slots.retired_by_submission[0].slots.as_ref(),
+            &[mapping[0] as usize]
+        );
         // Attaching a later GPUI Consumer does not change the actual
         // native DrawIndirect last-reader fence of this physical address.
         slots.submission_accepted(consumer);
@@ -885,7 +939,10 @@ mod tests {
         let (mut slots, _) = slots.plan(&original[1..]).unwrap();
         assert_eq!(slots.retired_by_submission[0].pending, vec![first, second]);
         slots.submission_completed(second);
-        assert!(slots.free.is_empty(), "a faster second queue cannot release the first reader");
+        assert!(
+            slots.free.is_empty(),
+            "a faster second queue cannot release the first reader"
+        );
         let (_, before) = slots.plan(&original).unwrap();
         assert_ne!(before[0], map[0]);
         slots.submission_completed(first);
@@ -899,7 +956,8 @@ mod tests {
         let buffer = gfx_core::BufferId::from_parts(720, 1);
         let original = draws(2);
         let (mut slots, _) = StableDrawSlots::with_resident_buffers(&[(buffer, 80)])
-            .plan(&original[..1]).unwrap();
+            .plan(&original[..1])
+            .unwrap();
         let old = gfx_core::SubmissionId::from_parts(721, 1);
         let recent = gfx_core::SubmissionId::from_parts(722, 1);
         slots.draw_producer_submitted(Some(old));
@@ -908,7 +966,13 @@ mod tests {
         let (mut slots, _) = slots.plan(&original[..1]).unwrap();
         assert_eq!(slots.retired_by_submission.len(), 1);
         assert_eq!(slots.retired_by_submission[0].pending, vec![recent]);
-        assert_eq!(slots.retired_by_submission[0].gpu_dependency.pending().len(), 0);
+        assert_eq!(
+            slots.retired_by_submission[0]
+                .gpu_dependency
+                .pending()
+                .len(),
+            0
+        );
         slots.submission_completed(recent);
         assert_eq!(slots.free, vec![map[1] as usize]);
         slots.submission_completed(old);
@@ -943,26 +1007,40 @@ mod tests {
         assert!(slots.retired_by_submission[0].needs_ordered_fallback);
         slots.submission_accepted(consumer);
         slots.submission_completed(reader);
-        assert!(slots.free.is_empty(), "the unknown native reader is not completed");
+        assert!(
+            slots.free.is_empty(),
+            "the unknown native reader is not completed"
+        );
         slots.submission_completed(consumer);
         assert_eq!(slots.free, vec![0]);
     }
 
     #[test]
     fn graphics_owner_global_callback_cannot_clear_independent_reader_fence() {
-        use gfx_core::{GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess, GpuSubmissionRecord, GpuWorkStage};
+        use gfx_core::{
+            GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess, GpuSubmissionRecord,
+            GpuWorkStage,
+        };
         let buffer = gfx_core::BufferId::from_parts(500, 1);
         let original = draws(3);
         let (mut slots, _) = StableDrawSlots::with_resident_buffers(&[(buffer, 80)])
-            .plan(&original).unwrap();
+            .plan(&original)
+            .unwrap();
         let foreign = gfx_core::SubmissionId::from_parts(501, 1);
-        slots.register_native_access(GpuSubmissionRecord::new(
-            foreign, GpuQueueId {family:4,index:1}, GpuWorkStage::Compute,
-            vec![GpuSubmissionAccess {
-                span: GpuResourceSpan::buffer(buffer, 0, 80).unwrap(),
-                access: GpuAccess::StorageReadWrite,
-            }],
-        )).unwrap();
+        slots
+            .register_native_access(GpuSubmissionRecord::new(
+                foreign,
+                GpuQueueId {
+                    family: 4,
+                    index: 1,
+                },
+                GpuWorkStage::Compute,
+                vec![GpuSubmissionAccess {
+                    span: GpuResourceSpan::buffer(buffer, 0, 80).unwrap(),
+                    access: GpuAccess::StorageReadWrite,
+                }],
+            ))
+            .unwrap();
         let (mut slots, _) = slots.plan(&original[1..]).unwrap();
         slots.gpu_work_completed(); // Simulate UI queue-only completion.
         assert!(slots.free.is_empty());
@@ -974,27 +1052,40 @@ mod tests {
     #[test]
     fn independent_compute_buffer_writer_pins_removed_physical_row() {
         use gfx_core::{
-            GpuQueueId, GpuWorkStage, GpuAccess, GpuResourceSpan, GpuSubmissionAccess,
-            GpuSubmissionRecord,
+            GpuAccess, GpuQueueId, GpuResourceSpan, GpuSubmissionAccess, GpuSubmissionRecord,
+            GpuWorkStage,
         };
         let buffer = gfx_core::BufferId::from_parts(321, 1);
         let foreign = gfx_core::BufferId::from_parts(322, 1);
         let mut slots = StableDrawSlots::with_resident_buffers(&[(buffer, 80)]);
         let original = draws(4);
         let (mut slots, _) = slots.plan(&original).unwrap();
-        let async_queue = GpuQueueId { family: 7, index: 1 };
+        let async_queue = GpuQueueId {
+            family: 7,
+            index: 1,
+        };
         let compute = gfx_core::SubmissionId::from_parts(170, 1);
-        slots.register_native_access(GpuSubmissionRecord::new(
-            compute, async_queue, GpuWorkStage::Compute,
-            vec![GpuSubmissionAccess {
-                span: GpuResourceSpan::buffer(buffer, 0, 80).unwrap(),
-                access: GpuAccess::StorageReadWrite,
-            }],
-        )).unwrap();
+        slots
+            .register_native_access(GpuSubmissionRecord::new(
+                compute,
+                async_queue,
+                GpuWorkStage::Compute,
+                vec![GpuSubmissionAccess {
+                    span: GpuResourceSpan::buffer(buffer, 0, 80).unwrap(),
+                    access: GpuAccess::StorageReadWrite,
+                }],
+            ))
+            .unwrap();
         let (mut slots, _) = slots.plan(&original[1..]).unwrap();
         assert!(slots.free.is_empty());
         assert_eq!(slots.retired_by_submission.len(), 1);
-        assert_eq!(slots.retired_by_submission[0].gpu_dependency.pending().len(), 1);
+        assert_eq!(
+            slots.retired_by_submission[0]
+                .gpu_dependency
+                .pending()
+                .len(),
+            1
+        );
 
         // An unrelated GUI consumer on the primary queue cannot authorize
         // recycling the physical row still owned by async Compute.
@@ -1008,13 +1099,17 @@ mod tests {
         // Matching index on a different BufferId must not create a hazard.
         let mut separate = StableDrawSlots::with_resident_buffers(&[(foreign, 80)]);
         let (mut separate, _) = separate.plan(&original).unwrap();
-        separate.register_native_access(GpuSubmissionRecord::new(
-            compute, async_queue, GpuWorkStage::Compute,
-            vec![GpuSubmissionAccess {
-                span: GpuResourceSpan::buffer(buffer, 0, 80).unwrap(),
-                access: GpuAccess::StorageReadWrite,
-            }],
-        )).unwrap();
+        separate
+            .register_native_access(GpuSubmissionRecord::new(
+                compute,
+                async_queue,
+                GpuWorkStage::Compute,
+                vec![GpuSubmissionAccess {
+                    span: GpuResourceSpan::buffer(buffer, 0, 80).unwrap(),
+                    access: GpuAccess::StorageReadWrite,
+                }],
+            ))
+            .unwrap();
         let (separate, _) = separate.plan(&original[1..]).unwrap();
         assert!(separate.retired_by_submission.is_empty());
         assert_eq!(separate.retired_unbound, vec![0]);
@@ -1305,13 +1400,15 @@ mod tests {
         let delta = crate::prepare::StructuralDrawDelta {
             previous_count: original.len(),
             edits: vec![crate::prepare::StructuralDrawEdit {
-                old: 200..201, new: 200..200,
+                old: 200..201,
+                new: 200..200,
             }],
         };
         let mut scratch = Vec::with_capacity(4096);
         let plan = resident
             .plan_structural_reusing(&next, &mapping, &delta, &mut scratch)
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert!(plan.mapping.capacity() >= 4096);
         assert!(scratch.is_empty());
         assert_eq!(plan.mapping[..200], mapping[..200]);
@@ -1327,7 +1424,11 @@ mod tests {
         resident = next;
         assert_eq!(mapping, old_map[..128]);
         assert_eq!(resident.high_water(), 1024);
-        assert_eq!(resident.trim_unused_tail(), 1024, "pending GPU readers pin the tail");
+        assert_eq!(
+            resident.trim_unused_tail(),
+            1024,
+            "pending GPU readers pin the tail"
+        );
         assert!(resident.free.is_empty());
         assert_eq!(resident.occupied.len(), 128);
         resident.gpu_work_completed();
@@ -1363,15 +1464,20 @@ mod tests {
         let original = draws(512);
         let (mut resident, old_map) = StableDrawSlots::default().plan(&original).unwrap();
         let survivors = original[..64].to_vec();
-        let plan = resident.plan_structural(
-            &survivors, &old_map,
-            &crate::prepare::StructuralDrawDelta {
-                previous_count: 512,
-                edits: vec![crate::prepare::StructuralDrawEdit {
-                    old: 64..512, new: 64..64,
-                }],
-            },
-        ).unwrap().unwrap();
+        let plan = resident
+            .plan_structural(
+                &survivors,
+                &old_map,
+                &crate::prepare::StructuralDrawDelta {
+                    previous_count: 512,
+                    edits: vec![crate::prepare::StructuralDrawEdit {
+                        old: 64..512,
+                        new: 64..64,
+                    }],
+                },
+            )
+            .unwrap()
+            .unwrap();
         let mapping = plan.mapping.clone();
         plan.commit(&mut resident);
         assert_eq!(mapping, old_map[..64]);
@@ -1528,8 +1634,7 @@ mod tests {
         assert_eq!(patches.len(), 1);
         assert_eq!(patches[0].0, 32);
         let canonical =
-            crate::scene_view::gpu::encode_draw_records(std::slice::from_ref(&next[32]))
-                .unwrap();
+            crate::scene_view::gpu::encode_draw_records(std::slice::from_ref(&next[32])).unwrap();
         assert_eq!(patches[0].2.as_slice(), canonical.as_slice());
     }
 
@@ -1568,8 +1673,7 @@ mod tests {
         assert_eq!(patches[0].0, mapping[8] as usize);
         assert_ne!(patches[0].1, keys[mapping[8] as usize]);
         let canonical =
-            crate::scene_view::gpu::encode_draw_records(std::slice::from_ref(&changed[8]))
-                .unwrap();
+            crate::scene_view::gpu::encode_draw_records(std::slice::from_ref(&changed[8])).unwrap();
         assert_eq!(patches[0].2.as_slice(), canonical.as_slice());
         let mut patched = baseline.clone();
         let start = patches[0].0 * DRAW_PARAMS_STRIDE as usize;

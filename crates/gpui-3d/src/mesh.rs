@@ -600,7 +600,7 @@ impl Mesh {
         indices: impl Into<Box<[u32]>>,
         parts: impl Into<Box<[MeshPart]>>,
     ) -> Result<Self, MeshError> {
-        Self::with_parts_impl(vertices.into(), indices.into(), parts.into(), true)
+        Self::build_parts(vertices.into(), indices.into(), parts.into(), true)
     }
 
     /// Creates renderable geometry without building a CPU triangle raycast index.
@@ -616,7 +616,7 @@ impl Mesh {
         indices: impl Into<Box<[u32]>>,
         parts: impl Into<Box<[MeshPart]>>,
     ) -> Result<Self, MeshError> {
-        Self::with_parts_impl(vertices.into(), indices.into(), parts.into(), false)
+        Self::build_parts(vertices.into(), indices.into(), parts.into(), false)
     }
 
     /// Builds compact voxel geometry directly from ordered quads without allocating a temporary
@@ -724,7 +724,7 @@ impl Mesh {
         })
     }
 
-    fn with_parts_impl(
+    fn build_parts(
         vertices: Box<[Vertex]>,
         indices: Box<[u32]>,
         parts: Box<[MeshPart]>,
@@ -984,7 +984,7 @@ impl Mesh {
             return Err(MeshError::VertexCountMismatch);
         }
 
-        let mut mesh = Self::with_parts_impl(
+        let mut mesh = Self::build_parts(
             vertices,
             self.indices().to_vec().into_boxed_slice(),
             self.parts.clone(),
@@ -1513,11 +1513,7 @@ mod tests {
         )
         .unwrap();
         let mesh = Mesh::from_gpu_voxels(source);
-        let expected = Aabb::new(
-            Vec3::new(2.0, 4.0, 4.0),
-            Vec3::new(3.0, 4.0, 5.0),
-        )
-        .unwrap();
+        let expected = Aabb::new(Vec3::new(2.0, 4.0, 4.0), Vec3::new(3.0, 4.0, 5.0)).unwrap();
         assert_eq!(mesh.bounds(), Some(expected));
         assert_eq!(mesh.part_bounds(0), Some(expected));
     }
