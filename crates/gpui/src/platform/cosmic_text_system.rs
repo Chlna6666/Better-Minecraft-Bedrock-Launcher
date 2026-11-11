@@ -2061,7 +2061,7 @@ fn ensure_rgba_len(actual_len: usize, pixel_count: usize, description: &str) -> 
 }
 
 #[cfg(target_os = "windows")]
-fn platform_system_font_name_impl(_font_system: &FontSystem) -> String {
+fn platform_font_name(_font_system: &FontSystem) -> String {
     let mut info = LOGFONTW::default();
     let result = unsafe {
         SystemParametersInfoW(
@@ -2084,12 +2084,12 @@ fn platform_system_font_name_impl(_font_system: &FontSystem) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn platform_system_font_name_impl(_font_system: &FontSystem) -> String {
+fn platform_font_name(_font_system: &FontSystem) -> String {
     ".AppleSystemUIFont".to_owned()
 }
 
 #[cfg(target_os = "linux")]
-fn platform_system_font_name_impl(font_system: &FontSystem) -> String {
+fn platform_font_name(font_system: &FontSystem) -> String {
     if let Some(family) = linux_desktop_font_family(font_system) {
         return family;
     }
@@ -2249,7 +2249,7 @@ fn matching_family_from_font_description<'a>(
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn platform_system_font_name_impl(_font_system: &FontSystem) -> String {
+fn platform_font_name(_font_system: &FontSystem) -> String {
     "IBM Plex Sans".to_owned()
 }
 
@@ -2287,7 +2287,7 @@ fn prepare_linux_system_fonts() {
 }
 
 fn resolved_platform_font_name(font_system: &FontSystem) -> String {
-    let preferred = platform_system_font_name_impl(font_system);
+    let preferred = platform_font_name(font_system);
     if font_family_exists(font_system, &preferred) {
         return preferred;
     }
@@ -2462,10 +2462,7 @@ mod linux_tests {
         database.set_sans_serif_family("User Preferred Sans");
         let font_system = FontSystem::new_with_locale_and_db("en-US".to_owned(), database);
 
-        assert_eq!(
-            platform_system_font_name_impl(&font_system),
-            "User Preferred Sans"
-        );
+        assert_eq!(platform_font_name(&font_system), "User Preferred Sans");
         assert_eq!(
             resolved_platform_font_name(&font_system),
             "User Preferred Sans"

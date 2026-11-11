@@ -15,7 +15,8 @@ fn rebase_compute_passes(
     let mut previous = 0;
     for stage in stages.iter() {
         let offset = stage.after_graphics_pass;
-        if offset >= graphics_count || offset < previous
+        if offset >= graphics_count
+            || offset < previous
             || first_graphics.checked_add(offset).is_none()
         {
             return Err(anyhow::anyhow!(
@@ -97,10 +98,9 @@ impl RendererRegistry {
         // mem::take here discarded it and reallocated when the 3D producer
         // reappeared every frame (even for one SceneView).
         for type_id in self.native_producers.drain(..) {
-            let renderer = self.renderers.get_mut(&type_id)
-                .ok_or_else(|| anyhow::anyhow!(
-                    "native producer was removed before GPU submission"
-                ))?;
+            let renderer = self.renderers.get_mut(&type_id).ok_or_else(|| {
+                anyhow::anyhow!("native producer was removed before GPU submission")
+            })?;
             if !renderer.has_native_offscreen_work() {
                 continue;
             }
@@ -180,17 +180,15 @@ impl RendererRegistry {
         renderer.drain_compute_passes(&mut self.compute_passes);
         let new_compute = &mut self.compute_passes[compute_before..];
         rebase_compute_passes(new_compute, before, self.passes.len() - before)?;
-        if renderer.has_native_offscreen_work()
-            && !self.native_producers.contains(&type_id)
-        {
+        if renderer.has_native_offscreen_work() && !self.native_producers.contains(&type_id) {
             self.native_producers.push(type_id);
         }
         if self.passes.len() > before || !new_compute.is_empty() {
             // A mixed sequence must stay on the GPU owner's ordered primary
             // queue, even when the renderer otherwise prefers an independent
             // secondary graphics queue for pure offscreen captures.
-            self.independent_producers_only &= new_compute.is_empty()
-                && renderer.prefers_independent_graphics_queue();
+            self.independent_producers_only &=
+                new_compute.is_empty() && renderer.prefers_independent_graphics_queue();
             if !self.submitted_types.contains(&type_id) {
                 self.submitted_types.push(type_id);
             }
@@ -277,11 +275,7 @@ mod tests {
         assert_eq!(cached_shadow[0].after_graphics_pass, 4);
         assert_eq!(cached_shadow[1].after_graphics_pass, 4);
 
-        for mut invalid in [
-            [make(3), make(3)],
-            [make(1), make(3)],
-            [make(2), make(1)],
-        ] {
+        for mut invalid in [[make(3), make(3)], [make(1), make(3)], [make(2), make(1)]] {
             assert!(rebase_compute_passes(&mut invalid, 4, 3).is_err());
         }
     }
@@ -311,14 +305,18 @@ mod tests {
 
     #[test]
     fn submission_acknowledgements_are_scoped_to_current_producers() {
-        use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
         struct Submitted(Arc<AtomicUsize>);
         impl crate::RendererExtensionRenderer for Submitted {
             fn render_passes_submitted(&mut self) {
                 self.0.fetch_add(1, Ordering::Relaxed);
             }
             fn render(
-                &mut self, _: &dyn crate::RendererExtension,
+                &mut self,
+                _: &dyn crate::RendererExtension,
                 _: &mut dyn ExtensionDevice,
                 _: crate::RendererExtensionContext,
                 _: &mut Vec<RenderCommand>,
@@ -334,8 +332,12 @@ mod tests {
         let second = Arc::new(AtomicUsize::new(0));
         let first_id = TypeId::of::<PendingRenderer>();
         let second_id = TypeId::of::<Submitted>();
-        registry.renderers.insert(first_id, Box::new(Submitted(first.clone())));
-        registry.renderers.insert(second_id, Box::new(Submitted(second.clone())));
+        registry
+            .renderers
+            .insert(first_id, Box::new(Submitted(first.clone())));
+        registry
+            .renderers
+            .insert(second_id, Box::new(Submitted(second.clone())));
         registry.submitted_types.push(first_id);
         registry.render_passes_submitted();
         assert_eq!(first.load(Ordering::Relaxed), 1);

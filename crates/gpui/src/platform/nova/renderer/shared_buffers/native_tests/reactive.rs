@@ -130,11 +130,11 @@ fn pixels(
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
-            stencil_load_op: None,
-        }),
+                    stencil_load_op: None,
+                }),
                 viewport: None,
-            resolve_target: None,
-        }])
+                resolve_target: None,
+            }])
             .expect("draw real view scene");
         let readback = device.read_texture(target.0).expect("read real view scene");
         readback

@@ -109,11 +109,11 @@ fn read_pixels(renderer: &NovaRenderer, target: (TextureId, TextureViewId)) -> V
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
-            stencil_load_op: None,
-        }),
+                    stencil_load_op: None,
+                }),
                 viewport: None,
-            resolve_target: None,
-        }])
+                resolve_target: None,
+            }])
             .expect("composition readback draw");
         let data = device.read_texture(target.0).expect("native pixels");
         data.bytes

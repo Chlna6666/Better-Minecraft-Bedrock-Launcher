@@ -39,7 +39,9 @@ impl LeakDetector {
                     backtrace.resolve();
                     eprintln!("Leaked handle: {:#?}", backtrace);
                 } else {
-                    eprintln!("Leaked handle: enable gpui::entity_leaks trace logging to find allocation site");
+                    eprintln!(
+                        "Leaked handle: enable gpui::entity_leaks trace logging to find allocation site"
+                    );
                 }
             }
             panic!();

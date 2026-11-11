@@ -90,11 +90,11 @@ fn draw_all(renderer: &NovaRenderer, view: TextureViewId, slot: usize) {
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
-            stencil_load_op: None,
-        }),
+                    stencil_load_op: None,
+                }),
                 viewport: None,
-            resolve_target: None,
-        }])
+                resolve_target: None,
+            }])
             .expect("segmented draw");
     });
 }
@@ -128,8 +128,8 @@ fn submit_old_slot(renderer: &mut NovaRenderer) {
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
-            stencil_load_op: None,
-        }),
+                    stencil_load_op: None,
+                }),
                 present_region: None,
             })
             .expect("old chunk submission")

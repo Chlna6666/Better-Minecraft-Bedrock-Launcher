@@ -458,7 +458,7 @@ impl Window {
         text_raster_scale: f32,
         paint: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.with_scene_animation_impl(animation_id, property, text_raster_scale, None, None, paint)
+        self.apply_scene_animation(animation_id, property, text_raster_scale, None, None, paint)
     }
 
     pub(crate) fn with_scene_composite_animation<R>(
@@ -476,7 +476,7 @@ impl Window {
                 | crate::TransitionProperty::ClipReveal
                 | crate::TransitionProperty::Translation
         ));
-        self.with_scene_animation_impl(
+        self.apply_scene_animation(
             animation_id,
             property,
             text_raster_scale,
@@ -494,7 +494,7 @@ impl Window {
         max_radius_device: f32,
         paint: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.with_scene_animation_impl(
+        self.apply_scene_animation(
             animation_id,
             crate::TransitionProperty::FilterBlur,
             text_raster_scale,
@@ -504,7 +504,7 @@ impl Window {
         )
     }
 
-    fn with_scene_animation_impl<R>(
+    fn apply_scene_animation<R>(
         &mut self,
         animation_id: crate::SceneAnimationId,
         property: crate::TransitionProperty,

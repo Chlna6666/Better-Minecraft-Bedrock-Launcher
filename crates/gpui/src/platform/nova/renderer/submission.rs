@@ -504,7 +504,7 @@ impl NovaRenderer {
             return Ok(false);
         }
 
-        if lock_backend(&self.backend).has_pending_resize_work(self.swapchain)? {
+        if lock_backend(&self.backend).check_resize_work(self.swapchain)? {
             return Ok(false);
         }
 

@@ -135,12 +135,12 @@ impl<'a, 'measurement> BenchAppContext<'a, 'measurement> {
         benchmark_name: Option<&'static str>,
         bencher: &'a mut criterion::Bencher<'measurement>,
     ) -> Self {
-        Self::new_with_report(benchmark_name, bencher, BenchReport::default())
+        Self::with_report(benchmark_name, bencher, BenchReport::default())
     }
 
     /// Creates a benchmark context with an explicit report configuration.
     #[doc(hidden)]
-    pub fn new_with_report(
+    pub fn with_report(
         benchmark_name: Option<&'static str>,
         bencher: &'a mut criterion::Bencher<'measurement>,
         report: BenchReport,

@@ -481,7 +481,7 @@ impl NovaRenderer {
         // not create an uninitialized surface merely to wait for presentation credit.
         let can_present = {
             let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::NativePacing);
-            lock_backend(&self.backend).can_present_without_wait(self.swapchain)?
+            lock_backend(&self.backend).check_present_readiness(self.swapchain)?
         };
         if !can_present {
             return Ok(PresentReadiness::NativeFrame);
@@ -500,7 +500,7 @@ impl NovaRenderer {
         }
         let can_present = {
             let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::NativePacing);
-            lock_backend(&self.backend).can_present_without_wait(self.swapchain)?
+            lock_backend(&self.backend).check_present_readiness(self.swapchain)?
         };
         Ok(if can_present {
             PresentReadiness::Ready
@@ -1067,7 +1067,7 @@ impl NovaRenderer {
         // Keep compositor content at native pixel scale. Stretching the entire old
         // scene and resetting it after each Present makes text and controls oscillate.
         // Retained-frame backends (OpenGL) re-present the last Scene at the new extent.
-        match lock_backend(&self.backend).present_retained_frame(self.swapchain, target) {
+        match lock_backend(&self.backend).present_previous_frame(self.swapchain, target) {
             Ok(()) => {
                 self.surface_extent = DrawableSize { width, height };
                 Ok(true)
@@ -1369,7 +1369,10 @@ impl NovaRenderer {
             // Memory compaction can destroy native buffers used by an
             // independent Compute/COPY producer. Trim is a slow path: drain
             // both exact fence sets before reclaiming their allocations.
-            match self.wait_pending_submissions().and_then(|_| self.wait_auxiliary_submissions()) {
+            match self
+                .wait_pending_submissions()
+                .and_then(|_| self.wait_auxiliary_submissions())
+            {
                 Ok(()) => true,
                 Err(error) => {
                     log::debug!("failed to drain nova-gfx submissions before memory trim: {error}");
@@ -1489,7 +1492,9 @@ impl NovaRenderer {
         // referenced by actual independent native Compute/Transfer queues.
         // Teardown is the only place that must wait for those native fences.
         if let Err(error) = self.wait_auxiliary_submissions() {
-            log::error!("failed to drain native extension submissions during renderer destroy: {error}");
+            log::error!(
+                "failed to drain native extension submissions during renderer destroy: {error}"
+            );
         }
         let submission_wait = destroy_started_at.elapsed();
         log::debug!(target: "gpui_gpu_shutdown", "renderer submissions drained backend={}", self.backend_info.label());

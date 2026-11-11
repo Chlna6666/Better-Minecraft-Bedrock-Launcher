@@ -135,7 +135,7 @@ impl Window {
     }
 
     fn invalidate_focus_transition(&mut self, previous: Option<FocusId>, current: Option<FocusId>) {
-        self.prune_focus_retained_targets_if_needed();
+        self.prune_focus_retained_targets();
 
         let mut schedule = false;
         if let Some(previous) = previous {

@@ -439,7 +439,9 @@ mod tests {
     fn graph_never_advertises_unfenced_transient_aliasable_targets() {
         let graph = FrameGraphPlan::compile(true, 1, 1, RootColorAccess::Absent, false);
         let mask = graph.lifetime(Resource::PathMask).expect("path mask");
-        let element = graph.lifetime(Resource::ElementColor).expect("element color");
+        let element = graph
+            .lifetime(Resource::ElementColor)
+            .expect("element color");
         assert_eq!(mask.residency, Residency::Persistent);
         assert_eq!(element.residency, Residency::Persistent);
         if let Some(swapchain) = graph.lifetime(Resource::Swapchain) {

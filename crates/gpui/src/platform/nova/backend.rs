@@ -212,7 +212,7 @@ impl NovaBackend {
     }
 
     /// Returns whether the current swapchain can accept a presentation without blocking GPUI.
-    pub(super) fn can_present_without_wait(&mut self, swapchain: SwapchainId) -> Result<bool> {
+    pub(super) fn check_present_readiness(&mut self, swapchain: SwapchainId) -> Result<bool> {
         match self {
             #[cfg(all(
                 feature = "nova-gfx-opengl",
@@ -220,11 +220,11 @@ impl NovaBackend {
             ))]
             Self::OpenGl(_) => Ok(true),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            Self::Dx11(device) => Ok(gfx_core::PresentationDevice::can_present_now(
+            Self::Dx11(device) => Ok(gfx_core::PresentationDevice::poll_present_readiness(
                 device, swapchain,
             )?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(device) => Ok(gfx_core::PresentationDevice::can_present_now(
+            Self::Dx12(device) => Ok(gfx_core::PresentationDevice::poll_present_readiness(
                 device, swapchain,
             )?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -364,7 +364,7 @@ impl NovaBackend {
     /// Presents the retained scene target over a native client area that grew ahead
     /// of the matching Scene. Backends without a retained-frame path return
     /// `Unavailable`, which the caller treats as "the compositor already covers it".
-    pub(super) fn present_retained_frame(
+    pub(super) fn present_previous_frame(
         &mut self,
         swapchain: SwapchainId,
         target: gfx_core::Extent2d,
@@ -374,26 +374,26 @@ impl NovaBackend {
                 feature = "nova-gfx-opengl",
                 any(target_os = "windows", target_os = "linux")
             ))]
-            Self::OpenGl(device) => Ok(gfx_core::PresentationDevice::present_retained_frame(
+            Self::OpenGl(device) => Ok(gfx_core::PresentationDevice::present_previous_frame(
                 device, swapchain, target,
             )?),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            Self::Dx11(device) => Ok(gfx_core::PresentationDevice::present_retained_frame(
+            Self::Dx11(device) => Ok(gfx_core::PresentationDevice::present_previous_frame(
                 device, swapchain, target,
             )?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(device) => Ok(gfx_core::PresentationDevice::present_retained_frame(
+            Self::Dx12(device) => Ok(gfx_core::PresentationDevice::present_previous_frame(
                 device, swapchain, target,
             )?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            Self::Metal(device) => Ok(gfx_core::PresentationDevice::present_retained_frame(
+            Self::Metal(device) => Ok(gfx_core::PresentationDevice::present_previous_frame(
                 device, swapchain, target,
             )?),
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            Self::Vulkan(device) => Ok(gfx_core::PresentationDevice::present_retained_frame(
+            Self::Vulkan(device) => Ok(gfx_core::PresentationDevice::present_previous_frame(
                 device, swapchain, target,
             )?),
             #[cfg(not(any(
@@ -565,7 +565,7 @@ impl NovaBackend {
     /// windows submit work. The renderer has already retired its own attachment readers.
     /// Vulkan maintenance1 follows this chain's WSI present fences as well; render fences
     /// alone cannot prove presentation-engine release of its images/semaphores.
-    pub(super) fn has_pending_resize_work(&mut self, swapchain: SwapchainId) -> Result<bool> {
+    pub(super) fn check_resize_work(&mut self, swapchain: SwapchainId) -> Result<bool> {
         match self {
             #[cfg(all(
                 feature = "nova-gfx-opengl",

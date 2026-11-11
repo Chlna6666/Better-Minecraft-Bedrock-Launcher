@@ -38,7 +38,6 @@ impl StaticForegroundPartition {
     fn has_proven_static_majority(self) -> bool {
         self.animated == 0 || self.static_prefix.saturating_mul(3) >= self.total().saturating_mul(2)
     }
-
 }
 
 fn classify_static_foreground(scene: &crate::Scene) -> StaticForegroundPartition {

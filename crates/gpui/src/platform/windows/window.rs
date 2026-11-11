@@ -1019,7 +1019,7 @@ impl WindowsWindow {
             .detach();
     }
 
-    pub(crate) fn should_close(&self) -> Option<bool> {
+    pub(crate) fn take_close_decision(&self) -> Option<bool> {
         let mut state = self.0.state.borrow_mut();
         let mut callback = state.callbacks.should_close.take()?;
         drop(state);

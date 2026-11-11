@@ -144,7 +144,7 @@ impl RasterBoundsCache {
             .store(self.frame_epoch.load(Ordering::Relaxed), Ordering::Relaxed);
         self.entries.insert(params, entry);
         self.inserts_since_sweep = self.inserts_since_sweep.saturating_add(1);
-        self.sweep_if_needed();
+        self.sweep();
         bounds
     }
 
@@ -169,7 +169,7 @@ impl RasterBoundsCache {
         self.frame_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn sweep_if_needed(&mut self) {
+    fn sweep(&mut self) {
         let threshold = self
             .entries
             .len()

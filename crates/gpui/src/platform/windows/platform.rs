@@ -961,7 +961,7 @@ impl Platform for WindowsPlatform {
     }
 
     fn should_auto_hide_scrollbars(&self) -> bool {
-        should_auto_hide_scrollbars().log_err().unwrap_or(false)
+        query_auto_hide_scrollbars().log_err().unwrap_or(false)
     }
 
     fn write_to_clipboard(&self, item: ClipboardItem) {
@@ -1549,7 +1549,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 }
             }
             winit::event::WindowEvent::CloseRequested => {
-                let should_close = window.should_close().unwrap_or(true);
+                let should_close = window.take_close_decision().unwrap_or(true);
                 if should_close {
                     self.close_window(event_loop, window_id, true);
                 }
@@ -2114,7 +2114,7 @@ unsafe fn username_and_password(credential: &CREDENTIALW) -> Result<(String, Vec
 }
 
 #[inline]
-fn should_auto_hide_scrollbars() -> Result<bool> {
+fn query_auto_hide_scrollbars() -> Result<bool> {
     let ui_settings = UISettings::new()?;
     Ok(ui_settings.AutoHideScrollBars()?)
 }

@@ -114,7 +114,7 @@ pub(crate) fn record_present_attempt(window_id: u64) {
     }
 }
 
-/// Records an active frame rejected by `can_present_without_wait`, not every deferred draw cause.
+/// Records an active frame rejected by `check_present_readiness`, not every deferred draw cause.
 pub(crate) fn record_present_preflight_deferred(window_id: u64) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();

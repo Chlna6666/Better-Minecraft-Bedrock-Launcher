@@ -123,11 +123,11 @@ fn verify_composite(renderer: &NovaRenderer) {
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
-            stencil_load_op: None,
-        }),
+                    stencil_load_op: None,
+                }),
                 viewport: None,
-            resolve_target: None,
-        }])
+                resolve_target: None,
+            }])
             .expect("root composite reference");
     });
     super::pixels(renderer, output.0, [0, 255, 0, 255]);

@@ -437,10 +437,12 @@ impl BladeRenderer {
             .create_surface_configured(window, surface_config)
             .map_err(|err| anyhow::anyhow!("Failed to create surface: {err:?}"))?;
 
-        let command_encoder = context.gpu.create_command_encoder(gpu::CommandEncoderDescriptor {
-            name: "main",
-            buffer_count: 2,
-        });
+        let command_encoder = context
+            .gpu
+            .create_command_encoder(gpu::CommandEncoderDescriptor {
+                name: "main",
+                buffer_count: 2,
+            });
         let rendering_parameters = RenderingParameters::from_env(context);
         let pipelines = BladePipelines::new(
             &context.gpu,
@@ -520,7 +522,7 @@ impl BladeRenderer {
     }
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
-        self.update_drawable_size_impl(size, false);
+        self.resize_drawable(size, false);
     }
 
     /// Like `update_drawable_size` but skips the check that the size has changed. This is useful in
@@ -536,10 +538,10 @@ impl BladeRenderer {
         allow(dead_code)
     )]
     pub fn reconfigure_drawable_size(&mut self, size: Size<DevicePixels>) {
-        self.update_drawable_size_impl(size, true);
+        self.resize_drawable(size, true);
     }
 
-    fn update_drawable_size_impl(&mut self, size: Size<DevicePixels>, force_resize: bool) {
+    fn resize_drawable(&mut self, size: Size<DevicePixels>, force_resize: bool) {
         let gpu_size = gpu::Extent {
             width: size.width.0 as u32,
             height: size.height.0 as u32,

@@ -901,7 +901,9 @@ impl RetainedLayoutCache {
         }
         self.estimated_bytes = self.estimated_bytes.saturating_add(estimated_bytes);
         self.line_recency.push_back((key, stamp));
-        self.compact_recency_if_needed();
+        if self.should_compact_recency() {
+            self.compact_recency();
+        }
     }
 
     #[cfg(test)]
@@ -937,7 +939,9 @@ impl RetainedLayoutCache {
         }
         self.estimated_bytes = self.estimated_bytes.saturating_add(estimated_bytes);
         self.wrapped_line_recency.push_back((key, stamp));
-        self.compact_recency_if_needed();
+        if self.should_compact_recency() {
+            self.compact_recency();
+        }
     }
 
     fn take_line(
@@ -974,7 +978,8 @@ impl RetainedLayoutCache {
         self.working_set_bytes = 0;
     }
 
-    fn compact_recency_if_needed(&mut self) {
+    /// Whether the recency queue has grown past the live-entry compaction threshold.
+    fn should_compact_recency(&self) -> bool {
         let live_entries = self.lines.len().saturating_add(self.wrapped_lines.len());
         let queue_entries = self
             .line_recency
@@ -983,9 +988,7 @@ impl RetainedLayoutCache {
         let compact_at = live_entries
             .saturating_mul(LINE_LAYOUT_CACHE_RECENCY_COMPACTION_MULTIPLIER)
             .max(live_entries.saturating_add(LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY));
-        if queue_entries > compact_at {
-            self.compact_recency();
-        }
+        queue_entries > compact_at
     }
 
     fn compact_recency(&mut self) {
@@ -1046,7 +1049,9 @@ impl RetainedLayoutCache {
                 };
                 self.working_set_bytes /= divisor;
                 self.evict_to_working_set_budget();
-                self.compact_recency();
+                if self.should_compact_recency() {
+                    self.compact_recency();
+                }
 
                 let line_capacity = LINE_LAYOUT_CACHE_MIN_RETAINED_CAPACITY.max(self.lines.len());
                 let wrapped_capacity =

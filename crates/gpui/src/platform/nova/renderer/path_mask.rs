@@ -105,8 +105,8 @@ pub(super) fn render<D: PresentationDevice>(
         clear_region: None,
         depth_attachment: Some(pass.depth_attachment),
         viewport: Some(pass.viewport),
-            resolve_target: None,
-        }]);
+        resolve_target: None,
+    }]);
     *cpu_elapsed = started.elapsed();
     result.map(|_| ()).map_err(Into::into)
 }

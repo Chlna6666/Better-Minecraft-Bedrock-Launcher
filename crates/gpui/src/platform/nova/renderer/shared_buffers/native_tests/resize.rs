@@ -227,8 +227,8 @@ fn verify_marker(renderer: &NovaRenderer, extent: (u32, u32)) {
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
-            stencil_load_op: None,
-        }),
+                    stencil_load_op: None,
+                }),
                 viewport: Some(gfx_core::Viewport {
                     origin: gfx_core::SignedOrigin2d::ZERO,
                     extent: Extent2d::new(extent.0, extent.1).expect("client viewport"),
@@ -239,8 +239,8 @@ fn verify_marker(renderer: &NovaRenderer, extent: (u32, u32)) {
                     .expect("retained target extent"),
                     mapping: gfx_core::ViewportMapping::Scaled,
                 }),
-            resolve_target: None,
-        }])
+                resolve_target: None,
+            }])
             .expect("live geometry pixel draw");
         let pixels = device.read_texture(output.0).expect("live geometry pixels");
         let target_width = renderer.current_size.width;
@@ -394,11 +394,11 @@ fn verify_pixels(renderer: &NovaRenderer) {
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
-            stencil_load_op: None,
-        }),
+                    stencil_load_op: None,
+                }),
                 viewport: None,
-            resolve_target: None,
-        }])
+                resolve_target: None,
+            }])
             .expect("resize pixel reference");
     });
     super::pixels(renderer, output.0, [0, 255, 0, 255]);

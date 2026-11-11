@@ -244,11 +244,11 @@ fn pixels<const N: usize>(
                 depth_attachment: Some(DepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
-            stencil_load_op: None,
-        }),
+                    stencil_load_op: None,
+                }),
                 viewport: None,
-            resolve_target: None,
-        }])
+                resolve_target: None,
+            }])
             .expect("draw final composition");
         let readback = device.read_texture(target.0).expect("read popup pixels");
         readback
@@ -409,8 +409,8 @@ fn verify(backend: RendererBackend) {
                         DepthAttachment {
                             target: renderer.depth_texture_view,
                             depth_load_op: LoadOp::Clear(1.),
-            stencil_load_op: None,
-        },
+                            stencil_load_op: None,
+                        },
                         std::slice::from_ref(&layer),
                         gfx_core::Viewport {
                             origin: gfx_core::SignedOrigin2d::ZERO,

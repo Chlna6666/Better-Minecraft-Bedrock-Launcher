@@ -154,7 +154,7 @@ impl Window {
     /// Bound the persistent focus-target lookup when applications create and discard many unique
     /// focus handles over time. The common path pays only one length comparison; pruning happens
     /// only after the table becomes unusually large.
-    pub(crate) fn prune_focus_retained_targets_if_needed(&mut self) {
+    pub(crate) fn prune_focus_retained_targets(&mut self) {
         const PRUNE_THRESHOLD: usize = 1_024;
         if self.focus_retained_targets.len() <= PRUNE_THRESHOLD {
             return;

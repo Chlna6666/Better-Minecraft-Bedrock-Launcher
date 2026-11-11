@@ -160,7 +160,9 @@ impl EntityMap {
     #[inline(always)]
     pub fn read<T: 'static>(&self, entity: &Entity<T>) -> &T {
         self.assert_valid_context(entity);
-        self.read_inner(entity.entity_id)
+        self.accessed_entities.borrow_mut().insert(entity.entity_id);
+        self.entities
+            .get(entity.entity_id)
             .and_then(|entity| entity.downcast_ref())
             .unwrap_or_else(|| double_lease_panic("read", type_name::<T>()))
     }
@@ -168,7 +170,8 @@ impl EntityMap {
     #[track_caller]
     pub(super) fn lease_erased(&mut self, pointer: &AnyEntity) -> LeaseInner {
         self.assert_valid_context(pointer);
-        let entity = Some(self.lease_inner(pointer.entity_id).unwrap_or_else(|| {
+        self.accessed_entities.get_mut().insert(pointer.entity_id);
+        let entity = Some(self.entities.remove(pointer.entity_id).unwrap_or_else(|| {
             let entity_type = self
                 .entity_type_names
                 .get(pointer.entity_id)
@@ -180,7 +183,8 @@ impl EntityMap {
     }
 
     pub(super) fn end_lease_erased(&mut self, entity_id: EntityId, mut lease: LeaseInner) {
-        self.end_lease_inner(entity_id, lease.entity.take().unwrap());
+        self.entities
+            .insert(entity_id, lease.entity.take().unwrap());
     }
 
     fn assert_valid_context(&self, entity: &AnyEntity) {
@@ -218,22 +222,6 @@ impl EntityMap {
                 Some((entity_id, self.entities.remove(entity_id)?))
             })
             .collect()
-    }
-    #[inline(never)]
-    fn read_inner(&self, entity_id: EntityId) -> Option<&dyn Any> {
-        self.accessed_entities.borrow_mut().insert(entity_id);
-        self.entities.get(entity_id).map(Box::as_ref)
-    }
-
-    #[inline(never)]
-    fn lease_inner(&mut self, entity_id: EntityId) -> Option<Box<dyn Any>> {
-        self.accessed_entities.get_mut().insert(entity_id);
-        self.entities.remove(entity_id)
-    }
-
-    #[inline(never)]
-    fn end_lease_inner(&mut self, entity_id: EntityId, entity: Box<dyn Any>) {
-        self.entities.insert(entity_id, entity);
     }
 }
 

@@ -28,9 +28,17 @@ struct SidecarBridgeCpuTrace {
 }
 
 enum SidecarBridgeCpuPhase {
-    Producer { passes: usize, independent: bool },
-    NativeProducer { producers: usize },
-    Consumer { commands: usize, has_predecessor: bool },
+    Producer {
+        passes: usize,
+        independent: bool,
+    },
+    NativeProducer {
+        producers: usize,
+    },
+    Consumer {
+        commands: usize,
+        has_predecessor: bool,
+    },
 }
 
 /// Submission *call* duration is CPU time, not time executing the queued
@@ -47,26 +55,18 @@ fn explicit_sidecar_bridge_trace(value: Option<&str>) -> bool {
 fn sidecar_bridge_trace_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        explicit_sidecar_bridge_trace(
-            std::env::var("GPUI_3D_TRACE_TIMINGS").ok().as_deref()
-        )
+        explicit_sidecar_bridge_trace(std::env::var("GPUI_3D_TRACE_TIMINGS").ok().as_deref())
     })
 }
 
 impl SidecarBridgeCpuTrace {
     // A GUI consumer without a native offscreen producer is not 3D activity.
     fn has_offscreen_activity(&self) -> bool {
-        self.producer_passes != 0
-            || self.native_producer_calls != 0
-            || self.linked_consumers != 0
+        self.producer_passes != 0 || self.native_producer_calls != 0 || self.linked_consumers != 0
     }
 }
 
-fn record_sidecar_bridge_cpu(
-    phase: SidecarBridgeCpuPhase,
-    elapsed: Duration,
-    pending: usize,
-) {
+fn record_sidecar_bridge_cpu(phase: SidecarBridgeCpuPhase, elapsed: Duration, pending: usize) {
     if !sidecar_bridge_trace_enabled() {
         return;
     }
@@ -209,10 +209,14 @@ impl ExtensionSubmission<'_> {
             return Ok(None);
         }
         let selected = &self.registry.passes()[range];
-        let passes = selected.iter()
+        let passes = selected
+            .iter()
             .map(crate::RendererExtensionPass::commands)
             .collect::<Vec<_>>();
-        let tags = selected.iter().map(|pass| pass.gpu_work_tag).collect::<Vec<_>>();
+        let tags = selected
+            .iter()
+            .map(|pass| pass.gpu_work_tag)
+            .collect::<Vec<_>>();
         let timed = tags.iter().any(Option::is_some);
         let submission = if independent && timed {
             device.render_to_textures_independent_profiled(&passes, &tags)?
@@ -246,15 +250,17 @@ impl ExtensionSubmission<'_> {
         let mut last_native_submission = None;
         let frame_resource_index = self.frame_resource_index;
         let pending = &mut self.pending;
-        let native_producer_count = self.registry.submit_native_offscreen(device, |submission| {
-            pending.push(PendingSubmission {
-                submission,
-                predecessors: SmallVec::new(),
-                frame_resource_index,
-                publication: None,
-            });
-            last_native_submission = Some(submission);
-        })?;
+        let native_producer_count =
+            self.registry
+                .submit_native_offscreen(device, |submission| {
+                    pending.push(PendingSubmission {
+                        submission,
+                        predecessors: SmallVec::new(),
+                        frame_resource_index,
+                        publication: None,
+                    });
+                    last_native_submission = Some(submission);
+                })?;
         if let Some(start) = native_started
             && native_producer_count != 0
         {
@@ -270,8 +276,9 @@ impl ExtensionSubmission<'_> {
         let mixed = !computes.is_empty();
         if mixed && !device.ordered_mixed_graphics_compute_supported() {
             return Err(gfx_core::Error::Unavailable(
-                "native mixed Graphics/Compute offscreen submission is unsupported".into()
-            ).into());
+                "native mixed Graphics/Compute offscreen submission is unsupported".into(),
+            )
+            .into());
         }
         let count = self.registry.passes().len();
         // Reject invalid insertion points and workgroup dimensions before
@@ -279,14 +286,15 @@ impl ExtensionSubmission<'_> {
         // half of a frame recorded on the native device.
         let mut last_boundary = 0usize;
         for stage in &computes {
-            if stage.after_graphics_pass >= count
-                || stage.after_graphics_pass < last_boundary
-            {
+            if stage.after_graphics_pass >= count || stage.after_graphics_pass < last_boundary {
                 return Err(gfx_core::Error::InvalidInput(
-                    "mixed Compute boundary is outside the ordered graphics sequence".into()
-                ).into());
+                    "mixed Compute boundary is outside the ordered graphics sequence".into(),
+                )
+                .into());
             }
-            stage.dispatch.validate(ResourceDevice::compute_capabilities(device))?;
+            stage
+                .dispatch
+                .validate(ResourceDevice::compute_capabilities(device))?;
             last_boundary = stage.after_graphics_pass;
         }
         let independent = !mixed
@@ -306,9 +314,7 @@ impl ExtensionSubmission<'_> {
             // states and make any Compute writes visible to the next Graphics
             // run. No CPU fence wait is permitted between these operations.
             if let Some(tag) = stage.gpu_work_tag {
-                ResourceDevice::dispatch_compute_bind_group_profiled(
-                    device, &stage.dispatch, tag,
-                )?;
+                ResourceDevice::dispatch_compute_bind_group_profiled(device, &stage.dispatch, tag)?;
             } else {
                 ResourceDevice::dispatch_compute_bind_group(device, &stage.dispatch)?;
             }
@@ -401,8 +407,8 @@ where
                 },
                 depth_attachment: Some(source_depth_attachment),
                 viewport: Some(viewport),
-            resolve_target: None,
-        });
+                resolve_target: None,
+            });
         }
         let filter_load_op = if group.preserve_filtered_pixels {
             LoadOp::Load
@@ -418,8 +424,8 @@ where
                 clear_region: None,
                 depth_attachment: None,
                 viewport: None,
-            resolve_target: None,
-        });
+                resolve_target: None,
+            });
         }
     }
     device.render_to_textures(&passes)?;
@@ -501,8 +507,8 @@ pub(super) fn color_layer_passes(
                     },
                     depth_attachment: Some(source_depth_attachment),
                     viewport: Some(viewport),
-            resolve_target: None,
-        });
+                    resolve_target: None,
+                });
             }
             let filter_load_op = if group.preserve_filtered_pixels {
                 LoadOp::Load
@@ -518,8 +524,8 @@ pub(super) fn color_layer_passes(
                     clear_region: None,
                     depth_attachment: None,
                     viewport: None,
-            resolve_target: None,
-        });
+                    resolve_target: None,
+                });
             }
         }
         let filter_load_op = if layer.preserve_filtered_pixels {
@@ -536,14 +542,16 @@ pub(super) fn color_layer_passes(
                 clear_region: None,
                 depth_attachment: None,
                 viewport: None,
-            resolve_target: None,
-        });
+                resolve_target: None,
+            });
         }
     }
     passes
 }
 
-fn execute_frame_graph_offscreen<D: PresentationDevice + ResourceDevice + PipelineDevice + SubmissionDevice>(
+fn execute_frame_graph_offscreen<
+    D: PresentationDevice + ResourceDevice + PipelineDevice + SubmissionDevice,
+>(
     device: &mut D,
     graph: &FrameGraphPlan,
     render_pass: RenderPassId,
@@ -1443,8 +1451,9 @@ impl NovaRenderer {
                         },
                         self.command_scratch.commands(),
                     )?;
-                    if let Some(submission) =
-                        presentation_frame.as_ref().and_then(|frame| frame.submission)
+                    if let Some(submission) = presentation_frame
+                        .as_ref()
+                        .and_then(|frame| frame.submission)
                     {
                         // The UI consumer is the last user of any old sidecar
                         // color/depth/placement resources retired this frame.
@@ -1588,8 +1597,9 @@ impl NovaRenderer {
                         },
                         self.command_scratch.commands(),
                     )?;
-                    if let Some(submission) =
-                        presentation_frame.as_ref().and_then(|frame| frame.submission)
+                    if let Some(submission) = presentation_frame
+                        .as_ref()
+                        .and_then(|frame| frame.submission)
                     {
                         // The UI consumer is the last user of any old sidecar
                         // color/depth/placement resources retired this frame.
@@ -1733,8 +1743,9 @@ impl NovaRenderer {
                         },
                         self.command_scratch.commands(),
                     )?;
-                    if let Some(submission) =
-                        presentation_frame.as_ref().and_then(|frame| frame.submission)
+                    if let Some(submission) = presentation_frame
+                        .as_ref()
+                        .and_then(|frame| frame.submission)
                     {
                         // The UI consumer is the last user of any old sidecar
                         // color/depth/placement resources retired this frame.
@@ -1860,8 +1871,9 @@ impl NovaRenderer {
                         },
                         self.command_scratch.commands(),
                     )?;
-                    if let Some(submission) =
-                        presentation_frame.as_ref().and_then(|frame| frame.submission)
+                    if let Some(submission) = presentation_frame
+                        .as_ref()
+                        .and_then(|frame| frame.submission)
                     {
                         // The UI consumer is the last user of any old sidecar
                         // color/depth/placement resources retired this frame.
@@ -1973,8 +1985,9 @@ impl NovaRenderer {
                         },
                         self.command_scratch.commands(),
                     )?;
-                    if let Some(submission) =
-                        presentation_frame.as_ref().and_then(|frame| frame.submission)
+                    if let Some(submission) = presentation_frame
+                        .as_ref()
+                        .and_then(|frame| frame.submission)
                     {
                         // The UI consumer is the last user of any old sidecar
                         // color/depth/placement resources retired this frame.

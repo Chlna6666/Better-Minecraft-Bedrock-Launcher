@@ -1,8 +1,8 @@
 //! Read cached production mask pixels through a test-only sampled color target.
 use super::*;
 use crate::platform::nova::tests::sprite_gpu::native_window;
-use gfx_core::{ResourceDevice, TextureTransferDevice};
 use gfx_core::*;
+use gfx_core::{ResourceDevice, TextureTransferDevice};
 
 #[test]
 #[ignore = "requires Windows hardware D3D12"]
@@ -202,8 +202,8 @@ fn pixels(renderer: &NovaRenderer, target: (TextureId, TextureViewId)) -> Vec<u8
             depth_attachment: Some(DepthAttachment {
                 target: renderer.depth_texture_view,
                 depth_load_op: LoadOp::Clear(1.0),
-            stencil_load_op: None,
-        }),
+                stencil_load_op: None,
+            }),
             viewport: None,
             resolve_target: None,
         }])
