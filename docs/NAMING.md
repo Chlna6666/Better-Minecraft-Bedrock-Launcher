@@ -41,6 +41,38 @@
 8. **可见性最小化**：先私有，再 `pub(crate)`/`pub(super)`，最后 `pub`；公共 API 必须有
    `///` 文档和 `# Errors`/`# Panics`。
 9. **测试命名**：`行为_条件_期望结果`，允许长名；不要在产品代码里复制测试长句。
+10. **参考专业项目，不自造词**：改名与新增 API 必须先对照同领域成熟项目的既有词汇，
+    不凭语感拼新词。参照基准：
+
+    | 层 / 领域 | 参考项目 | 直接沿用的词汇与形态 |
+    | --- | --- | --- |
+    | `nova-gfx` / `gfx-*` | [wgpu](https://docs.rs/wgpu/latest/wgpu/) | `*Descriptor` + `create_*`/`request_*`；`validate_*` + `*Error` 枚举；`Device::poll`、`PollType`、`SubmissionIndex`；`TextureDescriptor::array_layer_count`；`DeviceError::from_hal` 式 backend→通用错误映射；`dispatch_workgroups`、`transition_buffers` 等「动词 + 对象」 |
+    | `gpui` / UI 侧状态 | [Qt](https://doc.qt.io/qt-6/properties.html) | 属性名 `enabled`/`visible`，访问器 `isEnabled()`/`hasFocus()` → Rust 落为 `is_enabled()`/`has_focus()`；`setEnabled()` → `set_enabled()`；`enabledChanged` 信号 → `*_changed` 事件 |
+    | 任务 / 业务 API | JS/TS 生态 | 一个主入口 + 参数对象（`create(options)`、`update(id, update)`）；能力探测 `CSS.supports()` → `supports_*()`；`Option` 表达可选而非 `_with_*` 重载家族 |
+
+    **参数对象只承载配置，不承担副作用**：`create_task(options)` 是唯一入口并返回
+    `Result`；不得把注册动作藏进 `TaskOptions::create()` 之类的配置对象方法。
+    `new(title, stage)` 是最小必要构造，其余可选字段用 builder（`.detail()`/`.total()`/
+    `.parent()`），不得用 `from_parts(...)` 把一长串位置参数包一层。
+    `from_*` 只表达「有明确来源的转换或构造」，不作为规避 `new_with_*` 限制的改名工具；
+    实际执行初始化的构造用 `new(...)`，带配置的构造用 `with_*` 或 builder。
+    增量、绝对值与元数据更新要在名字和 rustdoc 中区分（如 `ProgressUpdate::advance()`
+    表示增量推进、`total()` 设置绝对上限、`stage()` 设置元数据）。
+
+    **布尔命名按语义分三类，不强制统一前缀**（与第 2 条互补，不是推翻）：
+    - 状态属性查询 → `is_*` / `has_*`（Qt `isEnabled` / `hasFocus`，Rust API Guidelines）。
+      功能开关是否启用用 `is_*_enabled()`；`supports_*` 只用于真正的特性/能力探测，
+      不要用它表达「是否启用」，避免语义混淆。
+    - 能力 / 特性探测 → `supports_*`（JS/TS `CSS.supports()`）。
+    - 可用性 / 状态形容词短语 → `*_enabled` / `*_available` / `*_supported` / `*_valid`。
+    - 「动作 + bool 返回值」表示「是否改变 / 是否成功」（`set_*`、`remove_*`、`pause_*`）
+      不受前缀约束。
+    - 主谓倒装短语（`path_is_under_*`、`model_has_detail_*`）与比较动词
+      （`eq`、`overlaps`、`contains`）视为合法布尔表达，不误报为缺谓词。
+
+    后端专有实现词（如 DXGI `GetDeviceRemovedReason`、`VK_KHR_incremental_present` 的
+    `damage`）只出现在专有实现里，不泄漏为通用接口名；通用错误映射用 `backend_error`
+    一类领域词，不把平台 API 名拼进函数名。
 
 ## 3. 边界规则
 
