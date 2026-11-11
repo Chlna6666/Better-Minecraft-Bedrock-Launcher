@@ -53,7 +53,7 @@ async fn connected_pair_with_config(
         .expect("发现服务端");
     assert_eq!(discovered.server_data, data);
 
-    let mut listener = NethernetListener::bind_with_config(
+    let mut listener = NethernetListener::bind(
         server_signaling,
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
         config,

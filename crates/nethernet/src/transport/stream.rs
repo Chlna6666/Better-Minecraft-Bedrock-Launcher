@@ -3,7 +3,7 @@
 use crate::consts::NEGOTIATION_TIMEOUT;
 use crate::error::{NethernetError, Result, SignalErrorCode};
 use crate::protocol::{Signal, SignalType};
-use crate::session::NethernetSession;
+use crate::session::{NethernetSession, SessionBackend};
 use crate::signaling::LanSignaling;
 use crate::transport::negotiate::{
     create_data_channels, create_peer_connection, finish_local_description, parse_candidate,
@@ -52,7 +52,8 @@ impl NethernetStream {
             "开始连接 NetherNet 对端"
         );
         let peer_connection = create_peer_connection().await?;
-        let session = NethernetSession::new(Arc::clone(&peer_connection));
+        let session =
+            NethernetSession::new(SessionBackend::PeerConnection(Arc::clone(&peer_connection)));
         let result = Self::negotiate(
             &peer_connection,
             &session,

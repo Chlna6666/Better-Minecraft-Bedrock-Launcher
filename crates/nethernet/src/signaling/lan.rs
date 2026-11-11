@@ -210,7 +210,7 @@ impl LanSignaling {
     /// # Errors
     ///
     /// 无法读取套接字地址时返回错误。启用广播失败不会阻止单播信令。
-    pub async fn server_from_socket_with_target(
+    pub async fn server_proxy_to_target(
         socket: UdpSocket,
         server_data: ServerData,
         delivery_target: SocketAddr,
@@ -232,7 +232,7 @@ impl LanSignaling {
     /// # Errors
     ///
     /// 无法读取套接字地址时返回错误。启用广播失败不会阻止单播信令。
-    pub async fn server_from_socket_with_local_routes(
+    pub async fn server_proxy_routes(
         socket: UdpSocket,
         server_data: ServerData,
         routes: Vec<(IpAddr, SocketAddr)>,
@@ -768,7 +768,7 @@ mod tests {
         let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .await
             .unwrap();
-        let server = LanSignaling::server_from_socket_with_target(
+        let server = LanSignaling::server_proxy_to_target(
             socket,
             ServerData::default(),
             fixed_receiver_address,
@@ -817,7 +817,7 @@ mod tests {
         let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .await
             .unwrap();
-        let server = LanSignaling::server_from_socket_with_local_routes(
+        let server = LanSignaling::server_proxy_routes(
             socket,
             ServerData::default(),
             vec![(peer_address.ip(), delivery_target)],

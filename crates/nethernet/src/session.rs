@@ -84,7 +84,7 @@ pub struct NethernetSession {
 }
 
 #[derive(Clone)]
-enum SessionBackend {
+pub(crate) enum SessionBackend {
     PeerConnection(Arc<RTCPeerConnection>),
     Ortc(Arc<OrtcStack>),
 }
@@ -102,15 +102,8 @@ impl SessionBackend {
 }
 
 impl NethernetSession {
-    pub(crate) fn new(peer_connection: Arc<RTCPeerConnection>) -> Arc<Self> {
-        Self::new_with_backend(SessionBackend::PeerConnection(peer_connection))
-    }
-
-    pub(crate) fn new_ortc(stack: Arc<OrtcStack>) -> Arc<Self> {
-        Self::new_with_backend(SessionBackend::Ortc(stack))
-    }
-
-    fn new_with_backend(backend: SessionBackend) -> Arc<Self> {
+    /// Initialises a session around the selected transport backend.
+    pub(crate) fn new(backend: SessionBackend) -> Arc<Self> {
         let (reliable_tx, reliable_rx) = mpsc::channel(RELIABLE_QUEUE_CAPACITY);
         let (unreliable_tx, unreliable_rx) = mpsc::channel(UNRELIABLE_QUEUE_CAPACITY);
         let session = Arc::new(Self {

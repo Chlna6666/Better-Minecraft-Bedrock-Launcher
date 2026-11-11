@@ -4,7 +4,7 @@ use crate::consts::{MAX_SIGNAL_SIZE, NEGOTIATION_TIMEOUT};
 use crate::error::{NethernetError, Result, SignalErrorCode};
 use crate::identity::ServerIdentity;
 use crate::protocol::{Signal, SignalType};
-use crate::session::NethernetSession;
+use crate::session::{NethernetSession, SessionBackend};
 use crate::signaling::LanSignaling;
 use crate::transport::candidate::{
     IceExchangeMode, NegotiationConfig, RemoteCandidateReceiver, gather_local_candidates,
@@ -47,16 +47,12 @@ impl NethernetListener {
     /// # Errors
     ///
     /// 当前实现在信令绑定之后没有会失败的初始化步骤。
-    pub fn bind(signaling: LanSignaling, local_addr: SocketAddr) -> Result<Self> {
-        Self::bind_with_config(signaling, local_addr, NegotiationConfig::default())
-    }
-
     /// 使用指定 ICE 交换方式开始监听。
     ///
     /// # Errors
     ///
     /// 身份初始化失败时返回错误。
-    pub fn bind_with_config(
+    pub fn bind(
         signaling: LanSignaling,
         local_addr: SocketAddr,
         config: NegotiationConfig,
@@ -256,7 +252,7 @@ async fn negotiate_incoming(
     config: NegotiationConfig,
 ) -> Result<()> {
     let stack = OrtcStack::new().await?;
-    let session = NethernetSession::new_ortc(Arc::clone(&stack));
+    let session = NethernetSession::new(SessionBackend::Ortc(Arc::clone(&stack)));
     install_incoming_channels(&stack, &session);
 
     // 任一步失败都必须终结会话：否则候选接收任务不会退出，
@@ -449,8 +445,12 @@ mod tests {
         let server_addr = server.local_addr().unwrap();
         let server_id = server.network_id();
         let client_id = server_id.wrapping_add(1);
-        let _listener =
-            NethernetListener::bind(server, SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let _listener = NethernetListener::bind(
+            server,
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            NegotiationConfig::default(),
+        )
+        .unwrap();
 
         let offer = Signal::offer(77, String::new(), server_id).to_string();
         let packet = DiscoveryPacket::Message {
