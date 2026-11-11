@@ -60,7 +60,7 @@ fn main() {
         "minecraft:wooden_sword",
         "minecraft:filled_map",
     ] {
-        match resolver.item_texture_for(item) {
+        match resolver.item_texture(item) {
             Some(texture) => println!("item {item} -> {}", texture.relative_path),
             None => println!("item {item} -> MISSING"),
         }

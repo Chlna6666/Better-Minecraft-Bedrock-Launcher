@@ -100,10 +100,10 @@ fn rotated_cuboid_planes(
         .map(|(indices, normal)| {
             let rotated_normal = rotated_axis_normal(normal, rotation_degrees);
             let mut plane = ModelPlane::new(indices.map(|index| points[index]), rotated_normal);
-            if let Some(slot) = material_slot_for_normal(&cuboid, normal) {
+            if let Some(slot) = face_material_slot(&cuboid, normal) {
                 plane = plane.with_material_slot(slot);
             }
-            if let Some(uv) = face_uv_for_normal(&cuboid, normal) {
+            if let Some(uv) = face_uv(&cuboid, normal) {
                 plane = plane.with_uv(uv);
             }
             plane
@@ -193,8 +193,8 @@ fn uv_pixels(texture_span: f32, [u0, v0, u1, v1]: [f32; 4]) -> [[f32; 2]; 4] {
     ]
 }
 
-fn material_slot_for_normal(cuboid: &ModelCuboid, normal: [i32; 3]) -> Option<String> {
-    let face = crate::obj::block_face_for_normal(normal);
+fn face_material_slot(cuboid: &ModelCuboid, normal: [i32; 3]) -> Option<String> {
+    let face = crate::obj::block_face_from_normal(normal);
     cuboid
         .face_material_slots
         .get(&face)
@@ -210,8 +210,8 @@ fn material_slot_for_normal(cuboid: &ModelCuboid, normal: [i32; 3]) -> Option<St
         .or_else(|| cuboid.material_slot.clone())
 }
 
-fn face_uv_for_normal(cuboid: &ModelCuboid, normal: [i32; 3]) -> Option<[[f32; 2]; 4]> {
-    let face = crate::obj::block_face_for_normal(normal);
+fn face_uv(cuboid: &ModelCuboid, normal: [i32; 3]) -> Option<[[f32; 2]; 4]> {
+    let face = crate::obj::block_face_from_normal(normal);
     cuboid
         .face_uvs
         .get(&face)

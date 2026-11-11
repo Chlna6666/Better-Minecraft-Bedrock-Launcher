@@ -66,7 +66,7 @@ where
     /// malformed or competing biome storage, or storage errors.
     pub fn put_biome_storage(&self, pos: ChunkPos, biome: Biome3d) -> Result<()> {
         self.ensure_writable()?;
-        if self.has_old_biome_record(pos)? {
+        if self.check_old_biome_record(pos)? {
             return Err(BedrockWorldError::Validation(
                 "cannot write Data3D biome storage: chunk contains Data2D or Data2DLegacy; use an explicit biome migration first"
                     .to_string(),
@@ -158,7 +158,7 @@ where
                 "cannot write new height map: chunk has no Data3D record".to_string(),
             )
         })?;
-        if self.has_old_biome_record(pos)? {
+        if self.check_old_biome_record(pos)? {
             return Err(BedrockWorldError::Validation(
                 "cannot write new height map: chunk also contains Data2D or Data2DLegacy; resolve the mixed biome representation with an explicit migration first"
                     .to_string(),
@@ -171,7 +171,7 @@ where
         self.put_raw(&key, &value)
     }
 
-    fn has_old_biome_record(&self, pos: ChunkPos) -> Result<bool> {
+    fn check_old_biome_record(&self, pos: ChunkPos) -> Result<bool> {
         for tag in [ChunkRecordTag::Data2D, ChunkRecordTag::Data2DLegacy] {
             if self
                 .storage()

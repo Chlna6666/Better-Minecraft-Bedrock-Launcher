@@ -405,7 +405,7 @@ pub(crate) fn get_table_lookup(
     paranoid_checks: bool,
     cache: Option<&NativeBlockCache>,
 ) -> Result<TableLookup> {
-    if is_custom_table(path, cache)? {
+    if detect_custom_table(path, cache)? {
         return get_custom_table_lookups(path, &[Bytes::copy_from_slice(key)], paranoid_checks)
             .map(|mut values| values.pop().unwrap_or(TableLookup::Missing));
     }
@@ -446,7 +446,7 @@ pub(crate) fn get_table_lookups(
     if keys.is_empty() {
         return Ok(Vec::new());
     }
-    if is_custom_table(path, cache)? {
+    if detect_custom_table(path, cache)? {
         return get_custom_table_lookups(path, keys, paranoid_checks);
     }
     get_native_table_lookups(path, keys, paranoid_checks, cache)
@@ -617,7 +617,7 @@ pub(crate) fn read_table_lookups(
 }
 
 pub(crate) fn read_table_max_sequence(path: &Path, paranoid_checks: bool) -> Result<u64> {
-    if is_custom_table(path, None)? {
+    if detect_custom_table(path, None)? {
         return Ok(0);
     }
     let file = open_table_file(path, None)?;
@@ -816,7 +816,7 @@ fn planned_duplicate_end(keys: &[Bytes], planned: &[(usize, usize)], start: usiz
     end
 }
 
-fn is_custom_table(path: &Path, cache: Option<&NativeBlockCache>) -> Result<bool> {
+fn detect_custom_table(path: &Path, cache: Option<&NativeBlockCache>) -> Result<bool> {
     let file = open_table_file(path, cache)?;
     let mut magic = [0_u8; CUSTOM_TABLE_MAGIC.len()];
     let read = read_at(&file, &mut magic, 0)

@@ -1,6 +1,9 @@
 //! Pure OBJ geometry conversion into local Bedrock block placements.
 
-use std::{collections::{HashMap, VecDeque}, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 
 use bedrock_world::editor::{BlockOffset, BlockPlacementPlan, PlacementBlock};
 use bedrock_world::surface::CancelFlag;
@@ -78,27 +81,27 @@ pub fn voxelize_obj(
     candidates: &[FlatBlockCandidate],
     options: ObjVoxelOptions,
 ) -> Result<BlockPlacementPlan> {
-    voxelize_obj_with_progress(model, candidates, options, &CancelFlag::new(), |_, _| {})
+    let textures = load_obj_textures(model)?;
+    voxelize_textured(
+        VoxelizeTexturesRequest {
+            model,
+            textures: &textures,
+            candidates,
+            options,
+            cancel: &CancelFlag::new(),
+        },
+        |_, _| {},
+    )
 }
 
-/// Voxelize with a cooperative cancellation check and triangle-count progress.
-///
-/// Progress counts parsed source triangles and is emitted after each 256
-/// triangles and at completion. A cancellation request stops before another
-/// triangle or flood-fill step; no world data has been modified.
-///
-/// # Errors
-/// Returns the same validation errors as [`voxelize_obj`], or a cancellation
-/// error when `cancel` has been requested.
-pub fn voxelize_obj_with_progress(
-    model: &ObjModel,
-    candidates: &[FlatBlockCandidate],
-    options: ObjVoxelOptions,
-    cancel: &CancelFlag,
-    progress: impl FnMut(usize, usize),
-) -> Result<BlockPlacementPlan> {
-    let textures = load_obj_textures(model)?;
-    voxelize_obj_with_textures_and_progress(model, &textures, candidates, options, cancel, progress)
+/// Inputs for voxelizing an OBJ with pre-decoded textures. JS/TS-style parameter
+/// object: one `voxelize_textured` entry instead of a `_with_*` variant chain.
+pub struct VoxelizeTexturesRequest<'a> {
+    pub model: &'a ObjModel,
+    pub textures: &'a [Option<Arc<SourceTexture>>],
+    pub candidates: &'a [FlatBlockCandidate],
+    pub options: ObjVoxelOptions,
+    pub cancel: &'a CancelFlag,
 }
 
 /// Uses previously decoded MTL images shared with the GPUI-3D source preview.
@@ -106,14 +109,18 @@ pub fn voxelize_obj_with_progress(
 ///
 /// # Errors
 /// Returns the same geometry, palette and cancellation errors as the ordinary voxelizer.
-pub fn voxelize_obj_with_textures_and_progress(
-    model: &ObjModel,
-    textures: &[Option<Arc<SourceTexture>>],
-    candidates: &[FlatBlockCandidate],
-    options: ObjVoxelOptions,
-    cancel: &CancelFlag,
+pub fn voxelize_textured(
+    request: VoxelizeTexturesRequest<'_>,
     mut progress: impl FnMut(usize, usize),
 ) -> Result<BlockPlacementPlan> {
+    let VoxelizeTexturesRequest {
+        model,
+        textures,
+        candidates,
+        options,
+        cancel,
+    } = request;
+
     if textures.len() != model.materials.len() {
         return Err(validation("OBJ texture table has incorrect material count"));
     }
@@ -196,7 +203,8 @@ pub fn voxelize_obj_with_textures_and_progress(
             return Err(validation("OBJ conversion cancelled"));
         }
         let rgb = material_rgb(model, triangle)?;
-        let texture = triangle.material
+        let texture = triangle
+            .material
             .and_then(|id| textures.get(id))
             .and_then(Option::as_deref);
         if texture.is_some() && triangle.vertices.iter().any(|vertex| vertex.uv.is_none()) {

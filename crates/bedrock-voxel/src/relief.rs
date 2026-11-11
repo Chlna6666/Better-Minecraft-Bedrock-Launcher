@@ -7,7 +7,7 @@ use bedrock_world::{
 
 use crate::{
     FlatBlockCandidate, FlatImageInput, FlatImageOptions, Result, block_image,
-    flat_block_plan_with_progress, validation,
+    flat_block_plan_tracked, validation,
 };
 
 /// Maximum dense structure volume accepted by luminance-relief conversion.
@@ -42,7 +42,7 @@ pub struct ReliefImageOptions {
 ///
 /// Returns the Flat matcher validation errors, cancellation, an invalid height range, or a
 /// validation error when the worst-case structure volume exceeds the in-memory budget.
-pub fn relief_block_plan_with_progress(
+pub fn relief_block_plan_tracked(
     input: FlatImageInput<'_>,
     candidates: &[FlatBlockCandidate],
     image_options: FlatImageOptions<'_>,
@@ -66,7 +66,7 @@ pub fn relief_block_plan_with_progress(
     }
 
     let flat_plan =
-        flat_block_plan_with_progress(input, candidates, image_options, cancel, |done, total| {
+        flat_block_plan_tracked(input, candidates, image_options, cancel, |done, total| {
             progress(u64::from(done), u64::from(total))
         })?;
     let mut blocks = Vec::with_capacity(flat_plan.blocks().len());
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn luminance_relief_keeps_north_up_and_fills_solid_columns() {
         let candidates = [candidate("minecraft:white_wool", [255, 255, 255, 255])];
-        let plan = relief_block_plan_with_progress(
+        let plan = relief_block_plan_tracked(
             FlatImageInput {
                 rgba: &[0, 0, 0, 255, 255, 255, 255, 255],
                 width: 1,
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn surface_relief_places_one_block_at_the_luminance_height() {
-        let plan = relief_block_plan_with_progress(
+        let plan = relief_block_plan_tracked(
             FlatImageInput {
                 rgba: &[255, 255, 255, 255],
                 width: 1,
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn relief_rejects_a_height_volume_beyond_the_structure_budget() {
-        let error = relief_block_plan_with_progress(
+        let error = relief_block_plan_tracked(
             FlatImageInput {
                 rgba: &[],
                 width: 512,

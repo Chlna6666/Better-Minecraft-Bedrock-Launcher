@@ -82,7 +82,7 @@ impl TextureSet {
     }
 
     #[must_use]
-    pub fn texture_for_face(&self, face: BlockFace) -> Option<&TextureReference> {
+    pub fn texture(&self, face: BlockFace) -> Option<&TextureReference> {
         self.faces
             .get(&face)
             .or_else(|| {

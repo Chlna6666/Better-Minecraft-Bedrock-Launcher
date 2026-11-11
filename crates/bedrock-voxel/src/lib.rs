@@ -12,17 +12,16 @@ mod relief;
 
 pub use block_image::{
     Dithering, FlatBlockCandidate, FlatImageInput, FlatImageOptions, flat_block_plan,
-    flat_block_plan_with_progress,
+    flat_block_plan_tracked,
 };
 pub use obj::{ObjMaterial, ObjModel, ObjTriangle, ObjVertex, load_obj_model};
 pub use obj_texture::{SourceTexture, load_obj_textures};
 pub use obj_voxel::{
-    ObjFill, ObjVoxelOptions, voxelize_obj, voxelize_obj_with_progress,
-    voxelize_obj_with_textures_and_progress,
+    ObjFill, ObjVoxelOptions, VoxelizeTexturesRequest, voxelize_obj, voxelize_textured,
 };
 pub use palette::default_block_candidates;
 pub use relief::{
-    MAX_RELIEF_BLOCK_VOLUME, ReliefImageFill, ReliefImageOptions, relief_block_plan_with_progress,
+    MAX_RELIEF_BLOCK_VOLUME, ReliefImageFill, ReliefImageOptions, relief_block_plan_tracked,
 };
 
 type Result<T> = std::result::Result<T, String>;

@@ -301,10 +301,10 @@ fn temporary_level_dat_path(path: &Path) -> PathBuf {
 }
 
 fn replace_file(source: &Path, target: &Path) -> Result<()> {
-    replace_file_impl(source, target)
+    replace_file_native(source, target)
 }
 
-fn replace_file_impl(source: &Path, target: &Path) -> Result<()> {
+fn replace_file_native(source: &Path, target: &Path) -> Result<()> {
     if fs::rename(source, target).is_ok() {
         return Ok(());
     }

@@ -558,7 +558,7 @@ pub struct ChunkData {
 impl ChunkData {
     /// Returns whether this request produced all data required by its [`ChunkDataRequest`].
     ///
-    /// This does not indicate whether [`crate::world::World::is_chunk_saved`] is true; an exact
+    /// This does not indicate whether [`crate::world::World::check_chunk_saved`] is true; an exact
     /// request for an all-air SubChunk can be unsatisfied while the chunk is persisted.
     #[must_use]
     pub const fn request_satisfied(&self) -> bool {

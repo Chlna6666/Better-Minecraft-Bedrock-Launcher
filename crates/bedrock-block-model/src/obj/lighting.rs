@@ -19,7 +19,7 @@ impl ObjTextureResolver {
     /// Resolves an environment texture by logical pack-relative path, following pack priority.
     #[must_use]
     pub fn environment_texture(&self, path: &str) -> Option<ObjResolvedTexture> {
-        self.texture_path_for_key(path)
+        self.texture_path(path)
             .map(|(pack, source)| pack.resolved_texture(&self.texture_directory_name, source))
     }
 }

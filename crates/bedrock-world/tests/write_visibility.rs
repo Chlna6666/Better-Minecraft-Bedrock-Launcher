@@ -25,7 +25,7 @@ fn committed_chunk_anchor_is_immediately_visible_without_flush() {
         z: -29,
         dimension: Dimension::Overworld,
     };
-    assert!(!world.is_chunk_saved(pos).expect("initial save state"));
+    assert!(!world.check_chunk_saved(pos).expect("initial save state"));
 
     let mut transaction = world.transaction();
     transaction.put_raw_key(
@@ -36,7 +36,7 @@ fn committed_chunk_anchor_is_immediately_visible_without_flush() {
 
     // No flush/compact/sleep is allowed between commit and these reads. The LevelDB WAL overlay is
     // part of the current database view and public World exact reads must observe it now.
-    assert!(world.is_chunk_saved(pos).expect("presence after commit"));
+    assert!(world.check_chunk_saved(pos).expect("presence after commit"));
     let chunk = world.chunk(pos).expect("read committed chunk");
     assert!(chunk.records.iter().any(|record| {
         record.key.tag == ChunkRecordTag::Version && record.value.as_ref() == [40]

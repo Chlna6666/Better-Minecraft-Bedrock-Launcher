@@ -8,10 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bedrock_block_model::{
-    BlockModelRepository, BlockStateQuery, ObjTextureResolver,
-    block_export_material_name_for_block, block_export_material_name_for_face,
-    block_export_material_name_for_plane, block_export_material_name_for_slot,
-    block_face_for_normal, model_family_for_block_name, model_shape_for_block_state,
+    BlockModelRepository, BlockStateQuery, ObjTextureResolver, block_face_from_normal,
+    model_family, obj_face_material_name, obj_material_name, obj_plane_material_name,
+    obj_slot_material_name, resolve_block_state_shape,
 };
 
 /// One representative state per model family, named the way the world stores blocks.
@@ -155,9 +154,9 @@ fn main() {
     let mut problems = 0usize;
 
     for name in SAMPLES {
-        let family = format!("{:?}", model_family_for_block_name(name));
+        let family = format!("{:?}", model_family(name));
         let query = BlockStateQuery::new(*name);
-        let Some(shape) = model_shape_for_block_state(&query) else {
+        let Some(shape) = resolve_block_state_shape(&query) else {
             by_family
                 .entry(family)
                 .or_default()
@@ -190,7 +189,7 @@ fn main() {
         }
 
         // Resolve the texture every face would use.
-        let base = block_export_material_name_for_block(name);
+        let base = obj_material_name(name);
         let mut textures = BTreeSet::new();
         let mut unresolved = 0usize;
         for cuboid in &shape.cuboids {
@@ -202,14 +201,14 @@ fn main() {
                 [1, 0, 0],
                 [-1, 0, 0],
             ] {
-                let face = block_face_for_normal(normal);
+                let face = block_face_from_normal(normal);
                 let material = match cuboid
                     .face_material_slots
                     .get(&face)
                     .or(cuboid.material_slot.as_ref())
                 {
-                    Some(slot) => block_export_material_name_for_slot(&base, slot),
-                    None => block_export_material_name_for_face(&base, normal),
+                    Some(slot) => obj_slot_material_name(&base, slot),
+                    None => obj_face_material_name(&base, normal),
                 };
                 match resolver.texture_for(&material, normal) {
                     Some(texture) => {
@@ -220,11 +219,8 @@ fn main() {
             }
         }
         for plane in &shape.planes {
-            let material = block_export_material_name_for_plane(
-                &base,
-                plane.normal,
-                plane.material_slot.as_deref(),
-            );
+            let material =
+                obj_plane_material_name(&base, plane.normal, plane.material_slot.as_deref());
             match resolver.texture_for(&material, plane.normal) {
                 Some(texture) => {
                     textures.insert(texture.relative_path);

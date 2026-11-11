@@ -137,7 +137,7 @@ fn resolve_face_textures(
         BlockFace::East,
         BlockFace::West,
     ] {
-        if let Some(texture) = textures.texture_for_face(face) {
+        if let Some(texture) = textures.texture(face) {
             face_textures.insert(face, resolved_texture(repository, texture));
         }
     }

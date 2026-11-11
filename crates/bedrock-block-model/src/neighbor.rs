@@ -1,7 +1,4 @@
-use crate::{
-    BlockStateQuery, BlockStateValue, ModelFamily, is_full_opaque_block,
-    model_family_for_block_name,
-};
+use crate::{BlockStateQuery, BlockStateValue, ModelFamily, is_full_opaque_block, model_family};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(u8)]
@@ -185,7 +182,7 @@ impl Default for NeighborBlockDescriptor {
 impl NeighborBlockDescriptor {
     #[must_use]
     pub fn from_state(state: &BlockStateQuery) -> Self {
-        let family = model_family_for_block_name(&state.name);
+        let family = model_family(&state.name);
         let name = normalized_name(&state.name);
         let facing = horizontal_facing(state, family);
         let sturdy = is_full_opaque_block(&state.name);

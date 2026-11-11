@@ -2,9 +2,9 @@
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use image::{ImageReader, Limits};
 #[cfg(test)]
 use image::RgbaImage;
+use image::{ImageReader, Limits};
 
 use crate::{
     Result,
@@ -106,12 +106,7 @@ pub(super) fn sample(texture: &SourceTexture, uv: [f32; 2]) -> [u8; 4] {
     let x1 = (x0 + 1) % width;
     let y0 = wrap(y0, height);
     let y1 = (y0 + 1) % height;
-    let corners = [
-        texel(x0, y0),
-        texel(x1, y0),
-        texel(x0, y1),
-        texel(x1, y1),
-    ];
+    let corners = [texel(x0, y0), texel(x1, y0), texel(x0, y1), texel(x1, y1)];
     let sample_channel = |channel: usize| {
         let top = f32::from(corners[0][channel]) * (1.0 - tx) + f32::from(corners[1][channel]) * tx;
         let bottom =
@@ -174,14 +169,20 @@ mod tests {
         let texture =
             RgbaImage::from_raw(2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255]).expect("texture");
 
-        assert_eq!(sample(&shared_texture(texture), [0.5, 0.5]), [188, 188, 188, 255]);
+        assert_eq!(
+            sample(&shared_texture(texture), [0.5, 0.5]),
+            [188, 188, 188, 255]
+        );
     }
 
     #[test]
     fn uv_sampler_premultiplies_transparent_texels_before_filtering() {
         let texture = RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 0, 0, 0]).expect("texture");
 
-        assert_eq!(sample(&shared_texture(texture), [0.5, 0.5]), [255, 0, 0, 128]);
+        assert_eq!(
+            sample(&shared_texture(texture), [0.5, 0.5]),
+            [255, 0, 0, 128]
+        );
     }
 
     #[test]

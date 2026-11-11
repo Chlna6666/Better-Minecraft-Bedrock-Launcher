@@ -100,7 +100,7 @@ pub enum ModelFamily {
 }
 
 #[must_use]
-pub fn model_family_for_block_name(name: &str) -> ModelFamily {
+pub fn model_family(name: &str) -> ModelFamily {
     let name = normalized_block_name(name);
     if name == "redstone_wire" {
         return ModelFamily::RedstoneWire;
@@ -125,9 +125,9 @@ pub fn model_family_for_block_name(name: &str) -> ModelFamily {
 }
 
 #[must_use]
-pub fn model_shape_for_block_state(state: &BlockStateQuery) -> Option<ModelShape> {
+pub fn model_shape(state: &BlockStateQuery) -> Option<ModelShape> {
     let name = normalized_block_name(&state.name);
-    match model_family_for_block_name(name) {
+    match model_family(name) {
         ModelFamily::OrientedFullBlock => Some(full_block_shape(name, state)),
         ModelFamily::Fence => Some(building::fences::fence_shape(name, state)),
         ModelFamily::FenceGate => Some(building::fences::fence_gate_shape(name, state)),
@@ -163,7 +163,7 @@ pub fn model_shape_for_block_state(state: &BlockStateQuery) -> Option<ModelShape
         ModelFamily::SporeBlossom => Some(flora::natural::spore_blossom_shape()),
         ModelFamily::SculkSensor => Some(flora::natural::sculk_sensor_shape(name)),
         ModelFamily::SculkShrieker => Some(flora::natural::sculk_shrieker_shape()),
-        ModelFamily::Vine => flora::vines::shape_for_vine(name, state),
+        ModelFamily::Vine => flora::vines::vine_shape(name, state),
         ModelFamily::Torch => Some(decorations::lighting::torch_shape(state)),
         ModelFamily::Lantern => Some(decorations::lighting::lantern_shape(state)),
         ModelFamily::Candle => Some(decorations::lighting::candle_shape(state)),
@@ -206,7 +206,7 @@ pub fn model_shape_for_block_state(state: &BlockStateQuery) -> Option<ModelShape
         ModelFamily::CopperGolemStatue => Some(decorations::copper_golem::shape(state)),
         ModelFamily::RedstoneDevice => Some(redstone::redstone_device_shape(name, state)),
         ModelFamily::RedstoneWire => Some(redstone::wire::shape_for(state)),
-        ModelFamily::CrossPlant => flora::cross_plants::shape_for_cross_plant(name, state),
+        ModelFamily::CrossPlant => flora::cross_plants::cross_plant_shape(name, state),
         ModelFamily::FullBlock => Some(full_block_shape(name, state)),
     }
 }
@@ -263,7 +263,7 @@ pub fn is_full_opaque_block(name: &str) -> bool {
         return true;
     }
     matches!(
-        model_family_for_block_name(name),
+        model_family(name),
         ModelFamily::FullBlock | ModelFamily::OrientedFullBlock | ModelFamily::ChiseledBookshelf
     ) && !name.contains("glass")
         && !name.contains("ice")
@@ -284,7 +284,7 @@ pub fn model_family_has_detail_shape(name: &str) -> bool {
         return false;
     }
     matches!(
-        model_family_for_block_name(name),
+        model_family(name),
         ModelFamily::OrientedFullBlock
             | ModelFamily::Slab
             | ModelFamily::Stairs
@@ -366,8 +366,8 @@ pub fn model_family_has_detail_shape(name: &str) -> bool {
 }
 
 #[must_use]
-pub fn detail_material_block_name_for_state(state: &BlockStateQuery) -> Option<Cow<'static, str>> {
-    let canonical_name = canonical_block_name_for_state(state);
+pub fn detail_material_block_name(state: &BlockStateQuery) -> Option<Cow<'static, str>> {
+    let canonical_name = canonical_block_name(state);
     let name = canonical_name
         .strip_prefix("minecraft:")
         .unwrap_or(canonical_name.as_str());
@@ -465,12 +465,12 @@ pub fn detail_material_block_name_for_state(state: &BlockStateQuery) -> Option<C
     if let Some(base) = name.strip_suffix("_wall") {
         return Some(canonical_wall_material_name(base));
     }
-    slab_material_block_name_for_state(state).map(Cow::Borrowed)
+    slab_material_block_name(state).map(Cow::Borrowed)
 }
 
 fn detail_material_uses_own_block_name(name: &str) -> bool {
     matches!(
-        model_family_for_block_name(name),
+        model_family(name),
         ModelFamily::OrientedFullBlock
             | ModelFamily::CrossPlant
             | ModelFamily::Cactus
@@ -516,7 +516,7 @@ fn detail_material_uses_own_block_name(name: &str) -> bool {
 }
 
 #[must_use]
-pub fn canonical_block_name_for_state(state: &BlockStateQuery) -> String {
+pub fn canonical_block_name(state: &BlockStateQuery) -> String {
     let name = normalized_block_name(&state.name);
     if name == "wool" {
         let color = state_color(state).unwrap_or("white");
@@ -868,7 +868,7 @@ fn wood_detail_material_name(base: &str) -> Option<Cow<'static, str>> {
     Some(Cow::Owned(material))
 }
 
-fn slab_material_block_name_for_state(state: &BlockStateQuery) -> Option<&'static str> {
+fn slab_material_block_name(state: &BlockStateQuery) -> Option<&'static str> {
     let raw_name = normalized_block_name(&state.name);
     let name = slab_material_lookup_name(raw_name);
     if let Some(material) = canonical_dedicated_slab_material_name(&name) {
@@ -1034,10 +1034,9 @@ fn is_double_slab_block_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::shape;
     use super::{
-        ModelFamily, canonical_block_name_for_state, detail_material_block_name_for_state,
-        is_full_opaque_block, model_family_for_block_name, model_shape_for_block_state,
+        ModelFamily, canonical_block_name, detail_material_block_name, is_full_opaque_block,
+        model_family, model_shape,
     };
 
     use crate::material::BlockFace;
@@ -1058,7 +1057,7 @@ mod tests {
         ] {
             let state = BlockStateQuery::new(format!("minecraft:{block}"));
             assert_eq!(
-                detail_material_block_name_for_state(&state).as_deref(),
+                detail_material_block_name(&state).as_deref(),
                 Some(format!("minecraft:{expected}").as_str())
             );
         }
@@ -1132,7 +1131,7 @@ mod tests {
                 ModelFamily::CopperGolemStatue,
             ),
         ] {
-            assert_eq!(model_family_for_block_name(block), family, "{block}");
+            assert_eq!(model_family(block), family, "{block}");
         }
     }
 
@@ -1154,7 +1153,7 @@ mod tests {
             ("minecraft:chest", ModelFamily::Container),
             ("minecraft:hopper", ModelFamily::Hopper),
         ] {
-            assert_eq!(model_family_for_block_name(block), family, "{block}");
+            assert_eq!(model_family(block), family, "{block}");
         }
     }
 
@@ -1189,7 +1188,7 @@ mod tests {
                 "minecraft:red_carpet",
             ),
         ] {
-            assert_eq!(canonical_block_name_for_state(&state), expected);
+            assert_eq!(canonical_block_name(&state), expected);
         }
     }
 
@@ -1231,11 +1230,11 @@ mod tests {
                             .with_state(key, value)
                             .with_state("top_slot_bit", top);
                         assert_eq!(
-                            detail_material_block_name_for_state(&state).as_deref(),
+                            detail_material_block_name(&state).as_deref(),
                             Some(material),
                             "{name} {key}={value} top={top}"
                         );
-                        let shape = model_shape_for_block_state(&state).unwrap();
+                        let shape = model_shape(&state).unwrap();
                         let slab = &shape.cuboids[0];
                         let (min_y, max_y) = if !prefix.is_empty() {
                             (0.0, 1.0)
@@ -1329,7 +1328,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                detail_material_block_name_for_state(&state).as_deref(),
+                detail_material_block_name(&state).as_deref(),
                 Some(expected)
             );
         }
@@ -1348,30 +1347,27 @@ mod tests {
 
     #[test]
     fn holoprint_reference_shapes_should_not_fallback_to_full_blocks() {
-        let cake = model_shape_for_block_state(
-            &BlockStateQuery::new("minecraft:cake").with_state("bite_counter", 3),
-        )
-        .unwrap_or_else(|| panic!("missing cake"));
+        let cake =
+            model_shape(&BlockStateQuery::new("minecraft:cake").with_state("bite_counter", 3))
+                .unwrap_or_else(|| panic!("missing cake"));
         assert_eq!(cake.cuboids.len(), 1);
         // Vanilla cake slices eat from the west side, so min x rises and max x stays at 15.
         assert!(cake.cuboids[0].min[0] > 0.25);
         assert!((cake.cuboids[0].max[1] - 0.5).abs() < 0.001);
 
-        let candle_cake =
-            model_shape_for_block_state(&BlockStateQuery::new("minecraft:blue_candle_cake"))
-                .unwrap_or_else(|| panic!("missing candle cake"));
+        let candle_cake = model_shape(&BlockStateQuery::new("minecraft:blue_candle_cake"))
+            .unwrap_or_else(|| panic!("missing candle cake"));
         assert_eq!(candle_cake.cuboids.len(), 2);
         assert_eq!(
             candle_cake.cuboids[1].material_slot.as_deref(),
             Some("candle")
         );
 
-        let plain_candle_cake =
-            model_shape_for_block_state(&BlockStateQuery::new("minecraft:candle_cake"))
-                .unwrap_or_else(|| panic!("missing plain candle cake"));
+        let plain_candle_cake = model_shape(&BlockStateQuery::new("minecraft:candle_cake"))
+            .unwrap_or_else(|| panic!("missing plain candle cake"));
         assert_eq!(plain_candle_cake.cuboids.len(), 2);
 
-        let bamboo = model_shape_for_block_state(
+        let bamboo = model_shape(
             &BlockStateQuery::new("minecraft:bamboo")
                 .with_state("bamboo_stalk_thickness", "thick")
                 .with_state("bamboo_leaf_size", "large_leaves"),
@@ -1380,7 +1376,7 @@ mod tests {
         assert_eq!(bamboo.cuboids.len(), 1);
         assert_eq!(bamboo.planes.len(), 2);
 
-        let cocoa = model_shape_for_block_state(
+        let cocoa = model_shape(
             &BlockStateQuery::new("minecraft:cocoa")
                 .with_state("age", 2)
                 .with_state("direction", 3),
@@ -1389,19 +1385,18 @@ mod tests {
         assert_eq!(cocoa.cuboids.len(), 1);
         assert!(cocoa.cuboids[0].min[0] > 0.4);
 
-        let azalea = model_shape_for_block_state(&BlockStateQuery::new("minecraft:azalea"))
+        let azalea = model_shape(&BlockStateQuery::new("minecraft:azalea"))
             .unwrap_or_else(|| panic!("missing azalea"));
         assert_eq!(azalea.cuboids.len(), 1);
         assert_eq!(azalea.planes.len(), 2);
 
-        let leaf_litter = model_shape_for_block_state(
-            &BlockStateQuery::new("minecraft:leaf_litter").with_state("growth", 3),
-        )
-        .unwrap_or_else(|| panic!("missing leaf litter"));
+        let leaf_litter =
+            model_shape(&BlockStateQuery::new("minecraft:leaf_litter").with_state("growth", 3))
+                .unwrap_or_else(|| panic!("missing leaf litter"));
         assert!(leaf_litter.cuboids.is_empty());
         assert_eq!(leaf_litter.planes.len(), 4);
 
-        let waterlily = model_shape_for_block_state(&BlockStateQuery::new("minecraft:waterlily"))
+        let waterlily = model_shape(&BlockStateQuery::new("minecraft:waterlily"))
             .unwrap_or_else(|| panic!("missing waterlily"));
         assert!(waterlily.cuboids.is_empty());
         assert_eq!(waterlily.planes.len(), 1);
@@ -1412,16 +1407,15 @@ mod tests {
                 .all(|corner| (corner[1] - 0.0078125).abs() < 0.001)
         );
 
-        let resin = model_shape_for_block_state(
+        let resin = model_shape(
             &BlockStateQuery::new("minecraft:resin_clump")
                 .with_state("multi_face_direction_bits", 12),
         )
         .unwrap_or_else(|| panic!("missing resin clump"));
         assert_eq!(resin.planes.len(), 2);
 
-        let mangrove_roots =
-            model_shape_for_block_state(&BlockStateQuery::new("minecraft:mangrove_roots"))
-                .unwrap_or_else(|| panic!("missing mangrove roots"));
+        let mangrove_roots = model_shape(&BlockStateQuery::new("minecraft:mangrove_roots"))
+            .unwrap_or_else(|| panic!("missing mangrove roots"));
         assert_eq!(mangrove_roots.cuboids.len(), 1);
         assert_eq!(mangrove_roots.planes.len(), 2);
         assert_eq!(
@@ -1432,30 +1426,28 @@ mod tests {
             Some("side")
         );
 
-        let scaffolding = model_shape_for_block_state(
-            &BlockStateQuery::new("minecraft:scaffolding").with_state("stability", 1),
-        )
-        .unwrap_or_else(|| panic!("missing scaffolding"));
+        let scaffolding =
+            model_shape(&BlockStateQuery::new("minecraft:scaffolding").with_state("stability", 1))
+                .unwrap_or_else(|| panic!("missing scaffolding"));
         assert!(scaffolding.cuboids.len() >= 9);
 
-        let shelf = model_shape_for_block_state(&BlockStateQuery::new("minecraft:pale_oak_shelf"))
+        let shelf = model_shape(&BlockStateQuery::new("minecraft:pale_oak_shelf"))
             .unwrap_or_else(|| panic!("missing shelf"));
         assert_eq!(shelf.cuboids.len(), 3);
 
-        let heavy_core = model_shape_for_block_state(&BlockStateQuery::new("minecraft:heavy_core"))
+        let heavy_core = model_shape(&BlockStateQuery::new("minecraft:heavy_core"))
             .unwrap_or_else(|| panic!("missing heavy core"));
         assert!((heavy_core.cuboids[0].max[1] - 0.5).abs() < 0.001);
 
-        let conduit = model_shape_for_block_state(&BlockStateQuery::new("minecraft:conduit"))
+        let conduit = model_shape(&BlockStateQuery::new("minecraft:conduit"))
             .unwrap_or_else(|| panic!("missing conduit"));
         assert!((conduit.cuboids[0].max[1] - 0.375).abs() < 0.001);
 
-        let dried_ghast =
-            model_shape_for_block_state(&BlockStateQuery::new("minecraft:dried_ghast"))
-                .unwrap_or_else(|| panic!("missing dried ghast"));
+        let dried_ghast = model_shape(&BlockStateQuery::new("minecraft:dried_ghast"))
+            .unwrap_or_else(|| panic!("missing dried ghast"));
         assert!(dried_ghast.cuboids.len() > 1);
 
-        let copper_golem_standing = model_shape_for_block_state(
+        let copper_golem_standing = model_shape(
             &BlockStateQuery::new("minecraft:copper_golem_statue").with_state("entity.Pose", 0),
         )
         .unwrap_or_else(|| panic!("missing copper golem statue"));
@@ -1481,7 +1473,7 @@ mod tests {
         assert!((body_north_uv[2][0] - 14.0 / 64.0).abs() < 0.001);
         assert!((body_north_uv[2][1] - 27.0 / 64.0).abs() < 0.001);
 
-        let copper_golem_sitting = model_shape_for_block_state(
+        let copper_golem_sitting = model_shape(
             &BlockStateQuery::new("minecraft:exposed_copper_golem_statue")
                 .with_state("entity.Pose", 1),
         )
@@ -1494,13 +1486,13 @@ mod tests {
                 .any(|cuboid| cuboid.min[1] < 0.0)
         );
 
-        let copper_golem_running_north = model_shape_for_block_state(
+        let copper_golem_running_north = model_shape(
             &BlockStateQuery::new("minecraft:weathered_copper_golem_statue")
                 .with_state("entity.Pose", 2)
                 .with_state("minecraft:cardinal_direction", "north"),
         )
         .unwrap_or_else(|| panic!("missing running copper golem statue"));
-        let copper_golem_running_east = model_shape_for_block_state(
+        let copper_golem_running_east = model_shape(
             &BlockStateQuery::new("minecraft:weathered_copper_golem_statue")
                 .with_state("entity.Pose", 2)
                 .with_state("minecraft:cardinal_direction", "east"),
@@ -1513,13 +1505,13 @@ mod tests {
                 > copper_golem_running_north.cuboids[1].min[2]
         );
 
-        let composter = model_shape_for_block_state(
+        let composter = model_shape(
             &BlockStateQuery::new("minecraft:composter").with_state("composter_fill_level", 6),
         )
         .unwrap_or_else(|| panic!("missing composter"));
         assert_eq!(composter.cuboids.len(), 6);
 
-        let portal_frame = model_shape_for_block_state(
+        let portal_frame = model_shape(
             &BlockStateQuery::new("minecraft:end_portal_frame")
                 .with_state("end_portal_eye_bit", true),
         )
@@ -1527,33 +1519,32 @@ mod tests {
         assert_eq!(portal_frame.cuboids.len(), 2);
         assert!((portal_frame.cuboids[0].max[1] - 0.8125).abs() < 0.001);
 
-        let end_rod = model_shape_for_block_state(
+        let end_rod = model_shape(
             &BlockStateQuery::new("minecraft:end_rod").with_state("facing_direction", 5),
         )
         .unwrap_or_else(|| panic!("missing end rod"));
         assert_eq!(end_rod.cuboids.len(), 2);
         assert!(end_rod.cuboids.iter().any(|cuboid| cuboid.max[0] == 1.0));
 
-        let sea_pickle = model_shape_for_block_state(
+        let sea_pickle = model_shape(
             &BlockStateQuery::new("minecraft:sea_pickle").with_state("cluster_count", 3),
         )
         .unwrap_or_else(|| panic!("missing sea pickle"));
         assert_eq!(sea_pickle.cuboids.len(), 4);
 
-        let turtle_egg = model_shape_for_block_state(
+        let turtle_egg = model_shape(
             &BlockStateQuery::new("minecraft:turtle_egg")
                 .with_state("turtle_egg_count", "four_egg"),
         )
         .unwrap_or_else(|| panic!("missing turtle egg"));
         assert_eq!(turtle_egg.cuboids.len(), 4);
 
-        let liquid = model_shape_for_block_state(
-            &BlockStateQuery::new("minecraft:water").with_state("liquid_depth", 7),
-        )
-        .unwrap_or_else(|| panic!("missing liquid"));
+        let liquid =
+            model_shape(&BlockStateQuery::new("minecraft:water").with_state("liquid_depth", 7))
+                .unwrap_or_else(|| panic!("missing liquid"));
         assert!(liquid.cuboids[0].max[1] < 0.1);
 
-        let fire = model_shape_for_block_state(&BlockStateQuery::new("minecraft:fire"))
+        let fire = model_shape(&BlockStateQuery::new("minecraft:fire"))
             .unwrap_or_else(|| panic!("missing fire"));
         assert_eq!(fire.planes.len(), 2);
         assert!(fire.planes.iter().all(|plane| {
@@ -1562,14 +1553,14 @@ mod tests {
                 && plane.material_slot.as_deref() == Some("side")
         }));
 
-        let end_portal = model_shape_for_block_state(&BlockStateQuery::new("minecraft:end_portal"))
+        let end_portal = model_shape(&BlockStateQuery::new("minecraft:end_portal"))
             .unwrap_or_else(|| panic!("missing end portal"));
         assert_eq!(end_portal.cuboids.len(), 1);
         assert!((end_portal.cuboids[0].max[1] - 0.75).abs() < 0.001);
         assert_eq!(end_portal.cuboids[0].min[0], 0.0);
         assert_eq!(end_portal.cuboids[0].max[0], 1.0);
 
-        let coral_wall_fan = model_shape_for_block_state(
+        let coral_wall_fan = model_shape(
             &BlockStateQuery::new("minecraft:coral_fan_hang").with_state("coral_direction", 0),
         )
         .unwrap_or_else(|| panic!("missing coral wall fan"));
@@ -1582,12 +1573,12 @@ mod tests {
                 .all(|corner| (corner[0] - 0.99).abs() < 0.001)
         );
 
-        let sculk = model_shape_for_block_state(&BlockStateQuery::new("minecraft:sculk_sensor"))
+        let sculk = model_shape(&BlockStateQuery::new("minecraft:sculk_sensor"))
             .unwrap_or_else(|| panic!("missing sculk sensor"));
         assert_eq!(sculk.cuboids.len(), 1);
         assert_eq!(sculk.planes.len(), 4);
 
-        let bookshelf = model_shape_for_block_state(
+        let bookshelf = model_shape(
             &BlockStateQuery::new("minecraft:chiseled_bookshelf").with_state("books_stored", 63),
         )
         .unwrap_or_else(|| panic!("missing chiseled bookshelf"));
@@ -1604,13 +1595,13 @@ mod tests {
 
     #[test]
     fn door_shape_should_honor_open_and_hinge_state() {
-        let closed = model_shape_for_block_state(&BlockStateQuery::new("minecraft:wooden_door"))
-            .expect("missing door");
-        let open_left = model_shape_for_block_state(
+        let closed =
+            model_shape(&BlockStateQuery::new("minecraft:wooden_door")).expect("missing door");
+        let open_left = model_shape(
             &BlockStateQuery::new("minecraft:wooden_door").with_state("open_bit", true),
         )
         .expect("missing door");
-        let open_right = model_shape_for_block_state(
+        let open_right = model_shape(
             &BlockStateQuery::new("minecraft:wooden_door")
                 .with_state("open_bit", true)
                 .with_state("door_hinge_bit", true),
@@ -1635,7 +1626,7 @@ mod tests {
             "minecraft:bell",
             "minecraft:unpowered_repeater",
         ] {
-            let shape = model_shape_for_block_state(&BlockStateQuery::new(block))
+            let shape = model_shape(&BlockStateQuery::new(block))
                 .unwrap_or_else(|| panic!("missing shape for {block}"));
             // Beds come from the official entity model, so they emit textured quads only.
             assert!(
@@ -1649,8 +1640,7 @@ mod tests {
     fn cross_plant_shape_should_emit_alpha_cutout_planes() {
         let state = BlockStateQuery::new("minecraft:poppy");
 
-        let shape =
-            model_shape_for_block_state(&state).unwrap_or_else(|| panic!("missing plant shape"));
+        let shape = model_shape(&state).unwrap_or_else(|| panic!("missing plant shape"));
 
         assert!(shape.cuboids.is_empty());
         assert_eq!(shape.planes.len(), 2);
@@ -1664,7 +1654,7 @@ mod tests {
     #[test]
     fn double_plant_halves_use_up_down_textures() {
         let lower = BlockStateQuery::new("minecraft:tall_grass");
-        let lower_shape = crate::model_shape_for_block_state(&lower)
+        let lower_shape = crate::resolve_block_state_shape(&lower)
             .unwrap_or_else(|| panic!("missing lower tall grass shape"));
         assert!(
             lower_shape
@@ -1676,7 +1666,7 @@ mod tests {
 
         let upper =
             BlockStateQuery::new("minecraft:tall_grass").with_state("upper_block_bit", true);
-        let upper_shape = crate::model_shape_for_block_state(&upper)
+        let upper_shape = crate::resolve_block_state_shape(&upper)
             .unwrap_or_else(|| panic!("missing upper tall grass shape"));
         assert!(
             upper_shape
@@ -1689,7 +1679,7 @@ mod tests {
 
     #[test]
     fn row_plants_should_match_holoprint_rows_shape() {
-        let wheat = model_shape_for_block_state(&BlockStateQuery::new("minecraft:wheat"))
+        let wheat = model_shape(&BlockStateQuery::new("minecraft:wheat"))
             .unwrap_or_else(|| panic!("missing wheat shape"));
 
         assert!(wheat.cuboids.is_empty());
@@ -1697,8 +1687,8 @@ mod tests {
 
         let seagrass_top =
             BlockStateQuery::new("minecraft:seagrass").with_state("sea_grass_type", "double_top");
-        let seagrass = model_shape_for_block_state(&seagrass_top)
-            .unwrap_or_else(|| panic!("missing seagrass shape"));
+        let seagrass =
+            model_shape(&seagrass_top).unwrap_or_else(|| panic!("missing seagrass shape"));
 
         assert_eq!(seagrass.planes.len(), 4);
         assert!(
@@ -1715,8 +1705,7 @@ mod tests {
             .with_state("north", "side")
             .with_state("south", "side");
 
-        let shape =
-            model_shape_for_block_state(&state).unwrap_or_else(|| panic!("missing redstone shape"));
+        let shape = model_shape(&state).unwrap_or_else(|| panic!("missing redstone shape"));
 
         assert!(shape.cuboids.is_empty());
         assert_eq!(shape.planes.len(), 1);
@@ -1732,8 +1721,7 @@ mod tests {
     fn redstone_wire_shape_should_include_wall_planes_for_up_connections() {
         let state = BlockStateQuery::new("minecraft:redstone_wire").with_state("east", "up");
 
-        let shape =
-            model_shape_for_block_state(&state).unwrap_or_else(|| panic!("missing redstone shape"));
+        let shape = model_shape(&state).unwrap_or_else(|| panic!("missing redstone shape"));
 
         assert_eq!(shape.planes.len(), 3);
         let wall = shape
@@ -1751,8 +1739,7 @@ mod tests {
     fn fence_shape_should_follow_connection_state() {
         let state = BlockStateQuery::new("minecraft:oak_fence").with_state("minecraft:north", true);
 
-        let shape =
-            model_shape_for_block_state(&state).unwrap_or_else(|| panic!("missing fence shape"));
+        let shape = model_shape(&state).unwrap_or_else(|| panic!("missing fence shape"));
 
         assert_eq!(shape.cuboids.len(), 3);
         assert!(
@@ -1766,8 +1753,7 @@ mod tests {
     #[test]
     fn fence_arms_should_project_uvs_onto_the_full_block_texture() {
         let state = BlockStateQuery::new("minecraft:oak_fence").with_state("minecraft:north", true);
-        let shape =
-            model_shape_for_block_state(&state).unwrap_or_else(|| panic!("missing fence shape"));
+        let shape = model_shape(&state).unwrap_or_else(|| panic!("missing fence shape"));
         let lower_arm = shape
             .cuboids
             .iter()
@@ -1790,7 +1776,7 @@ mod tests {
         let state = BlockStateQuery::new("minecraft:bamboo_fence");
 
         assert_eq!(
-            detail_material_block_name_for_state(&state).as_deref(),
+            detail_material_block_name(&state).as_deref(),
             Some("minecraft:bamboo_fence")
         );
     }
@@ -1802,8 +1788,7 @@ mod tests {
             .with_state("minecraft:wall_connection_type_south", "none")
             .with_state("wall_post_bit", true);
 
-        let shape =
-            model_shape_for_block_state(&state).unwrap_or_else(|| panic!("missing wall shape"));
+        let shape = model_shape(&state).unwrap_or_else(|| panic!("missing wall shape"));
 
         assert_eq!(shape.cuboids.len(), 2);
         assert!(shape.cuboids.iter().any(|cuboid| cuboid.min[2] == 0.0
@@ -1817,8 +1802,7 @@ mod tests {
             .with_state("minecraft:wall_connection_type_east", "short")
             .with_state("wall_post_bit", false);
 
-        let shape =
-            model_shape_for_block_state(&state).unwrap_or_else(|| panic!("missing wall shape"));
+        let shape = model_shape(&state).unwrap_or_else(|| panic!("missing wall shape"));
 
         assert_eq!(shape.cuboids.len(), 1);
         assert!(shape.cuboids.iter().any(|cuboid| {
@@ -1833,8 +1817,7 @@ mod tests {
             .with_state("minecraft:wall_connection_type_west", 2)
             .with_state("wall_post_bit", false);
 
-        let tall_shape =
-            model_shape_for_block_state(&tall).unwrap_or_else(|| panic!("missing wall shape"));
+        let tall_shape = model_shape(&tall).unwrap_or_else(|| panic!("missing wall shape"));
 
         assert_eq!(tall_shape.cuboids.len(), 1);
         assert!(tall_shape.cuboids.iter().any(|cuboid| {
@@ -1849,8 +1832,8 @@ mod tests {
         let connected =
             BlockStateQuery::new("minecraft:iron_bars").with_state("minecraft:north", true);
 
-        let connected_shape = model_shape_for_block_state(&connected)
-            .unwrap_or_else(|| panic!("missing connected pane shape"));
+        let connected_shape =
+            model_shape(&connected).unwrap_or_else(|| panic!("missing connected pane shape"));
 
         assert_eq!(connected_shape.cuboids.len(), 2);
         assert_eq!(
@@ -1869,7 +1852,7 @@ mod tests {
 
         let string_connected = BlockStateQuery::new("minecraft:glass_pane")
             .with_state("east_connection_type", "short");
-        let string_connected_shape = model_shape_for_block_state(&string_connected)
+        let string_connected_shape = model_shape(&string_connected)
             .unwrap_or_else(|| panic!("missing connected pane shape"));
         assert_eq!(
             string_connected_shape.cuboids[0]
@@ -1886,8 +1869,8 @@ mod tests {
         );
 
         let isolated = BlockStateQuery::new("minecraft:iron_bars");
-        let isolated_shape = model_shape_for_block_state(&isolated)
-            .unwrap_or_else(|| panic!("missing isolated pane shape"));
+        let isolated_shape =
+            model_shape(&isolated).unwrap_or_else(|| panic!("missing isolated pane shape"));
 
         assert_eq!(isolated_shape.cuboids.len(), 3);
         assert!(
@@ -1905,8 +1888,7 @@ mod tests {
     #[test]
     fn pane_arm_terminal_should_use_the_edge_material_slot() {
         let state = BlockStateQuery::new("minecraft:iron_bars").with_state("minecraft:east", true);
-        let shape =
-            model_shape_for_block_state(&state).unwrap_or_else(|| panic!("missing pane shape"));
+        let shape = model_shape(&state).unwrap_or_else(|| panic!("missing pane shape"));
         let east_arm = shape
             .cuboids
             .iter()
@@ -1928,8 +1910,7 @@ mod tests {
             .with_state("minecraft:cardinal_direction", "north")
             .with_state("open_bit", true);
 
-        let open_shape =
-            model_shape_for_block_state(&open).unwrap_or_else(|| panic!("missing trapdoor shape"));
+        let open_shape = model_shape(&open).unwrap_or_else(|| panic!("missing trapdoor shape"));
 
         assert_eq!(open_shape.cuboids.len(), 1);
         assert!(
@@ -1968,8 +1949,8 @@ mod tests {
         let open_west_hinge = BlockStateQuery::new("minecraft:oak_trapdoor")
             .with_state("direction", 0)
             .with_state("open_bit", true);
-        let west_hinge_shape = model_shape_for_block_state(&open_west_hinge)
-            .unwrap_or_else(|| panic!("missing trapdoor shape"));
+        let west_hinge_shape =
+            model_shape(&open_west_hinge).unwrap_or_else(|| panic!("missing trapdoor shape"));
         assert!(
             west_hinge_shape
                 .cuboids
@@ -1978,8 +1959,7 @@ mod tests {
         );
 
         let top = BlockStateQuery::new("minecraft:oak_trapdoor").with_state("half", "top");
-        let top_shape =
-            model_shape_for_block_state(&top).unwrap_or_else(|| panic!("missing trapdoor shape"));
+        let top_shape = model_shape(&top).unwrap_or_else(|| panic!("missing trapdoor shape"));
 
         assert!(
             top_shape
@@ -2000,10 +1980,8 @@ mod tests {
             .with_state("open_bit", true)
             .with_state("upside_down_bit", true);
 
-        let bottom_shape =
-            model_shape_for_block_state(&bottom).unwrap_or_else(|| panic!("missing trapdoor"));
-        let top_shape =
-            model_shape_for_block_state(&top).unwrap_or_else(|| panic!("missing trapdoor"));
+        let bottom_shape = model_shape(&bottom).unwrap_or_else(|| panic!("missing trapdoor"));
+        let top_shape = model_shape(&top).unwrap_or_else(|| panic!("missing trapdoor"));
 
         assert_ne!(
             bottom_shape.cuboids[0].face_uvs,
@@ -2015,8 +1993,7 @@ mod tests {
     fn simple_partial_block_shapes_should_follow_state() {
         let top_slab =
             BlockStateQuery::new("minecraft:stone_slab").with_state("top_slot_bit", true);
-        let top_slab_shape =
-            model_shape_for_block_state(&top_slab).unwrap_or_else(|| panic!("missing slab shape"));
+        let top_slab_shape = model_shape(&top_slab).unwrap_or_else(|| panic!("missing slab shape"));
         assert!(
             top_slab_shape
                 .cuboids
@@ -2027,14 +2004,13 @@ mod tests {
         let inner_stairs = BlockStateQuery::new("minecraft:oak_stairs")
             .with_state("minecraft:cardinal_direction", "north")
             .with_state("shape", "inner_left");
-        let inner_stairs_shape = model_shape_for_block_state(&inner_stairs)
-            .unwrap_or_else(|| panic!("missing stairs shape"));
+        let inner_stairs_shape =
+            model_shape(&inner_stairs).unwrap_or_else(|| panic!("missing stairs shape"));
         assert_eq!(inner_stairs_shape.cuboids.len(), 3);
 
         let ladder = BlockStateQuery::new("minecraft:ladder")
             .with_state("minecraft:cardinal_direction", "east");
-        let ladder_shape =
-            model_shape_for_block_state(&ladder).unwrap_or_else(|| panic!("missing ladder shape"));
+        let ladder_shape = model_shape(&ladder).unwrap_or_else(|| panic!("missing ladder shape"));
         assert_eq!(ladder_shape.planes.len(), 1);
         assert_eq!(ladder_shape.planes[0].normal, [1, 0, 0]);
     }
@@ -2044,8 +2020,7 @@ mod tests {
         fn frame_bounds(facing: i64) -> ([f32; 3], [f32; 3]) {
             let state =
                 BlockStateQuery::new("minecraft:frame").with_state("facing_direction", facing);
-            let shape = model_shape_for_block_state(&state)
-                .unwrap_or_else(|| panic!("missing item frame shape"));
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing item frame shape"));
             let mut min = [f32::INFINITY; 3];
             let mut max = [f32::NEG_INFINITY; 3];
             for cuboid in &shape.cuboids {
@@ -2069,16 +2044,16 @@ mod tests {
         let open_gate = BlockStateQuery::new("minecraft:oak_fence_gate")
             .with_state("minecraft:cardinal_direction", "north")
             .with_state("open_bit", true);
-        let gate_shape = model_shape_for_block_state(&open_gate)
-            .unwrap_or_else(|| panic!("missing fence gate shape"));
+        let gate_shape =
+            model_shape(&open_gate).unwrap_or_else(|| panic!("missing fence gate shape"));
         assert_eq!(gate_shape.cuboids.len(), 8);
         assert!(gate_shape.cuboids.iter().any(|cuboid| cuboid.max[2] == 1.0));
 
         let wall_gate = BlockStateQuery::new("minecraft:bamboo_fence_gate")
             .with_state("minecraft:cardinal_direction", "north")
             .with_state("in_wall_bit", true);
-        let wall_gate_shape = model_shape_for_block_state(&wall_gate)
-            .unwrap_or_else(|| panic!("missing bamboo fence gate shape"));
+        let wall_gate_shape =
+            model_shape(&wall_gate).unwrap_or_else(|| panic!("missing bamboo fence gate shape"));
         assert_eq!(wall_gate_shape.cuboids.len(), 8);
         assert!(
             wall_gate_shape
@@ -2087,13 +2062,12 @@ mod tests {
                 .any(|cuboid| (cuboid.min[1] - 2.0 / 16.0).abs() < 0.001)
         );
         assert_eq!(
-            detail_material_block_name_for_state(&wall_gate).as_deref(),
+            detail_material_block_name(&wall_gate).as_deref(),
             Some("minecraft:bamboo_fence_gate")
         );
 
         let chain = BlockStateQuery::new("minecraft:chain").with_state("pillar_axis", "x");
-        let chain_shape =
-            model_shape_for_block_state(&chain).unwrap_or_else(|| panic!("missing chain shape"));
+        let chain_shape = model_shape(&chain).unwrap_or_else(|| panic!("missing chain shape"));
         // Vanilla chains are two 45-degree sheets spanning the whole axis, not a box.
         assert_eq!(chain_shape.planes.len(), 2);
         assert!(chain_shape.cuboids.is_empty());
@@ -2107,8 +2081,7 @@ mod tests {
 
         let button = BlockStateQuery::new("minecraft:stone_button")
             .with_state("minecraft:cardinal_direction", "west");
-        let button_shape =
-            model_shape_for_block_state(&button).unwrap_or_else(|| panic!("missing button shape"));
+        let button_shape = model_shape(&button).unwrap_or_else(|| panic!("missing button shape"));
         assert!(
             button_shape
                 .cuboids
@@ -2117,8 +2090,8 @@ mod tests {
         );
 
         let pressure_plate = BlockStateQuery::new("minecraft:stone_pressure_plate");
-        let plate_shape = model_shape_for_block_state(&pressure_plate)
-            .unwrap_or_else(|| panic!("missing pressure plate shape"));
+        let plate_shape =
+            model_shape(&pressure_plate).unwrap_or_else(|| panic!("missing pressure plate shape"));
         assert!(
             plate_shape
                 .cuboids
@@ -2127,8 +2100,7 @@ mod tests {
         );
 
         let snow = BlockStateQuery::new("minecraft:snow_layer");
-        let snow_shape =
-            model_shape_for_block_state(&snow).unwrap_or_else(|| panic!("missing snow shape"));
+        let snow_shape = model_shape(&snow).unwrap_or_else(|| panic!("missing snow shape"));
         assert!(
             snow_shape
                 .cuboids
@@ -2142,8 +2114,7 @@ mod tests {
         let wall_torch = BlockStateQuery::new("minecraft:torch")
             .with_state("minecraft:block_face", "wall")
             .with_state("minecraft:cardinal_direction", "south");
-        let torch_shape = model_shape_for_block_state(&wall_torch)
-            .unwrap_or_else(|| panic!("missing torch shape"));
+        let torch_shape = model_shape(&wall_torch).unwrap_or_else(|| panic!("missing torch shape"));
         // Vanilla torches are a 2x10 px post plus two full-texture cross sheets; a wall torch
         // must sit against its support (south here) rather than at the block centre.
         assert_eq!(torch_shape.cuboids.len(), 3);
@@ -2160,8 +2131,8 @@ mod tests {
         );
 
         let lantern = BlockStateQuery::new("minecraft:lantern").with_state("hanging", true);
-        let lantern_shape = model_shape_for_block_state(&lantern)
-            .unwrap_or_else(|| panic!("missing lantern shape"));
+        let lantern_shape =
+            model_shape(&lantern).unwrap_or_else(|| panic!("missing lantern shape"));
         assert_eq!(lantern_shape.cuboids.len(), 2);
         assert!(
             lantern_shape
@@ -2183,13 +2154,11 @@ mod tests {
         );
 
         let candles = BlockStateQuery::new("minecraft:candle").with_state("candles", 4);
-        let candle_shape =
-            model_shape_for_block_state(&candles).unwrap_or_else(|| panic!("missing candle shape"));
+        let candle_shape = model_shape(&candles).unwrap_or_else(|| panic!("missing candle shape"));
         assert_eq!(candle_shape.cuboids.len(), 4);
 
         let portal = BlockStateQuery::new("minecraft:portal").with_state("portal_axis", "x");
-        let portal_shape =
-            model_shape_for_block_state(&portal).unwrap_or_else(|| panic!("missing portal shape"));
+        let portal_shape = model_shape(&portal).unwrap_or_else(|| panic!("missing portal shape"));
         assert!(
             portal_shape
                 .cuboids
@@ -2202,8 +2171,7 @@ mod tests {
     fn block_shell_shapes_should_follow_expected_partial_block_geometry() {
         let chest = BlockStateQuery::new("minecraft:chest")
             .with_state("minecraft:cardinal_direction", "north");
-        let chest_shape =
-            model_shape_for_block_state(&chest).unwrap_or_else(|| panic!("missing chest shape"));
+        let chest_shape = model_shape(&chest).unwrap_or_else(|| panic!("missing chest shape"));
         // Body, overlapping lid and the 2x4x1 latch that the 64x64 chest sheet carries at (0,0).
         assert_eq!(chest_shape.cuboids.len(), 3);
         assert!(
@@ -2221,8 +2189,8 @@ mod tests {
         );
 
         let shulker = BlockStateQuery::new("minecraft:blue_shulker_box");
-        let shulker_shape = model_shape_for_block_state(&shulker)
-            .unwrap_or_else(|| panic!("missing shulker box shape"));
+        let shulker_shape =
+            model_shape(&shulker).unwrap_or_else(|| panic!("missing shulker box shape"));
         assert_eq!(shulker_shape.cuboids.len(), 2);
         assert!(
             shulker_shape
@@ -2233,8 +2201,7 @@ mod tests {
 
         let anvil = BlockStateQuery::new("minecraft:anvil")
             .with_state("minecraft:cardinal_direction", "east");
-        let anvil_shape =
-            model_shape_for_block_state(&anvil).unwrap_or_else(|| panic!("missing anvil shape"));
+        let anvil_shape = model_shape(&anvil).unwrap_or_else(|| panic!("missing anvil shape"));
         assert_eq!(anvil_shape.cuboids.len(), 4);
         assert_eq!(
             anvil_shape.cuboids[0].material_slot.as_deref(),
@@ -2249,8 +2216,8 @@ mod tests {
 
         let stonecutter = BlockStateQuery::new("minecraft:stonecutter")
             .with_state("minecraft:cardinal_direction", "south");
-        let stonecutter_shape = model_shape_for_block_state(&stonecutter)
-            .unwrap_or_else(|| panic!("missing stonecutter shape"));
+        let stonecutter_shape =
+            model_shape(&stonecutter).unwrap_or_else(|| panic!("missing stonecutter shape"));
         assert_eq!(stonecutter_shape.cuboids.len(), 2);
         assert_eq!(stonecutter_shape.planes.len(), 1);
         assert_eq!(
@@ -2259,8 +2226,7 @@ mod tests {
         );
 
         let hopper = BlockStateQuery::new("minecraft:hopper").with_state("facing_direction", 5);
-        let hopper_shape =
-            model_shape_for_block_state(&hopper).unwrap_or_else(|| panic!("missing hopper shape"));
+        let hopper_shape = model_shape(&hopper).unwrap_or_else(|| panic!("missing hopper shape"));
         assert_eq!(hopper_shape.cuboids.len(), 7);
         assert!(
             hopper_shape
@@ -2283,8 +2249,8 @@ mod tests {
         );
 
         let potted = BlockStateQuery::new("minecraft:potted_poppy");
-        let potted_shape = model_shape_for_block_state(&potted)
-            .unwrap_or_else(|| panic!("missing flower pot shape"));
+        let potted_shape =
+            model_shape(&potted).unwrap_or_else(|| panic!("missing flower pot shape"));
         assert_eq!(potted_shape.cuboids.len(), 2);
         assert_eq!(potted_shape.planes.len(), 2);
     }
@@ -2292,14 +2258,12 @@ mod tests {
     #[test]
     fn vine_and_rail_shapes_should_emit_detail_planes() {
         let vine = BlockStateQuery::new("minecraft:vine").with_state("north", true);
-        let vine_shape =
-            model_shape_for_block_state(&vine).unwrap_or_else(|| panic!("missing vine shape"));
+        let vine_shape = model_shape(&vine).unwrap_or_else(|| panic!("missing vine shape"));
         assert_eq!(vine_shape.planes.len(), 1);
         assert_eq!(vine_shape.planes[0].normal, [0, 0, 1]);
 
         let rail = BlockStateQuery::new("minecraft:rail").with_state("rail_direction", 1_i64);
-        let rail_shape =
-            model_shape_for_block_state(&rail).unwrap_or_else(|| panic!("missing rail shape"));
+        let rail_shape = model_shape(&rail).unwrap_or_else(|| panic!("missing rail shape"));
         assert!(rail_shape.cuboids.is_empty());
         assert_eq!(rail_shape.planes.len(), 1);
         assert_eq!(rail_shape.planes[0].material_slot.as_deref(), Some("side"));
@@ -2311,8 +2275,7 @@ mod tests {
         );
 
         let sloped = BlockStateQuery::new("minecraft:rail").with_state("rail_direction", 2_i64);
-        let sloped_shape =
-            model_shape_for_block_state(&sloped).unwrap_or_else(|| panic!("missing sloped rail"));
+        let sloped_shape = model_shape(&sloped).unwrap_or_else(|| panic!("missing sloped rail"));
         assert!(
             sloped_shape.planes[0]
                 .corners
@@ -2321,33 +2284,32 @@ mod tests {
         );
 
         let curved = BlockStateQuery::new("minecraft:rail").with_state("rail_direction", 6_i64);
-        let curved_shape =
-            model_shape_for_block_state(&curved).unwrap_or_else(|| panic!("missing curved rail"));
+        let curved_shape = model_shape(&curved).unwrap_or_else(|| panic!("missing curved rail"));
         assert_eq!(curved_shape.planes[0].material_slot.as_deref(), Some("up"));
     }
 
     #[test]
     fn sign_and_cauldron_shapes_should_emit_non_full_geometry() {
         let standing_sign = BlockStateQuery::new("minecraft:standing_sign");
-        let standing_sign_shape = model_shape_for_block_state(&standing_sign)
-            .unwrap_or_else(|| panic!("missing standing sign shape"));
+        let standing_sign_shape =
+            model_shape(&standing_sign).unwrap_or_else(|| panic!("missing standing sign shape"));
         assert_eq!(standing_sign_shape.cuboids.len(), 2);
 
         let wall_sign = BlockStateQuery::new("minecraft:wall_sign")
             .with_state("minecraft:cardinal_direction", "west");
         let wall_sign_shape =
-            model_shape_for_block_state(&wall_sign).unwrap_or_else(|| panic!("missing wall sign"));
+            model_shape(&wall_sign).unwrap_or_else(|| panic!("missing wall sign"));
         assert_eq!(wall_sign_shape.cuboids.len(), 1);
 
         let hanging_sign = BlockStateQuery::new("minecraft:hanging_sign");
-        let hanging_sign_shape = model_shape_for_block_state(&hanging_sign)
-            .unwrap_or_else(|| panic!("missing hanging sign"));
+        let hanging_sign_shape =
+            model_shape(&hanging_sign).unwrap_or_else(|| panic!("missing hanging sign"));
         assert!(hanging_sign_shape.cuboids.len() >= 3);
 
         let wall_hanging_sign = BlockStateQuery::new("minecraft:oak_wall_hanging_sign")
             .with_state("minecraft:cardinal_direction", "east");
-        let wall_hanging_sign_shape = model_shape_for_block_state(&wall_hanging_sign)
-            .unwrap_or_else(|| panic!("missing wall hanging sign"));
+        let wall_hanging_sign_shape =
+            model_shape(&wall_hanging_sign).unwrap_or_else(|| panic!("missing wall hanging sign"));
         assert!(
             wall_hanging_sign_shape
                 .cuboids
@@ -2357,8 +2319,7 @@ mod tests {
 
         // Java `block/cauldron`: four walls, an inner floor and eight corner feet.
         let cauldron = BlockStateQuery::new("minecraft:cauldron");
-        let cauldron_shape =
-            model_shape_for_block_state(&cauldron).unwrap_or_else(|| panic!("missing cauldron"));
+        let cauldron_shape = model_shape(&cauldron).unwrap_or_else(|| panic!("missing cauldron"));
         assert_eq!(cauldron_shape.cuboids.len(), 13);
         assert!(
             cauldron_shape
@@ -2374,32 +2335,20 @@ mod tests {
             BlockStateQuery::new("minecraft:unpowered_repeater").with_state("repeater_delay", 0);
         let repeater_d3 =
             BlockStateQuery::new("minecraft:unpowered_repeater").with_state("repeater_delay", 3);
-        let shape_d0 = model_shape_for_block_state(&repeater_d0).unwrap();
-        let shape_d3 = model_shape_for_block_state(&repeater_d3).unwrap();
+        let shape_d0 = model_shape(&repeater_d0).unwrap();
+        let shape_d3 = model_shape(&repeater_d3).unwrap();
         assert_ne!(shape_d0.cuboids[2].min[2], shape_d3.cuboids[2].min[2]);
 
         // Bedrock keeps the base and the head in separate blocks, so both states are one box.
         let piston_normal = BlockStateQuery::new("minecraft:piston");
         let piston_extended =
             BlockStateQuery::new("minecraft:piston").with_state("extended_bit", true);
-        assert_eq!(
-            model_shape_for_block_state(&piston_normal)
-                .unwrap()
-                .cuboids
-                .len(),
-            1
-        );
-        assert_eq!(
-            model_shape_for_block_state(&piston_extended)
-                .unwrap()
-                .cuboids
-                .len(),
-            1
-        );
+        assert_eq!(model_shape(&piston_normal).unwrap().cuboids.len(), 1);
+        assert_eq!(model_shape(&piston_extended).unwrap().cuboids.len(), 1);
         // The head is its own block with its own direction.
         let arm = BlockStateQuery::new("minecraft:piston_arm_collision")
             .with_state("facing_direction", 3);
-        let arm_shape = model_shape_for_block_state(&arm).unwrap();
+        let arm_shape = model_shape(&arm).unwrap();
         assert_eq!(arm_shape.cuboids.len(), 1);
         assert!(arm_shape.cuboids[0].max[2] - arm_shape.cuboids[0].min[2] <= 0.25);
 
@@ -2408,10 +2357,10 @@ mod tests {
         let lectern_empty = BlockStateQuery::new("minecraft:lectern");
         let lectern_book =
             BlockStateQuery::new("minecraft:lectern").with_state("has_book_bit", true);
-        let empty = model_shape_for_block_state(&lectern_empty).unwrap();
+        let empty = model_shape(&lectern_empty).unwrap();
         assert_eq!(empty.cuboids.len(), 2);
         assert_eq!(empty.planes.len(), 1);
-        let with_book = model_shape_for_block_state(&lectern_book).unwrap();
+        let with_book = model_shape(&lectern_book).unwrap();
         assert_eq!(with_book.cuboids.len(), 3);
         assert_eq!(with_book.planes.len(), 1);
     }
@@ -2419,13 +2368,13 @@ mod tests {
     #[test]
     fn full_block_shapes_and_orientations_should_generate_valid_cuboids() {
         let stone = BlockStateQuery::new("minecraft:stone");
-        let stone_shape = model_shape_for_block_state(&stone).unwrap();
+        let stone_shape = model_shape(&stone).unwrap();
         assert_eq!(stone_shape.cuboids.len(), 1);
         assert_eq!(stone_shape.cuboids[0].min, [0.0, 0.0, 0.0]);
         assert_eq!(stone_shape.cuboids[0].max, [1.0, 1.0, 1.0]);
 
         let log_x = BlockStateQuery::new("minecraft:oak_log").with_state("pillar_axis", "x");
-        let log_shape = model_shape_for_block_state(&log_x).unwrap();
+        let log_shape = model_shape(&log_x).unwrap();
         assert_eq!(
             log_shape.cuboids[0]
                 .face_material_slots

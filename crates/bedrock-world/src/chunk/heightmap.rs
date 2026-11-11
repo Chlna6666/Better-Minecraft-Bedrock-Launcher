@@ -37,7 +37,7 @@ impl ChunkHeightMap {
 
     /// Returns whether the chunk itself is present in persistent storage.
     #[must_use]
-    pub const fn is_chunk_saved(&self) -> bool {
+    pub const fn check_chunk_saved(&self) -> bool {
         !matches!(self.status, ChunkHeightMapStatus::Missing)
     }
 }

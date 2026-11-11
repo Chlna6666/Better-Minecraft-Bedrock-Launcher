@@ -53,7 +53,7 @@ impl BlockStateQuery {
                 query.states.insert(name.clone(), value);
             }
         }
-        query.name = crate::canonical_block_name_for_state(&query);
+        query.name = crate::canonical_block_name(&query);
         query
     }
 }

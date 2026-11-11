@@ -106,7 +106,7 @@ impl ObjResourcePack {
                     ));
                 }
                 let relative = path.parent().unwrap_or(Path::new("")).join(name);
-                let source = self.texture_file_for_path(&relative).ok_or_else(|| {
+                let source = self.texture_file(&relative).ok_or_else(|| {
                     BlockModelError::Message(format!(
                         "missing same-pack Texture Set image: {}",
                         relative.display()

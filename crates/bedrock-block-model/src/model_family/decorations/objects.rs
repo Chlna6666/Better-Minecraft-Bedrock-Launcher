@@ -341,7 +341,7 @@ pub(crate) fn item_frame_shape(state: &BlockStateQuery) -> ModelShape {
             // The authored cuboids sit on the block's +Z face. facing_direction is the side the
             // frame's content faces, so the plate must be rotated toward the opposite (support)
             // side and stay flush with the wall.
-            let direction = cardinal_for_facing(facing).unwrap_or(CardinalDirection::South);
+            let direction = cardinal_from_facing(facing).unwrap_or(CardinalDirection::South);
             local_item_frame_cuboids()
                 .into_iter()
                 .map(|cuboid| rotate_cuboid_from_south(cuboid, direction.opposite()))
@@ -469,7 +469,7 @@ fn facing_from_cardinal(direction: CardinalDirection) -> Facing {
     }
 }
 
-pub(super) fn cardinal_for_facing(facing: Facing) -> Option<CardinalDirection> {
+pub(super) fn cardinal_from_facing(facing: Facing) -> Option<CardinalDirection> {
     match facing {
         Facing::North => Some(CardinalDirection::North),
         Facing::South => Some(CardinalDirection::South),

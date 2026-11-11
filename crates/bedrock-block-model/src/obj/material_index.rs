@@ -311,7 +311,7 @@ impl ObjTextureResolver {
                 .unwrap_or_else(|e| e.into_inner());
             let Some(file) = state.as_ref() else {
                 drop(state);
-                return self.texture_for_uncached(material, normal);
+                return self.resolve_uncached_texture(material, normal);
             };
             file.entries.get(&key).cloned()
         };
@@ -324,7 +324,7 @@ impl ObjTextureResolver {
             }
             None => {}
         }
-        let resolved = self.texture_for_uncached(material, normal);
+        let resolved = self.resolve_uncached_texture(material, normal);
         let entry = resolved.as_ref().and_then(|texture| {
             let index = self
                 .packs
@@ -353,7 +353,7 @@ impl ObjTextureResolver {
     fn material_index_entry_texture(&self, entry: &[String; 3]) -> Option<ObjResolvedTexture> {
         let index: usize = entry[0].parse().ok()?;
         let pack = self.packs.get(index)?;
-        let file = pack.texture_file_for_path(Path::new(&entry[1]))?;
+        let file = pack.texture_file(Path::new(&entry[1]))?;
         Some(pack.resolved_texture(&self.texture_directory_name, file))
     }
 }

@@ -77,7 +77,7 @@ pub fn flat_block_plan(
     candidates: &[FlatBlockCandidate],
     options: FlatImageOptions<'_>,
 ) -> Result<BlockPlacementPlan> {
-    flat_block_plan_with_progress(
+    flat_block_plan_tracked(
         FlatImageInput {
             rgba,
             width,
@@ -98,7 +98,7 @@ pub fn flat_block_plan(
 ///
 /// # Errors
 /// Returns the validation errors of [`flat_block_plan`] or a cancellation error.
-pub fn flat_block_plan_with_progress(
+pub fn flat_block_plan_tracked(
     input: FlatImageInput<'_>,
     candidates: &[FlatBlockCandidate],
     options: FlatImageOptions<'_>,
@@ -453,16 +453,14 @@ mod tests {
         };
         let cancel = CancelFlag::new();
         let mut updates = Vec::new();
-        flat_block_plan_with_progress(input, &candidates, options, &cancel, |done, total| {
+        flat_block_plan_tracked(input, &candidates, options, &cancel, |done, total| {
             updates.push((done, total));
         })
         .expect("flat plan");
         assert_eq!(updates, [(2, 2)]);
 
         cancel.cancel();
-        assert!(
-            flat_block_plan_with_progress(input, &candidates, options, &cancel, |_, _| {}).is_err()
-        );
+        assert!(flat_block_plan_tracked(input, &candidates, options, &cancel, |_, _| {}).is_err());
     }
 
     #[test]

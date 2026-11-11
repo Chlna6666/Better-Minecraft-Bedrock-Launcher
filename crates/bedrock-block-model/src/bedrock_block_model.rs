@@ -33,9 +33,8 @@ pub use material::{
 };
 pub use model_family::{
     BED_GEOMETRY_IDENTIFIER, ModelCuboid, ModelFamily, ModelPlane, ModelShape,
-    bed_shape_from_geometry, canonical_block_name_for_state, detail_cuboid_with_local_uv,
-    detail_material_block_name_for_state, is_full_opaque_block, model_family_for_block_name,
-    model_family_has_detail_shape,
+    bed_shape_from_geometry, canonical_block_name, detail_cuboid_with_local_uv,
+    detail_material_block_name, is_full_opaque_block, model_family, model_family_has_detail_shape,
 };
 pub use neighbor::{
     DerivedModelVariant, HorizontalDirection, HorizontalMask, NeighborBlockDescriptor,
@@ -43,30 +42,25 @@ pub use neighbor::{
 };
 pub use obj::{
     FALLBACK_MATERIAL_NAME, LocalLightDefinition, MATERIAL_SLOT_SEPARATOR, NamedObjMaterial,
-    ObjExport, ObjExportMaterial, ObjExportTarget, ObjExportWriteSummary, ObjFace, ObjMaterial,
-    ObjMaterialSample, ObjMeshFace, ObjMeshFaceSource, ObjResolvedPbrTextureSet,
-    ObjResolvedTexture, ObjTextureCopy, ObjTextureResolver, PbrTextureLayer,
-    alpha_mask_obj_texture_image, block_export_material_name_for_block,
-    block_export_material_name_for_face, block_export_material_name_for_plane,
-    block_export_material_name_for_slot, block_face_for_normal, decode_texture_image,
-    default_block_face_uvs_from_corners, export_obj_from_face_sources_with_package_roots,
-    find_texture_file, obj_alpha_texture_path, obj_block_face_for_normal, obj_block_identifier,
+    ObjDocumentHeader, ObjExport, ObjExportMaterial, ObjExportTarget, ObjExportWriteSummary,
+    ObjFace, ObjMaterial, ObjMaterialSample, ObjMeshFace, ObjMeshFaceSource,
+    ObjResolvedPbrTextureSet, ObjResolvedTexture, ObjTextureCopy, ObjTextureResolver,
+    PbrTextureLayer, alpha_mask_obj_texture_image, block_face_from_normal, decode_texture_image,
+    default_block_face_uvs_from_corners, export_face_groups, export_face_sources, export_parts,
+    find_texture_file, normal_from_block_face, obj_alpha_texture_path, obj_block_identifier,
     obj_block_texture_name, obj_canonical_block_lookup_name, obj_cull_hidden_mesh_faces,
-    obj_default_face_uvs_from_corners, obj_document_string,
-    obj_export_from_face_sources_with_package_roots, obj_export_from_mesh_face_groups,
-    obj_export_from_mesh_face_groups_with_progress, obj_export_from_parts, obj_export_materials,
-    obj_face_normal_from_triangle, obj_face_texture_slot_suffix, obj_faces_string,
-    obj_material_library_from_export_materials, obj_material_library_string,
-    obj_material_name_for_block, obj_material_name_for_face, obj_material_name_for_slot,
-    obj_material_needs_biome_tinted_texture, obj_material_slot_candidates,
-    obj_material_slot_component, obj_material_slots_for_block_face, obj_material_texture_name,
+    obj_default_face_uvs_from_corners, obj_document_string, obj_export_materials,
+    obj_face_material_name, obj_face_normal_from_triangle, obj_face_texture_slot_suffix,
+    obj_faces_string, obj_material_library_from_export_materials, obj_material_library_string,
+    obj_material_name, obj_material_needs_biome_tinted_texture, obj_material_slot_candidates,
+    obj_material_slot_component, obj_material_slots, obj_material_texture_name,
     obj_material_texture_tint, obj_material_uses_preview_tint, obj_material_uses_texture_alpha,
     obj_mesh_face_materials, obj_mesh_faces_from_source, obj_mesh_faces_string,
-    obj_normal_for_block_face, obj_normalize_texture_key, obj_path_extension_eq,
-    obj_texture_copies, obj_texture_faces_for_block_face, obj_texture_key_from_value,
+    obj_normalize_texture_key, obj_path_extension_eq, obj_plane_material_name,
+    obj_slot_material_name, obj_texture_copies, obj_texture_faces, obj_texture_key_from_value,
     obj_vertex_offsets, path_extension_eq, path_starts_with_directory, prefixed_relative_path,
     push_unique_resource_pack_path, read_obj_texture_copy_image, relative_path_string,
-    replace_path_extension, resource_pack_manifest_uuid, resource_pack_roots_for_world,
+    replace_path_extension, resource_pack_manifest_uuid, resource_pack_roots,
     vanilla_resource_pack_roots, vanilla_resource_pack_roots_from_packages,
     world_resource_pack_ids, world_resource_pack_paths, write_obj_export_files,
     write_obj_texture_copy,
@@ -102,8 +96,8 @@ pub fn is_engine_block_entity_model_block(name: &str) -> bool {
 /// These shapes are not represented as authoritative native exports. Exact per-state
 /// geometry is resolved by BlockModelRepository::captured_shape or block pack geometry.
 #[must_use]
-pub fn model_shape_for_block_state(state: &BlockStateQuery) -> Option<ModelShape> {
-    let mut shape = model_family::model_shape_for_block_state(state)?;
+pub fn resolve_block_state_shape(state: &BlockStateQuery) -> Option<ModelShape> {
+    let mut shape = model_family::model_shape(state)?;
     apply_double_plant_material_slots(state, &mut shape);
     fill_missing_full_texture_uv(&mut shape);
     Some(shape)
@@ -140,7 +134,7 @@ fn fill_missing_full_texture_uv(shape: &mut ModelShape) {
 
 /// Preserve Bedrock double-plant face texture selection by block-state half.
 fn apply_double_plant_material_slots(state: &BlockStateQuery, shape: &mut ModelShape) {
-    let canonical = canonical_block_name_for_state(state);
+    let canonical = canonical_block_name(state);
     let normalized = canonical.strip_prefix("minecraft:").unwrap_or(&canonical);
     if !matches!(
         normalized,
@@ -165,7 +159,6 @@ fn apply_double_plant_material_slots(state: &BlockStateQuery, shape: &mut ModelS
     }
 }
 
-
 #[cfg(test)]
 mod native_fallback_tests {
     use super::*;
@@ -173,12 +166,10 @@ mod native_fallback_tests {
     #[test]
     fn double_plant_slots_follow_bedrock_half_state() {
         for (upper, expected) in [(false, "down"), (true, "up")] {
-            let state = BlockStateQuery::new("minecraft:sunflower")
-                .with_state("upper_block_bit", upper);
-            let mut shape = ModelShape::default().with_planes([ModelPlane::new(
-                [[0.0, 0.0, 0.0]; 4],
-                [0, 1, 0],
-            )]);
+            let state =
+                BlockStateQuery::new("minecraft:sunflower").with_state("upper_block_bit", upper);
+            let mut shape = ModelShape::default()
+                .with_planes([ModelPlane::new([[0.0, 0.0, 0.0]; 4], [0, 1, 0])]);
             apply_double_plant_material_slots(&state, &mut shape);
             assert_eq!(shape.planes[0].material_slot.as_deref(), Some(expected));
         }
@@ -187,10 +178,10 @@ mod native_fallback_tests {
     #[test]
     fn non_plant_blocks_keep_original_material_slots() {
         let state = BlockStateQuery::new("minecraft:stone");
-        let mut shape = ModelShape::default().with_planes([ModelPlane::new(
-            [[0.0, 0.0, 0.0]; 4],
-            [0, 1, 0],
-        ).with_material_slot("original")]);
+        let mut shape =
+            ModelShape::default().with_planes([
+                ModelPlane::new([[0.0, 0.0, 0.0]; 4], [0, 1, 0]).with_material_slot("original")
+            ]);
         apply_double_plant_material_slots(&state, &mut shape);
         assert_eq!(shape.planes[0].material_slot.as_deref(), Some("original"));
     }
@@ -292,7 +283,7 @@ mod native_fallback_tests {
             let state = BlockStateQuery::new(*name)
                 .with_state("facing_direction", 3)
                 .with_state("minecraft:cardinal_direction", "south");
-            let Some(shape) = model_shape_for_block_state(&state) else {
+            let Some(shape) = resolve_block_state_shape(&state) else {
                 panic!("{name}: no procedural shape");
             };
             assert!(

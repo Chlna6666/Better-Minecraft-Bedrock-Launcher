@@ -114,14 +114,14 @@ pub fn saved_item_storage_form(
         }
         None => false,
     };
-    if has_string_identity(root)? {
+    if check_string_identity(root)? {
         return Ok(Some(if block {
             SavedItemStorageForm::ModernBlockState
         } else {
             SavedItemStorageForm::StringIdMeta
         }));
     }
-    if has_numeric_identity(root)? {
+    if check_numeric_identity(root)? {
         return Ok(Some(SavedItemStorageForm::ClassicNumeric));
     }
     Ok(None)
@@ -197,7 +197,7 @@ fn looks_like_item_stack(root: &IndexMap<String, NbtTag>) -> bool {
     has_identity && has_count
 }
 
-fn has_string_identity(root: &IndexMap<String, NbtTag>) -> Result<bool> {
+fn check_string_identity(root: &IndexMap<String, NbtTag>) -> Result<bool> {
     if let Some(value) = root.get("Name") {
         return match value {
             NbtTag::String(name) if !name.is_empty() => Ok(true),
@@ -214,7 +214,7 @@ fn has_string_identity(root: &IndexMap<String, NbtTag>) -> Result<bool> {
     }
 }
 
-fn has_numeric_identity(root: &IndexMap<String, NbtTag>) -> Result<bool> {
+fn check_numeric_identity(root: &IndexMap<String, NbtTag>) -> Result<bool> {
     match root.get("id") {
         Some(NbtTag::Byte(_) | NbtTag::Short(_) | NbtTag::Int(_) | NbtTag::Long(_)) => Ok(true),
         Some(NbtTag::String(_)) | None => Ok(false),

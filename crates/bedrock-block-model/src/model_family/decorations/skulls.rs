@@ -13,7 +13,7 @@
 //! against the block face and is rotated to the wall direction.
 
 use crate::material::BlockFace;
-use crate::model_family::decorations::objects::{Facing, cardinal_for_facing, facing_from_state};
+use crate::model_family::decorations::objects::{Facing, cardinal_from_facing, facing_from_state};
 use crate::model_family::direction::CardinalDirection;
 use crate::model_family::shape::{ModelCuboid, ModelShape, box_face_corners, box_unwrap_uv};
 use crate::state::BlockStateQuery;
@@ -144,7 +144,7 @@ impl Mount {
         match facing {
             Facing::Up => Self::Floor,
             Facing::Down => Self::Ceiling,
-            _ => Self::Wall(cardinal_for_facing(facing).unwrap_or(CardinalDirection::South)),
+            _ => Self::Wall(cardinal_from_facing(facing).unwrap_or(CardinalDirection::South)),
         }
     }
 
@@ -177,7 +177,7 @@ impl Mount {
             Self::Ceiling => [-normal[0], -normal[1], normal[2]],
             Self::Wall(direction) => rotate_y_direction(normal, direction),
         };
-        face_for_normal(direction)
+        face_from_normal(direction)
     }
 }
 
@@ -305,7 +305,7 @@ fn rotate_y(point: [f32; 3], direction: CardinalDirection) -> [f32; 3] {
     point
 }
 
-fn face_for_normal(normal: [i32; 3]) -> BlockFace {
+fn face_from_normal(normal: [i32; 3]) -> BlockFace {
     if normal[0] > 0 {
         BlockFace::East
     } else if normal[0] < 0 {

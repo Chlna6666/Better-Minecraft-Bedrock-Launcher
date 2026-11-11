@@ -11,7 +11,7 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
     }
 }
 
-pub(crate) fn shape_for_cross_plant(name: &str, state: &BlockStateQuery) -> Option<ModelShape> {
+pub(crate) fn cross_plant_shape(name: &str, state: &BlockStateQuery) -> Option<ModelShape> {
     if !is_cross_plant_family(name) {
         return None;
     }

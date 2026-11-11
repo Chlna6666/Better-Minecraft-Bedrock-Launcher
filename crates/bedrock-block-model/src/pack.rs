@@ -142,14 +142,14 @@ impl BlockModelRepository {
 
     #[must_use]
     pub fn captured_shape(&self, state: &BlockStateQuery) -> Option<crate::ModelShape> {
-        self.capture_catalog.as_ref()?.shape_for_state(state)
+        self.capture_catalog.as_ref()?.shape(state)
     }
 
     /// Share immutable captured geometry across chunk palettes without
     /// allocating a second owned ModelShape for each lookup.
     #[must_use]
     pub fn captured_shape_shared(&self, state: &BlockStateQuery) -> Option<Arc<crate::ModelShape>> {
-        self.capture_catalog.as_ref()?.shape_for_state_shared(state)
+        self.capture_catalog.as_ref()?.shared_shape(state)
     }
 
     #[must_use]

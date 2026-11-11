@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use bedrock_world::BlockState;
 
 use super::*;
+use crate::VoxelizeTexturesRequest;
 use crate::{ObjMaterial, ObjVertex};
 
 #[test]
@@ -409,13 +410,19 @@ fn predecoded_texture_survives_source_removal_and_is_reused_for_voxelization() {
     std::fs::remove_file(&file).unwrap();
 
     // No file I/O is permitted after the shared textures have been prepared.
-    let result = voxelize_obj_with_textures_and_progress(
-        &model,
-        &decoded,
-        &[candidate()],
-        ObjVoxelOptions { longest_side_blocks: 3, ..ObjVoxelOptions::default() },
-        &CancelFlag::new(),
+    let result = voxelize_textured(
+        VoxelizeTexturesRequest {
+            model: &model,
+            textures: &decoded,
+            candidates: &[candidate()],
+            options: ObjVoxelOptions {
+                longest_side_blocks: 3,
+                ..ObjVoxelOptions::default()
+            },
+            cancel: &CancelFlag::new(),
+        },
         |_, _| {},
-    ).unwrap();
+    )
+    .unwrap();
     assert!(!result.blocks().is_empty());
 }

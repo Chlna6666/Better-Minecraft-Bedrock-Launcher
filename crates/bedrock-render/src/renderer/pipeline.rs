@@ -4326,13 +4326,14 @@ fn encode_tile_cache_write_payload(
             if *flags == FAST_RGBA_ZSTD_FLAG_EMPTY_NEGATIVE {
                 return encode_fast_rgba_zstd_empty_negative(*width, *height, validation_value);
             }
-            encode_fast_rgba_zstd_with_validation_and_flags(
-                rgba.as_ref(),
-                *width,
-                *height,
+            encode_fast_rgba_zstd_tile(FastRgbaZstdInput {
+                rgba: rgba.as_ref(),
+                width: *width,
+                height: *height,
+                validation_kind: FAST_RGBA_ZSTD_VALIDATION_KIND_SIMPLE_TILE,
+                flags: *flags,
                 validation_value,
-                *flags,
-            )
+            })
         }
         TileCacheWritePayload::EmptyNegative {
             tile_size,
@@ -12620,14 +12621,14 @@ fn encode_image(
 /// Returns an error if the RGBA buffer length does not match `width * height * 4`, or if zstd
 /// compression fails.
 pub fn encode_fast_rgba_zstd(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
-    encode_fast_rgba_zstd_inner(
+    encode_fast_rgba_zstd_tile(FastRgbaZstdInput {
         rgba,
         width,
         height,
-        FAST_RGBA_ZSTD_VALIDATION_KIND_NONE,
-        fast_rgba_content_flags(rgba),
-        0,
-    )
+        validation_kind: FAST_RGBA_ZSTD_VALIDATION_KIND_NONE,
+        flags: fast_rgba_content_flags(rgba),
+        validation_value: 0,
+    })
 }
 
 /// Encodes native BGRA tile bytes into the fast zstd-backed tile cache format.
@@ -12649,30 +12650,14 @@ pub fn encode_fast_rgba_zstd_with_validation(
     height: u32,
     validation_value: u64,
 ) -> Result<Vec<u8>> {
-    encode_fast_rgba_zstd_with_validation_and_flags(
+    encode_fast_rgba_zstd_tile(FastRgbaZstdInput {
         rgba,
         width,
         height,
+        validation_kind: FAST_RGBA_ZSTD_VALIDATION_KIND_SIMPLE_TILE,
+        flags: fast_rgba_content_flags(rgba),
         validation_value,
-        fast_rgba_content_flags(rgba),
-    )
-}
-
-fn encode_fast_rgba_zstd_with_validation_and_flags(
-    rgba: &[u8],
-    width: u32,
-    height: u32,
-    validation_value: u64,
-    flags: u32,
-) -> Result<Vec<u8>> {
-    encode_fast_rgba_zstd_inner(
-        rgba,
-        width,
-        height,
-        FAST_RGBA_ZSTD_VALIDATION_KIND_SIMPLE_TILE,
-        flags,
-        validation_value,
-    )
+    })
 }
 
 fn encode_fast_rgba_zstd_empty_negative(
@@ -12692,14 +12677,27 @@ fn encode_fast_rgba_zstd_empty_negative(
     )
 }
 
-fn encode_fast_rgba_zstd_inner(
-    rgba: &[u8],
+/// Inputs for one fast-zstd tile encode. The tile dimensions, the validation
+/// kind/value and the content flags are distinct concerns, so they travel
+/// together instead of as a six-positional call.
+struct FastRgbaZstdInput<'a> {
+    rgba: &'a [u8],
     width: u32,
     height: u32,
     validation_kind: u32,
     flags: u32,
     validation_value: u64,
-) -> Result<Vec<u8>> {
+}
+
+fn encode_fast_rgba_zstd_tile(input: FastRgbaZstdInput<'_>) -> Result<Vec<u8>> {
+    let FastRgbaZstdInput {
+        rgba,
+        width,
+        height,
+        validation_kind,
+        flags,
+        validation_value,
+    } = input;
     let expected_len = fast_rgba_byte_len(width, height)?;
     if rgba.len() != expected_len {
         return Err(BedrockRenderError::Validation(format!(

@@ -19,7 +19,7 @@ where
     S: StorageBackend,
 {
     /// Checks whether one chunk has a canonical persisted Bedrock chunk record.
-    pub fn is_chunk_saved(&self, pos: ChunkPos) -> Result<bool> {
+    pub fn check_chunk_saved(&self, pos: ChunkPos) -> Result<bool> {
         Ok(self.chunk_keys_exist([pos], false)?.pop().unwrap_or(false))
     }
 
@@ -234,7 +234,7 @@ where
         if worker_count == 1 {
             let render_positions = positions
                 .into_iter()
-                .filter_map(|pos| match self.has_render_chunk_records(pos, &options) {
+                .filter_map(|pos| match self.check_render_chunk_records(pos, &options) {
                     Ok(true) => Some(Ok(pos)),
                     Ok(false) => None,
                     Err(error) => Some(Err(error)),
@@ -285,7 +285,7 @@ where
                             return;
                         };
                         let result = self
-                            .has_render_chunk_records(pos, &scan_options)
+                            .check_render_chunk_records(pos, &scan_options)
                             .map(|is_renderable| is_renderable.then_some(pos));
                         if sender.send(result).is_err() {
                             return;
@@ -512,7 +512,11 @@ where
         Ok(self.biome_data(pos)?.map(|biome_data| biome_data.storages))
     }
 
-    fn has_render_chunk_records(&self, pos: ChunkPos, options: &WorldScanOptions) -> Result<bool> {
+    fn check_render_chunk_records(
+        &self,
+        pos: ChunkPos,
+        options: &WorldScanOptions,
+    ) -> Result<bool> {
         let prefix = chunk_record_prefix(pos);
         let mut found = false;
         self.storage().for_each_prefix_key(

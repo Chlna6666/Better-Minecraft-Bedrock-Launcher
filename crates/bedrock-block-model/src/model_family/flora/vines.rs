@@ -11,7 +11,7 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
     }
 }
 
-pub(crate) fn shape_for_vine(name: &str, state: &BlockStateQuery) -> Option<ModelShape> {
+pub(crate) fn vine_shape(name: &str, state: &BlockStateQuery) -> Option<ModelShape> {
     if !is_vine_like_block(name) {
         return None;
     }
@@ -173,7 +173,7 @@ mod tests {
 
     fn vine_planes(bits: i64) -> Vec<ModelPlane> {
         let state = BlockStateQuery::new("minecraft:vine").with_state("vine_direction_bits", bits);
-        shape_for_vine("vine", &state).expect("vine shape").planes
+        vine_shape("vine", &state).expect("vine shape").planes
     }
 
     #[test]

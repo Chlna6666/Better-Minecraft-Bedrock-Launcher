@@ -418,15 +418,14 @@ impl RuntimeCaptureCatalog {
 
     /// Exact state match. Never silently use a different orientation or
     /// a different set of wall/fence/stair connection states.
-    pub fn shape_for_state(&self, state: &BlockStateQuery) -> Option<ModelShape> {
-        self.shape_for_state_shared(state)
-            .map(|shape| (*shape).clone())
+    pub fn shape(&self, state: &BlockStateQuery) -> Option<ModelShape> {
+        self.shared_shape(state).map(|shape| (*shape).clone())
     }
 
     /// Return an immutable shared model instead of cloning its plane and
     /// cuboid arrays on every state-cache hit. Renderer workers can cheaply
     /// retain the same captured geometry across chunk palette lookups.
-    pub fn shape_for_state_shared(&self, state: &BlockStateQuery) -> Option<Arc<ModelShape>> {
+    pub fn shared_shape(&self, state: &BlockStateQuery) -> Option<Arc<ModelShape>> {
         let key = query_key(state);
         if let Some(cached) = self.shapes.lock().ok()?.get(&key).cloned() {
             return cached;
@@ -913,22 +912,18 @@ mod tests {
         let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
         assert_eq!(catalog.state_count(), 1);
         let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
-        let first = catalog
-            .shape_for_state_shared(&state)
-            .expect("current quad");
+        let first = catalog.shared_shape(&state).expect("current quad");
         assert_eq!(first.planes.len(), 1);
         assert_eq!(
             first.planes[0].material_slot.as_deref(),
             Some(capture_texture_slot("grass_side").as_str())
         );
         assert!(first.planes[0].uv.is_some());
-        let second = catalog.shape_for_state_shared(&state).unwrap();
+        let second = catalog.shared_shape(&state).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
         assert!(
             catalog
-                .shape_for_state(
-                    &BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 3)
-                )
+                .shape(&BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 3))
                 .is_none()
         );
     }
@@ -1030,9 +1025,7 @@ mod tests {
         write(dir.path(), "blocks.json", &index);
         let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
         let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
-        let shape = catalog
-            .shape_for_state(&state)
-            .expect("native mesh with atlas UV");
+        let shape = catalog.shape(&state).expect("native mesh with atlas UV");
         assert_eq!(shape.planes.len(), 1);
         let plane = &shape.planes[0];
         assert_eq!(
@@ -1061,7 +1054,7 @@ mod tests {
         )
         .unwrap();
         let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
-        assert!(catalog.shape_for_state(&state).is_none());
+        assert!(catalog.shape(&state).is_none());
     }
 
     #[test]
@@ -1098,7 +1091,7 @@ mod tests {
         write(dir.path(), "blocks.json", &index);
         let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
         let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
-        assert!(catalog.shape_for_state_shared(&state).is_none());
+        assert!(catalog.shared_shape(&state).is_none());
     }
     #[test]
     fn capture_note_states_reuse_exact_recipe() {
@@ -1107,8 +1100,8 @@ mod tests {
         let catalog = RuntimeCaptureCatalog::open(dir.path()).unwrap();
         assert_eq!(catalog.state_count(), 2);
         assert_eq!(
-            catalog.shape_for_state(&BlockStateQuery::new("noteblock").with_state("note", 2)),
-            catalog.shape_for_state(&BlockStateQuery::new("noteblock").with_state("note", 24))
+            catalog.shape(&BlockStateQuery::new("noteblock").with_state("note", 2)),
+            catalog.shape(&BlockStateQuery::new("noteblock").with_state("note", 24))
         );
     }
     #[test]
@@ -1143,10 +1136,7 @@ mod tests {
         let catalog =
             RuntimeCaptureCatalog::open_with_source(Path::new("<embedded>"), Some(leaked)).unwrap();
         let state = BlockStateQuery::new("oak_stairs").with_state("weirdo_direction", 2);
-        assert_eq!(
-            catalog.shape_for_state_shared(&state).unwrap().planes.len(),
-            1
-        );
+        assert_eq!(catalog.shared_shape(&state).unwrap().planes.len(), 1);
     }
     #[test]
     fn real_embedded_capture_resolves_at_least_one_complete_renderable_recipe() {

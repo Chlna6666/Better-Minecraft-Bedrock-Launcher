@@ -189,11 +189,7 @@ impl ObjResourcePack {
     }
 
     /// Looks up one texture file by its logical path inside this pack.
-    pub(super) fn texture_file_for_path(&self, path: &Path) -> Option<ResourceFile> {
-        self.texture_file(path)
-    }
-
-    fn texture_file(&self, path: &Path) -> Option<ResourceFile> {
+    pub(super) fn texture_file(&self, path: &Path) -> Option<ResourceFile> {
         if let Some(file) = self.resources.get(path) {
             return Some(file);
         }

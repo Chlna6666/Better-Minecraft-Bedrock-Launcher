@@ -61,22 +61,22 @@ impl PlayerData {
     }
 
     /// Returns the persisted `IsGliding` flag when present.
-    pub fn is_gliding(&self) -> Result<Option<bool>> {
+    pub fn gliding(&self) -> Result<Option<bool>> {
         actor_bool(self.root()?.get("IsGliding"), "IsGliding")
     }
 
     /// Sets `IsGliding`, preserving its existing integer NBT width.
-    pub fn set_is_gliding(&mut self, value: bool) -> Result<()> {
+    pub fn set_gliding(&mut self, value: bool) -> Result<()> {
         set_actor_bool(self, "IsGliding", value)
     }
 
     /// Returns the persisted `IsSwimming` flag when present.
-    pub fn is_swimming(&self) -> Result<Option<bool>> {
+    pub fn swimming(&self) -> Result<Option<bool>> {
         actor_bool(self.root()?.get("IsSwimming"), "IsSwimming")
     }
 
     /// Sets `IsSwimming`, preserving its existing integer NBT width.
-    pub fn set_is_swimming(&mut self, value: bool) -> Result<()> {
+    pub fn set_swimming(&mut self, value: bool) -> Result<()> {
         set_actor_bool(self, "IsSwimming", value)
     }
 
