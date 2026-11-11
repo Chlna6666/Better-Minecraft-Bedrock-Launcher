@@ -74,7 +74,15 @@
     `damage`）只出现在专有实现里，不泄漏为通用接口名；通用错误映射用 `backend_error`
     一类领域词，不把平台 API 名拼进函数名。
 
-## 3. 边界规则
+## 3. 名称与契约审查
+
+- 规则覆盖本次新增或实际修改的声明与绑定，包括内部函数、trait 方法、字段、局部变量、模式绑定和闭包参数；不只检查 public API。先读实现、类型和调用方，确认名称描述真实对象、阶段、所有权、错误和副作用。
+- frame 只在实际指代明确帧概念时使用。按行为区分 CPU 准备、命令录制、提交批次、交换链图像、呈现帧、动画帧或网络帧；FrameId、SubmissionId、SwapchainImage、RenderPass 和 PresentedFrame 的含义不可混用。类型或模块已说明上下文时，不要机械追加 frame；也不要批量替换所有含 frame 的名字。
+- Options、Descriptor 等类型只承载配置。业务动作由拥有相应权限和生命周期的服务执行。new/default 用于惯用构造；from_* 应表达真实来源转换，不能只为缩短名称而改名。改接口时保留 Option/Result、默认值、所有权、错误传播、状态更新语义和调用方可观察行为。
+- 命名告警是审查线索，不是自动改名指令。仅处理本次范围及其必要调用链；历史问题先记录，不顺手批量重命名。检查外部 trait、平台实现、FFI、协议和序列化契约，不能只看最终名称是否变短。
+- 工具只能证明其覆盖范围内的结果。命名脚本不是完整 Rust AST 检查器；未由工具覆盖的语义、局部绑定和宏/条件编译路径要明确标为人工审查，不能声称全量自动通过。
+
+## 4. 边界规则
 
 - `nova-gfx` 不得出现 UI 词汇：`Window`（除 native surface target 的平台类型）、`ui`、
   `widget`、`scene`、`retained`、`damage`、`atlas`、`glyph`、`blur`。这些属于 gpui/gpui-3d。
@@ -85,7 +93,7 @@
 - gpui 渲染器内部按动词族组织：`prepare_*`（CPU 侧准备）、`encode_*`（生成命令）、
   `submit_*`（提交）、`present_*`（呈现）、`sync_*`（资源同步）。避免 `handle_*`。
 
-## 4. 文件与文档命名
+## 5. 文件与文档命名
 
 - crate 文档：`README.md`（英文）+ `README.zh-CN.md`（中文），成对维护。
 - 集中文档：`docs/UPPER_SNAKE.md`（如 `ARCHITECTURE.md`、`BUILD_AND_TEST.md`），
@@ -94,7 +102,7 @@
 - 不使用 `*-audit.md`、`*-migration.md`、`*-rename*.md`、`*-todo.md` 作为长期文档；
   迁移与待办放在 PR/issue。测试输出、benchmark 原始数据、截图和日志不进入 `docs/`。
 
-## 5. 评审检查清单
+## 6. 评审检查清单
 
 - [ ] 新名称读完能回答“动作 + 对象 + 返回类型”。
 - [ ] 公共 API 没有 `get_` 前缀（除 keyed lookup）。
@@ -104,7 +112,7 @@
 - [ ] 新增 trait 方法同步更新所有 backend 与文档。
 - [ ] 测试名描述行为，不泄漏实现细节。
 
-## 6. 自动化
+## 7. 自动化
 
 ```powershell
 pwsh -File scripts/check-nova-gfx-boundary.ps1
@@ -114,3 +122,5 @@ rustfmt --edition 2024 <改动文件...>
 ```
 
 允许清单只包含已评审的例外；新增例外需要在评审中说明理由，不能用来绕过规则。
+
+当前 check-naming.ps1 逐行检查部分 nova-gfx 与 GPUI Nova 路径中的公开函数名，并对部分 GPUI 名称给出提示；它不解析 Rust AST，也不覆盖整个工作区的局部绑定和所有声明。rustfmt、编译器与该脚本各自只验证其实际覆盖的内容。
