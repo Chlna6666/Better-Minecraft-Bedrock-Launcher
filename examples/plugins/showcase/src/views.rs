@@ -91,7 +91,7 @@ fn state_section() -> View {
                 tr!("showcase.button.save_notes"),
                 ShowcaseAction::SaveNotes.as_str(),
             ),
-            View::button_with_value(
+            View::button_action(
                 tr!("showcase.button.append_note"),
                 ShowcaseAction::SaveNotes.as_str(),
                 format!("{} {}", state::notes(), state::counter()),
@@ -257,7 +257,7 @@ fn footer_row() -> View {
         .child(icon("star"))
         .child(link(tr!("showcase.link.docs"), "https://bmcbl.com/"))
         .child(spacer(8))
-        .child(image_with_options(
+        .child(image_options(
             RESOURCE_NOTICE,
             tr!("showcase.image.alt"),
             ImageOptions::new()

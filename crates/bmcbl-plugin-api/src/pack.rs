@@ -495,55 +495,19 @@ fn write_package(
     zip.write_all(wasm)?;
 
     let mut written_files = BTreeSet::new();
-    write_optional_file_from_manifest(
+    let mut writer = ManifestWriter {
         plugin_dir,
-        &mut zip,
+        zip: &mut zip,
         manifest_text,
-        "readme",
-        &mut written_files,
-    )?;
-    write_optional_file_map_from_manifest(
-        plugin_dir,
-        &mut zip,
-        manifest_text,
-        "readme_locales",
-        &mut written_files,
-    )?;
-    write_optional_file_from_manifest(
-        plugin_dir,
-        &mut zip,
-        manifest_text,
-        "icon",
-        &mut written_files,
-    )?;
-    write_optional_file_from_manifest(
-        plugin_dir,
-        &mut zip,
-        manifest_text,
-        "config_default",
-        &mut written_files,
-    )?;
-    write_optional_file_from_manifest(
-        plugin_dir,
-        &mut zip,
-        manifest_text,
-        "config_schema",
-        &mut written_files,
-    )?;
-    write_optional_directory_from_manifest(
-        plugin_dir,
-        &mut zip,
-        manifest_text,
-        "lang_dir",
-        &mut written_files,
-    )?;
-    write_optional_directory_from_manifest(
-        plugin_dir,
-        &mut zip,
-        manifest_text,
-        "sidecar_dir",
-        &mut written_files,
-    )?;
+        written_files: &mut written_files,
+    };
+    writer.file("readme")?;
+    writer.file_map("readme_locales")?;
+    writer.file("icon")?;
+    writer.file("config_default")?;
+    writer.file("config_schema")?;
+    writer.dir("lang_dir")?;
+    writer.dir("sidecar_dir")?;
 
     write_allowed_resource_entries(plugin_dir, &mut zip, &mut written_files, manifest_text)?;
 
@@ -813,12 +777,12 @@ fn source_newer_than_artifact(path: &Path) -> Result<bool> {
 fn emit_build_script_rerun_paths(manifest_dir: &Path) -> Result<()> {
     emit_rerun_if_exists(&manifest_dir.join("Cargo.toml"));
     emit_rerun_if_exists(&manifest_dir.join("build.rs"));
-    emit_rerun_for_directory(&manifest_dir.join("src"))?;
-    emit_rerun_for_directory(&manifest_dir.join("assets"))?;
-    emit_rerun_for_directory(&manifest_dir.join("lang"))?;
-    emit_rerun_for_directory(&manifest_dir.join("config"))?;
+    emit_rerun_in_dir(&manifest_dir.join("src"))?;
+    emit_rerun_in_dir(&manifest_dir.join("assets"))?;
+    emit_rerun_in_dir(&manifest_dir.join("lang"))?;
+    emit_rerun_in_dir(&manifest_dir.join("config"))?;
     emit_rerun_if_exists(&manifest_dir.join("README.md"));
-    emit_rerun_for_readme_locales(&manifest_dir)?;
+    emit_rerun_readme_locales(&manifest_dir)?;
     Ok(())
 }
 
@@ -850,7 +814,7 @@ fn emit_package_rerun_path(manifest_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn emit_rerun_for_directory(path: &Path) -> Result<()> {
+fn emit_rerun_in_dir(path: &Path) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
@@ -862,7 +826,7 @@ fn emit_rerun_for_directory(path: &Path) -> Result<()> {
     for entry in entries {
         let path = entry.path();
         if path.is_dir() {
-            emit_rerun_for_directory(&path)?;
+            emit_rerun_in_dir(&path)?;
         } else {
             emit_rerun_if_exists(&path);
         }
@@ -876,7 +840,7 @@ fn emit_rerun_if_exists(path: &Path) {
     }
 }
 
-fn emit_rerun_for_readme_locales(manifest_dir: &Path) -> Result<()> {
+fn emit_rerun_readme_locales(manifest_dir: &Path) -> Result<()> {
     let mut entries = fs::read_dir(manifest_dir)
         .with_context(|| format!("read {}", manifest_dir.display()))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1029,53 +993,53 @@ fn write_allowed_resource_entries<W: Write + std::io::Seek>(
     Ok(())
 }
 
-fn write_optional_file_from_manifest<W: Write + std::io::Seek>(
-    plugin_dir: &Path,
-    zip: &mut zip::ZipWriter<W>,
-    manifest_text: &str,
-    key: &str,
-    written_files: &mut BTreeSet<String>,
-) -> Result<()> {
-    let Some(relative_path) = manifest_path_value(manifest_text, key)? else {
-        return Ok(());
-    };
-    if !written_files.insert(normalize_package_path(&relative_path.to_string_lossy())) {
-        return Ok(());
-    }
-    write_package_file(zip, plugin_dir, &relative_path, &relative_path)
+/// Groups the shared state for writing optional manifest-declared package entries.
+/// JS/TS-style parameter object: `writer.file("readme")` instead of a five-argument
+/// positional call repeated for every manifest key.
+struct ManifestWriter<'a, W: Write + std::io::Seek> {
+    plugin_dir: &'a Path,
+    zip: &'a mut zip::ZipWriter<W>,
+    manifest_text: &'a str,
+    written_files: &'a mut BTreeSet<String>,
 }
 
-fn write_optional_file_map_from_manifest<W: Write + std::io::Seek>(
-    plugin_dir: &Path,
-    zip: &mut zip::ZipWriter<W>,
-    manifest_text: &str,
-    key: &str,
-    written_files: &mut BTreeSet<String>,
-) -> Result<()> {
-    for relative_path in manifest_path_map_values(manifest_text, key)? {
-        if !written_files.insert(normalize_package_path(&relative_path.to_string_lossy())) {
-            continue;
+impl<W: Write + std::io::Seek> ManifestWriter<'_, W> {
+    fn file(&mut self, key: &str) -> Result<()> {
+        let Some(relative_path) = manifest_path_value(self.manifest_text, key)? else {
+            return Ok(());
+        };
+        if !self
+            .written_files
+            .insert(normalize_package_path(&relative_path.to_string_lossy()))
+        {
+            return Ok(());
         }
-        write_package_file(zip, plugin_dir, &relative_path, &relative_path)?;
+        write_package_file(self.zip, self.plugin_dir, &relative_path, &relative_path)
     }
-    Ok(())
-}
 
-fn write_optional_directory_from_manifest<W: Write + std::io::Seek>(
-    plugin_dir: &Path,
-    zip: &mut zip::ZipWriter<W>,
-    manifest_text: &str,
-    key: &str,
-    written_files: &mut BTreeSet<String>,
-) -> Result<()> {
-    let Some(relative_path) = manifest_path_value(manifest_text, key)? else {
-        return Ok(());
-    };
-    let root = plugin_dir.join(&relative_path);
-    if !root.exists() {
-        return Ok(());
+    fn file_map(&mut self, key: &str) -> Result<()> {
+        for relative_path in manifest_path_map_values(self.manifest_text, key)? {
+            if !self
+                .written_files
+                .insert(normalize_package_path(&relative_path.to_string_lossy()))
+            {
+                continue;
+            }
+            write_package_file(self.zip, self.plugin_dir, &relative_path, &relative_path)?;
+        }
+        Ok(())
     }
-    write_directory(zip, plugin_dir, &root, written_files)
+
+    fn dir(&mut self, key: &str) -> Result<()> {
+        let Some(relative_path) = manifest_path_value(self.manifest_text, key)? else {
+            return Ok(());
+        };
+        let root = self.plugin_dir.join(&relative_path);
+        if !root.exists() {
+            return Ok(());
+        }
+        write_directory(self.zip, self.plugin_dir, &root, self.written_files)
+    }
 }
 
 fn manifest_path_value(manifest_text: &str, key: &str) -> Result<Option<PathBuf>> {

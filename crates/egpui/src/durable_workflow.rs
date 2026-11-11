@@ -170,7 +170,7 @@ impl DurableWorkflowCoordinator {
         let store = self.store.clone();
         let execution_scope = self.scope.clone();
         self.scope
-            .spawn_io_with_cancellation(move |cancellation| async move {
+            .spawn_io_cancellable(move |cancellation| async move {
                 let mut running = record.clone();
                 running.set_phase(DurableTaskPhase::Running);
                 persist_record(&execution_scope, store.clone(), running.clone()).await?;

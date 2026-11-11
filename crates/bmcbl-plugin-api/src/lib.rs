@@ -972,7 +972,10 @@ pub trait Plugin {
     }
 
     fn call_service(_request: ServiceCallRequest) -> PluginResult<Vec<u8>> {
-        Err(PluginError::new("service-not-found", "service call not implemented by this plugin"))
+        Err(PluginError::new(
+            "service-not-found",
+            "service call not implemented by this plugin",
+        ))
     }
 
     fn shutdown(_reason: ShutdownReason) -> PluginResult<()> {
@@ -1118,10 +1121,9 @@ impl Registrations {
 
     #[must_use]
     pub fn service(mut self, service_name: impl Into<String>) -> Self {
-        self.items
-            .push(Registration::Service(ServiceRegistration {
-                service_name: service_name.into(),
-            }));
+        self.items.push(Registration::Service(ServiceRegistration {
+            service_name: service_name.into(),
+        }));
         self
     }
 
@@ -1420,8 +1422,8 @@ impl View {
     }
 
     #[must_use]
-    pub fn badge_with_style(label: impl Into<Arc<str>>, style: ViewStyle) -> Self {
-        Self::node(badge_with_style(label, style))
+    pub fn badge_styled(label: impl Into<Arc<str>>, style: ViewStyle) -> Self {
+        Self::node(badge_styled(label, style))
     }
 
     #[must_use]
@@ -1430,21 +1432,29 @@ impl View {
     }
 
     #[must_use]
-    pub fn button_with_value(
+    pub fn button_action(
         label: impl Into<Arc<str>>,
         action_id: impl Into<Arc<str>>,
         action_value: impl Into<Arc<str>>,
     ) -> Self {
-        Self::node(button_with_value(label, action_id, action_value))
+        Self::node(button_action(label, action_id, action_value))
     }
 
     #[must_use]
-    pub fn checkbox(label: impl Into<Arc<str>>, checked: bool, action_id: impl Into<Arc<str>>) -> Self {
+    pub fn checkbox(
+        label: impl Into<Arc<str>>,
+        checked: bool,
+        action_id: impl Into<Arc<str>>,
+    ) -> Self {
         Self::node(checkbox(label, checked, action_id))
     }
 
     #[must_use]
-    pub fn toggle(label: impl Into<Arc<str>>, enabled: bool, action_id: impl Into<Arc<str>>) -> Self {
+    pub fn toggle(
+        label: impl Into<Arc<str>>,
+        enabled: bool,
+        action_id: impl Into<Arc<str>>,
+    ) -> Self {
         Self::node(toggle(label, enabled, action_id))
     }
 
@@ -1474,31 +1484,12 @@ impl View {
     }
 
     #[must_use]
-    pub fn image_with_style(
-        src: impl Into<Arc<str>>,
-        alt: impl Into<Arc<str>>,
-        height: Option<u16>,
-        aspect_ratio: Option<(u16, u16)>,
-        fit: ImageFit,
-        corner_radius: Option<u16>,
-    ) -> Self {
-        Self::node(image_with_style(
-            src,
-            alt,
-            height,
-            aspect_ratio,
-            fit,
-            corner_radius,
-        ))
-    }
-
-    #[must_use]
-    pub fn image_with_options(
+    pub fn image_options(
         src: impl Into<Arc<str>>,
         alt: impl Into<Arc<str>>,
         options: ImageOptions,
     ) -> Self {
-        Self::node(image_with_options(src, alt, options))
+        Self::node(image_options(src, alt, options))
     }
 
     #[must_use]
@@ -1754,7 +1745,7 @@ pub fn badge(label: impl Into<Arc<str>>) -> ViewNode {
 }
 
 #[must_use]
-pub fn badge_with_style(label: impl Into<Arc<str>>, style: ViewStyle) -> ViewNode {
+pub fn badge_styled(label: impl Into<Arc<str>>, style: ViewStyle) -> ViewNode {
     ViewNode::Badge(BadgeNode {
         label: label.into(),
         style,
@@ -1772,7 +1763,7 @@ pub fn button(label: impl Into<Arc<str>>, action_id: impl Into<Arc<str>>) -> Vie
 }
 
 #[must_use]
-pub fn button_with_value(
+pub fn button_action(
     label: impl Into<Arc<str>>,
     action_id: impl Into<Arc<str>>,
     action_value: impl Into<Arc<str>>,
@@ -1786,7 +1777,11 @@ pub fn button_with_value(
 }
 
 #[must_use]
-pub fn checkbox(label: impl Into<Arc<str>>, checked: bool, action_id: impl Into<Arc<str>>) -> ViewNode {
+pub fn checkbox(
+    label: impl Into<Arc<str>>,
+    checked: bool,
+    action_id: impl Into<Arc<str>>,
+) -> ViewNode {
     ViewNode::Checkbox(CheckboxNode {
         label: label.into(),
         checked,
@@ -1797,7 +1792,11 @@ pub fn checkbox(label: impl Into<Arc<str>>, checked: bool, action_id: impl Into<
 }
 
 #[must_use]
-pub fn toggle(label: impl Into<Arc<str>>, enabled: bool, action_id: impl Into<Arc<str>>) -> ViewNode {
+pub fn toggle(
+    label: impl Into<Arc<str>>,
+    enabled: bool,
+    action_id: impl Into<Arc<str>>,
+) -> ViewNode {
     ViewNode::Toggle(ToggleNode {
         label: label.into(),
         enabled,
@@ -1855,7 +1854,7 @@ pub fn link(label: impl Into<Arc<str>>, url: impl Into<Arc<str>>) -> ViewNode {
 }
 
 #[must_use]
-pub fn link_with_tooltip(
+pub fn link_tooltip(
     label: impl Into<Arc<str>>,
     url: impl Into<Arc<str>>,
     tooltip: impl Into<Arc<str>>,
@@ -1899,24 +1898,7 @@ pub fn image(src: impl Into<Arc<str>>, alt: impl Into<Arc<str>>) -> ViewNode {
 }
 
 #[must_use]
-pub fn image_with_style(
-    src: impl Into<Arc<str>>,
-    alt: impl Into<Arc<str>>,
-    height: Option<u16>,
-    aspect_ratio: Option<(u16, u16)>,
-    fit: ImageFit,
-    corner_radius: Option<u16>,
-) -> ViewNode {
-    let mut options = ImageOptions::new().fit(fit);
-    options.height = height;
-    options.aspect_ratio_x = aspect_ratio.map(|(x, _)| x);
-    options.aspect_ratio_y = aspect_ratio.map(|(_, y)| y);
-    options.corner_radius = corner_radius;
-    image_with_options(src, alt, options)
-}
-
-#[must_use]
-pub fn image_with_options(
+pub fn image_options(
     src: impl Into<Arc<str>>,
     alt: impl Into<Arc<str>>,
     options: ImageOptions,
@@ -2450,9 +2432,7 @@ pub fn sidecar_call(
 pub fn register_service(name: impl Into<String>) -> PluginResult<()> {
     app_call_unit(
         AppOp::RegisterService,
-        &AppRequest::RegisterService {
-            name: name.into(),
-        },
+        &AppRequest::RegisterService { name: name.into() },
     )
 }
 
@@ -2521,10 +2501,7 @@ pub fn plugin_error(code: impl Into<String>, message: impl Into<String>) -> Plug
     PluginError::new(code, message)
 }
 
-fn unexpected_app_response<T>(
-    _response: AppResponse,
-    operation: &'static str,
-) -> PluginResult<T> {
+fn unexpected_app_response<T>(_response: AppResponse, operation: &'static str) -> PluginResult<T> {
     Err(plugin_error(
         "invalid-host-response",
         format!("{operation} returned unexpected response type"),
@@ -2822,12 +2799,11 @@ macro_rules! export_plugin {
         )]
         #[unsafe(no_mangle)]
         pub extern "C" fn bmcbl_call_service(ptr: u32, len: u32) -> u64 {
-            let request = match unsafe {
-                $crate::decode_request::<$crate::ServiceCallRequest>(ptr, len)
-            } {
-                Ok(request) => request,
-                Err(error) => return $crate::encode_plugin_result::<Vec<u8>>(Err(error)),
-            };
+            let request =
+                match unsafe { $crate::decode_request::<$crate::ServiceCallRequest>(ptr, len) } {
+                    Ok(request) => request,
+                    Err(error) => return $crate::encode_plugin_result::<Vec<u8>>(Err(error)),
+                };
             $crate::encode_plugin_result(<$plugin as $crate::Plugin>::call_service(request))
         }
 
@@ -3030,26 +3006,25 @@ macro_rules! invalidate {
 
 pub mod prelude {
     pub use crate::{
-        AbiResult, Align, CompactBehavior, Container, EventSubscription, PluginEvent, PluginEventKind,
-        HttpCacheState, HttpTextResponse, I18nArg, ImageFit, ImageOptions, Injection,
-        InjectionLayout, InjectionRegistration, InjectionRequest, InjectionSlot, LogLevel, Modal,
-        ModalRequest, Nav, Page, PageRegistration, PageRenderRequest, Plugin, PluginContext,
-        PluginError, PluginMetadata, PluginResult, Registration, Registrations, SelectOption,
+        AbiResult, Align, CompactBehavior, Container, EventSubscription, HttpCacheState,
+        HttpTextResponse, I18nArg, ImageFit, ImageOptions, Injection, InjectionLayout,
+        InjectionRegistration, InjectionRequest, InjectionSlot, LogLevel, Modal, ModalRequest, Nav,
+        Page, PageRegistration, PageRenderRequest, Plugin, PluginContext, PluginError, PluginEvent,
+        PluginEventKind, PluginMetadata, PluginResult, Registration, Registrations, SelectOption,
         ServiceCallRequest, ServiceRegistration, ShutdownReason, StorageEntry, TaskCreateRequest,
         TaskFinishRequest, TaskUpdateRequest, TextSizeToken, ThemeColor, ThemeMode, ThemeSnapshot,
         ThemeToken, ToastKind, View, ViewNode, ViewStyle, ViewTree, ViewTreeBuilder, Window,
-        app_info, badge, badge_with_style, bmcbl_plugin, button, button_with_value,
-        call_plugin_service, call_service, card, checkbox, config_read, config_write, create_task,
-        current_locale, current_unix_ms, default_style, emit_event, finish_task, http_get_text,
-        icon, image, image_with_options, image_with_style, invalidate, invalidate_all,
-        invalidate_injection, invalidate_page, is_dark_mode, link, link_with_tooltip, log,
-        log_debug, log_error, log_info, log_warn, navigate, navigate_page, navigate_path,
-        open_external_url, open_modal, open_window, option, plugin_actions, plugin_error,
-        plugin_metadata, progress, read_clipboard_text, read_config, read_resource_bytes,
-        read_resource_text, register_service, registrations, section, select, session_get,
-        session_set, show_toast, sidecar_call, spacer, storage_delete, storage_get, storage_list,
-        storage_set, text, theme_accent, theme_snapshot, title, toast, toggle, tr, tr_arg, tr_args,
-        update_task, view, write_clipboard_text,
+        app_info, badge, badge_styled, bmcbl_plugin, button, button_action, call_plugin_service,
+        call_service, card, checkbox, config_read, config_write, create_task, current_locale,
+        current_unix_ms, default_style, emit_event, finish_task, http_get_text, icon, image,
+        image_options, invalidate, invalidate_all, invalidate_injection, invalidate_page,
+        is_dark_mode, link, link_tooltip, log, log_debug, log_error, log_info, log_warn, navigate,
+        navigate_page, navigate_path, open_external_url, open_modal, open_window, option,
+        plugin_actions, plugin_error, plugin_metadata, progress, read_clipboard_text, read_config,
+        read_resource_bytes, read_resource_text, register_service, registrations, section, select,
+        session_get, session_set, show_toast, sidecar_call, spacer, storage_delete, storage_get,
+        storage_list, storage_set, text, theme_accent, theme_snapshot, title, toast, toggle, tr,
+        tr_arg, tr_args, update_task, view, write_clipboard_text,
     };
 }
 
@@ -3163,7 +3138,7 @@ mod tests {
 
     #[test]
     fn image_options_builder_sets_stable_render_fields() {
-        let node = image_with_options(
+        let node = image_options(
             "https://example.com/image.webp",
             "Preview",
             ImageOptions::new()
@@ -3199,7 +3174,8 @@ mod tests {
             service_name: "test-service".to_string(),
         });
         let bytes = postcard::to_allocvec(&registration).expect("service reg should encode");
-        let decoded = postcard::from_bytes::<Registration>(&bytes).expect("service reg should decode");
+        let decoded =
+            postcard::from_bytes::<Registration>(&bytes).expect("service reg should decode");
         assert_eq!(decoded, registration);
 
         let request = AppRequest::CallService {
@@ -3211,7 +3187,8 @@ mod tests {
             },
         };
         let bytes = postcard::to_allocvec(&request).expect("service call request should encode");
-        let decoded = postcard::from_bytes::<AppRequest>(&bytes).expect("service call request should decode");
+        let decoded =
+            postcard::from_bytes::<AppRequest>(&bytes).expect("service call request should decode");
         assert_eq!(decoded, request);
     }
 

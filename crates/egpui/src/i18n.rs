@@ -223,6 +223,17 @@ pub struct I18nService {
     changes: watch::Sender<LocaleSnapshot>,
 }
 
+/// Configuration for registering one catalog resource. JS/TS-style parameter object
+/// so the entry point stays a short action with typed inputs.
+pub struct CatalogRegistration<'a, N> {
+    pub resolver: &'a ResourceResolver,
+    pub resource: &'a ResourceId,
+    pub namespace: N,
+    pub locale: LocaleId,
+    pub direction: LocaleDirection,
+    pub maximum_bytes: usize,
+}
+
 impl I18nService {
     /// Creates a service with source and active locales.
     #[must_use]
@@ -298,15 +309,18 @@ impl I18nService {
     /// # Errors
     ///
     /// Returns resource, encoding, parser, or registration errors.
-    pub fn register_catalog_resource(
+    pub fn register_resource_catalog(
         &self,
-        resolver: &ResourceResolver,
-        resource: &ResourceId,
-        namespace: impl Into<Arc<str>>,
-        locale: LocaleId,
-        direction: LocaleDirection,
-        maximum_bytes: usize,
+        registration: CatalogRegistration<'_, impl Into<Arc<str>>>,
     ) -> Result<(), I18nError> {
+        let CatalogRegistration {
+            resolver,
+            resource,
+            namespace,
+            locale,
+            direction,
+            maximum_bytes,
+        } = registration;
         let Some(handle) = resolver.resolve(resource)? else {
             return Err(I18nError::ResourceMissing(resource.clone()));
         };

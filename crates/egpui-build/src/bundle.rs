@@ -173,7 +173,7 @@ pub struct NativeBundlerBackend;
 
 impl BundlerBackend for NativeBundlerBackend {
     fn supported_formats(&self) -> BTreeSet<PackageFormat> {
-        formats_for_host(HostPlatform::current())
+        host_formats(HostPlatform::current())
     }
 
     fn plan(
@@ -185,7 +185,7 @@ impl BundlerBackend for NativeBundlerBackend {
             return Err(BundlePlanError::TargetNotDeclared(request.format));
         }
         let host = HostPlatform::current();
-        if !formats_for_host(host).contains(&request.format) {
+        if !host_formats(host).contains(&request.format) {
             return Err(BundlePlanError::UnsupportedHost {
                 format: request.format,
                 host,
@@ -275,7 +275,7 @@ impl BundleExecutor for NativeBundleExecutor {
     }
 }
 
-fn formats_for_host(host: HostPlatform) -> BTreeSet<PackageFormat> {
+fn host_formats(host: HostPlatform) -> BTreeSet<PackageFormat> {
     match host {
         HostPlatform::Windows => [
             PackageFormat::WindowsPortable,
@@ -585,7 +585,13 @@ fn plan_linux_app_image(
     let binary = binary_name(manifest);
     let staging = request.output_directory.join(format!("{binary}.AppDir"));
     let desktop = desktop_file(manifest, &binary);
-    let mut steps = linux_staging_steps(manifest, request, &staging, &binary, &desktop);
+    let mut steps = linux_staging_steps(&LinuxStagingContext {
+        manifest,
+        request,
+        staging: &staging,
+        binary: &binary,
+        desktop: &desktop,
+    });
     let app_run = staging.join("AppRun");
     steps.push(BundleStep::WriteText {
         destination: app_run.clone(),
@@ -615,7 +621,13 @@ fn plan_linux_deb(
     let binary = binary_name(manifest);
     let staging = request.output_directory.join("deb-root");
     let desktop = desktop_file(manifest, &binary);
-    let mut steps = linux_staging_steps(manifest, request, &staging, &binary, &desktop);
+    let mut steps = linux_staging_steps(&LinuxStagingContext {
+        manifest,
+        request,
+        staging: &staging,
+        binary: &binary,
+        desktop: &desktop,
+    });
     steps.push(BundleStep::WriteText {
         destination: staging.join("DEBIAN/control"),
         contents: debian_control(manifest, &binary),
@@ -648,7 +660,13 @@ fn plan_linux_rpm(
     let binary = binary_name(manifest);
     let staging = request.output_directory.join("rpm-root");
     let desktop = desktop_file(manifest, &binary);
-    let mut steps = linux_staging_steps(manifest, request, &staging, &binary, &desktop);
+    let mut steps = linux_staging_steps(&LinuxStagingContext {
+        manifest,
+        request,
+        staging: &staging,
+        binary: &binary,
+        desktop: &desktop,
+    });
     let top_directory = request.output_directory.join("rpmbuild");
     let specification = top_directory.join("SPECS").join(format!("{binary}.spec"));
     steps.push(BundleStep::CreateDirectory(
@@ -697,13 +715,24 @@ fn common_staging_steps(
     steps
 }
 
-fn linux_staging_steps(
-    manifest: &AppManifest,
-    request: &BundleRequest,
-    staging: &Path,
-    binary: &str,
-    desktop: &str,
-) -> Vec<BundleStep> {
+/// Shared context for the three Linux packaging planners. JS/TS-style parameter
+/// object instead of a five-argument positional chain.
+struct LinuxStagingContext<'a> {
+    manifest: &'a AppManifest,
+    request: &'a BundleRequest,
+    staging: &'a Path,
+    binary: &'a str,
+    desktop: &'a str,
+}
+
+fn linux_staging_steps(context: &LinuxStagingContext<'_>) -> Vec<BundleStep> {
+    let LinuxStagingContext {
+        manifest,
+        request,
+        staging,
+        binary,
+        desktop,
+    } = *context;
     let executable_directory = staging.join("usr/bin");
     let share_directory = staging.join("usr/share");
     let mut steps = vec![
@@ -1142,9 +1171,7 @@ mod tests {
         ResourceManifest, RuntimeManifest,
     };
 
-    use super::{
-        BundleRequest, BundlerBackend, HostPlatform, NativeBundlerBackend, formats_for_host,
-    };
+    use super::{BundleRequest, BundlerBackend, HostPlatform, NativeBundlerBackend, host_formats};
 
     fn manifest(format: PackageFormat) -> AppManifest {
         AppManifest {
@@ -1177,7 +1204,7 @@ mod tests {
     fn backend_reports_only_native_formats() {
         assert_eq!(
             NativeBundlerBackend.supported_formats(),
-            formats_for_host(HostPlatform::current())
+            host_formats(HostPlatform::current())
         );
     }
 

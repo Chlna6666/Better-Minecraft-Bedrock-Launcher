@@ -84,9 +84,11 @@ pub fn build_resource_index(
     ] {
         for pattern in patterns {
             let matched = collect_pattern(
-                project_root,
-                pattern,
-                source,
+                &ResourcePattern {
+                    project_root,
+                    pattern,
+                    source,
+                },
                 &mut entries,
                 &mut case_folded_paths,
             )?;
@@ -121,13 +123,23 @@ pub fn render_embedded_resource_module(index: &ResourceIndex) -> String {
     output
 }
 
-fn collect_pattern(
-    project_root: &Path,
-    pattern: &str,
+/// Static inputs for one glob-pattern collection pass.
+struct ResourcePattern<'a> {
+    project_root: &'a Path,
+    pattern: &'a str,
     source: ResourceSource,
+}
+
+fn collect_pattern(
+    spec: &ResourcePattern<'_>,
     entries: &mut BTreeMap<String, IndexedResource>,
     case_folded_paths: &mut BTreeMap<String, String>,
 ) -> Result<bool, ResourceIndexError> {
+    let ResourcePattern {
+        project_root,
+        pattern,
+        source,
+    } = *spec;
     let mut matched = false;
     for item in WalkDir::new(project_root).follow_links(false) {
         let item = item?;

@@ -166,7 +166,7 @@ fn detail_page(state: HttpCacheState, error: Option<&str>, notes: &[PatchNote]) 
         .child(meta_row(&detail_note));
 
     if let Some(image_url) = detail_note.image_url.as_ref() {
-        root = root.child(image_with_options(
+        root = root.child(image_options(
             image_url.clone(),
             detail_note.title.clone(),
             news_image_options(260, 220, 300, 8, None, ImageFit::Cover),
@@ -202,25 +202,22 @@ fn base_panel(title_text: String, state: HttpCacheState, compact: bool) -> Conta
 }
 
 fn page_panel(title_text: String, state: HttpCacheState) -> Container {
-    View::column()
-        .padding(4)
-        .gap(14)
-        .child(
-            View::row()
-                .padding(0)
-                .gap(10)
-                .align(Align::Center)
-                .child(status_badge(state))
-                .child(title(title_text))
-                .finish_view(),
-        )
+    View::column().padding(4).gap(14).child(
+        View::row()
+            .padding(0)
+            .gap(10)
+            .align(Align::Center)
+            .child(status_badge(state))
+            .child(title(title_text))
+            .finish_view(),
+    )
 }
 
 fn home_summary(note: &PatchNote) -> View {
     let mut root = View::column().padding(0).gap(7);
 
     if let Some(image_url) = note.image_url.as_ref() {
-        root = root.child(image_with_options(
+        root = root.child(image_options(
             image_url.clone(),
             note.title.clone(),
             news_image_options(128, 116, 136, 6, None, ImageFit::Cover),
@@ -236,7 +233,11 @@ fn home_summary(note: &PatchNote) -> View {
             NotesAction::OpenDetail.as_str(),
             Some(note.content_path.clone().unwrap_or_default()),
         ))
-        .child(action_button(tr!("notes.more"), NotesAction::OpenList.as_str(), None))
+        .child(action_button(
+            tr!("notes.more"),
+            NotesAction::OpenList.as_str(),
+            None,
+        ))
         .finish_view();
 
     root.child(title(truncate(detail_title(note), 38)))
@@ -254,7 +255,7 @@ fn list_row(note: &PatchNote) -> View {
         .corner_radius(8);
 
     if let Some(image_url) = note.image_url.as_ref() {
-        row = row.child(image_with_options(
+        row = row.child(image_options(
             image_url.clone(),
             note.title.clone(),
             news_image_options(170, 142, 200, 6, None, ImageFit::Cover),
@@ -281,7 +282,7 @@ fn action_button(label: String, action_id: &'static str, action_value: Option<St
         ..default_style()
     };
     let node = if let Some(action_value) = action_value {
-        button_with_value(label, action_id, action_value)
+        button_action(label, action_id, action_value)
     } else {
         button(label, action_id)
     };
@@ -319,7 +320,7 @@ fn status_badge(state: HttpCacheState) -> View {
         emphasis: true,
         ..default_style()
     };
-    View::badge_with_style(status_label(state), style)
+    View::badge_styled(status_label(state), style)
 }
 
 fn news_image_options(

@@ -359,7 +359,7 @@ impl TaskScope {
         T: Send + 'static,
         E: Error + Send + Sync + 'static,
     {
-        self.spawn_io_with_cancellation(|_| future)
+        self.spawn_io_cancellable(|_| future)
     }
 
     /// Schedules an asynchronous operation with its task-scoped cancellation
@@ -373,7 +373,7 @@ impl TaskScope {
     /// # Errors
     ///
     /// Returns an error after application shutdown begins.
-    pub fn spawn_io_with_cancellation<F, Fut, T, E>(
+    pub fn spawn_io_cancellable<F, Fut, T, E>(
         &self,
         operation: F,
     ) -> Result<AppTask<T>, RuntimeError>
