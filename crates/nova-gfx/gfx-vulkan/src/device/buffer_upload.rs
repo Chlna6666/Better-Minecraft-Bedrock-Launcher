@@ -120,9 +120,13 @@ impl VulkanDevice {
         if let Some(query) = commands.timestamp_queries.filter(|_| timed) {
             // SAFETY: An idle, fence-complete upload pool owns two writable query slots.
             unsafe {
-                self.device.cmd_reset_query_pool(commands.command_buffer, query, 0, 2);
+                self.device
+                    .cmd_reset_query_pool(commands.command_buffer, query, 0, 2);
                 self.device.cmd_write_timestamp(
-                    commands.command_buffer, vk::PipelineStageFlags::TOP_OF_PIPE, query, 0,
+                    commands.command_buffer,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    query,
+                    0,
                 );
             }
         }
@@ -216,7 +220,10 @@ impl VulkanDevice {
             // SAFETY: The query pool remains owned until the native upload fence completes.
             unsafe {
                 self.device.cmd_write_timestamp(
-                    commands.command_buffer, vk::PipelineStageFlags::BOTTOM_OF_PIPE, query, 1,
+                    commands.command_buffer,
+                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    query,
+                    1,
                 );
             }
         }

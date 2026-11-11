@@ -77,7 +77,8 @@ impl State {
     }
     pub(super) fn remove_shader(&mut self, shader: ShaderModuleId) {
         self.programs.remove(&shader);
-        self.resource_set_programs.retain(|(id, _), _| *id != shader);
+        self.resource_set_programs
+            .retain(|(id, _), _| *id != shader);
     }
     pub(super) fn clear(&mut self) {
         self.programs.clear();
@@ -117,9 +118,14 @@ impl VulkanDevice {
         let mut images = Vec::<(TextureId, bool)>::new();
         for entry in &layout.entries {
             if !entry.stages.contains(ShaderStages::COMPUTE) {
-                return Err(Error::InvalidInput("Vulkan compute resource lacks stage visibility".into()));
+                return Err(Error::InvalidInput(
+                    "Vulkan compute resource lacks stage visibility".into(),
+                ));
             }
-            let binding = desc.entries.iter().find(|b| b.binding == entry.binding)
+            let binding = desc
+                .entries
+                .iter()
+                .find(|b| b.binding == entry.binding)
                 .ok_or_else(|| Error::InvalidInput("missing compute binding".into()))?;
             match (entry.binding_type, binding.resource) {
                 (BindingType::UniformBuffer, BindingResource::Buffer(buffer))
@@ -131,17 +137,21 @@ impl VulkanDevice {
                         _ => ComputeBufferAccess::ReadWrite,
                     };
                     buffer_bindings.push(gfx_core::ComputeBufferBinding {
-                        binding: entry.binding, buffer, access,
+                        binding: entry.binding,
+                        buffer,
+                        access,
                     });
                 }
                 (BindingType::SampledTexture, BindingResource::Texture(texture))
                 | (BindingType::StorageTexture { .. }, BindingResource::Texture(texture)) => {
                     let id = self.texture_views.get(texture.texture_view)?.texture;
                     let writable = matches!(entry.binding_type, BindingType::StorageTexture { .. });
-                    if let Some((_, earlier_writable)) = images.iter().find(|(image, _)| *image == id) {
+                    if let Some((_, earlier_writable)) =
+                        images.iter().find(|(image, _)| *image == id)
+                    {
                         if writable || *earlier_writable {
                             return Err(Error::InvalidInput(
-                                "Vulkan compute storage image aliases another image binding".into()
+                                "Vulkan compute storage image aliases another image binding".into(),
                             ));
                         }
                     } else {
@@ -149,24 +159,35 @@ impl VulkanDevice {
                     }
                 }
                 (BindingType::Sampler, BindingResource::Sampler(_)) => {}
-                _ => return Err(Error::InvalidInput("Vulkan compute binding type mismatch".into())),
+                _ => {
+                    return Err(Error::InvalidInput(
+                        "Vulkan compute binding type mismatch".into(),
+                    ));
+                }
             }
         }
         ComputeDispatch {
             shader: dispatch.shader,
             bindings: &buffer_bindings,
             workgroups: dispatch.workgroups,
-        }.validate_with_limits(self.compute.capabilities, self.buffer_binding_limits())?;
+        }
+        .validate_dispatch(self.compute.capabilities, self.buffer_binding_limits())?;
 
         // Read-only compute shaders do not produce incoherent storage writes.
         // Keep image layout transitions (including read-only storage images),
         // but do not emit a device-wide post-dispatch memory barrier for them.
-        let writes_storage = buffer_bindings.iter().any(|binding|
-            binding.access == ComputeBufferAccess::ReadWrite)
-            || layout.entries.iter().any(|entry| matches!(
-                entry.binding_type,
-                BindingType::StorageTexture { read_only: false, .. }
-            ));
+        let writes_storage = buffer_bindings
+            .iter()
+            .any(|binding| binding.access == ComputeBufferAccess::ReadWrite)
+            || layout.entries.iter().any(|entry| {
+                matches!(
+                    entry.binding_type,
+                    BindingType::StorageTexture {
+                        read_only: false,
+                        ..
+                    }
+                )
+            });
 
         let key = (dispatch.shader, layout_id);
         let program = if let Some(program) = self.compute.resource_set_programs.get(&key) {
@@ -174,25 +195,34 @@ impl VulkanDevice {
         } else {
             let shader = self.shader_modules.get(dispatch.shader)?;
             let program = Arc::new(create_resource_set_program(
-                self.device.clone(), self.pipeline_cache, shader, set_layout
+                self.device.clone(),
+                self.pipeline_cache,
+                shader,
+                set_layout,
             )?);
-            self.compute.resource_set_programs.insert(key, program.clone());
+            self.compute
+                .resource_set_programs
+                .insert(key, program.clone());
             program
         };
 
-        let encoder = self.create_command_encoder_with_buffer_count(1)?;
+        let encoder = self.create_encoder(1, self.graphics_queue_family_index)?;
         let command = self.command_encoders.get(encoder)?.command_buffers[0];
-        let query = self.command_encoders.get(encoder)?
-            .gpu_trace_query_pool.filter(|_| tag.is_some());
-        self.command_encoders.get_mut(encoder)?.gpu_work_tag =
-            tag.filter(|_| query.is_some());
+        let query = self
+            .command_encoders
+            .get(encoder)?
+            .gpu_trace_query_pool
+            .filter(|_| tag.is_some());
+        self.command_encoders.get_mut(encoder)?.gpu_work_tag = tag.filter(|_| query.is_some());
         let result = (|| -> Result<()> {
             unsafe {
-                self.device.begin_command_buffer(
-                    command,
-                    &vk::CommandBufferBeginInfo::default()
-                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                ).map_err(VulkanError::from)?;
+                self.device
+                    .begin_command_buffer(
+                        command,
+                        &vk::CommandBufferBeginInfo::default()
+                            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                    )
+                    .map_err(VulkanError::from)?;
                 if let Some(query) = query {
                     self.device.cmd_reset_query_pool(command, query, 0, 2);
                 }
@@ -207,40 +237,52 @@ impl VulkanDevice {
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
                 };
                 let range = vk::ImageSubresourceRange::default()
-                    .aspect_mask(image_aspect_for_format(texture.desc.format))
+                    .aspect_mask(image_aspect_from_format(texture.desc.format))
                     .base_mip_level(0)
                     .level_count(texture.desc.mip_level_count)
                     .base_array_layer(0)
                     .layer_count(texture.desc.dimension.layers());
-                pre_images.push(vk::ImageMemoryBarrier::default()
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .old_layout(texture.layout)
-                    .new_layout(desired)
-                    .image(texture.image)
-                    .subresource_range(range)
-                    .src_access_mask(if texture.layout == vk::ImageLayout::UNDEFINED {
-                        vk::AccessFlags::empty()
-                    } else {
-                        vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE
-                    })
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ |
-                        if writable { vk::AccessFlags::SHADER_WRITE } else { vk::AccessFlags::empty() }));
+                pre_images.push(
+                    vk::ImageMemoryBarrier::default()
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .old_layout(texture.layout)
+                        .new_layout(desired)
+                        .image(texture.image)
+                        .subresource_range(range)
+                        .src_access_mask(if texture.layout == vk::ImageLayout::UNDEFINED {
+                            vk::AccessFlags::empty()
+                        } else {
+                            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE
+                        })
+                        .dst_access_mask(
+                            vk::AccessFlags::SHADER_READ
+                                | if writable {
+                                    vk::AccessFlags::SHADER_WRITE
+                                } else {
+                                    vk::AccessFlags::empty()
+                                },
+                        ),
+                );
                 // A storage-only image has no sampled-image usage. Keep it in
                 // GENERAL across dispatches; the global post-dispatch memory
                 // dependency below makes its writes visible without a redundant
                 // layout transition. Images that can be sampled return to the
                 // read-only layout required by their sampled descriptors.
                 if writable && texture.desc.usage.contains(TextureUsage::SAMPLED) {
-                    post_images.push(vk::ImageMemoryBarrier::default()
-                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        .old_layout(vk::ImageLayout::GENERAL)
-                        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .image(texture.image)
-                        .subresource_range(range)
-                        .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-                        .dst_access_mask(vk::AccessFlags::SHADER_READ));
+                    post_images.push(
+                        vk::ImageMemoryBarrier::default()
+                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .old_layout(vk::ImageLayout::GENERAL)
+                            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                            .image(texture.image)
+                            .subresource_range(range)
+                            .src_access_mask(
+                                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                            )
+                            .dst_access_mask(vk::AccessFlags::SHADER_READ),
+                    );
                 }
             }
             let before = vk::MemoryBarrier::default()
@@ -253,33 +295,52 @@ impl VulkanDevice {
                     command,
                     vk::PipelineStageFlags::ALL_COMMANDS | vk::PipelineStageFlags::HOST,
                     vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(), &[before], &[], &pre_images,
+                    vk::DependencyFlags::empty(),
+                    &[before],
+                    &[],
+                    &pre_images,
                 );
                 self.device.cmd_bind_pipeline(
-                    command, vk::PipelineBindPoint::COMPUTE, program.pipeline,
+                    command,
+                    vk::PipelineBindPoint::COMPUTE,
+                    program.pipeline,
                 );
                 self.device.cmd_bind_descriptor_sets(
-                    command, vk::PipelineBindPoint::COMPUTE, program.layout, 0,
-                    &[set_handle], &[],
+                    command,
+                    vk::PipelineBindPoint::COMPUTE,
+                    program.layout,
+                    0,
+                    &[set_handle],
+                    &[],
                 );
                 if let Some(query) = query {
                     self.device.cmd_write_timestamp(
-                        command, vk::PipelineStageFlags::TOP_OF_PIPE, query, 0,
+                        command,
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        query,
+                        0,
                     );
                 }
                 self.device.cmd_dispatch(
                     command,
-                    dispatch.workgroups[0], dispatch.workgroups[1], dispatch.workgroups[2],
+                    dispatch.workgroups[0],
+                    dispatch.workgroups[1],
+                    dispatch.workgroups[2],
                 );
                 if let Some(query) = query {
                     self.device.cmd_write_timestamp(
-                        command, vk::PipelineStageFlags::BOTTOM_OF_PIPE, query, 1,
+                        command,
+                        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                        query,
+                        1,
                     );
                 }
                 if writes_storage || !post_images.is_empty() {
                     let after = vk::MemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                        .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE);
+                        .dst_access_mask(
+                            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                        );
                     let memory = if writes_storage {
                         std::slice::from_ref(&after)
                     } else {
@@ -289,10 +350,15 @@ impl VulkanDevice {
                         command,
                         vk::PipelineStageFlags::COMPUTE_SHADER,
                         vk::PipelineStageFlags::ALL_COMMANDS,
-                        vk::DependencyFlags::empty(), memory, &[], &post_images,
+                        vk::DependencyFlags::empty(),
+                        memory,
+                        &[],
+                        &post_images,
                     );
                 }
-                self.device.end_command_buffer(command).map_err(VulkanError::from)?;
+                self.device
+                    .end_command_buffer(command)
+                    .map_err(VulkanError::from)?;
             }
             self.submit_command_encoder_deferred(encoder)
         })();
@@ -320,7 +386,7 @@ impl VulkanDevice {
         dispatch: &ComputeDispatch<'_>,
         reuse: Option<&Arc<Call>>,
     ) -> Result<Option<Arc<Call>>> {
-        dispatch.validate_with_limits(self.compute.capabilities, self.buffer_binding_limits())?;
+        dispatch.validate_dispatch(self.compute.capabilities, self.buffer_binding_limits())?;
         let shader = self.shader_modules.get(dispatch.shader)?;
         if shader.stage != ShaderStage::Compute {
             return Err(Error::InvalidInput(
@@ -476,33 +542,36 @@ impl VulkanDevice {
         // typed command pool here. Every bound resource must be in a
         // CONCURRENT-shared Storage/Uniform buffer. An EXCLUSIVE image or
         // graphics command would need an explicit release/acquire protocol.
-        let dedicated = native_queue.is_some()
-            && native_queue == self.dedicated_compute_queue_id();
+        let dedicated = native_queue.is_some() && native_queue == self.dedicated_compute_queue_id();
         let family = if dedicated {
             for (index, _) in &calls {
                 for binding in dispatches[*index].bindings {
                     let resource = self.buffers.get(binding.buffer.buffer)?;
-                    if !resource.desc.usage.intersects(
-                        BufferUsage::STORAGE | BufferUsage::UNIFORM,
-                    ) {
+                    if !resource
+                        .desc
+                        .usage
+                        .intersects(BufferUsage::STORAGE | BufferUsage::UNIFORM)
+                    {
                         return Err(Error::Unavailable(
                             "Vulkan dedicated Compute requires concurrent-shared buffers".into(),
                         ));
                     }
                 }
             }
-            self.dedicated_compute_family_index.ok_or_else(|| Error::Unavailable(
-                "Vulkan dedicated Compute Queue Family not configured".into(),
-            ))?
+            self.dedicated_compute_family_index.ok_or_else(|| {
+                Error::Unavailable("Vulkan dedicated Compute Queue Family not configured".into())
+            })?
         } else {
             self.graphics_queue_family_index
         };
-        let encoder = self.create_command_encoder_with_family(1, family)?;
+        let encoder = self.create_encoder(1, family)?;
         let command = self.command_encoders.get(encoder)?.command_buffers[0];
-        let query = self.command_encoders.get(encoder)?
-            .gpu_trace_query_pool.filter(|_| tag.is_some());
-        self.command_encoders.get_mut(encoder)?.gpu_work_tag =
-            tag.filter(|_| query.is_some());
+        let query = self
+            .command_encoders
+            .get(encoder)?
+            .gpu_trace_query_pool
+            .filter(|_| tag.is_some());
+        self.command_encoders.get_mut(encoder)?.gpu_work_tag = tag.filter(|_| query.is_some());
         self.command_encoders
             .get_mut(encoder)?
             .compute_resources
@@ -520,7 +589,10 @@ impl VulkanDevice {
                 if let Some(query) = query {
                     self.device.cmd_reset_query_pool(command, query, 0, 2);
                     self.device.cmd_write_timestamp(
-                        command, vk::PipelineStageFlags::TOP_OF_PIPE, query, 0,
+                        command,
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        query,
+                        0,
                     );
                 }
                 for (index, call) in &calls {
@@ -611,7 +683,10 @@ impl VulkanDevice {
                 }
                 if let Some(query) = query {
                     self.device.cmd_write_timestamp(
-                        command, vk::PipelineStageFlags::BOTTOM_OF_PIPE, query, 1,
+                        command,
+                        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                        query,
+                        1,
                     );
                 }
                 self.device
@@ -620,12 +695,17 @@ impl VulkanDevice {
             }
             match native_queue {
                 None => self.submit_command_encoder_deferred(encoder).map(|_| None),
-                Some(queue) if queue == gfx_core::GpuQueueId::PRIMARY =>
-                    self.submit_command_encoder_deferred_tracked(encoder).map(Some),
-                Some(queue) if self.dedicated_compute_queue_id() == Some(queue) =>
-                    self.submit_command_encoder_dedicated_compute(encoder),
-                Some(queue) if self.independent_queue(gfx_core::GpuWorkStage::Compute) == Some(queue) =>
-                    self.submit_command_encoder_independent(encoder, true),
+                Some(queue) if queue == gfx_core::GpuQueueId::PRIMARY => {
+                    self.submit_encoder(encoder).map(Some)
+                }
+                Some(queue) if self.dedicated_compute_queue_id() == Some(queue) => {
+                    self.submit_command_encoder_dedicated_compute(encoder)
+                }
+                Some(queue)
+                    if self.independent_queue(gfx_core::GpuWorkStage::Compute) == Some(queue) =>
+                {
+                    self.submit_command_encoder_independent(encoder, true)
+                }
                 Some(_) => Err(Error::Unavailable(
                     "native Vulkan Compute queue is not available".into(),
                 )),
@@ -645,27 +725,39 @@ fn create_resource_set_program(
     set_layout: vk::DescriptorSetLayout,
 ) -> Result<ResourceSetProgram> {
     if shader.stage != ShaderStage::Compute {
-        return Err(Error::InvalidInput("resource set requires a compute shader".into()));
+        return Err(Error::InvalidInput(
+            "resource set requires a compute shader".into(),
+        ));
     }
     let entry = CString::new(shader.entry_point.as_str())
         .map_err(|e| Error::InvalidInput(e.to_string()))?;
     let mut program = ResourceSetProgram {
-        device, layout: vk::PipelineLayout::null(), pipeline: vk::Pipeline::null(),
+        device,
+        layout: vk::PipelineLayout::null(),
+        pipeline: vk::Pipeline::null(),
     };
     // This pipeline layout references the existing resource-set layout;
     // descriptor pools and sets remain owned by their GPU-fence-retired set.
     unsafe {
-        program.layout = program.device.create_pipeline_layout(
-            &vk::PipelineLayoutCreateInfo::default().set_layouts(&[set_layout]),
-            None,
-        ).map_err(VulkanError::from)?;
+        program.layout = program
+            .device
+            .create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default().set_layouts(&[set_layout]),
+                None,
+            )
+            .map_err(VulkanError::from)?;
         let info = vk::ComputePipelineCreateInfo::default()
             .layout(program.layout)
-            .stage(vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::COMPUTE)
-                .module(shader.module)
-                .name(&entry));
-        match program.device.create_compute_pipelines(cache, &[info], None) {
+            .stage(
+                vk::PipelineShaderStageCreateInfo::default()
+                    .stage(vk::ShaderStageFlags::COMPUTE)
+                    .module(shader.module)
+                    .name(&entry),
+            );
+        match program
+            .device
+            .create_compute_pipelines(cache, &[info], None)
+        {
             Ok(pipelines) => program.pipeline = pipelines[0],
             Err((pipelines, error)) => {
                 for pipeline in pipelines {

@@ -61,7 +61,8 @@ impl VulkanDevice {
                 source_layout,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 source.desc.mip_level_count,
-                image_aspect_for_format(source.desc.format),
+                1,
+                image_aspect_from_format(source.desc.format),
             );
             transition_image_layout_levels(
                 &self.device,
@@ -70,7 +71,8 @@ impl VulkanDevice {
                 destination_layout,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 destination.desc.mip_level_count,
-                image_aspect_for_format(destination.desc.format),
+                1,
+                image_aspect_from_format(destination.desc.format),
             );
             let layers = vk::ImageSubresourceLayers::default()
                 .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -113,7 +115,8 @@ impl VulkanDevice {
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 source_layout,
                 source.desc.mip_level_count,
-                image_aspect_for_format(source.desc.format),
+                1,
+                image_aspect_from_format(source.desc.format),
             );
             // An undefined destination must acquire a valid layout. Existing attachment/transfer
             // layouts are preserved, including copy-only textures without SAMPLED usage.
@@ -125,7 +128,8 @@ impl VulkanDevice {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 final_layout,
                 destination.desc.mip_level_count,
-                image_aspect_for_format(destination.desc.format),
+                1,
+                image_aspect_from_format(destination.desc.format),
             );
             layouts.insert(copy.destination, final_layout);
         }
@@ -209,7 +213,8 @@ impl VulkanDevice {
                 layout,
                 target,
                 texture.desc.mip_level_count,
-                image_aspect_for_format(texture.desc.format),
+                1,
+                image_aspect_from_format(texture.desc.format),
             );
             let bytes_per_texel = u64::from(texture.desc.format.bytes_per_pixel()).max(1);
             let row_pitch =
@@ -283,7 +288,8 @@ impl VulkanDevice {
                 target,
                 final_layout,
                 texture.desc.mip_level_count,
-                image_aspect_for_format(texture.desc.format),
+                1,
+                image_aspect_from_format(texture.desc.format),
             );
             // A later copy in this command buffer may read the buffer this one wrote;
             // transfer blocks are not ordered without an explicit memory barrier.

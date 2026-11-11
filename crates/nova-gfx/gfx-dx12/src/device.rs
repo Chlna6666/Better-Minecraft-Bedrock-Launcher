@@ -62,12 +62,11 @@ mod platform {
         PresentMode, PresentationDevice, PrimitiveTopology, RenderCommand, RenderPassCommands,
         RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId,
         RenderTarget, ResourceDevice, ResourceStats, SamplerDescriptor, SamplerId, ScissorRect,
-        ShaderCode, ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages,
-        StencilOp, StencilState, SubmissionDevice, SubmissionId,
-        SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId,
-        TextureDescriptor, TextureDimension, TextureId, TextureReadback, TextureTransferDevice,
-        TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
-        ThreadingMode,
+        ShaderCode, ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages, StencilOp,
+        StencilState, SubmissionDevice, SubmissionId, SubmissionStatus, SurfaceConfig,
+        SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId, TextureDescriptor,
+        TextureDimension, TextureId, TextureReadback, TextureTransferDevice, TextureUsage,
+        TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor, ThreadingMode,
     };
     use gfx_memory::{
         DeferredFreeQueue, UploadAllocation, UploadRingAllocator, UploadRingAllocatorDesc,
@@ -92,16 +91,17 @@ mod platform {
                 D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH,
                 D3D12_COLOR_WRITE_ENABLE_ALPHA, D3D12_COLOR_WRITE_ENABLE_BLUE,
                 D3D12_COLOR_WRITE_ENABLE_GREEN, D3D12_COLOR_WRITE_ENABLE_RED,
-                D3D12_COMMAND_LIST_TYPE, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                D3D12_COMMAND_LIST_TYPE_COMPUTE, D3D12_COMMAND_LIST_TYPE_COPY, D3D12_COMMAND_QUEUE_DESC,
-                D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMPARISON_FUNC, D3D12_COMPARISON_FUNC_ALWAYS,
-                D3D12_COMPARISON_FUNC_EQUAL, D3D12_COMPARISON_FUNC_GREATER,
-                D3D12_COMPARISON_FUNC_GREATER_EQUAL, D3D12_COMPARISON_FUNC_LESS,
-                D3D12_COMPARISON_FUNC_LESS_EQUAL, D3D12_COMPARISON_FUNC_NEVER,
-                D3D12_COMPARISON_FUNC_NOT_EQUAL, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
-                D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CULL_MODE_NONE, D3D12_DEFAULT_DEPTH_BIAS,
-                D3D12_DEFAULT_DEPTH_BIAS_CLAMP, D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS,
-                D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_WRITE_MASK_ALL,
+                D3D12_COMMAND_LIST_TYPE, D3D12_COMMAND_LIST_TYPE_COMPUTE,
+                D3D12_COMMAND_LIST_TYPE_COPY, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMPARISON_FUNC,
+                D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_EQUAL,
+                D3D12_COMPARISON_FUNC_GREATER, D3D12_COMPARISON_FUNC_GREATER_EQUAL,
+                D3D12_COMPARISON_FUNC_LESS, D3D12_COMPARISON_FUNC_LESS_EQUAL,
+                D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPARISON_FUNC_NOT_EQUAL,
+                D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF, D3D12_CPU_DESCRIPTOR_HANDLE,
+                D3D12_CULL_MODE_NONE, D3D12_DEFAULT_DEPTH_BIAS, D3D12_DEFAULT_DEPTH_BIAS_CLAMP,
+                D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS, D3D12_DEPTH_STENCIL_DESC,
+                D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_WRITE_MASK_ALL,
                 D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_HEAP_DESC,
                 D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
@@ -314,18 +314,15 @@ mod platform {
             };
             // The driver may reject dedicated queue creation. Keep these
             // optional: the primary DIRECT queue remains the exact fallback.
-            let async_compute = match create_native_queue(
-                &device, D3D12_COMMAND_LIST_TYPE_COMPUTE,
-            ) {
+            let async_compute = match create_native_queue(&device, D3D12_COMMAND_LIST_TYPE_COMPUTE)
+            {
                 Ok(queue) => Some(queue),
                 Err(error) => {
                     log::warn!("DX12 dedicated Compute queue unavailable: {error}");
                     None
                 }
             };
-            let async_transfer = match create_native_queue(
-                &device, D3D12_COMMAND_LIST_TYPE_COPY,
-            ) {
+            let async_transfer = match create_native_queue(&device, D3D12_COMMAND_LIST_TYPE_COPY) {
                 Ok(queue) => Some(queue),
                 Err(error) => {
                     log::warn!("DX12 dedicated Copy queue unavailable: {error}");
@@ -1259,15 +1256,18 @@ mod platform {
                     // each mip when building a GPU depth/lighting hierarchy.
                     let rtv = windows::Win32::Graphics::Direct3D12::D3D12_RENDER_TARGET_VIEW_DESC {
                         Format: format_to_dxgi(desc.format),
-                        ViewDimension: windows::Win32::Graphics::Direct3D12::D3D12_RTV_DIMENSION_TEXTURE2D,
-                        Anonymous: windows::Win32::Graphics::Direct3D12::D3D12_RENDER_TARGET_VIEW_DESC_0 {
-                            Texture2D: windows::Win32::Graphics::Direct3D12::D3D12_TEX2D_RTV {
-                                MipSlice: desc.base_mip_level,
-                                PlaneSlice: 0,
+                        ViewDimension:
+                            windows::Win32::Graphics::Direct3D12::D3D12_RTV_DIMENSION_TEXTURE2D,
+                        Anonymous:
+                            windows::Win32::Graphics::Direct3D12::D3D12_RENDER_TARGET_VIEW_DESC_0 {
+                                Texture2D: windows::Win32::Graphics::Direct3D12::D3D12_TEX2D_RTV {
+                                    MipSlice: desc.base_mip_level,
+                                    PlaneSlice: 0,
+                                },
                             },
-                        },
                     };
-                    self.device.CreateRenderTargetView(&resource, Some(&rtv), slot.cpu_handle);
+                    self.device
+                        .CreateRenderTargetView(&resource, Some(&rtv), slot.cpu_handle);
                 }
                 Some(slot)
             } else {
@@ -1275,7 +1275,8 @@ mod platform {
             };
 
             let dsv_slot = if usage.contains(TextureUsage::DEPTH_ATTACHMENT)
-                && desc.base_mip_level == 0 && desc.mip_level_count == 1
+                && desc.base_mip_level == 0
+                && desc.mip_level_count == 1
             {
                 let slot = match self.dsv_heap.allocate() {
                     Ok(slot) => slot,
@@ -1429,7 +1430,8 @@ mod platform {
                                     validate_storage_buffer_binding(buffer_binding)?;
                                     if entry.binding_type == BindingType::StorageBufferReadWrite
                                         && (!buffer.desc.usage.contains(BufferUsage::STORAGE_WRITE)
-                                            || buffer.desc.memory_location != MemoryLocation::GpuOnly)
+                                            || buffer.desc.memory_location
+                                                != MemoryLocation::GpuOnly)
                                     {
                                         return Err(Error::InvalidInput(
                                             "DX12 writable storage requires a GPU-only STORAGE_WRITE buffer".into(),
@@ -1453,22 +1455,21 @@ mod platform {
                                 u32::try_from(descriptor_size / 4)
                                     .map_err(|error| Error::InvalidInput(error.to_string()))?;
                             }
-                            let descriptor_key = if entry.binding_type
-                                == BindingType::StorageBufferReadWrite
-                            {
-                                DescriptorKey::WritableBuffer(
-                                    buffer_binding.buffer,
-                                    buffer_binding.offset,
-                                    descriptor_size,
-                                )
-                            } else {
-                                DescriptorKey::Buffer(
-                                    buffer_binding.buffer,
-                                    buffer_binding.offset,
-                                    descriptor_size,
-                                    uniform,
-                                )
-                            };
+                            let descriptor_key =
+                                if entry.binding_type == BindingType::StorageBufferReadWrite {
+                                    DescriptorKey::WritableBuffer(
+                                        buffer_binding.buffer,
+                                        buffer_binding.offset,
+                                        descriptor_size,
+                                    )
+                                } else {
+                                    DescriptorKey::Buffer(
+                                        buffer_binding.buffer,
+                                        buffer_binding.offset,
+                                        descriptor_size,
+                                        uniform,
+                                    )
+                                };
                             let (slot, fresh) =
                                 self.resource_heap.allocate_shared(descriptor_key)?;
                             if fresh {
@@ -1509,7 +1510,10 @@ mod platform {
                                         // SAFETY: the validated writable buffer and heap slot are live.
                                         unsafe {
                                             self.device.CreateUnorderedAccessView(
-                                                Some(resource), None, Some(&raw const raw), slot.cpu_handle,
+                                                Some(resource),
+                                                None,
+                                                Some(&raw const raw),
+                                                slot.cpu_handle,
                                             );
                                         }
                                     }
@@ -1603,17 +1607,24 @@ mod platform {
                                         ));
                                     }
                                 }
-                                _ => return Err(Error::InvalidInput("DX12 texture binding type mismatch".into())),
+                                _ => {
+                                    return Err(Error::InvalidInput(
+                                        "DX12 texture binding type mismatch".into(),
+                                    ));
+                                }
                             }
-                            let is_storage = matches!(entry.binding_type, BindingType::StorageTexture { .. });
+                            let is_storage =
+                                matches!(entry.binding_type, BindingType::StorageTexture { .. });
                             let descriptor_key = if is_storage {
                                 DescriptorKey::StorageTexture(texture_binding.texture_view)
                             } else {
                                 DescriptorKey::Texture(texture_binding.texture_view)
                             };
-                            let (slot, fresh) = self.resource_heap.allocate_shared(descriptor_key)?;
+                            let (slot, fresh) =
+                                self.resource_heap.allocate_shared(descriptor_key)?;
                             if fresh {
-                                if let BindingType::StorageTexture { format, .. } = entry.binding_type
+                                if let BindingType::StorageTexture { format, .. } =
+                                    entry.binding_type
                                 {
                                     if !texture.desc.usage.contains(TextureUsage::STORAGE)
                                         || view.format != format
@@ -2046,32 +2057,31 @@ mod platform {
         /// COMPUTE or COPY queues. These command lists are not recyclable as
         /// DIRECT command lists and retire after the primary GPU join fence.
         fn create_typed_queue_command_encoder(
-            &mut self, kind: D3D12_COMMAND_LIST_TYPE,
+            &mut self,
+            kind: D3D12_COMMAND_LIST_TYPE,
         ) -> Result<CommandEncoderId> {
-            if kind != D3D12_COMMAND_LIST_TYPE_COMPUTE
-                && kind != D3D12_COMMAND_LIST_TYPE_COPY
-            {
+            if kind != D3D12_COMMAND_LIST_TYPE_COMPUTE && kind != D3D12_COMMAND_LIST_TYPE_COPY {
                 return Err(Error::InvalidInput(
                     "typed async queue encoder must be COMPUTE or COPY".into(),
                 ));
             }
             // SAFETY: The allocator matches the exact native queue type.
-            let allocator: ID3D12CommandAllocator = unsafe {
-                self.device.CreateCommandAllocator(kind)
-            }.map_err(|error| Error::Backend(format!(
-                "DX12 typed queue command allocator: {error}"
-            )))?;
+            let allocator: ID3D12CommandAllocator =
+                unsafe { self.device.CreateCommandAllocator(kind) }.map_err(|error| {
+                    Error::Backend(format!("DX12 typed queue command allocator: {error}"))
+                })?;
             // SAFETY: Matching allocator/list types are bound to this device.
             let command_list: ID3D12GraphicsCommandList = unsafe {
                 self.device.CreateCommandList(
-                    0, kind, &allocator, Option::<&ID3D12PipelineState>::None,
+                    0,
+                    kind,
+                    &allocator,
+                    Option::<&ID3D12PipelineState>::None,
                 )
-            }.map_err(|error| Error::Backend(format!(
-                "DX12 typed queue command list: {error}"
-            )))?;
+            }
+            .map_err(|error| Error::Backend(format!("DX12 typed queue command list: {error}")))?;
             // SAFETY: New list starts open; reset path expects it closed.
-            unsafe { command_list.Close() }
-                .map_err(|error| Error::Backend(error.to_string()))?;
+            unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))?;
             Ok(self.command_encoders.insert(Dx12CommandEncoder {
                 command_type: kind,
                 native_buffer_owners: Vec::new(),
@@ -2106,10 +2116,12 @@ mod platform {
         /// UPLOAD heaps remain permanently GENERIC_READ; they may be read as
         /// native copy/compute sources, but cannot be promoted to COMMON.
         fn prepare_native_queue_buffers(
-            &mut self, buffers: impl IntoIterator<Item = BufferId>,
+            &mut self,
+            buffers: impl IntoIterator<Item = BufferId>,
         ) -> Result<()> {
             let mut transitions = std::collections::HashMap::<
-                BufferId, (ID3D12Resource, D3D12_RESOURCE_STATES),
+                BufferId,
+                (ID3D12Resource, D3D12_RESOURCE_STATES),
             >::new();
             for id in buffers {
                 let buffer = self.buffers.get(id)?;
@@ -2121,23 +2133,32 @@ mod platform {
                 let native = buffer.resource.as_ref().ok_or_else(|| {
                     Error::Backend("DX12 asynchronous buffer has no native allocation".into())
                 })?;
-                transitions.entry(id).or_insert_with(|| (native.clone(), buffer.state));
+                transitions
+                    .entry(id)
+                    .or_insert_with(|| (native.clone(), buffer.state));
             }
             if transitions.is_empty() {
                 return Ok(());
             }
-            let encoder = self.create_command_encoder(
-                &CommandEncoderDescriptor { label: Some("DX12 native queue release".into()) },
-            )?;
+            let encoder = self.create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("DX12 native queue release".into()),
+            })?;
             let release = (|| -> Result<u64> {
                 self.begin_texture_command_encoder(encoder, None)?;
-                let command = self.command_encoders.get(encoder)?.command_list
-                    .as_ref().ok_or_else(|| Error::Backend(
-                        "DX12 native queue release has no command list".into(),
-                    ))?;
+                let command = self
+                    .command_encoders
+                    .get(encoder)?
+                    .command_list
+                    .as_ref()
+                    .ok_or_else(|| {
+                        Error::Backend("DX12 native queue release has no command list".into())
+                    })?;
                 for (resource, state) in transitions.values() {
                     record_transition_barrier(
-                        command, resource, *state, D3D12_RESOURCE_STATE_COMMON,
+                        command,
+                        resource,
+                        *state,
+                        D3D12_RESOURCE_STATE_COMMON,
                     );
                 }
                 self.finish_texture_command_encoder(encoder)?;
@@ -2146,14 +2167,16 @@ mod platform {
             let fence_value = match release {
                 Ok(value) => value,
                 Err(error) => {
-                    let _ = self.release_temporary_command_encoder_after_failure(encoder);
+                    let _ = self.release_temporary_encoder(encoder);
                     return Err(error);
                 }
             };
             let encoder = self.command_encoders.take(encoder)?;
-            self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
-                fence_value, _encoder: encoder,
-            });
+            self.deferred_command_encoders
+                .push(DeferredDx12CommandEncoder {
+                    fence_value,
+                    _encoder: encoder,
+                });
             // Resource state changes are published only after the direct
             // release command list has been accepted. The typed queue will
             // GPU-wait on a newer primary timeline value before execution.
@@ -2238,24 +2261,29 @@ mod platform {
         /// sidecar fence; encoder allocation is still retired using the
         /// primary-queue GPU join fence. Neither path performs a CPU wait.
         fn submit_sidecar_deferred_native(
-            &mut self, encoder: CommandEncoderId, track_sidecar_producer: bool,
+            &mut self,
+            encoder: CommandEncoderId,
+            track_sidecar_producer: bool,
         ) -> Result<SubmissionId> {
             let (queue, fence) = match (&self.sidecar_queue, &self.sidecar_fence) {
                 (Some(queue), Some(fence)) => (queue.clone(), fence.clone()),
                 _ if !track_sidecar_producer => return self.submit_deferred(encoder),
-                _ => return Err(Error::Unavailable(
-                    "DX12 independent DIRECT queue is unavailable".into(),
-                )),
+                _ => {
+                    return Err(Error::Unavailable(
+                        "DX12 independent DIRECT queue is unavailable".into(),
+                    ));
+                }
             };
             self.validate_swapchain_submission(encoder)?;
             self.check_device_removed("DX12 sidecar submit preflight")?;
             let command_list = {
                 let encoder = self.command_encoders.get(encoder)?;
-                encoder.command_list.clone().ok_or_else(|| Error::Backend(
-                    "DX12 sidecar encoder has no command list".into()
-                ))?
+                encoder.command_list.clone().ok_or_else(|| {
+                    Error::Backend("DX12 sidecar encoder has no command list".into())
+                })?
             };
-            let executable: ID3D12CommandList = command_list.cast()
+            let executable: ID3D12CommandList = command_list
+                .cast()
                 .map_err(|error| Error::Backend(error.to_string()))?;
             // First graphics release: prior uploads, compute and transient
             // resource writes must be visible to the offscreen producer.
@@ -2277,10 +2305,11 @@ mod platform {
             let fence_value = self.signal_frame()?;
             self.check_device_removed("DX12 sidecar submit")?;
             let encoder = self.command_encoders.take(encoder)?;
-            self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
-                fence_value,
-                _encoder: encoder,
-            });
+            self.deferred_command_encoders
+                .push(DeferredDx12CommandEncoder {
+                    fence_value,
+                    _encoder: encoder,
+                });
             self.submitted_frames = self.submitted_frames.saturating_add(1);
             self.poll_cleanup();
             Ok(if track_sidecar_producer {
@@ -2301,7 +2330,8 @@ mod platform {
         /// Encoder COM resources retire only when the later primary join
         /// fence confirms COMPUTE completion.
         fn submit_dedicated_compute_deferred(
-            &mut self, encoder: CommandEncoderId,
+            &mut self,
+            encoder: CommandEncoderId,
         ) -> Result<SubmissionId> {
             self.submit_dedicated_typed_deferred(encoder, Dx12SubmissionQueue::Compute)
         }
@@ -2320,7 +2350,11 @@ mod platform {
             queue: gfx_core::GpuQueueId,
             copies: &[gfx_core::GpuBufferCopy],
         ) -> Result<SubmissionId> {
-            if queue != (gfx_core::GpuQueueId { family: 0, index: 3 })
+            if queue
+                != (gfx_core::GpuQueueId {
+                    family: 0,
+                    index: 3,
+                })
                 || self.async_transfer.is_none()
             {
                 return Err(Error::Unavailable(
@@ -2355,23 +2389,39 @@ mod platform {
                         "native COPY source must be GPU-only or UPLOAD memory".into(),
                     ));
                 }
-                if copy.source_offset.checked_add(copy.bytes).is_none_or(|end| end > source.desc.size)
-                    || copy.destination_offset.checked_add(copy.bytes)
+                if copy
+                    .source_offset
+                    .checked_add(copy.bytes)
+                    .is_none_or(|end| end > source.desc.size)
+                    || copy
+                        .destination_offset
+                        .checked_add(copy.bytes)
                         .is_none_or(|end| end > dest.desc.size)
                 {
                     return Err(Error::InvalidInput(
                         "native COPY byte range is out of bounds".into(),
                     ));
                 }
-                let source_native = source.resource.as_ref().ok_or_else(|| {
-                    Error::Backend("native COPY source allocation is missing".into())
-                })?.clone();
-                let destination_native = dest.resource.as_ref().ok_or_else(|| {
-                    Error::Backend("native COPY destination allocation is missing".into())
-                })?.clone();
+                let source_native = source
+                    .resource
+                    .as_ref()
+                    .ok_or_else(|| {
+                        Error::Backend("native COPY source allocation is missing".into())
+                    })?
+                    .clone();
+                let destination_native = dest
+                    .resource
+                    .as_ref()
+                    .ok_or_else(|| {
+                        Error::Backend("native COPY destination allocation is missing".into())
+                    })?
+                    .clone();
                 native.push((
-                    source_native, destination_native,
-                    copy.source_offset, copy.destination_offset, copy.bytes,
+                    source_native,
+                    destination_native,
+                    copy.source_offset,
+                    copy.destination_offset,
+                    copy.bytes,
                 ));
                 resources.extend([copy.source, copy.destination]);
             }
@@ -2381,16 +2431,21 @@ mod platform {
             // referenced GPU allocations. Keep every native Copy source and
             // destination alive until the actual cross-queue join fence (or
             // through device teardown on a partial native Signal failure).
-            let retained = native.iter().flat_map(|(source, destination, ..)| {
-                [source.clone(), destination.clone()]
-            }).collect::<Vec<_>>();
+            let retained = native
+                .iter()
+                .flat_map(|(source, destination, ..)| [source.clone(), destination.clone()])
+                .collect::<Vec<_>>();
             self.command_encoders.get_mut(encoder)?.native_buffer_owners = retained;
             let result = (|| -> Result<SubmissionId> {
                 self.begin_texture_command_encoder(encoder, None)?;
-                let command = self.command_encoders.get(encoder)?.command_list
-                    .as_ref().ok_or_else(|| Error::Backend(
-                        "DX12 typed COPY encoder is missing its command list".into(),
-                    ))?;
+                let command = self
+                    .command_encoders
+                    .get(encoder)?
+                    .command_list
+                    .as_ref()
+                    .ok_or_else(|| {
+                        Error::Backend("DX12 typed COPY encoder is missing its command list".into())
+                    })?;
                 for (source, destination, src_offset, dest_offset, bytes) in &native {
                     // SAFETY: Both D3D12 resources and byte ranges are live,
                     // validated and non-aliasing. The COPY queue implicitly
@@ -2398,8 +2453,11 @@ mod platform {
                     // accept a graphics-only resource transition barrier.
                     unsafe {
                         command.CopyBufferRegion(
-                            destination, *dest_offset,
-                            source, *src_offset, *bytes,
+                            destination,
+                            *dest_offset,
+                            source,
+                            *src_offset,
+                            *bytes,
                         );
                     }
                 }
@@ -2407,13 +2465,14 @@ mod platform {
                 self.submit_dedicated_copy_deferred(encoder)
             })();
             if result.is_err() {
-                let _ = self.release_temporary_command_encoder_after_failure(encoder);
+                let _ = self.release_temporary_encoder(encoder);
             }
             result
         }
 
         fn submit_dedicated_copy_deferred(
-            &mut self, encoder: CommandEncoderId,
+            &mut self,
+            encoder: CommandEncoderId,
         ) -> Result<SubmissionId> {
             self.submit_dedicated_typed_deferred(encoder, Dx12SubmissionQueue::Transfer)
         }
@@ -2423,14 +2482,18 @@ mod platform {
         /// upload/release barriers and later graphics accesses are ordered
         /// exclusively by GPU-side queue Wait/Signal, never a host fence wait.
         fn submit_dedicated_typed_deferred(
-            &mut self, encoder: CommandEncoderId, kind: Dx12SubmissionQueue,
+            &mut self,
+            encoder: CommandEncoderId,
+            kind: Dx12SubmissionQueue,
         ) -> Result<SubmissionId> {
             let expected_type = match kind {
                 Dx12SubmissionQueue::Compute => D3D12_COMMAND_LIST_TYPE_COMPUTE,
                 Dx12SubmissionQueue::Transfer => D3D12_COMMAND_LIST_TYPE_COPY,
-                _ => return Err(Error::InvalidInput(
-                    "dedicated typed submission requires COMPUTE or COPY".into(),
-                )),
+                _ => {
+                    return Err(Error::InvalidInput(
+                        "dedicated typed submission requires COMPUTE or COPY".into(),
+                    ));
+                }
             };
             self.validate_swapchain_submission(encoder)?;
             self.check_device_removed("DX12 dedicated typed queue preflight")?;
@@ -2440,18 +2503,22 @@ mod platform {
                     "DX12 command list type does not match its native queue".into(),
                 ));
             }
-            let executable: ID3D12CommandList = recorded.command_list.as_ref()
-                .ok_or_else(|| Error::Backend(
-                    "DX12 dedicated typed encoder has no native command list".into(),
-                ))?
-                .cast().map_err(|error| Error::Backend(error.to_string()))?;
+            let executable: ID3D12CommandList = recorded
+                .command_list
+                .as_ref()
+                .ok_or_else(|| {
+                    Error::Backend("DX12 dedicated typed encoder has no native command list".into())
+                })?
+                .cast()
+                .map_err(|error| Error::Backend(error.to_string()))?;
             let native = match kind {
                 Dx12SubmissionQueue::Compute => self.async_compute.as_ref(),
                 Dx12SubmissionQueue::Transfer => self.async_transfer.as_ref(),
                 _ => None,
-            }.ok_or_else(|| Error::Unavailable(
-                "DX12 requested dedicated queue is unavailable".into(),
-            ))?;
+            }
+            .ok_or_else(|| {
+                Error::Unavailable("DX12 requested dedicated queue is unavailable".into())
+            })?;
             let queue = native.queue.clone();
             let fence = native.fence.clone();
             let fence_value = native.next_fence_value;
@@ -2462,40 +2529,42 @@ mod platform {
                 Dx12SubmissionQueue::Compute => self.async_compute.as_mut(),
                 Dx12SubmissionQueue::Transfer => self.async_transfer.as_mut(),
                 _ => None,
-            }.expect("validated dedicated GPU queue").next_fence_value = next;
+            }
+            .expect("validated dedicated GPU queue")
+            .next_fence_value = next;
             // GPU-side Wait establishes PRIMARY release -> native COMPUTE/COPY.
             let input = self.signal_frame()?;
             // SAFETY: This native queue and the primary fence belong to one
             // D3D12 device. Wait is GPU-only and ordered before execution.
-            unsafe { queue.Wait(&self.fence, input) }
-                .map_err(|error| Error::Backend(format!(
-                    "DX12 {:?} input GPU Wait: {error}", kind,
-                )))?;
+            unsafe { queue.Wait(&self.fence, input) }.map_err(|error| {
+                Error::Backend(format!("DX12 {:?} input GPU Wait: {error}", kind,))
+            })?;
             self.command_encoders.get_mut(encoder)?.submitted = true;
             // SAFETY: The recorded allocator/list kind matches the executing
             // native COMPUTE/COPY queue and stays alive until the join fence.
             unsafe { queue.ExecuteCommandLists(&[Some(executable)]) };
             // SAFETY: Producer Signal is ordered after actual GPU commands.
-            unsafe { queue.Signal(&fence, fence_value) }
-                .map_err(|error| Error::Backend(format!(
-                    "DX12 {:?} producer Signal: {error}", kind,
-                )))?;
+            unsafe { queue.Signal(&fence, fence_value) }.map_err(|error| {
+                Error::Backend(format!("DX12 {:?} producer Signal: {error}", kind,))
+            })?;
             // SAFETY: Future graphics work cannot access writable buffers
             // until the typed queue has completed its native commands.
-            unsafe { self.graphics_queue.Wait(&fence, fence_value) }
-                .map_err(|error| Error::Backend(format!(
-                    "DX12 {:?} -> Graphics GPU Wait: {error}", kind,
-                )))?;
+            unsafe { self.graphics_queue.Wait(&fence, fence_value) }.map_err(|error| {
+                Error::Backend(format!("DX12 {:?} -> Graphics GPU Wait: {error}", kind,))
+            })?;
             let join = self.signal_frame()?;
             self.check_device_removed("DX12 dedicated typed queue submit")?;
             let encoder_resource = self.command_encoders.take(encoder)?;
-            self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
-                fence_value: join, _encoder: encoder_resource,
-            });
+            self.deferred_command_encoders
+                .push(DeferredDx12CommandEncoder {
+                    fence_value: join,
+                    _encoder: encoder_resource,
+                });
             self.submitted_frames = self.submitted_frames.saturating_add(1);
             self.poll_cleanup();
             Ok(self.submissions.insert(Dx12Submission {
-                fence_value, queue: kind,
+                fence_value,
+                queue: kind,
             }))
         }
 
@@ -2509,23 +2578,29 @@ mod platform {
                 });
             self.submitted_frames = self.submitted_frames.saturating_add(1);
             self.poll_cleanup();
-            Ok(self.submissions.insert(Dx12Submission { fence_value, queue: Dx12SubmissionQueue::Primary }))
+            Ok(self.submissions.insert(Dx12Submission {
+                fence_value,
+                queue: Dx12SubmissionQueue::Primary,
+            }))
         }
 
         fn submission_fence(&self, queue: Dx12SubmissionQueue) -> Result<ID3D12Fence> {
             match queue {
                 Dx12SubmissionQueue::Primary => Ok(self.fence.clone()),
-                Dx12SubmissionQueue::Sidecar => self.sidecar_fence.clone().ok_or_else(|| {
-                    Error::Unavailable("DX12 sidecar fence is unavailable".into())
-                }),
-                Dx12SubmissionQueue::Compute => self.async_compute.as_ref()
-                    .map(|native| native.fence.clone()).ok_or_else(|| {
-                        Error::Unavailable("DX12 Compute fence is unavailable".into())
-                    }),
-                Dx12SubmissionQueue::Transfer => self.async_transfer.as_ref()
-                    .map(|native| native.fence.clone()).ok_or_else(|| {
-                        Error::Unavailable("DX12 Copy fence is unavailable".into())
-                    }),
+                Dx12SubmissionQueue::Sidecar => self
+                    .sidecar_fence
+                    .clone()
+                    .ok_or_else(|| Error::Unavailable("DX12 sidecar fence is unavailable".into())),
+                Dx12SubmissionQueue::Compute => self
+                    .async_compute
+                    .as_ref()
+                    .map(|native| native.fence.clone())
+                    .ok_or_else(|| Error::Unavailable("DX12 Compute fence is unavailable".into())),
+                Dx12SubmissionQueue::Transfer => self
+                    .async_transfer
+                    .as_ref()
+                    .map(|native| native.fence.clone())
+                    .ok_or_else(|| Error::Unavailable("DX12 Copy fence is unavailable".into())),
             }
         }
 
@@ -2543,7 +2618,8 @@ mod platform {
                 let _failed = self.submissions.take(submission_id)?;
                 return Ok(SubmissionStatus::Failed(format!(
                     "DX12 {:?} fence signaled device removal: {}",
-                    queue, self.device_removed_reason()
+                    queue,
+                    self.device_removed_reason()
                 )));
             }
             if completed >= fence_value {
@@ -2570,10 +2646,9 @@ mod platform {
                 let fence = self.submission_fence(queue)?;
                 // SAFETY: The producer signaled this valid device fence before
                 // exposing its SubmissionId. Queue::Wait is GPU-side only.
-                unsafe { self.graphics_queue.Wait(&fence, fence_value) }
-                    .map_err(|error| Error::Backend(format!(
-                        "DX12 native queue drain dependency: {error}"
-                    )))?;
+                unsafe { self.graphics_queue.Wait(&fence, fence_value) }.map_err(|error| {
+                    Error::Backend(format!("DX12 native queue drain dependency: {error}"))
+                })?;
                 let witness = self.signal_frame()?;
                 self.wait_for_fence_value(witness)
             };
@@ -2613,7 +2688,9 @@ mod platform {
             tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
         ) -> Result<Option<SubmissionId>> {
             if tags.is_some_and(|t| t.len() != passes.len()) {
-                return Err(Error::InvalidInput("offscreen GPU tag count mismatch".into()));
+                return Err(Error::InvalidInput(
+                    "offscreen GPU tag count mismatch".into(),
+                ));
             }
             if passes.is_empty() {
                 return Ok(None);
@@ -2655,10 +2732,13 @@ mod platform {
                             tags.and_then(|t| t[index]).filter(|tag| {
                                 tag.stage == gfx_core::GpuTimestampStage::DrawIndirect
                                     && !pass.commands.is_empty()
-                                    && pass.commands.iter().all(|command| matches!(
-                                        command, RenderCommand::DrawIndirect(_)
-                                        | RenderCommand::DrawIndexedIndirect(_)
-                                    ))
+                                    && pass.commands.iter().all(|command| {
+                                        matches!(
+                                            command,
+                                            RenderCommand::DrawIndirect(_)
+                                                | RenderCommand::DrawIndexedIndirect(_)
+                                        )
+                                    })
                             }),
                         )?;
                     }
@@ -2669,14 +2749,14 @@ mod platform {
                     if independent {
                         self.submit_sidecar_deferred(encoder)
                     } else {
-                        self.submit_temporary_command_encoder_deferred_id(encoder)
+                        self.submit_temporary_encoder_id(encoder)
                     }
                 });
             match result {
                 Ok(submission) => Ok(Some(submission)),
                 Err(error) => {
                     let submitted = self.command_encoders.get(encoder)?.submitted;
-                    self.release_temporary_command_encoder_after_failure(encoder)?;
+                    self.release_temporary_encoder(encoder)?;
                     if !submitted {
                         for (texture_id, state) in &target_states {
                             self.textures.get_mut(*texture_id)?.state = *state;
@@ -2742,7 +2822,7 @@ mod platform {
             })
         }
 
-        fn render_step_list_and_present_deferred_timed(
+        fn record_and_present_timed(
             &mut self,
             swapchain: SwapchainId,
             render_pass: RenderPassId,
@@ -2772,13 +2852,12 @@ mod platform {
             let submission = match result {
                 Ok(submission) => submission,
                 Err(error) => {
-                    let _release_result =
-                        self.release_temporary_command_encoder_after_failure(encoder);
+                    let _release_result = self.release_temporary_encoder(encoder);
                     return Err(error);
                 }
             };
             let present_started = Instant::now();
-            self.present_with_damage(swapchain, 0, render_damage)?;
+            self.present_region(swapchain, 0, render_damage)?;
             Ok((
                 submission,
                 gfx_core::PresentTimings {
@@ -2791,37 +2870,18 @@ mod platform {
             ))
         }
 
-        fn submit_temporary_command_encoder_deferred(
-            &mut self,
-            encoder: CommandEncoderId,
-        ) -> Result<()> {
-            self.submit_temporary_command_encoder_deferred_id(encoder)
-                .map(|_| ())
+        fn submit_temporary_encoder(&mut self, encoder: CommandEncoderId) -> Result<()> {
+            self.submit_temporary_encoder_id(encoder).map(|_| ())
         }
 
-        fn submit_temporary_command_encoder_deferred_id(
+        fn submit_temporary_encoder_id(
             &mut self,
             encoder: CommandEncoderId,
         ) -> Result<SubmissionId> {
             self.submit_deferred(encoder)
         }
 
-        fn finish_temporary_command_encoder_after_result(
-            &mut self,
-            encoder: CommandEncoderId,
-            result: Result<()>,
-        ) -> Result<()> {
-            match result {
-                Ok(()) => Ok(()),
-                Err(error) => {
-                    let _release_result =
-                        self.release_temporary_command_encoder_after_failure(encoder);
-                    Err(error)
-                }
-            }
-        }
-
-        fn finish_temporary_command_encoder(
+        fn finish_temporary_encoder(
             &mut self,
             encoder: CommandEncoderId,
             result: Result<()>,
@@ -2833,17 +2893,13 @@ mod platform {
                     Ok(())
                 }
                 Err(error) => {
-                    let _release_result =
-                        self.release_temporary_command_encoder_after_failure(encoder);
+                    let _release_result = self.release_temporary_encoder(encoder);
                     Err(error)
                 }
             }
         }
 
-        fn release_temporary_command_encoder_after_failure(
-            &mut self,
-            encoder: CommandEncoderId,
-        ) -> Result<()> {
+        fn release_temporary_encoder(&mut self, encoder: CommandEncoderId) -> Result<()> {
             if !self.command_encoders.get(encoder)?.submitted {
                 let encoder = self.command_encoders.take(encoder)?;
                 self.release_encoder_resources(encoder);
@@ -2862,10 +2918,11 @@ mod platform {
                 } else {
                     // Existing DIRECT-queue recovery: the next primary fence
                     // covers submitted work in that queue's FIFO order.
-                    self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
-                        fence_value: self.next_fence_value,
-                        _encoder: encoder,
-                    });
+                    self.deferred_command_encoders
+                        .push(DeferredDx12CommandEncoder {
+                            fence_value: self.next_fence_value,
+                            _encoder: encoder,
+                        });
                 }
             }
             Ok(())
@@ -2889,10 +2946,10 @@ mod platform {
         }
 
         fn present(&mut self, swapchain: SwapchainId, _image_index: u32) -> Result<()> {
-            self.present_with_damage(swapchain, _image_index, None)
+            self.present_region(swapchain, _image_index, None)
         }
 
-        fn present_with_damage(
+        fn present_region(
             &mut self,
             swapchain: SwapchainId,
             _image_index: u32,
@@ -2941,7 +2998,7 @@ mod platform {
             };
             result
                 .ok()
-                .map_err(|error| self.backend_error_with_device_reason("DXGI Present", &error))?;
+                .map_err(|error| self.backend_error("DXGI Present", &error))?;
             {
                 let swapchain = self.swapchains.get_mut(swapchain)?;
                 swapchain.frame_pacing.consume_ready();
@@ -3201,8 +3258,12 @@ mod platform {
                 if let (Some(tag), Some(queries), Some(frequency)) = (
                     pending._encoder.gpu_work_tag.take(),
                     pending._encoder.timestamps.as_ref(),
-                    pending._encoder.gpu_work_frequency_hz.or(timestamp_frequency),
-                ) && let Ok((start, end)) = read_dx12_timestamp_ticks(&queries.readback) {
+                    pending
+                        ._encoder
+                        .gpu_work_frequency_hz
+                        .or(timestamp_frequency),
+                ) && let Ok((start, end)) = read_dx12_timestamp_ticks(&queries.readback)
+                {
                     gpu_work_samples.push(gfx_core::GpuTimestampSample {
                         tag,
                         duration_ticks: end.saturating_sub(start),
@@ -3214,7 +3275,8 @@ mod platform {
                         && let Ok((start, end)) = read_dx12_timestamp_ticks(&queries.readback)
                     {
                         gpu_work_samples.push(gfx_core::GpuTimestampSample {
-                            tag, duration_ticks: end.saturating_sub(start),
+                            tag,
+                            duration_ticks: end.saturating_sub(start),
                             frequency_hz: frequency,
                         });
                     }
@@ -3280,7 +3342,7 @@ mod platform {
 
         /// Returns whether the graphics queue still owns work that must retire
         /// before swapchain-dependent resources can be replaced.
-        pub fn has_pending_gpu_work(&mut self) -> Result<bool> {
+        pub fn poll_gpu_work(&mut self) -> Result<bool> {
             self.poll_cleanup();
             let completed = self.completed_fence_value("ID3D12Fence::GetCompletedValue")?;
             Ok(completed < self.next_fence_value.saturating_sub(1))
@@ -3685,7 +3747,7 @@ mod platform {
                 ));
             }
             let depth_handle =
-                self.depth_stencil_view_for_attachment(&render_pass, depth_attachment)?;
+                self.depth_stencil_view_from_attachment(&render_pass, depth_attachment)?;
             let first_step = steps.first().ok_or_else(|| {
                 Error::InvalidInput("DX12 render command list must not be empty".to_string())
             })?;
@@ -3775,7 +3837,7 @@ mod platform {
                         .filter_map(RenderCommand::scissor)
                         .find(|scissor| !scissor.is_empty())
                 })
-                .and_then(|scissor| dx12_rect_for_scissor(scissor, swapchain.config.size).ok())
+                .and_then(|scissor| dx12_rect_from_scissor(scissor, swapchain.config.size).ok())
                 .map(|rect| [rect]);
             let clear = [
                 clear_color.red,
@@ -3850,7 +3912,7 @@ mod platform {
                 if step_scissor.is_empty() {
                     continue;
                 }
-                let step_scissor = dx12_rect_for_scissor(step_scissor, source_extent)?;
+                let step_scissor = dx12_rect_from_scissor(step_scissor, source_extent)?;
                 let (
                     pipeline_state,
                     root_signature,
@@ -4055,7 +4117,7 @@ mod platform {
                 ));
             }
             let depth_handle =
-                self.depth_stencil_view_for_attachment(&render_pass, depth_attachment)?;
+                self.depth_stencil_view_from_attachment(&render_pass, depth_attachment)?;
             let mut attachments = Vec::with_capacity(texture_view_ids.len());
             let mut rtv_handles = Vec::with_capacity(texture_view_ids.len());
             let mut target_size = None;
@@ -4187,7 +4249,7 @@ mod platform {
             // Restrict color/depth clears to the filter dependency region.
             let clear_rect = clear_region
                 .filter(|region| !region.is_empty())
-                .and_then(|region| dx12_rect_for_scissor(region, scissor_extent).ok())
+                .and_then(|region| dx12_rect_from_scissor(region, scissor_extent).ok())
                 .map(|rect| [rect]);
             let rtv_count = u32::try_from(rtv_handles.len())
                 .map_err(|error| Error::InvalidInput(error.to_string()))?;
@@ -4243,19 +4305,21 @@ mod platform {
             let record_started = recording::start();
             let staged = self.stage_indirect(encoder_id, &command_list, steps)?;
             // GPU argument packing and color/depth clears are outside the query window.
-            let gpu_draw_query = if let (Some(tag), Some(_)) =
-                (gpu_draw_tag, self.timestamp_frequency)
-            {
-                let query = match self.gpu_draw_query_pool.pop() {
-                    Some(query) => query,
-                    None => create_dx12_timestamp_queries(
-                        &self.device, "nova-gfx indirect-only hardware timing",
-                    )?,
+            let gpu_draw_query =
+                if let (Some(tag), Some(_)) = (gpu_draw_tag, self.timestamp_frequency) {
+                    let query = match self.gpu_draw_query_pool.pop() {
+                        Some(query) => query,
+                        None => create_dx12_timestamp_queries(
+                            &self.device,
+                            "nova-gfx indirect-only hardware timing",
+                        )?,
+                    };
+                    // SAFETY: This command list is open and owns both query slots.
+                    unsafe { command_list.EndQuery(&query.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0) };
+                    Some((tag, query))
+                } else {
+                    None
                 };
-                // SAFETY: This command list is open and owns both query slots.
-                unsafe { command_list.EndQuery(&query.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0) };
-                Some((tag, query))
-            } else { None };
             let staging_ms =
                 record_started.map_or(0., |start| start.elapsed().as_secs_f64() * 1000.);
             let mut binding_state = bindings::State::default();
@@ -4275,7 +4339,7 @@ mod platform {
                     if region.is_empty() {
                         continue;
                     }
-                    dx12_rect_for_scissor(region, viewport_size)?
+                    dx12_rect_from_scissor(region, viewport_size)?
                 } else {
                     scissor
                 };
@@ -4380,8 +4444,12 @@ mod platform {
                 unsafe {
                     command_list.EndQuery(&query.heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
                     command_list.ResolveQueryData(
-                        &query.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2,
-                        &query.readback, 0,
+                        &query.heap,
+                        D3D12_QUERY_TYPE_TIMESTAMP,
+                        0,
+                        2,
+                        &query.readback,
+                        0,
                     );
                 }
             }
@@ -4453,13 +4521,15 @@ mod platform {
                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
             }
             if let Some((tag, queries)) = gpu_draw_query {
-                self.command_encoders.get_mut(encoder_id)?
-                    .gpu_draw_queries.push((tag, queries));
+                self.command_encoders
+                    .get_mut(encoder_id)?
+                    .gpu_draw_queries
+                    .push((tag, queries));
             }
             Ok(())
         }
 
-        fn depth_stencil_view_for_attachment(
+        fn depth_stencil_view_from_attachment(
             &self,
             render_pass: &Dx12RenderPass,
             depth_attachment: Option<DepthAttachment>,
@@ -4606,9 +4676,8 @@ mod platform {
             let fence_value = self.next_fence_value;
             self.next_fence_value = self.next_fence_value.saturating_add(1);
             // SAFETY: Queue and fence are valid and owned by this device.
-            unsafe { self.graphics_queue.Signal(&self.fence, fence_value) }.map_err(|error| {
-                self.backend_error_with_device_reason("ID3D12CommandQueue::Signal", &error)
-            })?;
+            unsafe { self.graphics_queue.Signal(&self.fence, fence_value) }
+                .map_err(|error| self.backend_error("ID3D12CommandQueue::Signal", &error))?;
             Ok(fence_value)
         }
 
@@ -4677,7 +4746,7 @@ mod platform {
             // SAFETY: The D3D12 device is a live COM object owned by this backend.
             match unsafe { self.device.GetDeviceRemovedReason() } {
                 Ok(()) => Ok(()),
-                Err(error) => Err(self.backend_error_with_device_reason(operation, &error)),
+                Err(error) => Err(self.backend_error(operation, &error)),
             }
         }
 
@@ -4691,9 +4760,7 @@ mod platform {
                 self.fence
                     .SetEventOnCompletion(fence_value, self.fence_event.0)
             }
-            .map_err(|error| {
-                self.backend_error_with_device_reason("ID3D12Fence::SetEventOnCompletion", &error)
-            })?;
+            .map_err(|error| self.backend_error("ID3D12Fence::SetEventOnCompletion", &error))?;
             let started_at = Instant::now();
             let mut warned_slow_wait = false;
             loop {
@@ -4754,7 +4821,7 @@ mod platform {
             Ok(fence_value)
         }
 
-        fn backend_error_with_device_reason(&self, operation: &str, error: &WindowsError) -> Error {
+        fn backend_error(&self, operation: &str, error: &WindowsError) -> Error {
             // SAFETY: The D3D12 device is a live COM object owned by this backend.
             let removed_reason = unsafe { self.device.GetDeviceRemovedReason() }
                 .err()
@@ -4967,7 +5034,8 @@ mod platform {
     }
 
     fn create_native_queue(
-        device: &ID3D12Device, kind: D3D12_COMMAND_LIST_TYPE,
+        device: &ID3D12Device,
+        kind: D3D12_COMMAND_LIST_TYPE,
     ) -> Result<Dx12NativeQueue> {
         let queue = create_command_queue_of_type(device, kind)?;
         let fence = create_fence(device)?;
@@ -4977,12 +5045,16 @@ mod platform {
             .ok()
             .filter(|frequency| *frequency > 0);
         Ok(Dx12NativeQueue {
-            queue, fence, next_fence_value: 1, timestamp_frequency_hz,
+            queue,
+            fence,
+            next_fence_value: 1,
+            timestamp_frequency_hz,
         })
     }
 
     fn create_command_queue_of_type(
-        device: &ID3D12Device, kind: D3D12_COMMAND_LIST_TYPE,
+        device: &ID3D12Device,
+        kind: D3D12_COMMAND_LIST_TYPE,
     ) -> Result<ID3D12CommandQueue> {
         let desc = D3D12_COMMAND_QUEUE_DESC {
             Type: kind,
@@ -5394,9 +5466,7 @@ mod platform {
         if (cached_blob.is_none() || rejected_cached_blob)
             && let Some(cache_path) = cache_path.as_deref()
         {
-            persist_pipeline_cache_blob(
-                cache_path, &pipeline_state, pipeline_cache_limit_bytes,
-            );
+            persist_pipeline_cache_blob(cache_path, &pipeline_state, pipeline_cache_limit_bytes);
         }
 
         Ok(pipeline_state)
@@ -5536,7 +5606,7 @@ mod platform {
         }
     }
 
-    fn dx12_rect_for_scissor(
+    fn dx12_rect_from_scissor(
         scissor: gfx_core::ScissorRect,
         extent: gfx_core::Extent2d,
     ) -> Result<windows::Win32::Foundation::RECT> {
@@ -5806,7 +5876,8 @@ mod platform {
             // Native texture3D SRV/UAV creation is implemented in the
             // resource-table path below.
             gfx_core::TextureVolumeCapabilities {
-                max_dimension_3d: windows::Win32::Graphics::Direct3D12::D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
+                max_dimension_3d:
+                    windows::Win32::Graphics::Direct3D12::D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION,
                 sampled: true,
                 storage: true,
             }
@@ -6136,12 +6207,14 @@ mod platform {
             }
             let (native, fence, fence_value, kind) = match (queue.family, queue.index) {
                 (0, 1) => {
-                    let native = self.sidecar_queue.clone().ok_or_else(|| Error::Unavailable(
-                        "DX12 independent DIRECT queue is unavailable".into(),
-                    ))?;
-                    let fence = self.sidecar_fence.clone().ok_or_else(|| Error::Unavailable(
-                        "DX12 independent DIRECT queue fence is unavailable".into(),
-                    ))?;
+                    let native = self.sidecar_queue.clone().ok_or_else(|| {
+                        Error::Unavailable("DX12 independent DIRECT queue is unavailable".into())
+                    })?;
+                    let fence = self.sidecar_fence.clone().ok_or_else(|| {
+                        Error::Unavailable(
+                            "DX12 independent DIRECT queue fence is unavailable".into(),
+                        )
+                    })?;
                     let value = self.next_sidecar_fence_value;
                     self.next_sidecar_fence_value = value.checked_add(1).ok_or_else(|| {
                         Error::InvalidInput("DX12 sidecar timeline exhausted".into())
@@ -6153,9 +6226,11 @@ mod platform {
                         &mut self.async_compute
                     } else {
                         &mut self.async_transfer
-                    }.as_mut().ok_or_else(|| Error::Unavailable(
-                        "DX12 requested dedicated queue is unavailable".into(),
-                    ))?;
+                    }
+                    .as_mut()
+                    .ok_or_else(|| {
+                        Error::Unavailable("DX12 requested dedicated queue is unavailable".into())
+                    })?;
                     let value = native.next_fence_value;
                     native.next_fence_value = value.checked_add(1).ok_or_else(|| {
                         Error::InvalidInput("DX12 dedicated queue timeline exhausted".into())
@@ -6167,20 +6242,22 @@ mod platform {
                     };
                     (native.queue.clone(), native.fence.clone(), value, kind)
                 }
-                _ => return Err(Error::Unavailable(
-                    "DX12 checkpoint target does not exist on this device".into(),
-                )),
+                _ => {
+                    return Err(Error::Unavailable(
+                        "DX12 checkpoint target does not exist on this device".into(),
+                    ));
+                }
             };
             // SAFETY: The native queue and fence belong to the same device.
             // Signal is a GPU-side operation that completes after every prior
             // native command/wait on this physical queue; no CPU wait occurs.
-            unsafe { native.Signal(&fence, fence_value) }
-                .map_err(|error| Error::Backend(format!(
-                    "DX12 native {:?} checkpoint Signal: {error}", kind,
-                )))?;
+            unsafe { native.Signal(&fence, fence_value) }.map_err(|error| {
+                Error::Backend(format!("DX12 native {:?} checkpoint Signal: {error}", kind,))
+            })?;
             self.check_device_removed("DX12 native queue checkpoint")?;
             Ok(self.submissions.insert(Dx12Submission {
-                fence_value, queue: kind,
+                fence_value,
+                queue: kind,
             }))
         }
 
@@ -6194,17 +6271,25 @@ mod platform {
             // COMPUTE->Graphics GPU-side wait. The independent DIRECT queue
             // remains an opt-in fallback and may share the 3D sidecar.
             if queue != gfx_core::GpuQueueId::PRIMARY
-                && queue != (gfx_core::GpuQueueId { family: 0, index: 1 })
-                && queue != (gfx_core::GpuQueueId { family: 0, index: 2 })
+                && queue
+                    != (gfx_core::GpuQueueId {
+                        family: 0,
+                        index: 1,
+                    })
+                && queue
+                    != (gfx_core::GpuQueueId {
+                        family: 0,
+                        index: 2,
+                    })
             {
                 return Err(Error::Unavailable(
                     "DX12 requested Compute queue is not supported".into(),
                 ));
             }
             self.dispatch_buffer_batch_on_queue(dispatches, None, Some(queue))?
-                .ok_or_else(|| Error::Unavailable(
-                    "DX12 native Compute submit has no completion fence".into(),
-                ))
+                .ok_or_else(|| {
+                    Error::Unavailable("DX12 native Compute submit has no completion fence".into())
+                })
         }
 
         fn submit_compute_batch_profiled_on_queue(
@@ -6214,17 +6299,27 @@ mod platform {
             tag: gfx_core::GpuTimestampTag,
         ) -> Result<SubmissionId> {
             if queue != gfx_core::GpuQueueId::PRIMARY
-                && queue != (gfx_core::GpuQueueId { family: 0, index: 1 })
-                && queue != (gfx_core::GpuQueueId { family: 0, index: 2 })
+                && queue
+                    != (gfx_core::GpuQueueId {
+                        family: 0,
+                        index: 1,
+                    })
+                && queue
+                    != (gfx_core::GpuQueueId {
+                        family: 0,
+                        index: 2,
+                    })
             {
                 return Err(Error::Unavailable(
                     "DX12 tagged Compute queue is not supported".into(),
                 ));
             }
             self.dispatch_buffer_batch_on_queue(dispatches, Some(tag), Some(queue))?
-                .ok_or_else(|| Error::Unavailable(
-                    "DX12 tagged Compute submit has no native producer fence".into(),
-                ))
+                .ok_or_else(|| {
+                    Error::Unavailable(
+                        "DX12 tagged Compute submit has no native producer fence".into(),
+                    )
+                })
         }
 
         fn submit_buffer_copies_on_queue(
@@ -6246,9 +6341,18 @@ mod platform {
             };
             let source_queue = match producer_kind {
                 Dx12SubmissionQueue::Primary => gfx_core::GpuQueueId::PRIMARY,
-                Dx12SubmissionQueue::Sidecar => gfx_core::GpuQueueId { family: 0, index: 1 },
-                Dx12SubmissionQueue::Compute => gfx_core::GpuQueueId { family: 0, index: 2 },
-                Dx12SubmissionQueue::Transfer => gfx_core::GpuQueueId { family: 0, index: 3 },
+                Dx12SubmissionQueue::Sidecar => gfx_core::GpuQueueId {
+                    family: 0,
+                    index: 1,
+                },
+                Dx12SubmissionQueue::Compute => gfx_core::GpuQueueId {
+                    family: 0,
+                    index: 2,
+                },
+                Dx12SubmissionQueue::Transfer => gfx_core::GpuQueueId {
+                    family: 0,
+                    index: 3,
+                },
             };
             if target_queue == source_queue {
                 return Err(Error::InvalidInput(
@@ -6264,32 +6368,36 @@ mod platform {
                     (0, 2) => self.async_compute.as_ref().map(|q| q.queue.clone()),
                     (0, 3) => self.async_transfer.as_ref().map(|q| q.queue.clone()),
                     _ => None,
-                }.ok_or_else(|| Error::Unavailable(
-                    "DX12 target native queue is unavailable".into(),
-                ))?
+                }
+                .ok_or_else(|| {
+                    Error::Unavailable("DX12 target native queue is unavailable".into())
+                })?
             };
             // SAFETY: The producer has already enqueued Signal for precisely
             // this queue-specific fence value. Both COM queues and the fence
             // belong to this device. ID3D12CommandQueue::Wait is GPU-side and
             // never stalls the CPU or spuriously completes the producer.
-            unsafe { consumer.Wait(&source_fence, producer_value) }
-                .map_err(|error| Error::Backend(format!(
-                    "DX12 native cross-queue GPU Wait: {error}"
-                )))?;
+            unsafe { consumer.Wait(&source_fence, producer_value) }.map_err(|error| {
+                Error::Backend(format!("DX12 native cross-queue GPU Wait: {error}"))
+            })?;
             // SAFETY: The specific native consumer GPU queue successfully
             // enqueued its Wait of the source queue's fence value.
-            Ok(unsafe {
-                gfx_core::GpuNativeWaitProof::after_native_wait(producer, target_queue)
-            })
+            Ok(unsafe { gfx_core::GpuNativeWaitProof::after_native_wait(producer, target_queue) })
         }
 
-        fn checkpoint_ordered_queue(&mut self, _stage: gfx_core::GpuWorkStage) -> Result<SubmissionId> {
+        fn checkpoint_ordered_queue(
+            &mut self,
+            _stage: gfx_core::GpuWorkStage,
+        ) -> Result<SubmissionId> {
             // The DIRECT queue serializes upload, compute and graphics. A
             // Signal after those commands is an actual native GPU completion
             // point, not a CPU-side submit timestamp.
             let fence_value = self.signal_frame()?;
             self.check_device_removed("DX12 ordered queue checkpoint")?;
-            Ok(self.submissions.insert(Dx12Submission { fence_value, queue: Dx12SubmissionQueue::Primary }))
+            Ok(self.submissions.insert(Dx12Submission {
+                fence_value,
+                queue: Dx12SubmissionQueue::Primary,
+            }))
         }
 
         fn wait_queue_idle(&mut self) -> Result<()> {
@@ -6349,7 +6457,7 @@ mod platform {
             )
         }
 
-        fn can_present_now(&mut self, swapchain: SwapchainId) -> Result<bool> {
+        fn poll_present_readiness(&mut self, swapchain: SwapchainId) -> Result<bool> {
             self.swapchain_frame_ready(swapchain)
         }
 
@@ -6400,7 +6508,7 @@ mod platform {
                     "DX12 swapchain LoadOp::Load is not implemented".to_string(),
                 ));
             };
-            let (submission, timings) = self.render_step_list_and_present_deferred_timed(
+            let (submission, timings) = self.record_and_present_timed(
                 frame.swapchain,
                 frame.render_pass,
                 frame.commands,
@@ -6442,9 +6550,7 @@ mod platform {
             &mut self,
             passes: &[RenderPassCommands<'_>],
         ) -> Result<Option<SubmissionId>> {
-            self.record_texture_passes_on_queue(
-                passes, self.independent_graphics_queue_available(),
-            )
+            self.record_texture_passes_on_queue(passes, self.independent_graphics_queue_available())
         }
 
         fn render_to_textures_independent_profiled(
@@ -6453,7 +6559,9 @@ mod platform {
             tags: &[Option<gfx_core::GpuTimestampTag>],
         ) -> Result<Option<SubmissionId>> {
             self.record_texture_passes_profiled(
-                passes, self.independent_graphics_queue_available(), Some(tags),
+                passes,
+                self.independent_graphics_queue_available(),
+                Some(tags),
             )
         }
     }
@@ -6948,8 +7056,9 @@ mod platform {
             Width: u64::from(desc.size.width()),
             Height: desc.size.height(),
             DepthOrArraySize: u16::try_from(
-                desc.dimension.layers().max(desc.dimension.mip_depth(0))
-            ).map_err(|_| {
+                desc.dimension.layers().max(desc.dimension.mip_depth(0)),
+            )
+            .map_err(|_| {
                 Error::InvalidInput("D3D12 texture Z extent/array layers exceeds u16".into())
             })?,
             MipLevels: u16::try_from(desc.mip_level_count).map_err(|error| {
@@ -8257,7 +8366,12 @@ mod platform {
     /// Queue-specific completion identity. Never poll a Compute/COPY native
     /// fence by reading the primary DIRECT queue's fence counter.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Dx12SubmissionQueue { Primary, Sidecar, Compute, Transfer }
+    enum Dx12SubmissionQueue {
+        Primary,
+        Sidecar,
+        Compute,
+        Transfer,
+    }
 
     struct Dx12NativeQueue {
         queue: ID3D12CommandQueue,

@@ -152,15 +152,22 @@ impl Dx12Device {
                         .Reset(&recycled.allocator, None)
                         .map_err(|e| Error::Backend(e.to_string()))?;
                 }
-                (recycled.allocator, recycled.graphics_command_list, recycled.timestamps)
+                (
+                    recycled.allocator,
+                    recycled.graphics_command_list,
+                    recycled.timestamps,
+                )
             } else {
                 let allocator = create_command_allocator(&self.device)?;
                 let commands = create_command_list(&self.device, &allocator)?;
                 let timestamps = if timed {
                     Some(create_dx12_timestamp_queries(
-                        &self.device, "nova-gfx DX12 resident buffer upload timestamps",
+                        &self.device,
+                        "nova-gfx DX12 resident buffer upload timestamps",
                     )?)
-                } else { None };
+                } else {
+                    None
+                };
                 (allocator, commands, timestamps)
             };
             if let Some(queries) = &timestamps {
@@ -206,7 +213,12 @@ impl Dx12Device {
                 unsafe {
                     commands.EndQuery(&queries.heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
                     commands.ResolveQueryData(
-                        &queries.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, &queries.readback, 0,
+                        &queries.heap,
+                        D3D12_QUERY_TYPE_TIMESTAMP,
+                        0,
+                        2,
+                        &queries.readback,
+                        0,
                     );
                 }
             }

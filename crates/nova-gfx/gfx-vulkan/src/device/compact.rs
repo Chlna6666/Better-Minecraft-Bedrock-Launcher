@@ -129,21 +129,21 @@ impl VulkanDevice {
             };
             let desc = &old.desc;
             let view = if let TextureDimension::D2Array { layers } = texture.desc.dimension {
-                create_image_view_range_with_layers(
+                create_image_view_array(
                     &self.device,
                     texture.image,
                     format_to_vk(desc.format),
-                    image_aspect_for_format(desc.format),
+                    image_aspect_from_format(desc.format),
                     desc.base_mip_level,
                     desc.mip_level_count,
                     layers,
                 )?
             } else {
-                create_image_view_range(
+                create_image_view_2d(
                     &self.device,
                     texture.image,
                     format_to_vk(desc.format),
-                    image_aspect_for_format(desc.format),
+                    image_aspect_from_format(desc.format),
                     desc.base_mip_level,
                     desc.mip_level_count,
                 )?
@@ -253,7 +253,7 @@ impl VulkanDevice {
             );
             return Err(VulkanError::from(error).into());
         }
-        destroy_fence_if_needed(&self.device, fence);
+        destroy_fence(&self.device, fence);
         destroy_upload_commands(&self.device, &upload);
         Ok(())
     }
@@ -267,7 +267,7 @@ impl VulkanDevice {
         if source.layout == vk::ImageLayout::UNDEFINED {
             return;
         }
-        let aspect = image_aspect_for_format(source.desc.format);
+        let aspect = image_aspect_from_format(source.desc.format);
         heap_image_barrier(
             &self.device,
             commands,
@@ -372,7 +372,7 @@ fn heap_image_barrier(
     new: vk::ImageLayout,
 ) {
     let range = vk::ImageSubresourceRange::default()
-        .aspect_mask(image_aspect_for_format(texture.desc.format))
+        .aspect_mask(image_aspect_from_format(texture.desc.format))
         .level_count(texture.desc.mip_level_count)
         .layer_count(texture.desc.dimension.layers());
     let barrier = vk::ImageMemoryBarrier::default()

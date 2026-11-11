@@ -274,12 +274,12 @@ impl OpenGlDevice {
         self.park()?;
         Ok(id)
     }
-    /// Copies the retained scene target into the window back buffer.
+    /// Copies the previously submitted frame into the window back buffer.
     ///
     /// The committed scene is copied one-to-one from its logical top-left; a native
     /// client that grew ahead of it receives an edge extension of the last valid
-    /// column/row, so no undefined black pixels and no resampled UI controls appear.
-    fn blit_retained_to_window(
+    /// column/row, so no undefined black pixels and no resampled controls appear.
+    fn blit_previous_frame(
         &self,
         chain: &Swapchain,
         native_size: (i32, i32),
@@ -292,7 +292,7 @@ impl OpenGlDevice {
         );
         let copy = present_copy(height, source_size, native_size);
         // SAFETY: both framebuffers belong to the current GL context.
-        // The scene has already been rendered into the retained allocation;
+        // The frame has already been rendered into the previous framebuffer;
         // only the top-left intersection is copied 1:1. A native window that
         // grew ahead of the GPU receives a temporary clear and edge extension
         // instead of undefined black backbuffer pixels or scaled UI controls.
@@ -407,7 +407,7 @@ impl OpenGlDevice {
             LoadOp::Clear(color) => Some(color),
             LoadOp::Load => None,
         };
-        self.blit_retained_to_window(chain, native_size, clear)?;
+        self.blit_previous_frame(chain, native_size, clear)?;
         let command_record = record_started.elapsed();
         let present_started = std::time::Instant::now();
         chain.window.swap_buffers(&self.context).map_err(native)?;
@@ -429,13 +429,13 @@ impl OpenGlDevice {
         ))
     }
 
-    /// Presents the retained scene target over a native client extent that grew ahead
+    /// Presents the previously submitted frame over a native client extent that grew ahead
     /// of the next buffer resize.
     ///
-    /// Only the native window surface changes here: the scene target is retained, so
+    /// Only the native window surface changes here: no new scene render is needed, so
     /// this path performs no scene render, upload or target allocation. The blit copies
     /// the scene one-to-one and extends its edges into the newly exposed strip.
-    pub(crate) fn present_retained_frame(
+    pub(crate) fn present_previous_frame(
         &mut self,
         id: SwapchainId,
         target: Extent2d,
@@ -445,11 +445,11 @@ impl OpenGlDevice {
         chain.window.resize(
             &self.context,
             NonZeroU32::new(target.width())
-                .ok_or_else(|| Error::InvalidInput("zero retained width".into()))?,
+                .ok_or_else(|| Error::InvalidInput("zero previous-frame width".into()))?,
             NonZeroU32::new(target.height())
-                .ok_or_else(|| Error::InvalidInput("zero retained height".into()))?,
+                .ok_or_else(|| Error::InvalidInput("zero previous-frame height".into()))?,
         );
-        self.blit_retained_to_window(chain, (target.width() as i32, target.height() as i32), None)?;
+        self.blit_previous_frame(chain, (target.width() as i32, target.height() as i32), None)?;
         chain.window.swap_buffers(&self.context).map_err(native)?;
         self.park()?;
         Ok(())

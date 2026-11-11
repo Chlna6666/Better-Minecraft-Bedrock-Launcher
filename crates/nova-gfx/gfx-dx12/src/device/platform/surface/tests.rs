@@ -165,7 +165,7 @@ fn verify_native_scaling(device: &Dx12Device, chain: SwapchainId) {
 fn verify_later_work(device: &mut Dx12Device, chain: SwapchainId, retirement: u64) {
     let gate = QueueBlock::new(device);
     device.signal_frame().expect("later unrelated work");
-    assert!(device.has_pending_gpu_work().expect("blocked later work"));
+    assert!(device.poll_gpu_work().expect("blocked later work"));
     for _ in 0..8 {
         assert!(
             device

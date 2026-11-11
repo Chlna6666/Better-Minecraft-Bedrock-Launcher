@@ -7,11 +7,7 @@ use windows::{
     core::PCSTR,
 };
 
-fn compile_shader_binary(
-    source: &str,
-    stage: ShaderStage,
-    entry: &str,
-) -> ShaderBinary {
+fn compile_shader_binary(source: &str, stage: ShaderStage, entry: &str) -> ShaderBinary {
     let module = gfx_shader::WgslModule::parse(source).expect("WGSL");
     let ShaderCode::Hlsl(hlsl) = module.compile_hlsl_dx11(stage, entry).expect("HLSL").code else {
         panic!("HLSL");
@@ -209,7 +205,6 @@ fn compute_vertices_and_indirect_offsets_reach_pixels() {
 
             sample_count: 1,
             resolve_target: None,
-
         })
         .expect("pass");
     let mut pipeline_desc = RenderPipelineDescriptor {
@@ -221,7 +216,10 @@ fn compute_vertices_and_indirect_offsets_reach_pixels() {
         vertex_buffers: vec![],
         render_pass: pass,
         pipeline_layout: Some(pipeline_layout),
-        color_targets: vec![ColorTargetState::new(Format::Rgba8Unorm, BlendMode::Replace)],
+        color_targets: vec![ColorTargetState::new(
+            Format::Rgba8Unorm,
+            BlendMode::Replace,
+        )],
         primitive_topology: PrimitiveTopology::TriangleList,
         raster: Default::default(),
         depth_state: None,
@@ -315,9 +313,8 @@ fn compute_vertices_and_indirect_offsets_reach_pixels() {
                 depth_attachment: None,
                 clear_region: None,
                 viewport: None,
-            resolve_target: None,
-
-        }])
+                resolve_target: None,
+            }])
             .expect("indirect draw");
         let pixels = device.read_texture(target).expect("pixels");
         assert_eq!(
@@ -379,9 +376,8 @@ fn compute_vertices_and_indirect_offsets_reach_pixels() {
                         depth_attachment: None,
                         clear_region: None,
                         viewport: None,
-            resolve_target: None,
-
-        }])
+                        resolve_target: None,
+                    }])
                     .unwrap();
                 let is_front = (front_face == FrontFace::Ccw) != reversed;
                 let visible = match cull_mode {
@@ -425,83 +421,39 @@ fn compute_vertices_and_indirect_offsets_reach_pixels() {
     }
 }
 
-
 /// Native hardware gate for compute that writes storage images and buffers.
 #[test]
 #[ignore = "requires Windows D3D11 hardware and a native texture readback"]
 fn compute_resource_set_writes_storage_image_and_buffer() {
     let mut device = Dx11Device::new(&DeviceDescriptor::default()).expect("D3D11 device");
     let data = buffer(
-        &mut device, 16,
+        &mut device,
+        16,
         BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE,
     );
-    let image = device.create_texture(&TextureDescriptor {
-        label: None,
-        size: Extent2d::new(16, 16).unwrap(),
-        mip_level_count: 1,
-        format: Format::Rgba8Unorm,
-        usage: TextureUsage::STORAGE | TextureUsage::COPY_SRC,
-        memory_location: MemoryLocation::GpuOnly,
-        dimension: TextureDimension::D2,
-        sample_count: 1,
-    }).expect("storage image");
-    let image_view = device.create_texture_view(&TextureViewDescriptor {
-        label: None,
-        texture: image,
-        base_mip_level: 0,
-        mip_level_count: 1,
-        format: Format::Rgba8Unorm,
-    }).expect("storage image UAV");
-    let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: None,
-        entries: vec![
-            BindGroupLayoutEntry {
-                binding: 0,
-                binding_type: BindingType::StorageBufferReadWrite,
-                stages: ShaderStages::COMPUTE,
-            },
-            BindGroupLayoutEntry {
-                binding: 1,
-                binding_type: BindingType::StorageTexture {
-                    format: Format::Rgba8Unorm,
-                    read_only: false,
-                },
-                stages: ShaderStages::COMPUTE,
-            },
-        ],
-    }).expect("compute-only layout");
-    let set = device.create_bind_group(&BindGroupDescriptor {
-        label: None,
-        layout,
-        entries: vec![
-            BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: data, offset: 0, size: 16, stride: None,
-                }),
-            },
-            BindGroupEntry {
-                binding: 1,
-                resource: BindingResource::Texture(TextureBinding {
-                    texture_view: image_view,
-                }),
-            },
-        ],
-    }).expect("native compute UAV bind group");
-    let source = r#"
-@group(0) @binding(0) var<storage, read_write> words: array<vec4<u32>>;
-@group(0) @binding(1) var target: texture_storage_2d<rgba8unorm, write>;
-@compute @workgroup_size(1)
-fn cs(@builtin(global_invocation_id) id: vec3<u32>) {
-    if (id.x == 0u && id.y == 0u) {
-        words[0] = vec4<u32>(1u, 2u, 3u, 4u);
-    }
-    textureStore(target, vec2<i32>(id.xy), vec4<f32>(0.0, 1.0, 0.0, 1.0));
-}
-"#;
-    let compute = shader(&mut device, source, ShaderStage::Compute, "cs");
-    assert!(device.compute_bind_group_capabilities().supports(
-        &BindGroupLayoutDescriptor {
+    let image = device
+        .create_texture(&TextureDescriptor {
+            label: None,
+            size: Extent2d::new(16, 16).unwrap(),
+            mip_level_count: 1,
+            format: Format::Rgba8Unorm,
+            usage: TextureUsage::STORAGE | TextureUsage::COPY_SRC,
+            memory_location: MemoryLocation::GpuOnly,
+            dimension: TextureDimension::D2,
+            sample_count: 1,
+        })
+        .expect("storage image");
+    let image_view = device
+        .create_texture_view(&TextureViewDescriptor {
+            label: None,
+            texture: image,
+            base_mip_level: 0,
+            mip_level_count: 1,
+            format: Format::Rgba8Unorm,
+        })
+        .expect("storage image UAV");
+    let layout = device
+        .create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: None,
             entries: vec![
                 BindGroupLayoutEntry {
@@ -512,18 +464,78 @@ fn cs(@builtin(global_invocation_id) id: vec3<u32>) {
                 BindGroupLayoutEntry {
                     binding: 1,
                     binding_type: BindingType::StorageTexture {
-                        format: Format::Rgba8Unorm, read_only: false,
+                        format: Format::Rgba8Unorm,
+                        read_only: false,
                     },
                     stages: ShaderStages::COMPUTE,
                 },
             ],
-        }
-    ));
-    device.dispatch_compute_bind_group(&ComputeBindGroupDispatch {
-        shader: compute,
-        bind_group: set,
-        workgroups: [16, 16, 1],
-    }).expect("native compute dispatch");
+        })
+        .expect("compute-only layout");
+    let set = device
+        .create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout,
+            entries: vec![
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: data,
+                        offset: 0,
+                        size: 16,
+                        stride: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Texture(TextureBinding {
+                        texture_view: image_view,
+                    }),
+                },
+            ],
+        })
+        .expect("native compute UAV bind group");
+    let source = r#"
+@group(0) @binding(0) var<storage, read_write> words: array<vec4<u32>>;
+@group(0) @binding(1) var output_image: texture_storage_2d<rgba8unorm, write>;
+@compute @workgroup_size(1)
+fn cs(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x == 0u && id.y == 0u) {
+        words[0] = vec4<u32>(1u, 2u, 3u, 4u);
+    }
+    textureStore(output_image, vec2<i32>(id.xy), vec4<f32>(0.0, 1.0, 0.0, 1.0));
+}
+"#;
+    let compute = shader(&mut device, source, ShaderStage::Compute, "cs");
+    assert!(
+        device
+            .compute_bind_group_capabilities()
+            .supports(&BindGroupLayoutDescriptor {
+                label: None,
+                entries: vec![
+                    BindGroupLayoutEntry {
+                        binding: 0,
+                        binding_type: BindingType::StorageBufferReadWrite,
+                        stages: ShaderStages::COMPUTE,
+                    },
+                    BindGroupLayoutEntry {
+                        binding: 1,
+                        binding_type: BindingType::StorageTexture {
+                            format: Format::Rgba8Unorm,
+                            read_only: false,
+                        },
+                        stages: ShaderStages::COMPUTE,
+                    },
+                ],
+            })
+    );
+    device
+        .dispatch_compute_bind_group(&ComputeBindGroupDispatch {
+            shader: compute,
+            bind_group: set,
+            workgroups: [16, 16, 1],
+        })
+        .expect("native compute dispatch");
     let pixels = device.read_texture(image).expect("GPU texture readback");
     let probe = (8 * 16 + 8) * 4;
     assert_eq!(&pixels.bytes[probe..probe + 4], &[0, 255, 0, 255]);

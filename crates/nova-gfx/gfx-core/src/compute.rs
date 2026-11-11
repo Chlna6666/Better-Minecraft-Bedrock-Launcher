@@ -36,7 +36,8 @@ impl ComputeBindGroupCapabilities {
             && layout.entries.iter().all(|entry| {
                 entry.stages.contains(ShaderStages::COMPUTE)
                     && match entry.binding_type {
-                        BindingType::UniformBuffer | BindingType::StorageBuffer
+                        BindingType::UniformBuffer
+                        | BindingType::StorageBuffer
                         | BindingType::StorageBufferReadWrite => self.buffers,
                         BindingType::SampledTexture => self.sampled_textures,
                         BindingType::Sampler => self.samplers,
@@ -135,9 +136,7 @@ impl BufferBindingLimits {
         requested
             .checked_add(align - 1)
             .map(|value| value / align * align)
-            .ok_or_else(|| {
-                Error::InvalidInput("aligned storage allocation size overflows".into())
-            })
+            .ok_or_else(|| Error::InvalidInput("aligned storage allocation size overflows".into()))
     }
 }
 
@@ -366,7 +365,9 @@ impl ComputeBindGroupDispatch {
                 .find(|binding| binding.binding == entry.binding)
                 .ok_or_else(|| Error::InvalidInput("missing compute binding".into()))?;
             let BindingResource::Buffer(buffer) = resource.resource else {
-                return Err(Error::InvalidInput("compute binding is not a buffer".into()));
+                return Err(Error::InvalidInput(
+                    "compute binding is not a buffer".into(),
+                ));
             };
             bindings.push(ComputeBufferBinding {
                 binding: entry.binding,
@@ -396,7 +397,7 @@ impl ComputeDispatch<'_> {
     /// Validate one compute submission against both the shader execution
     /// capabilities and native buffer binding limits. Shared across all four
     /// backends, analogous to wgpu's device-limit validation.
-    pub fn validate_with_limits(
+    pub fn validate_dispatch(
         &self,
         capabilities: ComputeCapabilities,
         limits: BufferBindingLimits,
@@ -508,7 +509,10 @@ mod tests {
             entries: vec![BindGroupEntry {
                 binding: 2,
                 resource: BindingResource::Buffer(BufferBinding {
-                    buffer: BufferId::new(3), offset: 0, size: 64, stride: None,
+                    buffer: BufferId::new(3),
+                    offset: 0,
+                    size: 64,
+                    stride: None,
                 }),
             }],
         };
@@ -526,13 +530,19 @@ mod tests {
             ComputeBufferAccess::ReadWrite
         );
         layout.entries[0].stages = ShaderStages::VERTEX;
-        assert!(matches!(dispatch.buffer_bindings(&set, &layout), Err(Error::InvalidInput(_))));
+        assert!(matches!(
+            dispatch.buffer_bindings(&set, &layout),
+            Err(Error::InvalidInput(_))
+        ));
         layout.entries[0].stages = ShaderStages::COMPUTE;
         layout.entries[0].binding_type = BindingType::SampledTexture;
         set.entries[0].resource = BindingResource::Texture(TextureBinding {
             texture_view: TextureViewId::new(6),
         });
-        assert!(matches!(dispatch.buffer_bindings(&set, &layout), Err(Error::Unavailable(_))));
+        assert!(matches!(
+            dispatch.buffer_bindings(&set, &layout),
+            Err(Error::Unavailable(_))
+        ));
     }
 
     #[test]
@@ -584,10 +594,10 @@ mod tests {
             bindings: &bindings,
             workgroups: [1; 3],
         };
-        assert!(dispatch.validate_with_limits(caps, limits).is_ok());
+        assert!(dispatch.validate_dispatch(caps, limits).is_ok());
         assert!(
             dispatch
-                .validate_with_limits(caps, BufferBindingLimits::default())
+                .validate_dispatch(caps, BufferBindingLimits::default())
                 .is_err()
         );
         let bad = [ComputeBufferBinding {
@@ -601,7 +611,7 @@ mod tests {
             bindings: &bad,
             ..dispatch
         };
-        assert!(dispatch.validate_with_limits(caps, limits).is_err());
+        assert!(dispatch.validate_dispatch(caps, limits).is_err());
     }
 
     #[test]
@@ -639,7 +649,10 @@ mod tests {
         dispatch.bindings = &aliases[..1];
         assert!(dispatch.validate(caps).is_ok());
         dispatch.workgroups = [1, 0, 1];
-        assert!(matches!(dispatch.validate(caps), Err(Error::InvalidInput(_))));
+        assert!(matches!(
+            dispatch.validate(caps),
+            Err(Error::InvalidInput(_))
+        ));
         dispatch.workgroups = [1, 1, 1];
         dispatch.workgroups[0] = 65536;
         assert!(dispatch.validate(caps).is_err());

@@ -78,8 +78,8 @@ impl PresentationDevice for OpenGlDevice {
         }))
     }
 
-    fn present_retained_frame(&mut self, swapchain: SwapchainId, target: Extent2d) -> Result<()> {
-        OpenGlDevice::present_retained_frame(self, swapchain, target)
+    fn present_previous_frame(&mut self, swapchain: SwapchainId, target: Extent2d) -> Result<()> {
+        OpenGlDevice::present_previous_frame(self, swapchain, target)
     }
 
     fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
@@ -116,23 +116,37 @@ impl PresentationDevice for OpenGlDevice {
         tags: &[Option<GpuTimestampTag>],
     ) -> Result<Option<SubmissionId>> {
         if passes.len() != tags.len() {
-            return Err(Error::InvalidInput("offscreen GPU tag count mismatch".into()));
+            return Err(Error::InvalidInput(
+                "offscreen GPU tag count mismatch".into(),
+            ));
         }
         for (pass, tag) in passes.iter().zip(tags) {
             let tag = tag.filter(|tag| {
                 tag.stage == GpuTimestampStage::DrawIndirect
                     && !pass.commands.is_empty()
-                    && pass.commands.iter().all(|command| matches!(
-                        command, RenderCommand::DrawIndirect(_)
-                        | RenderCommand::DrawIndexedIndirect(_)
-                    ))
+                    && pass.commands.iter().all(|command| {
+                        matches!(
+                            command,
+                            RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_)
+                        )
+                    })
             });
-            let targets = pass.color_attachments.iter().copied()
-                .map(RenderTarget::TextureView).collect::<Vec<_>>();
+            let targets = pass
+                .color_attachments
+                .iter()
+                .copied()
+                .map(RenderTarget::TextureView)
+                .collect::<Vec<_>>();
             self.render_target_clipped_profiled(
-                &targets, pass.resolve_target, pass.render_pass, pass.commands,
-                pass.color_load_op, pass.depth_attachment,
-                pass.clear_region, pass.viewport, tag,
+                &targets,
+                pass.resolve_target,
+                pass.render_pass,
+                pass.commands,
+                pass.color_load_op,
+                pass.depth_attachment,
+                pass.clear_region,
+                pass.viewport,
+                tag,
             )?;
         }
         Ok(None)

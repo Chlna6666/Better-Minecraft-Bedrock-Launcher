@@ -69,7 +69,11 @@ pub struct OpenGlDevice {
     pub(crate) surfaces: Registry<RawWindowHandle>,
     pub(crate) swapchains: Registry<Swapchain>,
     pending: VecDeque<(u32, glow::NativeFence)>,
-    pending_gpu_work: VecDeque<(Option<GpuTimestampTag>, glow::NativeQuery, glow::NativeQuery)>,
+    pending_gpu_work: VecDeque<(
+        Option<GpuTimestampTag>,
+        glow::NativeQuery,
+        glow::NativeQuery,
+    )>,
     reusable_gpu_queries: Vec<(glow::NativeQuery, glow::NativeQuery)>,
     gpu_work_samples: Vec<GpuTimestampSample>,
     submitted: u32,
@@ -323,7 +327,7 @@ impl OpenGlDevice {
         tag: GpuTimestampTag,
     ) -> Result<Option<(GpuTimestampTag, glow::NativeQuery, glow::NativeQuery)>> {
         self.park()?;
-        self.poll_gpu_work();
+        self.retire_gpu_work();
         if self.pending_gpu_work.len() >= 64 {
             return Ok(None);
         }
@@ -341,7 +345,9 @@ impl OpenGlDevice {
                 Err(_) => None,
             },
         };
-        let Some((start, end)) = queries else { return Ok(None); };
+        let Some((start, end)) = queries else {
+            return Ok(None);
+        };
         // SAFETY: These slots have no outstanding GPU users.
         unsafe { self.gl.query_counter(start, glow::TIMESTAMP) };
         Ok(Some((tag, start, end)))
@@ -357,7 +363,8 @@ impl OpenGlDevice {
         if let Some((tag, start, end)) = probe {
             // SAFETY: The current context recorded the matching start probe.
             unsafe { self.gl.query_counter(end, glow::TIMESTAMP) };
-            self.pending_gpu_work.push_back((succeeded.then_some(tag), start, end));
+            self.pending_gpu_work
+                .push_back((succeeded.then_some(tag), start, end));
         }
     }
 
@@ -377,19 +384,20 @@ impl OpenGlDevice {
         output: &mut Vec<GpuTimestampSample>,
     ) -> Result<()> {
         self.park()?;
-        self.poll_gpu_work();
+        self.retire_gpu_work();
         output.append(&mut self.gpu_work_samples);
         Ok(())
     }
 
-    fn poll_gpu_work(&mut self) {
+    fn retire_gpu_work(&mut self) {
         let mut index = 0;
         while index < self.pending_gpu_work.len() {
             let (_, _, end) = self.pending_gpu_work[index];
             // SAFETY: Query availability is non-blocking; only completed
             // timestamps are read through GL_QUERY_RESULT.
             let available = unsafe {
-                self.gl.get_query_parameter_u32(end, glow::QUERY_RESULT_AVAILABLE)
+                self.gl
+                    .get_query_parameter_u32(end, glow::QUERY_RESULT_AVAILABLE)
             } != 0;
             if !available {
                 index += 1;
@@ -409,10 +417,14 @@ impl OpenGlDevice {
             unsafe {
                 self.gl.bind_buffer(glow::QUERY_BUFFER, None);
                 self.gl.get_query_parameter_u64_with_offset(
-                    start, glow::QUERY_RESULT, (&raw mut first) as usize,
+                    start,
+                    glow::QUERY_RESULT,
+                    (&raw mut first) as usize,
                 );
                 self.gl.get_query_parameter_u64_with_offset(
-                    end, glow::QUERY_RESULT, (&raw mut last) as usize,
+                    end,
+                    glow::QUERY_RESULT,
+                    (&raw mut last) as usize,
                 );
             }
             if let Some(tag) = tag {
@@ -465,7 +477,7 @@ impl OpenGlDevice {
     /// Whether earlier work remains in flight.
     /// # Errors
     /// Returns native completion errors.
-    pub fn has_pending_gpu_work(&mut self) -> Result<bool> {
+    pub fn poll_gpu_work(&mut self) -> Result<bool> {
         self.retire()?;
         Ok(!self.pending.is_empty())
     }

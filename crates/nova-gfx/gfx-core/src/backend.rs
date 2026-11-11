@@ -9,12 +9,11 @@ use std::time::Duration;
 use crate::{
     AsyncCapabilities, BackendKind, BindGroupDescriptor, BindGroupId, BindGroupLayoutDescriptor,
     BindGroupLayoutId, BufferDescriptor, BufferId, BufferUploadStats, BufferWrite,
-    GpuTimestampSample, GpuTimestampTag,
     CommandEncoderDescriptor, CommandEncoderId, CompositeAlphaMode, DeviceMemoryBudget,
-    DrawDescriptor, Error, Extent2d, MemoryArchitecture, PipelineLayoutDescriptor,
-    PipelineLayoutId, PresentFrameDescriptor, RenderPassCommands, RenderPassDescriptor,
-    RenderPassId, RenderPipelineDescriptor, RenderPipelineId, ResourceStats, Result,
-    SamplerDescriptor, SamplerId, ShaderModuleDescriptor, ShaderModuleId, SubmissionId,
+    DrawDescriptor, Error, Extent2d, GpuTimestampSample, GpuTimestampTag, MemoryArchitecture,
+    PipelineLayoutDescriptor, PipelineLayoutId, PresentFrameDescriptor, RenderPassCommands,
+    RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId, ResourceStats,
+    Result, SamplerDescriptor, SamplerId, ShaderModuleDescriptor, ShaderModuleId, SubmissionId,
     SubmissionStatus, SurfaceCapabilities, SurfaceConfig, SurfaceDescriptor, SurfaceId,
     SwapchainId, TextureDescriptor, TextureId, TextureReadback, TextureViewDescriptor,
     TextureViewId, TextureWrite, TextureWriteDescriptor,
@@ -378,10 +377,7 @@ pub trait ResourceDevice {
     ///
     /// # Errors
     /// Returns a backend error when querying completed hardware probes fails.
-    fn drain_gpu_work_timestamps(
-        &mut self,
-        _output: &mut Vec<GpuTimestampSample>,
-    ) -> Result<()> {
+    fn drain_gpu_work_timestamps(&mut self, _output: &mut Vec<GpuTimestampSample>) -> Result<()> {
         Ok(())
     }
 
@@ -866,10 +862,7 @@ pub trait SubmissionDevice {
     ///
     /// A caller should checkpoint once per useful batch/retirement epoch,
     /// not per resource or dispatch; no CPU waiting is permitted here.
-    fn checkpoint_ordered_queue(
-        &mut self,
-        _stage: crate::GpuWorkStage,
-    ) -> Result<SubmissionId> {
+    fn checkpoint_ordered_queue(&mut self, _stage: crate::GpuWorkStage) -> Result<SubmissionId> {
         Err(Error::Unavailable(
             "native ordered queue checkpoint is unsupported".into(),
         ))
@@ -974,7 +967,9 @@ pub trait TrackedGpuWorkDevice: ResourceDevice + SubmissionDevice {
         writes: &[BufferWrite<'_>],
     ) -> Result<(BufferUploadStats, SubmissionId)> {
         if writes.is_empty() {
-            return Err(Error::InvalidInput("tracked transfer batch is empty".into()));
+            return Err(Error::InvalidInput(
+                "tracked transfer batch is empty".into(),
+            ));
         }
         let stats = self.write_buffer_batch(writes.iter().copied())?;
         let completion = self.checkpoint_ordered_queue(crate::GpuWorkStage::Transfer)?;
@@ -1092,7 +1087,7 @@ pub trait PresentationDevice {
     /// # Errors
     ///
     /// Returns [`Error`] if the swapchain is stale or the native readiness query fails.
-    fn can_present_now(&mut self, _swapchain: SwapchainId) -> Result<bool> {
+    fn poll_present_readiness(&mut self, _swapchain: SwapchainId) -> Result<bool> {
         Ok(true)
     }
 
@@ -1114,21 +1109,21 @@ pub trait PresentationDevice {
         Ok(())
     }
 
-    /// Presents the retained scene target over a new native extent without rendering.
+    /// Presents the previously submitted frame over a new native extent without rendering.
     ///
     /// A native client area can grow ahead of the next buffer resize. Backends whose
     /// compositor already scales the last presented frame over that strip keep the
-    /// default `Unavailable` result. A capable backend copies its retained scene target
-    /// one-to-one and extends its edges into the newly exposed strip, so the window never
-    /// exposes undefined black pixels and no text is resampled.
+    /// default `Unavailable` result. A capable backend copies its previous swapchain
+    /// image one-to-one and extends its edges into the newly exposed strip, so the window
+    /// never exposes undefined black pixels and no text is resampled.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Unavailable`] when the backend cannot retain the last frame, or a
+    /// Returns [`Error::Unavailable`] when the backend cannot reuse the previous frame, or a
     /// native error when the presentation fails.
-    fn present_retained_frame(&mut self, _swapchain: SwapchainId, _target: Extent2d) -> Result<()> {
+    fn present_previous_frame(&mut self, _swapchain: SwapchainId, _target: Extent2d) -> Result<()> {
         Err(Error::Unavailable(
-            "retained-frame presentation is not supported by this backend".into(),
+            "previous-frame presentation is not supported by this backend".into(),
         ))
     }
 
@@ -1195,7 +1190,9 @@ pub trait PresentationDevice {
         tags: &[Option<GpuTimestampTag>],
     ) -> Result<Option<SubmissionId>> {
         if passes.len() != tags.len() {
-            return Err(Error::InvalidInput("GPU timing tag/pass count mismatch".into()));
+            return Err(Error::InvalidInput(
+                "GPU timing tag/pass count mismatch".into(),
+            ));
         }
         self.render_to_textures(passes)
     }
@@ -1241,7 +1238,9 @@ pub trait PresentationDevice {
         tags: &[Option<GpuTimestampTag>],
     ) -> Result<Option<SubmissionId>> {
         if passes.len() != tags.len() {
-            return Err(Error::InvalidInput("GPU timing tag/pass count mismatch".into()));
+            return Err(Error::InvalidInput(
+                "GPU timing tag/pass count mismatch".into(),
+            ));
         }
         self.render_to_textures_independent(passes)
     }
@@ -1301,9 +1300,8 @@ impl<T: PresentationDevice> OffscreenSubmissionDevice for T {
             ));
         }
         let timed = tags.iter().any(Option::is_some);
-        let independent =
-            queue == OffscreenQueuePreference::IndependentGraphicsIfAvailable
-                && PresentationDevice::independent_graphics_queue_available(self);
+        let independent = queue == OffscreenQueuePreference::IndependentGraphicsIfAvailable
+            && PresentationDevice::independent_graphics_queue_available(self);
         if independent && timed {
             PresentationDevice::render_to_textures_independent_profiled(self, passes, tags)
         } else if independent {
@@ -1377,15 +1375,21 @@ mod offscreen_submission_tests {
     fn queue_preference_never_forces_unsupported_async_graphics() {
         let mut device = MockDevice::default();
         OffscreenSubmissionDevice::submit_offscreen_graphics(
-            &mut device, &[], &[],
+            &mut device,
+            &[],
+            &[],
             OffscreenQueuePreference::IndependentGraphicsIfAvailable,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(device.route, ["primary"]);
         device.independent = true;
         OffscreenSubmissionDevice::submit_offscreen_graphics(
-            &mut device, &[], &[],
+            &mut device,
+            &[],
+            &[],
             OffscreenQueuePreference::IndependentGraphicsIfAvailable,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(device.route, ["primary", "independent"]);
     }
 
@@ -1408,13 +1412,18 @@ mod offscreen_submission_tests {
         let mut device = MockDevice::default();
         device.independent = true;
         OffscreenSubmissionDevice::submit_offscreen_graphics(
-            &mut device, std::slice::from_ref(&pass), &[tag],
+            &mut device,
+            std::slice::from_ref(&pass),
+            &[tag],
             OffscreenQueuePreference::IndependentGraphicsIfAvailable,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(device.route, ["independent-profiled"]);
         assert!(matches!(
             OffscreenSubmissionDevice::submit_offscreen_graphics(
-                &mut device, std::slice::from_ref(&pass), &[],
+                &mut device,
+                std::slice::from_ref(&pass),
+                &[],
                 OffscreenQueuePreference::OrderedGraphics,
             ),
             Err(Error::InvalidInput(_)),

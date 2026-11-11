@@ -109,7 +109,15 @@ impl Dx11Device {
         viewport: Option<Viewport>,
     ) -> Result<()> {
         self.render_target_clipped_profiled(
-            targets, resolve_view, pass, commands, load, depth, clear_region, viewport, None,
+            targets,
+            resolve_view,
+            pass,
+            commands,
+            load,
+            depth,
+            clear_region,
+            viewport,
+            None,
         )
     }
 
@@ -327,36 +335,36 @@ impl Dx11Device {
         self.indirect_constants
             .stage(&self.native, &self.context, &self.buffers, commands)?;
         let draw_commands = |device: &mut Dx11Device| -> Result<()> {
-        let mut state = Dx11PassState::default();
-        let mut indirect_count = 0;
-        for command in commands {
-            let indirect_index = indirect_count;
-            if indirect::constant_source(command).is_some() {
-                indirect_count += 1;
+            let mut state = Dx11PassState::default();
+            let mut indirect_count = 0;
+            for command in commands {
+                let indirect_index = indirect_count;
+                if indirect::constant_source(command).is_some() {
+                    indirect_count += 1;
+                }
+                let scissor = match (viewport, command.scissor()) {
+                    (Some(viewport), Some(scissor)) => Some(viewport.map_scissor(scissor, size)?),
+                    (_, scissor) => scissor,
+                };
+                if scissor.is_some_and(ScissorRect::is_empty) {
+                    continue;
+                }
+                let target_formats = pass
+                    .color_attachments
+                    .iter()
+                    .map(|attachment| attachment.format)
+                    .collect::<Vec<_>>();
+                device.draw_step(
+                    command,
+                    scissor,
+                    viewport_size,
+                    &target_formats,
+                    dsv.is_some(),
+                    &mut state,
+                    indirect_index,
+                )?;
             }
-            let scissor = match (viewport, command.scissor()) {
-                (Some(viewport), Some(scissor)) => Some(viewport.map_scissor(scissor, size)?),
-                (_, scissor) => scissor,
-            };
-            if scissor.is_some_and(ScissorRect::is_empty) {
-                continue;
-            }
-            let target_formats = pass
-                .color_attachments
-                .iter()
-                .map(|attachment| attachment.format)
-                .collect::<Vec<_>>();
-            device.draw_step(
-                command,
-                scissor,
-                viewport_size,
-                &target_formats,
-                dsv.is_some(),
-                &mut state,
-                indirect_index,
-            )?;
-        }
-        Ok(())
+            Ok(())
         };
         // Time only the immediate-context draw commands after clears and
         // native argument staging, before output unbinding or MSAA resolve.
@@ -757,23 +765,37 @@ impl PresentationDevice for Dx11Device {
         tags: &[Option<GpuTimestampTag>],
     ) -> Result<Option<SubmissionId>> {
         if passes.len() != tags.len() {
-            return Err(Error::InvalidInput("offscreen GPU tag count mismatch".into()));
+            return Err(Error::InvalidInput(
+                "offscreen GPU tag count mismatch".into(),
+            ));
         }
         for (pass, tag) in passes.iter().zip(tags) {
             let tag = tag.filter(|tag| {
                 tag.stage == GpuTimestampStage::DrawIndirect
                     && !pass.commands.is_empty()
-                    && pass.commands.iter().all(|command| matches!(
-                        command, RenderCommand::DrawIndirect(_)
-                        | RenderCommand::DrawIndexedIndirect(_)
-                    ))
+                    && pass.commands.iter().all(|command| {
+                        matches!(
+                            command,
+                            RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_)
+                        )
+                    })
             });
-            let targets = pass.color_attachments.iter().copied()
-                .map(RenderTarget::TextureView).collect::<Vec<_>>();
+            let targets = pass
+                .color_attachments
+                .iter()
+                .copied()
+                .map(RenderTarget::TextureView)
+                .collect::<Vec<_>>();
             self.render_target_clipped_profiled(
-                &targets, pass.resolve_target, pass.render_pass,
-                pass.commands, pass.color_load_op, pass.depth_attachment,
-                pass.clear_region, pass.viewport, tag,
+                &targets,
+                pass.resolve_target,
+                pass.render_pass,
+                pass.commands,
+                pass.color_load_op,
+                pass.depth_attachment,
+                pass.clear_region,
+                pass.viewport,
+                tag,
             )?;
         }
         Ok(None)
@@ -796,7 +818,7 @@ impl PresentationDevice for Dx11Device {
         }
     }
 
-    fn can_present_now(&mut self, chain: SwapchainId) -> Result<bool> {
+    fn poll_present_readiness(&mut self, chain: SwapchainId) -> Result<bool> {
         self.swapchain_frame_ready(chain)
     }
 

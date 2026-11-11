@@ -368,7 +368,8 @@ impl VulkanDevice {
             &entry,
         )?;
         let dedicated_compute_timestamp_clock = if dedicated_compute_queue.is_some() {
-            queue_families.compute
+            queue_families
+                .compute
                 .and_then(|family| queue_properties.get(family as usize))
                 .filter(|properties| properties.timestamp_valid_bits > 0)
                 .map(|properties| VulkanTimestampClock {
@@ -477,7 +478,8 @@ impl VulkanDevice {
             // Prefer the second queue in the same graphics family. The
             // compute-only family is requested only if the graphics family
             // has no spare queue, so do not advertise an unused queue.
-            dedicated_compute_family_index: queue_families.compute
+            dedicated_compute_family_index: queue_families
+                .compute
                 .filter(|_| sidecar_queue.is_none()),
             present_queue,
             graphics_queue_family_index: queue_families.graphics,
@@ -679,7 +681,7 @@ impl VulkanDevice {
     /// # Errors
     ///
     /// Returns [`Error`] when a swapchain handle is invalid.
-    pub fn has_pending_gpu_work(&self) -> Result<bool> {
+    pub fn poll_gpu_work(&self) -> Result<bool> {
         let mut pending = false;
         self.submissions.for_each_live(|submission| {
             pending |= !fence_is_complete(&self.device, submission.fence);
@@ -785,15 +787,14 @@ impl VulkanDevice {
         );
         let families = [
             self.graphics_queue_family_index,
-            self.dedicated_compute_family_index.unwrap_or(self.graphics_queue_family_index),
+            self.dedicated_compute_family_index
+                .unwrap_or(self.graphics_queue_family_index),
         ];
-        let mut create_info = vk::BufferCreateInfo::default()
-            .size(desc.size)
-            .usage(
-                buffer_usage_to_vk(desc.usage)
-                    | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::TRANSFER_DST,
-            );
+        let mut create_info = vk::BufferCreateInfo::default().size(desc.size).usage(
+            buffer_usage_to_vk(desc.usage)
+                | vk::BufferUsageFlags::TRANSFER_SRC
+                | vk::BufferUsageFlags::TRANSFER_DST,
+        );
         if share_compute {
             create_info = create_info
                 .sharing_mode(vk::SharingMode::CONCURRENT)
@@ -880,18 +881,24 @@ impl VulkanDevice {
             // image dimensions are supported by the device.
             let features = unsafe {
                 self.instance.get_physical_device_format_properties(
-                    self.physical_device, format_to_vk(desc.format),
+                    self.physical_device,
+                    format_to_vk(desc.format),
                 )
-            }.optimal_tiling_features;
+            }
+            .optimal_tiling_features;
             if desc.usage.contains(TextureUsage::STORAGE)
                 && !features.contains(vk::FormatFeatureFlags::STORAGE_IMAGE)
             {
-                return Err(Error::Unavailable("Vulkan 3D storage image format unsupported".into()));
+                return Err(Error::Unavailable(
+                    "Vulkan 3D storage image format unsupported".into(),
+                ));
             }
             if desc.usage.contains(TextureUsage::SAMPLED)
                 && !features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE)
             {
-                return Err(Error::Unavailable("Vulkan 3D sampled image format unsupported".into()));
+                return Err(Error::Unavailable(
+                    "Vulkan 3D sampled image format unsupported".into(),
+                ));
             }
         }
         if let TextureDimension::D2Array { .. } = desc.dimension {
@@ -1129,12 +1136,13 @@ impl VulkanDevice {
             old_layout,
             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
             1,
-            image_aspect_for_format(format),
+            1,
+            image_aspect_from_format(format),
         );
         let region = vk::BufferImageCopy::default()
             .image_subresource(
                 vk::ImageSubresourceLayers::default()
-                    .aspect_mask(image_aspect_for_format(format))
+                    .aspect_mask(image_aspect_from_format(format))
                     .mip_level(0)
                     .base_array_layer(0)
                     .layer_count(1),
@@ -1162,7 +1170,8 @@ impl VulkanDevice {
             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
             old_layout,
             1,
-            image_aspect_for_format(format),
+            1,
+            image_aspect_from_format(format),
         );
         end_submit_wait_destroy(
             &self.device,
@@ -1186,7 +1195,7 @@ impl VulkanDevice {
         // Do not restrict the sampled range based on the texture's usage.
         let view = if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
             let range = vk::ImageSubresourceRange::default()
-                .aspect_mask(image_aspect_for_format(desc.format))
+                .aspect_mask(image_aspect_from_format(desc.format))
                 .base_mip_level(desc.base_mip_level)
                 .level_count(desc.mip_level_count)
                 .base_array_layer(0)
@@ -1196,24 +1205,23 @@ impl VulkanDevice {
                 .view_type(vk::ImageViewType::TYPE_3D)
                 .format(format_to_vk(desc.format))
                 .subresource_range(range);
-            unsafe { self.device.create_image_view(&info, None) }
-                .map_err(VulkanError::from)?
+            unsafe { self.device.create_image_view(&info, None) }.map_err(VulkanError::from)?
         } else if let TextureDimension::D2Array { layers } = texture.desc.dimension {
-            create_image_view_range_with_layers(
+            create_image_view_array(
                 &self.device,
                 texture.image,
                 format_to_vk(desc.format),
-                image_aspect_for_format(desc.format),
+                image_aspect_from_format(desc.format),
                 desc.base_mip_level,
                 desc.mip_level_count,
                 layers,
             )?
         } else {
-            create_image_view_range(
+            create_image_view_2d(
                 &self.device,
                 texture.image,
                 format_to_vk(desc.format),
-                image_aspect_for_format(desc.format),
+                image_aspect_from_format(desc.format),
                 desc.base_mip_level,
                 desc.mip_level_count,
             )?
@@ -1368,7 +1376,9 @@ impl VulkanDevice {
                         .iter()
                         .find(|entry| entry.binding == binding.binding)
                         .map(|entry| entry.binding_type)
-                        .ok_or_else(|| Error::InvalidInput("missing image layout binding".into()))?;
+                        .ok_or_else(|| {
+                            Error::InvalidInput("missing image layout binding".into())
+                        })?;
                     let view = self.texture_views.get(texture_binding.texture_view)?;
                     let texture = self.textures.get(view.texture)?;
                     let (descriptor_type, image_layout) = match kind {
@@ -1398,9 +1408,16 @@ impl VulkanDevice {
                             if texture.desc.format == Format::Depth32Float {
                                 sampled_depth.push(view.texture);
                             }
-                            (vk::DescriptorType::SAMPLED_IMAGE, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                            (
+                                vk::DescriptorType::SAMPLED_IMAGE,
+                                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                            )
                         }
-                        _ => return Err(Error::InvalidInput("invalid Vulkan image binding kind".into())),
+                        _ => {
+                            return Err(Error::InvalidInput(
+                                "invalid Vulkan image binding kind".into(),
+                            ));
+                        }
                     };
                     image_infos.push(
                         vk::DescriptorImageInfo::default()
@@ -1652,23 +1669,12 @@ impl VulkanDevice {
         &mut self,
         _desc: &CommandEncoderDescriptor,
     ) -> Result<CommandEncoderId> {
-        self.create_command_encoder_with_buffer_count(1)
-    }
-
-    fn create_command_encoder_with_buffer_count(
-        &mut self,
-        buffer_count: usize,
-    ) -> Result<CommandEncoderId> {
-        self.create_command_encoder_with_family(buffer_count, self.graphics_queue_family_index)
+        self.create_encoder(1, self.graphics_queue_family_index)
     }
 
     /// Command pools are queue-family typed. A buffer allocated from the
     /// graphics family CANNOT be submitted on a dedicated Compute family.
-    fn create_command_encoder_with_family(
-        &mut self,
-        buffer_count: usize,
-        family: u32,
-    ) -> Result<CommandEncoderId> {
+    fn create_encoder(&mut self, buffer_count: usize, family: u32) -> Result<CommandEncoderId> {
         let buffer_count = u32::try_from(buffer_count).map_err(|error| {
             Error::InvalidInput(format!("command buffer count overflow: {error}"))
         })?;
@@ -1680,12 +1686,10 @@ impl VulkanDevice {
         // Recycle only fully completed encoders with exactly the same command-buffer count.
         // In particular, a multipass blur submission must never submit stale extra buffers.
         self.poll_cleanup();
-        if let Some(index) = self
-            .free_command_encoders
-            .iter()
-            .position(|encoder| encoder.command_buffers.len() == buffer_count as usize
-                && encoder.queue_family_index == family)
-        {
+        if let Some(index) = self.free_command_encoders.iter().position(|encoder| {
+            encoder.command_buffers.len() == buffer_count as usize
+                && encoder.queue_family_index == family
+        }) {
             return Ok(self
                 .command_encoders
                 .insert(self.free_command_encoders.swap_remove(index)));
@@ -1844,7 +1848,7 @@ impl VulkanDevice {
             .map_err(|error| Error::InvalidInput(error.to_string()))?;
         let render_pass_record = render_pass_record.clone();
         let depth_view =
-            self.depth_attachment_view_for_render_pass(&render_pass_record, depth_attachment)?;
+            self.depth_attachment_view_from_pass(&render_pass_record, depth_attachment)?;
         let target_extent = match pass.target {
             RenderTarget::Swapchain { swapchain, .. } => {
                 let extent = self.swapchains.get(swapchain)?.extent;
@@ -2178,13 +2182,18 @@ impl VulkanDevice {
         }
         let gpu_query = if gpu_draw_tag.is_some() {
             let encoder = self.command_encoders.get(encoder_id)?;
-            let slot = encoder.command_buffers.iter().position(|&cmd| cmd == command_buffer);
+            let slot = encoder
+                .command_buffers
+                .iter()
+                .position(|&cmd| cmd == command_buffer);
             slot.and_then(|index| {
                 let pool = encoder.gpu_trace_query_pool?;
                 let start = u32::try_from(index).ok()?.checked_mul(2)?;
                 Some((pool, start, index))
             })
-        } else { None };
+        } else {
+            None
+        };
         let render_pass_record = self.render_passes.get(render_pass_id)?.clone();
         if color_views.len() != render_pass_record.color_formats.len() {
             return Err(Error::InvalidInput(
@@ -2192,7 +2201,7 @@ impl VulkanDevice {
             ));
         }
         let depth_view =
-            self.depth_attachment_view_for_render_pass(&render_pass_record, depth_attachment)?;
+            self.depth_attachment_view_from_pass(&render_pass_record, depth_attachment)?;
         let mut transitions = Vec::with_capacity(color_views.len());
         let mut render_target_textures = Vec::with_capacity(color_views.len());
         let mut extent = vk::Extent2D {
@@ -2489,7 +2498,7 @@ impl VulkanDevice {
         result
     }
 
-    fn depth_attachment_view_for_render_pass(
+    fn depth_attachment_view_from_pass(
         &self,
         render_pass: &VulkanRenderPass,
         depth_attachment: Option<DepthAttachment>,
@@ -2535,7 +2544,7 @@ impl VulkanDevice {
         Ok(())
     }
 
-    fn render_and_present_tracked(
+    fn record_and_present_timed(
         &mut self,
         swapchain_id: gfx_core::SwapchainId,
         render_pass_id: RenderPassId,
@@ -2629,7 +2638,8 @@ impl VulkanDevice {
     }
 
     fn record_texture_passes(&mut self, passes: &[RenderPassCommands<'_>]) -> Result<()> {
-        self.record_texture_passes_on_queue(passes, false).map(|_| ())
+        self.record_texture_passes_on_queue(passes, false)
+            .map(|_| ())
     }
 
     fn record_texture_passes_on_queue(
@@ -2647,7 +2657,9 @@ impl VulkanDevice {
         tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
     ) -> Result<Option<SubmissionId>> {
         if tags.is_some_and(|t| t.len() != passes.len()) {
-            return Err(Error::InvalidInput("offscreen GPU tag count mismatch".into()));
+            return Err(Error::InvalidInput(
+                "offscreen GPU tag count mismatch".into(),
+            ));
         }
         if passes.is_empty() {
             return Ok(None);
@@ -2671,7 +2683,7 @@ impl VulkanDevice {
             }
         }
 
-        let encoder = self.create_command_encoder_with_buffer_count(passes.len())?;
+        let encoder = self.create_encoder(passes.len(), self.graphics_queue_family_index)?;
         // The real target TextureId, not the logical variant index, is the
         // resource identity. Multiple horizontal Gaussian passes may share
         // one physical image. The graph marks WAW handoffs when a later pass
@@ -2704,10 +2716,13 @@ impl VulkanDevice {
                 tags.and_then(|tags| tags[index]).filter(|tag| {
                     tag.stage == gfx_core::GpuTimestampStage::DrawIndirect
                         && !pass.commands.is_empty()
-                        && pass.commands.iter().all(|command| matches!(
-                            command, RenderCommand::DrawIndirect(_)
-                            | RenderCommand::DrawIndexedIndirect(_)
-                        ))
+                        && pass.commands.iter().all(|command| {
+                            matches!(
+                                command,
+                                RenderCommand::DrawIndirect(_)
+                                    | RenderCommand::DrawIndexedIndirect(_)
+                            )
+                        })
                 }),
             );
             if let Err(error) = result {
@@ -2724,7 +2739,8 @@ impl VulkanDevice {
             // semaphore. Retire this encoder by its consumer-queue fence,
             // as the legacy Vulkan offscreen path does, without returning
             // a duplicate SubmissionId that could outlive its VkFence.
-            self.submit_command_encoder_independent(encoder, false).map(|_| None)
+            self.submit_command_encoder_independent(encoder, false)
+                .map(|_| None)
         } else {
             self.submit_command_encoder_deferred(encoder).map(|_| None)
         };
@@ -2747,10 +2763,7 @@ impl VulkanDevice {
             .map(|_| ())
     }
 
-    fn submit_command_encoder_deferred_tracked(
-        &mut self,
-        encoder: CommandEncoderId,
-    ) -> Result<SubmissionId> {
+    fn submit_encoder(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
         let fence = self.submit_command_encoder_deferred_to_fence(encoder)?;
         Ok(self.submissions.insert(VulkanSubmission {
             fence,
@@ -2801,10 +2814,13 @@ impl VulkanDevice {
             return self.submit_command_encoder_deferred(encoder).map(|_| None);
         };
         self.submit_command_encoder_native_secondary(
-            encoder, track_native_producer, queue,
+            encoder,
+            track_native_producer,
+            queue,
             self.graphics_queue_family_index,
             gfx_core::GpuQueueId {
-                family: self.graphics_queue_family_index, index: 1,
+                family: self.graphics_queue_family_index,
+                index: 1,
             },
         )
     }
@@ -2816,18 +2832,16 @@ impl VulkanDevice {
         &mut self,
         encoder: CommandEncoderId,
     ) -> Result<Option<SubmissionId>> {
-        let queue = self.dedicated_compute_queue.ok_or_else(|| Error::Unavailable(
-            "Vulkan dedicated compute queue is unavailable".into(),
-        ))?;
-        let family = self.dedicated_compute_family_index.ok_or_else(|| Error::Unavailable(
-            "Vulkan dedicated compute family is unavailable".into(),
-        ))?;
-        let queue_id = self.dedicated_compute_queue_id().ok_or_else(|| Error::Unavailable(
-            "Vulkan dedicated compute queue ID is unavailable".into(),
-        ))?;
-        self.submit_command_encoder_native_secondary(
-            encoder, true, queue, family, queue_id,
-        )
+        let queue = self.dedicated_compute_queue.ok_or_else(|| {
+            Error::Unavailable("Vulkan dedicated compute queue is unavailable".into())
+        })?;
+        let family = self.dedicated_compute_family_index.ok_or_else(|| {
+            Error::Unavailable("Vulkan dedicated compute family is unavailable".into())
+        })?;
+        let queue_id = self.dedicated_compute_queue_id().ok_or_else(|| {
+            Error::Unavailable("Vulkan dedicated compute queue ID is unavailable".into())
+        })?;
+        self.submit_command_encoder_native_secondary(encoder, true, queue, family, queue_id)
     }
 
     /// One native queue handoff implementation for either secondary graphics
@@ -2847,12 +2861,9 @@ impl VulkanDevice {
             ));
         }
         let semaphore_info = vk::SemaphoreCreateInfo::default();
-        let first = unsafe {
-            self.device.create_semaphore(&semaphore_info, None)
-        }.map_err(VulkanError::from)?;
-        let second = match unsafe {
-            self.device.create_semaphore(&semaphore_info, None)
-        } {
+        let first = unsafe { self.device.create_semaphore(&semaphore_info, None) }
+            .map_err(VulkanError::from)?;
+        let second = match unsafe { self.device.create_semaphore(&semaphore_info, None) } {
             Ok(value) => value,
             Err(error) => {
                 unsafe { self.device.destroy_semaphore(first, None) };
@@ -2894,8 +2905,10 @@ impl VulkanDevice {
             let releases = [first];
             let release = vk::SubmitInfo::default().signal_semaphores(&releases);
             unsafe {
-                self.device.queue_submit(self.graphics_queue, &[release], vk::Fence::null())
-            }.map_err(VulkanError::from)?;
+                self.device
+                    .queue_submit(self.graphics_queue, &[release], vk::Fence::null())
+            }
+            .map_err(VulkanError::from)?;
 
             // Submit 3D command buffers to queue index 1 in the same family.
             let waits = [first];
@@ -2909,9 +2922,12 @@ impl VulkanDevice {
                 .signal_semaphores(&signals);
             unsafe {
                 self.device.queue_submit(
-                    queue, &[producer], producer_fence.unwrap_or(vk::Fence::null()),
+                    queue,
+                    &[producer],
+                    producer_fence.unwrap_or(vk::Fence::null()),
                 )
-            }.map_err(VulkanError::from)?;
+            }
+            .map_err(VulkanError::from)?;
 
             // Keep the sampled attachment unavailable to the GUI graphics
             // queue until all sidecar writes and layout transitions finish.
@@ -2923,8 +2939,10 @@ impl VulkanDevice {
                 .wait_semaphores(&wait_producer)
                 .wait_dst_stage_mask(&consumer_stages);
             unsafe {
-                self.device.queue_submit(self.graphics_queue, &[consumer], fence)
-            }.map_err(VulkanError::from)?;
+                self.device
+                    .queue_submit(self.graphics_queue, &[consumer], fence)
+            }
+            .map_err(VulkanError::from)?;
             Ok(())
         })();
         if let Err(error) = result {
@@ -2962,7 +2980,7 @@ impl VulkanDevice {
     }
 
     fn submit_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
-        self.submit_command_encoder_deferred_tracked(encoder)
+        self.submit_encoder(encoder)
     }
 
     fn poll_submission(&mut self, submission: SubmissionId) -> Result<SubmissionStatus> {
@@ -4048,7 +4066,7 @@ impl VulkanDevice {
         group: &VulkanTextureUploadGroup<'_>,
     ) -> Result<()> {
         let layers = self.textures.get(group.texture)?.desc.dimension.layers();
-        transition_image_layout_levels_with_layers(
+        transition_image_layout_levels(
             &self.device,
             command_buffer,
             group.image,
@@ -4083,7 +4101,7 @@ impl VulkanDevice {
             }
             self.record_buffer_to_texture_copy(command_buffer, upload)?;
         }
-        transition_image_layout_levels_with_layers(
+        transition_image_layout_levels(
             &self.device,
             command_buffer,
             group.image,
@@ -4153,16 +4171,16 @@ impl VulkanDevice {
                 commands,
                 mut replacement,
             } => {
-                destroy_fence_if_needed(&self.device, fence);
+                destroy_fence(&self.device, fence);
                 destroy_upload_commands(&self.device, &commands);
                 self.discard_heap_replacement(&mut replacement)
             }
             DeferredResource::Buffer { fence, buffer } => {
-                destroy_fence_if_needed(&self.device, fence);
+                destroy_fence(&self.device, fence);
                 self.destroy_buffer_now(buffer)
             }
             DeferredResource::Buffers { fence, buffers } => {
-                destroy_fence_if_needed(&self.device, fence);
+                destroy_fence(&self.device, fence);
                 let mut result = Ok(());
                 for buffer in buffers {
                     if let Err(error) = self.destroy_buffer_now(buffer) {
@@ -4172,16 +4190,16 @@ impl VulkanDevice {
                 result
             }
             DeferredResource::Texture { fence, texture } => {
-                destroy_fence_if_needed(&self.device, fence);
+                destroy_fence(&self.device, fence);
                 self.destroy_texture_now(texture)
             }
             DeferredResource::TextureView { fence, view } => {
-                destroy_fence_if_needed(&self.device, fence);
+                destroy_fence(&self.device, fence);
                 self.destroy_texture_view_now(&view);
                 Ok(())
             }
             DeferredResource::BindGroup { fence, set } => {
-                destroy_fence_if_needed(&self.device, fence);
+                destroy_fence(&self.device, fence);
                 self.destroy_resource_set_now(&set);
                 Ok(())
             }
@@ -4213,13 +4231,14 @@ impl VulkanDevice {
                                 frequency_hz: timestamp_clock.frequency_hz(),
                             });
                         } else {
-                            let elapsed_ns = timestamp_clock.elapsed_nanoseconds(ticks[0], ticks[1]);
+                            let elapsed_ns =
+                                timestamp_clock.elapsed_nanoseconds(ticks[0], ticks[1]);
                             self.last_texture_transfer_time =
                                 Some(Duration::from_secs_f64(elapsed_ns / 1_000_000_000.0));
                         }
                     }
                 }
-                destroy_fence_if_needed(&self.device, fence);
+                destroy_fence(&self.device, fence);
                 let mut commands = commands;
                 commands.gpu_work_tag = None;
                 if self.upload_command_pool.len() < self.upload_command_pool_capacity {
@@ -4333,16 +4352,23 @@ impl VulkanDevice {
     fn recycle_command_encoder(&mut self, mut encoder: VulkanCommandEncoder) -> Result<()> {
         encoder.compute_resources.clear();
         if let (Some(tag), Some(pool), Some(clock)) = (
-            encoder.gpu_work_tag.take(), encoder.gpu_trace_query_pool, encoder.gpu_work_clock,
+            encoder.gpu_work_tag.take(),
+            encoder.gpu_trace_query_pool,
+            encoder.gpu_work_clock,
         ) {
             let mut ticks = [0_u64; 2];
             // SAFETY: The encoder's submission fence completed, and these two
             // query slots are private to the submitted compute command buffer.
             if unsafe {
                 self.device.get_query_pool_results(
-                    pool, 0, &mut ticks, vk::QueryResultFlags::TYPE_64,
+                    pool,
+                    0,
+                    &mut ticks,
+                    vk::QueryResultFlags::TYPE_64,
                 )
-            }.is_ok() {
+            }
+            .is_ok()
+            {
                 self.gpu_work_samples.push(gfx_core::GpuTimestampSample {
                     tag,
                     duration_ticks: clock.duration_ticks(ticks[0], ticks[1]),
@@ -4354,15 +4380,24 @@ impl VulkanDevice {
         // Read native GPU timestamps only AFTER completion; never stall the rendering lane.
         if let (Some(pool), Some(clock)) = (encoder.gpu_trace_query_pool, self.timestamp_clock) {
             for (index, entry) in encoder.gpu_draw_tags.iter_mut().enumerate() {
-                let Some(tag) = entry.take() else { continue; };
+                let Some(tag) = entry.take() else {
+                    continue;
+                };
                 let Some(start) = u32::try_from(index).ok().and_then(|i| i.checked_mul(2)) else {
                     continue;
                 };
                 let mut ticks = [0_u64; 2];
                 // SAFETY: Encoder's fence has completed. Do not use WAIT.
-                if unsafe { self.device.get_query_pool_results(
-                    pool, start, &mut ticks, vk::QueryResultFlags::TYPE_64,
-                ) }.is_ok() {
+                if unsafe {
+                    self.device.get_query_pool_results(
+                        pool,
+                        start,
+                        &mut ticks,
+                        vk::QueryResultFlags::TYPE_64,
+                    )
+                }
+                .is_ok()
+                {
                     self.gpu_work_samples.push(gfx_core::GpuTimestampSample {
                         tag,
                         duration_ticks: clock.duration_ticks(ticks[0], ticks[1]),
@@ -4615,19 +4650,23 @@ impl ResourceDevice for VulkanDevice {
 
     fn texture_volume_capabilities(&self) -> gfx_core::TextureVolumeCapabilities {
         let properties = unsafe {
-            self.instance.get_physical_device_properties(self.physical_device)
+            self.instance
+                .get_physical_device_properties(self.physical_device)
         };
         let format_features = unsafe {
             self.instance.get_physical_device_format_properties(
-                self.physical_device, vk::Format::R16G16B16A16_SFLOAT,
+                self.physical_device,
+                vk::Format::R16G16B16A16_SFLOAT,
             )
-        }.optimal_tiling_features;
+        }
+        .optimal_tiling_features;
         let maximum = properties.limits.max_image_dimension3_d;
         gfx_core::TextureVolumeCapabilities {
             max_dimension_3d: maximum,
             sampled: maximum != 0
                 && format_features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE),
-            storage: maximum != 0 && self.compute.capabilities.supports_compute()
+            storage: maximum != 0
+                && self.compute.capabilities.supports_compute()
                 && format_features.contains(vk::FormatFeatureFlags::STORAGE_IMAGE),
         }
     }
@@ -4934,8 +4973,9 @@ impl SubmissionDevice for VulkanDevice {
             // concurrent-sharing cost and no additional pipeline barriers.
             // With only one graphics queue, use the dedicated compute family
             // for buffer-only submissions. Textures/images stay on graphics.
-            gfx_core::GpuWorkStage::Compute =>
-                same_family.or_else(|| self.dedicated_compute_queue_id()),
+            gfx_core::GpuWorkStage::Compute => {
+                same_family.or_else(|| self.dedicated_compute_queue_id())
+            }
         }
     }
 
@@ -4944,9 +4984,11 @@ impl SubmissionDevice for VulkanDevice {
             return self.checkpoint_ordered_queue(gfx_core::GpuWorkStage::Graphics);
         }
         let secondary = if self.independent_queue(gfx_core::GpuWorkStage::Graphics) == Some(queue) {
-            self.sidecar_queue.expect("matched available graphics-family queue")
+            self.sidecar_queue
+                .expect("matched available graphics-family queue")
         } else if self.dedicated_compute_queue_id() == Some(queue) {
-            self.dedicated_compute_queue.expect("matched dedicated compute queue")
+            self.dedicated_compute_queue
+                .expect("matched dedicated compute queue")
         } else {
             return Err(Error::Unavailable(
                 "Vulkan checkpoint target is not an active native queue".into(),
@@ -4986,9 +5028,9 @@ impl SubmissionDevice for VulkanDevice {
             ));
         }
         self.dispatch_buffer_batch_on_queue(dispatches, None, Some(queue))?
-            .ok_or_else(|| Error::Unavailable(
-                "native Compute submission did not return a GPU fence".into(),
-            ))
+            .ok_or_else(|| {
+                Error::Unavailable("native Compute submission did not return a GPU fence".into())
+            })
     }
 
     fn submit_compute_batch_profiled_on_queue(
@@ -5005,9 +5047,11 @@ impl SubmissionDevice for VulkanDevice {
             ));
         }
         self.dispatch_buffer_batch_on_queue(dispatches, Some(tag), Some(queue))?
-            .ok_or_else(|| Error::Unavailable(
-                "tagged Vulkan native Compute submit has no producer fence".into(),
-            ))
+            .ok_or_else(|| {
+                Error::Unavailable(
+                    "tagged Vulkan native Compute submit has no producer fence".into(),
+                )
+            })
     }
 
     fn submit_buffer_copies_on_queue(
@@ -5026,11 +5070,17 @@ impl SubmissionDevice for VulkanDevice {
         // A native semaphore provides queue execution/memory ordering.
         // Dedicated-family Compute is legal only for CONCURRENT-shared
         // buffers; EXCLUSIVE textures/images are not admitted here.
-        let secondary = self.sidecar_queue.map(|queue| (
-            gfx_core::GpuQueueId { family: self.graphics_queue_family_index, index: 1 },
-            queue,
-        ));
-        let dedicated = self.dedicated_compute_queue_id()
+        let secondary = self.sidecar_queue.map(|queue| {
+            (
+                gfx_core::GpuQueueId {
+                    family: self.graphics_queue_family_index,
+                    index: 1,
+                },
+                queue,
+            )
+        });
+        let dedicated = self
+            .dedicated_compute_queue_id()
             .zip(self.dedicated_compute_queue);
         let lookup = |id| {
             if id == gfx_core::GpuQueueId::PRIMARY {
@@ -5043,23 +5093,23 @@ impl SubmissionDevice for VulkanDevice {
                 None
             }
         };
-        let target = lookup(target_queue).ok_or_else(|| Error::Unavailable(
-            "Vulkan requested GPU wait target queue is unavailable".into(),
-        ))?;
+        let target = lookup(target_queue).ok_or_else(|| {
+            Error::Unavailable("Vulkan requested GPU wait target queue is unavailable".into())
+        })?;
         let source = self.submissions.get(producer)?;
         if source.queue == target_queue {
             return Err(Error::InvalidInput(
                 "Vulkan cross-queue GPU wait cannot target the producer queue".into(),
             ));
         }
-        let source_queue = lookup(source.queue).ok_or_else(|| Error::Unavailable(
-            "Vulkan producer has no matching native queue".into(),
-        ))?;
+        let source_queue = lookup(source.queue).ok_or_else(|| {
+            Error::Unavailable("Vulkan producer has no matching native queue".into())
+        })?;
 
         let info = vk::SemaphoreCreateInfo::default();
         // SAFETY: Binary semaphore is allocated on this live logical device.
-        let semaphore = unsafe { self.device.create_semaphore(&info, None) }
-            .map_err(VulkanError::from)?;
+        let semaphore =
+            unsafe { self.device.create_semaphore(&info, None) }.map_err(VulkanError::from)?;
         let fence = match create_fence(&self.device, false) {
             Ok(fence) => fence,
             Err(error) => {
@@ -5075,8 +5125,10 @@ impl SubmissionDevice for VulkanDevice {
             // binary signal is enqueued AFTER that submission on precisely
             // its native physical queue, not on an unrelated graphics queue.
             unsafe {
-                self.device.queue_submit(source_queue, &[release], vk::Fence::null())
-            }.map_err(VulkanError::from)?;
+                self.device
+                    .queue_submit(source_queue, &[release], vk::Fence::null())
+            }
+            .map_err(VulkanError::from)?;
             let waits = [semaphore];
             let stages = [vk::PipelineStageFlags::ALL_COMMANDS];
             let acquire = vk::SubmitInfo::default()
@@ -5085,9 +5137,8 @@ impl SubmissionDevice for VulkanDevice {
             // SAFETY: The producer and target queues belong to this device.
             // Buffer-only separate-family work uses CONCURRENT sharing, and
             // this binary GPU wait orders all future target-queue accesses.
-            unsafe {
-                self.device.queue_submit(target, &[acquire], fence)
-            }.map_err(VulkanError::from)?;
+            unsafe { self.device.queue_submit(target, &[acquire], fence) }
+                .map_err(VulkanError::from)?;
             Ok(())
         })();
         if let Err(error) = result {
@@ -5109,9 +5160,7 @@ impl SubmissionDevice for VulkanDevice {
         });
         // SAFETY: A Vulkan binary semaphore signal and matching GPU wait
         // have both been submitted successfully to these physical queues.
-        Ok(unsafe {
-            gfx_core::GpuNativeWaitProof::after_native_wait(producer, target_queue)
-        })
+        Ok(unsafe { gfx_core::GpuNativeWaitProof::after_native_wait(producer, target_queue) })
     }
 
     fn checkpoint_ordered_queue(&mut self, _stage: gfx_core::GpuWorkStage) -> Result<SubmissionId> {
@@ -5124,7 +5173,8 @@ impl SubmissionDevice for VulkanDevice {
         // unsignaled fence is exclusively owned by this checkpoint. An empty
         // submission still follows all prior commands in queue order.
         if let Err(error) = unsafe {
-            self.device.queue_submit(self.graphics_queue, &submits, fence)
+            self.device
+                .queue_submit(self.graphics_queue, &submits, fence)
         } {
             // SAFETY: A failed queue_submit did not enqueue this fence.
             unsafe { self.device.destroy_fence(fence, None) };
@@ -5191,7 +5241,7 @@ impl PresentationDevice for VulkanDevice {
                 "Vulkan swapchain LoadOp::Load is not implemented".to_string(),
             ));
         };
-        self.render_and_present_tracked(
+        self.record_and_present_timed(
             frame.swapchain,
             frame.render_pass,
             frame.commands,
@@ -6090,7 +6140,7 @@ fn fence_is_complete(device: &ash::Device, fence: vk::Fence) -> bool {
     }
 }
 
-fn destroy_fence_if_needed(device: &ash::Device, fence: vk::Fence) {
+fn destroy_fence(device: &ash::Device, fence: vk::Fence) {
     if fence != vk::Fence::null() {
         // SAFETY: Fence was created by this device and is destroyed once here.
         unsafe { device.destroy_fence(fence, None) };
@@ -6253,8 +6303,8 @@ fn select_compute_only_family(families: &[vk::QueueFamilyProperties]) -> Option<
         (family.queue_count > 0
             && family.queue_flags.contains(vk::QueueFlags::COMPUTE)
             && !family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
-            .then(|| u32::try_from(index).ok())
-            .flatten()
+        .then(|| u32::try_from(index).ok())
+        .flatten()
     })
 }
 
@@ -6316,14 +6366,23 @@ fn create_device(
     indices: QueueFamilyIndices,
     properties2_supported: bool,
     entry: &Entry,
-) -> Result<(ash::Device, vk::Queue, Option<vk::Queue>, Option<vk::Queue>, vk::Queue, bool, bool, bool, bool)> {
+) -> Result<(
+    ash::Device,
+    vk::Queue,
+    Option<vk::Queue>,
+    Option<vk::Queue>,
+    vk::Queue,
+    bool,
+    bool,
+    bool,
+    bool,
+)> {
     let priorities = [1.0_f32, 0.75_f32];
     let single_priority = [1.0_f32];
     // Never request index 1 on a one-queue adapter. A separate Compute
     // family has its own index-0 queue and uses concurrent-shared buffers.
-    let queue_families = unsafe {
-        instance.get_physical_device_queue_family_properties(physical_device)
-    };
+    let queue_families =
+        unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
     let graphics_queue_count = queue_families
         .get(indices.graphics as usize)
         .map_or(0, |properties| properties.queue_count);
@@ -6431,18 +6490,23 @@ fn create_device(
     // SAFETY: Queue family index and queue index are valid per device creation.
     let graphics_queue = unsafe { device.get_device_queue(indices.graphics, 0) };
     // Queue index 1 is requested only when the physical family exposes it.
-    let sidecar_queue = dedicated.then(|| unsafe {
-        device.get_device_queue(indices.graphics, 1)
-    });
+    let sidecar_queue = dedicated.then(|| unsafe { device.get_device_queue(indices.graphics, 1) });
     if dedicated {
-        log::info!("nova-gfx Vulkan second graphics queue enabled in family {}", indices.graphics);
+        log::info!(
+            "nova-gfx Vulkan second graphics queue enabled in family {}",
+            indices.graphics
+        );
     }
     let dedicated_compute_queue = selected_compute.map(|family| {
         // SAFETY: The compute-family index-zero queue was requested above.
         unsafe { device.get_device_queue(family, 0) }
     });
     if let Some(family) = selected_compute {
-        log::info!("nova-gfx Vulkan separate compute queue enabled family={} graphics_family={}", family, indices.graphics);
+        log::info!(
+            "nova-gfx Vulkan separate compute queue enabled family={} graphics_family={}",
+            family,
+            indices.graphics
+        );
     }
     // SAFETY: Queue family index and queue index are valid per device creation.
     let present_queue = unsafe { device.get_device_queue(indices.present, 0) };
@@ -6586,10 +6650,10 @@ fn create_image_view(
     format: vk::Format,
     aspect_mask: vk::ImageAspectFlags,
 ) -> Result<vk::ImageView> {
-    create_image_view_range(device, image, format, aspect_mask, 0, 1)
+    create_image_view_2d(device, image, format, aspect_mask, 0, 1)
 }
 
-fn create_image_view_range_with_layers(
+fn create_image_view_array(
     device: &ash::Device,
     image: vk::Image,
     format: vk::Format,
@@ -6613,7 +6677,7 @@ fn create_image_view_range_with_layers(
         .map_err(|error| VulkanError::from(error).into())
 }
 
-fn create_image_view_range(
+fn create_image_view_2d(
     device: &ash::Device,
     image: vk::Image,
     format: vk::Format,
@@ -7314,7 +7378,7 @@ fn retained_offscreen_render_area(
         // The draw recorder falls back to a full scissor if native Vulkan
         // coordinate conversion fails. Match that behavior here, otherwise
         // a narrow renderArea could exclude pixels the draw will touch.
-        if vk_rect_for_scissor(scissor, extent).is_err() {
+        if vk_rect_from_scissor(scissor, extent).is_err() {
             return full;
         }
         let left = scissor.x.min(extent.width);
@@ -7374,7 +7438,7 @@ fn scoped_offscreen_clear_area(
     {
         return None;
     }
-    let target = vk_rect_for_scissor(region, extent).ok()?;
+    let target = vk_rect_from_scissor(region, extent).ok()?;
     if target.extent.width == 0 || target.extent.height == 0 {
         return None;
     }
@@ -7386,7 +7450,7 @@ fn scoped_offscreen_clear_area(
         .checked_add(target.extent.height)?;
     for scissor in scissors {
         let scissor = scissor?;
-        let clipped = vk_rect_for_scissor(scissor, extent).ok()?;
+        let clipped = vk_rect_from_scissor(scissor, extent).ok()?;
         let left = u32::try_from(clipped.offset.x).ok()?;
         let top = u32::try_from(clipped.offset.y).ok()?;
         if left < u32::try_from(target.offset.x).ok()?
@@ -7430,7 +7494,10 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
     if let Some((pool, slot)) = info.gpu_indirect_trace {
         // SAFETY: This dedicated command buffer owns this probe pair and is
         // reset only before entering its render pass.
-        unsafe { info.device.cmd_reset_query_pool(info.command_buffer, pool, slot, 2) };
+        unsafe {
+            info.device
+                .cmd_reset_query_pool(info.command_buffer, pool, slot, 2)
+        };
     }
     depth::record_depth_accesses(info.device, info.command_buffer, info.depth_accesses);
     if info.graph_write_hazard {
@@ -7545,7 +7612,10 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         if let Some((pool, slot)) = info.gpu_indirect_trace {
             // The clear/attachment setup has completed: start at native draw.
             info.device.cmd_write_timestamp(
-                info.command_buffer, vk::PipelineStageFlags::TOP_OF_PIPE, pool, slot,
+                info.command_buffer,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                pool,
+                slot,
             );
         }
         let mut previous_pipeline = None;
@@ -7555,7 +7625,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         while let Some(step) = step_iter.next() {
             let scissor = step
                 .scissor
-                .and_then(|scissor| vk_rect_for_scissor(scissor, info.scissor_extent).ok())
+                .and_then(|scissor| vk_rect_from_scissor(scissor, info.scissor_extent).ok())
                 .unwrap_or(full_scissor);
             if previous_scissor != Some(scissor) {
                 info.device
@@ -7685,7 +7755,10 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             // Ends after the last indirect command, before MSAA resolve,
             // attachment layout changes or GUI composition.
             info.device.cmd_write_timestamp(
-                info.command_buffer, vk::PipelineStageFlags::BOTTOM_OF_PIPE, pool, slot + 1,
+                info.command_buffer,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                pool,
+                slot + 1,
             );
         }
         info.device.cmd_end_render_pass(info.command_buffer);
@@ -7759,7 +7832,10 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
     Ok(())
 }
 
-fn vk_rect_for_scissor(scissor: gfx_core::ScissorRect, extent: vk::Extent2D) -> Result<vk::Rect2D> {
+fn vk_rect_from_scissor(
+    scissor: gfx_core::ScissorRect,
+    extent: vk::Extent2D,
+) -> Result<vk::Rect2D> {
     let x = scissor.x.min(extent.width);
     let y = scissor.y.min(extent.height);
     let right = scissor.x.saturating_add(scissor.width).min(extent.width);
@@ -7819,7 +7895,7 @@ fn end_submit_deferred(
     let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
     // SAFETY: Queue, command buffer, and fence belong to the same device.
     if let Err(error) = unsafe { device.queue_submit(queue, &[submit_info], fence) } {
-        destroy_fence_if_needed(device, fence);
+        destroy_fence(device, fence);
         return Err(VulkanError::from(error).into());
     }
     Ok(fence)
@@ -7839,32 +7915,12 @@ fn transition_image_layout(
         old_layout,
         new_layout,
         1,
+        1,
         vk::ImageAspectFlags::COLOR,
     );
 }
 
 fn transition_image_layout_levels(
-    device: &ash::Device,
-    command_buffer: vk::CommandBuffer,
-    image: vk::Image,
-    old_layout: vk::ImageLayout,
-    new_layout: vk::ImageLayout,
-    mip_level_count: u32,
-    aspect: vk::ImageAspectFlags,
-) {
-    transition_image_layout_levels_with_layers(
-        device,
-        command_buffer,
-        image,
-        old_layout,
-        new_layout,
-        mip_level_count,
-        1,
-        aspect,
-    );
-}
-
-fn transition_image_layout_levels_with_layers(
     device: &ash::Device,
     command_buffer: vk::CommandBuffer,
     image: vk::Image,
@@ -8060,7 +8116,7 @@ fn format_to_vk(format: Format) -> vk::Format {
     }
 }
 
-fn image_aspect_for_format(format: Format) -> vk::ImageAspectFlags {
+fn image_aspect_from_format(format: Format) -> vk::ImageAspectFlags {
     match format {
         Format::Depth32Float => vk::ImageAspectFlags::DEPTH,
         Format::R8Unorm
@@ -8216,7 +8272,7 @@ fn resource_binding_type_to_vk(binding_type: BindingType) -> vk::DescriptorType 
         BindingType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
         BindingType::StorageBuffer | BindingType::StorageBufferReadWrite => {
             vk::DescriptorType::STORAGE_BUFFER
-        },
+        }
         BindingType::SampledTexture => vk::DescriptorType::SAMPLED_IMAGE,
         BindingType::StorageTexture { .. } => vk::DescriptorType::STORAGE_IMAGE,
         BindingType::Sampler => vk::DescriptorType::SAMPLER,
@@ -8274,7 +8330,9 @@ mod tests {
     #[test]
     fn native_compute_family_selection_skips_zero_queue_and_graphics_families() {
         let with = |queue_count, queue_flags| vk::QueueFamilyProperties {
-            queue_count, queue_flags, ..Default::default()
+            queue_count,
+            queue_flags,
+            ..Default::default()
         };
         let families = [
             with(1, vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE),
@@ -8290,19 +8348,29 @@ mod tests {
     fn cross_family_buffer_sharing_is_restricted_to_compute_buffer_abi() {
         let compute = Some(2);
         assert!(needs_concurrent_compute_sharing(
-            false, compute, BufferUsage::STORAGE | BufferUsage::COPY_DST,
+            false,
+            compute,
+            BufferUsage::STORAGE | BufferUsage::COPY_DST,
         ));
         assert!(needs_concurrent_compute_sharing(
-            false, compute, BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            false,
+            compute,
+            BufferUsage::UNIFORM | BufferUsage::COPY_DST,
         ));
         assert!(!needs_concurrent_compute_sharing(
-            false, compute, BufferUsage::COPY_DST,
+            false,
+            compute,
+            BufferUsage::COPY_DST,
         ));
         assert!(!needs_concurrent_compute_sharing(
-            true, compute, BufferUsage::STORAGE,
+            true,
+            compute,
+            BufferUsage::STORAGE,
         ));
         assert!(!needs_concurrent_compute_sharing(
-            false, None, BufferUsage::STORAGE,
+            false,
+            None,
+            BufferUsage::STORAGE,
         ));
     }
 

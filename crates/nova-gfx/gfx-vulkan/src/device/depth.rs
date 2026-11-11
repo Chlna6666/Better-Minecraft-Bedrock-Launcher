@@ -70,6 +70,7 @@ pub(super) fn record_depth_accesses(
                 access.old_layout,
                 access.new_layout,
                 1,
+                1,
                 vk::ImageAspectFlags::DEPTH,
             );
         }

@@ -100,7 +100,8 @@ impl IndirectConstants {
         }
         let mut index = 0;
         for command in commands {
-            let Some((buffer_id, argument_offset, argument_bytes)) = constant_source(command) else {
+            let Some((buffer_id, argument_offset, argument_bytes)) = constant_source(command)
+            else {
                 continue;
             };
             let source = buffers.get(buffer_id)?;

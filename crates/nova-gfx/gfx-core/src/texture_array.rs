@@ -236,7 +236,7 @@ impl TextureArrayCapabilities {
     /// Require a fully implemented native resource + shader path, not just a
     /// valid hardware limit. Failing closed prevents displaying incorrect
     /// texture layers when one backend has not implemented indexed sampling.
-    pub fn plan_for_generated_mesh(
+    pub fn plan_array(
         self,
         width: u32,
         height: u32,
@@ -439,17 +439,13 @@ mod tests {
         assert!(limits.plan(16, 16, 64, 1, Format::Rgba8Unorm).is_ok());
         assert!(
             limits
-                .plan_for_generated_mesh(16, 16, 64, 1, Format::Rgba8Unorm)
+                .plan_array(16, 16, 64, 1, Format::Rgba8Unorm)
                 .is_err()
         );
         limits.array_resources = true;
         limits.layer_uploads = true;
         assert!(!limits.supports_generated_mesh_arrays());
         limits.indexed_sampling = true;
-        assert!(
-            limits
-                .plan_for_generated_mesh(16, 16, 64, 1, Format::Rgba8Unorm)
-                .is_ok()
-        );
+        assert!(limits.plan_array(16, 16, 64, 1, Format::Rgba8Unorm).is_ok());
     }
 }

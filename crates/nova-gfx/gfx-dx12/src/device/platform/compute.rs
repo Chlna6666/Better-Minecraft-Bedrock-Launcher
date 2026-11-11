@@ -80,7 +80,8 @@ impl State {
     }
     pub(super) fn remove_shader(&mut self, id: ShaderModuleId) {
         self.programs.remove(&id);
-        self.resource_set_programs.retain(|(shader, _), _| *shader != id);
+        self.resource_set_programs
+            .retain(|(shader, _), _| *shader != id);
     }
 
     pub(super) fn recycle_indirect(&mut self, mut resource: Indirect, submitted: bool) {
@@ -163,9 +164,14 @@ impl Dx12Device {
         let mut images = Vec::<(TextureId, bool)>::new();
         for entry in &layout.entries {
             if !entry.stages.contains(ShaderStages::COMPUTE) {
-                return Err(Error::InvalidInput("DX12 compute resource is not visible to compute".into()));
+                return Err(Error::InvalidInput(
+                    "DX12 compute resource is not visible to compute".into(),
+                ));
             }
-            let resource = set.desc.entries.iter()
+            let resource = set
+                .desc
+                .entries
+                .iter()
                 .find(|binding| binding.binding == entry.binding)
                 .ok_or_else(|| Error::InvalidInput("missing compute resource binding".into()))?;
             match (entry.binding_type, resource.resource) {
@@ -178,7 +184,9 @@ impl Dx12Device {
                         _ => ComputeBufferAccess::ReadWrite,
                     };
                     buffers.push(gfx_core::ComputeBufferBinding {
-                        binding: entry.binding, buffer, access,
+                        binding: entry.binding,
+                        buffer,
+                        access,
                     });
                 }
                 (BindingType::SampledTexture, BindingResource::Texture(view))
@@ -188,7 +196,7 @@ impl Dx12Device {
                     if let Some((_, prior_write)) = images.iter().find(|(image, _)| *image == id) {
                         if writable || *prior_write {
                             return Err(Error::InvalidInput(
-                                "DX12 compute writable image aliases another binding".into()
+                                "DX12 compute writable image aliases another binding".into(),
                             ));
                         }
                     } else {
@@ -196,44 +204,68 @@ impl Dx12Device {
                     }
                 }
                 (BindingType::Sampler, BindingResource::Sampler(_)) => {}
-                _ => return Err(Error::InvalidInput("DX12 compute resource type mismatch".into())),
+                _ => {
+                    return Err(Error::InvalidInput(
+                        "DX12 compute resource type mismatch".into(),
+                    ));
+                }
             }
         }
         ComputeDispatch {
             shader: dispatch.shader,
             bindings: &buffers,
             workgroups: dispatch.workgroups,
-        }.validate_with_limits(self.compute_capabilities(), self.buffer_binding_limits())?;
+        }
+        .validate_dispatch(self.compute_capabilities(), self.buffer_binding_limits())?;
         let key = (dispatch.shader, set.layout);
         let program = if let Some(cached) = self.compute.resource_set_programs.get(&key) {
             cached.clone()
         } else {
             let shader = self.shader_modules.get(dispatch.shader)?;
             let program = Arc::new(create_resource_set_program(&self.device, shader, &layout)?);
-            self.compute.resource_set_programs.insert(key, program.clone());
+            self.compute
+                .resource_set_programs
+                .insert(key, program.clone());
             program
         };
 
         let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
-        self.command_encoders.get_mut(encoder)?.compute_resources.push(Resources {
-            slots: Vec::new(), owned_slots: Vec::new(), program: program.clone(),
-        });
+        self.command_encoders
+            .get_mut(encoder)?
+            .compute_resources
+            .push(Resources {
+                slots: Vec::new(),
+                owned_slots: Vec::new(),
+                program: program.clone(),
+            });
         let mut final_buffers = Vec::<BufferId>::new();
         let result = (|| -> Result<()> {
             self.begin_texture_command_encoder(encoder, None)?;
-            let command = self.command_encoders.get(encoder)?.command_list.as_ref()
+            let command = self
+                .command_encoders
+                .get(encoder)?
+                .command_list
+                .as_ref()
                 .ok_or_else(|| Error::Backend("DX12 compute command list is missing".into()))?
                 .clone();
             let queries = if tag.is_some() {
-                self.command_encoders.get(encoder)?.timestamps.as_ref().map(|queries| {
-                    (queries.heap.clone(), queries.readback.clone())
-                })
+                self.command_encoders
+                    .get(encoder)?
+                    .timestamps
+                    .as_ref()
+                    .map(|queries| (queries.heap.clone(), queries.readback.clone()))
             } else {
                 None
             };
-            let has_sampler = layout.entries.iter().any(|e| e.binding_type == BindingType::Sampler);
+            let has_sampler = layout
+                .entries
+                .iter()
+                .any(|e| e.binding_type == BindingType::Sampler);
             let heaps = if has_sampler {
-                vec![Some(self.resource_heap.heap.clone()), Some(self.sampler_heap.heap.clone())]
+                vec![
+                    Some(self.resource_heap.heap.clone()),
+                    Some(self.sampler_heap.heap.clone()),
+                ]
             } else {
                 vec![Some(self.resource_heap.heap.clone())]
             };
@@ -248,10 +280,14 @@ impl Dx12Device {
             let mut sampler_emitted = false;
             for entry in &layout.entries {
                 if entry.binding_type == BindingType::Sampler {
-                    if sampler_emitted { continue; }
+                    if sampler_emitted {
+                        continue;
+                    }
                     sampler_emitted = true;
                     let indices = set.sampler_index_table.as_ref().ok_or_else(|| {
-                        Error::InvalidInput("DX12 compute sampler index descriptor is missing".into())
+                        Error::InvalidInput(
+                            "DX12 compute sampler index descriptor is missing".into(),
+                        )
                     })?;
                     unsafe {
                         command.SetComputeRootDescriptorTable(slot, self.sampler_heap.gpu_start());
@@ -260,7 +296,9 @@ impl Dx12Device {
                     slot += 2;
                     continue;
                 }
-                let table = set.resource_tables.iter()
+                let table = set
+                    .resource_tables
+                    .iter()
                     .find(|table| table.binding == entry.binding)
                     .ok_or_else(|| Error::InvalidInput("missing DX12 compute root table".into()))?;
                 unsafe { command.SetComputeRootDescriptorTable(slot, table.gpu_handle) };
@@ -268,11 +306,16 @@ impl Dx12Device {
             }
             let constants = draw_step_constants_root_index(std::slice::from_ref(&layout))?;
             if constants != slot {
-                return Err(Error::Backend("DX12 compute root layout ABI mismatch".into()));
+                return Err(Error::Backend(
+                    "DX12 compute root layout ABI mismatch".into(),
+                ));
             }
             unsafe {
                 command.SetComputeRoot32BitConstants(
-                    constants, 3, dispatch.workgroups.as_ptr().cast(), 0,
+                    constants,
+                    3,
+                    dispatch.workgroups.as_ptr().cast(),
+                    0,
                 );
             }
             for binding in &buffers {
@@ -299,9 +342,10 @@ impl Dx12Device {
             }
             for &(id, writable) in &images {
                 let texture = self.textures.get(id)?;
-                let resource = texture.resource.as_ref().ok_or_else(|| {
-                    Error::Backend("missing DX12 compute image".into())
-                })?;
+                let resource = texture
+                    .resource
+                    .as_ref()
+                    .ok_or_else(|| Error::Backend("missing DX12 compute image".into()))?;
                 let target = if writable {
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                 } else {
@@ -320,7 +364,9 @@ impl Dx12Device {
                     command.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 0);
                 }
                 command.Dispatch(
-                    dispatch.workgroups[0], dispatch.workgroups[1], dispatch.workgroups[2],
+                    dispatch.workgroups[0],
+                    dispatch.workgroups[1],
+                    dispatch.workgroups[2],
                 );
                 if let Some((heap, _)) = &queries {
                     command.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
@@ -336,9 +382,10 @@ impl Dx12Device {
                     continue;
                 }
                 let texture = self.textures.get(id)?;
-                let resource = texture.resource.as_ref().ok_or_else(|| {
-                    Error::Backend("missing DX12 compute image".into())
-                })?;
+                let resource = texture
+                    .resource
+                    .as_ref()
+                    .ok_or_else(|| Error::Backend("missing DX12 compute image".into()))?;
                 record_transition_barrier(
                     &command,
                     resource,
@@ -348,10 +395,17 @@ impl Dx12Device {
             }
             for binding in &buffers {
                 if binding.access == ComputeBufferAccess::ReadWrite {
-                    let resource = self.buffers.get(binding.buffer.buffer)?.resource.as_ref()
-                        .ok_or_else(|| Error::Backend("missing writable compute resource".into()))?;
+                    let resource = self
+                        .buffers
+                        .get(binding.buffer.buffer)?
+                        .resource
+                        .as_ref()
+                        .ok_or_else(|| {
+                            Error::Backend("missing writable compute resource".into())
+                        })?;
                     record_transition_barrier(
-                        &command, resource,
+                        &command,
+                        resource,
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                         D3D12_RESOURCE_STATE_GENERIC_READ,
                     );
@@ -359,22 +413,24 @@ impl Dx12Device {
             }
             if let Some((heap, readback)) = &queries {
                 unsafe {
-                    command.ResolveQueryData(
-                        heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, readback, 0,
-                    );
+                    command.ResolveQueryData(heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, readback, 0);
                 }
                 self.command_encoders.get_mut(encoder)?.gpu_work_tag = tag;
             }
             self.finish_texture_command_encoder(encoder)?;
             let fence_value = self.submit_without_wait(encoder)?;
             let submitted = self.command_encoders.take(encoder)?;
-            self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
-                fence_value, _encoder: submitted,
-            });
+            self.deferred_command_encoders
+                .push(DeferredDx12CommandEncoder {
+                    fence_value,
+                    _encoder: submitted,
+                });
             self.poll_cleanup();
             Ok(())
         })();
-        let was_submitted = self.command_encoders.get(encoder)
+        let was_submitted = self
+            .command_encoders
+            .get(encoder)
             .is_ok_and(|pending| pending.submitted);
         if result.is_ok() || was_submitted {
             for id in final_buffers {
@@ -389,7 +445,7 @@ impl Dx12Device {
             }
         }
         if result.is_err() {
-            let _ = self.release_temporary_command_encoder_after_failure(encoder);
+            let _ = self.release_temporary_encoder(encoder);
         }
         result
     }
@@ -403,7 +459,7 @@ impl Dx12Device {
         views: &mut HashMap<ViewKey, DescriptorSlot>,
     ) -> Result<Option<Resources>> {
         let limits = self.buffer_binding_limits();
-        dispatch.validate_with_limits(capabilities(), limits)?;
+        dispatch.validate_dispatch(capabilities(), limits)?;
         let shader = self.shader_modules.get(dispatch.shader)?;
         if shader.stage != ShaderStage::Compute {
             return Err(Error::InvalidInput(
@@ -633,9 +689,10 @@ impl Dx12Device {
             );
         }
         for (index, binding) in dispatch.bindings.iter().enumerate() {
-            if dispatch.bindings[..index].iter().any(|previous|
-                previous.buffer.buffer == binding.buffer.buffer
-            ) {
+            if dispatch.bindings[..index]
+                .iter()
+                .any(|previous| previous.buffer.buffer == binding.buffer.buffer)
+            {
                 continue;
             }
             let buffer = self.buffers.get(binding.buffer.buffer)?;
@@ -659,10 +716,12 @@ impl Dx12Device {
             if from != to {
                 record_transition_barrier(
                     &command,
-                    buffer.resource.as_ref().ok_or_else(|| Error::Backend(
-                        "missing compute resource".into(),
-                    ))?,
-                    from, to,
+                    buffer
+                        .resource
+                        .as_ref()
+                        .ok_or_else(|| Error::Backend("missing compute resource".into()))?,
+                    from,
+                    to,
                 );
             }
             states.insert(binding.buffer.buffer, to);
@@ -680,11 +739,14 @@ impl Dx12Device {
     /// performs the graphics-state -> COMMON transition only when required.
     /// Native typed COMPUTE then GPU-waits for that exact release fence.
     fn prepare_dedicated_compute_buffers(
-        &mut self, dispatches: &[ComputeDispatch<'_>],
+        &mut self,
+        dispatches: &[ComputeDispatch<'_>],
     ) -> Result<()> {
         let mut buffers = Vec::new();
         for dispatch in dispatches {
-            if dispatch.workgroups.contains(&0) { continue; }
+            if dispatch.workgroups.contains(&0) {
+                continue;
+            }
             for binding in dispatch.bindings {
                 let resource = self.buffers.get(binding.buffer.buffer)?;
                 if resource.desc.memory_location == MemoryLocation::CpuToGpu
@@ -717,7 +779,8 @@ impl Dx12Device {
         dispatches: &[ComputeDispatch<'_>],
         tag: Option<gfx_core::GpuTimestampTag>,
     ) -> Result<()> {
-        self.dispatch_buffer_batch_on_queue(dispatches, tag, None).map(|_| ())
+        self.dispatch_buffer_batch_on_queue(dispatches, tag, None)
+            .map(|_| ())
     }
 
     /// Optional native tracked dispatch: a second DIRECT queue can execute
@@ -753,10 +816,15 @@ impl Dx12Device {
                 Err(Error::InvalidInput(
                     "tracked Compute batch has no executable dispatches".into(),
                 ))
-            } else { Ok(None) };
+            } else {
+                Ok(None)
+            };
         }
-        let dedicated_compute =
-            native_queue == Some(gfx_core::GpuQueueId { family: 0, index: 2 });
+        let dedicated_compute = native_queue
+            == Some(gfx_core::GpuQueueId {
+                family: 0,
+                index: 2,
+            });
         if dedicated_compute {
             if let Err(error) = self.prepare_dedicated_compute_buffers(dispatches) {
                 for resources in prepared {
@@ -788,26 +856,38 @@ impl Dx12Device {
             // graphics queue's clock. Unsupported query clocks simply
             // produce no sample; they do not prevent GPU execution.
             let frequency = if dedicated_compute {
-                self.async_compute.as_ref().and_then(|q| q.timestamp_frequency_hz)
-            } else if native_queue == Some(gfx_core::GpuQueueId { family: 0, index: 1 }) {
-                self.sidecar_queue.as_ref().and_then(|q| {
-                    unsafe { q.GetTimestampFrequency() }.ok()
+                self.async_compute
+                    .as_ref()
+                    .and_then(|q| q.timestamp_frequency_hz)
+            } else if native_queue
+                == Some(gfx_core::GpuQueueId {
+                    family: 0,
+                    index: 1,
                 })
+            {
+                self.sidecar_queue
+                    .as_ref()
+                    .and_then(|q| unsafe { q.GetTimestampFrequency() }.ok())
             } else {
                 self.timestamp_frequency
-            }.filter(|hz| *hz > 0);
+            }
+            .filter(|hz| *hz > 0);
             if dedicated_compute && frequency.is_some() {
                 // An independent COMPUTE encoder is deliberately not allowed
                 // in the DIRECT allocator pool. Reuse completed timestamp
                 // probes instead of allocating a Query Heap per Section.
                 let probe = self.gpu_draw_query_pool.pop().or_else(|| {
                     create_dx12_timestamp_queries(
-                        &self.device, "nova-gfx native COMPUTE timestamps",
-                    ).ok()
+                        &self.device,
+                        "nova-gfx native COMPUTE timestamps",
+                    )
+                    .ok()
                 });
                 self.command_encoders.get_mut(encoder)?.timestamps = probe;
             }
-            self.command_encoders.get_mut(encoder)?.gpu_work_frequency_hz = frequency;
+            self.command_encoders
+                .get_mut(encoder)?
+                .gpu_work_frequency_hz = frequency;
         }
         if dedicated_compute {
             // A partial typed-queue Signal failure may outlive the logical
@@ -817,21 +897,30 @@ impl Dx12Device {
             let owned = (|| -> Result<Vec<ID3D12Resource>> {
                 let mut owned = Vec::new();
                 for dispatch in dispatches {
-                    if dispatch.workgroups.contains(&0) { continue; }
+                    if dispatch.workgroups.contains(&0) {
+                        continue;
+                    }
                     for binding in dispatch.bindings {
                         let buffer = self.buffers.get(binding.buffer.buffer)?;
-                        owned.push(buffer.resource.as_ref().ok_or_else(|| {
-                            Error::Backend("DX12 typed Compute buffer allocation missing".into())
-                        })?.clone());
+                        owned.push(
+                            buffer
+                                .resource
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    Error::Backend(
+                                        "DX12 typed Compute buffer allocation missing".into(),
+                                    )
+                                })?
+                                .clone(),
+                        );
                     }
                 }
                 Ok(owned)
             })();
             match owned {
-                Ok(owned) => self.command_encoders
-                    .get_mut(encoder)?.native_buffer_owners = owned,
+                Ok(owned) => self.command_encoders.get_mut(encoder)?.native_buffer_owners = owned,
                 Err(error) => {
-                    let _ = self.release_temporary_command_encoder_after_failure(encoder);
+                    let _ = self.release_temporary_encoder(encoder);
                     return Err(error);
                 }
             }
@@ -840,32 +929,49 @@ impl Dx12Device {
         let result = (|| {
             self.begin_texture_command_encoder(encoder, None)?;
             let queries = if tag.is_some() {
-                self.command_encoders.get(encoder)?.timestamps.as_ref().map(|queries| {
-                    (queries.heap.clone(), queries.readback.clone())
-                })
-            } else { None };
+                self.command_encoders
+                    .get(encoder)?
+                    .timestamps
+                    .as_ref()
+                    .map(|queries| (queries.heap.clone(), queries.readback.clone()))
+            } else {
+                None
+            };
             if let Some((heap, _)) = &queries {
-                let command = self.command_encoders.get(encoder)?.command_list
-                    .as_ref().ok_or_else(|| Error::Backend("missing DX12 compute command list".into()))?;
+                let command = self
+                    .command_encoders
+                    .get(encoder)?
+                    .command_list
+                    .as_ref()
+                    .ok_or_else(|| Error::Backend("missing DX12 compute command list".into()))?;
                 // SAFETY: The timestamp query is from the executing native
                 // queue's own command list and its two slots are exclusive.
                 unsafe { command.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 0) };
             }
             for (call_index, &index) in indices.iter().enumerate() {
                 self.record_dispatch(
-                    encoder, call_index, &dispatches[index], &mut states,
-                    native_queue == Some(gfx_core::GpuQueueId { family: 0, index: 2 }),
+                    encoder,
+                    call_index,
+                    &dispatches[index],
+                    &mut states,
+                    native_queue
+                        == Some(gfx_core::GpuQueueId {
+                            family: 0,
+                            index: 2,
+                        }),
                 )?;
             }
             if let Some((heap, readback)) = &queries {
-                let command = self.command_encoders.get(encoder)?.command_list
-                    .as_ref().ok_or_else(|| Error::Backend("missing DX12 compute command list".into()))?;
+                let command = self
+                    .command_encoders
+                    .get(encoder)?
+                    .command_list
+                    .as_ref()
+                    .ok_or_else(|| Error::Backend("missing DX12 compute command list".into()))?;
                 // SAFETY: Both timestamp queries belong to this encoder and resolve into 16 readback bytes.
                 unsafe {
                     command.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
-                    command.ResolveQueryData(
-                        heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, readback, 0,
-                    );
+                    command.ResolveQueryData(heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, readback, 0);
                 }
                 self.command_encoders.get_mut(encoder)?.gpu_work_tag = tag;
             }
@@ -874,18 +980,33 @@ impl Dx12Device {
                 None => {
                     let fence_value = self.submit_without_wait(encoder)?;
                     let completed = self.command_encoders.take(encoder)?;
-                    self.deferred_command_encoders.push(DeferredDx12CommandEncoder {
-                        fence_value, _encoder: completed,
-                    });
+                    self.deferred_command_encoders
+                        .push(DeferredDx12CommandEncoder {
+                            fence_value,
+                            _encoder: completed,
+                        });
                     self.poll_cleanup();
                     Ok(None)
                 }
-                Some(q) if q == gfx_core::GpuQueueId::PRIMARY =>
-                    self.submit_deferred(encoder).map(Some),
-                Some(q) if q == (gfx_core::GpuQueueId { family: 0, index: 1 }) =>
-                    self.submit_sidecar_deferred_native(encoder, true).map(Some),
-                Some(q) if q == (gfx_core::GpuQueueId { family: 0, index: 2 }) =>
-                    self.submit_dedicated_compute_deferred(encoder).map(Some),
+                Some(q) if q == gfx_core::GpuQueueId::PRIMARY => {
+                    self.submit_deferred(encoder).map(Some)
+                }
+                Some(q)
+                    if q == (gfx_core::GpuQueueId {
+                        family: 0,
+                        index: 1,
+                    }) =>
+                {
+                    self.submit_sidecar_deferred_native(encoder, true).map(Some)
+                }
+                Some(q)
+                    if q == (gfx_core::GpuQueueId {
+                        family: 0,
+                        index: 2,
+                    }) =>
+                {
+                    self.submit_dedicated_compute_deferred(encoder).map(Some)
+                }
                 Some(_) => Err(Error::Unavailable(
                     "DX12 requested native Compute queue is unavailable".into(),
                 )),
@@ -902,7 +1023,7 @@ impl Dx12Device {
             }
         }
         if result.is_err() {
-            let _ = self.release_temporary_command_encoder_after_failure(encoder);
+            let _ = self.release_temporary_encoder(encoder);
         }
         result
     }
@@ -1215,7 +1336,9 @@ fn create_resource_set_program(
     layout: &BindGroupLayoutDescriptor,
 ) -> Result<Program> {
     if shader.stage != ShaderStage::Compute {
-        return Err(Error::InvalidInput("resource set requires a compute shader".into()));
+        return Err(Error::InvalidInput(
+            "resource set requires a compute shader".into(),
+        ));
     }
     let root = create_root_signature(device, std::slice::from_ref(layout))?;
     let mut desc = D3D12_COMPUTE_PIPELINE_STATE_DESC::default();

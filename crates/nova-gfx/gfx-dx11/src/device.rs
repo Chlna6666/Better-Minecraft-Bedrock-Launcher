@@ -143,7 +143,7 @@ fn read_dx11_frame_timestamps(
 pub(crate) fn backend(error: windows::core::Error) -> Error {
     Error::Backend(format!("D3D11: {error}"))
 }
-pub(crate) fn backend_with_device_reason(
+pub(crate) fn backend_error(
     device: &ID3D11Device,
     operation: &str,
     error: windows::core::Error,
@@ -254,7 +254,7 @@ impl Dx11Device {
     /// Whether earlier immediate-context work is still executing.
     /// # Errors
     /// Returns a backend error if native query processing fails.
-    pub fn has_pending_gpu_work(&mut self) -> Result<bool> {
+    pub fn poll_gpu_work(&mut self) -> Result<bool> {
         self.retire()?;
         Ok(!self.pending.is_empty())
     }
@@ -329,9 +329,8 @@ impl Dx11Device {
             self.context.End(&queries.disjoint);
         }
         let serial = self.submitted.saturating_add(1);
-        self.pending_gpu_work_timestamps.push((
-            serial, result.as_ref().ok().map(|_| tag), queries,
-        ));
+        self.pending_gpu_work_timestamps
+            .push((serial, result.as_ref().ok().map(|_| tag), queries));
         result
     }
 
@@ -432,7 +431,7 @@ impl Dx11Device {
                     D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
                 )
             }
-            .map_err(|error| backend_with_device_reason(&self.native, "GetData", error))?;
+            .map_err(|error| backend_error(&self.native, "GetData", error))?;
             if done == 0 {
                 break;
             }

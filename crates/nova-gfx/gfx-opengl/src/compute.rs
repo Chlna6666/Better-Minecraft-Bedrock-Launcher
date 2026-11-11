@@ -19,10 +19,10 @@ struct Program {
     images: Vec<ImageSlot>,
 }
 
- // shader storage writes are incoherent in OpenGL. Publish only the consumers
- // permitted by the actual writable bindings; a read-only dispatch needs no
- // memory barrier at all. Rendering/texture fetch commands remain ordered on
- // the same GL context without an additional CPU synchronization point.
+// shader storage writes are incoherent in OpenGL. Publish only the consumers
+// permitted by the actual writable bindings; a read-only dispatch needs no
+// memory barrier at all. Rendering/texture fetch commands remain ordered on
+// the same GL context without an additional CPU synchronization point.
 fn compute_write_barrier_bits(bindings: impl IntoIterator<Item = BindingType>) -> u32 {
     let mut bits = 0;
     for binding in bindings {
@@ -36,7 +36,9 @@ fn compute_write_barrier_bits(bindings: impl IntoIterator<Item = BindingType>) -
                     | glow::ELEMENT_ARRAY_BARRIER_BIT
                     | glow::PIXEL_BUFFER_BARRIER_BIT;
             }
-            BindingType::StorageTexture { read_only: false, .. } => {
+            BindingType::StorageTexture {
+                read_only: false, ..
+            } => {
                 bits |= glow::SHADER_IMAGE_ACCESS_BARRIER_BIT
                     | glow::TEXTURE_FETCH_BARRIER_BIT
                     | glow::FRAMEBUFFER_BARRIER_BIT
@@ -151,7 +153,7 @@ impl State {
 
 impl OpenGlDevice {
     pub(crate) fn dispatch_buffers(&mut self, dispatch: &ComputeDispatch<'_>) -> Result<()> {
-        dispatch.validate_with_limits(self.compute.capabilities, self.buffer_binding_limits())?;
+        dispatch.validate_dispatch(self.compute.capabilities, self.buffer_binding_limits())?;
         self.park()?;
         let shader = self.shaders.get(dispatch.shader)?;
         if shader.stage != ShaderStage::Compute || !shader.reflection.textures.is_empty() {
@@ -259,13 +261,14 @@ impl OpenGlDevice {
                 dispatch.workgroups[1],
                 dispatch.workgroups[2],
             );
-            let barrier_bits = compute_write_barrier_bits(dispatch.bindings.iter().map(
-                |binding| match binding.access {
-                    ComputeBufferAccess::ReadWrite => BindingType::StorageBufferReadWrite,
-                    ComputeBufferAccess::ReadOnly => BindingType::StorageBuffer,
-                    ComputeBufferAccess::Uniform => BindingType::UniformBuffer,
-                },
-            ));
+            let barrier_bits =
+                compute_write_barrier_bits(dispatch.bindings.iter().map(|binding| {
+                    match binding.access {
+                        ComputeBufferAccess::ReadWrite => BindingType::StorageBufferReadWrite,
+                        ComputeBufferAccess::ReadOnly => BindingType::StorageBuffer,
+                        ComputeBufferAccess::Uniform => BindingType::UniformBuffer,
+                    }
+                }));
             if barrier_bits != 0 {
                 self.gl.memory_barrier(barrier_bits);
             }
@@ -389,8 +392,13 @@ impl OpenGlDevice {
                     ));
                 };
                 let buffer = self.buffers.get(range.buffer)?;
-                let layout_entry = layout.entries.iter().find(|entry| entry.binding == slot.logical)
-                    .ok_or_else(|| Error::InvalidInput("OpenGL compute buffer missing layout entry".into()))?;
+                let layout_entry = layout
+                    .entries
+                    .iter()
+                    .find(|entry| entry.binding == slot.logical)
+                    .ok_or_else(|| {
+                        Error::InvalidInput("OpenGL compute buffer missing layout entry".into())
+                    })?;
                 if layout_entry.binding_type == BindingType::StorageBufferReadWrite
                     && !buffer.desc.usage.contains(BufferUsage::STORAGE_WRITE)
                 {
@@ -480,9 +488,8 @@ impl OpenGlDevice {
                 dispatch.workgroups[1],
                 dispatch.workgroups[2],
             );
-            let barrier_bits = compute_write_barrier_bits(
-                layout.entries.iter().map(|entry| entry.binding_type),
-            );
+            let barrier_bits =
+                compute_write_barrier_bits(layout.entries.iter().map(|entry| entry.binding_type));
             if barrier_bits != 0 {
                 self.gl.memory_barrier(barrier_bits);
             }

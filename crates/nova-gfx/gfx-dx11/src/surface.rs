@@ -1,5 +1,5 @@
 use crate::{
-    device::{Dx11Device, backend, backend_with_device_reason, required},
+    device::{Dx11Device, backend, backend_error, required},
     frame_pacing::FrameLatencyWait,
     resources::format,
 };
@@ -413,7 +413,7 @@ impl Dx11Device {
         // SAFETY: immediate rendering has been recorded and output bindings removed. No tearing.
         unsafe { chain.native.Present(interval, DXGI_PRESENT(0)) }
             .ok()
-            .map_err(|error| backend_with_device_reason(&self.native, "Present", error))?;
+            .map_err(|error| backend_error(&self.native, "Present", error))?;
         let queue_present = present_started.elapsed();
         let cleanup_started = std::time::Instant::now();
         chain.pacing.consume_ready();

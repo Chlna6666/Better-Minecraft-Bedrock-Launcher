@@ -36,51 +36,66 @@ impl VulkanDevice {
                     "Vulkan transfer requires COPY_SRC and COPY_DST usage".into(),
                 ));
             }
-            if copy.source_offset.checked_add(copy.bytes).is_none_or(|end| end > source.desc.size)
-                || copy.destination_offset.checked_add(copy.bytes)
+            if copy
+                .source_offset
+                .checked_add(copy.bytes)
+                .is_none_or(|end| end > source.desc.size)
+                || copy
+                    .destination_offset
+                    .checked_add(copy.bytes)
                     .is_none_or(|end| end > destination.desc.size)
             {
-                return Err(Error::InvalidInput("Vulkan transfer range out of bounds".into()));
+                return Err(Error::InvalidInput(
+                    "Vulkan transfer range out of bounds".into(),
+                ));
             }
             validated.push((
-                source.buffer, destination.buffer,
-                copy.source, copy.destination,
+                source.buffer,
+                destination.buffer,
+                copy.source,
+                copy.destination,
                 vk::BufferCopy::default()
                     .src_offset(copy.source_offset)
                     .dst_offset(copy.destination_offset)
                     .size(copy.bytes),
             ));
         }
-        let encoder = self.create_command_encoder_with_buffer_count(1)?;
+        let encoder = self.create_encoder(1, self.graphics_queue_family_index)?;
         let command = self.command_encoders.get(encoder)?.command_buffers[0];
         let result = (|| -> Result<SubmissionId> {
             // SAFETY: The command buffer was allocated from this device's
             // graphics-family command pool and is not in flight.
             unsafe {
-                self.device.begin_command_buffer(
-                    command,
-                    &vk::CommandBufferBeginInfo::default()
-                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                ).map_err(VulkanError::from)?;
+                self.device
+                    .begin_command_buffer(
+                        command,
+                        &vk::CommandBufferBeginInfo::default()
+                            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                    )
+                    .map_err(VulkanError::from)?;
             }
             let mut unique = std::collections::HashSet::new();
-            let before = validated.iter().flat_map(|(source, destination, _, _, _)| [
-                *source, *destination,
-            ]).filter(|buffer| unique.insert(*buffer)).map(|buffer| {
-                vk::BufferMemoryBarrier::default()
-                    .src_access_mask(
-                        vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE
-                            | vk::AccessFlags::HOST_WRITE,
-                    )
-                    .dst_access_mask(
-                        vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
-                    )
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .buffer(buffer)
-                    .offset(0)
-                    .size(vk::WHOLE_SIZE)
-            }).collect::<Vec<_>>();
+            let before = validated
+                .iter()
+                .flat_map(|(source, destination, _, _, _)| [*source, *destination])
+                .filter(|buffer| unique.insert(*buffer))
+                .map(|buffer| {
+                    vk::BufferMemoryBarrier::default()
+                        .src_access_mask(
+                            vk::AccessFlags::MEMORY_READ
+                                | vk::AccessFlags::MEMORY_WRITE
+                                | vk::AccessFlags::HOST_WRITE,
+                        )
+                        .dst_access_mask(
+                            vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
+                        )
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .buffer(buffer)
+                        .offset(0)
+                        .size(vk::WHOLE_SIZE)
+                })
+                .collect::<Vec<_>>();
             // SAFETY: Both queues belong to the same graphics family. The
             // native GPU semaphore join establishes queue-to-queue execution
             // order; barriers make prior writes available to transfer.
@@ -90,7 +105,9 @@ impl VulkanDevice {
                     vk::PipelineStageFlags::ALL_COMMANDS | vk::PipelineStageFlags::HOST,
                     vk::PipelineStageFlags::TRANSFER,
                     vk::DependencyFlags::empty(),
-                    &[], &before, &[],
+                    &[],
+                    &before,
+                    &[],
                 );
             }
             let mut written = std::collections::HashSet::new();
@@ -99,16 +116,19 @@ impl VulkanDevice {
                     let dependency = vk::MemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
                         .dst_access_mask(
-                            vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE
+                            vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
                         );
                     // SAFETY: Two dependent Copy commands in one command
                     // buffer need an explicit Transfer->Transfer dependency.
                     unsafe {
                         self.device.cmd_pipeline_barrier(
-                            command, vk::PipelineStageFlags::TRANSFER,
+                            command,
+                            vk::PipelineStageFlags::TRANSFER,
                             vk::PipelineStageFlags::TRANSFER,
                             vk::DependencyFlags::empty(),
-                            &[dependency], &[], &[],
+                            &[dependency],
+                            &[],
+                            &[],
                         );
                     }
                 }
@@ -116,32 +136,39 @@ impl VulkanDevice {
                 // been checked, and their allocations remain live through
                 // the native command encoder's retirement fence.
                 unsafe {
-                    self.device.cmd_copy_buffer(command, *source, *destination, &[*region]);
+                    self.device
+                        .cmd_copy_buffer(command, *source, *destination, &[*region]);
                 }
                 written.insert(*destination_id);
             }
             let after = vk::MemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(
-                    vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
-                );
+                .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE);
             // SAFETY: Copies finish before subsequent Graphics/Compute
             // consumers on either graphics-family queue.
             unsafe {
                 self.device.cmd_pipeline_barrier(
-                    command, vk::PipelineStageFlags::TRANSFER,
+                    command,
+                    vk::PipelineStageFlags::TRANSFER,
                     vk::PipelineStageFlags::ALL_COMMANDS,
-                    vk::DependencyFlags::empty(), &[after], &[], &[],
+                    vk::DependencyFlags::empty(),
+                    &[after],
+                    &[],
+                    &[],
                 );
-                self.device.end_command_buffer(command).map_err(VulkanError::from)?;
+                self.device
+                    .end_command_buffer(command)
+                    .map_err(VulkanError::from)?;
             }
             if queue == gfx_core::GpuQueueId::PRIMARY {
-                self.submit_command_encoder_deferred_tracked(encoder)
+                self.submit_encoder(encoder)
             } else {
                 self.submit_command_encoder_independent(encoder, true)?
-                    .ok_or_else(|| Error::Unavailable(
-                        "Vulkan secondary transfer did not produce a native fence".into(),
-                    ))
+                    .ok_or_else(|| {
+                        Error::Unavailable(
+                            "Vulkan secondary transfer did not produce a native fence".into(),
+                        )
+                    })
             }
         })();
         if result.is_err() {
