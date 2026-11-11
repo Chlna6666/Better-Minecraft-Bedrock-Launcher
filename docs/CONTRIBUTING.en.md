@@ -1,83 +1,83 @@
 # Contributing
 
-This guide is for changes to the BMCBL workspace. Read [ARCHITECTURE](ARCHITECTURE.en.md)
-and [NAMING](NAMING.md) first.
+This guide covers scope, verification, documentation and commits. Open [ARCHITECTURE](ARCHITECTURE.en.md),
+[NAMING](NAMING.md) or [BUILD_AND_TEST](BUILD_AND_TEST.en.md) when the task needs them; reading
+all of them is not a prerequisite for every edit.
 
-## 1. Before changing: declare scope
+## 1. Scope
 
-Describe in the PR/commit:
+For changes involving multiple crates, public APIs, data formats, persistence, concurrency/lifecycles
+or multiple user-facing features, describe the goal, impact (crates, platforms and features) and
+verification in the PR/commit. A small local fix can be scoped by its diff without a separate formal
+declaration.
 
-- **IN SCOPE**: modules, files and public interfaces to change;
-- **OUT OF SCOPE**: what is intentionally left alone;
-- **Impact**: affected crates, features, platforms and user behaviour;
-- **Verification**: commands actually run and their results.
+Cross-layer changes must respect these boundaries:
 
-Cross-layer changes must respect the boundaries:
-
-- `nova-gfx` is graphics-only; no UI framework, window policy, damage/retained/atlas concepts.
-- `gpui` depends on `gfx-core` capability traits, not backend-specific inherent methods.
-- `egpui` owns no BMCBL product semantics.
-- `bedrock-*` does not depend on UI/GPU presentation.
+- nova-gfx provides general graphics capabilities and does not depend on UI frameworks, window policy
+  or application semantics.
+- gpui depends on gfx-core capability traits, not backend-specific inherent methods.
+- egpui owns no BMCBL product semantics.
+- bedrock-* does not depend on UI/GPU presentation.
 
 ## 2. Code conventions
 
-- Edition 2024; `unsafe_code = "warn"`; Clippy `all`/`pedantic` at warn level.
-- Library code should avoid `unwrap()`/`expect()` for recoverable errors; use `?` and typed errors.
-- Every `unsafe` block needs a `// SAFETY:` note covering pointer, lifetime and concurrency
-  preconditions.
-- Public APIs need rustdoc with `# Errors`/`# Panics`; prefer narrow trait bounds and parameter
-  objects.
-- Follow [NAMING](NAMING.md): verb + object, `is_/has_/can_` predicates, no `_compat`/`_legacy`
-  or chained sentences.
-- Hot rendering paths avoid allocations, locks and log spam; performance changes need a repeatable
-  measurement method.
+- Edition 2024; unsafe_code = warn; Clippy all/pedantic at warn level.
+- Library code should avoid unwrap()/expect() for recoverable errors; prefer ? and typed errors.
+- Every unsafe block needs a // SAFETY: note covering pointer, lifetime and concurrency preconditions.
+- Document public APIs with rustdoc, # Errors and # Panics where applicable; prefer narrow trait bounds
+  and suitable parameter types.
+- Follow [NAMING](NAMING.md) for Rust naming.
+- Avoid unnecessary allocations, locks and log spam in hot rendering paths; performance changes need a
+  repeatable measurement method.
 
-## 3. Testing
+## 3. Verification
 
-- Behaviour changes need new or updated tests; prefer unit tests. Hardware tests stay `#[ignore]`
-  with documented prerequisites.
-- At minimum run `cargo check` for the affected crate; run the feature matrix when multiple
-  backends are involved.
-- For `gfx-*`, run that backend's tests, including hardware gates when available.
-- For `gpui`/`gpui-3d`, run at least the `platform::nova::` or matching module tests.
-- For documentation, run `pwsh -File scripts/check-docs.ps1`.
+Choose the smallest relevant checks for the change and its risk; do not run the full workspace suite by
+default:
 
-See [BUILD_AND_TEST](BUILD_AND_TEST.en.md) for full commands.
+- For behaviour changes, verify the affected logic and add or update focused tests when appropriate.
+- For ordinary Rust logic, run cargo check for the affected crate or the relevant tests as needed.
+- For multiple backends/features, select the relevant matrix. Keep hardware tests #[ignore] with
+  prerequisites, and run them only when the device and window are available.
+- High-risk changes to concurrency, GPU resource lifecycles or persistence need evidence for important
+  failure/completion paths; static checks do not replace necessary runtime evidence.
+- For documentation-only changes, use relevant documentation checks without Rust compilation.
+
+See [BUILD_AND_TEST](BUILD_AND_TEST.en.md) for commands.
 
 ## 4. Documentation
 
-- Chinese is the primary project language; crate `README.md` is English and must have a
-  `README.zh-CN.md` counterpart.
-- Bilingual pairs must be updated together.
-- Do not commit test output/raw benchmark data/screenshots/logs, rename histories/migration maps,
-  or dated plans/drafts.
-- Update [ARCHITECTURE](ARCHITECTURE.en.md) or add an ADR for boundary changes; ADRs record
-  decisions, not line-by-line renames.
-- Commands, versions, features and paths in documentation must match the code.
+- Chinese is the primary project language; crate README.md files are in English and need README.zh-CN.md
+  counterparts.
+- Update both languages when editing a document with an English mirror.
+- Do not commit test output, raw benchmark data, screenshots, logs, rename histories/migration maps or
+  dated plans.
+- For architecture/boundary changes, update [ARCHITECTURE](ARCHITECTURE.en.md) or add an ADR. ADRs
+  record decisions, not line-by-line renames.
+- Commands, versions, features and paths must match the code.
 
 ## 5. Commits and changelog
 
-The repository uses Conventional Commits validated by `cog` (see `cog.toml`):
+The repository uses Conventional Commits validated by cog (see cog.toml):
 
-```text
-<type>(<scope>): <subject>
-```
+    <type>(<scope>): <subject>
 
-Common types: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `chore`, `ci`.
+Common types: feat, fix, refactor, perf, docs, test, chore, ci.
 
-- Chinese or English messages are both fine; keep one language per PR. Use crate/module names as
-  scope.
-- `CHANGELOG.md` is generated by `cog`; do not hand-edit historical entries.
-- One PR should contain one logical change; keep formatting, refactors and behaviour changes
-  separate where practical.
+- Chinese or English messages are both fine; keep one language per PR. Use crate/module names as scope.
+- CHANGELOG.md is generated by cog; do not hand-edit historical entries.
+- One PR should focus on one logical change; keep formatting, refactors and behaviour changes separate
+  where practical.
 
 ## 6. Review checklist
 
-- [ ] Scope and impact are documented; no unrelated drive-by edits.
-- [ ] No new reverse dependency (especially `nova-gfx -> gpui/app`).
-- [ ] Public names follow [NAMING](NAMING.md); no new compatibility aliases.
-- [ ] New behaviour has tests; hardware prerequisites are stated.
-- [ ] Documentation matches code, both languages are in sync, and no forbidden doc types are
-  added.
-- [ ] Touched files are `rustfmt`-formatted and the relevant `cargo check`/tests pass.
+- [ ] Scope and impact are clear; no unrelated drive-by edits.
+- [ ] No new reverse dependency, especially nova-gfx -> gpui/app.
+- [ ] Public API names follow [NAMING](NAMING.md); no unneeded compatibility aliases.
+- [ ] Behaviour changes have appropriate focused verification; commands not run are not reported as
+      passing.
+- [ ] Documentation matches the code, bilingual mirrors are synced, and no forbidden temporary
+      documents are added.
+- [ ] Modified Rust files follow project formatting; results of cargo check/tests actually run are
+      recorded accurately.
 - [ ] No temporary files, test data or debug output are committed.
