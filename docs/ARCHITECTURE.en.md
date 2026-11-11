@@ -65,6 +65,20 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 These constraints define the gpui / nova-gfx boundary; cross-layer changes must update
 this document.
 
+### 2.1 3D engine and UI Sidecar
+
+The 3D producer path belongs to gpui-3d and nova-gfx; GPUI consumes the resulting texture and
+handles window presentation. The GPUI adapter is optional behind the gpui-sidecar Cargo feature;
+BMCBL must enable it explicitly. Ordinary Sidecars use the same ordered graphics queue for production
+and consumption by default. Use a separate physical queue only when native GPU timestamps show a
+benefit, while retaining nova-gfx's general IndependentGraphicsIfAvailable capability.
+
+Retire in-flight resources only after the relevant submission or fence has actually completed.
+Keep host timings separate from native GPU timestamps, and do not add CPU fence waits to the hot
+path. Performance work must preserve rendering quality and valid passes; it must not trade them for
+lower frame rates or per-frame CPU synchronization. Multi-SceneView, resize, suspend/resume, device
+loss and in-flight resource reuse need failure paths.
+
 ## 3. Crate responsibilities
 
 | Crate | Responsibility | Constraint |

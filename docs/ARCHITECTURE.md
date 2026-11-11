@@ -87,6 +87,11 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
   GPUI Layout/Painter、Sidecar 已通过 Cargo `gpui-sidecar` feature 隔离。
   默认启用以保持启动器行为，独立 3D 应用使用 `--no-default-features` 构建纯引擎，
   无 GPUI 依赖；独立游戏窗口和 Swapchain 仍由消费方提供。
+- **默认队列与失败路径**：普通 Sidecar 的 3D 生产者和 UI 消费者默认使用同一条有序
+  GPU 图形队列。只有原生 GPU 时间戳证明有收益时才切换到独立物理队列；
+  nova-gfx 的通用 IndependentGraphicsIfAvailable 能力仍应保留。性能优化不得以降低画质、
+  跳过正确的 Shadow Pass、降帧或每帧 CPU 同步换取表面加速；多 SceneView、窗口尺寸变化、
+  挂起/恢复、GPU 设备丢失及在途资源复用都必须有失败路径。
 
 
 ## 3. crate 职责
