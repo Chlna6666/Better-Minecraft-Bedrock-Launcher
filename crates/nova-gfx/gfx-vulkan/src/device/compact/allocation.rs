@@ -121,7 +121,7 @@ pub(super) fn allocate_texture(
     }))
 }
 
-pub(super) fn allocation_memory(allocation: &MemoryAllocation) -> Result<vk::DeviceMemory> {
+pub(super) fn memory(allocation: &MemoryAllocation) -> Result<vk::DeviceMemory> {
     // SAFETY: Only compares a live handle; ownership remains with the allocator.
     unsafe { allocation.vulkan_memory() }
         .map(|(memory, _)| memory)

@@ -97,6 +97,7 @@ impl PresentationDevice for OpenGlDevice {
             pass.depth_attachment,
             pass.clear_region,
             pass.viewport,
+            None,
         )
     }
 
@@ -110,10 +111,11 @@ impl PresentationDevice for OpenGlDevice {
         Ok(None)
     }
 
-    fn render_to_textures_profiled(
+    fn render_to_textures_on_queue(
         &mut self,
         passes: &[RenderPassCommands<'_>],
         tags: &[Option<GpuTimestampTag>],
+        _queue: OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
         if passes.len() != tags.len() {
             return Err(Error::InvalidInput(
@@ -137,7 +139,7 @@ impl PresentationDevice for OpenGlDevice {
                 .copied()
                 .map(RenderTarget::TextureView)
                 .collect::<Vec<_>>();
-            self.render_target_clipped_profiled(
+            self.render_target_clipped(
                 &targets,
                 pass.resolve_target,
                 pass.render_pass,

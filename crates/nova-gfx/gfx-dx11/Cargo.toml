@@ -6,9 +6,6 @@ rust-version = "1.85"
 license = "GPL-3.0"
 description = "Native Direct3D 11 backend for nova-gfx"
 
-[lib]
-path = "src/gfx_dx11.rs"
-
 [lints.rust]
 unsafe_code = "warn"
 

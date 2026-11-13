@@ -1,5 +1,6 @@
 //! Ordered buffer compute and GPU-generated draw arguments.
 
+use crate::GpuTimestampTag;
 use crate::{
     BindGroupDescriptor, BindGroupLayoutDescriptor, BindingResource, BindingType, BufferBinding,
     Error, Result, ShaderModuleId, ShaderStages,
@@ -311,6 +312,21 @@ pub struct ComputeDispatch<'a> {
     pub workgroups: [u32; 3],
 }
 
+/// One native Compute submission: the requested physical queue, the dispatch
+/// batch, and an optional hardware-timestamp tag. Collapses the former
+/// `submit_compute_*_on_queue` / `*_profiled_on_queue` name family; the
+/// timestamp contract is unchanged (recorded inside the exact native command
+/// list on `queue`, never a host-side approximation).
+#[derive(Clone, Copy)]
+pub struct ComputeSubmit<'a> {
+    /// Exact native queue to encode and execute the dispatches on.
+    pub queue: crate::GpuQueueId,
+    /// Dispatch batch; must be nonempty.
+    pub dispatches: &'a [ComputeDispatch<'a>],
+    /// Optional fence-completed hardware timestamp correlation tag.
+    pub timestamp_tag: Option<GpuTimestampTag>,
+}
+
 /// Compute dispatch that binds one full resource set instead of individual buffers.
 ///
 /// Use this when the shader needs textures, storage images or samplers; the buffer-only
@@ -324,6 +340,9 @@ pub struct ComputeBindGroupDispatch {
     pub bind_group: crate::BindGroupId,
     /// Workgroup counts, not invocation counts.
     pub workgroups: [u32; 3],
+    /// Optional native GPU timestamp tag; `None` keeps the dispatch
+    /// uninstrumented instead of estimating host time.
+    pub gpu_work_tag: Option<crate::GpuTimestampTag>,
 }
 
 impl ComputeBindGroupDispatch {
@@ -520,6 +539,8 @@ mod tests {
             shader: ShaderModuleId::new(4),
             bind_group: crate::BindGroupId::new(5),
             workgroups: [1, 1, 1],
+
+            gpu_work_tag: None,
         };
         let converted = dispatch.buffer_bindings(&set, &layout).unwrap();
         assert_eq!(converted.len(), 1);

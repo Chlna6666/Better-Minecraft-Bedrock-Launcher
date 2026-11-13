@@ -77,7 +77,7 @@ impl Retirement {
         }
     }
 
-    pub(super) fn needs_idle(&self) -> bool {
+    pub(super) fn idle_required(&self) -> bool {
         self.uncertain
     }
 
@@ -107,7 +107,7 @@ impl Retirement {
 impl VulkanDevice {
     pub(super) fn retire_swapchain(&mut self, id: gfx_core::SwapchainId) -> Result<()> {
         let chain = self.swapchains.get_mut(id)?;
-        if !self.swapchain_maintenance || chain.presentation.needs_idle() {
+        if !self.swapchain_maintenance || chain.presentation.idle_required() {
             // SAFETY: unsupported/indeterminate native presentation has no finer proof.
             unsafe { self.device.device_wait_idle() }.map_err(VulkanError::from)?;
             chain.presentation.complete_after_idle();
@@ -153,7 +153,7 @@ mod retirement_tests {
             retirement.record(fence, result);
             assert_eq!(retirement.pending, [fence]);
             assert!(retirement.available.is_empty());
-            assert!(!retirement.needs_idle());
+            assert!(!retirement.idle_required());
         }
     }
 
@@ -171,10 +171,10 @@ mod retirement_tests {
         let mut retirement = Retirement::default();
         let fence = vk::Fence::from_raw(3);
         retirement.record(fence, Err(vk::Result::ERROR_UNKNOWN));
-        assert!(retirement.needs_idle());
+        assert!(retirement.idle_required());
         assert!(retirement.available.is_empty());
         retirement.complete_after_idle();
-        assert!(!retirement.needs_idle());
+        assert!(!retirement.idle_required());
         assert!(retirement.pending.is_empty());
         assert_eq!(retirement.available, [fence]);
     }

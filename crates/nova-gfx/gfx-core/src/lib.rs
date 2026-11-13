@@ -42,7 +42,7 @@ pub use buffer_texture_copy::{
 pub use compute::{
     BufferBindingLimits, ComputeBindGroupCapabilities, ComputeBindGroupDispatch,
     ComputeBufferAccess, ComputeBufferBinding, ComputeCapabilities, ComputeDispatch,
-    ComputeKernelProfile, VoxelExecutionPath,
+    ComputeKernelProfile, ComputeSubmit, VoxelExecutionPath,
 };
 pub use texture_array::{
     TextureArrayCapabilities, TextureArrayLayerUpload, TextureArrayLayerWriteDescriptor,

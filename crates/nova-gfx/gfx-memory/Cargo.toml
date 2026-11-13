@@ -11,9 +11,6 @@ keywords = ["graphics", "gpu", "memory", "allocator", "rendering"]
 categories = ["rendering::graphics-api", "memory-management"]
 include = ["src/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
 
-[lib]
-path = "src/gfx_memory.rs"
-
 [lints.rust]
 unsafe_code = "warn"
 

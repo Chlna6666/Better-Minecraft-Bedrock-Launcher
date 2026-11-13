@@ -18,11 +18,11 @@ remain alive until their submission fence completes. Portable draw records are c
 the GPU into root constants and native draw arguments. Dispatches and draws use the ordered
 graphics queue without CPU readback or a per-dispatch completion wait.
 
-`GFX_DX12_TRACE_TIMINGS=1` reports host indirect-argument staging and draw recording separately;
-these are not GPU execution times. Debug builds enable the native D3D12 debug layer by default.
-`GFX_DX12_DEBUG_LAYER=0` explicitly opts out for performance comparisons; `1` requests it even
-in release builds. Set it before creating any device and keep validation enabled for correctness
-tests. Diagnostics do not change the portable indirect draw ABI or culling policy.
+Debug builds may set `GFX_DX12_TRACE_TIMINGS=1` to report host indirect-argument staging and draw
+recording separately; these are not GPU execution times. Debug builds enable the native D3D12
+debug layer by default; `GFX_DX12_DEBUG_LAYER=0` opts out for performance comparisons and `=1`
+requests it explicitly. Release builds omit these diagnostics and the debug-layer override.
+Diagnostics do not change the portable indirect draw ABI or culling policy.
 
 Device-local buffer writes use ordered upload batches and fence-retained staging without
 waiting for completion on the CPU. CPU-visible mapped writes still require caller-owned

@@ -11,9 +11,6 @@ keywords = ["graphics", "gpu", "webgl", "rendering", "backend"]
 categories = ["rendering::graphics-api"]
 include = ["src/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
 
-[lib]
-path = "src/gfx_webgl.rs"
-
 [lints.rust]
 unsafe_code = "warn"
 

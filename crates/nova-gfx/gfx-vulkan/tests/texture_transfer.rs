@@ -147,7 +147,7 @@ fn texture_write_round_trips_offset_and_row_padding() {
         readback.bytes,
         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     );
-    if device.texture_transfer_timestamps_supported() {
+    if device.supports_transfer_timestamps() {
         assert!(device.last_texture_transfer_time().is_some());
     }
 }

@@ -298,7 +298,11 @@ pub trait ResourceDevice {
         ))
     }
 
-    /// Queues one compute dispatch that binds a full resource set.
+    /// Queues one compute dispatch that binds a full resource set. When
+    /// [`ComputeBindGroupDispatch::gpu_work_tag`] is set, the backend samples a
+    /// native GPU timestamp for the dispatch; it may return no sample if
+    /// hardware queries are unsupported, but must execute the dispatch exactly
+    /// once rather than estimating host time.
     ///
     /// The default reports `Unavailable`: a backend must opt in once it can bind a compute
     /// resource set, so a caller never silently loses its texture bindings.
@@ -312,18 +316,6 @@ pub trait ResourceDevice {
         Err(Error::Unavailable(
             "compute resource-set dispatches are not implemented by this backend".into(),
         ))
-    }
-
-    /// Enqueues a compute resource-set dispatch with a native GPU timestamp
-    /// tag. Backends may return no sample if hardware queries are unsupported,
-    /// but must execute the dispatch exactly once. The default is deliberately
-    /// uninstrumented rather than estimating host time.
-    fn dispatch_compute_bind_group_profiled(
-        &mut self,
-        dispatch: &crate::ComputeBindGroupDispatch,
-        _tag: GpuTimestampTag,
-    ) -> Result<()> {
-        self.dispatch_compute_bind_group(dispatch)
     }
 
     /// Queues ordered compute stages; each stage observes preceding writes.
@@ -612,7 +604,7 @@ pub trait ResourceDevice {
 pub trait TextureTransferDevice: ResourceDevice {
     /// Returns whether native GPU timestamp queries are available for texture transfers.
     #[must_use]
-    fn texture_transfer_timestamps_supported(&self) -> bool;
+    fn supports_transfer_timestamps(&self) -> bool;
 
     /// Waits until texture transfers submitted before this call have completed.
     ///
@@ -782,37 +774,25 @@ pub trait SubmissionDevice {
 
     /// Submit a nonempty Compute batch on the exact requested NATIVE queue,
     /// returning the native completion submission for that queue. Unlike a
-    /// checkpoint this must actually encode and execute each ComputeDispatch
-    /// on `queue`; it must not run work on PRIMARY and signal another queue.
+    /// checkpoint this must actually encode and execute each
+    /// [`ComputeSubmit::dispatches`] on the requested queue; it must not run
+    /// work on PRIMARY and signal another queue.
+    ///
+    /// When [`ComputeSubmit::timestamp_tag`] is set, the tag is recorded
+    /// inside the exact native command list executed on that queue; backends
+    /// that cannot measure it run the batch normally, without inventing
+    /// CPU-side GPU timing. The returned fence always identifies the actual
+    /// producer queue.
     ///
     /// Resource transitions and GPU-side waits remain backend obligations:
     /// callers must not reuse allocations until the returned submission
     /// completes, and a later Graphics consumer requires a real queue wait.
     /// Backends without safe typed command allocators and ownership barriers
     /// return Unavailable instead of silently falling back to PRIMARY.
-    fn submit_compute_batch_on_queue(
-        &mut self,
-        _queue: crate::GpuQueueId,
-        _dispatches: &[crate::ComputeDispatch<'_>],
-    ) -> Result<SubmissionId> {
+    fn submit_compute(&mut self, _submit: crate::ComputeSubmit<'_>) -> Result<SubmissionId> {
         Err(Error::Unavailable(
             "native compute command submission on this queue is unavailable".into(),
         ))
-    }
-
-    /// Native Compute submission with an optional fence-completed hardware
-    /// timestamp pair. The tag is recorded inside the exact native command
-    /// list executed on `queue`; backends that cannot measure it run the
-    /// batch normally, without inventing CPU-side GPU timing.
-    ///
-    /// The returned fence always identifies the actual producer queue.
-    fn submit_compute_batch_profiled_on_queue(
-        &mut self,
-        queue: crate::GpuQueueId,
-        dispatches: &[crate::ComputeDispatch<'_>],
-        _tag: GpuTimestampTag,
-    ) -> Result<SubmissionId> {
-        self.submit_compute_batch_on_queue(queue, dispatches)
     }
 
     /// Submit actual GPU buffer copies on exactly this native physical
@@ -1177,17 +1157,18 @@ pub trait PresentationDevice {
         Ok(None)
     }
 
-    /// Tags offscreen native indirect-only draw windows without granting
-    /// extensions native command queues or changing submission ordering.
-    /// Tags align positionally with passes; unsupported devices still render
-    /// without claiming hardware samples.
+    /// Records ordered offscreen render passes with optional per-pass GPU
+    /// timestamp tags. Tags align positionally with passes; unsupported
+    /// devices still render without claiming hardware samples. The default
+    /// ignores tags and submits each pass separately.
     ///
     /// # Errors
     /// Returns InvalidInput for mismatched lengths or a native backend error.
-    fn render_to_textures_profiled(
+    fn render_to_textures_on_queue(
         &mut self,
         passes: &[RenderPassCommands<'_>],
         tags: &[Option<GpuTimestampTag>],
+        queue: OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
         if passes.len() != tags.len() {
             return Err(Error::InvalidInput(
@@ -1215,34 +1196,20 @@ pub trait PresentationDevice {
         false
     }
 
-    /// Submit independent offscreen graphics producers without taking over
-    /// GUI presentation. A backend must signal native producer completion
-    /// and queue a GPU-side wait before the host's next graphics submission.
-    /// The returned SubmissionId must cover that consumer-side dependency,
-    /// so normal resource-retirement fences remain valid. Default is the
-    /// ordered same-queue path, not an unsafe second-thread emulation.
+    /// Submit offscreen graphics producers without taking over GUI
+    /// presentation. With [`OffscreenQueuePreference::IndependentGraphicsIfAvailable`]
+    /// a backend must signal native producer completion and queue a GPU-side
+    /// wait before the host's next graphics submission; the returned
+    /// SubmissionId must cover that consumer-side dependency, so normal
+    /// resource-retirement fences remain valid. The default is the ordered
+    /// same-queue path, not an unsafe second-thread emulation.
     fn render_to_textures_independent(
         &mut self,
         passes: &[RenderPassCommands<'_>],
-    ) -> Result<Option<SubmissionId>> {
-        self.render_to_textures(passes)
-    }
-
-    /// Tagged offscreen draws with native producer/consumer queue ordering.
-    ///
-    /// # Errors
-    /// Returns InvalidInput for mismatched lengths or a native backend error.
-    fn render_to_textures_independent_profiled(
-        &mut self,
-        passes: &[RenderPassCommands<'_>],
         tags: &[Option<GpuTimestampTag>],
+        queue: OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
-        if passes.len() != tags.len() {
-            return Err(Error::InvalidInput(
-                "GPU timing tag/pass count mismatch".into(),
-            ));
-        }
-        self.render_to_textures_independent(passes)
+        self.render_to_textures_on_queue(passes, tags, queue)
     }
 }
 
@@ -1299,17 +1266,12 @@ impl<T: PresentationDevice> OffscreenSubmissionDevice for T {
                 "native offscreen pass/timestamp tag count mismatch".into(),
             ));
         }
-        let timed = tags.iter().any(Option::is_some);
         let independent = queue == OffscreenQueuePreference::IndependentGraphicsIfAvailable
             && PresentationDevice::independent_graphics_queue_available(self);
-        if independent && timed {
-            PresentationDevice::render_to_textures_independent_profiled(self, passes, tags)
-        } else if independent {
-            PresentationDevice::render_to_textures_independent(self, passes)
-        } else if timed {
-            PresentationDevice::render_to_textures_profiled(self, passes, tags)
+        if independent {
+            PresentationDevice::render_to_textures_independent(self, passes, tags, queue)
         } else {
-            PresentationDevice::render_to_textures(self, passes)
+            PresentationDevice::render_to_textures_on_queue(self, passes, tags, queue)
         }
     }
 
@@ -1346,27 +1308,31 @@ mod offscreen_submission_tests {
             self.route.push("primary");
             Ok(None)
         }
-        fn render_to_textures_profiled(
+        fn render_to_textures_on_queue(
             &mut self,
             _passes: &[RenderPassCommands<'_>],
             _tags: &[Option<GpuTimestampTag>],
+            queue: OffscreenQueuePreference,
         ) -> Result<Option<SubmissionId>> {
-            self.route.push("primary-profiled");
+            self.route
+                .push(if queue == OffscreenQueuePreference::OrderedGraphics {
+                    "primary-profiled"
+                } else {
+                    "primary"
+                });
             Ok(None)
         }
         fn render_to_textures_independent(
             &mut self,
             _passes: &[RenderPassCommands<'_>],
-        ) -> Result<Option<SubmissionId>> {
-            self.route.push("independent");
-            Ok(None)
-        }
-        fn render_to_textures_independent_profiled(
-            &mut self,
-            _passes: &[RenderPassCommands<'_>],
             _tags: &[Option<GpuTimestampTag>],
+            _queue: OffscreenQueuePreference,
         ) -> Result<Option<SubmissionId>> {
-            self.route.push("independent-profiled");
+            self.route.push(if _tags.iter().any(Option::is_some) {
+                "independent-profiled"
+            } else {
+                "independent"
+            });
             Ok(None)
         }
     }

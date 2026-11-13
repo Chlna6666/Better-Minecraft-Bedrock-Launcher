@@ -11,9 +11,6 @@ keywords = ["graphics", "gpu", "rendering", "backend", "traits"]
 categories = ["rendering::graphics-api"]
 include = ["src/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
 
-[lib]
-path = "src/gfx_core.rs"
-
 [lints.rust]
 unsafe_code = "warn"
 missing_docs = "warn"

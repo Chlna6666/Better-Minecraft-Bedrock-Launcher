@@ -34,26 +34,11 @@ impl OpenGlDevice {
             depth,
             None,
             None,
+            None,
         )
     }
 
     pub(crate) fn render_target_clipped(
-        &mut self,
-        targets: &[RenderTarget],
-        resolve_view: Option<TextureViewId>,
-        pass: RenderPassId,
-        steps: &[RenderCommand],
-        load: LoadOp<ClearColor>,
-        depth: Option<DepthAttachment>,
-        clear_region: Option<ScissorRect>,
-        viewport: Option<Viewport>,
-    ) -> Result<()> {
-        self.render_target_clipped_profiled(
-            targets, resolve_view, pass, steps, load, depth, clear_region, viewport, None,
-        )
-    }
-
-    pub(crate) fn render_target_clipped_profiled(
         &mut self,
         targets: &[RenderTarget],
         resolve_view: Option<TextureViewId>,

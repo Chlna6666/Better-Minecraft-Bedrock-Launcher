@@ -1,6 +1,9 @@
-//! Opt-in host command-recording diagnostics; these are not GPU execution timings.
-use std::{sync::OnceLock, time::Instant};
+//! Debug-only host command-recording diagnostics; these are not GPU execution timings.
+#[cfg(debug_assertions)]
+use std::sync::OnceLock;
+use std::time::Instant;
 
+#[cfg(debug_assertions)]
 pub(super) fn start() -> Option<Instant> {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     ENABLED
@@ -8,6 +11,12 @@ pub(super) fn start() -> Option<Instant> {
         .then(Instant::now)
 }
 
+#[cfg(not(debug_assertions))]
+pub(super) fn start() -> Option<Instant> {
+    None
+}
+
+#[cfg(debug_assertions)]
 pub(super) fn finish(start: Option<Instant>, staging_ms: f64, commands: usize) {
     if let Some(start) = start {
         eprintln!(
@@ -17,6 +26,10 @@ pub(super) fn finish(start: Option<Instant>, staging_ms: f64, commands: usize) {
     }
 }
 
+#[cfg(not(debug_assertions))]
+pub(super) fn finish(_: Option<Instant>, _: f64, _: usize) {}
+
+#[cfg(any(debug_assertions, test))]
 pub(super) fn debug_layer_enabled(value: Option<&str>, debug_build: bool) -> bool {
     match value {
         Some("0") => false,

@@ -534,6 +534,8 @@ fn cs(@builtin(global_invocation_id) id: vec3<u32>) {
             shader: compute,
             bind_group: set,
             workgroups: [16, 16, 1],
+
+            gpu_work_tag: None,
         })
         .expect("native compute dispatch");
     let pixels = device.read_texture(image).expect("GPU texture readback");

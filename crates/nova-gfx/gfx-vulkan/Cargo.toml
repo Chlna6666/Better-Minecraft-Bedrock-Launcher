@@ -11,9 +11,6 @@ keywords = ["graphics", "gpu", "vulkan", "rendering", "backend"]
 categories = ["rendering::graphics-api"]
 include = ["src/**", "tests/**", "benches/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
 
-[lib]
-path = "src/gfx_vulkan.rs"
-
 [lints.rust]
 unsafe_code = "warn"
 

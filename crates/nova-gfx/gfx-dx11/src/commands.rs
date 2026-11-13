@@ -94,34 +94,11 @@ impl Dx11Device {
             depth,
             None,
             None,
-        )
-    }
-
-    pub(crate) fn render_target_clipped(
-        &mut self,
-        targets: &[RenderTarget],
-        resolve_view: Option<TextureViewId>,
-        pass: RenderPassId,
-        commands: &[RenderCommand],
-        load: LoadOp<ClearColor>,
-        depth: Option<DepthAttachment>,
-        clear_region: Option<ScissorRect>,
-        viewport: Option<Viewport>,
-    ) -> Result<()> {
-        self.render_target_clipped_profiled(
-            targets,
-            resolve_view,
-            pass,
-            commands,
-            load,
-            depth,
-            clear_region,
-            viewport,
             None,
         )
     }
 
-    pub(crate) fn render_target_clipped_profiled(
+    pub(crate) fn render_target_clipped(
         &mut self,
         targets: &[RenderTarget],
         resolve_view: Option<TextureViewId>,
@@ -746,6 +723,7 @@ impl PresentationDevice for Dx11Device {
             pass.depth_attachment,
             pass.clear_region,
             pass.viewport,
+            None,
         )
     }
 
@@ -759,10 +737,11 @@ impl PresentationDevice for Dx11Device {
         Ok(None)
     }
 
-    fn render_to_textures_profiled(
+    fn render_to_textures_on_queue(
         &mut self,
         passes: &[RenderPassCommands<'_>],
         tags: &[Option<GpuTimestampTag>],
+        _queue: OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
         if passes.len() != tags.len() {
             return Err(Error::InvalidInput(
@@ -786,7 +765,7 @@ impl PresentationDevice for Dx11Device {
                 .copied()
                 .map(RenderTarget::TextureView)
                 .collect::<Vec<_>>();
-            self.render_target_clipped_profiled(
+            self.render_target_clipped(
                 &targets,
                 pass.resolve_target,
                 pass.render_pass,

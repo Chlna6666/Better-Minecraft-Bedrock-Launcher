@@ -82,9 +82,7 @@ impl ResourceDevice for OpenGlDevice {
             return gfx_core::TextureVolumeCapabilities::default();
         }
         // OpenGL 4.5 requires native 3D textures and image load/store.
-        let maximum = unsafe {
-            self.gl.get_parameter_i32(glow::MAX_3D_TEXTURE_SIZE).max(0) as u32
-        };
+        let maximum = unsafe { self.gl.get_parameter_i32(glow::MAX_3D_TEXTURE_SIZE).max(0) as u32 };
         gfx_core::TextureVolumeCapabilities {
             max_dimension_3d: maximum,
             sampled: maximum != 0,
@@ -133,26 +131,21 @@ impl ResourceDevice for OpenGlDevice {
         writes: impl IntoIterator<Item = BufferWrite<'a>>,
         tag: GpuTimestampTag,
     ) -> Result<BufferUploadStats> {
-        self.profile_gpu_work(tag, |device| ResourceDevice::write_buffer_batch(device, writes))
+        self.profile_gpu_work(tag, |device| {
+            ResourceDevice::write_buffer_batch(device, writes)
+        })
     }
-    fn drain_gpu_work_timestamps(
-        &mut self,
-        output: &mut Vec<GpuTimestampSample>,
-    ) -> Result<()> {
+    fn drain_gpu_work_timestamps(&mut self, output: &mut Vec<GpuTimestampSample>) -> Result<()> {
         self.drain_profiled_gpu_work(output)
     }
     fn dispatch_compute_bind_group(
         &mut self,
         dispatch: &gfx_core::ComputeBindGroupDispatch,
     ) -> Result<()> {
-        self.dispatch_bind_group(dispatch)
-    }
-    fn dispatch_compute_bind_group_profiled(
-        &mut self,
-        dispatch: &gfx_core::ComputeBindGroupDispatch,
-        tag: GpuTimestampTag,
-    ) -> Result<()> {
-        self.profile_gpu_work(tag, |device| device.dispatch_bind_group(dispatch))
+        match dispatch.gpu_work_tag {
+            Some(tag) => self.profile_gpu_work(tag, |device| device.dispatch_bind_group(dispatch)),
+            None => self.dispatch_bind_group(dispatch),
+        }
     }
     fn copy_texture_buffer_batch(&mut self, copies: &[gfx_core::TextureBufferCopy]) -> Result<()> {
         self.copy_texture_buffer_regions(copies)
@@ -321,7 +314,9 @@ impl ResourceDevice for OpenGlDevice {
             TextureDimension::D3 { depth } => {
                 self.texture_volume_capabilities().validate(desc)?;
                 if depth > i32::MAX as u32 {
-                    return Err(Error::InvalidInput("3D texture depth exceeds GLsizei".into()));
+                    return Err(Error::InvalidInput(
+                        "3D texture depth exceeds GLsizei".into(),
+                    ));
                 }
                 glow::TEXTURE_3D
             }
@@ -369,8 +364,12 @@ impl ResourceDevice for OpenGlDevice {
                 );
             } else if let TextureDimension::D3 { depth } = desc.dimension {
                 self.gl.tex_storage_3d(
-                    target, desc.mip_level_count as i32, internal,
-                    width, height, depth as i32,
+                    target,
+                    desc.mip_level_count as i32,
+                    internal,
+                    width,
+                    height,
+                    depth as i32,
                 );
             } else {
                 self.gl.tex_storage_2d(
@@ -510,7 +509,10 @@ impl ResourceDevice for OpenGlDevice {
         } else {
             glow::TEXTURE_2D
         };
-        let layers = texture.desc.dimension.layers()
+        let layers = texture
+            .desc
+            .dimension
+            .layers()
             .max(texture.desc.dimension.mip_depth(desc.base_mip_level));
         self.park()?;
         // SAFETY: source has immutable storage; the new name has never been bound and the

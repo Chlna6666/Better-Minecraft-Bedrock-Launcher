@@ -159,7 +159,7 @@ impl WgslModule {
             images.push(gfx_core::GlslImageBinding {
                 name: name.into(),
                 binding: binding.binding,
-                format: storage_format_to_format(format)?,
+                format: core_format_from_storage(format)?,
                 read_only: access == naga::StorageAccess::LOAD,
             });
         }
@@ -180,20 +180,20 @@ impl WgslModule {
 }
 
 /// Maps one WGSL storage-image format onto a core [`gfx_core::Format`].
-fn storage_format_to_format(format: naga::StorageFormat) -> Result<gfx_core::Format> {
-    use naga::StorageFormat as S;
+fn core_format_from_storage(format: naga::StorageFormat) -> Result<gfx_core::Format> {
+    use naga::StorageFormat;
     Ok(match format {
-        S::R8Unorm => gfx_core::Format::R8Unorm,
-        S::Rg8Unorm => gfx_core::Format::Rg8Unorm,
-        S::R16Float => gfx_core::Format::R16Float,
-        S::Rg16Float => gfx_core::Format::Rg16Float,
-        S::R32Float => gfx_core::Format::R32Float,
-        S::Rgba8Unorm => gfx_core::Format::Rgba8Unorm,
-        S::Rgba16Float => gfx_core::Format::Rgba16Float,
-        S::Rgba32Float => gfx_core::Format::Rgba32Float,
-        S::R8Uint => gfx_core::Format::R8Uint,
-        S::Rg8Uint => gfx_core::Format::Rg8Uint,
-        S::Rgba8Uint => gfx_core::Format::Rgba8Uint,
+        StorageFormat::R8Unorm => gfx_core::Format::R8Unorm,
+        StorageFormat::Rg8Unorm => gfx_core::Format::Rg8Unorm,
+        StorageFormat::R16Float => gfx_core::Format::R16Float,
+        StorageFormat::Rg16Float => gfx_core::Format::Rg16Float,
+        StorageFormat::R32Float => gfx_core::Format::R32Float,
+        StorageFormat::Rgba8Unorm => gfx_core::Format::Rgba8Unorm,
+        StorageFormat::Rgba16Float => gfx_core::Format::Rgba16Float,
+        StorageFormat::Rgba32Float => gfx_core::Format::Rgba32Float,
+        StorageFormat::R8Uint => gfx_core::Format::R8Uint,
+        StorageFormat::Rg8Uint => gfx_core::Format::Rg8Uint,
+        StorageFormat::Rgba8Uint => gfx_core::Format::Rgba8Uint,
         other => {
             return Err(ShaderError::Glsl(format!(
                 "storage image format {other:?} has no portable gfx_core format"

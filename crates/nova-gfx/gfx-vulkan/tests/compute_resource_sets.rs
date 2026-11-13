@@ -80,7 +80,11 @@ fn native_compute_submission_and_reverse_gpu_queue_wait() {
         batch_id: 0xB123,
         stage: gfx_core::GpuTimestampStage::GeneratedMesh,
     };
-    let producer = device.submit_compute_batch_profiled_on_queue(secondary, &passes, tag)
+    let producer = device.submit_compute(gfx_core::ComputeSubmit {
+        queue: secondary,
+        dispatches: &passes,
+        timestamp_tag: Some(tag),
+    })
         .expect("actual secondary or dedicated Queue Family shader execution");
     let proof = device.enqueue_gpu_queue_wait(GpuQueueId::PRIMARY, producer)
         .expect("native queue-1 -> primary GPU semaphore");

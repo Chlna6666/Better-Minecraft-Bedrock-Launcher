@@ -11,9 +11,6 @@ keywords = ["graphics", "gpu", "dx12", "rendering", "backend"]
 categories = ["rendering::graphics-api"]
 include = ["src/**", "tests/**", "benches/**", "build.rs", "Cargo.toml", "README.md", "README.zh-CN.md"]
 
-[lib]
-path = "src/gfx_dx12.rs"
-
 [features]
 default = []
 # Intended for build tools, shader experiments, and explicit examples only.

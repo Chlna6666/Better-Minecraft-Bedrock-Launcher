@@ -1,13 +1,12 @@
 use crate::device::{Dx11Device, backend, required};
 use gfx_core::*;
 use std::cell::RefCell;
-use windows::core::Interface as _;
 use windows::Win32::Graphics::Direct3D::{
     D3D_SRV_DIMENSION_BUFFEREX, D3D_SRV_DIMENSION_TEXTURE2D, D3D_SRV_DIMENSION_TEXTURE2DARRAY,
-    D3D_SRV_DIMENSION_TEXTURE2DMS, D3D_SRV_DIMENSION_TEXTURE2DMSARRAY,
-    D3D_SRV_DIMENSION_TEXTURE3D,
+    D3D_SRV_DIMENSION_TEXTURE2DMS, D3D_SRV_DIMENSION_TEXTURE2DMSARRAY, D3D_SRV_DIMENSION_TEXTURE3D,
 };
 use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
+use windows::core::Interface as _;
 
 mod buffer_upload;
 mod compute;
@@ -186,14 +185,13 @@ impl ResourceDevice for Dx11Device {
         self.dispatch_buffers(dispatch)
     }
     fn dispatch_compute_bind_group(&mut self, dispatch: &ComputeBindGroupDispatch) -> Result<()> {
-        self.dispatch_bind_group_buffers(dispatch)
-    }
-    fn dispatch_compute_bind_group_profiled(
-        &mut self,
-        dispatch: &ComputeBindGroupDispatch,
-        tag: GpuTimestampTag,
-    ) -> Result<()> {
-        self.profile_gpu_work(tag, |device| device.dispatch_bind_group_buffers(dispatch))
+        let dispatch = &*dispatch;
+        match dispatch.gpu_work_tag {
+            Some(tag) => {
+                self.profile_gpu_work(tag, |device| device.dispatch_bind_group_buffers(dispatch))
+            }
+            None => self.dispatch_bind_group_buffers(dispatch),
+        }
     }
     fn gpu_work_timestamps_supported(&self) -> bool {
         self.timestamp_queries_supported
@@ -220,10 +218,7 @@ impl ResourceDevice for Dx11Device {
     ) -> Result<BufferUploadStats> {
         self.profile_gpu_work(tag, |device| device.upload_buffer_batch(writes))
     }
-    fn drain_gpu_work_timestamps(
-        &mut self,
-        output: &mut Vec<GpuTimestampSample>,
-    ) -> Result<()> {
+    fn drain_gpu_work_timestamps(&mut self, output: &mut Vec<GpuTimestampSample>) -> Result<()> {
         self.retire()?;
         output.append(&mut self.gpu_work_samples);
         Ok(())
@@ -450,7 +445,8 @@ impl ResourceDevice for Dx11Device {
                     None,
                     Some(&mut native),
                 )
-            }.map_err(backend)?;
+            }
+            .map_err(backend)?;
             return Ok(self.textures.insert(Texture {
                 native: required(native)?.cast().map_err(backend)?,
                 desc: desc.clone(),
@@ -590,33 +586,40 @@ impl ResourceDevice for Dx11Device {
                         "D3D11 compute storage requires one non-depth 2D or 3D mip".into(),
                     ));
                 }
-                self.native.CreateUnorderedAccessView(
-                    &texture.native,
-                    Some(&D3D11_UNORDERED_ACCESS_VIEW_DESC {
-                        Format: format(desc.format),
-                        ViewDimension: if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
-                            D3D11_UAV_DIMENSION_TEXTURE3D
-                        } else {
-                            D3D11_UAV_DIMENSION_TEXTURE2D
-                        },
-                        Anonymous: if let TextureDimension::D3 { depth } = texture.desc.dimension {
-                            D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
-                                Texture3D: D3D11_TEX3D_UAV {
-                                    MipSlice: desc.base_mip_level,
-                                    FirstWSlice: 0,
-                                    WSize: depth,
-                                },
-                            }
-                        } else {
-                            D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
-                                Texture2D: D3D11_TEX2D_UAV {
-                                    MipSlice: desc.base_mip_level,
-                                },
-                            }
-                        },
-                    }),
-                    Some(&mut view.uav),
-                ).map_err(backend)?;
+                self.native
+                    .CreateUnorderedAccessView(
+                        &texture.native,
+                        Some(&D3D11_UNORDERED_ACCESS_VIEW_DESC {
+                            Format: format(desc.format),
+                            ViewDimension: if matches!(
+                                texture.desc.dimension,
+                                TextureDimension::D3 { .. }
+                            ) {
+                                D3D11_UAV_DIMENSION_TEXTURE3D
+                            } else {
+                                D3D11_UAV_DIMENSION_TEXTURE2D
+                            },
+                            Anonymous: if let TextureDimension::D3 { depth } =
+                                texture.desc.dimension
+                            {
+                                D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
+                                    Texture3D: D3D11_TEX3D_UAV {
+                                        MipSlice: desc.base_mip_level,
+                                        FirstWSlice: 0,
+                                        WSize: depth,
+                                    },
+                                }
+                            } else {
+                                D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
+                                    Texture2D: D3D11_TEX2D_UAV {
+                                        MipSlice: desc.base_mip_level,
+                                    },
+                                }
+                            },
+                        }),
+                        Some(&mut view.uav),
+                    )
+                    .map_err(backend)?;
             }
             if texture.desc.usage.contains(TextureUsage::SAMPLED) {
                 self.native
@@ -630,7 +633,10 @@ impl ResourceDevice for Dx11Device {
                             },
                             // Multisampled textures need the MS view dimension; a plain
                             // TEXTURE2D SRV over MS storage is E_INVALIDARG on D3D11.
-                            ViewDimension: if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
+                            ViewDimension: if matches!(
+                                texture.desc.dimension,
+                                TextureDimension::D3 { .. }
+                            ) {
                                 D3D_SRV_DIMENSION_TEXTURE3D
                             } else {
                                 match (
@@ -643,7 +649,10 @@ impl ResourceDevice for Dx11Device {
                                     (false, true) => D3D_SRV_DIMENSION_TEXTURE2DMSARRAY,
                                 }
                             },
-                            Anonymous: if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) {
+                            Anonymous: if matches!(
+                                texture.desc.dimension,
+                                TextureDimension::D3 { .. }
+                            ) {
                                 D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
                                     Texture3D: D3D11_TEX3D_SRV {
                                         MostDetailedMip: desc.base_mip_level,
@@ -678,10 +687,11 @@ impl ResourceDevice for Dx11Device {
             // mip chain. A full-mip SRV is legal; only the per-mip RTV/DSV
             // requires one selected level. Do not reject the valid SRV just
             // because its underlying texture supports render attachments.
-            if desc.mip_level_count == 1 && texture
-                .desc
-                .usage
-                .intersects(TextureUsage::COLOR_ATTACHMENT | TextureUsage::DEPTH_ATTACHMENT)
+            if desc.mip_level_count == 1
+                && texture
+                    .desc
+                    .usage
+                    .intersects(TextureUsage::COLOR_ATTACHMENT | TextureUsage::DEPTH_ATTACHMENT)
             {
                 // Multisampled storage requires the MS view dimensions; TEXTURE2D is
                 // E_INVALIDARG over a multisampled resource on D3D11.
@@ -810,8 +820,7 @@ impl ResourceDevice for Dx11Device {
                 BindingType::UniformBuffer => 13,
                 BindingType::Sampler => 16,
                 BindingType::StorageBuffer | BindingType::SampledTexture => 128,
-                BindingType::StorageBufferReadWrite
-                | BindingType::StorageTexture { .. } => 8,
+                BindingType::StorageBufferReadWrite | BindingType::StorageTexture { .. } => 8,
             };
             if entry.binding >= limit {
                 return Err(Error::InvalidInput(
@@ -856,7 +865,8 @@ impl ResourceDevice for Dx11Device {
                     entry.binding == binding.binding
                         && matches!(
                             entry.binding_type,
-                            BindingType::StorageBufferReadWrite | BindingType::StorageTexture { .. }
+                            BindingType::StorageBufferReadWrite
+                                | BindingType::StorageTexture { .. }
                         )
                 })
             })

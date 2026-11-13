@@ -352,7 +352,6 @@ where
     result.and(cleanup)
 }
 
-
 /// Shader fixture for the compute resource-set conformance writer.
 pub const COMPUTE_RESOURCE_SET_WRITER_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read_write> values: array<vec4<u32>>;
@@ -478,7 +477,11 @@ where
             format: Format::Rgba8Unorm,
             usage: TextureUsage::STORAGE
                 | TextureUsage::COPY_SRC
-                | (if sampled { TextureUsage::SAMPLED } else { TextureUsage::empty() }),
+                | (if sampled {
+                    TextureUsage::SAMPLED
+                } else {
+                    TextureUsage::empty()
+                }),
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
             sample_count: 1,
@@ -500,7 +503,9 @@ where
                 },
                 BindGroupEntry {
                     binding: 1,
-                    resource: BindingResource::Texture(TextureBinding { texture_view: image_view }),
+                    resource: BindingResource::Texture(TextureBinding {
+                        texture_view: image_view,
+                    }),
                 },
             ],
         })?;
@@ -509,16 +514,22 @@ where
                 shader: writer_shader,
                 bind_group: write_set,
                 workgroups: [1, 1, 1],
+
+                gpu_work_tag: None,
             })?;
             device.dispatch_compute_bind_group(&ComputeBindGroupDispatch {
                 shader: reader_shader,
                 bind_group: read_set,
                 workgroups: [SIDE, SIDE, 1],
+
+                gpu_work_tag: None,
             })?;
             let pixels = device.read_texture(image)?;
             let row = pixels.bytes_per_row as usize;
             if row < SIDE as usize * 4 || pixels.bytes.len() < row * SIDE as usize {
-                return Err(Error::Backend("compute storage image readback is too short".into()));
+                return Err(Error::Backend(
+                    "compute storage image readback is too short".into(),
+                ));
             }
             for y in 0..SIDE as usize {
                 for x in 0..SIDE as usize {

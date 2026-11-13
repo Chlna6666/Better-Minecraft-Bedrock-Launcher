@@ -78,7 +78,11 @@ fn native_independent_direct_queue_compute_and_gpu_wait() {
     let jobs = [ComputeDispatch {
         shader, bindings: &bindings, workgroups: [1, 1, 1],
     }];
-    let compute = device.submit_compute_batch_on_queue(queue, &jobs)
+    let compute = device.submit_compute(gfx_core::ComputeSubmit {
+        queue,
+        dispatches: &jobs,
+        timestamp_tag: None,
+    })
         .expect("actual independent DIRECT compute dispatch");
     let proof = device.enqueue_gpu_queue_wait(GpuQueueId::PRIMARY, compute)
         .expect("GPU-side DIRECT queue join");
@@ -152,7 +156,11 @@ fn native_typed_compute_accepts_upload_heap_cbv_without_graphics_only_state() {
         batch_id: 0xD123,
         stage: gfx_core::GpuTimestampStage::GeneratedMesh,
     };
-    let producer = device.submit_compute_batch_profiled_on_queue(dedicated, &jobs, tag)
+    let producer = device.submit_compute(gfx_core::ComputeSubmit {
+        queue: dedicated,
+        dispatches: &jobs,
+        timestamp_tag: Some(tag),
+    })
         .expect("typed Compute with native GPU timestamp must keep upload CBV GENERIC_READ");
     let joined = device.checkpoint_gpu_queue(GpuQueueId::PRIMARY)
         .expect("primary join checkpoint");

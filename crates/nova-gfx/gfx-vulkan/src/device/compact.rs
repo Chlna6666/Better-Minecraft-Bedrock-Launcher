@@ -2,7 +2,7 @@
 use super::*;
 mod allocation;
 mod bindings;
-use allocation::{allocate_buffer, allocate_texture, allocation_memory};
+use allocation::{allocate_buffer, allocate_texture, memory};
 
 #[derive(Default)]
 pub(super) struct HeapReplacement {
@@ -81,7 +81,7 @@ impl VulkanDevice {
     ) -> Result<bool> {
         for id in self.buffers.live_ids() {
             let old = self.buffers.get(id)?;
-            if allocation_memory(&old.allocation)? != source {
+            if memory(&old.allocation)? != source {
                 continue;
             }
             let Some(buffer) =
@@ -93,7 +93,7 @@ impl VulkanDevice {
         }
         for id in self.textures.live_ids() {
             let old = self.textures.get(id)?;
-            if allocation_memory(&old.allocation)? != source {
+            if memory(&old.allocation)? != source {
                 continue;
             }
             // The relocation encoder currently copies 2D subresources. A
@@ -114,7 +114,7 @@ impl VulkanDevice {
             .upload_pages
             .iter()
             .flatten()
-            .any(|buffer| allocation_memory(&buffer.allocation).ok() == Some(source))
+            .any(|buffer| memory(&buffer.allocation).ok() == Some(source))
         {
             return Ok(false);
         }

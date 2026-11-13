@@ -11,9 +11,6 @@ keywords = ["graphics", "shader", "wgsl", "naga", "rendering"]
 categories = ["rendering::graphics-api"]
 include = ["src/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
 
-[lib]
-path = "src/gfx_shader.rs"
-
 [lints.rust]
 unsafe_code = "warn"
 

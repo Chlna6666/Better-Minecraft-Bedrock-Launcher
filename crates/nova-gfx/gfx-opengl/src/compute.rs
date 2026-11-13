@@ -23,7 +23,7 @@ struct Program {
 // permitted by the actual writable bindings; a read-only dispatch needs no
 // memory barrier at all. Rendering/texture fetch commands remain ordered on
 // the same GL context without an additional CPU synchronization point.
-fn compute_write_barrier_bits(bindings: impl IntoIterator<Item = BindingType>) -> u32 {
+fn write_barrier_bits(bindings: impl IntoIterator<Item = BindingType>) -> u32 {
     let mut bits = 0;
     for binding in bindings {
         match binding {
@@ -57,7 +57,7 @@ mod barrier_tests {
     #[test]
     fn read_only_dispatch_does_not_enqueue_memory_barriers() {
         assert_eq!(
-            compute_write_barrier_bits([
+            write_barrier_bits([
                 BindingType::UniformBuffer,
                 BindingType::StorageBuffer,
                 BindingType::SampledTexture,
@@ -72,7 +72,7 @@ mod barrier_tests {
 
     #[test]
     fn writable_buffers_publish_all_supported_graphics_consumers() {
-        let mask = compute_write_barrier_bits([BindingType::StorageBufferReadWrite]);
+        let mask = write_barrier_bits([BindingType::StorageBufferReadWrite]);
         for required in [
             glow::SHADER_STORAGE_BARRIER_BIT,
             glow::COMMAND_BARRIER_BIT,
@@ -88,7 +88,7 @@ mod barrier_tests {
 
     #[test]
     fn writable_images_publish_texture_and_framebuffer_consumers() {
-        let mask = compute_write_barrier_bits([BindingType::StorageTexture {
+        let mask = write_barrier_bits([BindingType::StorageTexture {
             format: Format::Rgba8Unorm,
             read_only: false,
         }]);
@@ -262,7 +262,7 @@ impl OpenGlDevice {
                 dispatch.workgroups[2],
             );
             let barrier_bits =
-                compute_write_barrier_bits(dispatch.bindings.iter().map(|binding| {
+                write_barrier_bits(dispatch.bindings.iter().map(|binding| {
                     match binding.access {
                         ComputeBufferAccess::ReadWrite => BindingType::StorageBufferReadWrite,
                         ComputeBufferAccess::ReadOnly => BindingType::StorageBuffer,
@@ -489,7 +489,7 @@ impl OpenGlDevice {
                 dispatch.workgroups[2],
             );
             let barrier_bits =
-                compute_write_barrier_bits(layout.entries.iter().map(|entry| entry.binding_type));
+                write_barrier_bits(layout.entries.iter().map(|entry| entry.binding_type));
             if barrier_bits != 0 {
                 self.gl.memory_barrier(barrier_bits);
             }

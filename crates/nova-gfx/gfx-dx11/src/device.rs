@@ -729,7 +729,7 @@ impl DiagnosticsDevice for Dx11Device {
     }
 }
 impl TextureTransferDevice for Dx11Device {
-    fn texture_transfer_timestamps_supported(&self) -> bool {
+    fn supports_transfer_timestamps(&self) -> bool {
         false
     }
     fn last_texture_transfer_time(&self) -> Option<Duration> {

@@ -780,7 +780,7 @@ impl VulkanDevice {
         // when a cheaper second graphics-family queue is already usable.
         // The dedicated compute family is selected only when no such queue
         // exists, and only native buffer compute may execute there.
-        let share_compute = needs_concurrent_compute_sharing(
+        let share_compute = concurrent_compute_sharing_required(
             self.sidecar_queue.is_some(),
             self.dedicated_compute_family_index,
             desc.usage,
@@ -2637,24 +2637,11 @@ impl VulkanDevice {
         }))
     }
 
-    fn record_texture_passes(&mut self, passes: &[RenderPassCommands<'_>]) -> Result<()> {
-        self.record_texture_passes_on_queue(passes, false)
-            .map(|_| ())
-    }
-
-    fn record_texture_passes_on_queue(
+    fn record_texture_passes(
         &mut self,
         passes: &[RenderPassCommands<'_>],
-        independent: bool,
-    ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes_profiled(passes, independent, None)
-    }
-
-    fn record_texture_passes_profiled(
-        &mut self,
-        passes: &[RenderPassCommands<'_>],
-        independent: bool,
         tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
+        independent: bool,
     ) -> Result<Option<SubmissionId>> {
         if tags.is_some_and(|t| t.len() != passes.len()) {
             return Err(Error::InvalidInput(
@@ -4705,20 +4692,14 @@ impl ResourceDevice for VulkanDevice {
     fn dispatch_compute(&mut self, dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
         self.dispatch_buffers(dispatch)
     }
+
     fn dispatch_compute_bind_group(
         &mut self,
         dispatch: &gfx_core::ComputeBindGroupDispatch,
     ) -> Result<()> {
         // Full native descriptor sets; the buffer-only batch still takes its
         // specialized zero-allocation path in dispatch_buffer_batch.
-        self.dispatch_resource_set(dispatch)
-    }
-    fn dispatch_compute_bind_group_profiled(
-        &mut self,
-        dispatch: &gfx_core::ComputeBindGroupDispatch,
-        tag: gfx_core::GpuTimestampTag,
-    ) -> Result<()> {
-        self.dispatch_resource_set_profiled(dispatch, Some(tag))
+        self.dispatch_resource_set_profiled(dispatch, dispatch.gpu_work_tag)
     }
     fn dispatch_compute_batch(
         &mut self,
@@ -5011,11 +4992,12 @@ impl SubmissionDevice for VulkanDevice {
         }))
     }
 
-    fn submit_compute_batch_on_queue(
-        &mut self,
-        queue: gfx_core::GpuQueueId,
-        dispatches: &[gfx_core::ComputeDispatch<'_>],
-    ) -> Result<SubmissionId> {
+    fn submit_compute(&mut self, submit: gfx_core::ComputeSubmit<'_>) -> Result<SubmissionId> {
+        let gfx_core::ComputeSubmit {
+            queue,
+            dispatches,
+            timestamp_tag,
+        } = submit;
         // Same-family compute uses the secondary graphics queue. Dedicated
         // compute uses queue-family-typed command pools and CONCURRENT-shared
         // storage/uniform buffers, so no EXCLUSIVE ownership transfer occurs.
@@ -5027,30 +5009,9 @@ impl SubmissionDevice for VulkanDevice {
                 "Vulkan native Compute queue is not available".into(),
             ));
         }
-        self.dispatch_buffer_batch_on_queue(dispatches, None, Some(queue))?
+        self.dispatch_buffer_batch_on_queue(dispatches, timestamp_tag, Some(queue))?
             .ok_or_else(|| {
                 Error::Unavailable("native Compute submission did not return a GPU fence".into())
-            })
-    }
-
-    fn submit_compute_batch_profiled_on_queue(
-        &mut self,
-        queue: gfx_core::GpuQueueId,
-        dispatches: &[gfx_core::ComputeDispatch<'_>],
-        tag: gfx_core::GpuTimestampTag,
-    ) -> Result<SubmissionId> {
-        if queue != gfx_core::GpuQueueId::PRIMARY
-            && self.independent_queue(gfx_core::GpuWorkStage::Compute) != Some(queue)
-        {
-            return Err(Error::Unavailable(
-                "Vulkan tagged Compute queue is not available".into(),
-            ));
-        }
-        self.dispatch_buffer_batch_on_queue(dispatches, Some(tag), Some(queue))?
-            .ok_or_else(|| {
-                Error::Unavailable(
-                    "tagged Vulkan native Compute submit has no producer fence".into(),
-                )
             })
     }
 
@@ -5252,23 +5213,25 @@ impl PresentationDevice for VulkanDevice {
     }
 
     fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
-        self.record_texture_passes(std::slice::from_ref(pass))
+        self.record_texture_passes(std::slice::from_ref(pass), None, false)
+            .map(|_| ())
     }
 
     fn render_to_textures(
         &mut self,
         passes: &[RenderPassCommands<'_>],
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes)?;
+        self.record_texture_passes(passes, None, false)?;
         Ok(None)
     }
 
-    fn render_to_textures_profiled(
+    fn render_to_textures_on_queue(
         &mut self,
         passes: &[RenderPassCommands<'_>],
         tags: &[Option<gfx_core::GpuTimestampTag>],
+        _queue: gfx_core::OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes_profiled(passes, false, Some(tags))
+        self.record_texture_passes(passes, Some(tags), false)
     }
 
     fn independent_graphics_queue_available(&self) -> bool {
@@ -5278,16 +5241,10 @@ impl PresentationDevice for VulkanDevice {
     fn render_to_textures_independent(
         &mut self,
         passes: &[RenderPassCommands<'_>],
-    ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes_on_queue(passes, self.sidecar_queue.is_some())
-    }
-
-    fn render_to_textures_independent_profiled(
-        &mut self,
-        passes: &[RenderPassCommands<'_>],
         tags: &[Option<gfx_core::GpuTimestampTag>],
+        _queue: gfx_core::OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes_profiled(passes, self.sidecar_queue.is_some(), Some(tags))
+        self.record_texture_passes(passes, Some(tags), self.sidecar_queue.is_some())
     }
 }
 
@@ -5341,7 +5298,7 @@ impl DiagnosticsDevice for VulkanDevice {
 }
 
 impl TextureTransferDevice for VulkanDevice {
-    fn texture_transfer_timestamps_supported(&self) -> bool {
+    fn supports_transfer_timestamps(&self) -> bool {
         self.timestamp_clock.is_some()
     }
 
@@ -6311,7 +6268,7 @@ fn select_compute_only_family(families: &[vk::QueueFamilyProperties]) -> Option<
 /// Concurrent sharing is a correctness requirement when two queue families
 /// access the same buffer. Avoid its potential cache overhead when a second
 /// same-family queue suffices. EXCLUSIVE images are never handed to compute.
-fn needs_concurrent_compute_sharing(
+fn concurrent_compute_sharing_required(
     sidecar_graphics_queue: bool,
     compute_family: Option<u32>,
     usage: BufferUsage,
@@ -8347,27 +8304,27 @@ mod tests {
     #[test]
     fn cross_family_buffer_sharing_is_restricted_to_compute_buffer_abi() {
         let compute = Some(2);
-        assert!(needs_concurrent_compute_sharing(
+        assert!(concurrent_compute_sharing_required(
             false,
             compute,
             BufferUsage::STORAGE | BufferUsage::COPY_DST,
         ));
-        assert!(needs_concurrent_compute_sharing(
+        assert!(concurrent_compute_sharing_required(
             false,
             compute,
             BufferUsage::UNIFORM | BufferUsage::COPY_DST,
         ));
-        assert!(!needs_concurrent_compute_sharing(
+        assert!(!concurrent_compute_sharing_required(
             false,
             compute,
             BufferUsage::COPY_DST,
         ));
-        assert!(!needs_concurrent_compute_sharing(
+        assert!(!concurrent_compute_sharing_required(
             true,
             compute,
             BufferUsage::STORAGE,
         ));
-        assert!(!needs_concurrent_compute_sharing(
+        assert!(!concurrent_compute_sharing_required(
             false,
             None,
             BufferUsage::STORAGE,
@@ -9126,17 +9083,23 @@ mod tests {
 
     #[test]
     fn color_write_flags_maps_channels_to_vk_components() {
-        use vk::ColorComponentFlags as F;
+        use vk::ColorComponentFlags;
         assert_eq!(
             color_write_flags(ColorWrites::ALL),
-            F::R | F::G | F::B | F::A
+            ColorComponentFlags::R
+                | ColorComponentFlags::G
+                | ColorComponentFlags::B
+                | ColorComponentFlags::A
         );
-        assert_eq!(color_write_flags(ColorWrites::COLOR), F::R | F::G | F::B);
-        assert_eq!(color_write_flags(ColorWrites::RED), F::R);
-        assert_eq!(color_write_flags(ColorWrites::ALPHA), F::A);
+        assert_eq!(
+            color_write_flags(ColorWrites::COLOR),
+            ColorComponentFlags::R | ColorComponentFlags::G | ColorComponentFlags::B
+        );
+        assert_eq!(color_write_flags(ColorWrites::RED), ColorComponentFlags::R);
+        assert_eq!(color_write_flags(ColorWrites::ALPHA), ColorComponentFlags::A);
         assert_eq!(
             color_write_flags(ColorWrites::RED | ColorWrites::ALPHA),
-            F::R | F::A
+            ColorComponentFlags::R | ColorComponentFlags::A
         );
         assert!(color_write_flags(ColorWrites::empty()).is_empty());
     }

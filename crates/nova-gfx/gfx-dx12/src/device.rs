@@ -77,6 +77,8 @@ mod platform {
     use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
     #[cfg(feature = "shader-compiler")]
     use windows::core::PCSTR;
+    #[cfg(debug_assertions)]
+    use windows::Win32::Graphics::Direct3D12::{D3D12GetDebugInterface, ID3D12Debug};
     use windows::{
         Win32::Graphics::{
             Direct3D::{
@@ -140,9 +142,9 @@ mod platform {
                 D3D12_TEXTURE_COPY_LOCATION_0, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
                 D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
                 D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_VIEWPORT, D3D12CreateDevice,
-                D3D12GetDebugInterface, D3D12SerializeRootSignature, ID3D12CommandAllocator,
-                ID3D12CommandList, ID3D12CommandQueue, ID3D12Debug, ID3D12DescriptorHeap,
-                ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12InfoQueue,
+                D3D12SerializeRootSignature, ID3D12CommandAllocator, ID3D12CommandList,
+                ID3D12CommandQueue, ID3D12DescriptorHeap, ID3D12Device, ID3D12Fence,
+                ID3D12GraphicsCommandList, ID3D12InfoQueue,
                 ID3D12PipelineState, ID3D12QueryHeap, ID3D12Resource, ID3D12RootSignature,
             },
             DirectComposition::{
@@ -2669,23 +2671,8 @@ mod platform {
         fn record_texture_passes(
             &mut self,
             passes: &[RenderPassCommands<'_>],
-        ) -> Result<Option<SubmissionId>> {
-            self.record_texture_passes_on_queue(passes, false)
-        }
-
-        fn record_texture_passes_on_queue(
-            &mut self,
-            passes: &[RenderPassCommands<'_>],
-            independent: bool,
-        ) -> Result<Option<SubmissionId>> {
-            self.record_texture_passes_profiled(passes, independent, None)
-        }
-
-        fn record_texture_passes_profiled(
-            &mut self,
-            passes: &[RenderPassCommands<'_>],
-            independent: bool,
             tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
+            independent: bool,
         ) -> Result<Option<SubmissionId>> {
             if tags.is_some_and(|t| t.len() != passes.len()) {
                 return Err(Error::InvalidInput(
@@ -2719,7 +2706,7 @@ mod platform {
                 .begin_texture_command_encoder(encoder, initial_step)
                 .and_then(|()| {
                     for (index, pass) in passes.iter().enumerate() {
-                        self.record_render_step_list_texture(
+                        self.record_texture_pass(
                             encoder,
                             pass.color_attachments,
                             pass.resolve_target,
@@ -2797,7 +2784,7 @@ mod platform {
             // SAFETY: This new allocator is not referenced by an in-flight command list.
             unsafe { allocator.Reset() }.map_err(|error| Error::Backend(error.to_string()))?;
             // D3D12 permits a null initial PSO. Draws bind their own PSO in
-            // record_render_step_list_texture, so a Clear-only batch needs none.
+            // record_texture_pass, so a Clear-only batch needs none.
             // SAFETY: The command list is closed and the allocator is fence-safe.
             unsafe { command_list.Reset(&allocator, pipeline_state.as_ref()) }
                 .map_err(|error| Error::Backend(error.to_string()))?;
@@ -2836,7 +2823,7 @@ mod platform {
             let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
             let command_encoder_create = encoder_started.elapsed();
             let record_started = Instant::now();
-            let result = self.record_render_step_list_frame(
+            let result = self.record_swapchain_pass(
                 encoder,
                 swapchain,
                 render_pass,
@@ -3717,7 +3704,7 @@ mod platform {
             clippy::too_many_lines,
             reason = "D3D12 frame recording stays together at the command-list FFI boundary"
         )]
-        fn record_render_step_list_frame(
+        fn record_swapchain_pass(
             &mut self,
             encoder_id: CommandEncoderId,
             swapchain_id: SwapchainId,
@@ -4086,7 +4073,7 @@ mod platform {
             clippy::too_many_lines,
             reason = "D3D12 offscreen frame recording stays together at the command-list FFI boundary"
         )]
-        fn record_render_step_list_texture(
+        fn record_texture_pass(
             &mut self,
             encoder_id: CommandEncoderId,
             texture_view_ids: &[TextureViewId],
@@ -5932,18 +5919,12 @@ mod platform {
         fn dispatch_compute(&mut self, dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
             self.dispatch_buffers(dispatch)
         }
+
         fn dispatch_compute_bind_group(
             &mut self,
             dispatch: &gfx_core::ComputeBindGroupDispatch,
         ) -> Result<()> {
-            self.dispatch_resource_set(dispatch)
-        }
-        fn dispatch_compute_bind_group_profiled(
-            &mut self,
-            dispatch: &gfx_core::ComputeBindGroupDispatch,
-            tag: gfx_core::GpuTimestampTag,
-        ) -> Result<()> {
-            self.dispatch_resource_set_profiled(dispatch, Some(tag))
+            self.dispatch_resource_set_profiled(dispatch, dispatch.gpu_work_tag)
         }
         fn dispatch_compute_batch(
             &mut self,
@@ -6261,11 +6242,12 @@ mod platform {
             }))
         }
 
-        fn submit_compute_batch_on_queue(
-            &mut self,
-            queue: gfx_core::GpuQueueId,
-            dispatches: &[gfx_core::ComputeDispatch<'_>],
-        ) -> Result<SubmissionId> {
+        fn submit_compute(&mut self, submit: gfx_core::ComputeSubmit<'_>) -> Result<SubmissionId> {
+            let gfx_core::ComputeSubmit {
+                queue,
+                dispatches,
+                timestamp_tag,
+            } = submit;
             // The dedicated COMPUTE path uses a COMPUTE-typed allocator
             // and command list with PRIMARY release to COMMON and a native
             // COMPUTE->Graphics GPU-side wait. The independent DIRECT queue
@@ -6286,39 +6268,9 @@ mod platform {
                     "DX12 requested Compute queue is not supported".into(),
                 ));
             }
-            self.dispatch_buffer_batch_on_queue(dispatches, None, Some(queue))?
+            self.dispatch_buffer_batch_on_queue(dispatches, timestamp_tag, Some(queue))?
                 .ok_or_else(|| {
                     Error::Unavailable("DX12 native Compute submit has no completion fence".into())
-                })
-        }
-
-        fn submit_compute_batch_profiled_on_queue(
-            &mut self,
-            queue: gfx_core::GpuQueueId,
-            dispatches: &[gfx_core::ComputeDispatch<'_>],
-            tag: gfx_core::GpuTimestampTag,
-        ) -> Result<SubmissionId> {
-            if queue != gfx_core::GpuQueueId::PRIMARY
-                && queue
-                    != (gfx_core::GpuQueueId {
-                        family: 0,
-                        index: 1,
-                    })
-                && queue
-                    != (gfx_core::GpuQueueId {
-                        family: 0,
-                        index: 2,
-                    })
-            {
-                return Err(Error::Unavailable(
-                    "DX12 tagged Compute queue is not supported".into(),
-                ));
-            }
-            self.dispatch_buffer_batch_on_queue(dispatches, Some(tag), Some(queue))?
-                .ok_or_else(|| {
-                    Error::Unavailable(
-                        "DX12 tagged Compute submit has no native producer fence".into(),
-                    )
                 })
         }
 
@@ -6523,7 +6475,7 @@ mod platform {
         }
 
         fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
-            self.record_texture_passes(std::slice::from_ref(pass))
+            self.record_texture_passes(std::slice::from_ref(pass), None, false)
                 .map(|_| ())
         }
 
@@ -6531,15 +6483,16 @@ mod platform {
             &mut self,
             passes: &[RenderPassCommands<'_>],
         ) -> Result<Option<SubmissionId>> {
-            self.record_texture_passes(passes)
+            self.record_texture_passes(passes, None, false)
         }
 
-        fn render_to_textures_profiled(
+        fn render_to_textures_on_queue(
             &mut self,
             passes: &[RenderPassCommands<'_>],
             tags: &[Option<gfx_core::GpuTimestampTag>],
+            _queue: gfx_core::OffscreenQueuePreference,
         ) -> Result<Option<SubmissionId>> {
-            self.record_texture_passes_profiled(passes, false, Some(tags))
+            self.record_texture_passes(passes, Some(tags), false)
         }
 
         fn independent_graphics_queue_available(&self) -> bool {
@@ -6549,19 +6502,13 @@ mod platform {
         fn render_to_textures_independent(
             &mut self,
             passes: &[RenderPassCommands<'_>],
-        ) -> Result<Option<SubmissionId>> {
-            self.record_texture_passes_on_queue(passes, self.independent_graphics_queue_available())
-        }
-
-        fn render_to_textures_independent_profiled(
-            &mut self,
-            passes: &[RenderPassCommands<'_>],
             tags: &[Option<gfx_core::GpuTimestampTag>],
+            _queue: gfx_core::OffscreenQueuePreference,
         ) -> Result<Option<SubmissionId>> {
-            self.record_texture_passes_profiled(
+            self.record_texture_passes(
                 passes,
-                self.independent_graphics_queue_available(),
                 Some(tags),
+                self.independent_graphics_queue_available(),
             )
         }
     }
@@ -6632,7 +6579,7 @@ mod platform {
     }
 
     impl TextureTransferDevice for Dx12Device {
-        fn texture_transfer_timestamps_supported(&self) -> bool {
+        fn supports_transfer_timestamps(&self) -> bool {
             self.timestamp_frequency.is_some()
         }
 
@@ -6895,20 +6842,23 @@ mod platform {
     }
 
     fn enable_debug_layer() {
-        if !recording::debug_layer_enabled(
-            std::env::var("GFX_DX12_DEBUG_LAYER").ok().as_deref(),
-            cfg!(debug_assertions),
-        ) {
-            return;
-        }
-        let mut debug = None;
-        // SAFETY: D3D12 initializes the output interface on success.
-        if unsafe { D3D12GetDebugInterface::<ID3D12Debug>(&raw mut debug) }.is_ok()
-            && let Some(debug) = debug
+        #[cfg(debug_assertions)]
         {
-            // SAFETY: The debug interface is valid and may be enabled before device creation.
-            unsafe {
-                debug.EnableDebugLayer();
+            if !recording::debug_layer_enabled(
+                std::env::var("GFX_DX12_DEBUG_LAYER").ok().as_deref(),
+                true,
+            ) {
+                return;
+            }
+            let mut debug = None;
+            // SAFETY: D3D12 initializes the output interface on success.
+            if unsafe { D3D12GetDebugInterface::<ID3D12Debug>(&raw mut debug) }.is_ok()
+                && let Some(debug) = debug
+            {
+                // SAFETY: The debug interface is valid and may be enabled before device creation.
+                unsafe {
+                    debug.EnableDebugLayer();
+                }
             }
         }
     }
