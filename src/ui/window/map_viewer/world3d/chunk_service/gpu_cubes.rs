@@ -5,14 +5,14 @@ impl Worker {
     pub(super) fn build_gpu_cube_mesh(
         &mut self,
         pos: ChunkPos,
-        band: p3d::GpuCubeBand,
-        faces: &[p3d::Preview3dStreamFace],
+        band: preview_3d_source::GpuCubeBand,
+        faces: &[preview_3d_source::Preview3dStreamFace],
         lighting: Option<&super::lighting::ChunkLighting>,
     ) -> Result<Option<World3dChunkMesh>, String> {
         let lighting = lighting.filter(|_| self.lighting.is_lit());
         let levels = lighting.map(|light| light.gpu_levels(pos, &band));
         let mut templates = Vec::with_capacity(faces.len());
-        let Some(mut output) = self.build_chunk_mesh_with_templates(
+        let Some(mut output) = self.build_chunk_mesh(
             pos,
             band.section_y,
             faces,
@@ -84,7 +84,7 @@ mod direct_template_tests {
 
     #[test]
     fn direct_gpu_template_matches_cpu_packed_quad_geometry() {
-        let face = p3d::Preview3dStreamFace {
+        let face = preview_3d_source::Preview3dStreamFace {
             ambient_light: [1.0; 4],
             corners: [
                 [0.0, 4.0, 0.0],
@@ -97,10 +97,15 @@ mod direct_template_tests {
             normal: [0, 1, 0],
             material: Arc::from("unit_test"),
             uv: Some([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
-            pass: p3d::Preview3dStreamPass::Opaque,
+            pass: preview_3d_source::Preview3dStreamPass::Opaque,
         };
         for local in [false, true] {
-            let quad = world3d_face_vertices(&face, [128.0, 0.0, 256.0], local, [1.0; 4]);
+            let coordinate_space = if local {
+                MeshCoordinateSpace::TemplateLocal
+            } else {
+                MeshCoordinateSpace::World
+            };
+            let quad = face_vertices(&face, [128.0, 0.0, 256.0], coordinate_space, [1.0; 4]);
             let mesh = Mesh::from_voxel_quads_without_raycast([quad], vec![MeshPart::new(0, 6, 0)])
                 .unwrap();
             let template = gpui_3d::VoxelFaceTemplate {

@@ -8,10 +8,10 @@ const MIN_REGION_CACHE_BYTES: usize = 96 * 1024 * 1024;
 const MAX_REGION_CACHE_BYTES: usize = 384 * 1024 * 1024;
 const TARGET_RESIDENT_TILE_IMAGES: usize = 4_096;
 
-pub(super) fn probe_tokio_blocking_pool(stage: &'static str) {
+pub(super) fn probe_blocking_pool(stage: &'static str) {
     if let Err(error) = crate::tasks::runtime::spawn_io(async move {
         let queued_at = Instant::now();
-        match crate::tasks::runtime::run_io_blocking(|| {}).await {
+        match crate::tasks::runtime::blocking::run_io(|| {}).await {
             Ok(()) => tracing::debug!(
                 stage,
                 queue_delay_ms = queued_at.elapsed().as_millis(),
@@ -55,11 +55,11 @@ pub(super) fn render_backend_label(
     }
 }
 
-pub(super) const fn default_interactive_render_backend() -> RenderBackend {
+pub(super) const fn default_render_backend() -> RenderBackend {
     RenderBackend::Auto
 }
 
-pub(super) const fn default_interactive_render_gpu_backend() -> RenderGpuBackend {
+pub(super) const fn default_gpu_backend() -> RenderGpuBackend {
     RenderGpuBackend::Auto
 }
 
@@ -84,7 +84,7 @@ pub(super) fn available_system_memory_bytes() -> u64 {
     AVAILABLE_SYSTEM_MEMORY_BYTES.load(std::sync::atomic::Ordering::Acquire)
 }
 
-pub(super) fn request_available_system_memory_refresh(cx: &mut Context<MapViewerWindowView>) {
+pub(super) fn request_system_memory_refresh(cx: &mut Context<View>) {
     let now_unix = system_memory_unix_now_seconds();
     let last_refresh = SYSTEM_MEMORY_LAST_REFRESH_UNIX.load(std::sync::atomic::Ordering::Acquire);
     let cached = available_system_memory_bytes();
@@ -331,7 +331,7 @@ pub(super) fn compact_gpu_name(name: &str) -> String {
 }
 
 pub(super) fn spawn_block_center(world_path: &std::path::Path) -> Option<(i32, i32)> {
-    let document = bedrock_world::read_level_dat_document(&world_path.join("level.dat")).ok()?;
+    let document = bedrock_world::level::read(&world_path.join("level.dat")).ok()?;
     let root = match &document.root {
         NbtTag::Compound(root) => root,
         _ => return None,
@@ -363,19 +363,19 @@ pub(super) fn viewer_mode_from_render_mode(mode: RenderMode) -> ViewerMode {
 
 pub(super) fn map_input_state(
     window: &mut Window,
-    cx: &mut Context<MapViewerWindowView>,
+    cx: &mut Context<View>,
     placeholder: &'static str,
 ) -> Entity<InputState> {
     cx.new(|cx| {
         let mut input = InputState::new(window, cx);
-        input.set_placeholder(SharedString::from(placeholder), window, cx);
+        input.set_placeholder(SharedString::from(placeholder), cx);
         input
     })
 }
 
 pub(super) fn map_input_subscriptions(
     input_fields: &MapInputFields,
-    cx: &mut Context<MapViewerWindowView>,
+    cx: &mut Context<View>,
 ) -> Vec<Subscription> {
     [
         (MapInputField::CenterX, input_fields.center_x.clone()),
@@ -414,7 +414,7 @@ pub(super) fn initialize_map_input_values(
     input_fields: &MapInputFields,
     values: [(MapInputField, String); 7],
     window: &mut Window,
-    cx: &mut Context<MapViewerWindowView>,
+    cx: &mut Context<View>,
 ) {
     for (field, value) in values {
         input_fields.entity(field).update(cx, |input, cx| {
@@ -464,7 +464,7 @@ pub(super) fn dimension_buttons(
     custom_id: i32,
     colors: &ThemeColors,
     _i18n: &I18n,
-    cx: &mut Context<MapViewerWindowView>,
+    cx: &mut Context<View>,
 ) -> Vec<AnyElement> {
     [
         (Dimension::Overworld, t!("MapViewer.dimension_overworld")),
@@ -492,7 +492,7 @@ pub(super) fn dimension_buttons(
 pub(super) fn slime_farm_search_mode_buttons(
     active: SlimeFarmSearchMode,
     colors: &ThemeColors,
-    cx: &mut Context<MapViewerWindowView>,
+    cx: &mut Context<View>,
 ) -> Vec<AnyElement> {
     [
         (
@@ -532,7 +532,7 @@ pub(super) fn slime_farm_scope_mode_buttons(
     active: SlimeFarmScopeMode,
     advanced_active: bool,
     colors: &ThemeColors,
-    cx: &mut Context<MapViewerWindowView>,
+    cx: &mut Context<View>,
 ) -> Vec<AnyElement> {
     [
         (

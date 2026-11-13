@@ -56,7 +56,7 @@ pub(super) fn finish_active_render_tiles(
     }
 }
 
-pub(super) fn requeue_active_render_tiles_after_cancel(
+pub(super) fn requeue_cancelled_render_tiles(
     tile_manager: &mut RegionManager,
     active_tiles: &mut ActiveRenderTiles,
 ) {
@@ -436,7 +436,7 @@ impl RegionManager {
             let mut previous = self.entries.remove(coord);
             let previous_bytes = previous
                 .as_ref()
-                .map_or(0, tile_entry_loaded_estimated_bytes);
+                .map_or(0, image_estimated_bytes);
             if let Some(previous) = previous.as_ref() {
                 self.state_counts.decrement(previous.state);
             }
@@ -470,7 +470,7 @@ impl RegionManager {
             self.state_counts.decrement(entry.state);
             self.loaded_estimated_bytes = self
                 .loaded_estimated_bytes
-                .saturating_sub(tile_entry_loaded_estimated_bytes(&entry));
+                .saturating_sub(image_estimated_bytes(&entry));
             tile_entry_take_render_image(&mut entry)
         } else {
             None
@@ -497,7 +497,7 @@ impl RegionManager {
                 return true;
             }
             removed_counts.increment(entry.state);
-            removed_bytes = removed_bytes.saturating_add(tile_entry_loaded_estimated_bytes(entry));
+            removed_bytes = removed_bytes.saturating_add(image_estimated_bytes(entry));
             if let Some(image) = tile_entry_take_render_image(entry) {
                 dropped_images.push(image);
             }
@@ -538,7 +538,7 @@ impl RegionManager {
                 self.state_counts.decrement(entry.state);
                 self.loaded_estimated_bytes = self
                     .loaded_estimated_bytes
-                    .saturating_sub(tile_entry_loaded_estimated_bytes(&entry));
+                    .saturating_sub(image_estimated_bytes(&entry));
                 if let Some(image) = tile_entry_take_render_image(&mut entry) {
                     dropped_images.push(image);
                 }
@@ -581,7 +581,7 @@ impl RegionManager {
                         entry.source_status,
                     ),
                     *coord,
-                    tile_entry_loaded_estimated_bytes(entry),
+                    image_estimated_bytes(entry),
                 )))
             })
             .collect::<BinaryHeap<_>>();
@@ -727,7 +727,7 @@ impl RegionManager {
             return Vec::new();
         }
         if tiles_are_sorted_center_first(visible_tiles, center) {
-            return self.queued_visible_coords_limited_ordered(
+            return self.queued_visible_coords_in_order(
                 visible_tiles,
                 &ActiveRenderTiles::default(),
                 limit,
@@ -773,7 +773,7 @@ impl RegionManager {
         candidates.into_iter().map(|(_, coord)| coord).collect()
     }
 
-    pub(super) fn queued_visible_coords_limited_ordered(
+    pub(super) fn queued_visible_coords_in_order(
         &self,
         visible_tiles: &[(i32, i32)],
         processing_tiles: &ActiveRenderTiles,
@@ -818,7 +818,7 @@ impl RegionManager {
         })
     }
 
-    pub(super) fn queued_prefetch_coords_limited_ordered(
+    pub(super) fn queued_prefetch_coords(
         &self,
         prefetch_tiles: &[(i32, i32)],
         limit: usize,
@@ -887,7 +887,7 @@ impl RegionManager {
         let mut dropped_image = None;
         let last_access = self.allocate_access_stamp();
         if let Some(entry) = self.entries.get_mut(&coord) {
-            previous_bytes = tile_entry_loaded_estimated_bytes(entry);
+            previous_bytes = image_estimated_bytes(entry);
             dropped_image = entry.image.replace(tile).map(|tile| tile.image);
             entry.last_access = last_access;
             self.state_counts
@@ -916,18 +916,7 @@ impl RegionManager {
         dropped_image
     }
 
-    #[cfg(test)]
     pub(super) fn mark_loaded_from_cache(
-        &mut self,
-        coord: (i32, i32),
-        tile: ViewerTile,
-        freshness: TileSourceFreshness,
-    ) -> bool {
-        self.mark_loaded_from_cache_with_eviction(coord, tile, freshness)
-            .0
-    }
-
-    pub(super) fn mark_loaded_from_cache_with_eviction(
         &mut self,
         coord: (i32, i32),
         tile: ViewerTile,
@@ -942,7 +931,7 @@ impl RegionManager {
         {
             return (false, None);
         }
-        let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
+        let previous_bytes = image_estimated_bytes(entry);
         let new_bytes = tile.estimated_bytes;
         let dropped_image = entry.image.replace(tile).map(|tile| tile.image);
         entry.last_access = last_access;
@@ -989,10 +978,10 @@ impl RegionManager {
         self.next_sequence = self.next_sequence.saturating_add(1);
         let (previous_bytes, retained_bytes, dropped_image) =
             if let Some(entry) = self.entries.get_mut(&coord) {
-                let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
+                let previous_bytes = image_estimated_bytes(entry);
                 let previous_state = entry.state;
                 let dropped_image = entry.mark_failed(message);
-                let retained_bytes = tile_entry_loaded_estimated_bytes(entry);
+                let retained_bytes = image_estimated_bytes(entry);
                 self.state_counts
                     .transition(previous_state, TileLoadState::Failed);
                 (previous_bytes, retained_bytes, dropped_image)
@@ -1014,7 +1003,7 @@ impl RegionManager {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
         let (previous_bytes, dropped_image) = if let Some(entry) = self.entries.get_mut(&coord) {
-            let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
+            let previous_bytes = image_estimated_bytes(entry);
             let dropped_image = tile_entry_take_render_image(entry);
             self.state_counts
                 .transition(entry.state, TileLoadState::Empty);
@@ -1049,7 +1038,7 @@ impl RegionManager {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
         let (previous_bytes, dropped_image) = if let Some(entry) = self.entries.get_mut(&coord) {
-            let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
+            let previous_bytes = image_estimated_bytes(entry);
             let dropped_image = tile_entry_take_render_image(entry);
             self.state_counts
                 .transition(entry.state, TileLoadState::Invalid);
@@ -1112,7 +1101,7 @@ impl RegionManager {
     }
 }
 
-pub(super) fn tile_entry_loaded_estimated_bytes(entry: &TileEntry) -> usize {
+pub(super) fn image_estimated_bytes(entry: &TileEntry) -> usize {
     entry.image.as_ref().map_or(0, |tile| tile.estimated_bytes)
 }
 

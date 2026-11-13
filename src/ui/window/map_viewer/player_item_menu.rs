@@ -13,7 +13,7 @@ pub(super) struct PlayerItemContextMenuState {
     pub(super) position: Point<Pixels>,
 }
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn open_player_item_context_menu(
         &mut self,
         selection: PlayerItemSelection,
@@ -33,7 +33,7 @@ impl MapViewerWindowView {
         self.player_workspace.selected_item = Some(selection);
         self.player_workspace.inspector_mode = PlayerInspectorMode::Visual;
         self.player_workspace.item_editor_error = None;
-        self.sync_selected_player_item_visual_inputs(cx);
+        self.sync_selected_item_fields(cx);
         self.sync_player_item_raw_editor(cx);
 
         let dock_changed = !self.ui_state.right_panel_open
@@ -140,11 +140,11 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) {
         self.player_workspace.selected_item = Some(selection);
-        self.import_selected_player_item_from_clipboard(cx);
+        self.import_player_item_from_clipboard(cx);
     }
 
     fn import_player_item_file(&mut self, selection: PlayerItemSelection, cx: &mut Context<Self>) {
-        let Some(path) = pick_file_path_with_filter("BMCBL 物品配置", &["json"]) else {
+        let Some(path) = pick_file_path(None, "BMCBL 物品配置", &["json"]) else {
             return;
         };
         self.status = SharedString::from("正在读取物品配置...");
@@ -152,7 +152,7 @@ impl MapViewerWindowView {
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
-            let result = crate::tasks::runtime::run_io_blocking(move || {
+            let result = crate::tasks::runtime::blocking::run_io(move || {
                 let text = fs::read_to_string(&path)
                     .map_err(|error| format!("读取物品配置失败: {error}"))?;
                 parse_workspace_item_import(&text, selection.slot)
@@ -198,7 +198,7 @@ impl MapViewerWindowView {
             .and_then(|entry| entry.item.name)
             .unwrap_or_else(|| "item".to_string());
         let safe = safe_export_stem(&id);
-        let Some(path) = pick_save_path_with_filter(
+        let Some(path) = pick_save_path(
             "BMCBL 物品配置",
             &["json"],
             &format!("{safe}_slot_{}.json", selection.slot),
@@ -209,7 +209,7 @@ impl MapViewerWindowView {
         cx.notify();
         let success_path = path.clone();
         cx.spawn(async move |handle, cx| {
-            let result = crate::tasks::runtime::run_io_blocking(move || {
+            let result = crate::tasks::runtime::blocking::run_io(move || {
                 fs::write(&path, text).map_err(|error| format!("导出物品配置失败: {error}"))
             })
             .await;
@@ -329,7 +329,7 @@ impl MapViewerWindowView {
             }
         };
         let safe = safe_export_stem(&player_id);
-        let Some(path) = pick_save_path_with_filter(
+        let Some(path) = pick_save_path(
             "BMCBL 玩家背包配置",
             &["json"],
             &format!("{safe}_inventory.json"),
@@ -340,7 +340,7 @@ impl MapViewerWindowView {
         cx.notify();
         let success_path = path.clone();
         cx.spawn(async move |handle, cx| {
-            let result = crate::tasks::runtime::run_io_blocking(move || {
+            let result = crate::tasks::runtime::blocking::run_io(move || {
                 fs::write(&path, text).map_err(|error| format!("导出背包配置失败: {error}"))
             })
             .await;
@@ -376,7 +376,7 @@ impl MapViewerWindowView {
                 || t!("MapViewer.item_empty"),
                 |name| SharedString::from(name.to_string()),
             );
-        let placement = place_context_menu_at_anchor(
+        let placement = place_at_anchor(
             ContextMenuAnchor::Cursor(menu.position),
             self.window_width,
             self.window_height,

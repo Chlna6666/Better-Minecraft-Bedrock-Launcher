@@ -1,14 +1,14 @@
 use super::model::*;
 use super::prelude::*;
-use super::preview_3d::{Preview3dMesh, namespace_preview_3d_mesh, preview_3d_scene_data};
+use super::preview_3d::{Preview3dMesh, namespace, scene_data};
 use crate::tasks::task_manager::ProgressUpdate;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
 use ::bedrock_world::{ExactChunkSelection, exact_selection_stats};
 use bedrock_block_model::BlockModelRepository;
-use bedrock_render::ExactChunkRenderPlan;
+use bedrock_render::exact_selection::Plan;
 
-impl MapViewerWindowView {
+impl View {
     /// Runs professional statistics against the exact selected chunk set instead
     /// of expanding the selection to its bounding rectangle.
     pub(super) fn exact_selection_stats(&mut self, cx: &mut Context<Self>) {
@@ -24,7 +24,7 @@ impl MapViewerWindowView {
             return;
         };
 
-        let options = self.professional_overlay_query_options();
+        let options = self.overlay_query_options();
         let generation = self.metadata_generation;
         let world_path = self.world_path.clone();
         let query_budget = self.map_query_budget.clone();
@@ -53,7 +53,7 @@ impl MapViewerWindowView {
                 if this.metadata_generation != generation
                     || this.professional.selection.map(ChunkSelection::chunks)
                         != Some(requested_chunks.clone())
-                    || this.professional_overlay_query_options() != options
+                    || this.overlay_query_options() != options
                 {
                     return;
                 }
@@ -194,9 +194,9 @@ impl MapViewerWindowView {
         .detach();
     }
 
-    /// Exports OBJ from the exact selected chunks. Bounding-box holes and
-    /// disconnected gaps are not loaded into the mesh.
-    pub(super) fn export_selection_as_obj_exact(&mut self, cx: &mut Context<Self>) {
+    /// Exports a 3D model from the exact selected chunks. Bounding-box holes
+    /// and disconnected gaps are not loaded into the mesh.
+    pub(super) fn export_exact_selection_model(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.professional.selection else {
             self.status = SharedString::from("没有可导出的选区");
             cx.notify();
@@ -212,7 +212,7 @@ impl MapViewerWindowView {
             "chunk-selection-{}-{}-{}-{}.obj",
             bounds.min_chunk_x, bounds.min_chunk_z, bounds.max_chunk_x, bounds.max_chunk_z,
         );
-        let Some(path) = pick_save_path_with_filter(
+        let Some(path) = pick_save_path(
             "3D Model (OBJ / glTF / GLB)",
             &["obj", "gltf", "glb"],
             &default_file_name,
@@ -233,23 +233,24 @@ impl MapViewerWindowView {
             return;
         }
         let world_path = self.world_path.clone();
-        let package_paths = exact_preview_3d_resource_package_paths(&world_path, cx);
+        let package_paths = resource_pack_paths(&world_path, cx);
         let query_budget = self.map_query_budget.clone();
         let chunk_count = exact_selection.len();
         self.context_menu = None;
 
         // All persistent exports must be owned by TaskManager, not a UI future.
-        let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new("精确选区导出 3D 模型", "读取区块与资源包").detail(
-                output
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned()),
-            ),
-        )
-        .expect("task id must be unique");
-        task_manager::register_task_cooperative_cancel(task_id.clone());
+        let mut task_options =
+            task_manager::TaskOptions::new("精确选区导出 3D 模型", "读取区块与资源包");
+        if let Some(detail) = output
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+        {
+            task_options = task_options.detail(detail);
+        }
+        let task_id = task_manager::create_task(task_options).expect("task id must be unique");
+        task_manager::register_cooperative_cancel(task_id.clone());
         let cancel = CancelFlag::new();
-        task_manager::register_task_cancel_hook(task_id.clone(), {
+        task_manager::register_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
         });
@@ -259,17 +260,15 @@ impl MapViewerWindowView {
             let background_id = worker_id.clone();
             let result = crate::tasks::runtime::run_cpu(move || {
                 let mut resolved_package_paths =
-                    bedrock_block_model::world_resource_pack_paths(&world_path);
+                    bedrock_block_model::resource_pack::paths_for_world(&world_path);
                 for path in package_paths {
-                    bedrock_block_model::push_unique_resource_pack_path(
+                    bedrock_block_model::resource_pack::append_unique_path(
                         &mut resolved_package_paths,
                         path,
                     );
                 }
-                for path in
-                    crate::core::minecraft::paths::discover_local_package_roots_with_vanilla()
-                {
-                    bedrock_block_model::push_unique_resource_pack_path(
+                for path in crate::core::minecraft::paths::discover_local_package_roots() {
+                    bedrock_block_model::resource_pack::append_unique_path(
                         &mut resolved_package_paths,
                         path,
                     );
@@ -324,7 +323,7 @@ impl MapViewerWindowView {
                     .as_ref()
                     .map_or_else(|| output.clone(), |root| root.join("selection.obj"));
                 let result = (|| -> Result<(), String> {
-                    let target = bedrock_block_model::ObjExportTarget::from_obj_path(&obj_path)
+                    let target = bedrock_block_model::ObjExportTarget::from_path(&obj_path)
                         .map_err(|error| error.to_string())?;
                     let export = export_preview_3d_obj(
                         Preview3dObjOptions {
@@ -338,7 +337,7 @@ impl MapViewerWindowView {
                     if cancel.is_cancelled() {
                         return Err("模型导出已取消".into());
                     }
-                    bedrock_block_model::write_obj_export_files(
+                    bedrock_block_model::obj::write_export_files(
                         &export,
                         &target.obj_path,
                         &target.material_library_path,
@@ -421,7 +420,7 @@ pub(super) fn load_preview_3d_mesh_exact(
         block_models,
         cancel,
     } = options;
-    let plan = ExactChunkRenderPlan::new(selection);
+    let plan = Plan::new(selection);
     let chunks = Arc::new(plan.positions().to_vec());
     let rectangles = plan.rectangle_cover().to_vec();
     let total_chunks = plan.chunk_count();
@@ -471,7 +470,7 @@ pub(super) fn load_preview_3d_mesh_exact(
             }
         };
 
-        let part = load_preview_3d_mesh(
+        let part = super::preview_3d::load_mesh(
             Preview3dLoadOptions {
                 world_path,
                 bounds,
@@ -534,9 +533,9 @@ fn merge_exact_preview_meshes(
     let chunk_meshes = parts
         .iter()
         .enumerate()
-        .flat_map(|(part_index, mesh)| namespace_preview_3d_mesh(mesh, part_index as u64 + 1))
+        .flat_map(|(part_index, mesh)| namespace(mesh, part_index as u64 + 1))
         .collect::<Vec<_>>();
-    let (scenes, scene_view) = preview_3d_scene_data(&chunk_meshes)?;
+    let (scenes, scene_view) = scene_data(&chunk_meshes)?;
 
     Ok(Preview3dMesh {
         chunk_meshes,
@@ -577,19 +576,19 @@ fn merge_exact_preview_meshes(
     })
 }
 
-fn exact_preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> Vec<PathBuf> {
+fn resource_pack_paths(world_path: &Path, cx: &App) -> Vec<PathBuf> {
     let mut package_paths = Vec::new();
     let launcher_path = cx.read_global(|state: &LauncherState, _cx| {
         let package_path = state.package_path.to_string();
         (!package_path.trim().is_empty()).then(|| PathBuf::from(package_path))
     });
     if let Some(package_path) = launcher_path {
-        bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, package_path);
+        bedrock_block_model::resource_pack::append_unique_path(&mut package_paths, package_path);
     }
 
     cx.read_global(|state: &LocalVersionsState, _cx| {
         for version in state.versions.iter() {
-            bedrock_block_model::push_unique_resource_pack_path(
+            bedrock_block_model::resource_pack::append_unique_path(
                 &mut package_paths,
                 PathBuf::from(version.path.as_ref()),
             );
@@ -597,9 +596,9 @@ fn exact_preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> Vec<P
     });
 
     for package_path in
-        crate::core::minecraft::paths::infer_package_roots_from_world_path(world_path)
+        crate::core::minecraft::paths::infer_package_roots(world_path)
     {
-        bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, package_path);
+        bedrock_block_model::resource_pack::append_unique_path(&mut package_paths, package_path);
     }
     package_paths
 }
@@ -621,7 +620,7 @@ mod tests {
         let selection =
             ExactChunkSelection::new([chunk(0, 0), chunk(1, 0), chunk(0, 1), chunk(0, 2)])
                 .expect("selection");
-        let plan = ExactChunkRenderPlan::new(selection);
+        let plan = Plan::new(selection);
         let covered = plan
             .rectangle_cover()
             .iter()
@@ -641,7 +640,7 @@ mod tests {
     fn public_render_plan_preserves_disconnected_chunks() {
         let selection =
             ExactChunkSelection::new([chunk(0, 0), chunk(4, 0), chunk(4, 1)]).expect("selection");
-        let plan = ExactChunkRenderPlan::new(selection);
+        let plan = Plan::new(selection);
         assert_eq!(
             plan.rectangle_cover()
                 .iter()

@@ -1,5 +1,5 @@
 #[cfg(debug_assertions)]
-use super::entity_debug_paint::{EntityDebugPaintContext, paint_missing_entity_avatar_labels};
+use super::entity_debug_paint::{PaintContext, paint_missing_avatar_labels};
 use super::map_history::{
     MapHistoryChunkVisual, MapHistoryChunkVisualKind, MapHistoryVisualFilter,
     MapHistoryVisualization,
@@ -12,18 +12,18 @@ use super::paint::{draw_map_canvas, draw_professional_overlay_canvas};
 use super::selection::{
     ChunkSelection, ExistingSelectionTarget, SelectionResizeHandle, SelectionScreenBounds,
     chunk_from_block, exact_selection_chunks, existing_selection_target,
-    selection_chunks_are_rectangular, selection_contains_chunk,
-    set_right_selection_modifier_requested,
+    chunks_are_rectangular, contains_chunk,
+    set_right_modifier_requested,
 };
 use super::tile_state::{MapRenderRange, PaintTile};
 use super::viewport::{
     TileBounds, block_screen_x, block_screen_y, paint_order_tiles, ruler_blocks, tile_bounds_count,
-    tile_paint_rect, tile_paint_sort_key, tile_render_range, viewport_screen_position,
+    tile_paint_rect, tile_paint_sort_key, tile_render_range, screen_position,
 };
 use super::world3d::camera_overlay::{CameraOverlayContext, MapCameraOverlayView};
 use super::world3d::types::{CameraOverlayMode, World3dCameraSnapshot};
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use bedrock_render::RenderLayout;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -141,7 +141,7 @@ pub(super) enum MapCanvasAction {
     },
 }
 
-pub(super) fn take_map_tile_paint_resources_unavailable() -> bool {
+pub(super) fn take_sustained_paint_resource_failure() -> bool {
     if !MAP_TILE_PAINT_RESOURCES_UNAVAILABLE.swap(false, Ordering::Relaxed) {
         PAINT_RESOURCE_FAILURE_STREAK.store(0, Ordering::Release);
         return false;
@@ -158,7 +158,7 @@ pub(super) fn take_map_tile_paint_resources_unavailable() -> bool {
     true
 }
 
-fn map_tile_paint_resources_unavailable() -> bool {
+fn paint_resources_unavailable() -> bool {
     MAP_TILE_PAINT_RESOURCES_UNAVAILABLE.load(Ordering::Relaxed)
 }
 
@@ -233,7 +233,7 @@ fn paint_unloaded_tile_placeholders(
             continue;
         }
         let Some(rect) = tile_paint_rect(viewport, layout, render_range, coord.0, coord.1)
-            .and_then(|rect| rect.to_bounds(bounds))
+            .and_then(|rect| rect.into_bounds(bounds))
         else {
             continue;
         };
@@ -891,7 +891,7 @@ fn render_interaction_layer(
             MouseButton::Right,
             cx.listener(move |_this, event: &MouseDownEvent, window, cx| {
                 focus_for_right_down.focus(window, cx);
-                set_right_selection_modifier_requested(
+                set_right_modifier_requested(
                     event.modifiers.control,
                     event.modifiers.alt,
                 );
@@ -966,13 +966,13 @@ pub(super) fn selection_cursor_at(
         return CursorStyle::Arrow;
     }
     if let Some(exact_chunks) = exact_selection_chunks(snapshot.selection)
-        && !selection_chunks_are_rectangular(snapshot.selection, Some(exact_chunks.as_ref()))
+        && !chunks_are_rectangular(snapshot.selection, Some(exact_chunks.as_ref()))
     {
         let (block_x, block_z) = snapshot
             .viewport
             .screen_to_block(local_position, snapshot.layout);
         let chunk = chunk_from_block(block_x, block_z, snapshot.selection.start.dimension);
-        if !selection_contains_chunk(snapshot.selection, Some(exact_chunks.as_ref()), chunk) {
+        if !contains_chunk(snapshot.selection, Some(exact_chunks.as_ref()), chunk) {
             return CursorStyle::Arrow;
         }
         return if pressed_button == Some(MouseButton::Left) {
@@ -990,13 +990,13 @@ pub(super) fn selection_cursor_at(
 
 fn selection_screen_bounds(snapshot: SelectionHitSnapshot) -> Option<SelectionScreenBounds> {
     let bounds = snapshot.selection.bounds();
-    let (left, top) = viewport_screen_position(
+    let (left, top) = screen_position(
         snapshot.viewport,
         snapshot.layout,
         bounds.min_chunk_x.saturating_mul(16),
         bounds.min_chunk_z.saturating_mul(16),
     )?;
-    let (right, bottom) = viewport_screen_position(
+    let (right, bottom) = screen_position(
         snapshot.viewport,
         snapshot.layout,
         bounds.max_chunk_x.saturating_add(1).saturating_mul(16),
@@ -1377,7 +1377,7 @@ fn render_tile_layer(snapshot: &TileLayerSnapshot) -> Div {
                         draw_map_canvas(bounds, viewport, layout, overlays, colors, window);
                         return;
                     };
-                    if map_tile_paint_resources_unavailable() {
+                    if paint_resources_unavailable() {
                         paint_map_images(
                             window,
                             screen_requests,
@@ -1397,7 +1397,7 @@ fn render_tile_layer(snapshot: &TileLayerSnapshot) -> Div {
                         ) else {
                             return None;
                         };
-                        let Some(image_bounds) = rect.to_bounds(bounds) else {
+                        let Some(image_bounds) = rect.into_bounds(bounds) else {
                             return None;
                         };
                         Some(
@@ -1448,7 +1448,7 @@ pub(super) fn screen_image_bounds(
     if image.width <= 0.0 || image.height <= 0.0 {
         return None;
     }
-    if !screen_image_viewports_transformable(current_viewport, image.source_viewport) {
+    if !can_transform_screen_image(current_viewport, image.source_viewport) {
         return None;
     }
     let scale_ratio = current_viewport.scale / image.source_viewport.scale;
@@ -1469,7 +1469,7 @@ pub(super) fn screen_image_bounds(
     })
 }
 
-pub(super) fn screen_image_viewports_transformable(
+pub(super) fn can_transform_screen_image(
     current_viewport: MapViewport,
     source_viewport: MapViewport,
 ) -> bool {
@@ -1519,8 +1519,8 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
                 );
                 #[cfg(debug_assertions)]
                 if let Some(overlay_paint) = overlay_paint.as_deref() {
-                    paint_missing_entity_avatar_labels(
-                        EntityDebugPaintContext {
+                    paint_missing_avatar_labels(
+                        PaintContext {
                             bounds,
                             viewport,
                             layout,
@@ -1924,7 +1924,7 @@ fn render_markers(snapshot: &MarkerLayerSnapshot, cx: &mut Context<MapMarkerLaye
             continue;
         }
         let Some((screen_x, screen_y)) =
-            viewport_screen_position(snapshot.viewport, snapshot.layout, marker.x, marker.z)
+            screen_position(snapshot.viewport, snapshot.layout, marker.x, marker.z)
         else {
             continue;
         };
@@ -2065,9 +2065,9 @@ fn hud_pill(colors: &ThemeColors, text: impl Into<SharedString>) -> Div {
 
 fn theme_colors(now: std::time::Instant, cx: &App) -> ThemeColors {
     let theme = cx.global::<crate::ui::state::theme::ThemeState>();
-    crate::ui::theme::colors::lerp_theme_colors(
-        &crate::ui::theme::colors::LightColors::colors(),
-        &crate::ui::theme::colors::DarkColors::colors(),
+    crate::ui::theme::lerp_theme_colors(
+        &crate::ui::theme::LightColors::theme(),
+        &crate::ui::theme::DarkColors::theme(),
         theme.factor(now),
         theme.accent,
     )

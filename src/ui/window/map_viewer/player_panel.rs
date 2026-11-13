@@ -3,7 +3,7 @@ use super::panels::*;
 use super::players::*;
 use super::prelude::*;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn render_players_panel(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         div()
             .flex_1()
@@ -652,7 +652,7 @@ impl MapViewerWindowView {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _event, _window, cx| {
-                                    this.set_player_item_name_from_clipboard(kind, list_index, cx)
+                                    this.paste_item_name(kind, list_index, cx)
                                 }),
                             ),
                     )
@@ -661,7 +661,7 @@ impl MapViewerWindowView {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _event, _window, cx| {
-                                    this.set_player_item_lore_from_clipboard(kind, list_index, cx)
+                                    this.paste_item_lore(kind, list_index, cx)
                                 }),
                             ),
                     )
@@ -794,7 +794,7 @@ impl MapViewerWindowView {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _event, _window, cx| {
-                                    this.add_player_item_enchant_from_clipboard(
+                                    this.paste_item_enchant(
                                         kind, list_index, cx,
                                     )
                                 }),
@@ -913,7 +913,7 @@ impl MapViewerWindowView {
                         toolbar_button(colors, t!("MapViewer.item_id_clipboard")).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _event, _window, cx| {
-                                this.add_player_item_from_clipboard(cx)
+                                this.add_item_from_clipboard(cx)
                             }),
                         ),
                     ),

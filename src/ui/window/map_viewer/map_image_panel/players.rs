@@ -3,7 +3,7 @@ use super::*;
 use crate::ui::components::button::ghost_button;
 use crate::ui::components::scroll::Scrollbar;
 
-impl MapViewerWindowView {
+impl View {
     pub(in super::super) fn reset_map_player_search_scroll(&self) {
         self.map_image
             .player_scroll
@@ -121,7 +121,7 @@ impl MapViewerWindowView {
             .flex_col()
             .gap(px(6.0))
             .min_w(px(0.0))
-            .child(generator_section_title(colors, "目标玩家"))
+            .child(inspector::section_title(colors, "目标玩家"))
             .child(
                 div()
                     .text_size(px(11.0))

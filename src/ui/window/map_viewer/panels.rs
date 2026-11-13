@@ -2,9 +2,10 @@ use super::helpers::*;
 use super::model::*;
 use super::overlays::SlimeFarmSearchScopeSource;
 use super::prelude::*;
+use super::selection::SelectionBound;
 use crate::ui::components::icon::themed_icon;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn top_bar_snapshot(&self, i18n: &I18n) -> MapTopBarSnapshot {
         MapTopBarSnapshot {
             window_width: self.window_width,
@@ -21,7 +22,7 @@ impl MapViewerWindowView {
 
     pub(super) fn tool_stripe_snapshot(&self) -> MapToolStripeSnapshot {
         MapToolStripeSnapshot {
-            world3d_editor_open: self.world3d_editor_is_open(),
+            world3d_editor_open: self.editor_is_open(),
             left_panel_open: self.ui_state.left_panel_open,
             right_panel_open: self.ui_state.right_panel_open,
             bottom_panel_open: self.ui_state.bottom_panel_open,
@@ -136,9 +137,9 @@ impl MapViewerWindowView {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .child(if self.import_workspace_active() {
+                    .child(if self.import_active() {
                         self.render_import_workspace(colors, cx).into_any_element()
-                    } else if self.player_workspace_active()
+                    } else if self.player_active()
                         && self.player_workspace.center != PlayerWorkspaceCenter::Map
                     {
                         self.render_player_center_workspace(colors, cx)
@@ -510,7 +511,7 @@ impl MapViewerWindowView {
             .as_ref()
             .map_or(0, |cache| cache.candidates.len());
         let scope = self.slime_farm_search_scope();
-        let advanced_scan = self.slime_farm_advanced_scan;
+        let advanced_scan = self.advanced_slime_scan;
         let selection_scope_unavailable = advanced_scan.is_none()
             && self.dimension == Dimension::Overworld
             && self.slime_farm_scope_mode == SlimeFarmScopeMode::Selection
@@ -568,7 +569,7 @@ impl MapViewerWindowView {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _event, _window, cx| {
-                        this.open_slime_farm_advanced_scan_dialog(cx)
+                        this.open_advanced_slime_scan_dialog(cx)
                     }),
                 ),
             )
@@ -812,25 +813,25 @@ impl MapViewerWindowView {
                         .child(toolbar_button(colors, "下界 −16").on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
-                                this.adjust_2d_selection_height(false, -16, cx)
+                                this.adjust_selection_bound(SelectionBound::Lower, -16, cx)
                             }),
                         ))
                         .child(toolbar_button(colors, "下界 −1").on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
-                                this.adjust_2d_selection_height(false, -1, cx)
+                                this.adjust_selection_bound(SelectionBound::Lower, -1, cx)
                             }),
                         ))
                         .child(toolbar_button(colors, "下界 +1").on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
-                                this.adjust_2d_selection_height(false, 1, cx)
+                                this.adjust_selection_bound(SelectionBound::Lower, 1, cx)
                             }),
                         ))
                         .child(toolbar_button(colors, "下界 +16").on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
-                                this.adjust_2d_selection_height(false, 16, cx)
+                                this.adjust_selection_bound(SelectionBound::Lower, 16, cx)
                             }),
                         )),
                 )
@@ -842,25 +843,25 @@ impl MapViewerWindowView {
                         .child(toolbar_button(colors, "上界 −16").on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
-                                this.adjust_2d_selection_height(true, -16, cx)
+                                this.adjust_selection_bound(SelectionBound::Upper, -16, cx)
                             }),
                         ))
                         .child(toolbar_button(colors, "上界 −1").on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
-                                this.adjust_2d_selection_height(true, -1, cx)
+                                this.adjust_selection_bound(SelectionBound::Upper, -1, cx)
                             }),
                         ))
                         .child(toolbar_button(colors, "上界 +1").on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
-                                this.adjust_2d_selection_height(true, 1, cx)
+                                this.adjust_selection_bound(SelectionBound::Upper, 1, cx)
                             }),
                         ))
                         .child(toolbar_button(colors, "上界 +16").on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
-                                this.adjust_2d_selection_height(true, 16, cx)
+                                this.adjust_selection_bound(SelectionBound::Upper, 16, cx)
                             }),
                         )),
                 )
@@ -872,22 +873,26 @@ impl MapViewerWindowView {
                         .child(toolbar_button(colors, "当前层→下界").on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
-                                this.use_current_layer_for_selection_height(false, cx)
+                                this.set_selection_bound_from_layer(SelectionBound::Lower, cx)
                             }),
                         ))
                         .child(toolbar_button(colors, "当前层→上界").on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
-                                this.use_current_layer_for_selection_height(true, cx)
+                                this.set_selection_bound_from_layer(SelectionBound::Upper, cx)
                             }),
                         ))
                         .child(toolbar_button(colors, "查看下界").on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.show_2d_selection_height(false, cx)),
+                            cx.listener(|this, _, _, cx| {
+                                this.show_selection_bound(SelectionBound::Lower, cx)
+                            }),
                         ))
                         .child(toolbar_button(colors, "查看上界").on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.show_2d_selection_height(true, cx)),
+                            cx.listener(|this, _, _, cx| {
+                                this.show_selection_bound(SelectionBound::Upper, cx)
+                            }),
                         )),
                 )
                 .child(
@@ -1258,7 +1263,7 @@ pub(super) fn dimension_label(dimension: Dimension) -> String {
     }
 }
 
-pub(super) fn compact_activity_label(_i18n: &I18n, view: &MapViewerWindowView) -> SharedString {
+pub(super) fn compact_activity_label(_i18n: &I18n, view: &View) -> SharedString {
     if let Some(progress) = view.professional.chunk_transfer_progress.as_ref() {
         return progress.label().to_string().into();
     }

@@ -34,7 +34,7 @@ pub(crate) fn run(world_path: PathBuf, package_roots: Vec<PathBuf>) {
             .any(|record| record.key.tag == ChunkRecordTag::BlockEntity)
         {
             let data = world
-                .query_chunk_data(
+                .load_render_chunk(
                     *pos,
                     ChunkLoadOptions {
                         data_request: ChunkDataRequest::new().full_3d_indices().block_entities(),
@@ -115,10 +115,10 @@ pub(crate) fn run(world_path: PathBuf, package_roots: Vec<PathBuf>) {
     // resource-model and family fallback selection as the streaming editor.
     for (state_index, batch) in state_list.chunks(1).enumerate() {
         let data = isolated_states(pos, batch);
-        let blocks =
-            p3d::preview_3d_collect_chunk_blocks_with_block_models(&data, Some(&worker.models))
-                .unwrap();
-        let mut builder = p3d::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+            let blocks =
+                preview_3d_source::collect_chunk_blocks(&data, Some(&worker.models), None, |_| true)
+                    .unwrap();
+        let mut builder = preview_3d_source::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
             dimension: pos.dimension,
             min_chunk_x: 0,
             max_chunk_x: 0,
@@ -127,7 +127,9 @@ pub(crate) fn run(world_path: PathBuf, package_roots: Vec<PathBuf>) {
         });
         builder.insert_stream_chunk(pos, blocks);
         let before = face_count;
-        for chunk in builder.build_stream_faces(&[pos]) {
+        for chunk in
+            builder.build_stream_faces(&[pos], preview_3d_source::StreamFaceOptions::default())
+        {
             face_count += chunk.faces.len();
             for face in chunk.faces {
                 audit.check(&mut worker, &face, &batch[0].0);
@@ -196,7 +198,12 @@ struct MissingMaterial {
 }
 
 impl MaterialAudit {
-    fn check(&mut self, worker: &mut Worker, face: &p3d::Preview3dStreamFace, context: &str) {
+    fn check(
+        &mut self,
+        worker: &mut Worker,
+        face: &preview_3d_source::Preview3dStreamFace,
+        context: &str,
+    ) {
         let key = (face.material.to_string(), face.normal);
         if let Some(missing) = self.missing.get_mut(&key) {
             missing.contexts.insert(context.to_owned());

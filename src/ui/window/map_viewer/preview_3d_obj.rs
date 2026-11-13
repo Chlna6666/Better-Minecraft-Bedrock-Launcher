@@ -1,8 +1,7 @@
 use std::path::PathBuf;
 
-use bedrock_block_model::{
-    ObjDocumentHeader, ObjExport, ObjMeshFaceSource, ObjTextureResolver, export_face_sources,
-};
+use bedrock_block_model::obj::export_face_sources;
+use bedrock_block_model::{ObjDocumentHeader, ObjExport, ObjMeshFaceSource, ObjTextureResolver};
 
 use super::preview_3d::{Preview3dChunkMesh, Preview3dMesh};
 
@@ -39,15 +38,15 @@ pub(super) fn export_preview_3d_obj(
 }
 
 impl ObjMeshFaceSource for Preview3dChunkMesh {
-    fn obj_face_count(&self) -> usize {
+    fn face_count(&self) -> usize {
         (self.mesh.indices().len() / 6).min(self.face_metadata.len())
     }
 
-    fn obj_face_material(&self, face_index: usize) -> Option<&str> {
+    fn face_material(&self, face_index: usize) -> Option<&str> {
         self.face_material(face_index)
     }
 
-    fn obj_face_color(&self, face_index: usize) -> Option<[f32; 4]> {
+    fn face_color(&self, face_index: usize) -> Option<[f32; 4]> {
         let vertex_index = *self.face_indices(face_index)?.first()?;
         self.mesh
             .vertices()
@@ -55,7 +54,7 @@ impl ObjMeshFaceSource for Preview3dChunkMesh {
             .map(|vertex| vertex.color)
     }
 
-    fn obj_face_triangle_positions(&self, face_index: usize) -> Option<[[f32; 3]; 6]> {
+    fn face_triangle_positions(&self, face_index: usize) -> Option<[[f32; 3]; 6]> {
         let indices = self.face_indices(face_index)?;
         Some([
             self.index_position(indices[0])?,
@@ -67,7 +66,7 @@ impl ObjMeshFaceSource for Preview3dChunkMesh {
         ])
     }
 
-    fn obj_face_uv(&self, face_index: usize) -> Option<[[f32; 2]; 4]> {
+    fn face_uv(&self, face_index: usize) -> Option<[[f32; 2]; 4]> {
         self.face_metadata.get(face_index)?.uv
     }
 }

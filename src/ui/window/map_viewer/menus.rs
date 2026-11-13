@@ -6,7 +6,7 @@ use super::prelude::*;
 use super::viewport::coordinate_text;
 use super::world3d::types::TeleportHeightMode;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn paste_copied_chunk_context_label(
         &self,
         _chunk: ChunkPos,
@@ -130,7 +130,7 @@ impl MapViewerWindowView {
         block_z: i32,
         cx: &mut Context<Self>,
     ) -> Vec<ContextMenuEntry> {
-        let editor_open = self.world3d_editor_is_open();
+        let editor_open = self.editor_is_open();
         let dimension = super::world3d::types::dimension_label(self.dimension);
         let y_layer = self.y_layer;
         let description = format!("{dimension} · X {block_x} / Z {block_z}");
@@ -183,13 +183,13 @@ impl MapViewerWindowView {
             entries.push(ContextMenuEntry::item(
                 ContextMenuItem::new(format!(
                     "2D 摄像机叠加：{}",
-                    self.world3d_overlay_mode_label()
+                    self.overlay_mode_label()
                 ))
                 .description("切换 位置+箭头 / 位置+视角 / 包含视距 / 隐藏")
                 .on_click(move |cx| {
                     entity.update(cx, |this, cx| {
                         this.close_context_menu(cx);
-                        this.cycle_world3d_camera_overlay_mode(cx);
+                        this.cycle_camera_overlay_mode(cx);
                     })
                 }),
             ));
@@ -232,7 +232,7 @@ impl MapViewerWindowView {
                 ContextMenuItem::new("打开 3D 世界编辑器窗口").on_click(move |cx| {
                     entity.update(cx, |this, cx| {
                         this.close_context_menu(cx);
-                        this.open_world3d_editor_at_map_center(cx);
+                        this.open_editor_at_map_center(cx);
                     })
                 }),
             ));
@@ -246,7 +246,7 @@ impl MapViewerWindowView {
         menu: ContextMenuState,
         cx: &mut Context<Self>,
     ) -> Div {
-        let placement = place_context_menu_at_anchor(
+        let placement = place_at_anchor(
             ContextMenuAnchor::Cursor(menu.position),
             self.window_width,
             self.window_height,
@@ -270,7 +270,7 @@ impl MapViewerWindowView {
             })
             .on_click({
                 let entity = cx.entity();
-                move |cx| entity.update(cx, |this, cx| this.open_context_block_entity_at_editor(cx))
+                move |cx| entity.update(cx, |this, cx| this.open_context_block_entity_editor(cx))
             }),
             ContextMenuItem::new("查看/编辑实体 Actors").on_click({
                 let entity = cx.entity();
@@ -283,6 +283,26 @@ impl MapViewerWindowView {
             ContextMenuItem::new("查看/编辑生物群系").on_click({
                 let entity = cx.entity();
                 move |cx| entity.update(cx, |this, cx| this.open_context_biome_storage_editor(cx))
+            }),
+            ContextMenuItem::new("编辑计划刻/随机刻").on_click({
+                let entity = cx.entity();
+                move |cx| entity.update(cx, |this, cx| {
+                    let Some(menu) = this.context_menu else { return; };
+                    let chunk = context_menu_chunk(menu, this.dimension);
+                    this.load_edit_detail(EditTarget::TickQueues { chunk, pending: None, random: None }, cx);
+                })
+            }),
+            ContextMenuItem::new("编辑世界事件 mobevents").on_click({
+                let entity = cx.entity();
+                move |cx| entity.update(cx, |this, cx| {
+                    this.load_edit_detail(EditTarget::GlobalRecord { kind: GlobalRecordKind::MobEvents, source: None }, cx);
+                })
+            }),
+            ContextMenuItem::new("编辑计分板").on_click({
+                let entity = cx.entity();
+                move |cx| entity.update(cx, |this, cx| {
+                    this.load_edit_detail(EditTarget::GlobalRecord { kind: GlobalRecordKind::Scoreboard, source: None }, cx);
+                })
             }),
         ];
         // While picking a map destination, put the action in the first menu group,
@@ -304,7 +324,7 @@ impl MapViewerWindowView {
                 })),
                 ContextMenuEntry::item(ContextMenuItem::new("导出选中区块 3D 模型…").on_click({
                     let entity = cx.entity();
-                    move |cx| entity.update(cx, |this, cx| this.export_selection_as_obj_exact(cx))
+                    move |cx| entity.update(cx, |this, cx| this.export_exact_selection_model(cx))
                 })),
                 ContextMenuEntry::item(ContextMenuItem::new("导出跨地图区域包").on_click({
                     let entity = cx.entity();
@@ -398,7 +418,7 @@ impl MapViewerWindowView {
                             let entity = cx.entity();
                             move |cx| {
                                 entity.update(cx, |this, cx| {
-                                    this.open_context_block_entity_at_editor(cx)
+                                    this.open_context_block_entity_editor(cx)
                                 })
                             }
                         }),
@@ -419,7 +439,7 @@ impl MapViewerWindowView {
                             let entity = cx.entity();
                             move |cx| {
                                 entity.update(cx, |this, cx| {
-                                    this.select_map_frame_center_from_context(cx)
+                                    this.select_map_frame_center(cx)
                                 })
                             }
                         }),
@@ -539,7 +559,7 @@ impl MapViewerWindowView {
                             entity.update(cx, move |this, cx| {
                                 this.context_menu = None;
                                 this.players.context_target = None;
-                                this.open_player_workspace_for_player(
+                                this.open_player_workspace(
                                     player_id,
                                     PlayerWorkspaceCenter::Inventory,
                                     cx,
@@ -592,7 +612,7 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn render_top_more_menu(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
-        let placement = place_context_menu_at_anchor(
+        let placement = place_at_anchor(
             ContextMenuAnchor::RectEdge(Bounds::new(
                 point(px((self.window_width - 116.0).max(8.0)), px(8.0)),
                 size(px(92.0), px(38.0)),
@@ -778,14 +798,14 @@ impl MapViewerWindowView {
                     ContextMenuEntry::item(
                         ContextMenuItem::new(format!(
                             "2D 摄像机叠加：{}",
-                            self.world3d_overlay_mode_label()
+                            self.overlay_mode_label()
                         ))
                         .on_click({
                             let entity = cx.entity();
                             move |cx| {
                                 entity.update(cx, |this, cx| {
                                     this.close_top_more();
-                                    this.cycle_world3d_camera_overlay_mode(cx);
+                                    this.cycle_camera_overlay_mode(cx);
                                 })
                             }
                         }),

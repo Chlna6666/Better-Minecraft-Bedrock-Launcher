@@ -48,8 +48,8 @@ fn nearest_block_entity_positions(
     (total, nearest.into_iter().map(|(_, x, z)| (x, z)).collect())
 }
 
-impl MapViewerWindowView {
-    pub(in super::super) fn render_map_container_candidates(
+impl View {
+    pub(in super::super) fn render_container_candidates(
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
@@ -84,7 +84,7 @@ impl MapViewerWindowView {
             .flex_col()
             .gap(px(7.0))
             .min_w(px(0.0))
-            .child(generator_section_title(colors, "附近方块实体候选"))
+            .child(inspector::section_title(colors, "附近方块实体候选"))
             .child(
                 div()
                     .text_size(px(11.0))

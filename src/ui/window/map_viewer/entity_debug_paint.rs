@@ -9,7 +9,7 @@ const MAX_ENTITY_DEBUG_LABELS: usize = 128;
 const LABEL_CELL_WIDTH: f32 = 150.0;
 const LABEL_CELL_HEIGHT: f32 = 22.0;
 
-pub(super) struct EntityDebugPaintContext<'a> {
+pub(super) struct PaintContext<'a> {
     pub(super) bounds: Bounds<Pixels>,
     pub(super) viewport: MapViewport,
     pub(super) layout: RenderLayout,
@@ -17,8 +17,8 @@ pub(super) struct EntityDebugPaintContext<'a> {
     pub(super) entity_avatar_pool: &'a BTreeMap<String, Arc<RenderImage>>,
 }
 
-pub(super) fn paint_missing_entity_avatar_labels(
-    context: EntityDebugPaintContext<'_>,
+pub(super) fn paint_missing_avatar_labels(
+    context: PaintContext<'_>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -39,7 +39,7 @@ pub(super) fn paint_missing_entity_avatar_labels(
             continue;
         }
         paint_debug_label(
-            entity_debug_label(entity, !context.entity_avatar_pool.is_empty()),
+            debug_label(entity, !context.entity_avatar_pool.is_empty()),
             context.bounds,
             screen_position,
             window,
@@ -53,7 +53,7 @@ pub(super) fn paint_missing_entity_avatar_labels(
 }
 
 fn debug_label_position(
-    context: &EntityDebugPaintContext<'_>,
+    context: &PaintContext<'_>,
     entity: &EntityOverlayPoint,
 ) -> Option<((i32, i32), (f32, f32))> {
     let screen_x = overlay_marker_screen_x(
@@ -87,7 +87,7 @@ fn debug_label_position_is_visible(bounds: Bounds<Pixels>, x: f32, y: f32) -> bo
         && y <= bounds.bottom() / px(1.0)
 }
 
-fn entity_debug_label(entity: &EntityOverlayPoint, avatar_pool_loaded: bool) -> SharedString {
+fn debug_label(entity: &EntityOverlayPoint, avatar_pool_loaded: bool) -> SharedString {
     let identifier = entity.identifier.as_deref().unwrap_or("<missing-id>");
     let avatar_status = if avatar_pool_loaded {
         "avatar:missing"

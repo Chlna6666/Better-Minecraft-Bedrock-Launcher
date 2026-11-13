@@ -2,15 +2,11 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use crate::core::minecraft::map::image::{MapImageFit, MapResample};
 
-use super::generator_panel::{generator_choice, generator_section_title};
-use super::model::MapViewerWindowView;
+use super::model::View;
 use super::players::PlayerRecordHealth;
 use super::prelude::*;
 use super::tile_state::TilePriority;
-use crate::core::minecraft::map::generator::{
-    MapPreviewOptions, get_map_preview, get_map_preview_frame, release_map_preview,
-    start_map_image_preview,
-};
+use crate::core::minecraft::map::generator::image_to_map::{self, MapPreviewOptions};
 use crate::ui::components::slider::Slider;
 
 mod actions;
@@ -62,15 +58,15 @@ impl MapImagePanelState {
         self.task_id.as_deref()
     }
 
-    pub(super) fn new(window: &mut Window, cx: &mut Context<MapViewerWindowView>) -> Self {
+    pub(super) fn new(window: &mut Window, cx: &mut Context<View>) -> Self {
         let player_search = cx.new(|cx| {
             let mut input = InputState::new(window, cx);
-            input.set_placeholder("搜索玩家名称 / UUID / 存储 ID", window, cx);
+            input.set_placeholder("搜索玩家名称 / UUID / 存储 ID", cx);
             input
         });
         let container_search = cx.new(|cx| {
             let mut input = InputState::new(window, cx);
-            input.set_placeholder("搜索当前已加载方块实体 X / Z", window, cx);
+            input.set_placeholder("搜索当前已加载方块实体 X / Z", cx);
             input
         });
         Self {
@@ -125,8 +121,8 @@ pub(super) enum GridAxis {
     Rows,
 }
 
-impl MapViewerWindowView {
-    pub(super) fn map_image_installing_to_player(&self) -> bool {
+impl View {
+    pub(super) fn installing_to_player(&self) -> bool {
         self.map_image.install_destination == MapImageInstallDestination::Player
     }
 
@@ -165,7 +161,7 @@ impl MapViewerWindowView {
             .is_some_and(|snapshot| snapshot.status.as_ref() == "completed")
     }
 
-    pub(super) fn map_image_can_place_world_grid(&self) -> bool {
+    pub(super) fn frame_placement_ready(&self) -> bool {
         self.map_image.install_destination == MapImageInstallDestination::NewUpFrame
             && self.map_frame_confirmed_center().is_some()
             && !self.map_image.picking_frame_center
@@ -182,16 +178,16 @@ impl MapViewerWindowView {
             })
     }
 
-    pub(super) fn map_image_placement_inspector_visible(&self) -> bool {
+    pub(super) fn placement_inspector_visible(&self) -> bool {
         self.map_image.show_placement_inspector
     }
 
-    pub(super) fn toggle_map_image_placement_inspector(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn toggle_placement_inspector(&mut self, cx: &mut Context<Self>) {
         self.map_image.show_placement_inspector = !self.map_image.show_placement_inspector;
         cx.notify();
     }
 
-    pub(super) fn map_image_workflow_status_label(&self) -> String {
+    pub(super) fn workflow_status_label(&self) -> String {
         if self.map_image.pending_bundle.is_some() {
             "外部 NBT 待确认 · 内容未预览".to_owned()
         } else if self.map_image.source.is_none() {
@@ -245,7 +241,7 @@ impl MapViewerWindowView {
     }
 
     /// Explicit placement operation; moving or zooming the world viewport has no write side effect.
-    fn set_map_frame_anchor_to_viewport(&mut self, cx: &mut Context<Self>) {
+    fn center_map_frame_anchor(&mut self, cx: &mut Context<Self>) {
         let position = self.viewport.center_block(self.active_layout);
         self.set_map_frame_anchor(position, cx);
     }
@@ -324,7 +320,7 @@ impl MapViewerWindowView {
         }
     }
 
-    pub(super) fn accept_map_install_task_snapshot(
+    pub(super) fn accept_install_snapshot(
         &mut self,
         snapshot: &TaskSnapshot,
         cx: &mut Context<Self>,
@@ -351,10 +347,11 @@ impl MapViewerWindowView {
                 MapImageInstallRefresh::Chunks(chunks) => match chunks.lock() {
                     Ok(chunks) if !chunks.is_empty() => {
                         let invalidation =
-                            MapEditInvalidation::chunks(chunks.clone()).with_metadata();
-                        self.apply_map_edit_invalidation_with_tile_priority(
+                            EditInvalidation::chunks(chunks.clone()).with_metadata();
+                        self.apply_map_edit_invalidation(
                             &invalidation,
                             TilePriority::EditRefresh,
+                            false,
                             cx,
                         );
                     }
@@ -371,7 +368,7 @@ impl MapViewerWindowView {
     pub(super) fn release_map_image_preview(&mut self) {
         if let Some(task_id) = self.map_image.task_id.take() {
             task_manager::cancel_task(&task_id);
-            release_map_preview(&task_id);
+            image_to_map::release_preview(&task_id);
         }
         self.map_image.preview = None;
         self.map_image.placement_preview = None;
@@ -381,12 +378,12 @@ impl MapViewerWindowView {
         self.map_image.preview_note = None;
     }
 
-    pub(super) fn accept_map_image_task_snapshot(&mut self, snapshot: &TaskSnapshot) {
+    pub(super) fn accept_image_snapshot(&mut self, snapshot: &TaskSnapshot) {
         if self.map_image.task_id.as_deref() != Some(snapshot.id.as_ref()) {
             return;
         }
         if snapshot.status.as_ref() != "completed" {
-            if let Some(frame) = get_map_preview_frame(snapshot.id.as_ref()) {
+            if let Some(frame) = image_to_map::get_preview_frame(snapshot.id.as_ref()) {
                 self.map_image.options.columns = frame.columns;
                 self.map_image.options.rows = frame.rows;
                 if frame.done == 0 {
@@ -435,7 +432,7 @@ impl MapViewerWindowView {
         {
             return;
         }
-        let Some(result) = get_map_preview(snapshot.id.as_ref()) else {
+        let Some(result) = image_to_map::get_preview(snapshot.id.as_ref()) else {
             self.map_image.preview_note = Some("预览结果已释放或过期，请重新转换".to_owned());
             return;
         };
@@ -546,7 +543,7 @@ impl MapViewerWindowView {
             return;
         }
         if let Some(path) =
-            pick_file_path_with_filter("图片", &["png", "jpg", "jpeg", "tga", "webp"])
+            pick_file_path(None,"图片", &["png", "jpg", "jpeg", "tga", "webp"])
         {
             self.set_map_image_source(PathBuf::from(path), cx);
         }
@@ -574,7 +571,7 @@ impl MapViewerWindowView {
 
     /// Task completion is informative, not an explicit user edit. Preserve typed values
     /// until Enter/blur commits them; leave preset/slider synchronization authoritative.
-    pub(super) fn sync_map_grid_numeric_fields_if_pristine(&self, cx: &mut Context<Self>) {
+    pub(super) fn sync_grid_fields_if_pristine(&self, cx: &mut Context<Self>) {
         self.num_map_columns
             .sync_if_pristine(self.map_image.options.columns, cx);
         self.num_map_rows
@@ -668,12 +665,12 @@ impl MapViewerWindowView {
         self.map_image.pending_bundle = None;
         self.release_map_image_preview();
         self.map_image.export_task_id = None;
-        match start_map_image_preview(source, options) {
+        match image_to_map::start_preview(source, options) {
             Ok(task_id) => {
                 self.map_image.preview_options = Some(options);
                 self.map_image.task_id = Some(task_id.clone());
-                if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
-                    self.accept_map_image_task_snapshot(&snapshot);
+                if let Some(snapshot) = task_manager::snapshot(&task_id) {
+                    self.accept_image_snapshot(&snapshot);
                     self.task_snapshots
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }

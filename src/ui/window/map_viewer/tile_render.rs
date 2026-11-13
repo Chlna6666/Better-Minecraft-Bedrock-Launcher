@@ -1,8 +1,7 @@
 pub(super) use super::tile_render_composite::*;
 
 use super::prelude::*;
-use super::tile_render_composite as composite;
-use super::tile_render_core as core;
+use super::{tile_render_composite, tile_render_core};
 use bedrock_render::RenderLayout;
 
 pub(super) const fn tile_texture_render_layout(
@@ -16,13 +15,14 @@ pub(super) const fn tile_texture_render_layout(
     }
 }
 
-pub(super) fn render_viewport_composite_stream(
+pub(super) fn render_viewport_composite(
     request: ViewportCompositeRequest,
     event_sender: UnboundedSender<ViewportCompositeEvent>,
 ) -> Result<(), String> {
     let render_cancel = request.render_cancel.clone();
     let (buffered_sender, mut buffered_receiver) = unbounded();
-    let render_result = composite::render_viewport_composite_stream(request, buffered_sender);
+    let render_result =
+        tile_render_composite::render_viewport_composite_stream(request, buffered_sender);
 
     // The stable compositor emits short-lived dirty-region images while it is building the
     // final viewport. Publishing those images to GPUI makes every preview a separate GPU image.
@@ -54,12 +54,12 @@ pub(super) fn render_viewport_composite_stream(
             "map_viewer viewport_composite_preview_frames_coalesced"
         );
     }
-    core::send_viewport_composite_event_or_cancel(&event_sender, &render_cancel, complete_event)
+    tile_render_core::send_composite_event_or_cancel(&event_sender, &render_cancel, complete_event)
         .map_err(|error| format!("视口合成完成事件发送失败: {error}"))?;
     Ok(())
 }
 
-pub(super) fn render_chunk_patches_blocking(
+pub(super) fn render_chunk_patches(
     request: ChunkPatchRenderRequest,
 ) -> Result<ChunkPatchRenderResult, String> {
     let ChunkPatchRenderRequest {

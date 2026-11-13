@@ -6,19 +6,17 @@ use crate::core::minecraft::assets::{
 use crate::core::minecraft::import::{
     ImportCheckResult, PackagePreview, PreviewIconData, PreviewImageFormat, WorldPackReference,
 };
-use crate::core::minecraft::paths::{BuildType, Edition};
-use crate::core::version::launch_versions::version_folder_matches;
+use crate::core::version::launch_versions::folder_matches;
 use crate::launch::ImportLaunchContext;
 use crate::ui::components::dropdown::{self, Dropdown, DropdownOption};
 use crate::ui::components::minecraft_text::MinecraftFormattedText;
 use crate::ui::components::scroll::ScrollableElement;
 use crate::ui::components::toast;
-use crate::ui::hooks::use_launcher::{
-    LaunchVersionDescriptor, LauncherSnapshot, launcher_snapshot_changed, read_launcher_snapshot,
-    start_launcher, sync_launcher_state,
-};
-use crate::ui::hooks::use_local_versions::{
-    ensure_local_versions_loaded, read_local_versions_snapshot,
+use crate::ui::hooks::launcher;
+use crate::ui::hooks::launcher::{LaunchVersionDescriptor, LauncherSnapshot};
+use crate::ui::hooks::local_versions::{
+    VersionRefresh, build_type, detail_label, display_type, edition, enable_isolation,
+    ensure_loaded, isolation_label, primary_label, snapshot, target_root_path, type_summary_label,
 };
 use crate::ui::state::i18n::I18n;
 #[cfg(target_os = "windows")]
@@ -26,7 +24,7 @@ use crate::ui::state::launch_prereq::LaunchPrereqState;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::window::import::ImportWindowTarget;
 use futures_util::future::join_all;
 use gpui::prelude::FluentBuilder as _;
@@ -85,8 +83,17 @@ struct ImportFilePreview {
     error: Option<SharedString>,
 }
 
-fn import_conflict_preflight_required(overwrite: bool, allow_shared_fallback: bool) -> bool {
-    !overwrite && !allow_shared_fallback
+#[derive(Clone, Copy, Default)]
+struct ImportOptions {
+    overwrite: bool,
+    allow_shared_fallback: bool,
+    launch_after_import: bool,
+}
+
+impl ImportOptions {
+    fn requires_preflight(self) -> bool {
+        !self.overwrite && !self.allow_shared_fallback
+    }
 }
 
 fn extend_unique_import_paths(
@@ -176,7 +183,7 @@ impl ImportWindowView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        ensure_local_versions_loaded(false, cx);
+        ensure_loaded(VersionRefresh::IfNeeded, cx);
         let local_versions = cx.global::<LocalVersionsState>();
         let mut local_versions_signature = (
             local_versions.catalog_generation,
@@ -187,7 +194,7 @@ impl ImportWindowView {
             local_versions.refresh_pending,
             local_versions.error.clone(),
         );
-        let launcher_snapshot = read_launcher_snapshot(cx);
+        let launcher_snapshot = launcher::snapshot(cx);
         let mut subscriptions = vec![
             cx.observe_global::<LocalVersionsState>(move |this, cx| {
                 let state = cx.global::<LocalVersionsState>();
@@ -210,8 +217,8 @@ impl ImportWindowView {
                 cx.notify();
             }),
             cx.observe_global::<LauncherState>(|this, cx| {
-                let next = read_launcher_snapshot(cx);
-                let changed = launcher_snapshot_changed(&this.launcher_snapshot, &next);
+                let next = launcher::snapshot(cx);
+                let changed = launcher::snapshot_changed(&this.launcher_snapshot, &next);
                 let modal_was_visible = this.launcher_snapshot.show_modal;
                 if changed {
                     this.launcher_snapshot = next;
@@ -313,7 +320,7 @@ impl ImportWindowView {
     }
 
     fn sync_selected_folder(&mut self, cx: &mut Context<Self>) {
-        let snapshot = read_local_versions_snapshot(cx);
+        let snapshot = snapshot(cx);
         if snapshot.versions.is_empty() {
             return;
         }
@@ -321,7 +328,7 @@ impl ImportWindowView {
         if self.target.lock_version {
             if let Some(target) = self.target.version_folder.as_ref()
                 && let Some(version) = snapshot.versions.iter().find(|version| {
-                    version_folder_matches(version.folder.as_ref(), target.as_ref())
+                    folder_matches(version.folder.as_ref(), target.as_ref())
                 })
             {
                 self.selected_folder = Some(SharedString::from(version.folder.clone()));
@@ -333,7 +340,7 @@ impl ImportWindowView {
             snapshot
                 .versions
                 .iter()
-                .any(|version| version_folder_matches(version.folder.as_ref(), selected.as_ref()))
+                .any(|version| folder_matches(version.folder.as_ref(), selected.as_ref()))
         });
         if !exists {
             self.selected_folder =
@@ -524,11 +531,14 @@ impl ImportWindowView {
 
     fn import_now(
         &mut self,
-        overwrite: bool,
-        allow_shared_fallback: bool,
-        launch_after_import: bool,
+        options: ImportOptions,
         cx: &mut Context<Self>,
     ) {
+        let ImportOptions {
+            overwrite,
+            allow_shared_fallback,
+            launch_after_import,
+        } = options;
         let Some(selected_folder) = self.selected_folder.clone() else {
             self.status = Some((StatusKind::Error, t!("Import.errors.no_selected_version")));
             cx.notify();
@@ -548,7 +558,7 @@ impl ImportWindowView {
         self.status = None;
         self.show_conflict_dialog = false;
 
-        let versions = read_local_versions_snapshot(cx);
+        let versions = snapshot(cx);
         let Some(selected_version) = selected_launch_version(self, &versions) else {
             self.is_importing = false;
             self.status = Some((StatusKind::Error, t!("Import.errors.no_target_version")));
@@ -556,9 +566,9 @@ impl ImportWindowView {
             return;
         };
 
-        let build_type = version_build_type(selected_version);
-        let edition = version_edition(selected_version);
-        let enable_isolation = version_enable_isolation(selected_version);
+        let build_type = build_type(selected_version);
+        let edition = edition(selected_version);
+        let enable_isolation = enable_isolation(selected_version);
         let user_id = self.target_user_id(&selected_folder);
         let launch_version = launch_version_descriptor(selected_version);
         let file_paths = self
@@ -584,7 +594,7 @@ impl ImportWindowView {
             // The confirmation dialog is shown only after checking every file in the batch.
             // Once approved, avoid another scan and proceed with the authorized options.
             let check_results =
-                if import_conflict_preflight_required(overwrite, allow_shared_fallback) {
+                if options.requires_preflight() {
                     let checks = file_paths.iter().cloned().map(|file_path| {
                         let request = CheckImportRequest {
                             build_type: build_type.clone(),
@@ -732,7 +742,7 @@ impl ImportWindowView {
                 let launch_started = should_launch_after_import
                     .then_some(())
                     .and(launch_version)
-                    .and_then(|version| start_launcher(version, cx))
+                    .and_then(|version| launcher::start(version, cx))
                     .is_some();
                 let message = if launch_started {
                     t!("Import.importSuccessLaunching")
@@ -865,8 +875,8 @@ impl ImportWindowView {
     fn theme_colors(&self, now: Instant, cx: &App) -> ThemeColors {
         let theme = cx.global::<ThemeState>();
         lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme.factor(now),
             theme.accent,
         )
@@ -894,7 +904,7 @@ impl ImportWindowView {
         self.target
             .version_folder
             .as_ref()
-            .is_some_and(|target| version_folder_matches(target.as_ref(), selected_folder.as_ref()))
+            .is_some_and(|target| folder_matches(target.as_ref(), selected_folder.as_ref()))
             .then(|| self.target.user_id.as_ref().map(ToString::to_string))
             .flatten()
     }
@@ -931,7 +941,7 @@ impl Drop for ImportWindowView {
             return;
         };
 
-        if crate::tasks::task_manager::get_snapshot_arc(&task_id)
+        if crate::tasks::task_manager::snapshot_arc(&task_id)
             .is_some_and(|snapshot| snapshot.is_terminal())
         {
             discard_import_inspection_result(&task_id);
@@ -945,7 +955,7 @@ impl Render for ImportWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let frame_now = window.animation_time();
         if self.presentation == ImportPresentation::Window {
-            sync_launcher_state(frame_now, cx);
+            launcher::sync_state(frame_now, cx);
         }
         let window_width_px = if self.presentation == ImportPresentation::Overlay {
             ((window.bounds().size.width / px(1.0)) - 32.0).min(900.0)
@@ -978,7 +988,7 @@ impl Render for ImportWindowView {
         let content_padding = if is_overlay { 16.0 } else { 20.0 };
         let column_gap = if is_overlay { 16.0 } else { 24.0 };
         let sidebar_dropdown_width = px((window_width_px - 40.0).clamp(240.0, 520.0));
-        let versions = read_local_versions_snapshot(cx);
+        let versions = snapshot(cx);
         let launcher_snapshot = if self.presentation == ImportPresentation::Window
             || self.close_after_launch_completion
         {
@@ -1148,7 +1158,7 @@ impl Render for ImportWindowView {
             let launch_prereq_state = cx.global::<LaunchPrereqState>();
             if self.presentation == ImportPresentation::Window && launch_prereq_state.visible {
                 root = root.child(
-                    crate::ui::overlays::launch_prereq::render_launch_prereq_overlay(
+                    crate::ui::overlays::launch_prereq::render(
                         launch_prereq_state,
                         window,
                         cx,
@@ -1168,6 +1178,7 @@ impl Render for ImportWindowView {
                 &colors,
                 frame_now,
                 toast_state,
+                toast_state.overlay_options(),
             ));
         }
         if self.presentation == ImportPresentation::Window
@@ -2204,7 +2215,7 @@ fn render_versions_card(
     this: &ImportWindowView,
     colors: &ThemeColors,
     cx: &mut Context<ImportWindowView>,
-    versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
+    versions: &crate::ui::hooks::local_versions::LocalVersionsSnapshot,
     dropdown_width: Pixels,
 ) -> AnyElement {
     let i18n = cx.global::<I18n>();
@@ -2230,7 +2241,7 @@ fn render_versions_card(
     let selected_index = selected_version_index(this, versions);
     let selected_version = selected_index.and_then(|index| versions.versions.get(index));
     let dropdown_label = selected_version
-        .map(version_primary_label)
+        .map(primary_label)
         .or_else(|| this.target.instance_name.clone())
         .unwrap_or_else(|| t!("Import.noVersions"));
     let dropdown_options = versions
@@ -2247,7 +2258,7 @@ fn render_versions_card(
         .map(|version| SharedString::from(version.folder.clone()))
         .collect::<Vec<_>>();
     let selected_meta = selected_version
-        .map(version_detail_label)
+        .map(detail_label)
         .or_else(|| this.target.game_version.clone())
         .unwrap_or_else(|| t!("Import.noVersions"));
     let target_locked = this.target.lock_version;
@@ -2675,16 +2686,16 @@ fn info_summary_panel(
     unknown_label: SharedString,
 ) -> AnyElement {
     let primary = selected_version
-        .map(version_primary_label)
+        .map(primary_label)
         .unwrap_or(unknown_label.clone());
     let target_path = selected_version
-        .and_then(version_target_root_path)
+        .and_then(target_root_path)
         .unwrap_or_else(|| SharedString::from("-"));
     let isolation = selected_version
-        .map(|version| version_isolation_label(version, i18n))
+        .map(|version| isolation_label(version, i18n))
         .unwrap_or_else(|| SharedString::from("-"));
     let version_type = selected_version
-        .map(|version| version_type_summary_label(version, i18n))
+        .map(|version| type_summary_label(version, i18n))
         .unwrap_or_else(|| SharedString::from("-"));
 
     div()
@@ -2799,23 +2810,23 @@ fn info_summary_row(
 
 fn selected_version_index(
     view: &ImportWindowView,
-    versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
+    versions: &crate::ui::hooks::local_versions::LocalVersionsSnapshot,
 ) -> Option<usize> {
     view.selected_folder.as_ref().and_then(|selected_folder| {
         versions.versions.iter().position(|version| {
-            version_folder_matches(version.folder.as_ref(), selected_folder.as_ref())
+            folder_matches(version.folder.as_ref(), selected_folder.as_ref())
         })
     })
 }
 
 fn selected_launch_version<'a>(
     view: &ImportWindowView,
-    versions: &'a crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
+    versions: &'a crate::ui::hooks::local_versions::LocalVersionsSnapshot,
 ) -> Option<&'a crate::core::version::launch_versions::LaunchVersionEntry> {
     if view.target.lock_version {
         let selected_folder = view.selected_folder.as_ref()?;
         return versions.versions.iter().find(|version| {
-            version_folder_matches(version.folder.as_ref(), selected_folder.as_ref())
+            folder_matches(version.folder.as_ref(), selected_folder.as_ref())
         });
     }
 
@@ -2838,62 +2849,14 @@ fn launch_version_descriptor(
     }
 }
 
-fn version_build_type(
-    version: &crate::core::version::launch_versions::LaunchVersionEntry,
-) -> BuildType {
-    crate::ui::hooks::use_local_versions::version_build_type(version)
-}
-
-fn version_edition(version: &crate::core::version::launch_versions::LaunchVersionEntry) -> Edition {
-    crate::ui::hooks::use_local_versions::version_edition(version)
-}
-
-fn version_enable_isolation(
-    version: &crate::core::version::launch_versions::LaunchVersionEntry,
-) -> bool {
-    crate::ui::hooks::use_local_versions::version_enable_isolation(version)
-}
-
-fn version_target_root_path(
-    version: &crate::core::version::launch_versions::LaunchVersionEntry,
-) -> Option<SharedString> {
-    crate::ui::hooks::use_local_versions::version_target_root_path(version)
-}
-
-fn version_isolation_label(
-    version: &crate::core::version::launch_versions::LaunchVersionEntry,
-    i18n: &I18n,
-) -> SharedString {
-    crate::ui::hooks::use_local_versions::version_isolation_label(version, i18n)
-}
-
-fn version_type_summary_label(
-    version: &crate::core::version::launch_versions::LaunchVersionEntry,
-    i18n: &I18n,
-) -> SharedString {
-    crate::ui::hooks::use_local_versions::version_type_summary_label(version, i18n)
-}
-
 fn version_dropdown_label(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
     i18n: &I18n,
 ) -> SharedString {
-    let name = version_primary_label(version);
-    let game_version = version_detail_label(version);
-    let edition = crate::ui::hooks::use_local_versions::launch_version_display_type(version, i18n);
+    let name = primary_label(version);
+    let game_version = detail_label(version);
+    let edition = display_type(version, i18n);
     SharedString::from(format!("{name} · {game_version} ({edition})"))
-}
-
-fn version_primary_label(
-    version: &crate::core::version::launch_versions::LaunchVersionEntry,
-) -> SharedString {
-    crate::ui::hooks::use_local_versions::version_primary_label(version)
-}
-
-fn version_detail_label(
-    version: &crate::core::version::launch_versions::LaunchVersionEntry,
-) -> SharedString {
-    crate::ui::hooks::use_local_versions::version_detail_label(version)
 }
 
 fn render_status_box(this: &ImportWindowView, colors: &ThemeColors) -> Option<AnyElement> {
@@ -2964,7 +2927,7 @@ fn render_footer(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
                         if !this.show_conflict_dialog {
-                            this.import_now(false, false, false, cx);
+                            this.import_now(ImportOptions::default(), cx);
                         }
                     }),
                 ),
@@ -2976,7 +2939,13 @@ fn render_footer(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
                         if !this.show_conflict_dialog {
-                            this.import_now(false, false, true, cx);
+                            this.import_now(
+                                ImportOptions {
+                                    launch_after_import: true,
+                                    ..ImportOptions::default()
+                                },
+                                cx,
+                            );
                         }
                     }),
                 ),
@@ -3210,9 +3179,11 @@ fn render_conflict_dialog(
                                                     this.conflict_requires_shared_fallback;
                                                 let launch_after_import = this.launch_after_import;
                                                 this.import_now(
-                                                    overwrite,
-                                                    allow_shared_fallback,
-                                                    launch_after_import,
+                                                    ImportOptions {
+                                                        overwrite,
+                                                        allow_shared_fallback,
+                                                        launch_after_import,
+                                                    },
                                                     cx,
                                                 );
                                             }),
@@ -3525,14 +3496,33 @@ fn format_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod import_conflict_confirmation_tests {
-    use super::import_conflict_preflight_required;
+    use super::ImportOptions;
 
     #[test]
     fn preflight_is_not_repeated_after_batch_confirmation() {
-        assert!(import_conflict_preflight_required(false, false));
-        assert!(!import_conflict_preflight_required(true, false));
-        assert!(!import_conflict_preflight_required(false, true));
-        assert!(!import_conflict_preflight_required(true, true));
+        assert!(ImportOptions::default().requires_preflight());
+        assert!(
+            !ImportOptions {
+                overwrite: true,
+                ..ImportOptions::default()
+            }
+            .requires_preflight()
+        );
+        assert!(
+            !ImportOptions {
+                allow_shared_fallback: true,
+                ..ImportOptions::default()
+            }
+            .requires_preflight()
+        );
+        assert!(
+            !ImportOptions {
+                overwrite: true,
+                allow_shared_fallback: true,
+                ..ImportOptions::default()
+            }
+            .requires_preflight()
+        );
     }
 }
 

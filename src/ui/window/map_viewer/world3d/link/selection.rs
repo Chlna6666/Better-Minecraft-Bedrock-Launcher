@@ -13,7 +13,7 @@ fn can_receive_selection(
     current == source || (selection.is_some() && !writing)
 }
 
-fn selection_chunks(selection: World3dSelection) -> ChunkSelection {
+fn chunks(selection: World3dSelection) -> ChunkSelection {
     ChunkSelection {
         start: BwChunkPos {
             x: selection.min[0].div_euclid(16),
@@ -28,7 +28,7 @@ fn selection_chunks(selection: World3dSelection) -> ChunkSelection {
     }
 }
 
-impl MapViewerWindowView {
+impl View {
     /// Locates a 3D target without applying coordinates to a different dimension.
     pub(crate) fn locate_world3d_in_map(
         &mut self,
@@ -45,7 +45,7 @@ impl MapViewerWindowView {
         self.set_dimension(dimension, cx);
         self.step_y(position[1].saturating_sub(self.y_layer), cx);
         if let Some(selection) = selection.filter(|selection| selection.dimension == dimension) {
-            self.set_world3d_selection_from_editor(dimension, Some(selection), cx);
+            self.set_selection_from_editor(dimension, Some(selection), cx);
         }
         self.center_viewport_on_block(position[0], position[2], cx);
         self.status = format!(
@@ -61,7 +61,7 @@ impl MapViewerWindowView {
         true
     }
 
-    pub(crate) fn set_world3d_selection_from_editor(
+    pub(crate) fn set_selection_from_editor(
         &mut self,
         dimension: BwDimension,
         selection: Option<World3dSelection>,
@@ -74,12 +74,12 @@ impl MapViewerWindowView {
             self.set_dimension(dimension, cx);
         }
         self.professional.volume_selection = selection;
-        self.professional.selection = selection.map(selection_chunks);
+        self.professional.selection = selection.map(chunks);
         self.professional.selection_stats = None;
         if self.preview_3d.source == Preview3dSource::Selection {
             self.invalidate_preview_3d_mesh();
         }
-        self.invalidate_professional_overlay_for_viewport_change();
+        self.invalidate_overlay_queries();
         self.professional.pending_overlay_refresh = true;
         self.sync_volume_selection_to_3d(cx);
         self.refresh_professional_render_caches(cx);
@@ -91,7 +91,7 @@ impl MapViewerWindowView {
 
 #[cfg(test)]
 mod tests {
-    use super::{BwDimension, World3dSelection, can_receive_selection, selection_chunks};
+    use super::{BwDimension, World3dSelection, can_receive_selection, chunks};
 
     #[test]
     fn clearing_a_selection_only_affects_its_source_dimension() {
@@ -146,7 +146,7 @@ mod tests {
     fn block_selection_projects_negative_chunk_edges_without_losing_height() {
         let volume =
             World3dSelection::from_corners(BwDimension::Overworld, [-17, -20, -1], [0, 9, 16]);
-        let chunks = selection_chunks(volume);
+        let chunks = chunks(volume);
         assert_eq!([chunks.start.x, chunks.start.z], [-2, -1]);
         assert_eq!([chunks.end.x, chunks.end.z], [0, 1]);
         assert_eq!([volume.min[1], volume.max[1]], [-20, 9]);

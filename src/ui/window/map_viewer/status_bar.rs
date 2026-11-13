@@ -2,7 +2,7 @@ use super::model::*;
 use super::panels::{compact_activity_label, dimension_label, panel_title};
 use super::prelude::*;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn set_chunk_transfer_progress(&mut self, progress: ChunkTransferProgress) {
         self.professional.last_chunk_transfer_progress = Some(progress.clone());
         self.professional.last_chunk_transfer_finished_at = None;
@@ -52,7 +52,7 @@ impl MapViewerWindowView {
                     }
                 };
 
-                let mut batch = HashMap::default();
+                let mut batch = FxHashMap::default();
                 if is_map_window_task_snapshot(first_snapshot.as_ref()) {
                     batch.insert(first_snapshot.id.clone(), first_snapshot);
                 }
@@ -83,14 +83,14 @@ impl MapViewerWindowView {
                             let finished_map_preview = this.map_image.task_id()
                                 == Some(snapshot.id.as_ref())
                                 && snapshot.is_terminal();
-                            this.accept_map_image_task_snapshot(snapshot.as_ref());
+                            this.accept_image_snapshot(snapshot.as_ref());
                             // Do not rewrite the input while the user is typing or while
                             // unrelated tasks are publishing frequent progress changes.
                             if finished_map_preview && this.map_image.options.auto_fit {
-                                this.sync_map_grid_numeric_fields_if_pristine(cx);
+                                this.sync_grid_fields_if_pristine(cx);
                             }
-                            this.accept_map_install_task_snapshot(snapshot.as_ref(), cx);
-                            this.accept_structure_preview_task_snapshot(snapshot.as_ref(), cx);
+                            this.accept_install_snapshot(snapshot.as_ref(), cx);
+                            this.accept_generator_task_snapshot(snapshot.as_ref(), cx);
                             this.task_snapshots.insert(snapshot.id.clone(), snapshot);
                         }
                         cx.notify();
@@ -196,14 +196,14 @@ impl MapViewerWindowView {
                     .text_color(colors.text_primary)
                     .child(activity_label),
             )
-            .child(status_bar_separator(colors))
+            .child(separator(colors))
             .child(div().flex_none().child(format!(
                 "{} · Y {} · {:.0}%",
                 dimension_label(self.dimension),
                 self.y_layer,
                 self.viewport.scale * 100.0
             )))
-            .child(status_bar_separator(colors))
+            .child(separator(colors))
             .child(div().flex_none().child(format!(
                 "Hover chunk {},{} · Center {},{}",
                 hover.x,
@@ -775,7 +775,7 @@ fn task_status_color(colors: &ThemeColors, status: &str) -> Hsla {
     }
 }
 
-fn status_bar_separator(colors: &ThemeColors) -> Div {
+fn separator(colors: &ThemeColors) -> Div {
     div().w(px(1.0)).h(px(16.0)).flex_none().bg(Hsla {
         a: CHROME_HAIRLINE_ALPHA,
         ..colors.border

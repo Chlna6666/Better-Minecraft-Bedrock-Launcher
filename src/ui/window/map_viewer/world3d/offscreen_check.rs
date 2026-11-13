@@ -12,7 +12,7 @@
 use super::chunk_service::{ChunkServiceConfig, ChunkServiceHandle, spawn_chunk_service};
 use super::types::{ChunkServiceCommand, ChunkServiceEvent, World3dChunkMesh, World3dChunkProbe};
 use ::bedrock_world::block::BlockState;
-use ::bedrock_world::level::read_level_dat_document;
+use ::bedrock_world::level::read;
 use ::bedrock_world::surface::{
     BiomeDataRequirement, ChunkData, ChunkDataRequest, ChunkLoadOptions, ChunkLoadPriority,
     WorldPipelineOptions, WorldThreadingOptions,
@@ -114,7 +114,7 @@ fn read_world_spawn(world_path: &std::path::Path) -> [f64; 3] {
     ) {
         return [f64::from(x) + 0.5, f64::from(y) + 1.6, f64::from(z) + 0.5];
     }
-    let document = read_level_dat_document(&world_path.join("level.dat"))
+    let document = read(&world_path.join("level.dat"))
         .expect("readable level.dat for the configured world");
     let NbtTag::Compound(root) = &document.root else {
         panic!("level.dat root is not a compound");
@@ -733,7 +733,7 @@ fn audit_real_world_blocks() {
                 z: base_chunk_z + dz,
                 dimension: env_dimension(),
             };
-            let Ok(data) = world.query_chunk_data(pos, audit_chunk_load_options()) else {
+            let Ok(data) = world.load_render_chunk(pos, audit_chunk_load_options()) else {
                 continue;
             };
             if !data.is_loaded {
@@ -906,7 +906,7 @@ fn scan_real_world_item_frames() {
                 z: position[2].div_euclid(16),
                 dimension,
             };
-            if let Ok(data) = world.query_chunk_data(chunk, audit_chunk_load_options())
+            if let Ok(data) = world.load_render_chunk(chunk, audit_chunk_load_options())
                 && let Some(state) =
                     audit_block_state_at(&data, position[0], position[1], position[2])
             {

@@ -9,14 +9,14 @@ struct Preview3dWorldFrame {
     fit_scale: f32,
 }
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn render_preview_3d_panel(
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
         let _i18n = cx.global::<I18n>();
-        let selection = self.preview_3d_selection_status();
+        let selection = self.selection_status();
         let status = self.preview_3d_status_label();
         let stats = self.preview_3d_stats_label();
         let mesh = self.preview_3d.mesh.clone();
@@ -185,7 +185,7 @@ impl MapViewerWindowView {
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     this.preview_3d_focus_handle.focus(window, cx);
-                    this.cancel_pointer_captures_for_panel_interaction("preview_3d mouse down", cx);
+                    this.cancel_pointer_captures("preview_3d mouse down", cx);
                     this.preview_3d_begin_drag(Preview3dDragMode::RotateModel, event.position, cx);
                     cx.stop_propagation();
                 }),
@@ -194,10 +194,7 @@ impl MapViewerWindowView {
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     this.preview_3d_focus_handle.focus(window, cx);
-                    this.cancel_pointer_captures_for_panel_interaction(
-                        "preview_3d right mouse down",
-                        cx,
-                    );
+                    this.cancel_pointer_captures("preview_3d right mouse down", cx);
                     this.preview_3d_begin_drag(Preview3dDragMode::OrbitCamera, event.position, cx);
                     cx.stop_propagation();
                 }),
@@ -273,7 +270,7 @@ impl MapViewerWindowView {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
                 if is_preview_3d_navigation_key(key) {
-                    this.preview_3d_press_navigation_key(
+                    this.press_navigation_key(
                         key,
                         event.keystroke.modifiers,
                         window,
@@ -285,13 +282,13 @@ impl MapViewerWindowView {
             .on_key_up(cx.listener(|this, event: &KeyUpEvent, _window, cx| {
                 let key = event.keystroke.key.as_str();
                 if is_preview_3d_navigation_key(key) {
-                    this.preview_3d_release_navigation_key(key, cx);
+                    this.release_navigation_key(key, cx);
                     cx.stop_propagation();
                 }
             }))
             .on_modifiers_changed(cx.listener(
                 |this, event: &ModifiersChangedEvent, window, cx| {
-                    this.preview_3d_sync_modifier_navigation(event.modifiers, window, cx);
+                    this.sync_modifier_navigation(event.modifiers, window, cx);
                     cx.stop_propagation();
                 },
             ));
@@ -299,7 +296,7 @@ impl MapViewerWindowView {
         if let Some(mesh) = mesh {
             // Converted OBJ/image previews must use their own mesh bounds. Reusing
             // the world's region selection bounds makes imported models microscopic.
-            let importing = self.import_workspace_active();
+            let importing = self.import_active();
             let selection_bounds = if importing {
                 None
             } else {
@@ -318,7 +315,7 @@ impl MapViewerWindowView {
                             .relative()
                             .size_full()
                             .overflow_hidden()
-                            .child(gpui_3d::scene_view(scene_view)),
+                            .child(gpui_3d::scene_view::element(scene_view)),
                     );
                 }
                 Err(error) => {

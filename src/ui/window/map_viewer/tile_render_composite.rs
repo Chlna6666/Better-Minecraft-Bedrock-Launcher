@@ -4,9 +4,9 @@ use crate::ui::window::map_viewer::model::MapViewport;
 use super::model::{CHUNKS_PER_TILE, MAX_VIEWPORT_COMPOSITE_DIMENSION};
 use super::prelude::*;
 use super::tile_cache::decoded_tile_byte_len;
-use super::tile_render_core as core;
+use super::tile_render_core;
 use super::tile_state::MapRenderRange;
-use super::viewport::{tile_render_range, tile_paint_rect};
+use super::viewport::{tile_paint_rect, tile_render_range};
 use bedrock_render::RenderLayout;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -23,10 +23,10 @@ pub(super) const fn web_relief_render_layout() -> RenderLayout {
 }
 
 pub(super) fn render_viewport_composite_stream(
-    request: core::ViewportCompositeRequest,
-    event_sender: UnboundedSender<core::ViewportCompositeEvent>,
+    request: tile_render_core::ViewportCompositeRequest,
+    event_sender: UnboundedSender<tile_render_core::ViewportCompositeEvent>,
 ) -> Result<(), String> {
-    let core::ViewportCompositeRequest {
+    let tile_render_core::ViewportCompositeRequest {
         render_session,
         dimension,
         layout,
@@ -40,9 +40,9 @@ pub(super) fn render_viewport_composite_stream(
         tile_cache_validation_seed,
         render_cancel,
     } = request;
-    core::validate_ui_render_layout(layout)?;
-    let render_range = tile_render_range(viewport, layout)
-        .ok_or_else(|| "视口合成范围无效".to_string())?;
+    tile_render_core::validate_ui_render_layout(layout)?;
+    let render_range =
+        tile_render_range(viewport, layout).ok_or_else(|| "视口合成范围无效".to_string())?;
     let (image_width, image_height, output_scale) = viewport_composite_image_size(viewport)?;
     let compositor = Arc::new(Mutex::new(ProgressiveViewportCompositor::new(
         viewport,
@@ -79,10 +79,10 @@ pub(super) fn render_viewport_composite_stream(
             planned_tiles: requested_tile_count,
             ..RenderPipelineStats::default()
         };
-        core::send_viewport_composite_event_or_cancel(
+        tile_render_core::send_composite_event_or_cancel(
             &event_sender,
             &render_cancel,
-            core::ViewportCompositeEvent::Complete {
+            tile_render_core::ViewportCompositeEvent::Complete {
                 frame: None,
                 requested_tiles,
                 rendered_tiles: 0,
@@ -95,7 +95,7 @@ pub(super) fn render_viewport_composite_stream(
         return Ok(());
     }
 
-    let render_options = core::interactive_render_options(
+    let render_options = tile_render_core::interactive_render_options(
         render_backend,
         render_gpu_backend,
         cpu_budget,
@@ -137,10 +137,10 @@ pub(super) fn render_viewport_composite_stream(
                                 .map_err(bedrock_render::BedrockRenderError::Validation)?
                         };
                         if let Some(preview) = preview {
-                            core::send_viewport_composite_event_or_cancel(
+                            tile_render_core::send_composite_event_or_cancel(
                                 &event_sender,
                                 &stream_cancel,
-                                core::ViewportCompositeEvent::Tile { tile: preview },
+                                tile_render_core::ViewportCompositeEvent::Tile { tile: preview },
                             )?;
                             std::thread::sleep(PROGRESSIVE_PREVIEW_PRESENT_INTERVAL);
                         }
@@ -180,10 +180,10 @@ pub(super) fn render_viewport_composite_stream(
                                 "map_viewer viewport_composite_completed_with_partial_failures"
                             );
                         }
-                        core::send_viewport_composite_event_or_cancel(
+                        tile_render_core::send_composite_event_or_cancel(
                             &event_sender,
                             &stream_cancel,
-                            core::ViewportCompositeEvent::Complete {
+                            tile_render_core::ViewportCompositeEvent::Complete {
                                 frame,
                                 requested_tiles: requested_tiles.clone(),
                                 rendered_tiles,
@@ -255,7 +255,7 @@ impl ProgressiveViewportCompositor {
         &mut self,
         coord: (i32, i32),
         tile: &DecodedTileImage,
-    ) -> Result<Option<core::ViewportCompositeTile>, String> {
+    ) -> Result<Option<tile_render_core::ViewportCompositeTile>, String> {
         if tile.pixel_format != TilePixelFormat::Rgba8 {
             return Err(format!("视口合成不支持像素格式: {:?}", tile.pixel_format));
         }
@@ -377,7 +377,7 @@ impl ProgressiveViewportCompositor {
         Ok(None)
     }
 
-    fn snapshot_dirty_region(&mut self) -> Result<core::ViewportCompositeTile, String> {
+    fn snapshot_dirty_region(&mut self) -> Result<tile_render_core::ViewportCompositeTile, String> {
         let dirty = self
             .dirty
             .take()
@@ -431,7 +431,7 @@ impl ProgressiveViewportCompositor {
         self.dirty_tiles = 0;
         self.preview_frames = self.preview_frames.saturating_add(1);
         let inverse_scale = 1.0 / self.output_scale.max(0.001);
-        Ok(core::ViewportCompositeTile {
+        Ok(tile_render_core::ViewportCompositeTile {
             image: Arc::new(image),
             source_viewport: self.viewport,
             left: dirty.left as f32 * inverse_scale,
@@ -442,7 +442,7 @@ impl ProgressiveViewportCompositor {
         })
     }
 
-    fn finish_frame(&mut self) -> Result<Option<core::ViewportCompositeFrame>, String> {
+    fn finish_frame(&mut self) -> Result<Option<tile_render_core::ViewportCompositeFrame>, String> {
         if self.rendered_tiles == 0 {
             return Ok(None);
         }
@@ -451,7 +451,7 @@ impl ProgressiveViewportCompositor {
         let image =
             RenderImage::from_raw_pixels(self.width, self.height, ImagePixelFormat::Rgba8, pixels)
                 .map_err(|error| format!("视口合成图创建失败: {error}"))?;
-        Ok(Some(core::ViewportCompositeFrame {
+        Ok(Some(tile_render_core::ViewportCompositeFrame {
             image: Arc::new(image),
             source_viewport: self.viewport,
             width: self.width,

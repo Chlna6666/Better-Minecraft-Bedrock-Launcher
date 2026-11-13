@@ -522,18 +522,11 @@ impl MapHistoryEntry {
 }
 
 pub(crate) fn capture_before(spec: MapHistoryCaptureSpec) -> Result<MapHistoryCapture, String> {
-    capture_before_with_progress(spec, |_| {})
-}
-
-pub(super) fn capture_before_with_progress(
-    spec: MapHistoryCaptureSpec,
-    progress: impl FnMut(MapHistoryApplyProgress),
-) -> Result<MapHistoryCapture, String> {
     let world = open_world_readonly(&spec.world_path)?;
-    capture_before_with_world_and_progress(spec, &world, progress)
+    capture_before_in_world(spec, &world, |_| {})
 }
 
-pub(super) fn capture_before_with_world_and_progress(
+pub(super) fn capture_before_in_world(
     spec: MapHistoryCaptureSpec,
     world: &World,
     mut progress: impl FnMut(MapHistoryApplyProgress),
@@ -556,7 +549,7 @@ pub(super) fn capture_before_with_world_and_progress(
         });
     }
 
-    let history_dir = history_dir_for_world(&spec.world_path);
+    let history_dir = history_dir(&spec.world_path);
     let mut before_raw_records = BTreeMap::new();
     for key in &raw_keys {
         let value = world
@@ -591,19 +584,11 @@ pub(crate) fn complete_after(
     capture: MapHistoryCapture,
     message: impl Into<String>,
 ) -> Result<MapHistoryEntry, String> {
-    complete_after_with_progress(capture, message, |_| {})
-}
-
-pub(super) fn complete_after_with_progress(
-    capture: MapHistoryCapture,
-    message: impl Into<String>,
-    progress: impl FnMut(MapHistoryApplyProgress),
-) -> Result<MapHistoryEntry, String> {
     let world = open_world_readonly(&capture.world_path)?;
-    complete_after_with_world_and_progress(capture, &world, message, progress)
+    complete_after_in_world(capture, &world, message, |_| {})
 }
 
-pub(super) fn complete_after_with_world_and_progress(
+pub(super) fn complete_after_in_world(
     capture: MapHistoryCapture,
     world: &World,
     message: impl Into<String>,
@@ -722,7 +707,7 @@ pub(crate) fn complete_failed(
 }
 
 pub(super) fn list_history(world_path: &Path) -> Result<Vec<MapHistoryEntry>, String> {
-    let history_dir = history_dir_for_world(world_path);
+    let history_dir = history_dir(world_path);
     if !history_dir.exists() {
         return Ok(Vec::new());
     }
@@ -843,7 +828,7 @@ pub(super) fn load_history_visualization(
     world_path: &Path,
     id: &str,
 ) -> Result<MapHistoryVisualization, String> {
-    let history_dir = history_dir_for_world(world_path);
+    let history_dir = history_dir(world_path);
     let entry_path = history_dir.join(id).join(HISTORY_ENTRY_FILE);
     let entry_raw = fs::read_to_string(&entry_path)
         .map_err(|error| format!("读取历史索引失败 {}: {error}", entry_path.display()))?;
@@ -1303,17 +1288,17 @@ fn accumulate_legacy_terrain_delta(
 
 fn decode_history_legacy_terrain(
     bytes: Option<&Vec<u8>>,
-) -> (Option<bedrock_world::LegacyTerrain>, bool) {
+) -> (Option<bedrock_world::chunk::LegacyTerrain>, bool) {
     let Some(bytes) = bytes else {
         return (None, true);
     };
-    match bedrock_world::LegacyTerrain::parse(bytes::Bytes::copy_from_slice(bytes)) {
+    match bedrock_world::chunk::LegacyTerrain::parse(bytes::Bytes::copy_from_slice(bytes)) {
         Ok(terrain) => (Some(terrain), true),
         Err(_) => (None, false),
     }
 }
 
-pub(super) fn apply_undo_with_progress(
+pub(super) fn apply_undo(
     world_path: &Path,
     cancel: &CancelFlag,
     progress: impl FnMut(MapHistoryApplyProgress),
@@ -1324,7 +1309,13 @@ pub(super) fn apply_undo_with_progress(
     else {
         return Err("没有可撤回的地图修改".to_string());
     };
-    let applied_change = apply_history_entry(world_path, &entry, true, cancel, progress)?;
+    let applied_change = apply_history_entry(
+        world_path,
+        &entry,
+        HistoryDirection::Undo,
+        cancel,
+        progress,
+    )?;
     mark_entry_status(world_path, &entry.id, MapHistoryEntryStatus::Undone, None)?;
     Ok(MapHistoryApplyOutcome {
         affected_chunks: applied_change.affected_chunks,
@@ -1334,7 +1325,7 @@ pub(super) fn apply_undo_with_progress(
     })
 }
 
-pub(super) fn apply_redo_with_progress(
+pub(super) fn apply_redo(
     world_path: &Path,
     cancel: &CancelFlag,
     progress: impl FnMut(MapHistoryApplyProgress),
@@ -1345,7 +1336,13 @@ pub(super) fn apply_redo_with_progress(
     else {
         return Err("没有可重做的地图修改".to_string());
     };
-    let applied_change = apply_history_entry(world_path, &entry, false, cancel, progress)?;
+    let applied_change = apply_history_entry(
+        world_path,
+        &entry,
+        HistoryDirection::Redo,
+        cancel,
+        progress,
+    )?;
     mark_entry_status(world_path, &entry.id, MapHistoryEntryStatus::Success, None)?;
     Ok(MapHistoryApplyOutcome {
         affected_chunks: applied_change.affected_chunks,
@@ -1355,7 +1352,7 @@ pub(super) fn apply_redo_with_progress(
     })
 }
 
-pub(super) fn restore_history_entry_with_progress(
+pub(super) fn restore_history_entry(
     world_path: &Path,
     entry_id: &str,
     cancel: &CancelFlag,
@@ -1368,7 +1365,13 @@ pub(super) fn restore_history_entry_with_progress(
     if entry.status == MapHistoryEntryStatus::Failed {
         return Err("失败的历史项不能回档".to_string());
     }
-    let applied_change = apply_history_entry(world_path, &entry, true, cancel, progress)?;
+    let applied_change = apply_history_entry(
+        world_path,
+        &entry,
+        HistoryDirection::Undo,
+        cancel,
+        progress,
+    )?;
     Ok(MapHistoryApplyOutcome {
         affected_chunks: applied_change.affected_chunks,
         refresh_all_tiles: applied_change.refresh_all_tiles,
@@ -1393,7 +1396,7 @@ pub(super) fn create_restore_protection_point(
     complete_snapshot(capture, "回档前保护点")
 }
 
-pub(super) fn history_dir_for_world(world_path: &Path) -> PathBuf {
+pub(super) fn history_dir(world_path: &Path) -> PathBuf {
     crate::utils::file_ops::bmcbl_subdir("map_history").join(world_history_id(world_path))
 }
 
@@ -1445,17 +1448,23 @@ pub(super) fn prune_history(
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HistoryDirection {
+    Undo,
+    Redo,
+}
+
 fn apply_history_entry(
     world_path: &Path,
     entry: &MapHistoryEntry,
-    undo: bool,
+    direction: HistoryDirection,
     cancel: &CancelFlag,
     mut progress: impl FnMut(MapHistoryApplyProgress),
 ) -> Result<MapHistoryAppliedChange, String> {
     if cancel.is_cancelled() {
         return Err("历史操作已取消".to_owned());
     }
-    let change = read_history_change(&history_dir_for_world(world_path), &entry.id)?;
+    let change = read_history_change(&history_dir(world_path), &entry.id)?;
     if cancel.is_cancelled() {
         return Err("历史操作已取消".to_owned());
     }
@@ -1466,8 +1475,14 @@ fn apply_history_entry(
         .raw_records
         .iter()
         .try_fold(0_usize, |total, delta| {
-            let source = if undo { &delta.after } else { &delta.before };
-            let target = if undo { &delta.before } else { &delta.after };
+            let source = match direction {
+                HistoryDirection::Undo => &delta.after,
+                HistoryDirection::Redo => &delta.before,
+            };
+            let target = match direction {
+                HistoryDirection::Undo => &delta.before,
+                HistoryDirection::Redo => &delta.after,
+            };
             total
                 .checked_add(delta.key.len().saturating_mul(2))
                 .and_then(|total| total.checked_add(source.as_ref().map_or(0, Vec::len)))
@@ -1487,10 +1502,9 @@ fn apply_history_entry(
         .saturating_add(usize::from(change.level_dat.is_some()))
         .saturating_add(usize::from(raw_total != 0))
         .max(1);
-    let phase = SharedString::from(if undo {
-        "应用历史回档"
-    } else {
-        "应用历史重做"
+    let phase = SharedString::from(match direction {
+        HistoryDirection::Undo => "应用历史回档",
+        HistoryDirection::Redo => "应用历史重做",
     });
     progress(MapHistoryApplyProgress {
         phase: phase.clone(),
@@ -1510,10 +1524,9 @@ fn apply_history_entry(
             if delta.key.is_empty() {
                 return Err("应用历史记录失败: 历史项包含空 LevelDB key".to_owned());
             }
-            let (source, target) = if undo {
-                (&delta.after, &delta.before)
-            } else {
-                (&delta.before, &delta.after)
+            let (source, target) = match direction {
+                HistoryDirection::Undo => (&delta.after, &delta.before),
+                HistoryDirection::Redo => (&delta.before, &delta.after),
             };
             let key = Bytes::copy_from_slice(&delta.key);
             transaction.require_raw_key(
@@ -1548,7 +1561,10 @@ fn apply_history_entry(
         if cancel.is_cancelled() {
             return Err("历史操作已取消".to_owned());
         }
-        let value = if undo { delta.before } else { delta.after };
+        let value = match direction {
+            HistoryDirection::Undo => delta.before,
+            HistoryDirection::Redo => delta.after,
+        };
         write_optional_file(world_path.join("level.dat"), value)?;
         progress(MapHistoryApplyProgress {
             phase,
@@ -2009,7 +2025,7 @@ fn mark_entry_status(
     status: MapHistoryEntryStatus,
     error: Option<String>,
 ) -> Result<(), String> {
-    let history_dir = history_dir_for_world(world_path);
+    let history_dir = history_dir(world_path);
     let path = history_dir.join(id).join(HISTORY_ENTRY_FILE);
     let raw = fs::read_to_string(&path).map_err(|error| format!("读取历史索引失败: {error}"))?;
     let mut entry = serde_json::from_str::<MapHistoryEntry>(&raw)

@@ -1,5 +1,6 @@
-use crate::ui::theme::colors::parse_hex_color_to_hsla;
+use crate::ui::theme::parse_hex_color;
 use crate::ui::window::debug::state::{DebugInspectorSnapshot, DebugState};
+use gpui::diagnostics::inspector::InspectorElementId;
 use gpui::*;
 
 fn format_rgba_hex(color: Hsla) -> SharedString {
@@ -145,7 +146,7 @@ pub fn find_window_by_id(target_id: Option<u64>, cx: &App) -> Option<AnyWindowHa
         .find(|window| window.window_id().as_u64() == target_id)
 }
 
-pub fn debug_window_is_open(cx: &App) -> bool {
+pub fn is_open(cx: &App) -> bool {
     find_window_by_id(
         cx.read_global(|debug: &DebugState, _cx| debug.debug_window_id),
         cx,
@@ -227,7 +228,7 @@ pub fn set_selected_element_opacity(cx: &mut App, opacity: f32) {
 pub fn set_selected_element_background(cx: &mut App, hex: &str) {
     tracing::debug!("debug devtools action: set_selected_element_background hex={hex}");
     #[cfg(debug_assertions)]
-    if let Some(color) = parse_hex_color_to_hsla(hex) {
+    if let Some(color) = parse_hex_color(hex) {
         with_selected_div_state(cx, move |state| {
             state.base_style.background = Some(color.into());
         });

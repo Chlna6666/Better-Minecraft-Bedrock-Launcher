@@ -77,7 +77,7 @@ pub(super) struct PlayerWorkspaceState {
 }
 
 impl PlayerWorkspaceState {
-    pub(super) fn new(window: &mut Window, cx: &mut Context<MapViewerWindowView>) -> Self {
+    pub(super) fn new(window: &mut Window, cx: &mut Context<View>) -> Self {
         let _i18n = cx.global::<I18n>().clone();
         let search = workspace_input(window, cx, t!("MapViewer.player_search_placeholder"));
         let item_id = workspace_input(window, cx, t!("MapViewer.item_id_placeholder"));
@@ -125,19 +125,19 @@ impl PlayerWorkspaceState {
 
 fn workspace_input(
     window: &mut Window,
-    cx: &mut Context<MapViewerWindowView>,
+    cx: &mut Context<View>,
     placeholder: impl Into<SharedString>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
         let mut input = InputState::new(window, cx);
-        input.set_placeholder(placeholder, window, cx);
+        input.set_placeholder(placeholder, cx);
         input
     })
 }
 
-pub(super) fn player_workspace_subscriptions(
+pub(super) fn player_subscriptions(
     state: &PlayerWorkspaceState,
-    cx: &mut Context<MapViewerWindowView>,
+    cx: &mut Context<View>,
 ) -> Vec<Subscription> {
     let mut subscriptions = Vec::new();
     let localized_inputs = [
@@ -187,7 +187,7 @@ pub(super) fn player_workspace_subscriptions(
         for (input, key) in &localized_inputs {
             let placeholder = i18n.t_key(*key);
             input.update(cx, |input, cx| {
-                input.set_placeholder_without_window(placeholder, cx);
+                input.set_placeholder(placeholder, cx);
             });
         }
         this.player_workspace.item_editor_error = None;
@@ -244,7 +244,7 @@ struct PlayerWorkspaceMetrics {
     compact: bool,
 }
 
-fn player_workspace_metrics_for_width(available: f32) -> PlayerWorkspaceMetrics {
+fn metrics_for_width(available: f32) -> PlayerWorkspaceMetrics {
     let available = available.max(1.0);
     let compact = available < 620.0;
     let tight = available < 470.0;
@@ -375,7 +375,7 @@ impl Render for PlayerItemDrag {
     }
 }
 
-impl MapViewerWindowView {
+impl View {
     fn player_workspace_metrics(&self) -> PlayerWorkspaceMetrics {
         // The center stage is the actual flex container available to the inventory. Do not
         // clamp it upward: doing so made narrow windows calculate a grid wider than their
@@ -385,10 +385,10 @@ impl MapViewerWindowView {
             .width
             / px(1.0))
         .max(1.0);
-        player_workspace_metrics_for_width(available)
+        metrics_for_width(available)
     }
 
-    pub(super) fn player_workspace_active(&self) -> bool {
+    pub(super) fn player_active(&self) -> bool {
         self.ui_state.active_left_panel == MapViewerLeftPanel::Players
             && self.ui_state.left_panel_open
     }
@@ -604,11 +604,7 @@ impl MapViewerWindowView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| {
-                    this.open_player_workspace_for_player(
-                        id.clone(),
-                        PlayerWorkspaceCenter::Inventory,
-                        cx,
-                    )
+                    this.open_player_workspace(id.clone(), PlayerWorkspaceCenter::Inventory, cx)
                 }),
             )
             .child(
@@ -693,7 +689,7 @@ impl MapViewerWindowView {
             )
     }
 
-    pub(super) fn open_player_workspace_for_player(
+    pub(super) fn open_player_workspace(
         &mut self,
         id: PlayerId,
         center: PlayerWorkspaceCenter,
@@ -1408,7 +1404,7 @@ impl MapViewerWindowView {
                                 .on_mouse_up(
                                     MouseButton::Left,
                                     cx.listener(move |this, _event, _window, cx| {
-                                        this.replace_selected_player_item_with_id(&click_id, cx)
+                                        this.replace_selected_item(&click_id, cx)
                                     }),
                                 )
                                 .into_any_element()
@@ -1430,7 +1426,7 @@ impl MapViewerWindowView {
             || self.ui_state.active_right_panel != MapViewerRightPanel::Player;
         self.ui_state.active_right_panel = MapViewerRightPanel::Player;
         self.ui_state.set_right_panel_open(true);
-        self.sync_selected_player_item_visual_inputs(cx);
+        self.sync_selected_item_fields(cx);
         self.sync_player_item_raw_editor(cx);
         if dock_changed {
             self.update_viewport_after_dock_change(cx);
@@ -1510,7 +1506,7 @@ impl MapViewerWindowView {
         self.workspace_entry_for_selection(self.player_workspace.selected_item?)
     }
 
-    pub(super) fn sync_selected_player_item_visual_inputs(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn sync_selected_item_fields(&mut self, cx: &mut Context<Self>) {
         self.sync_selected_player_map_preview(cx);
         let Some(selection) = self.player_workspace.selected_item else {
             return;
@@ -1590,10 +1586,7 @@ impl MapViewerWindowView {
                 cx.notify();
             }
             CodeEditorEvent::PointerInteractionStarted => {
-                self.cancel_pointer_captures_for_panel_interaction(
-                    "player item editor pointer down",
-                    cx,
-                );
+                self.cancel_pointer_captures("player item editor pointer down", cx);
             }
             CodeEditorEvent::PointerInteractionEnded => {}
             CodeEditorEvent::SaveRequested => self.save_selected_player_item_raw(cx),
@@ -1670,7 +1663,7 @@ impl MapViewerWindowView {
             )
             .child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(
                 if self.player_workspace.selected_item.is_some() {
-                    self.render_selected_player_item_inspector(colors, &i18n, cx)
+                    self.render_selected_item_inspector(colors, &i18n, cx)
                 } else {
                     self.render_player_overview_inspector(colors, detail, &i18n, cx)
                 },
@@ -1762,7 +1755,7 @@ impl MapViewerWindowView {
             .into_any_element()
     }
 
-    fn render_selected_player_item_inspector(
+    fn render_selected_item_inspector(
         &self,
         colors: &ThemeColors,
         i18n: &I18n,
@@ -2017,7 +2010,7 @@ impl MapViewerWindowView {
                         toolbar_button(colors, t!("MapViewer.import_clipboard")).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _event, _window, cx| {
-                                this.import_selected_player_item_from_clipboard(cx)
+                                this.import_player_item_from_clipboard(cx)
                             }),
                         ),
                     ),
@@ -2084,7 +2077,7 @@ impl MapViewerWindowView {
                         toolbar_button(colors, t!("MapViewer.add_enchantment")).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _event, _window, cx| {
-                                this.add_selected_player_item_enchant_from_inputs(cx)
+                                this.add_enchantment_to_selected_item(cx)
                             }),
                         ),
                     ),
@@ -2307,7 +2300,7 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
-    pub(super) fn import_selected_player_item_from_clipboard(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn import_player_item_from_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.player_workspace.selected_item else {
             self.status = SharedString::from("请先选择一个背包/末影箱/装备槽位");
             cx.notify();
@@ -2333,7 +2326,7 @@ impl MapViewerWindowView {
         self.write_player_workspace_slot(selection, Some(tag), "玩家物品：剪贴板导入", cx);
     }
 
-    pub(super) fn replace_selected_player_item_with_id(
+    pub(super) fn replace_selected_item(
         &mut self,
         id: &str,
         cx: &mut Context<Self>,
@@ -2365,7 +2358,7 @@ impl MapViewerWindowView {
         self.write_player_workspace_slot(selection, None, "玩家物品：清空槽位", cx);
     }
 
-    pub(super) fn add_selected_player_item_enchant_from_inputs(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn add_enchantment_to_selected_item(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.player_workspace.selected_item else {
             return;
         };
@@ -2416,7 +2409,7 @@ impl MapViewerWindowView {
         self.write_player_workspace_slot(selection, Some(tag), "玩家物品：修改附魔", cx);
     }
 
-    fn sync_player_summary_inventory_counts(&mut self, detail: &PlayerDetail) {
+    fn sync_inventory_summary(&mut self, detail: &PlayerDetail) {
         let entries = player_inventory_entries(&detail.nbt);
         let item_count = entries.len();
         let ender_item_count = entries
@@ -2548,13 +2541,13 @@ impl MapViewerWindowView {
                 this.players.saving = false;
                 match result {
                     Ok((detail, last)) => {
-                        this.sync_player_summary_inventory_counts(&detail);
+                        this.sync_inventory_summary(&detail);
                         this.players.detail = Some(detail);
                         this.player_workspace.multi_selected_items.clear();
                         this.player_workspace.selected_item = Some(last);
                         this.player_workspace.item_editor_dirty = false;
                         this.player_workspace.item_editor_error = None;
-                        this.sync_selected_player_item_visual_inputs(cx);
+                        this.sync_selected_item_fields(cx);
                         this.sync_player_item_raw_editor(cx);
                         this.status =
                             SharedString::from("批量物品移动完成 · 未覆盖其他槽位 · 可从历史撤销");
@@ -2641,12 +2634,12 @@ impl MapViewerWindowView {
                 this.players.saving = false;
                 match result {
                     Ok(detail) => {
-                        this.sync_player_summary_inventory_counts(&detail);
+                        this.sync_inventory_summary(&detail);
                         this.players.detail = Some(detail);
                         this.player_workspace.selected_item = Some(target);
                         this.player_workspace.item_editor_dirty = false;
                         this.player_workspace.item_editor_error = None;
-                        this.sync_selected_player_item_visual_inputs(cx);
+                        this.sync_selected_item_fields(cx);
                         this.sync_player_item_raw_editor(cx);
                         this.status = SharedString::from(
                             "物品拖拽已写入 · 目标有物品时自动交换 · 可从历史撤销",
@@ -2723,11 +2716,11 @@ impl MapViewerWindowView {
                 this.players.saving = false;
                 match result {
                     Ok(detail) => {
-                        this.sync_player_summary_inventory_counts(&detail);
+                        this.sync_inventory_summary(&detail);
                         this.players.detail = Some(detail);
                         this.player_workspace.item_editor_dirty = false;
                         this.player_workspace.item_editor_error = None;
-                        this.sync_selected_player_item_visual_inputs(cx);
+                        this.sync_selected_item_fields(cx);
                         this.sync_player_item_raw_editor(cx);
                         this.status = SharedString::from(
                             "玩家物品已写入 · 未识别 NBT 字段已保留 · 可从历史撤销",
@@ -3376,12 +3369,12 @@ fn stable_middle_ellipsis(value: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod responsive_inventory_layout_tests {
-    use super::player_workspace_metrics_for_width;
+    use super::metrics_for_width;
 
     #[::core::prelude::v1::test]
     fn nine_slot_grid_never_exceeds_available_center_width() {
         for available in [240.0_f32, 320.0, 420.0, 560.0, 800.0] {
-            let metrics = player_workspace_metrics_for_width(available);
+            let metrics = metrics_for_width(available);
             let occupied = metrics.grid_width
                 + metrics.panel_padding * 2.0
                 + metrics.outer_padding * 2.0

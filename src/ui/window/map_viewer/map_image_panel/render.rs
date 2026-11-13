@@ -1,7 +1,7 @@
 use super::*;
 
-impl MapViewerWindowView {
-    pub(in super::super) fn render_map_image_panel(
+impl View {
+    pub(in super::super) fn map_image_panel(
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
@@ -34,8 +34,8 @@ impl MapViewerWindowView {
                     .flex()
                     .flex_col()
                     .gap(px(15.0))
-                    .child(generator_section_title(colors, "01  素材"))
-                    .child(crate::ui::components::inspector::inspector_source_card(
+                    .child(inspector::section_title(colors, "01  素材"))
+                    .child(crate::ui::components::inspector::source_card(
                         colors,
                         if self.map_image.pending_bundle.is_some() {
                             "NBT / MAP"
@@ -64,7 +64,7 @@ impl MapViewerWindowView {
                         div().text_size(px(11.0)).text_color(colors.text_secondary)
                             .child("导出或写入中 · 目标与设置暂时锁定"),
                     ))
-                    .child(crate::ui::components::inspector::inspector_result_summary(
+                    .child(crate::ui::components::inspector::result_summary(
                         colors, "地图网格",
                         if grid_resolved {
                             format!(
@@ -78,11 +78,11 @@ impl MapViewerWindowView {
                             "正在计算最佳分片数".to_owned()
                         },
                     ))
-                    .child(generator_section_title(colors, "02  网格与画面利用率"))
+                    .child(inspector::section_title(colors, "02  网格与画面利用率"))
                     .child(
-                        crate::ui::components::inspector::inspector_field_group(colors)
+                        crate::ui::components::inspector::field_group(colors)
                             .child(
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     "智能行列 · 按图片比例减少留白",
                                     self.map_image.options.auto_fit,
@@ -105,7 +105,7 @@ impl MapViewerWindowView {
                             .child(self.render_grid_axis(GridAxis::Columns, colors, cx))
                             .child(self.render_grid_axis(GridAxis::Rows, colors, cx)),
                     )
-                    .child(generator_section_title(colors, "03  写入目标"))
+                    .child(inspector::section_title(colors, "03  写入目标"))
                     .child(
                         div()
                             .text_size(px(11.0))
@@ -178,11 +178,11 @@ impl MapViewerWindowView {
                                             }),
                                     )
                                 })
-                                .child(self.render_map_container_candidates(colors, cx))
+                                .child(self.render_container_candidates(colors, cx))
                         },
                     )
                     .when(self.map_image.install_destination == MapImageInstallDestination::NewUpFrame, |panel| panel
-                    .child(generator_section_title(colors, "朝上展示框放置"))
+                    .child(inspector::section_title(colors, "朝上展示框放置"))
                     .child(
                         div()
                             .flex()
@@ -228,7 +228,7 @@ impl MapViewerWindowView {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _event, _window, cx| {
-                                        this.set_map_frame_anchor_to_viewport(cx);
+                                        this.center_map_frame_anchor(cx);
                                     }),
                                 ),
                             )
@@ -274,7 +274,7 @@ impl MapViewerWindowView {
                         ]
                         .into_iter()
                         .map(|(name, label)| {
-                            generator_choice(colors, label, self.map_image.frame_support == name)
+                            choice::chip(colors, label, self.map_image.frame_support == name)
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, _event, _window, cx| {
@@ -315,7 +315,7 @@ impl MapViewerWindowView {
                             .text_color(colors.text_secondary)
                             .child("多图按网格编号；写入玩家背包时分组为潜影盒，写入现有箱子时在箱内分组。"),
                     )
-                    .child(generator_section_title(colors, "04  图片适配与采样"))
+                    .child(inspector::section_title(colors, "04  图片适配与采样"))
                     .child(div().flex().flex_wrap().gap(px(6.0)).children(
                         [
                             (MapImageFit::Contain, "完整图片 · 等比留边"),
@@ -324,7 +324,7 @@ impl MapViewerWindowView {
                         ]
                         .into_iter()
                         .map(|(fit, label)| {
-                            generator_choice(colors, label, self.map_image.options.fit == fit)
+                            choice::chip(colors, label, self.map_image.options.fit == fit)
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, _event, _window, cx| {
@@ -338,7 +338,7 @@ impl MapViewerWindowView {
                     .when(self.map_image.options.fit == MapImageFit::Contain, |panel| {
                         panel
                             .child(
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     "自动去除 PNG 透明外边距",
                                     self.map_image.options.trim_transparent_edges,
@@ -366,7 +366,7 @@ impl MapViewerWindowView {
                                     }),
                             )
                     })
-                    .child(generator_section_title(colors, "缩放采样"))
+                    .child(inspector::section_title(colors, "缩放采样"))
                     .child(div().flex().gap(px(6.0)).children(
                         [
                             (MapResample::Nearest, "最近邻"),
@@ -374,7 +374,7 @@ impl MapViewerWindowView {
                         ]
                         .into_iter()
                         .map(|(resample, label)| {
-                            generator_choice(
+                            choice::chip(
                                 colors,
                                 label,
                                 self.map_image.options.resample == resample,
@@ -389,12 +389,12 @@ impl MapViewerWindowView {
                                 )
                         }),
                     ))
-                    .child(generator_section_title(colors, "透明度"))
+                    .child(inspector::section_title(colors, "透明度"))
                     .child(div().flex().gap(px(6.0)).children(
                         [(1_u8, "保留边缘"), (128, "忽略半透明"), (255, "仅不透明")]
                             .into_iter()
                             .map(|(alpha, label)| {
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     label,
                                     self.map_image.options.alpha_threshold == alpha,

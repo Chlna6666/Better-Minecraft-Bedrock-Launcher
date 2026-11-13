@@ -3,7 +3,7 @@ use super::map_history::MapHistoryCapture;
 use super::model::*;
 use super::panels::*;
 use super::prelude::*;
-use std::collections::HashMap as StdHashMap;
+use std::collections::HashMap;
 use std::fs;
 
 const PLAYER_MAIN_INVENTORY_SIZE: i32 = 36;
@@ -272,7 +272,7 @@ struct PlayerRefreshResult {
     markers: BTreeMap<Dimension, Vec<Marker>>,
 }
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn refresh_players(&mut self, cx: &mut Context<Self>) {
         self.ensure_player_item_catalog(cx);
         self.players.generation = self.players.generation.saturating_add(1);
@@ -430,13 +430,13 @@ impl MapViewerWindowView {
                         {
                             this.player_workspace.open_first_after_refresh = false;
                             if let Some(id) = preferred_player_id(&this.players.players) {
-                                this.open_player_workspace_for_player(
+                                this.open_player_workspace(
                                     id,
                                     PlayerWorkspaceCenter::Inventory,
                                     cx,
                                 );
                             }
-                        } else if this.player_workspace_active() {
+                        } else if this.player_active() {
                             if let Some(id) = this.players.selected.clone() {
                                 this.load_player_detail(id, cx);
                             }
@@ -530,7 +530,7 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
-    pub(super) fn add_player_item_from_clipboard(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn add_item_from_clipboard(&mut self, cx: &mut Context<Self>) {
         let text = clipboard_text(cx);
         let Some(name) = parse_item_id(&text) else {
             self.status =
@@ -547,7 +547,7 @@ impl MapViewerWindowView {
         );
     }
 
-    pub(super) fn set_player_item_name_from_clipboard(
+    pub(super) fn paste_item_name(
         &mut self,
         kind: PlayerInventoryKind,
         list_index: usize,
@@ -569,7 +569,7 @@ impl MapViewerWindowView {
         );
     }
 
-    pub(super) fn set_player_item_lore_from_clipboard(
+    pub(super) fn paste_item_lore(
         &mut self,
         kind: PlayerInventoryKind,
         list_index: usize,
@@ -597,7 +597,7 @@ impl MapViewerWindowView {
         );
     }
 
-    pub(super) fn add_player_item_enchant_from_clipboard(
+    pub(super) fn paste_item_enchant(
         &mut self,
         kind: PlayerInventoryKind,
         list_index: usize,
@@ -868,7 +868,7 @@ impl MapViewerWindowView {
 
         self.player_item_catalog_loading = true;
         cx.spawn(async move |handle, cx| {
-            let loaded = crate::tasks::runtime::run_io_blocking(move || {
+            let loaded = crate::tasks::runtime::blocking::run_io(move || {
                 Arc::clone(slot.get_or_init(|| Arc::new(load_item_catalog(&instance_root))))
             })
             .await;
@@ -1653,7 +1653,7 @@ fn enchant_tag(id: i16, level: i16) -> NbtTag {
     NbtTag::Compound(compound)
 }
 
-fn clipboard_text(cx: &mut Context<MapViewerWindowView>) -> String {
+fn clipboard_text(cx: &mut Context<View>) -> String {
     cx.read_from_clipboard()
         .and_then(|item| item.text())
         .unwrap_or_default()
@@ -1704,8 +1704,8 @@ fn normalize_item_id(value: &str) -> String {
 type PlayerItemCatalogSlot = Arc<OnceLock<Arc<Vec<PlayerItemTexture>>>>;
 
 fn player_item_catalog_slot(instance_root: &Path) -> PlayerItemCatalogSlot {
-    static CACHE: OnceLock<Mutex<StdHashMap<PathBuf, PlayerItemCatalogSlot>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(StdHashMap::new()));
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, PlayerItemCatalogSlot>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cache = cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

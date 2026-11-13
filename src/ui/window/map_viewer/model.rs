@@ -22,7 +22,7 @@ pub(super) const UI_PIXELS_PER_BLOCK: u32 = 4;
 pub(super) const DEFAULT_TILE_SIZE: f32 = 512.0;
 pub(super) const PREFETCH_RADIUS: i32 = 0;
 pub(super) const RETAIN_RADIUS: i32 = 1;
-pub(super) const DRAG_RETAIN_RADIUS: i32 = 3;
+pub(super) const INTERACTION_RETAIN_RADIUS: i32 = 3;
 pub(super) const DRAG_CANVAS_SYNC_INTERVAL: Duration = Duration::from_millis(16);
 pub(super) const VIEWPORT_INTERACTION_IDLE_DELAY: Duration = Duration::from_millis(120);
 pub(super) const MAP_MEMORY_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(250);
@@ -104,7 +104,7 @@ pub(super) const CHUNK_TRANSFER_FINISHED_RETENTION: Duration = Duration::from_se
 pub(super) const MAP_CLICK_DRAG_THRESHOLD_PX: f32 = 4.0;
 
 #[derive(Clone)]
-pub struct MapViewerWindowInit {
+pub struct Init {
     pub version: ManagedVersionEntry,
     pub asset: ManageAssetEntry,
     pub world_path: SharedString,
@@ -157,7 +157,7 @@ impl RenderCpuBudget {
 
     pub(super) fn render_threading(self, work_items: usize) -> RenderThreadingOptions {
         let threads = RenderThreadingOptions::Auto
-            .resolve_for_profile_with_limits(
+            .resolve_for_profile(
                 RenderExecutionProfile::Interactive,
                 work_items.max(1),
                 Some(self.thread_count()),
@@ -434,13 +434,13 @@ impl Default for SlimeFarmScopeMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum SlimeFarmAdvancedScanPreset {
+pub(super) enum AdvancedSlimeScanPreset {
     Nearby,
     Regional,
     Comprehensive,
 }
 
-impl SlimeFarmAdvancedScanPreset {
+impl AdvancedSlimeScanPreset {
     pub(super) const fn radius_chunks(self) -> i32 {
         match self {
             Self::Nearby => 64,
@@ -468,7 +468,7 @@ impl SlimeFarmAdvancedScanPreset {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum SlimeFarmAdvancedScanAnchor {
+pub(super) enum AdvancedSlimeScanAnchor {
     ViewportCenter,
     SelectionCenter,
     SelectedPlayer,
@@ -476,19 +476,19 @@ pub(super) enum SlimeFarmAdvancedScanAnchor {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct SlimeFarmAdvancedScanRequest {
+pub(super) struct AdvancedSlimeScanRequest {
     pub(super) bounds: SlimeChunkBounds,
-    pub(super) preset: SlimeFarmAdvancedScanPreset,
-    pub(super) anchor: SlimeFarmAdvancedScanAnchor,
+    pub(super) preset: AdvancedSlimeScanPreset,
+    pub(super) anchor: AdvancedSlimeScanAnchor,
     pub(super) max_results: usize,
 }
 
 #[derive(Clone)]
-pub(super) struct SlimeFarmAdvancedScanDialogState {
-    pub(super) anchor: SlimeFarmAdvancedScanAnchor,
-    pub(super) preset: SlimeFarmAdvancedScanPreset,
+pub(super) struct AdvancedSlimeScanDialogState {
+    pub(super) anchor: AdvancedSlimeScanAnchor,
+    pub(super) preset: AdvancedSlimeScanPreset,
     pub(super) mode: SlimeFarmSearchMode,
-    pub(super) dismiss: crate::ui::components::modal::ModalDismissHandle,
+    pub(super) dismiss: crate::ui::components::modal::DismissHandle,
 }
 
 #[derive(Clone, Debug)]
@@ -550,25 +550,50 @@ impl ProfessionalDetail {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum EditTarget {
     SavedData(MapItemId),
-    GlobalRecord(GlobalRecordKind),
+    GlobalRecord {
+        kind: GlobalRecordKind,
+        source: Option<Bytes>,
+    },
+    TickQueues {
+        chunk: ChunkPos,
+        pending: Option<Bytes>,
+        random: Option<Bytes>,
+    },
     Player(PlayerId),
-    HsaChunk(ChunkPos),
-    BlockEntities(ChunkPos),
+    HsaChunk {
+        chunk: ChunkPos,
+        source: Option<Bytes>,
+    },
+    BlockEntities {
+        chunk: ChunkPos,
+        source: Option<Bytes>,
+    },
     BlockEntityAt { chunk: ChunkPos, block: BlockPos },
     Actors(ChunkPos),
     Actor { chunk: ChunkPos, unique_id: i64 },
-    HeightMap(ChunkPos),
-    BiomeStorage(ChunkPos),
+    HeightMap {
+        chunk: ChunkPos,
+        version: Option<ChunkVersion>,
+    },
+    BiomeStorage {
+        chunk: ChunkPos,
+        version: Option<ChunkVersion>,
+    },
 }
 
 impl EditTarget {
     pub(super) fn operation_label(&self) -> String {
         match self {
             Self::SavedData(id) => format!("edit map item {}", id.as_str()),
-            Self::GlobalRecord(kind) => format!("edit global record {}", global_kind_label(kind)),
+            Self::GlobalRecord { kind, .. } => {
+                format!("edit global record {}", global_kind_label(kind))
+            }
+            Self::TickQueues { chunk, .. } => format!("编辑计划刻/随机刻 {},{}", chunk.x, chunk.z),
             Self::Player(id) => format!("edit player {}", player_id_label(id)),
-            Self::HsaChunk(pos) => format!("edit HSA chunk {},{}", pos.x, pos.z),
-            Self::BlockEntities(pos) => format!("edit block entities chunk {},{}", pos.x, pos.z),
+            Self::HsaChunk { chunk: pos, .. } => format!("edit HSA chunk {},{}", pos.x, pos.z),
+            Self::BlockEntities { chunk: pos, .. } => {
+                format!("edit block entities chunk {},{}", pos.x, pos.z)
+            }
             Self::BlockEntityAt { block, .. } => {
                 format!("edit block entity {},{},{}", block.x, block.y, block.z)
             }
@@ -576,8 +601,8 @@ impl EditTarget {
             Self::Actor { chunk, unique_id } => {
                 format!("edit actor {unique_id} in chunk {},{}", chunk.x, chunk.z)
             }
-            Self::HeightMap(pos) => format!("edit heightmap chunk {},{}", pos.x, pos.z),
-            Self::BiomeStorage(pos) => format!("edit biome storage chunk {},{}", pos.x, pos.z),
+            Self::HeightMap { chunk: pos, .. } => format!("edit heightmap chunk {},{}", pos.x, pos.z),
+            Self::BiomeStorage { chunk: pos, .. } => format!("edit biome storage chunk {},{}", pos.x, pos.z),
         }
     }
 }
@@ -1001,10 +1026,11 @@ pub(super) fn sync_map_operation_task_progress(
     if reset {
         task_manager::reset_progress(task_id, total, Some(stage));
     }
-    task_manager::update_progress(
-        task_id,
-        ProgressUpdate::advance(delta).total(total).stage(stage),
-    );
+    let mut update = ProgressUpdate::advance(delta).stage(stage);
+    if let Some(total) = total {
+        update = update.total(total);
+    }
+    task_manager::update_progress(task_id, update);
 }
 
 pub(super) fn map_operation_cancelled(cancel: &CancelFlag, task_id: &str) -> bool {
@@ -1092,7 +1118,7 @@ impl CopiedChunkData {
 
 #[derive(Clone, Debug)]
 pub(super) struct ImportedStructureData {
-    pub(super) structure: Arc<bedrock_world::McStructureFile>,
+    pub(super) structure: Arc<bedrock_world::structure::McStructureFile>,
     pub(super) source_anchor: ChunkPos,
     pub(super) origin_y: i32,
 }
@@ -1334,7 +1360,7 @@ pub(super) struct ProfessionalOverlayPaintCache {
 
 impl ProfessionalOverlayPaintCache {
     pub(super) fn from_map_info_snapshot(
-        snapshot: &MapInfoOverlaySnapshot,
+        snapshot: &OverlaySnapshot,
         villages: &[VillageOverlay],
     ) -> Self {
         let mut cache = Self {
@@ -1451,7 +1477,7 @@ impl ProfessionalOverlayPaintCache {
                     .identifier
                     .as_deref()
                     .and_then(normalize_entity_avatar_key),
-                cache_status: MapInfoEntityCacheStatus::DirectQuery,
+                cache_status: EntityCacheStatus::DirectQuery,
             });
         }
         for block_entity in &query.block_entities {
@@ -1504,34 +1530,34 @@ pub(super) struct EntityCacheSummary {
     pub(super) source_fingerprints_validated: bool,
 }
 
-pub(super) const fn entity_cache_status_label(status: MapInfoEntityCacheStatus) -> &'static str {
+pub(super) const fn entity_cache_status_label(status: EntityCacheStatus) -> &'static str {
     match status {
-        MapInfoEntityCacheStatus::UnvalidatedCacheHit => "缓存预览（未校验）",
-        MapInfoEntityCacheStatus::ValidatedCacheHit => "缓存命中（源指纹有效）",
-        MapInfoEntityCacheStatus::Rebuilt => "缓存失效后实时重建",
-        MapInfoEntityCacheStatus::DirectQuery => "直接读取 LevelDB",
-        MapInfoEntityCacheStatus::Unknown => "来源未知",
+        EntityCacheStatus::UnvalidatedCacheHit => "缓存预览（未校验）",
+        EntityCacheStatus::ValidatedCacheHit => "缓存命中（源指纹有效）",
+        EntityCacheStatus::Rebuilt => "缓存失效后实时重建",
+        EntityCacheStatus::DirectQuery => "直接读取 LevelDB",
+        EntityCacheStatus::Unknown => "来源未知",
     }
 }
 
-pub(super) const fn entity_cache_short_label(status: MapInfoEntityCacheStatus) -> &'static str {
+pub(super) const fn entity_cache_short_label(status: EntityCacheStatus) -> &'static str {
     match status {
-        MapInfoEntityCacheStatus::UnvalidatedCacheHit => "cache:preview",
-        MapInfoEntityCacheStatus::ValidatedCacheHit => "cache:hit",
-        MapInfoEntityCacheStatus::Rebuilt => "cache:rebuilt",
-        MapInfoEntityCacheStatus::DirectQuery => "db:direct",
-        MapInfoEntityCacheStatus::Unknown => "cache:unknown",
+        EntityCacheStatus::UnvalidatedCacheHit => "cache:preview",
+        EntityCacheStatus::ValidatedCacheHit => "cache:hit",
+        EntityCacheStatus::Rebuilt => "cache:rebuilt",
+        EntityCacheStatus::DirectQuery => "db:direct",
+        EntityCacheStatus::Unknown => "cache:unknown",
     }
 }
 
-pub(super) const fn entity_cache_freshness_label(status: MapInfoEntityCacheStatus) -> &'static str {
+pub(super) const fn entity_cache_freshness_label(status: EntityCacheStatus) -> &'static str {
     match status {
-        MapInfoEntityCacheStatus::UnvalidatedCacheHit => "快速缓存预览，后台待校验源指纹",
-        MapInfoEntityCacheStatus::ValidatedCacheHit | MapInfoEntityCacheStatus::Rebuilt => {
+        EntityCacheStatus::UnvalidatedCacheHit => "快速缓存预览，后台待校验源指纹",
+        EntityCacheStatus::ValidatedCacheHit | EntityCacheStatus::Rebuilt => {
             "无固定 TTL，每次按 LevelDB 源指纹判定时效"
         }
-        MapInfoEntityCacheStatus::DirectQuery => "实时读取，不经过持久实体缓存",
-        MapInfoEntityCacheStatus::Unknown => "缓存时效未知",
+        EntityCacheStatus::DirectQuery => "实时读取，不经过持久实体缓存",
+        EntityCacheStatus::Unknown => "缓存时效未知",
     }
 }
 
@@ -1584,7 +1610,7 @@ pub(super) struct EntityContextTarget {
     pub(super) unique_id: Option<i64>,
     pub(super) identifier: Option<String>,
     pub(super) position: [f32; 3],
-    pub(super) cache_status: MapInfoEntityCacheStatus,
+    pub(super) cache_status: EntityCacheStatus,
     pub(super) cache_summary: EntityCacheSummary,
 }
 
@@ -1597,7 +1623,7 @@ pub(super) struct EntityOverlayPoint {
     pub(super) unique_id: Option<i64>,
     pub(super) identifier: Option<String>,
     pub(super) avatar_key: Option<String>,
-    pub(super) cache_status: MapInfoEntityCacheStatus,
+    pub(super) cache_status: EntityCacheStatus,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1714,7 +1740,7 @@ pub(super) struct MapInputFields {
 }
 
 impl MapInputFields {
-    pub(super) fn new(window: &mut Window, cx: &mut Context<MapViewerWindowView>) -> Self {
+    pub(super) fn new(window: &mut Window, cx: &mut Context<View>) -> Self {
         Self {
             center_x: map_input_state(window, cx, "X"),
             center_z: map_input_state(window, cx, "Z"),
@@ -1839,7 +1865,7 @@ pub(super) enum ImportNumericAxis {
     ObjSize,
 }
 
-pub struct MapViewerWindowView {
+pub struct View {
     pub(super) owner_window: AnyWindowHandle,
     pub(super) version: ManagedVersionEntry,
     pub(super) asset: ManageAssetEntry,
@@ -1862,8 +1888,8 @@ pub struct MapViewerWindowView {
     pub(super) overlay_options: OverlayOptions,
     pub(super) slime_farm_search_mode: SlimeFarmSearchMode,
     pub(super) slime_farm_scope_mode: SlimeFarmScopeMode,
-    pub(super) slime_farm_advanced_scan: Option<SlimeFarmAdvancedScanRequest>,
-    pub(super) slime_farm_advanced_scan_dialog: Option<SlimeFarmAdvancedScanDialogState>,
+    pub(super) advanced_slime_scan: Option<AdvancedSlimeScanRequest>,
+    pub(super) advanced_slime_scan_dialog: Option<AdvancedSlimeScanDialogState>,
     pub(super) professional: ProfessionalQueryState,
     pub(super) history: MapHistoryState,
     pub(super) players: PlayerPanelState,
@@ -1894,14 +1920,14 @@ pub struct MapViewerWindowView {
     pub(super) editor_document: EditorDocument<EditTarget>,
     pub(super) editor_state: Entity<CodeEditorState>,
     pub(super) db_tree: DbTreeState,
-    pub(super) task_snapshots: HashMap<Arc<str>, Arc<TaskSnapshot>>,
+    pub(super) task_snapshots: FxHashMap<Arc<str>, Arc<TaskSnapshot>>,
     pub(super) pending_paste_task_completion: Option<PendingPasteTaskCompletion>,
     pub(super) task_updates_task: Option<Task<anyhow::Result<()>>>,
     pub(super) frame_stats: FrameStats,
     pub(super) tile_reveal_state: TileRevealState,
     pub(super) available_tiles: BTreeSet<(i32, i32)>,
     pub(super) tile_chunk_index: TileChunkIndex,
-    pub(super) tile_occupancy_index: Option<Arc<TileOccupancyIndex>>,
+    pub(super) tile_occupancy_index: Option<Arc<bedrock_render::cache::occupancy::Index>>,
     pub(super) chunk_bounds: Option<ChunkBounds>,
     pub(super) tile_manager: RegionManager,
     pub(super) canvas_tile_snapshot: Arc<TilePaintSnapshot>,
@@ -1949,10 +1975,10 @@ pub struct MapViewerWindowView {
     pub(super) last_visible_tile_log: Option<Instant>,
     pub(super) last_tile_memory_trim: Option<Instant>,
     pub(super) last_memory_snapshot_record: Option<Instant>,
-    pub(super) pending_render_image_evictions: Vec<(Instant, Arc<RenderImage>)>,
-    pub(super) pending_render_image_eviction_generation: u64,
+    pub(super) pending_image_evictions: Vec<(Instant, Arc<RenderImage>)>,
+    pub(super) image_eviction_generation: u64,
     pub(super) last_visible_tile_signature: Option<ViewportTileSignature>,
-    pub(super) viewport_plan_generation: u64,
+    pub(super) tile_work_generation: u64,
     pub(super) viewport_composite_signature: Option<ViewportCompositeSignature>,
     pub(super) viewport_composite_request_id: Option<u64>,
     pub(super) viewport_zoom_transition: bool,
@@ -1976,16 +2002,6 @@ pub(super) struct ViewportTileSignature {
     pub(super) center: (i32, i32),
     pub(super) metadata_loading: bool,
     pub(super) metadata_index_ready: bool,
-}
-
-pub(super) struct ViewportTilePlan {
-    pub(super) visible: Vec<(i32, i32)>,
-    pub(super) visible_bounds: Option<TileBounds>,
-    pub(super) prefetch: Vec<(i32, i32)>,
-    pub(super) retain_filter: Option<RetainedTileFilter>,
-    pub(super) center: (i32, i32),
-    pub(super) is_interacting: bool,
-    pub(super) prefetch_radius: i32,
 }
 
 #[derive(Clone, Debug, PartialEq)]

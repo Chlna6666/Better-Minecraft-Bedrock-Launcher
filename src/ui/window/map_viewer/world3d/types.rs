@@ -349,7 +349,7 @@ impl World3dChunkProbe {
             return None;
         };
         for (storage_index, storage) in storages.iter().enumerate().rev() {
-            let palette_index = usize::from(storage.palette_index_at(
+            let palette_index = usize::from(storage.index_at(
                 u8::try_from(local_x).ok()?,
                 u8::try_from(local_y).ok()?,
                 u8::try_from(local_z).ok()?,
@@ -564,6 +564,7 @@ pub struct World3dBlockEditRequest {
 #[derive(Clone, Debug)]
 pub enum World3dBlockEditKind {
     Fill { block_name: String },
+    Ellipsoid { block_name: String },
     Clear,
 }
 

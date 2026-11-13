@@ -35,49 +35,6 @@ mod player_workspace;
 mod players;
 mod prelude;
 
-// Private current-domain import surface for large map-viewer compilation units. This does not expose
-// or restore removed bedrock-world crate-root APIs: every binding originates from a public 0.7 domain.
-pub(crate) mod bedrock_world_domains {
-    pub(crate) use ::bedrock_world::biome::{Biome2d, Biome3d, BiomeStorage};
-    pub(crate) use ::bedrock_world::block::{BlockState, block_storage_index};
-    pub(crate) use ::bedrock_world::chunk::{
-        ChunkKey, ChunkValue, ChunkVersion, LegacyTerrain, LevelChunk, SubChunk,
-        SubChunkDecodeMode, SubChunkFormat,
-    };
-    pub(crate) use ::bedrock_world::editor::McStructureWritePhase;
-    pub(crate) use ::bedrock_world::entity::ActorResolution;
-    pub(crate) use ::bedrock_world::error::{BedrockWorldError, Result};
-    pub(crate) use ::bedrock_world::item::ItemStack;
-    pub(crate) use ::bedrock_world::level::*;
-    pub(crate) use ::bedrock_world::storage::BedrockDbKey;
-
-    pub(crate) use ::bedrock_world::nbt::{NbtTag, NbtWriter};
-
-    pub(crate) use ::bedrock_world::query::*;
-    pub(crate) use ::bedrock_world::structure::{
-        McStructureFile, McStructurePaletteEntry, McStructurePlacement, McStructureRotation,
-        McStructureSize, read_mcstructure_file, write_mcstructure_file,
-    };
-    pub(crate) use ::bedrock_world::surface::*;
-    pub(crate) use ::bedrock_world::world::*;
-
-    pub(crate) mod biome {}
-    pub(crate) mod block {}
-    pub(crate) mod chunk {}
-    pub(crate) mod storage {}
-    pub(crate) mod entity {}
-    pub(crate) mod error {}
-    pub(crate) mod item {}
-    pub(crate) mod level {}
-    pub(crate) mod map_item {}
-    pub(crate) mod nbt {}
-    pub(crate) mod player {}
-    pub(crate) mod query {}
-    pub(crate) mod structure {}
-    pub(crate) mod surface {}
-    pub(crate) mod world {}
-}
-
 mod preview_3d;
 mod preview_3d_obj;
 mod preview_3d_source;
@@ -96,7 +53,7 @@ mod status_bar;
 mod r#tests;
 mod tile_cache;
 mod tile_occupancy;
-mod tile_plan;
+mod viewport_tiles;
 mod tile_render;
 mod tile_render_composite;
 mod tile_render_core;
@@ -108,5 +65,5 @@ mod viewport;
 pub(crate) mod world3d;
 
 pub use actions::init;
-pub use model::MapViewerWindowInit;
-pub use view::open_map_viewer_window;
+pub use model::Init;
+pub use view::open;

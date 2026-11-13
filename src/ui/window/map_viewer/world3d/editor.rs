@@ -7,8 +7,8 @@ use super::camera::{World3dCamera, World3dNavigation};
 use super::chunk_service::{ChunkServiceConfig, ChunkServiceHandle, spawn_chunk_service};
 use super::import::{World3dImportAction, World3dImportPreview};
 use super::registry::{
-    World3dRegistryEntry, register_world3d_editor, set_world3d_editor_window,
-    unregister_world3d_editor,
+    World3dRegistryEntry, register, set_window,
+    unregister,
 };
 use super::types::{
     ChunkServiceEvent, ChunkServiceInfo, ChunkServiceStatus, TeleportHeightMode, WORLD3D_BRUSHES,
@@ -19,10 +19,13 @@ use super::types::{
 };
 use crate::ui::components::slider::Slider;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::settings::state::SettingsPageState;
-use crate::ui::window::map_viewer::model::MapViewerWindowView;
+use crate::ui::window::map_viewer::model::View;
 use bedrock_render::{ChunkPos, Dimension};
+use gpui::diagnostics::gpu_owner::{
+    GpuOwnerJobKind, GpuOwnerJobOutcome, GpuOwnerJobPhases, GpuOwnerJobSample,
+};
 use gpui::StatefulInteractiveElement as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -327,7 +330,7 @@ fn gpu_submit_stats(samples: &[GpuOwnerJobSample], sample_age_ms: Option<u64>) -
     stats
 }
 
-fn owner_stage_ranking(phases: gpui::GpuOwnerJobPhases) -> [(&'static str, u64); 22] {
+fn owner_stage_ranking(phases: GpuOwnerJobPhases) -> [(&'static str, u64); 22] {
     let mut stages = [
         ("其他", phases.other_us),
         ("就绪", phases.readiness_us),
@@ -400,7 +403,7 @@ pub struct World3dEditorInit {
     pub spawn: Option<[f64; 3]>,
     pub spawn_source: String,
     pub package_roots: Vec<PathBuf>,
-    pub owner: Option<WeakEntity<MapViewerWindowView>>,
+    pub owner: Option<WeakEntity<View>>,
     pub initial_target: Option<WorldNavigationTarget>,
     pub initial_selection: Option<World3dSelection>,
     pub view_radius: i32,
@@ -745,7 +748,7 @@ pub struct World3dEditorView {
     spawn: Option<[f64; 3]>,
     spawn_source: String,
     package_roots: Vec<PathBuf>,
-    owner: Option<WeakEntity<MapViewerWindowView>>,
+    owner: Option<WeakEntity<View>>,
     window_handle: Option<AnyWindowHandle>,
     dimension: Dimension,
     camera: World3dCamera,
@@ -1639,7 +1642,7 @@ impl World3dEditorView {
             // Navigation can run while the map entity is still being updated.
             cx.defer(move |cx| {
                 let _ = owner.update(cx, |main, cx| {
-                    main.update_world3d_camera_snapshot(Some(snapshot), cx);
+                    main.update_camera_snapshot(Some(snapshot), cx);
                 });
             });
         }
@@ -1864,7 +1867,7 @@ impl World3dEditorView {
         };
         cx.defer(move |cx| {
             let _ = owner.update(cx, |main, cx| {
-                main.apply_world3d_import_action(action, cx);
+                main.apply_import_action(action, cx);
             });
         });
     }
@@ -2215,7 +2218,7 @@ impl World3dEditorView {
         let dimension = self.dimension;
         cx.defer(move |cx| {
             let _ = owner.update(cx, |main, cx| {
-                main.set_world3d_selection_from_editor(dimension, selection, cx)
+                main.set_selection_from_editor(dimension, selection, cx)
             });
         });
     }
@@ -2442,6 +2445,22 @@ impl World3dEditorView {
         );
     }
 
+    fn ellipsoid_fill_selection(&mut self, cx: &mut Context<Self>) {
+        let Some(selection) = self.selection else {
+            self.status = SharedString::from("没有 3D 选区");
+            self.status_kind = StatusKind::Warning;
+            cx.notify();
+            return;
+        };
+        let block = WORLD3D_BRUSHES[self.brush_index].block_name.to_string();
+        self.request_edit(
+            World3dBlockEditKind::Ellipsoid { block_name: block },
+            selection.min,
+            selection.max,
+            cx,
+        );
+    }
+
     fn clear_selection(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.selection else {
             self.status = SharedString::from("没有 3D 选区");
@@ -2560,7 +2579,7 @@ impl World3dEditorView {
     }
 
     fn on_closed(&mut self, cx: &mut Context<Self>) {
-        unregister_world3d_editor(&self.world_key, self.session_id);
+        unregister(&self.world_key, self.session_id);
         if let Some(service) = self.service.as_mut() {
             service.shutdown();
         }
@@ -3008,6 +3027,10 @@ impl World3dEditorView {
                     MouseButton::Left,
                     cx.listener(|this, _event, _window, cx| this.fill_selection(cx)),
                 ))
+                .child(toolbar_button(colors, "椭球填充", false).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| this.ellipsoid_fill_selection(cx)),
+                ))
                 .child(toolbar_button(colors, "清除", false).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _event, _window, cx| this.clear_selection(cx)),
@@ -3273,13 +3296,13 @@ impl World3dEditorView {
             return;
         }
         self.last_gpu_sample_at = Some(now);
-        let metrics = gpui::performance_metrics_snapshot();
+        let metrics = gpui::diagnostics::performance_metrics::snapshot();
         let window_id = window.window_handle().window_id().as_u64();
         let window_metrics = metrics
             .window_metrics
             .iter()
             .find(|sample| sample.window_id == window_id);
-        let owner = gpui::gpu_owner_metrics_snapshot()
+        let owner = gpui::diagnostics::gpu_owner::metrics_snapshot()
             .windows
             .into_iter()
             .find(|sample| sample.window_id == Some(window_id));
@@ -3288,11 +3311,11 @@ impl World3dEditorView {
             .filter(|sample| sample.sample_age_ms.is_some_and(|age| age < 1_000))
             .map(|sample| {
                 gpu_submit_stats(
-                    &gpui::gpu_owner_samples_since(sample.owner_id, 0),
+                    &gpui::diagnostics::gpu_owner::samples_since(sample.owner_id, 0),
                     sample.sample_age_ms,
                 )
             });
-        let memory = gpui::memory_profile_snapshot();
+        let memory = gpui::diagnostics::memory_profile::snapshot();
         let device = memory
             .devices
             .iter()
@@ -3588,7 +3611,7 @@ impl World3dEditorView {
                 div()
                     .absolute()
                     .inset_0()
-                    .child(gpui_3d::scene_view(snapshot)),
+                    .child(gpui_3d::scene_view::element(snapshot)),
             );
         } else {
             viewport = viewport.child(
@@ -3612,7 +3635,7 @@ impl World3dEditorView {
                 div()
                     .absolute()
                     .inset_0()
-                    .child(gpui_3d::scene_view(Arc::new(
+                    .child(gpui_3d::scene_view::element(Arc::new(
                         scene_view
                             .with_camera(camera)
                             .with_camera_sampler(move |now| navigation.sample_camera(now)),
@@ -4049,7 +4072,8 @@ fn retain_chunk_textures(
 mod texture_retention_tests {
     use super::{
         Arc, BTreeMap, BTreeSet, ChunkPos, Dimension, GpuOwnerJobKind, GpuOwnerJobOutcome,
-        GpuOwnerJobSample, HashMap, Mesh, TextureAsset, World3dChunkMesh, gpu_submit_stats,
+        GpuOwnerJobPhases, GpuOwnerJobSample, HashMap, Mesh, TextureAsset, World3dChunkMesh,
+        gpu_submit_stats,
         restore_retained_sections, retain_chunk_sections, retain_chunk_textures,
     };
 
@@ -4068,7 +4092,7 @@ mod texture_retention_tests {
             coalesced_count,
             owner_job_duration_us: completed_at_us,
             owner_blocking_wait_us: 0,
-            phases: gpui::GpuOwnerJobPhases::default(),
+            phases: GpuOwnerJobPhases::default(),
             schedule_lateness_us: None,
         };
         let samples = [
@@ -4386,8 +4410,8 @@ fn sky_color(dimension: Dimension) -> Hsla {
 fn theme_colors(now: Instant, cx: &App) -> ThemeColors {
     let theme = cx.global::<ThemeState>();
     lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        &LightColors::theme(),
+        &DarkColors::theme(),
         theme.factor(now),
         theme.accent,
     )
@@ -4479,7 +4503,7 @@ fn next_session_id() -> u64 {
 
 impl Drop for World3dEditorView {
     fn drop(&mut self) {
-        unregister_world3d_editor(&self.world_key, self.session_id);
+        unregister(&self.world_key, self.session_id);
         if let Some(service) = self.service.as_mut() {
             service.shutdown();
         }
@@ -4490,9 +4514,9 @@ impl Drop for World3dEditorView {
 // ---- window entry ------------------------------------------------------------------------
 
 /// Opens a new independent 3D world editor window.
-pub fn open_world3d_editor_window(init: World3dEditorInit, cx: &mut App) {
+pub fn open(init: World3dEditorInit, cx: &mut App) {
     let title = SharedString::from(format!("3D 世界编辑器 · {}", init.world_name));
-    let options = world3d_window_options(cx, title.clone());
+    let options = window_options(cx, title.clone());
     let slot: std::rc::Rc<
         std::cell::RefCell<Option<(World3dWorldKey, u64, WeakEntity<World3dEditorView>)>>,
     > = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -4506,7 +4530,7 @@ pub fn open_world3d_editor_window(init: World3dEditorInit, cx: &mut App) {
         let weak = view.downgrade();
         *slot_for_window.borrow_mut() = Some((key.clone(), session_id, weak.clone()));
         let window_handle = window.any_window_handle();
-        register_world3d_editor(
+        register(
             key.clone(),
             World3dRegistryEntry {
                 session_id,
@@ -4515,7 +4539,7 @@ pub fn open_world3d_editor_window(init: World3dEditorInit, cx: &mut App) {
                 world_name: view.read(cx).world_name.clone(),
             },
         );
-        set_world3d_editor_window(&key, window_handle);
+        set_window(&key, window_handle);
         let close_view = weak.clone();
         window.on_window_should_close(cx, move |window, cx| {
             if let Some(view) = close_view.upgrade() {
@@ -4530,7 +4554,7 @@ pub fn open_world3d_editor_window(init: World3dEditorInit, cx: &mut App) {
         Ok(handle) => {
             let any_handle: AnyWindowHandle = handle.into();
             if let Some((key, _session_id, weak)) = slot.borrow().clone() {
-                set_world3d_editor_window(&key, any_handle);
+                set_window(&key, any_handle);
                 let _ = weak.update(cx, |editor, cx| {
                     editor.window_handle = Some(any_handle);
                     editor.publish_camera_snapshot(cx);
@@ -4543,7 +4567,7 @@ pub fn open_world3d_editor_window(init: World3dEditorInit, cx: &mut App) {
     }
 }
 
-fn world3d_window_options(cx: &mut App, title: SharedString) -> WindowOptions {
+fn window_options(cx: &mut App, title: SharedString) -> WindowOptions {
     let window_size = size(px(1360.0), px(860.0));
     let mut options = WindowOptions::default();
     options.window_bounds = Some(WindowBounds::centered(window_size, cx));

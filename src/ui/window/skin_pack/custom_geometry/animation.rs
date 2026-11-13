@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(super) enum CustomGeometryBoneRole {
+pub(in crate::ui::window::skin_pack) enum CustomGeometryBoneRole {
     Static,
     Head,
     Body,
@@ -32,7 +32,7 @@ pub(super) struct CustomGeometryBoneDescriptor {
     pub(super) pivot: [f32; 3],
 }
 
-pub(super) fn custom_geometry_bone_bindings(
+pub(super) fn build_bindings(
     descriptors: impl IntoIterator<Item = CustomGeometryBoneDescriptor>,
 ) -> HashMap<String, CustomGeometryBoneBinding> {
     let descriptors = descriptors
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn child_bone_inherits_player_limb_binding() {
-        let bindings = custom_geometry_bone_bindings([
+        let bindings = build_bindings([
             CustomGeometryBoneDescriptor {
                 name: "leftArm".to_string(),
                 parent: Some("body".to_string()),

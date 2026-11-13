@@ -1,12 +1,12 @@
 use super::model::{
-    ChunkTransferTaskProgressSync, MapViewerWindowView, is_map_operation_cancelled_error,
+    ChunkTransferTaskProgressSync, View, is_map_operation_cancelled_error,
     sync_map_operation_task_progress, task_progress_units,
 };
 use super::panels::toolbar_button;
 use super::prelude::*;
 use super::tile_state::TilePriority;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn refresh_history(&mut self, cx: &mut Context<Self>) {
         self.history.loading = true;
         self.history.error = None;
@@ -135,7 +135,7 @@ impl MapViewerWindowView {
         self.apply_history_operation(
             "撤回修改",
             "撤回历史",
-            |world_path, cancel, progress| apply_undo_with_progress(&world_path, &cancel, progress),
+            |world_path, cancel, progress| apply_undo(&world_path, &cancel, progress),
             cx,
         );
     }
@@ -144,7 +144,7 @@ impl MapViewerWindowView {
         self.apply_history_operation(
             "重做修改",
             "重做历史",
-            |world_path, cancel, progress| apply_redo_with_progress(&world_path, &cancel, progress),
+            |world_path, cancel, progress| apply_redo(&world_path, &cancel, progress),
             cx,
         );
     }
@@ -175,7 +175,7 @@ impl MapViewerWindowView {
                         "回档前保护点",
                     )?;
                 }
-                restore_history_entry_with_progress(&world_path, &entry_id, &cancel, progress)
+                restore_history_entry(&world_path, &entry_id, &cancel, progress)
             },
             cx,
         );
@@ -242,7 +242,7 @@ impl MapViewerWindowView {
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let history_dir = history_dir_for_world(&world_path);
+                    let history_dir = history_dir(&world_path);
                     match std::fs::remove_dir_all(&history_dir) {
                         Ok(()) => Ok(()),
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -581,9 +581,9 @@ impl MapViewerWindowView {
                 .total(task_progress_units(1)),
         )
         .expect("task id must be unique");
-        task_manager::register_task_cooperative_cancel(task_id.clone());
+        task_manager::register_cooperative_cancel(task_id.clone());
         let cancel = CancelFlag::new();
-        task_manager::register_task_cancel_hook(task_id.clone(), {
+        task_manager::register_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
         });
@@ -671,13 +671,14 @@ impl MapViewerWindowView {
                                         this.refresh_metadata(cx);
                                         this.ensure_visible_tiles(cx);
                                     } else {
-                                        let invalidation = MapEditInvalidation::chunks(
+                                        let invalidation = EditInvalidation::chunks(
                                             outcome.affected_chunks.clone(),
                                         )
                                         .with_metadata();
-                                        this.apply_map_edit_invalidation_with_tile_priority(
+                                        this.apply_map_edit_invalidation(
                                             &invalidation,
                                             TilePriority::EditRefresh,
+                                            false,
                                             cx,
                                         );
                                     }
@@ -721,8 +722,8 @@ fn history_toolbar_action(
     colors: &ThemeColors,
     label: impl Into<SharedString>,
     enabled: bool,
-    cx: &mut Context<MapViewerWindowView>,
-    action: impl Fn(&mut MapViewerWindowView, &mut Context<MapViewerWindowView>) + 'static,
+    cx: &mut Context<View>,
+    action: impl Fn(&mut View, &mut Context<View>) + 'static,
 ) -> Div {
     let button = history_toolbar_button(colors, label, enabled);
     if enabled {
@@ -778,7 +779,7 @@ fn history_entry_timeline_color(entry: &MapHistoryEntry) -> Rgba {
 fn history_visualization_legend(
     colors: &ThemeColors,
     history: &MapHistoryState,
-    cx: &mut Context<MapViewerWindowView>,
+    cx: &mut Context<View>,
 ) -> Div {
     let visualization = history.visualization.as_ref();
     div()
@@ -869,7 +870,7 @@ fn history_filter_chip(
     filter: MapHistoryVisualFilter,
     color: Rgba,
     colors: &ThemeColors,
-    cx: &mut Context<MapViewerWindowView>,
+    cx: &mut Context<View>,
 ) -> Div {
     let active = filter.includes(kind);
     let blocks = visualization.kind_blocks(kind);

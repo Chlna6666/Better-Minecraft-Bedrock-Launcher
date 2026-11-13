@@ -1,4 +1,4 @@
-use super::editor::copy_chunks_blocking;
+use super::editor::copy_chunks;
 use super::model::*;
 use super::prelude::*;
 
@@ -217,7 +217,7 @@ impl RegionHardcodedSpawnAreaDisk {
     }
 }
 
-pub(super) fn default_region_package_file_name(selection: ChunkSelection) -> String {
+pub(super) fn default_file_name(selection: ChunkSelection) -> String {
     let bounds = selection.bounds();
     format!(
         "chunk-selection-{}-{}-{}-{}.{}",
@@ -229,7 +229,7 @@ pub(super) fn default_region_package_file_name(selection: ChunkSelection) -> Str
     )
 }
 
-pub(super) fn is_region_package_path(path: &PathBuf) -> bool {
+pub(super) fn is_path(path: &PathBuf) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
@@ -238,7 +238,7 @@ pub(super) fn is_region_package_path(path: &PathBuf) -> bool {
         })
 }
 
-pub(super) fn export_region_package_blocking(
+pub(super) fn export(
     world_path: &Path,
     source_anchor: ChunkPos,
     chunks: Vec<ChunkPos>,
@@ -247,8 +247,8 @@ pub(super) fn export_region_package_blocking(
 ) -> Result<Vec<u8>, String> {
     let world = World::open(world_path, bedrock_world::OpenOptions::default())
         .map_err(|error| error.to_string())?;
-    let editor = MapWorldEditor::from_world(world);
-    let copied_chunk = copy_chunks_blocking(
+    let editor = WorldEditor::from_world(world);
+    let copied_chunk = copy_chunks(
         &editor,
         source_anchor,
         chunks,
@@ -291,7 +291,7 @@ pub(super) fn export_region_package_blocking(
     Ok(bytes)
 }
 
-pub(super) fn write_region_package(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let temp_path = path.with_extension(format!("{REGION_PACKAGE_EXTENSION}.tmp"));
     std::fs::write(&temp_path, bytes).map_err(|error| {
         format!(
@@ -323,7 +323,7 @@ pub(super) fn write_region_package(path: &Path, bytes: &[u8]) -> Result<(), Stri
     }
 }
 
-pub(super) fn read_region_package(path: &Path) -> Result<CopiedChunkData, String> {
+pub(super) fn read(path: &Path) -> Result<CopiedChunkData, String> {
     let bytes = std::fs::read(path)
         .map_err(|error| format!("读取区域包失败（{}）：{}", path.display(), error))?;
     if !bytes.starts_with(REGION_PACKAGE_MAGIC) {
@@ -379,13 +379,13 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn recognizes_region_package_extensions() {
-        assert!(is_region_package_path(&PathBuf::from(
+        assert!(is_path(&PathBuf::from(
             "selection.bmcblregion"
         )));
-        assert!(is_region_package_path(&PathBuf::from(
+        assert!(is_path(&PathBuf::from(
             "selection.bmcbl-region"
         )));
-        assert!(!is_region_package_path(&PathBuf::from("selection.png")));
+        assert!(!is_path(&PathBuf::from("selection.png")));
     }
 
     #[::core::prelude::v1::test]
@@ -405,7 +405,7 @@ mod tests {
         let mut progress = Vec::new();
 
         let bytes =
-            export_region_package_blocking(&world_path, source_anchor, chunks, None, |update| {
+            export(&world_path, source_anchor, chunks, None, |update| {
                 progress.push(update)
             })
             .expect("export real-world region package");
@@ -417,11 +417,10 @@ mod tests {
         let package_path = std::env::temp_dir().join(format!(
             "bmcbl-real-world-region-{nonce}.{REGION_PACKAGE_EXTENSION}"
         ));
-        write_region_package(&package_path, &bytes).expect("write temporary region package");
-        let imported = read_region_package(&package_path).expect("read temporary region package");
-        let preview_images =
-            super::super::import_preview::copied_chunk_preview_images_for_import(&imported)
-                .expect("render imported region previews");
+        write(&package_path, &bytes).expect("write temporary region package");
+        let imported = read(&package_path).expect("read temporary region package");
+        let preview_images = super::super::import_preview::copied_chunk_preview_images(&imported)
+            .expect("render imported region previews");
         std::fs::remove_file(&package_path).expect("remove temporary region package");
 
         assert_eq!(imported.chunk_count(), 72);

@@ -1,39 +1,33 @@
 use image::DynamicImage;
 
 use super::super::super::color::shade_layer_edge_color;
-use super::super::super::custom_geometry_math::{
+use super::super::SkinVertex;
+use super::super::math::{
     average2, average3, barycentric2, barycentric3, normalize, texture_edge_length,
 };
-use super::super::SkinVertex;
 use super::super::{CustomGeometryPartBuilder, TextureSpace, ensure_capacity, sample_uv_color};
 use super::PolyMeshVertex;
 
-const CUSTOM_POLY_MAX_SUBDIVISIONS: u32 = 12;
+const MAX_SUBDIVISIONS: u32 = 12;
 
-pub(super) fn push_poly_mesh_triangle(
+pub(super) fn tessellate(
     image: &DynamicImage,
     texture_space: TextureSpace,
     normalized_uvs: bool,
     triangle: [PolyMeshVertex; 3],
     builder: &mut CustomGeometryPartBuilder,
 ) -> Result<(), String> {
-    let subdivisions = poly_mesh_subdivisions(texture_space, normalized_uvs, triangle);
+    let subdivisions = subdivision_count(texture_space, normalized_uvs, triangle);
     for row in 0..subdivisions {
         for column in 0..(subdivisions - row) {
-            let a = interpolate_poly_mesh_vertex(triangle, column, row, subdivisions);
-            let b = interpolate_poly_mesh_vertex(triangle, column + 1, row, subdivisions);
-            let c = interpolate_poly_mesh_vertex(triangle, column, row + 1, subdivisions);
-            push_sampled_poly_triangle(image, texture_space, normalized_uvs, [a, b, c], builder)?;
+            let a = interpolate_vertex(triangle, column, row, subdivisions);
+            let b = interpolate_vertex(triangle, column + 1, row, subdivisions);
+            let c = interpolate_vertex(triangle, column, row + 1, subdivisions);
+            push_sampled_triangle(image, texture_space, normalized_uvs, [a, b, c], builder)?;
 
             if column + row + 1 < subdivisions {
-                let d = interpolate_poly_mesh_vertex(triangle, column + 1, row + 1, subdivisions);
-                push_sampled_poly_triangle(
-                    image,
-                    texture_space,
-                    normalized_uvs,
-                    [b, d, c],
-                    builder,
-                )?;
+                let d = interpolate_vertex(triangle, column + 1, row + 1, subdivisions);
+                push_sampled_triangle(image, texture_space, normalized_uvs, [b, d, c], builder)?;
             }
         }
     }
@@ -41,7 +35,7 @@ pub(super) fn push_poly_mesh_triangle(
     Ok(())
 }
 
-fn push_sampled_poly_triangle(
+fn push_sampled_triangle(
     image: &DynamicImage,
     texture_space: TextureSpace,
     normalized_uvs: bool,
@@ -62,7 +56,7 @@ fn push_sampled_poly_triangle(
         return Ok(());
     }
 
-    push_triangle_vertices(
+    push_vertices(
         &mut builder.vertices,
         &mut builder.indices,
         triangle.map(|vertex| SkinVertex {
@@ -73,7 +67,7 @@ fn push_sampled_poly_triangle(
     )
 }
 
-fn push_triangle_vertices(
+fn push_vertices(
     vertices: &mut Vec<SkinVertex>,
     indices: &mut Vec<u32>,
     triangle: [SkinVertex; 3],
@@ -85,7 +79,7 @@ fn push_triangle_vertices(
     Ok(())
 }
 
-fn poly_mesh_subdivisions(
+fn subdivision_count(
     texture_space: TextureSpace,
     normalized_uvs: bool,
     triangle: [PolyMeshVertex; 3],
@@ -95,12 +89,10 @@ fn poly_mesh_subdivisions(
     let max_edge = texture_edge_length(texture_points[0], texture_points[1])
         .max(texture_edge_length(texture_points[1], texture_points[2]))
         .max(texture_edge_length(texture_points[2], texture_points[0]));
-    max_edge
-        .ceil()
-        .clamp(1.0, CUSTOM_POLY_MAX_SUBDIVISIONS as f32) as u32
+    max_edge.ceil().clamp(1.0, MAX_SUBDIVISIONS as f32) as u32
 }
 
-fn interpolate_poly_mesh_vertex(
+fn interpolate_vertex(
     triangle: [PolyMeshVertex; 3],
     column: u32,
     row: u32,

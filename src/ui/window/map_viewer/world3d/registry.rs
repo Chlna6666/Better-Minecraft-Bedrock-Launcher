@@ -19,13 +19,13 @@ thread_local! {
         RefCell::new(BTreeMap::new());
 }
 
-pub(super) fn register_world3d_editor(key: World3dWorldKey, entry: World3dRegistryEntry) {
+pub(super) fn register(key: World3dWorldKey, entry: World3dRegistryEntry) {
     WORLD3D_EDITORS.with(|editors| {
         editors.borrow_mut().insert(key, entry);
     });
 }
 
-pub(super) fn set_world3d_editor_window(key: &World3dWorldKey, window: AnyWindowHandle) {
+pub(super) fn set_window(key: &World3dWorldKey, window: AnyWindowHandle) {
     WORLD3D_EDITORS.with(|editors| {
         if let Some(entry) = editors.borrow_mut().get_mut(key) {
             entry.window = Some(window);
@@ -33,7 +33,7 @@ pub(super) fn set_world3d_editor_window(key: &World3dWorldKey, window: AnyWindow
     });
 }
 
-pub(super) fn unregister_world3d_editor(key: &World3dWorldKey, session_id: u64) {
+pub(super) fn unregister(key: &World3dWorldKey, session_id: u64) {
     WORLD3D_EDITORS.with(|editors| {
         let remove = editors
             .borrow()
@@ -45,11 +45,11 @@ pub(super) fn unregister_world3d_editor(key: &World3dWorldKey, session_id: u64) 
     });
 }
 
-pub(super) fn world3d_editor_for(key: &World3dWorldKey) -> Option<World3dRegistryEntry> {
+pub(super) fn editor_for(key: &World3dWorldKey) -> Option<World3dRegistryEntry> {
     WORLD3D_EDITORS.with(|editors| editors.borrow().get(key).cloned())
 }
 
 #[must_use]
-pub(super) fn world3d_editor_open(key: &World3dWorldKey) -> bool {
-    world3d_editor_for(key).is_some_and(|entry| entry.editor.upgrade().is_some())
+pub(super) fn is_editor_open(key: &World3dWorldKey) -> bool {
+    editor_for(key).is_some_and(|entry| entry.editor.upgrade().is_some())
 }

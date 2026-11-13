@@ -18,11 +18,11 @@ impl OverlayOptions {
     }
 }
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn preload_entity_avatar_pool(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |handle, cx| {
             let avatars = cx
-                .background_spawn(async move { load_generated_entity_avatars_rgba() })
+                .background_spawn(async move { load() })
                 .await;
             let decoded_count = avatars.len();
             let Some(view) = handle.upgrade() else {
@@ -73,7 +73,7 @@ impl MapViewerWindowView {
         self.last_synced_tile_layer_snapshot_key = None;
         let colors = self.theme_colors(cx);
         if self.viewport_interaction_active() {
-            self.sync_interaction_tile_layer_snapshot(colors, cx);
+            self.sync_interaction_snapshot(colors, cx);
         } else {
             self.sync_canvas_snapshot(colors, cx);
         }
@@ -83,7 +83,7 @@ impl MapViewerWindowView {
     fn sync_professional_render_snapshot(&mut self, cx: &mut Context<Self>) {
         let colors = self.theme_colors(cx);
         if self.viewport_interaction_active() {
-            self.sync_interaction_tile_layer_snapshot(colors, cx);
+            self.sync_interaction_snapshot(colors, cx);
         } else {
             self.sync_canvas_snapshot(colors, cx);
         }
@@ -105,7 +105,7 @@ impl MapViewerWindowView {
             return;
         };
         let bounds = query_scope.bounds;
-        let options = self.professional_overlay_prefetch_options();
+        let options = self.overlay_prefetch_options();
         let cache_key = overlay_query_cache_key(self, bounds);
         if let Some(cached) = self
             .map_query_budget
@@ -132,7 +132,7 @@ impl MapViewerWindowView {
         // long terrain render queue starve them; other professional overlays retain the
         // conservative defer policy.
         if !self.overlay_options.entities
-            && should_defer_overlay_query_for_visible_tiles(
+            && should_defer_overlay_query(
                 self.render_batch_active,
                 self.tile_manager.has_visible_work(),
             )
@@ -189,7 +189,7 @@ impl MapViewerWindowView {
                 let _query_permit = query_budget.acquire().await;
                 cx.background_spawn(async move {
                     let map_info = if tile_bound_map_info_requested(options) {
-                        load_cached_map_info_tiles_blocking(
+                        load_cached_tiles(
                             &cached_world_path,
                             bounds.dimension,
                             chunks_per_tile,
@@ -198,7 +198,7 @@ impl MapViewerWindowView {
                         )
                         .map_err(|error| error.to_string())?
                     } else {
-                        MapInfoOverlaySnapshot::default()
+                        OverlaySnapshot::default()
                     };
                     let mut villages = Vec::new();
                     if options.include_villages {
@@ -261,7 +261,7 @@ impl MapViewerWindowView {
                 let _query_permit = query_budget.acquire().await;
                 cx.background_spawn(async move {
                     let map_info = if tile_bound_map_info_requested(options) {
-                        load_map_info_tiles_blocking(
+                        load_tiles(
                             &world_path,
                             bounds.dimension,
                             chunks_per_tile,
@@ -271,7 +271,7 @@ impl MapViewerWindowView {
                         )
                         .map_err(|error| error.to_string())?
                     } else {
-                        MapInfoOverlaySnapshot::default()
+                        OverlaySnapshot::default()
                     };
                     let mut villages = Vec::new();
                     if options.include_villages {
@@ -462,8 +462,8 @@ impl MapViewerWindowView {
             .next_generation(MapQueryKind::SlimeFarmCandidates);
     }
 
-    pub(super) fn invalidate_professional_overlay_for_viewport_change(&mut self) {
-        if self.slime_farm_scope_depends_on_viewport() {
+    pub(super) fn invalidate_overlay_queries(&mut self) {
+        if self.slime_scope_tracks_viewport() {
             self.cancel_slime_farm_candidate_query();
             self.professional.slime_farm_candidates = None;
         }
@@ -487,7 +487,7 @@ impl MapViewerWindowView {
         self.professional.last_overlay_request_options = None;
     }
 
-    pub(super) fn invalidate_map_info_cache_after_edit(
+    pub(super) fn invalidate_map_info_cache(
         &mut self,
         chunks: BTreeSet<ChunkPos>,
         cx: &mut Context<Self>,
@@ -509,7 +509,7 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    invalidate_map_info_tiles_for_chunks(&world_path, chunks_per_tile, &chunks)
+                    invalidate_for_chunks(&world_path, chunks_per_tile, &chunks)
                         .map_err(|error| error.to_string())
                 })
                 .await;
@@ -540,11 +540,11 @@ impl MapViewerWindowView {
         .detach();
     }
 
-    pub(super) fn professional_overlay_query_options(&self) -> RegionOverlayQueryOptions {
+    pub(super) fn overlay_query_options(&self) -> RegionOverlayQueryOptions {
         self.overlay_options.query_options()
     }
 
-    pub(super) fn professional_overlay_prefetch_options(&self) -> RegionOverlayQueryOptions {
+    pub(super) fn overlay_prefetch_options(&self) -> RegionOverlayQueryOptions {
         RegionOverlayQueryOptions {
             include_slime: true,
             include_entities: true,
@@ -653,7 +653,7 @@ impl MapViewerWindowView {
                     this.professional.slime_overlay_runs = Some(cache);
                     let colors = this.theme_colors(cx);
                     if this.viewport_interaction_active() {
-                        this.sync_interaction_tile_layer_snapshot(colors, cx);
+                        this.sync_interaction_snapshot(colors, cx);
                     } else {
                         this.sync_canvas_snapshot(colors, cx);
                     }
@@ -776,7 +776,7 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    query_slime_farm_candidates_with_cancel(
+                    slime_farm_candidates(
                         bounds,
                         requested_mode.query_mode(),
                         max_results,
@@ -843,7 +843,7 @@ impl MapViewerWindowView {
             return None;
         }
 
-        if let Some(scan) = self.slime_farm_advanced_scan {
+        if let Some(scan) = self.advanced_slime_scan {
             return practical_slime_farm_scope(scan.bounds, SlimeFarmSearchScopeSource::Advanced);
         }
 
@@ -890,20 +890,20 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn slime_farm_candidate_result_limit(&self) -> usize {
-        self.slime_farm_advanced_scan
+        self.advanced_slime_scan
             .map_or(SLIME_FARM_MAX_RESULTS, |scan| scan.max_results)
     }
 
     fn slime_farm_query_chunk_limit(&self) -> usize {
-        if self.slime_farm_advanced_scan.is_some() {
+        if self.advanced_slime_scan.is_some() {
             SLIME_FARM_ADVANCED_MAX_QUERY_CHUNKS
         } else {
             SLIME_FARM_MAX_QUERY_CHUNKS
         }
     }
 
-    fn slime_farm_scope_depends_on_viewport(&self) -> bool {
-        if self.slime_farm_advanced_scan.is_some() {
+    fn slime_scope_tracks_viewport(&self) -> bool {
+        if self.advanced_slime_scan.is_some() {
             return false;
         }
         match self.slime_farm_scope_mode {
@@ -1031,7 +1031,7 @@ fn tile_bound_map_info_requested(options: RegionOverlayQueryOptions) -> bool {
         || options.include_hardcoded_spawn_areas
 }
 
-pub(super) const fn should_defer_overlay_query_for_visible_tiles(
+pub(super) const fn should_defer_overlay_query(
     render_batch_active: bool,
     has_visible_work: bool,
 ) -> bool {
@@ -1039,7 +1039,7 @@ pub(super) const fn should_defer_overlay_query_for_visible_tiles(
 }
 
 fn overlay_query_cache_key(
-    view: &MapViewerWindowView,
+    view: &View,
     bounds: SlimeChunkBounds,
 ) -> MapQueryCacheKey {
     MapQueryCacheKey::new(
@@ -1058,7 +1058,7 @@ fn overlay_query_cache_key(
     )
 }
 
-fn village_query_cache_key(view: &MapViewerWindowView) -> MapQueryCacheKey {
+fn village_query_cache_key(view: &View) -> MapQueryCacheKey {
     MapQueryCacheKey::new(
         MapQueryKind::VillageIndex,
         &view.world_path,

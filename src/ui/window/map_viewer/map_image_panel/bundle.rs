@@ -3,12 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use crate::core::minecraft::map::generator::{
-    MapBundleInstallTarget, MapInstallHistory, start_map_bundle_export,
-    start_map_bundle_file_install, start_map_bundle_install, start_map_frame_grid_preflight,
+    bundle,
+    install::{self, MapBundleInstallTarget, MapInstallHistory},
 };
 use ::bedrock_world::block::BlockState;
 
-impl MapViewerWindowView {
+impl View {
     /// Explicit read-only check: the write path rechecks world state atomically.
     pub(super) fn check_map_frame_grid(&mut self, cx: &mut Context<Self>) {
         if self.map_image_operation_busy()
@@ -45,7 +45,7 @@ impl MapViewerWindowView {
             states: BTreeMap::new(),
             version: Some(18_168_865),
         };
-        match start_map_frame_grid_preflight(
+        match install::start_frame_grid_preflight(
             self.world_path.clone(),
             center.to_chunk_pos(self.dimension),
             center,
@@ -56,7 +56,7 @@ impl MapViewerWindowView {
             Ok(task_id) => {
                 self.map_image.frame_check_key = Some(key);
                 self.map_image.frame_check_task_id = Some(task_id.clone());
-                if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
+                if let Some(snapshot) = task_manager::snapshot(&task_id) {
                     self.task_snapshots
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }
@@ -72,7 +72,7 @@ impl MapViewerWindowView {
 
     pub(in super::super) fn install_map_bundle_selected(&mut self, cx: &mut Context<Self>) {
         if self.map_image.install_destination == MapImageInstallDestination::NewUpFrame
-            && !self.map_image_can_place_world_grid()
+            && !self.frame_placement_ready()
         {
             self.check_map_frame_grid(cx);
             return;
@@ -85,7 +85,7 @@ impl MapViewerWindowView {
         if self.map_image_operation_busy() {
             return;
         }
-        if let Some(path) = pick_file_path_with_filter("地图包或 Bedrock 容器 NBT", &["nbt"])
+        if let Some(path) = pick_file_path(None,"地图包或 Bedrock 容器 NBT", &["nbt"])
         {
             self.map_image.pending_bundle = Some(PathBuf::from(path));
             self.status =
@@ -210,7 +210,7 @@ impl MapViewerWindowView {
             }))
         });
         let result = if let Some(input) = input {
-            start_map_bundle_file_install(input, world_path, target, history)
+            install::start_bundle_file(input, world_path, target, history)
         } else {
             let Some(preview_id) = self.map_image.task_id.as_deref() else {
                 return;
@@ -223,13 +223,13 @@ impl MapViewerWindowView {
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("地图")
                 .to_owned();
-            start_map_bundle_install(preview_id, world_path, title, target, history)
+            install::start_bundle(preview_id, world_path, title, target, history)
         };
         match result {
             Ok(task_id) => {
                 // Clear the staged input only once a visible, cancellable Task owns the write.
                 self.map_image.pending_bundle = None;
-                if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
+                if let Some(snapshot) = task_manager::snapshot(&task_id) {
                     self.task_snapshots
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }
@@ -261,13 +261,13 @@ impl MapViewerWindowView {
             .unwrap_or("地图")
             .to_owned();
         let default_name = format!("{title}.bmcbl-map.nbt");
-        let Some(path) = pick_save_path_with_filter("BMCBL 地图包", &["nbt"], &default_name)
+        let Some(path) = pick_save_path("BMCBL 地图包", &["nbt"], &default_name)
         else {
             return;
         };
-        match start_map_bundle_export(preview_id, PathBuf::from(path), title) {
+        match bundle::start_export(preview_id, PathBuf::from(path), title) {
             Ok(task_id) => {
-                if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
+                if let Some(snapshot) = task_manager::snapshot(&task_id) {
                     self.task_snapshots
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }

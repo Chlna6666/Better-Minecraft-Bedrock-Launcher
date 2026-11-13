@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 pub(super) fn advanced_slime_scan_bounds(
     center_chunk: (i32, i32),
-    preset: SlimeFarmAdvancedScanPreset,
+    preset: AdvancedSlimeScanPreset,
 ) -> SlimeChunkBounds {
     let radius = preset.radius_chunks();
     SlimeChunkBounds {
@@ -22,8 +22,8 @@ pub(super) fn advanced_slime_scan_bounds(
     }
 }
 
-impl MapViewerWindowView {
-    pub(super) fn open_slime_farm_advanced_scan_dialog(&mut self, cx: &mut Context<Self>) {
+impl View {
+    pub(super) fn open_advanced_slime_scan_dialog(&mut self, cx: &mut Context<Self>) {
         let _i18n = cx.global::<I18n>().clone();
         if self.dimension != Dimension::Overworld {
             self.status = t!("MapViewer.slime_overworld_only");
@@ -32,89 +32,89 @@ impl MapViewerWindowView {
         }
 
         let default_anchor = self
-            .slime_farm_advanced_scan
+            .advanced_slime_scan
             .map(|scan| scan.anchor)
             .unwrap_or_else(|| {
                 if self.professional.selection.is_some() {
-                    SlimeFarmAdvancedScanAnchor::SelectionCenter
+                    AdvancedSlimeScanAnchor::SelectionCenter
                 } else if self.selected_player_slime_bounds().is_some() {
-                    SlimeFarmAdvancedScanAnchor::SelectedPlayer
+                    AdvancedSlimeScanAnchor::SelectedPlayer
                 } else {
-                    SlimeFarmAdvancedScanAnchor::ViewportCenter
+                    AdvancedSlimeScanAnchor::ViewportCenter
                 }
             });
         let default_preset = self
-            .slime_farm_advanced_scan
-            .map_or(SlimeFarmAdvancedScanPreset::Regional, |scan| scan.preset);
+            .advanced_slime_scan
+            .map_or(AdvancedSlimeScanPreset::Regional, |scan| scan.preset);
 
-        self.slime_farm_advanced_scan_dialog = Some(SlimeFarmAdvancedScanDialogState {
+        self.advanced_slime_scan_dialog = Some(AdvancedSlimeScanDialogState {
             anchor: default_anchor,
             preset: default_preset,
             mode: self.slime_farm_search_mode,
-            dismiss: modal::ModalDismissHandle::new(),
+            dismiss: modal::DismissHandle::new(),
         });
         cx.notify();
     }
 
-    pub(super) fn set_slime_farm_advanced_scan_anchor(
+    pub(super) fn set_advanced_slime_scan_anchor(
         &mut self,
-        anchor: SlimeFarmAdvancedScanAnchor,
+        anchor: AdvancedSlimeScanAnchor,
         cx: &mut Context<Self>,
     ) {
-        if let Some(dialog) = self.slime_farm_advanced_scan_dialog.as_mut() {
+        if let Some(dialog) = self.advanced_slime_scan_dialog.as_mut() {
             dialog.anchor = anchor;
             cx.notify();
         }
     }
 
-    pub(super) fn set_slime_farm_advanced_scan_preset(
+    pub(super) fn set_advanced_slime_scan_preset(
         &mut self,
-        preset: SlimeFarmAdvancedScanPreset,
+        preset: AdvancedSlimeScanPreset,
         cx: &mut Context<Self>,
     ) {
-        if let Some(dialog) = self.slime_farm_advanced_scan_dialog.as_mut() {
+        if let Some(dialog) = self.advanced_slime_scan_dialog.as_mut() {
             dialog.preset = preset;
             cx.notify();
         }
     }
 
-    pub(super) fn set_slime_farm_advanced_scan_mode(
+    pub(super) fn set_advanced_slime_scan_mode(
         &mut self,
         mode: SlimeFarmSearchMode,
         cx: &mut Context<Self>,
     ) {
-        if let Some(dialog) = self.slime_farm_advanced_scan_dialog.as_mut() {
+        if let Some(dialog) = self.advanced_slime_scan_dialog.as_mut() {
             dialog.mode = mode;
             cx.notify();
         }
     }
 
-    fn slime_farm_advanced_scan_anchor_chunk(
+    fn scan_anchor_chunk(
         &self,
-        anchor: SlimeFarmAdvancedScanAnchor,
+        anchor: AdvancedSlimeScanAnchor,
     ) -> Option<(i32, i32)> {
         match anchor {
-            SlimeFarmAdvancedScanAnchor::ViewportCenter => {
+            AdvancedSlimeScanAnchor::ViewportCenter => {
                 let (block_x, block_z) = self.viewport.center_block(self.active_layout);
                 Some((block_x.div_euclid(16), block_z.div_euclid(16)))
             }
-            SlimeFarmAdvancedScanAnchor::SelectionCenter => self
+            AdvancedSlimeScanAnchor::SelectionCenter => self
                 .professional
                 .selection
                 .map(|selection| selection.bounds().center()),
-            SlimeFarmAdvancedScanAnchor::SelectedPlayer => self
+            AdvancedSlimeScanAnchor::SelectedPlayer => self
                 .selected_player_slime_bounds()
                 .map(SlimeChunkBounds::center),
-            SlimeFarmAdvancedScanAnchor::WorldOrigin => Some((0, 0)),
+            AdvancedSlimeScanAnchor::WorldOrigin => Some((0, 0)),
         }
     }
 
-    fn start_slime_farm_advanced_scan(&mut self, cx: &mut Context<Self>) -> bool {
+    fn start_advanced_slime_scan(&mut self, cx: &mut Context<Self>) -> bool {
         let _i18n = cx.global::<I18n>().clone();
-        let Some(dialog) = self.slime_farm_advanced_scan_dialog.clone() else {
+        let Some(dialog) = self.advanced_slime_scan_dialog.clone() else {
             return false;
         };
-        let Some(center_chunk) = self.slime_farm_advanced_scan_anchor_chunk(dialog.anchor) else {
+        let Some(center_chunk) = self.scan_anchor_chunk(dialog.anchor) else {
             self.status = t!("MapViewer.slime_advanced_anchor_unavailable");
             cx.notify();
             return false;
@@ -132,7 +132,7 @@ impl MapViewerWindowView {
         self.professional.slime_farm_candidates = None;
         self.professional.highlighted_slime_candidate = None;
         self.slime_farm_search_mode = dialog.mode;
-        self.slime_farm_advanced_scan = Some(SlimeFarmAdvancedScanRequest {
+        self.advanced_slime_scan = Some(AdvancedSlimeScanRequest {
             bounds: requested,
             preset: dialog.preset,
             anchor: dialog.anchor,
@@ -150,14 +150,14 @@ impl MapViewerWindowView {
         true
     }
 
-    pub(super) fn render_slime_farm_advanced_scan_modal(
+    pub(super) fn render_advanced_slime_scan_modal(
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let _i18n = cx.global::<I18n>().clone();
-        let dialog_state = self.slime_farm_advanced_scan_dialog.clone()?;
-        let center_chunk = self.slime_farm_advanced_scan_anchor_chunk(dialog_state.anchor);
+        let dialog_state = self.advanced_slime_scan_dialog.clone()?;
+        let center_chunk = self.scan_anchor_chunk(dialog_state.anchor);
         let preview_scope = center_chunk
             .map(|center| advanced_slime_scan_bounds(center, dialog_state.preset))
             .and_then(|bounds| {
@@ -167,22 +167,22 @@ impl MapViewerWindowView {
 
         let anchor_buttons = [
             (
-                SlimeFarmAdvancedScanAnchor::ViewportCenter,
+                AdvancedSlimeScanAnchor::ViewportCenter,
                 t!("MapViewer.slime_advanced_anchor_viewport"),
                 true,
             ),
             (
-                SlimeFarmAdvancedScanAnchor::SelectionCenter,
+                AdvancedSlimeScanAnchor::SelectionCenter,
                 t!("MapViewer.slime_advanced_anchor_selection"),
                 self.professional.selection.is_some(),
             ),
             (
-                SlimeFarmAdvancedScanAnchor::SelectedPlayer,
+                AdvancedSlimeScanAnchor::SelectedPlayer,
                 t!("MapViewer.slime_advanced_anchor_player"),
                 self.selected_player_slime_bounds().is_some(),
             ),
             (
-                SlimeFarmAdvancedScanAnchor::WorldOrigin,
+                AdvancedSlimeScanAnchor::WorldOrigin,
                 t!("MapViewer.slime_advanced_anchor_origin"),
                 true,
             ),
@@ -195,7 +195,7 @@ impl MapViewerWindowView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
-                            this.set_slime_farm_advanced_scan_anchor(anchor, cx)
+                            this.set_advanced_slime_scan_anchor(anchor, cx)
                         }),
                     )
                     .into_any_element()
@@ -207,15 +207,15 @@ impl MapViewerWindowView {
 
         let preset_buttons = [
             (
-                SlimeFarmAdvancedScanPreset::Nearby,
+                AdvancedSlimeScanPreset::Nearby,
                 t!("MapViewer.slime_advanced_preset_nearby"),
             ),
             (
-                SlimeFarmAdvancedScanPreset::Regional,
+                AdvancedSlimeScanPreset::Regional,
                 t!("MapViewer.slime_advanced_preset_regional"),
             ),
             (
-                SlimeFarmAdvancedScanPreset::Comprehensive,
+                AdvancedSlimeScanPreset::Comprehensive,
                 t!("MapViewer.slime_advanced_preset_comprehensive"),
             ),
         ]
@@ -226,7 +226,7 @@ impl MapViewerWindowView {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _event, _window, cx| {
-                        this.set_slime_farm_advanced_scan_preset(preset, cx)
+                        this.set_advanced_slime_scan_preset(preset, cx)
                     }),
                 )
                 .into_any_element()
@@ -258,7 +258,7 @@ impl MapViewerWindowView {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _event, _window, cx| {
-                        this.set_slime_farm_advanced_scan_mode(mode, cx)
+                        this.set_advanced_slime_scan_mode(mode, cx)
                     }),
                 )
                 .into_any_element()
@@ -370,7 +370,7 @@ impl MapViewerWindowView {
             let confirm_dismiss = dialog_state.dismiss.clone();
             confirm_button = confirm_button.on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 let started = confirm_view
-                    .update(cx, |this, cx| this.start_slime_farm_advanced_scan(cx))
+                    .update(cx, |this, cx| this.start_advanced_slime_scan(cx))
                     .unwrap_or(false);
                 if started {
                     confirm_dismiss.dismiss(cx);
@@ -380,14 +380,14 @@ impl MapViewerWindowView {
             confirm_button = confirm_button.opacity(0.45);
         }
 
-        let content = dialog::dialog_container(colors, px(680.0))
-            .child(dialog::dialog_header(
+        let content = dialog::container(colors, px(680.0))
+            .child(dialog::header(
                 colors,
                 t!("MapViewer.slime_advanced_title"),
                 Some(t!("MapViewer.slime_advanced_description")),
             ))
             .child(body)
-            .child(dialog::dialog_actions(
+            .child(dialog::actions(
                 colors,
                 cancel_button,
                 confirm_button,
@@ -396,16 +396,16 @@ impl MapViewerWindowView {
         let dismiss_view = cx.entity().downgrade();
         let on_dismiss = Rc::new(move |cx: &mut App| {
             let _ = dismiss_view.update(cx, |this, cx| {
-                this.slime_farm_advanced_scan_dialog = None;
+                this.advanced_slime_scan_dialog = None;
                 cx.notify();
             });
         });
 
-        Some(modal::modal_layer_dismissible_with_handle(
-            dialog_state.dismiss,
+        Some(modal::dismissible_layer(
             content,
             colors.backdrop,
             on_dismiss,
+            modal::DismissOptions::default().with_handle(dialog_state.dismiss),
         ))
     }
 }

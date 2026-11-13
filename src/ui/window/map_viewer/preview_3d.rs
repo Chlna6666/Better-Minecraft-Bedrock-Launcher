@@ -1,16 +1,13 @@
-use super::bedrock_world_domains as bedrock_world;
 mod mesh_namespace;
-pub(super) use mesh_namespace::namespace_preview_3d_mesh;
+pub(super) use mesh_namespace::namespace;
 
 pub(super) use super::preview_3d_source::{
     IndexRange, Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState,
     Preview3dMaterialRanges, Preview3dMeshSource, Preview3dModelRotation, Preview3dMovementInput,
-    Preview3dSelectionSignature, Preview3dSource, Preview3dStatus, preview_3d_bounds_depth,
-    preview_3d_bounds_width, preview_3d_viewport_parameters,
+    Preview3dSelectionSignature, Preview3dSource, Preview3dStatus,
 };
 
-use bedrock_render::ChunkPos;
-use bedrock_world::CancelFlag;
+use bedrock_world::surface::CancelFlag;
 use gpui_3d::{
     AlphaMode, Camera, Material, Mesh, MeshId, MeshPart, Node, ProjectionRegion, Scene, SceneView,
     ShadingModel, Transform, Vec2, Vec3, Vertex,
@@ -100,8 +97,12 @@ impl Preview3dMesh {
         } else {
             0
         };
-        let (camera, scene_transform) =
-            preview_3d_viewport_parameters(center, fit_scale, camera, model_rotation);
+        let (camera, scene_transform) = super::preview_3d_source::viewport_parameters(
+            center,
+            fit_scale,
+            camera,
+            model_rotation,
+        );
         let scene_view = self
             .scene_view
             .with_scene(self.scenes[scene_index].clone())
@@ -381,17 +382,17 @@ fn source_mesh_signature(mesh: &super::preview_3d_source::Preview3dMesh) -> Sour
     }
 }
 
-pub(super) fn load_preview_3d_mesh(
+pub(super) fn load_mesh(
     options: super::preview_3d_source::Preview3dLoadOptions<'_>,
     update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
 ) -> Result<Preview3dMesh, String> {
-    load_incremental_with_converter(
-        move |callback| super::preview_3d_source::load_preview_3d_mesh(options, callback),
+    load_incremental(
+        move |callback| super::preview_3d_source::load_mesh(options, callback),
         update,
     )
 }
 
-fn load_incremental_with_converter(
+fn load_incremental(
     loader: impl FnOnce(
         Box<dyn FnMut(Arc<super::preview_3d_source::Preview3dMesh>, Preview3dBuildStatus) + Send>,
     ) -> Result<super::preview_3d_source::Preview3dMesh, String>,
@@ -443,10 +444,8 @@ fn load_incremental_with_converter(
     )
 }
 
-pub(super) fn load_preview_3d_mesh_blocking(
-    source: Preview3dMeshSource<'_>,
-) -> Result<Preview3dMesh, String> {
-    super::preview_3d_source::load_preview_3d_mesh_blocking(source)
+pub(super) fn build_preview_mesh(source: Preview3dMeshSource<'_>) -> Result<Preview3dMesh, String> {
+    super::preview_3d_source::build_preview_mesh(source)
         .and_then(|mesh| convert_source_mesh(&mesh, &mut RegionMeshReuseCache::default()))
 }
 
@@ -568,7 +567,7 @@ fn convert_source_mesh(
         "map_viewer preview_3d_spatial_regions_built"
     );
 
-    let (scenes, scene_view) = preview_3d_scene_data(&chunks)?;
+    let (scenes, scene_view) = scene_data(&chunks)?;
 
     Ok(Preview3dMesh {
         chunk_meshes: chunks,
@@ -599,7 +598,7 @@ fn convert_source_mesh(
     })
 }
 
-pub(super) fn preview_3d_scene_data(
+pub(super) fn scene_data(
     chunks: &[Preview3dChunkMesh],
 ) -> Result<([Arc<Scene>; 3], Arc<SceneView>), String> {
     let full = build_map_scene(chunks, 0)?;
@@ -1443,7 +1442,7 @@ mod preview_region_geometry_tests {
 
     #[test]
     fn progressive_preview_reuses_scene_until_lod_meshes_exist() {
-        let (scenes, _) = preview_3d_scene_data(&[]).expect("empty scene setup");
+        let (scenes, _) = scene_data(&[]).expect("empty scene setup");
         assert!(Arc::ptr_eq(&scenes[0], &scenes[1]));
         assert!(Arc::ptr_eq(&scenes[1], &scenes[2]));
     }

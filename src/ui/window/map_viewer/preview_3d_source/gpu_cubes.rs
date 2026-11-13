@@ -54,7 +54,11 @@ mod tests {
                 } else {
                     "minecraft:lava"
                 }),
-                surface_only,
+                face_mode: if surface_only {
+                    FluidFaceMode::TopOnly
+                } else {
+                    FluidFaceMode::AllFaces
+                },
                 height: 0.75,
             };
             if water {
@@ -73,7 +77,10 @@ mod tests {
             max_chunk_z: 0,
         });
         builder.insert_stream_chunk(pos, blocks);
-        let cpu = builder.build_stream_faces(&[pos]).remove(0).faces;
+        let cpu = builder
+            .build_stream_faces(&[pos], StreamFaceOptions::default())
+            .remove(0)
+            .faces;
         let mut expected = cpu
             .iter()
             .map(|face| face.corners.map(|p| p.map(|v| (v as f32).to_bits())))
@@ -146,7 +153,7 @@ mod tests {
                 key,
                 color: [0.4, 0.6, 0.8, 0.5],
                 material: Arc::from("minecraft:water"),
-                surface_only: false,
+                face_mode: FluidFaceMode::AllFaces,
                 height: 1.0,
             });
         }
@@ -187,7 +194,7 @@ mod tests {
             key,
             color: [0.4, 0.6, 0.8, 0.5],
             material: Arc::from("minecraft:water"),
-            surface_only: false,
+            face_mode: FluidFaceMode::AllFaces,
             height: 1.0,
         });
         let mut builder = Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
@@ -384,7 +391,7 @@ mod tests {
         );
         builder.insert_stream_chunk(neighbor, Preview3dChunkBlocks::test_cubes(&[[16, 63, 8]]));
         let mut expected = builder
-            .build_stream_faces(&[pos])
+            .build_stream_faces(&[pos], StreamFaceOptions::default())
             .remove(0)
             .faces
             .into_iter()
@@ -438,10 +445,13 @@ mod tests {
         expected.sort();
         actual.sort();
         assert_eq!(actual, expected);
-        let cpu = builder.build_stream_faces_with_gpu_cubes(
+        let cpu = builder.build_stream_faces(
             &[pos],
-            &std::collections::HashMap::new(),
-            &std::collections::HashSet::from([pos]),
+            StreamFaceOptions {
+                selections: Some(&FxHashMap::default()),
+                gpu_cubes: Some(&FxHashSet::from_iter([pos])),
+                ..Default::default()
+            },
         );
         assert!(cpu.iter().all(|chunk| chunk.faces.is_empty()));
         let selection = Preview3dBandSelection {
@@ -571,7 +581,7 @@ impl Preview3dMeshBuilder {
                         };
                         // Most padded-grid cells belong to the target column.
                         // Its full block data is already borrowed above: avoid
-                        // two global ChunkKey -> HashMap probes per cell (one
+                        // two global ChunkKey -> FxHashMap probes per cell (one
                         // for material class, another for ambient occlusion).
                         // Only the one-cell halo needs cross-column lookups.
                         let (block_class, ao) =
@@ -626,8 +636,8 @@ impl Preview3dMeshBuilder {
             let mut cube_neighbours = Vec::new();
             let mut instance_faces = Vec::new();
             let mut instance_neighbours = Vec::new();
-            let mut cube_models = HashMap::<(u32, u32), u32>::default();
-            let mut instance_ranges = HashMap::<(u32, u32), std::ops::Range<u32>>::default();
+            let mut cube_models = FxHashMap::<(u32, u32), u32>::default();
+            let mut instance_ranges = FxHashMap::<(u32, u32), std::ops::Range<u32>>::default();
             let mut instances = Vec::new();
             for record in records {
                 let position = [

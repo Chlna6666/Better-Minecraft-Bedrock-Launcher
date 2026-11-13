@@ -4,7 +4,7 @@ use super::*;
 fn publish_outcome(
     editor: Option<WeakEntity<World3dEditorView>>,
     outcome: World3dEditOutcome,
-    cx: &mut Context<MapViewerWindowView>,
+    cx: &mut Context<View>,
 ) {
     if let Some(editor) = editor {
         // A rejected request may still be inside the editor's mouse event update.
@@ -14,7 +14,7 @@ fn publish_outcome(
     }
 }
 
-impl MapViewerWindowView {
+impl View {
     /// Executes a 3D edit under the same write ownership as 2D operations.
     pub(crate) fn apply_world3d_edit_request(
         &mut self,
@@ -43,6 +43,9 @@ impl MapViewerWindowView {
         }
         let label = match &request.kind {
             World3dBlockEditKind::Fill { block_name } => format!("3D 填充 {block_name}"),
+            World3dBlockEditKind::Ellipsoid { block_name } => {
+                format!("3D 椭球填充 {block_name}")
+            }
             World3dBlockEditKind::Clear => "3D 清除选区".into(),
         };
         let task_id = task_manager::create_task(
@@ -51,7 +54,7 @@ impl MapViewerWindowView {
         )
         .expect("task id must be unique");
         self.professional.active_write_task_id = Some(task_id.clone());
-        if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
+        if let Some(snapshot) = task_manager::snapshot(&task_id) {
             self.task_snapshots
                 .insert(snapshot.id.clone(), Arc::new(snapshot));
         }
@@ -71,7 +74,7 @@ impl MapViewerWindowView {
         let request_id = request.request_id;
         cx.spawn(async move |handle, cx| {
             let result = cx
-                .background_spawn(async move { apply_world3d_edit_blocking(&path, &request) })
+                .background_spawn(async move { apply_edit(&path, &request) })
                 .await;
             // Always finish the task, even if the UI was closed or metadata reloaded.
             let (status, message) = match &result {
@@ -83,7 +86,12 @@ impl MapViewerWindowView {
                 view.update(cx, move |this, cx| {
                     let outcome = match result {
                         Ok((invalidation, message, affected_chunks)) => {
-                            this.apply_map_edit_invalidation(&invalidation, cx);
+                            this.apply_map_edit_invalidation(
+                                &invalidation,
+                                super::super::super::tile_state::TilePriority::Visible,
+                                false,
+                                cx,
+                            );
                             World3dEditOutcome {
                                 request_id,
                                 ok: true,

@@ -1,7 +1,7 @@
 use super::*;
 
-impl MapViewerWindowView {
-    pub(in super::super) fn render_obj_import_actions(
+impl View {
+    pub(in super::super) fn obj_import_actions(
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
@@ -108,7 +108,7 @@ impl MapViewerWindowView {
             )
     }
 
-    pub(in super::super) fn render_generator_panel(
+    pub(in super::super) fn generator_panel(
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
@@ -131,8 +131,8 @@ impl MapViewerWindowView {
                     .flex()
                     .flex_col()
                     .gap(px(16.0))
-                    .child(generator_section_title(colors, "01  素材"))
-                    .child(crate::ui::components::inspector::inspector_source_card(
+                    .child(inspector::section_title(colors, "01  素材"))
+                    .child(crate::ui::components::inspector::source_card(
                         colors,
                         "OBJ / MTL · glTF / GLB",
                         self.generator.source.as_deref(),
@@ -159,14 +159,14 @@ impl MapViewerWindowView {
                         )
                     })
                     .when_some(self.generator.preview_size, |panel, size| {
-                        panel.child(crate::ui::components::inspector::inspector_result_summary(
+                        panel.child(crate::ui::components::inspector::result_summary(
                             colors,
                             "方块化结果",
                             format!("{} × {} × {} 方块", size[0], size[1], size[2]),
                         ))
                     })
                     .child(
-                        crate::ui::components::inspector::inspector_field_group(colors)
+                        crate::ui::components::inspector::field_group(colors)
                             .child(self.render_obj_parameters(colors, cx)),
                     ),
             )

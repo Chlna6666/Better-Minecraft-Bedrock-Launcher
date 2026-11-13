@@ -39,7 +39,7 @@ pub(super) fn push_skin_layer_face(
         );
 
         for edge in LayerPixelEdge::ALL {
-            if layer_edge_is_visible(grid, colors, run, edge) {
+            if edge_is_visible(grid, colors, run, edge) {
                 push_layer_edge(vertices, indices, inner, outer, edge, color);
             }
         }
@@ -53,7 +53,7 @@ pub(super) struct SkinLayerColors<'a> {
 }
 
 /// Reads one overlay face into same-color runs and keeps the run list ready for merging.
-pub(super) fn layer_face_colors(
+pub(super) fn face_colors(
     image: &DynamicImage,
     texture_scale: SkinTextureScale,
     region: TextureRegion,
@@ -64,7 +64,7 @@ pub(super) fn layer_face_colors(
 }
 
 /// Reports whether an overlay face contains at least one visible texel.
-pub(super) fn layer_has_visible_texel(colors: &[[f32; 4]]) -> bool {
+pub(super) fn has_visible_texel(colors: &[[f32; 4]]) -> bool {
     colors
         .iter()
         .any(|color| color[3] > SKIN_LAYER_ALPHA_THRESHOLD)
@@ -116,7 +116,7 @@ impl LayerPixelEdge {
     const ALL: [Self; 4] = [Self::Top, Self::Right, Self::Bottom, Self::Left];
 }
 
-fn layer_edge_is_visible(
+fn edge_is_visible(
     grid: FaceGrid,
     colors: &[[f32; 4]],
     run: ColorRun,
@@ -144,7 +144,7 @@ fn edge_row_is_transparent(
     let Some(row) = row.filter(|row| *row < grid.height) else {
         return true;
     };
-    (run.x..run.right()).all(|column| !layer_texel_is_opaque(grid, colors, column, row))
+    (run.x..run.right()).all(|column| !texel_is_opaque(grid, colors, column, row))
 }
 
 fn edge_column_is_transparent(
@@ -156,10 +156,10 @@ fn edge_column_is_transparent(
     let Some(column) = column.filter(|column| *column < grid.width) else {
         return true;
     };
-    (run.y..run.bottom()).all(|row| !layer_texel_is_opaque(grid, colors, column, row))
+    (run.y..run.bottom()).all(|row| !texel_is_opaque(grid, colors, column, row))
 }
 
-fn layer_texel_is_opaque(grid: FaceGrid, colors: &[[f32; 4]], column: u32, row: u32) -> bool {
+fn texel_is_opaque(grid: FaceGrid, colors: &[[f32; 4]], column: u32, row: u32) -> bool {
     let index = (row as usize).saturating_mul(grid.width as usize) + column as usize;
     colors
         .get(index)

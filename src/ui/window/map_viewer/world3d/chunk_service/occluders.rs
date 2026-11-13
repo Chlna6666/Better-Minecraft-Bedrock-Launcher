@@ -2,42 +2,33 @@
 use super::*;
 
 #[cfg(test)]
-fn cube_cell(face: &p3d::Preview3dStreamFace) -> Option<([i32; 3], u8)> {
-    if face.pass != p3d::Preview3dStreamPass::Opaque {
+fn cube_cell(face: &preview_3d_source::Preview3dStreamFace) -> Option<([i32; 3], u8)> {
+    if face.pass != preview_3d_source::Preview3dStreamPass::Opaque {
         return None;
     }
     full_face(face.corners, face.normal, gpui_3d::FrontFace::Cw)
 }
 
 pub(super) fn face_proxy(
-    face: &p3d::Preview3dStreamFace,
+    face: &preview_3d_source::Preview3dStreamFace,
     origin: [i32; 3],
+    coordinate_space: MeshCoordinateSpace,
 ) -> Option<gpui_3d::Occluder> {
-    face_proxy_with_template_origin(face, origin, false)
-}
-
-/// GPU cube templates are local in X/Z; regular faces are world-space.
-/// Preserve the old translated proxy semantics without cloning each face.
-pub(super) fn face_proxy_with_template_origin(
-    face: &p3d::Preview3dStreamFace,
-    origin: [i32; 3],
-    local_template: bool,
-) -> Option<gpui_3d::Occluder> {
-    if face.pass != p3d::Preview3dStreamPass::Opaque {
+    if face.pass != preview_3d_source::Preview3dStreamPass::Opaque {
         return None;
     }
     let (min, max, axis) = quad_bounds(face.corners, face.normal, gpui_3d::FrontFace::Cw)?;
     let local = |p: [f64; 3]| {
         Vec3::new(
             (p[0]
-                - if local_template {
+                - if coordinate_space == MeshCoordinateSpace::TemplateLocal {
                     0.
                 } else {
                     f64::from(origin[0])
                 }) as f32,
             (p[1] - f64::from(origin[1])) as f32,
             (p[2]
-                - if local_template {
+                - if coordinate_space == MeshCoordinateSpace::TemplateLocal {
                     0.
                 } else {
                     f64::from(origin[2])
@@ -60,15 +51,21 @@ mod tests {
             z: 0,
             dimension: Dimension::Overworld,
         };
-        let mut builder = p3d::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+        let mut builder = preview_3d_source::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
             dimension: pos.dimension,
             min_chunk_x: 0,
             max_chunk_x: 0,
             min_chunk_z: 0,
             max_chunk_z: 0,
         });
-        builder.insert_stream_chunk(pos, p3d::Preview3dChunkBlocks::test_cubes(&[[3, 4, 5]]));
-        let faces = builder.build_stream_faces(&[pos]).remove(0).faces;
+        builder.insert_stream_chunk(
+            pos,
+            preview_3d_source::Preview3dChunkBlocks::test_cubes(&[[3, 4, 5]]),
+        );
+        let faces = builder
+            .build_stream_faces(&[pos], preview_3d_source::StreamFaceOptions::default())
+            .remove(0)
+            .faces;
         assert_eq!(faces.len(), 6);
         let cells = faces
             .iter()
@@ -99,15 +96,21 @@ mod tests {
             z: 0,
             dimension: Dimension::Overworld,
         };
-        let mut builder = p3d::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+        let mut builder = preview_3d_source::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
             dimension: pos.dimension,
             min_chunk_x: 0,
             max_chunk_x: 0,
             min_chunk_z: 0,
             max_chunk_z: 0,
         });
-        builder.insert_stream_chunk(pos, p3d::Preview3dChunkBlocks::test_cubes(&[[3, 4, 5]]));
-        let faces = builder.build_stream_faces(&[pos]).remove(0).faces;
+        builder.insert_stream_chunk(
+            pos,
+            preview_3d_source::Preview3dChunkBlocks::test_cubes(&[[3, 4, 5]]),
+        );
+        let faces = builder
+            .build_stream_faces(&[pos], preview_3d_source::StreamFaceOptions::default())
+            .remove(0)
+            .faces;
         let origin = [16, 0, 32];
         for local in &faces {
             let mut world = local.clone();
@@ -115,8 +118,9 @@ mod tests {
                 corner[0] += f64::from(origin[0]);
                 corner[2] += f64::from(origin[2]);
             }
-            let old = face_proxy(&world, origin).expect("world face is an occluder");
-            let new = face_proxy_with_template_origin(local, origin, true)
+            let old = face_proxy(&world, origin, MeshCoordinateSpace::World)
+                .expect("world face is an occluder");
+            let new = face_proxy(local, origin, MeshCoordinateSpace::TemplateLocal)
                 .expect("local template is an occluder");
             assert_eq!(new.bounds.min, old.bounds.min);
             assert_eq!(new.bounds.max, old.bounds.max);
@@ -149,7 +153,7 @@ mod tests {
             z: 0,
             dimension: Dimension::Overworld,
         };
-        let mut builder = p3d::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+        let mut builder = preview_3d_source::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
             dimension: pos.dimension,
             min_chunk_x: 0,
             max_chunk_x: 0,
@@ -159,12 +163,20 @@ mod tests {
         let cells = (3..6)
             .flat_map(|x| (3..6).map(move |z| [x, 4, z]))
             .collect::<Vec<_>>();
-        builder.insert_stream_chunk(pos, p3d::Preview3dChunkBlocks::test_cubes(&cells));
-        let faces = builder.build_stream_faces(&[pos]).remove(0).faces;
+        builder.insert_stream_chunk(
+            pos,
+            preview_3d_source::Preview3dChunkBlocks::test_cubes(&cells),
+        );
+        let faces = builder
+            .build_stream_faces(&[pos], preview_3d_source::StreamFaceOptions::default())
+            .remove(0)
+            .faces;
         let proxies = merge_boxes(
             faces
                 .iter()
-                .filter_map(|face| face_proxy(face, [0; 3]))
+                .filter_map(|face| {
+                    face_proxy(face, [0; 3], MeshCoordinateSpace::World)
+                })
                 .collect(),
         );
         let proxy = proxies.iter().find(|proxy| proxy.faces == 8).unwrap();
@@ -193,7 +205,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut classes = vec![0; 27];
         classes[13] = 16;
-        let mut band = p3d::GpuCubeBand {
+        let mut band = preview_3d_source::GpuCubeBand {
             size: [3; 3],
             origin: Vec3::new(-1., -1., -1.),
             cells: vec![0; 27],
@@ -408,7 +420,7 @@ pub(super) fn merge_boxes(mut proxies: Vec<gpui_3d::Occluder>) -> Arc<[gpui_3d::
 }
 
 pub(super) fn gpu_boxes(
-    band: &p3d::GpuCubeBand,
+    band: &preview_3d_source::GpuCubeBand,
     templates: &[gpui_3d::VoxelFaceTemplate],
     materials: &[Arc<Material>],
 ) -> Arc<[gpui_3d::Occluder]> {

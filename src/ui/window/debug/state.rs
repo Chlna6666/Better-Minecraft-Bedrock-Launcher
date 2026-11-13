@@ -1,9 +1,7 @@
 use crate::plugins::runtime::PluginMemoryReport;
 use crate::utils::memory_diagnostics::BmcblMemorySnapshot;
-use gpui::{
-    Global, GpuSpecs, SharedString, Window, WindowMetricsSnapshot, performance_metrics_snapshot,
-    px, window_metrics_snapshot,
-};
+use gpui::diagnostics::performance_metrics::window::{self, MetricsSnapshot};
+use gpui::{Global, GpuSpecs, SharedString, Window, px};
 use once_cell::sync::Lazy;
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -22,7 +20,7 @@ pub struct DebugInspectorSnapshot {
     pub border_hex: SharedString,
     pub opacity: Option<f32>,
     #[cfg(debug_assertions)]
-    pub selected_id: Option<gpui::InspectorElementId>,
+    pub selected_id: Option<gpui::diagnostics::inspector::InspectorElementId>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -275,8 +273,8 @@ pub struct DebugWindowMetrics {
     pub upload_bytes: usize,
 }
 
-impl From<WindowMetricsSnapshot> for DebugWindowMetrics {
-    fn from(metrics: WindowMetricsSnapshot) -> Self {
+impl From<MetricsSnapshot> for DebugWindowMetrics {
+    fn from(metrics: MetricsSnapshot) -> Self {
         Self {
             window_id: metrics.window_id,
             present_fps_milli: metrics.present_fps_milli,
@@ -486,14 +484,14 @@ pub fn record_debug_gpu_specs(gpu_specs: Option<GpuSpecs>) {
 }
 
 pub fn refresh_realtime_window_metrics(snapshot: &mut DebugRuntimeSnapshot) {
-    snapshot.gpui_window_metrics = window_metrics_snapshot()
+    snapshot.gpui_window_metrics = window::snapshot()
         .into_iter()
         .map(DebugWindowMetrics::from)
         .collect();
 }
 
 pub fn refresh_realtime_runtime_metrics(snapshot: &mut DebugRuntimeSnapshot) {
-    let gpui_metrics = performance_metrics_snapshot();
+    let gpui_metrics = gpui::diagnostics::performance_metrics::snapshot();
     snapshot.gpui_renderer_backend =
         SharedString::from(gpui_metrics.renderer_backend.as_str().to_string());
     // Never use the process-wide mixed-window present clock as a window FPS. The DebugView

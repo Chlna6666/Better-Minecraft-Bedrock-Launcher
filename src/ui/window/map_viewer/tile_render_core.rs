@@ -23,18 +23,16 @@ pub(super) fn open_map_render_session(
         world = %world_path.display(),
         "map_viewer open_render_session"
     );
-    let config =
-        interactive_map_render_session_config(&world_path, render_backend, render_gpu_backend);
+    let config = render_session_config(&world_path, render_gpu_backend);
     MapRenderSession::open_leveldb_read_only(world_path, config, RenderPalette::builtin_shared())
         .map_err(|error| format!("打开地图渲染会话失败: {error}"))
 }
 
-pub(super) fn interactive_map_render_session_config(
+pub(super) fn render_session_config(
     world_path: &std::path::Path,
-    _render_backend: RenderBackend,
     render_gpu_backend: RenderGpuBackend,
 ) -> MapRenderSessionConfig {
-    let cache_identity = bedrock_render::world_cache_identity(world_path);
+    let cache_identity = bedrock_render::cache::world_cache_identity(world_path);
     let mut config = MapRenderSessionConfig::max_speed(
         file_ops::cache_subdir("bedrock-render"),
         cache_identity.world_id,
@@ -334,7 +332,7 @@ pub(super) fn render_tile_batch_stream(
                             "map_viewer tile_ready"
                         );
                         let (image, pixel_format, width, height, estimated_bytes) =
-                            match render_image_from_decoded_tile_parts(
+                            match tile_image(
                                 tile_width,
                                 tile_height,
                                 tile_pixel_format,
@@ -456,7 +454,7 @@ pub(super) fn empty_viewport_composite_frame(
     })
 }
 
-pub(super) fn viewport_composite_error_is_cancelled(error: &str) -> bool {
+pub(super) fn composite_error_is_cancelled(error: &str) -> bool {
     error.to_ascii_lowercase().contains("cancel")
 }
 
@@ -477,7 +475,7 @@ fn viewport_composite_image_size(viewport: MapViewport) -> Result<(u32, u32, f32
 }
 
 #[cfg(test)]
-pub(super) fn merge_chunk_patch_into_tile_pixels(
+pub(super) fn merge_chunk_patch(
     tile_pixels: &mut [u8],
     tile_pixel_format: TilePixelFormat,
     tile_size: u32,
@@ -606,7 +604,7 @@ pub(super) fn send_tile_event_or_cancel(
     }
 }
 
-pub(super) fn send_viewport_composite_event_or_cancel(
+pub(super) fn send_composite_event_or_cancel(
     sender: &UnboundedSender<ViewportCompositeEvent>,
     cancel: &RenderCancelFlag,
     event: ViewportCompositeEvent,
@@ -678,14 +676,12 @@ pub(super) fn web_relief_region_layout() -> RegionLayout {
 }
 
 pub(super) fn interactive_tile_batch_size(
-    render_backend: RenderBackend,
     cpu_budget: RenderCpuBudget,
 ) -> usize {
-    resolve_interactive_tile_batch_size(render_backend, cpu_budget, map_render_batch_tiles())
+    resolve_batch_size(cpu_budget, map_render_batch_tiles())
 }
 
-pub(super) fn resolve_interactive_tile_batch_size(
-    _render_backend: RenderBackend,
+pub(super) fn resolve_batch_size(
     cpu_budget: RenderCpuBudget,
     ui_batch_tiles: usize,
 ) -> usize {
@@ -776,7 +772,7 @@ pub(super) fn map_concurrent_render_batches() -> usize {
     MAX_CONCURRENT_RENDER_BATCHES
 }
 
-pub(super) fn map_viewer_prefetch_radius() -> i32 {
+pub(super) fn prefetch_radius() -> i32 {
     PREFETCH_RADIUS.clamp(0, RETAIN_RADIUS.max(0))
 }
 
@@ -895,7 +891,7 @@ pub(super) fn optimistic_tile_chunk_positions(
     Ok(TileChunkPositions::from(positions))
 }
 
-pub(super) fn tile_chunk_positions_for_known_bounds(
+pub(super) fn bounded_tile_chunk_positions(
     dimension: Dimension,
     coord: (i32, i32),
     layout: RenderLayout,
@@ -975,7 +971,7 @@ fn chunk_region_contains(region: &ChunkRegion, position: ChunkPos) -> bool {
 }
 
 #[cfg(test)]
-pub(super) fn ui_tile_chunk_positions_for_render(
+pub(super) fn cached_tile_chunk_positions(
     dimension: Dimension,
     tile_x: i32,
     tile_z: i32,

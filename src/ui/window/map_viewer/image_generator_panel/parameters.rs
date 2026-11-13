@@ -1,6 +1,6 @@
 use super::*;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn render_image_appearance(
         &self,
         colors: &ThemeColors,
@@ -8,7 +8,7 @@ impl MapViewerWindowView {
     ) -> Div {
         let busy = self.image_generator_busy();
         div().flex().flex_col().gap(px(14.0))
-                    .child(generator_section_title(colors, "图片比例"))
+                    .child(inspector::section_title(colors, "图片比例"))
                     .child(
                         div()
                             .w_full()
@@ -26,7 +26,7 @@ impl MapViewerWindowView {
                             ]
                             .into_iter()
                             .map(|(fit, label)| {
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     label,
                                     self.image_generator.options.fit == fit,
@@ -44,7 +44,7 @@ impl MapViewerWindowView {
                             }),
                         ),
                     )
-                    .child(generator_section_title(colors, "缩放采样"))
+                    .child(inspector::section_title(colors, "缩放采样"))
                     .child(
                         div().flex().gap(px(6.0)).children(
                             [
@@ -53,7 +53,7 @@ impl MapViewerWindowView {
                             ]
                             .into_iter()
                             .map(|(resample, label)| {
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     label,
                                     self.image_generator.options.resample == resample,
@@ -71,7 +71,7 @@ impl MapViewerWindowView {
                             }),
                         ),
                     )
-                    .child(generator_section_title(colors, "透明度"))
+                    .child(inspector::section_title(colors, "透明度"))
                     .child(
                         div().flex().flex_wrap().gap(px(6.0)).children(
                             [
@@ -81,7 +81,7 @@ impl MapViewerWindowView {
                             ]
                             .into_iter()
                             .map(|(alpha, label)| {
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     label,
                                     self.image_generator.options.alpha_threshold == alpha,
@@ -99,7 +99,7 @@ impl MapViewerWindowView {
                             }),
                         ),
                     )
-                    .child(generator_section_title(colors, "半透明底色"))
+                    .child(inspector::section_title(colors, "半透明底色"))
                     .child(
                         div().flex().gap(px(6.0)).children(
                             [
@@ -109,7 +109,7 @@ impl MapViewerWindowView {
                             ]
                             .into_iter()
                             .map(|(background, label)| {
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     label,
                                     self.image_generator.options.background == background,
@@ -127,14 +127,14 @@ impl MapViewerWindowView {
                             }),
                         ),
                     )
-                    .child(generator_section_title(colors, "透明区域方块"))
+                    .child(inspector::section_title(colors, "透明区域方块"))
                     .child(
                         div()
                             .flex()
                             .flex_wrap()
                             .gap(px(6.0))
                             .child(
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     "留空",
                                     self.image_generator.options.transparent_fill.is_none(),
@@ -151,7 +151,7 @@ impl MapViewerWindowView {
                                 }),
                             )
                             .child(
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     "填充方块",
                                     self.image_generator.options.transparent_fill.is_some(),
@@ -177,7 +177,7 @@ impl MapViewerWindowView {
                         self.image_generator.options.transparent_fill.as_ref(),
                         |panel, selected| {
                             panel.child(
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     format!(
                                         "{} · 更换",
@@ -212,7 +212,7 @@ impl MapViewerWindowView {
                                                 .transparent_fill
                                                 .as_deref()
                                                 == Some(name.as_str());
-                                            generator_choice(
+                                            choice::chip(
                                                 colors,
                                                 name.strip_prefix("minecraft:")
                                                     .unwrap_or(&name)

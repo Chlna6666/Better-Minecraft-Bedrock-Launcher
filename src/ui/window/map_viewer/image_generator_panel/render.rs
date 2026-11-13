@@ -1,7 +1,7 @@
 use super::*;
 
-impl MapViewerWindowView {
-    pub(in super::super) fn render_image_import_actions(
+impl View {
+    pub(in super::super) fn image_import_actions(
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
@@ -53,7 +53,7 @@ impl MapViewerWindowView {
             )
     }
 
-    pub(in super::super) fn render_image_generator_panel(
+    pub(in super::super) fn image_generator_panel(
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
@@ -76,8 +76,8 @@ impl MapViewerWindowView {
                     .flex()
                     .flex_col()
                     .gap(px(15.0))
-                    .child(generator_section_title(colors, "01  素材"))
-                    .child(crate::ui::components::inspector::inspector_source_card(
+                    .child(inspector::section_title(colors, "01  素材"))
+                    .child(crate::ui::components::inspector::source_card(
                         colors,
                         "IMAGE",
                         self.image_generator.source.as_deref(),
@@ -104,22 +104,22 @@ impl MapViewerWindowView {
                         )
                     })
                     .when_some(self.image_generator.preview_size, |panel, size| {
-                        panel.child(crate::ui::components::inspector::inspector_result_summary(
+                        panel.child(crate::ui::components::inspector::result_summary(
                             colors,
                             "方块化结果",
                             format!("{} × {} × {} 方块", size[0], size[1], size[2]),
                         ))
                     })
-                    .child(generator_section_title(colors, "02  输出尺寸"))
+                    .child(inspector::section_title(colors, "02  输出尺寸"))
                     .child(
-                        crate::ui::components::inspector::inspector_field_group(colors)
+                        crate::ui::components::inspector::field_group(colors)
                             .child(self.render_image_dimension(ImageAxis::Width, colors, cx))
                             .child(self.render_image_dimension(ImageAxis::Height, colors, cx))
                             .child(self.render_generator_y_control(colors, cx))
                             .child(self.render_image_dithering(colors, cx))
                             .child(self.render_image_depth_controls(colors, cx)),
                     )
-                    .child(crate::ui::components::inspector::inspector_result_summary(
+                    .child(crate::ui::components::inspector::result_summary(
                         colors,
                         "当前画布",
                         format!(
@@ -127,9 +127,9 @@ impl MapViewerWindowView {
                             self.image_generator.options.width, self.image_generator.options.height,
                         ),
                     ))
-                    .child(generator_section_title(colors, "03  画面与材质"))
+                    .child(inspector::section_title(colors, "03  画面与材质"))
                     .child(
-                        crate::ui::components::inspector::inspector_field_group(colors)
+                        crate::ui::components::inspector::field_group(colors)
                             .child(self.render_image_appearance(colors, cx)),
                     ),
             )

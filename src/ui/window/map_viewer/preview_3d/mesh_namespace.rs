@@ -1,7 +1,7 @@
 use super::*;
 use gpui_3d::MeshId;
 
-pub(in crate::ui::window::map_viewer) fn namespace_preview_3d_mesh(
+pub(in crate::ui::window::map_viewer) fn namespace(
     mesh: &Preview3dMesh,
     namespace: u64,
 ) -> Vec<Preview3dChunkMesh> {

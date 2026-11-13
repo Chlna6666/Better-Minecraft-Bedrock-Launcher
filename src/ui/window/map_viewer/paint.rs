@@ -1,6 +1,6 @@
 use super::model::*;
 use super::prelude::*;
-use super::selection::{exact_selection_chunks, selection_chunks_are_rectangular};
+use super::selection::{exact_selection_chunks, chunks_are_rectangular};
 use super::tile_state::MapRenderRange;
 use super::viewport::*;
 use std::cell::RefCell;
@@ -61,9 +61,9 @@ struct EntityAvatarCandidate {
 
 #[derive(Default)]
 struct EntityLodScratch {
-    chunk_clusters: HashMap<EntityChunkClusterKey, EntityChunkClusterAccum>,
+    chunk_clusters: FxHashMap<EntityChunkClusterKey, EntityChunkClusterAccum>,
     chunk_cluster_order: Vec<EntityChunkClusterKey>,
-    screen_clusters: HashMap<EntityScreenClusterKey, EntityScreenClusterAccum>,
+    screen_clusters: FxHashMap<EntityScreenClusterKey, EntityScreenClusterAccum>,
     screen_cluster_order: Vec<EntityScreenClusterKey>,
     avatar_candidates: Vec<EntityAvatarCandidate>,
 }
@@ -138,7 +138,7 @@ pub(super) fn draw_map_canvas(
     colors: ThemeColors,
     window: &mut Window,
 ) {
-    let block_bounds = viewport_block_bounds(viewport, layout);
+    let block_bounds = block_bounds(viewport, layout);
     let tile_step = grid_step_for_block_bounds(TILE_WORLD_BLOCKS, block_bounds, 140);
     draw_grid_lines(
         bounds,
@@ -260,7 +260,7 @@ fn entity_screen_position(
     Some((screen_x, screen_y))
 }
 
-fn paint_entity_overlay_lod(
+fn entity_overlay_lod(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -269,7 +269,7 @@ fn paint_entity_overlay_lod(
     window: &mut Window,
 ) {
     match entity_lod_mode(viewport, layout) {
-        EntityLodMode::Exact => paint_exact_entity_avatars(
+        EntityLodMode::Exact => exact_entity_avatars(
             bounds,
             viewport,
             layout,
@@ -277,7 +277,7 @@ fn paint_entity_overlay_lod(
             entity_avatar_pool,
             window,
         ),
-        EntityLodMode::ChunkType => paint_chunk_clustered_entity_avatars(
+        EntityLodMode::ChunkType => chunk_clustered_entity_avatars(
             bounds,
             viewport,
             layout,
@@ -285,7 +285,7 @@ fn paint_entity_overlay_lod(
             entity_avatar_pool,
             window,
         ),
-        EntityLodMode::ScreenCluster => paint_screen_clustered_entity_avatars(
+        EntityLodMode::ScreenCluster => screen_clustered_entity_avatars(
             bounds,
             viewport,
             layout,
@@ -296,7 +296,7 @@ fn paint_entity_overlay_lod(
     }
 }
 
-fn paint_exact_entity_avatars(
+fn exact_entity_avatars(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -315,7 +315,7 @@ fn paint_exact_entity_avatars(
                 continue;
             }
             if entity_avatar_arc(point, entity_avatar_pool).is_none() {
-                paint_point_marker(
+                point_marker(
                     bounds,
                     viewport,
                     layout,
@@ -333,7 +333,7 @@ fn paint_exact_entity_avatars(
                 icon_size,
             });
         }
-        paint_entity_avatar_candidates(
+        entity_avatar_candidates(
             &scratch.avatar_candidates,
             bounds,
             viewport,
@@ -346,7 +346,7 @@ fn paint_exact_entity_avatars(
     });
 }
 
-fn paint_chunk_clustered_entity_avatars(
+fn chunk_clustered_entity_avatars(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -402,7 +402,7 @@ fn paint_chunk_clustered_entity_avatars(
             let block_z = (cluster.sum_block_z / f64::from(count)) as f32;
             let representative = &overlay_paint.entity_points[cluster.representative_index];
             if entity_avatar_arc(representative, entity_avatar_pool).is_none() {
-                paint_entity_cluster_fallback(
+                entity_cluster_fallback(
                     bounds, viewport, layout, block_x, block_z, count, window,
                 );
                 continue;
@@ -414,7 +414,7 @@ fn paint_chunk_clustered_entity_avatars(
                 icon_size,
             });
         }
-        paint_entity_avatar_candidates(
+        entity_avatar_candidates(
             &scratch.avatar_candidates,
             bounds,
             viewport,
@@ -427,7 +427,7 @@ fn paint_chunk_clustered_entity_avatars(
     });
 }
 
-fn paint_screen_clustered_entity_avatars(
+fn screen_clustered_entity_avatars(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -487,7 +487,7 @@ fn paint_screen_clustered_entity_avatars(
             let block_z = (cluster.sum_block_z / f64::from(count)) as f32;
             let representative = &overlay_paint.entity_points[cluster.representative_index];
             if entity_avatar_arc(representative, entity_avatar_pool).is_none() {
-                paint_entity_cluster_fallback(
+                entity_cluster_fallback(
                     bounds, viewport, layout, block_x, block_z, count, window,
                 );
                 continue;
@@ -499,7 +499,7 @@ fn paint_screen_clustered_entity_avatars(
                 icon_size,
             });
         }
-        paint_entity_avatar_candidates(
+        entity_avatar_candidates(
             &scratch.avatar_candidates,
             bounds,
             viewport,
@@ -512,7 +512,7 @@ fn paint_screen_clustered_entity_avatars(
     });
 }
 
-fn paint_entity_cluster_fallback(
+fn entity_cluster_fallback(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -540,7 +540,7 @@ fn paint_entity_cluster_fallback(
     );
 }
 
-fn paint_entity_avatar_candidates(
+fn entity_avatar_candidates(
     candidates: &[EntityAvatarCandidate],
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
@@ -584,7 +584,7 @@ pub(super) fn draw_professional_overlay_canvas(
     selection: Option<ChunkSelection>,
     paste_preview: Option<&PastePreview>,
     map_frame_preview: Option<MapFrameGridPreview>,
-    paste_preview_images: &[PastePreviewImage],
+    preview_images: &[PastePreviewImage],
     highlighted_slime_candidate: Option<&SlimeFarmCandidate>,
     colors: ThemeColors,
     window: &mut Window,
@@ -597,10 +597,10 @@ pub(super) fn draw_professional_overlay_canvas(
             if cache.bounds.dimension != dimension || cache.runs.is_empty() {
                 return None;
             }
-            paint_cached_slime_runs(bounds, viewport, layout, range, cache, window)
+            cached_slime_runs(bounds, viewport, layout, range, cache, window)
         });
         if dimension == Dimension::Overworld {
-            paint_slime_grid_overlay(bounds, viewport, layout, range, cached_bounds, window);
+            slime_grid_overlay(bounds, viewport, layout, range, cached_bounds, window);
         }
     }
 
@@ -614,7 +614,7 @@ pub(super) fn draw_professional_overlay_canvas(
                     Some(crate::core::minecraft::map::load_risk::RiskLevel::Red) => rgb(0xe64747),
                     None => continue,
                 };
-                paint_chunk_rect(
+                chunk_rect(
                     bounds,
                     viewport,
                     layout,
@@ -636,7 +636,7 @@ pub(super) fn draw_professional_overlay_canvas(
         }
         if overlays.hardcoded_spawn_areas {
             for rect in &overlay_paint.hardcoded_spawn_rects {
-                paint_block_rect(
+                block_rect(
                     bounds,
                     viewport,
                     layout,
@@ -658,7 +658,7 @@ pub(super) fn draw_professional_overlay_canvas(
         }
         if overlays.villages {
             for rect in &overlay_paint.village_rects {
-                paint_chunk_rect(
+                chunk_rect(
                     bounds,
                     viewport,
                     layout,
@@ -679,7 +679,7 @@ pub(super) fn draw_professional_overlay_canvas(
             }
         }
         if overlays.entities {
-            paint_entity_overlay_lod(
+            entity_overlay_lod(
                 bounds,
                 viewport,
                 layout,
@@ -690,7 +690,7 @@ pub(super) fn draw_professional_overlay_canvas(
         }
         if overlays.block_entities {
             for point in &overlay_paint.block_entity_points {
-                paint_point_marker(
+                point_marker(
                     bounds,
                     viewport,
                     layout,
@@ -703,7 +703,7 @@ pub(super) fn draw_professional_overlay_canvas(
         }
         if overlays.pending_ticks {
             for marker in &overlay_paint.pending_tick_chunk_markers {
-                paint_chunk_marker(
+                chunk_marker(
                     bounds,
                     viewport,
                     layout,
@@ -719,10 +719,10 @@ pub(super) fn draw_professional_overlay_canvas(
         let exact_chunks = exact_selection_chunks(selection);
         let irregular = exact_chunks
             .as_deref()
-            .is_some_and(|chunks| !selection_chunks_are_rectangular(selection, Some(chunks)));
+            .is_some_and(|chunks| !chunks_are_rectangular(selection, Some(chunks)));
         if irregular {
             if let Some(exact_chunks) = exact_chunks.as_deref() {
-                paint_exact_chunk_selection(
+                exact_chunk_selection(
                     bounds,
                     viewport,
                     layout,
@@ -734,7 +734,7 @@ pub(super) fn draw_professional_overlay_canvas(
             }
         } else {
             let selection_bounds = selection.bounds();
-            paint_chunk_rect(
+            chunk_rect(
                 bounds,
                 viewport,
                 layout,
@@ -752,7 +752,7 @@ pub(super) fn draw_professional_overlay_canvas(
                 }),
                 window,
             );
-            paint_selection_resize_handles(
+            selection_resize_handles(
                 bounds,
                 viewport,
                 layout,
@@ -764,23 +764,23 @@ pub(super) fn draw_professional_overlay_canvas(
     }
 
     if let Some(preview) = paste_preview {
-        paint_paste_preview_images(bounds, viewport, layout, paste_preview_images, window);
-        paint_pending_paste_chunks(bounds, viewport, layout, preview, window);
+        paste_preview_images(bounds, viewport, layout, preview_images, window);
+        pending_paste_chunks(bounds, viewport, layout, preview, window);
         if !preview.is_writing() {
-            paint_paste_preview_outline(bounds, viewport, layout, preview, window);
+            paste_preview_outline(bounds, viewport, layout, preview, window);
         }
     }
 
     if let Some(preview) = map_frame_preview {
-        paint_frame_grid_preview(bounds, viewport, layout, preview, window);
+        frame_grid_preview(bounds, viewport, layout, preview, window);
     }
 
     if let Some(candidate) = highlighted_slime_candidate {
-        paint_slime_farm_candidate(bounds, viewport, layout, dimension, candidate, window);
+        slime_farm_candidate(bounds, viewport, layout, dimension, candidate, window);
     }
 }
 
-fn paint_frame_grid_preview(
+fn frame_grid_preview(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -809,7 +809,7 @@ fn paint_frame_grid_preview(
         }
     }
     let color = rgb(0x4ade80).into();
-    paint_block_rect(
+    block_rect(
         bounds,
         viewport,
         layout,
@@ -857,7 +857,7 @@ fn paint_frame_grid_preview(
     }
 }
 
-fn paint_slime_farm_candidate(
+fn slime_farm_candidate(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -884,7 +884,7 @@ fn paint_slime_farm_candidate(
         ..rgb(0x9ef01a).into()
     };
     for chunk in &selected {
-        paint_chunk_rect(
+        chunk_rect(
             bounds, viewport, layout, chunk.x, chunk.z, chunk.x, chunk.z, fill_color, None, window,
         );
     }
@@ -949,7 +949,7 @@ fn paint_slime_farm_candidate(
     }
 }
 
-fn paint_selection_resize_handles(
+fn selection_resize_handles(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -1006,7 +1006,7 @@ fn paint_selection_resize_handles(
     }
 }
 
-fn paint_exact_chunk_selection(
+fn exact_chunk_selection(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -1025,7 +1025,7 @@ fn paint_exact_chunk_selection(
     }
 
     for chunk in &selected {
-        paint_chunk_rect(
+        chunk_rect(
             bounds,
             viewport,
             layout,
@@ -1126,7 +1126,7 @@ fn selected_chunk_neighbor(
     })
 }
 
-fn paint_pending_paste_chunks(
+fn pending_paste_chunks(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -1140,7 +1140,7 @@ fn paint_pending_paste_chunks(
         return;
     }
     for chunk in preview.targets.iter().skip(progress.completed) {
-        paint_chunk_rect(
+        chunk_rect(
             bounds,
             viewport,
             layout,
@@ -1161,7 +1161,7 @@ fn paint_pending_paste_chunks(
     }
 }
 
-fn paint_cached_slime_runs(
+fn cached_slime_runs(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -1184,7 +1184,7 @@ fn paint_cached_slime_runs(
         if run_min_x > run_max_x || run_min_z > run_max_z {
             continue;
         }
-        paint_chunk_rect(
+        chunk_rect(
             bounds,
             viewport,
             layout,
@@ -1203,7 +1203,7 @@ fn paint_cached_slime_runs(
     Some((min_chunk_x, min_chunk_z, max_chunk_x, max_chunk_z))
 }
 
-fn paint_slime_grid_overlay(
+fn slime_grid_overlay(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -1211,7 +1211,7 @@ fn paint_slime_grid_overlay(
     covered_bounds: Option<(i32, i32, i32, i32)>,
     window: &mut Window,
 ) {
-    let block_bounds = viewport_block_bounds(viewport, layout);
+    let block_bounds = block_bounds(viewport, layout);
     let chunk_step = grid_step_for_block_bounds(16, block_bounds, 280).max(1);
     let mut chunk_z = range.min_chunk_z;
     while chunk_z <= range.max_chunk_z {
@@ -1232,7 +1232,7 @@ fn paint_slime_grid_overlay(
                 sample.x >= min_x && sample.x <= max_x && sample.z >= min_z && sample.z <= max_z
             });
             if !sample_is_cached && is_slime_chunk(sample) {
-                paint_chunk_rect(
+                chunk_rect(
                     bounds,
                     viewport,
                     layout,
@@ -1260,7 +1260,7 @@ fn paint_slime_grid_overlay(
     }
 }
 
-fn paint_paste_preview_outline(
+fn paste_preview_outline(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -1279,7 +1279,7 @@ fn paint_paste_preview_outline(
     let Some(max_z) = preview.targets.iter().map(|chunk| chunk.z).max() else {
         return;
     };
-    paint_chunk_rect(
+    chunk_rect(
         bounds,
         viewport,
         layout,
@@ -1297,7 +1297,7 @@ fn paint_paste_preview_outline(
         }),
         window,
     );
-    paint_chunk_rect(
+    chunk_rect(
         bounds,
         viewport,
         layout,
@@ -1317,7 +1317,7 @@ fn paint_paste_preview_outline(
     );
 }
 
-fn paint_paste_preview_images(
+fn paste_preview_images(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -1382,7 +1382,7 @@ pub(super) fn overlay_icon_size_px(viewport: MapViewport, layout: RenderLayout) 
     (chunk_screen_size * 0.35).clamp(16.0, 52.0)
 }
 
-pub(super) fn paint_chunk_rect(
+pub(super) fn chunk_rect(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -1394,7 +1394,7 @@ pub(super) fn paint_chunk_rect(
     stroke_color: Option<Hsla>,
     window: &mut Window,
 ) {
-    paint_block_rect(
+    block_rect(
         bounds,
         viewport,
         layout,
@@ -1408,7 +1408,7 @@ pub(super) fn paint_chunk_rect(
     );
 }
 
-pub(super) fn paint_block_rect(
+pub(super) fn block_rect(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -1448,7 +1448,7 @@ pub(super) fn paint_block_rect(
     }
 }
 
-pub(super) fn paint_point_marker(
+pub(super) fn point_marker(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -1512,7 +1512,7 @@ pub(super) fn overlay_marker_screen_y(
         )
 }
 
-pub(super) fn paint_chunk_marker(
+pub(super) fn chunk_marker(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,

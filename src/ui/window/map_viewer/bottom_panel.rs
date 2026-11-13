@@ -4,7 +4,7 @@ use super::panels::*;
 use super::prelude::*;
 use crate::ui::components::icon::themed_icon;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn render_bottom_dock(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         div()
             .h(px(self.ui_state.bottom_panel_height))
@@ -336,7 +336,7 @@ impl MapViewerWindowView {
                         .child(t!("MapViewer.no_record_detail"))
                 },
                 |detail| {
-                    self.render_professional_detail_panel(colors, detail, cx)
+                    self.render_detail_panel(colors, detail, cx)
                         .relative()
                         .top(px(0.0))
                         .right(px(0.0))

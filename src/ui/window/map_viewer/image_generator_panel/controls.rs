@@ -1,6 +1,6 @@
 use super::*;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn render_image_dithering(
         &self,
         colors: &ThemeColors,
@@ -12,7 +12,7 @@ impl MapViewerWindowView {
             .flex()
             .flex_col()
             .gap(px(7.0))
-            .child(generator_section_title(colors, "颜色匹配"))
+            .child(inspector::section_title(colors, "颜色匹配"))
             .child(div().flex().flex_wrap().gap(px(6.0)).children(
                 [
                     (Dithering::None, "最近色（无抖动）"),
@@ -20,7 +20,7 @@ impl MapViewerWindowView {
                 ]
                 .into_iter()
                 .map(|(dithering, label)| {
-                    generator_choice(colors, label, selected == dithering).when(!busy, |button| {
+                    choice::chip(colors, label, selected == dithering).when(!busy, |button| {
                         button.on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _event, _window, cx| {
@@ -58,7 +58,7 @@ impl MapViewerWindowView {
             .flex()
             .flex_col()
             .gap(px(7.0))
-            .child(generator_section_title(colors, "高度模式"))
+            .child(inspector::section_title(colors, "高度模式"))
             .child(self.render_image_height_modes(colors, cx, busy, depth, relief))
             .when_some(relief, |panel, (max_height, fill)| {
                 panel.child(self.render_relief_image_settings(
@@ -101,7 +101,7 @@ impl MapViewerWindowView {
                             ImageBlockHeight::LuminanceRelief { .. }
                         )
                 );
-                generator_choice(colors, label, selected).when(!busy, |button| {
+                choice::chip(colors, label, selected).when(!busy, |button| {
                     button.on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
@@ -211,7 +211,7 @@ impl MapViewerWindowView {
             ]
             .into_iter()
             .map(|(next_fill, label)| {
-                generator_choice(colors, label, fill == next_fill).when(!busy, |button| {
+                choice::chip(colors, label, fill == next_fill).when(!busy, |button| {
                     button.on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
@@ -255,7 +255,7 @@ impl MapViewerWindowView {
             move |size, app| {
                 let next = size.round().clamp(1.0, 512.0) as u32;
                 if let Err(error) = changed_view.update(app, |this, cx| {
-                    this.update_image_dimension_from_slider(axis, next, cx);
+                    this.update_image_dimension(axis, next, cx);
                     cx.notify();
                 }) {
                     tracing::warn!(%error, "could not update image dimension slider");
@@ -276,7 +276,7 @@ impl MapViewerWindowView {
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .child(generator_section_title(colors, title))
+            .child(inspector::section_title(colors, title))
             .child(
                 crate::ui::components::numeric_field::numeric_dimension_editor(
                     field,
@@ -325,7 +325,7 @@ impl MapViewerWindowView {
                     )
                     .child(div().flex_1())
                     .children([64_u32, 128, 256, 512].into_iter().map(|size| {
-                        generator_choice(colors, format!("{size}"), value == size).when(
+                        choice::chip(colors, format!("{size}"), value == size).when(
                             !busy,
                             |button| {
                                 button.on_mouse_down(

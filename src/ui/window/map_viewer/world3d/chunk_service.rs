@@ -11,10 +11,11 @@ use super::types::{
     PROBE_FLAG_SOLID, ProbingSubChunk, WORLD3D_MAX_VIEW_RADIUS, World3dChunkCompletion,
     World3dChunkMesh, World3dChunkPayload, World3dChunkProbe,
 };
-use crate::ui::window::map_viewer::preview_3d_source as p3d;
+use crate::ui::window::map_viewer::preview_3d_source;
+use bedrock_block_model::obj::material_texture_name;
+use bedrock_block_model::resource_pack::vanilla_roots_for_packages;
 use bedrock_block_model::{
-    MATERIAL_SLOT_SEPARATOR, ObjResolvedTexture, ObjTextureResolver, obj_material_texture_name,
-    vanilla_resource_pack_roots_from_packages,
+    MATERIAL_SLOT_SEPARATOR, ObjResolvedTexture, ObjTextureResolver,
 };
 use bedrock_render::{ChunkPos, Dimension};
 use bedrock_world::block::BlockState;
@@ -30,6 +31,7 @@ use bedrock_world::{SlimeChunkBounds, SubChunkDecodeMode};
 use gpui_3d::{AlphaMode, Material, Mesh, MeshId, MeshPart, TextureAsset, Vec2, Vec3, Vertex};
 use image::RgbaImage;
 use rayon::prelude::*;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
@@ -64,6 +66,12 @@ const FAR_LOD_SCALE: i32 = 4;
 const TEXTURE_MAX_DIMENSION: u32 = 4096;
 const CHUNK_MESH_ID_SALT: u64 = 0x574f_524c_4433_444d;
 const MATERIAL_INDEX_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy)]
+enum VisibilityRefresh {
+    Verify,
+    IfDue,
+}
 
 fn material_index_flush_due(last: Option<Instant>, now: Instant) -> bool {
     last.is_none_or(|last| now.saturating_duration_since(last) >= MATERIAL_INDEX_FLUSH_INTERVAL)
@@ -383,14 +391,29 @@ fn mesh_target_priority(
 
 #[inline]
 fn lazy_meshing_disabled() -> bool {
-    static DISABLED: OnceLock<bool> = OnceLock::new();
-    *DISABLED.get_or_init(|| std::env::var_os("BMCBL_WORLD3D_DISABLE_LAZY_MESH").is_some())
+    #[cfg(debug_assertions)]
+    {
+        static DISABLED: OnceLock<bool> = OnceLock::new();
+        *DISABLED.get_or_init(|| std::env::var_os("BMCBL_WORLD3D_DISABLE_LAZY_MESH").is_some())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
 }
 
 #[inline]
 pub(super) fn portal_culling_disabled() -> bool {
-    static DISABLED: OnceLock<bool> = OnceLock::new();
-    *DISABLED.get_or_init(|| std::env::var_os("BMCBL_WORLD3D_DISABLE_PORTAL_VISIBILITY").is_some())
+    #[cfg(debug_assertions)]
+    {
+        static DISABLED: OnceLock<bool> = OnceLock::new();
+        *DISABLED
+            .get_or_init(|| std::env::var_os("BMCBL_WORLD3D_DISABLE_PORTAL_VISIBILITY").is_some())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
 }
 
 /// Background columns in the rear hemisphere can defer expensive
@@ -485,7 +508,7 @@ fn section_priority(pos: ChunkPos, section_y: i32, view: ViewState) -> (bool, u6
     )
 }
 
-fn coarse_lod_for_view(pos: ChunkPos, view: ViewState, _was_coarse: bool) -> bool {
+fn coarse_lod_for_view(pos: ChunkPos, view: ViewState) -> bool {
     let center_x = (view.camera[0] / 16.0).floor() as i32;
     let center_z = (view.camera[2] / 16.0).floor() as i32;
     // The selected circular radius is the full-detail region. A coarse mesh must
@@ -496,10 +519,10 @@ fn coarse_lod_for_view(pos: ChunkPos, view: ViewState, _was_coarse: bool) -> boo
 
 fn partition_section_faces(
     pos: ChunkPos,
-    faces: Vec<p3d::Preview3dStreamFace>,
+    faces: Vec<preview_3d_source::Preview3dStreamFace>,
     view: ViewState,
-) -> Vec<(i32, Vec<p3d::Preview3dStreamFace>)> {
-    let mut sections = BTreeMap::<i32, Vec<p3d::Preview3dStreamFace>>::new();
+) -> Vec<(i32, Vec<preview_3d_source::Preview3dStreamFace>)> {
+    let mut sections = BTreeMap::<i32, Vec<preview_3d_source::Preview3dStreamFace>>::new();
     for face in faces {
         sections.entry(face_band_y(&face)).or_default().push(face);
     }
@@ -518,7 +541,7 @@ fn neighbor_affected_bands(min_y: i32, max_y: i32) -> (i32, i32) {
 /// Partial model snapshots are valid only while their omitted cave bands
 /// remain certified hidden. A newly visible target or adjacent seam request
 /// must restore its full decoded model set from the retained World.
-fn needs_unexpanded_rehydration(
+fn unexpanded_rehydration_required(
     pos: ChunkPos,
     is_target: bool,
     unexpanded: &BTreeSet<i32>,
@@ -535,7 +558,7 @@ fn needs_unexpanded_rehydration(
 // GPU mesh, but must provide a full voxel/boundary mask while an adjacent
 // target is meshed; otherwise internal seam faces become visible until the
 // delayed column is eventually promoted.
-fn needs_mesh_neighbor_hydration(is_target: bool, has_blocks: bool, has_boundary: bool) -> bool {
+fn mesh_neighbor_hydration_required(is_target: bool, has_blocks: bool, has_boundary: bool) -> bool {
     !has_blocks && (is_target || !has_boundary)
 }
 
@@ -550,15 +573,27 @@ const CHUNK_NEIGHBOR_OFFSETS: [(i32, i32); 8] = [
     (-1, -1),
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MeshCoordinateSpace {
+    World,
+    TemplateLocal,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MeshTargetScope {
+    ChangedOnly,
+    WithNeighbors,
+}
+
 fn mesh_target_positions(
     changed: &[ChunkPos],
-    include_neighbors: bool,
+    scope: MeshTargetScope,
     affects: impl Fn(&ChunkPos, &ChunkPos) -> bool,
 ) -> BTreeSet<ChunkPos> {
     let mut targets = BTreeSet::new();
     for pos in changed {
         targets.insert(*pos);
-        if include_neighbors {
+        if scope == MeshTargetScope::WithNeighbors {
             for (dx, dz) in CHUNK_NEIGHBOR_OFFSETS {
                 let neighbor = ChunkPos {
                     x: pos.x + dx,
@@ -882,12 +917,12 @@ mod view_tests {
         chunk_mesh_id, coarse_lod_for_view, desired_chunk_positions, downsample_texture,
         face_band_y, face_vertex_color, forget_published_sections, frustum_hidden_band,
         fully_hidden_mesh_columns, grass_block_side_texture_keys, inside_cache_hysteresis,
+        FaceColorOptions, MeshTargetScope,
         inside_view, intern_face_materials, is_full_grass_block_side_material,
-        mesh_target_positions, mesh_target_priority, mipmapped_texture,
-        needs_unexpanded_rehydration, p3d, partition_section_faces, premesh_opaque_terrain,
-        same_chunk_render_geometry, section_priority, skip_premesh_subchunk,
-        surrounded_chunk_candidates, take_visible_dirty_meshes, take_visible_urgent_chunks,
-        visible_dirty_meshes,
+        mesh_target_positions, mesh_target_priority, mipmapped_texture, partition_section_faces,
+        premesh_opaque_terrain, preview_3d_source, same_chunk_render_geometry, section_priority,
+        skip_premesh_subchunk, surrounded_chunk_candidates, take_visible_dirty_meshes,
+        take_visible_urgent_chunks, unexpanded_rehydration_required, visible_dirty_meshes,
     };
     use bedrock_block_model::{ObjResolvedTexture, ResourceFile};
     use bedrock_render::{ChunkPos, Dimension};
@@ -999,15 +1034,17 @@ mod view_tests {
         };
         let missing = BTreeSet::from([0, 1]);
         let mut deferred = BTreeSet::from([(pos, 0), (pos, 1)]);
-        assert!(!needs_unexpanded_rehydration(
+        assert!(!unexpanded_rehydration_required(
             pos, true, &missing, &deferred
         ));
-        assert!(needs_unexpanded_rehydration(
+        assert!(unexpanded_rehydration_required(
             pos, false, &missing, &deferred
         ));
         deferred.remove(&(pos, 0));
-        assert!(needs_unexpanded_rehydration(pos, true, &missing, &deferred));
-        assert!(!needs_unexpanded_rehydration(
+        assert!(unexpanded_rehydration_required(
+            pos, true, &missing, &deferred
+        ));
+        assert!(!unexpanded_rehydration_required(
             pos,
             true,
             &BTreeSet::new(),
@@ -1017,14 +1054,14 @@ mod view_tests {
 
     #[test]
     fn deferred_neighbor_without_boundary_must_restore_seam_occupancy() {
-        use super::needs_mesh_neighbor_hydration as needs;
+        use super::mesh_neighbor_hydration_required;
         // A deferred chunk may be absent from the GPU draw set, but it must
         // still suppress the covered side faces of adjacent loaded chunks.
-        assert!(needs(false, false, false));
-        assert!(needs(true, false, true));
-        assert!(!needs(false, false, true));
-        assert!(!needs(false, true, false));
-        assert!(!needs(true, true, false));
+        assert!(mesh_neighbor_hydration_required(false, false, false));
+        assert!(mesh_neighbor_hydration_required(true, false, true));
+        assert!(!mesh_neighbor_hydration_required(false, false, true));
+        assert!(!mesh_neighbor_hydration_required(false, true, false));
+        assert!(!mesh_neighbor_hydration_required(true, true, false));
     }
 
     #[test]
@@ -1311,11 +1348,13 @@ mod view_tests {
         let cached = BTreeSet::from([pos(0, 0), pos(1, 0), pos(0, 1), pos(1, 1)]);
         let changed = [pos(0, 0)];
         assert_eq!(
-            mesh_target_positions(&changed, false, |_, p| cached.contains(p)),
+            mesh_target_positions(&changed, MeshTargetScope::ChangedOnly, |_, p| cached
+                .contains(p)),
             BTreeSet::from(changed)
         );
         assert_eq!(
-            mesh_target_positions(&changed, true, |_, p| cached.contains(p)),
+            mesh_target_positions(&changed, MeshTargetScope::WithNeighbors, |_, p| cached
+                .contains(p)),
             cached
         );
     }
@@ -1544,17 +1583,11 @@ mod view_tests {
                 x: radius + 1,
                 ..edge
             };
-            for was_coarse in [false, true] {
-                assert!(!coarse_lod_for_view(edge, view, was_coarse));
-                assert!(coarse_lod_for_view(outside, view, was_coarse));
-                assert!(coarse_lod_for_view(
-                    ChunkPos { z: radius, ..edge },
-                    view,
-                    was_coarse
-                ));
-            }
+            assert!(!coarse_lod_for_view(edge, view));
+            assert!(coarse_lod_for_view(outside, view));
+            assert!(coarse_lod_for_view(ChunkPos { z: radius, ..edge }, view));
             view.camera[0] = 24.0;
-            assert!(!coarse_lod_for_view(outside, view, true));
+            assert!(!coarse_lod_for_view(outside, view));
             view.camera[0] = 8.0;
         }
     }
@@ -1575,7 +1608,7 @@ mod view_tests {
             radius: 8,
             view_distance: 320.0,
         };
-        let face_at = |y: f64| p3d::Preview3dStreamFace {
+        let face_at = |y: f64| preview_3d_source::Preview3dStreamFace {
             ambient_light: [1.0; 4],
             corners: [[0.0, y, 0.0]; 4],
             color: [1.0; 4],
@@ -1583,7 +1616,7 @@ mod view_tests {
             normal: [0, 1, 0],
             material: Arc::from("test"),
             uv: None,
-            pass: p3d::Preview3dStreamPass::Opaque,
+            pass: preview_3d_source::Preview3dStreamPass::Opaque,
         };
         let sections = partition_section_faces(
             pos,
@@ -1599,14 +1632,14 @@ mod view_tests {
 
     #[test]
     fn cube_and_detail_faces_do_not_share_sidedness() {
-        use p3d::Preview3dStreamPass as Pass;
-        assert!(!super::face_double_sided(Pass::Opaque));
+        use preview_3d_source::Preview3dStreamPass;
+        assert!(!super::face_double_sided(Preview3dStreamPass::Opaque));
         for pass in [
-            Pass::DetailOpaque,
-            Pass::Glass,
-            Pass::DetailGlass,
-            Pass::Water,
-            Pass::Lava,
+            Preview3dStreamPass::DetailOpaque,
+            Preview3dStreamPass::Glass,
+            Preview3dStreamPass::DetailGlass,
+            Preview3dStreamPass::Water,
+            Preview3dStreamPass::Lava,
         ] {
             assert!(super::face_double_sided(pass));
         }
@@ -1630,31 +1663,39 @@ mod view_tests {
 
     #[test]
     fn missing_textures_do_not_make_ordinary_blocks_translucent() {
-        use super::TextureAlphaContent as Content;
+        use super::TextureAlphaContent;
         use gpui_3d::AlphaMode;
-        use p3d::Preview3dStreamPass as Pass;
-        for pass in [Pass::Opaque, Pass::DetailOpaque, Pass::Lava] {
+        use preview_3d_source::Preview3dStreamPass;
+        for pass in [
+            Preview3dStreamPass::Opaque,
+            Preview3dStreamPass::DetailOpaque,
+            Preview3dStreamPass::Lava,
+        ] {
             assert_eq!(
-                super::alpha_mode_for_pass(pass, Content::Unknown),
+                super::alpha_mode_for_pass(pass, TextureAlphaContent::Unknown),
                 AlphaMode::Opaque
             );
             assert_eq!(
-                super::alpha_mode_for_pass(pass, Content::Opaque),
+                super::alpha_mode_for_pass(pass, TextureAlphaContent::Opaque),
                 AlphaMode::Opaque
             );
             assert_eq!(
-                super::alpha_mode_for_pass(pass, Content::Binary),
+                super::alpha_mode_for_pass(pass, TextureAlphaContent::Binary),
                 AlphaMode::Mask
             );
             // Authored partial coverage (portal, slime) must remain blended.
             assert_eq!(
-                super::alpha_mode_for_pass(pass, Content::Partial),
+                super::alpha_mode_for_pass(pass, TextureAlphaContent::Partial),
                 AlphaMode::Blend
             );
         }
-        for pass in [Pass::Glass, Pass::DetailGlass, Pass::Water] {
+        for pass in [
+            Preview3dStreamPass::Glass,
+            Preview3dStreamPass::DetailGlass,
+            Preview3dStreamPass::Water,
+        ] {
             assert_eq!(
-                super::alpha_mode_for_pass(pass, Content::Unknown),
+                super::alpha_mode_for_pass(pass, TextureAlphaContent::Unknown),
                 AlphaMode::Blend
             );
         }
@@ -2069,7 +2110,7 @@ mod view_tests {
 
     #[test]
     fn section_assignment_uses_world_height_and_unique_mesh_ids() {
-        let face = p3d::Preview3dStreamFace {
+        let face = preview_3d_source::Preview3dStreamFace {
             ambient_light: [1.0; 4],
             corners: [
                 [0.0, -1.0, 0.0],
@@ -2082,7 +2123,7 @@ mod view_tests {
             normal: [0, 0, 1],
             material: Arc::from("test"),
             uv: None,
-            pass: p3d::Preview3dStreamPass::Opaque,
+            pass: preview_3d_source::Preview3dStreamPass::Opaque,
         };
         assert_eq!(face_band_y(&face), -1);
         let mut face = face;
@@ -2108,7 +2149,7 @@ mod view_tests {
 
     #[test]
     fn face_material_names_share_one_allocation_per_chunk() {
-        let face = p3d::Preview3dStreamFace {
+        let face = preview_3d_source::Preview3dStreamFace {
             ambient_light: [1.0; 4],
             corners: [[0.0; 3]; 4],
             color: [1.0; 4],
@@ -2116,7 +2157,7 @@ mod view_tests {
             normal: [0, 1, 0],
             material: Arc::from("minecraft:stone"),
             uv: None,
-            pass: p3d::Preview3dStreamPass::Opaque,
+            pass: preview_3d_source::Preview3dStreamPass::Opaque,
         };
         let mut faces = [face.clone(), face];
         faces[1].material = Arc::from("minecraft:stone");
@@ -2127,7 +2168,7 @@ mod view_tests {
 
     #[test]
     fn source_batch_deduplicates_equal_names_with_distinct_arcs_and_keeps_face_directions() {
-        let face = p3d::Preview3dStreamFace {
+        let face = preview_3d_source::Preview3dStreamFace {
             ambient_light: [1.0; 4],
             corners: [[0.0; 3]; 4],
             color: [1.0; 4],
@@ -2135,7 +2176,7 @@ mod view_tests {
             normal: [0, 1, 0],
             material: Arc::from("minecraft_stone"),
             uv: None,
-            pass: p3d::Preview3dStreamPass::Opaque,
+            pass: preview_3d_source::Preview3dStreamPass::Opaque,
         };
         let mut other = face.clone();
         other.material = Arc::from("minecraft_stone");
@@ -2159,7 +2200,7 @@ mod view_tests {
 
     #[test]
     fn pre_tinted_face_keeps_vertex_color_neutral() {
-        let face = p3d::Preview3dStreamFace {
+        let face = preview_3d_source::Preview3dStreamFace {
             ambient_light: [1.0; 4],
             corners: [[0.0; 3]; 4],
             color: [0.5, 0.7, 0.3, 1.0],
@@ -2167,20 +2208,30 @@ mod view_tests {
             normal: [0, 0, 1],
             material: Arc::from("minecraft:grass"),
             uv: None,
-            pass: p3d::Preview3dStreamPass::Opaque,
+            pass: preview_3d_source::Preview3dStreamPass::Opaque,
         };
         assert_eq!(
             face_vertex_color(
                 &face,
-                true,
-                false,
-                false,
-                super::TextureAlphaContent::Opaque
+                FaceColorOptions {
+                    has_texture: true,
+                    uses_tint: false,
+                    opaque_glass: false,
+                    alpha_content: super::TextureAlphaContent::Opaque,
+                },
             ),
             [1.0; 4]
         );
         assert_eq!(
-            face_vertex_color(&face, true, true, false, super::TextureAlphaContent::Opaque),
+            face_vertex_color(
+                &face,
+                FaceColorOptions {
+                    has_texture: true,
+                    uses_tint: true,
+                    opaque_glass: false,
+                    alpha_content: super::TextureAlphaContent::Opaque,
+                },
+            ),
             face.color
         );
     }
@@ -2222,7 +2273,7 @@ mod view_tests {
 #[cfg(test)]
 mod cache_tests {
     use super::{
-        ChunkServiceConfig, ChunkServiceEvent, MaterialSlotKey, ViewState, Worker,
+        ChunkServiceConfig, ChunkServiceEvent, MaterialSlotKey, MeshTargetScope, ViewState, Worker,
         desired_chunk_positions,
     };
     use bedrock_render::{ChunkPos, Dimension};
@@ -2238,7 +2289,8 @@ mod cache_tests {
             z: 0,
             dimension: Dimension::Overworld,
         };
-        let mut blocks = super::p3d::Preview3dChunkBlocks::test_cubes(&[[15, 64, 15]]);
+        let mut blocks =
+            super::preview_3d_source::Preview3dChunkBlocks::test_cubes(&[[15, 64, 15]]);
         let boundary = std::sync::Arc::new(blocks.boundary_snapshot());
         let mut cached = super::CachedChunk {
             bytes: blocks.estimated_cpu_bytes(),
@@ -2276,7 +2328,7 @@ mod cache_tests {
             z: 0,
             dimension: Dimension::Overworld,
         };
-        let blocks = super::p3d::Preview3dChunkBlocks::test_cubes(&[[0, 1, 0]]);
+        let blocks = super::preview_3d_source::Preview3dChunkBlocks::test_cubes(&[[0, 1, 0]]);
         let mut chunk = super::CachedChunk {
             bytes: blocks.estimated_cpu_bytes(),
             blocks: Some(blocks),
@@ -2348,14 +2400,16 @@ mod cache_tests {
             .map(|(pos, chunk)| (pos, chunk.unwrap().unwrap()))
             .collect::<HashMap<_, _>>();
         let mut target = columns.remove(&center).unwrap();
-        target.blocks = Some(super::p3d::Preview3dChunkBlocks::test_cubes(&[
-            [center.x * 16 + 15, 8, center.z * 16 + 8],
-            [center.x * 16 + 15, 136, center.z * 16 + 8],
-        ]));
+        target.blocks = Some(super::preview_3d_source::Preview3dChunkBlocks::test_cubes(
+            &[
+                [center.x * 16 + 15, 8, center.z * 16 + 8],
+                [center.x * 16 + 15, 136, center.z * 16 + 8],
+            ],
+        ));
         target.frame_displays.clear();
         worker.cache.insert(center, target);
         let (events, rx) = sync_channel(4096);
-        worker.mesh_targets(&events, &[center], false);
+        worker.mesh_targets(&events, &[center], MeshTargetScope::ChangedOnly);
         let mut retained = rx
             .try_iter()
             .filter_map(|event| match event {
@@ -2379,14 +2433,12 @@ mod cache_tests {
             .unwrap()
             .clone();
         let mut new_neighbor = columns.remove(&east).unwrap();
-        new_neighbor.blocks = Some(super::p3d::Preview3dChunkBlocks::test_cubes(&[[
-            east.x * 16,
-            136,
-            east.z * 16 + 8,
-        ]]));
+        new_neighbor.blocks = Some(super::preview_3d_source::Preview3dChunkBlocks::test_cubes(
+            &[[east.x * 16, 136, east.z * 16 + 8]],
+        ));
         new_neighbor.frame_displays.clear();
         worker.cache.insert(east, new_neighbor);
-        worker.mesh_targets(&events, &[east], true);
+        worker.mesh_targets(&events, &[east], MeshTargetScope::WithNeighbors);
         let mut target_sections = Vec::new();
         let mut target_retained = Vec::new();
         for event in rx.try_iter() {
@@ -2426,7 +2478,7 @@ mod cache_tests {
             &worker.published_sections[&(center, 0)].upgrade().unwrap(),
             &original_low
         ));
-        worker.mesh_targets(&events, &[center], false);
+        worker.mesh_targets(&events, &[center], MeshTargetScope::ChangedOnly);
         assert!(rx.try_iter().all(|event| !matches!(event, ChunkServiceEvent::Chunk(payload) if payload.mesh.pos == center)), "incremental and full rebuild must match");
         // Removing an old boundary block must not use the new empty height range.
         worker.invalidate(&[east]);
@@ -2438,10 +2490,12 @@ mod cache_tests {
             .1
             .unwrap()
             .unwrap();
-        removed.blocks = Some(super::p3d::Preview3dChunkBlocks::test_cubes(&[]));
+        removed.blocks = Some(super::preview_3d_source::Preview3dChunkBlocks::test_cubes(
+            &[],
+        ));
         removed.frame_displays.clear();
         worker.cache.insert(east, removed);
-        worker.mesh_targets(&events, &[east], true);
+        worker.mesh_targets(&events, &[east], MeshTargetScope::WithNeighbors);
         assert!(rx.try_iter().any(|event| matches!(event, ChunkServiceEvent::Chunk(payload)
             if payload.mesh.pos == center && payload.mesh.section_y == 2 && payload.mesh.faces == 6)),
             "removing a boundary cube must restore the neighboring face");
@@ -2490,7 +2544,7 @@ mod cache_tests {
             worker.cache.insert(pos, chunk.unwrap().unwrap());
         }
         let (events, rx) = sync_channel(4096);
-        worker.mesh_targets(&events, &positions, true);
+        worker.mesh_targets(&events, &positions, MeshTargetScope::WithNeighbors);
         assert!(worker.cache.get(&center).unwrap().blocks.is_none());
         let mut material_ids = HashMap::new();
         let mut reused = 0;
@@ -2523,7 +2577,7 @@ mod cache_tests {
             retained_meshes.push(payload.mesh);
         }
         assert!(reused > 0);
-        worker.mesh_targets(&events, &[center], false);
+        worker.mesh_targets(&events, &[center], MeshTargetScope::ChangedOnly);
         assert!(worker.cache.get(&center).unwrap().blocks.is_none());
         assert!(
             worker.last_reused_sections > 0,
@@ -2546,7 +2600,7 @@ mod cache_tests {
             ..center
         };
         worker.cache.get_mut(&west).unwrap().discard_blocks();
-        worker.mesh_targets(&events, &[center, east], false);
+        worker.mesh_targets(&events, &[center, east], MeshTargetScope::ChangedOnly);
         assert!(
             worker.last_boundary_hits > 0,
             "an input-only neighbor should use its compact summary"
@@ -2574,8 +2628,8 @@ mod cache_tests {
 }
 
 struct CachedChunk {
-    blocks: Option<p3d::Preview3dChunkBlocks>,
-    boundary: Option<Arc<p3d::Preview3dChunkBoundary>>,
+    blocks: Option<preview_3d_source::Preview3dChunkBlocks>,
+    boundary: Option<Arc<preview_3d_source::Preview3dChunkBoundary>>,
     frame_displays: Vec<FrameDisplay>,
     probe: Arc<World3dChunkProbe>,
     bytes: usize,
@@ -2677,15 +2731,29 @@ impl FaceBucket {
 }
 
 pub(super) fn trace_timings() -> bool {
-    std::env::var_os("BMCBL_WORLD3D_TRACE_TIMINGS").is_some()
+    #[cfg(debug_assertions)]
+    {
+        std::env::var_os("BMCBL_WORLD3D_TRACE_TIMINGS").is_some()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
 }
 
 fn trace_verbose() -> bool {
-    std::env::var_os("BMCBL_WORLD3D_TRACE_VERBOSE").is_some()
+    #[cfg(debug_assertions)]
+    {
+        std::env::var_os("BMCBL_WORLD3D_TRACE_VERBOSE").is_some()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
 }
 
 fn unresolved_material_sources(
-    faces: &[p3d::Preview3dStreamFace],
+    faces: &[preview_3d_source::Preview3dStreamFace],
     cache: &HashMap<(String, [i32; 3]), Option<ObjResolvedTexture>>,
 ) -> Vec<(String, [i32; 3])> {
     let mut seen = HashSet::new();
@@ -2796,7 +2864,7 @@ fn load_batch_from_world(
     let options = request_for_stream_batch(options, positions, lazy_view);
     let cancel = options.cancel.clone();
     let (chunks, stats) =
-        match world.query_chunk_data_with_stats(positions.iter().copied(), options) {
+        match world.load_render_chunks_with_stats(positions.iter().copied(), options) {
             Ok(result) => result,
             Err(error) => {
                 let message = format!("批量读取区块失败：{error}");
@@ -2904,7 +2972,8 @@ fn load_batch_from_world(
     // A batch containing only deferred rear columns never touches expensive
     // biome/model collection. When any foreground column is present, keep
     // its original neighbor biomes for exact tinting at chunk boundaries.
-    let biome_blend = need_mesh_data.then(|| p3d::Preview3dBiomeBlendField::from_chunks(&chunks));
+    let biome_blend =
+        need_mesh_data.then(|| preview_3d_source::Preview3dBiomeBlendField::from_chunks(&chunks));
     let collect_started = Instant::now();
     let processed = chunks
         .into_par_iter()
@@ -3385,7 +3454,7 @@ impl Worker {
         let remesh =
             take_renderable_dirty_meshes(&mut self.dirty_meshes, self.view, REMESH_BATCH_CHUNKS);
         if !remesh.is_empty() {
-            self.mesh_targets(tx, &remesh, false);
+            self.mesh_targets(tx, &remesh, MeshTargetScope::ChangedOnly);
             if self
                 .last_status_at
                 .is_none_or(|at| at.elapsed() >= Duration::from_millis(250))
@@ -3429,7 +3498,7 @@ impl Worker {
                 ),
             );
             if !ready.is_empty() {
-                self.mesh_targets(tx, &ready, false);
+                self.mesh_targets(tx, &ready, MeshTargetScope::ChangedOnly);
                 if let Ok(command) = commands.try_recv() {
                     if let Some(pending) = pending_batch.take() {
                         self.urgent_chunks.extend(pending.positions.iter().copied());
@@ -3552,7 +3621,7 @@ impl Worker {
                 // burst. Neighbor masks are supplied from the same cache;
                 // previously meshed seams are queued by boundary_pairs.
                 for (index, wave) in newly_loaded.chunks(STREAM_MESH_BATCH_CHUNKS).enumerate() {
-                    self.mesh_targets(tx, wave, false);
+                    self.mesh_targets(tx, wave, MeshTargetScope::ChangedOnly);
                     if let Ok(command) = commands.try_recv() {
                         // Do not lose a decoded column when a newer camera
                         // view preempts the current scene build. The ordinary
@@ -3648,7 +3717,7 @@ impl Worker {
             if remesh.is_empty() {
                 continue;
             }
-            self.mesh_targets(tx, &remesh, false);
+            self.mesh_targets(tx, &remesh, MeshTargetScope::ChangedOnly);
             if self
                 .last_status_at
                 .is_none_or(|at| at.elapsed() >= Duration::from_millis(250))
@@ -3664,11 +3733,10 @@ impl Worker {
     /// value lookup. The graph is recomputed when the camera changes its
     /// voxel/height, when the index changes, or when the source DB revision
     /// differs. In-flight source changes fail open rather than hiding terrain.
-    fn refresh_index_plan(&mut self, verify_before_db_skip: bool) {
-        let changed = if verify_before_db_skip {
-            self.visibility_index.refresh()
-        } else {
-            self.visibility_index.refresh_if_due()
+    fn refresh_visibility(&mut self, refresh: VisibilityRefresh) {
+        let changed = match refresh {
+            VisibilityRefresh::Verify => self.visibility_index.refresh(),
+            VisibilityRefresh::IfDue => self.visibility_index.refresh_if_due(),
         };
         if changed {
             self.index_hidden_columns.clear();
@@ -3802,7 +3870,7 @@ impl Worker {
                 self.view.radius,
             )
         });
-        self.refresh_index_plan(false);
+        self.refresh_visibility(VisibilityRefresh::IfDue);
         let newly_visible = self
             .deferred_db_reads
             .iter()
@@ -3823,7 +3891,11 @@ impl Worker {
     }
 
     fn next_batch(&mut self, center_x: i32, center_z: i32) -> Vec<ChunkPos> {
-        self.refresh_index_plan(self.visibility_index.len() > 0);
+        self.refresh_visibility(if self.visibility_index.len() > 0 {
+            VisibilityRefresh::Verify
+        } else {
+            VisibilityRefresh::IfDue
+        });
         let mut batch = Vec::with_capacity(LOAD_BATCH_CHUNKS);
         let urgent = take_visible_urgent_chunks(
             &mut self.urgent_chunks,
@@ -3916,9 +3988,10 @@ impl Worker {
     }
 
     fn mark_neighbor_meshes(&mut self, pos: ChunkPos) {
-        let neighbors = mesh_target_positions(&[pos], true, |_, neighbor| {
-            self.cache.contains_key(neighbor)
-        });
+        let neighbors =
+            mesh_target_positions(&[pos], MeshTargetScope::WithNeighbors, |_, neighbor| {
+                self.cache.contains_key(neighbor)
+            });
         self.dirty_meshes.extend(
             neighbors
                 .into_iter()
@@ -3997,7 +4070,7 @@ impl Worker {
         &mut self,
         tx: &SyncSender<ChunkServiceEvent>,
         loaded: &[ChunkPos],
-        include_neighbors: bool,
+        scope: MeshTargetScope,
     ) {
         // Keep hot material metadata across every Section in this mesh wave,
         // not beyond it. Texture eviction and lighting mode changes therefore
@@ -4009,7 +4082,7 @@ impl Worker {
         let mut texture_lookup_time = Duration::ZERO;
         let mut texture_read_time = Duration::ZERO;
         let mut texture_decode_time = Duration::ZERO;
-        let targets = mesh_target_positions(loaded, include_neighbors, |_, neighbor| {
+        let targets = mesh_target_positions(loaded, scope, |_, neighbor| {
             self.cache.contains_key(neighbor) && !self.deferred_columns.contains(neighbor)
         });
         let (center_x, center_z) = self.view_center_chunk();
@@ -4086,7 +4159,7 @@ impl Worker {
                 self.cache.len()
             );
         }
-        let mut builder = p3d::Preview3dMeshBuilder::new_stream(bounds);
+        let mut builder = preview_3d_source::Preview3dMeshBuilder::new_stream(bounds);
         builder.set_ambient_occlusion(self.lighting.is_lit());
         let mut boundary_hits = 0usize;
         let target_set = targets.iter().copied().collect::<HashSet<_>>();
@@ -4103,11 +4176,11 @@ impl Worker {
             .copied()
             .filter(|pos| {
                 self.cache.get(pos).is_some_and(|chunk| {
-                    needs_mesh_neighbor_hydration(
+                    mesh_neighbor_hydration_required(
                         target_set.contains(pos),
                         chunk.blocks.is_some(),
                         chunk.boundary.is_some(),
-                    ) || needs_unexpanded_rehydration(
+                    ) || unexpanded_rehydration_required(
                         *pos,
                         target_set.contains(pos),
                         &chunk.unexpanded_bands,
@@ -4271,13 +4344,7 @@ impl Worker {
         let coarse_targets = targets
             .iter()
             .copied()
-            .filter(|pos| {
-                coarse_lod_for_view(
-                    *pos,
-                    self.view,
-                    self.lod_modes.get(pos).copied().unwrap_or(false),
-                )
-            })
+            .filter(|pos| coarse_lod_for_view(*pos, self.view))
             .collect::<HashSet<_>>();
         // Only reuse untouched height bands for previously published, unchanged cube-only
         // neighbors. Models and edit invalidations can affect geometry beyond this range.
@@ -4309,7 +4376,7 @@ impl Worker {
                 light_started.elapsed().as_secs_f64() * 1000.
             );
         }
-        if include_neighbors {
+        if scope == MeshTargetScope::WithNeighbors {
             for &pos in &targets {
                 if priority_targets.contains(&pos)
                     || self.dirty_meshes.contains(&pos)
@@ -4373,7 +4440,7 @@ impl Worker {
             .map(|(&pos, bands)| {
                 (
                     pos,
-                    p3d::Preview3dBandSelection {
+                    preview_3d_source::Preview3dBandSelection {
                         affected: bands.clone(),
                         retained: completed_sections
                             .get(&pos)
@@ -4385,8 +4452,9 @@ impl Worker {
                     },
                 )
             })
-            .collect::<HashMap<_, _>>();
-        let mut coarse_faces_by_pos = None::<HashMap<ChunkPos, p3d::Preview3dStreamChunkFaces>>;
+            .collect::<FxHashMap<_, _>>();
+        let mut coarse_faces_by_pos =
+            None::<HashMap<ChunkPos, preview_3d_source::Preview3dStreamChunkFaces>>;
         let (first, remaining) = targets.split_at(targets.len().min(4));
         for batch in std::iter::once(first).chain(remaining.chunks(8)) {
             let face_started = Instant::now();
@@ -4402,7 +4470,7 @@ impl Worker {
                         .get(pos)
                         .is_some_and(|(_, _, _, _, frames, _)| frames.is_empty())
                 })
-                .collect::<HashSet<_>>();
+                .collect::<FxHashSet<_>>();
             let mut gpu_bands = HashMap::new();
             let mut gpu_sections = Vec::new();
             for pos in gpu_targets.clone() {
@@ -4422,11 +4490,14 @@ impl Worker {
                     gpu_bands.insert((pos, band.section_y), band);
                 }
             }
-            let mut faces = builder.build_stream_faces_with_gpu_cubes_skipping(
+            let mut faces = builder.build_stream_faces(
                 &fine,
-                &selections,
-                &gpu_targets,
-                &hidden_bands,
+                preview_3d_source::StreamFaceOptions {
+                    selections: Some(&selections),
+                    gpu_cubes: Some(&gpu_targets),
+                    hidden_bands: Some(&hidden_bands),
+                    ..Default::default()
+                },
             );
             if !coarse.is_empty() && coarse_faces_by_pos.is_none() {
                 coarse_faces_by_pos = Some(
@@ -4453,7 +4524,10 @@ impl Worker {
             if let Some(coarse_faces) = coarse_faces {
                 faces.extend(coarse.iter().filter_map(|pos| coarse_faces.remove(pos)));
             }
-            faces.extend(builder.build_stream_faces(&coarse_fallback));
+            faces.extend(builder.build_stream_faces(
+                &coarse_fallback,
+                preview_3d_source::StreamFaceOptions::default(),
+            ));
             for pos in &fine {
                 completed_modes.insert(*pos, false);
             }
@@ -4465,12 +4539,12 @@ impl Worker {
             if trace_verbose() {
                 for face in faces.iter().flat_map(|chunk| &chunk.faces) {
                     let pass = match face.pass {
-                        p3d::Preview3dStreamPass::Opaque => 0,
-                        p3d::Preview3dStreamPass::DetailOpaque => 1,
-                        p3d::Preview3dStreamPass::Glass => 2,
-                        p3d::Preview3dStreamPass::DetailGlass => 3,
-                        p3d::Preview3dStreamPass::Water => 4,
-                        p3d::Preview3dStreamPass::Lava => 5,
+                        preview_3d_source::Preview3dStreamPass::Opaque => 0,
+                        preview_3d_source::Preview3dStreamPass::DetailOpaque => 1,
+                        preview_3d_source::Preview3dStreamPass::Glass => 2,
+                        preview_3d_source::Preview3dStreamPass::DetailGlass => 3,
+                        preview_3d_source::Preview3dStreamPass::Water => 4,
+                        preview_3d_source::Preview3dStreamPass::Lava => 5,
                     };
                     pass_faces[pass] += 1;
                 }
@@ -4803,7 +4877,7 @@ impl Worker {
             u64::try_from(texture_read_time.as_millis()).unwrap_or(u64::MAX);
         self.last_texture_decode_ms =
             u64::try_from(texture_decode_time.as_millis()).unwrap_or(u64::MAX);
-        if trace && !include_neighbors {
+        if trace && scope == MeshTargetScope::ChangedOnly {
             eprintln!(
                 "world3d remesh ts={} gen={} targets={} faces={} reused_sections={} boundary_hits={} total_ms={} rehydrate_ms={} face_ms={} convert_ms={} send_wait_ms={}",
                 trace_timestamp_ms(),
@@ -4874,10 +4948,11 @@ impl Worker {
         let started = Instant::now();
         let data = self
             .world
-            .query_chunk_data(pos, self.chunk_load_options())
+            .load_render_chunk(pos, self.chunk_load_options())
             .map_err(|error| format!("读取区块 {},{} 失败：{error}", pos.x, pos.z))?;
         let trace = trace_verbose();
-        let biome_blend = p3d::Preview3dBiomeBlendField::from_chunks(std::slice::from_ref(&data));
+        let biome_blend =
+            preview_3d_source::Preview3dBiomeBlendField::from_chunks(std::slice::from_ref(&data));
         let chunk = collect_cached_chunk(
             data,
             self.models.as_ref(),
@@ -4905,12 +4980,12 @@ impl Worker {
         &mut self,
         pos: ChunkPos,
         section_y: i32,
-        faces: &[p3d::Preview3dStreamFace],
+        faces: &[preview_3d_source::Preview3dStreamFace],
         light: Option<&lighting::ChunkLighting>,
     ) -> Result<Option<World3dChunkMesh>, String> {
         let mut templates = Vec::with_capacity(faces.len());
         let Some(mut output) =
-            self.build_chunk_mesh_with_templates(pos, section_y, faces, Some(&mut templates), 0)?
+            self.build_chunk_mesh(pos, section_y, faces, Some(&mut templates), 0)?
         else {
             return Ok(None);
         };
@@ -4945,11 +5020,11 @@ impl Worker {
         output.mesh = Arc::new(mesh);
         Ok(Some(output))
     }
-    fn build_chunk_mesh_with_templates(
+    fn build_chunk_mesh(
         &mut self,
         pos: ChunkPos,
         section_y: i32,
-        faces: &[p3d::Preview3dStreamFace],
+        faces: &[preview_3d_source::Preview3dStreamFace],
         mut gpu_templates: Option<&mut Vec<gpui_3d::VoxelFaceTemplate>>,
         template_local_faces: usize,
     ) -> Result<Option<World3dChunkMesh>, String> {
@@ -5098,10 +5173,14 @@ impl Worker {
             let alpha_mode = alpha_mode_for_pass(face.pass, properties.alpha_content);
             if (!gpu_source || template_local_faces == 0)
                 && alpha_mode == AlphaMode::Opaque
-                && let Some(proxy) = occluders::face_proxy_with_template_origin(
+                && let Some(proxy) = occluders::face_proxy(
                     face,
                     origin,
-                    face_index < template_local_faces,
+                    if face_index < template_local_faces {
+                        MeshCoordinateSpace::TemplateLocal
+                    } else {
+                        MeshCoordinateSpace::World
+                    },
                 )
             {
                 opaque_proxies.push(proxy);
@@ -5116,11 +5195,12 @@ impl Worker {
                 [1.0, 1.0, 1.0]
             };
             let key = MaterialSlotKey {
-                water: face.pass == p3d::Preview3dStreamPass::Water,
+                water: face.pass == preview_3d_source::Preview3dStreamPass::Water,
                 glass: alpha_mode == AlphaMode::Blend
                     && matches!(
                         face.pass,
-                        p3d::Preview3dStreamPass::Glass | p3d::Preview3dStreamPass::DetailGlass
+                        preview_3d_source::Preview3dStreamPass::Glass
+                            | preview_3d_source::Preview3dStreamPass::DetailGlass
                     ),
                 texture: texture.map(|texture| texture.id()),
                 normal: properties.normal.as_ref().map(|asset| asset.id()),
@@ -5168,10 +5248,12 @@ impl Worker {
             };
             let color = face_vertex_color(
                 face,
-                texture.is_some(),
-                uses_tint,
-                properties.opaque_glass,
-                properties.alpha_content,
+                FaceColorOptions {
+                    has_texture: texture.is_some(),
+                    uses_tint,
+                    opaque_glass: properties.opaque_glass,
+                    alpha_content: properties.alpha_content,
+                },
             );
             if let Some(templates) = gpu_templates.as_deref_mut() {
                 // Source faces are already in the template/instance/static order
@@ -5181,10 +5263,14 @@ impl Worker {
                 // read its vertices back for the GPU compute mesher.
                 let material_slot = u32::try_from(slot).map_err(|_| "区块材质过多".to_string())?;
                 templates.push(gpui_3d::VoxelFaceTemplate {
-                    vertices: world3d_face_vertices(
+                    vertices: face_vertices(
                         face,
                         origin_f64,
-                        face_index < template_local_faces,
+                        if face_index < template_local_faces {
+                            MeshCoordinateSpace::TemplateLocal
+                        } else {
+                            MeshCoordinateSpace::World
+                        },
                         color,
                     ),
                     material_slot,
@@ -5257,10 +5343,14 @@ impl Worker {
         }
         let quads = buckets.into_iter().flat_map(|bucket| {
             bucket.faces.into_iter().map(|(face_index, color)| {
-                world3d_face_vertices(
+                face_vertices(
                     &faces[face_index],
                     origin_f64,
-                    face_index < template_local_faces,
+                    if face_index < template_local_faces {
+                        MeshCoordinateSpace::TemplateLocal
+                    } else {
+                        MeshCoordinateSpace::World
+                    },
                     color,
                 )
             })
@@ -5316,7 +5406,7 @@ impl Worker {
         Ok(Some(mesh))
     }
 
-    fn resolve_chunk_texture_sources(&mut self, faces: &[p3d::Preview3dStreamFace]) {
+    fn resolve_chunk_texture_sources(&mut self, faces: &[preview_3d_source::Preview3dStreamFace]) {
         let unresolved = unresolved_material_sources(faces, &self.resolved_texture_lookup);
         if unresolved.len() < 4 {
             return;
@@ -5501,7 +5591,7 @@ impl Worker {
                 .path()
                 .extension()
                 .is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("tga"));
-            bedrock_block_model::decode_texture_image(&bytes, is_tga)
+            bedrock_block_model::obj::decode_texture_image(&bytes, is_tga)
         };
         let image = match decoded {
             Ok(image) => image.to_rgba8(),
@@ -5714,7 +5804,7 @@ fn is_full_grass_block_side_material(material: &str) -> bool {
         .split_once(MATERIAL_SLOT_SEPARATOR)
         .map_or(material, |(base, _)| base);
     matches!(
-        obj_material_texture_name(base).as_str(),
+        material_texture_name(base).as_str(),
         "grass_side" | "grass_block_side" | "grass_side_snowed" | "grass_block_side_snowed"
     )
 }
@@ -5727,20 +5817,32 @@ fn grass_block_side_texture_keys(material: &str) -> Option<(&'static str, &'stat
     let base = material
         .split_once(MATERIAL_SLOT_SEPARATOR)
         .map_or(material, |(base, _)| base);
-    match obj_material_texture_name(base).as_str() {
+    match material_texture_name(base).as_str() {
         "grass_side" | "grass_block_side" => Some(("dirt", "grass_side")),
         _ => None,
     }
 }
 
-fn face_vertex_color(
-    face: &p3d::Preview3dStreamFace,
+#[derive(Clone, Copy)]
+struct FaceColorOptions {
     has_texture: bool,
     uses_tint: bool,
     opaque_glass: bool,
     alpha_content: TextureAlphaContent,
+}
+
+fn face_vertex_color(
+    face: &preview_3d_source::Preview3dStreamFace,
+    options: FaceColorOptions,
 ) -> [f32; 4] {
-    let tinted = has_texture && (uses_tint || matches!(face.pass, p3d::Preview3dStreamPass::Water));
+    let FaceColorOptions {
+        has_texture,
+        uses_tint,
+        opaque_glass,
+        alpha_content,
+    } = options;
+    let tinted = has_texture
+        && (uses_tint || matches!(face.pass, preview_3d_source::Preview3dStreamPass::Water));
     let (r, g, b) = if tinted {
         (
             face.color[0].clamp(0.0, 1.0),
@@ -5752,10 +5854,14 @@ fn face_vertex_color(
     };
     let shade = face.shade.clamp(0.0, 1.0);
     let alpha = match face.pass {
-        p3d::Preview3dStreamPass::Glass | p3d::Preview3dStreamPass::DetailGlass if opaque_glass => {
+        preview_3d_source::Preview3dStreamPass::Glass
+        | preview_3d_source::Preview3dStreamPass::DetailGlass
+            if opaque_glass =>
+        {
             1.0
         }
-        p3d::Preview3dStreamPass::Glass | p3d::Preview3dStreamPass::DetailGlass => {
+        preview_3d_source::Preview3dStreamPass::Glass
+        | preview_3d_source::Preview3dStreamPass::DetailGlass => {
             // Textures with hard 0/255 alpha (vanilla glass) render as cutout;
             // only genuinely translucent textures keep the vertex alpha.
             match alpha_content {
@@ -5765,7 +5871,7 @@ fn face_vertex_color(
                 }
             }
         }
-        p3d::Preview3dStreamPass::Water => face.color[3].clamp(0.08, 1.0),
+        preview_3d_source::Preview3dStreamPass::Water => face.color[3].clamp(0.08, 1.0),
         _ => 1.0,
     };
     [
@@ -5900,7 +6006,7 @@ fn premesh_visibility_masks_for_sections<'a>(
             for local_z in 0u8..16 {
                 for local_x in 0u8..16 {
                     let opaque_cell = storage
-                        .palette_index_at(local_x, local_y, local_z)
+                        .index_at(local_x, local_y, local_z)
                         .and_then(|index| opaque.get(usize::from(index)))
                         .copied()
                         .unwrap_or(false);
@@ -6072,7 +6178,7 @@ fn discover_capture_library(package_roots: &[PathBuf]) -> Option<PathBuf> {
         .flatten()
 }
 fn build_pack_roots(_world_path: &Path, package_roots: &[PathBuf]) -> Vec<PathBuf> {
-    vanilla_resource_pack_roots_from_packages(package_roots.iter())
+    vanilla_roots_for_packages(package_roots.iter())
 }
 
 /// Metadata-first decode for far rear columns: no block model expansion,
@@ -6111,7 +6217,7 @@ fn collect_cached_chunk(
     data: ChunkData,
     models: &bedrock_block_model::BlockModelRepository,
     trace: bool,
-    biome_blend: Option<&p3d::Preview3dBiomeBlendField>,
+    biome_blend: Option<&preview_3d_source::Preview3dBiomeBlendField>,
     hidden_bands: &BTreeSet<i32>,
     preflight_masks: Option<&BTreeMap<i8, [u64; 64]>>,
 ) -> Result<Option<CachedChunk>, String> {
@@ -6139,14 +6245,11 @@ fn collect_cached_chunk(
     let blocks = if model_input_subchunks == 0 {
         // A fully occluded column needs only its retained Probe. No block
         // models, materials, geometry, or biome work are needed yet.
-        p3d::Preview3dChunkBlocks::default()
+        preview_3d_source::Preview3dChunkBlocks::default()
     } else {
-        p3d::preview_3d_collect_chunk_blocks_with_biome_blend(
-            &data,
-            Some(models),
-            biome_blend,
-            |y| !skip_premesh_subchunk(y, hidden_bands),
-        )
+        preview_3d_source::collect_chunk_blocks(&data, Some(models), biome_blend, |y| {
+            !skip_premesh_subchunk(y, hidden_bands)
+        })
         .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?
     };
     let bytes = blocks.estimated_cpu_bytes();
@@ -6190,10 +6293,10 @@ fn collect_cached_chunk(
 /// chunk-relative vertex. The offset order matches the former face-clone path.
 /// Shared CPU packed-mesh fallback and GPU source-template vertex semantics.
 #[inline]
-fn world3d_face_vertices(
-    face: &p3d::Preview3dStreamFace,
+fn face_vertices(
+    face: &preview_3d_source::Preview3dStreamFace,
     origin: [f64; 3],
-    local_template: bool,
+    coordinate_space: MeshCoordinateSpace,
     color: [f32; 4],
 ) -> [Vertex; 4] {
     let normal = Vec3::new(
@@ -6205,7 +6308,7 @@ fn world3d_face_vertices(
         .uv
         .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
     std::array::from_fn(|corner| Vertex {
-        position: chunk_mesh_corner(face.corners[corner], origin, local_template),
+        position: chunk_mesh_corner(face.corners[corner], origin, coordinate_space),
         normal,
         uv: Vec2::new(uv[corner][0], uv[corner][1]),
         color: std::array::from_fn(|channel| {
@@ -6219,9 +6322,11 @@ fn world3d_face_vertices(
 }
 
 #[inline]
-fn chunk_mesh_corner(corner: [f64; 3], origin: [f64; 3], local_template: bool) -> Vec3 {
-    let dx = if local_template { origin[0] } else { 0. };
-    let dz = if local_template { origin[2] } else { 0. };
+fn chunk_mesh_corner(corner: [f64; 3], origin: [f64; 3], space: MeshCoordinateSpace) -> Vec3 {
+    let (dx, dz) = match space {
+        MeshCoordinateSpace::World => (0., 0.),
+        MeshCoordinateSpace::TemplateLocal => (origin[0], origin[2]),
+    };
     Vec3::new(
         (corner[0] + dx - origin[0]) as f32,
         (corner[1] - origin[1]) as f32,
@@ -6229,7 +6334,7 @@ fn chunk_mesh_corner(corner: [f64; 3], origin: [f64; 3], local_template: bool) -
     )
 }
 
-fn intern_face_materials(faces: &mut [p3d::Preview3dStreamFace]) {
+fn intern_face_materials(faces: &mut [preview_3d_source::Preview3dStreamFace]) {
     let mut names = HashMap::<Arc<str>, Arc<str>>::new();
     for face in faces {
         if let Some(shared) = names.get(&face.material) {
@@ -6296,32 +6401,34 @@ fn texture_alpha_content(image: &RgbaImage) -> TextureAlphaContent {
 /// render opaque. When pixels are unavailable, only a transmissive model pass
 /// selects blending; missing ordinary textures must not turn blocks into glass.
 fn alpha_mode_for_pass(
-    pass: p3d::Preview3dStreamPass,
+    pass: preview_3d_source::Preview3dStreamPass,
     alpha_content: TextureAlphaContent,
 ) -> AlphaMode {
-    use p3d::Preview3dStreamPass as Pass;
+    use preview_3d_source::Preview3dStreamPass;
     match alpha_content {
         TextureAlphaContent::Opaque => match pass {
-            Pass::Water => AlphaMode::Blend,
+            Preview3dStreamPass::Water => AlphaMode::Blend,
             _ => AlphaMode::Opaque,
         },
         TextureAlphaContent::Binary => match pass {
-            Pass::Water => AlphaMode::Blend,
+            Preview3dStreamPass::Water => AlphaMode::Blend,
             _ => AlphaMode::Mask,
         },
         TextureAlphaContent::Partial => AlphaMode::Blend,
         TextureAlphaContent::Unknown => match pass {
-            Pass::Water | Pass::Glass | Pass::DetailGlass => AlphaMode::Blend,
+            Preview3dStreamPass::Water
+            | Preview3dStreamPass::Glass
+            | Preview3dStreamPass::DetailGlass => AlphaMode::Blend,
             _ => AlphaMode::Opaque,
         },
     }
 }
 
-fn face_double_sided(pass: p3d::Preview3dStreamPass) -> bool {
-    !matches!(pass, p3d::Preview3dStreamPass::Opaque)
+fn face_double_sided(pass: preview_3d_source::Preview3dStreamPass) -> bool {
+    !matches!(pass, preview_3d_source::Preview3dStreamPass::Opaque)
 }
 
-fn face_inside_block(face: &p3d::Preview3dStreamFace, pos: [i32; 3]) -> bool {
+fn face_inside_block(face: &preview_3d_source::Preview3dStreamFace, pos: [i32; 3]) -> bool {
     const EPSILON: f64 = 0.001;
     face.corners.iter().all(|corner| {
         corner[0] >= f64::from(pos[0]) - EPSILON
@@ -6333,7 +6440,7 @@ fn face_inside_block(face: &p3d::Preview3dStreamFace, pos: [i32; 3]) -> bool {
     })
 }
 
-fn face_band_y(face: &p3d::Preview3dStreamFace) -> i32 {
+fn face_band_y(face: &preview_3d_source::Preview3dStreamFace) -> i32 {
     let sum: f64 = face.corners.iter().map(|corner| corner[1]).sum();
     (sum / 4.0 / MESH_BAND_HEIGHT).floor() as i32
 }
@@ -6521,7 +6628,7 @@ fn run_worker(
                             new_center.1,
                             worker.view.radius,
                         ) && let Some(&was_coarse) = worker.lod_modes.get(&pos)
-                            && coarse_lod_for_view(pos, worker.view, was_coarse) != was_coarse
+                            && coarse_lod_for_view(pos, worker.view) != was_coarse
                         {
                             worker.dirty_meshes.insert(pos);
                         }
@@ -6576,7 +6683,7 @@ fn run_worker(
 
 #[cfg(test)]
 mod local_gpu_template_tests {
-    use super::chunk_mesh_corner;
+    use super::{MeshCoordinateSpace, chunk_mesh_corner};
 
     #[test]
     fn template_corners_match_translated_world_corners() {
@@ -6584,8 +6691,8 @@ mod local_gpu_template_tests {
         for origin in [[16., 0., 32.], [-512., 0., -64.], [0., 0., 0.]] {
             let world = [local[0] + origin[0], local[1], local[2] + origin[2]];
             assert_eq!(
-                chunk_mesh_corner(local, origin, true),
-                chunk_mesh_corner(world, origin, false),
+                chunk_mesh_corner(local, origin, MeshCoordinateSpace::TemplateLocal),
+                chunk_mesh_corner(world, origin, MeshCoordinateSpace::World),
             );
         }
     }

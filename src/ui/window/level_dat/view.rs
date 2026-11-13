@@ -3,7 +3,7 @@ use crate::ui::components::code_editor::{
 };
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::manage::data::{self, LevelDatDocument};
 use crate::ui::views::manage::level_dat_editor::{self, LevelDatJsonValidation};
 use crate::ui::views::manage::state::{ManageAssetEntry, ManagedVersionEntry};
@@ -11,7 +11,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
 #[derive(Clone)]
-pub struct LevelDatCodeWindowInit {
+pub struct CodeWindowInit {
     pub version: ManagedVersionEntry,
     pub asset: ManageAssetEntry,
     pub document_version: u32,
@@ -25,7 +25,7 @@ enum WindowStatusKind {
     Success,
 }
 
-pub struct LevelDatCodeWindowView {
+pub struct CodeWindowView {
     version: ManagedVersionEntry,
     asset: ManageAssetEntry,
     document_version: u32,
@@ -43,8 +43,8 @@ pub struct LevelDatCodeWindowView {
     _subscriptions: Vec<Subscription>,
 }
 
-impl LevelDatCodeWindowView {
-    pub fn new(init: LevelDatCodeWindowInit, window: &mut Window, cx: &mut Context<Self>) -> Self {
+impl CodeWindowView {
+    pub fn new(init: CodeWindowInit, window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.set_title(t!("LevelDat.title").as_ref());
         let editor_dirty = init.initial_text != init.saved_text;
         let initial_text = init.initial_text.clone();
@@ -142,8 +142,8 @@ impl LevelDatCodeWindowView {
     fn theme_colors(&self, now: std::time::Instant, cx: &App) -> ThemeColors {
         let theme = cx.global::<ThemeState>();
         lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme.factor(now),
             theme.accent,
         )
@@ -257,7 +257,7 @@ impl LevelDatCodeWindowView {
         let write_task_failed = t!("LevelDat.write_task_failed");
 
         cx.spawn(async move |handle, cx| {
-            let result: Result<(), String> = crate::tasks::runtime::run_io_blocking(move || {
+            let result: Result<(), String> = crate::tasks::runtime::blocking::run_io(move || {
                 let world_path = std::path::PathBuf::from(&folder_path);
                 let history_capture = crate::ui::window::map_viewer::map_history::capture_before(
                     crate::ui::window::map_viewer::map_history::MapHistoryCaptureSpec {
@@ -269,7 +269,7 @@ impl LevelDatCodeWindowView {
                         include_level_dat: true,
                     },
                 );
-                let result = data::write_level_dat_document(&folder_path, &document);
+                let result = data::write_level_dat(&folder_path, &document);
                 match (history_capture, result) {
                     (Ok(capture), Ok(())) => {
                         crate::ui::window::map_viewer::map_history::complete_after(
@@ -327,7 +327,7 @@ impl LevelDatCodeWindowView {
     }
 }
 
-impl Render for LevelDatCodeWindowView {
+impl Render for CodeWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.theme_colors(window.animation_time(), cx);
         let dirty = self.editor_dirty;
@@ -588,14 +588,14 @@ fn action_button(colors: &ThemeColors, primary: bool, label: SharedString) -> Di
         .child(label)
 }
 
-pub fn open_level_dat_code_window(init: LevelDatCodeWindowInit, cx: &mut App) {
+pub fn open_code_window(init: CodeWindowInit, cx: &mut App) {
     let title = t!("LevelDat.window_title", name = &init.asset.display_name).to_string();
-    let options = level_dat_code_window_options(cx);
+    let options = code_window_options(cx);
     let window = cx.open_window(options, move |window, cx| {
         window.set_title(&title);
         window.activate_window();
 
-        let view = cx.new(|cx| LevelDatCodeWindowView::new(init, window, cx));
+        let view = cx.new(|cx| CodeWindowView::new(init, window, cx));
         cx.new(|cx| crate::ui::runtime::root_view::RootView::new(view, window, cx))
     });
 
@@ -604,7 +604,7 @@ pub fn open_level_dat_code_window(init: LevelDatCodeWindowInit, cx: &mut App) {
     }
 }
 
-fn level_dat_code_window_options(cx: &mut App) -> WindowOptions {
+fn code_window_options(cx: &mut App) -> WindowOptions {
     let mut options = WindowOptions::default();
     options.window_bounds = Some(WindowBounds::centered(size(px(1360.), px(920.)), cx));
     options.window_min_size = Some(size(px(920.), px(640.)));

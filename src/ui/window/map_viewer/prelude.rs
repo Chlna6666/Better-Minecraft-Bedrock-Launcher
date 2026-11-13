@@ -8,32 +8,30 @@ pub(super) use super::actions::{
 pub(super) use super::canvas::{
     MapCanvasAction, MapCanvasSnapshot, MapCanvasView, ScreenPaintImage, TilePaintSnapshot,
     TilePaintSnapshotPatch, build_tile_paint_snapshot, patch_tile_paint_snapshot,
-    screen_image_viewports_transformable, take_map_tile_paint_resources_unavailable,
+    can_transform_screen_image, take_sustained_paint_resource_failure,
 };
 pub(super) use super::layout::{
     CHROME_ELEVATED_ALPHA, CHROME_HAIRLINE_ALPHA, CHROME_SECTION_GAP, CHROME_SURFACE_ALPHA,
     CHROME_TAB_ICON_SIZE, CHROME_TOOLBAR_ICON_SIZE, IDE_LEFT_DOCK_WIDTH, IDE_STATUS_BAR_HEIGHT,
-    center_stage_rect_for_layout,
+    center_stage_rect,
 };
 pub(super) use super::map_history::{
     MapHistoryApplyOutcome, MapHistoryApplyProgress, MapHistoryCaptureSpec, MapHistoryChunkVisual,
     MapHistoryEntry, MapHistoryEntryKind, MapHistoryEntryStatus, MapHistoryState,
     MapHistoryVisualFilter, MapHistoryVisualFilterKind, MapHistoryVisualization,
-    apply_redo_with_progress, apply_undo_with_progress, capture_before,
-    capture_before_with_world_and_progress, complete_after, complete_after_with_world_and_progress,
-    complete_failed, create_restore_protection_point, history_dir_for_world, list_history,
-    load_history_visualization, restore_history_entry_with_progress,
+    apply_redo, apply_undo, capture_before, capture_before_in_world,
+    complete_after, complete_after_in_world, complete_failed, create_restore_protection_point,
+    history_dir, list_history, load_history_visualization, restore_history_entry,
 };
 pub(super) use super::menu_overlay::{MapMenuOverlaySnapshot, MapMenuOverlayView};
 pub(super) use super::model::ChunkTransferProgress;
 pub(super) use super::player_workspace::{
-    PlayerWorkspaceCenter, PlayerWorkspaceState, player_workspace_subscriptions,
+    PlayerWorkspaceCenter, PlayerWorkspaceState, player_subscriptions,
 };
 pub(super) use super::preview_3d::{
     Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState, Preview3dMesh,
     Preview3dMeshSource, Preview3dModelRotation, Preview3dSelectionSignature, Preview3dSource,
-    Preview3dState, Preview3dStatus, load_preview_3d_mesh, load_preview_3d_mesh_blocking,
-    preview_3d_bounds_depth, preview_3d_bounds_width,
+    Preview3dState, Preview3dStatus,
 };
 pub(super) use super::preview_3d_obj::{Preview3dObjOptions, export_preview_3d_obj};
 pub(super) use super::preview_3d_source::Preview3dLoadOptions;
@@ -50,20 +48,21 @@ pub(super) use super::state::{
 };
 pub(super) use super::tool_stripe::{MapToolStripeSnapshot, MapToolStripeView};
 pub(super) use super::top_bar::{MapTopBarSnapshot, MapTopBarView};
-pub(super) use crate::core::minecraft::entity_avatar::load_generated_entity_avatars_rgba;
-pub(super) use crate::core::minecraft::map::viewer_cache::{
-    MapInfoEntityCacheStatus, MapInfoOverlaySnapshot, invalidate_map_info_tiles_for_chunks,
-    load_cached_map_info_tiles_blocking, load_map_info_tiles_blocking,
+pub(super) use crate::core::minecraft::entity_avatar::load;
+pub(super) use crate::core::minecraft::map::info_cache::{
+    EntityCacheStatus, OverlaySnapshot, invalidate_for_chunks,
+    load_cached_tiles, load_tiles,
 };
-pub(super) use crate::core::minecraft::map::{MapEditInvalidation, MapWorldEditor};
+pub(super) use crate::core::minecraft::map::{EditInvalidation, WorldEditor};
 pub(super) use crate::tasks::task_manager::{self, TaskSnapshot};
-pub(super) use crate::ui::animation::request_layout_animation_frame_if;
+pub(super) use crate::ui::animation::request_layout_frame;
 pub(super) use crate::ui::components::code_editor::{
     CodeEditor, CodeEditorEvent, CodeEditorLanguage, CodeEditorState,
 };
+pub(super) use crate::ui::components::{choice, inspector};
 pub(super) use crate::ui::components::context_menu::{
     ContextMenu, ContextMenuAnchor, ContextMenuEntry, ContextMenuGroup, ContextMenuItem,
-    place_context_menu_at_anchor,
+    place_at_anchor,
 };
 pub(super) use crate::ui::components::input::{Input, InputEvent, InputState};
 pub(super) use crate::ui::components::scroll::ScrollableElement as _;
@@ -71,22 +70,15 @@ pub(super) use crate::ui::components::split_pane::{SplitPaneAxis, split_handle, 
 pub(super) use crate::ui::components::toast;
 pub(super) use crate::ui::state::i18n::I18n;
 pub(super) use crate::ui::state::theme::ThemeState;
-pub(super) use crate::ui::theme::colors::{
+pub(super) use crate::ui::theme::{
     DarkColors, LightColors, ThemeColors, lerp_theme_colors,
 };
 pub(super) use crate::ui::views::manage::state::{ManageAssetEntry, ManagedVersionEntry};
 pub(super) use crate::utils::file_ops;
-pub(super) use crate::utils::file_picker::{
-    pick_file_path_with_filter, pick_save_path_with_filter,
-};
-
-// Make the map-viewer's private current-domain import surface available to source units that still
-// contain qualified `bedrock_world::...` spellings. This is not a bedrock-world public compatibility
-// API: the library continues to expose only its responsibility modules.
-pub(super) use super::bedrock_world_domains as bedrock_world;
+pub(super) use crate::utils::file_picker::{pick_file_path, pick_save_path};
 
 pub(super) use ::bedrock_world::{
-    biome::{Biome3d, BiomeStorage, HeightMap2d},
+    biome::{Biome3d, HeightMap2d},
     block::BlockEntityRecord,
     block::{BlockEntity, BlockPos},
     chunk::{
@@ -100,10 +92,10 @@ pub(super) use ::bedrock_world::{
         ChunkDetail, RegionOverlayQuery, RegionOverlayQueryOptions, SelectionStats,
         SlimeChunkBounds, SlimeFarmCandidate, SlimeFarmQueryMode, VillageOverlay,
         VillageOverlayIndex, WriteGuard, block_tip, chunk_detail, delete_chunks, is_slime_chunk,
-        query_slime_farm_candidates_with_cancel, selection_stats,
+        selection_stats, slime_farm_candidates,
     },
-    scan::Global,
-    surface::{CancelFlag, WorldScanOptions},
+    global,
+    surface::CancelFlag,
     world::World,
 };
 pub(super) use bedrock_render::{
@@ -116,8 +108,7 @@ pub(super) use bedrock_render::{
     RenderMemoryBudget, RenderMode, RenderOptions, RenderPalette, RenderPipelineStats,
     RenderTaskControl, RenderThreadingOptions, RenderTileOutputOptions, RenderTilePriority,
     ResolvedRenderBackend, SurfaceRenderOptions, TerrainGradientAlgorithm, TerrainLightingOptions,
-    TerrainShadingMode, TileCoord, TileOccupancyIndex, TileOccupancyIndexRequest,
-    TileOccupancyIndexSource, TilePixelFormat, TileReadySource, load_or_build_tile_occupancy_index,
+    TerrainShadingMode, TileCoord, TilePixelFormat, TileReadySource,
 };
 pub(super) use bytes::Bytes;
 pub(super) use futures::channel::mpsc::{UnboundedSender, unbounded};
@@ -125,7 +116,7 @@ pub(super) use futures_util::StreamExt as _;
 pub(super) use gpui::ImagePaintRequest;
 pub(super) use gpui::prelude::FluentBuilder as _;
 pub(super) use gpui::*;
-pub(super) use rustc_hash::FxHashMap as HashMap;
+pub(super) use rustc_hash::FxHashMap;
 pub(super) use serde::{Deserialize, Serialize};
 pub(super) use std::collections::{BTreeMap, BTreeSet};
 pub(super) use std::hash::Hash;

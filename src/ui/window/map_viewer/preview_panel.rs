@@ -4,7 +4,7 @@ use super::prelude::*;
 use futures::channel::mpsc::channel;
 use futures_util::SinkExt as _;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn invalidate_preview_3d_mesh(&mut self) {
         self.clear_preview_3d_resources(false);
     }
@@ -51,7 +51,7 @@ impl MapViewerWindowView {
         let is_same_signature = self.preview_3d.signature == Some(signature);
         self.preview_3d.status = Preview3dStatus::Loading(Preview3dBuildStatus::new(
             "准备",
-            self.preview_3d_selection_status(),
+            self.selection_status(),
         ));
         self.preview_3d.signature = Some(signature);
         if !is_same_signature {
@@ -71,7 +71,7 @@ impl MapViewerWindowView {
             let (event_sender, mut event_receiver) = channel::<Preview3dLoadEvent>(1);
             let mut complete_sender = event_sender.clone();
             let load_task = cx.background_spawn(async move {
-                let result = load_preview_3d_mesh(
+                let result = super::preview_3d::load_mesh(
                     Preview3dLoadOptions {
                         world_path: &world_path,
                         bounds: signature.bounds,
@@ -176,14 +176,14 @@ impl MapViewerWindowView {
             let result = cx
                 .background_spawn(async move {
                     if let Some(imported_structure) = imported_structure {
-                        load_preview_3d_mesh_blocking(Preview3dMeshSource::Structure {
+                        super::preview_3d::build_preview_mesh(Preview3dMeshSource::Structure {
                             structure: &imported_structure.structure,
                             anchor_chunk: imported_structure.source_anchor,
                             origin_y: imported_structure.origin_y,
                         })
                         .map(Arc::new)
                     } else if let Some(copied_chunk) = copied_chunk {
-                        load_preview_3d_mesh_blocking(Preview3dMeshSource::CopiedChunk(
+                        super::preview_3d::build_preview_mesh(Preview3dMeshSource::CopiedChunk(
                             &copied_chunk,
                         ))
                         .map(Arc::new)
@@ -340,7 +340,7 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
-    pub(super) fn preview_3d_press_navigation_key(
+    pub(super) fn press_navigation_key(
         &mut self,
         key: &str,
         modifiers: Modifiers,
@@ -354,11 +354,11 @@ impl MapViewerWindowView {
             return;
         }
         self.preview_3d.last_motion_frame_at = None;
-        request_layout_animation_frame_if(window, true);
+        request_layout_frame(window);
         cx.notify();
     }
 
-    pub(super) fn preview_3d_release_navigation_key(&mut self, key: &str, cx: &mut Context<Self>) {
+    pub(super) fn release_navigation_key(&mut self, key: &str, cx: &mut Context<Self>) {
         if self.preview_3d.movement_input.set_key_pressed(key, false) != Some(true) {
             return;
         }
@@ -368,25 +368,25 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
-    pub(super) fn preview_3d_sync_modifier_navigation(
+    pub(super) fn sync_modifier_navigation(
         &mut self,
         modifiers: Modifiers,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
-            self.preview_3d_release_navigation_key("shift", cx);
+            self.release_navigation_key("shift", cx);
             return;
         }
 
         if modifiers.shift {
-            self.preview_3d_press_navigation_key("shift", modifiers, window, cx);
+            self.press_navigation_key("shift", modifiers, window, cx);
         } else {
-            self.preview_3d_release_navigation_key("shift", cx);
+            self.release_navigation_key("shift", cx);
         }
     }
 
-    pub(super) fn preview_3d_selection_status(&self) -> SharedString {
+    pub(super) fn selection_status(&self) -> SharedString {
         if self.preview_3d.source == Preview3dSource::ImportPreview {
             if let Some(import) = self.professional.imported_structure.as_ref() {
                 return SharedString::from(format!(
@@ -413,8 +413,8 @@ impl MapViewerWindowView {
         let Some(signature) = self.current_preview_3d_signature() else {
             return SharedString::from("未选择 chunk，右键地图设置选区起点和终点");
         };
-        let width = preview_3d_bounds_width(signature.bounds);
-        let depth = preview_3d_bounds_depth(signature.bounds);
+        let width = super::preview_3d_source::bounds_width(signature.bounds);
+        let depth = super::preview_3d_source::bounds_depth(signature.bounds);
         SharedString::from(format!(
             "{}: {}x{} chunks",
             dimension_label(signature.bounds.dimension),

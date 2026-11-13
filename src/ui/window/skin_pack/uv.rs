@@ -17,11 +17,11 @@ pub(super) struct CuboidUv {
 }
 
 pub(super) fn head_uv(overlay: bool) -> CuboidUv {
-    uv_box(if overlay { 32 } else { 0 }, 0, 8, 8, 8)
+    cuboid(if overlay { 32 } else { 0 }, 0, 8, 8, 8)
 }
 
 pub(super) fn body_uv(overlay: bool) -> CuboidUv {
-    uv_box(16, if overlay { 32 } else { 16 }, 8, 12, 4)
+    cuboid(16, if overlay { 32 } else { 16 }, 8, 12, 4)
 }
 
 pub(super) fn arm_uv(left: bool, overlay: bool, slim: bool) -> CuboidUv {
@@ -32,7 +32,7 @@ pub(super) fn arm_uv(left: bool, overlay: bool, slim: bool) -> CuboidUv {
         (true, false) => (32, 48),
         (true, true) => (48, 48),
     };
-    uv_box(x, y, width, 12, 4)
+    cuboid(x, y, width, 12, 4)
 }
 
 pub(super) fn leg_uv(left: bool, overlay: bool) -> CuboidUv {
@@ -42,10 +42,10 @@ pub(super) fn leg_uv(left: bool, overlay: bool) -> CuboidUv {
         (true, false) => (16, 48),
         (true, true) => (0, 48),
     };
-    uv_box(x, y, 4, 12, 4)
+    cuboid(x, y, 4, 12, 4)
 }
 
-pub(super) fn uv_box(x: u32, y: u32, width: u32, height: u32, depth: u32) -> CuboidUv {    CuboidUv {
+pub(super) fn cuboid(x: u32, y: u32, width: u32, height: u32, depth: u32) -> CuboidUv {    CuboidUv {
         top: TextureRegion {
             x: x + depth,
             y,

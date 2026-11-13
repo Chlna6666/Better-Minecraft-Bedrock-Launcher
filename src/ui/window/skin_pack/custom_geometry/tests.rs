@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::window::skin_pack::custom_geometry_math::{PREVIEW_FEET_Y, PREVIEW_HEAD_TOP_Y};
+use crate::ui::window::skin_pack::custom_geometry::{PREVIEW_FEET_Y, PREVIEW_HEAD_TOP_Y};
 use image::{ImageBuffer, Rgba};
 use serde_json::json;
 
@@ -34,7 +34,7 @@ fn legacy_poly_mesh_quad_generates_textured_mesh() {
         }
     });
 
-    let mesh = build_custom_geometry_from_value(&image, &geometry, "geometry.test")
+    let mesh = build_from_value(&image, &geometry, "geometry.test")
         .expect("custom geometry should parse")
         .expect("custom geometry should produce mesh");
 
@@ -79,7 +79,7 @@ fn adjacent_poly_mesh_triangles_render_as_texel_quads() {
         }
     });
 
-    let mesh = build_custom_geometry_from_value(&image, &geometry, "geometry.test")
+    let mesh = build_from_value(&image, &geometry, "geometry.test")
         .expect("custom geometry should parse")
         .expect("custom geometry should produce mesh");
 
@@ -122,7 +122,7 @@ fn normalized_poly_mesh_uvs_use_bottom_origin_v_axis() {
         }
     });
 
-    let mesh = build_custom_geometry_from_value(&image, &geometry, "geometry.test")
+    let mesh = build_from_value(&image, &geometry, "geometry.test")
         .expect("custom geometry should parse")
         .expect("bottom-origin normalized UVs should sample nontransparent pixels");
 
@@ -166,7 +166,7 @@ fn poly_mesh_samples_texture_inside_triangle() {
         }
     });
 
-    let mesh = build_custom_geometry_from_value(&image, &geometry, "geometry.test")
+    let mesh = build_from_value(&image, &geometry, "geometry.test")
         .expect("custom geometry should parse")
         .expect("interior texture pixels should generate visible mesh");
 
@@ -197,7 +197,7 @@ fn modern_cube_geometry_generates_textured_faces() {
         }]
     });
 
-    let mesh = build_custom_geometry_from_value(&image, &geometry, "geometry.test")
+    let mesh = build_from_value(&image, &geometry, "geometry.test")
         .expect("custom cube geometry should parse")
         .expect("custom cube geometry should produce mesh");
 
@@ -226,7 +226,7 @@ fn zero_depth_cube_geometry_generates_plane_from_unshifted_uv() {
         }
     });
 
-    let mesh = build_custom_geometry_from_value(&image, &geometry, "geometry.test")
+    let mesh = build_from_value(&image, &geometry, "geometry.test")
         .expect("custom cube geometry should parse")
         .expect("zero-depth cube should produce a plane mesh");
 
@@ -270,7 +270,7 @@ fn player_limb_geometry_uses_limb_animation_binding() {
         }
     });
 
-    let mesh = build_custom_geometry_from_value(&image, &geometry, "geometry.test")
+    let mesh = build_from_value(&image, &geometry, "geometry.test")
         .expect("custom geometry should parse")
         .expect("custom geometry should produce mesh");
 
@@ -328,7 +328,7 @@ fn authored_geometry_is_fitted_into_the_preview_player_box() {
         }
     });
 
-    let mesh = build_custom_geometry_from_value(&image, &geometry, "geometry.test")
+    let mesh = build_from_value(&image, &geometry, "geometry.test")
         .expect("custom geometry should parse")
         .expect("custom geometry should produce mesh");
     let (min_y, max_y) = mesh_vertical_extent(&mesh);
@@ -373,7 +373,7 @@ fn oversized_authored_geometry_stays_inside_the_preview_player_box() {
         }
     });
 
-    let mesh = build_custom_geometry_from_value(&image, &geometry, "geometry.test")
+    let mesh = build_from_value(&image, &geometry, "geometry.test")
         .expect("custom geometry should parse")
         .expect("custom geometry should produce mesh");
     let (min_y, max_y) = mesh_vertical_extent(&mesh);

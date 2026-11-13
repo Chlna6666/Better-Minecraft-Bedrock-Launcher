@@ -7,7 +7,7 @@ use super::model::{ChunkTransferProgress, ViewerMode};
 use super::panels::{mode_button, status_badge};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use bedrock_render::Dimension;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -346,9 +346,9 @@ fn top_command_button(
 
 fn theme_colors(now: std::time::Instant, cx: &App) -> ThemeColors {
     let theme = cx.global::<crate::ui::state::theme::ThemeState>();
-    crate::ui::theme::colors::lerp_theme_colors(
-        &crate::ui::theme::colors::LightColors::colors(),
-        &crate::ui::theme::colors::DarkColors::colors(),
+    crate::ui::theme::lerp_theme_colors(
+        &crate::ui::theme::LightColors::theme(),
+        &crate::ui::theme::DarkColors::theme(),
         theme.factor(now),
         theme.accent,
     )

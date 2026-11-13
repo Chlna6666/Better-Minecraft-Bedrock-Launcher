@@ -2,7 +2,7 @@ use super::actions::MapViewerAction;
 use super::layout::IDE_LEFT_STRIPE_WIDTH;
 use super::state::{MapViewerBottomTab, MapViewerLeftPanel, MapViewerRightPanel};
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::{
     App, Context, CursorStyle, Div, EventEmitter, Hsla, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, Styled, Window, div, prelude::FluentBuilder as _, px,
@@ -219,9 +219,9 @@ impl Render for MapToolStripeView {
 
 fn theme_colors(now: std::time::Instant, cx: &App) -> ThemeColors {
     let theme = cx.global::<crate::ui::state::theme::ThemeState>();
-    crate::ui::theme::colors::lerp_theme_colors(
-        &crate::ui::theme::colors::LightColors::colors(),
-        &crate::ui::theme::colors::DarkColors::colors(),
+    crate::ui::theme::lerp_theme_colors(
+        &crate::ui::theme::LightColors::theme(),
+        &crate::ui::theme::DarkColors::theme(),
         theme.factor(now),
         theme.accent,
     )

@@ -100,7 +100,7 @@ fn capture<D: Device + TextureTransferDevice>(
     );
     let image = TextureTransferDevice::read_texture(&mut device, color.texture).unwrap();
     assert!(image.bytes.chunks_exact(4).all(|pixel| pixel[3] == 255));
-    if let Ok(Some(memory)) = gpui::process_memory_snapshot() {
+    if let Ok(Some(memory)) = gpui::diagnostics::process_memory::snapshot() {
         eprintln!(
             "world3d prepared_memory private_bytes={} working_set_bytes={}",
             memory.private_bytes, memory.working_set_bytes
@@ -627,14 +627,14 @@ fn streaming_move<D: Device + TextureTransferDevice>(
         encode_ms.push(encode);
         record_ms.push(record);
         wait_ms.push(wait);
-        if let Some(memory) = gpui::process_memory_snapshot().ok().flatten() {
+        if let Some(memory) = gpui::diagnostics::process_memory::snapshot().ok().flatten() {
             private_mib_samples.push(memory.private_bytes / 1048576);
         }
 
         if (frame_index + 1) % 120 == 0 {
             let sections = state.meshes.len();
             let faces = state.meshes.values().map(|mesh| mesh.faces).sum::<usize>();
-            let memory = gpui::process_memory_snapshot().ok().flatten();
+            let memory = gpui::diagnostics::process_memory::snapshot().ok().flatten();
             eprintln!(
                 "world3d stream frame={} sections={} faces={} publishes={} frame_ms={:.2} (poll {:.2} registry {:.2} encode {:.2} record {:.2} wait {:.2}) private_mib={}",
                 frame_index + 1,
@@ -709,7 +709,7 @@ fn streaming_move<D: Device + TextureTransferDevice>(
             peak_private_mib
         );
     }
-    if let Ok(Some(memory)) = gpui::process_memory_snapshot() {
+    if let Ok(Some(memory)) = gpui::diagnostics::process_memory::snapshot() {
         let stats = device.resource_stats();
         eprintln!(
             "world3d stream memory private_mib={} working_set_mib={} gpu_allocated_bytes={} gpu_reserved_bytes={} backend_cpu_shadow_bytes={} bind_groups={} buffers={} textures={}",

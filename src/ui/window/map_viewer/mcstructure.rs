@@ -14,7 +14,7 @@ pub(super) struct McStructureImport {
     pub(super) copied_chunk: CopiedChunkData,
     pub(super) imported_structure: ImportedStructureData,
     pub(super) preview_images: BTreeMap<ChunkPos, CopiedChunkPreviewImage>,
-    pub(super) size: bedrock_world::McStructureSize,
+    pub(super) size: bedrock_world::structure::McStructureSize,
 }
 
 pub(super) fn is_mcstructure_path(path: &Path) -> bool {
@@ -23,7 +23,7 @@ pub(super) fn is_mcstructure_path(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case(MCSTRUCTURE_EXTENSION))
 }
 
-pub(super) fn default_mcstructure_file_name(selection: ChunkSelection, center_y: i32) -> String {
+pub(super) fn default_file_name(selection: ChunkSelection, center_y: i32) -> String {
     let bounds = selection.bounds();
     let (min_y, max_y) = export_y_range(bounds.dimension, center_y);
     format!(
@@ -37,7 +37,7 @@ pub(super) fn default_mcstructure_file_name(selection: ChunkSelection, center_y:
     )
 }
 
-pub(super) fn export_selection_mcstructure_blocking(
+pub(super) fn export_selection(
     world_path: &Path,
     bounds: SlimeChunkBounds,
     center_y: i32,
@@ -74,9 +74,9 @@ pub(super) fn export_selection_mcstructure_blocking(
         .saturating_mul(16);
     let (min_y, max_y) = export_y_range(bounds.dimension, center_y);
     let height = max_y.saturating_sub(min_y).saturating_add(1);
-    let size = bedrock_world::McStructureSize::new(width, height, depth)
+    let size = bedrock_world::structure::McStructureSize::new(width, height, depth)
         .map_err(|error| format!("选区结构尺寸超过当前安全上限：{error}"))?;
-    let structure = bedrock_world::McStructureFile::from_world_region(
+    let structure = bedrock_world::structure::McStructureFile::from_world_region(
         &world,
         bounds.dimension,
         min_x,
@@ -91,7 +91,7 @@ pub(super) fn export_selection_mcstructure_blocking(
         completed: total.saturating_sub(1),
         total,
     });
-    bedrock_world::write_mcstructure_file(output_path, &structure)
+    bedrock_world::structure::write_mcstructure_file(output_path, &structure)
         .map_err(|error| error.to_string())?;
     check_mcstructure_export_cancelled(cancel)?;
     progress(ChunkTransferProgress {
@@ -118,18 +118,18 @@ pub(super) fn export_y_range(dimension: Dimension, _center_y: i32) -> (i32, i32)
     .y_range(bedrock_world::ChunkVersion::New)
 }
 
-pub(super) fn read_mcstructure_as_copied_chunk(
+pub(super) fn read_import(
     path: &Path,
     anchor_chunk: ChunkPos,
     origin_y: i32,
 ) -> Result<McStructureImport, String> {
-    let structure = bedrock_world::read_mcstructure_file(path)
+    let structure = bedrock_world::structure::read_mcstructure_file(path)
         .map_err(|error| format!("读取 .mcstructure 失败（{}）：{}", path.display(), error))?;
-    structure_as_copied_chunk(Arc::new(structure), anchor_chunk, origin_y)
+    prepare_import(Arc::new(structure), anchor_chunk, origin_y)
 }
 
-pub(super) fn structure_as_copied_chunk(
-    structure: Arc<bedrock_world::McStructureFile>,
+pub(super) fn prepare_import(
+    structure: Arc<bedrock_world::structure::McStructureFile>,
     anchor_chunk: ChunkPos,
     origin_y: i32,
 ) -> Result<McStructureImport, String> {
@@ -151,14 +151,14 @@ pub(super) fn structure_as_copied_chunk(
 }
 
 fn structure_to_copied_chunk(
-    structure: &bedrock_world::McStructureFile,
+    structure: &bedrock_world::structure::McStructureFile,
     anchor_chunk: ChunkPos,
 ) -> Result<CopiedChunkData, String> {
-    let placement = bedrock_world::McStructurePlacement {
+    let placement = bedrock_world::structure::McStructurePlacement {
         source_anchor: anchor_chunk,
         target_anchor: anchor_chunk,
         origin_y: structure.world_origin[1],
-        rotation: bedrock_world::McStructureRotation::None,
+        rotation: bedrock_world::structure::McStructureRotation::None,
         mirror_x: false,
         mirror_z: false,
     };
@@ -190,7 +190,7 @@ pub(super) fn imported_structure_targets(
 ) -> BTreeSet<ChunkPos> {
     import
         .structure
-        .target_chunks(bedrock_world::McStructurePlacement {
+        .target_chunks(bedrock_world::structure::McStructurePlacement {
             source_anchor: import.source_anchor,
             target_anchor,
             origin_y: import.origin_y,
@@ -201,7 +201,7 @@ pub(super) fn imported_structure_targets(
         .unwrap_or_default()
 }
 
-pub(super) fn paste_imported_structure_blocking(
+pub(super) fn paste_imported_structure(
     world: &World,
     import: &ImportedStructureData,
     target_anchor: ChunkPos,
@@ -209,11 +209,11 @@ pub(super) fn paste_imported_structure_blocking(
     guard: &WriteGuard,
     cancel: Option<&CancelFlag>,
     progress: &mut impl FnMut(ChunkTransferProgress),
-) -> bedrock_world::Result<(String, MapEditInvalidation)> {
+) -> bedrock_world::Result<(String, EditInvalidation)> {
     check_mcstructure_paste_cancelled(cancel)?;
     let result = import.structure.write_to_world(
         world,
-        bedrock_world::McStructurePlacement {
+        bedrock_world::structure::McStructurePlacement {
             source_anchor: import.source_anchor,
             target_anchor,
             origin_y: import.origin_y,
@@ -225,8 +225,8 @@ pub(super) fn paste_imported_structure_blocking(
         |write_progress| {
             progress(ChunkTransferProgress {
                 phase: SharedString::from(match write_progress.phase {
-                    bedrock_world::McStructureWritePhase::Prepare => "准备结构",
-                    bedrock_world::McStructureWritePhase::WriteChunks => "粘贴结构",
+                    bedrock_world::editor::McStructureWritePhase::Prepare => "准备结构",
+                    bedrock_world::editor::McStructureWritePhase::WriteChunks => "粘贴结构",
                 }),
                 completed: write_progress.completed,
                 total: write_progress.total,
@@ -245,7 +245,7 @@ pub(super) fn paste_imported_structure_blocking(
             target_anchor.z,
             result.affected_chunks.len()
         ),
-        MapEditInvalidation::chunks(result.affected_chunks).with_metadata(),
+        EditInvalidation::chunks(result.affected_chunks).with_metadata(),
     ))
 }
 
@@ -289,7 +289,7 @@ fn transformed_chunk_seed_value(
             transform_horizontal_values(&mut biome.biomes, transform)?;
             Bytes::from(biome.encode()?)
         }
-        ChunkRecordTag::Version | ChunkRecordTag::VersionOld | ChunkRecordTag::LegacyVersion => {
+        ChunkRecordTag::Version | ChunkRecordTag::VersionOld => {
             record.value.clone()
         }
         _ => return Ok(None),
@@ -375,11 +375,11 @@ fn check_mcstructure_paste_cancelled(cancel: Option<&CancelFlag>) -> bedrock_wor
     Ok(())
 }
 
-const fn mcstructure_rotation(rotation: PasteRotation) -> bedrock_world::McStructureRotation {
+const fn mcstructure_rotation(rotation: PasteRotation) -> bedrock_world::structure::McStructureRotation {
     match rotation {
-        PasteRotation::NoRotation => bedrock_world::McStructureRotation::None,
-        PasteRotation::Clockwise90 => bedrock_world::McStructureRotation::Clockwise90,
-        PasteRotation::Rotate180 => bedrock_world::McStructureRotation::Rotate180,
-        PasteRotation::CounterClockwise90 => bedrock_world::McStructureRotation::CounterClockwise90,
+        PasteRotation::NoRotation => bedrock_world::structure::McStructureRotation::None,
+        PasteRotation::Clockwise90 => bedrock_world::structure::McStructureRotation::Clockwise90,
+        PasteRotation::Rotate180 => bedrock_world::structure::McStructureRotation::Rotate180,
+        PasteRotation::CounterClockwise90 => bedrock_world::structure::McStructureRotation::CounterClockwise90,
     }
 }

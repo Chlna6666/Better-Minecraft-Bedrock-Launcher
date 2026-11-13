@@ -1,6 +1,6 @@
 use super::prelude::*;
 
-pub(super) fn render_image_from_decoded_tile_parts(
+pub(super) fn tile_image(
     width: u32,
     height: u32,
     pixel_format: TilePixelFormat,

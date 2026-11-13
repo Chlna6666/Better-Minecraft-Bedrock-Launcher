@@ -1,11 +1,11 @@
 //! Primary import actions stay on the central canvas, beside their result.
 
-use super::model::MapViewerWindowView;
+use super::model::View;
 use super::prelude::*;
 use super::state::ImportWorkspaceMode;
 use crate::ui::components::button::{primary_button, secondary_button};
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn import_task_snapshot(&self) -> Option<&Arc<TaskSnapshot>> {
         let write_task = self
             .professional
@@ -114,7 +114,7 @@ impl MapViewerWindowView {
                                 button.on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _, _, cx| {
-                                        this.move_import_preview_to_view_center(cx);
+                                        this.move_preview_to_view_center(cx);
                                     }),
                                 )
                             })
@@ -126,7 +126,7 @@ impl MapViewerWindowView {
                                 button.on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _, _, cx| {
-                                        this.center_paste_preview_in_view(cx);
+                                        this.center_view_on_preview(cx);
                                     }),
                                 )
                             })
@@ -214,10 +214,10 @@ impl MapViewerWindowView {
                     // handlers) on every world-placement render.
                     let actions = match self.ui_state.active_right_panel {
                         MapViewerRightPanel::Generator => {
-                            self.render_obj_import_actions(colors, cx)
+                            self.obj_import_actions(colors, cx)
                         }
                         MapViewerRightPanel::ImageGenerator => {
-                            self.render_image_import_actions(colors, cx)
+                            self.image_import_actions(colors, cx)
                         }
                         _ => self.render_map_import_actions(colors, cx),
                     };

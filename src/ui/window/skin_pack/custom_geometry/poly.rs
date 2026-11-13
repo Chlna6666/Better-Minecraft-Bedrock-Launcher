@@ -1,24 +1,23 @@
 use image::DynamicImage;
 use serde_json::Value;
 
-#[path = "custom_geometry_poly_triangle.rs"]
 mod triangle;
 
-use self::triangle::push_poly_mesh_triangle;
+use self::triangle::tessellate;
 use super::super::color::shade_layer_edge_color;
-use super::super::custom_geometry_json::{index_triplet, point2_array, point3_array};
-use super::super::custom_geometry_math::normalize;
-use super::super::custom_geometry_uv::texture_grid_count;
 use super::super::geometry::{FaceGrid, QuadEdgeMask, push_quad_with_edges};
+use super::json::{index_triplet, point2_array, point3_array};
+use super::math::normalize;
+use super::uv::texture_grid_count;
 use super::{
     BonePoses, CustomGeometryPartBuilder, TextureSpace, ensure_capacity, sample_uv_color,
     transform_normal_for_bone, transform_point_for_bone,
 };
 
-const CUSTOM_GEOMETRY_MAX_POLYGONS: usize = 100_000;
-const POLY_MESH_UV_EPSILON: f32 = 0.0001;
-const POLY_MESH_POSITION_EPSILON: f32 = 0.0001;
-const POLY_MESH_NORMAL_DOT_MIN: f32 = 0.995;
+const MAX_POLYGONS: usize = 100_000;
+const UV_EPSILON: f32 = 0.0001;
+const POSITION_EPSILON: f32 = 0.0001;
+const NORMAL_DOT_MIN: f32 = 0.995;
 
 #[derive(Clone, Copy)]
 struct PolyMeshVertex {
@@ -49,12 +48,12 @@ pub(super) fn push_poly_mesh(
     let mut index = 0;
     while index < polys.len() {
         builder.polygon_count = builder.polygon_count.saturating_add(1);
-        if builder.polygon_count > CUSTOM_GEOMETRY_MAX_POLYGONS {
+        if builder.polygon_count > MAX_POLYGONS {
             return Err("自定义皮肤 geometry.json 面片过多".to_string());
         }
 
         let Some(polygon_vertices) =
-            poly_mesh_polygon_vertices(&polys[index], &positions, &normals, &uvs, bone_name, poses)
+            parse_polygon_vertices(&polys[index], &positions, &normals, &uvs, bone_name, poses)
         else {
             index += 1;
             continue;
@@ -64,27 +63,27 @@ pub(super) fn push_poly_mesh(
             continue;
         }
 
-        if let Some(quad) = poly_mesh_quad_from_polygon(&polygon_vertices) {
-            push_poly_mesh_quad(image, texture_space, normalized_uvs, quad, builder)?;
+        if let Some(quad) = quad_from_polygon(&polygon_vertices) {
+            push_quad(image, texture_space, normalized_uvs, quad, builder)?;
             index += 1;
             continue;
         }
 
         if let Some(next_poly) = polys.get(index + 1)
             && let Some(next_vertices) =
-                poly_mesh_polygon_vertices(next_poly, &positions, &normals, &uvs, bone_name, poses)
-            && let Some(quad) = poly_mesh_quad_from_triangle_pair(&polygon_vertices, &next_vertices)
+                parse_polygon_vertices(next_poly, &positions, &normals, &uvs, bone_name, poses)
+            && let Some(quad) = quad_from_triangle_pair(&polygon_vertices, &next_vertices)
         {
             builder.polygon_count = builder.polygon_count.saturating_add(1);
-            if builder.polygon_count > CUSTOM_GEOMETRY_MAX_POLYGONS {
+            if builder.polygon_count > MAX_POLYGONS {
                 return Err("自定义皮肤 geometry.json 面片过多".to_string());
             }
-            push_poly_mesh_quad(image, texture_space, normalized_uvs, quad, builder)?;
+            push_quad(image, texture_space, normalized_uvs, quad, builder)?;
             index += 2;
             continue;
         }
 
-        push_poly_mesh_polygon(
+        push_polygon(
             image,
             texture_space,
             normalized_uvs,
@@ -97,7 +96,7 @@ pub(super) fn push_poly_mesh(
     Ok(())
 }
 
-fn poly_mesh_polygon_vertices(
+fn parse_polygon_vertices(
     poly: &Value,
     positions: &[[f32; 3]],
     normals: &[[f32; 3]],
@@ -132,25 +131,23 @@ fn poly_mesh_polygon_vertices(
         });
     }
 
-    let polygon_vertices = deduplicate_poly_mesh_polygon_vertices(polygon_vertices);
+    let polygon_vertices = deduplicate_vertices(polygon_vertices);
     (!polygon_vertices.is_empty()).then_some(polygon_vertices)
 }
 
-fn deduplicate_poly_mesh_polygon_vertices(
-    mut polygon_vertices: Vec<PolyMeshVertex>,
-) -> Vec<PolyMeshVertex> {
-    polygon_vertices.dedup_by(|current, previous| poly_mesh_vertices_match(current, previous));
+fn deduplicate_vertices(mut polygon_vertices: Vec<PolyMeshVertex>) -> Vec<PolyMeshVertex> {
+    polygon_vertices.dedup_by(|current, previous| vertices_match(current, previous));
     if polygon_vertices
         .first()
         .zip(polygon_vertices.last())
-        .is_some_and(|(first, last)| poly_mesh_vertices_match(first, last))
+        .is_some_and(|(first, last)| vertices_match(first, last))
     {
         polygon_vertices.pop();
     }
     polygon_vertices
 }
 
-fn push_poly_mesh_polygon(
+fn push_polygon(
     image: &DynamicImage,
     texture_space: TextureSpace,
     normalized_uvs: bool,
@@ -158,7 +155,7 @@ fn push_poly_mesh_polygon(
     builder: &mut CustomGeometryPartBuilder,
 ) -> Result<(), String> {
     for index in 1..polygon_vertices.len().saturating_sub(1) {
-        push_poly_mesh_triangle(
+        tessellate(
             image,
             texture_space,
             normalized_uvs,
@@ -174,18 +171,18 @@ fn push_poly_mesh_polygon(
     Ok(())
 }
 
-fn push_poly_mesh_quad(
+fn push_quad(
     image: &DynamicImage,
     texture_space: TextureSpace,
     normalized_uvs: bool,
     quad: [PolyMeshVertex; 4],
     builder: &mut CustomGeometryPartBuilder,
 ) -> Result<(), String> {
-    let Some((uv_min, uv_max)) = poly_mesh_uv_bounds(&quad) else {
+    let Some((uv_min, uv_max)) = uv_bounds(&quad) else {
         return Ok(());
     };
-    let grid = poly_mesh_quad_grid(texture_space, normalized_uvs, uv_min, uv_max);
-    let normal = poly_mesh_average_normal(&quad);
+    let grid = quad_grid(texture_space, normalized_uvs, uv_min, uv_max);
+    let normal = average_normal(&quad);
 
     for pixel_y in 0..grid.height {
         for pixel_x in 0..grid.width {
@@ -203,10 +200,10 @@ fn push_poly_mesh_quad(
             }
 
             let corners = [
-                interpolate_poly_mesh_quad_position(quad, u0, v0),
-                interpolate_poly_mesh_quad_position(quad, u1, v0),
-                interpolate_poly_mesh_quad_position(quad, u1, v1),
-                interpolate_poly_mesh_quad_position(quad, u0, v1),
+                interpolate_quad_position(quad, u0, v0),
+                interpolate_quad_position(quad, u1, v0),
+                interpolate_quad_position(quad, u1, v1),
+                interpolate_quad_position(quad, u0, v1),
             ];
             ensure_capacity(&builder.vertices, &builder.indices, 6, 6)?;
             push_quad_with_edges(
@@ -222,7 +219,7 @@ fn push_poly_mesh_quad(
     Ok(())
 }
 
-fn poly_mesh_quad_grid(
+fn quad_grid(
     texture_space: TextureSpace,
     normalized_uvs: bool,
     uv_min: [f32; 2],
@@ -247,7 +244,7 @@ fn poly_mesh_quad_grid(
     }
 }
 
-fn interpolate_poly_mesh_quad_position(quad: [PolyMeshVertex; 4], u: f32, v: f32) -> [f32; 3] {
+fn interpolate_quad_position(quad: [PolyMeshVertex; 4], u: f32, v: f32) -> [f32; 3] {
     let top = interpolate3(quad[0].position, quad[1].position, u);
     let bottom = interpolate3(quad[3].position, quad[2].position, u);
     interpolate3(top, bottom, v)
@@ -265,7 +262,7 @@ fn interpolate_scalar(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-fn poly_mesh_average_normal(vertices: &[PolyMeshVertex; 4]) -> [f32; 3] {
+fn average_normal(vertices: &[PolyMeshVertex; 4]) -> [f32; 3] {
     normalize([
         vertices.iter().map(|vertex| vertex.normal[0]).sum::<f32>() / 4.0,
         vertices.iter().map(|vertex| vertex.normal[1]).sum::<f32>() / 4.0,
@@ -273,12 +270,12 @@ fn poly_mesh_average_normal(vertices: &[PolyMeshVertex; 4]) -> [f32; 3] {
     ])
 }
 
-fn poly_mesh_quad_from_polygon(vertices: &[PolyMeshVertex]) -> Option<[PolyMeshVertex; 4]> {
-    let unique_vertices = unique_poly_mesh_vertices(vertices);
-    poly_mesh_quad_from_unique_vertices(&unique_vertices)
+fn quad_from_polygon(vertices: &[PolyMeshVertex]) -> Option<[PolyMeshVertex; 4]> {
+    let unique_vertices = unique_vertices(vertices);
+    quad_from_unique_vertices(&unique_vertices)
 }
 
-fn poly_mesh_quad_from_triangle_pair(
+fn quad_from_triangle_pair(
     first: &[PolyMeshVertex],
     second: &[PolyMeshVertex],
 ) -> Option<[PolyMeshVertex; 4]> {
@@ -289,30 +286,30 @@ fn poly_mesh_quad_from_triangle_pair(
     let mut vertices = Vec::with_capacity(6);
     vertices.extend_from_slice(first);
     vertices.extend_from_slice(second);
-    let unique_vertices = unique_poly_mesh_vertices(&vertices);
-    poly_mesh_quad_from_unique_vertices(&unique_vertices)
+    let unique_vertices = unique_vertices(&vertices);
+    quad_from_unique_vertices(&unique_vertices)
 }
 
-fn poly_mesh_quad_from_unique_vertices(vertices: &[PolyMeshVertex]) -> Option<[PolyMeshVertex; 4]> {
-    if vertices.len() != 4 || !poly_mesh_normals_are_compatible(vertices) {
+fn quad_from_unique_vertices(vertices: &[PolyMeshVertex]) -> Option<[PolyMeshVertex; 4]> {
+    if vertices.len() != 4 || !normals_are_compatible(vertices) {
         return None;
     }
 
-    let (uv_min, uv_max) = poly_mesh_uv_bounds(vertices)?;
+    let (uv_min, uv_max) = uv_bounds(vertices)?;
     Some([
-        poly_mesh_vertex_for_uv(vertices, [uv_min[0], uv_min[1]])?,
-        poly_mesh_vertex_for_uv(vertices, [uv_max[0], uv_min[1]])?,
-        poly_mesh_vertex_for_uv(vertices, [uv_max[0], uv_max[1]])?,
-        poly_mesh_vertex_for_uv(vertices, [uv_min[0], uv_max[1]])?,
+        vertex_for_uv(vertices, [uv_min[0], uv_min[1]])?,
+        vertex_for_uv(vertices, [uv_max[0], uv_min[1]])?,
+        vertex_for_uv(vertices, [uv_max[0], uv_max[1]])?,
+        vertex_for_uv(vertices, [uv_min[0], uv_max[1]])?,
     ])
 }
 
-fn unique_poly_mesh_vertices(vertices: &[PolyMeshVertex]) -> Vec<PolyMeshVertex> {
+fn unique_vertices(vertices: &[PolyMeshVertex]) -> Vec<PolyMeshVertex> {
     let mut unique_vertices = Vec::with_capacity(vertices.len());
     for vertex in vertices {
         if !unique_vertices
             .iter()
-            .any(|candidate| poly_mesh_vertices_match(candidate, vertex))
+            .any(|candidate| vertices_match(candidate, vertex))
         {
             unique_vertices.push(*vertex);
         }
@@ -320,14 +317,14 @@ fn unique_poly_mesh_vertices(vertices: &[PolyMeshVertex]) -> Vec<PolyMeshVertex>
     unique_vertices
 }
 
-fn poly_mesh_vertex_for_uv(vertices: &[PolyMeshVertex], uv: [f32; 2]) -> Option<PolyMeshVertex> {
+fn vertex_for_uv(vertices: &[PolyMeshVertex], uv: [f32; 2]) -> Option<PolyMeshVertex> {
     vertices
         .iter()
-        .find(|vertex| vec2_close(vertex.uv, uv, POLY_MESH_UV_EPSILON))
+        .find(|vertex| vec2_close(vertex.uv, uv, UV_EPSILON))
         .copied()
 }
 
-fn poly_mesh_uv_bounds(vertices: &[PolyMeshVertex]) -> Option<([f32; 2], [f32; 2])> {
+fn uv_bounds(vertices: &[PolyMeshVertex]) -> Option<([f32; 2], [f32; 2])> {
     let first = vertices.first()?;
     if !first.uv[0].is_finite() || !first.uv[1].is_finite() {
         return None;
@@ -345,27 +342,25 @@ fn poly_mesh_uv_bounds(vertices: &[PolyMeshVertex]) -> Option<([f32; 2], [f32; 2
         uv_max[1] = uv_max[1].max(vertex.uv[1]);
     }
 
-    if uv_max[0] - uv_min[0] <= POLY_MESH_UV_EPSILON
-        || uv_max[1] - uv_min[1] <= POLY_MESH_UV_EPSILON
-    {
+    if uv_max[0] - uv_min[0] <= UV_EPSILON || uv_max[1] - uv_min[1] <= UV_EPSILON {
         return None;
     }
     Some((uv_min, uv_max))
 }
 
-fn poly_mesh_normals_are_compatible(vertices: &[PolyMeshVertex]) -> bool {
+fn normals_are_compatible(vertices: &[PolyMeshVertex]) -> bool {
     let Some(first) = vertices.first() else {
         return false;
     };
     let normal = normalize(first.normal);
     vertices
         .iter()
-        .all(|vertex| dot3(normal, normalize(vertex.normal)) >= POLY_MESH_NORMAL_DOT_MIN)
+        .all(|vertex| dot3(normal, normalize(vertex.normal)) >= NORMAL_DOT_MIN)
 }
 
-fn poly_mesh_vertices_match(first: &PolyMeshVertex, second: &PolyMeshVertex) -> bool {
-    vec3_close(first.position, second.position, POLY_MESH_POSITION_EPSILON)
-        && vec2_close(first.uv, second.uv, POLY_MESH_UV_EPSILON)
+fn vertices_match(first: &PolyMeshVertex, second: &PolyMeshVertex) -> bool {
+    vec3_close(first.position, second.position, POSITION_EPSILON)
+        && vec2_close(first.uv, second.uv, UV_EPSILON)
 }
 
 fn vec2_close(first: [f32; 2], second: [f32; 2], epsilon: f32) -> bool {

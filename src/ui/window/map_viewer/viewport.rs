@@ -37,7 +37,7 @@ pub(super) fn paint_tile_bounds(
     })
 }
 
-pub(super) fn viewport_block_bounds(
+pub(super) fn block_bounds(
     viewport: MapViewport,
     layout: RenderLayout,
 ) -> (i32, i32, i32, i32) {
@@ -70,7 +70,7 @@ pub(super) fn draw_grid_lines(
     width: Pixels,
     window: &mut Window,
 ) {
-    let (min_x, min_z, max_x, max_z) = viewport_block_bounds(viewport, layout);
+    let (min_x, min_z, max_x, max_z) = block_bounds(viewport, layout);
     let step = step.max(1);
     let start_x = min_x.div_euclid(step).saturating_mul(step);
     let end_x = max_x.saturating_add(step);
@@ -201,7 +201,7 @@ pub(super) fn block_screen_y(
         + block_to_map_pixel(block_z, layout) * viewport.scale
 }
 
-pub(super) fn viewport_screen_position(
+pub(super) fn screen_position(
     viewport: MapViewport,
     layout: RenderLayout,
     block_x: i32,
@@ -245,7 +245,7 @@ impl TilePaintRect {
         self.bottom - self.top
     }
 
-    pub(super) fn to_bounds(self, bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    pub(super) fn into_bounds(self, bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
         let bounds_left = bounds.left() / px(1.0);
         let bounds_top = bounds.top() / px(1.0);
         let left = bounds_left + self.left;
@@ -455,7 +455,7 @@ pub(super) fn tile_bounds_count(bounds: TileBounds) -> usize {
     width.saturating_mul(height)
 }
 
-pub(super) fn viewport_with_composite_overscan(viewport: MapViewport) -> MapViewport {
+pub(super) fn with_composite_overscan(viewport: MapViewport) -> MapViewport {
     let overscan_x = (viewport.width * 0.2).clamp(
         MIN_VIEWPORT_COMPOSITE_OVERSCAN_PX,
         MAX_VIEWPORT_COMPOSITE_OVERSCAN_PX,

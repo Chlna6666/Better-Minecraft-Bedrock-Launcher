@@ -53,7 +53,7 @@ pub fn toolbar_overflow_count(window_width: f32) -> usize {
 }
 
 #[must_use]
-pub fn center_stage_rect_for_layout(
+pub fn center_stage_rect(
     window_width: f32,
     window_height: f32,
     left_open: bool,

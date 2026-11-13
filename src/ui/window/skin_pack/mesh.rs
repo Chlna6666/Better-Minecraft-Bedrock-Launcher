@@ -10,9 +10,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use super::color::{Face, shade_cuboid_face};
 use super::custom_geometry::{
-    CustomGeometryMesh, CustomGeometryPartMesh, build_custom_geometry_mesh,
+    CustomGeometryBoneRole, CustomGeometryMesh, CustomGeometryPartMesh, build_mesh,
 };
-use super::custom_geometry_animation::CustomGeometryBoneRole;
 use super::geometry::{
     ColorRun, CuboidSize, FaceGrid, SKIN_MIN_SIZE, SkinVertex, face_rect_corners, face_region,
     skin_preview_faces,
@@ -176,14 +175,14 @@ pub(super) fn skin_player_mesh(
         .map(skin_texture_asset)
         .transpose()?;
     let meshes = if let Some(geometry_source) = geometry_source.as_ref()
-        && let Some(custom_mesh) = build_custom_geometry_mesh(
+        && let Some(custom_mesh) = build_mesh(
             &image,
             Path::new(&geometry_source.path),
             &geometry_source.identifier,
         )? {
-        Arc::new(build_custom_geometry_meshes(image, texture, custom_mesh)?)
+        Arc::new(build_meshes(image, texture, custom_mesh)?)
     } else {
-        Arc::new(build_skin_player_meshes_with_cape(
+        Arc::new(build_skin_player_meshes(
             texture,
             slim_arms,
             layer_mode,
@@ -290,7 +289,7 @@ fn skin_texture_asset(image: &DynamicImage) -> Result<Arc<TextureAsset>, String>
         .map_err(|error| error.to_string())
 }
 
-fn build_custom_geometry_meshes(
+fn build_meshes(
     image: DynamicImage,
     texture: Arc<TextureAsset>,
     custom_mesh: CustomGeometryMesh,
@@ -333,25 +332,17 @@ fn build_custom_geometry_meshes(
         }
     }
 
-    finish_skin_preview(scene, texture, tracks, CUSTOM_GEOMETRY_PREVIEW_FRONT_YAW)
-}
-
-fn build_skin_player_meshes(
-    texture: Arc<TextureAsset>,
-    slim_arms: bool,
-    layer_mode: SkinLayerMode,
-) -> Result<SkinPreviewMeshes, String> {
-    build_skin_player_meshes_with_cape(
+    finish_skin_preview(
+        scene,
         texture,
-        slim_arms,
-        layer_mode,
         None,
         None,
-        CapePreviewMode::Cape,
+        tracks,
+        CUSTOM_GEOMETRY_PREVIEW_FRONT_YAW,
     )
 }
 
-fn build_skin_player_meshes_with_cape(
+fn build_skin_player_meshes(
     texture: Arc<TextureAsset>,
     slim_arms: bool,
     layer_mode: SkinLayerMode,
@@ -482,7 +473,7 @@ fn build_skin_player_meshes_with_cape(
             cape_mode,
         )?;
     }
-    finish_skin_preview_with_cape(
+    finish_skin_preview(
         scene,
         texture,
         cape_texture,
@@ -514,7 +505,7 @@ fn insert_cape_preview(
         // Bedrock's geometry.cape rotates the cape bone by 180 degrees, so the face a viewer
         // behind the player sees samples the unwrap's front region (1, 1)-(11, 17) — the
         // opposite of the Java/skinview3d cape orientation. Keep the face swap.
-        let mut uv = super::uv::uv_box(0, 0, 10, 16, 1);
+        let mut uv = super::uv::cuboid(0, 0, 10, 16, 1);
         std::mem::swap(&mut uv.front, &mut uv.back);
         let mesh = Arc::new(build_cuboid_mesh_atlas(
             CuboidSize {
@@ -565,7 +556,7 @@ fn insert_cape_preview(
             Some(texture) => (texture.width() as f32, texture.height() as f32),
             None => (cape_texture.width() as f32, cape_texture.height() as f32),
         };
-        let uv = super::uv::uv_box(22, 0, 10, 20, 2);
+        let uv = super::uv::cuboid(22, 0, 10, 20, 2);
         let mesh = Arc::new(build_cuboid_mesh_atlas(
             CuboidSize {
                 width: 10.0,
@@ -611,8 +602,7 @@ fn insert_cape_preview(
             .insert(
                 Some(yaw),
                 Node::new().with_transform(Transform {
-                    rotation: Quat::from_axis_angle(Vec3::Z, flare)
-                        .ok_or("无效的鞘翅展开角度")?,
+                    rotation: Quat::from_axis_angle(Vec3::Z, flare).ok_or("无效的鞘翅展开角度")?,
                     ..Transform::IDENTITY
                 }),
             )
@@ -683,15 +673,6 @@ fn insert_mesh_node(
 }
 
 fn finish_skin_preview(
-    scene: Scene,
-    texture: Arc<TextureAsset>,
-    tracks: Vec<TransformTrack>,
-    front_yaw: f32,
-) -> Result<SkinPreviewMeshes, String> {
-    finish_skin_preview_with_cape(scene, texture, None, None, tracks, front_yaw)
-}
-
-fn finish_skin_preview_with_cape(
     scene: Scene,
     texture: Arc<TextureAsset>,
     cape_texture: Option<Arc<TextureAsset>>,
@@ -989,5 +970,4 @@ fn skin_part_layout(part: SkinPreviewPart) -> ([f32; 3], [f32; 3], f32) {
 }
 
 #[cfg(test)]
-#[path = "mesh_tests.rs"]
 mod tests;

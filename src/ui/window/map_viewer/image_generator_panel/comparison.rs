@@ -1,8 +1,8 @@
 use super::super::import_workspace::import_preview_label;
 use super::*;
 
-impl MapViewerWindowView {
-    pub(in super::super) fn render_image_block_comparison(
+impl View {
+    pub(in super::super) fn render_block_comparison(
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,

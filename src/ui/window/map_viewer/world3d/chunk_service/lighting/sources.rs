@@ -51,7 +51,7 @@ pub(super) fn collect(
             for i in 0..4096u16 {
                 let (x, y, z) = ((i % 16) as u8, (i / 16 % 16) as u8, (i / 256) as u8);
                 let Some(&(emission, definition)) = storage
-                    .palette_index_at(x, y, z)
+                    .index_at(x, y, z)
                     .and_then(|i| palette.get(usize::from(i)))
                     .and_then(Option::as_ref)
                 else {

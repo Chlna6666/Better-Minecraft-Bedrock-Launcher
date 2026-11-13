@@ -142,7 +142,7 @@ fn take<const N: usize>(src: &mut &[u8]) -> Option<[u8; N]> {
     bytes.try_into().ok()
 }
 
-fn parse(data: &[u8], expected_revision: u64) -> Option<BTreeMap<ChunkPos, IndexedColumn>> {
+fn decode(data: &[u8], expected_revision: u64) -> Option<BTreeMap<ChunkPos, IndexedColumn>> {
     let mut input = data;
     if &take::<8>(&mut input)? != MAGIC {
         return None;
@@ -271,7 +271,7 @@ impl VisibilityIndex {
                 if metadata.len() > MAX_FILE_SIZE {
                     return None;
                 }
-                parse(&fs::read(&file).ok()?, stamp)
+                decode(&fs::read(&file).ok()?, stamp)
             })
             .unwrap_or_default();
         Self {
@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(index.len(), 2);
         index.invalidate(pos(1));
         index.flush();
-        let entries = parse(&fs::read(&path).unwrap(), revision.unwrap()).unwrap();
+        let entries = decode(&fs::read(&path).unwrap(), revision.unwrap()).unwrap();
         assert!(!entries.contains_key(&pos(1)));
         assert!(entries.contains_key(&pos(2)));
         // A foreign writer invalidates the complete previous certificate:
@@ -469,7 +469,7 @@ mod tests {
         fs::write(world.join("db/000002.log"), b"external edit").unwrap();
         assert!(index.refresh());
         assert_eq!(index.len(), 0);
-        assert!(parse(&fs::read(&path).unwrap(), source_revision(&world).unwrap()).is_none());
+        assert!(decode(&fs::read(&path).unwrap(), source_revision(&world).unwrap()).is_none());
         drop(index);
         fs::remove_dir_all(world).unwrap();
     }
@@ -511,12 +511,12 @@ mod tests {
         let mut entries = BTreeMap::new();
         entries.insert(pos(5), IndexedColumn::new(masks.clone()));
         let bytes = encode(&entries, 123);
-        let decoded = parse(&bytes, 123).unwrap();
+        let decoded = decode(&bytes, 123).unwrap();
         assert_eq!(decoded.get(&pos(5)).unwrap().masks, masks);
-        assert!(parse(&bytes, 124).is_none());
+        assert!(decode(&bytes, 124).is_none());
         let mut corrupt = bytes.clone();
         *corrupt.last_mut().unwrap() ^= 1;
-        assert!(parse(&corrupt, 123).is_none());
+        assert!(decode(&corrupt, 123).is_none());
         assert!(decoded.get(&pos(99)).is_none());
     }
 
@@ -527,7 +527,7 @@ mod tests {
         entries.insert(pos(1), IndexedColumn::new(masks));
         let bytes = encode(&entries, 4);
         for length in 0..bytes.len() {
-            assert!(parse(&bytes[..length], 4).is_none());
+            assert!(decode(&bytes[..length], 4).is_none());
         }
     }
 }

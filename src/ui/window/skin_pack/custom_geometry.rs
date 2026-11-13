@@ -4,27 +4,30 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-#[path = "custom_geometry_cube.rs"]
+mod animation;
 mod cube;
-#[path = "custom_geometry_poly.rs"]
+mod json;
+mod math;
 mod poly;
+mod uv;
 
+pub(super) use animation::CustomGeometryBoneRole;
+#[cfg(test)]
+pub(super) use math::{PREVIEW_FEET_Y, PREVIEW_HEAD_TOP_Y};
+
+use self::animation::{CustomGeometryBoneBinding, CustomGeometryBoneDescriptor, build_bindings};
 use self::cube::push_cube;
-use self::poly::push_poly_mesh;
-use super::color::sample_image_color;
-use super::custom_geometry_animation::{
-    CustomGeometryBoneBinding, CustomGeometryBoneDescriptor, CustomGeometryBoneRole,
-    custom_geometry_bone_bindings,
-};
-use super::custom_geometry_json::{array3, first_number};
-use super::custom_geometry_math::{
+use self::json::{array3, first_number};
+use self::math::{
     GeometryBounds, ModelSpace, clamp_image_index, normalize, rotate_point_around, rotate_vector,
 };
+use self::poly::push_poly_mesh;
+use super::color::sample_image_color;
 use super::geometry::SkinVertex;
 
-const CUSTOM_PREVIEW_MAX_TEXTURE_SCALE: u32 = 2;
-const CUSTOM_GEOMETRY_MAX_VERTICES: usize = 1_000_000;
-const CUSTOM_GEOMETRY_MAX_INDICES: usize = 1_500_000;
+const MAX_PREVIEW_TEXTURE_SCALE: u32 = 2;
+const MAX_VERTICES: usize = 1_000_000;
+const MAX_INDICES: usize = 1_500_000;
 
 pub(super) struct CustomGeometryMesh {
     pub(super) parts: Vec<CustomGeometryPartMesh>,
@@ -117,7 +120,7 @@ impl CustomGeometryBuilder {
     }
 }
 
-pub(super) fn build_custom_geometry_mesh(
+pub(super) fn build_mesh(
     image: &DynamicImage,
     geometry_path: &Path,
     identifier: &str,
@@ -126,10 +129,10 @@ pub(super) fn build_custom_geometry_mesh(
         .map_err(|error| format!("读取 geometry.json 失败: {error}"))?;
     let root = serde_json::from_str::<Value>(raw.trim_start_matches('\u{feff}'))
         .map_err(|error| format!("解析 geometry.json 失败: {error}"))?;
-    build_custom_geometry_from_value(image, &root, identifier)
+    build_from_value(image, &root, identifier)
 }
 
-fn build_custom_geometry_from_value(
+fn build_from_value(
     image: &DynamicImage,
     root: &Value,
     identifier: &str,
@@ -143,7 +146,7 @@ fn build_custom_geometry_from_value(
 
     let space = ModelSpace::fit(model_bounds(bones));
     let bone_poses = bone_poses(bones);
-    let bone_bindings = custom_geometry_bone_bindings(bone_animation_descriptors(&bone_poses));
+    let bone_bindings = build_bindings(bone_animation_descriptors(&bone_poses));
     let poses = BonePoses {
         poses: &bone_poses,
         space,
@@ -222,7 +225,7 @@ fn model_bounds(bones: &[Value]) -> GeometryBounds {
 
     for bone in bones {
         if let Some(poly_mesh) = bone.get("poly_mesh") {
-            for position in super::custom_geometry_json::point3_array(poly_mesh.get("positions")) {
+            for position in json::point3_array(poly_mesh.get("positions")) {
                 include_point(&mut bounds, position);
             }
         }
@@ -317,7 +320,7 @@ fn texture_space(geometry: &Value, image: &DynamicImage) -> TextureSpace {
     .max(1.0);
     let preview_scale = ((image_width as f32 / width).round() as u32)
         .max(1)
-        .min(CUSTOM_PREVIEW_MAX_TEXTURE_SCALE);
+        .min(MAX_PREVIEW_TEXTURE_SCALE);
 
     TextureSpace {
         width,
@@ -357,8 +360,8 @@ fn ensure_capacity(
     add_vertices: usize,
     add_indices: usize,
 ) -> Result<(), String> {
-    if vertices.len().saturating_add(add_vertices) > CUSTOM_GEOMETRY_MAX_VERTICES
-        || indices.len().saturating_add(add_indices) > CUSTOM_GEOMETRY_MAX_INDICES
+    if vertices.len().saturating_add(add_vertices) > MAX_VERTICES
+        || indices.len().saturating_add(add_indices) > MAX_INDICES
     {
         return Err("自定义皮肤 geometry.json 网格过大".to_string());
     }
@@ -430,5 +433,4 @@ fn transform_normal_for_bone(
 }
 
 #[cfg(test)]
-#[path = "custom_geometry_tests.rs"]
 mod tests;

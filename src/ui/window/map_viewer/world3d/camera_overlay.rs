@@ -6,7 +6,7 @@
 use super::super::model::MapViewport;
 use super::super::paint::{overlay_marker_screen_x, overlay_marker_screen_y};
 use super::types::{CameraOverlayMode, World3dCameraSnapshot, World3dProjectionKind};
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use bedrock_render::{Dimension, RenderLayout};
 use gpui::*;
 
@@ -140,7 +140,7 @@ impl Render for MapCameraOverlayView {
             canvas(
                 move |bounds, _window, _cx| bounds,
                 move |bounds, _bounds, window, _cx| {
-                    paint_world3d_camera_overlay(bounds, context, camera, mode, window);
+                    paint_overlay(bounds, context, camera, mode, window);
                 },
             )
             .size_full(),
@@ -148,7 +148,7 @@ impl Render for MapCameraOverlayView {
     }
 }
 
-fn paint_world3d_camera_overlay(
+fn paint_overlay(
     bounds: Bounds<Pixels>,
     context: CameraOverlayContext,
     camera: World3dCameraSnapshot,

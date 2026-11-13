@@ -1,7 +1,7 @@
 use super::*;
 use crate::ui::components::numeric_field::numeric_dimension_editor;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn render_grid_axis(
         &self,
         axis: GridAxis,
@@ -75,7 +75,7 @@ impl MapViewerWindowView {
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .child(generator_section_title(colors, label))
+            .child(inspector::section_title(colors, label))
             .child(numeric_dimension_editor(
                 field, colors, "张", decrease, increase, slider,
             ))
@@ -107,7 +107,7 @@ impl MapViewerWindowView {
                             .into_iter()
                             .filter(|size| *size <= max_count)
                             .map(|size| {
-                                generator_choice(colors, format!("{size}"), count == size).when(
+                                choice::chip(colors, format!("{size}"), count == size).when(
                                     !busy,
                                     |button| {
                                         button.on_mouse_down(

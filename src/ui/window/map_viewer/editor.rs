@@ -8,7 +8,9 @@ use super::tile_state::*;
 use crate::tasks::task_manager::ProgressUpdate;
 use rayon::prelude::*;
 
-impl MapViewerWindowView {
+mod records;
+
+impl View {
     pub(super) fn handle_editor_event(
         &mut self,
         editor: Entity<CodeEditorState>,
@@ -25,7 +27,7 @@ impl MapViewerWindowView {
                 cx.notify();
             }
             CodeEditorEvent::PointerInteractionStarted => {
-                self.cancel_pointer_captures_for_panel_interaction("code editor pointer down", cx);
+                self.cancel_pointer_captures("code editor pointer down", cx);
             }
             CodeEditorEvent::PointerInteractionEnded => {}
             CodeEditorEvent::SaveRequested => self.request_editor_save(cx),
@@ -46,7 +48,7 @@ impl MapViewerWindowView {
         });
         self.editor_document.text = formatted;
         self.editor_document.dirty = true;
-        self.status = SharedString::from("JSON 已格式化；第一版不会从文本回写任意 NBT");
+        self.status = SharedString::from("JSON 已格式化");
         cx.notify();
     }
 
@@ -78,12 +80,12 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let editor = MapWorldEditor::open_with_options(
+                    let editor = WorldEditor::open(
                         &world_path,
                         bedrock_world::OpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
-                    load_edit_detail_blocking(&editor, target_for_task)
+                    load_edit_detail(&editor, target_for_task)
                         .map_err(|error| error.to_string())
                 })
                 .await;
@@ -124,6 +126,11 @@ impl MapViewerWindowView {
             cx.notify();
             return;
         };
+        if !supports_editor_save(&target) {
+            self.status = "当前记录缺失或仅支持读取".into();
+            cx.notify();
+            return;
+        }
         self.confirm_or_run_edit(target, EditAction::Save, cx);
     }
 
@@ -198,7 +205,7 @@ impl MapViewerWindowView {
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let editor = MapWorldEditor::open_writable(&world_path)
+                    let editor = WorldEditor::open_writable(&world_path)
                         .map_err(|error| error.to_string())?;
                     let operation =
                         format!("{} via BMCBL map_viewer", target_for_task.operation_label());
@@ -208,7 +215,7 @@ impl MapViewerWindowView {
                         &target_for_task,
                         &action_for_task,
                     )?);
-                    let result = run_edit_action_blocking(
+                    let result = run_edit_action(
                         &editor,
                         target_for_task,
                         action_for_task,
@@ -248,7 +255,12 @@ impl MapViewerWindowView {
                 this.editor_document.saving = false;
                 match result {
                     Ok(invalidation) => {
-                        this.apply_map_edit_invalidation(&invalidation, cx);
+                        this.apply_map_edit_invalidation(
+                            &invalidation,
+                            TilePriority::Visible,
+                            false,
+                            cx,
+                        );
                         if deletes_player {
                             this.players.selected = None;
                             this.players.detail = None;
@@ -256,6 +268,17 @@ impl MapViewerWindowView {
                             this.refresh_players(cx);
                         }
                         this.status = SharedString::from("世界记录已写入并刷新地图状态");
+                        if matches!(
+                            target,
+                            EditTarget::GlobalRecord { .. }
+                                | EditTarget::TickQueues { .. }
+                                | EditTarget::HsaChunk { .. }
+                                | EditTarget::BlockEntities { .. }
+                                | EditTarget::HeightMap { .. }
+                                | EditTarget::BiomeStorage { .. }
+                        ) {
+                            this.load_edit_detail(target, cx);
+                        }
                     }
                     Err(error) => {
                         this.status = SharedString::from(error);
@@ -270,35 +293,14 @@ impl MapViewerWindowView {
 
     pub(super) fn apply_map_edit_invalidation(
         &mut self,
-        invalidation: &MapEditInvalidation,
-        cx: &mut Context<Self>,
-    ) {
-        self.apply_map_edit_invalidation_with_tile_priority(
-            invalidation,
-            TilePriority::Visible,
-            cx,
-        );
-    }
-
-    pub(super) fn apply_map_edit_invalidation_with_tile_priority(
-        &mut self,
-        invalidation: &MapEditInvalidation,
-        tile_priority: TilePriority,
-        cx: &mut Context<Self>,
-    ) {
-        self.apply_map_edit_invalidation_with_options(invalidation, tile_priority, false, cx);
-    }
-
-    pub(super) fn apply_map_edit_invalidation_with_options(
-        &mut self,
-        invalidation: &MapEditInvalidation,
+        invalidation: &EditInvalidation,
         tile_priority: TilePriority,
         reuse_known_tile_index: bool,
         cx: &mut Context<Self>,
     ) {
         let affected_chunks = invalidation.affected_chunks().clone();
         if invalidation.clear_tile_cache() {
-            self.invalidate_tiles_for_chunks_with_options(
+            self.invalidate_tiles_for_chunks(
                 &affected_chunks,
                 tile_priority,
                 reuse_known_tile_index,
@@ -313,14 +315,14 @@ impl MapViewerWindowView {
             self.professional.overlays = None;
             self.professional.overlay_paint = None;
             self.professional.selection_stats = None;
-            self.invalidate_map_info_cache_after_edit(affected_chunks, cx);
+            self.invalidate_map_info_cache(affected_chunks, cx);
         }
         self.set_professional_detail(None, cx);
         self.refresh_chunk_tree_if_selected();
         self.notify_world3d_mutation(invalidation.affected_chunks(), cx);
     }
 
-    pub(super) fn invalidate_tiles_for_chunks_with_options(
+    pub(super) fn invalidate_tiles_for_chunks(
         &mut self,
         chunks: &BTreeSet<ChunkPos>,
         tile_priority: TilePriority,
@@ -393,7 +395,7 @@ impl MapViewerWindowView {
         candidate: SlimeFarmCandidate,
         cx: &mut Context<Self>,
     ) {
-        self.invalidate_professional_overlay_for_viewport_change();
+        self.invalidate_overlay_queries();
         let min_block_x = candidate.min_chunk_x.saturating_mul(16);
         let max_block_x = candidate.max_chunk_x.saturating_add(1).saturating_mul(16);
         let min_block_z = candidate.min_chunk_z.saturating_mul(16);
@@ -524,7 +526,7 @@ impl MapViewerWindowView {
         let query_generation = self.professional.detail_generation.saturating_add(1);
         self.professional.detail_generation = query_generation;
         let world_path = self.world_path.clone();
-        let options = self.professional_overlay_query_options();
+        let options = self.overlay_query_options();
         let query_budget = self.map_query_budget.clone();
         cx.spawn(async move |handle, cx| {
             let _query_permit = query_budget.acquire().await;
@@ -544,7 +546,7 @@ impl MapViewerWindowView {
                 if this.metadata_generation != generation
                     || this.professional.detail_generation != query_generation
                     || this.professional_query_bounds() != Some(bounds)
-                    || this.professional_overlay_query_options() != options
+                    || this.overlay_query_options() != options
                 {
                     return;
                 }
@@ -582,8 +584,8 @@ impl MapViewerWindowView {
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
-        task_manager::register_task_cooperative_cancel(task_id.clone());
-        task_manager::register_task_cancel_hook(task_id.clone(), {
+        task_manager::register_cooperative_cancel(task_id.clone());
+        task_manager::register_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
         });
@@ -655,7 +657,7 @@ impl MapViewerWindowView {
                                 max_chunk_z: chunk.z,
                             };
                             cleared = cleared.saturating_add(
-                                clear_chunks_blocking(&world, bounds, &guard)
+                                clear_chunks(&world, bounds, &guard)
                                     .map_err(|error| error.to_string())?,
                             );
                             let progress = ChunkTransferProgress {
@@ -733,11 +735,12 @@ impl MapViewerWindowView {
                                     Ok(cleared) => {
                                         this.complete_chunk_transfer_progress();
                                         let invalidation =
-                                            MapEditInvalidation::chunks(affected_chunks)
+                                            EditInvalidation::chunks(affected_chunks)
                                                 .with_metadata();
-                                        this.apply_map_edit_invalidation_with_tile_priority(
+                                        this.apply_map_edit_invalidation(
                                             &invalidation,
                                             TilePriority::EditRefresh,
+                                            false,
                                             cx,
                                         );
                                         let message =
@@ -846,22 +849,20 @@ impl MapViewerWindowView {
                 completed: 0,
                 total,
             });
-        let task_total = progress
-            .as_ref()
-            .map(|progress| task_progress_units(progress.total.max(1)));
-        let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new(action.label(), task_stage).total(task_total),
-        )
-        .expect("task id must be unique");
+        let mut task_options = task_manager::TaskOptions::new(action.label(), task_stage);
+        if let Some(progress) = progress.as_ref() {
+            task_options = task_options.total(task_progress_units(progress.total.max(1)));
+        }
+        let task_id = task_manager::create_task(task_options).expect("task id must be unique");
         self.professional.active_write_task_id = Some(task_id.clone());
-        if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
+        if let Some(snapshot) = task_manager::snapshot(&task_id) {
             self.task_snapshots
                 .insert(snapshot.id.clone(), Arc::new(snapshot));
         }
         self.sync_world3d_import_preview(cx);
         let cancel = CancelFlag::new();
-        task_manager::register_task_cooperative_cancel(task_id.clone());
-        task_manager::register_task_cancel_hook(task_id.clone(), {
+        task_manager::register_cooperative_cancel(task_id.clone());
+        task_manager::register_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
         });
@@ -876,7 +877,7 @@ impl MapViewerWindowView {
             cx,
         );
         self.status = SharedString::from(format!("正在{}...", action.label()));
-        probe_tokio_blocking_pool("map_paste_start");
+        probe_blocking_pool("map_paste_start");
         cx.notify();
 
         let generation = self.metadata_generation;
@@ -896,7 +897,7 @@ impl MapViewerWindowView {
                     progress: ChunkTransferProgress,
                     paste_visual_progress: Option<(usize, usize)>,
                 },
-                Complete(Result<(String, MapEditInvalidation), String>),
+                Complete(Result<(String, EditInvalidation), String>),
             }
 
             let (event_sender, mut event_receiver) = unbounded::<QuickWriteEvent>();
@@ -939,7 +940,7 @@ impl MapViewerWindowView {
                         World::open(&world_path, options).map_err(|error| error.to_string())?;
                     let operation = format!("{} via BMCBL map_viewer", action_for_task.label());
                     let guard = WriteGuard::confirmed(world_path.clone(), operation);
-                    let history_capture = capture_before_with_world_and_progress(
+                    let history_capture = capture_before_in_world(
                         quick_write_history_spec(
                             &world_path,
                             &action_for_task,
@@ -955,7 +956,7 @@ impl MapViewerWindowView {
                             });
                         },
                     );
-                    let result = run_quick_write_action_blocking(
+                    let result = run_quick_write_action(
                         &world,
                         action_for_task.clone(),
                         &guard,
@@ -967,7 +968,7 @@ impl MapViewerWindowView {
                     .map_err(|error| error.to_string());
                     match (history_capture, result) {
                         (Ok(capture), Ok((message, invalidation))) => {
-                            complete_after_with_world_and_progress(
+                            complete_after_in_world(
                                 capture,
                                 &world,
                                 message.clone(),
@@ -1007,7 +1008,7 @@ impl MapViewerWindowView {
                         &task_id_for_task,
                         ProgressUpdate::advance(0).stage("map_refresh"),
                     );
-                    probe_tokio_blocking_pool("map_paste_write_complete");
+                    probe_blocking_pool("map_paste_write_complete");
                 } else {
                     task_manager::finish_task(&task_id_for_task, status, message);
                 }
@@ -1097,7 +1098,7 @@ impl MapViewerWindowView {
                                     write_progress.completed = write_progress.total;
                                     write_progress.awaiting_tile_refresh = true;
                                 }
-                                this.apply_map_edit_invalidation_with_options(
+                                this.apply_map_edit_invalidation(
                                     &invalidation,
                                     tile_refresh_priority,
                                     reuse_known_tile_index,
@@ -1249,7 +1250,7 @@ mod paste_preview_progress_tests {
     }
 }
 
-pub(super) fn block_tip_detail(tip: bedrock_world::BlockTip) -> ProfessionalDetail {
+pub(super) fn block_tip_detail(tip: bedrock_world::query::BlockTip) -> ProfessionalDetail {
     let title = SharedString::from(format!(
         "方块 {}, {}, {}",
         tip.block.x, tip.block.y, tip.block.z
@@ -1331,12 +1332,12 @@ pub(super) fn player_editor_detail(detail: PlayerDetail) -> ProfessionalDetail {
     }
 }
 
-pub(super) fn load_edit_detail_blocking(
-    editor: &MapWorldEditor,
+pub(super) fn load_edit_detail(
+    editor: &WorldEditor,
     target: EditTarget,
 ) -> bedrock_render::Result<ProfessionalDetail> {
     match target {
-        EditTarget::HsaChunk(pos) => hsa_editor_detail(editor, pos),
+        EditTarget::HsaChunk { chunk, .. } => hsa_editor_detail(editor, chunk),
         EditTarget::Player(id) => {
             let data = editor.world().player(&id)?.ok_or_else(|| {
                 bedrock_render::BedrockRenderError::Validation(
@@ -1347,29 +1348,30 @@ pub(super) fn load_edit_detail_blocking(
                 .map(player_editor_detail)
                 .map_err(|error| bedrock_render::BedrockRenderError::Validation(error.to_string()))
         }
-        EditTarget::BlockEntities(pos) => block_entities_editor_detail(editor, pos),
+        EditTarget::BlockEntities { chunk, .. } => block_entities_detail(editor, chunk),
         EditTarget::BlockEntityAt { chunk, block } => {
-            block_entity_at_editor_detail(editor, chunk, block)
+            block_entity_detail_at(editor, chunk, block)
         }
         EditTarget::Actors(pos) => actors_editor_detail(editor, pos),
         EditTarget::Actor { chunk, unique_id } => actor_editor_detail(editor, chunk, unique_id),
-        EditTarget::HeightMap(pos) => heightmap_editor_detail(editor, pos),
-        EditTarget::BiomeStorage(pos) => biome_storage_editor_detail(editor, pos),
+        EditTarget::HeightMap { chunk: pos, .. } => heightmap_editor_detail(editor, pos),
+        EditTarget::BiomeStorage { chunk: pos, .. } => biome_storage_editor_detail(editor, pos),
         EditTarget::SavedData(id) => map_item_editor_detail(editor, &id),
-        EditTarget::GlobalRecord(kind) => global_record_editor_detail(editor, kind),
+        EditTarget::GlobalRecord { kind, .. } => records::global_detail(editor, kind),
+        EditTarget::TickQueues { chunk, .. } => records::ticks_detail(editor, chunk),
     }
 }
 
-pub(super) fn run_edit_action_blocking(
-    editor: &MapWorldEditor,
+pub(super) fn run_edit_action(
+    editor: &WorldEditor,
     target: EditTarget,
     action: EditAction,
     document_text: Option<String>,
-) -> bedrock_render::Result<MapEditInvalidation> {
+) -> bedrock_render::Result<EditInvalidation> {
     let invalidation = match (target, action) {
         (EditTarget::Player(id), EditAction::Delete) => {
             editor.world().delete_player(&id)?;
-            Ok(MapEditInvalidation::metadata())
+            Ok(EditInvalidation::metadata())
         }
         (EditTarget::Player(id), EditAction::Save) => {
             let text = document_text.ok_or_else(|| {
@@ -1382,7 +1384,7 @@ pub(super) fn run_edit_action_blocking(
                     "player JSON is not valid NBT JSON: {error}"
                 ))
             })?;
-            let replacement = PlayerData::from_nbt(id.clone(), tag).map_err(|error| {
+            let replacement = PlayerData::from_nbt(id.clone(), tag, None).map_err(|error| {
                 bedrock_render::BedrockRenderError::Validation(format!(
                     "player NBT serialize failed: {error}"
                 ))
@@ -1394,24 +1396,13 @@ pub(super) fn run_edit_action_blocking(
             })?;
             player.edit_nbt(|nbt| *nbt = replacement.nbt);
             editor.world().save_player(&player)?;
-            Ok(MapEditInvalidation::metadata())
+            Ok(EditInvalidation::metadata())
         }
-        (EditTarget::HsaChunk(pos), EditAction::Save) => {
-            let areas = editor
-                .hardcoded_spawn_areas(WorldScanOptions::default())?
-                .into_iter()
-                .find_map(|(chunk, areas)| (chunk == pos).then_some(areas))
-                .unwrap_or_default();
-            editor.save_hardcoded_spawn_areas(pos, &areas)
+        (EditTarget::HsaChunk { chunk, source }, action) => {
+            records::write_spawn_areas(editor, chunk, source, action, document_text)
         }
-        (EditTarget::HsaChunk(pos), EditAction::Delete) => editor.delete_hardcoded_spawn_areas(pos),
-        (EditTarget::BlockEntities(pos), EditAction::Save) => {
-            let entities = editor
-                .block_entities(pos)?
-                .into_iter()
-                .map(|record| record.entity)
-                .collect::<Vec<_>>();
-            editor.put_block_entities(pos, &entities)
+        (EditTarget::BlockEntities { chunk, source }, EditAction::Save) => {
+            records::write_block_entities(editor, chunk, source, document_text)
         }
         (EditTarget::BlockEntityAt { chunk, block }, EditAction::Delete) => {
             editor.delete_block_entity_at(chunk, block)
@@ -1438,31 +1429,25 @@ pub(super) fn run_edit_action_blocking(
             let affected = editor
                 .world()
                 .edit_actor_nbt_by_unique_id(chunk, unique_id, nbt)?;
-            Ok(MapEditInvalidation::chunks(affected).with_metadata())
+            Ok(EditInvalidation::chunks(affected).with_metadata())
         }
         (EditTarget::Actor { chunk, unique_id }, EditAction::Delete) => {
             editor.world().delete_actor_by_unique_id(chunk, unique_id)?;
-            Ok(MapEditInvalidation::chunk(chunk).with_metadata())
+            Ok(EditInvalidation::chunk(chunk).with_metadata())
         }
-        (EditTarget::HeightMap(pos), EditAction::Save) => {
-            let height_map = editor.heightmap(pos)?.unwrap_or_else(default_heightmap);
-            editor.put_heightmap(pos, bedrock_world::ChunkVersion::New, height_map)
+        (EditTarget::HeightMap { chunk, version: Some(version) }, EditAction::Save) => {
+            records::write_heightmap(editor, chunk, version, document_text)
         }
-        (EditTarget::BiomeStorage(pos), EditAction::Save) => {
-            let height_map = editor.heightmap(pos)?.unwrap_or_else(default_heightmap);
-            let biome = Biome3d::new(
-                height_map.values,
-                vec![BiomeStorage {
-                    y: Some(-64),
-                    palette: vec![0],
-                    indices: Some(vec![0; 4096]),
-                    counts: vec![4096],
-                }],
-            )?;
-            editor.put_biome_storage(pos, biome)
+        (EditTarget::BiomeStorage { chunk, version: Some(ChunkVersion::New) }, EditAction::Save) => {
+            records::write_biomes(editor, chunk, document_text)
         }
-        (EditTarget::SavedData(id), EditAction::Delete) => editor.delete_map_item(&id),
-        (EditTarget::GlobalRecord(kind), EditAction::Delete) => editor.delete_global(kind),
+        (EditTarget::SavedData(id), EditAction::Delete) => editor.delete_item(&id),
+        (EditTarget::GlobalRecord { kind, source }, action) => {
+            records::write_global(editor, kind, source, action, document_text)
+        }
+        (EditTarget::TickQueues { chunk, pending, random }, action) => {
+            records::write_ticks(editor, chunk, (pending, random), action, document_text)
+        }
         (target, action) => Err(bedrock_world::BedrockWorldError::Validation(format!(
             "{} does not support {} yet",
             target.operation_label(),
@@ -1483,7 +1468,7 @@ fn edit_history_spec(
         EditTarget::SavedData(id) => {
             raw_keys.insert(id.storage_key().to_vec());
         }
-        EditTarget::GlobalRecord(kind) => {
+        EditTarget::GlobalRecord { kind, .. } => {
             raw_keys.insert(kind.storage_key().to_vec());
         }
         EditTarget::Player(id) => {
@@ -1492,12 +1477,13 @@ fn edit_history_spec(
             };
             raw_keys.insert(key.as_ref().to_vec());
         }
-        EditTarget::HsaChunk(chunk)
-        | EditTarget::BlockEntities(chunk)
+        EditTarget::TickQueues { chunk, .. }
+        | EditTarget::HsaChunk { chunk, .. }
+        | EditTarget::BlockEntities { chunk, .. }
         | EditTarget::Actors(chunk)
         | EditTarget::Actor { chunk, .. }
-        | EditTarget::HeightMap(chunk)
-        | EditTarget::BiomeStorage(chunk) => {
+        | EditTarget::HeightMap { chunk, .. }
+        | EditTarget::BiomeStorage { chunk, .. } => {
             chunks.insert(*chunk);
         }
         EditTarget::BlockEntityAt { chunk, .. } => {
@@ -1518,21 +1504,17 @@ fn edit_history_spec(
 }
 
 pub(super) fn hsa_editor_detail(
-    editor: &MapWorldEditor,
+    editor: &WorldEditor,
     pos: ChunkPos,
 ) -> bedrock_render::Result<ProfessionalDetail> {
-    let areas = editor
-        .hardcoded_spawn_areas(WorldScanOptions::default())?
-        .into_iter()
-        .find_map(|(chunk, areas)| (chunk == pos).then_some(areas))
-        .unwrap_or_default();
+    let (areas, source) = editor.world().hardcoded_spawn_areas_snapshot(pos)?;
     let rows = areas
         .iter()
         .enumerate()
         .flat_map(|(index, area)| hsa_rows(index, area))
         .collect::<Vec<_>>();
     Ok(ProfessionalDetail::Editor {
-        target: EditTarget::HsaChunk(pos),
+        target: EditTarget::HsaChunk { chunk: pos, source },
         title: SharedString::from(format!("HSA chunk {}, {}", pos.x, pos.z)),
         sections: vec![EditSection {
             title: SharedString::from("硬编码生成区域"),
@@ -1549,13 +1531,13 @@ pub(super) fn hsa_editor_detail(
     })
 }
 
-pub(super) fn block_entities_editor_detail(
-    editor: &MapWorldEditor,
+pub(super) fn block_entities_detail(
+    editor: &WorldEditor,
     pos: ChunkPos,
 ) -> bedrock_render::Result<ProfessionalDetail> {
-    let records = editor.block_entities(pos)?;
+    let (records, source) = editor.world().block_entities_snapshot(pos)?;
     Ok(ProfessionalDetail::Editor {
-        target: EditTarget::BlockEntities(pos),
+        target: EditTarget::BlockEntities { chunk: pos, source },
         title: SharedString::from(format!("方块实体 chunk {}, {}", pos.x, pos.z)),
         sections: vec![EditSection {
             title: SharedString::from("方块实体"),
@@ -1563,13 +1545,13 @@ pub(super) fn block_entities_editor_detail(
         }],
         json: pretty_json(serde_json::json!({
             "chunk": chunk_json(pos),
-            "records": records.iter().map(block_entity_json).collect::<Vec<_>>(),
+            "records": records.iter().map(|record| &record.entity.nbt).collect::<Vec<_>>(),
         })),
     })
 }
 
-pub(super) fn block_entity_at_editor_detail(
-    editor: &MapWorldEditor,
+pub(super) fn block_entity_detail_at(
+    editor: &WorldEditor,
     chunk: ChunkPos,
     block: BlockPos,
 ) -> bedrock_render::Result<ProfessionalDetail> {
@@ -1595,7 +1577,7 @@ pub(super) fn block_entity_at_editor_detail(
 }
 
 pub(super) fn actors_editor_detail(
-    editor: &MapWorldEditor,
+    editor: &WorldEditor,
     pos: ChunkPos,
 ) -> bedrock_render::Result<ProfessionalDetail> {
     let actors = editor.actors(pos)?;
@@ -1614,7 +1596,7 @@ pub(super) fn actors_editor_detail(
 }
 
 pub(super) fn actor_editor_detail(
-    editor: &MapWorldEditor,
+    editor: &WorldEditor,
     chunk: ChunkPos,
     unique_id: i64,
 ) -> bedrock_render::Result<ProfessionalDetail> {
@@ -1660,15 +1642,17 @@ pub(super) fn actor_editor_detail(
 }
 
 pub(super) fn heightmap_editor_detail(
-    editor: &MapWorldEditor,
+    editor: &WorldEditor,
     pos: ChunkPos,
 ) -> bedrock_render::Result<ProfessionalDetail> {
-    let heightmap = editor.heightmap(pos)?;
+    let biome = editor.world().biome_data(pos)?;
+    let version = biome.as_ref().map(|data| data.version);
+    let heightmap = biome.map(|data| HeightMap2d::new(data.height_map)).transpose()?;
     let rows = heightmap
         .as_ref()
         .map_or_else(|| vec![readonly_row("高度图", "无")], heightmap_rows);
     Ok(ProfessionalDetail::Editor {
-        target: EditTarget::HeightMap(pos),
+        target: EditTarget::HeightMap { chunk: pos, version },
         title: SharedString::from(format!("高度图 chunk {}, {}", pos.x, pos.z)),
         sections: vec![EditSection {
             title: SharedString::from("Data2D/Data3D 高度图"),
@@ -1682,41 +1666,29 @@ pub(super) fn heightmap_editor_detail(
 }
 
 pub(super) fn biome_storage_editor_detail(
-    editor: &MapWorldEditor,
+    editor: &WorldEditor,
     pos: ChunkPos,
 ) -> bedrock_render::Result<ProfessionalDetail> {
-    let height_map = editor.heightmap(pos)?;
+    let biome = editor.world().biome_data(pos)?;
     Ok(ProfessionalDetail::Editor {
-        target: EditTarget::BiomeStorage(pos),
+        target: EditTarget::BiomeStorage {
+            chunk: pos,
+            version: biome.as_ref().map(|data| data.version),
+        },
         title: SharedString::from(format!("生物群系 chunk {}, {}", pos.x, pos.z)),
         sections: vec![EditSection {
-            title: SharedString::from("Biome Storage"),
-            rows: vec![
-                readonly_row(
-                    "高度图",
-                    if height_map.is_some() {
-                        "存在"
-                    } else {
-                        "缺失"
-                    },
-                ),
-                editable_row("默认 palette[0]", "0"),
-                editable_row("索引模式", "uniform/full-indices"),
-            ],
+            title: "生物群系数据".into(),
+            rows: vec![readonly_row("记录", if biome.is_some() { "存在" } else { "缺失" })],
         }],
-        json: pretty_json(serde_json::json!({
-            "chunk": chunk_json(pos),
-            "heightmap_present": height_map.is_some(),
-            "write_model": "Data3D with validated Biome3d payload",
-        })),
+        json: pretty_json(serde_json::json!({ "chunk": chunk_json(pos), "biome": biome.as_ref().map(records::biome_json) })),
     })
 }
 
 pub(super) fn map_item_editor_detail(
-    editor: &MapWorldEditor,
+    editor: &WorldEditor,
     id: &MapItemId,
 ) -> bedrock_render::Result<ProfessionalDetail> {
-    let record = editor.map_item(id)?;
+    let record = editor.item(id)?;
     let rows = record.as_ref().map_or_else(
         || vec![readonly_row("记录", "不存在")],
         |record| {
@@ -1743,31 +1715,6 @@ pub(super) fn map_item_editor_detail(
             rows,
         }],
         json: pretty_json(serde_json::json!(record.as_ref().map(map_item_json))),
-    })
-}
-
-pub(super) fn global_record_editor_detail(
-    editor: &MapWorldEditor,
-    kind: GlobalRecordKind,
-) -> bedrock_render::Result<ProfessionalDetail> {
-    let record = editor.global(kind.clone())?;
-    Ok(ProfessionalDetail::Editor {
-        target: EditTarget::GlobalRecord(kind.clone()),
-        title: SharedString::from(format!("Global {}", global_kind_label(&kind))),
-        sections: vec![EditSection {
-            title: SharedString::from("全局记录"),
-            rows: record.as_ref().map_or_else(
-                || vec![readonly_row("记录", "不存在")],
-                |record| {
-                    vec![
-                        readonly_row("name", &record.name),
-                        readonly_row("kind", global_kind_label(&record.kind)),
-                        readonly_row("roots", record.roots.len().to_string()),
-                    ]
-                },
-            ),
-        }],
-        json: pretty_json(serde_json::json!(record.as_ref().map(global_record_json))),
     })
 }
 
@@ -1830,11 +1777,11 @@ pub(super) fn render_edit_row(colors: &ThemeColors, row: &EditRow) -> Div {
         )
 }
 
-pub(super) fn editor_action_buttons(
+pub(super) fn action_buttons(
     colors: &ThemeColors,
     target: EditTarget,
     pending: Option<&PendingEditConfirmation>,
-    cx: &mut Context<MapViewerWindowView>,
+    cx: &mut Context<View>,
 ) -> Vec<Div> {
     let mut buttons = Vec::new();
     if supports_editor_save(&target) {
@@ -1871,21 +1818,24 @@ pub(super) fn supports_editor_save(target: &EditTarget) -> bool {
     matches!(
         target,
         EditTarget::Player(_)
-            | EditTarget::HsaChunk(_)
-            | EditTarget::BlockEntities(_)
-            | EditTarget::HeightMap(_)
-            | EditTarget::BiomeStorage(_)
+            | EditTarget::HsaChunk { .. }
+            | EditTarget::BlockEntities { .. }
+            | EditTarget::HeightMap { version: Some(_), .. }
+            | EditTarget::BiomeStorage { version: Some(ChunkVersion::New), .. }
+            | EditTarget::GlobalRecord { .. }
+            | EditTarget::TickQueues { .. }
     )
 }
 
 pub(super) fn supports_editor_delete(target: &EditTarget) -> bool {
     matches!(
         target,
-        EditTarget::HsaChunk(_)
+        EditTarget::HsaChunk { .. }
             | EditTarget::BlockEntityAt { .. }
             | EditTarget::Actors(_)
             | EditTarget::SavedData(_)
-            | EditTarget::GlobalRecord(_)
+            | EditTarget::GlobalRecord { .. }
+            | EditTarget::TickQueues { .. }
     )
 }
 
@@ -2042,7 +1992,7 @@ pub(super) fn block_json(pos: BlockPos) -> serde_json::Value {
 
 pub(super) fn hsa_json(area: &HardcodedSpawnArea) -> serde_json::Value {
     serde_json::json!({
-        "kind": hsa_kind_label(area.kind),
+        "kind": area.kind,
         "min": area.min,
         "max": area.max,
     })
@@ -2092,15 +2042,7 @@ pub(super) fn map_item_json(record: &SavedData) -> serde_json::Value {
     })
 }
 
-pub(super) fn global_record_json(record: &Global) -> serde_json::Value {
-    serde_json::json!({
-        "name": record.name,
-        "kind": global_kind_label(&record.kind),
-        "roots": record.roots.len(),
-    })
-}
-
-pub(super) fn run_quick_write_action_blocking(
+pub(super) fn run_quick_write_action(
     world: &World,
     action: QuickWriteAction,
     guard: &WriteGuard,
@@ -2108,7 +2050,7 @@ pub(super) fn run_quick_write_action_blocking(
     imported_structure: Option<&ImportedStructureData>,
     cancel: Option<&CancelFlag>,
     mut progress: impl FnMut(ChunkTransferProgress),
-) -> bedrock_world::Result<(String, MapEditInvalidation)> {
+) -> bedrock_world::Result<(String, EditInvalidation)> {
     check_bedrock_operation_cancelled(cancel)?;
     let chunk = action.chunk();
     let result = match action {
@@ -2136,14 +2078,14 @@ pub(super) fn run_quick_write_action_blocking(
                     check_bedrock_operation_cancelled(cancel)?;
                     (
                         format!("已重置当前 chunk，删除 {deleted} 条记录并允许游戏重新加载"),
-                        MapEditInvalidation::chunk(chunk).with_metadata(),
+                        EditInvalidation::chunk(chunk).with_metadata(),
                     )
                 } else {
-                    let cleared = clear_chunks_blocking(world, bounds, guard)?;
+                    let cleared = clear_chunks(world, bounds, guard)?;
                     check_bedrock_operation_cancelled(cancel)?;
                     (
                         format!("已清空当前 chunk 为空气（{} 个 chunk）", cleared),
-                        MapEditInvalidation::chunk(chunk).with_metadata(),
+                        EditInvalidation::chunk(chunk).with_metadata(),
                     )
                 };
             progress(ChunkTransferProgress {
@@ -2155,10 +2097,10 @@ pub(super) fn run_quick_write_action_blocking(
         }
         QuickWriteAction::DeleteCurrentChunkBlockEntities(_) => {
             check_bedrock_operation_cancelled(cancel)?;
-            delete_chunk_record_with_guard(world, chunk, ChunkRecordTag::BlockEntity, guard)?;
+            delete_chunk_record(world, chunk, ChunkRecordTag::BlockEntity, guard)?;
             Ok((
                 format!("已删除 chunk {},{} 方块实体记录", chunk.x, chunk.z),
-                MapEditInvalidation::chunk(chunk).with_metadata(),
+                EditInvalidation::chunk(chunk).with_metadata(),
             ))
         }
         QuickWriteAction::DeleteCurrentChunkActors(_) => {
@@ -2170,13 +2112,13 @@ pub(super) fn run_quick_write_action_blocking(
                 deleted = deleted.saturating_add(1);
             }
             check_bedrock_operation_cancelled(cancel)?;
-            delete_chunk_record_with_guard(world, chunk, ChunkRecordTag::Entity, guard)?;
+            delete_chunk_record(world, chunk, ChunkRecordTag::Entity, guard)?;
             Ok((
                 format!(
                     "已删除 chunk {},{} 的 {deleted} 个现代实体",
                     chunk.x, chunk.z
                 ),
-                MapEditInvalidation::chunk(chunk).with_metadata(),
+                EditInvalidation::chunk(chunk).with_metadata(),
             ))
         }
         QuickWriteAction::PasteCopiedChunk {
@@ -2187,7 +2129,7 @@ pub(super) fn run_quick_write_action_blocking(
             let copied_chunk = copied_chunk.ok_or_else(|| {
                 bedrock_world::BedrockWorldError::Validation("没有可粘贴的区块副本".to_string())
             })?;
-            paste_copied_chunk_blocking(
+            paste_copied_chunk(
                 world,
                 copied_chunk,
                 source,
@@ -2207,7 +2149,7 @@ pub(super) fn run_quick_write_action_blocking(
             let copied_chunk = copied_chunk.ok_or_else(|| {
                 bedrock_world::BedrockWorldError::Validation("没有可粘贴的区块副本".to_string())
             })?;
-            paste_copied_chunk_blocking(
+            paste_copied_chunk(
                 world,
                 copied_chunk,
                 source_anchor,
@@ -2227,7 +2169,7 @@ pub(super) fn run_quick_write_action_blocking(
             let imported_structure = imported_structure.ok_or_else(|| {
                 bedrock_world::BedrockWorldError::Validation("没有可粘贴的结构文件".to_string())
             })?;
-            mcstructure::paste_imported_structure_blocking(
+            mcstructure::paste_imported_structure(
                 world,
                 imported_structure,
                 target_anchor,
@@ -2306,8 +2248,8 @@ fn quick_write_history_spec(
     })
 }
 
-pub(super) fn copy_chunks_blocking(
-    editor: &MapWorldEditor,
+pub(super) fn copy_chunks(
+    editor: &WorldEditor,
     source_anchor: ChunkPos,
     chunks: Vec<ChunkPos>,
     cancel: Option<&CancelFlag>,
@@ -2327,17 +2269,17 @@ pub(super) fn copy_chunks_blocking(
         let parsed_chunk = ::bedrock_world::scan::Chunk::new(
             chunk,
             &chunk_data.records,
-            copy_chunk_parse_options(),
+            copy_chunk_scan_options(),
         );
         let records = copy_safe_chunk_records(chunk_data.records);
         let mut block_entities = Vec::new();
         let mut hardcoded_spawn_areas = Vec::new();
         for record in parsed_chunk.records {
             match record.value {
-                bedrock_world::ChunkValue::BlockEntities(entities) => {
+                bedrock_world::scan::ChunkValue::BlockEntities(entities) => {
                     block_entities.extend(entities);
                 }
-                bedrock_world::ChunkValue::HardcodedSpawnAreas(areas) => {
+                bedrock_world::scan::ChunkValue::HardcodedSpawnAreas(areas) => {
                     hardcoded_spawn_areas.extend(areas);
                 }
                 _ => {}
@@ -2372,7 +2314,7 @@ fn check_bedrock_operation_cancelled(cancel: Option<&CancelFlag>) -> bedrock_wor
     Ok(())
 }
 
-pub(super) fn paste_copied_chunk_blocking(
+pub(super) fn paste_copied_chunk(
     world: &World,
     copied_chunk: &CopiedChunkData,
     source_anchor: ChunkPos,
@@ -2381,10 +2323,10 @@ pub(super) fn paste_copied_chunk_blocking(
     guard: &WriteGuard,
     cancel: Option<&CancelFlag>,
     progress: &mut impl FnMut(ChunkTransferProgress),
-) -> bedrock_world::Result<(String, MapEditInvalidation)> {
+) -> bedrock_world::Result<(String, EditInvalidation)> {
     check_bedrock_operation_cancelled(cancel)?;
     if !transform.is_default() {
-        return paste_transformed_copied_chunks_blocking(
+        return paste_transformed_copied_chunks(
             world,
             copied_chunk,
             source_anchor,
@@ -2421,7 +2363,7 @@ pub(super) fn paste_copied_chunk_blocking(
         let shifted_block_entities = snapshot
             .block_entities
             .iter()
-            .map(|entity| pasted_block_entity_for_target(entity, snapshot.chunk, target_chunk))
+            .map(|entity| translate_block_entity(entity, snapshot.chunk, target_chunk))
             .collect::<Vec<_>>();
         if !shifted_block_entities.is_empty() {
             active_transaction.put_block_entities(target_chunk, &shifted_block_entities)?;
@@ -2432,7 +2374,7 @@ pub(super) fn paste_copied_chunk_blocking(
             .iter()
             .cloned()
             .map(|area| {
-                pasted_hardcoded_spawn_area_for_target(
+                transform_spawn_area(
                     area,
                     snapshot.chunk,
                     target_chunk,
@@ -2470,29 +2412,29 @@ pub(super) fn paste_copied_chunk_blocking(
             "已粘贴 {} 个 chunk（{},{} -> {},{}）",
             total, source_anchor.x, source_anchor.z, target_anchor.x, target_anchor.z
         ),
-        MapEditInvalidation::chunks(affected_chunks).with_metadata(),
+        EditInvalidation::chunks(affected_chunks).with_metadata(),
     ))
 }
 
 pub(super) struct CopiedChunkStructurePlacement {
-    pub(super) structure: bedrock_world::McStructureFile,
+    pub(super) structure: bedrock_world::structure::McStructureFile,
     pub(super) source_anchor: ChunkPos,
     pub(super) target_anchor: ChunkPos,
     pub(super) origin_y: i32,
 }
 
-pub(super) fn copied_chunk_snapshot_structure_placement(
+pub(super) fn copied_chunk_structure_placement(
     snapshot: &CopiedChunk,
     target_chunk: ChunkPos,
 ) -> bedrock_world::Result<CopiedChunkStructurePlacement> {
     let (min_y, max_y) = snapshot.chunk.y_range(ChunkVersion::New);
     let height = max_y.saturating_sub(min_y).saturating_add(1);
-    let size = bedrock_world::McStructureSize::new(16, height, 16)?;
+    let size = bedrock_world::structure::McStructureSize::new(16, height, 16)?;
     let source_origin_x = snapshot.chunk.x.saturating_mul(16);
     let source_origin_z = snapshot.chunk.z.saturating_mul(16);
     let mut structure =
-        bedrock_world::McStructureFile::new_air(size, [source_origin_x, min_y, source_origin_z])?;
-    let mut palette_indices = HashMap::default();
+        bedrock_world::structure::McStructureFile::new_air(size, [source_origin_x, min_y, source_origin_z])?;
+    let mut palette_indices = FxHashMap::default();
     let air_key = mcstructure_palette_key(&structure.palette[0]);
     palette_indices.insert(air_key, 0_i32);
     let chunk = bedrock_world::LevelChunk {
@@ -2559,7 +2501,7 @@ pub(super) fn copied_chunk_snapshot_structure_placement(
     })
 }
 
-fn paste_transformed_copied_chunks_blocking(
+fn paste_transformed_copied_chunks(
     world: &World,
     copied_chunk: &CopiedChunkData,
     source_anchor: ChunkPos,
@@ -2568,7 +2510,7 @@ fn paste_transformed_copied_chunks_blocking(
     guard: &WriteGuard,
     cancel: Option<&CancelFlag>,
     progress: &mut impl FnMut(ChunkTransferProgress),
-) -> bedrock_world::Result<(String, MapEditInvalidation)> {
+) -> bedrock_world::Result<(String, EditInvalidation)> {
     const PREPARE_BATCH_SIZE: usize = 4;
     check_bedrock_operation_cancelled(cancel)?;
     let targets = pasted_chunk_targets(copied_chunk, source_anchor, target_anchor, transform);
@@ -2583,7 +2525,7 @@ fn paste_transformed_copied_chunks_blocking(
             .par_iter()
             .zip(target_batch.par_iter().copied())
             .map(|(snapshot, target_chunk)| {
-                copied_chunk_snapshot_structure_placement(snapshot, target_chunk)
+                copied_chunk_structure_placement(snapshot, target_chunk)
             })
             .collect::<bedrock_world::Result<Vec<_>>>()?;
 
@@ -2603,7 +2545,7 @@ fn paste_transformed_copied_chunks_blocking(
             )?;
             let result = structure_placement.structure.write_to_world(
                 world,
-                bedrock_world::McStructurePlacement {
+                bedrock_world::structure::McStructurePlacement {
                     source_anchor: structure_placement.source_anchor,
                     target_anchor: structure_placement.target_anchor,
                     origin_y: structure_placement.origin_y,
@@ -2615,8 +2557,8 @@ fn paste_transformed_copied_chunks_blocking(
                 |write_progress| {
                     progress(ChunkTransferProgress {
                         phase: SharedString::from(match write_progress.phase {
-                            bedrock_world::McStructureWritePhase::Prepare => "准备变换区块",
-                            bedrock_world::McStructureWritePhase::WriteChunks => "写入变换区块",
+                            bedrock_world::editor::McStructureWritePhase::Prepare => "准备变换区块",
+                            bedrock_world::editor::McStructureWritePhase::WriteChunks => "写入变换区块",
                         }),
                         completed: write_progress.completed,
                         total: write_progress.total,
@@ -2629,7 +2571,7 @@ fn paste_transformed_copied_chunks_blocking(
                 .iter()
                 .cloned()
                 .map(|area| {
-                    pasted_hardcoded_spawn_area_for_target(
+                    transform_spawn_area(
                         area,
                         snapshot.chunk,
                         target_chunk,
@@ -2662,18 +2604,18 @@ fn paste_transformed_copied_chunks_blocking(
             target_anchor.z,
             transform.label()
         ),
-        MapEditInvalidation::chunks(affected_chunks).with_metadata(),
+        EditInvalidation::chunks(affected_chunks).with_metadata(),
     ))
 }
 
 const fn mcstructure_rotation_for_paste(
     rotation: PasteRotation,
-) -> bedrock_world::McStructureRotation {
+) -> bedrock_world::structure::McStructureRotation {
     match rotation {
-        PasteRotation::NoRotation => bedrock_world::McStructureRotation::None,
-        PasteRotation::Clockwise90 => bedrock_world::McStructureRotation::Clockwise90,
-        PasteRotation::Rotate180 => bedrock_world::McStructureRotation::Rotate180,
-        PasteRotation::CounterClockwise90 => bedrock_world::McStructureRotation::CounterClockwise90,
+        PasteRotation::NoRotation => bedrock_world::structure::McStructureRotation::None,
+        PasteRotation::Clockwise90 => bedrock_world::structure::McStructureRotation::Clockwise90,
+        PasteRotation::Rotate180 => bedrock_world::structure::McStructureRotation::Rotate180,
+        PasteRotation::CounterClockwise90 => bedrock_world::structure::McStructureRotation::CounterClockwise90,
     }
 }
 
@@ -2698,22 +2640,22 @@ fn copied_chunk_decoded_subchunks(
 
 fn copied_chunk_structure_primary_entry_at(
     subchunks: &BTreeMap<i8, bedrock_world::SubChunk>,
-    legacy_terrain: Option<&bedrock_world::LegacyTerrain>,
+    legacy_terrain: Option<&bedrock_world::chunk::LegacyTerrain>,
     local_x: u8,
     world_y: i32,
     local_z: u8,
-) -> bedrock_world::Result<Option<bedrock_world::McStructurePaletteEntry>> {
+) -> bedrock_world::Result<Option<bedrock_world::structure::McStructurePaletteEntry>> {
     let (subchunk_y, local_y) = copied_chunk_structure_subchunk_coords(world_y)?;
     if let Some(state) = subchunks.get(&subchunk_y).and_then(|subchunk| {
         copied_chunk_subchunk_layer_state_at(subchunk, 0, local_x, local_y, local_z)
     }) {
         return Ok(Some(
-            bedrock_world::McStructurePaletteEntry::from_block_state(state),
+            bedrock_world::structure::McStructurePaletteEntry::from_block_state(state),
         ));
     }
     Ok(legacy_terrain
         .and_then(|terrain| copied_chunk_legacy_block_state_at(terrain, local_x, world_y, local_z))
-        .map(|state| bedrock_world::McStructurePaletteEntry::from_block_state(&state)))
+        .map(|state| bedrock_world::structure::McStructurePaletteEntry::from_block_state(&state)))
 }
 
 fn copied_chunk_structure_secondary_entry_at(
@@ -2721,7 +2663,7 @@ fn copied_chunk_structure_secondary_entry_at(
     local_x: u8,
     world_y: i32,
     local_z: u8,
-) -> bedrock_world::Result<Option<bedrock_world::McStructurePaletteEntry>> {
+) -> bedrock_world::Result<Option<bedrock_world::structure::McStructurePaletteEntry>> {
     let (subchunk_y, local_y) = copied_chunk_structure_subchunk_coords(world_y)?;
     Ok(subchunks
         .get(&subchunk_y)
@@ -2729,7 +2671,7 @@ fn copied_chunk_structure_secondary_entry_at(
             copied_chunk_subchunk_layer_state_at(subchunk, 1, local_x, local_y, local_z)
         })
         .filter(|state| !copied_chunk_is_air_block_state_name(&state.name))
-        .map(bedrock_world::McStructurePaletteEntry::from_block_state))
+        .map(bedrock_world::structure::McStructurePaletteEntry::from_block_state))
 }
 
 fn copied_chunk_structure_subchunk_coords(world_y: i32) -> bedrock_world::Result<(i8, u8)> {
@@ -2762,7 +2704,7 @@ fn copied_chunk_subchunk_layer_state_at(
 }
 
 fn copied_chunk_legacy_block_state_at(
-    terrain: &bedrock_world::LegacyTerrain,
+    terrain: &bedrock_world::chunk::LegacyTerrain,
     local_x: u8,
     world_y: i32,
     local_z: u8,
@@ -2799,9 +2741,9 @@ fn copied_chunk_is_air_block_state_name(name: &str) -> bool {
 }
 
 fn mcstructure_palette_index(
-    structure: &mut bedrock_world::McStructureFile,
-    palette_indices: &mut HashMap<String, i32>,
-    entry: bedrock_world::McStructurePaletteEntry,
+    structure: &mut bedrock_world::structure::McStructureFile,
+    palette_indices: &mut FxHashMap<String, i32>,
+    entry: bedrock_world::structure::McStructurePaletteEntry,
 ) -> bedrock_world::Result<i32> {
     let palette_key = mcstructure_palette_key(&entry);
     if let Some(index) = palette_indices.get(&palette_key) {
@@ -2815,7 +2757,7 @@ fn mcstructure_palette_index(
     Ok(index)
 }
 
-fn mcstructure_palette_key(entry: &bedrock_world::McStructurePaletteEntry) -> String {
+fn mcstructure_palette_key(entry: &bedrock_world::structure::McStructurePaletteEntry) -> String {
     let states = entry
         .states
         .iter()
@@ -2826,7 +2768,7 @@ fn mcstructure_palette_key(entry: &bedrock_world::McStructurePaletteEntry) -> St
 }
 
 fn insert_copied_block_entity_into_structure(
-    structure: &mut bedrock_world::McStructureFile,
+    structure: &mut bedrock_world::structure::McStructureFile,
     entity: &BlockEntity,
     source_origin_x: i32,
     origin_y: i32,
@@ -2852,7 +2794,7 @@ fn insert_copied_block_entity_into_structure(
     Ok(())
 }
 
-pub(super) fn pasted_block_entity_for_target(
+pub(super) fn translate_block_entity(
     entity: &BlockEntity,
     source_chunk: ChunkPos,
     target_chunk: ChunkPos,
@@ -2871,7 +2813,7 @@ pub(super) fn pasted_block_entity_for_target(
     pasted
 }
 
-pub(super) fn pasted_hardcoded_spawn_area_for_target(
+pub(super) fn transform_spawn_area(
     area: HardcodedSpawnArea,
     source_chunk: ChunkPos,
     target_chunk: ChunkPos,
@@ -2983,7 +2925,6 @@ pub(super) fn chunk_record_tag_is_copy_safe(tag: ChunkRecordTag) -> bool {
             | ChunkRecordTag::BlendingData
             | ChunkRecordTag::Version
             | ChunkRecordTag::VersionOld
-            | ChunkRecordTag::LegacyVersion
     )
 }
 
@@ -2994,9 +2935,9 @@ pub(super) fn copy_safe_chunk_records(records: Vec<ChunkRecord>) -> Vec<ChunkRec
         .collect()
 }
 
-fn copy_chunk_parse_options() -> bedrock_world::ScanOptions {
-    bedrock_world::ScanOptions {
-        categories: bedrock_world::ScanCategories {
+fn copy_chunk_scan_options() -> bedrock_world::scan::ScanOptions {
+    bedrock_world::scan::ScanOptions {
+        categories: bedrock_world::scan::ScanCategories {
             chunks: true,
             players: false,
             actors: false,
@@ -3004,13 +2945,13 @@ fn copy_chunk_parse_options() -> bedrock_world::ScanOptions {
             villages: false,
             globals: false,
         },
-        retention: bedrock_world::RetentionMode::Structured,
+        retention: bedrock_world::scan::RetentionMode::Structured,
         subchunk_decode_mode: bedrock_world::SubChunkDecodeMode::CountsOnly,
-        actor_resolution: bedrock_world::ActorResolution::None,
+        actor_resolution: bedrock_world::scan::ActorResolution::None,
     }
 }
 
-pub(super) fn delete_chunk_record_with_guard(
+pub(super) fn delete_chunk_record(
     world: &World,
     chunk: ChunkPos,
     tag: ChunkRecordTag,
@@ -3020,7 +2961,7 @@ pub(super) fn delete_chunk_record_with_guard(
     world.delete_raw(&key)
 }
 
-pub(super) fn clear_chunks_blocking(
+pub(super) fn clear_chunks(
     world: &World,
     bounds: SlimeChunkBounds,
     guard: &WriteGuard,
@@ -3034,14 +2975,14 @@ pub(super) fn clear_chunks_blocking(
                 z: chunk_z,
                 dimension: bounds.dimension,
             };
-            clear_chunk_blocking(world, chunk, guard)?;
+            clear_chunk(world, chunk, guard)?;
             cleared = cleared.saturating_add(1);
         }
     }
     Ok(cleared)
 }
 
-fn clear_chunk_blocking(
+fn clear_chunk(
     world: &World,
     chunk: ChunkPos,
     _guard: &WriteGuard,
@@ -3165,17 +3106,8 @@ pub(super) fn actor_source_label(source: &ActorSource) -> String {
 
 pub(super) fn global_kind_label(kind: &GlobalRecordKind) -> String {
     match kind {
-        GlobalRecordKind::MobEvents => "mobevents".to_string(),
         GlobalRecordKind::Dimension(dimension) => dimension_label(*dimension),
-        GlobalRecordKind::Scoreboard => "scoreboard".to_string(),
-        GlobalRecordKind::LocalPlayer => "LocalPlayer".to_string(),
-        GlobalRecordKind::AutonomousEntities => "autonomousentities".to_string(),
-        GlobalRecordKind::BiomeData => "BiomeData".to_string(),
-        GlobalRecordKind::LevelChunkMetaDataDictionary => {
-            "LevelChunkMetaDataDictionary".to_string()
-        }
-        GlobalRecordKind::WorldClocks => "WorldClocks".to_string(),
-        GlobalRecordKind::Other(name) => name.clone(),
+        _ => kind.name(),
     }
 }
 

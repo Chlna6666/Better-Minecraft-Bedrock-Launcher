@@ -3,12 +3,11 @@ use super::mesh::{
     skin_preview_scene_view,
 };
 use super::selector::{
-    render_current_preview, render_skin_selector, skin_selector_page_count,
-    skin_selector_page_for_index,
+    page_count, page_for_index, render_current_preview, render_skin_selector,
 };
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::path::Path;
@@ -103,7 +102,7 @@ impl SkinPreviewWindowView {
             }),
         ];
         let selected_index = init.selected_index.min(init.skins.len().saturating_sub(1));
-        let selector_page = skin_selector_page_for_index(selected_index);
+        let selector_page = page_for_index(selected_index);
         let mut this = Self {
             title: init.title,
             skins: init.skins,
@@ -189,8 +188,8 @@ impl SkinPreviewWindowView {
     fn theme_colors(&self, now: Instant, cx: &App) -> ThemeColors {
         let theme = cx.global::<ThemeState>();
         lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme.factor(now),
             theme.accent,
         )
@@ -220,7 +219,7 @@ impl SkinPreviewWindowView {
         }
 
         self.selected_index = index;
-        self.selector_page = skin_selector_page_for_index(index);
+        self.selector_page = page_for_index(index);
         self.walk_started_at = Instant::now();
         self.load_mesh(cx);
     }
@@ -279,13 +278,13 @@ impl SkinPreviewWindowView {
     }
 
     pub(super) fn toggle_selector_expanded(&mut self, cx: &mut Context<Self>) {
-        self.selector_page = skin_selector_page_for_index(self.selected_index);
+        self.selector_page = page_for_index(self.selected_index);
         self.selector_expanded = !self.selector_expanded;
         cx.notify();
     }
 
     pub(super) fn select_previous_selector_page(&mut self, cx: &mut Context<Self>) {
-        let page_count = skin_selector_page_count(self.skins.len());
+        let page_count = page_count(self.skins.len());
         if page_count < 2 {
             return;
         }
@@ -298,7 +297,7 @@ impl SkinPreviewWindowView {
     }
 
     pub(super) fn select_next_selector_page(&mut self, cx: &mut Context<Self>) {
-        let page_count = skin_selector_page_count(self.skins.len());
+        let page_count = page_count(self.skins.len());
         if page_count < 2 {
             return;
         }
@@ -402,7 +401,7 @@ impl SkinPreviewWindowView {
                     .overflow_hidden()
                     .bg(colors.surface)
                     .cursor_pointer()
-                    .child(gpui_3d::scene_view(scene_view))
+                    .child(gpui_3d::scene_view::element(scene_view))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, _window, cx| {

@@ -1,7 +1,7 @@
 use super::*;
 use crate::ui::components::button::{ghost_button, primary_button, secondary_button};
 
-impl MapViewerWindowView {
+impl View {
     /// One action bar for all map-image destinations. Selection is kept next to
     /// the result instead of hidden below a long options form.
     pub(in super::super) fn render_map_import_actions(
@@ -183,7 +183,7 @@ impl MapViewerWindowView {
                     ]
                     .into_iter()
                     .map(|(destination, label)| {
-                        generator_choice(colors, label, selected == destination).when(
+                        choice::chip(colors, label, selected == destination).when(
                             !busy,
                             |button| {
                                 button.on_mouse_down(

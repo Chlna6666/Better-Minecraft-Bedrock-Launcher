@@ -1,6 +1,6 @@
 //! Selected filled-map preview in the player item inspector.
 
-use super::model::MapViewerWindowView;
+use super::model::View;
 use super::prelude::*;
 use ::bedrock_world::map_item::{MapItemId, filled_map_id};
 
@@ -23,7 +23,7 @@ enum MapPixelsLookup {
     Invalid,
 }
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn clear_player_map_preview(&mut self, cx: &mut Context<Self>) {
         self.player_workspace.map_preview_generation = self
             .player_workspace

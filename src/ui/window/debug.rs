@@ -1,6 +1,6 @@
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use gpui::*;
 
 pub mod devtools;
@@ -24,8 +24,11 @@ impl DebugView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let inner = cx.new(|cx| view::DebugView::new(window, cx));
         let i18n_subscription = cx.observe_global::<I18n>(|_this, cx| cx.notify());
-        cx.on_release(|_, cx| {
-            apply_main_window_visual_debug(false, false, false, cx);
+        cx.on_release(|this, cx| {
+            this.flash_surface_updates = false;
+            this.show_layout_bounds = false;
+            this.show_element_updates = false;
+            this.apply_to_main_window(cx);
         })
         .detach();
 
@@ -37,6 +40,25 @@ impl DebugView {
             show_element_updates: false,
         }
     }
+
+    fn apply_to_main_window(&self, cx: &mut App) {
+        let main_window_id = cx.read_global(|debug: &DebugState, _cx| debug.main_window_id);
+        let Some(main_window) = devtools::find_window_by_id(main_window_id, cx) else {
+            return;
+        };
+
+        let _ = main_window.update(cx, |_root, window, cx| {
+            window.set_debug_visualization(
+                WindowDebugVisualization {
+                    frame_time_overlay: DebugFrameOverlayMode::Hidden,
+                    flash_surface_updates: self.flash_surface_updates,
+                    show_layout_bounds: self.show_layout_bounds,
+                    show_element_updates: self.show_element_updates,
+                },
+                cx,
+            );
+        });
+    }
 }
 
 impl Render for DebugView {
@@ -44,8 +66,8 @@ impl Render for DebugView {
         let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme.factor(now),
             theme.accent,
         );
@@ -55,7 +77,7 @@ impl Render for DebugView {
         let flash_enabled = self.flash_surface_updates;
         let layout_enabled = self.show_layout_bounds;
         let element_updates_enabled = self.show_element_updates;
-        let flash_toggle = debug_toggle(
+        let flash_toggle = toggle(
             "debug-flash-surface-updates",
             copy.flash_surface_updates,
             copy.flash_surface_updates_desc,
@@ -66,17 +88,12 @@ impl Render for DebugView {
             MouseButton::Left,
             cx.listener(|this, _, _, cx| {
                 this.flash_surface_updates = !this.flash_surface_updates;
-                apply_main_window_visual_debug(
-                    this.flash_surface_updates,
-                    this.show_layout_bounds,
-                    this.show_element_updates,
-                    cx,
-                );
+                this.apply_to_main_window(cx);
                 cx.notify();
             }),
         );
 
-        let layout_toggle = debug_toggle(
+        let layout_toggle = toggle(
             "debug-show-layout-bounds",
             copy.show_layout_bounds,
             copy.show_layout_bounds_desc,
@@ -87,17 +104,12 @@ impl Render for DebugView {
             MouseButton::Left,
             cx.listener(|this, _, _, cx| {
                 this.show_layout_bounds = !this.show_layout_bounds;
-                apply_main_window_visual_debug(
-                    this.flash_surface_updates,
-                    this.show_layout_bounds,
-                    this.show_element_updates,
-                    cx,
-                );
+                this.apply_to_main_window(cx);
                 cx.notify();
             }),
         );
 
-        let element_updates_toggle = debug_toggle(
+        let element_updates_toggle = toggle(
             "debug-show-element-updates",
             copy.show_element_updates,
             copy.show_element_updates_desc,
@@ -108,12 +120,7 @@ impl Render for DebugView {
             MouseButton::Left,
             cx.listener(|this, _, _, cx| {
                 this.show_element_updates = !this.show_element_updates;
-                apply_main_window_visual_debug(
-                    this.flash_surface_updates,
-                    this.show_layout_bounds,
-                    this.show_element_updates,
-                    cx,
-                );
+                this.apply_to_main_window(cx);
                 cx.notify();
             }),
         );
@@ -196,31 +203,7 @@ impl Render for DebugView {
     }
 }
 
-fn apply_main_window_visual_debug(
-    flash_surface_updates: bool,
-    show_layout_bounds: bool,
-    show_element_updates: bool,
-    cx: &mut App,
-) {
-    let main_window_id = cx.read_global(|debug: &DebugState, _cx| debug.main_window_id);
-    let Some(main_window) = devtools::find_window_by_id(main_window_id, cx) else {
-        return;
-    };
-
-    let _ = main_window.update(cx, |_root, window, cx| {
-        window.set_debug_visualization(
-            WindowDebugVisualization {
-                frame_time_overlay: DebugFrameOverlayMode::Hidden,
-                flash_surface_updates,
-                show_layout_bounds,
-                show_element_updates,
-            },
-            cx,
-        );
-    });
-}
-
-fn debug_toggle(
+fn toggle(
     id: &'static str,
     label: impl Into<SharedString>,
     description: impl Into<SharedString>,

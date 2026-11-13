@@ -1,9 +1,10 @@
+use super::editor::supports_editor_save;
 use super::model::*;
 use super::panels::*;
 use super::prelude::*;
 use crate::ui::components::icon::themed_icon;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn render_right_dock(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         div()
             .w(px(self.ui_state.right_panel_width))
@@ -21,17 +22,14 @@ impl MapViewerWindowView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, _window, cx| {
-                    this.cancel_pointer_captures_for_panel_interaction("right dock mouse down", cx);
+                    this.cancel_pointer_captures("right dock mouse down", cx);
                     cx.stop_propagation();
                 }),
             )
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, _event, _window, cx| {
-                    this.cancel_pointer_captures_for_panel_interaction(
-                        "right dock right mouse down",
-                        cx,
-                    );
+                    this.cancel_pointer_captures("right dock right mouse down", cx);
                     cx.stop_propagation();
                 }),
             )
@@ -42,11 +40,9 @@ impl MapViewerWindowView {
                 MapViewerRightPanel::Preview3d => {
                     self.render_preview_3d_panel(colors, cx).into_any_element()
                 }
-                MapViewerRightPanel::Generator => self.render_generator_panel(colors, cx),
-                MapViewerRightPanel::ImageGenerator => {
-                    self.render_image_generator_panel(colors, cx)
-                }
-                MapViewerRightPanel::MapImage => self.render_map_image_panel(colors, cx),
+                MapViewerRightPanel::Generator => self.generator_panel(colors, cx),
+                MapViewerRightPanel::ImageGenerator => self.image_generator_panel(colors, cx),
+                MapViewerRightPanel::MapImage => self.map_image_panel(colors, cx),
             })
     }
 
@@ -65,6 +61,12 @@ impl MapViewerWindowView {
         } else {
             self.editor_document.title.clone()
         };
+        let can_save = self
+            .professional
+            .detail
+            .as_ref()
+            .and_then(ProfessionalDetail::edit_target)
+            .is_some_and(|target| supports_editor_save(&target));
         div()
             .size_full()
             .min_w(px(0.0))
@@ -99,47 +101,49 @@ impl MapViewerWindowView {
                         MouseButton::Left,
                         cx.listener(|this, _event, _window, cx| this.close_right_panel(cx)),
                     ))
-                    .child(
-                        div()
-                            .id("nbt-save")
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .px(px(10.0))
-                            .py(px(6.0))
-                            .rounded(px(crate::ui::theme::tokens::radius::MD))
-                            .border_1()
-                            .border_color(Hsla {
-                                a: CHROME_HAIRLINE_ALPHA,
-                                ..colors.border
-                            })
-                            .bg(Hsla {
-                                a: CHROME_ELEVATED_ALPHA,
-                                ..colors.surface_hover
-                            })
-                            .hover(|style| {
-                                style.bg(Hsla {
-                                    a: CHROME_ELEVATED_ALPHA + 0.15,
+                    .when(can_save, |header| {
+                        header.child(
+                            div()
+                                .id("nbt-save")
+                                .flex()
+                                .items_center()
+                                .gap(px(5.0))
+                                .px(px(10.0))
+                                .py(px(6.0))
+                                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                                .border_1()
+                                .border_color(Hsla {
+                                    a: CHROME_HAIRLINE_ALPHA,
+                                    ..colors.border
+                                })
+                                .bg(Hsla {
+                                    a: CHROME_ELEVATED_ALPHA,
                                     ..colors.surface_hover
                                 })
-                            })
-                            .cursor_pointer()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(colors.text_primary)
-                            .child(themed_icon(
-                                lucide_gpui::icon!(save),
-                                CHROME_TAB_ICON_SIZE,
-                                colors.text_primary,
-                            ))
-                            .child(t!("common.save"))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.request_editor_save(cx)
-                                }),
-                            ),
-                    ),
+                                .hover(|style| {
+                                    style.bg(Hsla {
+                                        a: CHROME_ELEVATED_ALPHA + 0.15,
+                                        ..colors.surface_hover
+                                    })
+                                })
+                                .cursor_pointer()
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(colors.text_primary)
+                                .child(themed_icon(
+                                    lucide_gpui::icon!(save),
+                                    CHROME_TAB_ICON_SIZE,
+                                    colors.text_primary,
+                                ))
+                                .child(t!("common.save"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _event, _window, cx| {
+                                        this.request_editor_save(cx)
+                                    }),
+                                ),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -150,17 +154,14 @@ impl MapViewerWindowView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, _window, cx| {
-                            this.cancel_pointer_captures_for_panel_interaction(
-                                "code editor wrapper mouse down",
-                                cx,
-                            );
+                            this.cancel_pointer_captures("code editor wrapper mouse down", cx);
                             cx.stop_propagation();
                         }),
                     )
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(|this, _event, _window, cx| {
-                            this.cancel_pointer_captures_for_panel_interaction(
+                            this.cancel_pointer_captures(
                                 "code editor wrapper right mouse down",
                                 cx,
                             );

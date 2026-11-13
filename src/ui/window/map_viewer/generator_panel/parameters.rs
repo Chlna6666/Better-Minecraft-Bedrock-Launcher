@@ -1,6 +1,6 @@
 use super::*;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn render_obj_parameters(
         &self,
         colors: &ThemeColors,
@@ -8,7 +8,7 @@ impl MapViewerWindowView {
     ) -> Div {
         let busy = self.generator_busy();
         div().flex().flex_col().gap(px(14.0))
-                    .child(generator_section_title(colors, "目标尺寸"))
+                    .child(inspector::section_title(colors, "目标尺寸"))
                     .child(self.render_generator_y_control(colors, cx))
                     .child(
                         div()
@@ -105,7 +105,7 @@ impl MapViewerWindowView {
                             .child(div().flex_1())
                             .children(
                                 [16_u16, 64, 128, 256].into_iter().map(|size| {
-                                    generator_choice(
+                                    choice::chip(
                                         colors,
                                         format!("{size}"),
                                         self.generator.options.longest_side_blocks == size,
@@ -121,13 +121,13 @@ impl MapViewerWindowView {
                                 }),
                             ),
                     )
-                    .child(generator_section_title(colors, "填充方式"))
+                    .child(inspector::section_title(colors, "填充方式"))
                     .child(
                         div()
                             .flex()
                             .gap(px(6.0))
                             .child(
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     "空心 · 仅表面",
                                     self.generator.options.fill == ObjFill::Surface,
@@ -144,7 +144,7 @@ impl MapViewerWindowView {
                                 }),
                             )
                             .child(
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     "实心 · 填内部",
                                     self.generator.options.fill == ObjFill::Solid,
@@ -168,7 +168,7 @@ impl MapViewerWindowView {
                             .text_color(colors.text_secondary)
                             .child("实心模式填充封闭外壳；开放模型不会凭空补面。默认空心。"),
                     )
-                    .child(generator_section_title(colors, "纹理透明度"))
+                    .child(inspector::section_title(colors, "纹理透明度"))
                     .child(
                         div().flex().flex_wrap().gap(px(6.0)).children(
                             [
@@ -178,7 +178,7 @@ impl MapViewerWindowView {
                             ]
                             .into_iter()
                             .map(|(alpha, label)| {
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     label,
                                     self.generator.options.alpha_threshold == alpha,
@@ -196,7 +196,7 @@ impl MapViewerWindowView {
                             }),
                         ),
                     )
-                    .child(generator_section_title(colors, "半透明纹理底色"))
+                    .child(inspector::section_title(colors, "半透明纹理底色"))
                     .child(
                         div().flex().flex_wrap().gap(px(6.0)).children(
                             [
@@ -206,7 +206,7 @@ impl MapViewerWindowView {
                             ]
                             .into_iter()
                             .map(|(background, label)| {
-                                generator_choice(
+                                choice::chip(
                                     colors,
                                     label,
                                     self.generator.options.background == background,

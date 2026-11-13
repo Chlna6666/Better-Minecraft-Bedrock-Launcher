@@ -3,8 +3,8 @@ use super::model::*;
 use super::panels::*;
 use super::prelude::*;
 
-impl MapViewerWindowView {
-    pub(super) fn render_professional_detail_panel(
+impl View {
+    pub(super) fn render_detail_panel(
         &self,
         colors: &ThemeColors,
         detail: &ProfessionalDetail,
@@ -45,7 +45,7 @@ impl MapViewerWindowView {
             })
             .when_some(detail.edit_target(), |this, target| {
                 this.child(div().flex().items_center().gap(px(8.0)).children(
-                    editor_action_buttons(
+                    action_buttons(
                         colors,
                         target,
                         self.professional.pending_edit_confirmation.as_ref(),

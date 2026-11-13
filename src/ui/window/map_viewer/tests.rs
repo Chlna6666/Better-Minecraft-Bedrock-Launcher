@@ -14,10 +14,10 @@ use super::query_cache::*;
 use super::selection::{RightSelectionIntent, SelectionResizeHandle};
 use super::slime_scan_dialog::*;
 use super::tile_cache::*;
-use super::tile_plan::*;
+use super::viewport_tiles::*;
 use super::tile_render::*;
 use super::tile_state::*;
-use super::view::{MapLayerKind, map_render_layer_order, map_viewer_window_size_for_display};
+use super::view::{MapLayerKind, map_render_layer_order, window_size_for_display};
 use super::viewport::*;
 
 #[::core::prelude::v1::test]
@@ -125,7 +125,7 @@ fn decoded_rgba_tile_wraps_without_channel_swap() {
         pixel_format: TilePixelFormat::Rgba8,
     };
     let (image, _pixel_format, _width, _height, estimated_bytes) =
-        render_image_from_decoded_tile_parts(
+        tile_image(
             tile.width,
             tile.height,
             tile.pixel_format,
@@ -154,7 +154,7 @@ fn decoded_shared_rgba_tile_reuses_pixel_storage() {
     };
 
     let (image, _pixel_format, _width, _height, estimated_bytes) =
-        render_image_from_decoded_tile_parts(
+        tile_image(
             tile.width,
             tile.height,
             tile.pixel_format,
@@ -196,10 +196,10 @@ fn empty_viewport_composite_frame_is_transparent_rgba() {
 #[::core::prelude::v1::test]
 fn viewport_composite_owns_the_foreground_map_layer() {
     assert!(VIEWPORT_COMPOSITE_ENABLED);
-    assert!(!viewport_composite_owns_viewport(false, false, false));
-    assert!(viewport_composite_owns_viewport(false, true, false));
-    assert!(viewport_composite_owns_viewport(false, false, true));
-    assert!(!viewport_composite_owns_viewport(true, true, true));
+    assert!(!viewport_composite_owns_viewport(false, false));
+    assert!(viewport_composite_owns_viewport(true, false));
+    assert!(viewport_composite_owns_viewport(false, true));
+    assert!(viewport_composite_owns_viewport(true, true));
 }
 
 #[::core::prelude::v1::test]
@@ -248,7 +248,7 @@ fn screen_image_bounds_tracks_current_viewport_drag() {
 #[::core::prelude::v1::test]
 fn viewport_composite_overscan_covers_bounded_drag() {
     let viewport = MapViewport::new(size(px(1000.0), px(600.0)));
-    let source_viewport = viewport_with_composite_overscan(viewport);
+    let source_viewport = with_composite_overscan(viewport);
     let overscan_x = source_viewport.offset_x - viewport.offset_x;
     let overscan_y = source_viewport.offset_y - viewport.offset_y;
 
@@ -266,10 +266,10 @@ fn viewport_composite_overscan_covers_bounded_drag() {
 
 #[::core::prelude::v1::test]
 fn viewport_composite_cancel_error_is_control_flow() {
-    assert!(viewport_composite_error_is_cancelled(
+    assert!(composite_error_is_cancelled(
         "视口合成失败: render was cancelled"
     ));
-    assert!(!viewport_composite_error_is_cancelled(
+    assert!(!composite_error_is_cancelled(
         "视口合成失败: LevelDB checksum mismatch"
     ));
 }
@@ -358,15 +358,15 @@ fn chunk_transfer_task_progress_sync_resets_on_phase_change() {
 
 #[::core::prelude::v1::test]
 fn interactive_render_defaults_request_gpu_with_cpu_fallback() {
-    assert_eq!(default_interactive_render_backend(), RenderBackend::Auto);
+    assert_eq!(default_render_backend(), RenderBackend::Auto);
     assert_eq!(
-        default_interactive_render_gpu_backend(),
+        default_gpu_backend(),
         RenderGpuBackend::Auto
     );
 
     let options = interactive_render_options(
-        default_interactive_render_backend(),
-        default_interactive_render_gpu_backend(),
+        default_render_backend(),
+        default_gpu_backend(),
         RenderCpuBudget::default(),
         RenderTilePriority::RowMajor,
         RenderCancelFlag::new(),
@@ -457,8 +457,7 @@ fn visible_tile_bounds_do_not_use_partial_manifest_bounds() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(0.0, 0.0, 4160.0, 4160.0);
     let range = tile_render_range(viewport, layout).expect("render range");
-    let bounds =
-        render_range_tile_bounds(range, viewport.center_tile(layout)).expect("bounds");
+    let bounds = render_range_tile_bounds(range, viewport.center_tile(layout)).expect("bounds");
     let partial_manifest_bounds = ChunkBounds {
         dimension: Dimension::Overworld,
         min_chunk_x: 0,
@@ -495,8 +494,7 @@ fn precise_visible_tile_bounds_do_not_include_chunk_alignment_padding() {
     let center = viewport.center_tile(layout);
     let range = tile_render_range(viewport, layout).expect("render range");
     let coarse_bounds = render_range_tile_bounds(range, center).expect("coarse bounds");
-    let precise_bounds =
-        visible_tile_bounds(viewport, layout, center).expect("precise bounds");
+    let precise_bounds = visible_tile_bounds(viewport, layout, center).expect("precise bounds");
 
     assert_eq!(
         coarse_bounds,
@@ -554,9 +552,9 @@ fn low_zoom_paint_bounds_remain_span_limited_when_visible_bounds_are_large() {
     let center = viewport.center_tile(layout);
     let visible = visible_tile_bounds(viewport, layout, center).expect("visible");
     let paint_bounds =
-        paint_tile_bounds(viewport, layout, DRAG_RETAIN_RADIUS).expect("paint bounds");
+        paint_tile_bounds(viewport, layout, INTERACTION_RETAIN_RADIUS).expect("paint bounds");
 
-    assert!(tile_bounds_area(paint_bounds) < tile_bounds_area(visible.expand(DRAG_RETAIN_RADIUS)));
+    assert!(tile_bounds_area(paint_bounds) < tile_bounds_area(visible.expand(INTERACTION_RETAIN_RADIUS)));
     assert!(tile_bounds_contains(paint_bounds, center));
 }
 
@@ -570,11 +568,11 @@ fn low_zoom_paint_bounds_are_not_capped_by_canvas_image_limit() {
     let canvas_budget = canvas_tile_image_budget(viewport, layout);
 
     let paint_bounds =
-        paint_tile_bounds(viewport, layout, DRAG_RETAIN_RADIUS).expect("paint bounds");
-    let retained = retained_tile_filter_for_viewport(viewport, layout, true).expect("retained");
+        paint_tile_bounds(viewport, layout, INTERACTION_RETAIN_RADIUS).expect("paint bounds");
+    let retained = retained_filter(viewport, layout, INTERACTION_RETAIN_RADIUS).expect("retained");
 
     assert_eq!(canvas_budget, usize::MAX);
-    assert_eq!(paint_bounds, visible.expand(DRAG_RETAIN_RADIUS));
+    assert_eq!(paint_bounds, visible.expand(INTERACTION_RETAIN_RADIUS));
     assert!(tile_bounds_contains(paint_bounds, center));
     assert!(retained.contains(center));
 }
@@ -846,7 +844,7 @@ fn retained_tile_filter_matches_circular_retain_tiles() {
     viewport.scale = 0.75;
     let center = viewport.center_tile(layout);
     let visible = visible_tile_bounds(viewport, layout, center).expect("visible");
-    let mut expanded = visible.expand(DRAG_RETAIN_RADIUS);
+    let mut expanded = visible.expand(INTERACTION_RETAIN_RADIUS);
     clamp_tile_span(&mut expanded.min_x, &mut expanded.max_x, center.0);
     clamp_tile_span(&mut expanded.min_z, &mut expanded.max_z, center.1);
     let mut retained_bounds = expanded;
@@ -856,9 +854,9 @@ fn retained_tile_filter_matches_circular_retain_tiles() {
     } else {
         clamp_tile_count(&mut retained_bounds, center, max_tiles);
     }
-    let radius_squared =
-        i64::from(DRAG_RETAIN_RADIUS).saturating_mul(i64::from(DRAG_RETAIN_RADIUS));
-    let filter = retained_tile_filter_for_viewport(viewport, layout, true).expect("filter");
+    let radius_squared = i64::from(INTERACTION_RETAIN_RADIUS)
+        .saturating_mul(i64::from(INTERACTION_RETAIN_RADIUS));
+    let filter = retained_filter(viewport, layout, INTERACTION_RETAIN_RADIUS).expect("filter");
 
     for z in expanded.min_z..=expanded.max_z {
         for x in expanded.min_x..=expanded.max_x {
@@ -1242,7 +1240,7 @@ fn block_screen_position_matches_negative_block_math() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(17.0, -23.0, 300.0, 240.0);
     let (screen_x, screen_y) =
-        viewport_screen_position(viewport, layout, -17, -33).expect("screen position");
+        screen_position(viewport, layout, -17, -33).expect("screen position");
 
     assert_eq!(
         screen_x,
@@ -1633,30 +1631,30 @@ fn slime_farm_player_scope_is_bounded_and_uses_floor_for_negative_coordinates() 
 }
 
 #[::core::prelude::v1::test]
-fn slime_farm_advanced_scan_presets_are_bounded() {
-    assert_eq!(SlimeFarmAdvancedScanPreset::Nearby.radius_blocks(), 1_024);
+fn advanced_slime_scan_presets_are_bounded() {
+    assert_eq!(AdvancedSlimeScanPreset::Nearby.radius_blocks(), 1_024);
     assert_eq!(
-        SlimeFarmAdvancedScanPreset::Nearby.query_chunk_count(),
+        AdvancedSlimeScanPreset::Nearby.query_chunk_count(),
         16_641
     );
     assert_eq!(
-        SlimeFarmAdvancedScanPreset::Regional.query_chunk_count(),
+        AdvancedSlimeScanPreset::Regional.query_chunk_count(),
         66_049
     );
     assert_eq!(
-        SlimeFarmAdvancedScanPreset::Comprehensive.radius_blocks(),
+        AdvancedSlimeScanPreset::Comprehensive.radius_blocks(),
         4_096
     );
     assert_eq!(
-        SlimeFarmAdvancedScanPreset::Comprehensive.query_chunk_count(),
+        AdvancedSlimeScanPreset::Comprehensive.query_chunk_count(),
         263_169
     );
-    assert_eq!(SlimeFarmAdvancedScanPreset::Comprehensive.max_results(), 48);
+    assert_eq!(AdvancedSlimeScanPreset::Comprehensive.max_results(), 48);
 }
 
 #[::core::prelude::v1::test]
-fn slime_farm_advanced_scan_bounds_keep_exact_center() {
-    let bounds = advanced_slime_scan_bounds((-17, 23), SlimeFarmAdvancedScanPreset::Regional);
+fn advanced_slime_scan_bounds_keep_exact_center() {
+    let bounds = advanced_slime_scan_bounds((-17, 23), AdvancedSlimeScanPreset::Regional);
 
     assert_eq!(bounds.dimension, Dimension::Overworld);
     assert_eq!(bounds.center(), (-17, 23));
@@ -1995,7 +1993,7 @@ fn top_toolbar_moves_low_priority_commands_to_overflow() {
 
 #[::core::prelude::v1::test]
 fn center_stage_layout_accounts_for_stripe_and_docks() {
-    let rect = center_stage_rect_for_layout(
+    let rect = center_stage_rect(
         1280.0,
         860.0,
         true,
@@ -2011,7 +2009,7 @@ fn center_stage_layout_accounts_for_stripe_and_docks() {
     assert_eq!(rect.size.width, px(536.0));
     assert_eq!(rect.size.height, px(516.0));
 
-    let collapsed = center_stage_rect_for_layout(
+    let collapsed = center_stage_rect(
         920.0,
         620.0,
         false,
@@ -2235,8 +2233,8 @@ fn dimension_change_preserves_copied_structure_but_clears_placement_and_selectio
         dimension: Dimension::Overworld,
     };
     let structure = Arc::new(
-        bedrock_world::McStructureFile::new_air(
-            bedrock_world::McStructureSize::new(2, 3, 4).expect("valid size"),
+        bedrock_world::structure::McStructureFile::new_air(
+            bedrock_world::structure::McStructureSize::new(2, 3, 4).expect("valid size"),
             [0, 64, 0],
         )
         .expect("air structure"),
@@ -2284,11 +2282,6 @@ fn dimension_change_preserves_copied_structure_but_clears_placement_and_selectio
     assert!(state.paste_preview.is_none());
     assert!(state.selection.is_none());
     assert!(state.volume_selection.is_none());
-}
-
-#[::core::prelude::v1::test]
-fn interaction_layer_sync_requests_an_immediate_parent_refresh() {
-    assert!(should_notify_parent_after_interaction_layer_sync());
 }
 
 #[::core::prelude::v1::test]
@@ -2445,7 +2438,7 @@ fn ready_tile_events_request_a_window_refresh() {
         tiles: vec![test_ready_tile((0, 0), TileReadySource::Render)],
     };
 
-    assert!(tile_event_needs_window_refresh(&event));
+    assert!(tile_event_requires_window_refresh(&event));
 }
 
 #[::core::prelude::v1::test]
@@ -2654,7 +2647,7 @@ fn non_empty_tile_index_uses_exact_manifest_chunk_set() {
         dimension: Dimension::Overworld,
     }];
 
-    let render_positions = ui_tile_chunk_positions_for_render(
+    let render_positions = cached_tile_chunk_positions(
         Dimension::Overworld,
         1,
         -1,
@@ -2700,7 +2693,7 @@ fn indexed_tile_chunks_are_normalized_before_render() {
         },
     ];
 
-    let render_positions = ui_tile_chunk_positions_for_render(
+    let render_positions = cached_tile_chunk_positions(
         Dimension::Overworld,
         1,
         -1,
@@ -2727,7 +2720,7 @@ fn unknown_tile_candidates_are_clipped_to_known_chunk_bounds() {
     };
 
     let positions =
-        tile_chunk_positions_for_known_bounds(Dimension::Overworld, (0, 0), layout, Some(bounds))
+        bounded_tile_chunk_positions(Dimension::Overworld, (0, 0), layout, Some(bounds))
             .expect("known bounds should clip tile candidates");
 
     assert_eq!(positions.len(), 16);
@@ -2743,7 +2736,7 @@ fn empty_tile_index_remains_empty_for_negative_cache() {
     let layout = web_relief_render_layout();
     let indexed_positions = Vec::new();
 
-    let render_positions = ui_tile_chunk_positions_for_render(
+    let render_positions = cached_tile_chunk_positions(
         Dimension::Overworld,
         1,
         -1,
@@ -2881,7 +2874,7 @@ fn cancelling_active_render_requeues_tiles_before_task_finishes() {
     manager.mark_loading(&coords);
     track_active_render_tiles(&mut active_tiles, &coords);
 
-    requeue_active_render_tiles_after_cancel(&mut manager, &mut active_tiles);
+    requeue_cancelled_render_tiles(&mut manager, &mut active_tiles);
 
     assert_eq!(manager.queued_count(), coords.len());
     assert_eq!(manager.loading_count(), 0);
@@ -2988,16 +2981,12 @@ fn render_tile_plan_reuses_normalized_chunk_positions() {
 #[::core::prelude::v1::test]
 fn interactive_session_config_culls_missing_chunks() {
     let world_path = std::path::Path::new("world");
-    let config = interactive_map_render_session_config(
-        world_path,
-        RenderBackend::Auto,
-        RenderGpuBackend::Auto,
-    );
+    let config = render_session_config(world_path, RenderGpuBackend::Auto);
 
     assert!(config.cull_missing_chunks);
     assert_eq!(
         config.world_signature,
-        bedrock_render::world_cache_signature(world_path)
+        bedrock_render::cache::world_cache_identity(world_path).world_signature
     );
     assert_eq!(
         config.region_bake_cache_memory_limit,
@@ -3019,7 +3008,7 @@ fn interactive_tile_batch_defaults_are_conservative() {
     assert_eq!(RENDER_STREAM_GROUP_TILES, 4);
     assert_eq!(MAX_CONCURRENT_RENDER_BATCHES, 2);
     assert_eq!(
-        resolve_interactive_tile_batch_size(RenderBackend::Auto, RenderCpuBudget::default(), 8),
+        resolve_batch_size(RenderCpuBudget::default(), 8),
         RenderCpuBudget::default().tile_batch_size().min(8)
     );
     assert!(
@@ -3038,13 +3027,16 @@ fn interactive_tile_batch_defaults_are_conservative() {
 }
 
 #[::core::prelude::v1::test]
-fn visible_tile_foreground_work_limit_reduces_work_during_interaction() {
-    assert_eq!(visible_tile_foreground_work_limit(false), usize::MAX);
+fn visible_work_limit_reduces_work_while_dragging() {
+    assert_eq!(visible_work_limit(TileWorkMode::Steady), usize::MAX);
     assert_eq!(
-        visible_tile_foreground_work_limit(true),
+        visible_work_limit(TileWorkMode::Dragging),
         INTERACTION_VISIBLE_TILE_FOREGROUND_WORK_LIMIT
     );
-    assert!(visible_tile_foreground_work_limit(false) > visible_tile_foreground_work_limit(true));
+    assert!(
+        visible_work_limit(TileWorkMode::Steady)
+            > visible_work_limit(TileWorkMode::Dragging)
+    );
 }
 
 #[::core::prelude::v1::test]
@@ -3079,7 +3071,7 @@ fn visible_queue_uses_camera_membership_and_skips_processing_before_batch_limit(
     let processing_tiles = BTreeSet::from([(0, 0), (1, 0)]);
 
     assert_eq!(
-        manager.queued_visible_coords_limited_ordered(&visible_tiles, &processing_tiles, 2,),
+        manager.queued_visible_coords_in_order(&visible_tiles, &processing_tiles, 2,),
         vec![(2, 0)]
     );
     assert!(manager.has_queued_work_for_tiles(&visible_tiles));
@@ -3108,17 +3100,17 @@ fn prefetch_queue_only_returns_current_camera_plan() {
     let mut manager = RegionManager::default();
     manager.ensure_tiles(&[(0, 0), (1, 0), (2, 0)], TilePriority::Prefetch);
 
-    let queued = manager.queued_prefetch_coords_limited_ordered(&[(2, 0), (1, 0)], 1);
+    let queued = manager.queued_prefetch_coords(&[(2, 0), (1, 0)], 1);
 
     assert_eq!(queued, vec![(2, 0)]);
 }
 
 #[::core::prelude::v1::test]
 fn map_viewer_window_size_uses_smaller_default_and_display_limit() {
-    let default_size = map_viewer_window_size_for_display(None, Some(size(px(1920.0), px(1080.0))));
+    let default_size = window_size_for_display(None, Some(size(px(1920.0), px(1080.0))));
     assert_eq!(default_size, size(px(1120.0), px(720.0)));
 
-    let restored_size = map_viewer_window_size_for_display(
+    let restored_size = window_size_for_display(
         Some(crate::core::ui_prefs::MapViewerWindowPrefs {
             width: 1800.0,
             height: 1000.0,
@@ -3131,8 +3123,8 @@ fn map_viewer_window_size_uses_smaller_default_and_display_limit() {
 
 #[::core::prelude::v1::test]
 fn render_image_eviction_waits_until_viewport_interaction_is_idle() {
-    assert!(should_defer_render_image_evictions(true));
-    assert!(!should_defer_render_image_evictions(false));
+    assert!(should_defer_image_evictions(true));
+    assert!(!should_defer_image_evictions(false));
 }
 #[::core::prelude::v1::test]
 fn loaded_tile_without_image_is_requeued_for_visible_render() {
@@ -3165,17 +3157,17 @@ fn stale_render_batch_yields_to_the_new_viewport_center() {
         max_z: 12,
     };
 
-    assert!(render_batch_matches_current_viewport(
+    assert!(render_batch_matches_viewport(
         (10, 10),
         (10, 10),
         visible_bounds
     ));
-    assert!(!render_batch_matches_current_viewport(
+    assert!(!render_batch_matches_viewport(
         (9, 10),
         (10, 10),
         visible_bounds
     ));
-    assert!(!render_batch_matches_current_viewport(
+    assert!(!render_batch_matches_viewport(
         (3, 3),
         (10, 10),
         visible_bounds
@@ -3192,12 +3184,12 @@ fn tile_request_plan_keeps_intersecting_batches_and_drops_far_batches() {
     };
     let retained = RetainedTileFilter::new(visible_bounds, visible_bounds.expand(1), 1);
 
-    assert!(tile_request_intersects_plan(
+    assert!(tile_request_overlaps_viewport(
         &[(5, 5), (3, 2)],
         Some(visible_bounds),
         Some(retained),
     ));
-    assert!(!tile_request_intersects_plan(
+    assert!(!tile_request_overlaps_viewport(
         &[(5, 5), (6, 6)],
         Some(visible_bounds),
         Some(retained),
@@ -3299,7 +3291,7 @@ fn circular_tile_coords_are_generated_center_first() {
 }
 
 #[::core::prelude::v1::test]
-fn visible_tile_coords_keep_center_ring_order_when_center_is_outside_bounds() {
+fn visible_coords_keep_center_ring_order_when_center_is_outside_bounds() {
     let visible = TileBounds {
         min_x: 4,
         max_x: 7,
@@ -3307,7 +3299,7 @@ fn visible_tile_coords_keep_center_ring_order_when_center_is_outside_bounds() {
         max_z: 1,
     };
     let center = (0, 0);
-    let coords = tile_coords_for_visible_bounds(visible, center);
+    let coords = center_first_coords(visible, center);
 
     assert_eq!(coords.len(), 16);
     assert!(tiles_are_sorted_center_first(&coords, center));
@@ -3483,10 +3475,10 @@ fn edit_refresh_tiles_are_queued_before_visible_tiles() {
 }
 #[::core::prelude::v1::test]
 fn overlay_query_waits_for_visible_tile_pipeline_but_not_idle_viewport() {
-    assert!(should_defer_overlay_query_for_visible_tiles(true, false));
-    assert!(should_defer_overlay_query_for_visible_tiles(false, true));
-    assert!(should_defer_overlay_query_for_visible_tiles(true, true));
-    assert!(!should_defer_overlay_query_for_visible_tiles(false, false));
+    assert!(should_defer_overlay_query(true, false));
+    assert!(should_defer_overlay_query(false, true));
+    assert!(should_defer_overlay_query(true, true));
+    assert!(!should_defer_overlay_query(false, false));
 }
 
 #[::core::prelude::v1::test]
@@ -3578,7 +3570,7 @@ fn stale_cache_hit_is_replaced_by_render_and_late_cache_does_not_overwrite_fresh
     let mut manager = RegionManager::default();
     manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
 
-    let accepted = manager.mark_loaded_from_cache(
+    let (accepted, _) = manager.mark_loaded_from_cache(
         (0, 0),
         test_tile([1, 2, 3, 255]),
         TileSourceFreshness::Stale,
@@ -3613,7 +3605,7 @@ fn stale_cache_hit_is_replaced_by_render_and_late_cache_does_not_overwrite_fresh
         Some(TileSourceStatus::Fresh)
     );
 
-    let accepted = manager.mark_loaded_from_cache(
+    let (accepted, _) = manager.mark_loaded_from_cache(
         (0, 0),
         test_tile([7, 8, 9, 255]),
         TileSourceFreshness::Stale,
@@ -3632,7 +3624,7 @@ fn fresh_cache_hit_does_not_need_validation_render() {
     let mut manager = RegionManager::default();
     manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
 
-    let accepted = manager.mark_loaded_from_cache(
+    let (accepted, _) = manager.mark_loaded_from_cache(
         (0, 0),
         test_tile([1, 2, 3, 255]),
         TileSourceFreshness::Fresh,
@@ -3894,7 +3886,7 @@ fn chunk_patch_merge_only_replaces_matching_chunk_pixels() {
         pixel_format: TilePixelFormat::Rgba8,
     };
 
-    merge_chunk_patch_into_tile_pixels(
+    merge_chunk_patch(
         &mut tile_pixels,
         TilePixelFormat::Rgba8,
         2,
@@ -3934,7 +3926,7 @@ fn chunk_patch_merge_accepts_matching_bgra_pixels() {
         pixel_format: TilePixelFormat::Bgra8,
     };
 
-    merge_chunk_patch_into_tile_pixels(
+    merge_chunk_patch(
         &mut tile_pixels,
         TilePixelFormat::Bgra8,
         2,
@@ -3952,11 +3944,14 @@ fn chunk_patch_merge_accepts_matching_bgra_pixels() {
 
 #[::core::prelude::v1::test]
 fn editor_confirmation_requires_matching_target_and_action() {
-    let target = EditTarget::HsaChunk(ChunkPos {
-        x: 1,
-        z: 2,
-        dimension: Dimension::Overworld,
-    });
+    let target = EditTarget::HsaChunk {
+        chunk: ChunkPos {
+            x: 1,
+            z: 2,
+            dimension: Dimension::Overworld,
+        },
+        source: None,
+    };
     let pending = PendingEditConfirmation {
         target: target.clone(),
         action: EditAction::Save,
@@ -4485,15 +4480,15 @@ fn copied_chunk_snapshot_structure_placement_uses_full_height_and_single_target(
     let targets = pasted_chunk_targets(&copied_chunk, source_anchor, target_anchor, transform);
 
     for (snapshot, target_chunk) in copied_chunk.chunks.iter().zip(targets) {
-        let placement = copied_chunk_snapshot_structure_placement(snapshot, target_chunk)
+        let placement = copied_chunk_structure_placement(snapshot, target_chunk)
             .expect("copied chunk structure placement");
         let target_chunks = placement
             .structure
-            .target_chunks(bedrock_world::McStructurePlacement {
+            .target_chunks(bedrock_world::structure::McStructurePlacement {
                 source_anchor: placement.source_anchor,
                 target_anchor: placement.target_anchor,
                 origin_y: placement.origin_y,
-                rotation: bedrock_world::McStructureRotation::Clockwise90,
+                rotation: bedrock_world::structure::McStructureRotation::Clockwise90,
                 mirror_x: true,
                 mirror_z: false,
             })
@@ -4522,7 +4517,7 @@ fn copied_chunk_snapshot_structure_placement_preserves_secondary_layer() {
         hardcoded_spawn_areas: Vec::new(),
     };
 
-    let placement = copied_chunk_snapshot_structure_placement(&snapshot, source_chunk)
+    let placement = copied_chunk_structure_placement(&snapshot, source_chunk)
         .expect("copied chunk structure placement");
     let block_index = placement
         .structure
@@ -4621,10 +4616,10 @@ fn imported_structure_targets_rotate_relative_offsets() {
         z: 30,
         dimension: Dimension::End,
     };
-    let size = bedrock_world::McStructureSize::new(33, 4, 49).expect("structure size");
+    let size = bedrock_world::structure::McStructureSize::new(33, 4, 49).expect("structure size");
     let imported_structure = ImportedStructureData {
         structure: Arc::new(
-            bedrock_world::McStructureFile::new_air(size, [0, 64, 0]).expect("air structure"),
+            bedrock_world::structure::McStructureFile::new_air(size, [0, 64, 0]).expect("air structure"),
         ),
         source_anchor,
         origin_y: 64,
@@ -4728,7 +4723,7 @@ fn pasted_block_entity_updates_position_and_nbt_coordinates() {
         nbt: NbtTag::Compound(root),
     };
 
-    let pasted = pasted_block_entity_for_target(&entity, source_chunk, target_chunk);
+    let pasted = translate_block_entity(&entity, source_chunk, target_chunk);
     let expected_position = [target_chunk.x * 16 + 7, 64, target_chunk.z * 16 + 11];
 
     assert_eq!(pasted.position, Some(expected_position));
@@ -4883,7 +4878,7 @@ fn paste_672_chunks_reports_only_committed_batch_progress() {
     let guard = WriteGuard::confirmed("memory", "paste 672 chunk test");
     let mut progress = Vec::new();
 
-    let (_, invalidation) = paste_copied_chunk_blocking(
+    let (_, invalidation) = paste_copied_chunk(
         &world,
         &copied_chunk,
         source_anchor,
@@ -5029,7 +5024,7 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
             z: 50,
             dimension: Dimension::Overworld,
         };
-        paste_copied_chunk_blocking(
+        paste_copied_chunk(
             &world,
             &copied_chunk,
             source,
@@ -5130,7 +5125,7 @@ fn pasted_chunk_record_survives_leveldb_reopen() {
         )
         .expect("open temporary writable world");
         let guard = WriteGuard::confirmed(&world_path, "persistent paste test");
-        paste_copied_chunk_blocking(
+        paste_copied_chunk(
             &world,
             &copied_chunk,
             source,
@@ -5157,7 +5152,7 @@ fn pasted_chunk_record_survives_leveldb_reopen() {
 #[ignore = "requires tests/fixtures/bedrock-world to contain an installed Bedrock world"]
 fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
     let source_world_path = PathBuf::from("tests/fixtures/bedrock-world");
-    let source_editor = MapWorldEditor::open_with_options(
+    let source_editor = WorldEditor::open(
         &source_world_path,
         bedrock_world::OpenOptions {
             read_only: true,
@@ -5180,7 +5175,7 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
             })
         })
         .expect("a real candidate chunk must contain subchunk data");
-    let copied = copy_chunks_blocking(&source_editor, source, vec![source], None, |_| {})
+    let copied = copy_chunks(&source_editor, source, vec![source], None, |_| {})
         .expect("copy real source chunk");
     let expected_records = copied.chunks[0].records.clone();
 
@@ -5219,7 +5214,7 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
         )
         .expect("open temporary target world");
         let guard = WriteGuard::confirmed(&world_path, "real world paste persistence test");
-        paste_copied_chunk_blocking(
+        paste_copied_chunk(
             &target_world,
             &copied,
             source,
@@ -5230,7 +5225,7 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
             &mut |_| {},
         )
         .expect("paste real chunk into temporary world");
-        paste_copied_chunk_blocking(
+        paste_copied_chunk(
             &target_world,
             &copied,
             source,
@@ -5267,7 +5262,6 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
         for version_tag in [
             ChunkRecordTag::Version,
             ChunkRecordTag::VersionOld,
-            ChunkRecordTag::LegacyVersion,
         ] {
             for expected in expected_records
                 .iter()

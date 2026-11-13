@@ -1,7 +1,7 @@
-use super::model::MapViewerWindowView;
+use super::model::View;
 use super::prelude::*;
 
-impl MapViewerWindowView {
+impl View {
     fn step_generator_y(&mut self, delta: i32, cx: &mut Context<Self>) {
         let preview_size = match self.ui_state.active_right_panel {
             MapViewerRightPanel::Generator => self.generator.preview_size,

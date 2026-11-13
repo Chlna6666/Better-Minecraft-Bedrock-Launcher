@@ -2,11 +2,14 @@ use std::path::PathBuf;
 
 use bedrock_voxel::{ObjFill, ObjVoxelOptions};
 
-use super::model::MapViewerWindowView;
+use super::model::View;
 use super::prelude::*;
 use crate::core::minecraft::map::generator::{
-    ModelFileExportRequest, ObjExportRequest, StructurePreviewKind, StructurePreviewRequest,
-    release_structure_preview, start_model_file_export, start_obj_export, start_structure_preview,
+    ModelFileExportRequest, ObjExportRequest, start_model_file_export, start_obj_export,
+};
+use crate::core::minecraft::map::generator::source_obj_preview::ObjSourcePreview;
+use crate::core::minecraft::map::generator::structure_preview::{
+    self, StructurePreviewKind, StructurePreviewRequest,
 };
 use crate::ui::components::slider::Slider;
 
@@ -27,13 +30,12 @@ pub(super) struct GeneratorPanelState {
     pub(super) target_selected_by_user: bool,
     /// Real OBJ triangle scene retained only while this source is current.
     pub(super) original_preview:
-        Option<Arc<crate::core::minecraft::map::generator::ObjSourcePreview>>,
+        Option<Arc<ObjSourcePreview>>,
     preview_options: Option<ObjVoxelOptions>,
     preview_refresh_task: Option<Task<anyhow::Result<()>>>,
     preview_generation: u64,
     preview_refresh_pending: bool,
 }
-
 impl Default for GeneratorPanelState {
     fn default() -> Self {
         Self {
@@ -58,7 +60,7 @@ impl Default for GeneratorPanelState {
 
 const OBJ_PREVIEW_REFRESH_DELAY: Duration = Duration::from_millis(180);
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn generator_export_task_id(&self) -> Option<&str> {
         self.generator.task_id.as_deref()
     }
@@ -77,7 +79,7 @@ impl MapViewerWindowView {
             return;
         }
         if let Some(path) =
-            pick_file_path_with_filter("3D Model (OBJ / glTF / GLB)", &["obj", "gltf", "glb"])
+            pick_file_path(None,"3D Model (OBJ / glTF / GLB)", &["obj", "gltf", "glb"])
         {
             self.set_generator_obj_source(PathBuf::from(path), cx);
         }
@@ -182,7 +184,7 @@ impl MapViewerWindowView {
         // set_generator_obj_source explicitly clears it when the path changes.
         if let Some(id) = self.generator.preview_task_id.take() {
             task_manager::cancel_task(&id);
-            release_structure_preview(&id);
+            structure_preview::release(&id);
         }
         if self.generator.source.is_some() {
             self.clear_live_structure_preview(cx);
@@ -198,12 +200,12 @@ impl MapViewerWindowView {
         };
         let options = self.generator.options;
         self.generator.preview_options = Some(options);
-        match start_structure_preview(StructurePreviewRequest {
+        match structure_preview::start(StructurePreviewRequest {
             source,
             kind: StructurePreviewKind::Obj(options),
         }) {
             Ok(id) => {
-                if let Some(snapshot) = task_manager::get_snapshot(&id) {
+                if let Some(snapshot) = task_manager::snapshot(&id) {
                     self.task_snapshots
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }
@@ -231,7 +233,7 @@ impl MapViewerWindowView {
                 .unwrap_or("model")
         );
         let Some(path) =
-            pick_save_path_with_filter("Bedrock Structure", &["mcstructure"], &default_name)
+            pick_save_path("Bedrock Structure", &["mcstructure"], &default_name)
         else {
             return;
         };
@@ -242,7 +244,7 @@ impl MapViewerWindowView {
             voxel: self.generator.options,
         }) {
             Ok(task_id) => {
-                if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
+                if let Some(snapshot) = task_manager::snapshot(&task_id) {
                     self.task_snapshots
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }
@@ -276,7 +278,7 @@ impl MapViewerWindowView {
                 .unwrap_or("model")
         );
         let Some(path) =
-            pick_save_path_with_filter("OBJ / glTF / GLB model", &["obj", "gltf", "glb"], &name)
+            pick_save_path("OBJ / glTF / GLB model", &["obj", "gltf", "glb"], &name)
         else {
             return;
         };
@@ -286,7 +288,7 @@ impl MapViewerWindowView {
             output: output.clone(),
         }) {
             Ok(id) => {
-                if let Some(snapshot) = task_manager::get_snapshot(&id) {
+                if let Some(snapshot) = task_manager::snapshot(&id) {
                     self.task_snapshots
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }
@@ -301,16 +303,4 @@ impl MapViewerWindowView {
         }
         cx.notify();
     }
-}
-
-pub(super) fn generator_section_title(colors: &ThemeColors, title: &'static str) -> Div {
-    crate::ui::components::inspector::inspector_section_title(colors, title)
-}
-
-pub(super) fn generator_choice(
-    colors: &ThemeColors,
-    label: impl Into<SharedString>,
-    selected: bool,
-) -> Div {
-    crate::ui::components::choice::choice_chip(colors, label, selected)
 }

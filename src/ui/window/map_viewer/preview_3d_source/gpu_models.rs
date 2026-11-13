@@ -61,7 +61,7 @@ pub(super) struct ModelPlan {
     pub min_offset: [i32; 3],
     pub max_offset: [i32; 3],
     pub centers: Vec<(f32, f32)>,
-    range_centers: HashMap<(u32, u32), [f32; 2]>,
+    range_centers: FxHashMap<(u32, u32), [f32; 2]>,
 }
 
 impl ModelPlan {
@@ -77,9 +77,9 @@ impl ModelPlan {
             min_offset: [-1; 3],
             max_offset: [1; 3],
             centers: Vec::new(),
-            range_centers: HashMap::default(),
+            range_centers: FxHashMap::default(),
         };
-        let mut models = HashMap::<ModelKey, Range<u32>>::default();
+        let mut models = FxHashMap::<ModelKey, Range<u32>>::default();
         for (records, glass) in [(&blocks.opaque_blocks, false), (&blocks.glass_blocks, true)] {
             for block in records {
                 if skip_cell(block.key.y, false) {
@@ -98,11 +98,11 @@ impl ModelPlan {
                         let start = plan.faces.len() as u32;
                         for face in FACE_DEFINITIONS {
                             plan.push(
-                                preview_3d_stream_cube_face(
+                                stream_cube_face(
                                     BlockKey { x: 0, y: 0, z: 0 },
                                     face,
                                     block.colors.color_from_normal(face.normal),
-                                    preview_3d_face_material_name(
+                                    face_material_name(
                                         block.material.clone(),
                                         face.normal,
                                     ),
@@ -137,7 +137,7 @@ impl ModelPlan {
                 if !custom && skip_cell(block.key.y, true) {
                     continue;
                 }
-                let query = builder.preview_3d_detail_shape_query(block);
+                let query = builder.detail_shape_query(block);
                 let key = ModelKey::Detail(
                     Arc::as_ptr(&block.shape) as usize,
                     block.material.clone(),
@@ -151,18 +151,18 @@ impl ModelPlan {
                         let start = plan.faces.len() as u32;
                         let inferred = query
                             .as_ref()
-                            .and_then(resolve_block_state_shape)
-                            .map(preview_3d_detail_shape_from_model_shape);
+                            .and_then(model_family::resolve_shape)
+                            .map(detail_shape_from_model);
                         let mut prototype = block.clone();
                         prototype.key = BlockKey { x: 0, y: 0, z: 0 };
                         let mut faces = Vec::new();
-                        preview_3d_push_detail_block_faces(
+                        push_detail_block_faces(
                             &prototype,
                             inferred.as_ref().unwrap_or(&block.shape),
                             &mut faces,
                         );
                         let unshaded = block.normalized_name.ends_with("redstone_wire")
-                            || is_preview_3d_unshaded_detail(&block.normalized_name);
+                            || is_unshaded_detail(&block.normalized_name);
                         for mut face in faces {
                             if unshaded {
                                 face.shade = 1.0;
@@ -181,7 +181,7 @@ impl ModelPlan {
                                 }
                             }
                             plan.push(
-                                preview_3d_stream_face_from_preview(
+                                stream_face_from_preview(
                                     face,
                                     if glass {
                                         Preview3dStreamPass::DetailGlass
@@ -214,7 +214,7 @@ impl ModelPlan {
                 let key = ModelKey::Fluid(
                     block.material.clone(),
                     block.color.map(f32::to_bits),
-                    block.surface_only,
+                    block.face_mode == super::FluidFaceMode::TopOnly,
                     water,
                 );
                 let range = models
@@ -222,15 +222,17 @@ impl ModelPlan {
                     .or_insert_with(|| {
                         let start = plan.faces.len() as u32;
                         for face in FACE_DEFINITIONS {
-                            if block.surface_only && face.normal != [0, 1, 0] {
+                            if block.face_mode == super::FluidFaceMode::TopOnly
+                                && face.normal != [0, 1, 0]
+                            {
                                 continue;
                             }
                             plan.push(
-                                preview_3d_stream_fluid_face(
+                                stream_fluid_face(
                                     BlockKey { x: 0, y: 0, z: 0 },
                                     face,
                                     block.color,
-                                    preview_3d_fluid_material(block, face.normal),
+                                    fluid_material(block, face.normal),
                                     if water {
                                         Preview3dStreamPass::Water
                                     } else {

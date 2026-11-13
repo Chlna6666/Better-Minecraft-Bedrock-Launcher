@@ -6,7 +6,7 @@ use super::tile_state::TileLoadState;
 use crate::ui::window::map_viewer::lifecycle::VIEWPORT_COMPOSITE_ENABLED;
 use std::time::Duration;
 
-pub use super::model::MapViewerWindowInit;
+pub use super::model::Init;
 
 const MAP_VIEWER_DEFAULT_WINDOW_WIDTH: f32 = 1500.0;
 const MAP_VIEWER_DEFAULT_WINDOW_HEIGHT: f32 = 860.0;
@@ -25,7 +25,7 @@ fn visible_tile_frontend_ready(
     })
 }
 
-impl Drop for MapViewerWindowView {
+impl Drop for View {
     fn drop(&mut self) {
         self.release_map_image_preview();
         self.release_live_preview(MapViewerRightPanel::Generator);
@@ -55,7 +55,7 @@ impl Drop for MapViewerWindowView {
     }
 }
 
-impl MapViewerWindowView {
+impl View {
     fn release_window_resources(&mut self, cx: &mut Context<Self>) {
         self.release_world3d_link(cx);
         self.cancel_metadata_scan();
@@ -73,9 +73,9 @@ impl MapViewerWindowView {
         self.metadata_generation = self.metadata_generation.saturating_add(1);
         self.render_generation = self.render_generation.saturating_add(1);
         self.viewport_idle_generation = self.viewport_idle_generation.saturating_add(1);
-        self.viewport_plan_generation = self.viewport_plan_generation.saturating_add(1);
-        self.pending_render_image_eviction_generation = self
-            .pending_render_image_eviction_generation
+        self.tile_work_generation = self.tile_work_generation.saturating_add(1);
+        self.image_eviction_generation = self
+            .image_eviction_generation
             .saturating_add(1);
         self.pending_viewport_refresh = false;
         self.viewport_work_refresh_scheduled = false;
@@ -108,7 +108,7 @@ impl MapViewerWindowView {
         for image in self.canvas_tile_snapshot.screen_images.iter() {
             collect_image(image.image.clone());
         }
-        for (_, image) in self.pending_render_image_evictions.drain(..) {
+        for (_, image) in self.pending_image_evictions.drain(..) {
             collect_image(image);
         }
         for image in self.paste_preview_images.iter() {
@@ -163,7 +163,7 @@ impl MapViewerWindowView {
 
     fn render_external_file_drop_target(&self, cx: &mut Context<Self>) -> Div {
         let import_panel = self.ui_state.active_right_panel;
-        let import_active = self.import_workspace_active();
+        let import_active = self.import_active();
         div()
             .absolute()
             .inset_0()
@@ -183,7 +183,7 @@ impl MapViewerWindowView {
             })
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
                 let paths = paths.paths().to_vec();
-                if this.import_workspace_active() {
+                if this.import_active() {
                     this.import_source_paths_from_drop(&paths, cx);
                 } else {
                     this.import_structure_paths_from_drop(&paths, cx);
@@ -193,7 +193,7 @@ impl MapViewerWindowView {
     }
 }
 
-impl Render for MapViewerWindowView {
+impl Render for View {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
         let i18n = cx.global::<I18n>().clone();
@@ -202,19 +202,18 @@ impl Render for MapViewerWindowView {
             .tick_motion(now, self.preview_3d_focus_handle.is_focused(window));
         let paste_preview_auto_pan_active = self.tick_paste_preview_auto_pan(cx);
         let viewport_size_changed = self.update_viewport_size(window);
-        let initial_tile_plan_pending = self.render_session.is_some()
+        let initial_tiles_pending = self.render_session.is_some()
             && self.last_visible_tile_signature.is_none()
             && !self.session_loading;
-        if viewport_size_changed || initial_tile_plan_pending {
+        if viewport_size_changed || initial_tiles_pending {
             self.ensure_visible_tiles(cx);
             self.refresh_professional_render_caches(cx);
         }
         self.frame_stats.record_frame();
         self.sync_input_values(window, cx);
-        request_layout_animation_frame_if(
-            window,
-            preview_3d_motion_active || paste_preview_auto_pan_active,
-        );
+        if preview_3d_motion_active || paste_preview_auto_pan_active {
+            request_layout_frame(window);
+        }
         let theme = cx.global::<ThemeState>();
         if theme.is_animating(now) {
             window.request_animation_frame();
@@ -236,7 +235,7 @@ impl Render for MapViewerWindowView {
         if !self.viewport_interaction_active() {
             self.sync_canvas_snapshot(colors, cx);
         }
-        let slime_advanced_scan_modal = self.render_slime_farm_advanced_scan_modal(&colors, cx);
+        let slime_advanced_scan_modal = self.render_advanced_slime_scan_modal(&colors, cx);
 
         let root = div()
             .relative()
@@ -263,7 +262,7 @@ impl Render for MapViewerWindowView {
                     if !this.map_shortcuts_allowed(window, cx) {
                         return;
                     }
-                    this.start_paste_preview_from_keyboard(cx);
+                    this.start_paste_preview(cx);
                 }),
             )
             .on_action(cx.listener(
@@ -371,17 +370,17 @@ impl Render for MapViewerWindowView {
 
 fn external_paths_are_importable(paths: &ExternalPaths) -> bool {
     paths.paths().iter().any(|path| {
-        region_package::is_region_package_path(path) || mcstructure::is_mcstructure_path(path)
+        region_package::is_path(path) || mcstructure::is_mcstructure_path(path)
     })
 }
 
-pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
+pub fn open(init: Init, cx: &mut App) {
     let title = t!("MapViewer.window_title", name = &init.asset.display_name).to_string();
-    let options = map_viewer_window_options(cx, SharedString::from(title.clone()));
+    let options = window_options(cx, SharedString::from(title.clone()));
     let window = cx.open_window(options, move |window, cx| {
         window.set_title(&title);
         window.activate_window();
-        let view = cx.new(|cx| MapViewerWindowView::new(init, window, cx));
+        let view = cx.new(|cx| View::new(init, window, cx));
         let close_view = view.clone();
         window.on_window_should_close(cx, move |window, cx| {
             let restored_bounds = window.window_bounds().bounds();
@@ -391,7 +390,7 @@ pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
             };
             crate::core::ui_prefs::cache_map_viewer_window_prefs(prefs);
             if let Err(error) = crate::tasks::runtime::spawn_io(async move {
-                let result = crate::tasks::runtime::run_io_blocking(move || {
+                let result = crate::tasks::runtime::blocking::run_io(move || {
                     crate::core::ui_prefs::save_map_viewer_window_prefs(&prefs)
                 })
                 .await;
@@ -419,7 +418,7 @@ pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
     }
 }
 
-fn map_viewer_window_options(cx: &mut App, title: SharedString) -> WindowOptions {
+fn window_options(cx: &mut App, title: SharedString) -> WindowOptions {
     let mut options = WindowOptions::default();
     options.window_bounds = Some(WindowBounds::centered(map_viewer_window_size(cx), cx));
     options.window_min_size = Some(size(
@@ -446,10 +445,10 @@ fn map_viewer_window_size(cx: &App) -> Size<Pixels> {
     // pool; if startup prewarm has not completed yet, use the default size rather than blocking.
     let saved = crate::core::ui_prefs::cached_map_viewer_window_prefs();
     let display_size = cx.primary_display().map(|display| display.bounds().size);
-    map_viewer_window_size_for_display(saved, display_size)
+    window_size_for_display(saved, display_size)
 }
 
-pub(super) fn map_viewer_window_size_for_display(
+pub(super) fn window_size_for_display(
     saved: Option<crate::core::ui_prefs::MapViewerWindowPrefs>,
     display_size: Option<Size<Pixels>>,
 ) -> Size<Pixels> {
@@ -498,7 +497,7 @@ pub(super) fn map_render_layer_order() -> [MapLayerKind; 4] {
     ]
 }
 
-impl MapViewerWindowView {
+impl View {
     fn spawn_viewport_watchdog(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |handle, cx| {
             loop {
@@ -510,7 +509,7 @@ impl MapViewerWindowView {
                     if this.render_session.is_none() || this.session_loading {
                         return;
                     }
-                    let visible_tiles = this.tile_coords_for_viewport(0);
+                    let visible_tiles = this.visible_coords();
                     if visible_tiles.is_empty() {
                         return;
                     }

@@ -4,12 +4,12 @@
 //! selection. The 3D window sends navigation and edit requests here; the map window
 //! publishes its selection and receives a read-only camera snapshot for the overlay.
 
-use super::super::model::{MapViewerWindowView, PasteTransform};
+use super::super::model::{View, PasteTransform};
 use super::super::prelude::*;
-use super::super::selection::ChunkSelection;
-use super::editor::{World3dEditorInit, World3dEditorView, open_world3d_editor_window};
+use super::super::selection::{ChunkSelection, SelectionBound};
+use super::editor::{World3dEditorInit, World3dEditorView, open};
 use super::import::{World3dImportAction, World3dImportPreview};
-use super::registry::world3d_editor_for;
+use super::registry::editor_for;
 use super::types::{
     CameraOverlayMode, TeleportHeightMode, World3dBlockEditKind, World3dBlockEditRequest,
     World3dCameraSnapshot, World3dEditOutcome, World3dSelection, World3dWorldKey,
@@ -18,7 +18,7 @@ use super::types::{
 use ::bedrock_world::block::BlockState;
 use ::bedrock_world::chunk::Dimension as BwDimension;
 use ::bedrock_world::editor::{BlockEdit, BlockEditOptions, apply_block_edits};
-use ::bedrock_world::level::read_level_dat_document;
+use ::bedrock_world::level::read;
 use ::bedrock_world::world::{OpenOptions, World as BwWorld};
 use ::bedrock_world::{BlockPos, ChunkPos as BwChunkPos, NbtTag, SubChunkDecodeMode, WriteGuard};
 use std::path::Path;
@@ -76,7 +76,7 @@ impl World3dMapLink {
     }
 }
 
-impl MapViewerWindowView {
+impl View {
     pub(crate) fn report_clipboard_busy(&mut self, cx: &mut Context<Self>) {
         let message = "已有复制任务，请等待完成后再复制";
         self.status = message.into();
@@ -101,7 +101,7 @@ impl MapViewerWindowView {
             return;
         }
         let size = selection.size();
-        let Ok(size) = bedrock_world::McStructureSize::new(size[0], size[1], size[2]) else {
+        let Ok(size) = bedrock_world::structure::McStructureSize::new(size[0], size[1], size[2]) else {
             self.status = SharedString::from("3D 选区尺寸无效");
             cx.notify();
             return;
@@ -130,7 +130,7 @@ impl MapViewerWindowView {
                     let world =
                         bedrock_world::World::open(&path, bedrock_world::OpenOptions::default())
                             .map_err(|error| error.to_string())?;
-                    let structure = bedrock_world::McStructureFile::from_world_region(
+                    let structure = bedrock_world::structure::McStructureFile::from_world_region(
                         &world,
                         selection.dimension,
                         selection.min[0],
@@ -139,7 +139,7 @@ impl MapViewerWindowView {
                         size,
                     )
                     .map_err(|error| error.to_string())?;
-                    super::super::mcstructure::structure_as_copied_chunk(
+                    super::super::mcstructure::prepare_import(
                         Arc::new(structure),
                         source,
                         selection.min[1],
@@ -186,15 +186,15 @@ impl MapViewerWindowView {
         .detach();
     }
 
-    pub(crate) fn world3d_editor_is_open(&self) -> bool {
+    pub(crate) fn editor_is_open(&self) -> bool {
         self.world3d.is_open()
     }
 
-    fn current_world3d_key(&self) -> World3dWorldKey {
+    fn current_key(&self) -> World3dWorldKey {
         World3dWorldKey::from_path(&self.world_path)
     }
 
-    fn focus_world3d_editor_window(&mut self, cx: &mut Context<Self>) {
+    fn focus_editor_window(&mut self, cx: &mut Context<Self>) {
         if let Some(window) = self.world3d.window {
             let _ = window.update(cx, |_root, window, _cx| {
                 window.activate_window();
@@ -202,7 +202,7 @@ impl MapViewerWindowView {
         }
     }
 
-    fn attach_world3d_editor_handle(
+    fn attach_editor_handle(
         &mut self,
         key: World3dWorldKey,
         editor: WeakEntity<World3dEditorView>,
@@ -217,7 +217,7 @@ impl MapViewerWindowView {
         {
             self.world3d.overlay_mode = CameraOverlayMode::PositionFrustum;
         }
-        self.push_world3d_overlay(cx);
+        self.push_camera_overlay(cx);
         self.sync_world3d_import_preview(cx);
         self.sync_world3d_chunk_clipboard(cx);
         self.ensure_world3d_import_preview(cx);
@@ -330,7 +330,7 @@ impl MapViewerWindowView {
         });
     }
 
-    pub(super) fn apply_world3d_import_action(
+    pub(super) fn apply_import_action(
         &mut self,
         action: World3dImportAction,
         cx: &mut Context<Self>,
@@ -469,15 +469,15 @@ impl MapViewerWindowView {
         if !(min_y..=max_origin).contains(&value) {
             return Err(format!("粘贴高度须在 {min_y}..{max_origin} 内"));
         }
-        self.apply_world3d_import_action(World3dImportAction::MoveTo(target, value), cx);
+        self.apply_import_action(World3dImportAction::MoveTo(target, value), cx);
         Ok(())
     }
 
     pub(crate) fn adjust_2d_paste_height(&mut self, delta: i32, cx: &mut Context<Self>) {
-        self.apply_world3d_import_action(World3dImportAction::Raise(delta), cx);
+        self.apply_import_action(World3dImportAction::Raise(delta), cx);
     }
 
-    pub(crate) fn update_world3d_camera_snapshot(
+    pub(crate) fn update_camera_snapshot(
         &mut self,
         snapshot: Option<World3dCameraSnapshot>,
         cx: &mut Context<Self>,
@@ -496,7 +496,7 @@ impl MapViewerWindowView {
                     notify_main = true;
                 }
                 if self.world3d.world_key.is_none() {
-                    self.world3d.world_key = Some(self.current_world3d_key());
+                    self.world3d.world_key = Some(self.current_key());
                 }
                 if dimension_changed
                     && !dimension_matches
@@ -521,11 +521,11 @@ impl MapViewerWindowView {
                         self.center_viewport_on_block(center.0, center.1, cx);
                     }
                 }
-                self.push_world3d_overlay(cx);
+                self.push_camera_overlay(cx);
             }
             None => {
                 self.world3d.camera = None;
-                self.push_world3d_overlay(cx);
+                self.push_camera_overlay(cx);
             }
         }
         if notify_main {
@@ -533,7 +533,7 @@ impl MapViewerWindowView {
         }
     }
 
-    fn push_world3d_overlay(&mut self, cx: &mut Context<Self>) {
+    fn push_camera_overlay(&mut self, cx: &mut Context<Self>) {
         let camera = self.world3d.camera;
         let mode = self.world3d.overlay_mode;
         let dimension = self.dimension;
@@ -542,26 +542,26 @@ impl MapViewerWindowView {
         });
     }
 
-    pub(crate) fn set_world3d_camera_overlay_mode(
+    pub(crate) fn set_camera_overlay_mode(
         &mut self,
         mode: CameraOverlayMode,
         cx: &mut Context<Self>,
     ) {
         self.world3d.overlay_mode = mode;
         self.world3d.overlay_hidden_by_user = mode == CameraOverlayMode::Hidden;
-        self.push_world3d_overlay(cx);
+        self.push_camera_overlay(cx);
         self.status = SharedString::from(format!("2D 摄像机叠加：{}", mode.label()));
         cx.notify();
     }
 
-    pub(crate) fn cycle_world3d_camera_overlay_mode(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn cycle_camera_overlay_mode(&mut self, cx: &mut Context<Self>) {
         let next = match self.world3d.overlay_mode {
             CameraOverlayMode::Hidden => CameraOverlayMode::Position,
             CameraOverlayMode::Position => CameraOverlayMode::PositionFrustum,
             CameraOverlayMode::PositionFrustum => CameraOverlayMode::PositionFrustumDistance,
             CameraOverlayMode::PositionFrustumDistance => CameraOverlayMode::Hidden,
         };
-        self.set_world3d_camera_overlay_mode(next, cx);
+        self.set_camera_overlay_mode(next, cx);
     }
 
     pub(crate) fn handle_world3d_editor_closed(
@@ -600,7 +600,7 @@ impl MapViewerWindowView {
         exact_y: Option<f64>,
         cx: &mut Context<Self>,
     ) {
-        let key = self.current_world3d_key();
+        let key = self.current_key();
         let generation = self.world3d.next_navigation_generation();
         let requested_y = match height_mode {
             TeleportHeightMode::CurrentMapLayer => Some(f64::from(self.y_layer) + 1.6),
@@ -626,7 +626,7 @@ impl MapViewerWindowView {
             let _ = editor.update(cx, |editor, cx| {
                 editor.navigate_for_map(target, cx);
             });
-            self.focus_world3d_editor_window(cx);
+            self.focus_editor_window(cx);
             self.status = SharedString::from(format!(
                 "已传送 3D 编辑器到 X {block_x} · Z {block_z}（{}）",
                 height_mode.label()
@@ -634,14 +634,14 @@ impl MapViewerWindowView {
             cx.notify();
             return;
         }
-        if let Some(entry) = world3d_editor_for(&key)
+        if let Some(entry) = editor_for(&key)
             && entry.editor.upgrade().is_some()
         {
             let _ = entry.editor.update(cx, |editor, cx| {
                 editor.navigate_for_map(target, cx);
             });
-            self.attach_world3d_editor_handle(key, entry.editor, entry.window, cx);
-            self.focus_world3d_editor_window(cx);
+            self.attach_editor_handle(key, entry.editor, entry.window, cx);
+            self.focus_editor_window(cx);
             self.status = SharedString::from(format!(
                 "已传送 3D 编辑器到 X {block_x} · Z {block_z}（{}）",
                 height_mode.label()
@@ -649,10 +649,10 @@ impl MapViewerWindowView {
             cx.notify();
             return;
         }
-        self.spawn_open_world3d_editor(target, cx);
+        self.open_editor(target, cx);
     }
 
-    fn spawn_open_world3d_editor(&mut self, target: WorldNavigationTarget, cx: &mut Context<Self>) {
+    fn open_editor(&mut self, target: WorldNavigationTarget, cx: &mut Context<Self>) {
         if self.world3d.opening {
             return;
         }
@@ -662,7 +662,7 @@ impl MapViewerWindowView {
         let world_path = self.world_path.clone();
         let package_roots =
             super::super::interactions::preview_3d_resource_package_paths(&world_path, cx);
-        let initial_selection = self.world3d_initial_selection();
+        let initial_selection = self.initial_selection();
         let target_for_open = target.clone();
         cx.spawn(async move |handle, cx| {
             let world_path_for_spawn = world_path.clone();
@@ -688,15 +688,15 @@ impl MapViewerWindowView {
                     initial_selection,
                     view_radius: super::types::WORLD3D_DEFAULT_VIEW_RADIUS,
                 };
-                open_world3d_editor_window(init, cx);
-                if let Some(entry) = world3d_editor_for(&target.world_key) {
+                open(init, cx);
+                if let Some(entry) = editor_for(&target.world_key) {
                     this.world3d.world_key = Some(target.world_key.clone());
                     this.world3d.editor = Some(entry.editor);
                     this.world3d.window = entry.window;
                     this.sync_world3d_import_preview(cx);
                     this.sync_world3d_chunk_clipboard(cx);
                     this.ensure_world3d_import_preview(cx);
-                    this.focus_world3d_editor_window(cx);
+                    this.focus_editor_window(cx);
                 }
                 this.status = SharedString::from(format!(
                     "已打开 3D 世界编辑器 · 目标 X {} · Z {}",
@@ -709,7 +709,7 @@ impl MapViewerWindowView {
         .detach();
     }
 
-    fn world3d_initial_selection(&self) -> Option<World3dSelection> {
+    fn initial_selection(&self) -> Option<World3dSelection> {
         let selection = self.professional.selection?;
         if let Some(volume) = self.professional.volume_selection
             && volume.dimension == self.dimension
@@ -769,22 +769,25 @@ impl MapViewerWindowView {
         });
     }
 
-    pub(crate) fn adjust_2d_selection_height(
+    pub(crate) fn adjust_selection_bound(
         &mut self,
-        upper: bool,
+        bound: SelectionBound,
         delta: i32,
         cx: &mut Context<Self>,
     ) {
         let Some(volume) = self.professional.volume_selection else {
             return;
         };
-        let current = if upper { volume.max[1] } else { volume.min[1] };
-        self.set_2d_selection_height_bound(upper, current.saturating_add(delta), cx);
+        let current = match bound {
+            SelectionBound::Lower => volume.min[1],
+            SelectionBound::Upper => volume.max[1],
+        };
+        self.set_selection_bound(bound, current.saturating_add(delta), cx);
     }
 
-    pub(crate) fn set_2d_selection_height_bound(
+    pub(crate) fn set_selection_bound(
         &mut self,
-        upper: bool,
+        bound: SelectionBound,
         value: i32,
         cx: &mut Context<Self>,
     ) {
@@ -800,39 +803,40 @@ impl MapViewerWindowView {
         if min_y > max_y {
             return;
         }
-        if upper {
-            volume.max[1] = value.clamp(volume.min[1], max_y);
-        } else {
-            volume.min[1] = value.clamp(min_y, volume.max[1]);
+        match bound {
+            SelectionBound::Lower => volume.min[1] = value.clamp(min_y, volume.max[1]),
+            SelectionBound::Upper => volume.max[1] = value.clamp(volume.min[1], max_y),
         }
         self.professional.volume_selection = Some(volume);
         self.sync_volume_selection_to_3d(cx);
         cx.notify();
     }
 
-    pub(crate) fn use_current_layer_for_selection_height(
+    pub(crate) fn set_selection_bound_from_layer(
         &mut self,
-        upper: bool,
+        bound: SelectionBound,
         cx: &mut Context<Self>,
     ) {
         let Some(mut volume) = self.professional.volume_selection else {
             return;
         };
-        if upper {
-            volume.max[1] = self.y_layer.max(volume.min[1]);
-        } else {
-            volume.min[1] = self.y_layer.min(volume.max[1]);
+        match bound {
+            SelectionBound::Lower => volume.min[1] = self.y_layer.min(volume.max[1]),
+            SelectionBound::Upper => volume.max[1] = self.y_layer.max(volume.min[1]),
         }
         self.professional.volume_selection = Some(volume);
         self.sync_volume_selection_to_3d(cx);
         cx.notify();
     }
 
-    pub(crate) fn show_2d_selection_height(&mut self, upper: bool, cx: &mut Context<Self>) {
+    pub(crate) fn show_selection_bound(&mut self, bound: SelectionBound, cx: &mut Context<Self>) {
         let Some(volume) = self.professional.volume_selection else {
             return;
         };
-        let target = if upper { volume.max[1] } else { volume.min[1] };
+        let target = match bound {
+            SelectionBound::Lower => volume.min[1],
+            SelectionBound::Upper => volume.max[1],
+        };
         self.step_y(target.saturating_sub(self.y_layer), cx);
         self.set_mode(super::super::model::ViewerMode::Layer, cx);
     }
@@ -847,7 +851,7 @@ impl MapViewerWindowView {
         if super::super::selection::exact_selection_chunks(selection)
             .as_deref()
             .is_some_and(|chunks| {
-                !super::super::selection::selection_chunks_are_rectangular(selection, Some(chunks))
+                !super::super::selection::chunks_are_rectangular(selection, Some(chunks))
             })
         {
             self.status = SharedString::from("高度复制仅支持矩形选区；请重新框选连续区域");
@@ -867,7 +871,7 @@ impl MapViewerWindowView {
         if super::super::selection::exact_selection_chunks(selection)
             .as_deref()
             .is_some_and(|chunks| {
-                !super::super::selection::selection_chunks_are_rectangular(selection, Some(chunks))
+                !super::super::selection::chunks_are_rectangular(selection, Some(chunks))
             })
         {
             self.status = SharedString::from("高度清除仅支持矩形选区；请重新框选连续区域");
@@ -904,7 +908,7 @@ impl MapViewerWindowView {
         if super::super::selection::exact_selection_chunks(selection)
             .as_deref()
             .is_some_and(|chunks| {
-                !super::super::selection::selection_chunks_are_rectangular(selection, Some(chunks))
+                !super::super::selection::chunks_are_rectangular(selection, Some(chunks))
             })
         {
             self.status = SharedString::from("高度填充仅支持矩形选区；请重新框选连续区域");
@@ -1002,7 +1006,7 @@ mod height_selection_tests {
     }
 }
 
-impl MapViewerWindowView {
+impl View {
     /// Invalidates 3D chunk meshes after any 2D document write.
     pub(crate) fn notify_world3d_mutation(
         &mut self,
@@ -1030,7 +1034,7 @@ impl MapViewerWindowView {
     pub(crate) fn open_world3d_chunk_detail(&mut self, chunk: ChunkPos, cx: &mut Context<Self>) {
         self.ui_state.right_panel_open = true;
         self.ui_state.active_right_panel = MapViewerRightPanel::Nbt;
-        self.load_edit_detail(super::super::model::EditTarget::BlockEntities(chunk), cx);
+        self.load_edit_detail(super::super::model::EditTarget::BlockEntities { chunk, source: None }, cx);
         cx.notify();
     }
 
@@ -1060,7 +1064,7 @@ impl MapViewerWindowView {
 
 fn read_world_spawn(world_path: &Path) -> (Option<[f64; 3]>, Option<BwDimension>, String) {
     let level_dat = world_path.join("level.dat");
-    let document = match read_level_dat_document(&level_dat) {
+    let document = match read(&level_dat) {
         Ok(document) => document,
         Err(error) => {
             return (None, None, format!("level.dat 读取失败：{error}"));
@@ -1122,7 +1126,7 @@ fn nbt_i32(tag: Option<&NbtTag>) -> Option<i32> {
     }
 }
 
-impl MapViewerWindowView {
+impl View {
     /// Closes the linked editor window and removes its 2D overlay state.
     pub(crate) fn release_world3d_link(&mut self, cx: &mut Context<Self>) {
         self.close_world3d_editor_window(cx);
@@ -1133,12 +1137,12 @@ impl MapViewerWindowView {
         });
     }
 
-    pub(crate) fn world3d_overlay_mode_label(&self) -> String {
+    pub(crate) fn overlay_mode_label(&self) -> String {
         self.world3d.overlay_mode.label().to_string()
     }
 
     /// Opens the editor centered on the current 2D viewport center.
-    pub(crate) fn open_world3d_editor_at_map_center(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn open_editor_at_map_center(&mut self, cx: &mut Context<Self>) {
         let (block_x, block_z) = self.viewport.center_block(self.active_layout);
         self.teleport_world3d_editor(
             block_x,
@@ -1152,17 +1156,17 @@ impl MapViewerWindowView {
     /// Forwards a camera-targeted teleport request when the editor is already open.
     pub(crate) fn show_world3d_editor_window(&mut self, cx: &mut Context<Self>) {
         if self.world3d.is_open() {
-            self.focus_world3d_editor_window(cx);
+            self.focus_editor_window(cx);
             return;
         }
-        self.open_world3d_editor_at_map_center(cx);
+        self.open_editor_at_map_center(cx);
     }
 }
 
-fn apply_world3d_edit_blocking(
+fn apply_edit(
     world_path: &Path,
     request: &World3dBlockEditRequest,
-) -> Result<(MapEditInvalidation, String, Vec<BwChunkPos>), String> {
+) -> Result<(EditInvalidation, String, Vec<BwChunkPos>), String> {
     let mut options = OpenOptions::default();
     options.read_only = false;
     let world = BwWorld::open(world_path, options)
@@ -1183,6 +1187,18 @@ fn apply_world3d_edit_blocking(
                 &world,
                 request,
                 block_name,
+                VolumeShape::Cuboid,
+                &mut version_cache,
+                &mut edits,
+                &mut affected,
+            )?;
+        }
+        World3dBlockEditKind::Ellipsoid { block_name } => {
+            push_volume_edits(
+                &world,
+                request,
+                block_name,
+                VolumeShape::Ellipsoid,
                 &mut version_cache,
                 &mut edits,
                 &mut affected,
@@ -1193,6 +1209,7 @@ fn apply_world3d_edit_blocking(
                 &world,
                 request,
                 "minecraft:air",
+                VolumeShape::Cuboid,
                 &mut version_cache,
                 &mut edits,
                 &mut affected,
@@ -1206,9 +1223,12 @@ fn apply_world3d_edit_blocking(
         World3dBlockEditKind::Fill { block_name } => {
             format!("3D 填充 {} · {} 个方块", block_name, edits.len())
         }
+        World3dBlockEditKind::Ellipsoid { block_name } => {
+            format!("3D 椭球填充 {} · {} 个方块", block_name, edits.len())
+        }
         World3dBlockEditKind::Clear => format!("3D 清除选区 · {} 个方块", edits.len()),
     };
-    let history_capture = capture_before_with_world_and_progress(
+    let history_capture = capture_before_in_world(
         MapHistoryCaptureSpec {
             kind: MapHistoryEntryKind::BlockEdit,
             label: history_label.clone(),
@@ -1232,11 +1252,11 @@ fn apply_world3d_edit_blocking(
     let message = format!("{history_label} 已写入并记录到 2D 文档历史");
     match (history_capture, result) {
         (Ok(capture), Ok(result)) => {
-            complete_after_with_world_and_progress(capture, &world, message.clone(), |_| {})
+            complete_after_in_world(capture, &world, message.clone(), |_| {})
                 .map_err(|error| format!("历史写入失败：{error}"))?;
             let chunks = result.affected_chunks.iter().copied().collect::<Vec<_>>();
             Ok((
-                MapEditInvalidation::chunks(chunks.iter().copied()).with_metadata(),
+                EditInvalidation::chunks(chunks.iter().copied()).with_metadata(),
                 message,
                 chunks,
             ))
@@ -1249,7 +1269,7 @@ fn apply_world3d_edit_blocking(
             tracing::warn!(%history_error, "3D edit history capture failed");
             let chunks = result.affected_chunks.iter().copied().collect::<Vec<_>>();
             Ok((
-                MapEditInvalidation::chunks(chunks.iter().copied()).with_metadata(),
+                EditInvalidation::chunks(chunks.iter().copied()).with_metadata(),
                 format!("{message}（历史捕获失败：{history_error}）"),
                 chunks,
             ))
@@ -1264,6 +1284,7 @@ fn push_volume_edits(
     world: &BwWorld,
     request: &World3dBlockEditRequest,
     block_name: &str,
+    shape: VolumeShape,
     version_cache: &mut std::collections::HashMap<BwChunkPos, i32>,
     edits: &mut Vec<BlockEdit>,
     affected: &mut std::collections::BTreeSet<BwChunkPos>,
@@ -1290,6 +1311,9 @@ fn push_volume_edits(
             for y in request.min[1]..=request.max[1] {
                 for z in z_start..=z_end {
                     for x in x_start..=x_end {
+                        if !shape.contains([x, y, z], request.min, request.max) {
+                            continue;
+                        }
                         edits.push(BlockEdit::new(
                             request.dimension,
                             BlockPos { x, y, z },
@@ -1309,6 +1333,28 @@ fn push_volume_edits(
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum VolumeShape {
+    Cuboid,
+    Ellipsoid,
+}
+
+impl VolumeShape {
+    fn contains(self, point: [i32; 3], min: [i32; 3], max: [i32; 3]) -> bool {
+        if matches!(self, Self::Cuboid) {
+            return true;
+        }
+        let mut normalized_distance = 0.0_f64;
+        for axis in 0..3 {
+            let center = (f64::from(min[axis]) + f64::from(max[axis])) * 0.5;
+            let radius = ((f64::from(max[axis]) - f64::from(min[axis]) + 1.0) * 0.5).max(0.5);
+            let offset = (f64::from(point[axis]) - center) / radius;
+            normalized_distance += offset * offset;
+        }
+        normalized_distance <= 1.0
+    }
 }
 
 #[cfg(test)]

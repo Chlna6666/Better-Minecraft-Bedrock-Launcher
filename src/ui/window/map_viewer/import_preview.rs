@@ -1,18 +1,12 @@
 use super::model::{CopiedChunkData, CopiedChunkPreviewImage};
 use super::prelude::*;
 
-pub(super) fn copied_chunk_preview_images_for_import(
-    copied_chunk: &CopiedChunkData,
-) -> Result<BTreeMap<ChunkPos, CopiedChunkPreviewImage>, String> {
-    copied_chunk_preview_images_from_records(copied_chunk)
-}
-
-pub(super) fn copied_chunk_preview_images_from_records(
+pub(super) fn copied_chunk_preview_images(
     copied_chunk: &CopiedChunkData,
 ) -> Result<BTreeMap<ChunkPos, CopiedChunkPreviewImage>, String> {
     let mut images = BTreeMap::new();
     for snapshot in &copied_chunk.chunks {
-        if let Some(image) = copied_chunk_preview_image_from_snapshot(snapshot)? {
+        if let Some(image) = preview_image(snapshot)? {
             images.insert(snapshot.chunk, image);
         }
     }
@@ -20,7 +14,7 @@ pub(super) fn copied_chunk_preview_images_from_records(
 }
 
 pub(super) fn mcstructure_preview_images(
-    structure: &bedrock_world::McStructureFile,
+    structure: &bedrock_world::structure::McStructureFile,
     anchor_chunk: ChunkPos,
 ) -> Result<BTreeMap<ChunkPos, CopiedChunkPreviewImage>, String> {
     let mut columns: BTreeMap<ChunkPos, Vec<Option<ImportPreviewColumn>>> = BTreeMap::new();
@@ -32,7 +26,7 @@ pub(super) fn mcstructure_preview_images(
     {
         let primary = structure_palette_preview_state(structure, block.primary);
         let secondary = structure_palette_preview_state(structure, block.secondary);
-        let Some(state) = import_preview_visible_state(primary, secondary) else {
+        let Some(state) = visible_state(primary, secondary) else {
             continue;
         };
         let world_x = origin_x.saturating_add(block.x);
@@ -51,21 +45,21 @@ pub(super) fn mcstructure_preview_images(
     preview_images_from_columns(columns)
 }
 
-fn copied_chunk_preview_image_from_snapshot(
+fn preview_image(
     snapshot: &super::model::CopiedChunk,
 ) -> Result<Option<CopiedChunkPreviewImage>, String> {
     let parsed = ::bedrock_world::scan::Chunk::new(
         snapshot.chunk,
         &snapshot.records,
-        import_preview_parse_options(),
+        scan_options(),
     );
     let mut columns = vec![None; 16 * 16];
     for record in parsed.records {
         match record.value {
-            bedrock_world::ChunkValue::SubChunk(subchunk) => {
+            bedrock_world::scan::ChunkValue::SubChunk(subchunk) => {
                 sample_subchunk_columns(&subchunk, &mut columns);
             }
-            bedrock_world::ChunkValue::LegacyTerrain(terrain) => {
+            bedrock_world::scan::ChunkValue::LegacyTerrain(terrain) => {
                 sample_legacy_terrain_columns(&terrain, &mut columns);
             }
             _ => {}
@@ -76,7 +70,7 @@ fn copied_chunk_preview_image_from_snapshot(
     };
     Ok(Some(CopiedChunkPreviewImage {
         chunk: snapshot.chunk,
-        image: render_image_from_preview_pixels(pixels)?,
+        image: image_from_pixels(pixels)?,
         width: 16,
         height: 16,
     }))
@@ -98,12 +92,12 @@ fn sample_subchunk_columns(
                     .visible_block_states_at(local_x, local_y, local_z)
                     .find(|state| {
                         matches!(
-                            import_preview_block_class(&state.name),
+                            block_class(&state.name),
                             ImportPreviewBlockClass::Water | ImportPreviewBlockClass::Lava
                         )
                     })
                     .map(block_state_preview_state);
-                if let Some(state) = import_preview_visible_state(primary, secondary) {
+                if let Some(state) = visible_state(primary, secondary) {
                     update_column_slice(
                         columns,
                         usize::from(local_x),
@@ -116,7 +110,7 @@ fn sample_subchunk_columns(
                 {
                     let state = ImportPreviewState {
                         name,
-                        block_class: import_preview_block_class(name),
+                        block_class: block_class(name),
                     };
                     update_column_slice(
                         columns,
@@ -132,7 +126,7 @@ fn sample_subchunk_columns(
 }
 
 fn sample_legacy_terrain_columns(
-    terrain: &bedrock_world::LegacyTerrain,
+    terrain: &bedrock_world::chunk::LegacyTerrain,
     columns: &mut [Option<ImportPreviewColumn>],
 ) {
     for y in 0u8..128 {
@@ -146,7 +140,7 @@ fn sample_legacy_terrain_columns(
                 };
                 let state = ImportPreviewState {
                     name,
-                    block_class: import_preview_block_class(name),
+                    block_class: block_class(name),
                 };
                 update_column_slice(
                     columns,
@@ -191,7 +185,7 @@ fn update_column_slice(
     if column.as_ref().is_none_or(|existing| y >= existing.y) {
         *column = Some(ImportPreviewColumn {
             y,
-            color: import_preview_color_for_state(state),
+            color: color_for_state(state),
         });
     }
 }
@@ -208,7 +202,7 @@ fn preview_images_from_columns(
             chunk,
             CopiedChunkPreviewImage {
                 chunk,
-                image: render_image_from_preview_pixels(pixels)?,
+                image: image_from_pixels(pixels)?,
                 width: 16,
                 height: 16,
             },
@@ -231,15 +225,15 @@ fn preview_pixels_from_chunk_columns(columns: &[Option<ImportPreviewColumn>]) ->
     has_pixels.then_some(pixels)
 }
 
-fn render_image_from_preview_pixels(pixels: Vec<u8>) -> Result<Arc<RenderImage>, String> {
+fn image_from_pixels(pixels: Vec<u8>) -> Result<Arc<RenderImage>, String> {
     RenderImage::from_raw_pixels(16, 16, ImagePixelFormat::Rgba8, pixels)
         .map(Arc::new)
         .map_err(|error| format!("导入预览图片无效：{error}"))
 }
 
-fn import_preview_parse_options() -> bedrock_world::ScanOptions {
-    bedrock_world::ScanOptions {
-        categories: bedrock_world::ScanCategories {
+fn scan_options() -> bedrock_world::scan::ScanOptions {
+    bedrock_world::scan::ScanOptions {
+        categories: bedrock_world::scan::ScanCategories {
             chunks: true,
             players: false,
             actors: false,
@@ -247,19 +241,19 @@ fn import_preview_parse_options() -> bedrock_world::ScanOptions {
             villages: false,
             globals: false,
         },
-        retention: bedrock_world::RetentionMode::Structured,
+        retention: bedrock_world::scan::RetentionMode::Structured,
         subchunk_decode_mode: bedrock_world::SubChunkDecodeMode::FullIndices,
-        actor_resolution: bedrock_world::ActorResolution::None,
+        actor_resolution: bedrock_world::scan::ActorResolution::None,
     }
 }
 
 fn structure_palette_preview_state(
-    structure: &bedrock_world::McStructureFile,
+    structure: &bedrock_world::structure::McStructureFile,
     index: i32,
 ) -> Option<ImportPreviewState<'_>> {
     let index = usize::try_from(index).ok()?;
     let entry = structure.palette.get(index)?;
-    let block_class = import_preview_block_class(&entry.name);
+    let block_class = block_class(&entry.name);
     Some(ImportPreviewState {
         name: &entry.name,
         block_class,
@@ -269,17 +263,17 @@ fn structure_palette_preview_state(
 fn block_state_preview_state(state: &bedrock_world::BlockState) -> ImportPreviewState<'_> {
     ImportPreviewState {
         name: &state.name,
-        block_class: import_preview_block_class(&state.name),
+        block_class: block_class(&state.name),
     }
 }
 
-fn import_preview_visible_state<'state>(
+fn visible_state<'state>(
     primary: Option<ImportPreviewState<'state>>,
     secondary: Option<ImportPreviewState<'state>>,
 ) -> Option<ImportPreviewState<'state>> {
     let primary_class = primary.map(|state| state.block_class);
     if let Some(state) = primary
-        && import_preview_block_class_is_renderable(state.block_class)
+        && block_class_is_renderable(state.block_class)
     {
         return Some(state);
     }
@@ -292,11 +286,11 @@ fn import_preview_visible_state<'state>(
     {
         return Some(state);
     }
-    secondary.filter(|state| import_preview_block_class_is_renderable(state.block_class))
+    secondary.filter(|state| block_class_is_renderable(state.block_class))
 }
 
-fn import_preview_color_for_state(state: ImportPreviewState<'_>) -> [u8; 4] {
-    let palette = import_preview_palette();
+fn color_for_state(state: ImportPreviewState<'_>) -> [u8; 4] {
+    let palette = palette();
     match state.block_class {
         ImportPreviewBlockClass::Water => [45, 118, 190, 232],
         ImportPreviewBlockClass::Lava => {
@@ -335,7 +329,7 @@ fn voxel_block_preview_color(name: &str) -> Option<[u8; 4]> {
     Some(candidates.get(index)?.top_color)
 }
 
-fn import_preview_palette() -> &'static RenderPalette {
+fn palette() -> &'static RenderPalette {
     static PALETTE: OnceLock<RenderPalette> = OnceLock::new();
     PALETTE.get_or_init(RenderPalette::default)
 }
@@ -362,7 +356,7 @@ enum ImportPreviewBlockClass {
     SkipTransparent,
 }
 
-fn import_preview_block_class(name: &str) -> ImportPreviewBlockClass {
+fn block_class(name: &str) -> ImportPreviewBlockClass {
     let normalized = name.strip_prefix("minecraft:").unwrap_or(name);
     if matches!(normalized, "air" | "cave_air" | "void_air") {
         return ImportPreviewBlockClass::Air;
@@ -373,23 +367,23 @@ fn import_preview_block_class(name: &str) -> ImportPreviewBlockClass {
     if matches!(normalized, "lava" | "flowing_lava") {
         return ImportPreviewBlockClass::Lava;
     }
-    if import_preview_is_glass_block(normalized) {
+    if is_glass_block(normalized) {
         return ImportPreviewBlockClass::TransparentGlass;
     }
-    if import_preview_is_transparent_detail_block(normalized) {
+    if is_transparent_detail_block(normalized) {
         return ImportPreviewBlockClass::SkipTransparent;
     }
     ImportPreviewBlockClass::Opaque
 }
 
-fn import_preview_block_class_is_renderable(block_class: ImportPreviewBlockClass) -> bool {
+fn block_class_is_renderable(block_class: ImportPreviewBlockClass) -> bool {
     !matches!(
         block_class,
         ImportPreviewBlockClass::Air | ImportPreviewBlockClass::SkipTransparent
     )
 }
 
-fn import_preview_is_glass_block(normalized: &str) -> bool {
+fn is_glass_block(normalized: &str) -> bool {
     normalized == "glass"
         || normalized == "glass_pane"
         || normalized.ends_with("_glass")
@@ -397,7 +391,7 @@ fn import_preview_is_glass_block(normalized: &str) -> bool {
         || normalized.contains("stained_glass")
 }
 
-fn import_preview_is_transparent_detail_block(normalized: &str) -> bool {
+fn is_transparent_detail_block(normalized: &str) -> bool {
     let transparent_exact = [
         "short_grass",
         "tall_grass",
@@ -514,7 +508,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn import_preview_uses_opaque_alpha_for_solid_blocks() {
-        let color = import_preview_color_for_state(ImportPreviewState {
+        let color = color_for_state(ImportPreviewState {
             name: "minecraft:stone",
             block_class: ImportPreviewBlockClass::Opaque,
         });
@@ -524,11 +518,11 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn import_preview_preserves_material_specific_transparency() {
-        let water = import_preview_color_for_state(ImportPreviewState {
+        let water = color_for_state(ImportPreviewState {
             name: "minecraft:water",
             block_class: ImportPreviewBlockClass::Water,
         });
-        let glass = import_preview_color_for_state(ImportPreviewState {
+        let glass = color_for_state(ImportPreviewState {
             name: "minecraft:glass",
             block_class: ImportPreviewBlockClass::TransparentGlass,
         });
@@ -543,7 +537,7 @@ mod tests {
             .iter()
             .find(|candidate| candidate.state.name == "minecraft:pale_oak_planks")
             .expect("versioned voxel palette contains pale oak planks");
-        let preview = import_preview_color_for_state(ImportPreviewState {
+        let preview = color_for_state(ImportPreviewState {
             name: "minecraft:pale_oak_planks",
             block_class: ImportPreviewBlockClass::Opaque,
         });

@@ -1,16 +1,15 @@
 //! Import previews and placement controls owned by the central workspace.
 
-use super::generator_panel::generator_choice;
 use super::image_generator_panel::ImageAxis;
 use super::map_image_panel::GridAxis;
-use super::model::{ImportNumericAxis, MapViewerWindowView, PasteTransform};
+use super::model::{ImportNumericAxis, View, PasteTransform};
 use super::prelude::*;
 use super::state::ImportWorkspaceMode;
 use crate::ui::components::button::{primary_button, secondary_button};
 
-impl MapViewerWindowView {
+impl View {
     /// An open import editor owns the central preview while keeping its parameters visible.
-    pub(super) fn import_workspace_active(&self) -> bool {
+    pub(super) fn import_active(&self) -> bool {
         self.ui_state.right_panel_open && self.ui_state.active_right_panel.is_import()
     }
 
@@ -21,7 +20,7 @@ impl MapViewerWindowView {
         mode: ImportWorkspaceMode,
         cx: &mut Context<Self>,
     ) {
-        self.cancel_pointer_captures_for_panel_interaction("import workspace switch", cx);
+        self.cancel_pointer_captures("import workspace switch", cx);
         if mode == ImportWorkspaceMode::Placement && self.professional.paste_preview.is_none() {
             let anchor = match self.ui_state.active_right_panel {
                 MapViewerRightPanel::Generator if self.generator.preview_result_active => {
@@ -50,7 +49,7 @@ impl MapViewerWindowView {
     /// Some(false) means a converted structure has a default, unconfirmed anchor.
     /// Other workflows keep their own target validation protocols.
     pub(super) fn converter_target_selected(&self) -> Option<bool> {
-        if !self.import_workspace_active() {
+        if !self.import_active() {
             return None;
         }
         match self.ui_state.active_right_panel {
@@ -81,7 +80,7 @@ impl MapViewerWindowView {
 
     /// Use the current world viewport as an explicit placement target. This is not
     /// a write: only the separate confirmation action submits the map edit task.
-    pub(super) fn move_import_preview_to_view_center(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn move_preview_to_view_center(&mut self, cx: &mut Context<Self>) {
         if !self.import_canvas_stage_active() || self.map_write_busy() {
             return;
         }
@@ -112,7 +111,7 @@ impl MapViewerWindowView {
     ) -> Div {
         let preview = self.ui_state.import_workspace_mode == ImportWorkspaceMode::Preview;
         let inventory_target = self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
-            && self.map_image_installing_to_player();
+            && self.installing_to_player();
         let source_missing = match self.ui_state.active_right_panel {
             MapViewerRightPanel::Generator => self.generator.source.is_none(),
             MapViewerRightPanel::ImageGenerator => self.image_generator.source.is_none(),
@@ -128,7 +127,7 @@ impl MapViewerWindowView {
         } else if preview {
             self.render_import_result(colors, cx).into_any_element()
         } else if inventory_target {
-            self.render_map_image_inventory_workspace(colors)
+            self.render_map_inventory_workspace(colors)
                 .into_any_element()
         } else {
             self.canvas_view.clone().into_any_element()
@@ -145,8 +144,7 @@ impl MapViewerWindowView {
             // Commands are part of layout, above the preview; never overlay the world.
             .child(self.render_import_workspace_toolbar(colors, cx))
             .when(
-                (preview
-                    && self.ui_state.active_right_panel != MapViewerRightPanel::Generator)
+                (preview && self.ui_state.active_right_panel != MapViewerRightPanel::Generator)
                     || self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
                     || self.import_task_snapshot().is_some()
                     || matches!(
@@ -196,7 +194,7 @@ impl MapViewerWindowView {
                                                 if this.import_canvas_stage_active()
                                                     && this.viewport.set_size(bounds.size)
                                                 {
-                                                    this.invalidate_professional_overlay_for_viewport_change();
+                                                    this.invalidate_overlay_queries();
                                                     this.ensure_visible_tiles(cx);
                                                     this.refresh_professional_render_caches(cx);
                                                 }
@@ -215,8 +213,10 @@ impl MapViewerWindowView {
                         !preview
                             && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
                             && !inventory_target
-                            && self.map_image_placement_inspector_visible(),
-                        |workspace| workspace.child(self.render_map_image_placement_thumbnail(colors)),
+                            && self.placement_inspector_visible(),
+                        |workspace| {
+                            workspace.child(self.render_map_placement_thumbnail(colors))
+                        },
                     ),
             )
     }
@@ -295,7 +295,7 @@ impl MapViewerWindowView {
                 ]
                 .into_iter()
                 .map(|(mode, number, label)| {
-                    crate::ui::components::inspector::inspector_stage_tab(
+                    crate::ui::components::inspector::stage_tab(
                         colors,
                         number,
                         label,
@@ -315,23 +315,23 @@ impl MapViewerWindowView {
             .child(div().flex_1())
             .when(
                 preview && self.ui_state.active_right_panel == MapViewerRightPanel::Generator,
-                |toolbar| toolbar.child(self.render_obj_import_actions(colors, cx)),
+                |toolbar| toolbar.child(self.obj_import_actions(colors, cx)),
             )
             .when(is_map_image, |bar| {
                 bar.child(
                     div()
                         .text_size(px(11.0))
                         .text_color(colors.text_secondary)
-                        .child(self.map_image_workflow_status_label()),
+                        .child(self.workflow_status_label()),
                 )
             })
             .when(
-                is_map_image && !preview && !self.map_image_installing_to_player(),
+                is_map_image && !preview && !self.installing_to_player(),
                 |bar| {
                     bar.child(
-                        generator_choice(
+                        choice::chip(
                             colors,
-                            if self.map_image_placement_inspector_visible() {
+                            if self.placement_inspector_visible() {
                                 "收起缩略图"
                             } else {
                                 "显示缩略图"
@@ -341,7 +341,7 @@ impl MapViewerWindowView {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _event, _window, cx| {
-                                this.toggle_map_image_placement_inspector(cx)
+                                this.toggle_placement_inspector(cx)
                             }),
                         ),
                     )
@@ -352,7 +352,7 @@ impl MapViewerWindowView {
                     && source_available
                     && self.ui_state.active_right_panel != MapViewerRightPanel::MapImage,
                 |bar| {
-                    bar.child(generator_choice(colors, "重置视角", false).on_mouse_down(
+                    bar.child(choice::chip(colors, "重置视角", false).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, _window, cx| this.reset_preview_3d_camera(cx)),
                     ))
@@ -363,7 +363,7 @@ impl MapViewerWindowView {
     fn render_import_result(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         let body = match self.ui_state.active_right_panel {
             MapViewerRightPanel::MapImage => self.render_map_image_comparison(colors),
-            MapViewerRightPanel::ImageGenerator => self.render_image_block_comparison(colors, cx),
+            MapViewerRightPanel::ImageGenerator => self.render_block_comparison(colors, cx),
             MapViewerRightPanel::Generator => self.render_obj_source_comparison(colors, cx),
             _ => self.render_import_block_canvas(colors, cx),
         };
@@ -404,13 +404,12 @@ impl MapViewerWindowView {
                             // normalized to [-1, 1] and has its own fit scale,
                             // but the viewing transform is otherwise identical
                             // to the voxel result (no independent orbit camera).
-                            let (camera, transform) =
-                                super::preview_3d_source::preview_3d_viewport_parameters(
-                                    [0.0; 3],
-                                    0.91,
-                                    self.preview_3d.camera,
-                                    self.preview_3d.model_rotation,
-                                );
+                            let (camera, transform) = super::preview_3d_source::viewport_parameters(
+                                [0.0; 3],
+                                0.91,
+                                self.preview_3d.camera,
+                                self.preview_3d.model_rotation,
+                            );
                             let source = original.scene_view.with_camera(camera);
                             let scene = source
                                 .with_scene_transform(transform * original.source_normalization)
@@ -441,7 +440,7 @@ impl MapViewerWindowView {
                                         .min_h(px(0.0))
                                         .rounded(px(7.0))
                                         .overflow_hidden()
-                                        .child(gpui_3d::scene_view(Arc::new(scene)))
+                                        .child(gpui_3d::scene_view::element(Arc::new(scene)))
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             cx.listener(

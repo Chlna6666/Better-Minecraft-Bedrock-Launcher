@@ -1,7 +1,7 @@
 use super::preview::{SkinPreviewWindowSkin, SkinPreviewWindowView};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::ops::Range;
@@ -16,7 +16,7 @@ const SELECTOR_EXPANDED_MAX_HEIGHT: f32 = 180.0;
 const SELECTOR_MAX_WIDTH: f32 = 584.0;
 const SELECTOR_PAGE_SIZE: usize = 30;
 
-pub(super) fn skin_selector_page_count(skin_count: usize) -> usize {
+pub(super) fn page_count(skin_count: usize) -> usize {
     if skin_count == 0 {
         0
     } else {
@@ -24,11 +24,11 @@ pub(super) fn skin_selector_page_count(skin_count: usize) -> usize {
     }
 }
 
-pub(super) fn skin_selector_page_for_index(index: usize) -> usize {
+pub(super) fn page_for_index(index: usize) -> usize {
     index / SELECTOR_PAGE_SIZE
 }
 
-pub(super) fn skin_selector_range(
+pub(super) fn range(
     skin_count: usize,
     expanded: bool,
     page_index: usize,
@@ -37,7 +37,7 @@ pub(super) fn skin_selector_range(
         return 0..skin_count;
     }
 
-    let page_count = skin_selector_page_count(skin_count);
+    let page_count = page_count(skin_count);
     let page_index = page_index.min(page_count.saturating_sub(1));
     let page_start = page_index
         .saturating_mul(SELECTOR_PAGE_SIZE)
@@ -69,10 +69,10 @@ pub(super) fn render_skin_selector(
     colors: &ThemeColors,
     cx: &mut Context<SkinPreviewWindowView>,
 ) -> Div {
-    let page_count = skin_selector_page_count(skins.len());
+    let page_count = page_count(skins.len());
     let i18n = cx.global::<I18n>().clone();
     let page_index = page_index.min(page_count.saturating_sub(1));
-    let selector_range = skin_selector_range(skins.len(), expanded, page_index);
+    let selector_range = range(skins.len(), expanded, page_index);
     let item_size = if expanded {
         SELECTOR_EXPANDED_ITEM_SIZE
     } else {
@@ -160,7 +160,7 @@ pub(super) fn render_skin_selector(
         .child(content)
         .when(!expanded && page_count > 1, |this| {
             this.child(
-                selector_icon_button(
+                icon_button(
                     colors,
                     "skin-preview-selector-page-previous",
                     lucide_gpui::icon!(chevron_left),
@@ -174,7 +174,7 @@ pub(super) fn render_skin_selector(
                 ),
             )
             .child(
-                selector_icon_button(
+                icon_button(
                     colors,
                     "skin-preview-selector-page-next",
                     lucide_gpui::icon!(chevron_right),
@@ -188,7 +188,7 @@ pub(super) fn render_skin_selector(
                 ),
             )
         })
-        .child(selector_toggle_button(colors, expanded).on_mouse_down(
+        .child(toggle_button(colors, expanded).on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, _, _, cx| {
                 this.toggle_selector_expanded(cx);
@@ -252,7 +252,7 @@ fn render_selector_summary(
         )
 }
 
-fn selector_icon_button(
+fn icon_button(
     colors: &ThemeColors,
     id: &'static str,
     icon: &'static str,
@@ -279,8 +279,8 @@ fn selector_icon_button(
         )
 }
 
-fn selector_toggle_button(colors: &ThemeColors, expanded: bool) -> Stateful<Div> {
-    selector_icon_button(
+fn toggle_button(colors: &ThemeColors, expanded: bool) -> Stateful<Div> {
+    icon_button(
         colors,
         "skin-preview-selector-toggle",
         if expanded {
@@ -427,5 +427,4 @@ fn skin_preview_placeholder(colors: &ThemeColors) -> Div {
 }
 
 #[cfg(test)]
-#[path = "selector_tests.rs"]
 mod tests;

@@ -1,7 +1,7 @@
 use serde_json::Value;
 
-use super::color::Face;
-use super::custom_geometry_json::{array2, array4};
+use super::super::color::Face;
+use super::json::{array2, array4};
 
 #[derive(Clone, Copy)]
 pub(super) struct GeometryTextureRegion {
@@ -36,13 +36,13 @@ impl CubeUvRegions {
 
 pub(super) fn cube_uv_regions(uv: &Value, size: [f32; 3]) -> Option<CubeUvRegions> {
     if let Some([u, v]) = array2(Some(uv)) {
-        if let Some(regions) = uv_plane_regions(u, v, size) {
+        if let Some(regions) = plane_regions(u, v, size) {
             return Some(regions);
         }
         let width = texture_units(size[0]);
         let height = texture_units(size[1]);
         let depth = texture_units(size[2]);
-        return Some(uv_box_regions(u, v, width, height, depth));
+        return Some(box_regions(u, v, width, height, depth));
     }
 
     let object = uv.as_object()?;
@@ -56,7 +56,7 @@ pub(super) fn cube_uv_regions(uv: &Value, size: [f32; 3]) -> Option<CubeUvRegion
     })
 }
 
-fn uv_plane_regions(u: f32, v: f32, size: [f32; 3]) -> Option<CubeUvRegions> {
+fn plane_regions(u: f32, v: f32, size: [f32; 3]) -> Option<CubeUvRegions> {
     let zero_axis = zero_dimension_axis(size)?;
     let width = texture_units(size[0]);
     let height = texture_units(size[1]);
@@ -121,7 +121,7 @@ fn uv_plane_regions(u: f32, v: f32, size: [f32; 3]) -> Option<CubeUvRegions> {
     }
 }
 
-fn uv_box_regions(u: f32, v: f32, width: f32, height: f32, depth: f32) -> CubeUvRegions {
+fn box_regions(u: f32, v: f32, width: f32, height: f32, depth: f32) -> CubeUvRegions {
     CubeUvRegions {
         top: Some(GeometryTextureRegion {
             u: u + depth,

@@ -40,7 +40,7 @@ enum DetachedPreviewDrag {
 }
 
 pub(super) struct DetachedPreview3dView {
-    owner: WeakEntity<MapViewerWindowView>,
+    owner: WeakEntity<View>,
     owner_id: u64,
     focus: FocusHandle,
     drag: Option<DetachedPreviewDrag>,
@@ -58,7 +58,7 @@ impl Drop for DetachedPreview3dView {
 
 impl DetachedPreview3dView {
     fn new(
-        owner: Entity<MapViewerWindowView>,
+        owner: Entity<View>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -97,7 +97,7 @@ impl DetachedPreview3dView {
     fn with_owner(
         &self,
         cx: &mut Context<Self>,
-        update: impl FnOnce(&mut MapViewerWindowView, &mut Context<MapViewerWindowView>),
+        update: impl FnOnce(&mut View, &mut Context<View>),
     ) {
         if let Some(owner) = self.owner.upgrade() {
             owner.update(cx, update);
@@ -318,7 +318,7 @@ impl Render for DetachedPreview3dView {
                                 div()
                                     .absolute()
                                     .inset_0()
-                                    .child(gpui_3d::scene_view(scene_view)),
+                                    .child(gpui_3d::scene_view::element(scene_view)),
                             ),
                             Err(error) => {
                                 tracing::error!(%error, "failed to configure detached map preview scene view");
@@ -378,14 +378,14 @@ fn detached_preview_world_frame(
 fn detached_theme_colors(now: std::time::Instant, cx: &App) -> ThemeColors {
     let theme = cx.global::<ThemeState>();
     lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        &LightColors::theme(),
+        &DarkColors::theme(),
         theme.factor(now),
         theme.accent,
     )
 }
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn open_detached_preview_3d(
         &mut self,
         origin: Option<Point<Pixels>>,

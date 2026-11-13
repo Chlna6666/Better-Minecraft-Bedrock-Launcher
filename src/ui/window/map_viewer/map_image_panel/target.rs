@@ -1,9 +1,9 @@
 use super::*;
 
-impl MapViewerWindowView {
+impl View {
     /// Route the world context menu to destination selection while this importer owns it.
     pub(in super::super) fn map_image_selecting_block(&self) -> bool {
-        self.import_workspace_active()
+        self.import_active()
             && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
             && self.map_image.install_destination == MapImageInstallDestination::SelectedBlock
             && self.ui_state.import_workspace_mode
@@ -12,7 +12,7 @@ impl MapViewerWindowView {
 
     /// World-context interaction is active only for the frame-grid placement workflow.
     pub(in super::super) fn map_image_positioning_frames(&self) -> bool {
-        self.import_workspace_active()
+        self.import_active()
             && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
             && self.map_image.install_destination == MapImageInstallDestination::NewUpFrame
             && self.ui_state.import_workspace_mode
@@ -20,7 +20,7 @@ impl MapViewerWindowView {
     }
 
     /// Select an exact world coordinate with the context menu. No world writes occur.
-    pub(in super::super) fn select_map_frame_center_from_context(
+    pub(in super::super) fn select_map_frame_center(
         &mut self,
         cx: &mut Context<Self>,
     ) {

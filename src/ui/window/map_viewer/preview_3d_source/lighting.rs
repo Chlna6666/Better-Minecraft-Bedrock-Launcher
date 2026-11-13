@@ -3,14 +3,14 @@ use super::*;
 
 impl Preview3dChunkBlocks {
     pub(super) fn refresh_ambient_exclusions(&mut self) {
-        let mut materials = HashMap::default();
+        let mut materials = FxHashMap::default();
         // Keep exclusions for records removed by interior-face compaction: their
         // occupied cells remain in the culling index until the chunk is replaced.
         self.ao_exclusions
             .extend(self.opaque_blocks.iter().filter_map(|block| {
                 let opaque = materials.entry(block.material.as_ref()).or_insert_with(|| {
-                    let name = bedrock_block_model::obj_material_texture_name(&block.material);
-                    bedrock_block_model::is_full_opaque_block(&name)
+                    let name = bedrock_block_model::obj::material_texture_name(&block.material);
+                    bedrock_block_model::model_family::is_full_opaque_block(&name)
                 });
                 (!*opaque).then_some(block.key)
             }));
@@ -25,7 +25,7 @@ impl Preview3dMeshBuilder {
         if !self.ambient_occlusion {
             return [1.; 4];
         }
-        gpui_3d::voxel_ambient_light(normal, preview_3d_stream_face_corners(normal), |offset| {
+        gpui_3d::voxel_ambient_light(normal, stream_face_corners(normal), |offset| {
             let neighbor = BlockKey {
                 x: block.x + offset[0],
                 y: block.y + offset[1],

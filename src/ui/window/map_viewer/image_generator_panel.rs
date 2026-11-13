@@ -2,13 +2,14 @@ use std::path::PathBuf;
 
 use crate::core::minecraft::map::image::MapResample;
 
-use super::generator_panel::{generator_choice, generator_section_title};
-use super::model::MapViewerWindowView;
+use super::model::View;
 use super::prelude::*;
-use crate::core::minecraft::map::generator::{
+use crate::core::minecraft::map::generator::image::{
     Dithering, ImageBlockExportRequest, ImageBlockHeight, ImageBlockOptions, ImageFit,
-    ReliefImageFill, StructurePreviewKind, StructurePreviewRequest, approved_block_names,
-    release_structure_preview, start_image_block_export, start_structure_preview,
+    ReliefImageFill, approved_block_names, start_block_export,
+};
+use crate::core::minecraft::map::generator::structure_preview::{
+    self, StructurePreviewKind, StructurePreviewRequest,
 };
 use crate::ui::components::slider::Slider;
 
@@ -69,7 +70,7 @@ pub(super) enum ImageAxis {
     Height,
 }
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn image_export_task_id(&self) -> Option<&str> {
         self.image_generator.task_id.as_deref()
     }
@@ -88,7 +89,7 @@ impl MapViewerWindowView {
             return;
         }
         if let Some(path) =
-            pick_file_path_with_filter("图片", &["png", "jpg", "jpeg", "tga", "webp"])
+            pick_file_path(None,"图片", &["png", "jpg", "jpeg", "tga", "webp"])
         {
             self.set_image_generator_source(PathBuf::from(path), cx);
         }
@@ -133,7 +134,7 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
-    fn update_image_dimension_from_slider(
+    fn update_image_dimension(
         &mut self,
         axis: ImageAxis,
         size: u32,
@@ -223,7 +224,7 @@ impl MapViewerWindowView {
     fn clear_image_live_preview(&mut self, cx: &mut Context<Self>) {
         if let Some(id) = self.image_generator.preview_task_id.take() {
             task_manager::cancel_task(&id);
-            release_structure_preview(&id);
+            structure_preview::release(&id);
         }
         if self.image_generator.source.is_some() {
             self.clear_live_structure_preview(cx);
@@ -242,12 +243,12 @@ impl MapViewerWindowView {
         self.image_generator.preview_processed = false;
         self.image_generator.preview_size = None;
         let options = self.image_generator.options.clone();
-        match start_structure_preview(StructurePreviewRequest {
+        match structure_preview::start(StructurePreviewRequest {
             source,
             kind: StructurePreviewKind::Image(options),
         }) {
             Ok(id) => {
-                if let Some(snapshot) = task_manager::get_snapshot(&id) {
+                if let Some(snapshot) = task_manager::snapshot(&id) {
                     self.task_snapshots
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }
@@ -303,18 +304,18 @@ impl MapViewerWindowView {
                 .unwrap_or("image")
         );
         let Some(path) =
-            pick_save_path_with_filter("Bedrock Structure", &["mcstructure"], &default_name)
+            pick_save_path("Bedrock Structure", &["mcstructure"], &default_name)
         else {
             return;
         };
         let output = PathBuf::from(path);
-        match start_image_block_export(ImageBlockExportRequest {
+        match start_block_export(ImageBlockExportRequest {
             source,
             output: output.clone(),
             options: self.image_generator.options.clone(),
         }) {
             Ok(task_id) => {
-                if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
+                if let Some(snapshot) = task_manager::snapshot(&task_id) {
                     self.task_snapshots
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }

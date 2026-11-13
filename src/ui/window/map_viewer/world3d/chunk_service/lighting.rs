@@ -116,7 +116,7 @@ impl Worker {
             return Arc::clone(&cached.cells);
         }
         let mut cells = vec![LightCell::AIR; 16 * height as usize * 16];
-        write_probe_cells_with_stride(&self.models, probe, &mut cells, [0, min_y, 0], 16);
+        write_probe_cells(&self.models, probe, &mut cells, [0, min_y, 0], 16);
         let cells: Arc<[LightCell]> = cells.into();
         self.light_columns.insert(
             pos,
@@ -157,18 +157,7 @@ fn copy_light_column(
     }
 }
 
-/// Collate complete storage layers once per palette, including waterlogged solids.
-#[cfg(test)]
 fn write_probe_cells(
-    models: &bedrock_block_model::BlockModelRepository,
-    probe: &World3dChunkProbe,
-    cells: &mut [LightCell],
-    origin: [i32; 3],
-) {
-    write_probe_cells_with_stride(models, probe, cells, origin, 48);
-}
-
-fn write_probe_cells_with_stride(
     models: &bedrock_block_model::BlockModelRepository,
     probe: &World3dChunkProbe,
     cells: &mut [LightCell],
@@ -221,7 +210,7 @@ fn write_probe_cells_with_stride(
             } else {
                 for (storage, palette) in &palettes {
                     if let Some(p) = storage
-                        .palette_index_at(x, y, z)
+                        .index_at(x, y, z)
                         .and_then(|i| palette.get(usize::from(i)))
                     {
                         emission = emission.max(p.emission);
@@ -289,7 +278,11 @@ impl ChunkLighting {
             [((q[2] * i64::from(self.size[1]) + q[1]) * i64::from(self.size[0]) + q[0]) as usize]
     }
 
-    pub(super) fn gpu_levels(&self, pos: ChunkPos, band: &p3d::GpuCubeBand) -> Vec<u8> {
+    pub(super) fn gpu_levels(
+        &self,
+        pos: ChunkPos,
+        band: &preview_3d_source::GpuCubeBand,
+    ) -> Vec<u8> {
         (0..band.size[0] * band.size[1] * band.size[2])
             .map(|i| {
                 self.packed_at([
@@ -429,7 +422,7 @@ mod tests {
         };
         let models = bedrock_block_model::BlockModelRepository::new();
         let mut cells = vec![LightCell::OPAQUE; 48 * 16 * 48];
-        write_probe_cells(&models, &probe, &mut cells, [16, 0, 16]);
+        write_probe_cells(&models, &probe, &mut cells, [16, 0, 16], 48);
         assert_eq!(
             LightVolume::solve([48, 16, 48], &cells, true)
                 .unwrap()
@@ -441,7 +434,7 @@ mod tests {
         {
             storages[0] = storage("minecraft:air");
         }
-        write_probe_cells(&models, &probe, &mut cells, [16, 0, 16]);
+        write_probe_cells(&models, &probe, &mut cells, [16, 0, 16], 48);
         assert_eq!(
             LightVolume::solve([48, 16, 48], &cells, true)
                 .unwrap()
@@ -452,7 +445,7 @@ mod tests {
             version: None,
             bytes: Vec::new().into(),
         };
-        write_probe_cells(&models, &probe, &mut cells, [16, 0, 16]);
+        write_probe_cells(&models, &probe, &mut cells, [16, 0, 16], 48);
         assert_eq!(cells[(16 * 16 + 15) * 48 + 16], LightCell::OPAQUE);
     }
 }

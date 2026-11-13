@@ -6,7 +6,7 @@ use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::window::debug::devtools;
 use crate::ui::window::debug::state::{
     DebugRuntimeSnapshot, DebugState, refresh_realtime_window_metrics, snapshot_runtime_metrics,
@@ -496,12 +496,12 @@ fn open_path_in_background(
     let path = path.into();
     let success_message = success_message.into();
     cx.spawn(async move |_this, cx| {
-        match crate::utils::open_path::open_path(path.to_string_lossy().to_string()).await {
+        match crate::utils::open_path::open(path.to_string_lossy().to_string()).await {
             Ok(()) => {
-                let _ = toast::push_async(cx, toast::ToastKind::Success, success_message);
+                let _ = toast::async_app::push(cx, toast::ToastKind::Success, success_message);
             }
             Err(error) => {
-                let _ = toast::push_async(cx, toast::ToastKind::Error, SharedString::from(error));
+                let _ = toast::async_app::push(cx, toast::ToastKind::Error, SharedString::from(error));
             }
         }
         Ok::<(), anyhow::Error>(())
@@ -513,7 +513,7 @@ fn run_aggressive_memory_cleanup(cx: &mut Context<DebugView>) {
     cx.spawn(async move |_this, cx| {
         let cleanup =
             cx.background_spawn(
-                async move { crate::utils::memory::force_memory_cleanup_aggressive() },
+                async move { crate::utils::memory::force_aggressive_cleanup() },
             );
         let stats = cleanup.await;
         let message = SharedString::from(format!(
@@ -521,7 +521,7 @@ fn run_aggressive_memory_cleanup(cx: &mut Context<DebugView>) {
             bytes_to_human(stats.working_set_kb.saturating_mul(1024)),
             bytes_to_human(stats.private_kb.saturating_mul(1024))
         ));
-        let _ = toast::push_async(cx, toast::ToastKind::Success, message);
+        let _ = toast::async_app::push(cx, toast::ToastKind::Success, message);
         Ok::<(), anyhow::Error>(())
     })
     .detach();
@@ -1292,9 +1292,9 @@ impl Render for DebugView {
         };
 
         let theme_state = cx.global::<ThemeState>();
-        let colors = crate::ui::theme::colors::lerp_theme_colors(
-            &crate::ui::theme::colors::LightColors::colors(),
-            &crate::ui::theme::colors::DarkColors::colors(),
+        let colors = crate::ui::theme::lerp_theme_colors(
+            &crate::ui::theme::LightColors::theme(),
+            &crate::ui::theme::DarkColors::theme(),
             theme_k,
             theme_state.accent,
         );
@@ -1535,7 +1535,7 @@ impl Render for DebugView {
                                     ))
                                     .child(line(
                                         copy.app_version,
-                                        SharedString::from(crate::utils::app_info::get_version()),
+                                        SharedString::from(crate::utils::app_info::version()),
                                         muted,
                                     ))
                                     .child(line(
@@ -2090,7 +2090,7 @@ impl Render for DebugView {
                                     .child(div().flex().items_center().gap(px(8.)).children(
                                         color_presets.into_iter().map(|hex| {
                                             let color =
-                                                crate::ui::theme::colors::parse_hex_color_to_hsla(
+                                                crate::ui::theme::parse_hex_color(
                                                     hex,
                                                 )
                                                 .unwrap_or(colors.accent);
@@ -3435,7 +3435,7 @@ impl Render for DebugView {
                             div()
                                 .text_size(px(12.))
                                 .text_color(muted)
-                                .child(crate::utils::app_info::get_version()),
+                                .child(crate::utils::app_info::version()),
                         ),
                 )
                 .child(

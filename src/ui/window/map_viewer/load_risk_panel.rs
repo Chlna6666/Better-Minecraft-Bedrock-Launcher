@@ -1,9 +1,9 @@
 //! Offline heatmap explanations projected from owned overlay snapshots.
 
-use super::model::MapViewerWindowView;
+use super::model::View;
 use super::prelude::*;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn render_load_risk_legend(&self, colors: &ThemeColors, cx: &Context<Self>) -> Div {
         let _i18n = cx.global::<I18n>().clone();
         div()

@@ -35,7 +35,7 @@ impl Worker {
             .path()
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("tga"));
-        let image = bedrock_block_model::decode_texture_image(&bytes, is_tga)?.to_rgba8();
+        let image = bedrock_block_model::obj::decode_texture_image(&bytes, is_tga)?.to_rgba8();
         let definition = self.resolver.flipbook_definition_for(source);
         let (image, seconds_per_frame) = animation_strip(image, definition)?;
         let asset = gpui_3d::TextureAsset::rgba8(image.width(), image.height(), image.into_raw())?;

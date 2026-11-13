@@ -1,13 +1,11 @@
 use std::sync::Arc;
 
 use super::mcstructure;
-use super::model::{MapViewerWindowView, PasteRotation, PasteTransform, paste_rotation_degrees};
+use super::model::{View, PasteRotation, PasteTransform, paste_rotation_degrees};
 use super::prelude::*;
-use crate::core::minecraft::map::generator::{
-    get_obj_source_preview, get_structure_preview, release_structure_preview,
-};
+use crate::core::minecraft::map::generator::structure_preview;
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn clear_live_structure_preview(&mut self, cx: &mut Context<Self>) {
         // A regenerated mesh or changed color/size may occupy different blocks.
         // Never carry a previous write confirmation over to a different result.
@@ -52,11 +50,11 @@ impl MapViewerWindowView {
         };
         if let Some(task_id) = task_id {
             task_manager::cancel_task(&task_id);
-            release_structure_preview(&task_id);
+            structure_preview::release(&task_id);
         }
     }
 
-    pub(super) fn accept_structure_preview_task_snapshot(
+    pub(super) fn accept_generator_task_snapshot(
         &mut self,
         snapshot: &TaskSnapshot,
         cx: &mut Context<Self>,
@@ -76,7 +74,7 @@ impl MapViewerWindowView {
         // TaskManager progress event performs no disk IO or geometry rebuild.
         if obj
             && self.generator.original_preview.is_none()
-            && let Some(original) = get_obj_source_preview(snapshot.id.as_ref())
+            && let Some(original) = structure_preview::get_obj_source(snapshot.id.as_ref())
         {
             self.generator.original_preview = Some(original);
             cx.notify();
@@ -94,12 +92,12 @@ impl MapViewerWindowView {
             return;
         }
         let task_id = snapshot.id.to_string();
-        let Some(bytes) = get_structure_preview(&task_id) else {
+        let Some(bytes) = structure_preview::get(&task_id) else {
             self.status = SharedString::from("结构预览结果已过期，请调整设置重新生成");
             return;
         };
         let original_obj = if obj {
-            get_obj_source_preview(&task_id)
+            structure_preview::get_obj_source(&task_id)
         } else {
             None
         };
@@ -115,12 +113,12 @@ impl MapViewerWindowView {
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let structure = bedrock_world::McStructureFile::from_bytes(&bytes)
+                    let structure = bedrock_world::structure::McStructureFile::from_bytes(&bytes)
                         .map_err(|error| error.to_string())?;
-                    mcstructure::structure_as_copied_chunk(Arc::new(structure), target, y)
+                    mcstructure::prepare_import(Arc::new(structure), target, y)
                 })
                 .await;
-            release_structure_preview(&task_id);
+            structure_preview::release(&task_id);
             let Some(view) = handle.upgrade() else {
                 return Ok::<(), anyhow::Error>(());
             };
@@ -167,7 +165,7 @@ impl MapViewerWindowView {
                             cx,
                         ) {
                             if should_center {
-                                this.center_paste_preview_in_view(cx);
+                                this.center_view_on_preview(cx);
                             }
                             this.refresh_import_preview_3d(cx);
                             this.status = SharedString::from(format!(

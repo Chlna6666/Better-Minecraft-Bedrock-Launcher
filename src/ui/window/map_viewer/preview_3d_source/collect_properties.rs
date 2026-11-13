@@ -1,26 +1,26 @@
 //! Resolves immutable palette-entry properties once instead of once for every occupied voxel.
 
 use super::{
-    Arc, BlockModelRepository, BlockState, HashMap, Preview3dBiomeSample, Preview3dBlockClass,
+    Arc, BlockModelRepository, BlockState, FxHashMap, Preview3dBiomeSample, Preview3dBlockClass,
     Preview3dBlockEntityModelState, Preview3dBlockFaceColors, Preview3dConnectionKind,
     Preview3dDetailShape, Preview3dMaterialName, Preview3dNeighborModel, Preview3dStairState,
-    RenderPalette, preview_3d_block_color, preview_3d_block_face_colors,
-    preview_3d_connection_kind, preview_3d_detail_shape, preview_3d_fluid_height,
-    preview_3d_lava_color, preview_3d_material_block_name, preview_3d_material_name,
-    preview_3d_neighbor_model, preview_3d_normalized_block_name, preview_3d_resolved_detail_shape,
-    preview_3d_stair_state, preview_3d_transparent_color, preview_3d_water_color,
+    RenderPalette, block_color, block_face_colors,
+    connection_kind, detail_shape, fluid_height,
+    lava_color, material_block_name, material_name,
+    neighbor_model, normalized_block_name, resolved_detail_shape,
+    stair_state, transparent_color, water_color,
 };
 
 pub(super) struct BlockPropertiesCache<'a> {
     models: Option<&'a BlockModelRepository>,
-    entries: HashMap<usize, BlockProperties>,
+    entries: FxHashMap<usize, BlockProperties>,
 }
 
 impl<'a> BlockPropertiesCache<'a> {
     pub(super) fn new(models: Option<&'a BlockModelRepository>) -> Self {
         Self {
             models,
-            entries: HashMap::default(),
+            entries: FxHashMap::default(),
         }
     }
 
@@ -81,14 +81,14 @@ pub(super) struct BlockColorEntry {
 /// lookups and tint computations.
 pub(super) struct BlockColorCache<'a> {
     palette: &'a RenderPalette,
-    entries: HashMap<(usize, Option<BiomeColorKey>), BlockColorEntry>,
+    entries: FxHashMap<(usize, Option<BiomeColorKey>), BlockColorEntry>,
 }
 
 impl<'a> BlockColorCache<'a> {
     pub(super) fn new(palette: &'a RenderPalette) -> Self {
         Self {
             palette,
-            entries: HashMap::default(),
+            entries: FxHashMap::default(),
         }
     }
 
@@ -102,11 +102,11 @@ impl<'a> BlockColorCache<'a> {
             biome.map(BiomeColorKey::from_sample),
         );
         self.entries.entry(key).or_insert_with(|| BlockColorEntry {
-            face: preview_3d_block_face_colors(self.palette, state, biome),
-            flat: preview_3d_block_color(self.palette, state, biome),
-            transparent: preview_3d_transparent_color(self.palette, state, biome),
-            water: preview_3d_water_color(self.palette, state, biome),
-            lava: preview_3d_lava_color(self.palette, state, biome),
+            face: block_face_colors(self.palette, state, biome),
+            flat: block_color(self.palette, state, biome),
+            transparent: transparent_color(self.palette, state, biome),
+            water: water_color(self.palette, state, biome),
+            lava: lava_color(self.palette, state, biome),
         })
     }
 }
@@ -128,9 +128,9 @@ impl BlockProperties {
         class: Preview3dBlockClass,
         models: Option<&BlockModelRepository>,
     ) -> Self {
-        let material_source = preview_3d_material_block_name(state, class);
+        let material_source = material_block_name(state, class);
         let resolved =
-            models.and_then(|models| preview_3d_resolved_detail_shape(models, state, class));
+            models.and_then(|models| resolved_detail_shape(models, state, class));
         let resolved_shape = resolved.is_some();
         let shape = resolved
             .or_else(|| {
@@ -138,21 +138,21 @@ impl BlockProperties {
                     class,
                     Preview3dBlockClass::Water | Preview3dBlockClass::Lava
                 ))
-                .then(|| preview_3d_detail_shape(state, None))
+                .then(|| detail_shape(state, None))
                 .flatten()
             })
             .map(Arc::new);
         Self {
-            material: preview_3d_material_name(material_source.as_ref(), class),
-            normalized_name: Arc::from(preview_3d_normalized_block_name(&state.name)),
-            stair_state: preview_3d_stair_state(state),
-            connection_kind: preview_3d_connection_kind(state),
+            material: material_name(material_source.as_ref(), class),
+            normalized_name: Arc::from(normalized_block_name(&state.name)),
+            stair_state: stair_state(state),
+            connection_kind: connection_kind(state),
             neighbor_model: if resolved_shape {
                 Preview3dNeighborModel::None
             } else {
-                preview_3d_neighbor_model(state)
+                neighbor_model(state)
             },
-            fluid_height: preview_3d_fluid_height(state),
+            fluid_height: fluid_height(state),
             shape,
             resolved_shape,
         }
@@ -167,7 +167,7 @@ impl BlockProperties {
             self.shape.clone()
         } else {
             // Paired chests depend on block-entity coordinates, not only the palette entry.
-            preview_3d_detail_shape(state, entity).map(Arc::new)
+            detail_shape(state, entity).map(Arc::new)
         }
     }
 }

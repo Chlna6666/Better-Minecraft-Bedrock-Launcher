@@ -1,18 +1,18 @@
-use super::editor::{copy_chunks_blocking, pasted_chunk_targets};
+use super::editor::{copy_chunks, pasted_chunk_targets};
 use super::helpers::*;
 use super::import_preview;
-use super::lifecycle::should_notify_parent_after_interaction_layer_sync;
 use super::mcstructure;
 use super::model::*;
 use super::panels::*;
 use super::prelude::*;
 use super::region_package;
+use super::selection::SelectionBound;
 use super::tile_cache::render_image_pixels;
 use super::tile_render::{
     RenderTilePlan, TileBatchRequest, open_map_render_session, render_tile_batch_stream,
 };
 use super::tile_state::ReadyTile;
-use super::viewport::{coordinate_text, viewport_screen_position};
+use super::viewport::{coordinate_text, screen_position};
 use crate::core::version::launch_versions::LaunchVersionEntry;
 use crate::tasks::task_manager::ProgressUpdate;
 use crate::ui::state::launcher::LauncherState;
@@ -27,7 +27,7 @@ struct CopyChunkComplete {
     preview_error: Option<String>,
 }
 
-impl MapViewerWindowView {
+impl View {
     pub(super) fn begin_edit_toast(
         &mut self,
         message: impl Into<SharedString>,
@@ -91,8 +91,8 @@ impl MapViewerWindowView {
         }
         self.dimension = dimension;
         self.context_menu = None;
-        self.slime_farm_advanced_scan = None;
-        self.slime_farm_advanced_scan_dialog = None;
+        self.advanced_slime_scan = None;
+        self.advanced_slime_scan_dialog = None;
         self.cancel_professional_overlay_query();
         self.cancel_slime_farm_candidate_query();
         self.professional.reset_for_dimension_change();
@@ -131,17 +131,14 @@ impl MapViewerWindowView {
         self.mark_viewport_interaction();
         self.viewport.zoom_at(position, factor);
         self.mark_viewport_render_dirty();
-        self.invalidate_professional_overlay_for_viewport_change();
+        self.invalidate_overlay_queries();
         self.context_menu = None;
         self.ensure_visible_tiles_throttled(cx);
         self.professional.pending_overlay_refresh = true;
         self.schedule_viewport_idle_refresh(cx);
         let colors = self.theme_colors(cx);
-        if self.sync_interaction_tile_layer_snapshot(colors, cx)
-            && should_notify_parent_after_interaction_layer_sync()
-        {
-            cx.notify();
-        }
+        self.sync_interaction_snapshot(colors, cx);
+        cx.notify();
     }
 
     pub(super) fn zoom_by_center(&mut self, factor: f32, cx: &mut Context<Self>) {
@@ -387,7 +384,7 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn show_right_preview_3d_panel(&mut self, cx: &mut Context<Self>) {
-        if self.import_workspace_active() {
+        if self.import_active() {
             self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Preview, cx);
             return;
         }
@@ -401,7 +398,7 @@ impl MapViewerWindowView {
             .clamp_sizes(self.window_width, self.window_height);
         let size = size(px(self.window_width), px(self.window_height));
         if self.viewport.set_size(self.center_stage_size(size)) {
-            self.invalidate_professional_overlay_for_viewport_change();
+            self.invalidate_overlay_queries();
             self.ensure_visible_tiles(cx);
             self.refresh_professional_render_caches(cx);
             self.refresh_professional_overlays(cx);
@@ -412,7 +409,7 @@ impl MapViewerWindowView {
         self.ui_state.left_panel_open = !self.ui_state.left_panel_open;
         let size = size(px(self.window_width), px(self.window_height));
         if self.viewport.set_size(self.center_stage_size(size)) {
-            self.invalidate_professional_overlay_for_viewport_change();
+            self.invalidate_overlay_queries();
             self.ensure_visible_tiles(cx);
             self.refresh_professional_render_caches(cx);
             self.refresh_professional_overlays(cx);
@@ -443,7 +440,7 @@ impl MapViewerWindowView {
                 self.refresh_players(cx);
             } else if let Some(id) = super::players::preferred_player_id(&self.players.players) {
                 self.player_workspace.open_first_after_refresh = false;
-                self.open_player_workspace_for_player(id, PlayerWorkspaceCenter::Inventory, cx);
+                self.open_player_workspace(id, PlayerWorkspaceCenter::Inventory, cx);
                 return;
             }
         } else if self.ui_state.active_right_panel == MapViewerRightPanel::Player {
@@ -458,7 +455,7 @@ impl MapViewerWindowView {
         self.ui_state.bottom_panel_open = !self.ui_state.bottom_panel_open;
         let size = size(px(self.window_width), px(self.window_height));
         if self.viewport.set_size(self.center_stage_size(size)) {
-            self.invalidate_professional_overlay_for_viewport_change();
+            self.invalidate_overlay_queries();
             self.ensure_visible_tiles(cx);
             self.refresh_professional_render_caches(cx);
             self.refresh_professional_overlays(cx);
@@ -488,7 +485,7 @@ impl MapViewerWindowView {
         panel: MapViewerRightPanel,
         cx: &mut Context<Self>,
     ) {
-        if panel == MapViewerRightPanel::Preview3d && self.import_workspace_active() {
+        if panel == MapViewerRightPanel::Preview3d && self.import_active() {
             self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Preview, cx);
             return;
         }
@@ -624,12 +621,12 @@ impl MapViewerWindowView {
                     clamp_right_panel_width(drag.start_size + delta, self.window_width);
                 let size = size(px(self.window_width), px(self.window_height));
                 if self.viewport.set_size(self.center_stage_size(size)) {
-                    self.invalidate_professional_overlay_for_viewport_change();
+                    self.invalidate_overlay_queries();
                     self.ensure_visible_tiles_throttled(cx);
                     self.professional.pending_overlay_refresh = true;
                     self.schedule_viewport_idle_refresh(cx);
                     let colors = self.theme_colors(cx);
-                    self.sync_interaction_tile_layer_snapshot(colors, cx);
+                    self.sync_interaction_snapshot(colors, cx);
                 }
             }
             DockDrag::BottomPanel => {
@@ -639,12 +636,12 @@ impl MapViewerWindowView {
                     clamp_bottom_panel_height(drag.start_size + delta, self.window_height);
                 let size = size(px(self.window_width), px(self.window_height));
                 if self.viewport.set_size(self.center_stage_size(size)) {
-                    self.invalidate_professional_overlay_for_viewport_change();
+                    self.invalidate_overlay_queries();
                     self.ensure_visible_tiles_throttled(cx);
                     self.professional.pending_overlay_refresh = true;
                     self.schedule_viewport_idle_refresh(cx);
                     let colors = self.theme_colors(cx);
-                    self.sync_interaction_tile_layer_snapshot(colors, cx);
+                    self.sync_interaction_snapshot(colors, cx);
                 }
             }
         }
@@ -702,7 +699,7 @@ impl MapViewerWindowView {
         changed
     }
 
-    pub(super) fn cancel_pointer_captures_for_panel_interaction(
+    pub(super) fn cancel_pointer_captures(
         &mut self,
         source: &'static str,
         cx: &mut Context<Self>,
@@ -788,11 +785,8 @@ impl MapViewerWindowView {
             last_movement_y: 0.0,
         });
         let colors = self.theme_colors(cx);
-        if self.sync_interaction_tile_layer_snapshot(colors, cx)
-            && should_notify_parent_after_interaction_layer_sync()
-        {
-            cx.notify();
-        }
+        self.sync_interaction_snapshot(colors, cx);
+        cx.notify();
     }
 
     pub(super) fn update_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
@@ -827,7 +821,7 @@ impl MapViewerWindowView {
             drag.moved = true;
             self.drag = Some(drag);
             self.mark_viewport_render_dirty();
-            self.invalidate_professional_overlay_for_viewport_change();
+            self.invalidate_overlay_queries();
             overlay_invalidated = true;
         }
         if let Some(active_drag) = self.drag.as_mut() {
@@ -851,17 +845,14 @@ impl MapViewerWindowView {
         });
         if should_sync {
             self.last_drag_canvas_snapshot_sync = Some(now);
-            let snapshot_changed = if overlay_invalidated {
+            if overlay_invalidated {
                 self.last_synced_canvas_snapshot_key = None;
                 self.last_synced_tile_layer_snapshot_key = None;
                 self.sync_canvas_snapshot(colors, cx);
-                true
             } else {
-                self.sync_interaction_tile_layer_snapshot(colors, cx)
-            };
-            if snapshot_changed && should_notify_parent_after_interaction_layer_sync() {
-                cx.notify();
+                self.sync_interaction_snapshot(colors, cx);
             }
+            cx.notify();
             self.ensure_visible_tiles_throttled(cx);
         }
     }
@@ -895,13 +886,13 @@ impl MapViewerWindowView {
 
     fn selection_screen_bounds(&self, selection: ChunkSelection) -> Option<SelectionScreenBounds> {
         let bounds = selection.bounds();
-        let (left, top) = viewport_screen_position(
+        let (left, top) = screen_position(
             self.viewport,
             self.active_layout,
             bounds.min_chunk_x.saturating_mul(16),
             bounds.min_chunk_z.saturating_mul(16),
         )?;
-        let (right, bottom) = viewport_screen_position(
+        let (right, bottom) = screen_position(
             self.viewport,
             self.active_layout,
             bounds.max_chunk_x.saturating_add(1).saturating_mul(16),
@@ -1268,7 +1259,15 @@ impl MapViewerWindowView {
                                 )),
                             ));
                         }
-                        self.set_2d_selection_height_bound(upper, value, cx);
+                        self.set_selection_bound(
+                            if upper {
+                                SelectionBound::Upper
+                            } else {
+                                SelectionBound::Lower
+                            },
+                            value,
+                            cx,
+                        );
                         Ok(format!(
                             "选区高度已设为 Y {}..{}",
                             self.professional
@@ -1348,7 +1347,7 @@ impl MapViewerWindowView {
         self.viewport
             .center_on_block(block_x, block_z, self.active_layout);
         self.mark_viewport_render_dirty();
-        self.invalidate_professional_overlay_for_viewport_change();
+        self.invalidate_overlay_queries();
         self.context_menu = None;
         self.ensure_visible_tiles(cx);
         self.professional.pending_overlay_refresh = true;
@@ -1383,8 +1382,8 @@ impl MapViewerWindowView {
         chunk_from_block(block_x, block_z, self.dimension)
     }
 
-    pub(super) fn center_paste_preview_in_view(&mut self, cx: &mut Context<Self>) {
-        let Some((center_block_x, center_block_z)) = self.paste_preview_center_block() else {
+    pub(super) fn center_view_on_preview(&mut self, cx: &mut Context<Self>) {
+        let Some((center_block_x, center_block_z)) = self.preview_center_block() else {
             return;
         };
         self.viewport
@@ -1395,7 +1394,7 @@ impl MapViewerWindowView {
         self.sync_canvas_snapshot(colors, cx);
     }
 
-    fn paste_preview_center_block(&self) -> Option<(i32, i32)> {
+    fn preview_center_block(&self) -> Option<(i32, i32)> {
         let preview = self.professional.paste_preview.as_ref()?;
         let min_x = preview.targets.iter().map(|chunk| chunk.x).min()?;
         let max_x = preview.targets.iter().map(|chunk| chunk.x).max()?;
@@ -1480,7 +1479,7 @@ impl MapViewerWindowView {
         let Some(copied_chunk) = self.professional.copied_chunk.as_ref() else {
             return Vec::new();
         };
-        let source_bounds = copied_chunk_chunk_bounds(copied_chunk);
+        let source_bounds = copied_chunk_bounds(copied_chunk);
         copied_chunk
             .chunks
             .iter()
@@ -1513,21 +1512,18 @@ impl MapViewerWindowView {
             .collect()
     }
 
-    fn copied_chunk_preview_images_for_chunks(
+    fn preview_images_for_chunks(
         &self,
         chunks: &[ChunkPos],
     ) -> BTreeMap<ChunkPos, CopiedChunkPreviewImage> {
         chunks
             .iter()
-            .filter_map(|chunk| self.copied_chunk_preview_image_from_canvas(*chunk))
+            .filter_map(|chunk| self.preview_image_for_chunk(*chunk))
             .map(|image| (image.chunk, image))
             .collect()
     }
 
-    fn copied_chunk_preview_image_from_canvas(
-        &self,
-        source: ChunkPos,
-    ) -> Option<CopiedChunkPreviewImage> {
+    fn preview_image_for_chunk(&self, source: ChunkPos) -> Option<CopiedChunkPreviewImage> {
         let chunks_per_tile = i32::try_from(self.active_layout.chunks_per_tile)
             .ok()?
             .max(1);
@@ -1636,7 +1632,7 @@ impl MapViewerWindowView {
         true
     }
 
-    pub(super) fn start_paste_preview_from_keyboard(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn start_paste_preview(&mut self, cx: &mut Context<Self>) {
         let target = self.viewport_center_chunk_pos();
         if !self.set_paste_preview(
             target,
@@ -1656,7 +1652,7 @@ impl MapViewerWindowView {
 
     pub(super) fn rotate_paste_preview(&mut self, clockwise: bool, cx: &mut Context<Self>) {
         let Some(preview) = self.professional.paste_preview.as_ref() else {
-            self.start_paste_preview_from_keyboard(cx);
+            self.start_paste_preview(cx);
             return;
         };
         let transform = if clockwise {
@@ -1705,7 +1701,7 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) {
         let Some(preview) = self.professional.paste_preview.clone() else {
-            self.start_paste_preview_from_keyboard(cx);
+            self.start_paste_preview(cx);
             return;
         };
         let transform = update(preview.transform);
@@ -1787,7 +1783,7 @@ impl MapViewerWindowView {
             self.professional.paste_preview.is_some() || !self.paste_preview_images.is_empty();
         self.clear_paste_preview_state(cx);
         if changed {
-            if self.import_workspace_active() {
+            if self.import_active() {
                 self.ui_state.import_workspace_mode = super::state::ImportWorkspaceMode::Preview;
             }
             self.status = SharedString::from("已取消粘贴预览");
@@ -1798,7 +1794,7 @@ impl MapViewerWindowView {
         changed
     }
 
-    fn update_paste_preview_target_from_hover(&mut self, cx: &mut Context<Self>) -> bool {
+    fn update_paste_preview_target(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(preview) = self.professional.paste_preview.as_ref() else {
             return false;
         };
@@ -1816,7 +1812,7 @@ impl MapViewerWindowView {
         moved
     }
 
-    fn move_paste_preview_to_stage_position(
+    fn move_paste_preview(
         &mut self,
         position: Point<Pixels>,
         cx: &mut Context<Self>,
@@ -1824,18 +1820,18 @@ impl MapViewerWindowView {
         if self.professional.paste_preview.is_none() {
             return false;
         }
-        let auto_pan = self.paste_preview_auto_pan_for_position(position);
+        let auto_pan = self.paste_preview_auto_pan(position);
         if let Some(preview) = self.professional.paste_preview.as_mut() {
             preview.auto_pan = auto_pan;
         }
         let changed_hover = self.update_hover_block(position);
         if changed_hover {
-            return self.update_paste_preview_target_from_hover(cx);
+            return self.update_paste_preview_target(cx);
         }
         false
     }
 
-    fn paste_preview_auto_pan_for_position(
+    fn paste_preview_auto_pan(
         &self,
         position: Point<Pixels>,
     ) -> Option<PastePreviewAutoPan> {
@@ -1877,7 +1873,7 @@ impl MapViewerWindowView {
         self.viewport.offset_y += auto_pan.velocity_y;
         self.pending_viewport_refresh = true;
         self.professional.pending_overlay_refresh = true;
-        self.move_paste_preview_to_stage_position(auto_pan.local_position, cx);
+        self.move_paste_preview(auto_pan.local_position, cx);
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
         true
@@ -1901,13 +1897,13 @@ impl MapViewerWindowView {
         }
         self.begin_exclusive_pointer_interaction();
         self.set_paste_preview_drag(Some(PastePreviewDrag::Move), cx);
-        self.move_paste_preview_to_stage_position(local_position, cx);
+        self.move_paste_preview(local_position, cx);
         self.status = SharedString::from("粘贴预览移动中：拖动预览区域定位，松开后停止移动");
         cx.notify();
         true
     }
 
-    fn begin_paste_preview_move_from_toolbar(&mut self, cx: &mut Context<Self>) -> bool {
+    fn begin_paste_preview_move(&mut self, cx: &mut Context<Self>) -> bool {
         if self
             .professional
             .paste_preview
@@ -1994,7 +1990,7 @@ impl MapViewerWindowView {
             .entity_points
             .iter()
             .filter_map(|entity| {
-                let (screen_x, screen_y) = viewport_screen_position(
+                let (screen_x, screen_y) = screen_position(
                     self.viewport,
                     self.active_layout,
                     entity.block_x.floor() as i32,
@@ -2110,7 +2106,7 @@ impl MapViewerWindowView {
                 pressed_button,
             } => self.handle_canvas_pointer_moved(position, pressed_button, cx),
             MapCanvasAction::BeginPastePreviewMove => {
-                self.begin_paste_preview_move_from_toolbar(cx);
+                self.begin_paste_preview_move(cx);
             }
             MapCanvasAction::ConfirmPastePreview => self.confirm_paste_preview(cx),
             MapCanvasAction::CancelPastePreview => {
@@ -2146,7 +2142,7 @@ impl MapViewerWindowView {
             match (drag, pressed_button) {
                 (PastePreviewDrag::Move, Some(MouseButton::Left)) => {
                     let local_position = self.stage_local_position(position);
-                    if self.move_paste_preview_to_stage_position(local_position, cx) {
+                    if self.move_paste_preview(local_position, cx) {
                         return;
                     }
                 }
@@ -2212,15 +2208,14 @@ impl MapViewerWindowView {
             selection.bounds().max_chunk_x,
             selection.bounds().max_chunk_z
         );
-        let Some(path) = pick_save_path_with_filter("Wavefront OBJ", &["obj"], &default_file_name)
-        else {
+        let Some(path) = pick_save_path("Wavefront OBJ", &["obj"], &default_file_name) else {
             self.status = SharedString::from("已取消导出 OBJ");
             cx.notify();
             return;
         };
         let path = PathBuf::from(path);
         let chunk_count = selection.bounds().chunk_count().max(1);
-        let task_total = Some(task_progress_units(chunk_count.saturating_add(2)));
+        let task_total = task_progress_units(chunk_count.saturating_add(2));
         let task_id = task_manager::create_task(
             task_manager::TaskOptions::new("导出 OBJ", "map_export")
                 .detail(format!(
@@ -2234,8 +2229,8 @@ impl MapViewerWindowView {
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
-        task_manager::register_task_cooperative_cancel(task_id.clone());
-        task_manager::register_task_cancel_hook(task_id.clone(), {
+        task_manager::register_cooperative_cancel(task_id.clone());
+        task_manager::register_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
         });
@@ -2280,17 +2275,17 @@ impl MapViewerWindowView {
                 let result = (|| {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     let mut resolved_package_paths =
-                        bedrock_block_model::world_resource_pack_paths(&world_path);
+                        bedrock_block_model::resource_pack::paths_for_world(&world_path);
                     for package_path in package_paths {
-                        bedrock_block_model::push_unique_resource_pack_path(
+                        bedrock_block_model::resource_pack::append_unique_path(
                             &mut resolved_package_paths,
                             package_path,
                         );
                     }
                     for package_path in
-                        crate::core::minecraft::paths::discover_local_package_roots_with_vanilla()
+                        crate::core::minecraft::paths::discover_local_package_roots()
                     {
-                        bedrock_block_model::push_unique_resource_pack_path(
+                        bedrock_block_model::resource_pack::append_unique_path(
                             &mut resolved_package_paths,
                             package_path,
                         );
@@ -2302,7 +2297,7 @@ impl MapViewerWindowView {
                     .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
 
                     let completed_chunks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                    let mesh = load_preview_3d_mesh(
+                    let mesh = super::preview_3d::load_mesh(
                         Preview3dLoadOptions {
                             world_path: &world_path,
                             bounds,
@@ -2362,7 +2357,7 @@ impl MapViewerWindowView {
                     {
                         tracing::debug!("obj export text progress receiver dropped");
                     }
-                    let export_target = bedrock_block_model::ObjExportTarget::from_obj_path(&path)
+                    let export_target = bedrock_block_model::ObjExportTarget::from_path(&path)
                         .map_err(|error| error.to_string())?;
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     let texture_directory_name = "textures";
@@ -2404,7 +2399,7 @@ impl MapViewerWindowView {
                     {
                         tracing::debug!("obj export write progress receiver dropped");
                     }
-                    bedrock_block_model::write_obj_export_files(
+                    bedrock_block_model::obj::write_export_files(
                         &export,
                         &export_target.obj_path,
                         &export_target.material_library_path,
@@ -2528,8 +2523,8 @@ impl MapViewerWindowView {
             cx.notify();
             return;
         }
-        let default_file_name = region_package::default_region_package_file_name(selection);
-        let Some(path) = pick_save_path_with_filter(
+        let default_file_name = region_package::default_file_name(selection);
+        let Some(path) = pick_save_path(
             "BMCBL Region",
             &[region_package::REGION_PACKAGE_EXTENSION, "bmcbl-region"],
             &default_file_name,
@@ -2554,8 +2549,8 @@ impl MapViewerWindowView {
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
-        task_manager::register_task_cooperative_cancel(task_id.clone());
-        task_manager::register_task_cancel_hook(task_id.clone(), {
+        task_manager::register_cooperative_cancel(task_id.clone());
+        task_manager::register_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
         });
@@ -2594,7 +2589,7 @@ impl MapViewerWindowView {
                 let result = (|| {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     let mut progress_sync = ChunkTransferTaskProgressSync::default();
-                    let bytes = region_package::export_region_package_blocking(
+                    let bytes = region_package::export(
                         &world_path,
                         source_anchor,
                         chunks,
@@ -2615,7 +2610,7 @@ impl MapViewerWindowView {
                         },
                     )?;
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
-                    region_package::write_region_package(&path, &bytes)?;
+                    region_package::write(&path, &bytes)?;
                     Ok::<PathBuf, String>(path)
                 })();
                 let status =
@@ -2711,7 +2706,7 @@ impl MapViewerWindowView {
         let target = self.active_target_chunk_pos();
         let Some(path) = paths
             .iter()
-            .find(|path| region_package::is_region_package_path(path))
+            .find(|path| region_package::is_path(path))
             .cloned()
         else {
             if let Some(path) = paths
@@ -2733,7 +2728,8 @@ impl MapViewerWindowView {
 
     pub(super) fn open_import_structure_dialog(&mut self, cx: &mut Context<Self>) {
         let target = self.viewport_center_chunk_pos();
-        let Some(path) = pick_file_path_with_filter(
+        let Some(path) = pick_file_path(
+            None,
             "Bedrock Region / Structure",
             &[
                 region_package::REGION_PACKAGE_EXTENSION,
@@ -2746,7 +2742,7 @@ impl MapViewerWindowView {
             return;
         };
         let path = PathBuf::from(path);
-        if region_package::is_region_package_path(&path) {
+        if region_package::is_path(&path) {
             self.import_region_package_at(path, target, cx);
         } else if mcstructure::is_mcstructure_path(&path) {
             self.import_mcstructure_at(path, target, false, cx);
@@ -2775,8 +2771,8 @@ impl MapViewerWindowView {
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
-        task_manager::register_task_cooperative_cancel(task_id.clone());
-        task_manager::register_task_cancel_hook(task_id.clone(), {
+        task_manager::register_cooperative_cancel(task_id.clone());
+        task_manager::register_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
         });
@@ -2800,12 +2796,10 @@ impl MapViewerWindowView {
             let result = cx
                 .background_spawn(async move {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
-                    region_package::read_region_package(&path).and_then(|copied_chunk| {
+                    region_package::read(&path).and_then(|copied_chunk| {
                         check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                         let (preview_images, preview_error) =
-                            match import_preview::copied_chunk_preview_images_for_import(
-                                &copied_chunk,
-                            ) {
+                            match import_preview::copied_chunk_preview_images(&copied_chunk) {
                                 Ok(images) => (images, None),
                                 Err(error) => (BTreeMap::new(), Some(error)),
                             };
@@ -2857,7 +2851,7 @@ impl MapViewerWindowView {
                             None,
                             cx,
                         ) {
-                            this.center_paste_preview_in_view(cx);
+                            this.center_view_on_preview(cx);
                             let message = SharedString::from(format!(
                                 "已导入 {} 个 chunk 区域包，预览 {} 个 · 目标 {},{} · 确认后写入",
                                 chunk_count,
@@ -2932,8 +2926,8 @@ impl MapViewerWindowView {
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
-        task_manager::register_task_cooperative_cancel(task_id.clone());
-        task_manager::register_task_cancel_hook(task_id.clone(), {
+        task_manager::register_cooperative_cancel(task_id.clone());
+        task_manager::register_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
         });
@@ -2959,7 +2953,7 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     let import =
-                        mcstructure::read_mcstructure_as_copied_chunk(&path, target, origin_y)?;
+                        mcstructure::read_import(&path, target, origin_y)?;
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     Ok::<_, String>((path, import))
                 })
@@ -3008,7 +3002,7 @@ impl MapViewerWindowView {
                             None,
                             cx,
                         ) {
-                            this.center_paste_preview_in_view(cx);
+                            this.center_view_on_preview(cx);
                             if open_3d_after_import {
                                 this.show_right_preview_3d_panel(cx);
                                 this.refresh_import_preview_3d(cx);
@@ -3067,8 +3061,8 @@ impl MapViewerWindowView {
         };
         let export_center_y = self.y_layer;
         let default_file_name =
-            mcstructure::default_mcstructure_file_name(selection, export_center_y);
-        let Some(path) = pick_save_path_with_filter(
+            mcstructure::default_file_name(selection, export_center_y);
+        let Some(path) = pick_save_path(
             "Bedrock Structure",
             &[mcstructure::MCSTRUCTURE_EXTENSION],
             &default_file_name,
@@ -3093,8 +3087,8 @@ impl MapViewerWindowView {
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
-        task_manager::register_task_cooperative_cancel(task_id.clone());
-        task_manager::register_task_cancel_hook(task_id.clone(), {
+        task_manager::register_cooperative_cancel(task_id.clone());
+        task_manager::register_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
         });
@@ -3131,7 +3125,7 @@ impl MapViewerWindowView {
                 let task_id_for_task = task_id_for_background;
                 let cancel_for_task = cancel_for_background;
                 let mut progress_sync = ChunkTransferTaskProgressSync::default();
-                let result = mcstructure::export_selection_mcstructure_blocking(
+                let result = mcstructure::export_selection(
                     &world_path,
                     bounds,
                     export_center_y,
@@ -3248,8 +3242,7 @@ impl MapViewerWindowView {
             || export_file_name_for_chunks("chunk-image", &chunks),
             |export| export.file_name.clone(),
         );
-        let Some(path) = pick_save_path_with_filter("PNG Image", &["png"], &default_file_name)
-        else {
+        let Some(path) = pick_save_path("PNG Image", &["png"], &default_file_name) else {
             self.status = SharedString::from("已取消导出区块图片");
             cx.notify();
             return;
@@ -3273,8 +3266,8 @@ impl MapViewerWindowView {
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
-        task_manager::register_task_cooperative_cancel(task_id.clone());
-        task_manager::register_task_cancel_hook(task_id.clone(), {
+        task_manager::register_cooperative_cancel(task_id.clone());
+        task_manager::register_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
         });
@@ -3298,7 +3291,7 @@ impl MapViewerWindowView {
         let cpu_budget = self.cpu_budget;
         let tile_chunk_index =
             preview_tile_chunk_index_for_chunks(&chunks, layout, &self.tile_chunk_index);
-        let canvas_preview_images = self.copied_chunk_preview_images_for_chunks(&chunks);
+        let canvas_preview_images = self.preview_images_for_chunks(&chunks);
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -3321,7 +3314,7 @@ impl MapViewerWindowView {
                     let export = if let Some(export) = cached_export {
                         export
                     } else {
-                        build_chunk_image_export_blocking(
+                        build_chunk_image_export(
                             world_path,
                             render_backend,
                             render_gpu_backend,
@@ -3488,8 +3481,8 @@ impl MapViewerWindowView {
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
-        task_manager::register_task_cooperative_cancel(task_id.clone());
-        task_manager::register_task_cancel_hook(task_id.clone(), {
+        task_manager::register_cooperative_cancel(task_id.clone());
+        task_manager::register_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
         });
@@ -3521,7 +3514,7 @@ impl MapViewerWindowView {
         let render_gpu_backend = self.render_gpu_backend;
         let tile_chunk_index =
             preview_tile_chunk_index_for_chunks(&chunks, layout, &self.tile_chunk_index);
-        let canvas_preview_images = self.copied_chunk_preview_images_for_chunks(&chunks);
+        let canvas_preview_images = self.preview_images_for_chunks(&chunks);
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -3542,9 +3535,9 @@ impl MapViewerWindowView {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     let world = World::open(&world_path, bedrock_world::OpenOptions::default())
                         .map_err(|error| error.to_string())?;
-                    let editor = MapWorldEditor::from_world(world);
+                    let editor = WorldEditor::from_world(world);
                     let mut progress_sync = ChunkTransferTaskProgressSync::default();
-                    let copied_chunk = copy_chunks_blocking(
+                    let copied_chunk = copy_chunks(
                         &editor,
                         source_anchor,
                         chunks,
@@ -3570,31 +3563,30 @@ impl MapViewerWindowView {
                             total: copied_chunk.chunk_count(),
                         },
                     ));
-                    let (preview_images, preview_error) =
-                        match render_copied_chunk_preview_images_blocking(
-                            world_path,
-                            render_backend,
-                            render_gpu_backend,
-                            mode,
-                            dimension,
-                            layout,
-                            cpu_budget,
-                            tile_chunk_index,
-                            &copied_chunk,
-                            Some(&cancel_for_task),
-                        ) {
-                            Ok(mut preview_images) if !preview_images.is_empty() => {
-                                for (chunk, image) in canvas_preview_images {
-                                    preview_images.entry(chunk).or_insert(image);
-                                }
-                                (preview_images, None)
+                    let (preview_images, preview_error) = match render_copy_previews(
+                        world_path,
+                        render_backend,
+                        render_gpu_backend,
+                        mode,
+                        dimension,
+                        layout,
+                        cpu_budget,
+                        tile_chunk_index,
+                        &copied_chunk,
+                        Some(&cancel_for_task),
+                    ) {
+                        Ok(mut preview_images) if !preview_images.is_empty() => {
+                            for (chunk, image) in canvas_preview_images {
+                                preview_images.entry(chunk).or_insert(image);
                             }
-                            Ok(_) => (canvas_preview_images, None),
-                            Err(error) if is_map_operation_cancelled_error(&error) => {
-                                return Err(error);
-                            }
-                            Err(error) => (canvas_preview_images, Some(error)),
-                        };
+                            (preview_images, None)
+                        }
+                        Ok(_) => (canvas_preview_images, None),
+                        Err(error) if is_map_operation_cancelled_error(&error) => {
+                            return Err(error);
+                        }
+                        Err(error) => (canvas_preview_images, Some(error)),
+                    };
                     task_manager::update_progress(
                         &task_id_for_task,
                         ProgressUpdate::advance(task_progress_units(copied_chunk.chunk_count()))
@@ -3848,11 +3840,11 @@ impl MapViewerWindowView {
         mode: SlimeFarmScopeMode,
         cx: &mut Context<Self>,
     ) {
-        if self.slime_farm_scope_mode == mode && self.slime_farm_advanced_scan.is_none() {
+        if self.slime_farm_scope_mode == mode && self.advanced_slime_scan.is_none() {
             return;
         }
         self.slime_farm_scope_mode = mode;
-        self.slime_farm_advanced_scan = None;
+        self.advanced_slime_scan = None;
         self.cancel_slime_farm_candidate_query();
         self.professional.slime_farm_candidates = None;
         self.professional.highlighted_slime_candidate = None;
@@ -3937,7 +3929,7 @@ impl MapViewerWindowView {
             cx.notify();
             return;
         };
-        self.load_edit_detail(EditTarget::HsaChunk(chunk), cx);
+        self.load_edit_detail(EditTarget::HsaChunk { chunk, source: None }, cx);
     }
 
     pub(super) fn open_context_block_entities_editor(&mut self, cx: &mut Context<Self>) {
@@ -3946,10 +3938,10 @@ impl MapViewerWindowView {
             cx.notify();
             return;
         };
-        self.load_edit_detail(EditTarget::BlockEntities(chunk), cx);
+        self.load_edit_detail(EditTarget::BlockEntities { chunk, source: None }, cx);
     }
 
-    pub(super) fn open_context_block_entity_at_editor(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn open_context_block_entity_editor(&mut self, cx: &mut Context<Self>) {
         let Some(menu) = self.context_menu else {
             return;
         };
@@ -3986,7 +3978,7 @@ impl MapViewerWindowView {
             cx.notify();
             return;
         };
-        self.load_edit_detail(EditTarget::HeightMap(chunk), cx);
+        self.load_edit_detail(EditTarget::HeightMap { chunk, version: None }, cx);
     }
 
     pub(super) fn open_context_biome_storage_editor(&mut self, cx: &mut Context<Self>) {
@@ -3995,7 +3987,7 @@ impl MapViewerWindowView {
             cx.notify();
             return;
         };
-        self.load_edit_detail(EditTarget::BiomeStorage(chunk), cx);
+        self.load_edit_detail(EditTarget::BiomeStorage { chunk, version: None }, cx);
     }
 
     pub(super) fn context_chunk_pos(&self) -> Option<ChunkPos> {
@@ -4088,23 +4080,23 @@ pub(super) fn preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> 
         latest_preview_resource_package(state.versions.as_ref())
     });
     if let Some(path) = selected {
-        bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, path);
+        bedrock_block_model::resource_pack::append_unique_path(&mut package_paths, path);
     }
     if let Some(path) = newest_bmcbl_resource_package() {
-        bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, path);
+        bedrock_block_model::resource_pack::append_unique_path(&mut package_paths, path);
     }
     let launcher_path = cx.read_global(|state: &LauncherState, _cx| {
         let path = state.package_path.to_string();
         (!path.trim().is_empty()).then(|| PathBuf::from(path))
     });
     if let Some(path) = launcher_path {
-        bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, path);
+        bedrock_block_model::resource_pack::append_unique_path(&mut package_paths, path);
     }
 
     for package_path in
-        crate::core::minecraft::paths::infer_package_roots_from_world_path(world_path)
+        crate::core::minecraft::paths::infer_package_roots(world_path)
     {
-        bedrock_block_model::push_unique_resource_pack_path(&mut package_paths, package_path);
+        bedrock_block_model::resource_pack::append_unique_path(&mut package_paths, package_path);
     }
 
     select_preview_resource_package(package_paths)
@@ -4312,7 +4304,7 @@ fn paste_preview_image_for_chunk(
     })
 }
 
-fn copied_chunk_chunk_bounds(copied_chunk: &CopiedChunkData) -> Option<(i32, i32, i32, i32)> {
+fn copied_chunk_bounds(copied_chunk: &CopiedChunkData) -> Option<(i32, i32, i32, i32)> {
     let mut chunks = copied_chunk.chunks.iter().map(|chunk| chunk.chunk);
     let first = chunks.next()?;
     let (mut min_x, mut max_x, mut min_z, mut max_z) = (first.x, first.x, first.z, first.z);
@@ -4375,7 +4367,7 @@ fn fallback_copied_chunk_preview_image(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_copied_chunk_preview_images_blocking(
+fn render_copy_previews(
     world_path: PathBuf,
     render_backend: RenderBackend,
     render_gpu_backend: RenderGpuBackend,
@@ -4434,11 +4426,8 @@ fn render_copied_chunk_preview_images_blocking(
     );
     let render_cancel = RenderCancelFlag::new();
     let (event_sender, mut event_receiver) = unbounded::<TileRenderEvent>();
-    let tile_cache_validation_seed = bedrock_render::render_preset_cache_validation_seed(
-        &world_path,
-        render_backend,
-        render_gpu_backend,
-    );
+    let tile_cache_validation_seed =
+        bedrock_render::cache::preset_validation_seed(render_backend, render_gpu_backend);
     render_tile_batch_stream(
         TileBatchRequest {
             render_session,
@@ -4639,7 +4628,7 @@ fn preview_source_pixel_to_rgba(pixel_format: TilePixelFormat, pixel: &[u8]) -> 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_chunk_image_export_blocking(
+fn build_chunk_image_export(
     world_path: PathBuf,
     render_backend: RenderBackend,
     render_gpu_backend: RenderGpuBackend,
@@ -4668,9 +4657,9 @@ fn build_chunk_image_export_blocking(
     });
     let world = World::open(&world_path, bedrock_world::OpenOptions::default())
         .map_err(|error| error.to_string())?;
-    let editor = MapWorldEditor::from_world(world);
+    let editor = WorldEditor::from_world(world);
     let copied_chunk =
-        copy_chunks_blocking(&editor, source_anchor, chunks, cancel, |copy_progress| {
+        copy_chunks(&editor, source_anchor, chunks, cancel, |copy_progress| {
             progress(copy_progress);
         })
         .map_err(|error| error.to_string())?;
@@ -4683,7 +4672,7 @@ fn build_chunk_image_export_blocking(
         completed: 0,
         total: chunk_count,
     });
-    let mut preview_images = render_copied_chunk_preview_images_blocking(
+    let mut preview_images = render_copy_previews(
         world_path,
         render_backend,
         render_gpu_backend,

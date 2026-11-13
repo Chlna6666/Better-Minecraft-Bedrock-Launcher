@@ -1,10 +1,10 @@
 use super::super::import_workspace::import_preview_label;
 use super::*;
 
-impl MapViewerWindowView {
+impl View {
     /// Inventory delivery is not a world placement. Show the actual map mosaic and
     /// selected player here instead of opening an unrelated terrain canvas.
-    pub(in super::super) fn render_map_image_inventory_workspace(
+    pub(in super::super) fn render_map_inventory_workspace(
         &self,
         colors: &ThemeColors,
     ) -> Div {
@@ -76,7 +76,7 @@ impl MapViewerWindowView {
     }
 
     /// Non-destructive placement inspector sharing the generated map image.
-    pub(in super::super) fn render_map_image_placement_thumbnail(
+    pub(in super::super) fn render_map_placement_thumbnail(
         &self,
         colors: &ThemeColors,
     ) -> Div {

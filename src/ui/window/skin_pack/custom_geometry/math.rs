@@ -126,7 +126,10 @@ impl GeometryBounds {
     }
 
     fn is_finite(self) -> bool {
-        self.min.iter().chain(self.max.iter()).all(|value| value.is_finite())
+        self.min
+            .iter()
+            .chain(self.max.iter())
+            .all(|value| value.is_finite())
     }
 }
 
@@ -143,9 +146,9 @@ pub(super) struct ModelSpace {
 }
 
 /// Lowest preview Y of the reference player skeleton used by the skin preview.
-pub(super) const PREVIEW_FEET_Y: f32 = -4.0;
+pub(in crate::ui::window::skin_pack) const PREVIEW_FEET_Y: f32 = -4.0;
 /// Highest preview Y of the reference player skeleton used by the skin preview.
-pub(super) const PREVIEW_HEAD_TOP_Y: f32 = 16.0;
+pub(in crate::ui::window::skin_pack) const PREVIEW_HEAD_TOP_Y: f32 = 16.0;
 
 const MODEL_SPACE_MIN_SCALE: f32 = 0.02;
 const MODEL_SPACE_MAX_SCALE: f32 = 4.0;

@@ -2,20 +2,18 @@ use image::DynamicImage;
 use serde_json::Value;
 
 use super::super::color::{Face, shade_layer_edge_color};
-use super::super::custom_geometry_json::array3;
-use super::super::custom_geometry_math::{add3, normal_from_corners, rotate_point_around};
-use super::super::custom_geometry_uv::{
-    GeometryTextureRegion, cube_uv_regions, texture_grid_count,
-};
 use super::super::geometry::{
     CuboidSize, FaceGrid, QuadEdgeMask, face_pixel_corners, push_quad_with_edges,
 };
+use super::json::array3;
+use super::math::{add3, normal_from_corners, rotate_point_around};
+use super::uv::{GeometryTextureRegion, cube_uv_regions, texture_grid_count};
 use super::{
     BonePoses, CustomGeometryPartBuilder, TextureSpace, ensure_capacity, sample_uv_color,
     transform_point_for_bone_unmapped,
 };
 
-const CUSTOM_GEOMETRY_MAX_CUBE_TEXELS: usize = 240_000;
+const MAX_TEXELS: usize = 240_000;
 
 pub(super) fn push_cube(
     image: &DynamicImage,
@@ -66,7 +64,7 @@ pub(super) fn push_cube(
             .unwrap_or(0.0),
     );
 
-    for face in cube_faces(size) {
+    for face in faces(size) {
         let Some(region) = regions.region(*face) else {
             continue;
         };
@@ -105,7 +103,7 @@ fn push_cube_face(
     };
     let texel_count = (grid.width as usize).saturating_mul(grid.height as usize);
     builder.cube_texel_count = builder.cube_texel_count.saturating_add(texel_count);
-    if builder.cube_texel_count > CUSTOM_GEOMETRY_MAX_CUBE_TEXELS {
+    if builder.cube_texel_count > MAX_TEXELS {
         return Err("自定义皮肤 geometry.json cube 贴图面过多".to_string());
     }
 
@@ -137,7 +135,7 @@ fn push_cube_face(
     Ok(())
 }
 
-fn cube_faces(size: [f32; 3]) -> &'static [Face] {
+fn faces(size: [f32; 3]) -> &'static [Face] {
     match zero_dimension_axis(size) {
         Some(0) => &[Face::Right, Face::Left],
         Some(1) => &[Face::Top, Face::Bottom],

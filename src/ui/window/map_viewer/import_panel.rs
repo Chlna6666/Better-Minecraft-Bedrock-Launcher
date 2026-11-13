@@ -1,11 +1,10 @@
 //! Shared chrome and task feedback for the three import editors.
 
-use super::generator_panel::generator_choice;
-use super::model::MapViewerWindowView;
+use super::model::View;
 use super::panels::dock_close_button;
 use super::prelude::*;
 
-impl MapViewerWindowView {
+impl View {
     /// Keep the close control visible while the editor's parameters scroll beneath it.
     pub(super) fn render_import_panel_header(
         &self,
@@ -95,7 +94,7 @@ impl MapViewerWindowView {
                             .child(format!("预计剩余 {}", task.eta)),
                     )
                     .when(!task.cancel_requested, |panel| {
-                        panel.child(generator_choice(colors, "取消任务", false).on_mouse_down(
+                        panel.child(choice::chip(colors, "取消任务", false).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |_this, _event, _window, cx| {
                                 task_manager::cancel_task(&task_id);

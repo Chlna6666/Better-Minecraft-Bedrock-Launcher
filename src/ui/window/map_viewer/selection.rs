@@ -22,6 +22,12 @@ enum RightSelectionModifierMode {
     Paint,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SelectionBound {
+    Lower,
+    Upper,
+}
+
 #[derive(Clone, Debug)]
 struct AdvancedSelectionState {
     selection: Option<ChunkSelection>,
@@ -68,7 +74,7 @@ fn advanced_selection_token(selection: ChunkSelection) -> Option<u32> {
     Some(marker.wrapping_sub(i32::MIN) as u32)
 }
 
-fn next_advanced_selection_token_for_dimension(
+fn next_advanced_selection_token(
     registry: &AdvancedSelectionRegistry,
     logical_dimension: Dimension,
 ) -> u32 {
@@ -102,7 +108,7 @@ fn trim_advanced_selection_registry(registry: &mut AdvancedSelectionRegistry) {
 ///
 /// Ctrl keeps the original rectangular stretch-and-union interaction. Alt uses
 /// a chunk-grid paint stroke. Alt takes precedence when both modifiers are held.
-pub(super) fn set_right_selection_modifier_requested(control: bool, alt: bool) {
+pub(super) fn set_right_modifier_requested(control: bool, alt: bool) {
     let mode = if alt {
         RIGHT_SELECTION_MODE_PAINT
     } else if control {
@@ -113,7 +119,7 @@ pub(super) fn set_right_selection_modifier_requested(control: bool, alt: bool) {
     RIGHT_SELECTION_MODIFIER_REQUESTED.store(mode, Ordering::Release);
 }
 
-fn take_right_selection_modifier_requested() -> RightSelectionModifierMode {
+fn take_right_selection_mode() -> RightSelectionModifierMode {
     match RIGHT_SELECTION_MODIFIER_REQUESTED.swap(RIGHT_SELECTION_MODE_NONE, Ordering::AcqRel) {
         RIGHT_SELECTION_MODE_ADD_RECTANGLE => RightSelectionModifierMode::AddRectangle,
         RIGHT_SELECTION_MODE_PAINT => RightSelectionModifierMode::Paint,
@@ -189,7 +195,7 @@ fn advanced_selection_identity(
     chunks: &[ChunkPos],
 ) -> Option<(ChunkSelection, u32)> {
     let mut selection = chunk_selection_from_chunks(chunks)?;
-    let token = next_advanced_selection_token_for_dimension(registry, selection.start.dimension);
+    let token = next_advanced_selection_token(registry, selection.start.dimension);
     selection.end.dimension = advanced_selection_marker_dimension(token);
     Some((selection, token))
 }
@@ -436,7 +442,7 @@ pub(super) fn chunk_selection_from_chunks(chunks: &[ChunkPos]) -> Option<ChunkSe
     ))
 }
 
-pub(super) fn selection_chunks_are_rectangular(
+pub(super) fn chunks_are_rectangular(
     selection: ChunkSelection,
     exact_chunks: Option<&[ChunkPos]>,
 ) -> bool {
@@ -456,7 +462,7 @@ pub(super) fn selection_chunks_are_rectangular(
     })
 }
 
-pub(super) fn selection_contains_chunk(
+pub(super) fn contains_chunk(
     selection: ChunkSelection,
     exact_chunks: Option<&[ChunkPos]>,
     chunk: ChunkPos,
@@ -485,7 +491,7 @@ pub(super) struct RightSelectionDrag {
 
 impl RightSelectionDrag {
     pub(super) fn new(start_position: Point<Pixels>, start_chunk: ChunkPos) -> Self {
-        match take_right_selection_modifier_requested() {
+        match take_right_selection_mode() {
             RightSelectionModifierMode::AddRectangle => {
                 let session_id = begin_additive_selection(None);
                 return Self::add_rectangle(start_position, start_chunk, session_id);
@@ -539,7 +545,7 @@ impl RightSelectionDrag {
         button: SelectionPointerButton,
     ) -> Self {
         if button == SelectionPointerButton::Right {
-            match take_right_selection_modifier_requested() {
+            match take_right_selection_mode() {
                 RightSelectionModifierMode::AddRectangle => {
                     let session_id = begin_additive_selection(Some(selection));
                     return Self::add_rectangle(start_position, start_chunk, session_id);
@@ -555,9 +561,9 @@ impl RightSelectionDrag {
         let exact_chunks = exact_selection_chunks(selection);
         let exact_chunk_slice = exact_chunks.as_ref().map(|chunks| chunks.as_slice());
         let irregular = exact_chunk_slice
-            .is_some_and(|chunks| !selection_chunks_are_rectangular(selection, Some(chunks)));
+            .is_some_and(|chunks| !chunks_are_rectangular(selection, Some(chunks)));
         let target = if irregular {
-            if selection_contains_chunk(selection, exact_chunk_slice, start_chunk) {
+            if contains_chunk(selection, exact_chunk_slice, start_chunk) {
                 ExistingSelectionTarget::Inside
             } else {
                 ExistingSelectionTarget::Outside

@@ -8,7 +8,7 @@ use gpui::*;
 
 use crate::launch::ImportLaunchContext;
 use crate::ui::components::{modal, toast};
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 
 pub use view::ImportWindowView;
 
@@ -48,14 +48,10 @@ pub fn pick_and_open_import_window(
     target: ImportWindowTarget,
     cx: &mut App,
 ) {
-    let file_paths = crate::utils::file_picker::pick_file_paths_with_filter_for_window(
-        window,
-        filter_name,
-        extensions,
-    )
-    .into_iter()
-    .map(PathBuf::from)
-    .collect::<Vec<_>>();
+    let file_paths = crate::utils::file_picker::pick_file_paths(window, filter_name, extensions)
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
     if file_paths.is_empty() {
         return;
     }
@@ -153,7 +149,7 @@ pub fn render_import_overlay(
         .filter(|entry| entry.owner_window_id == window.window_handle().window_id().as_u64())
         .cloned()?;
     let dismiss = Rc::new(crate::ui::state::import::clear_import_overlay);
-    let surface = modal::modal_surface(
+    let surface = modal::surface(
         colors.settings_panel_bg,
         colors.border,
         px(900.0),
@@ -162,18 +158,18 @@ pub fn render_import_overlay(
     )
     .shadow_lg()
     .child(entry.view);
-    Some(modal::modal_layer_dismissible_with_handle(
-        entry.dismiss,
+    Some(modal::dismissible_layer(
         surface,
         colors.backdrop,
         dismiss,
+        modal::DismissOptions::default().with_handle(entry.dismiss),
     ))
 }
 
 fn start_game_package_import(file_path: PathBuf, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result =
-            crate::core::minecraft::local_package::start_local_game_package_import(file_path).await;
+            crate::core::minecraft::local_package::start_import(file_path).await;
         cx.update(|cx| match result {
             Ok(_) => toast::push(cx, t!("Import.game_import_started")),
             Err(error) => toast::error(cx, SharedString::from(error)),
@@ -183,7 +179,7 @@ fn start_game_package_import(file_path: PathBuf, cx: &mut App) {
 }
 
 pub fn open_import_window(file_path: PathBuf, target: ImportWindowTarget, cx: &mut App) {
-    let window_options = import_window_options(cx);
+    let window_options = options(cx);
     let import_view = Rc::new(RefCell::new(None));
     let import_view_in_closure = Rc::clone(&import_view);
     let import_context = ImportLaunchContext { file_path };
@@ -232,7 +228,7 @@ fn has_supported_extension(path: &Path, extensions: &[&str]) -> bool {
         })
 }
 
-fn import_window_options(cx: &mut App) -> WindowOptions {
+fn options(cx: &mut App) -> WindowOptions {
     let mut options = WindowOptions::default();
     let fixed_size = size(px(980.), px(720.));
     options.window_bounds = Some(WindowBounds::centered(fixed_size, cx));
