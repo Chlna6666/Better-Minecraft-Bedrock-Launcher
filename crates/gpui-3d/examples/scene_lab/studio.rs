@@ -326,7 +326,7 @@ pub(crate) fn build_instance_field(count: u32) -> Result<(Scene, f32), Box<dyn E
     Ok((scene, radius))
 }
 
-pub(crate) fn studio_camera(options: &StudioOptions) -> Camera {
+pub(crate) fn camera(options: &StudioOptions) -> Camera {
     let target = Vec3::new(0.0, 0.15, 0.3);
     let horizontal = options.distance * options.pitch.cos();
     let eye = Vec3::new(

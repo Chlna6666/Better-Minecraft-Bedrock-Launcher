@@ -81,7 +81,7 @@ mod raycast;
 mod render;
 mod scene;
 #[cfg(feature = "gpui-sidecar")]
-mod scene_view;
+pub mod scene_view;
 
 pub use animation::{
     AnimationError, AnimationScratch, Interpolation, Keyframe, RotationTrack, TransformTrack,
@@ -113,5 +113,5 @@ pub use scene::{EvaluatedScene, LodLevel, Node, NodeError, NodeId, Occluder, Sce
 pub use scene_view::{
     DistanceFog, FlipbookTexture, ProjectionRegion, SceneView, SceneViewConfigError,
     SceneViewRaycastError, SceneViewRaycastScratch, SceneViewTextureError, ScreenEffects,
-    VoxelDisplay, VoxelIllumination, VoxelShading, VoxelShadingError, scene_view,
+    VoxelDisplay, VoxelIllumination, VoxelShading, VoxelShadingError,
 };

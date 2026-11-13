@@ -1,6 +1,6 @@
 //! Offscreen differential check of retained ordering against a full GPU table rebuild.
 use super::*;
-use crate::scene_view::{artifacts, batching::group_voxel_batches};
+use crate::scene_view::{artifacts, batching::group_voxel_batches_from_meshes};
 use crate::{Material, Mesh, Node, Transform, Vec2, Vec3, Vertex};
 use gfx_core::*;
 use gfx_dx11::Dx11Device;
@@ -265,7 +265,7 @@ fn retained_transparent_order_matches_full_rebuild_pixels() {
     state
         .ensure_meshes(&mut device, BackendKind::Dx11, true)
         .unwrap();
-    state.batches = group_voxel_batches(&mut state.prepared.draws, &state.meshes);
+    state.batches = group_voxel_batches_from_meshes(&mut state.prepared.draws, &state.meshes);
     assert_eq!(state.batches[0].instance_count, 3);
     state.culling = Some(
         CullResources::create(

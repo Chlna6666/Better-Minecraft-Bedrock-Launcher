@@ -29,7 +29,7 @@ impl Render for SceneViewExample {
             .bg(rgb(0x141820))
             .p(px(24.0))
             .overflow_hidden()
-            .child(gpui_3d::scene_view(self.scene_view.clone()))
+            .child(gpui_3d::scene_view::element(self.scene_view.clone()))
     }
 }
 
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .transpose()?;
     let observed = Arc::new(AtomicBool::new(false));
     let observed_by_window = observed.clone();
-    let initial_presents = gpui::performance_metrics_snapshot().direct_present_count;
+    let initial_presents = gpui::diagnostics::performance_metrics::snapshot().direct_present_count;
     Application::with_renderer_options(RendererOptions {
         backend,
         fallback: RendererFallback::Disabled,
@@ -90,7 +90,7 @@ fn quit_after_present(
         let started_at = Instant::now();
         while started_at.elapsed() < timeout {
             Timer::after(Duration::from_millis(50)).await;
-            let metrics = gpui::performance_metrics_snapshot();
+            let metrics = gpui::diagnostics::performance_metrics::snapshot();
             if metrics.direct_present_count > initial_presents {
                 observed.store(true, Ordering::Release);
                 println!(

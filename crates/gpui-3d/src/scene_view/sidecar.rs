@@ -162,7 +162,7 @@ impl Mailbox {
             }
             let next_pending = state.pending.is_some();
             drop(state);
-            if std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some() {
+            if super::renderer::trace_timings() {
                 log::info!(
                     "gpui3d sidecar_cpu_prepared revision={} current={} draws={} elapsed_ms={:.2} next_pending={}",
                     request.revision,
@@ -223,12 +223,13 @@ fn merits_sidecar(scene: &Scene) -> bool {
 /// Stage an immutable Scene for background traversal. No UI or GPU context
 /// is held while the work runs; a newer revision replaces queued old work.
 pub(super) fn schedule(view: &SceneView) {
-    if std::env::var_os("GPUI_3D_DISABLE_SIDECAR").is_some()
-        // A few large regional meshes are heavy even with very few nodes.
-        // Lightweight widgets still stay on the direct path.
-        || !merits_sidecar(&view.scene)
-        || !view.animation.is_empty()
-    {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("GPUI_3D_DISABLE_SIDECAR").is_some() {
+        return;
+    }
+    // A few large regional meshes are heavy even with very few nodes.
+    // Lightweight widgets still stay on the direct path.
+    if !merits_sidecar(&view.scene) || !view.animation.is_empty() {
         return;
     }
     let slot = Arc::clone(&view.sidecar);
@@ -251,7 +252,7 @@ pub(super) fn pending(view: &SceneView) -> bool {
 
 /// Keep the GPUI offscreen extension ticking until the sidecar producer has
 /// delivered and the GPU owner has consumed its final completed publication.
-pub(super) fn needs_frame(view: &SceneView) -> bool {
+pub(super) fn frame_required(view: &SceneView) -> bool {
     view.sidecar.status(&view.scene, view.scene_transform, view.camera).1
 }
 

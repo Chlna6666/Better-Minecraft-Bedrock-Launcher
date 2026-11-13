@@ -69,7 +69,8 @@ CPU 保留的方块模型索引在编号小于 255 时使用字节，并保留�
 网格计数和分段表示输出容量，而非 GPU 最终可见面数。其他渲染路径按需生成补齐的 CPU 几何；
 体素网格不支持射线查询。世界解码、单元和模板提取、连接模型状态解析、LOD 选择及材质解析仍在 CPU；
 应用可继续用 CPU 生成实体几何。当前不包含独立异步计算队列。
-`GPUI_3D_TRACE_TIMINGS` 在原有绘制统计旁输出 `gpu_cull_batches_max`、`gpu_resident_draws_max`。
+仅调试构建读取 `GPUI_3D_TRACE_TIMINGS`，并在原有绘制统计旁输出
+`gpu_cull_batches_max`、`gpu_resident_draws_max`；正式构建不包含这条诊断路径。
 开发构建默认提供 `gpui3d gpu_owner_phase` 主机/API 耗时，
 `gpui3d gpu_hardware_phase` 则在 DX11、DX12、Vulkan 和 OpenGL 上
 报告由已完成的原生 GPU 时间戳测得的 Generated Mesh Compute 及

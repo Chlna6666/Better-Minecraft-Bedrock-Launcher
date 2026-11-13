@@ -163,13 +163,9 @@ const fn phase_name(index: usize) -> &'static str {
     }
 }
 
-/// Enabled in dev builds without environment variables, or explicitly in
-/// release diagnostics; no per-dispatch clock reads in ordinary release.
+/// Enabled in debug builds; release builds omit this diagnostic path.
 pub(crate) fn enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        cfg!(debug_assertions) || std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some()
-    })
+    cfg!(debug_assertions)
 }
 
 /// Measures a successful API call or host command-build operation only.

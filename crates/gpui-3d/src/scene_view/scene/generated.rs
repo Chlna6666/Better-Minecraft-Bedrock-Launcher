@@ -174,7 +174,7 @@ fn mapping_patches(previous: &[u32], current: &[u32]) -> Vec<MappingPatch> {
 ///
 /// Without GPU culling, output records are densely indexed and include the
 /// logical first_instance. In that mode retain ordinary positional patches.
-fn generated_output_dirty_patches(
+fn output_dirty_patches(
     previous: &[u32],
     current: &[u32],
     physical_slots: bool,
@@ -241,7 +241,7 @@ impl BatchMappingSource {
         let Some(generated) = &mesh.generated else {
             return Ok(None);
         };
-        let part = generated_part_index(draw.mesh.parts(), draw.part)
+        let part = part_index(draw.mesh.parts(), draw.part)
             .ok_or_else(|| anyhow!("missing generated material part"))?;
         let argument_part = generated
             .argument_base
@@ -262,7 +262,7 @@ impl BatchMappingSource {
 /// count; it writes the current logical first_instance into its own indirect
 /// command every frame. Without GPU culling the generated output remains a
 /// conventional densely indexed DrawIndirect table.
-pub(super) fn generated_mapping_target(
+pub(super) fn mapping_target(
     physical_slots: Option<&[u32]>,
     batch_index: usize,
     first_instance: usize,
@@ -325,7 +325,7 @@ pub(super) fn invalidate_argument_page(
 /// Mesh parts are validated as contiguous, strictly increasing index
 /// ranges at construction. Resolve the generated part in O(log N) rather than
 /// scanning every material part again for each generated Draw batch.
-fn generated_part_index(parts: &[MeshPart], target: MeshPart) -> Option<usize> {
+fn part_index(parts: &[MeshPart], target: MeshPart) -> Option<usize> {
     parts
         .binary_search_by_key(&target.first_index(), |part| part.first_index())
         .ok()
@@ -486,7 +486,7 @@ impl SceneResources {
                     BatchMappingSource::for_draw(draw, mesh)?
                 };
                 let (slot, first_instance) =
-                    generated_mapping_target(physical_slots, index, batch.first_instance)?;
+                    mapping_target(physical_slots, index, batch.first_instance)?;
                 push_page_record(
                     &mut fallback,
                     &mut self.generated_mappings,
@@ -608,7 +608,7 @@ impl SceneResources {
             // shuffle many input records while leaving all survivor output
             // values unchanged. Keep these two dirty domains independent.
             let output_dirty = self.culling.as_ref().map(|_| {
-                generated_output_dirty_patches(
+                output_dirty_patches(
                     &self.generated_mappings[&source].entries,
                     &entries,
                     true,
@@ -962,7 +962,7 @@ mod tests {
 #[cfg(test)]
 mod mapping_patch_tests {
     use super::{
-        MappingDispatchRange, generated_output_dirty_patches, mapping_dispatch_ranges,
+        MappingDispatchRange, output_dirty_patches, mapping_dispatch_ranges,
         mapping_patches,
     };
     use gfx_core::BufferBindingLimits;
@@ -1072,7 +1072,7 @@ mod mapping_patch_tests {
             super::splice_generated_page_entries(&original, &removed, &[[27, 8, 0, 0]]).unwrap();
         assert_eq!(updated, [10, 5, 0, 0, 12, 13, 0, 0, 27, 8, 0, 0]);
         assert_eq!(
-            super::generated_output_dirty_patches(&original, &updated, true,).len(),
+            super::output_dirty_patches(&original, &updated, true,).len(),
             1
         );
         let replaced = super::splice_generated_page_entries(
@@ -1089,11 +1089,11 @@ mod mapping_patch_tests {
         let previous = vec![17, 5, 0, 0, 21, 11, 0, 0, 25, 29, 0, 0];
         let reordered = vec![25, 29, 0, 0, 17, 5, 0, 0, 21, 11, 0, 0];
         assert!(!mapping_patches(&previous, &reordered).is_empty());
-        assert!(generated_output_dirty_patches(&previous, &reordered, true).is_empty());
+        assert!(output_dirty_patches(&previous, &reordered, true).is_empty());
         // A dense Batch-indexed source cannot safely skip this reorder.
-        assert!(!generated_output_dirty_patches(&previous, &reordered, false).is_empty());
+        assert!(!output_dirty_patches(&previous, &reordered, false).is_empty());
         let inserted = vec![25, 29, 0, 0, 39, 9, 0, 0, 17, 5, 0, 0, 21, 11, 0, 0];
-        let compute = generated_output_dirty_patches(&previous, &inserted, true);
+        let compute = output_dirty_patches(&previous, &inserted, true);
         assert_eq!(compute.len(), 1);
         assert_eq!(compute[0].offset, 16);
         assert_eq!(compute[0].bytes.len(), 16);
@@ -1115,17 +1115,17 @@ mod mapping_patch_tests {
         // A Section inserted at logical position zero does not require
         // rewriting any of the old physical count records.
         assert_eq!(
-            super::generated_mapping_target(Some(&slots), 1, 1).unwrap(),
+            super::mapping_target(Some(&slots), 1, 1).unwrap(),
             (2, 0),
         );
         assert_eq!(
-            super::generated_mapping_target(Some(&slots), 2, 2).unwrap(),
+            super::mapping_target(Some(&slots), 2, 2).unwrap(),
             (17, 0),
         );
         // Standalone/non-culling indirect draws still carry dense offsets
         // and the logical first-instance required by DrawIndirect.
-        assert_eq!(super::generated_mapping_target(None, 2, 2).unwrap(), (2, 2),);
-        assert!(super::generated_mapping_target(Some(&slots), 4, 8).is_err());
+        assert_eq!(super::mapping_target(None, 2, 2).unwrap(), (2, 2),);
+        assert!(super::mapping_target(Some(&slots), 4, 8).is_err());
     }
 
     #[test]
@@ -1253,18 +1253,18 @@ mod generated_part_lookup_tests {
             next_first += count;
         }
         for (expected, &part) in parts.iter().enumerate() {
-            assert_eq!(generated_part_index(&parts, part), Some(expected));
+            assert_eq!(part_index(&parts, part), Some(expected));
             assert_eq!(
-                generated_part_index(&parts, part),
+                part_index(&parts, part),
                 parts.iter().position(|old| *old == part),
             );
         }
         let changed_material = MeshPart::new(parts[50].first_index(), parts[50].index_count(), 999);
-        assert_eq!(generated_part_index(&parts, changed_material), None);
+        assert_eq!(part_index(&parts, changed_material), None);
         assert_eq!(
-            generated_part_index(&parts, MeshPart::new(next_first, 6, 0)),
+            part_index(&parts, MeshPart::new(next_first, 6, 0)),
             None
         );
-        assert_eq!(generated_part_index(&[], MeshPart::new(0, 6, 0)), None);
+        assert_eq!(part_index(&[], MeshPart::new(0, 6, 0)), None);
     }
 }

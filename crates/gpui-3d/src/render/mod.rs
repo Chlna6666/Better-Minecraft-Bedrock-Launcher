@@ -222,7 +222,7 @@ pub enum RenderQuality {
 impl RenderQuality {
     /// Returns a complete option set for this quality level.
     #[must_use]
-    pub fn render_options(self) -> RenderOptions {
+    pub fn options(self) -> RenderOptions {
         let mut options = RenderOptions::default();
         match self {
             Self::Low => {

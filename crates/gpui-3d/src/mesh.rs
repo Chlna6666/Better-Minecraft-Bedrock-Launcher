@@ -40,7 +40,7 @@ pub struct TriangleEdgeMask(u8);
 ///
 /// An all-zero UV stream cannot address a texture region; treating it as texture-mapped would make
 /// every draw sample one arbitrary texel.
-fn mesh_uses_uv_regions(vertices: &[Vertex]) -> bool {
+fn uses_uv_regions(vertices: &[Vertex]) -> bool {
     vertices
         .iter()
         .any(|vertex| vertex.uv.x != 0.0 || vertex.uv.y != 0.0)
@@ -804,7 +804,7 @@ impl Mesh {
         if !triangle_order.is_empty() {
             build_bvh(&vertices, &indices, &mut triangle_order, 0, &mut bvh)?;
         }
-        let uses_uv = mesh_uses_uv_regions(&vertices);
+        let uses_uv = uses_uv_regions(&vertices);
         let unorm_colors = vertices.iter().all(|vertex| {
             vertex
                 .color
@@ -1021,7 +1021,7 @@ impl Mesh {
     /// scene view binds an albedo asset.
     #[must_use]
     pub fn with_uv_regions(mut self, uses_uv: bool) -> Self {
-        self.uses_uv = uses_uv && mesh_uses_uv_regions(self.vertices());
+        self.uses_uv = uses_uv && uses_uv_regions(self.vertices());
         self
     }
 

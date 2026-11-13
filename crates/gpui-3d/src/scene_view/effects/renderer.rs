@@ -17,7 +17,6 @@ use gpui::{
 };
 use std::{collections::HashMap, sync::Arc, time::Instant};
 #[cfg(test)]
-#[path = "tests.rs"]
 mod tests;
 
 pub(in crate::scene_view) struct EffectsRenderer {
@@ -319,7 +318,7 @@ impl EffectsRenderer {
         {
             if let Some(program) = &self.froxel_program {
                 if state.froxel.is_none() {
-                    if let Some(grid) = FroxelGrid::plan_native(
+                    if let Some(grid) = FroxelGrid::plan(
                         extent, device.compute_capabilities(),
                         device.texture_volume_capabilities(),
                     ) {

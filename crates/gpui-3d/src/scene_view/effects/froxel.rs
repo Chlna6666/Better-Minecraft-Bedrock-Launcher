@@ -36,12 +36,20 @@ pub(super) struct FroxelGrid {
 }
 
 impl FroxelGrid {
-    /// Plan a froxel grid from actual framebuffer size and compute limits.
+    /// Plan a froxel grid from framebuffer size and device compute/volume limits.
     /// None retains the existing fragment-integrated fog without an unsafe
     /// backend override. High-resolution windows increase tile size before
     /// allocating unbounded 3D images.
-    pub fn plan(extent: Extent2d, caps: ComputeCapabilities) -> Option<Self> {
-        if !caps.supports_kernel(FROXEL_KERNEL) {
+    pub fn plan(
+        extent: Extent2d,
+        caps: ComputeCapabilities,
+        volume_caps: gfx_core::TextureVolumeCapabilities,
+    ) -> Option<Self> {
+        if !caps.supports_kernel(FROXEL_KERNEL)
+            || !volume_caps.sampled
+            || !volume_caps.storage
+            || volume_caps.max_dimension_3d < FROXEL_DEPTH_SLICES
+        {
             return None;
         }
         let mut tile_pixels = INITIAL_TILE_PIXELS;
@@ -61,7 +69,10 @@ impl FroxelGrid {
                 z.div_ceil(FROXEL_KERNEL.workgroup_size[2]),
             ];
             if texture_bytes <= MAX_FROXEL_BYTES
-                && workgroups.iter().zip(caps.max_workgroups)
+                && x.max(y) <= volume_caps.max_dimension_3d
+                && workgroups
+                    .iter()
+                    .zip(caps.max_workgroups)
                     .all(|(&count, limit)| count > 0 && count <= limit)
             {
                 return Some(Self {
@@ -78,49 +89,15 @@ impl FroxelGrid {
         }
     }
 
-    /// Device-qualified volume grid: reject unsupported 3D sampled/storage
-    /// formats instead of using a 2DArray fallback that changes shader semantics.
-    pub fn plan_native(
-        extent: Extent2d,
-        caps: ComputeCapabilities,
-        volume: gfx_core::TextureVolumeCapabilities,
-    ) -> Option<Self> {
-        if !volume.sampled || !volume.storage ||
-            volume.max_dimension_3d < FROXEL_DEPTH_SLICES
-        {
-            return None;
-        }
-        let mut grid = Self::plan(extent, caps)?;
-        while grid.extent[0].max(grid.extent[1]) > volume.max_dimension_3d {
-            if grid.tile_pixels >= MAX_TILE_PIXELS {
-                return None;
-            }
-            grid.tile_pixels = grid.tile_pixels.checked_mul(2)?;
-            grid.extent[0] = extent.width().div_ceil(grid.tile_pixels);
-            grid.extent[1] = extent.height().div_ceil(grid.tile_pixels);
-            grid.workgroups[0] = grid.extent[0].div_ceil(FROXEL_KERNEL.workgroup_size[0]);
-            grid.workgroups[1] = grid.extent[1].div_ceil(FROXEL_KERNEL.workgroup_size[1]);
-            grid.texture_bytes = u64::from(grid.extent[0])
-                .checked_mul(u64::from(grid.extent[1]))?
-                .checked_mul(u64::from(grid.extent[2]))?
-                .checked_mul(BYTES_PER_RGBA16F)?
-                .checked_mul(VOLUME_COUNT)?;
-        }
-        if grid.workgroups.iter().zip(caps.max_workgroups)
-            .any(|(&count, maximum)| count > maximum)
-        { return None; }
-        if !caps.supports_kernel(ComputeKernelProfile {
-            workgroup_size: [8, 8, 1], shared_memory_bytes: 0
-        }) { return None; }
-        Some(grid)
-    }
-
     /// Center of a logarithmically distributed depth slice (in world units).
     /// The matching shader must use the same mapping for light injection,
     /// integration and full-resolution composite sampling.
     pub fn depth_at_slice(self, index: u32, near: f32, far: f32) -> Option<f32> {
-        if index >= self.extent[2] || !near.is_finite() || !far.is_finite()
-            || near <= 0.0 || far <= near
+        if index >= self.extent[2]
+            || !near.is_finite()
+            || !far.is_finite()
+            || near <= 0.0
+            || far <= near
         {
             return None;
         }
@@ -144,9 +121,22 @@ mod tests {
         }
     }
 
+    fn volume_capable() -> gfx_core::TextureVolumeCapabilities {
+        gfx_core::TextureVolumeCapabilities {
+            max_dimension_3d: u32::MAX,
+            sampled: true,
+            storage: true,
+        }
+    }
+
     #[test]
     fn full_hd_grid_uses_3d_dispatch_and_bounded_storage() {
-        let grid = FroxelGrid::plan(Extent2d::new(1920, 1080).unwrap(), capable()).unwrap();
+        let grid = FroxelGrid::plan(
+            Extent2d::new(1920, 1080).unwrap(),
+            capable(),
+            volume_capable(),
+        )
+        .unwrap();
         assert_eq!(grid.extent, [120, 68, FROXEL_DEPTH_SLICES]);
         assert_eq!(grid.workgroups, [15, 9, 16]);
         assert_eq!(grid.tile_pixels, 16);
@@ -155,7 +145,12 @@ mod tests {
 
     #[test]
     fn ultra_high_resolution_reduces_grid_density_before_exceeding_budget() {
-        let grid = FroxelGrid::plan(Extent2d::new(7680, 4320).unwrap(), capable()).unwrap();
+        let grid = FroxelGrid::plan(
+            Extent2d::new(7680, 4320).unwrap(),
+            capable(),
+            volume_capable(),
+        )
+        .unwrap();
         assert!(grid.tile_pixels > INITIAL_TILE_PIXELS);
         assert!(grid.texture_bytes <= MAX_FROXEL_BYTES);
         assert_eq!(grid.extent[2], FROXEL_DEPTH_SLICES);
@@ -168,31 +163,55 @@ mod tests {
             sampled: true,
             storage: true,
         };
-        let grid = FroxelGrid::plan_native(
-            Extent2d::new(3840,2160).unwrap(), capable(), caps
-        ).unwrap();
+        let grid =
+            FroxelGrid::plan(
+                Extent2d::new(3840, 2160).unwrap(),
+                capable(),
+                caps,
+            )
+            .unwrap();
         assert!(grid.extent[0] <= 128);
         assert_eq!(grid.extent[2], 64);
-        assert!(FroxelGrid::plan_native(
-            Extent2d::new(1920,1080).unwrap(), capable(),
-            gfx_core::TextureVolumeCapabilities::default()
-        ).is_none());
+        assert!(
+            FroxelGrid::plan(
+                Extent2d::new(1920, 1080).unwrap(),
+                capable(),
+                gfx_core::TextureVolumeCapabilities::default()
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn unavailable_compute_limits_keep_existing_fog_path() {
-        assert!(FroxelGrid::plan(
-            Extent2d::new(1920, 1080).unwrap(),
-            ComputeCapabilities::default()
-        ).is_none());
+        assert!(
+            FroxelGrid::plan(
+                Extent2d::new(1920, 1080).unwrap(),
+                ComputeCapabilities::default(),
+                volume_capable(),
+            )
+            .is_none()
+        );
         let mut limits = capable();
         limits.max_workgroups[2] = 1;
-        assert!(FroxelGrid::plan(Extent2d::new(1920, 1080).unwrap(), limits).is_none());
+        assert!(
+            FroxelGrid::plan(
+                Extent2d::new(1920, 1080).unwrap(),
+                limits,
+                volume_capable(),
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn logarithmic_depth_is_monotonic_and_stays_in_frustum() {
-        let grid = FroxelGrid::plan(Extent2d::new(800, 600).unwrap(), capable()).unwrap();
+        let grid = FroxelGrid::plan(
+            Extent2d::new(800, 600).unwrap(),
+            capable(),
+            volume_capable(),
+        )
+        .unwrap();
         let mut previous = 0.0;
         for z in 0..grid.extent[2] {
             let current = grid.depth_at_slice(z, 0.1, 512.0).unwrap();
@@ -204,12 +223,11 @@ mod tests {
     }
 }
 
-
+use super::super::SceneView;
+use super::ScreenEffects;
+use super::targets::Target;
 use gfx_core::*;
 use gpui::{ExtensionDevice, RendererExtensionComputePass};
-use super::targets::Target;
-use super::ScreenEffects;
-use super::super::SceneView;
 
 /// Shared native compute programs and descriptor layouts, one per GPU owner.
 /// SceneView instances only own their small 3D textures and bind groups.
@@ -231,60 +249,80 @@ impl FroxelProgram {
             let inject_layout = cleanup.record(
                 device.create_bind_group_layout(&BindGroupLayoutDescriptor {
                     label: Some("gpui-3d froxel injection bindings".into()),
-                    entries: (0..7).map(|binding| BindGroupLayoutEntry {
-                        binding,
-                        binding_type: match binding {
-                            0 => BindingType::UniformBuffer,
-                            1 | 2 => BindingType::StorageBuffer,
-                            6 => BindingType::StorageTexture {
-                                format: Format::Rgba16Float, read_only: false,
+                    entries: (0..7)
+                        .map(|binding| BindGroupLayoutEntry {
+                            binding,
+                            binding_type: match binding {
+                                0 => BindingType::UniformBuffer,
+                                1 | 2 => BindingType::StorageBuffer,
+                                6 => BindingType::StorageTexture {
+                                    format: Format::Rgba16Float,
+                                    read_only: false,
+                                },
+                                _ => BindingType::SampledTexture,
                             },
-                            _ => BindingType::SampledTexture,
-                        },
-                        stages: ShaderStages::COMPUTE,
-                    }).collect(),
+                            stages: ShaderStages::COMPUTE,
+                        })
+                        .collect(),
                 })?,
-                |d, id| { let _ = d.destroy_bind_group_layout(id); },
+                |d, id| {
+                    let _ = d.destroy_bind_group_layout(id);
+                },
             );
             let integrate_layout = cleanup.record(
                 device.create_bind_group_layout(&BindGroupLayoutDescriptor {
                     label: Some("gpui-3d froxel integration bindings".into()),
                     entries: vec![
                         BindGroupLayoutEntry {
-                            binding: 0, binding_type: BindingType::SampledTexture,
+                            binding: 0,
+                            binding_type: BindingType::SampledTexture,
                             stages: ShaderStages::COMPUTE,
                         },
                         BindGroupLayoutEntry {
                             binding: 1,
                             binding_type: BindingType::StorageTexture {
-                                format: Format::Rgba16Float, read_only: false,
+                                format: Format::Rgba16Float,
+                                read_only: false,
                             },
                             stages: ShaderStages::COMPUTE,
                         },
                     ],
                 })?,
-                |d, id| { let _ = d.destroy_bind_group_layout(id); },
+                |d, id| {
+                    let _ = d.destroy_bind_group_layout(id);
+                },
             );
             let inject_shader = cleanup.record(
                 device.create_shader_module(&ShaderModuleDescriptor {
                     label: Some("cs_froxel_inject".into()),
                     binary: super::super::resources::embedded_shader(
-                        context, ShaderStage::Compute, "cs_froxel_inject",
+                        context,
+                        ShaderStage::Compute,
+                        "cs_froxel_inject",
                     )?,
                 })?,
-                |d, id| { let _ = d.destroy_shader_module(id); },
+                |d, id| {
+                    let _ = d.destroy_shader_module(id);
+                },
             );
             let integrate_shader = cleanup.record(
                 device.create_shader_module(&ShaderModuleDescriptor {
                     label: Some("cs_froxel_integrate".into()),
                     binary: super::super::resources::embedded_shader(
-                        context, ShaderStage::Compute, "cs_froxel_integrate",
+                        context,
+                        ShaderStage::Compute,
+                        "cs_froxel_integrate",
                     )?,
                 })?,
-                |d, id| { let _ = d.destroy_shader_module(id); },
+                |d, id| {
+                    let _ = d.destroy_shader_module(id);
+                },
             );
             Ok(Self {
-                inject_layout, integrate_layout, inject_shader, integrate_shader,
+                inject_layout,
+                integrate_layout,
+                inject_shader,
+                integrate_shader,
             })
         })();
         cleanup.finish(device, result)
@@ -375,8 +413,12 @@ impl FroxelVolume {
         let result = (|| {
             let create = |device: &mut dyn ExtensionDevice| -> gpui::Result<Target> {
                 let (texture, view) = super::super::volume_texture::create_gpu_volume(
-                    device, "gpui-3d froxel RGBA16F volume", grid.extent,
-                    Format::Rgba16Float, TextureUsage::SAMPLED | TextureUsage::STORAGE, 1,
+                    device,
+                    "gpui-3d froxel RGBA16F volume",
+                    grid.extent,
+                    Format::Rgba16Float,
+                    TextureUsage::SAMPLED | TextureUsage::STORAGE,
+                    1,
                 )?;
                 Ok(Target { texture, view })
             };
@@ -403,12 +445,20 @@ impl FroxelVolume {
                         },
                     ],
                 })?,
-                |d, group| { let _ = d.destroy_bind_group(group); },
+                |d, group| {
+                    let _ = d.destroy_bind_group(group);
+                },
             );
             Ok(Self {
-                grid, injection, integrated, injection_group: None,
-                integration_group, binding_key: None,
-                valid: false, queued: false, last_inputs: None,
+                grid,
+                injection,
+                integrated,
+                injection_group: None,
+                integration_group,
+                binding_key: None,
+                valid: false,
+                queued: false,
+                last_inputs: None,
             })
         })();
         cleanup.finish(device, result)
@@ -419,11 +469,15 @@ impl FroxelVolume {
     }
 
     fn bind_injection(
-        &mut self, device: &mut dyn ExtensionDevice,
-        program: &FroxelProgram, key: InjectBindings,
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        program: &FroxelProgram,
+        key: InjectBindings,
     ) -> gpui::Result<BindGroupId> {
         if self.binding_key == Some(key) {
-            if let Some(group) = self.injection_group { return Ok(group); }
+            if let Some(group) = self.injection_group {
+                return Ok(group);
+            }
         }
         let mut entries = Vec::with_capacity(7);
         for (binding, buffer, bytes) in [
@@ -434,7 +488,10 @@ impl FroxelVolume {
             entries.push(BindGroupEntry {
                 binding,
                 resource: BindingResource::Buffer(BufferBinding {
-                    buffer, offset: 0, size: bytes, stride: None,
+                    buffer,
+                    offset: 0,
+                    size: bytes,
+                    stride: None,
                 }),
             });
         }
@@ -469,21 +526,32 @@ impl FroxelVolume {
         &mut self,
         device: &mut dyn ExtensionDevice,
         program: &FroxelProgram,
-        frame: BufferId, lights: (BufferId, u64, u32),
-        tiles: (BufferId, u64), shadows: [TextureViewId; 3],
+        frame: BufferId,
+        lights: (BufferId, u64, u32),
+        tiles: (BufferId, u64),
+        shadows: [TextureViewId; 3],
         after_graphics_pass: usize,
         queue: &mut Vec<RendererExtensionComputePass>,
         batch_id: u64,
         profiled: bool,
         inputs: FroxelInputs,
     ) -> gpui::Result<()> {
-        let group = self.bind_injection(device, program, InjectBindings {
-            frame, lights: (lights.0, lights.1), tiles, shadows,
-        })?;
+        let group = self.bind_injection(
+            device,
+            program,
+            InjectBindings {
+                frame,
+                lights: (lights.0, lights.1),
+                tiles,
+                shadows,
+            },
+        )?;
         let injection = ComputeBindGroupDispatch {
             shader: program.inject_shader,
             bind_group: group,
             workgroups: self.grid.workgroups,
+
+            gpu_work_tag: None,
         };
         let integration = ComputeBindGroupDispatch {
             shader: program.integrate_shader,
@@ -493,20 +561,26 @@ impl FroxelVolume {
                 self.grid.extent[1].div_ceil(8),
                 1,
             ],
+
+            gpu_work_tag: None,
         };
         let caps = device.compute_capabilities();
         injection.validate(caps)?;
         integration.validate(caps)?;
         queue.push(RendererExtensionComputePass {
-            after_graphics_pass, dispatch: injection,
+            after_graphics_pass,
+            dispatch: injection,
             gpu_work_tag: profiled.then_some(GpuTimestampTag {
-                batch_id, stage: GpuTimestampStage::FroxelInjection,
+                batch_id,
+                stage: GpuTimestampStage::FroxelInjection,
             }),
         });
         queue.push(RendererExtensionComputePass {
-            after_graphics_pass, dispatch: integration,
+            after_graphics_pass,
+            dispatch: integration,
             gpu_work_tag: profiled.then_some(GpuTimestampTag {
-                batch_id, stage: GpuTimestampStage::FroxelIntegration,
+                batch_id,
+                stage: GpuTimestampStage::FroxelIntegration,
             }),
         });
         self.queued = true;

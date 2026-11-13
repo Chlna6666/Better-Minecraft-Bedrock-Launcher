@@ -179,7 +179,7 @@ fn run() -> Result<(), String> {
             gpui_3d::EnvironmentMap::procedural_studio(),
         )),
         Some(path) => Some(std::sync::Arc::new(
-            gpui_3d::EnvironmentMap::load_path(path)
+            gpui_3d::EnvironmentMap::load(path)
                 .map_err(|error| format!("load environment {path}: {error}"))?,
         )),
         None => None,
@@ -211,13 +211,13 @@ fn run() -> Result<(), String> {
         field_camera(field, *radius, &args)
     } else {
         match (&studio_scene, &imported) {
-            (Some(_), _) => studio::studio_camera(&studio_options),
+            (Some(_), _) => studio::camera(&studio_options),
             (_, Some(imported)) => imported
                 .cameras
                 .first()
                 .map(|camera| camera.camera)
                 .unwrap_or_else(|| imported_camera(imported, &args)),
-            _ => studio::studio_camera(&studio_options),
+            _ => studio::camera(&studio_options),
         }
     };
     if let Some((field, radius)) = &field_scene {
@@ -246,7 +246,7 @@ fn run() -> Result<(), String> {
     }
     let mut options = args
         .quality
-        .map_or_else(RenderOptions::default, RenderQuality::render_options);
+        .map_or_else(RenderOptions::default, RenderQuality::options);
     options.shadows.enabled = args.shadows;
     if let Some(resolution) = args.shadow_resolution {
         options.shadows.resolution = resolution;

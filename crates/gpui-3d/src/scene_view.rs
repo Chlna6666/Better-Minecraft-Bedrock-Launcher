@@ -1,3 +1,5 @@
+//! GPUI scene-view data and element integration.
+
 use crate::{
     AnimationError, AnimationScratch, Camera, CameraError, Mat4, Ray, RaycastError, RaycastScratch,
     NodeId, Scene, TextureAsset, TextureAssetId, TransformTrack, Vec2, Vec3,
@@ -831,7 +833,7 @@ pub enum SceneViewRaycastError {
 }
 
 /// Creates a GPUI element that fills the available layout bounds and paints a scene view there.
-pub fn scene_view(scene_view: Arc<SceneView>) -> impl IntoElement {
+pub fn element(scene_view: Arc<SceneView>) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |bounds, (), window: &mut Window, _| {
@@ -844,7 +846,7 @@ pub fn scene_view(scene_view: Arc<SceneView>) -> impl IntoElement {
 impl RendererExtension for SceneView {
     fn is_time_dependent(&self) -> bool {
         self.continuous_presentation
-            || sidecar::needs_frame(self)
+            || sidecar::frame_required(self)
             || self.screen_effects.is_some_and(|effects| {
                 effects.water || effects.clouds && effects.cloud_texture.is_some()
             })

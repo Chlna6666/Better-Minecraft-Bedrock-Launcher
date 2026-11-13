@@ -28,7 +28,7 @@ impl FrameProjection {
             scene_view.inset_max_pixels,
             scene_view.inset_fraction,
         );
-        let bounds = projection_bounds(
+        let bounds = bounds(
             element_bounds,
             context.content_mask().bounds,
             scene_view.projection_region,
@@ -107,7 +107,7 @@ fn inset_bounds(
     bounds
 }
 
-fn projection_bounds(
+fn bounds(
     element_bounds: Bounds<ScaledPixels>,
     visible_bounds: Bounds<ScaledPixels>,
     region: ProjectionRegion,
@@ -152,7 +152,7 @@ mod tests {
             ..base
         }));
     }
-    use super::{inset_bounds, projection_bounds};
+    use super::inset_bounds;
     use crate::ProjectionRegion;
     use gpui::{Bounds, bounds, point, px, size};
 
@@ -161,7 +161,7 @@ mod tests {
         let element = bounds(point(px(10.0), px(20.0)), size(px(300.0), px(200.0))).scale(1.0);
         let mask = bounds(point(px(40.0), px(50.0)), size(px(100.0), px(80.0))).scale(1.0);
 
-        let actual = projection_bounds(element, mask, ProjectionRegion::VisibleContent);
+        let actual = super::bounds(element, mask, ProjectionRegion::VisibleContent);
         let expected = bounds(point(px(40.0), px(50.0)), size(px(100.0), px(80.0))).scale(1.0);
 
         assert_eq!(actual, expected);
@@ -172,7 +172,7 @@ mod tests {
         let element = bounds(point(px(0.0), px(0.0)), size(px(20.0), px(20.0))).scale(1.0);
         let mask = bounds(point(px(30.0), px(30.0)), size(px(10.0), px(10.0))).scale(1.0);
 
-        let actual: Bounds<_> = projection_bounds(element, mask, ProjectionRegion::VisibleContent);
+        let actual: Bounds<_> = super::bounds(element, mask, ProjectionRegion::VisibleContent);
 
         assert!(actual.size.width <= px(0.0).scale(1.0));
         assert!(actual.size.height <= px(0.0).scale(1.0));
@@ -183,7 +183,7 @@ mod tests {
         let element = bounds(point(px(10.0), px(20.0)), size(px(300.0), px(200.0))).scale(1.0);
         let mask = bounds(point(px(40.0), px(50.0)), size(px(100.0), px(80.0))).scale(1.0);
 
-        let actual = projection_bounds(element, mask, ProjectionRegion::VisibleSquare);
+        let actual = super::bounds(element, mask, ProjectionRegion::VisibleSquare);
         let expected = bounds(point(px(50.0), px(50.0)), size(px(80.0), px(80.0))).scale(1.0);
 
         assert_eq!(actual, expected);
@@ -205,7 +205,7 @@ mod tests {
         let mask = bounds(point(px(0.0), px(0.0)), size(px(40.0), px(50.0))).scale(1.0);
         let inset = inset_bounds(element, 6.0, 0.08);
 
-        let actual = projection_bounds(inset, mask, ProjectionRegion::VisibleContent);
+        let actual = super::bounds(inset, mask, ProjectionRegion::VisibleContent);
         let expected = bounds(point(px(16.0), px(26.0)), size(px(24.0), px(24.0))).scale(1.0);
 
         assert_eq!(actual, expected);

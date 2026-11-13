@@ -38,7 +38,7 @@ enum InputWriteOutcome {
 // Avoid two dispatches if the tail cannot save at least one workgroup.
 const SINGLETON_CULL_WORKGROUP_WIDTH: u32 = 64;
 
-fn culling_dispatch_groups(count: u32, tail_start: u32, shader_available: bool) -> (u32, u32) {
+fn dispatch_groups(count: u32, tail_start: u32, shader_available: bool) -> (u32, u32) {
     let tail_count = count.saturating_sub(tail_start);
     if shader_available && tail_count > SINGLETON_CULL_WORKGROUP_WIDTH {
         (tail_start, tail_count.div_ceil(SINGLETON_CULL_WORKGROUP_WIDTH))
@@ -1147,7 +1147,7 @@ impl CullResources {
         let count = u32::try_from(self.count).context("GPU culling batch count exceeds u32")?;
         let tail_start = u32::try_from(self.singleton_start)
             .context("GPU culling singleton tail exceeds u32")?;
-        let (normal_groups, singleton_groups) = culling_dispatch_groups(
+        let (normal_groups, singleton_groups) = dispatch_groups(
             count, tail_start, singleton_shader.is_some(),
         );
         let compact_start = if singleton_groups == 0 { count } else { tail_start };
@@ -1503,21 +1503,21 @@ mod singleton_dispatch_tests {
 
     #[test]
     fn generated_singletons_reduce_dispatch_groups_without_reordering() {
-        assert_eq!(culling_dispatch_groups(65_993, 0, true), (0, 1032));
-        assert_eq!(culling_dispatch_groups(65_993, 65_993, true), (65_993, 0));
-        assert_eq!(culling_dispatch_groups(65_993, 0, false), (65_993, 0));
-        assert_eq!(culling_dispatch_groups(1, 0, true), (1, 0));
-        assert_eq!(culling_dispatch_groups(64, 0, true), (64, 0));
-        assert_eq!(culling_dispatch_groups(65, 0, true), (0, 2));
+        assert_eq!(dispatch_groups(65_993, 0, true), (0, 1032));
+        assert_eq!(dispatch_groups(65_993, 65_993, true), (65_993, 0));
+        assert_eq!(dispatch_groups(65_993, 0, false), (65_993, 0));
+        assert_eq!(dispatch_groups(1, 0, true), (1, 0));
+        assert_eq!(dispatch_groups(64, 0, true), (64, 0));
+        assert_eq!(dispatch_groups(65, 0, true), (0, 2));
     }
 
     #[test]
     fn mixed_quad_instancing_and_generated_sections_keep_both_dispatch_paths() {
-        assert_eq!(culling_dispatch_groups(65_993, 96, true), (96, 1030));
-        assert_eq!(culling_dispatch_groups(65_993, 96, false), (65_993, 0));
-        assert_eq!(culling_dispatch_groups(200, 180, true), (200, 0));
-        assert_eq!(culling_dispatch_groups(200, 135, true), (135, 2));
-        assert_eq!(culling_dispatch_groups(200, 200, true), (200, 0));
+        assert_eq!(dispatch_groups(65_993, 96, true), (96, 1030));
+        assert_eq!(dispatch_groups(65_993, 96, false), (65_993, 0));
+        assert_eq!(dispatch_groups(200, 180, true), (200, 0));
+        assert_eq!(dispatch_groups(200, 135, true), (135, 2));
+        assert_eq!(dispatch_groups(200, 200, true), (200, 0));
     }
 }
 

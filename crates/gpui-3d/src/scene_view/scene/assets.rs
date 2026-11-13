@@ -67,7 +67,7 @@ impl AssetCounts {
         (&self.removed_meshes, &self.removed_textures)
     }
 
-    pub(super) fn needs_full_rescan(&self) -> bool {
+    pub(super) fn full_rescan_required(&self) -> bool {
         self.full_rescan
     }
 
@@ -190,7 +190,7 @@ mod tests {
         next.insert(None, Node::new().with_mesh(mesh)).unwrap();
         assert!(!counts.sync(Some(&before), &next));
         assert!(counts.removed_ids().0.is_empty());
-        assert!(!counts.needs_full_rescan());
+        assert!(!counts.full_rescan_required());
     }
 
     #[test]
@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(counts.removed_ids().0, &[one.id()]);
         assert_eq!(counts.removed_ids().1.len(), 0);
         assert!(next.node(stay).is_some());
-        assert!(!counts.needs_full_rescan());
+        assert!(!counts.full_rescan_required());
     }
 
     #[test]

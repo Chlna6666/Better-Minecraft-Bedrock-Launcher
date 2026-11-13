@@ -704,7 +704,7 @@ fn hdr_post_effects_and_quality_presets_change_the_resolved_frame() {
         .expect("reused effects frame");
     assert!(reused.frame_reused);
 
-    let ultra = RenderQuality::Ultra.render_options();
+    let ultra = RenderQuality::Ultra.options();
     assert_eq!(ultra.shadows.resolution, 4096);
     assert!(ultra.bloom.enabled);
     assert_eq!(ultra.antialias, AntialiasMode::Fxaa);

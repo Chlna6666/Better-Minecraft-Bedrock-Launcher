@@ -75,7 +75,7 @@ impl EnvironmentMap {
     ///
     /// Returns [`EnvironmentError::Io`] when the file cannot be read and
     /// [`EnvironmentError::Image`] when it is not a supported image.
-    pub fn load_path(path: impl AsRef<Path>) -> Result<Self, EnvironmentError> {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, EnvironmentError> {
         let bytes = std::fs::read(path)?;
         let (texture, resized_from) = decode_texture(&bytes, true, 4096, true, true)
             .map_err(|error| EnvironmentError::Image(error.to_string()))?;

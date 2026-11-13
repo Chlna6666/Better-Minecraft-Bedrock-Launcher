@@ -57,7 +57,7 @@ impl BatchWorkspace {
 }
 
 #[cfg(test)]
-pub(super) fn group_voxel_batches(
+pub(super) fn group_voxel_batches_from_meshes(
     draws: &mut [PreparedDraw],
     meshes: &HashMap<(MeshId, bool), MeshResources>,
 ) -> Vec<DrawBatchRange> {
@@ -79,16 +79,21 @@ pub(super) fn group_voxel_batches_into(
     batches: &mut Vec<DrawBatchRange>,
 ) {
     // Direct callers and differential tests retain the original API.
-    group_voxel_batches_with_quad_presence(
-        draws, meshes, workspace, batches,
-        meshes.values().any(|mesh| mesh.procedural_quads && mesh.generated.is_none()),
+    group_voxel_batches(
+        draws,
+        meshes,
+        workspace,
+        batches,
+        meshes
+            .values()
+            .any(|mesh| mesh.procedural_quads && mesh.generated.is_none()),
     );
 }
 
 /// The streaming GPU renderer maintains this property incrementally while
 /// loading/unloading MeshResources. No full Mesh HashMap traversal is needed
 /// to decide whether a SceneDelta needs native quad instancing.
-pub(super) fn group_voxel_batches_with_quad_presence(
+pub(super) fn group_voxel_batches(
     draws: &mut [PreparedDraw],
     meshes: &HashMap<(MeshId, bool), MeshResources>,
     workspace: &mut BatchWorkspace,
@@ -424,7 +429,7 @@ mod tests {
         assert_ne!(ids[0], ids[1]);
         let mut meshes = HashMap::new();
         meshes.insert(mesh_key(&draws[0], true), mock_quad_resources(&mesh));
-        let batches = group_voxel_batches(&mut draws, &meshes);
+        let batches = group_voxel_batches_from_meshes(&mut draws, &meshes);
         assert_eq!(batches.len(), 1, "per-instance material data must not split a quad draw");
         assert_eq!(batches[0].instance_count, 192);
         assert_eq!(draws.iter().map(|d| d.material.id()).collect::<std::collections::HashSet<_>>().len(), 192);
@@ -450,7 +455,7 @@ mod tests {
             let blend_count = draws.iter().filter(|draw| draw.material.alpha_mode == AlphaMode::Blend).count();
             let mut meshes = HashMap::new();
             meshes.insert(mesh_key(&draws[0], true), mock_quad_resources(&mesh));
-            let batches = group_voxel_batches(&mut draws, &meshes);
+            let batches = group_voxel_batches_from_meshes(&mut draws, &meshes);
             assert_eq!(batches.len(), blend_count + 1);
             assert_eq!(batches[0].instance_count, count - blend_count);
             assert!(batches.iter().skip(1).all(|batch| batch.instance_count == 1));
@@ -480,7 +485,7 @@ mod tests {
         let mut draws = prepare(&scene);
         let mut meshes = HashMap::new();
         meshes.insert(mesh_key(&draws[0], true), mock_quad_resources(&mesh));
-        let batches = group_voxel_batches(&mut draws, &meshes);
+        let batches = group_voxel_batches_from_meshes(&mut draws, &meshes);
         assert_eq!(batches.len(), 4, "texture or culling state changes need independent bindings");
         assert!(batches.iter().all(|batch| batch.instance_count == 1));
     }
@@ -525,7 +530,7 @@ mod tests {
         let mut workspace = BatchWorkspace::default();
         let mut batches = Vec::new();
         let mut draws = prepare(&scene);
-        group_voxel_batches_with_quad_presence(
+        group_voxel_batches(
             &mut draws, &meshes, &mut workspace, &mut batches, false,
         );
         assert!(workspace.singleton_layout);
@@ -538,7 +543,7 @@ mod tests {
         let removed = scene.roots()[45];
         scene.remove(removed).unwrap();
         let mut draws = prepare(&scene);
-        group_voxel_batches_with_quad_presence(
+        group_voxel_batches(
             &mut draws, &meshes, &mut workspace, &mut batches, false,
         );
         assert_eq!(batches.as_ptr(), existing);
@@ -552,7 +557,7 @@ mod tests {
         let mesh = Arc::new(Mesh::cube());
         scene.insert(None, Node::new().with_mesh(mesh)).unwrap();
         let mut draws = prepare(&scene);
-        group_voxel_batches_with_quad_presence(
+        group_voxel_batches(
             &mut draws, &meshes, &mut workspace, &mut batches, false,
         );
         assert_eq!(batches.len(), snapshot.len());
@@ -568,18 +573,18 @@ mod tests {
         let mut workspace = BatchWorkspace::default();
         let mut batches = Vec::new();
         let meshes = HashMap::new();
-        group_voxel_batches_with_quad_presence(
+        group_voxel_batches(
             &mut draws, &meshes, &mut workspace, &mut batches, false,
         );
         assert!(workspace.singleton_layout);
         // Switching to the native grouping path invalidates the assumption.
-        group_voxel_batches_with_quad_presence(
+        group_voxel_batches(
             &mut draws, &meshes, &mut workspace, &mut batches, true,
         );
         assert!(!workspace.singleton_layout);
         // Re-entering the generated-only path reconstructs all singleton
         // descriptors, even if the former grouping produced fewer batches.
-        group_voxel_batches_with_quad_presence(
+        group_voxel_batches(
             &mut draws, &meshes, &mut workspace, &mut batches, false,
         );
         assert!(workspace.singleton_layout);
@@ -603,7 +608,7 @@ mod tests {
         let mut draws = prepare(&scene);
         let mut workspace = BatchWorkspace::default();
         let mut batches = Vec::new();
-        group_voxel_batches_with_quad_presence(
+        group_voxel_batches(
             &mut draws,
             &meshes,
             &mut workspace,

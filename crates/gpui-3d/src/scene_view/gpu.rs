@@ -721,7 +721,7 @@ impl MeshArena {
     /// a GPU fence from an unrelated queue cannot free these allocations.
     ///
     /// Calls must originate from the native owner immediately after
-    /// submit_compute_batch_on_queue returns a real SubmissionId. The owner
+    /// submit_compute returns a real SubmissionId. The owner
     /// must subsequently poll that ID and forward gpu_submission_completed.
     /// Failure to register falls back to unfenced quarantine.
     pub(super) fn register_native_compute_allocations(

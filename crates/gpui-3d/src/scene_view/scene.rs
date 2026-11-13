@@ -23,6 +23,7 @@ use gfx_core::{
     IndexBufferBinding, RenderCommand, SamplerId, bind_group_list,
 };
 use gpui::ExtensionDevice;
+use gpui::diagnostics::gpu_owner;
 use gpui::RendererExtensionContext;
 use std::{
     cell::RefCell,
@@ -206,24 +207,24 @@ mod structural_light_delta_tests {
             measured_hardware_upload_us: 0,
             hardware_ns_per_mib: 0,
         };
-        assert_eq!(sparse_upload_range_budget_with_cost(BackendKind::Vulkan, 65_536, None), 64);
-        assert_eq!(sparse_upload_range_budget_with_cost(
+        assert_eq!(sparse_upload_range_budget(BackendKind::Vulkan, 65_536, None), 64);
+        assert_eq!(sparse_upload_range_budget(
             BackendKind::Vulkan, 65_536, Some(cost),
         ), 24);
         cost.ns_per_write = 500;
-        assert_eq!(sparse_upload_range_budget_with_cost(
+        assert_eq!(sparse_upload_range_budget(
             BackendKind::Vulkan, 65_536, Some(cost),
         ), 96);
         // A different graphics device cannot use this backend's timings.
-        assert_eq!(sparse_upload_range_budget_with_cost(
+        assert_eq!(sparse_upload_range_budget(
             BackendKind::Dx11, 65_536, Some(cost),
         ), 16);
         // Small scenes and cold estimators retain deterministic behavior.
-        assert_eq!(sparse_upload_range_budget_with_cost(
+        assert_eq!(sparse_upload_range_budget(
             BackendKind::Vulkan, 256, Some(cost),
         ), 16);
         cost.samples = 2;
-        assert_eq!(sparse_upload_range_budget_with_cost(
+        assert_eq!(sparse_upload_range_budget(
             BackendKind::Vulkan, 65_536, Some(cost),
         ), 64);
     }
@@ -325,13 +326,7 @@ impl DrawSyncAudit {
 /// owner measurements exist, tune sparse-range count from the breakeven gap:
 /// bytes worth transferring to avoid one more driver write. Retain the
 /// deterministic backend default during startup or with sparse samples.
-fn sparse_upload_range_budget(backend: BackendKind, draw_count: usize) -> usize {
-    sparse_upload_range_budget_with_cost(
-        backend, draw_count, crate::gpu_upload_cost_estimate(),
-    )
-}
-
-fn sparse_upload_range_budget_with_cost(
+fn sparse_upload_range_budget(
     backend: BackendKind,
     draw_count: usize,
     feedback: Option<crate::GpuUploadCostEstimate>,
@@ -860,7 +855,7 @@ impl SceneResources {
         let sampler =
             renderer.sampler(device, scene_view.sampling, scene_view.anisotropy_enabled)?;
         let assets_changed =
-            scene_assets_changed(self.scene.as_ref(), self.texture_table.as_ref(), scene_view);
+            assets_changed(self.scene.as_ref(), self.texture_table.as_ref(), scene_view);
         let camera_changed = self.camera != Some(scene_view.camera)
             || self.projection.map(FrameProjection::aspect) != Some(projection.aspect());
         let culling_bounds_changed = self.culling_bounds != scene_view.culling_bounds;
@@ -937,7 +932,7 @@ impl SceneResources {
         if draw_state_changed {
             let stage_started = trace_timings().then(Instant::now);
             let camera_phase =
-                gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::CameraCull);
+                gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::CameraCull);
             let local_changes = self
                 .scene
                 .as_ref()
@@ -1006,7 +1001,7 @@ impl SceneResources {
             let stage_started = trace_timings().then(Instant::now);
             {
                 let _phase =
-                    gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
+                    gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::ResourceSync);
                 if incremental_asset_sync {
                     validate_draw_textures(self.prepared.incremental_asset_draws(), scene_view)?;
                 } else {
@@ -1027,7 +1022,7 @@ impl SceneResources {
             let camera_started = trace_timings().then(Instant::now);
             let mut refresh_culled_assets = false;
             let camera_phase =
-                gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::CameraCull);
+                gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::CameraCull);
             let tracked_start = if gpu_culling {
                 self.prepared
                     .draws
@@ -1077,7 +1072,7 @@ impl SceneResources {
             if refresh_culled_assets {
                 // CPU re-culling can reveal assets not uploaded by earlier frames.
                 let _phase =
-                    gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
+                    gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::ResourceSync);
                 self.ensure_textures(device, scene_view, false)?;
                 self.ensure_meshes(device, context.backend_kind(), scene_view.voxel_shader)?;
             }
@@ -1087,7 +1082,7 @@ impl SceneResources {
         }
         if voxel_shader_changed && !draw_state_changed {
             let _phase =
-                gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
+                gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::ResourceSync);
             self.ensure_meshes(device, context.backend_kind(), scene_view.voxel_shader)?;
         }
         let shading = projection.voxel_shading();
@@ -1103,7 +1098,7 @@ impl SceneResources {
         let shadow_created = shadow_enabled && self.shadow.is_none();
         if draw_list_changed {
             let batch_started = trace_timings().then(Instant::now);
-            let _phase = gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::BatchBuild);
+            let _phase = gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::BatchBuild);
             if gpu_culling {
                 let native_quads = self.page_refs.has_non_generated_quads();
                 if native_quads {
@@ -1112,7 +1107,7 @@ impl SceneResources {
                     // candidate indices must not be treated as GPU slots.
                     self.prepared.invalidate_resident_candidate_order();
                 }
-                super::batching::group_voxel_batches_with_quad_presence(
+                super::batching::group_voxel_batches(
                     &mut self.prepared.draws,
                     &self.meshes,
                     &mut self.batch_workspace,
@@ -1132,7 +1127,7 @@ impl SceneResources {
             }
         }
         let resource_phase =
-            gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::ResourceSync);
+            gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::ResourceSync);
         let mut cull_update_started = trace_timings().then(Instant::now);
         if gpu_culling && (draw_list_changed || self.culling.is_none()) {
             // Both proofs are maintained incrementally: no non-generated
@@ -1242,7 +1237,7 @@ impl SceneResources {
         if draw_list_changed {
             let buffer_started = trace_timings().then(Instant::now);
             let _phase =
-                gpui::gpu_owner_extension_phase(gpui::GpuOwnerExtensionPhase::BufferEncode);
+                gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::BufferEncode);
             let bind_group_layout = renderer.bind_group_layout()?;
             let mut selected_sync = DrawSyncPath::Full;
             {
@@ -1361,7 +1356,7 @@ impl SceneResources {
                 if references_removed
                     && !mesh_replaced
                     && !visible_instances_changed
-                    && !self.active_assets.needs_full_rescan()
+                    && !self.active_assets.full_rescan_required()
                 {
                     let (removed_meshes, removed_textures) = self.active_assets.removed_ids();
                     let removed_meshes = removed_meshes.to_vec();
@@ -1953,7 +1948,7 @@ impl SceneResources {
             &self.uploaded_tables[2],
             &light_bytes,
             LIGHT_STRIDE as usize,
-            sparse_upload_range_budget(self.backend, count),
+            sparse_upload_range_budget(self.backend, count, crate::gpu_upload_cost_estimate()),
             4,
         );
 
@@ -2396,8 +2391,11 @@ impl SceneResources {
         let light_buffer = new_lights.unwrap_or(self.light_buffer);
         let slot_map_buffer = new_slot_map.unwrap_or(self.draw_slot_buffer);
         let write_started = trace_started.map(|_| Instant::now());
-        let upload_range_budget =
-            sparse_upload_range_budget(self.backend, self.prepared.draws.len());
+        let upload_range_budget = sparse_upload_range_budget(
+            self.backend,
+            self.prepared.draws.len(),
+            crate::gpu_upload_cost_estimate(),
+        );
         let writes = [
             (
                 draw_buffer,
@@ -3452,7 +3450,7 @@ impl SceneResources {
                 next_keys.push(previous_key);
                 next_sources.push(source);
                 let metadata = self.generated_batch_sources[batch_index];
-                let (slot, first_instance) = generated::generated_mapping_target(
+                let (slot, first_instance) = generated::mapping_target(
                     self.culling
                         .as_ref()
                         .map(|culling| culling.committed_slot_layout().1),
@@ -3476,7 +3474,7 @@ impl SceneResources {
             // This lookup and binary material-part resolution now happen in
             // the same pass that already resolves the native BindGroup.
             let generated_source = generated::BatchMappingSource::for_draw(draw, mesh)?;
-            let (slot, first_instance) = generated::generated_mapping_target(
+            let (slot, first_instance) = generated::mapping_target(
                 self.culling
                     .as_ref()
                     .map(|culling| culling.committed_slot_layout().1),
@@ -4248,7 +4246,7 @@ fn upload_pending_meshes(
 #[cfg(test)]
 mod tests {
     use super::{
-        DrawMeshKey, DrawResourceKey, mesh_key, scene_asset_ids, scene_assets_changed,
+        DrawMeshKey, DrawResourceKey, mesh_key, asset_ids, assets_changed,
         update_prepared, validate_textures,
     };
     use crate::{
@@ -4412,12 +4410,12 @@ mod tests {
             )
             .unwrap();
 
-        let (meshes, textures) = scene_asset_ids(&scene);
+        let (meshes, textures) = asset_ids(&scene);
         assert!(meshes.contains(&mesh.id()));
         assert!(textures.contains(&TextureAssetId(42)));
 
         scene.remove(node).unwrap();
-        let (meshes, textures) = scene_asset_ids(&scene);
+        let (meshes, textures) = asset_ids(&scene);
         assert!(meshes.is_empty());
         assert!(textures.is_empty());
     }
@@ -4440,14 +4438,14 @@ mod tests {
             ..scene_view.camera
         });
 
-        assert!(!scene_assets_changed(
+        assert!(!assets_changed(
             Some(&scene_view.scene),
             Some(&scene_view.textures),
             &rotated,
         ));
         // A failed suffix upload clears the committed scene identity, forcing a full resync
         // even if the CPU has already sorted this same camera's transparent draws.
-        assert!(scene_assets_changed(
+        assert!(assets_changed(
             None,
             Some(&scene_view.textures),
             &rotated
@@ -4713,7 +4711,7 @@ mod tests {
 }
 
 #[cfg(test)]
-fn scene_asset_ids(scene: &Scene) -> (HashSet<MeshId>, HashSet<TextureAssetId>) {
+fn asset_ids(scene: &Scene) -> (HashSet<MeshId>, HashSet<TextureAssetId>) {
     let mut meshes = HashSet::new();
     let mut textures = HashSet::new();
     let mut pending = scene.roots().to_vec();
@@ -4763,7 +4761,7 @@ fn draw_identity(draw: &PreparedDraw) -> (NodeId, MeshId, MeshPart, MaterialId) 
     (draw.node, draw.mesh.id(), draw.part, draw.material.id())
 }
 
-fn scene_assets_changed(
+fn assets_changed(
     scene: Option<&Arc<Scene>>,
     texture_table: Option<&Arc<HashMap<TextureAssetId, Arc<crate::TextureAsset>>>>,
     scene_view: &SceneView,
@@ -5004,11 +5002,11 @@ mod sparse_upload_budget_tests {
 
     #[test]
     fn high_draw_count_uses_more_ranges_only_for_batched_native_uploads() {
-        assert_eq!(sparse_upload_range_budget(BackendKind::Vulkan, 103_305), 64);
-        assert_eq!(sparse_upload_range_budget(BackendKind::Dx12, 103_305), 64);
-        assert_eq!(sparse_upload_range_budget(BackendKind::Vulkan, 10_000), 16);
-        assert_eq!(sparse_upload_range_budget(BackendKind::Dx11, 103_305), 16);
-        assert_eq!(sparse_upload_range_budget(BackendKind::OpenGl, 103_305), 16);
+        assert_eq!(sparse_upload_range_budget(BackendKind::Vulkan, 103_305, None), 64);
+        assert_eq!(sparse_upload_range_budget(BackendKind::Dx12, 103_305, None), 64);
+        assert_eq!(sparse_upload_range_budget(BackendKind::Vulkan, 10_000, None), 16);
+        assert_eq!(sparse_upload_range_budget(BackendKind::Dx11, 103_305, None), 16);
+        assert_eq!(sparse_upload_range_budget(BackendKind::OpenGl, 103_305, None), 16);
     }
 }
 

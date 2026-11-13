@@ -1,14 +1,8 @@
-#[path = "tests/indirect.rs"]
 mod indirect;
-#[path = "tests/light_tiles.rs"]
 mod light_tiles;
-#[path = "tests/materials.rs"]
 mod materials;
-#[path = "tests/reflections.rs"]
 mod reflections;
-#[path = "tests/shadow_planes.rs"]
 mod shadow_planes;
-#[path = "tests/water_waves.rs"]
 mod water_waves;
 use super::super::targets::Target;
 use super::*;

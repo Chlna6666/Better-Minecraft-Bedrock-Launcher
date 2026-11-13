@@ -159,7 +159,11 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
             (1, buffers[0].0, buffers[0].1),
             (8, buffers[1].0, buffers[1].1),
             (9, buffers[2].0, buffers[2].1),
-            (12, generated.templates, generated.template_page_bytes / 112 * 112),
+            (
+                12,
+                generated.templates,
+                generated.template_page_bytes / 112 * 112,
+            ),
             (13, resource.vertices, resource.vertex_binding_bytes as u64),
             (14, generated.templates, generated.template_page_bytes),
             (
@@ -210,7 +214,6 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
 
             sample_count: 1,
             resolve_target: None,
-
         },
     )
     .unwrap();
@@ -227,7 +230,10 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
             vertex_buffers: vec![],
             render_pass: pass,
             pipeline_layout: Some(layout),
-            color_targets: vec![ColorTargetState::new(Format::Rgba8Unorm, BlendMode::Replace)],
+            color_targets: vec![ColorTargetState::new(
+                Format::Rgba8Unorm,
+                BlendMode::Replace,
+            )],
             primitive_topology: PrimitiveTopology::TriangleList,
             raster: RasterState {
                 front_face: FrontFace::Ccw,
@@ -282,9 +288,8 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
                 depth_attachment: None,
                 clear_region: None,
                 viewport: None,
-            resolve_target: None,
-
-        }],
+                resolve_target: None,
+            }],
         )
         .unwrap();
         let pixels = TextureTransferDevice::read_texture(device, texture)
@@ -380,7 +385,6 @@ pub(in crate::scene_view) fn probe<D: Device + TextureTransferDevice>(
 
             sample_count: 1,
             resolve_target: None,
-
         },
     )
     .unwrap();
@@ -434,7 +438,10 @@ pub(in crate::scene_view) fn probe<D: Device + TextureTransferDevice>(
             vertex_buffers: vec![],
             render_pass: pass,
             pipeline_layout: Some(pipeline_layout),
-            color_targets: vec![ColorTargetState::new(Format::Rgba8Unorm, BlendMode::Replace)],
+            color_targets: vec![ColorTargetState::new(
+                Format::Rgba8Unorm,
+                BlendMode::Replace,
+            )],
             primitive_topology: PrimitiveTopology::TriangleList,
             raster: RasterState {
                 front_face: FrontFace::Ccw,
@@ -464,7 +471,6 @@ pub(in crate::scene_view) fn probe<D: Device + TextureTransferDevice>(
             clear_region: None,
             viewport: None,
             resolve_target: None,
-
         }],
     )
     .unwrap();
@@ -582,9 +588,13 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             }
         }
         crate::VoxelMeshSource::new(
-            size, crate::Vec3::new(-2.0, -2.0, -2.0), cells,
+            size,
+            crate::Vec3::new(-2.0, -2.0, -2.0),
+            cells,
             crate::voxel_mesh::tests::source().templates.to_vec(),
-        ).unwrap().with_greedy_visible_faces(true)
+        )
+        .unwrap()
+        .with_greedy_visible_faces(true)
     };
     assert_eq!(dense.capacity(), 96);
     // The 16^3 interior uses the new GPU row-run dispatch (rather than the
@@ -601,18 +611,22 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             }
         }
         crate::VoxelMeshSource::new(
-            size, crate::Vec3::new(-1.0, -1.0, -1.0), cells,
+            size,
+            crate::Vec3::new(-1.0, -1.0, -1.0),
+            cells,
             crate::voxel_mesh::tests::source().templates.to_vec(),
-        ).unwrap().with_greedy_visible_faces(true)
+        )
+        .unwrap()
+        .with_greedy_visible_faces(true)
     };
     assert_eq!(row_dense.capacity(), 16 * 16 * 6);
     let row_dense_ao = {
         let size = row_dense.size;
         let cells = row_dense.cells.to_vec();
-        crate::VoxelMeshSource::new(
-            size, row_dense.origin, cells,
-            row_dense.templates.to_vec(),
-        ).unwrap().with_greedy_visible_faces(true).with_ambient_occlusion(16)
+        crate::VoxelMeshSource::new(size, row_dense.origin, cells, row_dense.templates.to_vec())
+            .unwrap()
+            .with_greedy_visible_faces(true)
+            .with_ambient_occlusion(16)
     };
     // 16^3 interior with every other Y layer occupied. This has enough
     // exposed faces to exercise cs_mesh_rows_grouped, but still reduces to
@@ -628,21 +642,28 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             }
         }
         let source = crate::VoxelMeshSource::new(
-            size, crate::Vec3::new(-1.0, -1.0, -1.0), cells,
+            size,
+            crate::Vec3::new(-1.0, -1.0, -1.0),
+            cells,
             crate::voxel_mesh::tests::source().templates.to_vec(),
-        ).unwrap().with_greedy_visible_faces(true);
+        )
+        .unwrap()
+        .with_greedy_visible_faces(true);
         assert!(prefer_grouped_row_reservation(
-            &source, gpu_row_workgroups(source.size, 64)
+            &source,
+            gpu_row_workgroups(source.size, 64)
         ));
         source
     };
     let uniform_light = crate::voxel_mesh::tests::source()
-        .with_lighting(vec![0x77; 36], 0.2).unwrap()
+        .with_lighting(vec![0x77; 36], 0.2)
+        .unwrap()
         .with_greedy_visible_faces(true);
     let mut gradient = vec![0x77; 36];
     gradient[17] = 0x87;
     let gradient_light = crate::voxel_mesh::tests::source()
-        .with_lighting(gradient, 0.2).unwrap()
+        .with_lighting(gradient, 0.2)
+        .unwrap()
         .with_greedy_visible_faces(true);
     for (source, expected, static_count) in [
         // The 4x4x4 solid contains 96 exposed unit faces but only six
@@ -656,7 +677,11 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
         (uniform_light, 36, 0),
         (gradient_light, 60, 0),
         // Two touching cubes have ten visible faces and merge to six.
-        (crate::voxel_mesh::tests::source().with_greedy_visible_faces(true), 36, 0),
+        (
+            crate::voxel_mesh::tests::source().with_greedy_visible_faces(true),
+            36,
+            0,
+        ),
         (crate::voxel_mesh::tests::source(), 60u16, 0),
         (
             crate::voxel_mesh::tests::source()
@@ -735,11 +760,16 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             counts(&mut device, output, 48),
             [expected as u8, (expected >> 8) as u8, 1, 11]
         );
-        if (expected == 36 && mesh.gpu_voxels().is_some_and(|source| {
-            source.size == [4, 3, 3] && source.lighting.is_none()
-        })) || (expected == 60 && mesh.gpu_voxels().is_some_and(|source| {
-            source.lighting.is_none()
-        })) || expected == 834 {
+        if (expected == 36
+            && mesh
+                .gpu_voxels()
+                .is_some_and(|source| source.size == [4, 3, 3] && source.lighting.is_none()))
+            || (expected == 60
+                && mesh
+                    .gpu_voxels()
+                    .is_some_and(|source| source.lighting.is_none()))
+            || expected == 834
+        {
             let before = mesh.geometry_storage_bytes();
             ResourceDevice::write_buffer(&mut device, mapping, 8, &0u32.to_le_bytes()).unwrap();
             ResourceDevice::dispatch_compute(
@@ -789,29 +819,54 @@ fn generated_faces_share_a_page_with_independent_section_offsets() {
     let mut templates = MeshArena::generated_templates(limits);
     let mut arguments = MeshArena::generated_arguments(limits);
     let mut resources = create_many_pooled(
-        &mut device, &[&meshes[0], &meshes[1]], &shaders,
-        &mut arena, &mut templates, &mut arguments, BackendKind::Dx11, 0,
-    ).unwrap();
-    assert_eq!(resources[0].generated.as_ref().unwrap().templates,
-               resources[1].generated.as_ref().unwrap().templates);
-    assert_ne!(resources[0].generated.as_ref().unwrap().template_base,
-               resources[1].generated.as_ref().unwrap().template_base);
-    assert_eq!(resources[0].generated.as_ref().unwrap().arguments,
-               resources[1].generated.as_ref().unwrap().arguments);
-    assert_ne!(resources[0].generated.as_ref().unwrap().argument_base,
-               resources[1].generated.as_ref().unwrap().argument_base);
-    assert_ne!(resources[0].generated.as_ref().unwrap().templates, resources[0].vertices);
+        &mut device,
+        &[&meshes[0], &meshes[1]],
+        &shaders,
+        &mut arena,
+        &mut templates,
+        &mut arguments,
+        BackendKind::Dx11,
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        resources[0].generated.as_ref().unwrap().templates,
+        resources[1].generated.as_ref().unwrap().templates
+    );
+    assert_ne!(
+        resources[0].generated.as_ref().unwrap().template_base,
+        resources[1].generated.as_ref().unwrap().template_base
+    );
+    assert_eq!(
+        resources[0].generated.as_ref().unwrap().arguments,
+        resources[1].generated.as_ref().unwrap().arguments
+    );
+    assert_ne!(
+        resources[0].generated.as_ref().unwrap().argument_base,
+        resources[1].generated.as_ref().unwrap().argument_base
+    );
+    assert_ne!(
+        resources[0].generated.as_ref().unwrap().templates,
+        resources[0].vertices
+    );
     assert_eq!(resources.len(), 2);
     assert_eq!(resources[0].vertices, resources[1].vertices);
     assert_ne!(resources[0].vertex_base, resources[1].vertex_base);
-    assert!(resources.iter().all(|resource| resource.allocation.is_some()));
+    assert!(
+        resources
+            .iter()
+            .all(|resource| resource.allocation.is_some())
+    );
     assert_eq!(arena.stats().0, 1);
     for (mesh, resource) in meshes.iter().zip(&resources) {
-        assert_eq!(counts(
-            &mut device,
-            resource.generated.as_ref().unwrap().arguments,
-            16,
-        )[0], 60);
+        assert_eq!(
+            counts(
+                &mut device,
+                resource.generated.as_ref().unwrap().arguments,
+                16,
+            )[0],
+            60
+        );
         render_generated(
             &mut device,
             mesh,
@@ -826,8 +881,14 @@ fn generated_faces_share_a_page_with_independent_section_offsets() {
     let mut ordinary = MeshArena::default();
     for resource in resources.drain(..) {
         super::super::gpu::destroy_mesh(
-            &mut device, resource, &mut ordinary, &mut arena, &mut templates, &mut arguments,
-        ).unwrap();
+            &mut device,
+            resource,
+            &mut ordinary,
+            &mut arena,
+            &mut templates,
+            &mut arguments,
+        )
+        .unwrap();
     }
     assert_eq!(arena.stats().0, 0);
     assert_eq!(templates.stats().0, 0);

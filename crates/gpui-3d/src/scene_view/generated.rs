@@ -1,5 +1,8 @@
 //! Compute-generated face descriptors, retained templates and native draw arguments.
-use super::{artifacts, gpu::{ArenaAllocation, MeshArena, MeshResources}};
+use super::{
+    artifacts,
+    gpu::{ArenaAllocation, MeshArena, MeshResources},
+};
 use crate::{Mesh, VoxelFaceTemplate, VoxelMeshSource};
 use anyhow::{Context as _, anyhow};
 use gfx_core::*;
@@ -112,9 +115,12 @@ fn canonical_greedy_face(face: &VoxelFaceTemplate) -> bool {
     let mut uv_low = [1.0f32; 2];
     let mut uv_high = [0.0f32; 2];
     let packed_color = |v: &crate::Vertex| -> u32 {
-        v.color.iter().enumerate().fold(0u32, |word, (index, value)| {
-            word | (((value * 255.0).round() as u32) << (index * 8))
-        })
+        v.color
+            .iter()
+            .enumerate()
+            .fold(0u32, |word, (index, value)| {
+                word | (((value * 255.0).round() as u32) << (index * 8))
+            })
     };
     let tint = packed_color(&face.vertices[0]);
     for v in &face.vertices {
@@ -124,7 +130,9 @@ fn canonical_greedy_face(face: &VoxelFaceTemplate) -> bool {
             return false;
         }
         for i in 0..3 {
-            if pos[i] != 0.0 && pos[i] != 1.0 { return false; }
+            if pos[i] != 0.0 && pos[i] != 1.0 {
+                return false;
+            }
             low[i] = low[i].min(pos[i]);
             high[i] = high[i].max(pos[i]);
         }
@@ -135,13 +143,14 @@ fn canonical_greedy_face(face: &VoxelFaceTemplate) -> bool {
     }
     for i in 0..3 {
         if i == axis {
-            if low[i] != boundary || high[i] != boundary { return false; }
+            if low[i] != boundary || high[i] != boundary {
+                return false;
+            }
         } else if low[i] != 0.0 || high[i] != 1.0 {
             return false;
         }
     }
-    (0..2).all(|i| uv_low[i] == 0.0 &&
-        (uv_high[i] == 0.0 || (uv_high[i] - 1.0).abs() <= 0.00001))
+    (0..2).all(|i| uv_low[i] == 0.0 && (uv_high[i] == 0.0 || (uv_high[i] - 1.0).abs() <= 0.00001))
 }
 
 /// A dense canonical cube grid may be processed one 16-cell face row at a
@@ -182,7 +191,9 @@ fn row_template_order(source: &VoxelMeshSource) -> Option<Vec<usize>> {
 /// the six directions share one Compute dispatch. u64 intermediates prevent
 /// overflow for fused world3d sections; the caller falls back on large grids.
 fn gpu_row_workgroups(size: [u32; 3], group_size: u32) -> Option<usize> {
-    if group_size == 0 { return None; }
+    if group_size == 0 {
+        return None;
+    }
     let sx = u64::from(size[0].checked_sub(2)?);
     let sy = u64::from(size[1].checked_sub(2)?);
     let sz = u64::from(size[2].checked_sub(2)?);
@@ -199,10 +210,7 @@ fn gpu_row_workgroups(size: [u32; 3], group_size: u32) -> Option<usize> {
 /// Use shared-memory material tickets only for fragmented canonical rows.
 /// Dense solid Sections already emit very few rectangles, so bypassing the
 /// workgroup hash/staging is cheaper. Part count limits hash-table occupancy.
-fn prefer_grouped_row_reservation(
-    source: &VoxelMeshSource,
-    row_groups: Option<usize>,
-) -> bool {
+fn prefer_grouped_row_reservation(source: &VoxelMeshSource, row_groups: Option<usize>) -> bool {
     row_groups.is_some()
         && (1..=64).contains(&source.parts.len())
         && source.exposed_cube_faces >= 512
@@ -236,11 +244,15 @@ fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>, bool, bool) {
     let row_order = row_template_order(source);
     // No normalization for sources with repeated, missing or noncanonical
     // directions: they continue to use the existing per-voxel kernel.
-    let encoded_indices = row_order.clone()
+    let encoded_indices = row_order
+        .clone()
         .unwrap_or_else(|| (0..source.templates.len()).collect());
     for (index, source_index) in encoded_indices.into_iter().enumerate() {
         let face = &source.templates[source_index];
-        let part = material_parts.get(&face.material_slot).copied().unwrap_or(0);
+        let part = material_parts
+            .get(&face.material_slot)
+            .copied()
+            .unwrap_or(0);
         let center = face.vertices.iter().map(|v| v.position.y).sum::<f32>() * 0.25;
         let address = if index < source.static_start {
             source.neighbour_delta(face) as u32
@@ -284,7 +296,6 @@ fn encode(source: &VoxelMeshSource) -> (Vec<u8>, Vec<u32>, bool, bool) {
     (bytes, static_counts, has_greedy_faces, row_order.is_some())
 }
 
-
 #[cfg(test)]
 mod row_meshing_algorithm_tests {
     use super::*;
@@ -301,7 +312,10 @@ mod row_meshing_algorithm_tests {
                 _ => [0, 0, 1],
             };
             let sign = if encoded_index % 2 == 0 { 1 } else { -1 };
-            assert_eq!(source.templates[source_index].neighbour, axis.map(|v| v * sign));
+            assert_eq!(
+                source.templates[source_index].neighbour,
+                axis.map(|v| v * sign)
+            );
         }
         let (encoded, _, has_greedy, row_safe) = encode(&source);
         assert!(has_greedy && row_safe);
@@ -324,26 +338,50 @@ mod row_meshing_algorithm_tests {
         // six surfaces to six rectangles; local aggregation would cost more.
         let size = [18u32; 3];
         let mut cells = vec![0u32; 18 * 18 * 18];
-        for z in 1..17 { for y in 1..17 { for x in 1..17 {
-            cells[(z*18+y)*18+x] = 1;
-        }}}
+        for z in 1..17 {
+            for y in 1..17 {
+                for x in 1..17 {
+                    cells[(z * 18 + y) * 18 + x] = 1;
+                }
+            }
+        }
         let solid = crate::VoxelMeshSource::new(
-            size, crate::Vec3::ZERO, cells.clone(),
+            size,
+            crate::Vec3::ZERO,
+            cells.clone(),
             crate::voxel_mesh::tests::source().templates.to_vec(),
-        ).unwrap().with_greedy_visible_faces(true);
-        assert!(!prefer_grouped_row_reservation(&solid, gpu_row_workgroups(size, 64)));
+        )
+        .unwrap()
+        .with_greedy_visible_faces(true);
+        assert!(!prefer_grouped_row_reservation(
+            &solid,
+            gpu_row_workgroups(size, 64)
+        ));
 
         // Disjoint horizontal layers have many exposed faces, but no overlap
         // between adjacent layers. Grouped row material reservations can
         // amortize global atomic contention on this class of input.
-        for z in 1..17 { for y in 1..17 { for x in 1..17 {
-            if y % 2 == 0 { cells[(z*18+y)*18+x] = 0; }
-        }}}
+        for z in 1..17 {
+            for y in 1..17 {
+                for x in 1..17 {
+                    if y % 2 == 0 {
+                        cells[(z * 18 + y) * 18 + x] = 0;
+                    }
+                }
+            }
+        }
         let layers = crate::VoxelMeshSource::new(
-            size, crate::Vec3::ZERO, cells,
+            size,
+            crate::Vec3::ZERO,
+            cells,
             crate::voxel_mesh::tests::source().templates.to_vec(),
-        ).unwrap().with_greedy_visible_faces(true);
-        assert!(prefer_grouped_row_reservation(&layers, gpu_row_workgroups(size, 64)));
+        )
+        .unwrap()
+        .with_greedy_visible_faces(true);
+        assert!(prefer_grouped_row_reservation(
+            &layers,
+            gpu_row_workgroups(size, 64)
+        ));
         assert!(!prefer_grouped_row_reservation(&layers, None));
 
         // WGSL RowStageFace is 20 bytes. The 512 records + 128 triads +
@@ -521,11 +559,11 @@ fn prepare_generated(
     // direction. Sparse grids and surfaces with nearly all faces isolated
     // should keep the per-occupied-cell kernel; the 2D/3D benchmark confirms
     // that pre-scanning short, fragmented runs cannot amortize its cost.
-    let row_groups = if greedy && row_safe
+    let row_groups = if greedy
+        && row_safe
         && source.exposed_cube_faces >= 128
         && source.occupied_cube_cells.saturating_mul(4) >= interior_cells
-        && source.exposed_cube_faces
-            <= source.occupied_cube_cells.saturating_mul(3)
+        && source.exposed_cube_faces <= source.occupied_cube_cells.saturating_mul(3)
     {
         gpu_row_workgroups(source.size, 64)
     } else {
@@ -545,12 +583,13 @@ fn prepare_generated(
     } else {
         row_groups
     };
-    let cached_greedy = greedy && source.exposed_cube_faces >= 128
+    let cached_greedy = greedy
+        && source.exposed_cube_faces >= 128
         && (source.ambient_occlusion != 0
             || source.exposed_cube_faces.saturating_mul(4)
                 >= source.occupied_cube_cells.saturating_mul(7));
-    let row_mask = row_groups.is_some() && source.ambient_occlusion != 0
-        && source.exposed_cube_faces >= 128;
+    let row_mask =
+        row_groups.is_some() && source.ambient_occlusion != 0 && source.exposed_cube_faces >= 128;
     // 0 = no merge; 1 = direct per-cell; 2 = cached per-cell;
     // 3 = direct row-run; 4 = cached row-run.
     let greedy_mode = if row_groups.is_some() {
@@ -562,7 +601,11 @@ fn prepare_generated(
     } else {
         1.0
     };
-    let needs_mask = if row_groups.is_some() { row_mask } else { cached_greedy };
+    let needs_mask = if row_groups.is_some() {
+        row_mask
+    } else {
+        cached_greedy
+    };
     let params = source
         .size
         .into_iter()
@@ -578,8 +621,8 @@ fn prepare_generated(
                 // per exposed face on the GPU, not dropped globally.
                 greedy_mode,
             ]
-                .into_iter()
-                .flat_map(f32::to_le_bytes),
+            .into_iter()
+            .flat_map(f32::to_le_bytes),
         )
         .chain(
             [
@@ -617,7 +660,9 @@ fn prepare_generated(
         .ok_or_else(|| anyhow!("voxel capacity overflow"))?;
     // Keep instance prefix sums and per-cell greedy masks in disjoint ranges
     // of the same batch-scoped scratch buffer. Do not add a new bind group.
-    let scratch_bytes = jobs.len().max(1)
+    let scratch_bytes = jobs
+        .len()
+        .max(1)
         .checked_add(if needs_mask { source.cells.len() } else { 0 })
         .and_then(|words| words.checked_mul(4))
         .ok_or_else(|| anyhow!("GPU greedy mask scratch capacity overflow"))?;
@@ -682,7 +727,9 @@ fn prepare_generated(
                     template_allocation = Some(allocation);
                     template_offset = offset;
                     if offset % 112 != 0 {
-                        return Err(anyhow!("template page offset violates 112-byte record alignment"));
+                        return Err(anyhow!(
+                            "template page offset violates 112-byte record alignment"
+                        ));
                     }
                     template_base = u32::try_from(offset / 112)
                         .context("generated template index exceeds u32")?;
@@ -699,7 +746,9 @@ fn prepare_generated(
                     argument_allocation = Some(allocation);
                     argument_offset = offset;
                     if offset % 16 != 0 {
-                        return Err(anyhow!("generated argument offset violates u32x4 record alignment"));
+                        return Err(anyhow!(
+                            "generated argument offset violates u32x4 record alignment"
+                        ));
                     }
                     argument_base = u32::try_from(offset / 16)
                         .context("generated part-count address exceeds u32")?;
@@ -734,7 +783,8 @@ fn prepare_generated(
             let local = u32::from_le_bytes(templates[124..128].try_into().unwrap());
             let page_offset = u32::try_from(template_offset / 4)
                 .context("generated lighting offset exceeds u32")?;
-            let absolute = page_offset.checked_add(local)
+            let absolute = page_offset
+                .checked_add(local)
                 .ok_or_else(|| anyhow!("generated lighting page address overflow"))?;
             templates[124..128].copy_from_slice(&absolute.to_le_bytes());
         }
@@ -879,7 +929,7 @@ pub(super) fn create_many(
     meshes: &[&Mesh],
     shaders: &Shaders,
 ) -> gpui::Result<Vec<MeshResources>> {
-    create_many_impl(device, meshes, shaders, None, None, None, None, None)
+    create_many_with_options(device, meshes, shaders, None, None, None, None, None)
 }
 
 /// Production GPU meshing suballocates output descriptors into shared writable
@@ -894,9 +944,17 @@ pub(super) fn create_many_pooled(
     backend: BackendKind,
     batch_id: u64,
 ) -> gpui::Result<Vec<MeshResources>> {
-    create_many_pooled_impl(
-        device, meshes, shaders, arena, template_arena, argument_arena,
-        backend, batch_id, None, None,
+    create_many_with_pools(
+        device,
+        meshes,
+        shaders,
+        arena,
+        template_arena,
+        argument_arena,
+        backend,
+        batch_id,
+        None,
+        None,
     )
 }
 
@@ -915,13 +973,21 @@ pub(super) fn create_many_pooled_native(
     accepted: &mut Vec<gfx_core::SubmissionId>,
     feedback: &mut super::queue_feedback::QueueFeedback,
 ) -> gpui::Result<Vec<MeshResources>> {
-    create_many_pooled_impl(
-        device, meshes, shaders, arena, template_arena, argument_arena,
-        backend, batch_id, Some(accepted), Some(feedback),
+    create_many_with_pools(
+        device,
+        meshes,
+        shaders,
+        arena,
+        template_arena,
+        argument_arena,
+        backend,
+        batch_id,
+        Some(accepted),
+        Some(feedback),
     )
 }
 
-fn create_many_pooled_impl(
+fn create_many_with_pools(
     device: &mut dyn ExtensionDevice,
     meshes: &[&Mesh],
     shaders: &Shaders,
@@ -935,13 +1001,13 @@ fn create_many_pooled_impl(
 ) -> gpui::Result<Vec<MeshResources>> {
     // One batch scratch pool serves every Section's cells/params/jobs input
     // buffers: three native buffer creations per batch instead of per Section.
-    let mut scratch = crate::scene_view::gpu::BatchScratch::new(
-        device.buffer_binding_limits(), backend,
-    );
-    let profile = crate::gpu_submission_trace::enabled()
-        && device.gpu_work_timestamps_supported();
-    let result = create_many_impl(
-        device, meshes, shaders,
+    let mut scratch =
+        crate::scene_view::gpu::BatchScratch::new(device.buffer_binding_limits(), backend);
+    let profile = crate::gpu_submission_trace::enabled() && device.gpu_work_timestamps_supported();
+    let result = create_many_with_options(
+        device,
+        meshes,
+        shaders,
         Some((arena, template_arena, argument_arena, backend)),
         Some(&mut scratch),
         profile.then_some(batch_id),
@@ -949,7 +1015,10 @@ fn create_many_pooled_impl(
         feedback,
     );
     match result {
-        Ok(resources) => scratch.destroy(device).map(|_| resources).map_err(anyhow::Error::from),
+        Ok(resources) => scratch
+            .destroy(device)
+            .map(|_| resources)
+            .map_err(anyhow::Error::from),
         Err(error) => {
             let _ = scratch.destroy(device);
             Err(error)
@@ -971,24 +1040,30 @@ fn mark_generated_mesh_uses(
     for mesh in pending {
         if let Some(allocation) = mesh.allocation {
             faces.mark_untracked_access_on_queue(
-                allocation, gfx_core::GpuAccess::StorageWrite, queue,
+                allocation,
+                gfx_core::GpuAccess::StorageWrite,
+                queue,
             )?;
         }
         if let Some(allocation) = mesh.template_allocation {
             templates.mark_untracked_access_on_queue(
-                allocation, gfx_core::GpuAccess::ReadBuffer, queue,
+                allocation,
+                gfx_core::GpuAccess::ReadBuffer,
+                queue,
             )?;
         }
         if let Some(allocation) = mesh.argument_allocation {
             arguments.mark_untracked_access_on_queue(
-                allocation, gfx_core::GpuAccess::StorageReadWrite, queue,
+                allocation,
+                gfx_core::GpuAccess::StorageReadWrite,
+                queue,
             )?;
         }
     }
     Ok(())
 }
 
-fn create_many_impl(
+fn create_many_with_options(
     device: &mut dyn ExtensionDevice,
     meshes: &[&Mesh],
     shaders: &Shaders,
@@ -1006,9 +1081,9 @@ fn create_many_impl(
     // after workgroups are known: small batches stay on the ordered Graphics
     // path to avoid multiple semaphore/fence submissions per one-off Section.
     let available_native_queue = if accepted.is_some()
-        && arena.as_ref().is_some_and(|(_, _, _, backend)|
-            matches!(backend, BackendKind::Vulkan | BackendKind::Dx12))
-    {
+        && arena.as_ref().is_some_and(|(_, _, _, backend)| {
+            matches!(backend, BackendKind::Vulkan | BackendKind::Dx12)
+        }) {
         device.native_queue_for(gfx_core::GpuWorkStage::Compute)
     } else {
         None
@@ -1019,14 +1094,20 @@ fn create_many_impl(
     let trace_started = super::renderer::trace_timings().then(Instant::now);
     let mut pending = Vec::with_capacity(meshes.len());
     for mesh in meshes {
-        let pool = arena.as_mut().map(|(faces, templates, arguments, backend)| {
-            (&mut **faces, &mut **templates, &mut **arguments, *backend)
-        });
+        let pool = arena
+            .as_mut()
+            .map(|(faces, templates, arguments, backend)| {
+                (&mut **faces, &mut **templates, &mut **arguments, *backend)
+            });
         match prepare_generated(device, mesh, pool, scratch.as_deref_mut()) {
             Ok(mesh) => pending.push(mesh),
             Err(error) => {
                 discard_pending_generated(
-                    device, pending, arena.as_mut().map(|(faces, templates, arguments, _)| (&mut **faces, &mut **templates, &mut **arguments)),
+                    device,
+                    pending,
+                    arena.as_mut().map(|(faces, templates, arguments, _)| {
+                        (&mut **faces, &mut **templates, &mut **arguments)
+                    }),
                 );
                 return Err(error);
             }
@@ -1054,18 +1135,17 @@ fn create_many_impl(
         if let Some((_, templates, arguments, _)) = arena.as_mut() {
             for mesh in &pending {
                 if let Some(allocation) = mesh.template_allocation {
-                    templates.mark_untracked_access(
-                        allocation, gfx_core::GpuAccess::CopyWrite,
-                    )?;
+                    templates.mark_untracked_access(allocation, gfx_core::GpuAccess::CopyWrite)?;
                 }
                 if let Some(allocation) = mesh.argument_allocation {
-                    arguments.mark_untracked_access(
-                        allocation, gfx_core::GpuAccess::CopyWrite,
-                    )?;
+                    arguments.mark_untracked_access(allocation, gfx_core::GpuAccess::CopyWrite)?;
                 }
             }
         }
-        let bytes = staging_writes.iter().map(|write| write.data.len()).sum::<usize>();
+        let bytes = staging_writes
+            .iter()
+            .map(|write| write.data.len())
+            .sum::<usize>();
         let started = crate::gpu_submission_trace::enabled().then(Instant::now);
         let upload_result = if let Some(batch_id) = batch_id {
             device.write_buffer_batch_profiled(
@@ -1097,16 +1177,24 @@ fn create_many_impl(
             crate::gpu_submission_trace::observe(
                 *backend,
                 crate::gpu_submission_trace::Phase::GeneratedInputUpload,
-                staging_writes.len(), bytes, duration,
+                staging_writes.len(),
+                bytes,
+                duration,
             );
             // Include generated input staging in the budget's existing
             // GPU-owner buffer-write feedback; no extra driver call.
             crate::upload_feedback::observe_buffer_upload(
-                *backend, bytes, staging_writes.len(), duration,
+                *backend,
+                bytes,
+                staging_writes.len(),
+                duration,
             );
             if let Some(batch_id) = batch_id {
                 crate::upload_feedback::observe_tagged_upload(
-                    *backend, batch_id, bytes, staging_writes.len(),
+                    *backend,
+                    batch_id,
+                    bytes,
+                    staging_writes.len(),
                 );
             }
         }
@@ -1132,9 +1220,12 @@ fn create_many_impl(
     // path. No extra O(dispatches) pass for ordinary GL/DX11 rendering.
     let workgroups = if available_native_queue.is_some() || tracing_gpu_queue {
         dispatches.iter().fold(0u64, |total, dispatch| {
-            total.saturating_add(dispatch.workgroups.iter().fold(1u64, |n, &count| {
-                n.saturating_mul(u64::from(count))
-            }))
+            total.saturating_add(
+                dispatch
+                    .workgroups
+                    .iter()
+                    .fold(1u64, |n, &count| n.saturating_mul(u64::from(count))),
+            )
         })
     } else {
         0
@@ -1143,9 +1234,9 @@ fn create_many_impl(
     // hardware query pairs. At cold start, ordered work calibrates first;
     // native probes are bounded and never use a fixed Section/radius gate.
     let native_queue = available_native_queue.filter(|_| {
-        feedback.as_deref_mut().is_some_and(|model| {
-            model.admit_native(true, hardware_timestamps, workgroups)
-        })
+        feedback
+            .as_deref_mut()
+            .is_some_and(|model| model.admit_native(true, hardware_timestamps, workgroups))
     });
     let should_tag = if available_native_queue.is_none() {
         // No queue decision is possible: do not turn on permanent native
@@ -1173,19 +1264,28 @@ fn create_many_impl(
         // Route opt-in GPU queue diagnostics through the host logging facade.
         log::info!(
             "gpui3d generated_mesh_queue publication_id={:?} sample_id={:?} native_queue={:?} workgroups={} dispatches={} meshes={} gpu_rates={:?} timing=completed_native_ticks_only",
-            batch_id, compute_tag.map(|tag| tag.batch_id), native_queue,
-            workgroups, dispatch_count, meshes.len(), rates,
+            batch_id,
+            compute_tag.map(|tag| tag.batch_id),
+            native_queue,
+            workgroups,
+            dispatch_count,
+            meshes.len(),
+            rates,
         );
     }
     if dispatch_count != 0 && native_queue.is_none() {
         if let Some((faces, templates, arguments, _)) = arena.as_mut() {
             mark_generated_mesh_uses(
-                faces, templates, arguments, &pending, gfx_core::GpuQueueId::PRIMARY,
+                faces,
+                templates,
+                arguments,
+                &pending,
+                gfx_core::GpuQueueId::PRIMARY,
             )?;
         }
     }
-    let dispatch_started = (trace_started.is_some() || crate::gpu_submission_trace::enabled())
-        .then(Instant::now);
+    let dispatch_started =
+        (trace_started.is_some() || crate::gpu_submission_trace::enabled()).then(Instant::now);
     let submitted: anyhow::Result<()> = if dispatches.is_empty() {
         Ok(())
     } else if let Some(queue) = native_queue {
@@ -1210,11 +1310,11 @@ fn create_many_impl(
             if let Some((faces, templates, arguments, _)) = arena.as_mut() {
                 mark_generated_mesh_uses(faces, templates, arguments, &pending, queue)?;
             }
-            let compute_result = if let Some(tag) = compute_tag {
-                device.submit_compute_batch_profiled_on_queue(queue, &dispatches, tag)
-            } else {
-                device.submit_compute_batch_on_queue(queue, &dispatches)
-            };
+            let compute_result = device.submit_compute(gfx_core::ComputeSubmit {
+                queue,
+                dispatches: &dispatches,
+                timestamp_tag: compute_tag,
+            });
             let compute = match compute_result {
                 Ok(submission) => submission,
                 Err(error) => {
@@ -1244,25 +1344,45 @@ fn create_many_impl(
             // The physical GPU Page ranges have been conservatively marked
             // on the independent queue BEFORE native submission. Once
             // accepted, bind those declarations to its exact producer fence.
-            let writes = pending.iter().filter_map(|mesh| mesh.allocation.map(|allocation|
-                (allocation, gfx_core::GpuAccess::StorageWrite)
-            )).collect::<Vec<_>>();
-            let reads = pending.iter().filter_map(|mesh| mesh.template_allocation.map(|allocation|
-                (allocation, gfx_core::GpuAccess::ReadBuffer)
-            )).collect::<Vec<_>>();
-            let arguments_used = pending.iter().filter_map(|mesh| mesh.argument_allocation.map(|allocation|
-                (allocation, gfx_core::GpuAccess::StorageReadWrite)
-            )).collect::<Vec<_>>();
+            let writes = pending
+                .iter()
+                .filter_map(|mesh| {
+                    mesh.allocation
+                        .map(|allocation| (allocation, gfx_core::GpuAccess::StorageWrite))
+                })
+                .collect::<Vec<_>>();
+            let reads = pending
+                .iter()
+                .filter_map(|mesh| {
+                    mesh.template_allocation
+                        .map(|allocation| (allocation, gfx_core::GpuAccess::ReadBuffer))
+                })
+                .collect::<Vec<_>>();
+            let arguments_used = pending
+                .iter()
+                .filter_map(|mesh| {
+                    mesh.argument_allocation
+                        .map(|allocation| (allocation, gfx_core::GpuAccess::StorageReadWrite))
+                })
+                .collect::<Vec<_>>();
             if let Some((faces, templates, arguments, _)) = arena.as_mut() {
                 if !writes.is_empty() {
                     faces.register_native_compute_allocations(compute, queue, &writes, &[wait])?;
                 }
                 if !reads.is_empty() {
-                    templates.register_native_compute_allocations(compute, queue, &reads, &[wait])?;
+                    templates.register_native_compute_allocations(
+                        compute,
+                        queue,
+                        &reads,
+                        &[wait],
+                    )?;
                 }
                 if !arguments_used.is_empty() {
                     arguments.register_native_compute_allocations(
-                        compute, queue, &arguments_used, &[wait],
+                        compute,
+                        queue,
+                        &arguments_used,
+                        &[wait],
                     )?;
                 }
             }
@@ -1273,7 +1393,8 @@ fn create_many_impl(
             device.dispatch_compute_batch_profiled(&dispatches, tag)
         } else {
             device.dispatch_compute_batch(&dispatches)
-        }.map_err(anyhow::Error::from);
+        }
+        .map_err(anyhow::Error::from);
         if result.is_ok() {
             if let Some(model) = feedback.as_deref_mut() {
                 model.accepted(
@@ -1286,20 +1407,29 @@ fn create_many_impl(
         }
         result
     };
-    let dispatch_elapsed = dispatch_started.map(|start| start.elapsed()).unwrap_or_default();
+    let dispatch_elapsed = dispatch_started
+        .map(|start| start.elapsed())
+        .unwrap_or_default();
     let dispatch_ms = dispatch_elapsed.as_secs_f64() * 1000.0;
     drop(dispatches);
     if submitted.is_ok() && dispatch_count != 0 {
         if let Some((_, _, _, backend)) = arena.as_ref() {
             crate::gpu_submission_trace::observe(
-                *backend, crate::gpu_submission_trace::Phase::GeneratedComputeIssue,
-                dispatch_count, meshes.len(), dispatch_elapsed,
+                *backend,
+                crate::gpu_submission_trace::Phase::GeneratedComputeIssue,
+                dispatch_count,
+                meshes.len(),
+                dispatch_elapsed,
             );
         }
     }
     if let Err(error) = submitted {
         discard_pending_generated(
-            device, pending, arena.as_mut().map(|(faces, templates, arguments, _)| (&mut **faces, &mut **templates, &mut **arguments)),
+            device,
+            pending,
+            arena.as_mut().map(|(faces, templates, arguments, _)| {
+                (&mut **faces, &mut **templates, &mut **arguments)
+            }),
         );
         return Err(error);
     }
@@ -1316,7 +1446,11 @@ fn create_many_impl(
     }
     if let Err(error) = device.destroy_buffer_batch(&owned_scratch) {
         discard_pending_generated(
-            device, pending, arena.as_mut().map(|(faces, templates, arguments, _)| (&mut **faces, &mut **templates, &mut **arguments)),
+            device,
+            pending,
+            arena.as_mut().map(|(faces, templates, arguments, _)| {
+                (&mut **faces, &mut **templates, &mut **arguments)
+            }),
         );
         return Err(error.into());
     }
@@ -1336,7 +1470,10 @@ fn create_many_impl(
             );
         }
     }
-    Ok(pending.into_iter().map(PendingGenerated::into_resources).collect())
+    Ok(pending
+        .into_iter()
+        .map(PendingGenerated::into_resources)
+        .collect())
 }
 
 #[cfg(test)]
@@ -1369,7 +1506,10 @@ mod material_part_tests {
         for face in source.templates.iter() {
             assert_eq!(
                 lookup.get(&face.material_slot).copied().unwrap_or(0),
-                source.parts.iter().position(|part| part.material_slot() == face.material_slot)
+                source
+                    .parts
+                    .iter()
+                    .position(|part| part.material_slot() == face.material_slot)
                     .unwrap_or(0),
             );
         }

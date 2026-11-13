@@ -93,7 +93,8 @@ Other render paths lazily generate padded CPU geometry. Voxel meshes do not supp
 World decoding, cell/template extraction, connected-model state resolution, LOD selection and
 material resolution remain CPU work. Applications may retain CPU generation for entity geometry;
 there is no independent asynchronous compute queue.
-`GPUI_3D_TRACE_TIMINGS` reports `gpu_cull_batches_max` and `gpu_resident_draws_max` alongside draws.
+In debug builds, `GPUI_3D_TRACE_TIMINGS` reports `gpu_cull_batches_max` and
+`gpu_resident_draws_max` alongside draws. Release builds omit this diagnostic path.
 In development builds, `gpui3d gpu_owner_phase` reports CPU host/API latency while
 `gpui3d gpu_hardware_phase` reports **completed native GPU timestamps** with the
 Section publication `batch_id`. The latter measures GPU Generated Mesh compute
@@ -263,7 +264,7 @@ let environment = std::sync::Arc::new(gpui_3d::EnvironmentMap::procedural_studio
 scene.set_environment(Some(environment)); // Scene::set_environment(None) restores the analytic fallback
 ```
 
-`EnvironmentMap::load_path` accepts an sRGB equirectangular PNG/JPEG, and
+`EnvironmentMap::load` accepts an sRGB equirectangular PNG/JPEG, and
 `EnvironmentMap::new(Arc<TextureAsset>, intensity, rotation)` accepts caller-provided linear or sRGB
 texture data (a complete mip chain improves diffuse/roughness filtering). A fullscreen sky triangle
 renders the same map as background; debug and object-id views skip it. Environment textures are

@@ -3,7 +3,7 @@
 use super::*;
 use crate::scene_view::{
     INSTANCE_STRIDE, artifacts,
-    batching::group_voxel_batches,
+    batching::group_voxel_batches_from_meshes,
     gpu::{self, MeshArena},
 };
 use crate::{
@@ -388,7 +388,7 @@ fn verify_gpu_compaction<D: Device + TextureTransferDevice>(mut device: D, repet
         }
         meshes.insert((draw.mesh.id(), true), mesh);
     }
-    let batches = group_voxel_batches(&mut prepared.draws, &meshes);
+    let batches = group_voxel_batches_from_meshes(&mut prepared.draws, &meshes);
     assert_eq!(prepared.draws.len(), 2049);
     assert_eq!(
         batches.len(),
@@ -403,7 +403,7 @@ fn verify_gpu_compaction<D: Device + TextureTransferDevice>(mut device: D, repet
     }
     .matrix();
     assert_eq!(mirrored[0].raster_front_face(), Some(FrontFace::Cw));
-    let mirrored_batches = group_voxel_batches(&mut mirrored, &meshes);
+    let mirrored_batches = group_voxel_batches_from_meshes(&mut mirrored, &meshes);
     assert_eq!(mirrored_batches.len(), batches.len() + 1);
     for batch in mirrored_batches {
         let draws = &mirrored[batch.first_instance..batch.first_instance + batch.instance_count];
@@ -421,7 +421,10 @@ fn verify_gpu_compaction<D: Device + TextureTransferDevice>(mut device: D, repet
         .iter()
         .map(|draw| (draw.node, draw.part))
         .collect::<Vec<_>>();
-    assert_eq!(group_voxel_batches(&mut blended, &meshes).len(), 2049);
+    assert_eq!(
+        group_voxel_batches_from_meshes(&mut blended, &meshes).len(),
+        2049
+    );
     assert_eq!(
         blended
             .iter()
@@ -431,7 +434,7 @@ fn verify_gpu_compaction<D: Device + TextureTransferDevice>(mut device: D, repet
     );
     let mut mixed = prepared.draws.clone();
     mixed.extend(blended.iter().take(4).cloned());
-    let mixed_batches = group_voxel_batches(&mut mixed, &meshes);
+    let mixed_batches = group_voxel_batches_from_meshes(&mut mixed, &meshes);
     assert_eq!(mixed_batches.len(), batches.len() + 4);
     assert_eq!(
         mixed[mixed.len() - 4..]
