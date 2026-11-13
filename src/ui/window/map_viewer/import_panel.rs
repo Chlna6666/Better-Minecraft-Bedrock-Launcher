@@ -23,22 +23,10 @@ impl View {
             .justify_between()
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.0))
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(colors.text_secondary)
-                            .child("转换器 / 参数检查器"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(colors.text_primary)
-                            .child(title),
-                    ),
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(colors.text_primary)
+                    .child(title),
             )
             .child(dock_close_button(colors).on_mouse_down(
                 MouseButton::Left,

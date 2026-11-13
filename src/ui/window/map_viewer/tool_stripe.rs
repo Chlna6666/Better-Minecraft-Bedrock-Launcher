@@ -141,7 +141,7 @@ impl Render for MapToolStripeView {
                 "stripe-generator",
                 &colors,
                 lucide_gpui::icon!(blocks),
-                "转方块",
+                "模型转方块",
                 snapshot.right_panel_open
                     && snapshot.active_right_panel == MapViewerRightPanel::Generator,
                 cx.listener(|_this, _event, _window, cx| {
@@ -154,7 +154,7 @@ impl Render for MapToolStripeView {
                 "stripe-image-generator",
                 &colors,
                 lucide_gpui::icon!(image),
-                "图片",
+                "像素画",
                 snapshot.right_panel_open
                     && snapshot.active_right_panel == MapViewerRightPanel::ImageGenerator,
                 cx.listener(|_this, _event, _window, cx| {
@@ -167,7 +167,7 @@ impl Render for MapToolStripeView {
                 "stripe-map-image",
                 &colors,
                 lucide_gpui::icon!(map),
-                "地图物品",
+                "地图画",
                 snapshot.right_panel_open
                     && snapshot.active_right_panel == MapViewerRightPanel::MapImage,
                 cx.listener(|_this, _event, _window, cx| {
@@ -292,7 +292,7 @@ fn stripe_button(
         ))
         .child(
             div()
-                .max_w(px(IDE_LEFT_STRIPE_WIDTH - 10.0))
+                .max_w(px(IDE_LEFT_STRIPE_WIDTH - 4.0))
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_size(px(9.0))

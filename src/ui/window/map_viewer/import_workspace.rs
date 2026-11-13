@@ -225,9 +225,9 @@ impl View {
         let preview = self.ui_state.import_workspace_mode == ImportWorkspaceMode::Preview;
         let is_map_image = self.ui_state.active_right_panel == MapViewerRightPanel::MapImage;
         let (workspace_kind, workspace_title) = match self.ui_state.active_right_panel {
-            MapViewerRightPanel::Generator => ("3D MODEL", "模型编辑"),
-            MapViewerRightPanel::ImageGenerator => ("IMAGE / BLOCK", "图片建模"),
-            MapViewerRightPanel::MapImage => ("IMAGE / MAP", "地图拼接"),
+            MapViewerRightPanel::Generator => ("3D MODEL", "模型转方块"),
+            MapViewerRightPanel::ImageGenerator => ("IMAGE / BLOCK", "像素画"),
+            MapViewerRightPanel::MapImage => ("IMAGE / MAP", "地图画"),
             _ => ("IMPORT", "导入编辑"),
         };
         let source_available = match self.ui_state.active_right_panel {
@@ -287,7 +287,7 @@ impl View {
                         ImportWorkspaceMode::Placement,
                         "02",
                         if is_map_image {
-                            "选择写入目标"
+                            "定位与写入"
                         } else {
                             "世界放置"
                         },

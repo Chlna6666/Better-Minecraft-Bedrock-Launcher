@@ -79,14 +79,14 @@ impl View {
             || "预览尚未准备，完成转换后再选择放置位置".to_owned(),
             |preview| {
                 format!(
-                    "预览锚点：区块 X {} · Z {}，占用 {} 个区块 · {}",
+                    "锚点 X {} · Z {} · {} 个区块 · {}",
                     preview.target_anchor.x,
                     preview.target_anchor.z,
                     footprint,
                     if self.converter_target_selected() == Some(true) {
-                        "已选择放置位置"
+                        "已选点"
                     } else {
-                        "待确认位置：请在地图中拖动预览或选择当前视野中心"
+                        "拖动预览选择位置"
                     },
                 )
             },

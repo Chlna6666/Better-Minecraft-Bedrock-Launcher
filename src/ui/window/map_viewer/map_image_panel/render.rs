@@ -24,7 +24,7 @@ impl View {
             .min_h(px(0.0))
             .flex()
             .flex_col()
-            .child(self.render_import_panel_header(colors, "图片转地图物品", cx))
+            .child(self.render_import_panel_header(colors, "地图画", cx))
             .child(
                 div()
                     .flex_1()
@@ -78,40 +78,26 @@ impl View {
                             "正在计算最佳分片数".to_owned()
                         },
                     ))
-                    .child(inspector::section_title(colors, "02  网格与画面利用率"))
-                    .child(
-                        crate::ui::components::inspector::field_group(colors)
-                            .child(
-                                choice::chip(
-                                    colors,
-                                    "智能行列 · 按图片比例减少留白",
-                                    self.map_image.options.auto_fit,
-                                )
-                                .when(self.map_image.source.is_some() && !operation_busy, |button| {
-                                    button.on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.enable_grid_auto_fit(cx)
-                                        }),
-                                    )
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(colors.text_secondary)
-                                    .child("自动去除透明外边距，按比例匹配分片；手动修改行列将切换固定网格。"),
-                            )
-                            .child(self.render_grid_axis(GridAxis::Columns, colors, cx))
-                            .child(self.render_grid_axis(GridAxis::Rows, colors, cx)),
-                    )
-                    .child(inspector::section_title(colors, "03  写入目标"))
+                    .child(inspector::section_title(colors, "02  放置目标"))
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child("在中央操作栏选择写入目标；此处仅显示对应目标的参数。"),
+                            .child("选择接收地图的位置；确认后才写入世界。"),
                     )
+                    .child(div().flex().flex_wrap().gap(px(6.0)).children(
+                        [
+                            (MapImageInstallDestination::NewUpFrame, "世界展示框"),
+                            (MapImageInstallDestination::Player, "玩家背包"),
+                            (MapImageInstallDestination::SelectedBlock, "容器／展示框"),
+                        ].into_iter().map(|(destination, label)| {
+                            choice::chip(colors, label, self.map_image.install_destination == destination)
+                                .when(!operation_busy, |button| button.on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| this.set_map_install_destination(destination, cx)),
+                                ))
+                        })
+                    ))
                     .when(
                         self.map_image.install_destination == MapImageInstallDestination::Player,
                         |panel| {
@@ -245,7 +231,7 @@ impl View {
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child("在当前地图编辑器中直接写入世界展示框（无需进入游戏手动摆放）；默认石头支撑，可选其他支撑块。框位必须为空，支撑位可为空或已是所选方块。"),
+                            .child("支撑块位于展示框下方一格；放置前自动检查空间。"),
                     ))
                     .child(
                         div()
@@ -272,6 +258,33 @@ impl View {
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
                             .child("多图按网格编号；写入玩家背包时分组为潜影盒，写入现有箱子时在箱内分组。"),
+                    )
+                    .child(inspector::section_title(colors, "03  地图网格"))
+                    .child(
+                        crate::ui::components::inspector::field_group(colors)
+                            .child(
+                                choice::chip(
+                                    colors,
+                                    "智能行列 · 按图片比例减少留白",
+                                    self.map_image.options.auto_fit,
+                                )
+                                .when(self.map_image.source.is_some() && !operation_busy, |button| {
+                                    button.on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            this.enable_grid_auto_fit(cx)
+                                        }),
+                                    )
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(colors.text_secondary)
+                                    .child("自动去除透明外边距，按比例匹配分片；手动修改行列将切换固定网格。"),
+                            )
+                            .child(self.render_grid_axis(GridAxis::Columns, colors, cx))
+                            .child(self.render_grid_axis(GridAxis::Rows, colors, cx)),
                     )
                     .child(inspector::section_title(colors, "04  图片适配与采样"))
                     .child(div().flex().flex_wrap().gap(px(6.0)).children(

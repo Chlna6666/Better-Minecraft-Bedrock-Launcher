@@ -66,7 +66,7 @@ impl View {
             .min_h(px(0.0))
             .flex()
             .flex_col()
-            .child(self.render_import_panel_header(colors, "图片转方块", cx))
+            .child(self.render_import_panel_header(colors, "像素画", cx))
             .child(
                 div()
                     .flex_1()

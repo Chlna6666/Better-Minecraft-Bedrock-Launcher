@@ -58,7 +58,6 @@ impl View {
                         }
                     },
                 ),
-                "在地图上右键目标方块，选择首项「设为地图写入目标」；选中后会在世界画布高亮位置。",
                 self.map_image
                     .selected_block
                     .is_some_and(|(chunk, _)| chunk.dimension == self.dimension),
@@ -72,12 +71,7 @@ impl View {
                 } else {
                     "尚未选择放置位置；不会自动使用地图视口中心".to_owned()
                 };
-                (
-                    "直接放置到当前世界",
-                    target,
-                    "在地图上左键选择放置中心，预览完整网格范围；然后检查空位与支撑，最后确认写入。",
-                    true,
-                )
+                ("直接放置到当前世界", target, true)
             }
         };
         let status = if busy {
@@ -113,24 +107,6 @@ impl View {
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(colors.text_primary)
-                            .child("写入目标"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(colors.text_secondary)
-                            .child(status),
-                    ),
-            )
             .when_some(
                 check
                     .filter(|task| task.status.as_ref() == "error")
@@ -165,32 +141,6 @@ impl View {
                             ),
                     )
                 },
-            )
-            .child(
-                div().flex().flex_wrap().gap(px(6.0)).children(
-                    [
-                        (MapImageInstallDestination::Player, "玩家背包"),
-                        (
-                            MapImageInstallDestination::SelectedBlock,
-                            "现有容器／展示框",
-                        ),
-                        (MapImageInstallDestination::NewUpFrame, "新建展示框网格"),
-                    ]
-                    .into_iter()
-                    .map(|(destination, label)| {
-                        choice::chip(colors, label, selected == destination).when(
-                            !busy,
-                            |button| {
-                                button.on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _event, _window, cx| {
-                                        this.set_map_install_destination(destination, cx)
-                                    }),
-                                )
-                            },
-                        )
-                    }),
-                ),
             )
             .child(
                 div()
