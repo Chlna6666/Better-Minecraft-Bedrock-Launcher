@@ -32,6 +32,14 @@ function Test-PathAttributeAllowed {
         return $true
     }
 
+    $relativePath = [System.IO.Path]::GetRelativePath($repoRoot, $File.FullName)
+    $inRustSourceTree = $relativePath -match "(^|[\\/])src([\\/]|$)"
+    $isBuildScript = $File.Name -eq "build.rs" -and -not $inRustSourceTree
+    $isBuildSupport = $relativePath -match "(^|[\\/])(build|build_support)([\\/])" -and -not $inRustSourceTree
+    if ($isBuildScript -or $isBuildSupport) {
+        return $true
+    }
+
     $attributeBody = $Attribute.Groups["body"].Value
     if ($attributeBody -match '^\s*cfg_attr\s*\(\s*test\s*,\s*path\s*=') {
         return $true
