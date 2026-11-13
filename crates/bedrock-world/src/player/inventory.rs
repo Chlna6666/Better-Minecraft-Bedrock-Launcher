@@ -378,7 +378,7 @@ mod tests {
             "Inventory".to_string(),
             NbtTag::List(vec![item("minecraft:stone", 9)]),
         )]));
-        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt, None).unwrap();
         let replacement = item("minecraft:dirt", 0);
         player
             .set_inventory_item(PlayerInventorySlot::from_raw(9), replacement)
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn selected_inventory_slot_is_validated() {
         let mut player =
-            PlayerData::from_nbt(PlayerId::Local, NbtTag::Compound(IndexMap::new())).unwrap();
+            PlayerData::from_nbt(PlayerId::Local, NbtTag::Compound(IndexMap::new()), None).unwrap();
         player.set_selected_inventory_slot(8).unwrap();
         assert_eq!(player.selected_inventory_slot().unwrap(), Some(8));
         assert!(player.set_selected_inventory_slot(9).is_err());

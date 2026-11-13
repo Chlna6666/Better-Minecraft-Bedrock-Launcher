@@ -168,7 +168,7 @@ fn parse_optional_i32(
 }
 
 fn spawn_tile_center(world_path: &Path) -> Option<(i32, i32)> {
-    let document = bedrock_world::read_level_dat_document(&world_path.join("level.dat")).ok()?;
+    let document = bedrock_world::level::read(&world_path.join("level.dat")).ok()?;
     let NbtTag::Compound(root) = &document.root else {
         return None;
     };

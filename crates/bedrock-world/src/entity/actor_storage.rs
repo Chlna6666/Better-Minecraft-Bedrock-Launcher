@@ -10,9 +10,9 @@ use crate::chunk::{BedrockDbKey, ChunkPos};
 use crate::chunk::{ChunkKey, ChunkRecordTag};
 use crate::entity::{ActorDigestKey, ActorUid};
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::{NbtTag, parse_consecutive_root_nbt};
 #[cfg(test)]
-use crate::nbt::serialize_root_nbt;
+use crate::nbt::serialize_root;
+use crate::nbt::{NbtTag, parse_consecutive_roots};
 use crate::scan::{decode_actor_ids, encode_actor_ids};
 use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use bytes::Bytes;
@@ -81,7 +81,7 @@ pub(crate) fn stage_actor_uid_repair(
     let mut replacements = BTreeMap::<ActorUid, ActorUid>::new();
     let mut report = ActorUidRepairReport::default();
     for (stored_uid, value) in &actor_values {
-        let Ok(roots) = parse_consecutive_root_nbt(value) else {
+        let Ok(roots) = parse_consecutive_roots(value) else {
             report.unreadable_actorprefix_records_retained = report
                 .unreadable_actorprefix_records_retained
                 .saturating_add(1);
@@ -158,7 +158,7 @@ pub(crate) fn stage_actor_uid_repair(
 /// referenced `actorprefix` NBT exactly match the inline source. Extra actors, reordered actors, or
 /// differing actor NBT abort the entire rewrite before storage mutation.
 #[cfg(test)]
-pub(crate) fn stage_world_entity_to_digp_actorprefix(
+pub(crate) fn stage_inline_to_split(
     storage: &dyn WorldStorage,
 ) -> Result<(StorageBatch, ActorStorageRewriteReport)> {
     let snapshot = scan_actor_storage(storage)?;
@@ -176,7 +176,7 @@ pub(crate) fn stage_world_entity_to_digp_actorprefix(
     let mut inline_owner = BTreeMap::<ActorUid, ChunkPos>::new();
 
     for (pos, raw) in &snapshot.entities {
-        let roots = parse_consecutive_root_nbt(raw)?;
+        let roots = parse_consecutive_roots(raw)?;
         if roots.is_empty() {
             return Err(BedrockWorldError::CorruptWorld(format!(
                 "Entity record for chunk {pos:?} is empty"
@@ -238,7 +238,7 @@ pub(crate) fn stage_world_entity_to_digp_actorprefix(
             .collect::<Vec<_>>();
         let existing_values = storage.get_many(&actor_keys)?;
         for ((uid, root, unique_id), existing) in source_roots.into_iter().zip(existing_values) {
-            let encoded = Bytes::from(serialize_root_nbt(&root)?);
+            let encoded = Bytes::from(serialize_root(&root)?);
             if let Some(existing) = existing {
                 if existing != encoded {
                     return Err(BedrockWorldError::ConcurrentWrite(format!(
@@ -267,7 +267,7 @@ pub(crate) fn stage_world_entity_to_digp_actorprefix(
 /// are not merged. Every referenced `actorprefix` is deleted only because every `digp` record is
 /// converted in the same batch; unreferenced `actorprefix` records are retained.
 #[cfg(test)]
-pub(crate) fn stage_world_digp_actorprefix_to_entity(
+pub(crate) fn stage_split_to_inline(
     storage: &dyn WorldStorage,
 ) -> Result<(StorageBatch, ActorStorageRewriteReport)> {
     let snapshot = scan_actor_storage(storage)?;
@@ -290,7 +290,7 @@ pub(crate) fn stage_world_digp_actorprefix_to_entity(
                 "digp references missing actorprefix storage id {uid:?}"
             ))
         })?;
-        let roots = parse_consecutive_root_nbt(&value)?;
+        let roots = parse_consecutive_roots(&value)?;
         if roots.len() != 1 {
             return Err(BedrockWorldError::CorruptWorld(format!(
                 "actorprefix {uid:?} contains {} NBT roots instead of one",
@@ -466,7 +466,7 @@ mod tests {
     fn entity_bytes(roots: &[NbtTag]) -> Bytes {
         let mut bytes = Vec::new();
         for root in roots {
-            bytes.extend(serialize_root_nbt(root).expect("serialize actor"));
+            bytes.extend(serialize_root(root).expect("serialize actor"));
         }
         Bytes::from(bytes)
     }
@@ -490,8 +490,7 @@ mod tests {
             )
             .expect("seed Entity");
 
-        let (batch, report) =
-            stage_world_entity_to_digp_actorprefix(&storage).expect("stage rewrite");
+        let (batch, report) = stage_inline_to_split(&storage).expect("stage rewrite");
         assert!(
             storage
                 .get(&ActorDigestKey::new(pos).storage_key())
@@ -541,7 +540,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(stage_world_entity_to_digp_actorprefix(&storage).is_err());
+        assert!(stage_inline_to_split(&storage).is_err());
         assert!(
             storage
                 .get(&ChunkKey::new(pos, ChunkRecordTag::Entity).encode())
@@ -564,7 +563,7 @@ mod tests {
                 .expect("seed duplicate Entity");
         }
 
-        assert!(stage_world_entity_to_digp_actorprefix(&storage).is_err());
+        assert!(stage_inline_to_split(&storage).is_err());
         assert!(
             storage
                 .get(&ActorDigestKey::new(first).storage_key())
@@ -608,8 +607,7 @@ mod tests {
             )
             .expect("seed orphan actorprefix");
 
-        let (batch, report) =
-            stage_world_digp_actorprefix_to_entity(&storage).expect("stage downgrade");
+        let (batch, report) = stage_split_to_inline(&storage).expect("stage downgrade");
         assert_eq!(report.orphan_actorprefix_records_retained, 1);
         storage.write_batch(&batch).expect("commit downgrade");
         assert!(
@@ -703,7 +701,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(stage_world_digp_actorprefix_to_entity(&storage).is_err());
+        assert!(stage_split_to_inline(&storage).is_err());
         assert!(storage.get(&uid.storage_key()).unwrap().is_some());
         assert!(
             storage

@@ -103,7 +103,7 @@ mod tests {
             ("SpawnX".to_string(), NbtTag::Int(1)),
             ("SpawnY".to_string(), NbtTag::Int(64)),
         ]));
-        let player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        let player = PlayerData::from_nbt(PlayerId::Local, nbt, None).unwrap();
         assert!(player.spawn_position().is_err());
     }
 
@@ -113,7 +113,7 @@ mod tests {
             "FutureField".to_string(),
             NbtTag::String("keep".to_string()),
         )]));
-        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt, None).unwrap();
         player.set_spawn_position([1, 65, -2]).unwrap();
         player.set_spawn_dimension(1).unwrap();
         assert_eq!(player.spawn_position().unwrap(), Some([1, 65, -2]));

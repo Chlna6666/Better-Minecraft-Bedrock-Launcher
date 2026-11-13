@@ -349,7 +349,7 @@ impl McStructureFile {
 
     /// Serializes this structure as uncompressed little-endian NBT bytes.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        NbtWriter::write_root(&self.to_nbt()?)
+        Ok(NbtWriter::write_root(&self.to_nbt()?)?)
     }
 
     /// Reads a `.mcstructure` file from disk.

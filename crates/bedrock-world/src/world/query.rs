@@ -2,10 +2,9 @@
 
 use super::*;
 
-const CHUNK_ANCHOR_TAGS: [ChunkRecordTag; 8] = [
+const CHUNK_ANCHOR_TAGS: [ChunkRecordTag; 7] = [
     ChunkRecordTag::Version,
     ChunkRecordTag::VersionOld,
-    ChunkRecordTag::LegacyVersion,
     ChunkRecordTag::Data3D,
     ChunkRecordTag::Data2D,
     ChunkRecordTag::Data2DLegacy,
@@ -390,13 +389,13 @@ where
         let Some(key) = id.storage_key() else {
             if *id == PlayerId::LegacyLevelDat {
                 let document = self.read_level_dat()?;
-                return Ok(Some(PlayerData::from_nbt(id.clone(), document.root)?));
+                return crate::player::level_dat::read(&document);
             }
             return Ok(None);
         };
         self.storage()
             .get(key.as_ref())?
-            .map(|bytes| PlayerData::from_raw(id.clone(), bytes))
+            .map(|bytes| PlayerData::from_raw(id.clone(), bytes, None))
             .transpose()
     }
 
@@ -438,7 +437,7 @@ where
     /// Get chunk.
     pub fn chunk(&self, pos: ChunkPos) -> Result<LevelChunk> {
         let mut records = Vec::new();
-        let prefix = chunk_record_prefix(pos);
+        let prefix = record_prefix(pos);
         self.storage().for_each_prefix(
             &prefix,
             StorageReadOptions::default(),
@@ -471,7 +470,7 @@ where
     /// Scans the world storage using the selected retention options.
     pub fn scan(&self, options: ScanOptions) -> Result<WorldScan> {
         let level_dat = self.read_level_dat()?;
-        scan_storage(level_dat, self.storage(), options)
+        parse_world(level_dat, self.storage(), options)
     }
 
     /// Scans the known records for one chunk using the selected retention options.
@@ -517,7 +516,7 @@ where
         pos: ChunkPos,
         options: &WorldScanOptions,
     ) -> Result<bool> {
-        let prefix = chunk_record_prefix(pos);
+        let prefix = record_prefix(pos);
         let mut found = false;
         self.storage().for_each_prefix_key(
             &prefix,
@@ -567,7 +566,7 @@ where
             return Ok(None);
         };
         let terrain = LegacyTerrain::parse(value)?;
-        Ok(Some(render_biome_colors_from_legacy_terrain(&terrain)))
+        Ok(Some(biome_colors_from_legacy_terrain(&terrain)))
     }
 
     /// Get legacy biome samples.
@@ -580,7 +579,7 @@ where
             return Ok(None);
         };
         let terrain = LegacyTerrain::parse(value)?;
-        Ok(Some(render_biomes_from_legacy_terrain(&terrain)))
+        Ok(Some(biome_samples_from_legacy_terrain(&terrain)))
     }
 
     /// Get legacy biome color.
@@ -627,7 +626,7 @@ where
         options: SurfaceColumnOptions,
     ) -> Result<Option<SurfaceColumn>> {
         validate_local_column(local_x, local_z)?;
-        let chunk = self.query_chunk_data(
+        let chunk = self.load_render_chunk(
             pos,
             ChunkLoadOptions::for_data_request(
                 ChunkDataRequest::new()
@@ -666,8 +665,8 @@ where
     }
 
     /// Load render chunk.
-    pub fn query_chunk_data(&self, pos: ChunkPos, options: ChunkLoadOptions) -> Result<ChunkData> {
-        let (mut chunks, _) = self.query_chunk_data_with_stats([pos], options)?;
+    pub fn load_render_chunk(&self, pos: ChunkPos, options: ChunkLoadOptions) -> Result<ChunkData> {
+        let (mut chunks, _) = self.load_render_chunks_with_stats([pos], options)?;
         chunks.pop().ok_or_else(|| {
             BedrockWorldError::CorruptWorld("exact render load returned no chunk".to_string())
         })
@@ -702,20 +701,20 @@ where
             )
         });
         options.data_request = request;
-        Ok(self.query_chunk_data(pos, options)?.column_samples)
+        Ok(self.load_render_chunk(pos, options)?.column_samples)
     }
 
     /// Load render chunks.
-    pub fn query_chunk_data_many(
+    pub fn load_render_chunks(
         &self,
         positions: impl IntoIterator<Item = ChunkPos>,
         options: ChunkLoadOptions,
     ) -> Result<Vec<ChunkData>> {
-        Ok(self.query_chunk_data_with_stats(positions, options)?.0)
+        Ok(self.load_render_chunks_with_stats(positions, options)?.0)
     }
 
     /// Load render chunks with stats.
-    pub fn query_chunk_data_with_stats(
+    pub fn load_render_chunks_with_stats(
         &self,
         positions: impl IntoIterator<Item = ChunkPos>,
         options: ChunkLoadOptions,
@@ -766,7 +765,7 @@ where
         let mut keys = Vec::new();
         let mut requests = Vec::new();
         for (chunk_index, pos) in positions.iter().copied().enumerate() {
-            if request_needs_legacy_terrain(&options) {
+            if legacy_terrain_required(&options) {
                 push_render_record_request(
                     &mut keys,
                     &mut requests,
@@ -775,7 +774,7 @@ where
                     RenderRecordKind::LegacyTerrain,
                 );
             }
-            if request_needs_biome_record(&options) {
+            if biome_record_required(&options) {
                 push_render_record_request(
                     &mut keys,
                     &mut requests,
@@ -798,7 +797,7 @@ where
                     RenderRecordKind::Data2DLegacy,
                 );
             }
-            if !request_uses_hint_surface_subchunks(&options) {
+            if !uses_hint_surface_subchunks(&options) {
                 for y in planned_render_subchunk_ys(pos, &options, None)? {
                     push_render_record_request(
                         &mut keys,
@@ -809,7 +808,7 @@ where
                     );
                 }
             }
-            if request_loads_block_entities(&options) {
+            if loads_block_entities(&options) {
                 push_render_record_request(
                     &mut keys,
                     &mut requests,
@@ -832,7 +831,7 @@ where
         exact_get_batches = exact_get_batches.saturating_add(usize::from(!keys.is_empty()));
         let mut keys_found = apply_render_record_values(&mut raw_chunks, &requests, values)?;
 
-        if request_needs_legacy_terrain_fallback(&options) {
+        if legacy_terrain_fallback_required(&options) {
             let mut fallback_keys = Vec::new();
             let mut fallback_requests = Vec::new();
             for (chunk_index, raw) in raw_chunks.iter().enumerate() {
@@ -862,7 +861,7 @@ where
             }
         }
 
-        if request_uses_hint_surface_subchunks(&options) {
+        if uses_hint_surface_subchunks(&options) {
             let mut needed_keys = Vec::new();
             let mut needed_requests = Vec::new();
             for (chunk_index, raw) in raw_chunks.iter().enumerate() {
@@ -933,8 +932,7 @@ where
             }
             (chunks, timing)
         };
-        let full_reload_ms =
-            self.reload_incomplete_needed_exact_surface_chunks(&mut chunks, &options)?;
+        let full_reload_ms = self.reload_incomplete_surface_chunks(&mut chunks, &options)?;
         let decode_ms = decode_started.elapsed().as_millis();
         let mut stats = render_load_stats(&chunks, worker_count, 0, started.elapsed().as_millis());
         stats.keys_requested = keys_requested;
@@ -962,12 +960,12 @@ where
         Ok((chunks, stats))
     }
 
-    fn reload_incomplete_needed_exact_surface_chunks(
+    fn reload_incomplete_surface_chunks(
         &self,
         chunks: &mut [ChunkData],
         options: &ChunkLoadOptions,
     ) -> Result<u128> {
-        if !request_uses_hint_surface_subchunks(options) {
+        if !uses_hint_surface_subchunks(options) {
             return Ok(0);
         }
 
@@ -976,7 +974,7 @@ where
         let mut reload_indexes = Vec::new();
         let mut reload_positions = Vec::new();
         for (index, chunk) in chunks.iter().enumerate() {
-            if needed_exact_surface_chunk_requires_full_reload(chunk)? {
+            if exact_surface_reload_required(chunk)? {
                 reload_indexes.push(index);
                 reload_positions.push(chunk.pos);
             }
@@ -992,7 +990,8 @@ where
         } else {
             WorldThreadingOptions::Fixed(worker_count)
         };
-        let (reloaded, stats) = self.query_chunk_data_with_stats(reload_positions, full_options)?;
+        let (reloaded, stats) =
+            self.load_render_chunks_with_stats(reload_positions, full_options)?;
         for (chunk_index, reloaded_chunk) in reload_indexes.into_iter().zip(reloaded) {
             if let Some(chunk) = chunks.get_mut(chunk_index) {
                 *chunk = reloaded_chunk;
@@ -1011,7 +1010,7 @@ where
     }
 
     /// Load render region.
-    pub fn query_chunk_region(
+    pub fn load_render_region(
         &self,
         region: Region,
         options: RegionLoadOptions,
@@ -1036,7 +1035,7 @@ where
                 });
             }
         }
-        let (chunks, stats) = self.query_chunk_data_with_stats(positions, options.into())?;
+        let (chunks, stats) = self.load_render_chunks_with_stats(positions, options.into())?;
         Ok(RegionLoad {
             region,
             chunks,

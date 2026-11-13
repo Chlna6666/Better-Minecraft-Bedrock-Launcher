@@ -19,8 +19,8 @@ pub struct SubChunkVersionCount {
     pub records: usize,
 }
 
-/// Count for one persisted `LevelChunk` version byte observed under `Version`, `VersionOld` or
-/// `LegacyVersion` chunk records.
+/// Count for one persisted `LevelChunk` version byte observed under `Version` or
+/// `VersionOld` chunk records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LevelChunkVersionCount {
     /// Exact persisted `LevelChunk` version byte.
@@ -36,7 +36,7 @@ pub struct WorldVersions {
     pub level: LevelVersion,
     /// Physical world storage family detected from the folder.
     pub world_format: WorldFormat,
-    /// `LevelChunk` version bytes observed in `Version`, `VersionOld` and `LegacyVersion` records.
+    /// `LevelChunk` version bytes observed in `Version` and `VersionOld` records.
     pub level_chunk_versions: Vec<LevelChunkVersionCount>,
     /// Number of chunk version records with no readable leading version byte.
     pub unversioned_level_chunks: usize,
@@ -181,8 +181,7 @@ where
                 match BedrockDbKey::decode(key) {
                     BedrockDbKey::Chunk(chunk) => match chunk.tag {
                         ChunkRecordTag::Version
-                        | ChunkRecordTag::VersionOld
-                        | ChunkRecordTag::LegacyVersion => {
+                        | ChunkRecordTag::VersionOld => {
                             if let Some(version) = value.first().copied() {
                                 let slot = &mut level_chunk_version_counts[usize::from(version)];
                                 *slot = slot.saturating_add(1);

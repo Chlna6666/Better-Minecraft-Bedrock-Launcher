@@ -6,10 +6,27 @@
 
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag};
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::{NbtTag, parse_root_nbt_with_consumed, serialize_root_nbt};
+use crate::nbt::{NbtTag, parse_root_with_consumed, serialize_root};
 use crate::storage::{StorageBatch, WorldStorage};
 use bytes::Bytes;
 use indexmap::IndexMap;
+
+impl crate::scan::BlockEntity {
+    /// Parses a block entity from owned NBT without requiring world storage.
+    ///
+    /// Unknown fields remain in `nbt`. Chunk ownership and required coordinates
+    /// are validated when the entity is staged for a world write.
+    ///
+    /// # Errors
+    /// Returns an error if the root is not a compound or contains invalid NBT.
+    pub fn from_nbt(nbt: NbtTag) -> Result<Self> {
+        crate::nbt::serialize_root(&nbt)?;
+        Ok(crate::scan::parse_block_entity_from_nbt(
+            nbt,
+            &mut crate::scan::ScanReport::default(),
+        ))
+    }
+}
 
 /// Version evidence supplied to one block-entity rewrite pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -136,7 +153,7 @@ pub fn rewrite_block_entity_chunk(
     let mut report = BlockEntityChunkRewriteReport::default();
     let mut encoded = Vec::with_capacity(raw.len());
     while !remaining.is_empty() {
-        let (root, consumed) = parse_root_nbt_with_consumed(remaining)?;
+        let (root, consumed) = parse_root_with_consumed(remaining)?;
         if consumed == 0 || consumed > remaining.len() {
             return Err(BedrockWorldError::Nbt(
                 "BlockEntity consecutive NBT parser did not advance".to_string(),
@@ -156,7 +173,7 @@ pub fn rewrite_block_entity_chunk(
                 report.roots_unchanged = report.roots_unchanged.saturating_add(1);
             }
             BlockEntityRewriteStatus::Rewritten => {
-                encoded.extend_from_slice(&serialize_root_nbt(&outcome.nbt)?);
+                encoded.extend_from_slice(&serialize_root(&outcome.nbt)?);
                 report.roots_rewritten = report.roots_rewritten.saturating_add(1);
             }
             BlockEntityRewriteStatus::Preserved => {
@@ -204,7 +221,7 @@ pub fn rewrite_block_entity_chunk(
 ///
 /// Returns an error for malformed consecutive BlockEntity NBT, invalid sign data, serialization
 /// failure, or a failed LevelDB write.
-pub fn rewrite_block_entity_sign_text(
+pub fn rewrite_sign_text(
     storage: &dyn WorldStorage,
     pos: ChunkPos,
     context: BlockEntityRewriteContext,
@@ -421,14 +438,14 @@ mod tests {
             ("id".to_string(), NbtTag::String("FutureThing".to_string())),
             ("future".to_string(), NbtTag::Long(42)),
         ]));
-        let future_raw = serialize_root_nbt(&future).unwrap();
+        let future_raw = serialize_root(&future).unwrap();
         let sign = sign_with([("Text".to_string(), NbtTag::String("hello".to_string()))]);
         let mut payload = future_raw.clone();
-        payload.extend_from_slice(&serialize_root_nbt(&sign).unwrap());
+        payload.extend_from_slice(&serialize_root(&sign).unwrap());
         storage.put(&key, &payload).unwrap();
 
         let report =
-            rewrite_block_entity_sign_text(&storage, pos, BlockEntityRewriteContext::default())
+            rewrite_sign_text(&storage, pos, BlockEntityRewriteContext::default())
                 .unwrap();
         assert_eq!(report.roots_preserved, 1);
         assert_eq!(report.roots_rewritten, 1);
@@ -447,17 +464,17 @@ mod tests {
         let key = ChunkKey::new(pos, ChunkRecordTag::BlockEntity).encode();
         let root = sign_with([("Text".to_string(), NbtTag::String("hello".to_string()))]);
         storage
-            .put(&key, &serialize_root_nbt(&root).unwrap())
+            .put(&key, &serialize_root(&root).unwrap())
             .unwrap();
 
         let first =
-            rewrite_block_entity_sign_text(&storage, pos, BlockEntityRewriteContext::default())
+            rewrite_sign_text(&storage, pos, BlockEntityRewriteContext::default())
                 .unwrap();
         assert_eq!(first.roots_rewritten, 1);
         assert!(first.payload_rewritten);
 
         let second =
-            rewrite_block_entity_sign_text(&storage, pos, BlockEntityRewriteContext::default())
+            rewrite_sign_text(&storage, pos, BlockEntityRewriteContext::default())
                 .unwrap();
         assert_eq!(second.roots_unchanged, 1);
         assert!(!second.payload_rewritten);

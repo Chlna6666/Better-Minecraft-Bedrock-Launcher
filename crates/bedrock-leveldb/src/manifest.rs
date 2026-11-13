@@ -110,7 +110,7 @@ impl Manifest {
     }
 
     #[must_use]
-    pub(crate) fn manifest_name(number: u64) -> String {
+    pub(crate) fn file_name(number: u64) -> String {
         format!("MANIFEST-{number:06}")
     }
 
@@ -127,25 +127,25 @@ impl Manifest {
     pub(crate) fn load(root: &Path) -> Result<Self> {
         let current_path = root.join(Self::current_name());
         log::trace!("loading manifest pointer {}", current_path.display());
-        let manifest_name = fs::read_to_string(&current_path).map_err(|error| {
+        let file_name = fs::read_to_string(&current_path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 LevelDbError::not_found(current_path.clone())
             } else {
                 LevelDbError::io_at("read CURRENT", current_path.clone(), error)
             }
         })?;
-        let manifest_path = root.join(manifest_name.trim());
+        let manifest_path = root.join(file_name.trim());
         Self::read_file(&manifest_path)
     }
 
     pub(crate) fn store(&self, root: &Path) -> Result<()> {
         fs::create_dir_all(root)
             .map_err(|error| LevelDbError::io_at("create manifest directory", root, error))?;
-        let manifest_name = Self::manifest_name(1);
-        let manifest_path = root.join(&manifest_name);
+        let file_name = Self::file_name(1);
+        let manifest_path = root.join(&file_name);
         self.write_file(&manifest_path)?;
         let current_path = root.join(Self::current_name());
-        fs::write(&current_path, format!("{manifest_name}\n"))
+        fs::write(&current_path, format!("{file_name}\n"))
             .map_err(|error| LevelDbError::io_at("write CURRENT", &current_path, error))?;
         log::trace!("stored manifest {}", manifest_path.display());
         Ok(())
@@ -356,6 +356,7 @@ fn normalize_table_metadata(manifest: &mut Manifest) {
         }
     }
     manifest.table_files.sort_by_key(|table| table.number);
+    manifest.table_files.dedup_by_key(|table| table.number);
 }
 
 fn internal_user_key(internal_key: &[u8]) -> Option<&[u8]> {

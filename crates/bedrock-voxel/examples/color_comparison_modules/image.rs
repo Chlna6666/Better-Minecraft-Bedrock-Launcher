@@ -5,7 +5,7 @@ use std::{
 };
 
 use ::image::{ImageReader, Rgba, RgbaImage, imageops};
-use bedrock_voxel::{Dithering, FlatImageOptions, default_block_candidates, flat_block_plan};
+use bedrock_voxel::{Dithering, FlatImageOptions, default_block_candidates, plan_flat_image};
 
 pub(super) fn compare_image(input_path: &Path, output_dir: &Path) -> Result<(), String> {
     let source = ImageReader::open(input_path)
@@ -38,7 +38,7 @@ pub(super) fn compare_image(input_path: &Path, output_dir: &Path) -> Result<(), 
             ("none", Dithering::None),
             ("floyd_steinberg", Dithering::FloydSteinberg),
         ] {
-            let plan = flat_block_plan(
+            let plan = plan_flat_image(
                 resized.as_raw(),
                 side,
                 side,
@@ -51,7 +51,7 @@ pub(super) fn compare_image(input_path: &Path, output_dir: &Path) -> Result<(), 
                 },
             )
             .map_err(|error| error.to_string())?;
-            let (blocks, counts) = image_from_plan(&plan, side, side, candidates)?;
+            let (blocks, counts) = rasterize_plan(&plan, side, side, candidates)?;
             let output_path = output_dir.join(format!("{stem}_{side}_{name}.png"));
             save_png(&blocks, &output_path)?;
             let structure = bedrock_world::structure::McStructureFile::from_placement_plan(&plan)
@@ -173,7 +173,7 @@ fn center_crop_resize(source: &RgbaImage, width: u32, height: u32) -> Result<Rgb
     Ok(resized)
 }
 
-fn image_from_plan(
+fn rasterize_plan(
     plan: &bedrock_world::editor::BlockPlacementPlan,
     width: u32,
     height: u32,

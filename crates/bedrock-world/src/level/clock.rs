@@ -5,7 +5,7 @@
 //! the single typed representation of those fields; higher-level world handles should delegate here
 //! instead of duplicating NBT handling.
 
-use super::{LevelDatDocument, read_level_dat_document, write_level_dat_document};
+use super::{LevelDatDocument, read, write};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
 use std::path::Path;
@@ -97,16 +97,16 @@ impl LevelDatDocument {
 
 /// Reads the typed Bedrock world clock from an existing `level.dat` file.
 pub fn read_clock(path: &Path) -> Result<WorldClock> {
-    read_level_dat_document(path)?.clock()
+    read(path)?.clock()
 }
 
 /// Atomically updates only the clock fields in an existing `level.dat` file.
 ///
 /// The complete document is round-tripped so unknown and newer metadata remains preserved.
 pub fn write_clock(path: &Path, clock: WorldClock) -> Result<()> {
-    let mut document = read_level_dat_document(path)?;
+    let mut document = read(path)?;
     document.set_clock(clock)?;
-    write_level_dat_document(path, &document)
+    write(path, &document)
 }
 
 fn read_i64_field(name: &str, tag: &NbtTag) -> Result<i64> {

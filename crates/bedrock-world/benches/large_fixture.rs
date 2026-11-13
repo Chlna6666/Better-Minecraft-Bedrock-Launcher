@@ -1,13 +1,14 @@
-use bedrock_world::integrity::scan_compatibility;
+use bedrock_world::integrity::assess_compatibility;
 use bedrock_world::nbt::NbtView;
 use bedrock_world::surface::{
     BiomeDataRequirement, ChunkDataRequest, ChunkLoadOptions, ChunkLoadStats,
     ExactSurfaceSubchunkPolicy, WorldScanOptions, WorldThreadingOptions,
 };
+use bedrock_world::level::read;
 use bedrock_world::{
     BedrockLevelDbStorage, ChunkPos, Dimension, OpenOptions, ScanOptions, StorageCachePolicy,
     StorageReadOptions, StorageScanMode, StorageThreadingOptions, StorageVisitorControl, World,
-    WorldFormat, WorldStorage, read_level_dat_document,
+    WorldFormat, WorldStorage,
 };
 use std::fs::File;
 use std::io::Read;
@@ -48,7 +49,7 @@ fn main() {
     );
 
     let start = Instant::now();
-    let level_dat = read_level_dat_document(&world_path.join("level.dat")).expect("read level.dat");
+    let level_dat = read(&world_path.join("level.dat")).expect("read level.dat");
     println!(
         "large_fixture.level_dat elapsed_ms={} version={} payload_len={}",
         start.elapsed().as_millis(),
@@ -73,7 +74,7 @@ fn main() {
         World::from_typed_storage(world_path.clone(), storage.clone(), OpenOptions::default());
 
     let compatibility_started = Instant::now();
-    let compatibility_single = scan_compatibility(
+    let compatibility_single = assess_compatibility(
         &storage,
         WorldFormat::LevelDb,
         scan_options(StorageThreadingOptions::Single, StorageScanMode::Sequential),
@@ -90,7 +91,7 @@ fn main() {
     );
 
     let compatibility_started = Instant::now();
-    let compatibility = scan_compatibility(
+    let compatibility = assess_compatibility(
         &storage,
         WorldFormat::LevelDb,
         scan_options(
@@ -342,7 +343,7 @@ fn main() {
 
     let start = Instant::now();
     let (chunks, layer_stats) = generic_world
-        .query_chunk_data_with_stats(
+        .load_render_chunks_with_stats(
             render_positions,
             ChunkLoadOptions {
                 data_request: ChunkDataRequest::new().layer(64),
@@ -470,7 +471,7 @@ fn run_render_sample(
     cache_policy: StorageCachePolicy,
 ) -> ChunkLoadStats {
     world
-        .query_chunk_data_with_stats(
+        .load_render_chunks_with_stats(
             positions.iter().copied(),
             ChunkLoadOptions {
                 data_request: ChunkDataRequest::new()

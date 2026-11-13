@@ -9,7 +9,6 @@ mod pocket_chunks;
 mod raw;
 
 pub use crate::chunk::key::{BedrockDbKey, BedrockDbKeyKind, GlobalRecordKind};
-pub use crate::scan::Global;
 pub use key_batch::{StorageKeyBatch, StorageKeyBatchBuilder};
 pub use raw::{
     MemoryStorage, PartitionedWorldStorage, StorageBatch, StorageCachePolicy, StorageCancelFlag,

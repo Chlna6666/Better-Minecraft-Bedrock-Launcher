@@ -1,4 +1,3 @@
-#[path = "palette/import.rs"]
 mod import;
 mod light;
 mod map_color;

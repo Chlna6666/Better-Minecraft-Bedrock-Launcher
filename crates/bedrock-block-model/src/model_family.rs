@@ -3,19 +3,19 @@ mod decorations;
 mod direction;
 mod flora;
 mod redstone;
-pub(crate) mod shape;
+pub mod shape;
 mod utility;
 
 use std::borrow::Cow;
 
 use crate::state::{BlockStateQuery, BlockStateValue};
 
-pub use shape::{ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv};
+pub use shape::{ModelCuboid, ModelPlane, ModelShape};
 
-/// The official `geometry.bed` identifier, resolved from the active pack at runtime.
-pub use decorations::bed::BED_GEOMETRY_IDENTIFIER;
-/// Converts the pack's `geometry.bed` entity model into bed block geometry.
-pub use decorations::bed::bed_shape_from_geometry;
+/// Bed block geometry from the active resource pack.
+pub mod bed {
+    pub use super::decorations::bed::{GEOMETRY_IDENTIFIER, shape_from_geometry};
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelFamily {
@@ -100,7 +100,7 @@ pub enum ModelFamily {
 }
 
 #[must_use]
-pub fn model_family(name: &str) -> ModelFamily {
+pub fn classify(name: &str) -> ModelFamily {
     let name = normalized_block_name(name);
     if name == "redstone_wire" {
         return ModelFamily::RedstoneWire;
@@ -125,9 +125,9 @@ pub fn model_family(name: &str) -> ModelFamily {
 }
 
 #[must_use]
-pub fn model_shape(state: &BlockStateQuery) -> Option<ModelShape> {
+fn model_shape(state: &BlockStateQuery) -> Option<ModelShape> {
     let name = normalized_block_name(&state.name);
-    match model_family(name) {
+    match classify(name) {
         ModelFamily::OrientedFullBlock => Some(full_block_shape(name, state)),
         ModelFamily::Fence => Some(building::fences::fence_shape(name, state)),
         ModelFamily::FenceGate => Some(building::fences::fence_gate_shape(name, state)),
@@ -192,7 +192,7 @@ pub fn model_shape(state: &BlockStateQuery) -> Option<ModelShape> {
         ModelFamily::ShulkerBox => Some(utility::containers::shulker_box_shape()),
         ModelFamily::Stonecutter => Some(utility::stations::stonecutter_shape(state)),
         ModelFamily::Hopper => Some(utility::stations::hopper_shape(state)),
-        ModelFamily::Bed => Some(decorations::bed::bed_shape(state)),
+        ModelFamily::Bed => Some(decorations::bed::shape(state)),
         ModelFamily::Banner => Some(decorations::furniture::banner_shape(name, state)),
         ModelFamily::Campfire => Some(decorations::campfires::shape(state)),
         ModelFamily::Grindstone => Some(utility::stations::grindstone_shape(state)),
@@ -204,11 +204,81 @@ pub fn model_shape(state: &BlockStateQuery) -> Option<ModelShape> {
         ModelFamily::Conduit => Some(decorations::objects::conduit_shape()),
         ModelFamily::DriedGhast => Some(decorations::objects::dried_ghast_shape(state)),
         ModelFamily::CopperGolemStatue => Some(decorations::copper_golem::shape(state)),
-        ModelFamily::RedstoneDevice => Some(redstone::redstone_device_shape(name, state)),
+        ModelFamily::RedstoneDevice => Some(redstone::device_shape(name, state)),
         ModelFamily::RedstoneWire => Some(redstone::wire::shape_for(state)),
         ModelFamily::CrossPlant => flora::cross_plants::cross_plant_shape(name, state),
         ModelFamily::FullBlock => Some(full_block_shape(name, state)),
     }
+}
+
+/// Resolves the built-in model-family shape for a block state, including Bedrock texture slots
+/// and full-tile UV defaults for faces that do not define their own coordinates.
+#[must_use]
+pub fn resolve_shape(state: &BlockStateQuery) -> Option<ModelShape> {
+    let mut shape = model_shape(state)?;
+    apply_double_plant_material_slots(state, &mut shape);
+    fill_missing_full_texture_uv(&mut shape);
+    Some(shape)
+}
+
+pub(super) fn fill_missing_full_texture_uv(shape: &mut ModelShape) {
+    let uv = shape::full_texture_uv();
+    for cuboid in &mut shape.cuboids {
+        for face in [
+            crate::material::BlockFace::Up,
+            crate::material::BlockFace::Down,
+            crate::material::BlockFace::North,
+            crate::material::BlockFace::South,
+            crate::material::BlockFace::East,
+            crate::material::BlockFace::West,
+        ] {
+            if !cuboid.face_uvs.contains_key(&face) {
+                *cuboid = cuboid.clone().with_face_uv(face, uv);
+            }
+        }
+    }
+    for plane in &mut shape.planes {
+        if plane.uv.is_none() {
+            plane.uv = Some(uv);
+        }
+    }
+}
+
+pub(super) fn apply_double_plant_material_slots(state: &BlockStateQuery, shape: &mut ModelShape) {
+    let canonical = canonical_block_name(state);
+    let normalized = canonical.strip_prefix("minecraft:").unwrap_or(&canonical);
+    if !matches!(
+        normalized,
+        "tall_grass"
+            | "tallgrass"
+            | "large_fern"
+            | "sunflower"
+            | "lilac"
+            | "rose_bush"
+            | "peony"
+            | "pitcher_plant"
+            | "double_plant"
+    ) {
+        return;
+    }
+    let upper = state
+        .state("upper_block_bit")
+        .is_some_and(|value| value.is_truthy());
+    let slot = if upper { "up" } else { "down" };
+    for plane in &mut shape.planes {
+        plane.material_slot = Some(slot.to_owned());
+    }
+}
+
+/// Whether a block uses the engine-specific procedural shape fallback when a captured or
+/// resource-pack model is unavailable.
+#[must_use]
+pub fn needs_engine_fallback(name: &str) -> bool {
+    let name = name.strip_prefix("minecraft:").unwrap_or(name);
+    name == "bed"
+        || name.ends_with("_bed")
+        || name == "shulker_box"
+        || name.ends_with("_shulker_box")
 }
 
 #[must_use]
@@ -263,7 +333,7 @@ pub fn is_full_opaque_block(name: &str) -> bool {
         return true;
     }
     matches!(
-        model_family(name),
+        classify(name),
         ModelFamily::FullBlock | ModelFamily::OrientedFullBlock | ModelFamily::ChiseledBookshelf
     ) && !name.contains("glass")
         && !name.contains("ice")
@@ -278,13 +348,13 @@ pub fn is_full_opaque_block(name: &str) -> bool {
 }
 
 #[must_use]
-pub fn model_family_has_detail_shape(name: &str) -> bool {
+pub fn has_detail_shape(name: &str) -> bool {
     let name = normalized_block_name(name);
     if is_double_slab_block_name(name) {
         return false;
     }
     matches!(
-        model_family(name),
+        classify(name),
         ModelFamily::OrientedFullBlock
             | ModelFamily::Slab
             | ModelFamily::Stairs
@@ -470,7 +540,7 @@ pub fn detail_material_block_name(state: &BlockStateQuery) -> Option<Cow<'static
 
 fn detail_material_uses_own_block_name(name: &str) -> bool {
     matches!(
-        model_family(name),
+        classify(name),
         ModelFamily::OrientedFullBlock
             | ModelFamily::CrossPlant
             | ModelFamily::Cactus
@@ -584,7 +654,7 @@ fn state_color(state: &BlockStateQuery) -> Option<&'static str> {
 }
 
 fn state_string<'a>(state: &'a BlockStateQuery, key: &str) -> Option<&'a str> {
-    state.state(key).and_then(block_state_value_as_string)
+    state.state(key).and_then(as_string)
 }
 
 fn state_i64(state: &BlockStateQuery, key: &str) -> Option<i64> {
@@ -603,7 +673,7 @@ fn normalize_state_literal(value: &str) -> &str {
         .unwrap_or(value.trim())
 }
 
-fn block_state_value_as_string(value: &BlockStateValue) -> Option<&str> {
+fn as_string(value: &BlockStateValue) -> Option<&str> {
     match value {
         BlockStateValue::String(value) => Some(value),
         BlockStateValue::Bool(_) | BlockStateValue::Int(_) => None,
@@ -1035,8 +1105,8 @@ fn is_double_slab_block_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ModelFamily, canonical_block_name, detail_material_block_name, is_full_opaque_block,
-        model_family, model_shape,
+        ModelFamily, canonical_block_name, classify, detail_material_block_name,
+        is_full_opaque_block, model_shape, resolve_shape,
     };
 
     use crate::material::BlockFace;
@@ -1131,7 +1201,7 @@ mod tests {
                 ModelFamily::CopperGolemStatue,
             ),
         ] {
-            assert_eq!(model_family(block), family, "{block}");
+            assert_eq!(classify(block), family, "{block}");
         }
     }
 
@@ -1153,7 +1223,7 @@ mod tests {
             ("minecraft:chest", ModelFamily::Container),
             ("minecraft:hopper", ModelFamily::Hopper),
         ] {
-            assert_eq!(model_family(block), family, "{block}");
+            assert_eq!(classify(block), family, "{block}");
         }
     }
 
@@ -1654,8 +1724,8 @@ mod tests {
     #[test]
     fn double_plant_halves_use_up_down_textures() {
         let lower = BlockStateQuery::new("minecraft:tall_grass");
-        let lower_shape = crate::resolve_block_state_shape(&lower)
-            .unwrap_or_else(|| panic!("missing lower tall grass shape"));
+        let lower_shape =
+            resolve_shape(&lower).unwrap_or_else(|| panic!("missing lower tall grass shape"));
         assert!(
             lower_shape
                 .planes
@@ -1666,8 +1736,8 @@ mod tests {
 
         let upper =
             BlockStateQuery::new("minecraft:tall_grass").with_state("upper_block_bit", true);
-        let upper_shape = crate::resolve_block_state_shape(&upper)
-            .unwrap_or_else(|| panic!("missing upper tall grass shape"));
+        let upper_shape =
+            resolve_shape(&upper).unwrap_or_else(|| panic!("missing upper tall grass shape"));
         assert!(
             upper_shape
                 .planes

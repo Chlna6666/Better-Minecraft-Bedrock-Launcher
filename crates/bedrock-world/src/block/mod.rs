@@ -1,17 +1,17 @@
 //! Minecraft Bedrock blocks, BlockStates, palettes and BlockEntity records.
 
-pub(crate) mod block_entity;
+pub(crate) mod entity;
 mod query;
 pub(crate) mod state;
-pub(crate) mod version;
+pub mod version;
 
 pub use crate::chunk::palette::{BlockPalette, BlockState, block_storage_index};
 pub use crate::chunk::position::BlockPos;
 pub use crate::scan::{BlockEntity, BlockEntityRecord};
-pub use block_entity::{
+pub use entity::{
     BlockEntityChunkRewriteReport, BlockEntityRewriteContext, BlockEntityRewriteOutcome,
     BlockEntityRewriteStatus, BlockEntityRewriter, VanillaBlockEntityRewriter,
-    rewrite_block_entity_chunk, rewrite_block_entity_sign_text,
+    rewrite_block_entity_chunk, rewrite_sign_text,
 };
 pub use query::{
     BlockStateBatchStats, BlockStateQueryControl, BlockStateQueryResult, BlockStateView,
@@ -21,7 +21,7 @@ pub use state::{
     BlockStateSchema, BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus,
     BlockStateUpgrader, BlockStateValueRewrite, DoorBlockStates, HorizontalDirection,
     RedstoneBlockStates, SlabBlockStates, StairBlockStates, StairCorner, StatePropertySchema,
-    TrapdoorBlockStates, VerticalHalf, block_schema, block_state_schema, fluid_level, is_fluid,
+    TrapdoorBlockStates, VerticalHalf, catalog, fluid_level, for_block, is_fluid,
     read_block_state_nbt, validate_state,
 };
 pub use version::{
@@ -33,8 +33,4 @@ pub use version::{
     PINNED_BLOCK_UPGRADE_SCHEMA_VERSION, PINNED_LEGACY_BLOCK_ID_MAP_FILE,
     PINNED_LEGACY_ID_META_1_9_TABLE_FILE, PINNED_LEGACY_ID_META_1_12_TABLE_FILE,
     PinnedBlockMigrationBundle, PinnedCorpusFileSpec, VanillaBlockStatePalette,
-    load_pinned_block_migration_bundle_for_target_from_dir,
-    load_pinned_block_migration_bundle_from_dir, load_pinned_block_state_catalog,
-    load_pinned_block_state_catalog_for_target, load_pinned_block_upgrade_data_for_palette,
-    verify_pinned_block_migration_corpus,
 };

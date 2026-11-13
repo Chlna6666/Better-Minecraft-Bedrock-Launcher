@@ -69,7 +69,7 @@ where
                 entries_seen = entries_seen.saturating_add(1);
                 match BedrockDbKey::decode(key) {
                     BedrockDbKey::LocalPlayer | BedrockDbKey::RemotePlayer(_) => {
-                        match parse_root_nbt(value) {
+                        match parse_root(value) {
                             Ok(nbt) => {
                                 let mut player_items = collect_item_stacks(&nbt);
                                 report.item_count =
@@ -230,11 +230,11 @@ where
                 let BedrockDbKey::Village(key) = BedrockDbKey::decode(entry.key) else {
                     return Ok(StorageVisitorControl::Continue);
                 };
-                let roots = parse_consecutive_root_nbt(entry.value).unwrap_or_default();
+                let roots = parse_consecutive_roots(entry.value)?;
                 villages.push(Entry {
                     key,
                     roots,
-                    raw: Bytes::new(),
+                    raw: Bytes::copy_from_slice(entry.value),
                 });
                 Ok(StorageVisitorControl::Continue)
             },
@@ -242,63 +242,47 @@ where
         Ok(villages)
     }
 
-    /// Reads a single typed global record by exact key.
+    /// Reads one village record by its exact `VILLAGE_*` key.
     ///
     /// # Errors
     ///
-    /// Returns storage errors or global NBT parse errors.
-    pub fn global(&self, kind: GlobalRecordKind) -> Result<Option<Global>> {
-        let key = kind.storage_key();
-        self.storage()
-            .get(&key)?
-            .map(|value| decode_global(kind.clone(), kind.name(), value))
-            .transpose()
+    /// Returns storage or NBT decoding errors.
+    pub fn village(&self, key: &VillageKey) -> Result<Option<Entry>> {
+        let Some(raw) = self.storage().get(key.raw.as_bytes())? else {
+            return Ok(None);
+        };
+        let roots = parse_consecutive_roots(&raw)?;
+        Ok(Some(Entry {
+            key: key.clone(),
+            roots,
+            raw,
+        }))
     }
 
-    /// Scans known global records while preserving each typed key kind.
+    /// Saves one village record while preserving unknown NBT fields.
+    ///
+    /// The source bytes retained by a read record are checked at transaction commit. A new record
+    /// requires its key to remain absent.
     ///
     /// # Errors
     ///
-    /// Returns storage errors, cancellation, or global NBT parse errors.
-    pub fn globals(&self, options: WorldScanOptions) -> Result<Vec<Global>> {
-        let mut records = Vec::new();
-        self.storage()
-            .for_each_entry(to_storage_read_options(&options), &mut |key, value| {
-                check_cancelled(&options)?;
-                let BedrockDbKey::Global(kind) = BedrockDbKey::decode(key) else {
-                    return Ok(StorageVisitorControl::Continue);
-                };
-                records.push(decode_global(kind.clone(), kind.name(), value.clone())?);
-                Ok(StorageVisitorControl::Continue)
-            })?;
-        Ok(records)
-    }
-
-    /// Writes a global record after serialize -> parse roundtrip validation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BedrockWorldError::ReadOnly`] for read-only worlds, validation
-    /// errors for malformed records, or storage errors from the commit.
-    pub fn save_global(&self, record: &Global) -> Result<()> {
+    /// Returns read-only, validation, stale-source, serialization, or storage errors.
+    pub fn save_village(&self, village: &Entry) -> Result<()> {
         self.ensure_writable()?;
-        let value = encode_global(record)?;
-        decode_global(record.kind.clone(), record.name.clone(), value.clone())?;
         let mut transaction = self.transaction();
-        transaction.put_raw_key(record.kind.storage_key(), value);
+        transaction.save_village(village)?;
         transaction.commit()
     }
 
-    /// Deletes a typed global record.
+    /// Deletes one village record by its exact `VILLAGE_*` key.
     ///
     /// # Errors
     ///
-    /// Returns [`BedrockWorldError::ReadOnly`] for read-only worlds or storage
-    /// errors from the commit.
-    pub fn delete_global(&self, kind: GlobalRecordKind) -> Result<()> {
+    /// Returns read-only or storage errors.
+    pub fn delete_village(&self, key: &VillageKey) -> Result<()> {
         self.ensure_writable()?;
         let mut transaction = self.transaction();
-        transaction.delete_raw_key(kind.storage_key());
+        transaction.delete_village(key);
         transaction.commit()
     }
 
@@ -324,6 +308,25 @@ where
                 Ok(StorageVisitorControl::Continue)
             })?;
         Ok(records)
+    }
+
+    /// Reads one chunk's spawn areas together with the exact source record.
+    ///
+    /// # Errors
+    /// Returns storage or malformed spawn-area errors.
+    pub fn hardcoded_spawn_areas_snapshot(
+        &self,
+        pos: ChunkPos,
+    ) -> Result<(Vec<HardcodedSpawnArea>, Option<Bytes>)> {
+        let source = self.storage().get(
+            &ChunkKey::new(pos, ChunkRecordTag::HardcodedSpawners).encode(),
+        )?;
+        let areas = source
+            .as_ref()
+            .map(|value| decode_hardcoded_spawn_areas(value))
+            .transpose()?
+            .unwrap_or_default();
+        Ok((areas, source))
     }
 
     /// Writes hardcoded spawn areas for one chunk.
@@ -443,7 +446,7 @@ where
         edit(&mut entities[index].nbt)?;
         let mut report = ScanReport::default();
         entities[index] = parse_block_entities_from_value(
-            &Bytes::from(serialize_root_nbt(&entities[index].nbt)?),
+            &Bytes::from(serialize_root(&entities[index].nbt)?),
             &mut report,
         )
         .into_iter()
@@ -533,7 +536,7 @@ where
             .ok_or_else(|| {
                 BedrockWorldError::Validation("actor UniqueID is required".to_string())
             })?;
-        let value = Bytes::from(serialize_root_nbt(&actor.nbt)?);
+        let value = Bytes::from(serialize_root(&actor.nbt)?);
         parse_entities_from_value(&value, &mut ScanReport::default());
         let mut transaction = self.transaction();
         transaction.put_actor(pos, uid, value)?;
@@ -559,7 +562,7 @@ where
             .ok_or_else(|| {
                 BedrockWorldError::Validation(format!("actor UniqueID {unique_id} does not exist"))
             })?;
-        let value = Bytes::from(serialize_root_nbt(&nbt)?);
+        let value = Bytes::from(serialize_root(&nbt)?);
         let mut report = ScanReport::default();
         let mut parsed = parse_entities_from_value(&value, &mut report);
         if parsed.len() != 1 {
@@ -616,7 +619,7 @@ where
                 *actor = edited;
                 let mut encoded = Vec::new();
                 for actor in actors {
-                    encoded.extend(serialize_root_nbt(&actor.nbt)?);
+                    encoded.extend(serialize_root(&actor.nbt)?);
                 }
                 let mut transaction = self.transaction();
                 transaction.put_raw_key(inline_key.encode(), Bytes::from(encoded));
@@ -666,7 +669,7 @@ where
                 } else {
                     let mut encoded = Vec::new();
                     for actor in actors {
-                        encoded.extend(serialize_root_nbt(&actor.nbt)?);
+                        encoded.extend(serialize_root(&actor.nbt)?);
                     }
                     transaction.put_raw_key(inline_key.encode(), Bytes::from(encoded));
                 }
@@ -702,7 +705,7 @@ where
             .ok_or_else(|| {
                 BedrockWorldError::Validation("actor UniqueID is required".to_string())
             })?;
-        let value = Bytes::from(serialize_root_nbt(&actor.nbt)?);
+        let value = Bytes::from(serialize_root(&actor.nbt)?);
         let mut transaction = self.transaction();
         transaction.delete_actor(from, uid)?;
         transaction.put_actor(to, uid, value)?;

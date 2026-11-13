@@ -5,7 +5,7 @@
 //! tools can surface tolerated data issues without failing the entire open path.
 
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::{NbtTag, nbt_tags_equal_for_write, parse_root_nbt, serialize_root_nbt};
+use crate::nbt::{NbtTag, parse_root, serialize_root, tags_equal_for_write};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -102,7 +102,10 @@ impl LevelDatDocument {
     /// Existing maps are authoritative: if `RandomSeed` already exists, its value is returned
     /// unchanged even when `candidate` differs. This prevents map editors or servers from
     /// accidentally generating new chunks with a different seed and creating terrain seams.
-    pub fn initialize_random_seed_if_missing(&mut self, candidate: i64) -> Result<i64> {
+    ///
+    /// # Errors
+    /// Returns an error if the document is malformed or has an unsupported `RandomSeed` value.
+    pub fn ensure_random_seed(&mut self, candidate: i64) -> Result<i64> {
         if let Some(seed) = self.random_seed()? {
             return Ok(seed);
         }
@@ -117,7 +120,7 @@ impl LevelDatDocument {
 }
 
 /// Parses a complete `level.dat` byte slice.
-pub fn parse_level_dat_document(data: &[u8]) -> Result<LevelDatDocument> {
+pub fn parse(data: &[u8]) -> Result<LevelDatDocument> {
     if data.len() < 8 {
         return Err(BedrockWorldError::CorruptWorld(
             "level.dat is shorter than its 8-byte header".to_string(),
@@ -146,7 +149,7 @@ pub fn parse_level_dat_document(data: &[u8]) -> Result<LevelDatDocument> {
         &data[8..]
     };
 
-    let root = parse_root_nbt(payload)?;
+    let root = parse_root(payload)?;
     Ok(LevelDatDocument {
         header: LevelDatHeader {
             version,
@@ -159,39 +162,37 @@ pub fn parse_level_dat_document(data: &[u8]) -> Result<LevelDatDocument> {
 }
 
 /// Reads and parses a `level.dat` file from disk.
-pub fn read_level_dat_document(path: &Path) -> Result<LevelDatDocument> {
+pub fn read(path: &Path) -> Result<LevelDatDocument> {
     let bytes = fs::read(path)?;
-    parse_level_dat_document(&bytes)
-}
-
-/// Alias for [`read_level_dat_document`].
-pub fn read_level_dat(path: &Path) -> Result<LevelDatDocument> {
-    read_level_dat_document(path)
+    parse(&bytes)
 }
 
 /// Reads the map-owned `RandomSeed` from an existing `level.dat`.
 ///
 /// Unlike application-level configuration fallbacks, this function never invents a seed. A
 /// missing seed remains `None` and malformed metadata is returned as an error.
-pub fn read_level_dat_random_seed(path: &Path) -> Result<Option<i64>> {
-    read_level_dat_document(path)?.random_seed()
+pub fn read_random_seed(path: &Path) -> Result<Option<i64>> {
+    read(path)?.random_seed()
 }
 
 /// Initializes a missing `RandomSeed` and atomically writes the document only when needed.
 ///
 /// If the map already has a seed, no file write occurs and the existing value is returned.
-pub fn initialize_level_dat_random_seed_if_missing(path: &Path, candidate: i64) -> Result<i64> {
-    let mut document = read_level_dat_document(path)?;
+///
+/// # Errors
+/// Returns an error if `level.dat` cannot be read, parsed or atomically written.
+pub fn ensure_random_seed(path: &Path, candidate: i64) -> Result<i64> {
+    let mut document = read(path)?;
     if let Some(seed) = document.random_seed()? {
         return Ok(seed);
     }
-    let seed = document.initialize_random_seed_if_missing(candidate)?;
-    write_level_dat_document(path, &document)?;
+    let seed = document.ensure_random_seed(candidate)?;
+    write(path, &document)?;
     Ok(seed)
 }
 
 /// Writes a `level.dat` document through a temporary file and replacement.
-pub fn write_level_dat_document(path: &Path, document: &LevelDatDocument) -> Result<()> {
+pub fn write(path: &Path, document: &LevelDatDocument) -> Result<()> {
     if path.file_name().is_some_and(|name| name != "level.dat") {
         return Err(BedrockWorldError::Validation(format!(
             "refusing to write non-level.dat file: {}",
@@ -207,7 +208,30 @@ pub fn write_level_dat_document(path: &Path, document: &LevelDatDocument) -> Res
         }
     }
 
-    let payload = serialize_root_nbt(&document.root)?;
+    let bytes = encode(document)?;
+    let temporary_path = temporary_level_dat_path(path);
+    let mut file = fs::File::create(&temporary_path)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+
+    replace_file(&temporary_path, path)
+}
+
+/// Encodes a complete `level.dat` document without accessing the filesystem.
+///
+/// Recomputes the payload length and validates the encoded header and NBT. Unknown
+/// fields and their persisted types are retained; no game-version conversion occurs.
+///
+/// # Errors
+/// Returns serialization or validation errors for an invalid document.
+pub fn encode(document: &LevelDatDocument) -> Result<Vec<u8>> {
+    if !matches!(document.root, NbtTag::Compound(_)) {
+        return Err(BedrockWorldError::Validation(
+            "level.dat root must be a compound".to_string(),
+        ));
+    }
+    let payload = serialize_root(&document.root)?;
     if payload.len() > MAX_LEVEL_DAT_PAYLOAD_BYTES {
         return Err(BedrockWorldError::Validation(
             "level.dat payload is too large".to_string(),
@@ -218,50 +242,32 @@ pub fn write_level_dat_document(path: &Path, document: &LevelDatDocument) -> Res
     bytes.extend_from_slice(&document.header.version.to_le_bytes());
     bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     bytes.extend_from_slice(&payload);
-    validate_level_dat_bytes_for_write(&bytes, &document.root, document.header.version)?;
+    validate_bytes(&bytes, &document.root, document.header.version)?;
 
-    let temporary_path = temporary_level_dat_path(path);
-    let mut file = fs::File::create(&temporary_path)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    drop(file);
-
-    replace_file(&temporary_path, path)
-}
-
-/// Alias for [`write_level_dat_document`].
-pub fn write_level_dat_atomic(path: &Path, document: &LevelDatDocument) -> Result<()> {
-    write_level_dat_document(path, document)
+    Ok(bytes)
 }
 
 #[cfg(feature = "async")]
-/// Async wrapper for [`read_level_dat`] using `tokio::task::spawn_blocking`.
-pub async fn read_level_dat_async(path: impl AsRef<Path>) -> Result<LevelDatDocument> {
+/// Async wrapper for [`read`] using `tokio::task::spawn_blocking`.
+pub async fn read_async(path: impl AsRef<Path>) -> Result<LevelDatDocument> {
     let path = path.as_ref().to_path_buf();
-    tokio::task::spawn_blocking(move || read_level_dat(&path))
+    tokio::task::spawn_blocking(move || read(&path))
         .await
         .map_err(|error| BedrockWorldError::Join(error.to_string()))?
 }
 
 #[cfg(feature = "async")]
-/// Async wrapper for [`write_level_dat_atomic`] using `tokio::task::spawn_blocking`.
-pub async fn write_level_dat_atomic_async(
-    path: impl AsRef<Path>,
-    document: LevelDatDocument,
-) -> Result<()> {
+/// Async wrapper for [`write`] using `tokio::task::spawn_blocking`.
+pub async fn write_async(path: impl AsRef<Path>, document: LevelDatDocument) -> Result<()> {
     let path = path.as_ref().to_path_buf();
-    tokio::task::spawn_blocking(move || write_level_dat_atomic(&path, &document))
+    tokio::task::spawn_blocking(move || write(&path, &document))
         .await
         .map_err(|error| BedrockWorldError::Join(error.to_string()))?
 }
 
 /// Re-parses candidate bytes before replacing `level.dat`.
-pub fn validate_level_dat_bytes_for_write(
-    bytes: &[u8],
-    expected_root: &NbtTag,
-    expected_version: u32,
-) -> Result<()> {
-    let parsed = parse_level_dat_document(bytes)?;
+pub fn validate_bytes(bytes: &[u8], expected_root: &NbtTag, expected_version: u32) -> Result<()> {
+    let parsed = parse(bytes)?;
     if parsed.header.version != expected_version {
         return Err(BedrockWorldError::Validation(
             "level.dat version changed during write validation".to_string(),
@@ -278,7 +284,7 @@ pub fn validate_level_dat_bytes_for_write(
             parsed.warnings
         )));
     }
-    if !nbt_tags_equal_for_write(&parsed.root, expected_root) {
+    if !tags_equal_for_write(&parsed.root, expected_root) {
         return Err(BedrockWorldError::Validation(
             "level.dat roundtrip root mismatch".to_string(),
         ));
@@ -326,14 +332,14 @@ mod tests {
         let mut root = IndexMap::new();
         root.insert("LevelName".to_string(), NbtTag::String("Test".to_string()));
         let root = NbtTag::Compound(root);
-        let payload = serialize_root_nbt(&root).expect("serialize");
+        let payload = serialize_root(&root).expect("serialize");
 
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&10_u32.to_le_bytes());
         bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&payload);
 
-        let document = parse_level_dat_document(&bytes).expect("parse");
+        let document = parse(&bytes).expect("parse");
         assert_eq!(document.header.version, 10);
         assert_eq!(document.header.actual_payload_len, payload.len());
         assert!(document.warnings.is_empty());
@@ -342,14 +348,14 @@ mod tests {
     #[test]
     fn level_dat_warns_when_declared_length_is_too_large() {
         let root = NbtTag::Compound(IndexMap::new());
-        let payload = serialize_root_nbt(&root).expect("serialize");
+        let payload = serialize_root(&root).expect("serialize");
 
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&10_u32.to_le_bytes());
         bytes.extend_from_slice(&((payload.len() + 8) as u32).to_le_bytes());
         bytes.extend_from_slice(&payload);
 
-        let document = parse_level_dat_document(&bytes).expect("parse");
+        let document = parse(&bytes).expect("parse");
         assert_eq!(
             document.warnings,
             vec![LevelDatReadWarning::DeclaredLengthTooLarge {
@@ -365,9 +371,7 @@ mod tests {
         root.insert("RandomSeed".to_string(), NbtTag::Long(123456789));
         let mut document = LevelDatDocument::new(10, NbtTag::Compound(root));
 
-        let resolved = document
-            .initialize_random_seed_if_missing(-987654321)
-            .expect("seed");
+        let resolved = document.ensure_random_seed(-987654321).expect("seed");
         assert_eq!(resolved, 123456789);
         assert_eq!(document.random_seed().expect("read"), Some(123456789));
     }
@@ -376,19 +380,9 @@ mod tests {
     fn missing_random_seed_is_initialized_once() {
         let mut document = LevelDatDocument::new(10, NbtTag::Compound(IndexMap::new()));
         assert_eq!(document.random_seed().expect("read"), None);
-        assert_eq!(
-            document
-                .initialize_random_seed_if_missing(42)
-                .expect("initialize"),
-            42
-        );
+        assert_eq!(document.ensure_random_seed(42).expect("initialize"), 42);
         assert_eq!(document.random_seed().expect("read"), Some(42));
-        assert_eq!(
-            document
-                .initialize_random_seed_if_missing(99)
-                .expect("preserve"),
-            42
-        );
+        assert_eq!(document.ensure_random_seed(99).expect("preserve"), 42);
     }
 
     #[test]

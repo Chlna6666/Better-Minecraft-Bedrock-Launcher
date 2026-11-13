@@ -28,8 +28,7 @@ formats they need.
 - Web-map paths are deterministic and cache-safe:
   `<world>/<signature>/r<renderer>-p<palette>/<dimension>/<mode>/<layout>/<tile_x>/<tile_z>.<ext>`.
 - `world_cache_identity(path)` computes the stable world cache ID and current
-  content signature together. The compatibility helpers `world_cache_id` and
-  `world_cache_signature` remain available for callers that need one value.
+  content signature together.
 - Tile batches use bounded worker threads. `Auto` resolves from the selected
   execution profile: `Export` uses host logical CPUs, `Interactive` caps work to
   a smaller foreground-safe pool. Explicit thread counts support `1..=512`.

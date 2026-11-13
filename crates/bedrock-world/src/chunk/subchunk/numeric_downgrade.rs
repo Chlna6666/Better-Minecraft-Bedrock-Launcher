@@ -9,7 +9,8 @@
 use crate::block::{BlockState, LegacyNumericBlockMatch, LegacyNumericBlockUpgradeTable};
 use crate::chunk::{
     BedrockDbKey, ChunkPos, ChunkRecordTag, ChunkVersion, Dimension, LegacyBlockExtraDataBuilder,
-    LegacySubChunkBuilder, SubChunk, SubChunkDecodeMode, SubChunkFormat, SubChunkVersion,
+    LegacySubChunkBuilder, LegacySubChunkEncoding, SubChunk, SubChunkDecodeMode, SubChunkFormat,
+    SubChunkVersion,
 };
 use crate::error::{BedrockWorldError, Result};
 use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
@@ -168,7 +169,7 @@ pub(crate) fn stage_subchunk_downgrade(
         })?;
         let primary_numeric = resolve_primary_palette(primary, &key, numeric, &mut report)?;
 
-        let mut builder = LegacySubChunkBuilder::zeroed(target_byte, false)?;
+        let mut builder = LegacySubChunkBuilder::zeroed(target_byte, LegacySubChunkEncoding::WithoutLightArrays)?;
         for local_x in 0_u8..16 {
             for local_z in 0_u8..16 {
                 for local_y in 0_u8..16 {
@@ -400,7 +401,7 @@ mod tests {
         LegacyNumericBlockStateTable, LegacyNumericBlockUpgradeTable,
     };
     use crate::chunk::{BlockPalette, ChunkKey};
-    use crate::nbt::{NbtTag, serialize_root_nbt};
+    use crate::nbt::{NbtTag, serialize_root};
     use crate::storage::MemoryStorage;
     use indexmap::IndexMap;
 
@@ -438,7 +439,7 @@ mod tests {
                 ("states".to_string(), NbtTag::Compound(IndexMap::new())),
                 ("version".to_string(), NbtTag::Int(version)),
             ]));
-            table.extend(serialize_root_nbt(&root).unwrap());
+            table.extend(serialize_root(&root).unwrap());
         }
         LegacyNumericBlockStateTable::parse(&table, &serde_json::to_string(&ids).unwrap()).unwrap()
     }

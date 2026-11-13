@@ -13,4 +13,4 @@ pub use data2d::{data2d_to_data3d, data3d_to_data2d};
 pub use downgrade::BiomeData2dDowngradeReport;
 pub use legacy::Biome2dLegacy;
 pub use quart::encode_data3d_quart;
-pub use upgrade::BiomeData3dUpgradeReport;
+pub use upgrade::{BiomeData3dUpgradeReport, SavedBiomeRgbPolicy};

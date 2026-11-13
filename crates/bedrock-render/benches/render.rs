@@ -58,26 +58,6 @@ fn dynamic_renderer() -> Option<MapRenderer> {
 fn emit_machine_readable_report(
     case: &str,
     storage: &str,
-    renderer: &MapRenderer<impl bedrock_world::StorageBackend>,
-) {
-    emit_machine_readable_report_with_options(
-        case,
-        storage,
-        "default",
-        renderer,
-        RenderOptions {
-            format: ImageFormat::Rgba,
-            threading: RenderThreadingOptions::Auto,
-            execution_profile: RenderExecutionProfile::Export,
-            memory_budget: RenderMemoryBudget::Disabled,
-            ..RenderOptions::default()
-        },
-    );
-}
-
-fn emit_machine_readable_report_with_options(
-    case: &str,
-    storage: &str,
     backend_label: &str,
     renderer: &MapRenderer<impl bedrock_world::StorageBackend>,
     options: RenderOptions,
@@ -148,7 +128,7 @@ fn emit_gpu_comparison_reports(renderer: &MapRenderer<impl bedrock_world::Storag
         ("dx11", RenderBackend::Wgpu, RenderGpuBackend::Dx11),
         ("vulkan", RenderBackend::Wgpu, RenderGpuBackend::Vulkan),
     ] {
-        emit_machine_readable_report_with_options(
+        emit_machine_readable_report(
             "surface_region_rgba_gpu_compare",
             "generic",
             label,
@@ -291,13 +271,41 @@ fn emit_v02_hsa_report(editor: &World) {
 #[allow(clippy::too_many_lines)]
 fn render_benches(c: &mut Criterion) {
     let Some(renderer) = renderer() else {
+        eprintln!(
+            "Skipping bedrock-render benchmarks: sample world is absent or cannot be opened at {}",
+            fixture_world_path().display()
+        );
         return;
     };
-    emit_machine_readable_report("surface_region_rgba", "generic", &renderer);
+    emit_machine_readable_report(
+        "surface_region_rgba",
+        "generic",
+        "default",
+        &renderer,
+        RenderOptions {
+            format: ImageFormat::Rgba,
+            threading: RenderThreadingOptions::Auto,
+            execution_profile: RenderExecutionProfile::Export,
+            memory_budget: RenderMemoryBudget::Disabled,
+            ..RenderOptions::default()
+        },
+    );
     emit_gpu_comparison_reports(&renderer);
     emit_v02_editor_reports();
     if let Some(dynamic) = dynamic_renderer() {
-        emit_machine_readable_report("surface_region_rgba", "dynamic", &dynamic);
+        emit_machine_readable_report(
+            "surface_region_rgba",
+            "dynamic",
+            "default",
+            &dynamic,
+            RenderOptions {
+                format: ImageFormat::Rgba,
+                threading: RenderThreadingOptions::Auto,
+                execution_profile: RenderExecutionProfile::Export,
+                memory_budget: RenderMemoryBudget::Disabled,
+                ..RenderOptions::default()
+            },
+        );
     }
     let coord = TileCoord {
         x: 0,

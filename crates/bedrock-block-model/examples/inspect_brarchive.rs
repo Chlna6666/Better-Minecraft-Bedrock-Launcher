@@ -2,9 +2,8 @@
 use std::path::Path;
 use std::time::Instant;
 
-use bedrock_block_model::{
-    BlockModelRepository, ObjTextureCopy, ObjTextureResolver, read_obj_texture_copy_image,
-};
+use bedrock_block_model::obj::read_texture_copy_image;
+use bedrock_block_model::{BlockModelRepository, ObjTextureCopy, ObjTextureResolver};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::args_os()
@@ -32,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         alpha_mask: false,
     };
     drop(resolver);
-    let image = read_obj_texture_copy_image(&copy)?;
+    let image = read_texture_copy_image(&copy)?;
     println!(
         "stone_source={:?} bytes={} image={}x{} elapsed_ms={:.3}",
         copy.source_path,

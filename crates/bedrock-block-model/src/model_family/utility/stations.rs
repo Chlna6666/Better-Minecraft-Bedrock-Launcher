@@ -154,7 +154,7 @@ fn hopper_side_direction(state: &BlockStateQuery) -> Option<CardinalDirection> {
             if value == "down" {
                 return None;
             }
-            return crate::model_family::direction::cardinal_direction_from_string(value);
+            return crate::model_family::direction::from_string(value);
         }
     }
     crate::model_family::direction::state_i64(state, "facing_direction")

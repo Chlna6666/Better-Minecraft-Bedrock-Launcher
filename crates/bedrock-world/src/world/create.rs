@@ -2,7 +2,7 @@
 
 use super::{OpenOptions, World, WorldFormatHint};
 use crate::error::{BedrockWorldError, Result};
-use crate::level::{LevelDatDocument, write_level_dat_document};
+use crate::level::{LevelDatDocument, write};
 use crate::nbt::NbtTag;
 use crate::storage::create_bedrock_leveldb;
 use indexmap::IndexMap;
@@ -135,7 +135,7 @@ impl World {
         let create_result = (|| {
             create_bedrock_leveldb(path.join("db"))?;
             let level_dat = build_level_dat(&options)?;
-            write_level_dat_document(&path.join("level.dat"), &level_dat)?;
+            write(&path.join("level.dat"), &level_dat)?;
             fs::write(
                 path.join("levelname.txt"),
                 format!("{}\n", options.level_name),

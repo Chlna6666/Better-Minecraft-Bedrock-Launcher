@@ -2,7 +2,7 @@
 
 use super::{
     AuthoritativeBlockStateCatalog, LegacyNumericBlockStateTable, PinnedBlockMigrationBundle,
-    VanillaBlockStatePalette, load_pinned_block_migration_bundle_for_target_from_dir,
+    VanillaBlockStatePalette,
 };
 use crate::error::{BedrockWorldError, Result};
 use std::path::Path;
@@ -41,14 +41,11 @@ impl BlockUpgradeData {
 ///
 /// The target palette supplies the exact persisted BlockState endpoint. The pinned schema loader
 /// refuses targets that are not represented by a real schema endpoint in the verified corpus.
-pub fn load_pinned_block_upgrade_data_for_palette(
+pub fn load(
     root: impl AsRef<Path>,
     target_palette: &VanillaBlockStatePalette,
 ) -> Result<BlockUpgradeData> {
-    let inner = load_pinned_block_migration_bundle_for_target_from_dir(
-        root,
-        target_palette.storage_version(),
-    )?;
+    let inner = super::corpus_bundle::load_for_target(root, target_palette.storage_version())?;
     if inner.target_block_state_version() != target_palette.storage_version().raw() {
         return Err(BedrockWorldError::Validation(format!(
             "pinned block upgrade data ends at {}, target Bedrock {} palette uses {}",

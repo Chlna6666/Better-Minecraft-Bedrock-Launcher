@@ -62,7 +62,7 @@ impl PlayerData {
 
     /// Returns the persisted Actor `FallDistance` value when present.
     pub fn fall_distance(&self) -> Result<Option<f64>> {
-        actor_number(self.root()?.get("FallDistance"), "FallDistance")
+        number_value(self.root()?.get("FallDistance"), "FallDistance")
     }
 
     /// Sets Actor `FallDistance`, preserving Float/Double width when present.
@@ -95,7 +95,7 @@ impl PlayerData {
 
     /// Returns the persisted Actor `Dead` flag when present.
     pub fn dead(&self) -> Result<Option<bool>> {
-        actor_bool(self.root()?.get("Dead"), "Dead")
+        bool_value(self.root()?.get("Dead"), "Dead")
     }
 
     /// Sets Actor `Dead`, preserving its existing integer NBT width.
@@ -106,8 +106,8 @@ impl PlayerData {
     /// Returns the persisted root Actor `Invulnerable` flag when present.
     ///
     /// This is distinct from `abilities.invulnerable`.
-    pub fn actor_invulnerable(&self) -> Result<Option<bool>> {
-        actor_bool(self.root()?.get("Invulnerable"), "Invulnerable")
+    pub fn invulnerable(&self) -> Result<Option<bool>> {
+        bool_value(self.root()?.get("Invulnerable"), "Invulnerable")
     }
 
     /// Sets the root Actor `Invulnerable` flag without changing `abilities.invulnerable`.
@@ -117,7 +117,7 @@ impl PlayerData {
 
     /// Returns the persisted Actor `OnGround` flag when present.
     pub fn on_ground(&self) -> Result<Option<bool>> {
-        actor_bool(self.root()?.get("OnGround"), "OnGround")
+        bool_value(self.root()?.get("OnGround"), "OnGround")
     }
 
     /// Sets Actor `OnGround`, preserving its existing integer NBT width.
@@ -127,7 +127,7 @@ impl PlayerData {
 
     /// Returns the persisted Actor `UniqueID` when present.
     pub fn unique_id(&self) -> Result<Option<i64>> {
-        actor_i64(self.root()?.get("UniqueID"), "UniqueID")
+        integer_value(self.root()?.get("UniqueID"), "UniqueID")
     }
 
     /// Sets Actor `UniqueID`, preserving the existing integer NBT width when representable.
@@ -194,11 +194,11 @@ fn set_actor_bool(player: &mut PlayerData, field: &str, value: bool) -> Result<(
     Ok(())
 }
 
-fn actor_bool(value: Option<&NbtTag>, field: &str) -> Result<Option<bool>> {
+fn bool_value(value: Option<&NbtTag>, field: &str) -> Result<Option<bool>> {
     Ok(integer_tag(value, field)?.map(|value| value != 0))
 }
 
-fn actor_i64(value: Option<&NbtTag>, field: &str) -> Result<Option<i64>> {
+fn integer_value(value: Option<&NbtTag>, field: &str) -> Result<Option<i64>> {
     let Some(value) = value else {
         return Ok(None);
     };
@@ -213,7 +213,7 @@ fn actor_i64(value: Option<&NbtTag>, field: &str) -> Result<Option<i64>> {
     }
 }
 
-fn actor_number(value: Option<&NbtTag>, field: &str) -> Result<Option<f64>> {
+fn number_value(value: Option<&NbtTag>, field: &str) -> Result<Option<f64>> {
     let Some(value) = value else {
         return Ok(None);
     };
@@ -256,6 +256,7 @@ mod tests {
                 ("UniqueID".to_string(), NbtTag::Long(123)),
                 ("FutureActorField".to_string(), NbtTag::Long(9)),
             ])),
+            None,
         )
         .unwrap();
 
@@ -288,11 +289,12 @@ mod tests {
                     )])),
                 ),
             ])),
+            None,
         )
         .unwrap();
 
         player.set_actor_invulnerable(true).unwrap();
-        assert_eq!(player.actor_invulnerable().unwrap(), Some(true));
+        assert_eq!(player.invulnerable().unwrap(), Some(true));
         assert_eq!(
             player.abilities().unwrap().unwrap().invulnerable().unwrap(),
             Some(true)

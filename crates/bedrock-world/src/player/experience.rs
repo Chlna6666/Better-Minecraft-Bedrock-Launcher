@@ -7,12 +7,12 @@ use crate::player::inventory::{integer_tag, set_integer_preserving_type};
 
 impl PlayerData {
     /// Returns the raw `PlayerLevel` integer when present.
-    pub fn player_level(&self) -> Result<Option<i32>> {
+    pub fn level(&self) -> Result<Option<i32>> {
         integer_tag(self.root()?.get("PlayerLevel"), "PlayerLevel")
     }
 
     /// Sets `PlayerLevel`.
-    pub fn set_player_level(&mut self, level: i32) -> Result<()> {
+    pub fn set_level(&mut self, level: i32) -> Result<()> {
         let root = self.root_mut()?;
         set_integer_preserving_type(root, "PlayerLevel", level)?;
         self.finish_edit();
@@ -20,7 +20,7 @@ impl PlayerData {
     }
 
     /// Returns `PlayerLevelProgress` when present.
-    pub fn player_level_progress(&self) -> Result<Option<f64>> {
+    pub fn level_progress(&self) -> Result<Option<f64>> {
         let Some(tag) = self.root()?.get("PlayerLevelProgress") else {
             return Ok(None);
         };
@@ -42,7 +42,7 @@ impl PlayerData {
     }
 
     /// Sets `PlayerLevelProgress`, preserving an existing double representation.
-    pub fn set_player_level_progress(&mut self, progress: f64) -> Result<()> {
+    pub fn set_level_progress(&mut self, progress: f64) -> Result<()> {
         if !progress.is_finite() || !(0.0..=1.0).contains(&progress) {
             return Err(BedrockWorldError::Validation(format!(
                 "PlayerLevelProgress must be finite and within 0..=1, got {progress}"

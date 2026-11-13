@@ -12,16 +12,16 @@ use indexmap::IndexMap;
 
 /// One compatibility problem found while checking a Modern saved item against a target release.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ModernSavedItemIssue {
+pub struct Issue {
     /// Stable NBT path from the checked root to the item-like compound.
     pub path: String,
     /// Exact reason the item cannot be written to the requested Modern target.
-    pub kind: ModernSavedItemIssueKind,
+    pub kind: IssueKind,
 }
 
 /// Reason one Modern saved item is not proven writable in the requested target release.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ModernSavedItemIssueKind {
+pub enum IssueKind {
     /// Both `Name` and `id` identities are present, so the source identity is ambiguous.
     IdentityConflict,
     /// `Damage` and `Aux` are both present and disagree.
@@ -115,7 +115,7 @@ pub enum ModernSavedItemIssueKind {
 
 /// Non-mutating preflight report for converting Modern saved items to an older Modern target.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct ModernSavedItemCheckReport {
+pub struct CheckReport {
     /// Number of item-like NBT compounds inspected.
     pub items_seen: usize,
     /// Number of inspected items that used string identifiers.
@@ -139,10 +139,10 @@ pub struct ModernSavedItemCheckReport {
     /// Number of block-item payloads that could not be proven compatible.
     pub block_incompatible: usize,
     /// Ordered audit trail of individual compatibility issues.
-    pub issues: Vec<ModernSavedItemIssue>,
+    pub issues: Vec<Issue>,
 }
 
-impl ModernSavedItemCheckReport {
+impl CheckReport {
     /// Returns true when no issue counters can block an exact target write.
     #[must_use]
     pub fn is_fully_proven(&self) -> bool {
@@ -158,18 +158,18 @@ impl ModernSavedItemCheckReport {
 
 /// Result of converting an NBT tree to one exact older Modern saved-item target.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ModernSavedItemConversionOutcome {
+pub struct ConversionOutcome {
     /// Converted NBT tree with unmodified unrelated fields preserved.
     pub nbt: NbtTag,
     /// Preflight and mutation counters produced by the conversion.
-    pub report: ModernSavedItemConversionReport,
+    pub report: ConversionReport,
 }
 
 /// Counters produced by an exact Modern-to-Modern saved-item conversion.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct ModernSavedItemConversionReport {
+pub struct ConversionReport {
     /// Non-mutating compatibility report used to authorize the conversion.
-    pub check: ModernSavedItemCheckReport,
+    pub check: CheckReport,
     /// Number of item compounds whose item identity or metadata changed.
     pub items_changed: usize,
     /// Number of item `Block` payloads whose BlockState payload changed.
@@ -177,11 +177,11 @@ pub struct ModernSavedItemConversionReport {
 }
 
 /// Checks whether every recognised saved item can be written to a concrete older Modern target.
-pub fn check_saved_items_for_modern_target(
+pub fn check(
     nbt: &NbtTag,
     target: &ModernSavedItemTarget,
-) -> Result<ModernSavedItemCheckReport> {
-    let mut report = ModernSavedItemCheckReport::default();
+) -> Result<CheckReport> {
+    let mut report = CheckReport::default();
     check_tag(nbt, target, "$", &mut report)?;
     Ok(report)
 }
@@ -191,11 +191,11 @@ pub fn check_saved_items_for_modern_target(
 /// The function refuses to mutate when the preflight report is not fully proven. Unknown fields on
 /// item compounds and existing `Block` payloads are preserved unless the target BlockState fields
 /// must be replaced.
-pub fn convert_saved_items_to_modern_target(
+pub fn convert(
     nbt: &NbtTag,
     target: &ModernSavedItemTarget,
-) -> Result<ModernSavedItemConversionOutcome> {
-    let check = check_saved_items_for_modern_target(nbt, target)?;
+) -> Result<ConversionOutcome> {
+    let check = check(nbt, target)?;
     if !check.is_fully_proven() {
         return Err(validation(format!(
             "Modern saved-item target {} is not fully proven: numeric_sources={}, identity_conflicts={}, metadata_conflicts={}, item_missing={}, item_ambiguous={}, meta_range={}, block_incompatible={}, first_issue={:?}",
@@ -214,9 +214,9 @@ pub fn convert_saved_items_to_modern_target(
     let mut items_changed = 0usize;
     let mut block_states_changed = 0usize;
     let nbt = convert_tag(nbt, target, &mut items_changed, &mut block_states_changed)?;
-    Ok(ModernSavedItemConversionOutcome {
+    Ok(ConversionOutcome {
         nbt,
-        report: ModernSavedItemConversionReport {
+        report: ConversionReport {
             check,
             items_changed,
             block_states_changed,
@@ -228,7 +228,7 @@ fn check_tag(
     tag: &NbtTag,
     target: &ModernSavedItemTarget,
     path: &str,
-    report: &mut ModernSavedItemCheckReport,
+    report: &mut CheckReport,
 ) -> Result<()> {
     match tag {
         NbtTag::Compound(root) if looks_like_item_stack(root) => {
@@ -267,12 +267,12 @@ fn check_item(
     root: &IndexMap<String, NbtTag>,
     target: &ModernSavedItemTarget,
     path: &str,
-    report: &mut ModernSavedItemCheckReport,
+    report: &mut CheckReport,
 ) -> Result<()> {
     report.items_seen = report.items_seen.saturating_add(1);
     if root.contains_key("Name") && root.contains_key("id") {
         report.identity_conflicts = report.identity_conflicts.saturating_add(1);
-        push_issue(report, path, ModernSavedItemIssueKind::IdentityConflict);
+        push_issue(report, path, IssueKind::IdentityConflict);
         return Ok(());
     }
 
@@ -282,7 +282,7 @@ fn check_item(
             push_issue(
                 report,
                 path,
-                ModernSavedItemIssueKind::MetadataConflict { damage, aux },
+                IssueKind::MetadataConflict { damage, aux },
             );
             return Ok(());
         }
@@ -295,7 +295,7 @@ fn check_item(
             push_issue(
                 report,
                 path,
-                ModernSavedItemIssueKind::NumericSource { numeric_id },
+                IssueKind::NumericSource { numeric_id },
             );
             return Ok(());
         }
@@ -312,7 +312,7 @@ fn check_item(
             push_issue(
                 report,
                 path,
-                ModernSavedItemIssueKind::MissingItem { source },
+                IssueKind::MissingItem { source },
             );
         }
         ModernSavedItemTargetMatch::AmbiguousItem {
@@ -324,7 +324,7 @@ fn check_item(
             push_issue(
                 report,
                 path,
-                ModernSavedItemIssueKind::AmbiguousItem {
+                IssueKind::AmbiguousItem {
                     source,
                     first,
                     second,
@@ -338,7 +338,7 @@ fn check_item(
                 push_issue(
                     report,
                     path,
-                    ModernSavedItemIssueKind::MetadataOutOfRange { target: item },
+                    IssueKind::MetadataOutOfRange { target: item },
                 );
             } else {
                 report.items_proven = report.items_proven.saturating_add(1);
@@ -350,7 +350,7 @@ fn check_item(
                 push_issue(
                     report,
                     path,
-                    ModernSavedItemIssueKind::MetadataOutOfRange { target: item },
+                    IssueKind::MetadataOutOfRange { target: item },
                 );
             } else {
                 report.block_items_proven = report.block_items_proven.saturating_add(1);
@@ -361,7 +361,7 @@ fn check_item(
             push_issue(
                 report,
                 path,
-                ModernSavedItemIssueKind::UnexpectedSourceBlock { target: item },
+                IssueKind::UnexpectedSourceBlock { target: item },
             );
         }
         ModernSavedItemTargetMatch::AmbiguousTargetBlockItem {
@@ -374,7 +374,7 @@ fn check_item(
             push_issue(
                 report,
                 path,
-                ModernSavedItemIssueKind::AmbiguousTargetBlockItem {
+                IssueKind::AmbiguousTargetBlockItem {
                     target: item,
                     first_block,
                     second_block,
@@ -390,7 +390,7 @@ fn check_item(
             push_issue(
                 report,
                 path,
-                ModernSavedItemIssueKind::SourceBlockRequired {
+                IssueKind::SourceBlockRequired {
                     target: item,
                     target_block_id,
                 },
@@ -404,7 +404,7 @@ fn check_item(
             push_issue(
                 report,
                 path,
-                ModernSavedItemIssueKind::MissingBlockState {
+                IssueKind::MissingBlockState {
                     target: item,
                     target_block_id,
                 },
@@ -421,7 +421,7 @@ fn check_item(
             push_issue(
                 report,
                 path,
-                ModernSavedItemIssueKind::AmbiguousBlockState {
+                IssueKind::AmbiguousBlockState {
                     target: item,
                     target_block_id,
                     first,
@@ -440,7 +440,7 @@ fn check_item(
             push_issue(
                 report,
                 path,
-                ModernSavedItemIssueKind::BlockIdentityMismatch {
+                IssueKind::BlockIdentityMismatch {
                     target: item,
                     expected_block_id,
                     actual_block_id,
@@ -531,8 +531,8 @@ fn convert_tag(
     }
 }
 
-fn push_issue(report: &mut ModernSavedItemCheckReport, path: &str, kind: ModernSavedItemIssueKind) {
-    report.issues.push(ModernSavedItemIssue {
+fn push_issue(report: &mut CheckReport, path: &str, kind: IssueKind) {
+    report.issues.push(Issue {
         path: path.to_string(),
         kind,
     });
@@ -747,7 +747,7 @@ mod tests {
             &block_palette,
         )
         .unwrap();
-        let item_blocks = VanillaSavedItemBlockMap::from_block_id_to_item_id_map_json(
+        let item_blocks = VanillaSavedItemBlockMap::from_json(
             GameVersion::new(vec![1, 9, 0]).unwrap(),
             r#"{"minecraft:old_door":"minecraft:item.old_door"}"#,
         )
@@ -783,7 +783,7 @@ mod tests {
     #[test]
     fn ordinary_item_rewrites_target_identity_and_preserves_unknown_fields() {
         let source = item("minecraft:apple", NbtTag::Int(4), None);
-        let outcome = convert_saved_items_to_modern_target(&source, &target()).unwrap();
+        let outcome = convert(&source, &target()).unwrap();
         let NbtTag::Compound(root) = outcome.nbt else {
             panic!("compound")
         };
@@ -807,7 +807,7 @@ mod tests {
                 target.source_block_state_version().raw(),
             )),
         );
-        let outcome = convert_saved_items_to_modern_target(&source, &target).unwrap();
+        let outcome = convert(&source, &target).unwrap();
         let NbtTag::Compound(root) = outcome.nbt else {
             panic!("compound")
         };
@@ -837,7 +837,7 @@ mod tests {
             ("Damage".to_string(), NbtTag::Short(0)),
             ("Count".to_string(), NbtTag::Byte(1)),
         ]));
-        let check = check_saved_items_for_modern_target(&source, &target()).unwrap();
+        let check = check(&source, &target()).unwrap();
         assert_eq!(check.numeric_sources, 1);
         assert!(!check.is_fully_proven());
     }
@@ -852,17 +852,15 @@ mod tests {
             "id".to_string(),
             NbtTag::String("minecraft:apple".to_string()),
         );
-        let check =
-            check_saved_items_for_modern_target(&NbtTag::Compound(root), &target()).unwrap();
-        assert_eq!(check.identity_conflicts, 1);
+        let report = check(&NbtTag::Compound(root), &target()).unwrap();
+        assert_eq!(report.identity_conflicts, 1);
 
         let mut root = match item("minecraft:apple", NbtTag::Short(1), None) {
             NbtTag::Compound(root) => root,
             _ => unreachable!(),
         };
         root.insert("Aux".to_string(), NbtTag::Short(2));
-        let check =
-            check_saved_items_for_modern_target(&NbtTag::Compound(root), &target()).unwrap();
+        let check = check(&NbtTag::Compound(root), &target()).unwrap();
         assert_eq!(check.metadata_conflicts, 1);
     }
 }

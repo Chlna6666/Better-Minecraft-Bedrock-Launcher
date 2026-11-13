@@ -3,7 +3,7 @@
 //! Usage: cargo run -p bedrock-world --example rename_world -- <world-dir> <new-name>
 
 use bedrock_world::NbtTag;
-use bedrock_world::level::{read_level_dat, write_level_dat_atomic};
+use bedrock_world::level::{read, write};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -12,11 +12,11 @@ fn main() {
         std::process::exit(2);
     };
     let path = std::path::Path::new(&world).join("level.dat");
-    let mut document = read_level_dat(&path).expect("read level.dat");
+    let mut document = read(&path).expect("read level.dat");
     let NbtTag::Compound(root) = &mut document.root else {
         panic!("level.dat root is not a compound");
     };
     root.insert("LevelName".to_string(), NbtTag::String(name.clone()));
-    write_level_dat_atomic(&path, &document).expect("write level.dat");
+    write(&path, &document).expect("write level.dat");
     eprintln!("renamed {world} to {name}");
 }

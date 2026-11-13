@@ -202,17 +202,25 @@ pub struct LegacySubChunkBuilder {
     bytes: Vec<u8>,
 }
 
+/// Byte layout selected when creating a zero-filled legacy SubChunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacySubChunkEncoding {
+    /// Historical short form containing block IDs and metadata only.
+    WithoutLightArrays,
+    /// Historical long form containing block IDs, metadata, sky light and block light.
+    WithLightArrays,
+}
+
 impl LegacySubChunkBuilder {
     /// Creates a zero-filled legacy subchunk.
     ///
-    /// `with_light_arrays` selects the historical short form (`ID + data`) or long form
+    /// `encoding` selects the historical short form (`ID + data`) or long form
     /// (`ID + data + sky light + block light`).
-    pub fn zeroed(version: u8, with_light_arrays: bool) -> Result<Self> {
+    pub fn zeroed(version: u8, encoding: LegacySubChunkEncoding) -> Result<Self> {
         validate_legacy_subchunk_version(version)?;
-        let len = if with_light_arrays {
-            LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN
-        } else {
-            LEGACY_SUBCHUNK_MIN_VALUE_LEN
+        let len = match encoding {
+            LegacySubChunkEncoding::WithoutLightArrays => LEGACY_SUBCHUNK_MIN_VALUE_LEN,
+            LegacySubChunkEncoding::WithLightArrays => LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN,
         };
         let mut bytes = vec![0; len];
         bytes[0] = version;
@@ -478,7 +486,7 @@ mod tests {
     #[test]
     fn legacy_subchunk_builder_roundtrips_all_supported_fields() {
         for version in [0, 2, 3, 4, 5, 6, 7] {
-            let mut builder = LegacySubChunkBuilder::zeroed(version, true).unwrap();
+            let mut builder = LegacySubChunkBuilder::zeroed(version, LegacySubChunkEncoding::WithLightArrays).unwrap();
             builder.set_block(15, 15, 15, 200, 14).unwrap();
             builder.set_sky_light(15, 15, 15, 12).unwrap();
             builder.set_block_light(15, 15, 15, 6).unwrap();
@@ -493,7 +501,7 @@ mod tests {
 
     #[test]
     fn short_legacy_subchunk_preserves_omitted_light_arrays() {
-        let mut builder = LegacySubChunkBuilder::zeroed(7, false).unwrap();
+        let mut builder = LegacySubChunkBuilder::zeroed(7, LegacySubChunkEncoding::WithoutLightArrays).unwrap();
         builder.set_block(1, 2, 3, 4, 5).unwrap();
         assert!(builder.set_sky_light(1, 2, 3, 15).is_err());
         let subchunk = builder.build().unwrap();
@@ -504,7 +512,7 @@ mod tests {
 
     #[test]
     fn raw_version_edits_are_revalidated_on_build() {
-        let mut builder = LegacySubChunkBuilder::zeroed(7, false).unwrap();
+        let mut builder = LegacySubChunkBuilder::zeroed(7, LegacySubChunkEncoding::WithoutLightArrays).unwrap();
         builder.as_raw_mut()[0] = 8;
         assert_eq!(builder.version(), 8);
         assert!(builder.build().is_err());
@@ -513,7 +521,7 @@ mod tests {
     #[test]
     fn legacy_subchunk_builder_rejects_paletted_versions() {
         for version in [1, 8, 9, 10] {
-            assert!(LegacySubChunkBuilder::zeroed(version, false).is_err());
+            assert!(LegacySubChunkBuilder::zeroed(version, LegacySubChunkEncoding::WithoutLightArrays).is_err());
         }
     }
 
@@ -524,7 +532,7 @@ mod tests {
         assert_eq!(terrain.as_raw_mut()[0], 0);
         assert!(terrain.fill_sky_light(16).is_err());
 
-        let mut subchunk = LegacySubChunkBuilder::zeroed(7, true).unwrap();
+        let mut subchunk = LegacySubChunkBuilder::zeroed(7, LegacySubChunkEncoding::WithLightArrays).unwrap();
         assert!(subchunk.set_block(0, 0, 0, 9, 16).is_err());
         assert_eq!(subchunk.as_raw_mut()[1], 0);
         assert!(subchunk.set_block_light(0, 0, 0, 16).is_err());

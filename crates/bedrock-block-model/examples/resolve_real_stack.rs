@@ -3,13 +3,13 @@
 //! Usage: cargo run --example resolve_real_stack -p bedrock-block-model
 use std::path::Path;
 
-use bedrock_block_model::{ObjTextureResolver, vanilla_resource_pack_roots_from_packages};
+use bedrock_block_model::ObjTextureResolver;
+use bedrock_block_model::resource_pack::vanilla_roots_for_packages;
 
 fn main() {
-    let package = Path::new(
-        r"C:\Users\Administrator\Desktop\BMCBL\target\debug\BMCBL\versions\26.51",
-    );
-    let roots = vanilla_resource_pack_roots_from_packages([package]);
+    let package =
+        Path::new(r"C:\Users\Administrator\Desktop\BMCBL\target\debug\BMCBL\versions\26.51");
+    let roots = vanilla_roots_for_packages([package]);
     println!("pack roots discovered: {}", roots.len());
     for root in &roots {
         println!("  {}", root.display());

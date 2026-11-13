@@ -45,7 +45,7 @@ where
         let mut options =
             ChunkLoadOptions::for_data_request(ChunkDataRequest::new().block_entities());
         options.threading = threading;
-        let chunks = self.query_chunk_data_many(positions.iter().copied(), options)?;
+        let chunks = self.load_render_chunks(positions.iter().copied(), options)?;
         if chunks.len() != positions.len() {
             return Err(BedrockWorldError::CorruptWorld(format!(
                 "BlockEntity query returned {} chunks for {} positions",

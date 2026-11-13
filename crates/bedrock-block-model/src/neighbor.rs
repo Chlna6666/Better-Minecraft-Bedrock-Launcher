@@ -1,4 +1,5 @@
-use crate::{BlockStateQuery, BlockStateValue, ModelFamily, is_full_opaque_block, model_family};
+use crate::model_family::{self, ModelFamily};
+use crate::{BlockStateQuery, BlockStateValue};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(u8)]
@@ -182,10 +183,10 @@ impl Default for NeighborBlockDescriptor {
 impl NeighborBlockDescriptor {
     #[must_use]
     pub fn from_state(state: &BlockStateQuery) -> Self {
-        let family = model_family(&state.name);
+        let family = model_family::classify(&state.name);
         let name = normalized_name(&state.name);
         let facing = horizontal_facing(state, family);
-        let sturdy = is_full_opaque_block(&state.name);
+        let sturdy = model_family::is_full_opaque_block(&state.name);
         let mut descriptor = Self {
             kind: match family {
                 ModelFamily::Pane => NeighborModelKind::Pane,
@@ -391,7 +392,7 @@ impl DerivedModelVariant {
 /// descriptors. Offsets are world-relative; renderers can therefore route the callback across
 /// chunk boundaries without the model crate knowing anything about chunk storage.
 #[must_use]
-pub fn derive_model_variant(
+pub fn derive_variant(
     center: NeighborBlockDescriptor,
     mut neighbor: impl FnMut(i8, i8, i8) -> Option<NeighborBlockDescriptor>,
 ) -> DerivedModelVariant {
@@ -630,14 +631,14 @@ fn persisted_boolean_connection(
     state: &BlockStateQuery,
     direction: HorizontalDirection,
 ) -> Option<bool> {
-    state_value_by_keys(state, boolean_connection_keys(direction)).and_then(value_as_bool_like)
+    state_value_by_keys(state, boolean_connection_keys(direction)).and_then(as_bool_like)
 }
 
 fn persisted_wall_connection(
     state: &BlockStateQuery,
     direction: HorizontalDirection,
 ) -> Option<WallConnection> {
-    state_value_by_keys(state, wall_connection_keys(direction)).and_then(value_as_wall_connection)
+    state_value_by_keys(state, wall_connection_keys(direction)).and_then(as_wall_connection)
 }
 
 fn persisted_redstone_connection(
@@ -645,7 +646,7 @@ fn persisted_redstone_connection(
     direction: HorizontalDirection,
 ) -> Option<RedstoneConnection> {
     state_value_by_keys(state, redstone_connection_keys(direction))
-        .and_then(value_as_redstone_connection)
+        .and_then(as_redstone_connection)
 }
 
 fn boolean_connection_keys(direction: HorizontalDirection) -> &'static [&'static str] {
@@ -726,7 +727,7 @@ fn state_value_by_keys<'a>(
     keys.iter().find_map(|key| state.state(key))
 }
 
-fn value_as_bool_like(value: &BlockStateValue) -> Option<bool> {
+fn as_bool_like(value: &BlockStateValue) -> Option<bool> {
     match value {
         BlockStateValue::Bool(value) => Some(*value),
         BlockStateValue::Int(value) => Some(*value != 0),
@@ -738,7 +739,7 @@ fn value_as_bool_like(value: &BlockStateValue) -> Option<bool> {
     }
 }
 
-fn value_as_wall_connection(value: &BlockStateValue) -> Option<WallConnection> {
+fn as_wall_connection(value: &BlockStateValue) -> Option<WallConnection> {
     match value {
         BlockStateValue::Bool(value) => Some(if *value {
             WallConnection::Low
@@ -759,7 +760,7 @@ fn value_as_wall_connection(value: &BlockStateValue) -> Option<WallConnection> {
     }
 }
 
-fn value_as_redstone_connection(value: &BlockStateValue) -> Option<RedstoneConnection> {
+fn as_redstone_connection(value: &BlockStateValue) -> Option<RedstoneConnection> {
     match value {
         BlockStateValue::Bool(value) => Some(if *value {
             RedstoneConnection::Side
@@ -878,7 +879,7 @@ fn state_i64(state: &BlockStateQuery, key: &str) -> Option<i64> {
 }
 
 fn state_bool_like(state: &BlockStateQuery, key: &str) -> Option<bool> {
-    state.state(key).and_then(value_as_bool_like)
+    state.state(key).and_then(as_bool_like)
 }
 
 fn normalized_name(name: &str) -> &str {
@@ -911,7 +912,7 @@ mod tests {
             .with_state("wall_connection_type_west", "none")
             .with_state("wall_post_bit", false);
         let descriptor = NeighborBlockDescriptor::from_state(&state);
-        let variant = derive_model_variant(descriptor, |_, _, _| None);
+        let variant = derive_variant(descriptor, |_, _, _| None);
         assert_eq!(
             variant.wall_connection(HorizontalDirection::North),
             WallConnection::Tall
@@ -927,7 +928,7 @@ mod tests {
     fn fence_derives_missing_neighbor_connection() {
         let center = desc("minecraft:oak_fence");
         let stone = desc("minecraft:stone");
-        let variant = derive_model_variant(center, |dx, dy, dz| {
+        let variant = derive_variant(center, |dx, dy, dz| {
             (dx == 1 && dy == 0 && dz == 0).then_some(stone)
         });
         assert!(variant.connected(HorizontalDirection::East));
@@ -941,7 +942,7 @@ mod tests {
                 .with_state("minecraft:connection_east", false),
         );
         let stone = desc("minecraft:stone");
-        let variant = derive_model_variant(center, |dx, dy, dz| {
+        let variant = derive_variant(center, |dx, dy, dz| {
             (dx == 1 && dy == 0 && dz == 0).then_some(stone)
         });
         assert!(!variant.connected(HorizontalDirection::East));
@@ -968,7 +969,7 @@ mod tests {
     fn redstone_climbs_over_conductive_side_block() {
         let wire = desc("minecraft:redstone_wire");
         let stone = desc("minecraft:stone");
-        let variant = derive_model_variant(wire, |dx, dy, dz| {
+        let variant = derive_variant(wire, |dx, dy, dz| {
             if (dx, dy, dz) == (1, 0, 0) {
                 Some(stone)
             } else if (dx, dy, dz) == (1, 1, 0) {
@@ -987,7 +988,7 @@ mod tests {
     fn redstone_does_not_climb_when_ceiling_blocks_wire() {
         let wire = desc("minecraft:redstone_wire");
         let stone = desc("minecraft:stone");
-        let variant = derive_model_variant(wire, |dx, dy, dz| match (dx, dy, dz) {
+        let variant = derive_variant(wire, |dx, dy, dz| match (dx, dy, dz) {
             (1, 0, 0) | (0, 1, 0) => Some(stone),
             (1, 1, 0) => Some(wire),
             _ => None,

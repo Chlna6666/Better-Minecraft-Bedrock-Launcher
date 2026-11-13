@@ -695,15 +695,15 @@ fn migrate_tree(
 ///
 /// The schema source names and ordering must match [`PINNED_ITEM_SCHEMA_FILES`]. This validates the
 /// pinned catalogue contract before parsing; callers that load files from disk should prefer
-/// [`load_pinned_item_migration_catalog_from_dir`], which also verifies each file's pinned identity.
+/// [`load_catalog_from_dir`], which also verifies each file's pinned identity.
 ///
 /// # Errors
 ///
 /// Returns [`BedrockWorldError::Validation`] when the source-name set differs from the pinned schema
 /// list or when mapping/schema JSON is invalid. This in-memory loader validates filenames and schema
-/// structure, but not file hashes; use [`load_pinned_item_migration_catalog_from_dir`] to verify the
+/// structure, but not file hashes; use [`load_catalog_from_dir`] to verify the
 /// pinned file identities as well.
-pub fn load_pinned_item_migration_catalog(
+pub fn load_catalog(
     legacy_item_id_map_json: &str,
     item_to_block_1_12_json: &str,
     sources: &[ItemSchemaSource<'_>],
@@ -724,7 +724,7 @@ pub fn load_pinned_item_migration_catalog(
 ///
 /// Returns an error when a required file is missing, a file's bytes differ from the pinned corpus, or
 /// the directory cannot be read.
-pub fn verify_pinned_item_migration_corpus(root: impl AsRef<Path>) -> Result<()> {
+pub fn verify_corpus(root: impl AsRef<Path>) -> Result<()> {
     let _ = read_verified_corpus(root.as_ref())?;
     Ok(())
 }
@@ -738,9 +738,7 @@ pub fn verify_pinned_item_migration_corpus(root: impl AsRef<Path>) -> Result<()>
 ///
 /// Returns an error when a resource is missing or differs from its pinned identity, or when any
 /// resource fails UTF-8, JSON, or catalogue validation.
-pub fn load_pinned_item_migration_catalog_from_dir(
-    root: impl AsRef<Path>,
-) -> Result<AuthoritativeItemMigrationCatalog> {
+pub fn load_catalog_from_dir(root: impl AsRef<Path>) -> Result<AuthoritativeItemMigrationCatalog> {
     let mut files = read_verified_corpus(root.as_ref())?;
     let legacy = take_utf8(&mut files, "item_legacy_id_map.json")?;
     let blocks = take_utf8(&mut files, "1.12.0_item_id_to_block_id_map.json")?;
@@ -759,7 +757,7 @@ pub fn load_pinned_item_migration_catalog_from_dir(
             json: json.as_str(),
         })
         .collect::<Vec<_>>();
-    load_pinned_item_migration_catalog(&legacy, &blocks, &sources)
+    load_catalog(&legacy, &blocks, &sources)
 }
 
 fn validate_pinned_schema_sources(sources: &[ItemSchemaSource<'_>]) -> Result<()> {

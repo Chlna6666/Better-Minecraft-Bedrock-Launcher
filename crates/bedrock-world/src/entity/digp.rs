@@ -3,7 +3,7 @@
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag};
 use crate::entity::{ActorDigestKey, ActorUid};
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::{NbtTag, parse_consecutive_root_nbt, serialize_root_nbt};
+use crate::nbt::{NbtTag, parse_consecutive_roots, serialize_root};
 use crate::storage::{StorageBatch, WorldStorage};
 use bytes::Bytes;
 use std::collections::BTreeSet;
@@ -32,7 +32,7 @@ pub fn write_digp_from_entity(
     let Some(entity_payload) = storage.get(&entity_key)? else {
         return Ok(ActorRecordWriteReport::default());
     };
-    let roots = parse_consecutive_root_nbt(entity_payload.as_ref())?;
+    let roots = parse_consecutive_roots(entity_payload.as_ref())?;
     if roots.is_empty() {
         return Err(BedrockWorldError::CorruptWorld(format!(
             "Entity record for chunk ({}, {}, {}) is empty",
@@ -66,7 +66,7 @@ pub fn write_digp_from_entity(
         digest.extend_from_slice(&raw_uid);
         actor_values.push((
             uid.storage_key(),
-            Bytes::from(serialize_root_nbt(&root)?),
+            Bytes::from(serialize_root(&root)?),
             unique_id,
         ));
     }
@@ -168,7 +168,7 @@ pub fn write_entity_from_digp(
                 uid_bytes
             ))
         })?;
-        let roots = parse_consecutive_root_nbt(actor.as_ref())?;
+        let roots = parse_consecutive_roots(actor.as_ref())?;
         if roots.len() != 1 {
             return Err(BedrockWorldError::CorruptWorld(format!(
                 "actorprefix {:?} contains {} NBT roots instead of one",
@@ -236,8 +236,8 @@ mod tests {
         let storage = MemoryStorage::new();
         let pos = pos();
         let entity_key = ChunkKey::new(pos, ChunkRecordTag::Entity).encode();
-        let mut raw = serialize_root_nbt(&actor(9)).unwrap();
-        raw.extend_from_slice(&serialize_root_nbt(&actor(2)).unwrap());
+        let mut raw = serialize_root(&actor(9)).unwrap();
+        raw.extend_from_slice(&serialize_root(&actor(2)).unwrap());
         storage.put(entity_key.as_ref(), &raw).unwrap();
 
         write_digp_from_entity(&storage, pos).unwrap();
@@ -257,7 +257,7 @@ mod tests {
         let pos = pos();
         let entity_key = ChunkKey::new(pos, ChunkRecordTag::Entity).encode();
         storage
-            .put(entity_key.as_ref(), &serialize_root_nbt(&actor(9)).unwrap())
+            .put(entity_key.as_ref(), &serialize_root(&actor(9)).unwrap())
             .unwrap();
         storage
             .put(

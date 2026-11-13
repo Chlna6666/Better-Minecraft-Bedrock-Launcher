@@ -7,6 +7,8 @@ use crate::Result;
 use crate::json::read_json_file;
 use crate::material::BlockFace;
 
+pub use crate::geometry_shape::model_shape;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GeometryLibrary {
     pub geometries: BTreeMap<String, BlockGeometry>,
@@ -25,7 +27,7 @@ impl GeometryLibrary {
     }
 
     pub fn merge_value(&mut self, value: &Value) {
-        for geometry in geometries_from_value(value) {
+        for geometry in from_value(value) {
             self.geometries
                 .insert(geometry.identifier.clone(), geometry);
         }
@@ -70,20 +72,20 @@ pub struct GeometryUv {
 }
 
 #[must_use]
-pub fn geometries_from_value(value: &Value) -> Vec<BlockGeometry> {
+pub fn from_value(value: &Value) -> Vec<BlockGeometry> {
     let mut geometries = Vec::new();
 
     if let Some(minecraft_geometry) = value.get("minecraft:geometry") {
         match minecraft_geometry {
             Value::Array(items) => {
                 for item in items {
-                    if let Some(geometry) = geometry_from_modern_value(item) {
+                    if let Some(geometry) = from_modern_value(item) {
                         geometries.push(geometry);
                     }
                 }
             }
             Value::Object(_) => {
-                if let Some(geometry) = geometry_from_modern_value(minecraft_geometry) {
+                if let Some(geometry) = from_modern_value(minecraft_geometry) {
                     geometries.push(geometry);
                 }
             }
@@ -94,7 +96,7 @@ pub fn geometries_from_value(value: &Value) -> Vec<BlockGeometry> {
     if let Some(object) = value.as_object() {
         for (key, legacy_geometry) in object {
             if key.starts_with("geometry.") {
-                geometries.push(geometry_from_legacy_value(key, legacy_geometry));
+                geometries.push(from_legacy_value(key, legacy_geometry));
             }
         }
     }
@@ -102,7 +104,7 @@ pub fn geometries_from_value(value: &Value) -> Vec<BlockGeometry> {
     geometries
 }
 
-fn geometry_from_modern_value(value: &Value) -> Option<BlockGeometry> {
+fn from_modern_value(value: &Value) -> Option<BlockGeometry> {
     let object = value.as_object()?;
     let identifier = object
         .get("description")
@@ -121,7 +123,7 @@ fn geometry_from_modern_value(value: &Value) -> Option<BlockGeometry> {
     })
 }
 
-fn geometry_from_legacy_value(identifier: &str, value: &Value) -> BlockGeometry {
+fn from_legacy_value(identifier: &str, value: &Value) -> BlockGeometry {
     let object = value.as_object();
     BlockGeometry {
         identifier: identifier.to_owned(),
@@ -244,10 +246,10 @@ fn number_to_f32(value: &Value) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::geometries_from_value;
+    use super::from_value;
 
     #[test]
-    fn geometries_from_value_should_parse_modern_geometry_array() {
+    fn from_value_parses_modern_geometry_array() {
         let value = serde_json::json!({
             "minecraft:geometry": [{
                 "description": { "identifier": "geometry.test.block" },
@@ -258,7 +260,7 @@ mod tests {
             }]
         });
 
-        let geometries = geometries_from_value(&value);
+        let geometries = from_value(&value);
 
         assert_eq!(geometries[0].identifier, "geometry.test.block");
         assert_eq!(geometries[0].bones[0].cubes.len(), 1);

@@ -1,7 +1,8 @@
-use bedrock_render::{
-    ChunkFingerprintInput, Dimension, TILE_AUTHORITY_FLAG_NON_EMPTY, TileAuthorityBlobReader,
+use bedrock_render::Dimension;
+use bedrock_render::cache::{
+    ChunkFingerprintInput, TILE_AUTHORITY_FLAG_NON_EMPTY, TileAuthorityBlobReader,
     TileAuthorityCache, TileAuthorityCacheKey, TileAuthorityCommit, TileAuthorityEntry,
-    TileAuthorityIndexSnapshot, tile_payload_fingerprint, validate_chunk_fingerprints_parallel,
+    TileAuthorityIndexSnapshot, fingerprint_chunks, tile_payload_fingerprint,
 };
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use std::fs;
@@ -53,7 +54,7 @@ impl AuthorityFixture {
         }
     }
 
-    fn refresh_with_payload(&mut self, payload: Vec<u8>) {
+    fn refresh(&mut self, payload: Vec<u8>) {
         self.snapshot = self
             .cache
             .commit_tile(
@@ -147,7 +148,7 @@ fn authority_cache_benches(c: &mut Criterion) {
             bench.iter_batched(
                 || AuthorityFixture::new(64 * 1024),
                 |mut fixture| {
-                    fixture.refresh_with_payload(vec![0x22; 64 * 1024]);
+                    fixture.refresh(vec![0x22; 64 * 1024]);
                     black_box(fixture.snapshot.generation);
                 },
                 BatchSize::SmallInput,
@@ -156,13 +157,16 @@ fn authority_cache_benches(c: &mut Criterion) {
     );
 
     let inputs = fingerprint_inputs();
-    c.bench_function("bedrock_render/cache/xxh3_128_validate_128x16k", |bench| {
-        bench.iter_batched(
-            || inputs.clone(),
-            |inputs| black_box(validate_chunk_fingerprints_parallel(inputs)),
-            BatchSize::SmallInput,
-        );
-    });
+    c.bench_function(
+        "bedrock_render/cache/xxh3_128_fingerprint_128x16k",
+        |bench| {
+            bench.iter_batched(
+                || inputs.clone(),
+                |inputs| black_box(fingerprint_chunks(inputs)),
+                BatchSize::SmallInput,
+            );
+        },
+    );
 }
 
 criterion_group!(cache_benches, authority_cache_benches);

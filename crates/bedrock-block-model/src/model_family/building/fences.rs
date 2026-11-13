@@ -1,7 +1,7 @@
 use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{
-    CardinalDirection, cardinal_direction, direction_connected, state_bool,
+    CardinalDirection, cardinal_direction, connected, state_bool,
 };
 use crate::model_family::shape::{
     ModelCuboid, ModelPlane, ModelShape, apply_jmc_box_uv, detail_cuboid_with_local_uv,
@@ -75,7 +75,7 @@ pub(crate) fn fence_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     let mut cuboids = Vec::with_capacity(9);
     cuboids.push(fence_post_cuboid(is_bamboo));
     for direction in CardinalDirection::ALL {
-        if direction_connected(state, direction) {
+        if connected(state, direction) {
             cuboids.push(fence_arm_cuboid_with_uv(
                 direction, 0.375, 0.5625, is_bamboo,
             ));

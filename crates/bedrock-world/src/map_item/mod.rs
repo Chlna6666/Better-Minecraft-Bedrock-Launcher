@@ -46,7 +46,7 @@ pub fn filled_map_id(item: &NbtTag) -> Option<MapItemId> {
 /// # Errors
 ///
 /// Returns a validation error for a negative map id or slot number.
-pub fn new_filled_map_item(id: i64, slot: i8) -> Result<NbtTag> {
+pub fn new_filled(id: i64, slot: i8) -> Result<NbtTag> {
     if id < 0 || slot < 0 {
         return Err(BedrockWorldError::Validation(
             "filled map id and slot must be nonnegative".to_string(),
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn constructed_filled_map_resolves_to_matching_map_record() {
-        let item = new_filled_map_item(92, 14).expect("map item");
+        let item = new_filled(92, 14).expect("map item");
         let NbtTag::Compound(root) = &item else {
             panic!("item")
         };
@@ -479,7 +479,7 @@ mod tests {
             filled_map_id(&item).as_ref().map(MapItemId::as_str),
             Some("92")
         );
-        assert!(new_filled_map_item(92, -1).is_err());
+        assert!(new_filled(92, -1).is_err());
     }
 
     #[test]

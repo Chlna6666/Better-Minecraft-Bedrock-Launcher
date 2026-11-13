@@ -6,7 +6,7 @@
 
 use crate::block::BlockState;
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::{NbtTag, parse_root_nbt_with_consumed};
+use crate::nbt::{NbtTag, parse_root_with_consumed};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One historical numeric block identity.
@@ -98,7 +98,7 @@ impl LegacyNumericBlockStateTable {
                 let remaining = table
                     .get(offset..)
                     .ok_or_else(|| validation("legacy block table NBT offset exceeds input"))?;
-                let (root, consumed) = parse_root_nbt_with_consumed(remaining)?;
+                let (root, consumed) = parse_root_with_consumed(remaining)?;
                 if consumed == 0 {
                     return Err(validation("legacy block table NBT parser did not advance"));
                 }
@@ -357,7 +357,7 @@ fn validation(message: impl Into<String>) -> BedrockWorldError {
 mod tests {
     use super::*;
     use crate::block::BlockStateStorageVersion;
-    use crate::nbt::serialize_root_nbt;
+    use crate::nbt::serialize_root;
     use indexmap::IndexMap;
 
     fn put_var_u32(mut value: u32, output: &mut Vec<u8>) {
@@ -396,7 +396,7 @@ mod tests {
             ),
             ("version".to_string(), NbtTag::Int(version)),
         ]));
-        let nbt = serialize_root_nbt(&root).unwrap();
+        let nbt = serialize_root(&root).unwrap();
         let mut table = Vec::new();
         put_var_u32(1, &mut table);
         put_var_u32("minecraft:test".len() as u32, &mut table);
@@ -431,7 +431,7 @@ mod tests {
         put_var_u32(2, &mut table);
         for metadata in [0_u32, 1] {
             put_var_u32(metadata, &mut table);
-            table.extend(serialize_root_nbt(&state("minecraft:test", version)).unwrap());
+            table.extend(serialize_root(&state("minecraft:test", version)).unwrap());
         }
         let parsed =
             LegacyNumericBlockStateTable::parse(&table, r#"{"minecraft:test":5}"#).unwrap();

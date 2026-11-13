@@ -5,9 +5,10 @@
 //! 3D/mesh consumers continue to receive full `ChunkData`.
 
 use crate::Result;
+pub use bedrock_world::query::ExactChunkSelection;
 use bedrock_world::{
     chunk::ChunkPos,
-    query::{ExactChunkSelection, SlimeChunkBounds},
+    query::SlimeChunkBounds,
     surface::{
         ChunkData, ChunkLoadOptions, SurfaceMapBatchStats, SurfaceMapChunk, SurfaceMapQueryOptions,
     },
@@ -19,14 +20,14 @@ use bedrock_world::{
 /// `bounds` is only spatial metadata. Consumers must use `positions` or
 /// `selection.contains(...)` for membership decisions.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExactChunkRenderPlan {
+pub struct Plan {
     selection: ExactChunkSelection,
     bounds: SlimeChunkBounds,
     positions: Vec<ChunkPos>,
     rectangle_cover: Vec<SlimeChunkBounds>,
 }
 
-impl ExactChunkRenderPlan {
+impl Plan {
     /// Builds a render plan without expanding the exact selection.
     #[must_use]
     pub fn new(selection: ExactChunkSelection) -> Self {
@@ -86,18 +87,18 @@ impl ExactChunkRenderPlan {
 /// This is the 3D/mesh-oriented contract and deliberately retains the existing
 /// `ChunkData` path.
 #[derive(Clone, Debug)]
-pub struct ExactChunkRenderData {
+pub struct Chunks {
     /// The exact plan used to perform the load.
-    pub plan: ExactChunkRenderPlan,
+    pub plan: Plan,
     /// Loaded render data for the exact requested positions.
     pub chunks: Vec<ChunkData>,
 }
 
 /// Compact 2D surface data loaded for an exact render selection.
 #[derive(Clone, Debug)]
-pub struct ExactSurfaceRenderData {
+pub struct Surfaces {
     /// The exact plan used to perform the load.
-    pub plan: ExactChunkRenderPlan,
+    pub plan: Plan,
     /// Compact exact 16x16 surface planes for the requested positions.
     pub chunks: Vec<SurfaceMapChunk>,
     /// Storage/decode diagnostics for the surface batch.
@@ -113,23 +114,23 @@ pub struct ExactSurfaceRenderData {
 /// # Errors
 ///
 /// Returns storage, decode, cancellation, or chunk-loading errors from `bedrock-world`.
-pub fn load_exact_chunk_render_data<S>(
+pub fn load_chunks<S>(
     world: &World<S>,
     selection: ExactChunkSelection,
     options: ChunkLoadOptions,
-) -> Result<ExactChunkRenderData>
+) -> Result<Chunks>
 where
     S: StorageBackend,
 {
-    let plan = ExactChunkRenderPlan::new(selection);
+    let plan = Plan::new(selection);
     let (chunks, _) =
-        world.query_chunk_data_with_stats(plan.positions().iter().copied(), options)?;
-    Ok(ExactChunkRenderData { plan, chunks })
+        world.load_render_chunks_with_stats(plan.positions().iter().copied(), options)?;
+    Ok(Chunks { plan, chunks })
 }
 
 /// Loads exactly the selected chunks as compact 2D surface planes.
 ///
-/// Unlike [`load_exact_chunk_render_data`], this route does not expose
+/// Unlike [`load_chunks`], this route does not expose
 /// general `ChunkData`, full 3D indices, or block entities. The world-layer
 /// surface contract is exact; rendering colors remain the responsibility of
 /// `bedrock-render`.
@@ -138,18 +139,18 @@ where
 ///
 /// Returns storage, decode, cancellation, or surface-projection errors from
 /// `bedrock-world`.
-pub fn load_exact_surface_render_data<S>(
+pub fn load_surfaces<S>(
     world: &World<S>,
     selection: ExactChunkSelection,
     options: SurfaceMapQueryOptions,
-) -> Result<ExactSurfaceRenderData>
+) -> Result<Surfaces>
 where
     S: StorageBackend,
 {
-    let plan = ExactChunkRenderPlan::new(selection);
+    let plan = Plan::new(selection);
     let (chunks, stats) =
         world.query_surface_map_many(plan.positions().iter().copied(), options)?;
-    Ok(ExactSurfaceRenderData {
+    Ok(Surfaces {
         plan,
         chunks,
         stats,
@@ -173,7 +174,7 @@ mod tests {
     fn plan_preserves_disconnected_selection() {
         let selection =
             ExactChunkSelection::new([chunk(0, 0), chunk(2, 0)]).expect("exact selection");
-        let plan = ExactChunkRenderPlan::new(selection);
+        let plan = Plan::new(selection);
 
         assert_eq!(plan.chunk_count(), 2);
         assert!(plan.contains(chunk(0, 0)));

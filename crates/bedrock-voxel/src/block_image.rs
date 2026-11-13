@@ -70,14 +70,14 @@ pub struct FlatImageInput<'a> {
 ///
 /// Returns validation errors for empty or oversized dimensions, mismatched RGBA byte count,
 /// empty candidates or an entirely transparent image without a transparent fill block.
-pub fn flat_block_plan(
+pub fn plan_flat_image(
     rgba: &[u8],
     width: u32,
     height: u32,
     candidates: &[FlatBlockCandidate],
     options: FlatImageOptions<'_>,
 ) -> Result<BlockPlacementPlan> {
-    flat_block_plan_tracked(
+    plan_flat_image_tracked(
         FlatImageInput {
             rgba,
             width,
@@ -97,8 +97,8 @@ pub fn flat_block_plan(
 /// no world or file has been modified.
 ///
 /// # Errors
-/// Returns the validation errors of [`flat_block_plan`] or a cancellation error.
-pub fn flat_block_plan_tracked(
+/// Returns the validation errors of [`plan_flat_image`] or a cancellation error.
+pub fn plan_flat_image_tracked(
     input: FlatImageInput<'_>,
     candidates: &[FlatBlockCandidate],
     options: FlatImageOptions<'_>,
@@ -328,7 +328,7 @@ mod tests {
             candidate("minecraft:white_wool", [255, 255, 255]),
         ];
         let image = [128, 128, 128, 255].repeat(8);
-        let plan = flat_block_plan(
+        let plan = plan_flat_image(
             &image,
             8,
             1,
@@ -358,7 +358,7 @@ mod tests {
             candidate("minecraft:black_wool", [0, 0, 0]),
             candidate("minecraft:white_wool", [255, 255, 255]),
         ];
-        let plan = flat_block_plan(
+        let plan = plan_flat_image(
             &[128, 128, 128, 255].repeat(8),
             8,
             1,
@@ -385,7 +385,7 @@ mod tests {
             candidate("minecraft:red_wool", [255, 0, 0]),
             candidate("minecraft:blue_wool", [0, 0, 255]),
         ];
-        let plan = flat_block_plan(
+        let plan = plan_flat_image(
             &[128, 0, 128, 255].repeat(128),
             16,
             8,
@@ -416,7 +416,7 @@ mod tests {
             candidate("minecraft:red_wool", [255, 0, 0]),
             candidate("minecraft:blue_wool", [0, 0, 255]),
         ];
-        let blocks = flat_block_plan(
+        let blocks = plan_flat_image(
             &[255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 255, 255],
             3,
             1,
@@ -453,21 +453,21 @@ mod tests {
         };
         let cancel = CancelFlag::new();
         let mut updates = Vec::new();
-        flat_block_plan_tracked(input, &candidates, options, &cancel, |done, total| {
+        plan_flat_image_tracked(input, &candidates, options, &cancel, |done, total| {
             updates.push((done, total));
         })
         .expect("flat plan");
         assert_eq!(updates, [(2, 2)]);
 
         cancel.cancel();
-        assert!(flat_block_plan_tracked(input, &candidates, options, &cancel, |_, _| {}).is_err());
+        assert!(plan_flat_image_tracked(input, &candidates, options, &cancel, |_, _| {}).is_err());
     }
 
     #[test]
     fn transparent_fill_uses_selected_block_without_color_matching() {
         let candidates = [candidate("minecraft:red_wool", [255, 0, 0])];
         let fill = candidate("minecraft:quartz_block", [255, 255, 255]);
-        let plan = flat_block_plan(
+        let plan = plan_flat_image(
             &[255, 0, 0, 255, 0, 0, 0, 0],
             2,
             1,
@@ -512,7 +512,7 @@ mod tests {
             transparent_fill: None,
         };
 
-        let opaque = flat_block_plan(
+        let opaque = plan_flat_image(
             &[255, 255, 255, 255],
             1,
             1,
@@ -523,7 +523,7 @@ mod tests {
         assert_eq!(opaque.blocks()[0].state.name, "minecraft:gray_wool");
 
         let translucent =
-            flat_block_plan(&[255, 255, 255, 128], 1, 1, &[glass, opaque_gray], options)
+            plan_flat_image(&[255, 255, 255, 128], 1, 1, &[glass, opaque_gray], options)
                 .expect("translucent image plan");
         assert_eq!(translucent.blocks()[0].state.name, "minecraft:glass");
     }

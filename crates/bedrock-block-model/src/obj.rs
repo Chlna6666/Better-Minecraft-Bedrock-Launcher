@@ -18,7 +18,6 @@ pub const MATERIAL_SLOT_SEPARATOR: &str = "__mat_";
 pub const FALLBACK_MATERIAL_NAME: &str = "minecraft_unknown";
 
 #[cfg(test)]
-#[path = "obj/flipbook_tests.rs"]
 mod flipbook_tests;
 mod lighting;
 mod pbr;
@@ -48,10 +47,10 @@ impl ObjMaterial {
     ) -> Self {
         let has_texture = relative_texture_path.is_some();
         let texture_tint = has_texture
-            .then(|| obj_material_texture_tint(material_name, color))
+            .then(|| material_texture_tint(material_name, color))
             .flatten();
-        let use_preview_color = texture_tint.is_none()
-            && (!has_texture || obj_material_uses_preview_tint(material_name));
+        let use_preview_color =
+            texture_tint.is_none() && (!has_texture || uses_preview_tint(material_name));
         let diffuse_color = if use_preview_color {
             [
                 color[0].clamp(0.0, 1.0),
@@ -61,10 +60,10 @@ impl ObjMaterial {
         } else {
             [1.0, 1.0, 1.0]
         };
-        let dissolve = obj_material_preview_dissolve(material_name, color, use_preview_color);
-        let use_texture_alpha = has_texture && obj_material_uses_texture_alpha(material_name);
+        let dissolve = material_preview_dissolve(material_name, color, use_preview_color);
+        let use_texture_alpha = has_texture && material_uses_texture_alpha(material_name);
         let alpha_texture_path = if use_texture_alpha {
-            relative_texture_path.as_deref().map(obj_alpha_texture_path)
+            relative_texture_path.as_deref().map(alpha_texture_path)
         } else {
             None
         };
@@ -122,17 +121,17 @@ pub struct ObjTextureCopy {
 
 impl ObjTextureCopy {
     #[must_use]
-    pub fn needs_png_conversion(&self) -> bool {
+    pub fn png_conversion_required(&self) -> bool {
         true
     }
 }
 
-pub fn write_obj_texture_copy(texture_copy: &ObjTextureCopy, target_path: &Path) -> Result<()> {
-    let image = read_obj_texture_copy_image(texture_copy)?;
+pub fn write_texture_copy(texture_copy: &ObjTextureCopy, target_path: &Path) -> Result<()> {
+    let image = read_texture_copy_image(texture_copy)?;
     let image = if texture_copy.alpha_mask {
-        alpha_mask_obj_texture_image(image)
+        alpha_mask_texture_image(image)
     } else if let Some(tint) = texture_copy.tint {
-        let tinted = tint_obj_texture_image(image, tint);
+        let tinted = tint_texture_image(image, tint);
         upscale_and_clean_texture_image(tinted)
     } else {
         upscale_and_clean_texture_image(image)
@@ -153,15 +152,15 @@ pub fn write_obj_texture_copy(texture_copy: &ObjTextureCopy, target_path: &Path)
     Ok(())
 }
 
-pub fn write_obj_export_files(
+pub fn write_export_files(
     export: &ObjExport,
     obj_path: &Path,
     material_library_path: &Path,
     export_root: &Path,
 ) -> Result<ObjExportWriteSummary> {
-    create_obj_export_directory(export_root)?;
-    create_obj_export_parent_directory(obj_path)?;
-    create_obj_export_parent_directory(material_library_path)?;
+    create_export_directory(export_root)?;
+    create_export_parent_directory(obj_path)?;
+    create_export_parent_directory(material_library_path)?;
 
     std::fs::write(obj_path, &export.obj_text).map_err(|source| BlockModelError::Write {
         path: obj_path.to_path_buf(),
@@ -175,9 +174,9 @@ pub fn write_obj_export_files(
     })?;
 
     for texture_copy in &export.texture_copies {
-        let target_path = obj_export_texture_target_path(export_root, &texture_copy.relative_path)?;
-        create_obj_export_parent_directory(&target_path)?;
-        write_obj_texture_copy(texture_copy, &target_path)?;
+        let target_path = export_texture_target_path(export_root, &texture_copy.relative_path)?;
+        create_export_parent_directory(&target_path)?;
+        write_texture_copy(texture_copy, &target_path)?;
     }
 
     Ok(ObjExportWriteSummary {
@@ -187,17 +186,17 @@ pub fn write_obj_export_files(
     })
 }
 
-fn create_obj_export_parent_directory(path: &Path) -> Result<()> {
+fn create_export_parent_directory(path: &Path) -> Result<()> {
     let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     else {
         return Ok(());
     };
-    create_obj_export_directory(parent)
+    create_export_directory(parent)
 }
 
-fn create_obj_export_directory(path: &Path) -> Result<()> {
+fn create_export_directory(path: &Path) -> Result<()> {
     if path.as_os_str().is_empty() {
         return Ok(());
     }
@@ -207,7 +206,7 @@ fn create_obj_export_directory(path: &Path) -> Result<()> {
     })
 }
 
-fn obj_export_texture_target_path(export_root: &Path, relative_path: &str) -> Result<PathBuf> {
+fn export_texture_target_path(export_root: &Path, relative_path: &str) -> Result<PathBuf> {
     let relative_path = Path::new(relative_path);
     let leaves_export_root = relative_path.components().any(|component| {
         matches!(
@@ -224,7 +223,7 @@ fn obj_export_texture_target_path(export_root: &Path, relative_path: &str) -> Re
     Ok(export_root.join(relative_path))
 }
 
-pub fn read_obj_texture_copy_image(texture_copy: &ObjTextureCopy) -> Result<DynamicImage> {
+pub fn read_texture_copy_image(texture_copy: &ObjTextureCopy) -> Result<DynamicImage> {
     let bytes = texture_copy.source_path.read()?;
     let tga = path_extension_eq(texture_copy.source_path.path(), "tga");
     decode_texture_image(&bytes, tga).map_err(|error| {
@@ -283,7 +282,7 @@ fn tga_without_unreachable_palette_alpha(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 #[must_use]
-pub fn tint_obj_texture_image(image: DynamicImage, tint: [f32; 3]) -> DynamicImage {
+pub fn tint_texture_image(image: DynamicImage, tint: [f32; 3]) -> DynamicImage {
     let mut image = image.to_rgba8();
     for pixel in image.pixels_mut() {
         pixel[0] = ((f32::from(pixel[0]) * tint[0]).round()).clamp(0.0, 255.0) as u8;
@@ -310,7 +309,7 @@ pub fn upscale_and_clean_texture_image(image: DynamicImage) -> DynamicImage {
 }
 
 #[must_use]
-pub fn alpha_mask_obj_texture_image(image: DynamicImage) -> DynamicImage {
+pub fn alpha_mask_texture_image(image: DynamicImage) -> DynamicImage {
     let (width, height) = (image.width(), image.height());
     let rgba = image.to_rgba8();
     let mut mask = image::RgbImage::new(width, height);
@@ -350,7 +349,7 @@ pub struct ObjExportTarget {
 }
 
 impl ObjExportTarget {
-    pub fn from_obj_path(path: &Path) -> Result<Self> {
+    pub fn from_path(path: &Path) -> Result<Self> {
         let output_stem = path
             .file_stem()
             .and_then(|name| name.to_str())
@@ -421,15 +420,15 @@ pub struct ObjMeshFace<'a> {
 }
 
 pub trait ObjMeshFaceSource {
-    fn obj_face_count(&self) -> usize;
+    fn face_count(&self) -> usize;
 
-    fn obj_face_material(&self, face_index: usize) -> Option<&str>;
+    fn face_material(&self, face_index: usize) -> Option<&str>;
 
-    fn obj_face_color(&self, face_index: usize) -> Option<[f32; 4]>;
+    fn face_color(&self, face_index: usize) -> Option<[f32; 4]>;
 
-    fn obj_face_triangle_positions(&self, face_index: usize) -> Option<[[f32; 3]; 6]>;
+    fn face_triangle_positions(&self, face_index: usize) -> Option<[[f32; 3]; 6]>;
 
-    fn obj_face_uv(&self, face_index: usize) -> Option<[[f32; 2]; 4]>;
+    fn face_uv(&self, face_index: usize) -> Option<[[f32; 2]; 4]>;
 }
 
 #[derive(Clone, Debug)]
@@ -550,7 +549,7 @@ impl ObjTextureResolver {
         P: AsRef<Path>,
     {
         Self::with_pack_roots(
-            vanilla_resource_pack_roots_from_packages(package_roots),
+            crate::resource_pack::vanilla_roots_for_packages(package_roots),
             texture_directory_name,
         )
     }
@@ -595,15 +594,15 @@ impl ObjTextureResolver {
         material: &str,
         normal: [i32; 3],
     ) -> Option<ObjResolvedTexture> {
-        let block = obj_block_texture_name(material);
-        let lookup_block = obj_canonical_block_lookup_name(&block);
-        let material_texture = obj_material_texture_name(material);
-        let material_slot = obj_material_instance_slot(material);
+        let block = block_texture_name(material);
+        let lookup_block = canonical_block_lookup_name(&block);
+        let material_texture = material_texture_name(material);
+        let material_slot = material_instance_slot(material);
         // The capture catalog stores engine texture aliases only. Resolve
         // them against local resource packs (never a version-indexed path).
         if let Some(alias) = material_slot
             .as_deref()
-            .and_then(crate::decode_capture_texture_slot)
+            .and_then(crate::runtime_capture::decode_texture_slot)
         {
             // An explicit capture alias must never silently fall back to the
             // block's generic north/top texture on a missing asset.
@@ -616,12 +615,12 @@ impl ObjTextureResolver {
             .map(BlockFace::parse)
             .filter(|face| !matches!(face, BlockFace::Default | BlockFace::All));
         let requested_face = slot_face
-            .or_else(|| obj_material_block_face(material))
+            .or_else(|| material_block_face(material))
             .unwrap_or_else(|| block_face_from_normal(normal));
         // A material named `_side` covers four faces. Blocks such as the lectern and the bell
         // give north/south/east/west different art (front, sides, base, wooden support), so an
         // aggregate material must not overwrite the face the caller asked for. Per-face lookups
-        // still fall back to `side`/`*` through `obj_texture_faces`.
+        // still fall back to `side`/`*` through `texture_faces`.
         let block_face = if matches!(requested_face, BlockFace::Side) {
             block_face_from_normal(normal)
         } else {
@@ -693,7 +692,7 @@ impl ObjTextureResolver {
                 continue;
             }
             for texture_key in
-                obj_fallback_texture_keys(&material_texture, &lookup_block, lookup_normal)
+                fallback_texture_keys(&material_texture, &lookup_block, lookup_normal)
             {
                 if let Some((texture_pack, source_path)) = self.texture_path(&texture_key) {
                     return Some(
@@ -726,7 +725,7 @@ impl ObjTextureResolver {
         if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
             return None;
         }
-        if let Some(icon) = crate::item_icons::item_icon_name(name)
+        if let Some(icon) = crate::item_icons::name(name)
             && icon != name
             && let Some(resolved) = self.item_icon_texture(icon)
         {
@@ -875,7 +874,7 @@ impl ObjTextureResolver {
     }
 
     fn resolved_texture_key_for(&self, block: &str, face: BlockFace) -> Option<String> {
-        let state = BlockStateQuery::new(obj_block_identifier(block));
+        let state = BlockStateQuery::new(block_identifier(block));
         let resolved = self.models.resolve_block(&state);
         if resolved
             .warnings
@@ -884,12 +883,12 @@ impl ObjTextureResolver {
         {
             return None;
         }
-        obj_texture_faces(face)
+        texture_faces(face)
             .iter()
             .find_map(|face| resolved.face_textures.get(face))
             .map(|texture| texture.key.clone())
             .or_else(|| {
-                obj_material_slots(face)
+                material_slots(face)
                     .iter()
                     .find_map(|slot| resolved.materials.get(*slot))
                     .and_then(|material| material.texture_key.clone())
@@ -897,7 +896,7 @@ impl ObjTextureResolver {
     }
 
     fn resolved_texture_key(&self, block: &str, slot: &str) -> Option<String> {
-        let state = BlockStateQuery::new(obj_block_identifier(block));
+        let state = BlockStateQuery::new(block_identifier(block));
         let resolved = self.models.resolve_block(&state);
         if resolved
             .warnings
@@ -914,14 +913,14 @@ impl ObjTextureResolver {
             return Some(texture_key);
         }
         if let Some(face) = material_slot_block_face(slot)
-            && let Some(texture_key) = obj_texture_faces(face)
+            && let Some(texture_key) = texture_faces(face)
                 .iter()
                 .find_map(|face| resolved.face_textures.get(face))
                 .map(|texture| texture.key.clone())
         {
             return Some(texture_key);
         }
-        obj_material_slot_candidate_list(slot)
+        material_slot_candidate_list(slot)
             .iter()
             .find_map(|slot| resolved.materials.get(*slot))
             .and_then(|material| material.texture_key.clone())
@@ -941,7 +940,7 @@ impl ObjTextureResolver {
             mappings.push(texture_key);
         }
         for texture_path in mappings {
-            let normalized = obj_normalize_texture_key(texture_path);
+            let normalized = normalize_texture_key(texture_path);
             for relative in texture_candidate_relatives(&normalized) {
                 for path in [
                     PathBuf::from("textures").join(&relative),
@@ -964,7 +963,7 @@ impl ObjTextureResolver {
 }
 
 #[must_use]
-pub fn obj_material_library_string<'a>(
+pub fn material_library_string<'a>(
     materials: impl IntoIterator<Item = NamedObjMaterial<'a>>,
 ) -> String {
     let materials = materials.into_iter();
@@ -1003,10 +1002,10 @@ pub fn obj_material_library_string<'a>(
 }
 
 #[must_use]
-pub fn obj_material_library_from_export_materials<K: AsRef<str>>(
+pub fn export_material_library<K: AsRef<str>>(
     materials: &BTreeMap<K, ObjExportMaterial>,
 ) -> String {
-    obj_material_library_string(materials.iter().map(|(name, material)| NamedObjMaterial {
+    material_library_string(materials.iter().map(|(name, material)| NamedObjMaterial {
         name: Cow::Borrowed(name.as_ref()),
         material: material.material.clone(),
     }))
@@ -1025,7 +1024,7 @@ pub struct ObjDocumentHeader<'a> {
 }
 
 #[must_use]
-pub fn obj_document_string<'a>(
+pub fn document_string<'a>(
     header: &ObjDocumentHeader<'_>,
     parts: impl IntoIterator<Item = &'a str>,
 ) -> String {
@@ -1061,13 +1060,13 @@ pub fn export_parts<'a, K: AsRef<str>>(
     materials: &BTreeMap<K, ObjExportMaterial>,
     parts: impl IntoIterator<Item = &'a str>,
 ) -> ObjExport {
-    let material_library_text = obj_material_library_from_export_materials(materials);
-    let texture_copies = obj_texture_copies(materials.values());
+    let material_library_text = export_material_library(materials);
+    let texture_copies = texture_copies(materials.values());
     let textured_material_count = materials
         .values()
         .filter(|material| material.source_texture_path.is_some())
         .count();
-    let obj_text = obj_document_string(header, parts);
+    let obj_text = document_string(header, parts);
 
     ObjExport {
         obj_text,
@@ -1090,18 +1089,18 @@ where
     G: IntoIterator<Item = Vec<ObjMeshFace<'a>>>,
 {
     let mut face_groups = face_groups.into_iter().collect::<Vec<_>>();
-    obj_cull_hidden_mesh_faces(&mut face_groups);
-    let materials = obj_mesh_face_materials(
+    cull_hidden_mesh_faces(&mut face_groups);
+    let materials = mesh_face_materials(
         face_groups.iter().flat_map(|faces| faces.iter().cloned()),
         resolver,
     );
-    let offsets = obj_vertex_offsets(face_groups.iter().map(Vec::len));
+    let offsets = vertex_offsets(face_groups.iter().map(Vec::len));
     let total_parts = face_groups.len().max(1);
     progress(0, total_parts);
 
     let mut parts = Vec::with_capacity(face_groups.len());
     for (index, (faces, vertex_offset)) in face_groups.into_iter().zip(offsets).enumerate() {
-        parts.push(obj_mesh_faces_string(faces, vertex_offset));
+        parts.push(mesh_faces_string(faces, vertex_offset));
         progress(index + 1, total_parts);
     }
 
@@ -1122,12 +1121,12 @@ where
 {
     let face_groups = face_sources
         .into_iter()
-        .map(obj_mesh_faces_from_source)
+        .map(mesh_faces_from_source)
         .collect::<Vec<_>>();
     export_face_groups(header, face_groups, resolver, progress)
 }
 
-pub fn obj_cull_hidden_mesh_faces(face_groups: &mut [Vec<ObjMeshFace<'_>>]) {
+pub fn cull_hidden_mesh_faces(face_groups: &mut [Vec<ObjMeshFace<'_>>]) {
     let mut hidden = face_groups
         .iter()
         .map(|faces| vec![false; faces.len()])
@@ -1136,13 +1135,13 @@ pub fn obj_cull_hidden_mesh_faces(face_groups: &mut [Vec<ObjMeshFace<'_>>]) {
 
     for (group_index, faces) in face_groups.iter().enumerate() {
         for (face_index, face) in faces.iter().enumerate() {
-            if !obj_mesh_face_can_be_hidden(face) {
+            if !mesh_face_can_be_hidden(face) {
                 continue;
             }
-            let Some(normal) = obj_mesh_face_normal(face) else {
+            let Some(normal) = mesh_face_normal(face) else {
                 continue;
             };
-            let key = obj_hidden_face_key(face);
+            let key = hidden_face_key(face);
             candidates.entry(key).or_default().push(ObjHiddenFaceRef {
                 group_index,
                 face_index,
@@ -1160,7 +1159,7 @@ pub fn obj_cull_hidden_mesh_faces(face_groups: &mut [Vec<ObjMeshFace<'_>>]) {
                 if hidden[right.group_index][right.face_index] {
                     continue;
                 }
-                if obj_normals_are_opposite(left.normal, right.normal) {
+                if normals_are_opposite(left.normal, right.normal) {
                     hidden[left.group_index][left.face_index] = true;
                     hidden[right.group_index][right.face_index] = true;
                     break;
@@ -1180,21 +1179,19 @@ pub fn obj_cull_hidden_mesh_faces(face_groups: &mut [Vec<ObjMeshFace<'_>>]) {
 }
 
 #[must_use]
-pub fn obj_mesh_faces_from_source(
-    source: &(impl ObjMeshFaceSource + ?Sized),
-) -> Vec<ObjMeshFace<'_>> {
-    let mut faces = Vec::with_capacity(source.obj_face_count());
-    for face_index in 0..source.obj_face_count() {
-        let Some(material) = source.obj_face_material(face_index) else {
+pub fn mesh_faces_from_source(source: &(impl ObjMeshFaceSource + ?Sized)) -> Vec<ObjMeshFace<'_>> {
+    let mut faces = Vec::with_capacity(source.face_count());
+    for face_index in 0..source.face_count() {
+        let Some(material) = source.face_material(face_index) else {
             continue;
         };
-        let Some(color) = source.obj_face_color(face_index) else {
+        let Some(color) = source.face_color(face_index) else {
             continue;
         };
-        let Some(triangle_positions) = source.obj_face_triangle_positions(face_index) else {
+        let Some(triangle_positions) = source.face_triangle_positions(face_index) else {
             continue;
         };
-        let Some(uv) = source.obj_face_uv(face_index) else {
+        let Some(uv) = source.face_uv(face_index) else {
             continue;
         };
         faces.push(ObjMeshFace {
@@ -1219,31 +1216,31 @@ struct ObjHiddenFaceRef {
     normal: [i32; 3],
 }
 
-fn obj_mesh_face_can_be_hidden(face: &ObjMeshFace<'_>) -> bool {
-    face.color[3] >= 0.999 && !obj_material_uses_texture_alpha(face.material.as_ref())
+fn mesh_face_can_be_hidden(face: &ObjMeshFace<'_>) -> bool {
+    face.color[3] >= 0.999 && !material_uses_texture_alpha(face.material.as_ref())
 }
 
-fn obj_mesh_face_normal(face: &ObjMeshFace<'_>) -> Option<[i32; 3]> {
-    obj_face_normal_from_triangle(
+fn mesh_face_normal(face: &ObjMeshFace<'_>) -> Option<[i32; 3]> {
+    face_normal_from_triangle(
         face.triangle_positions[0],
         face.triangle_positions[1],
         face.triangle_positions[2],
     )
 }
 
-fn obj_hidden_face_key(face: &ObjMeshFace<'_>) -> ObjHiddenFaceKey {
+fn hidden_face_key(face: &ObjMeshFace<'_>) -> ObjHiddenFaceKey {
     let mut vertices = [
-        obj_quantized_position(face.triangle_positions[0]),
-        obj_quantized_position(face.triangle_positions[1]),
-        obj_quantized_position(face.triangle_positions[2]),
-        obj_quantized_position(face.triangle_positions[5]),
+        quantized_position(face.triangle_positions[0]),
+        quantized_position(face.triangle_positions[1]),
+        quantized_position(face.triangle_positions[2]),
+        quantized_position(face.triangle_positions[5]),
     ];
     vertices.sort_unstable();
     ObjHiddenFaceKey { vertices }
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn obj_quantized_position(position: [f32; 3]) -> [i64; 3] {
+fn quantized_position(position: [f32; 3]) -> [i64; 3] {
     const SCALE: f32 = 1_000_000.0;
     [
         (position[0] * SCALE).round() as i64,
@@ -1252,12 +1249,12 @@ fn obj_quantized_position(position: [f32; 3]) -> [i64; 3] {
     ]
 }
 
-fn obj_normals_are_opposite(left: [i32; 3], right: [i32; 3]) -> bool {
+fn normals_are_opposite(left: [i32; 3], right: [i32; 3]) -> bool {
     left[0] == -right[0] && left[1] == -right[1] && left[2] == -right[2]
 }
 
 #[must_use]
-pub fn obj_vertex_offsets(face_counts: impl IntoIterator<Item = usize>) -> Vec<usize> {
+pub fn vertex_offsets(face_counts: impl IntoIterator<Item = usize>) -> Vec<usize> {
     let mut next_offset = 1usize;
     face_counts
         .into_iter()
@@ -1270,7 +1267,7 @@ pub fn obj_vertex_offsets(face_counts: impl IntoIterator<Item = usize>) -> Vec<u
 }
 
 #[must_use]
-pub fn obj_faces_string<'a>(
+pub fn faces_string<'a>(
     faces: impl IntoIterator<Item = ObjFace<'a>>,
     vertex_offset: usize,
 ) -> String {
@@ -1286,44 +1283,36 @@ pub fn obj_faces_string<'a>(
             current_material = Some(face.material.into_owned());
         }
         for position in face.positions {
-            push_obj_vertex(&mut output, position);
+            push_vertex(&mut output, position);
         }
-        push_obj_texcoords(&mut output, &face.uv);
+        push_texcoords(&mut output, &face.uv);
         let a = vertex_offset.saturating_add(face_index.saturating_mul(4));
         let b = a.saturating_add(1);
         let c = a.saturating_add(2);
         let d = a.saturating_add(3);
-        push_obj_quad_face(&mut output, a, b, c, d);
+        push_quad_face(&mut output, a, b, c, d);
     }
     output
 }
 
 #[must_use]
-pub fn obj_mesh_faces_string<'a>(
+pub fn mesh_faces_string<'a>(
     faces: impl IntoIterator<Item = ObjMeshFace<'a>>,
     vertex_offset: usize,
 ) -> String {
-    obj_faces_string(
-        faces.into_iter().map(obj_face_from_mesh_face),
-        vertex_offset,
-    )
+    faces_string(faces.into_iter().map(face_from_mesh_face), vertex_offset)
 }
 
 #[must_use]
-pub fn obj_default_face_uvs_from_corners(corners: &[[f32; 3]; 4]) -> [[f32; 2]; 4] {
-    let u_span = obj_vec3_distance(corners[1], corners[0]).max(1.0);
-    let v_span = obj_vec3_distance(corners[3], corners[0]).max(1.0);
+pub fn default_face_uvs_from_corners(corners: &[[f32; 3]; 4]) -> [[f32; 2]; 4] {
+    let u_span = vec3_distance(corners[1], corners[0]).max(1.0);
+    let v_span = vec3_distance(corners[3], corners[0]).max(1.0);
     [[0.0, 0.0], [u_span, 0.0], [u_span, v_span], [0.0, v_span]]
 }
 
 #[must_use]
-pub fn default_block_face_uvs_from_corners(corners: &[[f32; 3]; 4]) -> [[f32; 2]; 4] {
-    obj_default_face_uvs_from_corners(corners)
-}
-
-#[must_use]
-pub fn obj_face_normal_from_triangle(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<[i32; 3]> {
-    let normal = obj_vec3_normalize(obj_vec3_cross(obj_vec3_sub(b, a), obj_vec3_sub(c, a)));
+pub fn face_normal_from_triangle(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<[i32; 3]> {
+    let normal = vec3_normalize(vec3_cross(vec3_sub(b, a), vec3_sub(c, a)));
     let axis = (0..3).max_by(|left, right| {
         normal[*left]
             .abs()
@@ -1340,7 +1329,7 @@ pub fn obj_face_normal_from_triangle(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> O
 }
 
 #[must_use]
-pub fn obj_export_materials<'a>(
+pub fn export_materials<'a>(
     samples: impl IntoIterator<Item = ObjMaterialSample<'a>>,
     resolver: &ObjTextureResolver,
 ) -> BTreeMap<String, ObjExportMaterial> {
@@ -1363,18 +1352,18 @@ pub fn obj_export_materials<'a>(
 }
 
 #[must_use]
-pub fn obj_mesh_face_materials<'a>(
+pub fn mesh_face_materials<'a>(
     faces: impl IntoIterator<Item = ObjMeshFace<'a>>,
     resolver: &ObjTextureResolver,
 ) -> BTreeMap<String, ObjExportMaterial> {
-    obj_export_materials(
-        faces.into_iter().map(obj_material_sample_from_mesh_face),
+    export_materials(
+        faces.into_iter().map(material_sample_from_mesh_face),
         resolver,
     )
 }
 
 #[must_use]
-pub fn obj_texture_copies<'a>(
+pub fn texture_copies<'a>(
     materials: impl IntoIterator<Item = &'a ObjExportMaterial>,
 ) -> Vec<ObjTextureCopy> {
     let mut texture_copies = Vec::new();
@@ -1403,8 +1392,8 @@ pub fn obj_texture_copies<'a>(
 }
 
 #[must_use]
-pub fn obj_face_texture_slot_suffix(normal: [i32; 3]) -> &'static str {
-    match obj_face_texture_slot(normal) {
+pub fn face_texture_slot_suffix(normal: [i32; 3]) -> &'static str {
+    match face_texture_slot(normal) {
         ObjTextureSlot::Up => "up",
         ObjTextureSlot::Down => "down",
         ObjTextureSlot::Side => "side",
@@ -1412,7 +1401,7 @@ pub fn obj_face_texture_slot_suffix(normal: [i32; 3]) -> &'static str {
 }
 
 #[must_use]
-pub fn obj_material_name(block: &str) -> String {
+pub fn material_name(block: &str) -> String {
     let mut material = String::with_capacity(block.len().saturating_add(8));
     for character in block.chars() {
         if character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.') {
@@ -1430,35 +1419,31 @@ pub fn obj_material_name(block: &str) -> String {
 }
 
 #[must_use]
-pub fn obj_face_material_name(base: &str, normal: [i32; 3]) -> String {
-    format!("{base}_{}", obj_face_texture_slot_suffix(normal))
+pub fn face_material_name(base: &str, normal: [i32; 3]) -> String {
+    format!("{base}_{}", face_texture_slot_suffix(normal))
 }
 
 #[must_use]
-pub fn obj_slot_material_name(base: &str, slot: &str) -> String {
+pub fn slot_material_name(base: &str, slot: &str) -> String {
     format!(
         "{base}{MATERIAL_SLOT_SEPARATOR}{}",
-        obj_material_slot_component(slot)
+        material_slot_component(slot)
     )
 }
 
 /// Material name for one model plane: the slot variant when the plane names a
 /// material slot, otherwise the face variant derived from its normal.
 #[must_use]
-pub fn obj_plane_material_name(
-    base: &str,
-    normal: [i32; 3],
-    material_slot: Option<&str>,
-) -> String {
+pub fn plane_material_name(base: &str, normal: [i32; 3], material_slot: Option<&str>) -> String {
     if let Some(slot) = material_slot {
-        obj_slot_material_name(base, slot)
+        slot_material_name(base, slot)
     } else {
-        obj_face_material_name(base, normal)
+        face_material_name(base, normal)
     }
 }
 
 #[must_use]
-pub fn obj_material_slot_component(slot: &str) -> String {
+pub fn material_slot_component(slot: &str) -> String {
     let slot = slot.trim();
     if slot == "*" {
         return "default".to_string();
@@ -1479,7 +1464,7 @@ pub fn obj_material_slot_component(slot: &str) -> String {
     }
 }
 
-fn obj_face_from_mesh_face<'a>(face: ObjMeshFace<'a>) -> ObjFace<'a> {
+fn face_from_mesh_face<'a>(face: ObjMeshFace<'a>) -> ObjFace<'a> {
     ObjFace {
         material: face.material,
         positions: [
@@ -1492,8 +1477,8 @@ fn obj_face_from_mesh_face<'a>(face: ObjMeshFace<'a>) -> ObjFace<'a> {
     }
 }
 
-fn obj_material_sample_from_mesh_face(face: ObjMeshFace<'_>) -> ObjMaterialSample<'static> {
-    let normal = obj_face_normal_from_triangle(
+fn material_sample_from_mesh_face(face: ObjMeshFace<'_>) -> ObjMaterialSample<'static> {
+    let normal = face_normal_from_triangle(
         face.triangle_positions[0],
         face.triangle_positions[1],
         face.triangle_positions[2],
@@ -1506,7 +1491,7 @@ fn obj_material_sample_from_mesh_face(face: ObjMeshFace<'_>) -> ObjMaterialSampl
     }
 }
 
-fn push_obj_vertex(output: &mut String, position: [f32; 3]) {
+fn push_vertex(output: &mut String, position: [f32; 3]) {
     let _ = writeln!(
         output,
         "v {:.6} {:.6} {:.6}",
@@ -1514,25 +1499,25 @@ fn push_obj_vertex(output: &mut String, position: [f32; 3]) {
     );
 }
 
-fn push_obj_texcoords(output: &mut String, uv: &[[f32; 2]; 4]) {
+fn push_texcoords(output: &mut String, uv: &[[f32; 2]; 4]) {
     for [u, v] in uv {
         let _ = writeln!(output, "vt {:.6} {:.6}", u.max(0.0), v.max(0.0));
     }
 }
 
-fn push_obj_quad_face(output: &mut String, a: usize, b: usize, c: usize, d: usize) {
+fn push_quad_face(output: &mut String, a: usize, b: usize, c: usize, d: usize) {
     let _ = writeln!(output, "f {a}/{a} {b}/{b} {c}/{c} {d}/{d}");
 }
 
-fn obj_vec3_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
-    obj_vec3_length_squared(obj_vec3_sub(a, b)).sqrt()
+fn vec3_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    vec3_length_squared(vec3_sub(a, b)).sqrt()
 }
 
-fn obj_vec3_sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+fn vec3_sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-fn obj_vec3_cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+fn vec3_cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -1540,17 +1525,17 @@ fn obj_vec3_cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-fn obj_vec3_length_squared(value: [f32; 3]) -> f32 {
+fn vec3_length_squared(value: [f32; 3]) -> f32 {
     value[0].mul_add(value[0], value[1].mul_add(value[1], value[2] * value[2]))
 }
 
-fn obj_vec3_normalize(value: [f32; 3]) -> [f32; 3] {
-    let length = obj_vec3_length_squared(value).sqrt().max(0.0001);
+fn vec3_normalize(value: [f32; 3]) -> [f32; 3] {
+    let length = vec3_length_squared(value).sqrt().max(0.0001);
     [value[0] / length, value[1] / length, value[2] / length]
 }
 
 #[must_use]
-pub fn obj_alpha_texture_path(relative_texture_path: &str) -> String {
+pub fn alpha_texture_path(relative_texture_path: &str) -> String {
     let slash_index = relative_texture_path
         .rfind('/')
         .map_or(0, |index| index + 1);
@@ -1569,8 +1554,8 @@ pub fn obj_alpha_texture_path(relative_texture_path: &str) -> String {
 }
 
 #[must_use]
-pub fn obj_material_uses_preview_tint(material_name: &str) -> bool {
-    let block = obj_block_texture_name(material_name);
+pub fn uses_preview_tint(material_name: &str) -> bool {
+    let block = block_texture_name(material_name);
     is_water_block(&block)
         || is_lava_block(&block)
         || block == "redstone_wire"
@@ -1588,12 +1573,12 @@ pub fn obj_material_uses_preview_tint(material_name: &str) -> bool {
 }
 
 #[must_use]
-pub fn obj_material_texture_tint(material_name: &str, color: [f32; 4]) -> Option<[f32; 3]> {
-    let block = obj_block_texture_name(material_name);
+pub fn material_texture_tint(material_name: &str, color: [f32; 4]) -> Option<[f32; 3]> {
+    let block = block_texture_name(material_name);
     if is_water_block(&block) {
         return Some([0.267, 0.686, 0.961]);
     }
-    if !obj_material_needs_biome_tinted_texture(material_name) {
+    if !biome_tint_applies(material_name) {
         return None;
     }
     let tint = [
@@ -1610,12 +1595,8 @@ pub fn obj_material_texture_tint(material_name: &str, color: [f32; 4]) -> Option
     }
 }
 
-fn obj_material_preview_dissolve(
-    material_name: &str,
-    color: [f32; 4],
-    use_preview_color: bool,
-) -> f32 {
-    let block = obj_block_texture_name(material_name);
+fn material_preview_dissolve(material_name: &str, color: [f32; 4], use_preview_color: bool) -> f32 {
+    let block = block_texture_name(material_name);
     if is_water_block(&block) {
         return 0.65;
     }
@@ -1627,15 +1608,15 @@ fn obj_material_preview_dissolve(
 }
 
 #[must_use]
-pub fn obj_material_needs_biome_tinted_texture(material_name: &str) -> bool {
-    let block = obj_block_texture_name(material_name);
-    let texture_name = obj_material_texture_name(material_name);
+pub fn biome_tint_applies(material_name: &str) -> bool {
+    let block = block_texture_name(material_name);
+    let texture_name = material_texture_name(material_name);
     if is_full_grass_block(&block) {
         // Only the top face (grass_up) gets biome tint.
         // Side faces use grass_side_carried which already has blended color baked in.
         // Bottom face (dirt) is never tinted.
         return texture_name.ends_with("_up")
-            || obj_material_instance_slot(material_name)
+            || material_instance_slot(material_name)
                 .as_deref()
                 .is_some_and(is_top_material_slot);
     }
@@ -1643,14 +1624,14 @@ pub fn obj_material_needs_biome_tinted_texture(material_name: &str) -> bool {
 }
 
 #[must_use]
-pub fn obj_material_uses_texture_alpha(material_name: &str) -> bool {
-    let block = obj_block_texture_name(material_name);
-    let texture_name = obj_material_texture_name(material_name);
+pub fn material_uses_texture_alpha(material_name: &str) -> bool {
+    let block = block_texture_name(material_name);
+    let texture_name = material_texture_name(material_name);
     if is_full_grass_block(&block) {
         return texture_name.ends_with("_side")
             || texture_name.ends_with("_side_carried")
             || texture_name.ends_with("_snowed")
-            || obj_material_instance_slot(material_name)
+            || material_instance_slot(material_name)
                 .as_deref()
                 .is_some_and(is_side_material_slot);
     }
@@ -1719,8 +1700,8 @@ pub fn item_texture_alias_paths(item: &str) -> &'static [&'static str] {
 }
 
 #[must_use]
-pub fn obj_block_texture_name(material: &str) -> String {
-    let material_base = obj_material_base(material);
+pub fn block_texture_name(material: &str) -> String {
+    let material_base = material_base(material);
     let material = material_base
         .strip_prefix("minecraft_")
         .unwrap_or(material_base)
@@ -1740,8 +1721,8 @@ pub fn obj_block_texture_name(material: &str) -> String {
 }
 
 #[must_use]
-pub fn obj_material_texture_name(material: &str) -> String {
-    let material_base = obj_material_base(material);
+pub fn material_texture_name(material: &str) -> String {
+    let material_base = material_base(material);
     material_base
         .strip_prefix("minecraft_")
         .unwrap_or(material_base)
@@ -1749,14 +1730,14 @@ pub fn obj_material_texture_name(material: &str) -> String {
 }
 
 #[must_use]
-pub fn obj_material_base(material: &str) -> &str {
+pub fn material_base(material: &str) -> &str {
     material
         .split_once(MATERIAL_SLOT_SEPARATOR)
         .map_or(material, |(base, _)| base)
 }
 
 #[must_use]
-pub fn obj_block_identifier(block: &str) -> String {
+pub fn block_identifier(block: &str) -> String {
     if block.contains(':') {
         block.to_owned()
     } else {
@@ -1765,7 +1746,7 @@ pub fn obj_block_identifier(block: &str) -> String {
 }
 
 #[must_use]
-pub fn obj_canonical_block_lookup_name(block: &str) -> Cow<'_, str> {
+pub fn canonical_block_lookup_name(block: &str) -> Cow<'_, str> {
     match block {
         "grass_block" => Cow::Borrowed("grass"),
         "flowing_water" | "water_still" | "water_flow" | "still_water" | "flowing_water_grey"
@@ -1782,7 +1763,7 @@ pub fn obj_canonical_block_lookup_name(block: &str) -> Cow<'_, str> {
 }
 
 #[must_use]
-pub fn obj_material_instance_slot(material: &str) -> Option<Cow<'_, str>> {
+pub fn material_instance_slot(material: &str) -> Option<Cow<'_, str>> {
     let (_, slot) = material.split_once(MATERIAL_SLOT_SEPARATOR)?;
     let slot = slot.trim();
     if slot.is_empty() {
@@ -1795,8 +1776,8 @@ pub fn obj_material_instance_slot(material: &str) -> Option<Cow<'_, str>> {
 }
 
 #[must_use]
-pub fn obj_material_block_face(material: &str) -> Option<BlockFace> {
-    let normalized = obj_material_texture_name(material);
+pub fn material_block_face(material: &str) -> Option<BlockFace> {
+    let normalized = material_texture_name(material);
     if normalized.ends_with("_up") {
         Some(BlockFace::Up)
     } else if normalized.ends_with("_down") {
@@ -1842,7 +1823,7 @@ pub fn normal_from_block_face(face: BlockFace) -> [i32; 3] {
 }
 
 #[must_use]
-pub fn obj_texture_faces(face: BlockFace) -> &'static [BlockFace] {
+pub fn texture_faces(face: BlockFace) -> &'static [BlockFace] {
     match face {
         BlockFace::Up => &[BlockFace::Up, BlockFace::All, BlockFace::Default],
         BlockFace::Down => &[BlockFace::Down, BlockFace::All, BlockFace::Default],
@@ -1877,7 +1858,7 @@ pub fn obj_texture_faces(face: BlockFace) -> &'static [BlockFace] {
 }
 
 #[must_use]
-pub fn obj_material_slots(face: BlockFace) -> &'static [&'static str] {
+pub fn material_slots(face: BlockFace) -> &'static [&'static str] {
     match face {
         BlockFace::Up => &["up", "*"],
         BlockFace::Down => &["down", "*"],
@@ -1891,7 +1872,7 @@ pub fn obj_material_slots(face: BlockFace) -> &'static [&'static str] {
 }
 
 #[must_use]
-pub fn obj_material_slot_candidates(slot: &str) -> [&str; 2] {
+pub fn material_slot_candidates(slot: &str) -> [&str; 2] {
     if slot == "default" {
         ["*", "default"]
     } else {
@@ -1899,7 +1880,7 @@ pub fn obj_material_slot_candidates(slot: &str) -> [&str; 2] {
     }
 }
 
-fn obj_material_slot_candidate_list(slot: &str) -> Vec<&str> {
+fn material_slot_candidate_list(slot: &str) -> Vec<&str> {
     match slot {
         "default" => vec!["*", "default"],
         "front" => vec!["front", "south", "north", "side", "*"],
@@ -1934,28 +1915,28 @@ pub fn cake_candle_block(block: &str) -> Option<String> {
 }
 
 #[must_use]
-pub fn obj_texture_key_from_value(value: &Value, normal: [i32; 3]) -> Option<String> {
+pub fn texture_key_from_value(value: &Value, normal: [i32; 3]) -> Option<String> {
     match value {
-        Value::String(text) => Some(obj_normalize_texture_key(text)),
+        Value::String(text) => Some(normalize_texture_key(text)),
         Value::Array(values) => values
             .iter()
-            .find_map(|value| obj_texture_key_from_value(value, normal)),
+            .find_map(|value| texture_key_from_value(value, normal)),
         Value::Object(object) => {
-            let keys = obj_texture_value_keys(normal);
+            let keys = texture_value_keys(normal);
             keys.iter()
                 .find_map(|key| object.get(*key))
-                .and_then(|value| obj_texture_key_from_value(value, normal))
+                .and_then(|value| texture_key_from_value(value, normal))
                 .or_else(|| {
                     object
                         .values()
-                        .find_map(|value| obj_texture_key_from_value(value, normal))
+                        .find_map(|value| texture_key_from_value(value, normal))
                 })
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => None,
     }
 }
 
-fn obj_texture_value_keys(normal: [i32; 3]) -> &'static [&'static str] {
+fn texture_value_keys(normal: [i32; 3]) -> &'static [&'static str] {
     match block_face_from_normal(normal) {
         BlockFace::Up => &["up", "top", "all", "side", "default"],
         BlockFace::Down => &["down", "bottom", "all", "side", "default"],
@@ -1971,11 +1952,7 @@ fn obj_texture_value_keys(normal: [i32; 3]) -> &'static [&'static str] {
 }
 
 #[must_use]
-pub fn obj_fallback_texture_keys(
-    material_texture: &str,
-    block: &str,
-    normal: [i32; 3],
-) -> Vec<String> {
+pub fn fallback_texture_keys(material_texture: &str, block: &str, normal: [i32; 3]) -> Vec<String> {
     let mut keys = Vec::with_capacity(24);
     if is_water_block(block) {
         for key in [
@@ -1993,7 +1970,7 @@ pub fn obj_fallback_texture_keys(
             push_texture_key_aliases(&mut keys, key);
         }
     } else if is_full_grass_block(block) {
-        match obj_face_texture_slot(normal) {
+        match face_texture_slot(normal) {
             ObjTextureSlot::Up => {
                 for key in ["grass_top", "grass"] {
                     push_texture_key_aliases(&mut keys, key);
@@ -2013,7 +1990,7 @@ pub fn obj_fallback_texture_keys(
     }
     push_block_specific_texture_aliases(&mut keys, block, normal);
     push_texture_key_aliases(&mut keys, block);
-    match obj_face_texture_slot(normal) {
+    match face_texture_slot(normal) {
         ObjTextureSlot::Up => {
             push_texture_key_aliases(&mut keys, format!("{block}_top"));
             push_texture_key_aliases(&mut keys, format!("{block}_up"));
@@ -2071,185 +2048,9 @@ pub fn path_extension_eq(path: &Path, extension: &str) -> bool {
 }
 
 #[must_use]
-pub fn obj_path_extension_eq(path: &str, extension: &str) -> bool {
+pub fn string_extension_eq(path: &str, extension: &str) -> bool {
     path.rsplit_once('.')
         .is_some_and(|(_, value)| value.eq_ignore_ascii_case(extension))
-}
-
-#[must_use]
-pub fn vanilla_resource_pack_roots(package_path: &Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    push_unique_path(&mut roots, package_path.to_path_buf());
-    if path_file_name_eq(package_path, "textures")
-        && let Some(parent) = package_path.parent()
-    {
-        push_unique_path(&mut roots, parent.to_path_buf());
-    }
-    push_vanilla_resource_pack_roots(
-        &mut roots,
-        &package_path.join("data").join("resource_packs"),
-    );
-    push_vanilla_resource_pack_roots(&mut roots, &package_path.join("data").join("resourcepacks"));
-    roots
-}
-
-#[must_use]
-pub fn vanilla_resource_pack_roots_from_packages<I, P>(package_roots: I) -> Vec<PathBuf>
-where
-    I: IntoIterator<Item = P>,
-    P: AsRef<Path>,
-{
-    let mut roots = Vec::new();
-    for package_root in package_roots {
-        for root in vanilla_resource_pack_roots(package_root.as_ref()) {
-            push_unique_path(&mut roots, root);
-        }
-    }
-    roots
-}
-
-#[must_use]
-pub fn world_resource_pack_paths(world_path: &Path) -> Vec<PathBuf> {
-    let pack_ids = world_resource_pack_ids(world_path);
-    if pack_ids.is_empty() {
-        return Vec::new();
-    }
-
-    let resource_pack_roots = resource_pack_roots(world_path);
-    let mut package_paths = Vec::new();
-    for pack_id in pack_ids {
-        for root in &resource_pack_roots {
-            if let Some(package_path) = find_resource_pack_path(root, &pack_id) {
-                push_unique_resource_pack_path(&mut package_paths, package_path);
-                break;
-            }
-        }
-    }
-    package_paths
-}
-
-#[must_use]
-pub fn world_resource_pack_ids(world_path: &Path) -> Vec<String> {
-    let Some(value) = read_optional_json(&world_path.join("world_resource_packs.json")) else {
-        return Vec::new();
-    };
-    let Some(items) = value.as_array() else {
-        return Vec::new();
-    };
-
-    let mut pack_ids = Vec::new();
-    for item in items {
-        let Some(pack_id) = item
-            .get("pack_id")
-            .and_then(Value::as_str)
-            .or_else(|| item.get("uuid").and_then(Value::as_str))
-        else {
-            continue;
-        };
-        let normalized = normalize_pack_uuid(pack_id);
-        if !normalized.is_empty() && !pack_ids.iter().any(|existing| existing == &normalized) {
-            pack_ids.push(normalized);
-        }
-    }
-    pack_ids
-}
-
-#[must_use]
-pub fn resource_pack_roots(world_path: &Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    push_unique_resource_pack_path(&mut roots, world_path.join("resource_packs"));
-    for ancestor in world_path.ancestors() {
-        if !path_file_name_eq(ancestor, "minecraftWorlds") {
-            continue;
-        }
-        let Some(com_mojang_dir) = ancestor.parent() else {
-            continue;
-        };
-        if !path_file_name_eq(com_mojang_dir, "com.mojang") {
-            continue;
-        }
-        push_unique_resource_pack_path(&mut roots, com_mojang_dir.join("resource_packs"));
-
-        let Some(games_dir) = com_mojang_dir.parent() else {
-            continue;
-        };
-        if !path_file_name_eq(games_dir, "games") {
-            continue;
-        }
-        let Some(user_dir) = games_dir.parent() else {
-            continue;
-        };
-        let Some(users_dir) = user_dir
-            .parent()
-            .filter(|path| path_file_name_eq(path, "Users"))
-        else {
-            continue;
-        };
-        push_unique_resource_pack_path(
-            &mut roots,
-            users_dir
-                .join("Shared")
-                .join("games")
-                .join("com.mojang")
-                .join("resource_packs"),
-        );
-    }
-    roots
-}
-
-#[must_use]
-pub fn find_resource_pack_path(root: &Path, pack_id: &str) -> Option<PathBuf> {
-    let pack_id = normalize_pack_uuid(pack_id);
-    if pack_id.is_empty() || !root.is_dir() {
-        return None;
-    }
-
-    for candidate_name in [
-        format!("pack_{pack_id}"),
-        pack_id.clone(),
-        format!("pack_{}", pack_id.to_ascii_lowercase()),
-        pack_id.to_ascii_lowercase(),
-    ] {
-        let candidate = root.join(candidate_name);
-        if resource_pack_candidate_matches(&candidate, &pack_id, true) {
-            return Some(candidate);
-        }
-    }
-
-    let entries = std::fs::read_dir(root).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if resource_pack_candidate_matches(&path, &pack_id, false) {
-            return Some(path);
-        }
-    }
-    None
-}
-
-#[must_use]
-pub fn resource_pack_manifest_uuid(path: &Path) -> Option<String> {
-    let value = read_optional_json(&path.join("manifest.json"))?;
-    value
-        .get("header")
-        .and_then(|header| header.get("uuid"))
-        .and_then(Value::as_str)
-        .map(normalize_pack_uuid)
-}
-
-#[must_use]
-pub fn normalize_pack_uuid(value: &str) -> String {
-    value
-        .trim()
-        .trim_matches('{')
-        .trim_matches('}')
-        .to_ascii_lowercase()
-}
-
-pub fn push_unique_resource_pack_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
-    if path.as_os_str().is_empty() {
-        return;
-    }
-    push_unique_path(paths, path);
 }
 
 #[must_use]
@@ -2265,7 +2066,7 @@ pub fn replace_path_extension(path: &str, extension: &str) -> String {
 }
 
 #[must_use]
-pub fn obj_normalize_texture_key(value: &str) -> String {
+pub fn normalize_texture_key(value: &str) -> String {
     let mut value = value.trim().replace('\\', "/");
     if value
         .get(..9)
@@ -2517,7 +2318,7 @@ fn grass_block_texture_key(face: BlockFace) -> Option<String> {
     }
 }
 
-fn obj_face_texture_slot(normal: [i32; 3]) -> ObjTextureSlot {
+fn face_texture_slot(normal: [i32; 3]) -> ObjTextureSlot {
     if normal[1] > 0 {
         ObjTextureSlot::Up
     } else if normal[1] < 0 {
@@ -2552,101 +2353,6 @@ fn block_definition<'a>(blocks: &'a Value, block: &str) -> Option<&'a Value> {
         }
     }
     None
-}
-
-fn push_vanilla_resource_pack_roots(roots: &mut Vec<PathBuf>, resource_packs_dir: &Path) {
-    // The base vanilla pack is authoritative. Overlay packs are appended first so the resolver
-    // (which walks later roots first) can still fill files that only exist in an overlay, but any
-    // file present in resource_packs/vanilla wins over an overlay copy.
-    let vanilla = resource_packs_dir.join("vanilla");
-
-    let Ok(entries) = std::fs::read_dir(resource_packs_dir) else {
-        push_unique_path(roots, vanilla.join("client"));
-        push_unique_path(roots, vanilla);
-        return;
-    };
-    let mut vanilla_overlay_roots = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_dir()
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(is_vanilla_resource_pack_overlay_name)
-        })
-        .collect::<Vec<_>>();
-    vanilla_overlay_roots.sort_by(|left, right| {
-        let left_version = left
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(vanilla_resource_pack_overlay_version);
-        let right_version = right
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(vanilla_resource_pack_overlay_version);
-        left_version
-            .cmp(&right_version)
-            .then_with(|| left.cmp(right))
-    });
-
-    let ignore_overlays = std::env::var("BMCBL_VANILLA_OVERLAYS")
-        .is_ok_and(|value| matches!(value.as_str(), "ignore" | "none" | "0" | "false"));
-    if !ignore_overlays {
-        for root in vanilla_overlay_roots {
-            push_unique_path(roots, root.join("client"));
-            push_unique_path(roots, root);
-        }
-    }
-
-    // Base pack last = highest priority after the resolver reverses the list.
-    push_unique_path(roots, vanilla.join("client"));
-    push_unique_path(roots, vanilla);
-}
-
-fn resource_pack_candidate_matches(path: &Path, pack_id: &str, allow_name_fallback: bool) -> bool {
-    if !path.join("textures").is_dir()
-        && !path.join("__brarchive/textures.brarchive").is_file()
-        && !path.join("__brarchive/textures").is_dir()
-    {
-        return false;
-    }
-    if let Some(manifest_uuid) = resource_pack_manifest_uuid(path) {
-        return manifest_uuid == pack_id;
-    }
-    allow_name_fallback
-}
-
-fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
-    if !paths.iter().any(|existing| existing == &path) {
-        paths.push(path);
-    }
-}
-
-fn path_file_name_eq(path: &Path, expected: &str) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.eq_ignore_ascii_case(expected))
-}
-
-fn is_vanilla_resource_pack_overlay_name(name: &str) -> bool {
-    vanilla_resource_pack_overlay_version(name).is_some()
-}
-
-fn vanilla_resource_pack_overlay_version(name: &str) -> Option<Vec<u32>> {
-    let version = name.strip_prefix("vanilla_").or_else(|| {
-        name.get(..8)
-            .filter(|prefix| prefix.eq_ignore_ascii_case("vanilla_"))
-            .and_then(|_| name.get(8..))
-    })?;
-    let mut parts = Vec::new();
-    for part in version.split('.') {
-        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
-            return None;
-        }
-        parts.push(part.parse().ok()?);
-    }
-    (!parts.is_empty()).then_some(parts)
 }
 
 fn read_optional_json(path: &Path) -> Option<Value> {
@@ -2707,7 +2413,7 @@ fn merge_texture_data_map(textures: &mut HashMap<String, Vec<String>>, path: &Pa
     for (key, value) in texture_data {
         let paths: Vec<String> = terrain_texture_paths(value)
             .into_iter()
-            .map(|path| obj_normalize_texture_key(&path))
+            .map(|path| normalize_texture_key(&path))
             .collect();
         if paths.is_empty() {
             continue;
@@ -2788,7 +2494,7 @@ fn push_block_specific_texture_aliases(keys: &mut Vec<String>, block: &str, norm
         return;
     }
 
-    let texture_slot = obj_face_texture_slot(normal);
+    let texture_slot = face_texture_slot(normal);
     // Flora whose terrain_texture key predates or differs from the block id;
     // the pack stack defines no key matching the block name itself.
     if block == "sugar_cane" {
@@ -4595,7 +4301,7 @@ fn copper_golem_texture_key(block: &str) -> Option<&'static str> {
 }
 
 fn push_texture_key_aliases(keys: &mut Vec<String>, texture_key: impl AsRef<str>) {
-    let normalized = obj_normalize_texture_key(texture_key.as_ref());
+    let normalized = normalize_texture_key(texture_key.as_ref());
     if normalized.is_empty() {
         return;
     }
@@ -4651,15 +4357,13 @@ fn push_unique_string(values: &mut Vec<String>, value: String) {
 mod tests {
     use super::{
         NamedObjMaterial, ObjDocumentHeader, ObjExportMaterial, ObjFace, ObjMaterial, ObjMeshFace,
-        ObjMeshFaceSource, ObjTextureCopy, ObjTextureResolver, cake_candle_block,
-        export_face_groups, export_face_sources, obj_alpha_texture_path,
-        obj_default_face_uvs_from_corners, obj_document_string, obj_face_material_name,
-        obj_face_normal_from_triangle, obj_face_texture_slot_suffix, obj_faces_string,
-        obj_material_library_from_export_materials, obj_material_library_string, obj_material_name,
-        obj_material_slot_component, obj_mesh_face_materials, obj_mesh_faces_from_source,
-        obj_mesh_faces_string, obj_slot_material_name, obj_texture_copies,
-        path_starts_with_directory, vanilla_resource_pack_roots, world_resource_pack_ids,
-        world_resource_pack_paths, write_obj_texture_copy,
+        ObjMeshFaceSource, ObjTextureCopy, ObjTextureResolver, alpha_texture_path,
+        cake_candle_block, default_face_uvs_from_corners, document_string, export_face_groups,
+        export_face_sources, export_material_library, face_material_name,
+        face_normal_from_triangle, face_texture_slot_suffix, faces_string, material_library_string,
+        material_name, material_slot_component, mesh_face_materials, mesh_faces_from_source,
+        mesh_faces_string, path_starts_with_directory, slot_material_name, texture_copies,
+        write_texture_copy,
     };
     use std::borrow::Cow;
     use std::collections::BTreeMap;
@@ -4676,7 +4380,7 @@ mod tests {
             Some("textures/blocks/redstone_dust_cross.png".to_owned()),
         );
 
-        let material_library = obj_material_library_string([NamedObjMaterial {
+        let material_library = material_library_string([NamedObjMaterial {
             name: Cow::Borrowed("minecraft_redstone_wire__mat_up"),
             material: material.clone(),
         }]);
@@ -4747,7 +4451,7 @@ mod tests {
             None,
         );
 
-        let material_library = obj_material_library_string([NamedObjMaterial {
+        let material_library = material_library_string([NamedObjMaterial {
             name: Cow::Borrowed("minecraft_unknown_side"),
             material,
         }]);
@@ -4818,7 +4522,7 @@ mod tests {
             },
         ];
 
-        let material_library = obj_material_library_string(materials);
+        let material_library = material_library_string(materials);
 
         assert!(material_library.contains("map_d -imfchan a textures/blocks/iron_bars_alpha.png"));
         assert!(material_library.contains("map_d -imfchan a textures/blocks/glass_alpha.png"));
@@ -5453,145 +5157,11 @@ mod tests {
     }
 
     #[test]
-    fn vanilla_resource_pack_roots_should_include_base_and_sorted_overlays() {
-        let pack = TestPack::new();
-        pack.write_bytes("data/resource_packs/vanilla/textures/.keep", b"");
-        pack.write_bytes("data/resource_packs/vanilla_1.21.40/textures/.keep", b"");
-        pack.write_bytes("data/resource_packs/vanilla_1.20.0/textures/.keep", b"");
-
-        let roots = vanilla_resource_pack_roots(&pack.path());
-
-        let expected = vec![
-            pack.path(),
-            pack.path()
-                .join("data")
-                .join("resource_packs")
-                .join("vanilla_1.20.0")
-                .join("client"),
-            pack.path()
-                .join("data")
-                .join("resource_packs")
-                .join("vanilla_1.20.0"),
-            pack.path()
-                .join("data")
-                .join("resource_packs")
-                .join("vanilla_1.21.40")
-                .join("client"),
-            pack.path()
-                .join("data")
-                .join("resource_packs")
-                .join("vanilla_1.21.40"),
-            pack.path()
-                .join("data")
-                .join("resource_packs")
-                .join("vanilla")
-                .join("client"),
-            pack.path()
-                .join("data")
-                .join("resource_packs")
-                .join("vanilla"),
-            pack.path()
-                .join("data")
-                .join("resourcepacks")
-                .join("vanilla")
-                .join("client"),
-            pack.path()
-                .join("data")
-                .join("resourcepacks")
-                .join("vanilla"),
-        ];
-
-        assert_eq!(roots, expected);
-    }
-
-    #[test]
-    fn world_resource_pack_paths_should_follow_world_manifest_pack_order() {
-        let root = TestPack::new();
-        let world_path = root
-            .path()
-            .join("Users")
-            .join("player")
-            .join("games")
-            .join("com.mojang")
-            .join("minecraftWorlds")
-            .join("world");
-        let local_pack = world_path.join("resource_packs").join("pack-local");
-        let global_pack = root
-            .path()
-            .join("Users")
-            .join("player")
-            .join("games")
-            .join("com.mojang")
-            .join("resource_packs")
-            .join("global-pack");
-        let shared_pack = root
-            .path()
-            .join("Users")
-            .join("Shared")
-            .join("games")
-            .join("com.mojang")
-            .join("resource_packs")
-            .join("shared-pack");
-        for pack_path in [&local_pack, &global_pack, &shared_pack] {
-            must_ok(fs::create_dir_all(pack_path.join("textures")));
-        }
-        root.write(
-            "Users/player/games/com.mojang/minecraftWorlds/world/resource_packs/pack-local/manifest.json",
-            r#"{"header":{"uuid":"{11111111-1111-1111-1111-111111111111}"}}"#,
-        );
-        root.write(
-            "Users/player/games/com.mojang/resource_packs/global-pack/manifest.json",
-            r#"{"header":{"uuid":"22222222-2222-2222-2222-222222222222"}}"#,
-        );
-        root.write(
-            "Users/Shared/games/com.mojang/resource_packs/shared-pack/manifest.json",
-            r#"{"header":{"uuid":"33333333-3333-3333-3333-333333333333"}}"#,
-        );
-        root.write(
-            "Users/player/games/com.mojang/minecraftWorlds/world/world_resource_packs.json",
-            r#"[
-                // comments and trailing commas are accepted
-                {"pack_id":"22222222-2222-2222-2222-222222222222"},
-                {"pack_id":"11111111-1111-1111-1111-111111111111"},
-                {"uuid":"33333333-3333-3333-3333-333333333333"},
-            ]"#,
-        );
-
-        let paths = world_resource_pack_paths(&world_path);
-
-        assert_eq!(paths, vec![global_pack, local_pack, shared_pack]);
-    }
-
-    #[test]
-    fn world_resource_pack_ids_should_normalize_and_dedupe_pack_ids() {
-        let root = TestPack::new();
-        let world_path = root.path().join("world");
-        root.write(
-            "world/world_resource_packs.json",
-            r#"[
-                {"pack_id":"{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}"},
-                {"uuid":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
-                {"pack_id":"BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"},
-            ]"#,
-        );
-
-        let pack_ids = world_resource_pack_ids(&world_path);
-
-        assert_eq!(
-            pack_ids,
-            vec![
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_owned(),
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
     fn obj_export_target_should_use_directory_named_after_selected_obj_stem() {
         let root = TestPack::new();
         let selected_path = root.path().join("chunk-selection.obj");
 
-        let target = must_ok(super::ObjExportTarget::from_obj_path(&selected_path));
+        let target = must_ok(super::ObjExportTarget::from_path(&selected_path));
 
         assert_eq!(target.export_root, root.path().join("chunk-selection"));
         assert_eq!(
@@ -5612,22 +5182,22 @@ mod tests {
     #[test]
     fn alpha_texture_path_should_append_alpha_before_extension() {
         assert_eq!(
-            obj_alpha_texture_path("textures/blocks/web.png"),
+            alpha_texture_path("textures/blocks/web.png"),
             "textures/blocks/web_alpha.png"
         );
         assert_eq!(
-            obj_alpha_texture_path("textures/blocks/web_alpha.png"),
+            alpha_texture_path("textures/blocks/web_alpha.png"),
             "textures/blocks/web_alpha.png"
         );
         assert_eq!(
-            obj_alpha_texture_path("textures/blocks/custom"),
+            alpha_texture_path("textures/blocks/custom"),
             "textures/blocks/custom_alpha"
         );
     }
 
     #[test]
     fn obj_faces_string_should_write_material_vertices_uvs_and_indices() {
-        let text = obj_faces_string(
+        let text = faces_string(
             [
                 ObjFace {
                     material: Cow::Borrowed("minecraft_test_side"),
@@ -5662,7 +5232,7 @@ mod tests {
 
     #[test]
     fn obj_mesh_faces_string_should_convert_triangle_faces_to_obj_quads() {
-        let text = obj_mesh_faces_string(
+        let text = mesh_faces_string(
             [ObjMeshFace {
                 material: Cow::Borrowed("minecraft_test_side"),
                 color: [1.0, 1.0, 1.0, 1.0],
@@ -5694,7 +5264,7 @@ mod tests {
         pack.write_bytes("textures/blocks/test_top.png", b"png");
 
         let resolver = ObjTextureResolver::with_pack_roots([pack.path()], "textures");
-        let materials = obj_mesh_face_materials(
+        let materials = mesh_face_materials(
             [ObjMeshFace {
                 material: Cow::Borrowed("minecraft_test_up"),
                 color: [0.2, 0.3, 0.4, 1.0],
@@ -5926,7 +5496,7 @@ mod tests {
     fn obj_mesh_faces_from_source_should_skip_incomplete_faces() {
         let source = TestSparseFaceSource;
 
-        let faces = obj_mesh_faces_from_source(&source);
+        let faces = mesh_faces_from_source(&source);
 
         assert_eq!(faces.len(), 1);
         assert_eq!(faces[0].material, Cow::Borrowed("minecraft_test_up"));
@@ -5934,7 +5504,7 @@ mod tests {
 
     #[test]
     fn obj_default_face_uvs_should_scale_with_face_edges() {
-        let uv = obj_default_face_uvs_from_corners(&[
+        let uv = default_face_uvs_from_corners(&[
             [0.0, 0.0, 0.0],
             [2.0, 0.0, 0.0],
             [2.0, 3.0, 0.0],
@@ -5947,18 +5517,18 @@ mod tests {
     #[test]
     fn obj_face_normal_from_triangle_should_return_dominant_axis() {
         assert_eq!(
-            obj_face_normal_from_triangle([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]),
+            face_normal_from_triangle([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]),
             Some([0, 0, 1])
         );
         assert_eq!(
-            obj_face_normal_from_triangle([0.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, -1.0]),
+            face_normal_from_triangle([0.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, -1.0]),
             Some([1, 0, 0])
         );
     }
 
     #[test]
     fn obj_document_string_should_write_header_and_parts() {
-        let text = obj_document_string(
+        let text = document_string(
             &ObjDocumentHeader {
                 comment: "bedrock-block-model OBJ export",
                 material_library_name: "selection.mtl",
@@ -5975,28 +5545,28 @@ mod tests {
 
     #[test]
     fn face_texture_slot_suffix_should_match_obj_export_convention() {
-        assert_eq!(obj_face_texture_slot_suffix([0, 1, 0]), "up");
-        assert_eq!(obj_face_texture_slot_suffix([0, -1, 0]), "down");
-        assert_eq!(obj_face_texture_slot_suffix([1, 0, 0]), "side");
+        assert_eq!(face_texture_slot_suffix([0, 1, 0]), "up");
+        assert_eq!(face_texture_slot_suffix([0, -1, 0]), "down");
+        assert_eq!(face_texture_slot_suffix([1, 0, 0]), "side");
     }
 
     #[test]
     fn material_name_helpers_should_sanitize_slots_and_append_face_suffixes() {
         assert_eq!(
-            obj_material_name("minecraft:grass block"),
+            material_name("minecraft:grass block"),
             "minecraft_grass_block"
         );
-        assert_eq!(obj_material_name(" ! "), "minecraft_unknown");
+        assert_eq!(material_name(" ! "), "minecraft_unknown");
         assert_eq!(
-            obj_face_material_name("minecraft_test", [0, 1, 0]),
+            face_material_name("minecraft_test", [0, 1, 0]),
             "minecraft_test_up"
         );
         assert_eq!(
-            obj_slot_material_name("minecraft_chest", "front latch"),
+            slot_material_name("minecraft_chest", "front latch"),
             "minecraft_chest__mat_front_latch"
         );
-        assert_eq!(obj_material_slot_component("*"), "default");
-        assert_eq!(obj_material_slot_component(" ! "), "default");
+        assert_eq!(material_slot_component("*"), "default");
+        assert_eq!(material_slot_component(" ! "), "default");
     }
 
     #[test]
@@ -6012,7 +5582,7 @@ mod tests {
             ),
         );
 
-        let material_library = obj_material_library_from_export_materials(&materials);
+        let material_library = export_material_library(&materials);
 
         assert!(material_library.contains("newmtl minecraft_stone_side"));
         assert!(material_library.contains("map_Kd textures/blocks/stone.png"));
@@ -6065,7 +5635,7 @@ mod tests {
             Some("textures/blocks/web.png".to_owned()),
         );
 
-        let copies = obj_texture_copies([&material]);
+        let copies = texture_copies([&material]);
 
         assert_eq!(copies.len(), 2);
         assert!(
@@ -6073,14 +5643,14 @@ mod tests {
                 .iter()
                 .any(|copy| copy.relative_path == "textures/blocks/web.png"
                     && !copy.alpha_mask
-                    && copy.needs_png_conversion())
+                    && copy.png_conversion_required())
         );
         assert!(
             copies
                 .iter()
                 .any(|copy| copy.relative_path == "textures/blocks/web_alpha.png"
                     && copy.alpha_mask
-                    && copy.needs_png_conversion())
+                    && copy.png_conversion_required())
         );
     }
 
@@ -6100,7 +5670,7 @@ mod tests {
             alpha_mask: true,
         };
 
-        must_ok(write_obj_texture_copy(&texture_copy, &target_path));
+        must_ok(write_texture_copy(&texture_copy, &target_path));
 
         let mask = must_ok(image::open(&target_path)).to_rgb8();
         assert_eq!(mask.get_pixel(0, 0), &image::Rgb([0, 0, 0]));
@@ -6125,7 +5695,7 @@ mod tests {
             alpha_mask: false,
         };
 
-        must_ok(write_obj_texture_copy(&texture_copy, &target_path));
+        must_ok(write_texture_copy(&texture_copy, &target_path));
 
         let tinted = must_ok(image::open(&target_path)).to_rgba8();
         assert_eq!(tinted.get_pixel(0, 0), &image::Rgba([50, 150, 50, 255]));
@@ -6159,7 +5729,7 @@ mod tests {
         let obj_path = export_root.join("selection.obj");
         let material_path = export_root.join("selection.mtl");
 
-        let summary = must_ok(super::write_obj_export_files(
+        let summary = must_ok(super::write_export_files(
             &export,
             &obj_path,
             &material_path,
@@ -6194,7 +5764,7 @@ mod tests {
         let obj_path = export_root.join("selection.obj");
         let material_path = export_root.join("selection.mtl");
 
-        let error = super::write_obj_export_files(&export, &obj_path, &material_path, &export_root)
+        let error = super::write_export_files(&export, &obj_path, &material_path, &export_root)
             .unwrap_err();
 
         assert!(error.to_string().contains("inside export root"));
@@ -6266,19 +5836,19 @@ mod tests {
     }
 
     impl ObjMeshFaceSource for TestFaceSource {
-        fn obj_face_count(&self) -> usize {
+        fn face_count(&self) -> usize {
             1
         }
 
-        fn obj_face_material(&self, face_index: usize) -> Option<&str> {
+        fn face_material(&self, face_index: usize) -> Option<&str> {
             (face_index == 0).then_some(self.material)
         }
 
-        fn obj_face_color(&self, face_index: usize) -> Option<[f32; 4]> {
+        fn face_color(&self, face_index: usize) -> Option<[f32; 4]> {
             (face_index == 0).then_some([1.0, 1.0, 1.0, 1.0])
         }
 
-        fn obj_face_triangle_positions(&self, face_index: usize) -> Option<[[f32; 3]; 6]> {
+        fn face_triangle_positions(&self, face_index: usize) -> Option<[[f32; 3]; 6]> {
             (face_index == 0).then_some([
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -6289,7 +5859,7 @@ mod tests {
             ])
         }
 
-        fn obj_face_uv(&self, face_index: usize) -> Option<[[f32; 2]; 4]> {
+        fn face_uv(&self, face_index: usize) -> Option<[[f32; 2]; 4]> {
             (face_index == 0).then_some([[0.0, 0.0]; 4])
         }
     }
@@ -6297,11 +5867,11 @@ mod tests {
     struct TestSparseFaceSource;
 
     impl ObjMeshFaceSource for TestSparseFaceSource {
-        fn obj_face_count(&self) -> usize {
+        fn face_count(&self) -> usize {
             2
         }
 
-        fn obj_face_material(&self, face_index: usize) -> Option<&str> {
+        fn face_material(&self, face_index: usize) -> Option<&str> {
             match face_index {
                 0 => Some("minecraft_test_up"),
                 1 => None,
@@ -6309,18 +5879,18 @@ mod tests {
             }
         }
 
-        fn obj_face_color(&self, face_index: usize) -> Option<[f32; 4]> {
+        fn face_color(&self, face_index: usize) -> Option<[f32; 4]> {
             (face_index == 0).then_some([1.0, 1.0, 1.0, 1.0])
         }
 
-        fn obj_face_triangle_positions(&self, face_index: usize) -> Option<[[f32; 3]; 6]> {
+        fn face_triangle_positions(&self, face_index: usize) -> Option<[[f32; 3]; 6]> {
             TestFaceSource {
                 material: "minecraft_test_up",
             }
-            .obj_face_triangle_positions(face_index)
+            .face_triangle_positions(face_index)
         }
 
-        fn obj_face_uv(&self, face_index: usize) -> Option<[[f32; 2]; 4]> {
+        fn face_uv(&self, face_index: usize) -> Option<[[f32; 2]; 4]> {
             (face_index == 0).then_some([[0.0, 0.0]; 4])
         }
     }
@@ -6328,11 +5898,11 @@ mod tests {
     #[test]
     fn texture_tint_should_fallback_to_standard_minecraft_biome_colors() {
         let grass_tint =
-            super::obj_material_texture_tint("minecraft_grass_block_up", [1.0, 1.0, 1.0, 1.0]);
+            super::material_texture_tint("minecraft_grass_block_up", [1.0, 1.0, 1.0, 1.0]);
         assert_eq!(grass_tint, Some([0.48, 0.74, 0.32]));
 
         let water_tint =
-            super::obj_material_texture_tint("minecraft_flowing_water_up", [1.0, 1.0, 1.0, 1.0]);
+            super::material_texture_tint("minecraft_flowing_water_up", [1.0, 1.0, 1.0, 1.0]);
         assert_eq!(water_tint, Some([0.267, 0.686, 0.961]));
     }
 

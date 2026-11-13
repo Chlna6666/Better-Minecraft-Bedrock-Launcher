@@ -7,7 +7,7 @@
 
 /// One SubChunk's contribution to a complete 16x16 Bedrock column height map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubChunkHeightMapContribution {
+pub enum Contribution {
     /// The source column height map is incomplete, so no safe contribution can be produced.
     NoData,
     /// Per-column local heights in `[z][x]` order.
@@ -21,7 +21,7 @@ pub enum SubChunkHeightMapContribution {
     AllTooLow,
 }
 
-impl SubChunkHeightMapContribution {
+impl Contribution {
     /// Returns the 256-byte `[z][x]` contribution only for [`Self::HasData`].
     #[must_use]
     pub const fn data(&self) -> Option<&[[i8; 16]; 16]> {
@@ -36,12 +36,12 @@ impl SubChunkHeightMapContribution {
 ///
 /// `height_map` must contain absolute world Y values in `[z][x]` order, which is the public form
 /// returned by `bedrock-world` chunk-data queries. Any unknown column makes the whole contribution
-/// [`SubChunkHeightMapContribution::NoData`] instead of guessing and corrupting client lighting.
+/// [`Contribution::NoData`] instead of guessing and corrupting client lighting.
 #[must_use]
-pub fn subchunk_height_map_contribution(
+pub fn contribution(
     height_map: &[[Option<i16>; 16]; 16],
     subchunk_y: i32,
-) -> SubChunkHeightMapContribution {
+) -> Contribution {
     let section_min_y = subchunk_y.saturating_mul(16);
     let section_max_y = section_min_y.saturating_add(15);
     let mut output = [[0_i8; 16]; 16];
@@ -51,7 +51,7 @@ pub fn subchunk_height_map_contribution(
     for z in 0..16 {
         for x in 0..16 {
             let Some(height) = height_map[z][x].map(i32::from) else {
-                return SubChunkHeightMapContribution::NoData;
+                return Contribution::NoData;
             };
             let local = if height < section_min_y {
                 -1
@@ -67,11 +67,11 @@ pub fn subchunk_height_map_contribution(
     }
 
     if all_high {
-        SubChunkHeightMapContribution::AllTooHigh
+        Contribution::AllTooHigh
     } else if all_low {
-        SubChunkHeightMapContribution::AllTooLow
+        Contribution::AllTooLow
     } else {
-        SubChunkHeightMapContribution::HasData(output)
+        Contribution::HasData(output)
     }
 }
 
@@ -83,14 +83,14 @@ mod tests {
     fn all_above_and_all_below_use_compact_variants() {
         let above = [[Some(80_i16); 16]; 16];
         assert_eq!(
-            subchunk_height_map_contribution(&above, 0),
-            SubChunkHeightMapContribution::AllTooHigh
+            contribution(&above, 0),
+            Contribution::AllTooHigh
         );
 
         let below = [[Some(-64_i16); 16]; 16];
         assert_eq!(
-            subchunk_height_map_contribution(&below, 4),
-            SubChunkHeightMapContribution::AllTooLow
+            contribution(&below, 4),
+            Contribution::AllTooLow
         );
     }
 
@@ -101,8 +101,8 @@ mod tests {
         height_map[0][1] = Some(64);
         height_map[0][2] = Some(79);
         height_map[0][3] = Some(80);
-        let contribution = subchunk_height_map_contribution(&height_map, 4);
-        let SubChunkHeightMapContribution::HasData(data) = contribution else {
+        let contribution = contribution(&height_map, 4);
+        let Contribution::HasData(data) = contribution else {
             panic!("expected mixed height-map data")
         };
         assert_eq!(data[0][0], -1);
@@ -116,8 +116,8 @@ mod tests {
         let mut height_map = [[Some(64_i16); 16]; 16];
         height_map[7][9] = None;
         assert_eq!(
-            subchunk_height_map_contribution(&height_map, 4),
-            SubChunkHeightMapContribution::NoData
+            contribution(&height_map, 4),
+            Contribution::NoData
         );
     }
 }

@@ -89,15 +89,15 @@ impl BlockPalette {
 
     #[must_use]
     /// Returns the decoded palette index at local subchunk coordinates.
-    pub fn palette_index_at(&self, local_x: u8, local_y: u8, local_z: u8) -> Option<u16> {
+    pub fn index_at(&self, local_x: u8, local_y: u8, local_z: u8) -> Option<u16> {
         if local_x >= 16 || local_y >= 16 || local_z >= 16 {
             return None;
         }
-        self.palette_index_by_storage_index(block_storage_index(local_x, local_y, local_z))
+        self.index_by_storage_index(block_storage_index(local_x, local_y, local_z))
     }
 
     #[inline]
-    pub(crate) fn palette_index_by_storage_index(&self, index: usize) -> Option<u16> {
+    pub(crate) fn index_by_storage_index(&self, index: usize) -> Option<u16> {
         if index >= 4096 {
             return None;
         }
@@ -110,7 +110,7 @@ impl BlockPalette {
     #[must_use]
     /// Returns the block state at local subchunk coordinates.
     pub fn block_state_at(&self, local_x: u8, local_y: u8, local_z: u8) -> Option<&BlockState> {
-        let palette_index = usize::from(self.palette_index_at(local_x, local_y, local_z)?);
+        let palette_index = usize::from(self.index_at(local_x, local_y, local_z)?);
         self.states.get(palette_index)
     }
 
@@ -120,7 +120,7 @@ impl BlockPalette {
         local_y: u8,
         local_z: u8,
     ) -> Option<BlockStatePaletteEntry<'_>> {
-        let palette_index = usize::from(self.palette_index_at(local_x, local_y, local_z)?);
+        let palette_index = usize::from(self.index_at(local_x, local_y, local_z)?);
         let state = self.states.get(palette_index)?;
         Some(BlockStatePaletteEntry {
             state,
@@ -131,7 +131,7 @@ impl BlockPalette {
     /// Returns already-unpacked indices when they exist.
     ///
     /// Packed `SurfaceColumns`/`PackedIndices` storage deliberately returns `None` here so callers
-    /// use [`Self::palette_index_by_storage_index`] instead of materializing a temporary 4096-entry
+    /// use [`Self::index_by_storage_index`] instead of materializing a temporary 4096-entry
     /// `Vec<u16>`. This keeps the exact surface path on the shared packed SubChunk backing buffer.
     pub(crate) fn surface_indices(&self) -> Option<Cow<'_, [u16]>> {
         self.indices

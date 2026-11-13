@@ -11,8 +11,8 @@ mod palette;
 mod relief;
 
 pub use block_image::{
-    Dithering, FlatBlockCandidate, FlatImageInput, FlatImageOptions, flat_block_plan,
-    flat_block_plan_tracked,
+    Dithering, FlatBlockCandidate, FlatImageInput, FlatImageOptions, plan_flat_image,
+    plan_flat_image_tracked,
 };
 pub use obj::{ObjMaterial, ObjModel, ObjTriangle, ObjVertex, load_obj_model};
 pub use obj_texture::{SourceTexture, load_obj_textures};
@@ -21,7 +21,7 @@ pub use obj_voxel::{
 };
 pub use palette::default_block_candidates;
 pub use relief::{
-    MAX_RELIEF_BLOCK_VOLUME, ReliefImageFill, ReliefImageOptions, relief_block_plan_tracked,
+    MAX_RELIEF_BLOCK_VOLUME, ReliefImageFill, ReliefImageOptions, plan_relief_image,
 };
 
 type Result<T> = std::result::Result<T, String>;

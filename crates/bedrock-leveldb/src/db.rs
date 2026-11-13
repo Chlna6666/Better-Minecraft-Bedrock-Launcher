@@ -51,11 +51,6 @@ impl Db {
         self.0.get_ref(key)
     }
 
-    /// Reads one key as shared owned bytes.
-    pub fn get_owned(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        self.0.get_owned(key)
-    }
-
     /// Reads one key with explicit options.
     pub fn get_with(&self, key: &[u8], options: ReadOptions) -> Result<Option<Bytes>> {
         self.0.get_with(key, options)
@@ -104,7 +99,7 @@ impl Db {
     where
         F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
     {
-        self.0.for_each_key_scan(options, visitor)
+        self.0.for_each_key(options, visitor)
     }
 
     /// Visits visible key/value entries as borrowed byte slices.
@@ -120,7 +115,7 @@ impl Db {
     where
         F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
     {
-        self.0.for_each_entry_borrowed_scan(options, visitor)
+        self.0.for_each_entry_borrowed(options, visitor)
     }
 
     /// Compatibility visitor that materializes one `Bytes` value per record.
@@ -156,8 +151,7 @@ impl Db {
     where
         F: FnMut(&[u8], &[u8]) -> Result<VisitorControl> + Send,
     {
-        self.0
-            .for_each_prefix_borrowed_scan(prefix, options, visitor)
+        self.0.for_each_prefix_borrowed(prefix, options, visitor)
     }
 
     /// Compatibility prefix visitor that materializes one `Bytes` value per record.
@@ -202,7 +196,7 @@ impl Db {
     where
         F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
     {
-        self.0.for_each_prefix_key_scan(prefix, options, visitor)
+        self.0.for_each_prefix_key(prefix, options, visitor)
     }
 
     /// Runs a visibility-correct key reduction using independent caller-owned states.
@@ -217,7 +211,7 @@ impl Db {
         I: Fn() -> T + Send + Sync,
         F: Fn(&mut T, &[u8]) -> Result<VisitorControl> + Send + Sync,
     {
-        self.0.scan_keys_partitioned_scan(options, init, visitor)
+        self.0.scan_keys_partitioned(options, init, visitor)
     }
 
     /// Runs an entry reduction through the compatibility `Bytes` visitor.
@@ -332,11 +326,6 @@ impl Db {
         })
     }
 
-    /// Alias for [`Db::stats_full`].
-    pub fn stats(&self) -> Result<DbStats> {
-        self.stats_full()
-    }
-
     #[cfg(feature = "async")]
     /// Opens a database on a blocking Tokio task.
     pub async fn open_async(path: impl AsRef<Path>, options: LevelDbOpenOptions) -> Result<Self> {
@@ -411,16 +400,6 @@ impl Db {
         tokio::task::spawn_blocking(move || self.collect_prefix_owned(&prefix, options))
             .await
             .map_err(|error| LevelDbError::join(error.to_string()))?
-    }
-
-    #[cfg(feature = "async")]
-    /// Compatibility alias for prefix-key collection.
-    pub async fn prefix_keys_async(
-        self: Arc<Self>,
-        prefix: Bytes,
-        options: ReadOptions,
-    ) -> Result<Vec<Bytes>> {
-        self.collect_prefix_keys_owned_async(prefix, options).await
     }
 }
 

@@ -6,7 +6,7 @@ use super::palette::BlockState;
 use super::position::ChunkPos;
 use super::subchunk::{SubChunk, SubChunkDecodeMode};
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::{NbtTag, parse_consecutive_root_nbt};
+use crate::nbt::{NbtTag, parse_consecutive_roots};
 use bytes::Bytes;
 use std::collections::BTreeMap;
 
@@ -123,13 +123,6 @@ impl LevelChunk {
         )))
     }
 
-    /// Replaces a block in a structured editable chunk.
-    pub fn set_block(&mut self, _x: u8, _y: i16, _z: u8, _block: BlockState) -> Result<()> {
-        Err(BedrockWorldError::UnsupportedChunkFormat(
-            "structured block editing is not enabled for this chunk format".to_string(),
-        ))
-    }
-
     /// Returns legacy inline entity records decoded from this chunk.
     pub fn get_entities(&self) -> Result<Vec<EntityData>> {
         let mut entities = Vec::new();
@@ -158,6 +151,7 @@ impl LevelChunk {
 }
 
 fn parse_consecutive_nbt(bytes: &[u8]) -> Result<Vec<EntityData>> {
-    parse_consecutive_root_nbt(bytes)
+    parse_consecutive_roots(bytes)
         .map(|tags| tags.into_iter().map(|tag| EntityData { tag }).collect())
+        .map_err(Into::into)
 }

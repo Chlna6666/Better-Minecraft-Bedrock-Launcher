@@ -6,8 +6,7 @@
 
 use super::{
     AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,
-    LegacyNumericBlockStateTable, PINNED_BLOCK_STATE_SCHEMA_FILES, load_pinned_block_state_catalog,
-    load_pinned_block_state_catalog_for_target,
+    LegacyNumericBlockStateTable, PINNED_BLOCK_STATE_SCHEMA_FILES,
 };
 use crate::error::{BedrockWorldError, Result};
 use std::collections::BTreeMap;
@@ -287,7 +286,7 @@ impl PinnedBlockMigrationBundle {
 ///
 /// Returns an error if a required resource is missing, cannot be read, or differs from its pinned
 /// identity.
-pub fn verify_pinned_block_migration_corpus(root: impl AsRef<Path>) -> Result<()> {
+pub fn verify(root: impl AsRef<Path>) -> Result<()> {
     let _ = read_verified_corpus(root.as_ref())?;
     Ok(())
 }
@@ -302,15 +301,13 @@ pub fn verify_pinned_block_migration_corpus(root: impl AsRef<Path>) -> Result<()
 ///
 /// Returns an error if a resource is missing, differs from the pinned identity, or contains invalid
 /// UTF-8, JSON, or migration data.
-pub fn load_pinned_block_migration_bundle_from_dir(
-    root: impl AsRef<Path>,
-) -> Result<PinnedBlockMigrationBundle> {
+pub fn load(root: impl AsRef<Path>) -> Result<PinnedBlockMigrationBundle> {
     load_bundle(root.as_ref(), None)
 }
 
 /// Loads, verifies and parses a bundle bound to one exact historical schema endpoint.
 ///
-/// The target is subject to the same rules as [`load_pinned_block_state_catalog_for_target`]: it must
+/// The target is subject to the same rules as [`crate::block::version::corpus::load_for_target`]: it must
 /// be an authoritative schema endpoint represented by the complete pinned corpus. This operation
 /// reads only the specified resource directory and does not access world storage.
 ///
@@ -318,7 +315,7 @@ pub fn load_pinned_block_migration_bundle_from_dir(
 ///
 /// Returns an error if the target is not an exact catalog endpoint or a resource is missing, differs
 /// from the pinned identity, or contains invalid migration data.
-pub fn load_pinned_block_migration_bundle_for_target_from_dir(
+pub fn load_for_target(
     root: impl AsRef<Path>,
     target_version: BlockStateStorageVersion,
 ) -> Result<PinnedBlockMigrationBundle> {
@@ -349,9 +346,9 @@ fn load_bundle(
         .collect::<Vec<_>>();
 
     let catalog = if let Some(target) = target_version {
-        load_pinned_block_state_catalog_for_target(&sources, target)?
+        super::corpus::load_for_target(&sources, target)?
     } else {
-        load_pinned_block_state_catalog(&sources)?
+        super::corpus::load(&sources)?
     };
     let legacy_numeric_1_9 = LegacyNumericBlockStateTable::parse(&numeric_1_9, &legacy_id_map)?;
     let legacy_numeric_1_12 = LegacyNumericBlockStateTable::parse(&numeric_1_12, &legacy_id_map)?;

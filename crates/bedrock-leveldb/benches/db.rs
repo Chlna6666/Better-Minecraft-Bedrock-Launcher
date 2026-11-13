@@ -214,31 +214,33 @@ fn bench_scans(c: &mut Criterion) {
             |b, read_options| {
                 b.iter(|| {
                     let mut bytes = 0usize;
-                    if name.ends_with("key") {
-                        db.for_each_key(read_options.clone(), |key| {
-                            bytes = bytes.saturating_add(key.len());
-                            Ok(VisitorControl::Continue)
-                        })
-                        .expect("scan keys");
-                    } else if name.ends_with("prefix_key") {
-                        db.for_each_prefix_key(b"chunk:00", read_options.clone(), |key| {
-                            bytes = bytes.saturating_add(key.len());
-                            Ok(VisitorControl::Continue)
-                        })
-                        .expect("scan prefix keys");
-                    } else if name.ends_with("prefix") {
-                        db.for_each_prefix(b"chunk:00", read_options.clone(), |_key, value| {
-                            bytes = bytes.saturating_add(value.len());
-                            Ok(VisitorControl::Continue)
-                        })
-                        .expect("scan prefix");
-                    } else {
-                        db.for_each_entry(read_options.clone(), |_key, value| {
-                            bytes = bytes.saturating_add(value.len());
-                            Ok(VisitorControl::Continue)
-                        })
-                        .expect("scan entries");
-                    }
+                    match name {
+                        "custom_for_each_key" => db
+                            .for_each_key(read_options.clone(), |key| {
+                                bytes = bytes.saturating_add(key.len());
+                                Ok(VisitorControl::Continue)
+                            })
+                            .expect("scan keys"),
+                        "native_for_each_prefix_key" => db
+                            .for_each_prefix_key(b"chunk:00", read_options.clone(), |key| {
+                                bytes = bytes.saturating_add(key.len());
+                                Ok(VisitorControl::Continue)
+                            })
+                            .expect("scan prefix keys"),
+                        "native_for_each_prefix" => db
+                            .for_each_prefix(b"chunk:00", read_options.clone(), |_key, value| {
+                                bytes = bytes.saturating_add(value.len());
+                                Ok(VisitorControl::Continue)
+                            })
+                            .expect("scan prefix"),
+                        "custom_for_each_entry" | "native_parallel_tables" => db
+                            .for_each_entry(read_options.clone(), |_key, value| {
+                                bytes = bytes.saturating_add(value.len());
+                                Ok(VisitorControl::Continue)
+                            })
+                            .expect("scan entries"),
+                        _ => unreachable!("unknown scan benchmark: {name}"),
+                    };
                     black_box(bytes);
                 });
             },

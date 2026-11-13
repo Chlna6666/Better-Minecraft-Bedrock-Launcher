@@ -21,9 +21,9 @@ const FNV1A64_OFFSET: u64 = 0xcbf_29ce_4842_2325;
 const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
 static TILE_OCCUPANCY_CACHE_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 
-/// One compact tile entry in a [`TileOccupancyIndex`].
+/// One compact tile entry in an [`Index`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TileOccupancyEntry {
+pub struct Entry {
     /// Tile X coordinate.
     pub tile_x: i32,
     /// Tile Z coordinate.
@@ -34,15 +34,15 @@ pub struct TileOccupancyEntry {
 
 /// Compact immutable occupancy index for one dimension and tile layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TileOccupancyIndex {
+pub struct Index {
     dimension: Dimension,
     chunks_per_tile: u32,
-    entries: Vec<TileOccupancyEntry>,
+    entries: Vec<Entry>,
     chunks: Vec<ChunkPos>,
     bounds: Option<ChunkBounds>,
 }
 
-impl TileOccupancyIndex {
+impl Index {
     /// Builds a compact index from renderable chunk positions.
     pub fn from_render_chunk_positions(
         dimension: Dimension,
@@ -130,7 +130,7 @@ impl TileOccupancyIndex {
 
     /// Sorted compact tile entries.
     #[must_use]
-    pub fn entries(&self) -> &[TileOccupancyEntry] {
+    pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
 
@@ -156,7 +156,7 @@ impl TileOccupancyIndex {
 
 /// Input for loading or building a persistent tile occupancy index.
 #[derive(Debug, Clone)]
-pub struct TileOccupancyIndexRequest {
+pub struct Request {
     /// Bedrock world directory.
     pub world_path: PathBuf,
     /// Root shared with the renderer's disk tile cache.
@@ -169,7 +169,7 @@ pub struct TileOccupancyIndexRequest {
     pub scan_options: WorldScanOptions,
 }
 
-impl TileOccupancyIndexRequest {
+impl Request {
     /// Creates a request with automatic table-parallel scanning.
     #[must_use]
     pub fn new(
@@ -193,7 +193,7 @@ impl TileOccupancyIndexRequest {
 
 /// Source used to produce an occupancy index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TileOccupancyIndexSource {
+pub enum LoadSource {
     /// Loaded from the persistent sidecar.
     DiskCache,
     /// Built from one partitioned key-space scan.
@@ -202,30 +202,30 @@ pub enum TileOccupancyIndexSource {
 
 /// Loaded index and its source.
 #[derive(Debug, Clone)]
-pub struct TileOccupancyIndexResult {
+pub struct LoadResult {
     /// Compact immutable index.
-    pub index: TileOccupancyIndex,
+    pub index: Index,
     /// Whether the index came from disk or a scan.
-    pub source: TileOccupancyIndexSource,
+    pub source: LoadSource,
 }
 
 /// Loads a validated sidecar or performs one whole-key-space occupancy scan.
 ///
 /// The sidecar uses the same world identity and cache root as rendered tiles, so
 /// a world signature change invalidates both cache paths consistently.
-pub fn load_or_build_tile_occupancy_index(
-    request: TileOccupancyIndexRequest,
+pub fn load_or_build_index(
+    request: Request,
     control: &RenderTaskControl,
-) -> Result<TileOccupancyIndexResult> {
+) -> Result<LoadResult> {
     wait_for_control(control)?;
-    let identity = super::cache::world_cache_identity(&request.world_path);
-    let validation = occupancy_validation(
+        let identity = crate::cache::world_cache_identity(&request.world_path);
+    let validation = cache_key(
         &identity.world_id,
         &identity.world_signature,
         request.dimension,
         request.layout.chunks_per_tile,
     );
-    let path = tile_occupancy_cache_path(
+    let path = cache_path(
         &request.cache_root,
         &identity.world_id,
         request.dimension,
@@ -238,9 +238,9 @@ pub fn load_or_build_tile_occupancy_index(
         request.dimension,
         request.layout.chunks_per_tile,
     )? {
-        return Ok(TileOccupancyIndexResult {
+        return Ok(LoadResult {
             index,
-            source: TileOccupancyIndexSource::DiskCache,
+            source: LoadSource::DiskCache,
         });
     }
 
@@ -248,21 +248,21 @@ pub fn load_or_build_tile_occupancy_index(
     let source = LevelDbRenderSource::open_read_only(&request.world_path)?;
     let positions = source.render_chunk_positions(request.scan_options)?;
     wait_for_control(control)?;
-    let index = TileOccupancyIndex::from_render_chunk_positions(
+    let index = Index::from_render_chunk_positions(
         request.dimension,
         request.layout.chunks_per_tile,
         positions,
     )?;
     store_index(&path, validation, &index)?;
-    Ok(TileOccupancyIndexResult {
+    Ok(LoadResult {
         index,
-        source: TileOccupancyIndexSource::KeySpaceScan,
+        source: LoadSource::KeySpaceScan,
     })
 }
 
 /// Returns the persistent sidecar path for an occupancy configuration.
 #[must_use]
-pub fn tile_occupancy_cache_path(
+pub fn cache_path(
     cache_root: &Path,
     world_id: &str,
     dimension: Dimension,
@@ -290,8 +290,8 @@ fn wait_for_control(control: &RenderTaskControl) -> Result<()> {
     }
 }
 
-fn tile_entry(tile_x: i32, tile_z: i32, start: usize, end: usize) -> Result<TileOccupancyEntry> {
-    Ok(TileOccupancyEntry {
+fn tile_entry(tile_x: i32, tile_z: i32, start: usize, end: usize) -> Result<Entry> {
+    Ok(Entry {
         tile_x,
         tile_z,
         chunk_start: u32::try_from(start).map_err(|_| {
@@ -325,7 +325,7 @@ fn chunk_bounds(dimension: Dimension, positions: &[ChunkPos]) -> Option<ChunkBou
     })
 }
 
-fn occupancy_validation(
+fn cache_key(
     world_id: &str,
     world_signature: &str,
     dimension: Dimension,
@@ -352,7 +352,7 @@ fn load_index(
     validation: u64,
     dimension: Dimension,
     chunks_per_tile: u32,
-) -> Result<Option<TileOccupancyIndex>> {
+) -> Result<Option<Index>> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -377,7 +377,7 @@ fn load_index(
     }
 }
 
-fn store_index(path: &Path, validation: u64, index: &TileOccupancyIndex) -> Result<()> {
+fn store_index(path: &Path, validation: u64, index: &Index) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             BedrockRenderError::io("failed to create tile occupancy directory", error)
@@ -416,7 +416,7 @@ fn store_index(path: &Path, validation: u64, index: &TileOccupancyIndex) -> Resu
     Ok(())
 }
 
-fn encode_index(validation: u64, index: &TileOccupancyIndex) -> Vec<u8> {
+fn encode_index(validation: u64, index: &Index) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(
         72usize
             .saturating_add(index.entries.len().saturating_mul(16))
@@ -472,7 +472,7 @@ fn decode_index(
     expected_validation: u64,
     dimension: Dimension,
     chunks_per_tile: u32,
-) -> Result<TileOccupancyIndex> {
+) -> Result<Index> {
     let mut cursor = Cursor::new(bytes);
     if cursor.take(8)? != TILE_OCCUPANCY_CACHE_MAGIC {
         return Err(BedrockRenderError::Validation(
@@ -518,7 +518,7 @@ fn decode_index(
     }
     let mut entries = Vec::with_capacity(entry_count);
     for _ in 0..entry_count {
-        entries.push(TileOccupancyEntry {
+        entries.push(Entry {
             tile_x: cursor.i32()?,
             tile_z: cursor.i32()?,
             chunk_start: cursor.u32()?,
@@ -567,7 +567,7 @@ fn decode_index(
             "occupancy bounds count does not match chunks".to_string(),
         ));
     }
-    Ok(TileOccupancyIndex {
+    Ok(Index {
         dimension,
         chunks_per_tile,
         entries,
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn compact_index_groups_negative_chunks_with_euclidean_tiles() {
-        let index = TileOccupancyIndex::from_render_chunk_positions(
+        let index = Index::from_render_chunk_positions(
             Dimension::Overworld,
             8,
             vec![
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn occupancy_cache_round_trip_is_exact() {
-        let index = TileOccupancyIndex::from_render_chunk_positions(
+        let index = Index::from_render_chunk_positions(
             Dimension::Overworld,
             8,
             vec![

@@ -11,9 +11,8 @@ use bedrock_world::{NbtReader, NbtTag};
 use serde::Deserialize;
 
 use crate::{BlockFace, BlockStateQuery, BlockStateValue, ModelCuboid, ModelPlane, ModelShape};
-#[path = "runtime_capture_pool.rs"]
 mod pool;
-use pool::{Appearance as CaptureAppearance, Geometry as CaptureGeometry, GeometryPool};
+use pool::GeometryPool;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 enum StateValueKey {
@@ -196,8 +195,8 @@ pub struct RuntimeCaptureCatalog {
     capture_revision: u64,
     states: HashMap<StateKey, StateRecipe>,
     // Negative cache also prevents repeated I/O for corrupt or missing meshes.
-    geometries: Mutex<HashMap<u32, Option<Arc<CaptureGeometry>>>>,
-    appearances: Mutex<HashMap<u32, Option<Arc<CaptureAppearance>>>>,
+    geometries: Mutex<HashMap<u32, Option<Arc<pool::Geometry>>>>,
+    appearances: Mutex<HashMap<u32, Option<Arc<pool::Appearance>>>>,
     shapes: Mutex<HashMap<StateKey, Option<Arc<ModelShape>>>>,
 }
 impl PartialEq for RuntimeCaptureCatalog {
@@ -469,7 +468,7 @@ impl RuntimeCaptureCatalog {
         }
         result
     }
-    fn shared_geometry(&self, id: &u32) -> Option<Arc<CaptureGeometry>> {
+    fn shared_geometry(&self, id: &u32) -> Option<Arc<pool::Geometry>> {
         let mut cache = self.geometries.lock().ok()?;
         if let Some(value) = cache.get(id) {
             return value.clone();
@@ -477,12 +476,12 @@ impl RuntimeCaptureCatalog {
         let result = self
             .pool
             .read(0, *id)
-            .and_then(|bytes| CaptureGeometry::parse(&bytes))
+            .and_then(|bytes| pool::Geometry::parse(&bytes))
             .map(Arc::new);
         cache.insert(*id, result.clone());
         result
     }
-    fn shared_appearance(&self, id: &u32) -> Option<Arc<CaptureAppearance>> {
+    fn shared_appearance(&self, id: &u32) -> Option<Arc<pool::Appearance>> {
         let mut cache = self.appearances.lock().ok()?;
         if let Some(value) = cache.get(id) {
             return value.clone();
@@ -490,7 +489,7 @@ impl RuntimeCaptureCatalog {
         let result = self
             .pool
             .read(1, *id)
-            .and_then(|bytes| CaptureAppearance::parse(&bytes))
+            .and_then(|bytes| pool::Appearance::parse(&bytes))
             .map(Arc::new);
         cache.insert(*id, result.clone());
         result
@@ -554,7 +553,7 @@ fn standard_full_cube(shape: &ModelShape) -> Option<ModelCuboid> {
 /// Encodes an engine texture *alias*, never a version-specific file path.
 /// The OBJ resolver reverses this encoding and resolves it through the active
 /// local terrain_texture.json / resource-pack stack.
-pub fn capture_texture_slot(alias: &str) -> String {
+pub fn encode_texture_slot(alias: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(4 + alias.len() * 2);
     out.push_str("bsc_");
@@ -564,7 +563,7 @@ pub fn capture_texture_slot(alias: &str) -> String {
     }
     out
 }
-pub fn decode_capture_texture_slot(slot: &str) -> Option<String> {
+pub fn decode_texture_slot(slot: &str) -> Option<String> {
     let hex = slot.strip_prefix("bsc_")?;
     if hex.len() % 2 != 0 || hex.len() > 1024 {
         return None;
@@ -597,8 +596,8 @@ fn native_atlas_to_local(uv: [f32; 2], rect: [f32; 4]) -> Option<[f32; 2]> {
     }
 }
 fn shared_mesh_planes(
-    geometry: &CaptureGeometry,
-    appearance: &CaptureAppearance,
+    geometry: &pool::Geometry,
+    appearance: &pool::Appearance,
     geometry_id: &u32,
     aliases: &HashMap<usize, CaptureMaterialSlot>,
 ) -> Option<Vec<ModelPlane>> {
@@ -771,7 +770,7 @@ fn shared_mesh_planes(
         }
         let (j, mut plane) = selected?;
         if let Some(alias) = slots[i].and_then(|id| aliases.get(&id)) {
-            plane = plane.with_material_slot(capture_texture_slot(&alias.alias));
+            plane = plane.with_material_slot(encode_texture_slot(&alias.alias));
         }
         used[i] = true;
         used[j] = true;
@@ -916,7 +915,7 @@ mod tests {
         assert_eq!(first.planes.len(), 1);
         assert_eq!(
             first.planes[0].material_slot.as_deref(),
-            Some(capture_texture_slot("grass_side").as_str())
+            Some(encode_texture_slot("grass_side").as_str())
         );
         assert!(first.planes[0].uv.is_some());
         let second = catalog.shared_shape(&state).unwrap();
@@ -1030,7 +1029,7 @@ mod tests {
         let plane = &shape.planes[0];
         assert_eq!(
             plane.material_slot.as_deref(),
-            Some(capture_texture_slot("torch").as_str())
+            Some(encode_texture_slot("torch").as_str())
         );
         let uvs = plane.uv.expect("local UVs");
         assert!(
@@ -1186,7 +1185,7 @@ mod tests {
 
     #[test]
     fn capture_diagonal_cross_uv_preserved() {
-        let geometry = CaptureGeometry {
+        let geometry = pool::Geometry {
             vertices: vec![[0., 0., 0.], [1., 0., 1.], [1., 1., 1.], [0., 1., 0.]],
             triangles: vec![[0, 2, 3], [0, 1, 2]],
         };
@@ -1195,7 +1194,7 @@ mod tests {
             uv: [u, v],
             abgr: u32::MAX,
         };
-        let appearance = CaptureAppearance {
+        let appearance = pool::Appearance {
             geometry_id: 0,
             source_kind: 1,
             uv_complete: true,
@@ -1254,7 +1253,7 @@ mod tests {
         let make = |normal: [i32; 3], corners: [[f32; 3]; 4], face: &str| {
             ModelPlane::new(corners, normal)
                 .front_only()
-                .with_material_slot(capture_texture_slot(face))
+                .with_material_slot(encode_texture_slot(face))
                 .with_uv([[0., 0.], [0., 1.], [1., 1.], [1., 0.]])
         };
         let shape = ModelShape::default().with_planes(vec![
@@ -1294,7 +1293,7 @@ mod tests {
             cube.face_material_slots
                 .get(&BlockFace::Up)
                 .map(String::as_str),
-            Some(capture_texture_slot("top").as_str())
+            Some(encode_texture_slot("top").as_str())
         );
         assert_eq!(cube.face_material_slots.len(), 6);
         assert_eq!(cube.face_uvs.len(), 6);

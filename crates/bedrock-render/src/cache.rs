@@ -1,10 +1,10 @@
 #![allow(clippy::missing_errors_doc)]
 
-use super::pipeline::{
+use crate::error::{BedrockRenderError, Result};
+use crate::renderer::pipeline::{
     DEFAULT_PALETTE_VERSION, RENDERER_CACHE_VERSION, RenderBackend, RenderGpuBackend, RenderLayout,
     RenderMode,
 };
-use crate::error::{BedrockRenderError, Result};
 use bedrock_world::{ChunkPos, Dimension};
 use rayon::prelude::*;
 use std::collections::BTreeSet;
@@ -16,6 +16,20 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use xxhash_rust::xxh3::xxh3_128;
+
+/// Fast zstd encoding and validation for cached map tiles.
+pub mod tile {
+    pub use crate::renderer::pipeline::tile_cache_validation_value as validation_value;
+    pub use crate::renderer::pipeline::{
+        decode_fast_bgra_zstd, decode_fast_rgba_zstd, decode_fast_rgba_zstd_header,
+        encode_fast_bgra_zstd, encode_fast_rgba_zstd,
+    };
+}
+
+/// Persistent cache for chunk occupancy indexes used by map rendering.
+pub mod occupancy {
+    pub use crate::renderer::occupancy::*;
+}
 
 const RENDER_CACHE_VALIDATION_VERSION: u32 = 1;
 const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -83,8 +97,8 @@ impl TileAuthorityCacheKey {
         Self {
             world_id: identity.world_id,
             world_signature: identity.world_signature,
-            renderer_signature: render_preset_cache_signature(world_path, backend, gpu_backend),
-            mode_slug: render_mode_cache_slug(mode),
+            renderer_signature: preset_signature(backend, gpu_backend),
+            mode_slug: mode_slug(mode),
             renderer_version: RENDERER_CACHE_VERSION,
             palette_version: DEFAULT_PALETTE_VERSION,
             dimension,
@@ -112,7 +126,7 @@ impl TileAuthorityCacheKey {
     }
 
     #[must_use]
-    pub fn root_for_cache_root(&self, root: &Path) -> PathBuf {
+    pub fn directory(&self, root: &Path) -> PathBuf {
         root.join("maps")
             .join(&self.world_id)
             .join(format!(
@@ -156,9 +170,7 @@ pub struct ChunkFingerprintInput {
 
 /// Hashes independent chunk records in parallel without sharing mutable state.
 #[must_use]
-pub fn validate_chunk_fingerprints_parallel(
-    inputs: Vec<ChunkFingerprintInput>,
-) -> Vec<TileAuthorityChunkState> {
+pub fn fingerprint_chunks(inputs: Vec<ChunkFingerprintInput>) -> Vec<TileAuthorityChunkState> {
     let mut states = inputs
         .into_par_iter()
         .map(|input| TileAuthorityChunkState {
@@ -167,7 +179,7 @@ pub fn validate_chunk_fingerprints_parallel(
             content_hash: xxh3_128(&input.bytes),
         })
         .collect::<Vec<_>>();
-    states.sort_by_key(tile_authority_chunk_state_sort_key);
+    states.sort_by_key(chunk_state_sort_key);
     states
 }
 
@@ -186,10 +198,10 @@ pub fn tile_payload_fingerprint(bytes: &[u8]) -> u128 {
 ///
 /// Returns an error when the background task is cancelled or panics.
 #[cfg(feature = "async")]
-pub async fn validate_chunk_fingerprints_async(
+pub async fn fingerprint_chunks_async(
     inputs: Vec<ChunkFingerprintInput>,
 ) -> Result<Vec<TileAuthorityChunkState>> {
-    tokio::task::spawn_blocking(move || validate_chunk_fingerprints_parallel(inputs))
+    tokio::task::spawn_blocking(move || fingerprint_chunks(inputs))
         .await
         .map_err(|error| {
             BedrockRenderError::Join(format!("chunk fingerprint task failed: {error}"))
@@ -321,10 +333,9 @@ impl TileAuthorityIndexSnapshot {
     ) -> Vec<TileAuthorityChunkTileRef> {
         let mut changed_tiles = BTreeSet::new();
         for state in current_states {
-            let known = self.chunk_states.binary_search_by_key(
-                &tile_authority_chunk_state_sort_key(state),
-                tile_authority_chunk_state_sort_key,
-            );
+            let known = self
+                .chunk_states
+                .binary_search_by_key(&chunk_state_sort_key(state), chunk_state_sort_key);
             let unchanged = known
                 .ok()
                 .and_then(|index| self.chunk_states.get(index))
@@ -470,7 +481,7 @@ impl TileAuthorityCache {
 
     #[must_use]
     pub fn root_for_key(&self, key: &TileAuthorityCacheKey) -> PathBuf {
-        key.root_for_cache_root(&self.root)
+        key.directory(&self.root)
     }
 
     pub fn load_index(
@@ -659,16 +670,6 @@ fn write_tile_authority_checkpoint(
 }
 
 #[must_use]
-pub fn world_cache_id(world_path: &Path) -> String {
-    world_cache_identity(world_path).world_id
-}
-
-#[must_use]
-pub fn world_cache_signature(world_path: &Path) -> String {
-    world_cache_identity(world_path).world_signature
-}
-
-#[must_use]
 pub fn world_cache_identity(world_path: &Path) -> WorldCacheIdentity {
     let mut id_hash = FNV1A64_OFFSET;
     let mut signature_hash = FNV1A64_OFFSET;
@@ -692,7 +693,7 @@ pub fn world_cache_identity(world_path: &Path) -> WorldCacheIdentity {
 }
 
 #[must_use]
-pub fn render_mode_cache_slug(mode: RenderMode) -> String {
+fn mode_slug(mode: RenderMode) -> String {
     match mode {
         RenderMode::Biome { y } => format!("biome-y{y}"),
         RenderMode::RawBiomeLayer { y } => format!("raw-biome-y{y}"),
@@ -715,7 +716,7 @@ fn dimension_slug(dimension: Dimension) -> String {
 }
 
 #[must_use]
-pub fn render_backend_cache_slug(backend: RenderBackend) -> &'static str {
+fn backend_slug(backend: RenderBackend) -> &'static str {
     match backend {
         RenderBackend::Cpu => "cpu",
         RenderBackend::Auto => "auto",
@@ -724,7 +725,7 @@ pub fn render_backend_cache_slug(backend: RenderBackend) -> &'static str {
 }
 
 #[must_use]
-pub fn render_gpu_backend_cache_slug(gpu_backend: RenderGpuBackend) -> &'static str {
+fn gpu_backend_slug(gpu_backend: RenderGpuBackend) -> &'static str {
     match gpu_backend {
         RenderGpuBackend::Auto => "auto",
         RenderGpuBackend::Dx11 => "dx11",
@@ -734,39 +735,26 @@ pub fn render_gpu_backend_cache_slug(gpu_backend: RenderGpuBackend) -> &'static 
 }
 
 #[must_use]
-pub fn render_preset_cache_signature(
-    world_path: &Path,
-    backend: RenderBackend,
-    gpu_backend: RenderGpuBackend,
-) -> String {
-    let _ = world_path;
+fn preset_signature(backend: RenderBackend, gpu_backend: RenderGpuBackend) -> String {
     let mut hash = FNV1A64_OFFSET;
     fnv1a_write_u32(&mut hash, RENDERER_CACHE_VERSION);
     fnv1a_write_u32(&mut hash, DEFAULT_PALETTE_VERSION);
-    fnv1a_write_str(&mut hash, render_backend_cache_slug(backend));
-    fnv1a_write_str(&mut hash, render_gpu_backend_cache_slug(gpu_backend));
+    fnv1a_write_str(&mut hash, backend_slug(backend));
+    fnv1a_write_str(&mut hash, gpu_backend_slug(gpu_backend));
     fnv1a_write_u32(&mut hash, RENDER_CACHE_VALIDATION_VERSION);
     format!("{hash:016x}")
 }
 
 #[must_use]
-pub fn render_cache_validation_seed_from_signature(signature: &str) -> u64 {
+fn validation_seed(signature: &str) -> u64 {
     let mut hash = FNV1A64_OFFSET;
     fnv1a_write_str(&mut hash, signature);
     if hash == 0 { FNV1A64_OFFSET } else { hash }
 }
 
 #[must_use]
-pub fn render_preset_cache_validation_seed(
-    world_path: &Path,
-    backend: RenderBackend,
-    gpu_backend: RenderGpuBackend,
-) -> u64 {
-    render_cache_validation_seed_from_signature(&render_preset_cache_signature(
-        world_path,
-        backend,
-        gpu_backend,
-    ))
+pub fn preset_validation_seed(backend: RenderBackend, gpu_backend: RenderGpuBackend) -> u64 {
+    validation_seed(&preset_signature(backend, gpu_backend))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1084,11 +1072,11 @@ fn merge_tile_authority_commits(
         chunk_tile_refs.extend(commit.chunk_tile_refs);
     }
 
-    chunk_states.sort_by_key(tile_authority_chunk_state_sort_key);
-    chunk_states.dedup_by_key(|state| tile_authority_chunk_state_sort_key(state));
+    chunk_states.sort_by_key(chunk_state_sort_key);
+    chunk_states.dedup_by_key(|state| chunk_state_sort_key(state));
     tiles.sort_by_key(|entry| (entry.tile_x, entry.tile_z));
-    dependencies.sort_by_key(tile_authority_dependency_sort_key);
-    chunk_tile_refs.sort_by_key(tile_authority_chunk_tile_ref_sort_key);
+    dependencies.sort_by_key(dependency_sort_key);
+    chunk_tile_refs.sort_by_key(chunk_tile_ref_sort_key);
     chunk_tile_refs.dedup();
 
     TileAuthorityIndexSnapshot {
@@ -1101,7 +1089,7 @@ fn merge_tile_authority_commits(
     }
 }
 
-fn tile_authority_chunk_state_sort_key(state: &TileAuthorityChunkState) -> (i32, i32, i32) {
+fn chunk_state_sort_key(state: &TileAuthorityChunkState) -> (i32, i32, i32) {
     (
         state.position.dimension.id(),
         state.position.x,
@@ -1109,9 +1097,7 @@ fn tile_authority_chunk_state_sort_key(state: &TileAuthorityChunkState) -> (i32,
     )
 }
 
-fn tile_authority_dependency_sort_key(
-    dependency: &TileAuthorityDependency,
-) -> (i32, i32, i32, i32, i32) {
+fn dependency_sort_key(dependency: &TileAuthorityDependency) -> (i32, i32, i32, i32, i32) {
     (
         dependency.tile_x,
         dependency.tile_z,
@@ -1121,9 +1107,7 @@ fn tile_authority_dependency_sort_key(
     )
 }
 
-fn tile_authority_chunk_tile_ref_sort_key(
-    reference: &TileAuthorityChunkTileRef,
-) -> (i32, i32, i32, i32, i32) {
+fn chunk_tile_ref_sort_key(reference: &TileAuthorityChunkTileRef) -> (i32, i32, i32, i32, i32) {
     (
         reference.position.dimension.id(),
         reference.position.x,
@@ -1914,7 +1898,7 @@ fn prune_tile_authority_generations(root: &Path, latest_generation: u64) {
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        let Some(generation) = authority_index_generation_from_file_name(file_name) else {
+        let Some(generation) = parse_authority_index_generation(file_name) else {
             continue;
         };
         if generation >= oldest_retained_generation {
@@ -1932,7 +1916,7 @@ fn prune_tile_authority_generations(root: &Path, latest_generation: u64) {
     }
 }
 
-fn authority_index_generation_from_file_name(file_name: &str) -> Option<u64> {
+fn parse_authority_index_generation(file_name: &str) -> Option<u64> {
     for stem in TILE_AUTHORITY_INDEX_STEMS {
         let Some(generation) = file_name
             .strip_prefix(stem)
@@ -2263,12 +2247,12 @@ mod tests {
         )
     }
     #[test]
-    fn world_cache_identity_matches_compatibility_accessors_and_tracks_db_state() {
+    fn world_cache_identity_tracks_path_and_db_state() {
         let world_path = test_world("world-cache-identity");
         let initial = world_cache_identity(&world_path);
-
-        assert_eq!(initial.world_id, world_cache_id(&world_path));
-        assert_eq!(initial.world_signature, world_cache_signature(&world_path));
+        let repeated = world_cache_identity(&world_path);
+        assert_eq!(initial.world_id, repeated.world_id);
+        assert_eq!(initial.world_signature, repeated.world_signature);
 
         let db_path = world_path.join("db");
         fs::create_dir_all(&db_path).expect("create db directory");
@@ -2652,12 +2636,12 @@ mod tests {
             z: -8,
             dimension: Dimension::Overworld,
         };
-        let initial = validate_chunk_fingerprints_parallel(vec![ChunkFingerprintInput {
+        let initial = fingerprint_chunks(vec![ChunkFingerprintInput {
             position,
             revision: 1,
             bytes: Arc::<[u8]>::from(b"initial chunk bytes".as_slice()),
         }]);
-        let changed = validate_chunk_fingerprints_parallel(vec![ChunkFingerprintInput {
+        let changed = fingerprint_chunks(vec![ChunkFingerprintInput {
             position,
             revision: 2,
             bytes: Arc::<[u8]>::from(b"changed chunk bytes".as_slice()),
@@ -2676,12 +2660,12 @@ mod tests {
             z: 3,
             dimension: Dimension::Overworld,
         };
-        let initial = validate_chunk_fingerprints_parallel(vec![ChunkFingerprintInput {
+        let initial = fingerprint_chunks(vec![ChunkFingerprintInput {
             position,
             revision: 1,
             bytes: Arc::<[u8]>::from(b"before".as_slice()),
         }]);
-        let changed = validate_chunk_fingerprints_parallel(vec![ChunkFingerprintInput {
+        let changed = fingerprint_chunks(vec![ChunkFingerprintInput {
             position,
             revision: 2,
             bytes: Arc::<[u8]>::from(b"after".as_slice()),
@@ -2723,13 +2707,11 @@ mod tests {
             .build()
             .expect("build runtime");
         let states = runtime
-            .block_on(validate_chunk_fingerprints_async(vec![
-                ChunkFingerprintInput {
-                    position,
-                    revision: 3,
-                    bytes: Arc::<[u8]>::from(b"async chunk bytes".as_slice()),
-                },
-            ]))
+            .block_on(fingerprint_chunks_async(vec![ChunkFingerprintInput {
+                position,
+                revision: 3,
+                bytes: Arc::<[u8]>::from(b"async chunk bytes".as_slice()),
+            }]))
             .expect("validate chunk asynchronously");
 
         assert_eq!(states[0].position, position);

@@ -32,7 +32,7 @@
     clippy::used_underscore_binding
 )]
 
-use super::cache::{
+use crate::cache::{
     TILE_AUTHORITY_FLAG_EMPTY, TILE_AUTHORITY_FLAG_NON_EMPTY, TileAuthorityBlobReader,
     TileAuthorityCache, TileAuthorityCacheKey, TileAuthorityChunkState, TileAuthorityChunkTileRef,
     TileAuthorityCommit, TileAuthorityDependency, TileAuthorityEntry, TileAuthorityIndexSnapshot,
@@ -123,17 +123,17 @@ pub trait RenderChunkSource: Send + Sync {
     ) -> Result<Vec<ChunkPos>>;
 
     /// Loads render data for a region.
-    fn query_chunk_region(&self, region: Region, options: RegionLoadOptions) -> Result<RegionLoad>;
+    fn load_render_region(&self, region: Region, options: RegionLoadOptions) -> Result<RegionLoad>;
 
     /// Loads render data for explicit chunks with stats.
-    fn query_chunk_data_with_stats(
+    fn load_render_chunks_with_stats(
         &self,
         positions: &[ChunkPos],
         options: ChunkLoadOptions,
     ) -> Result<(Vec<ChunkData>, ChunkLoadStats)>;
 
     /// Loads render data for one chunk.
-    fn query_chunk_data(&self, pos: ChunkPos, options: ChunkLoadOptions) -> Result<ChunkData>;
+    fn load_render_chunk(&self, pos: ChunkPos, options: ChunkLoadOptions) -> Result<ChunkData>;
 }
 
 impl<S> RenderChunkSource for World<S>
@@ -152,24 +152,24 @@ where
         Ok(World::region_chunk_positions(self, region, options)?)
     }
 
-    fn query_chunk_region(&self, region: Region, options: RegionLoadOptions) -> Result<RegionLoad> {
-        Ok(World::query_chunk_region(self, region, options)?)
+    fn load_render_region(&self, region: Region, options: RegionLoadOptions) -> Result<RegionLoad> {
+        Ok(World::load_render_region(self, region, options)?)
     }
 
-    fn query_chunk_data_with_stats(
+    fn load_render_chunks_with_stats(
         &self,
         positions: &[ChunkPos],
         options: ChunkLoadOptions,
     ) -> Result<(Vec<ChunkData>, ChunkLoadStats)> {
-        Ok(World::query_chunk_data_with_stats(
+        Ok(World::load_render_chunks_with_stats(
             self,
             positions.iter().copied(),
             options,
         )?)
     }
 
-    fn query_chunk_data(&self, pos: ChunkPos, options: ChunkLoadOptions) -> Result<ChunkData> {
-        Ok(World::query_chunk_data(self, pos, options)?)
+    fn load_render_chunk(&self, pos: ChunkPos, options: ChunkLoadOptions) -> Result<ChunkData> {
+        Ok(World::load_render_chunk(self, pos, options)?)
     }
 }
 
@@ -1914,7 +1914,7 @@ impl RenderThreadingOptions {
     ///
     /// Returns an error when a fixed thread count or maximum thread cap is outside `1..=512`,
     /// or when an explicit fixed thread count exceeds the effective cap.
-    pub fn resolve_for_profile_with_limits(
+    pub fn resolve_for_profile(
         self,
         profile: RenderExecutionProfile,
         work_items: usize,
@@ -2097,22 +2097,22 @@ impl RenderChunkSource for LevelDbRenderSource {
             .collect())
     }
 
-    fn query_chunk_region(&self, region: Region, options: RegionLoadOptions) -> Result<RegionLoad> {
-        Ok(self.world.query_chunk_region(region, options)?)
+    fn load_render_region(&self, region: Region, options: RegionLoadOptions) -> Result<RegionLoad> {
+        Ok(self.world.load_render_region(region, options)?)
     }
 
-    fn query_chunk_data_with_stats(
+    fn load_render_chunks_with_stats(
         &self,
         positions: &[ChunkPos],
         options: ChunkLoadOptions,
     ) -> Result<(Vec<ChunkData>, ChunkLoadStats)> {
         Ok(self
             .world
-            .query_chunk_data_with_stats(positions.iter().copied(), options)?)
+            .load_render_chunks_with_stats(positions.iter().copied(), options)?)
     }
 
-    fn query_chunk_data(&self, pos: ChunkPos, options: ChunkLoadOptions) -> Result<ChunkData> {
-        Ok(self.world.query_chunk_data(pos, options)?)
+    fn load_render_chunk(&self, pos: ChunkPos, options: ChunkLoadOptions) -> Result<ChunkData> {
+        Ok(self.world.load_render_chunk(pos, options)?)
     }
 }
 
@@ -3736,11 +3736,11 @@ impl TileCache {
     /// Returns the root authority-cache directory for a tile key.
     #[must_use]
     pub fn path_for_key(&self, key: &TileCacheKey) -> PathBuf {
-        tile_authority_cache_key_from_tile_key(key).root_for_cache_root(&self.root)
+        authority_cache_key_from_tile_key(key).directory(&self.root)
     }
 }
 
-fn tile_authority_cache_key_from_tile_key(key: &TileCacheKey) -> TileAuthorityCacheKey {
+fn authority_cache_key_from_tile_key(key: &TileCacheKey) -> TileAuthorityCacheKey {
     TileAuthorityCacheKey {
         world_id: key.world_id.clone(),
         world_signature: key.world_signature.clone(),
@@ -3755,14 +3755,14 @@ fn tile_authority_cache_key_from_tile_key(key: &TileCacheKey) -> TileAuthorityCa
     }
 }
 
-fn load_tile_authority_snapshots_for_batch(
+fn load_tile_authority_snapshots(
     cache: &Arc<Mutex<TileCache>>,
     snapshot_cache: &TileAuthoritySnapshotCache,
     cache_keys: impl IntoIterator<Item = TileCacheKey>,
 ) -> Result<BTreeMap<TileAuthorityCacheKey, TileAuthoritySnapshotState>> {
     let mut authority_keys = cache_keys
         .into_iter()
-        .map(|key| tile_authority_cache_key_from_tile_key(&key))
+        .map(|key| authority_cache_key_from_tile_key(&key))
         .collect::<Vec<_>>();
     authority_keys.sort();
     authority_keys.dedup();
@@ -3813,7 +3813,7 @@ fn load_tile_authority_snapshots_for_batch(
     Ok(loaded)
 }
 
-fn open_tile_authority_blob_readers_for_batch(
+fn open_tile_authority_blob_readers(
     cache: &Arc<Mutex<TileCache>>,
     snapshots: &BTreeMap<TileAuthorityCacheKey, TileAuthoritySnapshotState>,
 ) -> Result<BTreeMap<TileAuthorityCacheKey, TileAuthorityBlobReaderState>> {
@@ -3853,7 +3853,7 @@ fn prepare_fast_rgba_zstd_commit(
     chunk_positions: Option<&[ChunkPos]>,
     validation_seed: u64,
 ) -> Result<PreparedTileCacheCommit> {
-    let authority_key = tile_authority_cache_key_from_tile_key(key);
+    let authority_key = authority_cache_key_from_tile_key(key);
     let header = decode_fast_rgba_zstd_header(encoded)?;
     let validation_value = header.validation_value.unwrap_or_else(|| {
         region
@@ -3897,19 +3897,9 @@ fn prepare_fast_rgba_zstd_commit(
         } else {
             encoded.to_vec()
         },
-        dependencies: tile_authority_dependencies_from_positions(
-            key,
-            region,
-            chunk_positions,
-            validation_seed,
-        ),
-        chunk_states: tile_authority_chunk_states_from_positions(
-            key,
-            region,
-            chunk_positions,
-            validation_seed,
-        ),
-        chunk_tile_refs: tile_authority_chunk_tile_refs_from_positions(key, chunk_positions),
+        dependencies: tile_authority_dependencies(key, region, chunk_positions, validation_seed),
+        chunk_states: tile_authority_chunk_states(key, region, chunk_positions, validation_seed),
+        chunk_tile_refs: tile_authority_chunk_tile_refs(key, chunk_positions),
     };
     Ok(PreparedTileCacheCommit {
         authority_key,
@@ -3917,7 +3907,7 @@ fn prepare_fast_rgba_zstd_commit(
     })
 }
 
-fn tile_authority_dependencies_from_positions(
+fn tile_authority_dependencies(
     key: &TileCacheKey,
     region: Option<ChunkRegion>,
     chunk_positions: Option<&[ChunkPos]>,
@@ -3942,7 +3932,7 @@ fn tile_authority_dependencies_from_positions(
         .collect()
 }
 
-fn tile_authority_chunk_states_from_positions(
+fn tile_authority_chunk_states(
     key: &TileCacheKey,
     region: Option<ChunkRegion>,
     chunk_positions: Option<&[ChunkPos]>,
@@ -3965,7 +3955,7 @@ fn tile_authority_chunk_states_from_positions(
         .collect()
 }
 
-fn tile_authority_chunk_tile_refs_from_positions(
+fn tile_authority_chunk_tile_refs(
     key: &TileCacheKey,
     chunk_positions: Option<&[ChunkPos]>,
 ) -> Vec<TileAuthorityChunkTileRef> {
@@ -4436,7 +4426,7 @@ fn region_wave_compose_worker_count(worker_count: usize, region_worker_count: us
 
 fn resolve_render_worker_count(options: &RenderOptions, work_items: usize) -> Result<usize> {
     let max_threads = (options.cpu.max_total_threads > 0).then_some(options.cpu.max_total_threads);
-    options.threading.resolve_for_profile_with_limits(
+    options.threading.resolve_for_profile(
         options.execution_profile,
         work_items,
         max_threads,
@@ -4446,7 +4436,7 @@ fn resolve_render_worker_count(options: &RenderOptions, work_items: usize) -> Re
 
 fn resolve_cpu_worker_count(options: &RenderOptions, work_items: usize) -> Result<usize> {
     let max_threads = (options.cpu.max_total_threads > 0).then_some(options.cpu.max_total_threads);
-    options.cpu_workers.resolve_for_profile_with_limits(
+    options.cpu_workers.resolve_for_profile(
         options.execution_profile,
         work_items,
         max_threads,
@@ -4860,27 +4850,27 @@ where
                 Ok(())
             };
 
-            let authority_snapshots_for_batch = load_tile_authority_snapshots_for_batch(
+            let snapshot_states = load_tile_authority_snapshots(
                 &cache,
                 &authority_snapshots,
                 ordered_tiles.iter().map(|planned| {
-                    self.cache_key_for_planned(planned, cache_format, options.pixel_format)
+                    self.tile_cache_key(planned, cache_format, options.pixel_format)
                 }),
             )?;
             let blob_readers_for_batch =
-                open_tile_authority_blob_readers_for_batch(&cache, &authority_snapshots_for_batch)?;
+                open_tile_authority_blob_readers(&cache, &snapshot_states)?;
 
             if probe_workers <= 1 || ordered_tiles.len() <= 1 {
                 let mut decode_scratch = TileCacheDecodeScratch::new();
                 for (ordinal, planned) in ordered_tiles.iter().enumerate() {
                     let render_key =
-                        self.cache_key_for_planned(planned, render_format, options.pixel_format);
+                        self.tile_cache_key(planned, render_format, options.pixel_format);
                     let cache_key =
-                        self.cache_key_for_planned(planned, cache_format, options.pixel_format);
+                        self.tile_cache_key(planned, cache_format, options.pixel_format);
                     let probe = resolve_tile_cache_entry(
                         &cache,
                         &session_tile_memory,
-                        &authority_snapshots_for_batch,
+                        &snapshot_states,
                         &blob_readers_for_batch,
                         &render_key,
                         &cache_key,
@@ -4904,16 +4894,10 @@ where
                     .into_iter()
                     .enumerate()
                     .map(|(ordinal, planned)| {
-                        let render_key = self.cache_key_for_planned(
-                            &planned,
-                            render_format,
-                            options.pixel_format,
-                        );
-                        let cache_key = self.cache_key_for_planned(
-                            &planned,
-                            cache_format,
-                            options.pixel_format,
-                        );
+                        let render_key =
+                            self.tile_cache_key(&planned, render_format, options.pixel_format);
+                        let cache_key =
+                            self.tile_cache_key(&planned, cache_format, options.pixel_format);
                         TileCacheProbeWork {
                             ordinal,
                             planned,
@@ -4950,7 +4934,7 @@ where
                         let result_sender = result_sender.clone();
                         let cache = Arc::clone(&cache);
                         let session_tile_memory = Arc::clone(&session_tile_memory);
-                        let authority_snapshots_for_batch = &authority_snapshots_for_batch;
+                        let snapshot_states = &snapshot_states;
                         let blob_readers_for_batch = &blob_readers_for_batch;
                         scope.spawn(move || {
                             let mut decode_scratch = TileCacheDecodeScratch::new();
@@ -4958,7 +4942,7 @@ where
                                 let result = resolve_tile_cache_entry(
                                     &cache,
                                     &session_tile_memory,
-                                    authority_snapshots_for_batch,
+                                    snapshot_states,
                                     blob_readers_for_batch,
                                     &work.render_key,
                                     &work.cache_key,
@@ -5036,7 +5020,7 @@ where
             {
                 if let Some(cache_format) = cache_write_format {
                     let cache_key =
-                        self.cache_key_for_planned(&planned, cache_format, options.pixel_format);
+                        self.tile_cache_key(&planned, cache_format, options.pixel_format);
                     if let Some(write) = empty_negative_tile_cache_write(
                         &cache_key,
                         &planned,
@@ -5092,7 +5076,7 @@ where
                     render_group,
                     options.clone(),
                     |planned, tile| {
-                        let render_key = self.cache_key_for_planned(
+                        let render_key = self.tile_cache_key(
                             &planned,
                             render_format,
                             options.pixel_format,
@@ -5113,7 +5097,7 @@ where
                                 return None;
                             };
                             Some(TileCacheWrite {
-                                key: self.cache_key_for_planned(
+                                key: self.tile_cache_key(
                                     &planned,
                                     cache_format,
                                     options.pixel_format,
@@ -5486,8 +5470,7 @@ where
             return Ok(planned_tiles.to_vec());
         }
         let started = Instant::now();
-        let renderable_chunks =
-            self.index_renderable_chunks_for_planned_tiles(planned_tiles, options)?;
+        let renderable_chunks = self.index_renderable_chunks(planned_tiles, options)?;
         let mut prepared = Vec::with_capacity(planned_tiles.len());
         let mut total_selected_chunks = 0usize;
         for planned in planned_tiles {
@@ -5523,7 +5506,7 @@ where
         Ok(prepared)
     }
 
-    fn index_renderable_chunks_for_planned_tiles(
+    fn index_renderable_chunks(
         &self,
         planned_tiles: &[PlannedTile],
         options: &RenderOptions,
@@ -5601,7 +5584,7 @@ where
         Ok(renderable_chunks)
     }
 
-    fn cache_key_for_planned(
+    fn tile_cache_key(
         &self,
         planned: &PlannedTile,
         format: ImageFormat,
@@ -5796,7 +5779,7 @@ fn resolve_tile_cache_entry(
     }
 
     let read_started = Instant::now();
-    let authority_key = tile_authority_cache_key_from_tile_key(cache_key);
+    let authority_key = authority_cache_key_from_tile_key(cache_key);
     let disk_read = match authority_snapshots.get(&authority_key) {
         Some(TileAuthoritySnapshotState::Ready(authority_snapshot)) => {
             let blob_reader = match blob_readers.get(&authority_key) {
@@ -5898,7 +5881,7 @@ fn resolve_tile_cache_entry(
     }
 
     let decode_started = Instant::now();
-    let decoded = match decode_fast_rgba_zstd_shared_with_header(&encoded, header, scratch) {
+    let decoded = match decode_shared_fast_rgba_zstd_tile(&encoded, header, scratch) {
         Ok(decoded) => decoded,
         Err(error) => {
             decode_ms = decode_started.elapsed().as_millis();
@@ -6167,7 +6150,7 @@ where
         }
         let total_tiles = jobs.len();
         let worker_count = resolve_render_worker_count(&options, total_tiles)?;
-        if worker_count == 1 {
+        if worker_count == 1 || total_tiles == 1 {
             let mut tiles = Vec::with_capacity(total_tiles);
             for job in jobs {
                 check_cancelled(&options)?;
@@ -6215,12 +6198,12 @@ where
         }
 
         let worker_count = resolve_render_worker_count(options, bake_keys.len().max(total_tiles))?;
-        let queue_capacity = pipeline_queue_capacity(options, worker_count);
+        let queue_capacity = queue_capacity(options, worker_count);
         let loader_count =
-            pipeline_loader_count_for_options(options, worker_count, bake_keys.len());
+            loader_count_for_options(options, worker_count, bake_keys.len());
         let compose_count =
-            pipeline_compose_count_for_options(options, worker_count, loader_count, total_tiles);
-        let bake_count = pipeline_bake_count_for_options(
+            compose_count_for_options(options, worker_count, loader_count, total_tiles);
+        let bake_count = bake_count_for_options(
             options,
             worker_count,
             loader_count,
@@ -6262,7 +6245,7 @@ where
                             return;
                         }
                         let result = renderer
-                            .load_render_chunk_data_with_options(key.pos, key.mode, &options)
+                            .load_tile_render_chunk_data(key.pos, key.mode, &options)
                             .map(|data| (key, data));
                         if loaded_sender.send(result).is_err() {
                             return;
@@ -6592,7 +6575,7 @@ where
             max_chunk_z: chunk_region.max_chunk_z,
         };
         let threading = render_world_threading(options, render_chunk_region_area(&chunk_region)?)?;
-        let data = self.source.query_chunk_region(
+        let data = self.source.load_render_region(
             world_region,
             RegionLoadOptions {
                 data_request: render_chunk_request_for_options(mode, options),
@@ -6627,7 +6610,7 @@ where
         options.region_layout.validate()?;
         let threading =
             render_world_threading_with_budget(options, chunk_positions.len(), world_workers);
-        let (data, load_stats) = self.source.query_chunk_data_with_stats(
+        let (data, load_stats) = self.source.load_render_chunks_with_stats(
             chunk_positions,
             ChunkLoadOptions {
                 data_request: render_chunk_request_for_options(mode, options),
@@ -6640,36 +6623,10 @@ where
                 ..ChunkLoadOptions::default()
             },
         )?;
-        self.bake_loaded_region_chunks_with_cached(
-            coord,
-            chunk_region,
-            data,
-            Some(load_stats),
-            options,
-            mode,
-        )
+        self.bake_loaded_region_chunks(coord, chunk_region, data, Some(load_stats), options, mode)
     }
 
     fn bake_loaded_region_chunks(
-        &self,
-        coord: RegionCoord,
-        chunk_region: ChunkRegion,
-        chunks: Vec<ChunkData>,
-        load_stats: Option<ChunkLoadStats>,
-        options: &RenderOptions,
-        mode: RenderMode,
-    ) -> Result<RegionBake> {
-        self.bake_loaded_region_chunks_with_cached(
-            coord,
-            chunk_region,
-            chunks,
-            load_stats,
-            options,
-            mode,
-        )
-    }
-
-    fn bake_loaded_region_chunks_with_cached(
         &self,
         coord: RegionCoord,
         chunk_region: ChunkRegion,
@@ -6912,7 +6869,7 @@ where
 
         let worker_split = region_wave_worker_split(options, worker_count, wave_plans.len());
         let region_worker_count = worker_split.region_workers.max(1);
-        let queue_capacity = pipeline_queue_capacity(options, region_worker_count);
+        let queue_capacity = queue_capacity(options, region_worker_count);
         let next_plan = Arc::new(AtomicUsize::new(0));
         let (sender, receiver) = crossbeam_channel::bounded(queue_capacity);
         log::debug!(
@@ -6931,7 +6888,7 @@ where
         for plan in wave_plans {
             check_cancelled(options)?;
             match self.load_cached_region_bake(plan.key, options)? {
-                Some(region) if region_bake_covers_plan(&region, plan) => {
+                Some(region) if region_bake_covers(&region, plan) => {
                     log::trace!(
                         "region bake cache hit (coord=({}, {:?}, {}), mode={:?})",
                         plan.key.coord.x,
@@ -7128,7 +7085,7 @@ where
         })
     }
 
-    fn render_tile_from_cached_regions_with_gpu_stats(
+    fn render_tile_from_regions(
         &self,
         job: RenderJob,
         options: &RenderOptions,
@@ -7197,16 +7154,16 @@ where
 
     fn load_render_chunk_data(&self, pos: ChunkPos, mode: RenderMode) -> Result<ChunkData> {
         self.source
-            .query_chunk_data(pos, render_chunk_load_options(mode))
+            .load_render_chunk(pos, render_chunk_load_options(mode))
     }
 
-    fn load_render_chunk_data_with_options(
+    fn load_tile_render_chunk_data(
         &self,
         pos: ChunkPos,
         mode: RenderMode,
         options: &RenderOptions,
     ) -> Result<ChunkData> {
-        self.source.query_chunk_data(
+        self.source.load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: render_chunk_request_for_options(mode, options),
@@ -7279,7 +7236,7 @@ where
         };
         let (chunk_data, _stats) = self
             .source
-            .query_chunk_data_with_stats(&positions, load_options)?;
+            .load_render_chunks_with_stats(&positions, load_options)?;
         let mut diagnostics = RenderDiagnostics::default();
         let mut bakes = BTreeMap::new();
         for data in chunk_data {
@@ -11006,7 +10963,7 @@ fn collect_region_plans(
         .collect())
 }
 
-fn region_bake_covers_plan(region: &RegionBake, plan: &RegionPlan) -> bool {
+fn region_bake_covers(region: &RegionBake, plan: &RegionPlan) -> bool {
     region.coord == plan.key.coord
         && region.mode == plan.key.mode
         && chunk_region_contains(region.covered_chunk_region, plan.region)
@@ -11179,7 +11136,7 @@ fn ready_web_tile_indexes(
         if plans.iter().all(|plan| {
             regions
                 .get(&plan.key)
-                .is_some_and(|region| region_bake_covers_plan(region, plan))
+                .is_some_and(|region| region_bake_covers(region, plan))
         }) {
             ready.push(index);
         }
@@ -11223,7 +11180,7 @@ where
             let planned = planned_tiles.get(*index).ok_or_else(|| {
                 BedrockRenderError::Validation("planned tile index is out of range".to_string())
             })?;
-            let (tile, tile_stats) = renderer.render_tile_from_cached_regions_with_gpu_stats(
+            let (tile, tile_stats) = renderer.render_tile_from_regions(
                 planned.job.clone(),
                 options,
                 regions,
@@ -11270,7 +11227,7 @@ where
                         return;
                     };
                     let tile_result = renderer
-                        .render_tile_from_cached_regions_with_gpu_stats(
+                        .render_tile_from_regions(
                             planned.job.clone(),
                             &options,
                             regions,
@@ -11365,7 +11322,7 @@ fn store_tile_compose_result(
     Ok(())
 }
 
-fn pipeline_queue_capacity(options: &RenderOptions, worker_count: usize) -> usize {
+fn queue_capacity(options: &RenderOptions, worker_count: usize) -> usize {
     options
         .cpu
         .resolve_queue_depth(worker_count, worker_count)
@@ -11387,7 +11344,7 @@ fn render_cpu_pool(worker_count: usize) -> Result<rayon::ThreadPool> {
         })
 }
 
-fn pipeline_loader_count(worker_count: usize, work_items: usize) -> usize {
+fn loader_count(worker_count: usize, work_items: usize) -> usize {
     if work_items == 0 {
         return 0;
     }
@@ -11399,12 +11356,12 @@ fn pipeline_loader_count(worker_count: usize, work_items: usize) -> usize {
         .min(work_items)
 }
 
-fn pipeline_loader_count_for_options(
+fn loader_count_for_options(
     options: &RenderOptions,
     worker_count: usize,
     work_items: usize,
 ) -> usize {
-    let count = pipeline_loader_count(worker_count, work_items);
+    let count = loader_count(worker_count, work_items);
     if options.cpu.max_db_workers > 0 {
         count
             .min(options.cpu.max_db_workers)
@@ -11414,7 +11371,7 @@ fn pipeline_loader_count_for_options(
     }
 }
 
-fn pipeline_compose_count(worker_count: usize, loader_count: usize, work_items: usize) -> usize {
+fn compose_count(worker_count: usize, loader_count: usize, work_items: usize) -> usize {
     if work_items == 0 || worker_count <= loader_count.saturating_add(1) {
         return 0;
     }
@@ -11426,13 +11383,13 @@ fn pipeline_compose_count(worker_count: usize, loader_count: usize, work_items: 
         .min(work_items)
 }
 
-fn pipeline_compose_count_for_options(
+fn compose_count_for_options(
     options: &RenderOptions,
     worker_count: usize,
     loader_count: usize,
     work_items: usize,
 ) -> usize {
-    let count = pipeline_compose_count(worker_count, loader_count, work_items);
+    let count = compose_count(worker_count, loader_count, work_items);
     if options.cpu.max_compose_workers > 0 {
         count.min(options.cpu.max_compose_workers)
     } else {
@@ -11440,7 +11397,7 @@ fn pipeline_compose_count_for_options(
     }
 }
 
-fn pipeline_bake_count(
+fn bake_count(
     worker_count: usize,
     loader_count: usize,
     compose_count: usize,
@@ -11456,14 +11413,14 @@ fn pipeline_bake_count(
         .min(work_items)
 }
 
-fn pipeline_bake_count_for_options(
+fn bake_count_for_options(
     options: &RenderOptions,
     worker_count: usize,
     loader_count: usize,
     compose_count: usize,
     work_items: usize,
 ) -> usize {
-    let count = pipeline_bake_count(worker_count, loader_count, compose_count, work_items);
+    let count = bake_count(worker_count, loader_count, compose_count, work_items);
     if options.cpu.max_bake_workers > 0 {
         count
             .min(options.cpu.max_bake_workers)
@@ -12073,7 +12030,7 @@ fn state_surface_block_color_with_biome(
     biome_tint: bool,
 ) -> RgbaColor {
     let state = canonical_material_state_for_color(state);
-    palette.surface_block_state_color_with_legacy_biome(
+    palette.surface_block_state_color(
         state.as_ref(),
         biome.and_then(BiomeSample::biome_id),
         biome.and_then(BiomeSample::legacy_color),
@@ -12609,25 +12566,36 @@ fn encode_image(
         }
         ImageFormat::WebP => encode_webp(pixels, width, height).map(Some),
         ImageFormat::Png => encode_png(pixels, width, height).map(Some),
-        ImageFormat::FastRgbaZstd => encode_fast_rgba_zstd(pixels, width, height).map(Some),
+        ImageFormat::FastRgbaZstd => encode_fast_rgba_zstd(pixels, width, height, None).map(Some),
         ImageFormat::FastBgraZstd => encode_fast_bgra_zstd(pixels, width, height).map(Some),
     }
 }
 
 /// Encodes raw RGBA tile bytes into the fast zstd-backed tile cache format.
 ///
+/// `validation_value` stores simple-tile validation metadata when present.
+///
 /// # Errors
 ///
 /// Returns an error if the RGBA buffer length does not match `width * height * 4`, or if zstd
 /// compression fails.
-pub fn encode_fast_rgba_zstd(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+pub fn encode_fast_rgba_zstd(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    validation_value: Option<u64>,
+) -> Result<Vec<u8>> {
+    let (validation_kind, validation_value) = validation_value.map_or(
+        (FAST_RGBA_ZSTD_VALIDATION_KIND_NONE, 0),
+        |value| (FAST_RGBA_ZSTD_VALIDATION_KIND_SIMPLE_TILE, value),
+    );
     encode_fast_rgba_zstd_tile(FastRgbaZstdInput {
         rgba,
         width,
         height,
-        validation_kind: FAST_RGBA_ZSTD_VALIDATION_KIND_NONE,
+        validation_kind,
         flags: fast_rgba_content_flags(rgba),
-        validation_value: 0,
+        validation_value,
     })
 }
 
@@ -12635,29 +12603,7 @@ pub fn encode_fast_rgba_zstd(rgba: &[u8], width: u32, height: u32) -> Result<Vec
 ///
 /// The byte order is preserved exactly; this function never swizzles the input.
 pub fn encode_fast_bgra_zstd(bgra: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
-    encode_fast_rgba_zstd(bgra, width, height)
-}
-
-/// Encodes RGBA tile bytes as fast zstd-backed cache bytes with a tile validation value.
-///
-/// # Errors
-///
-/// Returns an error if the RGBA buffer length does not match `width * height * 4`, or if zstd
-/// compression fails.
-pub fn encode_fast_rgba_zstd_with_validation(
-    rgba: &[u8],
-    width: u32,
-    height: u32,
-    validation_value: u64,
-) -> Result<Vec<u8>> {
-    encode_fast_rgba_zstd_tile(FastRgbaZstdInput {
-        rgba,
-        width,
-        height,
-        validation_kind: FAST_RGBA_ZSTD_VALIDATION_KIND_SIMPLE_TILE,
-        flags: fast_rgba_content_flags(rgba),
-        validation_value,
-    })
+    encode_fast_rgba_zstd(bgra, width, height, None)
 }
 
 fn encode_fast_rgba_zstd_empty_negative(
@@ -12809,7 +12755,7 @@ fn encode_fast_rgba_zstd_v1_for_test(rgba: &[u8], width: u32, height: u32) -> Re
 pub fn decode_fast_rgba_zstd(bytes: &[u8]) -> Result<FastRgbaZstdTile> {
     let header = decode_fast_rgba_zstd_header(bytes)?;
     let mut scratch = TileCacheDecodeScratch::new();
-    decode_fast_rgba_zstd_with_header(bytes, header, &mut scratch)
+    decode_fast_rgba_zstd_tile(bytes, header, &mut scratch)
 }
 
 /// Decodes native BGRA bytes from a `FastBgraZstd` tile cache entry.
@@ -12902,7 +12848,7 @@ pub fn decode_fast_rgba_zstd_header(bytes: &[u8]) -> Result<FastRgbaZstdHeader> 
     }
 }
 
-fn decode_fast_rgba_zstd_pixels_with_header(
+fn decode_fast_rgba_zstd_pixels(
     bytes: &[u8],
     header: FastRgbaZstdHeader,
     scratch: &mut TileCacheDecodeScratch,
@@ -12924,7 +12870,7 @@ fn decode_fast_rgba_zstd_pixels_with_header(
     Ok(pixels)
 }
 
-fn decode_fast_rgba_zstd_pixels_arc_with_header(
+fn decode_shared_fast_rgba_zstd_pixels(
     bytes: &[u8],
     header: FastRgbaZstdHeader,
     scratch: &mut TileCacheDecodeScratch,
@@ -12938,12 +12884,12 @@ fn decode_fast_rgba_zstd_pixels_arc_with_header(
     scratch.decompress_to_arc(&bytes[header.header_len..], expected_len)
 }
 
-fn decode_fast_rgba_zstd_with_header(
+fn decode_fast_rgba_zstd_tile(
     bytes: &[u8],
     header: FastRgbaZstdHeader,
     scratch: &mut TileCacheDecodeScratch,
 ) -> Result<FastRgbaZstdTile> {
-    let rgba = decode_fast_rgba_zstd_pixels_with_header(bytes, header, scratch)?;
+    let rgba = decode_fast_rgba_zstd_pixels(bytes, header, scratch)?;
     Ok(FastRgbaZstdTile {
         width: header.width,
         height: header.height,
@@ -12952,12 +12898,12 @@ fn decode_fast_rgba_zstd_with_header(
     })
 }
 
-fn decode_fast_rgba_zstd_shared_with_header(
+fn decode_shared_fast_rgba_zstd_tile(
     bytes: &[u8],
     header: FastRgbaZstdHeader,
     scratch: &mut TileCacheDecodeScratch,
 ) -> Result<FastRgbaZstdSharedTile> {
-    let rgba = decode_fast_rgba_zstd_pixels_arc_with_header(bytes, header, scratch)?;
+    let rgba = decode_shared_fast_rgba_zstd_pixels(bytes, header, scratch)?;
     Ok(FastRgbaZstdSharedTile {
         width: header.width,
         height: header.height,
@@ -13425,7 +13371,7 @@ mod tests {
         cache: &Arc<Mutex<TileCache>>,
         key: &TileCacheKey,
     ) -> BTreeMap<TileAuthorityCacheKey, TileAuthoritySnapshotState> {
-        let authority_key = tile_authority_cache_key_from_tile_key(key);
+        let authority_key = authority_cache_key_from_tile_key(key);
         let snapshot = cache
             .lock()
             .expect("cache lock")
@@ -13441,8 +13387,8 @@ mod tests {
         cache: &Arc<Mutex<TileCache>>,
         key: &TileCacheKey,
     ) -> BTreeMap<TileAuthorityCacheKey, TileAuthorityBlobReaderState> {
-        let authority_key = tile_authority_cache_key_from_tile_key(key);
-        open_tile_authority_blob_readers_for_batch(
+        let authority_key = authority_cache_key_from_tile_key(key);
+        open_tile_authority_blob_readers(
             cache,
             &BTreeMap::from([(
                 authority_key.clone(),
@@ -14211,8 +14157,8 @@ mod tests {
             chunks_out_of_bounds: 0,
         };
 
-        assert!(region_bake_covers_plan(&partial_region, &first_plan));
-        assert!(!region_bake_covers_plan(&partial_region, &second_plan));
+        assert!(region_bake_covers(&partial_region, &first_plan));
+        assert!(!region_bake_covers(&partial_region, &second_plan));
         assert!(!region_bake_covers_full_region(
             &partial_region,
             region_layout
@@ -14436,11 +14382,15 @@ mod tests {
                 &test_legacy_terrain_bytes(2, 65),
             )
             .expect("put legacy terrain");
-        let world = Arc::new(World::from_storage_with_format(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
-            bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+            OpenOptions {
+                format: bedrock_world::WorldFormatHint::Exact(
+                    bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+                ),
+                ..OpenOptions::default()
+            },
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
 
@@ -14504,11 +14454,15 @@ mod tests {
                 &test_legacy_grass_over_stone_bytes(65, 0x0020_c840),
             )
             .expect("put legacy terrain");
-        let world = Arc::new(World::from_storage_with_format(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
-            bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+            OpenOptions {
+                format: bedrock_world::WorldFormatHint::Exact(
+                    bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+                ),
+                ..OpenOptions::default()
+            },
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
 
@@ -14565,11 +14519,15 @@ mod tests {
                 &terrain,
             )
             .expect("put legacy terrain");
-        let world = Arc::new(World::from_storage_with_format(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
-            bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+            OpenOptions {
+                format: bedrock_world::WorldFormatHint::Exact(
+                    bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+                ),
+                ..OpenOptions::default()
+            },
         ));
         let palette = RenderPalette::default();
         let forest = palette.biome_color(4).to_array();
@@ -14628,11 +14586,15 @@ mod tests {
                 &test_data2d_bytes(2, 24),
             )
             .expect("put conflicting data2d");
-        let world = Arc::new(World::from_storage_with_format(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
-            bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+            OpenOptions {
+                format: bedrock_world::WorldFormatHint::Exact(
+                    bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+                ),
+                ..OpenOptions::default()
+            },
         ));
         let palette = RenderPalette::default();
         let expected = palette.biome_color(12).to_array();
@@ -14702,11 +14664,15 @@ mod tests {
                 &test_legacy_terrain_bytes(9, 65),
             )
             .expect("put legacy terrain");
-        let world = Arc::new(World::from_storage_with_format(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
-            bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+            OpenOptions {
+                format: bedrock_world::WorldFormatHint::Exact(
+                    bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+                ),
+                ..OpenOptions::default()
+            },
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
 
@@ -14762,11 +14728,15 @@ mod tests {
                 &terrain,
             )
             .expect("put legacy terrain");
-        let world = Arc::new(World::from_storage_with_format(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
-            bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+            OpenOptions {
+                format: bedrock_world::WorldFormatHint::Exact(
+                    bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+                ),
+                ..OpenOptions::default()
+            },
         ));
         let palette = RenderPalette::default();
         let known_raw = palette.raw_biome_color(4).to_array();
@@ -14883,11 +14853,15 @@ mod tests {
                 &test_asymmetric_legacy_terrain_bytes(),
             )
             .expect("put legacy terrain");
-        let world = Arc::new(World::from_storage_with_format(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
-            bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+            OpenOptions {
+                format: bedrock_world::WorldFormatHint::Exact(
+                    bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+                ),
+                ..OpenOptions::default()
+            },
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:stone", RgbaColor::new(90, 90, 90, 255))
@@ -15068,11 +15042,15 @@ mod tests {
                 &test_legacy_sand_data_terrain_bytes(),
             )
             .expect("put legacy sand terrain");
-        let world = Arc::new(World::from_storage_with_format(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
-            bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+            OpenOptions {
+                format: bedrock_world::WorldFormatHint::Exact(
+                    bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+                ),
+                ..OpenOptions::default()
+            },
         ));
         let palette = RenderPalette::default()
             .with_block_color("minecraft:sand", RgbaColor::new(220, 210, 120, 255))
@@ -17989,7 +17967,7 @@ mod tests {
             OpenOptions::default(),
         ));
         let data = world
-            .query_chunk_data(
+            .load_render_chunk(
                 pos,
                 ChunkLoadOptions {
                     data_request: ChunkDataRequest::new().height_map(),
@@ -18744,8 +18722,8 @@ mod tests {
     #[test]
     fn flat_opaque_tiles_keep_vanilla_appearance_channels() {
         for (name, expected) in [
-            ("minecraft:pale_oak_planks", [228, 218, 216, 255]),
-            ("minecraft:cherry_planks", [227, 179, 173, 255]),
+            ("minecraft:pale_oak_planks", [227, 217, 216, 255]),
+            ("minecraft:cherry_planks", [226, 178, 172, 255]),
             ("minecraft:quartz_bricks", [234, 229, 221, 255]),
             ("minecraft:red_concrete", [142, 32, 32, 255]),
         ] {
@@ -19260,22 +19238,22 @@ mod tests {
         let mut changed_pixel_format = base.clone();
         changed_pixel_format.pixel_format = TilePixelFormat::Bgra8;
 
-        let base = tile_authority_cache_key_from_tile_key(&base);
+        let base = authority_cache_key_from_tile_key(&base);
         assert_ne!(
             base.validation_value(),
-            tile_authority_cache_key_from_tile_key(&changed_signature).validation_value()
+            authority_cache_key_from_tile_key(&changed_signature).validation_value()
         );
         assert_ne!(
             base.validation_value(),
-            tile_authority_cache_key_from_tile_key(&changed_layout).validation_value()
+            authority_cache_key_from_tile_key(&changed_layout).validation_value()
         );
         assert_ne!(
             base.validation_value(),
-            tile_authority_cache_key_from_tile_key(&changed_pixel_scale).validation_value()
+            authority_cache_key_from_tile_key(&changed_pixel_scale).validation_value()
         );
         assert_ne!(
             base.validation_value(),
-            tile_authority_cache_key_from_tile_key(&changed_pixel_format).validation_value()
+            authority_cache_key_from_tile_key(&changed_pixel_format).validation_value()
         );
     }
 
@@ -19313,7 +19291,7 @@ mod tests {
         let rgba = vec![
             255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 128,
         ];
-        let encoded = encode_fast_rgba_zstd(&rgba, 2, 2).expect("encode fast tile");
+        let encoded = encode_fast_rgba_zstd(&rgba, 2, 2, None).expect("encode fast tile");
         let header = decode_fast_rgba_zstd_header(&encoded).expect("decode fast tile header");
         let decoded = decode_fast_rgba_zstd(&encoded).expect("decode fast tile");
 
@@ -19327,7 +19305,7 @@ mod tests {
         assert_eq!(decoded.rgba, rgba);
 
         let encoded =
-            encode_fast_rgba_zstd_with_validation(&rgba, 2, 2, 0xabc).expect("encode validated");
+            encode_fast_rgba_zstd(&rgba, 2, 2, Some(0xabc)).expect("encode validated");
         let header = decode_fast_rgba_zstd_header(&encoded).expect("decode validated header");
         let decoded = decode_fast_rgba_zstd(&encoded).expect("decode validated tile");
         assert_eq!(header.validation_value, Some(0xabc));
@@ -19369,7 +19347,7 @@ mod tests {
     #[test]
     fn fast_rgba_zstd_content_flags_round_trip() {
         let empty = vec![0; 16];
-        let encoded = encode_fast_rgba_zstd_with_validation(&empty, 2, 2, 0x55)
+        let encoded = encode_fast_rgba_zstd(&empty, 2, 2, Some(0x55))
             .expect("encode empty negative");
         let header = decode_fast_rgba_zstd_header(&encoded).expect("decode empty header");
         assert!(header.is_empty_negative());
@@ -19414,13 +19392,13 @@ mod tests {
     #[test]
     fn fast_rgba_zstd_rejects_invalid_entries() {
         let rgba = vec![0; 16];
-        let mut encoded = encode_fast_rgba_zstd(&rgba, 2, 2).expect("encode fast tile");
+        let mut encoded = encode_fast_rgba_zstd(&rgba, 2, 2, None).expect("encode fast tile");
         encoded[0] = b'X';
         assert!(decode_fast_rgba_zstd(&encoded).is_err());
 
-        let encoded = encode_fast_rgba_zstd(&rgba, 2, 2).expect("encode fast tile");
+        let encoded = encode_fast_rgba_zstd(&rgba, 2, 2, None).expect("encode fast tile");
         assert!(decode_fast_rgba_zstd(&encoded[..8]).is_err());
-        assert!(encode_fast_rgba_zstd(&rgba[..15], 2, 2).is_err());
+        assert!(encode_fast_rgba_zstd(&rgba[..15], 2, 2, None).is_err());
     }
 
     #[test]
@@ -19443,11 +19421,11 @@ mod tests {
             fast_rgba_byte_len(planned.job.tile_size, planned.job.tile_size)
                 .expect("tile byte length")
         ];
-        let mut encoded = encode_fast_rgba_zstd_with_validation(
+        let mut encoded = encode_fast_rgba_zstd(
             &rgba,
             planned.job.tile_size,
             planned.job.tile_size,
-            validation_value,
+            Some(validation_value),
         )
         .expect("encode transparent tile");
         encoded[28..32].copy_from_slice(&0_u32.to_le_bytes());
@@ -19477,11 +19455,11 @@ mod tests {
             fast_rgba_byte_len(planned.job.tile_size, planned.job.tile_size)
                 .expect("tile byte length")
         ];
-        let encoded = encode_fast_rgba_zstd_with_validation(
+        let encoded = encode_fast_rgba_zstd(
             &rgba,
             planned.job.tile_size,
             planned.job.tile_size,
-            validation_value,
+            Some(validation_value),
         )
         .expect("encode negative tile");
 
@@ -19579,11 +19557,11 @@ mod tests {
                 .expect("tile byte length")
         ];
         rgba[3] = 255;
-        let encoded = encode_fast_rgba_zstd_with_validation(
+        let encoded = encode_fast_rgba_zstd(
             &rgba,
             planned.job.tile_size,
             planned.job.tile_size,
-            validation_value,
+            Some(validation_value),
         )
         .expect("encode dense fallback tile");
 
@@ -19623,11 +19601,11 @@ mod tests {
                 .expect("tile byte length")
         ];
         rgba[3] = 255;
-        let encoded = encode_fast_rgba_zstd_with_validation(
+        let encoded = encode_fast_rgba_zstd(
             &rgba,
             planned.job.tile_size,
             planned.job.tile_size,
-            validation_value,
+            Some(validation_value),
         )
         .expect("encode cache tile");
         cache
@@ -19763,11 +19741,11 @@ mod tests {
                 .expect("tile byte length")
         ];
         rgba[3] = 255;
-        let encoded = encode_fast_rgba_zstd_with_validation(
+        let encoded = encode_fast_rgba_zstd(
             &rgba,
             planned.job.tile_size,
             planned.job.tile_size,
-            validation_value,
+            Some(validation_value),
         )
         .expect("encode tile");
         cache
@@ -19780,7 +19758,7 @@ mod tests {
             )
             .expect("write authority cache");
 
-        let authority_key = tile_authority_cache_key_from_tile_key(&key);
+        let authority_key = authority_cache_key_from_tile_key(&key);
         let snapshot = cache
             .authority
             .load_index(&authority_key)
@@ -19822,11 +19800,11 @@ mod tests {
             fast_rgba_byte_len(planned.job.tile_size, planned.job.tile_size)
                 .expect("tile byte length")
         ];
-        let encoded = encode_fast_rgba_zstd_with_validation(
+        let encoded = encode_fast_rgba_zstd(
             &rgba,
             planned.job.tile_size,
             planned.job.tile_size,
-            validation_value,
+            Some(validation_value),
         )
         .expect("encode first tile");
         cache
@@ -19839,7 +19817,7 @@ mod tests {
             )
             .expect("write first authority cache");
 
-        let authority_key = tile_authority_cache_key_from_tile_key(&key);
+        let authority_key = authority_cache_key_from_tile_key(&key);
         let tiles_path = cache
             .authority
             .root_for_key(&authority_key)
@@ -19856,11 +19834,11 @@ mod tests {
             rebuilt.chunk_positions.as_deref().expect("chunk positions"),
             31,
         );
-        let encoded = encode_fast_rgba_zstd_with_validation(
+        let encoded = encode_fast_rgba_zstd(
             &rgba,
             rebuilt.job.tile_size,
             rebuilt.job.tile_size,
-            rebuilt_validation_value,
+            Some(rebuilt_validation_value),
         )
         .expect("encode rebuilt tile");
         cache
@@ -19921,18 +19899,18 @@ mod tests {
             second.chunk_positions.as_deref().expect("second chunks"),
             37,
         );
-        let first_encoded = encode_fast_rgba_zstd_with_validation(
+        let first_encoded = encode_fast_rgba_zstd(
             &rgba,
             first.job.tile_size,
             first.job.tile_size,
-            first_validation,
+            Some(first_validation),
         )
         .expect("encode first tile");
-        let second_encoded = encode_fast_rgba_zstd_with_validation(
+        let second_encoded = encode_fast_rgba_zstd(
             &rgba,
             second.job.tile_size,
             second.job.tile_size,
-            second_validation,
+            Some(second_validation),
         )
         .expect("encode second tile");
         let commits = vec![
@@ -19960,7 +19938,7 @@ mod tests {
         assert_eq!(committed.len(), 1);
         assert_eq!(committed[0].1.generation, 1);
         assert_eq!(committed[0].1.tiles.len(), 2);
-        let authority_key = tile_authority_cache_key_from_tile_key(&first_key);
+        let authority_key = authority_cache_key_from_tile_key(&first_key);
         let loaded = cache
             .authority
             .load_index(&authority_key)
@@ -19999,11 +19977,15 @@ mod tests {
                 &test_legacy_terrain_bytes(2, 65),
             )
             .expect("put legacy terrain");
-        let world = Arc::new(World::from_storage_with_format(
+        let world = Arc::new(World::from_storage(
             "memory",
             storage,
-            OpenOptions::default(),
-            bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+            OpenOptions {
+                format: bedrock_world::WorldFormatHint::Exact(
+                    bedrock_world::WorldFormat::LevelDbLegacyTerrain,
+                ),
+                ..OpenOptions::default()
+            },
         ));
         let renderer = MapRenderer::new(world, RenderPalette::default());
         let config = MapRenderSessionConfig {
@@ -20050,7 +20032,8 @@ mod tests {
             tile_z: 0,
             extension: image_format_extension(ImageFormat::FastRgbaZstd).to_string(),
         };
-        let cached = encode_fast_rgba_zstd(&[0, 0, 0, 255], 1, 1).expect("encode cached tile");
+        let cached = encode_fast_rgba_zstd(&[0, 0, 0, 255], 1, 1, None)
+            .expect("encode cached tile");
         TileCache::new(&cache_root, 1)
             .write_encoded(&cache_key, &cached)
             .expect("write cached tile");
@@ -20131,7 +20114,7 @@ mod tests {
             extension: image_format_extension(ImageFormat::FastRgbaZstd).to_string(),
         };
         let cached =
-            encode_fast_rgba_zstd_with_validation(&[0, 0, 0, 0], 1, 1, 123).expect("encode cached");
+            encode_fast_rgba_zstd(&[0, 0, 0, 0], 1, 1, Some(123)).expect("encode cached");
         TileCache::new(&cache_root, 1)
             .write_encoded(&cache_key, &cached)
             .expect("write cached tile");
@@ -20327,7 +20310,7 @@ mod tests {
                 ("states".to_string(), NbtTag::Compound(IndexMap::new())),
                 ("version".to_string(), NbtTag::Int(1)),
             ]));
-            bytes.extend_from_slice(&bedrock_world::nbt::serialize_root_nbt(&tag).expect("nbt"));
+            bytes.extend_from_slice(&bedrock_world::nbt::serialize_root(&tag).expect("nbt"));
         }
         bytes
     }
@@ -20384,7 +20367,7 @@ mod tests {
                 ("states".to_string(), NbtTag::Compound(IndexMap::new())),
                 ("version".to_string(), NbtTag::Int(1)),
             ]));
-            bytes.extend_from_slice(&bedrock_world::nbt::serialize_root_nbt(&tag).expect("nbt"));
+            bytes.extend_from_slice(&bedrock_world::nbt::serialize_root(&tag).expect("nbt"));
         }
         bytes
     }
@@ -20480,7 +20463,7 @@ mod tests {
                 ("states".to_string(), NbtTag::Compound(IndexMap::new())),
                 ("version".to_string(), NbtTag::Int(1)),
             ]));
-            bytes.extend_from_slice(&bedrock_world::nbt::serialize_root_nbt(&tag).expect("nbt"));
+            bytes.extend_from_slice(&bedrock_world::nbt::serialize_root(&tag).expect("nbt"));
         }
         bytes
     }
@@ -20534,7 +20517,7 @@ mod tests {
                 ),
                 ("version".to_string(), NbtTag::Int(1)),
             ]));
-            bytes.extend_from_slice(&bedrock_world::nbt::serialize_root_nbt(&tag).expect("nbt"));
+            bytes.extend_from_slice(&bedrock_world::nbt::serialize_root(&tag).expect("nbt"));
         }
         bytes
     }
@@ -20592,7 +20575,7 @@ mod tests {
                 ("states".to_string(), NbtTag::Compound(IndexMap::new())),
                 ("version".to_string(), NbtTag::Int(1)),
             ]));
-            bytes.extend_from_slice(&bedrock_world::nbt::serialize_root_nbt(&tag).expect("nbt"));
+            bytes.extend_from_slice(&bedrock_world::nbt::serialize_root(&tag).expect("nbt"));
         }
     }
 
@@ -20759,7 +20742,7 @@ mod tests {
     }
 
     fn test_block_entity_bytes(tag: NbtTag) -> Vec<u8> {
-        bedrock_world::nbt::serialize_root_nbt(&tag).expect("block entity nbt")
+        bedrock_world::nbt::serialize_root(&tag).expect("block entity nbt")
     }
 
     fn test_data3d_biome_layers_bytes(biomes: &[Option<i32>]) -> Vec<u8> {

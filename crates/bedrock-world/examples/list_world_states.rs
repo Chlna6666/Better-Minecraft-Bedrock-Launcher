@@ -49,7 +49,7 @@ fn main() {
     let mut states: BTreeMap<(String, String), (usize, [i32; 3])> = BTreeMap::new();
     let mut loaded = 0usize;
     for pos in positions {
-        let Ok(data) = world.query_chunk_data(pos, load_options()) else {
+        let Ok(data) = world.load_render_chunk(pos, load_options()) else {
             continue;
         };
         if !data.is_loaded {

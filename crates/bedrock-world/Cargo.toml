@@ -36,12 +36,13 @@ all-features = true
 
 [features]
 default = ["async", "bedrock-leveldb", "simd"]
-simd = ["dep:fearless_simd"]
+simd = ["dep:fearless_simd", "bedrock-nbt/simd"]
 async = ["dep:tokio", "bedrock-leveldb?/async"]
 bedrock-leveldb = ["dep:bedrock-leveldb", "bedrock-leveldb/zlib", "bedrock-leveldb/snappy"]
 leveldb-mmap = ["bedrock-leveldb", "bedrock-leveldb/mmap"]
 
 [dependencies]
+bedrock-nbt = { path = "../bedrock-nbt", version = "0.1.0", default-features = false, features = ["parallel"] }
 fearless_simd = { workspace = true, optional = true }
 bedrock-leveldb = { path = "../bedrock-leveldb", version = "0.7.0", default-features = false, optional = true }
 bytes = "1.10.1"

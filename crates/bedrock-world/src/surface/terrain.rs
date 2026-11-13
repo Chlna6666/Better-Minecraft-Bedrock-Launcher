@@ -118,7 +118,7 @@ pub(crate) fn missing_surface_columns(chunk: &ChunkData) -> usize {
     })
 }
 
-pub(crate) fn needed_exact_surface_chunk_requires_full_reload(chunk: &ChunkData) -> Result<bool> {
+pub(crate) fn exact_surface_reload_required(chunk: &ChunkData) -> Result<bool> {
     let Some(samples) = chunk.column_samples.as_ref() else {
         return Ok(false);
     };

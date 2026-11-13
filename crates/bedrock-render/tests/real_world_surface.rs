@@ -2,8 +2,9 @@ use bedrock_render::{
     ImageFormat, MapRenderer, RenderBackend, RenderJob, RenderLayout, RenderMode, RenderOptions,
     RenderPalette, RenderThreadingOptions, TileCoord,
 };
+use bedrock_world::level::read;
 use bedrock_world::{
-    ChunkPos, Dimension, NbtTag, OpenOptions, SubChunkFormat, World, read_level_dat_document,
+    ChunkPos, Dimension, NbtTag, OpenOptions, SubChunkFormat, World,
     surface::{
         ChunkData, ChunkLoadOptions, ExactSurfaceBiomeLoad, ExactSurfaceSubchunkPolicy,
         WorldThreadingOptions,
@@ -25,7 +26,7 @@ fn real_world_exact_surface_finds_secondary_storage_surface()
         z: spawn_chunk_z - 3,
         dimension: Dimension::Overworld,
     };
-    let chunk = world.query_chunk_data(target_pos, exact_surface_options())?;
+    let chunk = world.load_render_chunk(target_pos, exact_surface_options())?;
     let surface = find_layered_surface_column(&chunk).ok_or_else(|| {
         format!("no secondary-storage exact surface column found in chunk {target_pos:?}")
     })?;
@@ -93,7 +94,7 @@ fn real_world_zero_bit_top_subchunks_parse_and_sample_above_stone()
         };
         let local_x = u8::try_from(block_x.rem_euclid(16))?;
         let local_z = u8::try_from(block_z.rem_euclid(16))?;
-        let chunk = world.query_chunk_data(chunk_pos, exact_surface_options())?;
+        let chunk = world.load_render_chunk(chunk_pos, exact_surface_options())?;
         let subchunk = chunk
             .subchunks
             .get(&4)
@@ -159,7 +160,7 @@ fn real_world_cobblestone_slab_aliases_render_consistently()
         };
         let local_x = u8::try_from(block_x.rem_euclid(16))?;
         let local_z = u8::try_from(block_z.rem_euclid(16))?;
-        let chunk = world.query_chunk_data(chunk_pos, exact_surface_options())?;
+        let chunk = world.load_render_chunk(chunk_pos, exact_surface_options())?;
         let sample = chunk
             .column_sample_at(local_x, local_z)
             .ok_or_else(|| format!("missing exact surface at block ({block_x}, {block_z})"))?;
@@ -291,7 +292,7 @@ struct RealWorldLayeredSurface {
 }
 
 fn spawn_chunk(world_path: &Path) -> Option<(i32, i32)> {
-    let document = read_level_dat_document(&world_path.join("level.dat")).ok()?;
+    let document = read(&world_path.join("level.dat")).ok()?;
     let NbtTag::Compound(root) = document.root else {
         return None;
     };

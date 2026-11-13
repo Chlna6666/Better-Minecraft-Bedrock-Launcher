@@ -77,7 +77,11 @@ where
         self.put_raw(&ChunkKey::new(pos, ChunkRecordTag::Data3D), &value)
     }
 
-    pub(crate) fn biome_data(&self, pos: ChunkPos) -> Result<Option<BiomeData>> {
+    /// Reads the persisted biome model without selecting a different generation.
+    ///
+    /// # Errors
+    /// Returns storage, parsing or mixed-representation errors.
+    pub fn biome_data(&self, pos: ChunkPos) -> Result<Option<BiomeData>> {
         let mut parsed = None;
         let mut parsed_tag = None;
         for tag in [
@@ -351,7 +355,7 @@ mod tests {
         assert_eq!(parsed.storages[0].biome_id_at(1, 0, 1), Some(42));
 
         let chunk = world
-            .query_chunk_data(
+            .load_render_chunk(
                 pos,
                 ChunkLoadOptions::for_data_request(
                     ChunkDataRequest::new().biome(BiomeDataRequirement::All),
@@ -495,7 +499,7 @@ mod tests {
         assert!(matches!(error, BedrockWorldError::CorruptWorld(_)));
 
         let error = world
-            .query_chunk_data(
+            .load_render_chunk(
                 pos,
                 ChunkLoadOptions::for_data_request(ChunkDataRequest::new().height_map()),
             )

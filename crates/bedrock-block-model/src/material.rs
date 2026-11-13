@@ -215,7 +215,7 @@ impl BlockComponents {
             .get("minecraft:material_instances")
             .or_else(|| object.get("material_instances"))
         {
-            components.material_instances = material_instances_from_value(material_instances);
+            components.material_instances = instances_from_value(material_instances);
         }
 
         if let Some(textures) = object
@@ -280,7 +280,7 @@ impl BlockComponents {
         if self.material_instances.is_empty()
             && let Some(material_instances) = object.get("material_instances")
         {
-            self.material_instances = material_instances_from_value(material_instances);
+            self.material_instances = instances_from_value(material_instances);
         }
     }
 }
@@ -316,7 +316,7 @@ fn geometry_identifier(value: &Value) -> Option<String> {
     }
 }
 
-fn material_instances_from_value(value: &Value) -> BTreeMap<String, MaterialInstance> {
+fn instances_from_value(value: &Value) -> BTreeMap<String, MaterialInstance> {
     let mut material_instances = BTreeMap::new();
     let Some(object) = value.as_object() else {
         return material_instances;

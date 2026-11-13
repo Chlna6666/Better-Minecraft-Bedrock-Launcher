@@ -233,7 +233,7 @@ impl SubChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunk::{BlockPalette, BlockState, LegacySubChunkBuilder};
+    use crate::chunk::{BlockPalette, BlockState, LegacySubChunkBuilder, LegacySubChunkEncoding};
     use std::collections::BTreeMap;
 
     fn paletted_subchunk(version: u8, y: i8) -> SubChunk {
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn v7_reads_and_writes_as_v7() {
-        let legacy = LegacySubChunkBuilder::zeroed(7, false)
+        let legacy = LegacySubChunkBuilder::zeroed(7, LegacySubChunkEncoding::WithoutLightArrays)
             .unwrap()
             .build()
             .unwrap();
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn legacy_subchunk_versions_roundtrip_without_implicit_upgrade() {
         for version in [0_u8, 2, 3, 4, 5, 6, 7] {
-            let legacy = LegacySubChunkBuilder::zeroed(version, false)
+            let legacy = LegacySubChunkBuilder::zeroed(version, LegacySubChunkEncoding::WithoutLightArrays)
                 .unwrap()
                 .build()
                 .unwrap();
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn legacy_cross_version_write_refuses_missing_numeric_reverse_mapping() {
-        let legacy = LegacySubChunkBuilder::zeroed(7, false)
+        let legacy = LegacySubChunkBuilder::zeroed(7, LegacySubChunkEncoding::WithoutLightArrays)
             .unwrap()
             .build()
             .unwrap();

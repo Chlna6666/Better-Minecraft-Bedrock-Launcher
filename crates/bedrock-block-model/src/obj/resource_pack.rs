@@ -1,8 +1,8 @@
 use super::{
     HashMap, ObjResolvedTexture, PackResources, Path, PathBuf, ResourceFile, Result, Value,
-    block_definition, obj_normalize_texture_key, obj_texture_key_from_value, path_extension_eq,
-    path_starts_with_directory, prefixed_relative_path, read_texture_data_maps,
-    relative_path_string, replace_path_extension,
+    block_definition, normalize_texture_key, path_extension_eq, path_starts_with_directory,
+    prefixed_relative_path, read_texture_data_maps, relative_path_string, replace_path_extension,
+    texture_key_from_value,
 };
 use crate::json::read_resource_json;
 
@@ -76,7 +76,7 @@ impl ObjResourcePack {
                     for (key, value) in entries {
                         let paths: Vec<String> = super::terrain_texture_paths(value)
                             .into_iter()
-                            .map(|path| obj_normalize_texture_key(&path))
+                            .map(|path| normalize_texture_key(&path))
                             .collect();
                         if !paths.is_empty() {
                             texture_data.insert(key.clone(), paths);
@@ -111,7 +111,7 @@ impl ObjResourcePack {
                 let Some(texture) = entry.get("flipbook_texture").and_then(Value::as_str) else {
                     continue;
                 };
-                flipbook_textures.insert(obj_normalize_texture_key(texture), entry.clone());
+                flipbook_textures.insert(normalize_texture_key(texture), entry.clone());
             }
         }
         let (local_lights, local_light_error) = match super::lighting::read_local_lights(&resources)
@@ -145,13 +145,13 @@ impl ObjResourcePack {
     /// Whether the given texture path is declared as an animated flipbook strip.
     pub(super) fn is_flipbook_texture(&self, relative_path: &str) -> bool {
         self.flipbook_textures
-            .contains_key(&obj_normalize_texture_key(relative_path))
+            .contains_key(&normalize_texture_key(relative_path))
     }
 
     pub(super) fn flipbook_definition(&self, texture: &ObjResolvedTexture) -> Option<&Value> {
         (texture.pack_root == self.root).then_some(())?;
         self.flipbook_textures
-            .get(&obj_normalize_texture_key(&texture.relative_path))
+            .get(&normalize_texture_key(&texture.relative_path))
     }
 
     pub(super) fn block_texture_key_for(&self, block: &str, normal: [i32; 3]) -> Option<String> {
@@ -163,7 +163,7 @@ impl ObjResourcePack {
             .get("textures")
             .or_else(|| object.get("texture"))
             .or_else(|| object.get("carried_textures"))?;
-        obj_texture_key_from_value(textures, normal)
+        texture_key_from_value(textures, normal)
     }
 
     /// Returns the terrain-texture path registered for one key in this pack.

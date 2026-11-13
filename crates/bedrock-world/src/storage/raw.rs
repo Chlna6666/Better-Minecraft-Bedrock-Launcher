@@ -609,20 +609,20 @@ pub mod backend {
     impl BedrockLevelDbStorage {
         /// Opens an existing Bedrock LevelDB for writes.
         pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-            Self::open_inner(path, false, true)
+            Self::open_level_db(path, false, true)
         }
 
         /// Opens an existing Bedrock LevelDB read-only.
         pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
-            Self::open_inner(path, true, true)
+            Self::open_level_db(path, true, true)
         }
 
         /// Opens read-only while allowing invalid table-block checksums.
         pub fn open_read_only_best_effort(path: impl AsRef<Path>) -> Result<Self> {
-            Self::open_inner(path, true, false)
+            Self::open_level_db(path, true, false)
         }
 
-        fn open_inner(
+        fn open_level_db(
             path: impl AsRef<Path>,
             read_only: bool,
             paranoid_checks: bool,
@@ -1122,6 +1122,8 @@ mod tests {
         storage.put(b"player_1", b"one").unwrap();
         storage.put(b"player_2", b"two").unwrap();
         storage.flush().unwrap();
+        drop(storage);
+
         let reopened = backend::BedrockLevelDbStorage::open(&path).unwrap();
         assert_eq!(
             reopened.get(b"player_1").unwrap(),
@@ -1132,7 +1134,6 @@ mod tests {
         assert!(reopened.get(b"player_2").unwrap().is_none());
 
         drop(reopened);
-        drop(storage);
         std::fs::remove_dir_all(path).unwrap();
     }
 }

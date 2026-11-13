@@ -59,7 +59,7 @@ where
     /// Only after both legacy and paletted staging complete successfully are their disjoint changes
     /// committed through one [`crate::world::WorldTransaction`]. `LegacyTerrain`, biomes, actors,
     /// player items and `level.dat` are deliberately outside this concrete operation.
-    pub fn upgrade_bedrock_subchunks(
+    pub fn upgrade_subchunks(
         &self,
         target: GameVersion,
         upgrade_data: &BlockUpgradeData,

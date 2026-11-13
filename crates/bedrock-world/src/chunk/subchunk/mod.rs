@@ -3,14 +3,14 @@
 use super::legacy::LegacySubChunk;
 use super::palette::{BlockPalette, BlockState, BlockStatePaletteEntry, PackedPaletteIndices};
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::{NbtTag, parse_root_nbt_with_consumed};
+use crate::nbt::{NbtTag, parse_root_with_consumed};
 use crate::surface::is_air_block_name;
 use bytes::Bytes;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-mod heightmap;
+pub mod heightmap;
 mod indices;
 mod memory;
 mod numeric_downgrade;
@@ -28,7 +28,6 @@ mod v8;
 mod v9;
 pub mod version;
 
-pub use heightmap::{SubChunkHeightMapContribution, subchunk_height_map_contribution};
 pub use numeric_downgrade::NumericSubChunkDowngradeReport;
 pub(crate) use numeric_downgrade::stage_subchunk_downgrade;
 pub use numeric_upgrade::NumericSubChunkUpgradeReport;
@@ -133,17 +132,17 @@ impl SubChunk {
         }
     }
 
-    pub(crate) fn visible_block_surface_states_at(
+    pub(crate) fn visible_surface_states_at(
         &self,
         local_x: u8,
         local_y: u8,
         local_z: u8,
-    ) -> VisibleBlockSurfaceStatesAt<'_> {
+    ) -> VisibleSurfaceStatesAt<'_> {
         let storages = match &self.format {
             SubChunkFormat::Paletted { storages, .. } => Some(storages.iter().enumerate().rev()),
             _ => None,
         };
-        VisibleBlockSurfaceStatesAt {
+        VisibleSurfaceStatesAt {
             storages,
             local_x,
             local_y,
@@ -202,14 +201,14 @@ impl<'chunk> Iterator for VisibleBlockStatesAt<'chunk> {
 }
 
 /// Iterator over visible block states including their storage-layer positions.
-pub(crate) struct VisibleBlockSurfaceStatesAt<'chunk> {
+pub(crate) struct VisibleSurfaceStatesAt<'chunk> {
     storages: Option<std::iter::Rev<std::iter::Enumerate<std::slice::Iter<'chunk, BlockPalette>>>>,
     local_x: u8,
     local_y: u8,
     local_z: u8,
 }
 
-impl<'chunk> Iterator for VisibleBlockSurfaceStatesAt<'chunk> {
+impl<'chunk> Iterator for VisibleSurfaceStatesAt<'chunk> {
     type Item = BlockStatePaletteEntry<'chunk>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -355,7 +354,7 @@ fn parse_palette_storages<const SIMD: bool>(
 
         let mut states = Vec::with_capacity(palette_len);
         for _ in 0..palette_len {
-            let (tag, consumed) = parse_root_nbt_with_consumed(&bytes[offset..])?;
+            let (tag, consumed) = parse_root_with_consumed(&bytes[offset..])?;
             offset += consumed;
             states.push(block_state_from_nbt(tag));
         }

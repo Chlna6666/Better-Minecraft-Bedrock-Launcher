@@ -310,7 +310,10 @@ mod tests {
             dimension: Dimension::Overworld,
         };
         let key = ChunkKey::subchunk(pos, 0).encode();
-        let legacy = crate::chunk::LegacySubChunkBuilder::zeroed(7, false)
+        let legacy = crate::chunk::LegacySubChunkBuilder::zeroed(
+            7,
+            crate::chunk::LegacySubChunkEncoding::WithoutLightArrays,
+        )
             .expect("builder")
             .build()
             .expect("legacy V7");

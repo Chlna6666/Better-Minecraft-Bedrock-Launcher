@@ -6,7 +6,7 @@
 
 use crate::chunk::palette::BlockState;
 use crate::error::Result;
-use crate::nbt::{NbtTag, serialize_root_nbt};
+use crate::nbt::{NbtTag, serialize_root};
 use indexmap::IndexMap;
 
 impl BlockState {
@@ -32,7 +32,7 @@ impl BlockState {
 
     /// Serialises [`Self::canonical_nbt`] into stable Bedrock NBT bytes.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
-        serialize_root_nbt(&self.canonical_nbt())
+        Ok(serialize_root(&self.canonical_nbt())?)
     }
 
     /// Returns whether two block states are semantically identical.

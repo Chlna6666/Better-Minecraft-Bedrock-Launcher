@@ -270,7 +270,7 @@ struct BackgroundStatus {
 enum BackgroundCommand {
     Flush(Arc<ImmutableMemTable>),
     Compact {
-        force: bool,
+        mode: compaction::CompactionMode,
         done: mpsc::Sender<Result<()>>,
     },
     Shutdown,
@@ -400,19 +400,14 @@ impl Db {
 
     /// Reads one key using default options.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        self.get_owned(key)
+        Ok(self
+            .get_with_ref(key, ReadOptions::default())?
+            .map(ValueRef::into_bytes))
     }
 
     /// Reads one key as a borrowed-first value view.
     pub fn get_ref(&self, key: &[u8]) -> Result<Option<ValueRef<'static>>> {
         self.get_with_ref(key, ReadOptions::default())
-    }
-
-    /// Reads one key as shared owned bytes.
-    pub fn get_owned(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        Ok(self
-            .get_with_ref(key, ReadOptions::default())?
-            .map(ValueRef::into_bytes))
     }
 
     /// Reads one key with explicit options.
@@ -454,7 +449,7 @@ impl Db {
             if !path.exists() {
                 continue;
             }
-            match table::get_table_lookup(
+            match table::get_lookup(
                 &path,
                 key,
                 read_checksums(&self.shared.options, &options),
@@ -540,7 +535,7 @@ impl Db {
                 .map(|index| keys[*index].clone())
                 .collect::<Vec<_>>();
             table_probes = table_probes.saturating_add(1);
-            let lookups = table::get_table_lookups(
+            let lookups = table::get_lookups(
                 &path,
                 &table_keys,
                 read_checksums(&self.shared.options, &options),
@@ -638,17 +633,6 @@ impl Db {
         Ok(())
     }
 
-    #[cfg(test)]
-    /// Visits visible keys. This compatibility surface no longer keeps the DB
-    /// metadata lock during table I/O; the table scan implementation will be
-    /// replaced by the batch cursor in the next storage-scan stage.
-    pub fn for_each_key<F>(&self, options: ReadOptions, mut visitor: F) -> Result<ScanOutcome>
-    where
-        F: FnMut(&[u8]) -> Result<VisitorControl> + Send,
-    {
-        self.for_each_entry(options, |key, _value| visitor(key))
-    }
-
     /// Visits visible key/value entries using a pinned read state.
     pub fn for_each_entry<F>(&self, options: ReadOptions, mut visitor: F) -> Result<ScanOutcome>
     where
@@ -720,7 +704,8 @@ impl Db {
         self.background()?.ensure_healthy()?;
         self.rotate_active_memtable(true)?;
         self.background()?.wait_for_flushes()?;
-        self.background()?.compact(true)
+        self.background()?
+            .compact(compaction::CompactionMode::Forced)
     }
 
     /// Rebuilds a native manifest/table from readable tables and logs.
@@ -874,7 +859,7 @@ impl Db {
             if !path.exists() {
                 continue;
             }
-            let table_outcome = table::for_each_table_lookup(
+            let table_outcome = table::for_each_lookup(
                 &path,
                 verify_checksums,
                 read_cache(options, &self.shared.block_cache),
@@ -1033,12 +1018,12 @@ impl Background {
         Ok(())
     }
 
-    fn compact(&self, force: bool) -> Result<()> {
+    fn compact(&self, mode: compaction::CompactionMode) -> Result<()> {
         self.ensure_healthy()?;
         let (done_sender, done_receiver) = mpsc::channel();
         self.sender
             .send(BackgroundCommand::Compact {
-                force,
+                mode,
                 done: done_sender,
             })
             .map_err(|_| {
@@ -1091,18 +1076,21 @@ fn background_worker(
                 }
                 if result.is_ok()
                     && let Some(shared) = shared.upgrade()
-                    && let Err(error) = compact_levels(&shared, false)
+                    && let Err(error) = compact_levels(
+                        &shared,
+                        compaction::CompactionMode::Thresholds,
+                    )
                 {
                     log::warn!("automatic LevelDB compaction failed: {error}");
                 }
             }
-            BackgroundCommand::Compact { force, done } => {
+            BackgroundCommand::Compact { mode, done } => {
                 let result = shared
                     .upgrade()
                     .ok_or_else(|| {
                         LevelDbError::corruption("database closed during background compaction")
                     })
-                    .and_then(|shared| compact_levels(&shared, force));
+                    .and_then(|shared| compact_levels(&shared, mode));
                 let _ = done.send(result);
             }
             BackgroundCommand::Shutdown => break,
@@ -1203,11 +1191,11 @@ fn install_empty_immutable(
     Ok(())
 }
 
-fn compact_levels(shared: &Arc<SharedDb>, force: bool) -> Result<()> {
+fn compact_levels(shared: &Arc<SharedDb>, mode: compaction::CompactionMode) -> Result<()> {
     loop {
         let (plan, version_pin) = {
             let inner = read_lock(&shared.inner, "planning background compaction")?;
-            let Some(plan) = compaction::plan(&inner.manifest, force) else {
+            let Some(plan) = compaction::plan(&inner.manifest, mode) else {
                 return Ok(());
             };
             (plan, Arc::clone(&inner.version))
@@ -1359,7 +1347,7 @@ fn collect_visible_from_state(
         if !path.exists() {
             continue;
         }
-        table::for_each_table_lookup(
+        table::for_each_lookup(
             &path,
             read_checksums(&shared.options, options),
             read_cache(options, &shared.block_cache),
@@ -1719,23 +1707,33 @@ fn parse_file_number(path: &Path) -> Option<u64> {
 
 fn repair_database(root: &Path, options: &LevelDbOpenOptions) -> Result<RepairReport> {
     let mut report = RepairReport::default();
-    let source_manifest = match Manifest::load(root) {
-        Ok(manifest) => manifest,
+    let (source_manifest, recover_orphan_tables) = match Manifest::load(root) {
+        Ok(manifest) => (manifest, false),
         Err(error) if error.kind() == ErrorKind::NotFound && options.create_if_missing => {
-            Manifest::default()
+            (Manifest::default(), true)
         }
         Err(error) => return Err(error),
     };
+    let referenced_tables = source_manifest
+        .table_numbers
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
     let mut values = BTreeMap::new();
     let mut last_sequence = source_manifest.last_sequence;
     let paths = sorted_database_paths(root)?;
 
     for path in paths
         .iter()
-        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("ldb"))
+        .filter(|path| {
+            path.extension().and_then(|extension| extension.to_str()) == Some("ldb")
+                && (recover_orphan_tables
+                    || parse_file_number(path)
+                        .is_some_and(|number| referenced_tables.contains(&number)))
+        })
     {
-        match table::read_table_lookups(path, false).and_then(|entries| {
-            table::read_table_max_sequence(path, false).map(|sequence| (entries, sequence))
+        match table::read_lookups(path, false).and_then(|entries| {
+            table::read_max_sequence(path, false).map(|sequence| (entries, sequence))
         }) {
             Ok((entries, sequence)) => {
                 for (key, lookup) in entries {

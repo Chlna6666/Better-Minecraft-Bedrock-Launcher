@@ -1,6 +1,6 @@
 use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
-use crate::model_family::direction::{CardinalDirection, direction_connected};
+use crate::model_family::direction::{CardinalDirection, connected};
 use crate::model_family::shape::{
     ModelCuboid, ModelShape, apply_jmc_box_uv, detail_cuboid_with_local_uv, uv16,
 };
@@ -22,7 +22,7 @@ pub(crate) fn shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     pane_shape_from_connections(
         CardinalDirection::ALL
             .into_iter()
-            .filter(|direction| direction_connected(state, *direction)),
+            .filter(|direction| connected(state, *direction)),
         kind,
     )
 }

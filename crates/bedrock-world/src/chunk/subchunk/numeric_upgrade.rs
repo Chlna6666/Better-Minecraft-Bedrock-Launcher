@@ -589,9 +589,10 @@ mod tests {
     use crate::block::{BlockStateSchemaSource, BlockStateStorageVersion};
     use crate::chunk::{
         ChunkKey, ChunkPos, Dimension, LegacyBlockExtraDataBuilder, LegacySubChunkBuilder,
+        LegacySubChunkEncoding,
         SubChunkDecodeMode,
     };
-    use crate::nbt::{NbtTag, serialize_root_nbt};
+    use crate::nbt::{NbtTag, serialize_root};
     use crate::storage::MemoryStorage;
     use crate::version::GameVersion;
     use indexmap::IndexMap;
@@ -644,7 +645,7 @@ mod tests {
             table.extend_from_slice(name.as_bytes());
             put_var_u32(1, &mut table);
             put_var_u32(meta, &mut table);
-            table.extend(serialize_root_nbt(&root).expect("serialize numeric state"));
+            table.extend(serialize_root(&root).expect("serialize numeric state"));
         }
         LegacyNumericBlockStateTable::parse(
             &table,
@@ -704,7 +705,7 @@ mod tests {
             dimension: Dimension::Overworld,
         };
         let key = ChunkKey::subchunk(pos, 0).encode();
-        let mut builder = LegacySubChunkBuilder::zeroed(7, false).expect("V7 builder");
+        let mut builder = LegacySubChunkBuilder::zeroed(7, LegacySubChunkEncoding::WithoutLightArrays).expect("V7 builder");
         builder.set_block(1, 2, 3, 1, 2).expect("set legacy block");
         let source = builder.build().expect("V7").into_raw();
         storage.put(&key, &source).expect("seed V7");
@@ -751,7 +752,7 @@ mod tests {
             dimension: Dimension::Overworld,
         };
         let subchunk_key = ChunkKey::subchunk(pos, 0).encode();
-        let mut builder = LegacySubChunkBuilder::zeroed(7, true).expect("V7 builder");
+        let mut builder = LegacySubChunkBuilder::zeroed(7, LegacySubChunkEncoding::WithLightArrays).expect("V7 builder");
         builder
             .set_block(1, 2, 3, 1, 2)
             .expect("set primary legacy block");
@@ -831,7 +832,7 @@ mod tests {
         storage
             .put(
                 &subchunk_key,
-                &LegacySubChunkBuilder::zeroed(7, false)
+                &LegacySubChunkBuilder::zeroed(7, LegacySubChunkEncoding::WithoutLightArrays)
                     .expect("builder")
                     .build()
                     .expect("V7")

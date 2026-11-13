@@ -10,7 +10,7 @@ use crate::map_item::MapItemId;
 fn read_subchunk(y: i8, bytes: Bytes) -> crate::error::Result<SubChunk> {
     SubChunk::read(y, bytes, SubChunkDecodeMode::FullIndices)
 }
-use crate::nbt::{NbtTag, serialize_root_nbt};
+use crate::nbt::{NbtTag, serialize_root};
 use bytes::Bytes;
 use indexmap::IndexMap;
 
@@ -148,6 +148,7 @@ fn chunk_record_tags_align_with_bedrock_level_reference() {
         (0x40, ChunkRecordTag::BlendingData),
         (0x41, ChunkRecordTag::ActorDigestVersion),
         (0x76, ChunkRecordTag::VersionOld),
+        (0x77, ChunkRecordTag::AabbVolumes),
     ];
     for (byte, tag) in expected {
         assert_eq!(ChunkRecordTag::from_byte(byte), tag);
@@ -462,7 +463,7 @@ fn visible_surface_state_iterator_reports_palette_positions() {
     };
     assert_eq!(storages.len(), 3);
     let visible_entries = subchunk
-        .visible_block_surface_states_at(1, 2, 3)
+        .visible_surface_states_at(1, 2, 3)
         .map(|entry| (entry.storage_index, entry.state.name.as_str()))
         .collect::<Vec<_>>();
     assert_eq!(
@@ -600,7 +601,7 @@ fn build_paletted_subchunk(
             ("states".to_string(), NbtTag::Compound(IndexMap::new())),
             ("version".to_string(), NbtTag::Int(1)),
         ]));
-        bytes.extend_from_slice(&serialize_root_nbt(&tag).expect("serialize palette"));
+        bytes.extend_from_slice(&serialize_root(&tag).expect("serialize palette"));
     }
     bytes
 }
@@ -612,7 +613,7 @@ fn append_zero_bit_palette_storage(bytes: &mut Vec<u8>, name: &str) {
         ("states".to_string(), NbtTag::Compound(IndexMap::new())),
         ("version".to_string(), NbtTag::Int(1)),
     ]));
-    bytes.extend_from_slice(&serialize_root_nbt(&tag).expect("serialize palette"));
+    bytes.extend_from_slice(&serialize_root(&tag).expect("serialize palette"));
 }
 
 fn build_two_storage_paletted_subchunk(lower_name: &str, upper_name: &str) -> Vec<u8> {
@@ -663,6 +664,6 @@ fn append_test_palette_storage(
             ("states".to_string(), NbtTag::Compound(IndexMap::new())),
             ("version".to_string(), NbtTag::Int(1)),
         ]));
-        bytes.extend_from_slice(&serialize_root_nbt(&tag).expect("serialize palette"));
+        bytes.extend_from_slice(&serialize_root(&tag).expect("serialize palette"));
     }
 }

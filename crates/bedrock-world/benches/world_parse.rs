@@ -1,8 +1,7 @@
+use bedrock_world::level::{parse, read};
 use bedrock_world::{
     BedrockLevelDbStorage, ChunkPos, Dimension, NbtReader, NbtTag, NbtWriter, OpenOptions,
-    ScanOptions, World,
-    chunk::{SubChunk, SubChunkDecodeMode},
-    parse_level_dat_document, read_level_dat_document,
+    ScanOptions, World, chunk::{SubChunk, SubChunkDecodeMode},
 };
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use indexmap::IndexMap;
@@ -29,7 +28,7 @@ fn bench_level_dat(c: &mut Criterion) {
     let mut group = c.benchmark_group("bedrock_world/level_dat");
     group.throughput(Throughput::Bytes(synthetic.len() as u64));
     group.bench_function("parse_synthetic", |b| {
-        b.iter(|| parse_level_dat_document(black_box(&synthetic)).expect("parse level.dat"));
+        b.iter(|| parse(black_box(&synthetic)).expect("parse level.dat"));
     });
     group.bench_function("nbt_events_synthetic", |b| {
         let nbt_payload = &synthetic[8..];
@@ -64,7 +63,7 @@ fn bench_level_dat(c: &mut Criterion) {
     });
     if level_dat_path.exists() {
         group.bench_function("read_fixture", |b| {
-            b.iter(|| read_level_dat_document(black_box(&level_dat_path)).expect("read level.dat"));
+            b.iter(|| read(black_box(&level_dat_path)).expect("read level.dat"));
         });
     } else {
         eprintln!(
@@ -141,12 +140,12 @@ fn bench_large_fixture(c: &mut Criterion) {
         });
     });
 
-    c.bench_function("bedrock_world/chunk/parse_fixture_chunk", |b| {
+    c.bench_function("bedrock_world/chunk/scan_fixture", |b| {
         b.iter(|| {
             black_box(
                 world
                     .scan_chunk(black_box(pos), ScanOptions::full())
-                    .expect("parse chunk"),
+                    .expect("scan chunk"),
             )
         });
     });

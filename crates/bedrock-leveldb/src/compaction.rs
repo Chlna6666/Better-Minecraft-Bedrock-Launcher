@@ -16,6 +16,12 @@ const MAX_COMPACTION_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 const STREAM_QUEUE_DEPTH: usize = 4;
 const COMPACTION_STREAM_STACK_BYTES: usize = 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompactionMode {
+    Thresholds,
+    Forced,
+}
+
 pub(crate) struct CompactionPlan {
     pub(crate) inputs: Vec<TableFileMeta>,
     pub(crate) output_level: u32,
@@ -82,8 +88,8 @@ impl Ord for HeapEntry {
     }
 }
 
-pub(crate) fn plan(manifest: &Manifest, force: bool) -> Option<CompactionPlan> {
-    let input_level = choose_input_level(manifest, force)?;
+pub(crate) fn plan(manifest: &Manifest, mode: CompactionMode) -> Option<CompactionPlan> {
+    let input_level = choose_input_level(manifest, mode)?;
     let mut inputs = if input_level == 0 {
         let mut level_zero = manifest
             .table_files
@@ -126,7 +132,7 @@ fn take_bounded_level_zero_inputs(level_zero: Vec<TableFileMeta>) -> Vec<TableFi
         if selected.len() >= MAX_LEVEL_ZERO_INPUTS_PER_PASS {
             break;
         }
-        let table_bytes = compaction_budget_bytes(&table);
+        let table_bytes = budget_bytes(&table);
         if !selected.is_empty()
             && selected_bytes.saturating_add(table_bytes) > MAX_COMPACTION_SOURCE_BYTES
         {
@@ -139,7 +145,7 @@ fn take_bounded_level_zero_inputs(level_zero: Vec<TableFileMeta>) -> Vec<TableFi
     selected
 }
 
-fn compaction_budget_bytes(table: &TableFileMeta) -> u64 {
+fn budget_bytes(table: &TableFileMeta) -> u64 {
     if table.file_size == 0 {
         TARGET_OUTPUT_FILE_BYTES
     } else {
@@ -352,13 +358,15 @@ fn advance_stream(
     Ok(())
 }
 
-fn choose_input_level(manifest: &Manifest, force: bool) -> Option<u32> {
+fn choose_input_level(manifest: &Manifest, mode: CompactionMode) -> Option<u32> {
     let level_zero_count = manifest
         .table_files
         .iter()
         .filter(|table| table.level == 0)
         .count();
-    if level_zero_count >= LEVEL_ZERO_FILE_TRIGGER || (force && level_zero_count != 0) {
+    if level_zero_count >= LEVEL_ZERO_FILE_TRIGGER
+        || (mode == CompactionMode::Forced && level_zero_count != 0)
+    {
         return Some(0);
     }
     for level in 1..MAX_LEVEL {
@@ -372,7 +380,9 @@ fn choose_input_level(manifest: &Manifest, force: bool) -> Option<u32> {
             table_count = table_count.saturating_add(1);
             bytes = bytes.saturating_add(table.file_size);
         }
-        if bytes > level_size_limit(level) || (force && table_count != 0) {
+        if bytes > level_size_limit(level)
+            || (mode == CompactionMode::Forced && table_count != 0)
+        {
             return Some(level);
         }
     }
@@ -561,7 +571,7 @@ mod tests {
             manifest.table_files.push(table);
         }
 
-        let plan = plan(&manifest, true).expect("forced level-zero plan");
+        let plan = plan(&manifest, CompactionMode::Forced).expect("forced level-zero plan");
         let level_zero_inputs = plan.inputs.iter().filter(|table| table.level == 0).count();
         assert_eq!(level_zero_inputs, MAX_LEVEL_ZERO_INPUTS_PER_PASS);
     }
@@ -577,7 +587,8 @@ mod tests {
             manifest.table_files.push(table);
         }
 
-        let plan = plan(&manifest, true).expect("byte-bounded level-zero plan");
+        let plan = plan(&manifest, CompactionMode::Forced)
+            .expect("byte-bounded level-zero plan");
         let level_zero_inputs = plan
             .inputs
             .iter()
@@ -602,7 +613,8 @@ mod tests {
         manifest.table_numbers.push(oversized.number);
         manifest.table_files.push(oversized);
 
-        let plan = plan(&manifest, true).expect("oversized level-zero plan");
+        let plan = plan(&manifest, CompactionMode::Forced)
+            .expect("oversized level-zero plan");
         assert_eq!(
             plan.inputs.iter().filter(|table| table.level == 0).count(),
             1

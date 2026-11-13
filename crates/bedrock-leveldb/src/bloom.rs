@@ -46,7 +46,7 @@ impl BloomFilterBlockBuilder {
                 "cannot append to a finished bloom filter block".to_string(),
             ));
         }
-        self.hashes.push(bloom_hash(key));
+        self.hashes.push(hash(key));
         Ok(())
     }
 
@@ -182,7 +182,7 @@ impl BloomFilterBlock {
         if start > limit || limit > self.array_offset {
             return true;
         }
-        bloom_key_may_match(key, &self.data[start..limit])
+        key_may_match(key, &self.data[start..limit])
     }
 
     #[must_use]
@@ -191,7 +191,7 @@ impl BloomFilterBlock {
     }
 }
 
-fn bloom_key_may_match(key: &[u8], filter: &[u8]) -> bool {
+fn key_may_match(key: &[u8], filter: &[u8]) -> bool {
     if filter.len() < 2 {
         return false;
     }
@@ -204,7 +204,7 @@ fn bloom_key_may_match(key: &[u8], filter: &[u8]) -> bool {
     if bits == 0 {
         return false;
     }
-    let mut h = bloom_hash(key);
+    let mut h = hash(key);
     let delta = h.rotate_right(17);
     for _ in 0..probes {
         let bit_position = usize::try_from(h).unwrap_or(usize::MAX) % bits;
@@ -216,7 +216,7 @@ fn bloom_key_may_match(key: &[u8], filter: &[u8]) -> bool {
     true
 }
 
-fn bloom_hash(data: &[u8]) -> u32 {
+fn hash(data: &[u8]) -> u32 {
     leveldb_hash(data, BLOOM_HASH_SEED)
 }
 

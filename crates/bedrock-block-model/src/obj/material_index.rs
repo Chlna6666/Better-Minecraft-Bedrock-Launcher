@@ -59,7 +59,7 @@ impl MaterialIndexFile {
     }
 }
 
-fn material_index_key(material: &str, normal: [i32; 3]) -> String {
+fn key(material: &str, normal: [i32; 3]) -> String {
     format!("{material}|{},{},{}", normal[0], normal[1], normal[2])
 }
 
@@ -88,7 +88,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .entries
-            .insert(material_index_key("minecraft_stone", [0, 1, 0]), None);
+            .insert(key("minecraft_stone", [0, 1, 0]), None);
         assert!(resolver.texture_for("minecraft_stone", [0, 1, 0]).is_none());
     }
 
@@ -303,7 +303,7 @@ impl ObjTextureResolver {
     /// and file restoration run outside the shared index lock.
     #[must_use]
     pub fn texture_for(&self, material: &str, normal: [i32; 3]) -> Option<ObjResolvedTexture> {
-        let key = material_index_key(material, normal);
+        let key = key(material, normal);
         let cached = {
             let state = self
                 .material_index

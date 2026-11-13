@@ -331,6 +331,7 @@ mod tests {
                 "abilities".to_string(),
                 NbtTag::Compound(abilities),
             )])),
+            None,
         )
         .unwrap();
 

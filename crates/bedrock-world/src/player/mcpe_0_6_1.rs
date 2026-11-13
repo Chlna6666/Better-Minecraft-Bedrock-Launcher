@@ -15,12 +15,12 @@ const MCPE_0_6_1_STORAGE_VERSION: i32 = 3;
 
 /// Compatibility report for writing one player as MCPE 0.6.1 `level.dat.Player`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Mcpe061PlayerCheckReport {
+pub struct CompatibilityReport {
     /// Human-readable persisted-shape violations. An empty list means the player can be written.
     pub issues: Vec<String>,
 }
 
-impl Mcpe061PlayerCheckReport {
+impl CompatibilityReport {
     /// Returns whether no incompatible persisted shape was found.
     #[must_use]
     pub fn is_compatible(&self) -> bool {
@@ -33,9 +33,9 @@ impl PlayerData {
     ///
     /// Unknown fields are intentionally ignored and therefore preserved by the writer. Known newer
     /// storage such as `Offhand`/`OffHandItem` is rejected because MCPE 0.6.1 has no equivalent slot.
-    pub fn check_for_mcpe_0_6_1(&self) -> Result<Mcpe061PlayerCheckReport> {
+    pub fn check_mcpe_0_6_1(&self) -> Result<CompatibilityReport> {
         let root = self.root()?;
-        let mut report = Mcpe061PlayerCheckReport::default();
+        let mut report = CompatibilityReport::default();
 
         require_float_list(root, "Pos", 3, &mut report);
         require_float_list(root, "Motion", 3, &mut report);
@@ -66,10 +66,7 @@ impl PlayerData {
 /// The target must use level header version `3` and `StorageVersion=3`. The player is preflighted
 /// completely before the target document is changed. This function does not alter world terrain,
 /// saved-item IDs, player source storage, or any unrelated `level.dat` field.
-pub fn write_mcpe_0_6_1_level_dat_player(
-    document: &mut LevelDatDocument,
-    player: &PlayerData,
-) -> Result<()> {
+pub fn write_level_dat(document: &mut LevelDatDocument, player: &PlayerData) -> Result<()> {
     if document.header.version != MCPE_0_6_1_LEVEL_VERSION {
         return Err(BedrockWorldError::Validation(format!(
             "MCPE 0.6.1 player target requires level.dat header version {MCPE_0_6_1_LEVEL_VERSION}, got {}",
@@ -95,7 +92,7 @@ pub fn write_mcpe_0_6_1_level_dat_player(
         }
     }
 
-    let report = player.check_for_mcpe_0_6_1()?;
+    let report = player.check_mcpe_0_6_1()?;
     if !report.is_compatible() {
         return Err(BedrockWorldError::Validation(format!(
             "player is not writable as MCPE 0.6.1 level.dat.Player: {}",
@@ -114,7 +111,7 @@ fn require_float_list(
     root: &IndexMap<String, NbtTag>,
     field: &str,
     expected_len: usize,
-    report: &mut Mcpe061PlayerCheckReport,
+    report: &mut CompatibilityReport,
 ) {
     let Some(value) = root.get(field) else {
         report.issues.push(format!("missing {field}"));
@@ -146,7 +143,7 @@ fn require_type(
     field: &str,
     matches_type: fn(&NbtTag) -> bool,
     expected: &str,
-    report: &mut Mcpe061PlayerCheckReport,
+    report: &mut CompatibilityReport,
 ) {
     match root.get(field) {
         Some(value) if matches_type(value) => {}
@@ -155,7 +152,7 @@ fn require_type(
     }
 }
 
-fn check_inventory(root: &IndexMap<String, NbtTag>, report: &mut Mcpe061PlayerCheckReport) {
+fn check_inventory(root: &IndexMap<String, NbtTag>, report: &mut CompatibilityReport) {
     let Some(value) = root.get("Inventory") else {
         report.issues.push("missing Inventory".to_string());
         return;
@@ -196,7 +193,7 @@ fn check_inventory(root: &IndexMap<String, NbtTag>, report: &mut Mcpe061PlayerCh
     }
 }
 
-fn check_armor(root: &IndexMap<String, NbtTag>, report: &mut Mcpe061PlayerCheckReport) {
+fn check_armor(root: &IndexMap<String, NbtTag>, report: &mut CompatibilityReport) {
     let Some(value) = root.get("Armor") else {
         report.issues.push("missing Armor".to_string());
         return;
@@ -233,7 +230,7 @@ fn check_armor(root: &IndexMap<String, NbtTag>, report: &mut Mcpe061PlayerCheckR
     }
 }
 
-fn reject_newer_equipment(root: &IndexMap<String, NbtTag>, report: &mut Mcpe061PlayerCheckReport) {
+fn reject_newer_equipment(root: &IndexMap<String, NbtTag>, report: &mut CompatibilityReport) {
     if let Some(NbtTag::List(values)) = root.get("Offhand")
         && !values.is_empty()
     {
@@ -262,7 +259,7 @@ fn require_item_field(
     field: &str,
     matches_type: fn(&NbtTag) -> bool,
     expected: &str,
-    report: &mut Mcpe061PlayerCheckReport,
+    report: &mut CompatibilityReport,
 ) {
     match item.get(field) {
         Some(value) if matches_type(value) => {}
@@ -344,6 +341,7 @@ mod tests {
                 ),
                 ("FutureField".to_string(), NbtTag::Long(9)),
             ])),
+            None,
         )
         .unwrap()
     }
@@ -351,7 +349,7 @@ mod tests {
     #[test]
     fn compatible_player_keeps_unknown_fields() {
         let player = player();
-        assert!(player.check_for_mcpe_0_6_1().unwrap().is_compatible());
+        assert!(player.check_mcpe_0_6_1().unwrap().is_compatible());
         let NbtTag::Compound(root) = &player.nbt else {
             panic!("compound");
         };
@@ -373,7 +371,7 @@ mod tests {
             NbtTag::String("minecraft:stone".to_string()),
         );
         root.insert("OffHandItem".to_string(), NbtTag::Compound(IndexMap::new()));
-        let report = player.check_for_mcpe_0_6_1().unwrap();
+        let report = player.check_mcpe_0_6_1().unwrap();
         assert!(!report.is_compatible());
         assert!(report.issues.iter().any(|issue| issue.contains("named")));
         assert!(
@@ -394,7 +392,7 @@ mod tests {
                 NbtTag::Int(3),
             )])),
         );
-        write_mcpe_0_6_1_level_dat_player(&mut level, &player).unwrap();
+        write_level_dat(&mut level, &player).unwrap();
         let NbtTag::Compound(root) = level.root else {
             panic!("compound");
         };

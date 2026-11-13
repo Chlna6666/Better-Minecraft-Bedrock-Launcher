@@ -5,10 +5,10 @@
 //! `BlockEntity` chunk records so normal World query APIs can inspect the complete old world
 //! without caller-side file plumbing.
 
-use super::entities::read_pocket_entities_dat;
+use super::entities::read;
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag, Dimension};
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::{NbtTag, serialize_root_nbt};
+use crate::nbt::{NbtTag, serialize_root};
 use crate::storage::{
     PocketChunksDatStorage, StorageBatch, StorageReadOptions, StorageScanOutcome,
     StorageVisitorControl, WorldStorage,
@@ -127,7 +127,7 @@ impl WorldStorage for PocketWorldStorage {
 }
 
 fn build_entity_records(world_path: &Path) -> Result<BTreeMap<Vec<u8>, Bytes>> {
-    let document = read_pocket_entities_dat(world_path)?;
+    let document = read(world_path)?;
     if document.version() != CONFIRMED_ENTITIES_DAT_VERSION {
         return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
             "entities.dat version {} is not the confirmed Pocket Edition version {}",
@@ -252,7 +252,7 @@ fn integer_value(tag: Option<&NbtTag>) -> Option<i32> {
 fn serialize_consecutive_roots(roots: &[&NbtTag]) -> Result<Bytes> {
     let mut raw = Vec::new();
     for root in roots {
-        raw.extend_from_slice(&serialize_root_nbt(root)?);
+        raw.extend_from_slice(&serialize_root(root)?);
     }
     Ok(Bytes::from(raw))
 }

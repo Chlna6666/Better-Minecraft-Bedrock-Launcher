@@ -136,6 +136,7 @@ mod tests {
                 ("Sneaking".to_string(), NbtTag::Byte(1)),
                 ("FutureActorState".to_string(), NbtTag::Long(77)),
             ])),
+            None,
         )
         .unwrap();
 

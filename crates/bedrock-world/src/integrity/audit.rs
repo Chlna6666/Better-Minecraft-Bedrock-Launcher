@@ -9,8 +9,8 @@ use crate::chunk::{
 };
 use crate::entity::decode_actor_ids;
 use crate::error::{BedrockWorldError, Result};
-use crate::level::read_level_dat_document;
-use crate::nbt::{NbtTag, parse_consecutive_root_nbt, parse_root_nbt};
+use crate::level::read;
+use crate::nbt::{NbtTag, parse_consecutive_roots, parse_root};
 use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::world::{StorageBackend, World};
 use std::collections::{BTreeMap, BTreeSet};
@@ -208,7 +208,7 @@ impl Report {
 /// Audits one world folder and raw storage backend without modifying either.
 pub fn audit(world_path: &Path, storage: &dyn WorldStorage, options: Options) -> Result<Report> {
     let mut report = Report::default();
-    audit_level_dat(world_path, &options, &mut report);
+    level_dat(world_path, &options, &mut report);
 
     let mut actor_records = BTreeSet::<i64>::new();
     let mut actor_references = BTreeMap::<i64, usize>::new();
@@ -306,7 +306,7 @@ pub fn audit(world_path: &Path, storage: &dyn WorldStorage, options: Options) ->
                     ChunkRecordTag::BlockEntity | ChunkRecordTag::Entity
                         if options.validate_nbt =>
                     {
-                        if let Err(error) = parse_consecutive_root_nbt(value) {
+                        if let Err(error) = parse_consecutive_roots(value) {
                             report.push_issue(
                                 &options,
                                 Issue {
@@ -325,7 +325,7 @@ pub fn audit(world_path: &Path, storage: &dyn WorldStorage, options: Options) ->
                 report.actor_records = report.actor_records.saturating_add(1);
                 actor_records.insert(actor_id);
                 if options.validate_nbt {
-                    if let Err(error) = parse_consecutive_root_nbt(value) {
+                    if let Err(error) = parse_consecutive_roots(value) {
                         report.push_issue(
                             &options,
                             Issue {
@@ -363,7 +363,7 @@ pub fn audit(world_path: &Path, storage: &dyn WorldStorage, options: Options) ->
                 }
             }
             BedrockDbKey::LocalPlayer | BedrockDbKey::RemotePlayer(_) if options.validate_nbt => {
-                if let Err(error) = parse_root_nbt(value) {
+                if let Err(error) = parse_root(value) {
                     report.push_issue(
                         &options,
                         Issue {
@@ -463,9 +463,9 @@ pub fn audit(world_path: &Path, storage: &dyn WorldStorage, options: Options) ->
     Ok(report)
 }
 
-fn audit_level_dat(world_path: &Path, options: &Options, report: &mut Report) {
+fn level_dat(world_path: &Path, options: &Options, report: &mut Report) {
     let level_dat = world_path.join("level.dat");
-    match read_level_dat_document(&level_dat) {
+    match read(&level_dat) {
         Ok(document) => {
             for warning in &document.warnings {
                 report.push_issue(
@@ -553,7 +553,7 @@ mod tests {
     use super::*;
     use crate::chunk::{ChunkPos, Dimension};
     use crate::entity::{ActorDigestKey, ActorUid};
-    use crate::level::{LevelDatDocument, write_level_dat_document};
+    use crate::level::{LevelDatDocument, write};
     use crate::storage::MemoryStorage;
     use bytes::Bytes;
     use indexmap::IndexMap;
@@ -587,7 +587,7 @@ mod tests {
                 ("SpawnZ".to_string(), NbtTag::Int(0)),
             ])),
         );
-        write_level_dat_document(&temp.join("level.dat"), &document).expect("level.dat");
+        write(&temp.join("level.dat"), &document).expect("level.dat");
 
         let report = audit(
             &temp,

@@ -54,11 +54,11 @@ pub fn set_item_display(item: &mut NbtTag, name: &str, lore: &[String]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map_item::{filled_map_id, new_filled_map_item};
+    use crate::map_item::{filled_map_id, new_filled};
 
     #[test]
     fn labeling_map_preserves_uuid_and_future_tags() {
-        let mut item = new_filled_map_item(92, 4).expect("map");
+        let mut item = new_filled(92, 4).expect("map");
         let NbtTag::Compound(root) = &mut item else {
             panic!("item")
         };

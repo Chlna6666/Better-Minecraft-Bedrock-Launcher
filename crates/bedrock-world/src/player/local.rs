@@ -1,9 +1,9 @@
 //! Minecraft Bedrock `~local_player` LevelDB record and explicit movement to/from `level.dat.Player`.
 
-use super::level_dat::{read_level_dat_player, remove_level_dat_player, write_level_dat_player};
+use super::level_dat;
 use super::storage::{LocalPlayerRecords, classify_local_player_records};
 use crate::error::{BedrockWorldError, Result};
-use crate::level::{LevelDatDocument, read_level_dat_document, write_level_dat_document};
+use crate::level::{self, LevelDatDocument};
 use crate::player::{PlayerData, PlayerId};
 use crate::storage::{StorageBatch, WorldStorage};
 use bytes::Bytes;
@@ -18,7 +18,7 @@ const LOCAL_PLAYER_KEY: &[u8] = b"~local_player";
 /// An interruption can leave two identical copies, but cannot intentionally leave zero copies; the
 /// next call recognizes the matching destination and safely completes the move.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LocalPlayerStorageMoveReport {
+pub struct StorageMoveReport {
     /// Whether the requested source representation existed.
     pub source_found: bool,
     /// Whether the destination representation was created by this call.
@@ -29,22 +29,14 @@ pub struct LocalPlayerStorageMoveReport {
     pub source_removed: bool,
 }
 
-/// Reads `~local_player` and detects saved-item/version evidence from its contents.
-pub fn read_local_player(storage: &dyn WorldStorage) -> Result<Option<PlayerData>> {
-    storage
-        .get(LOCAL_PLAYER_KEY)?
-        .map(|raw| PlayerData::from_raw(PlayerId::Local, raw))
-        .transpose()
-}
-
-/// Reads `~local_player` with real Bedrock version evidence from `level.dat`.
-pub fn read_local_player_with_level(
+/// Reads `~local_player`, optionally using version evidence from its owning `level.dat`.
+pub fn read(
     storage: &dyn WorldStorage,
-    level: &LevelDatDocument,
+    level: Option<&LevelDatDocument>,
 ) -> Result<Option<PlayerData>> {
     storage
         .get(LOCAL_PLAYER_KEY)?
-        .map(|raw| PlayerData::from_raw_with_level(PlayerId::Local, raw, level))
+        .map(|raw| PlayerData::from_raw(PlayerId::Local, raw, level))
         .transpose()
 }
 
@@ -52,10 +44,10 @@ pub fn read_local_player_with_level(
 ///
 /// The supplied [`PlayerData`] must itself represent `~local_player`; this does not implicitly move
 /// another Bedrock player-record family.
-pub fn write_local_player(storage: &dyn WorldStorage, player: &PlayerData) -> Result<()> {
+pub fn write(storage: &dyn WorldStorage, player: &PlayerData) -> Result<()> {
     if player.id != PlayerId::Local {
         return Err(BedrockWorldError::Validation(
-            "write_local_player requires PlayerId::Local".to_string(),
+            "player::local::write requires PlayerId::Local".to_string(),
         ));
     }
     let mut batch = StorageBatch::new();
@@ -64,7 +56,7 @@ pub fn write_local_player(storage: &dyn WorldStorage, player: &PlayerData) -> Re
 }
 
 /// Deletes the exact `~local_player` key.
-pub fn delete_local_player(storage: &dyn WorldStorage) -> Result<()> {
+pub fn delete(storage: &dyn WorldStorage) -> Result<()> {
     let mut batch = StorageBatch::new();
     batch.delete(Bytes::from_static(LOCAL_PLAYER_KEY));
     storage.write_batch(&batch)
@@ -89,17 +81,14 @@ pub fn delete_local_player(storage: &dyn WorldStorage) -> Result<()> {
 ///
 /// Returns an error when `level.dat` or LevelDB data cannot be read or written, the player NBT cannot
 /// be parsed/serialized, the destination conflicts with the source, or the destination write fails.
-pub fn move_level_dat_player_to_local_player(
-    world_path: &Path,
-    storage: &dyn WorldStorage,
-) -> Result<LocalPlayerStorageMoveReport> {
+pub fn move_from_level(world_path: &Path, storage: &dyn WorldStorage) -> Result<StorageMoveReport> {
     let level_path = world_path.join("level.dat");
-    let mut level = read_level_dat_document(&level_path)?;
-    let source = read_level_dat_player(&level)?;
-    let existing = read_local_player_with_level(storage, &level)?;
+    let mut level = level::read(&level_path)?;
+    let source = level_dat::read(&level)?;
+    let existing = read(storage, Some(&level))?;
     let state = classify_local_player_records(source.as_ref(), existing.as_ref());
 
-    let mut report = LocalPlayerStorageMoveReport::default();
+    let mut report = StorageMoveReport::default();
     match state {
         LocalPlayerRecords::None | LocalPlayerRecords::LocalPlayer => return Ok(report),
         LocalPlayerRecords::ConflictingLevelDatAndLocalPlayer => {
@@ -113,16 +102,15 @@ pub fn move_level_dat_player_to_local_player(
         }
         LocalPlayerRecords::LevelDatPlayer => {
             let source = source.as_ref().expect("classified level.dat player exists");
-            let target =
-                PlayerData::from_nbt_with_level(PlayerId::Local, source.nbt.clone(), &level)?;
-            write_local_player(storage, &target)?;
+            let target = PlayerData::from_nbt(PlayerId::Local, source.nbt.clone(), Some(&level))?;
+            write(storage, &target)?;
             report.source_found = true;
             report.target_created = true;
         }
     }
 
-    if remove_level_dat_player(&mut level)?.is_some() {
-        write_level_dat_document(&level_path, &level)?;
+    if level_dat::remove(&mut level)?.is_some() {
+        level::write(&level_path, &level)?;
         report.source_removed = true;
     }
     Ok(report)
@@ -144,17 +132,14 @@ pub fn move_level_dat_player_to_local_player(
 /// Returns an error when either storage representation cannot be read, `level.dat` cannot be replaced,
 /// LevelDB cannot delete `~local_player`, the player NBT cannot be parsed/serialized, or the two
 /// existing records conflict.
-pub fn move_local_player_to_level_dat(
-    world_path: &Path,
-    storage: &dyn WorldStorage,
-) -> Result<LocalPlayerStorageMoveReport> {
+pub fn move_to_level(world_path: &Path, storage: &dyn WorldStorage) -> Result<StorageMoveReport> {
     let level_path = world_path.join("level.dat");
-    let mut level = read_level_dat_document(&level_path)?;
-    let existing = read_level_dat_player(&level)?;
-    let source = read_local_player_with_level(storage, &level)?;
+    let mut level = level::read(&level_path)?;
+    let existing = level_dat::read(&level)?;
+    let source = read(storage, Some(&level))?;
     let state = classify_local_player_records(existing.as_ref(), source.as_ref());
 
-    let mut report = LocalPlayerStorageMoveReport::default();
+    let mut report = StorageMoveReport::default();
     match state {
         LocalPlayerRecords::None | LocalPlayerRecords::LevelDatPlayer => return Ok(report),
         LocalPlayerRecords::ConflictingLevelDatAndLocalPlayer => {
@@ -168,19 +153,16 @@ pub fn move_local_player_to_level_dat(
         }
         LocalPlayerRecords::LocalPlayer => {
             let source = source.as_ref().expect("classified local player exists");
-            let target = PlayerData::from_nbt_with_level(
-                PlayerId::LegacyLevelDat,
-                source.nbt.clone(),
-                &level,
-            )?;
-            write_level_dat_player(&mut level, &target)?;
-            write_level_dat_document(&level_path, &level)?;
+            let target =
+                PlayerData::from_nbt(PlayerId::LegacyLevelDat, source.nbt.clone(), Some(&level))?;
+            level_dat::write(&mut level, &target)?;
+            level::write(&level_path, &level)?;
             report.source_found = true;
             report.target_created = true;
         }
     }
 
-    delete_local_player(storage)?;
+    delete(storage)?;
     report.source_removed = true;
     Ok(report)
 }
@@ -217,7 +199,7 @@ mod tests {
             ("LevelName".to_string(), NbtTag::String("test".to_string())),
             ("Player".to_string(), player),
         ]));
-        write_level_dat_document(&path.join("level.dat"), &LevelDatDocument::new(10, root))
+        level::write(&path.join("level.dat"), &LevelDatDocument::new(10, root))
             .expect("write level.dat");
     }
 
@@ -228,37 +210,31 @@ mod tests {
         write_level_with_player(&world, original.clone());
         let storage = MemoryStorage::new();
 
-        let forward = move_level_dat_player_to_local_player(&world, &storage)
-            .expect("move level.dat Player to local");
+        let forward = move_from_level(&world, &storage).expect("move level.dat Player to local");
         assert!(forward.target_created);
         assert!(forward.source_removed);
-        let level = read_level_dat_document(&world.join("level.dat")).expect("read level.dat");
-        assert!(
-            read_level_dat_player(&level)
-                .expect("read embedded")
-                .is_none()
-        );
+        let level = level::read(&world.join("level.dat")).expect("read level.dat");
+        assert!(level_dat::read(&level).expect("read embedded").is_none());
         assert_eq!(
-            read_local_player_with_level(&storage, &level)
+            read(&storage, Some(&level))
                 .expect("read local")
                 .expect("local exists")
                 .nbt,
             original
         );
 
-        let reverse = move_local_player_to_level_dat(&world, &storage)
-            .expect("move local to level.dat Player");
+        let reverse = move_to_level(&world, &storage).expect("move local to level.dat Player");
         assert!(reverse.target_created);
         assert!(reverse.source_removed);
-        let level = read_level_dat_document(&world.join("level.dat")).expect("read level.dat");
+        let level = level::read(&world.join("level.dat")).expect("read level.dat");
         assert_eq!(
-            read_level_dat_player(&level)
+            level_dat::read(&level)
                 .expect("read embedded")
                 .expect("embedded exists")
                 .nbt,
             original
         );
-        assert!(read_local_player(&storage).expect("read local").is_none());
+        assert!(read(&storage, None).expect("read local").is_none());
 
         fs::remove_dir_all(world).expect("cleanup");
     }
@@ -269,18 +245,18 @@ mod tests {
         let original = player_nbt(42, "Alex");
         write_level_with_player(&world, original.clone());
         let storage = MemoryStorage::new();
-        let local = PlayerData::from_nbt(PlayerId::Local, original.clone()).unwrap();
-        write_local_player(&storage, &local).unwrap();
+        let local = PlayerData::from_nbt(PlayerId::Local, original.clone(), None).unwrap();
+        write(&storage, &local).unwrap();
 
-        let report = move_level_dat_player_to_local_player(&world, &storage).unwrap();
+        let report = move_from_level(&world, &storage).unwrap();
         assert!(report.source_found);
         assert!(report.target_reused);
         assert!(!report.target_created);
         assert!(report.source_removed);
 
-        let level = read_level_dat_document(&world.join("level.dat")).unwrap();
-        assert!(read_level_dat_player(&level).unwrap().is_none());
-        assert_eq!(read_local_player(&storage).unwrap().unwrap().nbt, original);
+        let level = level::read(&world.join("level.dat")).unwrap();
+        assert!(level_dat::read(&level).unwrap().is_none());
+        assert_eq!(read(&storage, None).unwrap().unwrap().nbt, original);
         fs::remove_dir_all(world).unwrap();
     }
 
@@ -290,14 +266,14 @@ mod tests {
         let embedded = player_nbt(7, "Alex");
         write_level_with_player(&world, embedded.clone());
         let storage = MemoryStorage::new();
-        let local =
-            PlayerData::from_nbt(PlayerId::Local, player_nbt(8, "Steve")).expect("build local");
-        write_local_player(&storage, &local).expect("seed local");
+        let local = PlayerData::from_nbt(PlayerId::Local, player_nbt(8, "Steve"), None)
+            .expect("build local");
+        write(&storage, &local).expect("seed local");
 
-        assert!(move_level_dat_player_to_local_player(&world, &storage).is_err());
-        let level = read_level_dat_document(&world.join("level.dat")).expect("read level.dat");
+        assert!(move_from_level(&world, &storage).is_err());
+        let level = level::read(&world.join("level.dat")).expect("read level.dat");
         assert_eq!(
-            read_level_dat_player(&level)
+            level_dat::read(&level)
                 .expect("read embedded")
                 .expect("embedded exists")
                 .nbt,

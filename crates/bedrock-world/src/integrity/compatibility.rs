@@ -217,9 +217,14 @@ impl ChunkCapabilities {
 
         for record in records {
             match record.key.tag {
+                ChunkRecordTag::AabbVolumes => {
+                    capabilities.compatibility = merge_compatibility(
+                        capabilities.compatibility,
+                        CompatibilityLevel::ReadCompatible,
+                    );
+                }
                 ChunkRecordTag::Version
-                | ChunkRecordTag::VersionOld
-                | ChunkRecordTag::LegacyVersion => capabilities.has_version_record = true,
+                | ChunkRecordTag::VersionOld => capabilities.has_version_record = true,
                 ChunkRecordTag::LegacyTerrain => capabilities.has_legacy_terrain = true,
                 ChunkRecordTag::Entity => {
                     capabilities.has_entity = true;

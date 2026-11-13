@@ -374,11 +374,10 @@ fn missing_manifest_error_carries_path_context() {
 #[test]
 fn repair_ignores_unreferenced_files_and_library_does_not_init_logger() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let pre_logger_path = temp.path().join("pre_logger_open");
-    let _db =
-        Db::open(&pre_logger_path, LevelDbOpenOptions::default()).expect("open before logger");
+    let db = Db::open(temp.path(), LevelDbOpenOptions::default()).expect("open before logger");
     assert!(install_test_logger());
     clear_logs();
+    drop(db);
 
     let corrupt_table = temp.path().join("000123.ldb");
     std::fs::write(&corrupt_table, b"not a leveldb table").expect("write corrupt table");

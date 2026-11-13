@@ -31,7 +31,7 @@ pub struct LegacyTerrainCombineReport {
 /// SubChunks Y=0..7. Every SubChunk must carry both historical light arrays. Any SubChunk outside the
 /// 0..127 `LegacyTerrain` height range, any paletted source, an existing `LegacyTerrain`, another biome
 /// generation, or an `i16` height outside `0..=255` makes the operation fail before any storage write.
-pub(crate) fn stage_legacy_terrain_combine(
+pub(crate) fn stage(
     storage: &dyn WorldStorage,
 ) -> Result<(StorageBatch, LegacyTerrainCombineReport)> {
     let mut candidates = BTreeSet::<ChunkPos>::new();
@@ -224,12 +224,12 @@ fn copy_legacy_subchunk_into_terrain(
 mod tests {
     use super::*;
     use crate::biome::{Biome2dLegacy, LegacyBiomeSample};
-    use crate::chunk::{Dimension, LegacySubChunkBuilder, LegacyTerrain};
+    use crate::chunk::{Dimension, LegacySubChunkBuilder, LegacySubChunkEncoding, LegacyTerrain};
     use crate::storage::MemoryStorage;
 
     fn seed_exact_source(storage: &MemoryStorage, pos: ChunkPos) {
         for section in 0_i8..8 {
-            let mut builder = LegacySubChunkBuilder::zeroed(7, true).unwrap();
+            let mut builder = LegacySubChunkBuilder::zeroed(7, LegacySubChunkEncoding::WithLightArrays).unwrap();
             if section == 2 {
                 builder.set_block(3, 5, 9, 42, 11).unwrap();
                 builder.set_sky_light(3, 5, 9, 13).unwrap();
@@ -278,7 +278,7 @@ mod tests {
         seed_exact_source(&storage, pos);
         let terrain_key = ChunkKey::new(pos, ChunkRecordTag::LegacyTerrain).encode();
 
-        let (batch, report) = stage_legacy_terrain_combine(&storage).unwrap();
+        let (batch, report) = stage(&storage).unwrap();
         assert_eq!(report.records, 1);
         assert_eq!(report.subchunks_removed, 8);
         assert!(storage.get(&terrain_key).unwrap().is_none());
@@ -307,7 +307,7 @@ mod tests {
             storage
                 .put(
                     &ChunkKey::subchunk(pos, section).encode(),
-                    LegacySubChunkBuilder::zeroed(7, true)
+                    LegacySubChunkBuilder::zeroed(7, LegacySubChunkEncoding::WithLightArrays)
                         .unwrap()
                         .build()
                         .unwrap()
@@ -335,7 +335,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(stage_legacy_terrain_combine(&storage).is_err());
+        assert!(stage(&storage).is_err());
         assert!(
             storage
                 .get(&ChunkKey::new(pos, ChunkRecordTag::LegacyTerrain).encode())

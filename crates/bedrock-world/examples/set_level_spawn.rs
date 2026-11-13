@@ -3,7 +3,7 @@
 //! Usage: cargo run -p bedrock-world --example set_level_spawn -- <world-dir> <x> <y> <z>
 
 use bedrock_world::NbtTag;
-use bedrock_world::level::{read_level_dat, write_level_dat_atomic};
+use bedrock_world::level::{read, write};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -19,7 +19,7 @@ fn main() {
         z.parse::<f64>().expect("z"),
     ];
     let path = std::path::Path::new(&world).join("level.dat");
-    let mut document = read_level_dat(&path).expect("read level.dat");
+    let mut document = read(&path).expect("read level.dat");
     let NbtTag::Compound(root) = &mut document.root else {
         panic!("level.dat root is not a compound");
     };
@@ -40,6 +40,6 @@ fn main() {
         ),
     );
     player.insert("DimensionId".to_string(), NbtTag::Int(0));
-    write_level_dat_atomic(&path, &document).expect("write level.dat");
+    write(&path, &document).expect("write level.dat");
     eprintln!("player moved to {position:?}");
 }

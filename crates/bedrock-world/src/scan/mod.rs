@@ -11,9 +11,10 @@ use crate::chunk::{
     LegacyTerrain, SubChunk, SubChunkDecodeMode, SubChunkFormat,
 };
 use crate::error::{BedrockWorldError, Result as WorldResult};
-use crate::level_dat::LevelDatDocument;
+use crate::level::LevelDatDocument;
+use crate::global::{self, Record};
 use crate::map_item::{KnownFields, MapItemId, Pixels, SavedData};
-use crate::nbt::{NbtTag, parse_consecutive_root_nbt, parse_root_nbt, serialize_root_nbt};
+use crate::nbt::{NbtTag, parse_consecutive_roots, parse_root};
 use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::village::{Entry, VillageKey};
 use bytes::Bytes;
@@ -272,7 +273,7 @@ pub enum ScanValue {
     /// Entry record value.
     VillageData(Entry),
     /// Global record value.
-    GlobalData(Global),
+    GlobalData(Record),
     /// Consecutive NBT roots decoded from the value.
     NbtRoots(Vec<NbtTag>),
     /// Raw bytes preserved because the payload was not decoded.
@@ -301,6 +302,8 @@ pub enum ChunkValue {
     BlockEntities(Vec<BlockEntity>),
     /// Pending tick NBT record.
     PendingTicks(Vec<NbtTag>),
+    /// Random tick NBT record.
+    RandomTicks(Vec<NbtTag>),
     /// Current chunk version record.
     Version(u8),
     /// Finalized state record.
@@ -583,7 +586,7 @@ impl HardcodedSpawnArea {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Hardcoded spawn area record decoded from chunk tag `0x39`.
 pub struct HardcodedSpawnArea {
     /// Spawn area structure kind.
@@ -594,7 +597,7 @@ pub struct HardcodedSpawnArea {
     pub max: [i32; 3],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 /// Known hardcoded spawn area kind, preserving unknown tag values.
 pub enum HardcodedSpawnAreaKind {
     /// Nether fortress spawn area.
@@ -607,19 +610,6 @@ pub enum HardcodedSpawnAreaKind {
     PillagerOutpost,
     /// Unknown byte value preserved for roundtrip.
     Unknown(u8),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-/// Typed global record preserving the original NBT payload.
-pub struct Global {
-    /// Canonical key name used for storage.
-    pub name: String,
-    /// Classified global record kind.
-    pub kind: GlobalRecordKind,
-    /// Consecutive NBT roots stored in the value.
-    pub roots: Vec<NbtTag>,
-    /// Raw value bytes for roundtrip preservation.
-    pub raw: Bytes,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -753,7 +743,7 @@ pub struct ItemStack {
 }
 
 /// Parses world storage using the selected options and accumulates non-fatal diagnostics.
-pub fn scan_storage(
+pub fn parse_world(
     level_dat: LevelDatDocument,
     storage: &dyn WorldStorage,
     options: ScanOptions,
@@ -904,7 +894,11 @@ fn should_parse_key(key: &BedrockDbKey, categories: ScanCategories) -> bool {
         BedrockDbKey::ActorPrefix { .. } | BedrockDbKey::ActorDigest { .. } => categories.actors,
         BedrockDbKey::Map(_) => categories.maps,
         BedrockDbKey::Village(_) => categories.villages,
-        BedrockDbKey::Global(_) => categories.globals,
+        BedrockDbKey::Global(_)
+        | BedrockDbKey::Portals
+        | BedrockDbKey::SchedulerWt
+        | BedrockDbKey::StructureTemplate(_)
+        | BedrockDbKey::TickingArea(_) => categories.globals,
         BedrockDbKey::PlainString(name) if should_try_nbt_plain_key(name) => categories.globals,
         _ => false,
     }
@@ -932,14 +926,20 @@ fn parse_entry_value(
         BedrockDbKey::Map(id) => parse_map_value(id, value, report),
         BedrockDbKey::Village(village) => parse_village_value(village, value, report),
         BedrockDbKey::Global(kind) => parse_global_value(&kind.name(), value, report),
+        BedrockDbKey::Portals => parse_global_value("portals", value, report),
+        BedrockDbKey::SchedulerWt => parse_global_value("schedulerWT", value, report),
+        BedrockDbKey::StructureTemplate(suffix) => {
+            let name = format!("structuretemplate{suffix}");
+            parse_global_value(&name, value, report)
+        }
+        BedrockDbKey::TickingArea(suffix) => {
+            let name = format!("tickingarea{suffix}");
+            parse_global_value(&name, value, report)
+        }
         BedrockDbKey::PlainString(name) if should_try_nbt_plain_key(name) => {
             parse_global_value(name, value, report)
         }
         BedrockDbKey::GameFlatWorldLayers
-        | BedrockDbKey::Portals
-        | BedrockDbKey::SchedulerWt
-        | BedrockDbKey::StructureTemplate(_)
-        | BedrockDbKey::TickingArea(_)
         | BedrockDbKey::PlainString(_)
         | BedrockDbKey::Unknown(_) => {
             report.raw_entry_count += 1;
@@ -993,8 +993,9 @@ fn parse_chunk_record_value(
         }
         ChunkRecordTag::BlockEntity => parse_block_entities(value, report),
         ChunkRecordTag::Entity => parse_entities_chunk_record(value, report),
-        ChunkRecordTag::PendingTicks => parse_pending_ticks(value, report),
-        ChunkRecordTag::Version | ChunkRecordTag::VersionOld | ChunkRecordTag::LegacyVersion => {
+        ChunkRecordTag::PendingTicks => parse_tick_records(value, "pending ticks", report),
+        ChunkRecordTag::RandomTicks => parse_tick_records(value, "random ticks", report),
+        ChunkRecordTag::Version | ChunkRecordTag::VersionOld => {
             value.first().copied().map_or_else(
                 || {
                     report
@@ -1026,7 +1027,7 @@ fn parse_chunk_record_value(
         | ChunkRecordTag::BiomeState
         | ChunkRecordTag::ConversionData
         | ChunkRecordTag::BorderBlocks
-        | ChunkRecordTag::RandomTicks
+        | ChunkRecordTag::AabbVolumes
         | ChunkRecordTag::Checksums
         | ChunkRecordTag::GenerationSeed
         | ChunkRecordTag::MetaDataHash
@@ -1125,7 +1126,7 @@ fn raw_chunk_value(value: &Bytes, options: ScanOptions) -> ChunkValue {
 }
 
 fn parse_map_value(id: &str, value: &Bytes, report: &mut ScanReport) -> ScanValue {
-    let roots = match parse_consecutive_root_nbt(value) {
+    let roots = match parse_consecutive_roots(value) {
         Ok(roots) => roots,
         Err(error) => {
             report
@@ -1148,7 +1149,7 @@ fn parse_map_value(id: &str, value: &Bytes, report: &mut ScanReport) -> ScanValu
 }
 
 fn parse_village_value(key: &VillageKey, value: &Bytes, report: &mut ScanReport) -> ScanValue {
-    let roots = match parse_consecutive_root_nbt(value) {
+    let roots = match parse_consecutive_roots(value) {
         Ok(roots) => roots,
         Err(error) => {
             report
@@ -1168,16 +1169,12 @@ fn parse_village_value(key: &VillageKey, value: &Bytes, report: &mut ScanReport)
 
 fn parse_global_value(name: &str, value: &Bytes, report: &mut ScanReport) -> ScanValue {
     report.global_record_count += 1;
-    match parse_consecutive_root_nbt(value) {
-        Ok(tags) => {
-            report.other_nbt_root_count += tags.len();
-            ScanValue::GlobalData(Global {
-                name: name.to_string(),
-                kind: GlobalRecordKind::from_key(name.as_bytes())
-                    .unwrap_or_else(|| GlobalRecordKind::Other(name.to_string())),
-                roots: tags,
-                raw: value.clone(),
-            })
+    let kind = GlobalRecordKind::from_key(name.as_bytes())
+        .unwrap_or_else(|| GlobalRecordKind::Other(name.to_string()));
+    match global::parse(kind, value.clone()) {
+        Ok(record) => {
+            report.other_nbt_root_count += record.roots().len();
+            ScanValue::GlobalData(record)
         }
         Err(error) => {
             report
@@ -1191,7 +1188,7 @@ fn parse_global_value(name: &str, value: &Bytes, report: &mut ScanReport) -> Sca
 
 /// Decodes a Bedrock `map_<id>` item value.
 pub fn decode_map_item(id: MapItemId, value: Bytes) -> WorldResult<SavedData> {
-    let roots = parse_consecutive_root_nbt(&value)?;
+    let roots = parse_consecutive_roots(&value)?;
     Ok(SavedData {
         id,
         known_fields: map_known_fields(&roots),
@@ -1204,22 +1201,6 @@ pub fn decode_map_item(id: MapItemId, value: Bytes) -> WorldResult<SavedData> {
 /// Encodes a Bedrock `map_<id>` item value.
 pub fn encode_map_item(item: &SavedData) -> WorldResult<Bytes> {
     encode_consecutive_roots(&item.roots)
-}
-
-/// Decodes a known Bedrock global value.
-pub fn decode_global(kind: GlobalRecordKind, name: String, value: Bytes) -> WorldResult<Global> {
-    let roots = parse_consecutive_root_nbt(&value)?;
-    Ok(Global {
-        name,
-        kind,
-        roots,
-        raw: value,
-    })
-}
-
-/// Encodes a known Bedrock global value.
-pub fn encode_global(global: &Global) -> WorldResult<Bytes> {
-    encode_consecutive_roots(&global.roots)
 }
 
 /// Decodes actor UIDs stored in a `digp` value.
@@ -1279,15 +1260,11 @@ pub fn encode_consecutive_roots(roots: &[NbtTag]) -> WorldResult<Bytes> {
             "record must contain at least one root NBT compound".to_string(),
         ));
     }
-    let mut bytes = Vec::new();
-    for root in roots {
-        bytes.extend_from_slice(&serialize_root_nbt(root)?);
-    }
-    Ok(Bytes::from(bytes))
+    Ok(Bytes::from(crate::nbt::serialize_consecutive_roots(roots)?))
 }
 
 fn parse_player_value(key: BedrockDbKey, value: &Bytes, report: &mut ScanReport) -> ScanValue {
-    match parse_root_nbt(value) {
+    match parse_root(value) {
         Ok(nbt) => {
             let items = collect_item_stacks(&nbt);
             report.player_count += 1;
@@ -1379,7 +1356,7 @@ fn byte_array_field_any<'a>(
 }
 
 pub(crate) fn parse_actor_value(value: &Bytes, report: &mut ScanReport) -> ScanValue {
-    match parse_consecutive_root_nbt(value) {
+    match parse_consecutive_roots(value) {
         Ok(tags) => {
             let entities = tags
                 .into_iter()
@@ -1773,7 +1750,7 @@ fn read_hardcoded_spawn_areas(value: &[u8]) -> Result<Vec<HardcodedSpawnArea>, S
 }
 
 pub(crate) fn parse_block_entities(value: &Bytes, report: &mut ScanReport) -> ChunkValue {
-    match parse_consecutive_root_nbt(value) {
+    match parse_consecutive_roots(value) {
         Ok(tags) => {
             let block_entities = tags
                 .into_iter()
@@ -1793,7 +1770,7 @@ pub(crate) fn parse_block_entities(value: &Bytes, report: &mut ScanReport) -> Ch
 }
 
 fn parse_entities_chunk_record(value: &Bytes, report: &mut ScanReport) -> ChunkValue {
-    match parse_consecutive_root_nbt(value) {
+    match parse_consecutive_roots(value) {
         Ok(tags) => {
             let entities = tags
                 .into_iter()
@@ -1829,13 +1806,26 @@ pub(crate) fn parse_block_entities_from_value(
     }
 }
 
-fn parse_pending_ticks(value: &Bytes, report: &mut ScanReport) -> ChunkValue {
-    match parse_consecutive_root_nbt(value) {
-        Ok(tags) => ChunkValue::PendingTicks(tags),
+fn parse_tick_records(value: &Bytes, name: &str, report: &mut ScanReport) -> ChunkValue {
+    match parse_consecutive_roots(value) {
+        Ok(tags) if tags.iter().all(|tag| matches!(tag, NbtTag::Compound(_))) => {
+            if name == "pending ticks" {
+                ChunkValue::PendingTicks(tags)
+            } else {
+                ChunkValue::RandomTicks(tags)
+            }
+        }
+        Ok(_) => {
+            report
+                .parse_errors
+                .push(format!("{name} contain a non-compound NBT root"));
+            report.raw_entry_count += 1;
+            ChunkValue::Raw(value.clone())
+        }
         Err(error) => {
             report
                 .parse_errors
-                .push(format!("pending ticks kept raw: {error}"));
+                .push(format!("{name} kept raw: {error}"));
             report.raw_entry_count += 1;
             ChunkValue::Raw(value.clone())
         }
@@ -1858,7 +1848,7 @@ fn parse_entity_from_nbt(nbt: NbtTag, report: &mut ScanReport) -> Actor {
     }
 }
 
-fn parse_block_entity_from_nbt(nbt: NbtTag, report: &mut ScanReport) -> BlockEntity {
+pub(crate) fn parse_block_entity_from_nbt(nbt: NbtTag, report: &mut ScanReport) -> BlockEntity {
     let items = collect_item_stacks(&nbt);
     report.item_count += items.len();
     let root = compound(&nbt);
@@ -1884,11 +1874,11 @@ fn parse_block_entity_from_nbt(nbt: NbtTag, report: &mut ScanReport) -> BlockEnt
 
 pub(crate) fn collect_item_stacks(tag: &NbtTag) -> Vec<ItemStack> {
     let mut items = Vec::new();
-    collect_item_stacks_inner(tag, &mut items);
+    collect_item_stacks_into(tag, &mut items);
     items
 }
 
-fn collect_item_stacks_inner(tag: &NbtTag, items: &mut Vec<ItemStack>) {
+fn collect_item_stacks_into(tag: &NbtTag, items: &mut Vec<ItemStack>) {
     match tag {
         NbtTag::Compound(root) => {
             if looks_like_item_stack(root) {
@@ -1905,12 +1895,12 @@ fn collect_item_stacks_inner(tag: &NbtTag, items: &mut Vec<ItemStack>) {
                 });
             }
             for value in root.values() {
-                collect_item_stacks_inner(value, items);
+                collect_item_stacks_into(value, items);
             }
         }
         NbtTag::List(values) => {
             for value in values {
-                collect_item_stacks_inner(value, items);
+                collect_item_stacks_into(value, items);
             }
         }
         _ => {}
@@ -2057,7 +2047,7 @@ fn read_i32(value: &[u8]) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nbt::serialize_root_nbt;
+    use crate::nbt::serialize_root;
     use crate::storage::{
         MemoryStorage, StorageBatch, StorageReadOptions, StorageScanOutcome, WorldStorage,
     };
@@ -2155,7 +2145,7 @@ mod tests {
                 ]))]),
             ),
         ]));
-        let bytes = Bytes::from(serialize_root_nbt(&entity).expect("serialize"));
+        let bytes = Bytes::from(serialize_root(&entity).expect("serialize"));
         let mut report = ScanReport::default();
 
         let value = parse_actor_value(&bytes, &mut report);
@@ -2188,7 +2178,7 @@ mod tests {
                 ]))]),
             ),
         ]));
-        let bytes = Bytes::from(serialize_root_nbt(&block_entity).expect("serialize"));
+        let bytes = Bytes::from(serialize_root(&block_entity).expect("serialize"));
         let mut report = ScanReport::default();
 
         let value = parse_block_entities(&bytes, &mut report);
@@ -2314,7 +2304,7 @@ mod tests {
                 NbtTag::ByteArray(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
             ),
         ]));
-        let map_bytes = Bytes::from(serialize_root_nbt(&map_root).expect("serialize"));
+        let map_bytes = Bytes::from(serialize_root(&map_root).expect("serialize"));
         let map = decode_map_item(MapItemId::unchecked("5"), map_bytes).expect("map");
 
         assert_eq!(map.known_fields.center_x, Some(10));
@@ -2326,13 +2316,12 @@ mod tests {
             Some(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16][..])
         );
 
-        let global = decode_global(
+        let global = global::parse(
             GlobalRecordKind::Scoreboard,
-            "scoreboard".to_string(),
             encode_consecutive_roots(&[NbtTag::Compound(IndexMap::new())]).expect("encode"),
         )
         .expect("global");
-        assert_eq!(global.kind, GlobalRecordKind::Scoreboard);
+        assert_eq!(global.kind(), &GlobalRecordKind::Scoreboard);
     }
 
     #[test]
@@ -2485,11 +2474,11 @@ mod tests {
         storage
             .put(
                 b"~local_player",
-                &serialize_root_nbt(&NbtTag::Compound(IndexMap::new())).expect("serialize"),
+                &serialize_root(&NbtTag::Compound(IndexMap::new())).expect("serialize"),
             )
             .expect("insert player");
 
-        let parsed = scan_storage(
+        let parsed = parse_world(
             LevelDatDocument {
                 header: crate::LevelDatHeader {
                     version: 10,
@@ -2523,7 +2512,7 @@ mod tests {
             key: chunk_key.encode(),
         };
 
-        let parsed = scan_storage(
+        let parsed = parse_world(
             LevelDatDocument::new(10, NbtTag::Compound(IndexMap::new())),
             &storage,
             ScanOptions::summary(),

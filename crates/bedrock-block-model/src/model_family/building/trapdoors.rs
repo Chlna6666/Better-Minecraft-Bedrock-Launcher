@@ -1,7 +1,7 @@
 use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{
-    CardinalDirection, cardinal_direction, cardinal_direction_from_string, state_bool, state_i64,
+    CardinalDirection, cardinal_direction, from_string, state_bool, state_i64,
     state_string,
 };
 use crate::model_family::shape::{ModelCuboid, ModelShape, detail_cuboid_with_local_uv};
@@ -70,7 +70,7 @@ fn trapdoor_direction(state: &BlockStateQuery) -> Option<CardinalDirection> {
                     .parse::<i64>()
                     .ok()
                     .and_then(trapdoor_direction_from_int)
-                    .or_else(|| cardinal_direction_from_string(value))
+                    .or_else(|| from_string(value))
             })
         })
         .or_else(|| cardinal_direction(state))

@@ -18,7 +18,7 @@ pub use properties::{
     StairBlockStates, StairCorner, TrapdoorBlockStates, VerticalHalf,
 };
 pub use schema::{
-    BlockSchema, BlockStateSchema, StatePropertySchema, block_schema, block_state_schema,
+    BlockSchema, BlockStateSchema, StatePropertySchema, catalog, for_block,
     fluid_level, is_fluid, validate_state,
 };
 pub use upgrade::{

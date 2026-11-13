@@ -81,6 +81,38 @@ fn temp_world_dir(name: &str) -> PathBuf {
     ))
 }
 
+#[cfg(feature = "bedrock-leveldb")]
+#[test]
+fn exact_format_uses_the_caller_identified_world_format() {
+    let leveldb_path = temp_world_dir("exact-format-leveldb");
+    std::fs::create_dir_all(leveldb_path.join("db")).expect("create LevelDB folder");
+    std::fs::write(leveldb_path.join("db").join("CURRENT"), b"MANIFEST-000001\n")
+        .expect("write LevelDB marker");
+    assert_eq!(
+        detect_world_format(
+            &leveldb_path,
+            WorldFormatHint::Exact(WorldFormat::LevelDbLegacyTerrain),
+        )
+        .expect("use exact LevelDB format"),
+        WorldFormat::LevelDbLegacyTerrain
+    );
+
+    let pocket_path = temp_world_dir("exact-format-pocket");
+    std::fs::create_dir_all(&pocket_path).expect("create Pocket world folder");
+    std::fs::write(pocket_path.join("chunks.dat"), b"").expect("write Pocket marker");
+    assert_eq!(
+        detect_world_format(
+            &pocket_path,
+            WorldFormatHint::Exact(WorldFormat::PocketChunksDat),
+        )
+        .expect("use exact Pocket format"),
+        WorldFormat::PocketChunksDat
+    );
+
+    let _ = std::fs::remove_dir_all(leveldb_path);
+    let _ = std::fs::remove_dir_all(pocket_path);
+}
+
 fn exact_surface_request(
     subchunks: ExactSurfaceSubchunkPolicy,
     biome: ExactSurfaceBiomeLoad,
@@ -159,12 +191,7 @@ fn map_and_global_records_roundtrip_through_world_transactions() {
         .expect("map exists");
     assert_eq!(read_map.known_fields.scale, Some(1));
 
-    let global = Global {
-        name: "scoreboard".to_string(),
-        kind: GlobalRecordKind::Scoreboard,
-        roots: vec![NbtTag::Compound(IndexMap::new())],
-        raw: Bytes::new(),
-    };
+    let global = Record::new(GlobalRecordKind::Scoreboard, vec![NbtTag::Compound(IndexMap::new())]);
     world.save_global(&global).expect("write global");
     assert!(
         world
@@ -184,7 +211,7 @@ fn save_player_persists_inventory_edit_and_rejects_stale_source() {
         ("Inventory".to_string(), NbtTag::List(Vec::new())),
         ("future".to_string(), NbtTag::String("keep".to_string())),
     ]));
-    let raw = crate::nbt::serialize_root_nbt(&source).expect("player NBT");
+    let raw = crate::nbt::serialize_root(&source).expect("player NBT");
     storage.put(b"~local_player", &raw).expect("seed player");
     let world = World::from_storage(
         "memory",
@@ -202,7 +229,7 @@ fn save_player_persists_inventory_edit_and_rejects_stale_source() {
     player
         .set_inventory_item(
             PlayerInventorySlot::from_raw(9),
-            crate::map_item::new_filled_map_item(92, 9).expect("map item"),
+            crate::map_item::new_filled(92, 9).expect("map item"),
         )
         .expect("set item");
     world.save_player(&player).expect("save edit");
@@ -273,7 +300,7 @@ fn map_bundle_install_uses_free_player_slot_and_commits_maps_with_shulker() {
     storage
         .put(
             b"~local_player",
-            &crate::nbt::serialize_root_nbt(&player_nbt).expect("player NBT"),
+            &crate::nbt::serialize_root(&player_nbt).expect("player NBT"),
         )
         .expect("seed player");
     let world = World::from_storage(
@@ -306,8 +333,8 @@ fn map_bundle_install_uses_free_player_slot_and_commits_maps_with_shulker() {
         NbtTag::Compound(IndexMap::from([(
             "Items".to_string(),
             NbtTag::List(vec![
-                crate::map_item::new_filled_map_item(7, 0).expect("item"),
-                crate::map_item::new_filled_map_item(8, 0).expect("item"),
+                crate::map_item::new_filled(7, 0).expect("item"),
+                crate::map_item::new_filled(8, 0).expect("item"),
             ]),
         )])),
     )
@@ -362,7 +389,7 @@ fn map_id_collision_rejects_map_and_player_batch_without_inventory_change() {
         "Inventory".to_string(),
         NbtTag::List(Vec::new()),
     )]));
-    let raw = crate::nbt::serialize_root_nbt(&source).expect("player NBT");
+    let raw = crate::nbt::serialize_root(&source).expect("player NBT");
     storage.put(b"~local_player", &raw).expect("seed player");
     let world = World::from_storage(
         "memory",
@@ -387,7 +414,7 @@ fn map_id_collision_rejects_map_and_player_batch_without_inventory_change() {
     player
         .set_inventory_item(
             PlayerInventorySlot::from_raw(9),
-            crate::map_item::new_filled_map_item(92, 9).expect("map item"),
+            crate::map_item::new_filled(92, 9).expect("map item"),
         )
         .expect("set item");
     let mut transaction = world.transaction();
@@ -763,9 +790,7 @@ fn map_bundle_install_preserves_existing_chest_items() {
         ],
         NbtTag::Compound(IndexMap::from([(
             "Items".to_string(),
-            NbtTag::List(vec![
-                crate::map_item::new_filled_map_item(7, 0).expect("map item"),
-            ]),
+            NbtTag::List(vec![crate::map_item::new_filled(7, 0).expect("map item")]),
         )])),
     )
     .expect("bundle");
@@ -819,7 +844,7 @@ fn map_bundle_install_preserves_existing_chest_items() {
         .storage()
         .put(
             b"~local_player",
-            &crate::nbt::serialize_root_nbt(&NbtTag::Compound(IndexMap::from([(
+            &crate::nbt::serialize_root(&NbtTag::Compound(IndexMap::from([(
                 "Inventory".to_string(),
                 NbtTag::List(vec![template]),
             )])))
@@ -848,7 +873,7 @@ fn map_bundle_install_preserves_existing_chest_items() {
             "Items".to_string(),
             NbtTag::List(
                 (8..36)
-                    .map(|id| crate::map_item::new_filled_map_item(id, 0).expect("item"))
+                    .map(|id| crate::map_item::new_filled(id, 0).expect("item"))
                     .collect(),
             ),
         )])),
@@ -972,9 +997,7 @@ fn map_bundle_install_updates_frame_map_bit_and_item_together() {
         ],
         NbtTag::Compound(IndexMap::from([(
             "Items".to_string(),
-            NbtTag::List(vec![
-                crate::map_item::new_filled_map_item(7, 0).expect("item"),
-            ]),
+            NbtTag::List(vec![crate::map_item::new_filled(7, 0).expect("item")]),
         )])),
     )
     .expect("bundle");
@@ -1059,7 +1082,7 @@ fn map_bundle_install_creates_upward_frame_grid_and_stone_support_atomically() {
             "Items".to_string(),
             NbtTag::List(
                 (7..9)
-                    .map(|id| crate::map_item::new_filled_map_item(id, 0).expect("item"))
+                    .map(|id| crate::map_item::new_filled(id, 0).expect("item"))
                     .collect(),
             ),
         )])),
@@ -1074,7 +1097,7 @@ fn map_bundle_install_creates_upward_frame_grid_and_stone_support_atomically() {
         version: Some(18_168_865),
     };
     let plan = world
-        .prepare_map_bundle_new_up_frame(&bundle, chunk, position, support.clone())
+        .prepare_map_frame_grid(&bundle, chunk, position, support.clone())
         .expect("prepare upward frame");
     assert_eq!(plan.map_ids(), &[0, 1]);
     assert_eq!(plan.affected_chunks().len(), 1);
@@ -1132,7 +1155,7 @@ fn map_bundle_install_creates_upward_frame_grid_and_stone_support_atomically() {
         .expect("seed support");
     }
     world
-        .prepare_map_bundle_new_up_frame(&bundle, chunk, BlockPos { x: 3, y: 64, z: 1 }, support)
+        .prepare_map_frame_grid(&bundle, chunk, BlockPos { x: 3, y: 64, z: 1 }, support)
         .expect("reuse matching support")
         .commit(&world)
         .expect("commit over existing support");
@@ -1202,7 +1225,7 @@ fn map_bundle_frame_grid_crosses_chunk_boundary_in_one_plan() {
             "Items".to_string(),
             NbtTag::List(
                 (21..23)
-                    .map(|id| crate::map_item::new_filled_map_item(id, 0).expect("item"))
+                    .map(|id| crate::map_item::new_filled(id, 0).expect("item"))
                     .collect(),
             ),
         )])),
@@ -1216,7 +1239,7 @@ fn map_bundle_frame_grid_crosses_chunk_boundary_in_one_plan() {
         version: Some(18_168_865),
     };
     let plan = world
-        .prepare_map_bundle_new_up_frame(
+        .prepare_map_frame_grid(
             &bundle,
             chunks[1],
             BlockPos { x: 16, y: 64, z: 1 },
@@ -1778,7 +1801,7 @@ fn data3d_height_map_is_normalized_to_dimension_min_y() {
 
     assert_eq!(world.height(pos, 4, 2).expect("height"), Some(66));
     let chunk = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: ChunkDataRequest::new().height_map(),
@@ -1811,7 +1834,7 @@ fn render_chunk_exact_load_preserves_data2d_xz_height_and_biome_coordinates() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let chunk = world
-        .query_chunk_data(pos, ChunkLoadOptions::default())
+        .load_render_chunk(pos, ChunkLoadOptions::default())
         .expect("load render chunk");
     let height_map = chunk.height_map.as_ref().expect("height map");
     let biome_storage = chunk
@@ -1869,7 +1892,7 @@ fn render_chunk_needed_surface_subchunks_avoids_full_y_range() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let needed = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: exact_surface_request(
@@ -1882,7 +1905,7 @@ fn render_chunk_needed_surface_subchunks_avoids_full_y_range() {
         )
         .expect("needed render chunk");
     let full = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: exact_surface_request(
@@ -1928,7 +1951,7 @@ fn render_chunk_needed_surface_subchunks_include_lookup_above_heightmap() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let chunk = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: exact_surface_request(
@@ -1980,7 +2003,7 @@ fn render_chunk_needed_exact_surface_reloads_full_when_window_top_is_touched() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let chunk = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: exact_surface_request(
@@ -2037,7 +2060,7 @@ fn render_chunk_needed_exact_surface_reloads_full_when_raw_height_is_stale() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let chunk = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: exact_surface_request(
@@ -2081,7 +2104,7 @@ fn render_chunk_raw_heightmap_request_does_not_build_surface_samples() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let chunk = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: ChunkDataRequest::new().height_map(),
@@ -2112,7 +2135,7 @@ fn render_chunk_needed_surface_subchunks_fall_back_to_full_without_heightmap() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let chunk = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: exact_surface_request(
@@ -2150,16 +2173,16 @@ fn render_chunk_loads_block_entities_when_requested() {
     storage
         .put(
             &ChunkKey::new(pos, ChunkRecordTag::BlockEntity).encode(),
-            &crate::nbt::serialize_root_nbt(&block_entity).expect("serialize block entity"),
+            &crate::nbt::serialize_root(&block_entity).expect("serialize block entity"),
         )
         .expect("put block entity");
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let without_entities = world
-        .query_chunk_data(pos, ChunkLoadOptions::default())
+        .load_render_chunk(pos, ChunkLoadOptions::default())
         .expect("load render chunk without block entities");
     let with_entities = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: exact_surface_request(
@@ -2334,7 +2357,7 @@ fn render_region_index_uses_key_only_scan_and_parallel_load_keeps_order() {
     assert_eq!(visible, render_positions.to_vec());
 
     let chunks = world
-        .query_chunk_data_many(
+        .load_render_chunks(
             visible,
             ChunkLoadOptions {
                 threading: WorldThreadingOptions::Fixed(2),
@@ -2362,11 +2385,13 @@ fn legacy_terrain_is_renderable_and_exact_batch_loaded() {
             &test_legacy_terrain_bytes(2, 65),
         )
         .expect("put legacy terrain");
-    let world = World::from_storage_with_format(
+    let world = World::from_storage(
         "memory",
         storage,
-        OpenOptions::default(),
-        WorldFormat::LevelDbLegacyTerrain,
+        OpenOptions {
+            format: WorldFormatHint::Exact(WorldFormat::LevelDbLegacyTerrain),
+            ..OpenOptions::default()
+        },
     );
 
     let positions = world
@@ -2384,7 +2409,7 @@ fn legacy_terrain_is_renderable_and_exact_batch_loaded() {
     assert_eq!(positions, vec![pos]);
 
     let (chunks, stats) = world
-        .query_chunk_data_with_stats(
+        .load_render_chunks_with_stats(
             positions,
             ChunkLoadOptions {
                 threading: WorldThreadingOptions::Single,
@@ -2428,15 +2453,17 @@ fn legacy_terrain_biome_rgb_takes_priority_over_data2d_biome_id() {
             &test_data2d_bytes(2, 24),
         )
         .expect("put conflicting old data2d");
-    let world = World::from_storage_with_format(
+    let world = World::from_storage(
         "memory",
         storage,
-        OpenOptions::default(),
-        WorldFormat::LevelDbLegacyTerrain,
+        OpenOptions {
+            format: WorldFormatHint::Exact(WorldFormat::LevelDbLegacyTerrain),
+            ..OpenOptions::default()
+        },
     );
 
     let (chunks, stats) = world
-        .query_chunk_data_with_stats(
+        .load_render_chunks_with_stats(
             [pos],
             ChunkLoadOptions {
                 data_request: exact_surface_request(
@@ -2489,7 +2516,7 @@ fn modern_data2d_biome_remains_available_without_legacy_terrain() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let (chunks, stats) = world
-        .query_chunk_data_with_stats(
+        .load_render_chunks_with_stats(
             [pos],
             ChunkLoadOptions {
                 data_request: exact_surface_request(
@@ -2530,15 +2557,17 @@ fn legacy_terrain_exposes_biome_colors_without_transposing_columns() {
             &terrain,
         )
         .expect("put legacy terrain");
-    let world = World::from_storage_with_format(
+    let world = World::from_storage(
         "memory",
         storage,
-        OpenOptions::default(),
-        WorldFormat::LevelDbLegacyTerrain,
+        OpenOptions {
+            format: WorldFormatHint::Exact(WorldFormat::LevelDbLegacyTerrain),
+            ..OpenOptions::default()
+        },
     );
 
     let chunk = world
-        .query_chunk_data(pos, ChunkLoadOptions::default())
+        .load_render_chunk(pos, ChunkLoadOptions::default())
         .expect("load legacy render chunk");
     let colors = chunk.legacy_biome_colors.expect("legacy biome colors");
     let samples = chunk.legacy_biomes.expect("legacy biome samples");
@@ -2588,7 +2617,7 @@ fn render_load_keeps_subchunks_when_legacy_terrain_is_also_present() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let (chunks, stats) = world
-        .query_chunk_data_with_stats(
+        .load_render_chunks_with_stats(
             [pos],
             ChunkLoadOptions {
                 data_request: exact_surface_request(
@@ -2632,7 +2661,7 @@ fn exact_surface_column_samples_use_top_block_not_raw_heightmap() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let (chunks, stats) = world
-        .query_chunk_data_with_stats(
+        .load_render_chunks_with_stats(
             [pos],
             ChunkLoadOptions {
                 data_request: exact_surface_request(
@@ -2682,7 +2711,7 @@ fn exact_surface_columns_match_full_indices() {
         false,
     );
     let full = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: surface_request.clone().full_3d_indices(),
@@ -2691,7 +2720,7 @@ fn exact_surface_columns_match_full_indices() {
         )
         .expect("load full indices");
     let surface = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: surface_request,
@@ -2811,10 +2840,10 @@ fn exact_surface_samples_keep_visual_overlay_and_primary_thin_blocks() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let full = world
-        .query_chunk_data(pos, ChunkLoadOptions::default())
+        .load_render_chunk(pos, ChunkLoadOptions::default())
         .expect("load exact surface chunk");
     let surface = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 subchunk_decode: SubChunkDecodeMode::SurfaceColumns,
@@ -2893,7 +2922,7 @@ fn exact_surface_samples_high_roof_from_secondary_storage() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let chunk = world
-        .query_chunk_data(pos, ChunkLoadOptions::default())
+        .load_render_chunk(pos, ChunkLoadOptions::default())
         .expect("load exact surface chunk");
     let sample = chunk.column_sample_at(0, 0).expect("roof column");
 
@@ -2936,7 +2965,7 @@ fn exact_surface_samples_process_secondary_storage_water_and_overlay() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let chunk = world
-        .query_chunk_data(pos, ChunkLoadOptions::default())
+        .load_render_chunk(pos, ChunkLoadOptions::default())
         .expect("load exact surface chunk");
     let water = chunk.column_sample_at(0, 0).expect("water column");
     assert_eq!(water.surface_y, 0);
@@ -2983,7 +3012,7 @@ fn exact_surface_samples_keep_transparent_water_relief_context() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let chunk = world
-        .query_chunk_data(pos, ChunkLoadOptions::default())
+        .load_render_chunk(pos, ChunkLoadOptions::default())
         .expect("load exact surface chunk");
     let sample = chunk.column_sample_at(0, 0).expect("water column");
     let water = sample.water.as_ref().expect("water context");
@@ -3019,7 +3048,7 @@ fn render_chunk_exact_load_preserves_legacy_subchunk_xzy_coordinates() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let chunk = world
-        .query_chunk_data(
+        .load_render_chunk(
             pos,
             ChunkLoadOptions {
                 data_request: ChunkDataRequest::new().layer(10),
@@ -3052,7 +3081,7 @@ fn layer_query_does_not_read_surface_fallback_records() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let (chunks, stats) = world
-        .query_chunk_data_with_stats(
+        .load_render_chunks_with_stats(
             [pos],
             ChunkLoadOptions::for_data_request(ChunkDataRequest::new().layer(0)),
         )
@@ -3136,7 +3165,7 @@ fn render_chunk_exact_batch_keeps_shuffled_positions_bound_to_records() {
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
     let (chunks, stats) = world
-        .query_chunk_data_with_stats(
+        .load_render_chunks_with_stats(
             vec![fixtures[1].0, fixtures[0].0, fixtures[2].0, fixtures[1].0],
             ChunkLoadOptions {
                 data_request: ChunkDataRequest::new().layer(64),
@@ -3191,7 +3220,7 @@ fn test_surface_subchunk_bytes() -> Vec<u8> {
             ("states".to_string(), NbtTag::Compound(IndexMap::new())),
             ("version".to_string(), NbtTag::Int(1)),
         ]));
-        bytes.extend_from_slice(&crate::nbt::serialize_root_nbt(&tag).expect("nbt"));
+        bytes.extend_from_slice(&crate::nbt::serialize_root(&tag).expect("nbt"));
     }
     bytes
 }
@@ -3220,7 +3249,7 @@ fn test_uniform_named_subchunk_bytes(block_name: &str) -> Vec<u8> {
             ("states".to_string(), NbtTag::Compound(IndexMap::new())),
             ("version".to_string(), NbtTag::Int(1)),
         ]));
-        bytes.extend_from_slice(&crate::nbt::serialize_root_nbt(&tag).expect("nbt"));
+        bytes.extend_from_slice(&crate::nbt::serialize_root(&tag).expect("nbt"));
     }
     bytes
 }
@@ -3247,7 +3276,7 @@ fn test_uniform_frame_subchunk_bytes() -> Vec<u8> {
             ("states".to_string(), NbtTag::Compound(states)),
             ("version".to_string(), NbtTag::Int(18_168_865)),
         ]));
-        bytes.extend_from_slice(&crate::nbt::serialize_root_nbt(&tag).expect("nbt"));
+        bytes.extend_from_slice(&crate::nbt::serialize_root(&tag).expect("nbt"));
     }
     bytes
 }
@@ -3267,7 +3296,7 @@ fn test_uniform_versioned_air_subchunk_bytes(version: i32) -> Vec<u8> {
             ("states".to_string(), NbtTag::Compound(IndexMap::new())),
             ("version".to_string(), NbtTag::Int(version)),
         ]));
-        bytes.extend_from_slice(&crate::nbt::serialize_root_nbt(&tag).expect("nbt"));
+        bytes.extend_from_slice(&crate::nbt::serialize_root(&tag).expect("nbt"));
     }
     bytes
 }
@@ -3310,7 +3339,7 @@ fn test_named_subchunk_bytes_with_values(
             ("states".to_string(), NbtTag::Compound(IndexMap::new())),
             ("version".to_string(), NbtTag::Int(1)),
         ]));
-        bytes.extend_from_slice(&crate::nbt::serialize_root_nbt(&tag).expect("nbt"));
+        bytes.extend_from_slice(&crate::nbt::serialize_root(&tag).expect("nbt"));
     }
     bytes
 }
@@ -3366,7 +3395,7 @@ fn append_named_palette_storage(
             ("states".to_string(), NbtTag::Compound(IndexMap::new())),
             ("version".to_string(), NbtTag::Int(1)),
         ]));
-        bytes.extend_from_slice(&crate::nbt::serialize_root_nbt(&tag).expect("nbt"));
+        bytes.extend_from_slice(&crate::nbt::serialize_root(&tag).expect("nbt"));
     }
 }
 

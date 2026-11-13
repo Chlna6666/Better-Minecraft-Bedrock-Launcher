@@ -203,6 +203,7 @@ mod tests {
                 "Armor".to_string(),
                 NbtTag::List(vec![item("minecraft:iron_helmet")]),
             )])),
+            None,
         )
         .unwrap();
         player

@@ -143,7 +143,7 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
         .or_else(|| state_bool(state, "upside_down_bit"))
         .unwrap_or(false);
     let direction = stair_direction(state).unwrap_or(CardinalDirection::North);
-    let shape_name = stairs_shape_name(state).unwrap_or("straight");
+    let shape_name = shape_name(state).unwrap_or("straight");
     let mut cuboids = Vec::with_capacity(3);
     if top {
         cuboids.push(detail_cuboid_with_local_uv(stair_cuboid_with_slots(
@@ -165,7 +165,7 @@ fn is_top_half(value: &str) -> bool {
     value == "top" || value == "upper"
 }
 
-fn stairs_shape_name<'a>(state: &'a BlockStateQuery) -> Option<&'a str> {
+fn shape_name<'a>(state: &'a BlockStateQuery) -> Option<&'a str> {
     state_string(state, "shape")
         .or_else(|| state_string(state, "stairs_shape"))
         .or_else(|| state_string(state, "minecraft:shape"))

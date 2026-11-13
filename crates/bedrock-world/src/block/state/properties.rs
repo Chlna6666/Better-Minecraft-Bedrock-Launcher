@@ -117,22 +117,22 @@ impl BlockState {
     }
 
     /// Iterates every persisted state without filtering unknown or future keys.
-    pub fn state_entries(&self) -> impl ExactSizeIterator<Item = (&str, &NbtTag)> {
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = (&str, &NbtTag)> {
         self.states.iter().map(|(key, value)| (key.as_str(), value))
     }
 
     /// Reads any persisted boolean state by its exact Bedrock key.
-    pub fn state_boolean(&self, key: &str) -> Result<Option<bool>> {
+    pub fn boolean(&self, key: &str) -> Result<Option<bool>> {
         optional_boolean_key(self, key)
     }
 
     /// Reads any persisted integer state by its exact Bedrock key.
-    pub fn state_integer(&self, key: &str) -> Result<Option<i64>> {
+    pub fn integer(&self, key: &str) -> Result<Option<i64>> {
         optional_integer_key(self, key)
     }
 
     /// Reads any persisted string state by its exact Bedrock key.
-    pub fn state_string(&self, key: &str) -> Result<Option<&str>> {
+    pub fn string(&self, key: &str) -> Result<Option<&str>> {
         self.states
             .get(key)
             .map(|value| match value {
@@ -587,10 +587,10 @@ mod tests {
             })
         );
         assert_eq!(
-            stairs.state_string("future_rotation_mode").unwrap(),
+            stairs.string("future_rotation_mode").unwrap(),
             Some("custom")
         );
-        assert_eq!(stairs.state_entries().len(), 4);
+        assert_eq!(stairs.entries().len(), 4);
 
         let slab = block(
             "minecraft:blackstone_slab",

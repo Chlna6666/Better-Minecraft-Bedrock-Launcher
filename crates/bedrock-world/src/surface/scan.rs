@@ -426,7 +426,7 @@ where
             load_options.priority = options.priority;
             load_options.storage_cache_policy = options.storage_cache_policy;
             let (chunks, stats) =
-                self.query_chunk_data_with_stats(fallback_positions, load_options)?;
+                self.load_render_chunks_with_stats(fallback_positions, load_options)?;
             fallback_stats = stats;
             for chunk in chunks {
                 fallback_chunks.insert(chunk.pos, compact_surface_chunk(&chunk)?);
@@ -779,10 +779,10 @@ fn sample_direct_surface_column(
         })?;
         let height = i16::try_from(y).unwrap_or(if y < 0 { i16::MIN } else { i16::MAX });
         let mut saw_layer = false;
-        for entry in subchunk.visible_block_surface_states_at(local_x, local_y, local_z) {
+        for entry in subchunk.visible_surface_states_at(local_x, local_y, local_z) {
             saw_layer = true;
             let role = terrain_surface_role(&entry.state.name);
-            if let Some(column) = scan_direct_surface_state(
+            if let Some(column) = direct_surface_state(
                 local_x,
                 local_z,
                 y,
@@ -828,7 +828,7 @@ fn sample_direct_surface_column(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn scan_direct_surface_state(
+fn direct_surface_state(
     local_x: u8,
     local_z: u8,
     y: i32,

@@ -1,7 +1,7 @@
 use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{
-    CardinalDirection, DirectionConnection, direction_connection, state_bool,
+    CardinalDirection, DirectionConnection, connection, state_bool,
 };
 use crate::model_family::shape::{ModelCuboid, ModelShape, detail_cuboid_with_local_uv};
 use crate::state::BlockStateQuery;
@@ -37,7 +37,7 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
 }
 
 fn wall_arm_height(state: &BlockStateQuery, direction: CardinalDirection) -> Option<f32> {
-    match direction_connection(state, direction) {
+    match connection(state, direction) {
         Some(DirectionConnection::Disconnected) => None,
         Some(DirectionConnection::Tall) => Some(1.0),
         Some(DirectionConnection::Short) => Some(short_wall_height()),

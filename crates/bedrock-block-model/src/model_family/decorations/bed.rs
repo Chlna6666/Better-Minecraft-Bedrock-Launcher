@@ -1,20 +1,11 @@
 use crate::geometry::BlockGeometry;
 use crate::material::BlockFace;
-use crate::model_family::ModelFamily;
 use crate::model_family::direction::{CardinalDirection, cardinal_direction, state_bool};
 use crate::model_family::shape::{ModelPlane, ModelShape, box_unwrap_uv};
 use crate::state::BlockStateQuery;
 
-pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
-    if name == "bed" || name.ends_with("_bed") {
-        Some(ModelFamily::Bed)
-    } else {
-        None
-    }
-}
-
 /// The official `geometry.bed` identifier from the pack's `models/mobs.json`.
-pub const BED_GEOMETRY_IDENTIFIER: &str = "geometry.bed";
+pub const GEOMETRY_IDENTIFIER: &str = "geometry.bed";
 
 /// Bed art is the 64x64 entity sprite `textures/entity/bed/<colour>`.
 const BED_TEXTURE_SPAN: f32 = 64.0;
@@ -26,7 +17,7 @@ const BED_TOP_PX: f32 = 9.0;
 const HALF_LENGTH_PX: f32 = 16.0;
 
 /// Fallback bed used only when the pack ships no `geometry.bed`.
-pub(crate) fn bed_shape(state: &BlockStateQuery) -> ModelShape {
+pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
     build_bed(state, default_bed_cubes()).unwrap_or_default()
 }
 
@@ -36,7 +27,7 @@ pub(crate) fn bed_shape(state: &BlockStateQuery) -> ModelShape {
 /// thickness (mattress 0..6, legs 6..9). The block-entity renderer lays it flat, mapping a model
 /// point `(x, y, z)` to block space as `x/16`, `(9 - z)/16`, `y/16`. Each bed block draws one half
 /// of that length, so cubes are clipped at 16 px before the transform.
-pub fn bed_shape_from_geometry(
+pub fn shape_from_geometry(
     geometry: &BlockGeometry,
     state: &BlockStateQuery,
 ) -> Option<ModelShape> {
@@ -83,8 +74,8 @@ fn build_bed(
     state: &BlockStateQuery,
     cubes: Vec<([f32; 3], [f32; 3], [f32; 2])>,
 ) -> Option<ModelShape> {
-    let is_head = bed_is_head(state);
-    let direction = bed_direction(state);
+    let is_head = is_head(state);
+    let direction = direction(state);
     let (half_low, half_high) = if is_head {
         (HALF_LENGTH_PX, 2.0 * HALF_LENGTH_PX)
     } else {
@@ -104,7 +95,7 @@ fn build_bed(
     })
 }
 
-fn bed_is_head(state: &BlockStateQuery) -> bool {
+fn is_head(state: &BlockStateQuery) -> bool {
     state_bool(state, "head_piece_bit")
         .or_else(|| {
             crate::model_family::direction::state_string(state, "bed_part").map(|s| s == "head")
@@ -113,7 +104,7 @@ fn bed_is_head(state: &BlockStateQuery) -> bool {
 }
 
 /// Bed `direction` is an integer 0..=3; other spellings cover pack variants.
-fn bed_direction(state: &BlockStateQuery) -> CardinalDirection {
+fn direction(state: &BlockStateQuery) -> CardinalDirection {
     if let Some(value) = crate::model_family::direction::state_i64(state, "direction") {
         return match value & 3 {
             0 => CardinalDirection::South,
@@ -193,7 +184,7 @@ fn push_cube_planes(
             corner[1] = corner[1].clamp(low, high);
             uvs[index] = model_uv(face, uv, min, max, *corner);
         }
-        let block = clipped.map(|point| bed_point_to_block(point, half_low));
+        let block = clipped.map(|point| point_to_block(point, half_low));
         let block = rotate_corners(block, direction);
         let normal = plane_normal(block);
         planes.push(
@@ -217,7 +208,7 @@ fn model_uv(
 }
 
 /// Model point to bed block space: lay flat, then put this half inside the cell.
-fn bed_point_to_block(point: [f32; 3], half_low: f32) -> [f32; 3] {
+fn point_to_block(point: [f32; 3], half_low: f32) -> [f32; 3] {
     let [x, y, z] = point;
     [x / PX, (BED_TOP_PX - z) / PX, (y - half_low) / PX]
 }

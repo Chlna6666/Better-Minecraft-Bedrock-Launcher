@@ -467,7 +467,7 @@ fn replace_file(tmp_path: &Path, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::table::{TableLookup, get_table_lookup};
+    use crate::table::{TableLookup, get_lookup};
     use bytes::Bytes;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -494,7 +494,7 @@ mod tests {
         let written = writer.finish().expect("finish");
         assert!(written.file_size > 0);
         assert_eq!(
-            get_table_lookup(&path, b"key:0192", true, None).expect("lookup"),
+            get_lookup(&path, b"key:0192", true, None).expect("lookup"),
             TableLookup::Value(Bytes::from(vec![192_u8; 256]))
         );
         std::fs::remove_file(path).expect("cleanup");
@@ -509,7 +509,7 @@ mod tests {
         writer.push(b"b", None).expect("delete");
         writer.finish().expect("finish");
         assert_eq!(
-            get_table_lookup(&path, b"b", true, None).expect("lookup"),
+            get_lookup(&path, b"b", true, None).expect("lookup"),
             TableLookup::Deleted
         );
         std::fs::remove_file(path).expect("cleanup");

@@ -110,7 +110,7 @@ impl CompatibilityReport {
 }
 
 /// Scans raw world storage once and derives world/chunk compatibility information.
-pub fn scan_compatibility(
+pub fn assess_compatibility(
     storage: &dyn WorldStorage,
     format: WorldFormat,
     options: StorageReadOptions,
@@ -410,7 +410,7 @@ mod tests {
         );
         storage.write_batch(&batch).expect("seed storage");
 
-        let report = scan_compatibility(
+        let report = assess_compatibility(
             &storage,
             WorldFormat::LevelDb,
             StorageReadOptions::default(),
@@ -449,7 +449,7 @@ mod tests {
         batch.put(uid.storage_key(), Bytes::from_static(b"actor"));
         storage.write_batch(&batch).expect("seed actor links");
 
-        let report = scan_compatibility(
+        let report = assess_compatibility(
             &storage,
             WorldFormat::LevelDb,
             StorageReadOptions::default(),
@@ -485,7 +485,7 @@ mod tests {
         );
         storage.write_batch(&batch).expect("seed legacy terrain");
 
-        let report = scan_compatibility(
+        let report = assess_compatibility(
             &storage,
             WorldFormat::LevelDbLegacyTerrain,
             StorageReadOptions::default(),

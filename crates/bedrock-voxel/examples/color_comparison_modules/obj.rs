@@ -69,7 +69,7 @@ pub(super) fn compare_obj(
         };
         let source_projection = obj_xy_source_projection(&model, longest_side, view_positive_z)?;
         let nearest_projection = nearest_palette_projection(&source_projection, &candidates);
-        let (voxel_projection, counts) = obj_xy_voxel_projection(
+        let (voxel_projection, counts) = xy_voxel_projection(
             &front_plan,
             &candidates,
             source_projection.pixels.width(),
@@ -94,7 +94,7 @@ pub(super) fn compare_obj(
             voxel_projection.pixels.clone(),
         ];
         if let Some(reverse_plan) = &reverse_plan {
-            let (reverse_projection, _) = obj_xy_voxel_projection(
+            let (reverse_projection, _) = xy_voxel_projection(
                 reverse_plan,
                 &candidates,
                 source_projection.pixels.width(),
@@ -223,7 +223,7 @@ fn print_obj_materials(model: &bedrock_voxel::ObjModel) {
     println!("diffuse texture references loaded through OBJ API: {textures:?}");
 }
 
-fn obj_xy_voxel_projection(
+fn xy_voxel_projection(
     plan: &bedrock_world::editor::BlockPlacementPlan,
     candidates: &[bedrock_voxel::FlatBlockCandidate],
     width: u32,

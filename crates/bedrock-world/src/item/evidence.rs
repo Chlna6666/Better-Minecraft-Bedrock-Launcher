@@ -3,14 +3,14 @@
 //! A plain string-ID item is shared by the Medieval and Modern generations, so this module reports
 //! persisted structure first and only reports a generation when the bytes actually prove it.
 
-use super::SavedItemFormat;
+use super::Generation;
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
 use indexmap::IndexMap;
 
 /// Concrete persisted identity form observed in one recognised saved-item compound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SavedItemStorageForm {
+pub enum StorageForm {
     /// Numeric `id`, the identity form used by Classic saves.
     ClassicNumeric,
     /// String `Name`/`id` with metadata and no persisted `Block` BlockState.
@@ -23,7 +23,7 @@ pub enum SavedItemStorageForm {
 
 /// Non-mutating evidence collected from all recognised saved items in one NBT tree.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SavedItemFormatEvidence {
+pub struct Evidence {
     /// Recognised saved-item compounds visited.
     pub items_seen: usize,
     /// Numeric-ID saved items observed.
@@ -38,7 +38,7 @@ pub struct SavedItemFormatEvidence {
     pub identity_conflicts: usize,
 }
 
-impl SavedItemFormatEvidence {
+impl Evidence {
     /// Returns whether more than one incompatible persisted identity generation is present.
     #[must_use]
     pub const fn has_mixed_identity_generations(&self) -> bool {
@@ -58,15 +58,15 @@ impl SavedItemFormatEvidence {
     /// BlockState and no Classic numeric item is mixed into the tree. Plain string-ID items alone do
     /// not prove Medieval because the same representation is also valid for ordinary Modern items.
     #[must_use]
-    pub const fn proven_format(&self) -> Option<SavedItemFormat> {
+    pub const fn proven_format(&self) -> Option<Generation> {
         if self.items_seen == 0 || self.has_storage_conflicts() {
             return None;
         }
         if self.classic_numeric == self.items_seen {
-            return Some(SavedItemFormat::Classic);
+            return Some(Generation::Classic);
         }
         if self.classic_numeric == 0 && self.modern_block_state > 0 {
-            return Some(SavedItemFormat::Modern);
+            return Some(Generation::Modern);
         }
         None
     }
@@ -77,7 +77,7 @@ impl SavedItemFormatEvidence {
     /// string-ID items returns Medieval even though the bytes may have been written by a Modern game.
     /// Mixed Classic/string identities or non-canonical conflicts return `None`.
     #[must_use]
-    pub const fn minimum_format(&self) -> Option<SavedItemFormat> {
+    pub const fn minimum_format(&self) -> Option<Generation> {
         if self.items_seen == 0
             || self.has_storage_conflicts()
             || self.has_mixed_identity_generations()
@@ -85,11 +85,11 @@ impl SavedItemFormatEvidence {
             return None;
         }
         if self.classic_numeric > 0 {
-            Some(SavedItemFormat::Classic)
+            Some(Generation::Classic)
         } else if self.modern_block_state > 0 {
-            Some(SavedItemFormat::Modern)
+            Some(Generation::Modern)
         } else if self.string_id_meta > 0 {
-            Some(SavedItemFormat::Medieval)
+            Some(Generation::Medieval)
         } else {
             None
         }
@@ -99,9 +99,9 @@ impl SavedItemFormatEvidence {
 /// Returns the concrete storage form of one recognised saved-item compound.
 ///
 /// `Ok(None)` means the compound does not look like a saved item. Unknown fields are ignored.
-pub fn saved_item_storage_form(
+pub fn storage_form(
     root: &IndexMap<String, NbtTag>,
-) -> Result<Option<SavedItemStorageForm>> {
+) -> Result<Option<StorageForm>> {
     if !looks_like_item_stack(root) {
         return Ok(None);
     }
@@ -116,47 +116,47 @@ pub fn saved_item_storage_form(
     };
     if check_string_identity(root)? {
         return Ok(Some(if block {
-            SavedItemStorageForm::ModernBlockState
+            StorageForm::ModernBlockState
         } else {
-            SavedItemStorageForm::StringIdMeta
+            StorageForm::StringIdMeta
         }));
     }
     if check_numeric_identity(root)? {
-        return Ok(Some(SavedItemStorageForm::ClassicNumeric));
+        return Ok(Some(StorageForm::ClassicNumeric));
     }
     Ok(None)
 }
 
 /// Inspects saved-item storage forms recursively without modifying or normalising the NBT tree.
-pub fn inspect_saved_item_formats(nbt: &NbtTag) -> Result<SavedItemFormatEvidence> {
-    let mut evidence = SavedItemFormatEvidence::default();
+pub fn inspect(nbt: &NbtTag) -> Result<Evidence> {
+    let mut evidence = Evidence::default();
     inspect_tag(nbt, &mut evidence)?;
     Ok(evidence)
 }
 
-fn inspect_tag(tag: &NbtTag, evidence: &mut SavedItemFormatEvidence) -> Result<()> {
+fn inspect_tag(tag: &NbtTag, evidence: &mut Evidence) -> Result<()> {
     match tag {
         NbtTag::Compound(root) if looks_like_item_stack(root) => {
             evidence.items_seen = evidence.items_seen.saturating_add(1);
             if root.contains_key("Name") && root.contains_key("id") {
                 evidence.identity_conflicts = evidence.identity_conflicts.saturating_add(1);
             }
-            let form = saved_item_storage_form(root)?.ok_or_else(|| {
+            let form = storage_form(root)?.ok_or_else(|| {
                 BedrockWorldError::CorruptWorld(
                     "recognised saved item has no supported identity form".to_string(),
                 )
             })?;
             match form {
-                SavedItemStorageForm::ClassicNumeric => {
+                StorageForm::ClassicNumeric => {
                     evidence.classic_numeric = evidence.classic_numeric.saturating_add(1);
                     if root.contains_key("Block") {
                         evidence.numeric_with_block = evidence.numeric_with_block.saturating_add(1);
                     }
                 }
-                SavedItemStorageForm::StringIdMeta => {
+                StorageForm::StringIdMeta => {
                     evidence.string_id_meta = evidence.string_id_meta.saturating_add(1);
                 }
-                SavedItemStorageForm::ModernBlockState => {
+                StorageForm::ModernBlockState => {
                     evidence.modern_block_state = evidence.modern_block_state.saturating_add(1);
                 }
             }
@@ -255,9 +255,9 @@ mod tests {
             ("Name", NbtTag::String("minecraft:stone".to_string())),
             false,
         )]);
-        let evidence = inspect_saved_item_formats(&root).unwrap();
+        let evidence = inspect(&root).unwrap();
         assert_eq!(evidence.string_id_meta, 1);
-        assert_eq!(evidence.minimum_format(), Some(SavedItemFormat::Medieval));
+        assert_eq!(evidence.minimum_format(), Some(Generation::Medieval));
         assert_eq!(evidence.proven_format(), None);
     }
 
@@ -273,19 +273,19 @@ mod tests {
                 false,
             ),
         ]);
-        let evidence = inspect_saved_item_formats(&root).unwrap();
+        let evidence = inspect(&root).unwrap();
         assert_eq!(evidence.modern_block_state, 1);
         assert_eq!(evidence.string_id_meta, 1);
-        assert_eq!(evidence.proven_format(), Some(SavedItemFormat::Modern));
-        assert_eq!(evidence.minimum_format(), Some(SavedItemFormat::Modern));
+        assert_eq!(evidence.proven_format(), Some(Generation::Modern));
+        assert_eq!(evidence.minimum_format(), Some(Generation::Modern));
     }
 
     #[test]
     fn numeric_only_tree_proves_classic_identity_generation() {
         let root = NbtTag::List(vec![item(("id", NbtTag::Short(1)), false)]);
-        let evidence = inspect_saved_item_formats(&root).unwrap();
-        assert_eq!(evidence.proven_format(), Some(SavedItemFormat::Classic));
-        assert_eq!(evidence.minimum_format(), Some(SavedItemFormat::Classic));
+        let evidence = inspect(&root).unwrap();
+        assert_eq!(evidence.proven_format(), Some(Generation::Classic));
+        assert_eq!(evidence.minimum_format(), Some(Generation::Classic));
     }
 
     #[test]
@@ -297,7 +297,7 @@ mod tests {
                 false,
             ),
         ]);
-        let evidence = inspect_saved_item_formats(&root).unwrap();
+        let evidence = inspect(&root).unwrap();
         assert!(evidence.has_mixed_identity_generations());
         assert_eq!(evidence.proven_format(), None);
         assert_eq!(evidence.minimum_format(), None);
@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn numeric_item_with_block_payload_is_retained_as_conflict_evidence() {
         let root = item(("id", NbtTag::Short(1)), true);
-        let evidence = inspect_saved_item_formats(&root).unwrap();
+        let evidence = inspect(&root).unwrap();
         assert_eq!(evidence.classic_numeric, 1);
         assert_eq!(evidence.numeric_with_block, 1);
         assert!(evidence.has_storage_conflicts());

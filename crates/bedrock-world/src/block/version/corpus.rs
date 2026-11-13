@@ -62,9 +62,7 @@ pub const PINNED_BLOCK_STATE_SCHEMA_FILES: &[&str] = &[
 /// Input ordering does not matter, but the filename set must match
 /// [`PINNED_BLOCK_STATE_SCHEMA_FILES`] exactly. This prevents a server from performing destructive
 /// migration with a partially updated resource bundle.
-pub fn load_pinned_block_state_catalog(
-    sources: &[BlockStateSchemaSource<'_>],
-) -> Result<AuthoritativeBlockStateCatalog> {
+pub fn load(sources: &[BlockStateSchemaSource<'_>]) -> Result<AuthoritativeBlockStateCatalog> {
     validate_pinned_sources(sources)?;
     AuthoritativeBlockStateCatalog::from_sources(sources)
 }
@@ -75,7 +73,7 @@ pub fn load_pinned_block_state_catalog(
 /// groups whose result version is at or below `target_version`, so the per-block migration hot path
 /// remains identical to a newest-version catalogue. The target must be an actual authoritative schema
 /// endpoint; arbitrary version stamping and downgrades are refused.
-pub fn load_pinned_block_state_catalog_for_target(
+pub fn load_for_target(
     sources: &[BlockStateSchemaSource<'_>],
     target_version: BlockStateStorageVersion,
 ) -> Result<AuthoritativeBlockStateCatalog> {

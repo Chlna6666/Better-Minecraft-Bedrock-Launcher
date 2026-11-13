@@ -149,12 +149,12 @@ state omits explicit north/south/east/west connection booleans, a viewer may inf
 connections from neighboring blocks, inject the booleans into `BlockStateQuery`, and then call
 `model_shape_for_block_state`. The generated pane mesh and UVs still come from this crate.
 
-World resource-pack discovery is not UI policy and belongs here. Call `world_resource_pack_paths`
-when an export should honor `world_resource_packs.json`; the crate parses relaxed Bedrock JSON,
-normalizes pack UUIDs, matches resource-pack manifests, and searches the standard local/shared
-Bedrock resource-pack folders. Applications may prepend or append extra package roots from their
-own launcher/version state, but should use `push_unique_resource_pack_path` instead of duplicating
-path de-duplication or manifest parsing.
+World resource-pack discovery is not UI policy and belongs here. Call
+`resource_pack::paths_for_world` when an export should honor `world_resource_packs.json`; the crate
+parses relaxed Bedrock JSON, normalizes pack UUIDs, matches resource-pack manifests, and searches the
+standard local/shared Bedrock resource-pack folders. Applications may prepend or append extra
+package roots from their own launcher/version state, but should use
+`resource_pack::append_unique_path` instead of duplicating path de-duplication or manifest parsing.
 
 OBJ target selection remains application-level, but standard target derivation, file write-out,
 and reusable texture-copy behavior belong here. A caller chooses the selected `.obj` path, then

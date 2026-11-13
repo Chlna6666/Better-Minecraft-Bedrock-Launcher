@@ -549,7 +549,7 @@ impl RenderPalette {
             })
     }
 
-    pub(crate) fn surface_block_state_color_with_legacy_biome(
+    pub(crate) fn surface_block_state_color(
         &self,
         state: &BlockState,
         biome_id: Option<u32>,
@@ -2524,10 +2524,7 @@ mod tests {
                 "{name}: surface color must be the mask times the returned tint"
             );
         }
-        assert_eq!(
-            palette.surface_block_tint("minecraft:stone", Some(1)),
-            None
-        );
+        assert_eq!(palette.surface_block_tint("minecraft:stone", Some(1)), None);
     }
 
     #[test]
@@ -2676,7 +2673,7 @@ mod tests {
             for biome in [None, Some(1), Some(21), Some(193)] {
                 assert_eq!(palette.surface_block_color(&name, biome, true), expected);
                 assert_eq!(
-                    palette.surface_block_state_color_with_legacy_biome(
+                    palette.surface_block_state_color(
                         &state,
                         biome,
                         Some(RgbaColor::new(30, 220, 20, 255)),
@@ -2697,8 +2694,8 @@ mod tests {
             assert_eq!(expected, palette.surface_block_color(&name, Some(21), true));
             let state = test_block_state_with_string("minecraft:leaves", "old_leaf_type", kind);
             assert_eq!(
-                palette.surface_block_state_color_with_legacy_biome(&state, Some(1), None, true),
-                palette.surface_block_state_color_with_legacy_biome(
+                palette.surface_block_state_color(&state, Some(1), None, true),
+                palette.surface_block_state_color(
                     &state,
                     Some(21),
                     Some(RgbaColor::new(255, 20, 255, 255)),

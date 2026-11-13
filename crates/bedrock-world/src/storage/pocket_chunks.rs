@@ -13,7 +13,7 @@ use crate::chunk::{
     POCKET_TERRAIN_VALUE_LEN,
 };
 use crate::error::{BedrockWorldError, Result};
-use crate::level::read_level_dat_document;
+use crate::level::read;
 use crate::nbt::NbtTag;
 use bytes::Bytes;
 use std::collections::BTreeMap;
@@ -231,7 +231,7 @@ fn chunk_payload(
 }
 
 fn read_limited_world_origin(world_path: &Path) -> (i32, i32) {
-    let Ok(document) = read_level_dat_document(&world_path.join("level.dat")) else {
+    let Ok(document) = read(&world_path.join("level.dat")) else {
         return (0, 0);
     };
     let NbtTag::Compound(root) = document.root else {

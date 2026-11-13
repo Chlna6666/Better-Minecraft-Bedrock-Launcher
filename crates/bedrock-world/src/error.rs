@@ -109,3 +109,14 @@ impl From<std::str::Utf8Error> for BedrockWorldError {
         Self::Nbt(error.to_string())
     }
 }
+
+impl From<bedrock_nbt::Error> for BedrockWorldError {
+    fn from(error: bedrock_nbt::Error) -> Self {
+        match error {
+            bedrock_nbt::Error::Io(error) => Self::Io(error),
+            bedrock_nbt::Error::Nbt(message) => Self::Nbt(message),
+            bedrock_nbt::Error::Validation(message) => Self::Validation(message),
+            other => Self::Nbt(other.to_string()),
+        }
+    }
+}

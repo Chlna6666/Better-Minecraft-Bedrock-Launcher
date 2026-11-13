@@ -4,6 +4,7 @@
 //! modes, image encoding, cancellation, diagnostics, and Criterion-backed
 //! benchmark support for map tooling.
 
+pub mod cache;
 mod error;
 /// Exact non-rectangular selection planning with separate compact 2D-surface and full 3D-chunk loads.
 pub mod exact_selection;
@@ -12,23 +13,23 @@ mod renderer;
 
 pub use bedrock_world::{
     World,
-    query::{ExactChunkSelection, SlimeChunkBounds},
+    query::SlimeChunkBounds,
     surface::{
         ChunkData, ChunkLoadOptions, SurfaceMapBatchStats, SurfaceMapChunk, SurfaceMapColumn,
         SurfaceMapMaterial, SurfaceMapQueryOptions,
     },
 };
-pub use error::{BedrockRenderError, BedrockRenderErrorKind, Result};
-pub use exact_selection::{
-    ExactChunkRenderData, ExactChunkRenderPlan, ExactSurfaceRenderData,
-    load_exact_chunk_render_data, load_exact_surface_render_data,
+pub use cache::{
+    ChunkFingerprintInput, TILE_AUTHORITY_FLAG_EMPTY, TILE_AUTHORITY_FLAG_NON_EMPTY,
+    TileAuthorityBlobReader, TileAuthorityCache, TileAuthorityCacheKey, TileAuthorityChunkState,
+    TileAuthorityChunkTileRef, TileAuthorityCommit, TileAuthorityDependency, TileAuthorityEntry,
+    TileAuthorityFreeExtent, TileAuthorityIndexSnapshot, WorldCacheIdentity,
 };
+pub use error::{BedrockRenderError, BedrockRenderErrorKind, Result};
 pub use palette::{
     MapColor, MapColorEntry, MapTintMethod, PaletteImportReport, RenderPalette, RgbaColor,
     SurfaceTintKind,
 };
-#[cfg(feature = "async")]
-pub use renderer::validate_chunk_fingerprints_async;
 pub use renderer::{
     AtlasRenderOptions, BakeDiagnostics, BakeOptions, BlockBoundaryRenderOptions,
     BlockVolumeRenderOptions, ChunkBounds, ChunkPos, ChunkRegion, ChunkTileLayout,
@@ -47,19 +48,4 @@ pub use renderer::{
     SurfacePlaneAtlas, SurfaceRenderOptions, TerrainGradientAlgorithm, TerrainLightingOptions,
     TerrainLightingPreset, TerrainShadingMode, TileCache, TileCacheKey, TileCoord, TileImage,
     TilePathScheme, TilePixelFormat, TileReadySource, TileSet, TileStreamEvent, WorldRenderSource,
-    decode_fast_bgra_zstd, decode_fast_rgba_zstd, decode_fast_rgba_zstd_header,
-    encode_fast_bgra_zstd, encode_fast_rgba_zstd, encode_fast_rgba_zstd_with_validation,
-    tile_cache_validation_value,
-};
-pub use renderer::{
-    ChunkFingerprintInput, TILE_AUTHORITY_FLAG_EMPTY, TILE_AUTHORITY_FLAG_NON_EMPTY,
-    TileAuthorityBlobReader, TileAuthorityCache, TileAuthorityCacheKey, TileAuthorityChunkState,
-    TileAuthorityChunkTileRef, TileAuthorityCommit, TileAuthorityDependency, TileAuthorityEntry,
-    TileAuthorityFreeExtent, TileAuthorityIndexSnapshot, TileOccupancyEntry, TileOccupancyIndex,
-    TileOccupancyIndexRequest, TileOccupancyIndexResult, TileOccupancyIndexSource,
-    WorldCacheIdentity, load_or_build_tile_occupancy_index, render_backend_cache_slug,
-    render_cache_validation_seed_from_signature, render_gpu_backend_cache_slug,
-    render_mode_cache_slug, render_preset_cache_signature, render_preset_cache_validation_seed,
-    tile_occupancy_cache_path, tile_payload_fingerprint, validate_chunk_fingerprints_parallel,
-    world_cache_id, world_cache_identity, world_cache_signature,
 };

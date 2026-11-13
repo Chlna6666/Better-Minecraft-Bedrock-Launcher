@@ -91,14 +91,14 @@ impl BlockEditPlan {
                 memory.put(key, value)?;
             }
         }
-        Ok(World::from_typed_storage_with_format(
+        Ok(World::from_typed_storage(
             world.path().to_path_buf(),
             memory,
             OpenOptions {
                 read_only: true,
+                format: crate::world::WorldFormatHint::Exact(world.format()),
                 ..OpenOptions::default()
             },
-            world.format(),
         ))
     }
 
@@ -229,14 +229,14 @@ where
             memory.put(key, value)?;
         }
     }
-    let prepared_world = World::from_typed_storage_with_format(
+    let prepared_world = World::from_typed_storage(
         world.path().to_path_buf(),
         memory,
         OpenOptions {
             read_only: false,
+            format: crate::world::WorldFormatHint::Exact(world.format()),
             ..OpenOptions::default()
         },
-        world.format(),
     );
 
     if !conditions_match(&prepared_world, conditions)? {

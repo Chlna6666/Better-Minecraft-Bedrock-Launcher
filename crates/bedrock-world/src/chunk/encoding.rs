@@ -8,11 +8,10 @@ use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtTag, NbtWriter};
 use bytes::Bytes;
 use indexmap::IndexMap;
-use std::collections::BTreeMap;
 
 const BLOCKS_PER_SUBCHUNK: usize = 4096;
 
-pub(crate) fn encode_paletted_subchunk_from_palettes(
+pub(crate) fn encode_paletted_subchunk(
     version: u8,
     y: i8,
     palettes: &[&BlockPalette],
@@ -26,20 +25,6 @@ pub(crate) fn encode_paletted_subchunk_from_palettes(
             )
         })?;
         bytes.extend_from_slice(&encode_palette_storage(&palette.states, indices.as_ref())?);
-    }
-    Ok(Bytes::from(bytes))
-}
-
-#[allow(dead_code)]
-pub(crate) fn encode_paletted_subchunk(
-    version: u8,
-    y: i8,
-    layers: &[&[BlockState]],
-) -> Result<Bytes> {
-    validate_storage_count(version, layers.len())?;
-    let mut bytes = subchunk_header(version, y, layers.len())?;
-    for layer in layers {
-        bytes.extend_from_slice(&encode_palette_layer(layer)?);
     }
     Ok(Bytes::from(bytes))
 }
@@ -79,35 +64,6 @@ fn subchunk_header(version: u8, y: i8, count: usize) -> Result<Vec<u8>> {
         ],
         _ => unreachable!("validated above"),
     })
-}
-
-fn encode_palette_layer(states: &[BlockState]) -> Result<Vec<u8>> {
-    if states.len() != BLOCKS_PER_SUBCHUNK {
-        return Err(BedrockWorldError::Validation(format!(
-            "subchunk layer has {} blocks, expected {BLOCKS_PER_SUBCHUNK}",
-            states.len()
-        )));
-    }
-
-    let mut palette = Vec::<BlockState>::new();
-    let mut lookup = BTreeMap::<Vec<u8>, u16>::new();
-    let mut indices = Vec::<u16>::with_capacity(BLOCKS_PER_SUBCHUNK);
-    for state in states {
-        validate_writable_state(state)?;
-        let key = storage_identity_bytes(state)?;
-        let index = if let Some(index) = lookup.get(&key) {
-            *index
-        } else {
-            let index = u16::try_from(palette.len()).map_err(|_| {
-                BedrockWorldError::Validation("subchunk palette exceeds u16".to_string())
-            })?;
-            palette.push(state.clone());
-            lookup.insert(key, index);
-            index
-        };
-        indices.push(index);
-    }
-    encode_palette_storage(&palette, &indices)
 }
 
 fn encode_palette_storage(states: &[BlockState], indices: &[u16]) -> Result<Vec<u8>> {
@@ -174,15 +130,6 @@ fn validate_writable_state(state: &BlockState) -> Result<()> {
     }
     state.canonical_bytes()?;
     Ok(())
-}
-
-fn storage_identity_bytes(state: &BlockState) -> Result<Vec<u8>> {
-    let mut bytes = state.canonical_bytes()?;
-    let version = state.version.ok_or_else(|| {
-        BedrockWorldError::Validation(format!("block state {} has no version", state.name))
-    })?;
-    bytes.extend_from_slice(&version.to_le_bytes());
-    Ok(bytes)
 }
 
 fn storage_state_nbt(state: &BlockState) -> Result<NbtTag> {
@@ -264,7 +211,7 @@ mod tests {
                 .collect(),
             None,
         );
-        let encoded = encode_paletted_subchunk_from_palettes(9, -4, &[&palette]).unwrap();
+        let encoded = encode_paletted_subchunk(9, -4, &[&palette]).unwrap();
         let parsed = SubChunk::read(-4, encoded, SubChunkDecodeMode::FullIndices).unwrap();
         let SubChunkFormat::Paletted { version, storages } = parsed.format else {
             panic!("expected paletted subchunk");
@@ -277,7 +224,7 @@ mod tests {
     fn paletted_v1_uses_single_storage_layout() {
         let palette =
             BlockPalette::with_unpacked_indices(vec![state("minecraft:air")], vec![0; 4096], None);
-        let encoded = encode_paletted_subchunk_from_palettes(1, 0, &[&palette]).unwrap();
+        let encoded = encode_paletted_subchunk(1, 0, &[&palette]).unwrap();
         assert_eq!(encoded[0], 1);
         assert_ne!(encoded.get(1).copied(), Some(1));
     }

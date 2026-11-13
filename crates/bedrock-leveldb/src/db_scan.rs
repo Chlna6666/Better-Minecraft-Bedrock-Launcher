@@ -1,5 +1,5 @@
 impl Db {
-    pub(super) fn for_each_key_scan<F>(
+    pub(super) fn for_each_key<F>(
         &self,
         options: ReadOptions,
         mut visitor: F,
@@ -10,7 +10,7 @@ impl Db {
         self.scan_visible_borrowed(None, &options, &mut |key, _value| visitor(key))
     }
 
-    pub(super) fn for_each_entry_borrowed_scan<F>(
+    pub(super) fn for_each_entry_borrowed<F>(
         &self,
         options: ReadOptions,
         mut visitor: F,
@@ -21,7 +21,7 @@ impl Db {
         self.scan_visible_borrowed(None, &options, &mut visitor)
     }
 
-    pub(super) fn for_each_prefix_borrowed_scan<F>(
+    pub(super) fn for_each_prefix_borrowed<F>(
         &self,
         prefix: &[u8],
         options: ReadOptions,
@@ -33,7 +33,7 @@ impl Db {
         self.scan_visible_borrowed(Some(prefix), &options, &mut visitor)
     }
 
-    pub(super) fn for_each_prefix_key_scan<F>(
+    pub(super) fn for_each_prefix_key<F>(
         &self,
         prefix: &[u8],
         options: ReadOptions,
@@ -45,7 +45,7 @@ impl Db {
         self.scan_visible_borrowed(Some(prefix), &options, &mut |key, _value| visitor(key))
     }
 
-    pub(super) fn scan_keys_partitioned_scan<T, I, F>(
+    pub(super) fn scan_keys_partitioned<T, I, F>(
         &self,
         options: ReadOptions,
         init: I,

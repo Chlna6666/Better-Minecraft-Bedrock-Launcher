@@ -175,26 +175,26 @@ pub(crate) fn planned_render_subchunk_ys(
     Ok(subchunk_ys)
 }
 
-pub(crate) fn request_needs_biome_record(options: &ChunkLoadOptions) -> bool {
+pub(crate) fn biome_record_required(options: &ChunkLoadOptions) -> bool {
     let request = &options.data_request;
     request.height_map || !matches!(request.biome, BiomeDataRequirement::None)
 }
 
-pub(crate) fn request_needs_legacy_terrain(options: &ChunkLoadOptions) -> bool {
+pub(crate) fn legacy_terrain_required(options: &ChunkLoadOptions) -> bool {
     options.data_request.height_map
-        || request_builds_column_samples(options)
+        || builds_column_samples(options)
         || !matches!(options.data_request.biome, BiomeDataRequirement::None)
 }
 
-pub(crate) fn request_needs_legacy_terrain_fallback(options: &ChunkLoadOptions) -> bool {
-    !request_needs_legacy_terrain(options) && !options.data_request.subchunks.is_empty()
+pub(crate) fn legacy_terrain_fallback_required(options: &ChunkLoadOptions) -> bool {
+    !legacy_terrain_required(options) && !options.data_request.subchunks.is_empty()
 }
 
-pub(crate) fn request_loads_block_entities(options: &ChunkLoadOptions) -> bool {
+pub(crate) fn loads_block_entities(options: &ChunkLoadOptions) -> bool {
     options.data_request.block_entities
 }
 
-pub(crate) fn request_builds_column_samples(options: &ChunkLoadOptions) -> bool {
+pub(crate) fn builds_column_samples(options: &ChunkLoadOptions) -> bool {
     options
         .data_request
         .subchunks
@@ -202,7 +202,7 @@ pub(crate) fn request_builds_column_samples(options: &ChunkLoadOptions) -> bool 
         .any(|requirement| matches!(requirement, SubchunkDataRequirement::SurfaceColumns(_)))
 }
 
-pub(crate) fn request_uses_hint_surface_subchunks(options: &ChunkLoadOptions) -> bool {
+pub(crate) fn uses_hint_surface_subchunks(options: &ChunkLoadOptions) -> bool {
     options.data_request.subchunks.iter().any(|requirement| {
         matches!(
             requirement,
@@ -321,7 +321,7 @@ pub(crate) fn render_height_map_from_legacy_terrain(
     heights
 }
 
-pub(crate) fn render_biomes_from_legacy_terrain(
+pub(crate) fn biome_samples_from_legacy_terrain(
     terrain: &LegacyTerrain,
 ) -> [[Option<LegacyBiomeSample>; 16]; 16] {
     let mut samples = [[None; 16]; 16];
@@ -334,11 +334,9 @@ pub(crate) fn render_biomes_from_legacy_terrain(
     samples
 }
 
-pub(crate) fn render_biome_colors_from_legacy_terrain(
-    terrain: &LegacyTerrain,
-) -> [[Option<u32>; 16]; 16] {
+pub(crate) fn biome_colors_from_legacy_terrain(terrain: &LegacyTerrain) -> [[Option<u32>; 16]; 16] {
     let mut colors = [[None; 16]; 16];
-    let samples = render_biomes_from_legacy_terrain(terrain);
+    let samples = biome_samples_from_legacy_terrain(terrain);
     for local_z in 0..16 {
         for local_x in 0..16 {
             colors[local_z][local_x] = samples[local_z][local_x].map(LegacyBiomeSample::rgb_u32);
@@ -554,7 +552,7 @@ fn sample_column_top_down(
                     }
                 }
             } else {
-                for entry in subchunk.visible_block_surface_states_at(local_x, local_y, local_z) {
+                for entry in subchunk.visible_surface_states_at(local_x, local_y, local_z) {
                     saw_subchunk_layer = true;
                     let role = terrain_surface_role(&entry.state.name);
                     if let Some(sample) = scan_terrain_surface_state(
@@ -861,10 +859,10 @@ pub(crate) fn render_chunk_from_raw(
         });
     let legacy_biomes = legacy_terrain
         .as_ref()
-        .map(render_biomes_from_legacy_terrain);
+        .map(biome_samples_from_legacy_terrain);
     let legacy_biome_colors = legacy_terrain
         .as_ref()
-        .map(render_biome_colors_from_legacy_terrain);
+        .map(biome_colors_from_legacy_terrain);
     let mut render_biomes = BTreeMap::new();
     let data_request = &options.data_request;
     insert_render_biome_storages(&mut render_biomes, biome_data, data_request);
@@ -892,7 +890,7 @@ pub(crate) fn render_chunk_from_raw(
     timing.subchunk_parse_us = subchunk_started.elapsed().as_micros();
 
     let block_entity_started = Instant::now();
-    let block_entities = if request_loads_block_entities(options) {
+    let block_entities = if loads_block_entities(options) {
         if let Some(value) = raw.block_entities {
             let mut report = ScanReport::default();
             let block_entities = parse_block_entities_from_value(&value, &mut report);
@@ -916,7 +914,7 @@ pub(crate) fn render_chunk_from_raw(
     timing.block_entity_parse_us = block_entity_started.elapsed().as_micros();
 
     let surface_scan_started = Instant::now();
-    let column_samples = if request_builds_column_samples(options) {
+    let column_samples = if builds_column_samples(options) {
         Some(build_terrain_column_samples(
             raw.pos,
             version,
@@ -1127,7 +1125,7 @@ pub(crate) fn to_render_storage_read_options(options: &ChunkLoadOptions) -> Stor
     }
 }
 
-pub(crate) fn chunk_record_prefix(pos: ChunkPos) -> Bytes {
+pub(crate) fn record_prefix(pos: ChunkPos) -> Bytes {
     let mut bytes = Vec::with_capacity(if pos.dimension == crate::Dimension::Overworld {
         8
     } else {

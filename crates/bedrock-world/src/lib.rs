@@ -3,6 +3,10 @@
 //! `bedrock-world` owns Minecraft Bedrock world semantics. Mojang LevelDB mechanics belong exclusively
 //! to `bedrock-leveldb`. Ordinary reads and writes keep the persisted Bedrock representation. World
 //! upgrade and downgrade are separate caller-requested operations.
+//!
+//! This reusable semantic layer parses and edits typed world data through [`WorldStorage`]; it does
+//! not require a LevelDB handle. [`World`] can use in-memory storage or another `WorldStorage`
+//! implementation, while its transactions coordinate record writes and commits.
 
 #![deny(missing_docs)]
 #![allow(
@@ -23,6 +27,7 @@ pub mod biome;
 pub mod block;
 pub mod chunk;
 pub mod entity;
+pub mod global;
 /// Crate-wide Bedrock world error types.
 pub mod error;
 /// Bedrock saved-item identities, stacks and historical item data.
@@ -51,7 +56,7 @@ pub mod structure {
 }
 
 /// Bedrock little-endian NBT parsing, writing and borrowed views.
-pub mod nbt;
+pub use bedrock_nbt as nbt;
 
 /// `level.dat` document access and world-level metadata.
 pub mod level;
@@ -93,20 +98,17 @@ pub use chunk::{
 pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub use integrity::{ChunkCapabilities, CompatibilityLevel};
 pub use item::ItemStack;
-pub use level::*;
+pub use level::{
+    LevelChunkVersionCount, LevelDatDocument, LevelDatHeader, LevelDatReadWarning,
+    SubChunkVersionCount, WorldClock, WorldVersions,
+};
 pub use nbt::{NbtReader, NbtTag, NbtWriter};
 pub use player::{PlayerData, PlayerId};
 pub use query::{
     ExactChunkSelection, SlimeChunkBounds, SlimeChunkWindow, SlimeFarmCandidate,
     SlimeFarmQueryMode, SlimeWindowSize, WriteGuard, exact_selection_stats,
-    query_slime_farm_candidates, query_slime_farm_candidates_with_cancel, rasterize_chunk_line,
+    slime_farm_candidates, rasterize_chunk_line,
 };
 pub use scan::ChunkEntry;
 pub use storage::*;
 pub use world::*;
-
-pub(crate) mod level_dat {
-    pub(crate) use crate::level::{
-        LevelDatDocument, read_level_dat_document, write_level_dat_document,
-    };
-}

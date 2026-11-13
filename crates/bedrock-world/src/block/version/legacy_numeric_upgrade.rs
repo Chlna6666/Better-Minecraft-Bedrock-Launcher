@@ -134,7 +134,7 @@ fn insert_candidate(
 mod tests {
     use super::*;
     use crate::block::{BlockStateSchemaSource, LegacyNumericBlockStateTable};
-    use crate::nbt::{NbtTag, serialize_root_nbt};
+    use crate::nbt::{NbtTag, serialize_root};
     use indexmap::IndexMap;
 
     fn put_var_u32(mut value: u32, output: &mut Vec<u8>) {
@@ -169,7 +169,7 @@ mod tests {
                     ("states".to_string(), NbtTag::Compound(IndexMap::new())),
                     ("version".to_string(), NbtTag::Int(version)),
                 ]));
-                bytes.extend_from_slice(&serialize_root_nbt(&nbt).unwrap());
+                bytes.extend_from_slice(&serialize_root(&nbt).unwrap());
             }
         }
         let ids = entries

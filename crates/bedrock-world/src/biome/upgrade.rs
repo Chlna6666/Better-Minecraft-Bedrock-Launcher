@@ -12,6 +12,15 @@ use crate::storage::{
 use crate::world::{StorageBackend, World};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// How a `Data2DLegacy` to `Data3D` rewrite handles historical biome RGB samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedBiomeRgbPolicy {
+    /// Reject the rewrite if any input record contains RGB samples that `Data3D` cannot store.
+    Preserve,
+    /// Allow the rewrite and report the discarded samples in [`BiomeData3dUpgradeReport`].
+    Discard,
+}
+
 /// Summary of promoting all two-dimensional Bedrock biome records to `Data3D`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BiomeData3dUpgradeReport {
@@ -40,16 +49,19 @@ where
     /// `ChunkVersion::New` selects the extended-height range. Nether and End use their dimension range.
     ///
     /// `Data2DLegacy` contains an additional saved RGB triplet for every column; `Data3D` has no field
-    /// for those bytes. If such records exist and `allow_saved_rgb_loss` is `false`, the complete
-    /// operation is rejected before any write. Passing `true` explicitly acknowledges that those
-    /// historical RGB samples will be discarded while biome IDs and height values are preserved.
+    /// for those bytes. [`SavedBiomeRgbPolicy::Preserve`] rejects the complete operation before any
+    /// write if such records exist. [`SavedBiomeRgbPolicy::Discard`] allows the rewrite and reports
+    /// the discarded samples while preserving biome IDs and height values.
     pub fn rewrite_biomes_to_data3d(
         &self,
         target_chunk_version: ChunkVersion,
-        allow_saved_rgb_loss: bool,
+        saved_rgb_policy: SavedBiomeRgbPolicy,
     ) -> Result<BiomeData3dUpgradeReport> {
-        let (batch, report) =
-            stage_biomes_to_data3d(self.storage(), target_chunk_version, allow_saved_rgb_loss)?;
+        let (batch, report) = stage_biomes_to_data3d(
+            self.storage(),
+            target_chunk_version,
+            saved_rgb_policy,
+        )?;
         if batch.is_empty() {
             return Ok(report);
         }
@@ -72,7 +84,7 @@ where
 fn stage_biomes_to_data3d(
     storage: &dyn WorldStorage,
     target_chunk_version: ChunkVersion,
-    allow_saved_rgb_loss: bool,
+    saved_rgb_policy: SavedBiomeRgbPolicy,
 ) -> Result<(StorageBatch, BiomeData3dUpgradeReport)> {
     let mut sources = BTreeMap::<ChunkPos, ChunkRecordTag>::new();
     let mut data3d = BTreeSet::<ChunkPos>::new();
@@ -100,13 +112,13 @@ fn stage_biomes_to_data3d(
         Ok(StorageVisitorControl::Continue)
     })?;
 
-    if !allow_saved_rgb_loss
+    if saved_rgb_policy == SavedBiomeRgbPolicy::Preserve
         && sources
             .values()
             .any(|tag| *tag == ChunkRecordTag::Data2DLegacy)
     {
         return Err(BedrockWorldError::UnsupportedChunkFormat(
-            "Data2DLegacy -> Data3D would discard saved historical biome RGB samples; rerun with allow_saved_rgb_loss=true to acknowledge that loss"
+            "Data2DLegacy -> Data3D would discard saved historical biome RGB samples; rerun with the explicit discard policy to acknowledge that loss"
                 .to_string(),
         ));
     }
@@ -183,7 +195,12 @@ mod tests {
         let source = Biome2d::new(vec![72; 256], vec![4; 256]).unwrap();
         storage.put(&source_key, &source.encode().unwrap()).unwrap();
 
-        let (batch, report) = stage_biomes_to_data3d(&storage, ChunkVersion::Old, false).unwrap();
+        let (batch, report) = stage_biomes_to_data3d(
+            &storage,
+            ChunkVersion::Old,
+            SavedBiomeRgbPolicy::Preserve,
+        )
+        .unwrap();
         assert_eq!(report.data2d_records, 1);
         storage.write_batch(&batch).unwrap();
         let value = storage
@@ -208,7 +225,12 @@ mod tests {
         let source = Biome2d::new(vec![72; 256], vec![4; 256]).unwrap();
         storage.put(&source_key, &source.encode().unwrap()).unwrap();
 
-        let (batch, _) = stage_biomes_to_data3d(&storage, ChunkVersion::New, false).unwrap();
+        let (batch, _) = stage_biomes_to_data3d(
+            &storage,
+            ChunkVersion::New,
+            SavedBiomeRgbPolicy::Preserve,
+        )
+        .unwrap();
         storage.write_batch(&batch).unwrap();
         let value = storage
             .get(&ChunkKey::new(pos, ChunkRecordTag::Data3D).encode())
@@ -245,9 +267,19 @@ mod tests {
         .unwrap();
         storage.put(&source_key, &legacy.encode().unwrap()).unwrap();
 
-        assert!(stage_biomes_to_data3d(&storage, ChunkVersion::Old, false).is_err());
+        assert!(stage_biomes_to_data3d(
+            &storage,
+            ChunkVersion::Old,
+            SavedBiomeRgbPolicy::Preserve,
+        )
+        .is_err());
         assert!(storage.get(&source_key).unwrap().is_some());
-        let (batch, report) = stage_biomes_to_data3d(&storage, ChunkVersion::Old, true).unwrap();
+        let (batch, report) = stage_biomes_to_data3d(
+            &storage,
+            ChunkVersion::Old,
+            SavedBiomeRgbPolicy::Discard,
+        )
+        .unwrap();
         assert_eq!(report.data2d_legacy_records, 1);
         assert_eq!(report.saved_rgb_samples_discarded, 256);
         storage.write_batch(&batch).unwrap();

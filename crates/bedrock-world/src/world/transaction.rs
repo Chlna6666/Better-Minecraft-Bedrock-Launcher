@@ -99,7 +99,7 @@ where
     pub fn delete_chunk(&mut self, pos: ChunkPos) -> Result<usize> {
         let mut raw_keys = Vec::new();
         self.storage.storage().for_each_prefix(
-            &chunk_record_prefix(pos),
+            &record_prefix(pos),
             StorageReadOptions::default(),
             &mut |raw_key, _| {
                 if ChunkKey::decode(raw_key).is_ok_and(|key| key.pos == pos) {
@@ -146,7 +146,7 @@ where
             .iter()
             .map(|entity| entity.nbt.clone())
             .collect::<Vec<_>>();
-        let value = encode_consecutive_roots(&roots)?;
+        let value = Bytes::from(crate::nbt::serialize_consecutive_roots(&roots)?);
         let mut report = ScanReport::default();
         let parsed = parse_block_entities_from_value(&value, &mut report);
         validate_block_entities_in_chunk(pos, &parsed)?;
@@ -197,6 +197,31 @@ where
             value,
         );
         Ok(())
+    }
+
+    /// Stages spawn-area edits with the source returned by [`World::hardcoded_spawn_areas_snapshot`].
+    ///
+    /// # Errors
+    /// Returns validation/encoding errors; commit rejects a stale source.
+    pub fn update_hardcoded_spawn_areas(
+        &mut self,
+        pos: ChunkPos,
+        source: Option<Bytes>,
+        areas: &[HardcodedSpawnArea],
+    ) -> Result<()> {
+        self.save_hardcoded_spawn_areas(pos, areas)?;
+        self.require_raw_key(
+            ChunkKey::new(pos, ChunkRecordTag::HardcodedSpawners).encode(),
+            source,
+        );
+        Ok(())
+    }
+
+    /// Stages spawn-area deletion guarded by the original record snapshot.
+    pub fn remove_hardcoded_spawn_areas(&mut self, pos: ChunkPos, source: Option<Bytes>) {
+        let key = ChunkKey::new(pos, ChunkRecordTag::HardcodedSpawners);
+        self.require_raw_key(key.encode(), source);
+        self.delete_raw(&key);
     }
 
     /// Stages an update to an existing LevelDB-backed player record.
@@ -290,16 +315,66 @@ where
     /// # Errors
     ///
     /// Returns validation or serialization errors for malformed global data.
-    pub fn save_global(&mut self, record: &Global) -> Result<()> {
-        let value = encode_global(record)?;
-        decode_global(record.kind.clone(), record.name.clone(), value.clone())?;
-        self.batch.put(record.kind.storage_key(), value);
+    pub fn save_global(&mut self, record: &Record) -> Result<()> {
+        let value = crate::global::encode(record)?;
+        crate::global::parse(record.kind().clone(), value.clone())?;
+        let key = record.kind().storage_key();
+        self.require_raw_key(key.clone(), record.source().cloned());
+        self.batch.put(key, value);
         Ok(())
+    }
+
+    /// Stages deletion of a global record only if its read snapshot is still current.
+    pub fn remove_global(&mut self, record: &Record) {
+        let key = record.kind().storage_key();
+        self.require_raw_key(key.clone(), record.source().cloned());
+        self.batch.delete(key);
     }
 
     /// Stages deletion of one typed global record.
     pub fn delete_global(&mut self, kind: &GlobalRecordKind) {
         self.batch.delete(kind.storage_key());
+    }
+
+    /// Stages a village record write after NBT roundtrip validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation or serialization errors for a malformed key or non-compound NBT roots.
+    pub fn save_village(&mut self, village: &Entry) -> Result<()> {
+        if !matches!(
+            BedrockDbKey::decode(village.key.raw.as_bytes()),
+            BedrockDbKey::Village(_)
+        ) {
+            return Err(BedrockWorldError::Validation(format!(
+                "invalid village key {:?}",
+                village.key.raw
+            )));
+        }
+        if village
+            .roots
+            .iter()
+            .any(|root| !matches!(root, NbtTag::Compound(_)))
+        {
+            return Err(BedrockWorldError::Validation(
+                "village records must contain NBT compound roots".to_string(),
+            ));
+        }
+        let value = encode_consecutive_roots(&village.roots)?;
+        parse_consecutive_roots(&value)?;
+        let key = Bytes::copy_from_slice(village.key.raw.as_bytes());
+        self.preconditions.push(StoragePrecondition {
+            key: key.clone(),
+            expected: (!village.raw.is_empty()).then(|| village.raw.clone()),
+        });
+        self.batch.put(key, value);
+        Ok(())
+    }
+
+    /// Stages deletion of one village record.
+    pub fn delete_village(&mut self, key: &VillageKey) {
+        self.batch
+            .delete(Bytes::copy_from_slice(key.raw.as_bytes()));
     }
 
     /// Stages a modern actor write and updates the owning chunk's `digp` digest.
@@ -432,7 +507,7 @@ fn validate_chunk_preconditions(
     for condition in preconditions {
         let mut current = BTreeMap::new();
         storage.for_each_prefix(
-            &chunk_record_prefix(condition.pos),
+            &record_prefix(condition.pos),
             StorageReadOptions::default(),
             &mut |raw_key, value| {
                 let key = ChunkKey::decode(raw_key).map_err(|error| {
@@ -466,7 +541,7 @@ fn validate_batch(batch: &StorageBatch) -> Result<()> {
                         "batch contains empty key".to_string(),
                     ));
                 }
-                if value.is_empty() {
+                if value.is_empty() && !allows_empty_value(key) {
                     return Err(BedrockWorldError::Validation(format!(
                         "batch put for key {key:?} contains empty value"
                     )));
@@ -482,6 +557,18 @@ fn validate_batch(batch: &StorageBatch) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn allows_empty_value(key: &[u8]) -> bool {
+    match BedrockDbKey::decode(key) {
+        BedrockDbKey::Chunk(key) => matches!(
+            key.tag,
+            ChunkRecordTag::BlockEntity | ChunkRecordTag::PendingTicks | ChunkRecordTag::RandomTicks
+        ),
+        BedrockDbKey::Global(_) | BedrockDbKey::Portals | BedrockDbKey::SchedulerWt
+        | BedrockDbKey::TickingArea(_) | BedrockDbKey::StructureTemplate(_) => true,
+        _ => false,
+    }
 }
 
 fn validate_block_entities_in_chunk(pos: ChunkPos, entities: &[BlockEntity]) -> Result<()> {

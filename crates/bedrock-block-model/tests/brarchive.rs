@@ -2,9 +2,9 @@ use std::fs;
 use std::io::Cursor;
 use std::path::Path;
 
+use bedrock_block_model::obj::{read_texture_copy_image, write_texture_copy};
 use bedrock_block_model::{
     BlockModelError, BlockModelRepository, ObjTextureCopy, ObjTextureResolver,
-    read_obj_texture_copy_image, write_obj_texture_copy,
 };
 
 fn write_archive(root: &Path, relative: &str, entries: &[(&str, &[u8])]) {
@@ -84,11 +84,11 @@ fn archive_only_atlas_geometry_and_png_work_without_extraction() {
     assert_eq!(copy.source_path.read().unwrap(), image_bytes);
     assert_eq!(copy.relative_path, "textures/blocks/stone.png");
     // The resolver has already been dropped; the export retains its source.
-    let image = read_obj_texture_copy_image(&copy).unwrap().to_rgba8();
+    let image = read_texture_copy_image(&copy).unwrap().to_rgba8();
     assert_eq!(image.get_pixel(0, 0).0, [11, 22, 33, 255]);
     let output = tempfile::tempdir().unwrap();
     let target = output.path().join("stone.png");
-    write_obj_texture_copy(&copy, &target).unwrap();
+    write_texture_copy(&copy, &target).unwrap();
     assert_eq!(
         image::open(target).unwrap().to_rgba8().get_pixel(0, 0).0,
         [11, 22, 33, 255]
@@ -123,7 +123,7 @@ fn embedded_payload_wins_and_stubs_fall_back_to_loose_files() {
         &[("stone.png", b"")],
     );
     assert_eq!(
-        read_obj_texture_copy_image(&resolved_copy(pack.path()))
+        read_texture_copy_image(&resolved_copy(pack.path()))
             .unwrap()
             .to_rgba8()
             .get_pixel(0, 0)

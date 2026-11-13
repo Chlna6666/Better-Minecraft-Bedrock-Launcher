@@ -38,21 +38,21 @@ fn item_map() -> &'static BTreeMap<String, ItemEntry> {
 
 /// Icon name for an item id (with or without the `minecraft:` prefix).
 #[must_use]
-pub fn item_icon_name(item: &str) -> Option<&'static str> {
+pub fn name(item: &str) -> Option<&'static str> {
     let normalized = item.strip_prefix("minecraft:").unwrap_or(item);
     item_map().get(normalized).map(|entry| entry.icon.as_str())
 }
 
 /// Full mapping entry for an item id.
 #[must_use]
-pub fn item_icon_entry(item: &str) -> Option<&'static ItemEntry> {
+pub fn entry(item: &str) -> Option<&'static ItemEntry> {
     let normalized = item.strip_prefix("minecraft:").unwrap_or(item);
     item_map().get(normalized)
 }
 
 /// Number of embedded item mappings.
 #[must_use]
-pub fn item_icon_count() -> usize {
+pub fn count() -> usize {
     item_map().len()
 }
 
@@ -62,22 +62,19 @@ mod tests {
 
     #[test]
     fn mapping_covers_common_items() {
-        assert!(item_icon_count() > 400);
-        assert_eq!(item_icon_name("minecraft:apple"), Some("apple"));
+        assert!(count() > 400);
+        assert_eq!(name("minecraft:apple"), Some("apple"));
         assert_eq!(
-            item_icon_name("minecraft:prismarine_crystals"),
+            name("minecraft:prismarine_crystals"),
             Some("prismarine_crystals")
         );
-        assert_eq!(item_icon_name("prismarine_shard"), Some("prismarine_shard"));
+        assert_eq!(name("prismarine_shard"), Some("prismarine_shard"));
     }
 
     #[test]
     fn legacy_item_ids_map_to_renamed_icons() {
-        assert_eq!(
-            item_icon_name("minecraft:ink_sac"),
-            Some("dye_powder_black_new")
-        );
-        assert_eq!(item_icon_name("minecraft:wooden_sword"), Some("wood_sword"));
-        assert_eq!(item_icon_name("minecraft:golden_sword"), Some("gold_sword"));
+        assert_eq!(name("minecraft:ink_sac"), Some("dye_powder_black_new"));
+        assert_eq!(name("minecraft:wooden_sword"), Some("wood_sword"));
+        assert_eq!(name("minecraft:golden_sword"), Some("gold_sword"));
     }
 }

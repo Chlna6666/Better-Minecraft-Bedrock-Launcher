@@ -808,7 +808,7 @@ fn render_dimensions_parallel(
                         );
                     }
                     let mut task_config = config.clone();
-                    task_config.threading = threading_for_threads(task_threads);
+                    task_config.threading = threading_options(task_threads);
                     let result = render_dimension_mode(
                         &renderer,
                         &task_config,
@@ -933,8 +933,7 @@ fn render_dimension_mode(
             stats: RenderPipelineStats::default(),
         });
     }
-    let planned_tiles =
-        planned_tiles_for_coords(dimension, mode, config.layout, tile_coords, tile_chunks)?;
+    let planned_tiles = plan_tiles(dimension, mode, config.layout, tile_coords, tile_chunks)?;
     if config.render_cache_validation
         && cache_valid
         && all_tiles_present(config, dimension, mode, &planned_tiles)
@@ -1014,7 +1013,7 @@ fn render_dimension_mode(
             RenderOptions {
                 format: ImageFormat::WebP,
                 backend: config.backend,
-                threading: threading_for_threads(resolved_threads),
+                threading: threading_options(resolved_threads),
                 execution_profile: config.profile,
                 memory_budget: config.memory_budget,
                 pipeline_depth: config.pipeline_depth,
@@ -1192,7 +1191,7 @@ fn resolve_render_threads(
     config: &WebMapConfig,
     work_items: usize,
 ) -> bedrock_render::Result<usize> {
-    config.threading.resolve_for_profile_with_limits(
+    config.threading.resolve_for_profile(
         config.profile,
         work_items.max(1),
         config.max_render_threads,
@@ -1212,7 +1211,7 @@ fn render_thread_limit(config: &WebMapConfig) -> usize {
     allowed.max(1)
 }
 
-fn threading_for_threads(threads: usize) -> RenderThreadingOptions {
+fn threading_options(threads: usize) -> RenderThreadingOptions {
     if threads <= 1 {
         RenderThreadingOptions::Single
     } else {
@@ -1334,7 +1333,7 @@ fn include_chunk_bounds(bounds: &mut Option<ChunkBounds>, pos: ChunkPos) {
     }
 }
 
-fn planned_tiles_for_coords(
+fn plan_tiles(
     dimension: Dimension,
     mode: RenderMode,
     layout: RenderLayout,
@@ -1349,12 +1348,12 @@ fn planned_tiles_for_coords(
                 .get(&(tile_x, tile_z))
                 .cloned()
                 .unwrap_or_default();
-            planned_tile_for_coord(dimension, mode, layout, tile_x, tile_z, chunks)
+            plan_tile(dimension, mode, layout, tile_x, tile_z, chunks)
         })
         .collect()
 }
 
-fn planned_tile_for_coord(
+fn plan_tile(
     dimension: Dimension,
     mode: RenderMode,
     layout: RenderLayout,

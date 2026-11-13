@@ -3,10 +3,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use bedrock_block_model::{
-    BlockStateQuery, BlockStateValue, ModelFamily, canonical_block_name, model_family,
-    resolve_block_state_shape,
-};
+use bedrock_block_model::model_family;
+use bedrock_block_model::{BlockStateQuery, BlockStateValue, ModelFamily};
 use serde::Serialize;
 use serde_json::Value;
 use walkdir::WalkDir;
@@ -474,12 +472,12 @@ fn build_report(states: &[DiscoveredBlockState]) -> CoverageReport {
             name: state.name.clone(),
             states: state.states.clone(),
         };
-        let canonical_name = canonical_block_name(&query);
+        let canonical_name = model_family::canonical_block_name(&query);
         let canonical_query = BlockStateQuery {
             name: canonical_name.clone(),
             states: state.states.clone(),
         };
-        let family = model_family(&canonical_name);
+        let family = model_family::classify(&canonical_name);
         let status = coverage_status(family, &canonical_query);
 
         summary.entry(status).or_default().observe(&canonical_name);
@@ -515,7 +513,7 @@ fn build_report(states: &[DiscoveredBlockState]) -> CoverageReport {
 }
 
 fn coverage_status(family: ModelFamily, state: &BlockStateQuery) -> CoverageStatus {
-    let Some(shape) = resolve_block_state_shape(state) else {
+    let Some(shape) = model_family::resolve_shape(state) else {
         return CoverageStatus::Unknown;
     };
     if shape.is_empty() {

@@ -2,7 +2,7 @@
 
 use crate::error::{BedrockWorldError, Result};
 use crate::level::LevelDatDocument;
-use crate::nbt::{NbtTag, parse_root_nbt, serialize_root_nbt};
+use crate::nbt::{NbtTag, parse_root, serialize_root};
 use crate::version::{GameVersion, LevelVersion};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use std::borrow::Cow;
 
 /// Player identifier used by the typed player convenience APIs.
 ///
-/// Arbitrary raw `player_*` suffix bytes are intentionally represented by [`crate::player::PlayerKeyRecord`]
+/// Arbitrary raw `player_*` suffix bytes are represented by [`crate::player::server::key::Record`].
 /// and [`crate::player::PlayerStorageOverview`] rather than being forced through this textual enum.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PlayerId {
@@ -58,7 +58,7 @@ impl PlayerId {
 
     /// Returns the textual suffix of a `player_<id>` key when this is such a record.
     #[must_use]
-    pub fn player_key_id(&self) -> Option<&str> {
+    pub fn key_id(&self) -> Option<&str> {
         match self {
             Self::Xuid(id) => Some(id),
             _ => None,
@@ -96,8 +96,8 @@ impl SavedItemKind {
 ///
 /// The original NBT and bytes are retained so an unchanged record can be written byte-for-byte.
 /// Editing does not select or apply another historical representation automatically. Constructors
-/// normally interpret their NBT argument as the player record itself; the level-aware convenience
-/// constructor has one narrow compatibility case for the exact owning `LevelDatDocument::root`.
+/// normally interpret their NBT argument as the player record itself; a supplied level has one
+/// narrow compatibility case for the exact owning `LevelDatDocument::root`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerData {
     /// Bedrock player source/id.
@@ -114,80 +114,63 @@ pub struct PlayerData {
 }
 
 impl PlayerData {
-    /// Reads one exact player payload and detects its saved-item representation automatically.
-    pub fn from_raw(id: PlayerId, raw: Bytes) -> Result<Self> {
-        Self::from_raw_with_level_version(id, raw, None)
-    }
-
-    /// Reads one exact player payload with actual version evidence from its owning `level.dat`.
-    pub fn from_raw_with_level(id: PlayerId, raw: Bytes, level: &LevelDatDocument) -> Result<Self> {
-        Self::from_raw_with_level_version(id, raw, Some(LevelVersion::detect(level)?))
+    /// Reads one exact player payload. Supplying its owning level adds version evidence.
+    pub fn from_raw(id: PlayerId, raw: Bytes, level: Option<&LevelDatDocument>) -> Result<Self> {
+        let level_version = level.map(LevelVersion::detect).transpose()?;
+        Self::from_raw_version(id, raw, level_version)
     }
 
     /// Reads a known textual Bedrock player LevelDB key and its NBT payload.
     ///
-    /// Returns `Ok(None)` for keys other than `~local_player` and UTF-8 `player_<id>` records. Use
-    /// [`crate::player::read_player_key`] for arbitrary raw `player_*` suffixes.
-    pub fn from_leveldb_key(key: &[u8], raw: Bytes) -> Result<Option<Self>> {
-        let Some(id) = PlayerId::from_storage_key(key) else {
-            return Ok(None);
-        };
-        Self::from_raw(id, raw).map(Some)
-    }
-
-    /// Reads a known textual Bedrock player LevelDB key with version evidence from its owning `level.dat`.
-    ///
     /// Returns `Ok(None)` for keys other than `~local_player` and UTF-8 `player_<id>` records.
-    pub fn from_leveldb_key_with_level(
+    /// Use [`crate::player::server::key::read`] to preserve arbitrary raw `player_*` suffixes.
+    pub fn from_leveldb_key(
         key: &[u8],
         raw: Bytes,
-        level: &LevelDatDocument,
+        level: Option<&LevelDatDocument>,
     ) -> Result<Option<Self>> {
         let Some(id) = PlayerId::from_storage_key(key) else {
             return Ok(None);
         };
-        Self::from_raw_with_level(id, raw, level).map(Some)
+        Self::from_raw(id, raw, level).map(Some)
     }
 
-    /// Builds one player record from structured NBT.
-    pub fn from_nbt(id: PlayerId, nbt: NbtTag) -> Result<Self> {
-        Self::from_nbt_with_level_version(id, nbt, None)
-    }
-
-    /// Builds one player record with actual version evidence from its owning `level.dat`.
+    /// Builds one player record from structured NBT and optional level version evidence.
     ///
     /// Ordinarily `nbt` is interpreted exactly as the player record. For the historical
     /// [`PlayerId::LegacyLevelDat`] convenience path only, when `nbt` is exactly equal to the supplied
     /// `level.root`, this method extracts that document's `Player` compound. It does not unwrap an
     /// arbitrary compound merely because a field named `Player` exists.
-    pub fn from_nbt_with_level(
-        id: PlayerId,
-        nbt: NbtTag,
-        level: &LevelDatDocument,
-    ) -> Result<Self> {
-        let nbt = if matches!(id, PlayerId::LegacyLevelDat) && nbt == level.root {
-            let NbtTag::Compound(root) = &level.root else {
-                return Err(BedrockWorldError::CorruptWorld(
-                    "level.dat root is not an NBT compound".to_string(),
-                ));
-            };
-            match root.get("Player") {
-                Some(NbtTag::Compound(_)) => root["Player"].clone(),
-                Some(other) => {
-                    return Err(BedrockWorldError::CorruptWorld(format!(
-                        "level.dat Player field has unexpected NBT type: {other:?}"
-                    )));
-                }
-                None => {
-                    return Err(BedrockWorldError::CorruptWorld(
-                        "level.dat does not contain a Player compound".to_string(),
-                    ));
-                }
+    pub fn from_nbt(id: PlayerId, nbt: NbtTag, level: Option<&LevelDatDocument>) -> Result<Self> {
+        let (nbt, level_version) = match level {
+            Some(level) => {
+                let nbt = if matches!(id, PlayerId::LegacyLevelDat) && nbt == level.root {
+                    let NbtTag::Compound(root) = &level.root else {
+                        return Err(BedrockWorldError::CorruptWorld(
+                            "level.dat root is not an NBT compound".to_string(),
+                        ));
+                    };
+                    match root.get("Player") {
+                        Some(NbtTag::Compound(_)) => root["Player"].clone(),
+                        Some(other) => {
+                            return Err(BedrockWorldError::CorruptWorld(format!(
+                                "level.dat Player field has unexpected NBT type: {other:?}"
+                            )));
+                        }
+                        None => {
+                            return Err(BedrockWorldError::CorruptWorld(
+                                "level.dat does not contain a Player compound".to_string(),
+                            ));
+                        }
+                    }
+                } else {
+                    nbt
+                };
+                (nbt, Some(LevelVersion::detect(level)?))
             }
-        } else {
-            nbt
+            None => (nbt, None),
         };
-        Self::from_nbt_with_level_version(id, nbt, Some(LevelVersion::detect(level)?))
+        Self::from_nbt_version(id, nbt, level_version)
     }
 
     /// Returns the exact last-opened Bedrock version reported by the owning `level.dat`, when known.
@@ -240,7 +223,7 @@ impl PlayerData {
         if !self.is_modified() {
             return Ok(self.raw.clone());
         }
-        Ok(Bytes::from(serialize_root_nbt(&self.nbt)?))
+        Ok(Bytes::from(serialize_root(&self.nbt)?))
     }
 
     /// Edits the owned player NBT and refreshes saved-item representation evidence afterwards.
@@ -277,13 +260,13 @@ impl PlayerData {
         self.refresh_saved_items();
     }
 
-    pub(crate) fn from_nbt_with_level_version(
+    pub(crate) fn from_nbt_version(
         id: PlayerId,
         nbt: NbtTag,
         level_version: Option<LevelVersion>,
     ) -> Result<Self> {
         ensure_player_compound(&nbt)?;
-        let raw = Bytes::from(serialize_root_nbt(&nbt)?);
+        let raw = Bytes::from(serialize_root(&nbt)?);
         let saved_items = detect_saved_items(&nbt);
         Ok(Self {
             id,
@@ -295,12 +278,12 @@ impl PlayerData {
         })
     }
 
-    pub(crate) fn from_raw_with_level_version(
+    pub(crate) fn from_raw_version(
         id: PlayerId,
         raw: Bytes,
         level_version: Option<LevelVersion>,
     ) -> Result<Self> {
-        let nbt = parse_root_nbt(&raw)?;
+        let nbt = parse_root(&raw)?;
         ensure_player_compound(&nbt)?;
         let saved_items = detect_saved_items(&nbt);
         Ok(Self {
@@ -413,7 +396,7 @@ mod tests {
                 ])),
             ]),
         )]));
-        let player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        let player = PlayerData::from_nbt(PlayerId::Local, nbt, None).unwrap();
         assert_eq!(player.saved_items, SavedItemKind::Mixed);
     }
 
@@ -426,8 +409,8 @@ mod tests {
                 NbtTag::String("1.0.0".to_string()),
             ),
         ]));
-        let raw = Bytes::from(serialize_root_nbt(&nbt).unwrap());
-        let player = PlayerData::from_raw(PlayerId::Local, raw.clone()).unwrap();
+        let raw = Bytes::from(serialize_root(&nbt).unwrap());
+        let player = PlayerData::from_raw(PlayerId::Local, raw.clone(), None).unwrap();
         assert_eq!(player.to_raw().unwrap(), raw);
         assert!(!player.is_modified());
         assert_eq!(player.format_version().unwrap(), Some("1.0.0"));
@@ -440,8 +423,8 @@ mod tests {
             NbtTag::Int(4),
         )]));
         let level_root = NbtTag::Compound(IndexMap::from([("Player".to_string(), player_nbt)]));
-        let raw = Bytes::from(serialize_root_nbt(&level_root).unwrap());
-        let player = PlayerData::from_raw(PlayerId::LegacyLevelDat, raw.clone()).unwrap();
+        let raw = Bytes::from(serialize_root(&level_root).unwrap());
+        let player = PlayerData::from_raw(PlayerId::LegacyLevelDat, raw.clone(), None).unwrap();
         assert_eq!(player.nbt, level_root);
         assert_eq!(player.to_raw().unwrap(), raw);
     }
@@ -461,7 +444,7 @@ mod tests {
         ]));
         let level = LevelDatDocument::new(10, level_root.clone());
         let player =
-            PlayerData::from_nbt_with_level(PlayerId::LegacyLevelDat, level_root, &level).unwrap();
+            PlayerData::from_nbt(PlayerId::LegacyLevelDat, level_root, Some(&level)).unwrap();
         assert_eq!(player.nbt, player_nbt);
         assert_eq!(player.id, PlayerId::LegacyLevelDat);
 
@@ -473,7 +456,7 @@ mod tests {
             )])),
         )]));
         let not_unwrapped =
-            PlayerData::from_nbt_with_level(PlayerId::LegacyLevelDat, unrelated.clone(), &level)
+            PlayerData::from_nbt(PlayerId::LegacyLevelDat, unrelated.clone(), Some(&level))
                 .unwrap();
         assert_eq!(not_unwrapped.nbt, unrelated);
     }

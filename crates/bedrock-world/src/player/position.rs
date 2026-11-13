@@ -286,7 +286,7 @@ mod tests {
             ),
             ("FutureField".to_string(), NbtTag::Long(123)),
         ]));
-        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt, None).unwrap();
         assert_eq!(player.position().unwrap(), Some([1.5, 64.0, -2.25]));
         player.set_position([2.0, 70.0, 3.0]).unwrap();
         assert_eq!(player.position().unwrap(), Some([2.0, 70.0, 3.0]));
@@ -302,7 +302,7 @@ mod tests {
             "Pos".to_string(),
             NbtTag::List(vec![NbtTag::Int(1), NbtTag::Int(64), NbtTag::Int(-2)]),
         )]));
-        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt, None).unwrap();
         player.set_position([2.0, 70.0, 3.0]).unwrap();
         assert_eq!(
             player.root().unwrap().get("Pos"),
@@ -321,7 +321,7 @@ mod tests {
             "Pos".to_string(),
             NbtTag::List(vec![NbtTag::Int(1), NbtTag::Int(64), NbtTag::Int(-2)]),
         )]));
-        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt, None).unwrap();
         player.edit_nbt(|nbt| {
             let NbtTag::Compound(root) = nbt else {
                 panic!("player root must remain a compound")
@@ -340,7 +340,7 @@ mod tests {
             "Pos".to_string(),
             NbtTag::List(vec![NbtTag::Long(0), NbtTag::Long(0), NbtTag::Long(0)]),
         )]));
-        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt, None).unwrap();
         assert!(
             player
                 .set_position([9_223_372_036_854_775_808.0, 0.0, 0.0])
@@ -354,7 +354,7 @@ mod tests {
             "DimensionId".to_string(),
             NbtTag::Short(0),
         )]));
-        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt, None).unwrap();
         player.set_dimension_id(2).unwrap();
         assert_eq!(
             player.root().unwrap().get("DimensionId"),

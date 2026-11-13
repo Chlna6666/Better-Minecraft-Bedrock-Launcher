@@ -38,10 +38,10 @@ pub struct VanillaSavedItemBlockMap {
 
 impl VanillaSavedItemBlockMap {
     /// Parses one release's `block_id_to_item_id_map.json`.
-    pub fn from_block_id_to_item_id_map_json(
-        game_version: GameVersion,
-        json: &str,
-    ) -> Result<Self> {
+    ///
+    /// # Errors
+    /// Returns an error if the JSON is invalid, empty or contains invalid block/item IDs.
+    pub fn from_json(game_version: GameVersion, json: &str) -> Result<Self> {
         let block_to_item: BTreeMap<String, String> =
             serde_json::from_str(json).map_err(|error| {
                 BedrockWorldError::Validation(format!(
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn different_block_and_item_ids_are_preserved() {
-        let map = VanillaSavedItemBlockMap::from_block_id_to_item_id_map_json(
+        let map = VanillaSavedItemBlockMap::from_json(
             GameVersion::new(vec![1, 21, 100]).unwrap(),
             r#"{
                 "minecraft:bed":"minecraft:item.bed",
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn reverse_aliases_are_reported_as_ambiguous() {
-        let map = VanillaSavedItemBlockMap::from_block_id_to_item_id_map_json(
+        let map = VanillaSavedItemBlockMap::from_json(
             GameVersion::new(vec![1, 21, 100]).unwrap(),
             r#"{
                 "minecraft:first_block":"minecraft:shared_item",
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn invalid_non_namespaced_ids_are_rejected() {
         assert!(
-            VanillaSavedItemBlockMap::from_block_id_to_item_id_map_json(
+            VanillaSavedItemBlockMap::from_json(
                 GameVersion::new(vec![1, 21, 100]).unwrap(),
                 r#"{"bed":"minecraft:item.bed"}"#,
             )

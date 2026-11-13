@@ -2,8 +2,7 @@
 
 use crate::chunk::{
     BlockState, ChunkKey, ChunkPos, ChunkRecordTag, LegacyTerrain, LegacyTerrainCombineReport,
-    LegacyTerrainSplitReport, SubChunkVersion, stage_legacy_terrain_combine,
-    stage_legacy_terrain_split,
+    LegacyTerrainSplitReport, SubChunkVersion, stage_legacy_terrain_split,
 };
 use crate::error::Result;
 use crate::nbt::NbtTag;
@@ -39,7 +38,7 @@ where
     /// every `Data2DLegacy` height fits the `LegacyTerrain` `u8` field, and no competing biome or
     /// existing `LegacyTerrain` record is present. Otherwise nothing is written.
     pub fn combine_legacy_terrain(&self) -> Result<LegacyTerrainCombineReport> {
-        let (batch, report) = stage_legacy_terrain_combine(self.storage())?;
+        let (batch, report) = super::legacy_terrain_combine::stage(self.storage())?;
         commit_legacy_terrain_batch(self, &batch)?;
         Ok(report)
     }
@@ -145,6 +144,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(state.name, "legacy:64");
-        assert_eq!(state.state_integer("data").unwrap(), Some(7));
+        assert_eq!(state.integer("data").unwrap(), Some(7));
     }
 }

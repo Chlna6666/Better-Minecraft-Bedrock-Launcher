@@ -4,8 +4,8 @@
 //! rewriting any player. Raw `player_*` keys are retained as bytes because their suffix is not
 //! guaranteed to be an Xbox XUID or even UTF-8 in every historical/custom world.
 
-use super::level_dat::read_level_dat_player;
-use super::local_player::read_local_player_with_level;
+use super::level_dat::read;
+use super::local;
 use crate::error::Result;
 use crate::level::LevelDatDocument;
 use crate::player::PlayerData;
@@ -108,8 +108,8 @@ pub fn inspect_player_storage(
     storage: &dyn WorldStorage,
     level: &LevelDatDocument,
 ) -> Result<PlayerStorageOverview> {
-    let level_dat_player = read_level_dat_player(level)?;
-    let local_player = read_local_player_with_level(storage, level)?;
+    let level_dat_player = read(level)?;
+    let local_player = local::read(storage, Some(level))?;
     let local_player =
         classify_local_player_records(level_dat_player.as_ref(), local_player.as_ref());
 
@@ -130,7 +130,7 @@ pub fn inspect_player_storage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nbt::{NbtTag, serialize_root_nbt};
+    use crate::nbt::{NbtTag, serialize_root};
     use crate::player::PlayerId;
     use crate::storage::MemoryStorage;
     use indexmap::IndexMap;
@@ -154,14 +154,15 @@ mod tests {
     #[test]
     fn classifier_uses_already_read_player_nbt() {
         let source = player(1, "Alex");
-        let embedded = PlayerData::from_nbt(PlayerId::LegacyLevelDat, source.clone()).unwrap();
-        let local = PlayerData::from_nbt(PlayerId::Local, source).unwrap();
+        let embedded =
+            PlayerData::from_nbt(PlayerId::LegacyLevelDat, source.clone(), None).unwrap();
+        let local = PlayerData::from_nbt(PlayerId::Local, source, None).unwrap();
         assert_eq!(
             classify_local_player_records(Some(&embedded), Some(&local)),
             LocalPlayerRecords::MatchingLevelDatAndLocalPlayer
         );
 
-        let other = PlayerData::from_nbt(PlayerId::Local, player(2, "Steve")).unwrap();
+        let other = PlayerData::from_nbt(PlayerId::Local, player(2, "Steve"), None).unwrap();
         assert_eq!(
             classify_local_player_records(Some(&embedded), Some(&other)),
             LocalPlayerRecords::ConflictingLevelDatAndLocalPlayer
@@ -174,7 +175,7 @@ mod tests {
         let level = level_with_player(Some(source.clone()));
         let storage = MemoryStorage::new();
         storage
-            .put(b"~local_player", &serialize_root_nbt(&source).unwrap())
+            .put(b"~local_player", &serialize_root(&source).unwrap())
             .unwrap();
 
         let matching = inspect_player_storage(&storage, &level).unwrap();
@@ -187,7 +188,7 @@ mod tests {
 
         let different = player(2, "Steve");
         storage
-            .put(b"~local_player", &serialize_root_nbt(&different).unwrap())
+            .put(b"~local_player", &serialize_root(&different).unwrap())
             .unwrap();
         let conflicting = inspect_player_storage(&storage, &level).unwrap();
         assert_eq!(

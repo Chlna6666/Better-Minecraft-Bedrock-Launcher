@@ -43,7 +43,7 @@ pub struct UpgradeOptions<'a> {
     pub subchunks: Option<SubChunkUpgradeOptions<'a>>,
 }
 
-/// Report returned by [`World::upgrade_bedrock_world`].
+/// Report returned by [`World::upgrade`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpgradeReport {
     /// Target Minecraft Bedrock game version requested by the caller.
@@ -89,11 +89,11 @@ where
     /// This is the server-facing orchestration entry. It currently wires the implemented SubChunk
     /// upgrade path and returns explicit gaps for the remaining historical record families instead of
     /// silently pretending the whole world has been fully upgraded.
-    pub fn upgrade_bedrock_world(&self, options: UpgradeOptions<'_>) -> Result<UpgradeReport> {
+    pub fn upgrade(&self, options: UpgradeOptions<'_>) -> Result<UpgradeReport> {
         let subchunks = options
             .subchunks
             .map(|subchunks| {
-                self.upgrade_bedrock_subchunks(
+                self.upgrade_subchunks(
                     options.target.clone(),
                     subchunks.block_upgrade_data,
                     subchunks.target_palette,
@@ -119,7 +119,7 @@ where
     /// The downgrade entry exists so server code can depend on a stable API shape, but the concrete
     /// reverse transformations are intentionally not marked as completed yet. Callers receive a typed
     /// unsupported error instead of a partial destructive rewrite.
-    pub fn downgrade_bedrock_world(&self, options: DowngradeOptions) -> Result<DowngradeReport> {
+    pub fn downgrade(&self, options: DowngradeOptions) -> Result<DowngradeReport> {
         let _ = self;
         Err(BedrockWorldError::UnsupportedChunkFormat(format!(
             "Minecraft Bedrock world downgrade to {} is not complete; missing phases: {:?}",

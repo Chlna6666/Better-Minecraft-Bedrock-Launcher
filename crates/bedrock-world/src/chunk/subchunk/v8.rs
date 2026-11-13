@@ -1,6 +1,6 @@
 //! Minecraft Bedrock SubChunk V8.
 
-use crate::chunk::encoding::encode_paletted_subchunk_from_palettes;
+use crate::chunk::encoding::encode_paletted_subchunk;
 use crate::chunk::{SubChunk, SubChunkDecodeMode, SubChunkFormat};
 use crate::error::{BedrockWorldError, Result};
 use bytes::Bytes;
@@ -18,7 +18,7 @@ pub(crate) fn write(subchunk: &SubChunk) -> Result<Bytes> {
     match &subchunk.format {
         SubChunkFormat::Paletted { storages, .. } => {
             let storages = storages.iter().collect::<Vec<_>>();
-            encode_paletted_subchunk_from_palettes(8, subchunk.y, &storages)
+            encode_paletted_subchunk(8, subchunk.y, &storages)
         }
         SubChunkFormat::Raw {
             version: Some(8),

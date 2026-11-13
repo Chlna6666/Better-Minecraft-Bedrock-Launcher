@@ -131,12 +131,12 @@ fn profile_world_snapshot() -> Result<(), Box<dyn std::error::Error>> {
         corpus.errors, 0,
         "corrupt fixture is unsuitable for optimization measurements"
     );
-    profile_palettes(&corpus.samples);
-    profile_decode(&corpus.payloads);
+    palettes(&corpus.samples);
+    benchmark_decode(&corpus.payloads);
     Ok(())
 }
 
-fn profile_palettes(samples: &BTreeMap<u8, Vec<PaletteSample>>) {
+fn palettes(samples: &BTreeMap<u8, Vec<PaletteSample>>) {
     for (bits, group) in samples {
         let medians = paired(31, |auto| {
             for sample in group {
@@ -157,7 +157,7 @@ fn profile_palettes(samples: &BTreeMap<u8, Vec<PaletteSample>>) {
     }
 }
 
-fn profile_decode(payloads: &[(i8, Bytes)]) {
+fn benchmark_decode(payloads: &[(i8, Bytes)]) {
     for mode in [
         SubChunkDecodeMode::FullIndices,
         SubChunkDecodeMode::CountsOnly,

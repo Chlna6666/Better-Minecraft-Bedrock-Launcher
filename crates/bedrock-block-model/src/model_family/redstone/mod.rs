@@ -27,7 +27,7 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
     None
 }
 
-pub(crate) fn redstone_device_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
+pub(crate) fn device_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     if name == "lever" {
         return interactive::lever_shape(state);
     }

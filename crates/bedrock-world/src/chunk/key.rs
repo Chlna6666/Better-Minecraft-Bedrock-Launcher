@@ -59,8 +59,8 @@ pub enum ChunkRecordTag {
     Version,
     /// Old chunk version record.
     VersionOld,
-    /// Legacy chunk version record.
-    LegacyVersion,
+    /// Binary structure bounding volumes; this is not a chunk version or NBT record.
+    AabbVolumes,
     /// Unknown value preserved for forward compatibility.
     Unknown(u8),
 }
@@ -94,7 +94,7 @@ impl ChunkRecordTag {
             Self::BlendingData => 0x40,
             Self::ActorDigestVersion => 0x41,
             Self::VersionOld => 0x76,
-            Self::LegacyVersion => 0x77,
+            Self::AabbVolumes => 0x77,
             Self::Unknown(value) => value,
         }
     }
@@ -127,7 +127,7 @@ impl ChunkRecordTag {
             0x40 => Self::BlendingData,
             0x41 => Self::ActorDigestVersion,
             0x76 => Self::VersionOld,
-            0x77 => Self::LegacyVersion,
+            0x77 => Self::AabbVolumes,
             other => Self::Unknown(other),
         }
     }
@@ -298,6 +298,10 @@ impl ActorDigestKey {
 pub enum GlobalRecordKind {
     /// `mobevents` global NBT record.
     MobEvents,
+    /// `portals` NBT record containing saved portal destinations.
+    Portals,
+    /// `schedulerWT` NBT record for wandering trader scheduling.
+    SchedulerWt,
     /// Dimension metadata record: `Overworld`, `Nether`, or `TheEnd`.
     Dimension(Dimension),
     /// `scoreboard` global NBT record.
@@ -312,6 +316,10 @@ pub enum GlobalRecordKind {
     LevelChunkMetaDataDictionary,
     /// World clock metadata.
     WorldClocks,
+    /// One `tickingarea_<id>` NBT record.
+    TickingArea(String),
+    /// One `structuretemplate_<name>` NBT record.
+    StructureTemplate(String),
     /// Preserved UTF-8 global key not recognized by this crate.
     Other(String),
 }
@@ -323,6 +331,8 @@ impl GlobalRecordKind {
         let text = std::str::from_utf8(key).ok()?;
         match text {
             "mobevents" => Some(Self::MobEvents),
+            "portals" => Some(Self::Portals),
+            "schedulerWT" => Some(Self::SchedulerWt),
             "Overworld" => Some(Self::Dimension(Dimension::Overworld)),
             "Nether" => Some(Self::Dimension(Dimension::Nether)),
             "TheEnd" => Some(Self::Dimension(Dimension::End)),
@@ -334,6 +344,16 @@ impl GlobalRecordKind {
             "WorldClocks" => Some(Self::WorldClocks),
             _ => None,
         }
+        .or_else(|| {
+            text.strip_prefix("tickingarea")
+                .filter(|suffix| !suffix.is_empty())
+                .map(|suffix| Self::TickingArea(suffix.to_string()))
+        })
+        .or_else(|| {
+            text.strip_prefix("structuretemplate")
+                .filter(|suffix| !suffix.is_empty())
+                .map(|suffix| Self::StructureTemplate(suffix.to_string()))
+        })
     }
 
     #[must_use]
@@ -341,6 +361,8 @@ impl GlobalRecordKind {
     pub fn name(&self) -> String {
         match self {
             Self::MobEvents => "mobevents".to_string(),
+            Self::Portals => "portals".to_string(),
+            Self::SchedulerWt => "schedulerWT".to_string(),
             Self::Dimension(Dimension::Overworld) => "Overworld".to_string(),
             Self::Dimension(Dimension::Nether) => "Nether".to_string(),
             Self::Dimension(Dimension::End) => "TheEnd".to_string(),
@@ -351,6 +373,8 @@ impl GlobalRecordKind {
             Self::BiomeData => "BiomeData".to_string(),
             Self::LevelChunkMetaDataDictionary => "LevelChunkMetaDataDictionary".to_string(),
             Self::WorldClocks => "WorldClocks".to_string(),
+            Self::TickingArea(suffix) => format!("tickingarea{suffix}"),
+            Self::StructureTemplate(suffix) => format!("structuretemplate{suffix}"),
             Self::Other(name) => name.clone(),
         }
     }
@@ -549,6 +573,8 @@ fn is_known_global_key(key: &[u8]) -> bool {
         b"game_flatworldlayers",
     ];
     GLOBAL_KEYS.contains(&key)
+        || key.starts_with(b"tickingarea_")
+        || key.starts_with(b"structuretemplate_")
 }
 
 fn encoded_chunk_tag(key: &[u8]) -> Option<ChunkRecordTag> {

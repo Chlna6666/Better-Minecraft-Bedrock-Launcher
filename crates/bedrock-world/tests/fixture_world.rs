@@ -1,9 +1,9 @@
 #![cfg(feature = "bedrock-leveldb")]
 
+use bedrock_world::level::read;
 use bedrock_world::{
     BedrockDbKey, BedrockLevelDbStorage, ChunkPos, ChunkRecordTag, NbtTag, OpenOptions,
     ScanOptions, StorageReadOptions, StorageVisitorControl, World, WorldStorage,
-    read_level_dat_document,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -27,7 +27,7 @@ fn parses_copied_bedrock_world_through_leveldb_backend() {
         return;
     }
 
-    let document = read_level_dat_document(&world_path.join("level.dat")).expect("read level.dat");
+    let document = read(&world_path.join("level.dat")).expect("read level.dat");
     assert!(document.header.actual_payload_len > 0);
     let root = match &document.root {
         NbtTag::Compound(root) => root,

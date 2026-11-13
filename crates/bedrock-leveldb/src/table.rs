@@ -195,7 +195,7 @@ struct CachedTableFile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct NativeBlockCacheKey {
-    table_id: TableId,
+    id: TableId,
     offset: u64,
     size: u64,
     paranoid_checks: bool,
@@ -203,7 +203,7 @@ struct NativeBlockCacheKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct NativeIndexCacheKey {
-    table_id: TableId,
+    id: TableId,
     paranoid_checks: bool,
 }
 
@@ -324,7 +324,7 @@ impl NativeBlockCache {
     }
 
     fn open_table_file(&self, path: &Path) -> Result<Arc<File>> {
-        let id = table_id(path);
+        let id = id(path);
         let shard = &self.files[cache_shard_index(&id, self.files.len())];
         if let Some(mut shard) = lock_cache_shard(shard, &self.counters.lock_contention)
             && let Some(cached) = shard.get_cloned(&id)
@@ -353,17 +353,17 @@ impl NativeBlockCache {
         if paths.is_empty() {
             return;
         }
-        let mut ids = paths.iter().map(|path| table_id(path)).collect::<Vec<_>>();
+        let mut ids = paths.iter().map(|path| id(path)).collect::<Vec<_>>();
         ids.sort_unstable();
         ids.dedup();
         for shard in &self.data {
             if let Some(mut shard) = lock_cache_shard(shard, &self.counters.lock_contention) {
-                shard.remove_where(|key| ids.binary_search(&key.table_id).is_ok());
+                shard.remove_where(|key| ids.binary_search(&key.id).is_ok());
             }
         }
         for shard in &self.indexes {
             if let Some(mut shard) = lock_cache_shard(shard, &self.counters.lock_contention) {
-                shard.remove_where(|key| ids.binary_search(&key.table_id).is_ok());
+                shard.remove_where(|key| ids.binary_search(&key.id).is_ok());
             }
         }
         for shard in &self.files {
@@ -399,7 +399,7 @@ pub(crate) enum TableLookup {
     Value(Bytes),
 }
 
-pub(crate) fn get_table_lookup(
+pub(crate) fn get_lookup(
     path: &Path,
     key: &[u8],
     paranoid_checks: bool,
@@ -418,7 +418,7 @@ pub(crate) fn get_table_lookup(
         return Ok(TableLookup::Missing);
     }
     let cache_key = NativeBlockCacheKey {
-        table_id: table_id(path),
+        id: id(path),
         offset: entry.handle.offset,
         size: entry.handle.size,
         paranoid_checks,
@@ -437,7 +437,7 @@ pub(crate) fn get_table_lookup(
     })
 }
 
-pub(crate) fn get_table_lookups(
+pub(crate) fn get_lookups(
     path: &Path,
     keys: &[Bytes],
     paranoid_checks: bool,
@@ -523,7 +523,7 @@ fn get_native_table_lookups(
         return Ok(results);
     }
 
-    let table_id = table_id(path);
+    let id = id(path);
     let mut blocks = Vec::<PlannedBlock>::new();
     let mut start = 0_usize;
     while start < planned.len() {
@@ -534,7 +534,7 @@ fn get_native_table_lookups(
         }
         let entry = &index[block_index];
         let cache_key = NativeBlockCacheKey {
-            table_id,
+            id,
             offset: entry.handle.offset,
             size: entry.handle.size,
             paranoid_checks,
@@ -601,7 +601,7 @@ fn get_native_table_lookups(
     Ok(results)
 }
 
-pub(crate) fn read_table_lookups(
+pub(crate) fn read_lookups(
     path: &Path,
     paranoid_checks: bool,
 ) -> Result<BTreeMap<Vec<u8>, TableLookup>> {
@@ -616,7 +616,7 @@ pub(crate) fn read_table_lookups(
     Ok(entries)
 }
 
-pub(crate) fn read_table_max_sequence(path: &Path, paranoid_checks: bool) -> Result<u64> {
+pub(crate) fn read_max_sequence(path: &Path, paranoid_checks: bool) -> Result<u64> {
     if detect_custom_table(path, None)? {
         return Ok(0);
     }
@@ -637,7 +637,7 @@ pub(crate) fn read_table_max_sequence(path: &Path, paranoid_checks: bool) -> Res
     Ok(max_sequence)
 }
 
-pub(crate) fn for_each_table_lookup<F>(
+pub(crate) fn for_each_lookup<F>(
     path: &Path,
     paranoid_checks: bool,
     _cache: Option<&NativeBlockCache>,
@@ -831,7 +831,7 @@ fn read_native_index_entries(
     cache: Option<&NativeBlockCache>,
 ) -> Result<NativeIndexEntries> {
     let cache_key = NativeIndexCacheKey {
-        table_id: table_id(path),
+        id: id(path),
         paranoid_checks,
     };
     if let Some(entries) = cache.and_then(|cache| cache.get_index(&cache_key)) {
@@ -1205,7 +1205,7 @@ fn open_table_file_uncached(path: &Path) -> Result<File> {
     File::open(path).map_err(|error| LevelDbError::io_at("open native table", path, error))
 }
 
-fn table_id(path: &Path) -> TableId {
+fn id(path: &Path) -> TableId {
     if let Some(number) = path
         .file_stem()
         .and_then(|stem| stem.to_str())

@@ -50,7 +50,7 @@ where
 
     #[cfg(feature = "async")]
     /// List render chunk positions in region.
-    pub async fn region_render_chunk_positions_async(
+    pub async fn region_chunk_positions_async(
         &self,
         region: Region,
         options: WorldScanOptions,
@@ -112,7 +112,7 @@ where
         options: ChunkLoadOptions,
     ) -> Result<ChunkData> {
         let world = self.task_clone();
-        tokio::task::spawn_blocking(move || world.query_chunk_data(pos, options))
+        tokio::task::spawn_blocking(move || world.load_render_chunk(pos, options))
             .await
             .map_err(|error| BedrockWorldError::Join(error.to_string()))?
     }
@@ -125,7 +125,7 @@ where
         options: ChunkLoadOptions,
     ) -> Result<Vec<ChunkData>> {
         let world = self.task_clone();
-        tokio::task::spawn_blocking(move || world.query_chunk_data_many(positions, options))
+        tokio::task::spawn_blocking(move || world.load_render_chunks(positions, options))
             .await
             .map_err(|error| BedrockWorldError::Join(error.to_string()))?
     }
@@ -138,7 +138,7 @@ where
         options: RegionLoadOptions,
     ) -> Result<RegionLoad> {
         let world = self.task_clone();
-        tokio::task::spawn_blocking(move || world.query_chunk_region(region, options))
+        tokio::task::spawn_blocking(move || world.load_render_region(region, options))
             .await
             .map_err(|error| BedrockWorldError::Join(error.to_string()))?
     }
@@ -246,7 +246,7 @@ where
     ///
     /// Returns join, storage, or global parse errors.
     #[cfg(feature = "async")]
-    pub async fn global_async(&self, kind: GlobalRecordKind) -> Result<Option<Global>> {
+    pub async fn global_async(&self, kind: GlobalRecordKind) -> Result<Option<Record>> {
         let world = self.task_clone();
         tokio::task::spawn_blocking(move || world.global(kind))
             .await
@@ -259,7 +259,7 @@ where
     ///
     /// Returns join, storage, cancellation, or global parse errors.
     #[cfg(feature = "async")]
-    pub async fn globals_async(&self, options: WorldScanOptions) -> Result<Vec<Global>> {
+    pub async fn globals_async(&self, options: WorldScanOptions) -> Result<Vec<Record>> {
         let world = self.task_clone();
         tokio::task::spawn_blocking(move || world.globals(options))
             .await
@@ -272,7 +272,7 @@ where
     ///
     /// Returns join, read-only, validation, or storage errors.
     #[cfg(feature = "async")]
-    pub async fn save_global_async(&self, record: Global) -> Result<()> {
+    pub async fn save_global_async(&self, record: Record) -> Result<()> {
         let world = self.task_clone();
         tokio::task::spawn_blocking(move || world.save_global(&record))
             .await

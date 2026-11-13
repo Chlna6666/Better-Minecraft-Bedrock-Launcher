@@ -35,7 +35,7 @@ impl BlockModelRepository {
         };
         let [mut emission, mut dampening] = default.unwrap_or([
             0,
-            if crate::is_full_opaque_block(name) {
+            if crate::model_family::is_full_opaque_block(name) {
                 15
             } else {
                 0

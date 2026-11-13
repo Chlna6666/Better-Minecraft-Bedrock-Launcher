@@ -7,7 +7,7 @@
 
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag, Dimension};
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::{NbtReader, NbtTag, serialize_root_nbt};
+use crate::nbt::{NbtReader, NbtTag, serialize_root};
 use crate::storage::{StorageBatch, WorldStorage};
 use bytes::Bytes;
 use std::collections::BTreeMap;
@@ -15,15 +15,15 @@ use std::fs;
 use std::io::Write as _;
 use std::path::Path;
 
-const POCKET_ENTITIES_DAT_HEADER_LEN: usize = 12;
-const POCKET_ENTITIES_DAT_VERSION: i32 = 1;
+const HEADER_LEN: usize = 12;
+const FILE_VERSION: i32 = 1;
 
 /// Parsed pre-LevelDB Pocket Edition `entities.dat` document.
 ///
 /// The source bytes and parsed NBT are both retained. An unchanged document serializes to the exact
 /// original bytes, including any bytes after the declared NBT payload.
 #[derive(Debug, Clone, PartialEq)]
-pub struct PocketEntitiesDatDocument {
+pub struct Document {
     version: i32,
     original_version: i32,
     root: NbtTag,
@@ -32,10 +32,10 @@ pub struct PocketEntitiesDatDocument {
     trailing: Bytes,
 }
 
-impl PocketEntitiesDatDocument {
+impl Document {
     /// Parses one complete `entities.dat` byte buffer.
     pub fn from_raw(raw: Bytes) -> Result<Self> {
-        if raw.len() < POCKET_ENTITIES_DAT_HEADER_LEN {
+        if raw.len() < HEADER_LEN {
             return Err(BedrockWorldError::CorruptWorld(format!(
                 "entities.dat is too short: {} bytes",
                 raw.len()
@@ -62,7 +62,7 @@ impl PocketEntitiesDatDocument {
                 "entities.dat declares an empty NBT payload".to_string(),
             ));
         }
-        let payload_end = POCKET_ENTITIES_DAT_HEADER_LEN
+        let payload_end = HEADER_LEN
             .checked_add(declared_len)
             .ok_or_else(|| {
                 BedrockWorldError::CorruptWorld(
@@ -72,11 +72,11 @@ impl PocketEntitiesDatDocument {
         if payload_end > raw.len() {
             return Err(BedrockWorldError::CorruptWorld(format!(
                 "entities.dat declares {declared_len} NBT bytes but only {} are available",
-                raw.len().saturating_sub(POCKET_ENTITIES_DAT_HEADER_LEN)
+                raw.len().saturating_sub(HEADER_LEN)
             )));
         }
 
-        let payload = raw.slice(POCKET_ENTITIES_DAT_HEADER_LEN..payload_end);
+        let payload = raw.slice(HEADER_LEN..payload_end);
         let (root, consumed) = NbtReader::new(payload.as_ref()).parse_root_with_consumed()?;
         if consumed != payload.len() {
             return Err(BedrockWorldError::CorruptWorld(format!(
@@ -178,16 +178,16 @@ impl PocketEntitiesDatDocument {
 }
 
 /// Reads `entities.dat` from one pre-LevelDB Pocket Edition world folder.
-pub fn read_pocket_entities_dat(world_path: impl AsRef<Path>) -> Result<PocketEntitiesDatDocument> {
+pub fn read(world_path: impl AsRef<Path>) -> Result<Document> {
     let raw = Bytes::from(fs::read(world_path.as_ref().join("entities.dat"))?);
-    PocketEntitiesDatDocument::from_raw(raw)
+    Document::from_raw(raw)
 }
 
 /// Writes one pre-LevelDB Pocket Edition `entities.dat` document using the game's `_new`/`_old`
 /// sidecar pattern.
-pub fn write_pocket_entities_dat_atomic(
+pub fn write_atomic(
     world_path: impl AsRef<Path>,
-    document: &PocketEntitiesDatDocument,
+    document: &Document,
 ) -> Result<()> {
     let world_path = world_path.as_ref();
     let path = world_path.join("entities.dat");
@@ -217,7 +217,7 @@ pub fn write_pocket_entities_dat_atomic(
 
 /// Settings for explicitly importing historical `entities.dat` lists into LevelDB chunk records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PocketEntitiesDatImportOptions {
+pub struct ImportOptions {
     /// Allows replacing an existing target `Entity` or `BlockEntity` chunk record.
     pub overwrite_existing: bool,
     /// Allows source entities without a usable position to be skipped rather than rejecting import.
@@ -226,7 +226,7 @@ pub struct PocketEntitiesDatImportOptions {
 
 /// Result of importing one historical `entities.dat` file into LevelDB chunk records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PocketEntitiesDatImportReport {
+pub struct ImportReport {
     /// Source `entities.dat` header version.
     pub source_version: i32,
     /// Entity compounds written from the `Entities` list.
@@ -252,25 +252,25 @@ pub struct PocketEntitiesDatImportReport {
 /// generation and requires a separate explicit actor-storage write. Every source position, serialized
 /// target value and target collision is checked before the single [`WorldStorage::write_batch`] call.
 /// Therefore a backend batch failure cannot leave only a prefix of the source entities imported.
-pub fn import_pocket_entities_dat(
+pub fn import(
     source_world_path: impl AsRef<Path>,
     target: &dyn WorldStorage,
-    options: PocketEntitiesDatImportOptions,
-) -> Result<PocketEntitiesDatImportReport> {
-    let document = read_pocket_entities_dat(source_world_path)?;
-    if document.version() != POCKET_ENTITIES_DAT_VERSION {
+    options: ImportOptions,
+) -> Result<ImportReport> {
+    let document = read(source_world_path)?;
+    if document.version() != FILE_VERSION {
         return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
             "entities.dat version {} is not the confirmed Pocket Edition version {}",
             document.version(),
-            POCKET_ENTITIES_DAT_VERSION
+            FILE_VERSION
         )));
     }
 
     let mut entity_groups = BTreeMap::<ChunkPos, Vec<&NbtTag>>::new();
     let mut tile_entity_groups = BTreeMap::<ChunkPos, Vec<&NbtTag>>::new();
-    let mut report = PocketEntitiesDatImportReport {
+    let mut report = ImportReport {
         source_version: document.version(),
-        ..PocketEntitiesDatImportReport::default()
+        ..ImportReport::default()
     };
 
     for (index, entity) in document.entities()?.iter().enumerate() {
@@ -383,12 +383,12 @@ fn root_list<'a>(root: &'a NbtTag, field: &str) -> Result<&'a [NbtTag]> {
 
 fn encode_document(version: i32, root: &NbtTag, trailing: &[u8]) -> Result<Bytes> {
     ensure_root_compound(root)?;
-    let payload = serialize_root_nbt(root)?;
+    let payload = serialize_root(root)?;
     let payload_len = i32::try_from(payload.len()).map_err(|_| {
         BedrockWorldError::Validation("entities.dat NBT payload exceeds i32 length".to_string())
     })?;
     let mut raw = Vec::with_capacity(
-        POCKET_ENTITIES_DAT_HEADER_LEN
+        HEADER_LEN
             .saturating_add(payload.len())
             .saturating_add(trailing.len()),
     );
@@ -490,7 +490,7 @@ fn integer_value(tag: Option<&NbtTag>) -> Option<i32> {
 fn serialize_consecutive_roots(roots: &[&NbtTag]) -> Result<Bytes> {
     let mut raw = Vec::new();
     for root in roots {
-        raw.extend_from_slice(&serialize_root_nbt(root)?);
+        raw.extend_from_slice(&serialize_root(root)?);
     }
     Ok(Bytes::from(raw))
 }
@@ -524,8 +524,8 @@ mod tests {
         ]))
     }
 
-    fn document() -> PocketEntitiesDatDocument {
-        PocketEntitiesDatDocument::new(
+    fn document() -> Document {
+        Document::new(
             1,
             NbtTag::Compound(IndexMap::from([
                 (
@@ -547,7 +547,7 @@ mod tests {
         let raw = document.to_raw().unwrap();
         assert_eq!(&raw[..4], b"ENT\0");
         assert_eq!(i32::from_le_bytes(raw[4..8].try_into().unwrap()), 1);
-        let reparsed = PocketEntitiesDatDocument::from_raw(raw.clone()).unwrap();
+        let reparsed = Document::from_raw(raw.clone()).unwrap();
         assert_eq!(reparsed.to_raw().unwrap(), raw);
         assert_eq!(reparsed.entities().unwrap().len(), 2);
         assert_eq!(reparsed.tile_entities().unwrap().len(), 1);
@@ -569,7 +569,7 @@ mod tests {
         };
         root.insert("FutureField".to_string(), NbtTag::Long(99));
         let raw = document.to_raw().unwrap();
-        let reparsed = PocketEntitiesDatDocument::from_raw(raw).unwrap();
+        let reparsed = Document::from_raw(raw).unwrap();
         let NbtTag::Compound(root) = reparsed.root() else {
             panic!("compound");
         };
@@ -594,7 +594,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("entities.dat"), document.to_raw().unwrap()).unwrap();
         let result =
-            import_pocket_entities_dat(&root, &storage, PocketEntitiesDatImportOptions::default());
+            import(&root, &storage, ImportOptions::default());
         assert!(result.is_err());
         assert_eq!(
             storage.get(key.as_ref()).unwrap().unwrap().as_ref(),
@@ -616,7 +616,7 @@ mod tests {
         fs::write(root.join("entities.dat"), document.to_raw().unwrap()).unwrap();
 
         let report =
-            import_pocket_entities_dat(&root, &storage, PocketEntitiesDatImportOptions::default())
+            import(&root, &storage, ImportOptions::default())
                 .unwrap();
         assert_eq!(report.entities, 2);
         assert_eq!(report.tile_entities, 1);

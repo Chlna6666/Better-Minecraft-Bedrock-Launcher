@@ -19,10 +19,10 @@ fn level_zero_trigger_compacts_incremental_tables_without_losing_values() {
             .expect("write incremental value");
             db.flush().expect("flush level-zero table");
         }
-        assert_eq!(db.stats_fast().expect("read stats").tables, 1);
     }
 
     let db = Db::open(directory.path(), options).expect("reopen compacted database");
+    assert_eq!(db.stats_fast().expect("read stats").tables, 1);
     for index in 0..4 {
         assert_eq!(
             db.get(format!("chunk:{index}").as_bytes())

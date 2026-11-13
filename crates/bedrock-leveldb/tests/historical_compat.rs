@@ -33,7 +33,7 @@ fn fixture_path(name: &str) -> PathBuf {
     fixture_root().join(name)
 }
 
-fn open_fixture_if_present(name: &str) -> Option<Db> {
+fn open_fixture(name: &str) -> Option<Db> {
     let path = fixture_path(name);
     if !path.join("CURRENT").is_file() {
         if require_historical_fixtures() {
@@ -63,7 +63,7 @@ fn open_fixture_if_present(name: &str) -> Option<Db> {
 }
 
 fn assert_fixture_scans(name: &str) {
-    let Some(db) = open_fixture_if_present(name) else {
+    let Some(db) = open_fixture(name) else {
         return;
     };
     let mut visited = 0usize;

@@ -10,7 +10,7 @@ use crate::model_family::{ModelCuboid, ModelPlane, ModelShape};
 /// texture-span interpretation. Cubes without an origin or size are skipped. The function does
 /// not resolve textures, read world data, or create renderer resources.
 #[must_use]
-pub fn shape_from_geometry(geometry: &BlockGeometry) -> Option<ModelShape> {
+pub fn model_shape(geometry: &BlockGeometry) -> Option<ModelShape> {
     let mut shape = ModelShape::default();
     for bone in &geometry.bones {
         for cube in &bone.cubes {

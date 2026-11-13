@@ -1,7 +1,7 @@
 //! Discovery helpers for locating Bedrock world folders on disk.
 
 use crate::error::Result;
-use crate::level::read_level_dat_document;
+use crate::level::read;
 use crate::nbt::NbtTag;
 use crate::version::LevelVersion;
 use serde::{Deserialize, Serialize};
@@ -77,7 +77,7 @@ pub struct WorldSummary {
 /// `level.dat` is parsed once per discovered world and reused for both the display-name fallback and
 /// version detection. The summary also exposes the actual storage files present so callers can choose
 /// LevelDB handling or the older `chunks.dat` importer without guessing from a game-version string.
-pub fn discover_worlds(options: &WorldDiscovery) -> Result<Vec<WorldSummary>> {
+pub fn worlds(options: &WorldDiscovery) -> Result<Vec<WorldSummary>> {
     let mut folders = Vec::new();
     for root in &options.roots {
         if let Ok(entries) = fs::read_dir(root) {
@@ -143,7 +143,7 @@ fn read_level_metadata(folder_path: &Path) -> (Option<String>, Option<LevelVersi
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let document = read_level_dat_document(&folder_path.join("level.dat")).ok();
+    let document = read(&folder_path.join("level.dat")).ok();
     let level_name = text_name.or_else(|| {
         let document = document.as_ref()?;
         let NbtTag::Compound(root) = &document.root else {
@@ -207,14 +207,14 @@ fn count_packs(value: &Value) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::level::{LevelDatDocument, write_level_dat_document};
+    use crate::level::{LevelDatDocument, write};
     use indexmap::IndexMap;
     use std::io::Write as _;
 
     #[test]
     fn discovers_level_dat_worlds_with_version_and_storage_evidence() {
         let root = std::env::temp_dir().join(format!(
-            "bedrock-world-discover-{}",
+            "bedrock-world-worlds-{}",
             SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -243,13 +243,13 @@ mod tests {
                 NbtTag::Int(5),
             ]),
         );
-        write_level_dat_document(
+        write(
             &world.join("level.dat"),
             &LevelDatDocument::new(10, NbtTag::Compound(level)),
         )
         .expect("write level.dat");
 
-        let worlds = discover_worlds(&WorldDiscovery::new(vec![root.clone()])).expect("discover");
+        let worlds = worlds(&WorldDiscovery::new(vec![root.clone()])).expect("worlds");
         assert_eq!(worlds.len(), 1);
         assert_eq!(worlds[0].level_name.as_deref(), Some("Test World"));
         assert_eq!(

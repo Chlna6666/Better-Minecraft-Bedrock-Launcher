@@ -135,7 +135,7 @@ static SCHEMA: OnceLock<BlockStateSchema> = OnceLock::new();
 
 /// Returns the embedded, lazily parsed block-state catalogue.
 #[must_use]
-pub fn block_state_schema() -> &'static BlockStateSchema {
+pub fn catalog() -> &'static BlockStateSchema {
     SCHEMA.get_or_init(|| {
         serde_json::from_str(include_str!("block_state_schema.json"))
             .expect("embedded block state schema must be valid")
@@ -144,14 +144,14 @@ pub fn block_state_schema() -> &'static BlockStateSchema {
 
 /// Returns the schema of one block id, or None when the id is unknown.
 #[must_use]
-pub fn block_schema(name: &str) -> Option<&'static BlockSchema> {
-    block_state_schema().block(name)
+pub fn for_block(name: &str) -> Option<&'static BlockSchema> {
+    catalog().block(name)
 }
 
 /// Reports whether a block id is a fluid.
 #[must_use]
 pub fn is_fluid(name: &str) -> bool {
-    block_state_schema()
+    catalog()
         .fluids()
         .iter()
         .any(|fluid| fluid == name)
@@ -179,7 +179,7 @@ pub fn fluid_level(state: &BlockState) -> Option<u8> {
 ///
 /// Returns [`BedrockWorldError::Validation`] for the first unknown key or out-of-domain value.
 pub fn validate_state(state: &BlockState) -> Result<()> {
-    let Some(schema) = block_schema(&state.name) else {
+    let Some(schema) = for_block(&state.name) else {
         return Err(BedrockWorldError::Validation(format!(
             "unknown block id {}",
             state.name
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn catalogue_lists_the_supported_blocks() {
-        let schema = block_state_schema();
+        let schema = catalog();
         assert!(schema.block_count() >= 1_200, "{}", schema.block_count());
         assert_eq!(schema.block_count(), schema.blocks().len());
         assert!(schema.observed_permutations() >= 10_000);
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn water_is_a_fluid_with_the_full_depth_range() {
         assert!(is_fluid("minecraft:water"));
-        let schema = block_schema("minecraft:water").expect("water schema");
+        let schema = for_block("minecraft:water").expect("water schema");
         let depth = schema.property("liquid_depth").expect("liquid_depth");
         assert_eq!(depth.value_count(), 16);
         assert!(depth.is_expanded());
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn stairs_expose_direction_and_upside_down_values() {
-        let schema = block_schema("minecraft:oak_stairs").expect("oak stairs schema");
+        let schema = for_block("minecraft:oak_stairs").expect("oak stairs schema");
         let direction = schema
             .property("weirdo_direction")
             .expect("weirdo_direction");

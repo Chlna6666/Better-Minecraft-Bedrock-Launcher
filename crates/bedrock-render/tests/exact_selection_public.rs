@@ -1,4 +1,5 @@
-use bedrock_render::{ChunkPos, Dimension, ExactChunkRenderPlan, ExactChunkSelection};
+use bedrock_render::{ChunkPos, Dimension};
+use bedrock_render::exact_selection::{ExactChunkSelection, Plan};
 
 fn chunk(x: i32, z: i32) -> ChunkPos {
     ChunkPos {
@@ -12,7 +13,7 @@ fn chunk(x: i32, z: i32) -> ChunkPos {
 fn exact_selection_api_is_public_and_preserves_holes() {
     let selection = ExactChunkSelection::new([chunk(0, 0), chunk(1, 0), chunk(0, 1), chunk(6, 2)])
         .expect("public exact selection");
-    let plan = ExactChunkRenderPlan::new(selection);
+    let plan = Plan::new(selection);
 
     assert_eq!(plan.chunk_count(), 4);
     assert!(plan.contains(chunk(0, 1)));

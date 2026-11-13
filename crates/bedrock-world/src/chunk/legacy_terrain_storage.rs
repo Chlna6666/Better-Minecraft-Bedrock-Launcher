@@ -8,7 +8,7 @@
 use crate::biome::Biome2dLegacy;
 use crate::chunk::{
     BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag, LegacyBiomeSample, LegacySubChunkBuilder,
-    LegacyTerrain, SubChunkVersion,
+    LegacySubChunkEncoding, LegacyTerrain, SubChunkVersion,
 };
 use crate::error::{BedrockWorldError, Result};
 use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
@@ -153,7 +153,7 @@ pub(crate) fn stage_legacy_terrain_split(
 
     for (pos, source_key, terrain) in sources {
         for section in 0_u8..LEGACY_TERRAIN_SUBCHUNKS as u8 {
-            let mut builder = LegacySubChunkBuilder::zeroed(version_byte, true)?;
+            let mut builder = LegacySubChunkBuilder::zeroed(version_byte, LegacySubChunkEncoding::WithLightArrays)?;
             let base_y = section * 16;
             for local_x in 0_u8..16 {
                 for local_z in 0_u8..16 {

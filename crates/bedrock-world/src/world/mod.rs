@@ -9,6 +9,7 @@ mod create;
 /// Filesystem discovery for Minecraft Bedrock world folders.
 pub mod discover;
 mod map_bundle;
+mod global;
 mod migration;
 pub use map_bundle::{MapBlockContainerImportPlan, MapFrameImportPlan, MapPlayerImportPlan};
 
@@ -21,23 +22,24 @@ use crate::chunk::{
 };
 use crate::entity::{ActorOwnershipIndex, ActorUidRepairReport, stage_actor_uid_repair};
 use crate::error::{BedrockWorldError, Result};
-use crate::level_dat::{LevelDatDocument, read_level_dat_document, write_level_dat_document};
+use crate::global::Record;
+use crate::level::{LevelDatDocument, read, write};
 use crate::map_item::{MapBundle, MapItemId, SavedData};
-use crate::nbt::{NbtTag, parse_consecutive_root_nbt, parse_root_nbt, serialize_root_nbt};
+use crate::nbt::{NbtTag, parse_consecutive_roots, parse_root, serialize_root};
 use crate::player::{PlayerData, PlayerId, PlayerInventorySlot};
 use crate::scan::{
-    Actor, ActorRecord, ActorSource, Biome3d, BiomeStorage, BlockEntity, BlockEntityRecord, Global,
+    Actor, ActorRecord, ActorSource, Biome3d, BiomeStorage, BlockEntity, BlockEntityRecord,
     HardcodedSpawnArea, HeightMap2d, ItemStack, WorldScan, collect_item_stacks, decode_actor_ids,
-    decode_global, decode_hardcoded_spawn_areas, decode_map_item, encode_actor_ids,
-    encode_consecutive_roots, encode_global, encode_hardcoded_spawn_areas, encode_map_item,
-    parse_block_entities_from_value, parse_entities_from_value, scan_storage,
+    decode_hardcoded_spawn_areas, decode_map_item, encode_actor_ids,
+    encode_consecutive_roots, encode_hardcoded_spawn_areas, encode_map_item,
+    parse_block_entities_from_value, parse_entities_from_value, parse_world,
 };
 use crate::storage::backend::BedrockLevelDbStorage;
 use crate::storage::{
     StorageBatch, StorageOp, StorageReadOptions, StorageVisitorControl, WorldStorage,
 };
 use crate::surface::*;
-use crate::village::Entry;
+use crate::village::{Entry, VillageKey};
 use bytes::Bytes;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -53,8 +55,8 @@ use std::{
 pub struct OpenOptions {
     /// Reject mutating operations when set.
     pub read_only: bool,
-    /// Preferred world storage format. [`WorldFormatHint::Auto`] detects the
-    /// backend from `db/CURRENT` and old `chunks.dat` files.
+    /// Preferred world format. [`WorldFormatHint::Auto`] detects filesystem-backed worlds;
+    /// [`WorldFormatHint::Exact`] preserves a format already identified by the caller.
     pub format: WorldFormatHint,
 }
 
@@ -75,6 +77,8 @@ pub enum WorldFormatHint {
     Auto,
     /// Modern Bedrock `LevelDB` world.
     LevelDb,
+    /// Use a known format when the storage backend has already been identified.
+    Exact(WorldFormat),
     /// Pre-`LevelDB` Pocket Edition `chunks.dat` world.
     PocketChunksDat,
 }
@@ -137,6 +141,7 @@ impl StorageBackend for Arc<dyn WorldStorage> {
 mod r#async;
 mod query;
 mod scan;
+mod ticks;
 
 impl World<Arc<dyn WorldStorage>> {
     /// Opens a world on the calling thread with automatic format detection.
@@ -191,22 +196,7 @@ impl World<Arc<dyn WorldStorage>> {
         storage: Arc<dyn WorldStorage>,
         options: OpenOptions,
     ) -> Self {
-        Self {
-            path: path.into(),
-            options,
-            storage,
-            format: WorldFormat::LevelDb,
-        }
-    }
-
-    #[must_use]
-    /// Creates a world from an already-open storage backend and explicit format.
-    pub fn from_storage_with_format(
-        path: impl Into<PathBuf>,
-        storage: Arc<dyn WorldStorage>,
-        options: OpenOptions,
-        format: WorldFormat,
-    ) -> Self {
+        let format = storage_format(options.format);
         Self {
             path: path.into(),
             options,
@@ -250,22 +240,7 @@ where
     #[must_use]
     /// Creates a world from a concrete storage backend.
     pub fn from_typed_storage(path: impl Into<PathBuf>, storage: S, options: OpenOptions) -> Self {
-        Self {
-            path: path.into(),
-            options,
-            storage,
-            format: WorldFormat::LevelDb,
-        }
-    }
-
-    #[must_use]
-    /// Creates a world from a concrete storage backend and explicit format.
-    pub fn from_typed_storage_with_format(
-        path: impl Into<PathBuf>,
-        storage: S,
-        options: OpenOptions,
-        format: WorldFormat,
-    ) -> Self {
+        let format = storage_format(options.format);
         Self {
             path: path.into(),
             options,
@@ -299,7 +274,7 @@ where
 
     /// Reads the current `level.dat` document from this world folder.
     pub fn read_level_dat(&self) -> Result<LevelDatDocument> {
-        read_level_dat_document(&self.path.join("level.dat"))
+        read(&self.path.join("level.dat"))
     }
 
     /// Replaces this world's `level.dat` document.
@@ -307,7 +282,7 @@ where
     /// This write is outside LevelDB and therefore outside [`WorldTransaction`] atomicity.
     pub fn write_level_dat(&self, document: &LevelDatDocument) -> Result<()> {
         self.ensure_writable()?;
-        write_level_dat_document(&self.path.join("level.dat"), document)
+        write(&self.path.join("level.dat"), document)
     }
 
     /// Compacts the underlying world storage after writes.
@@ -352,7 +327,7 @@ where
             actor_ownership: None,
             preconditions: Vec::new(),
             chunk_preconditions: Vec::new(),
-            mutation_lock: world_mutation_lock(&self.path),
+            mutation_lock: mutation_lock(&self.path),
         }
     }
 
@@ -369,7 +344,7 @@ mod transaction;
 
 pub use transaction::WorldTransaction;
 
-fn world_mutation_lock(path: &Path) -> Arc<Mutex<()>> {
+fn mutation_lock(path: &Path) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
     let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut registry = registry
@@ -382,6 +357,14 @@ fn world_mutation_lock(path: &Path) -> Arc<Mutex<()>> {
     let lock = Arc::new(Mutex::new(()));
     registry.insert(path.to_path_buf(), Arc::downgrade(&lock));
     lock
+}
+
+fn storage_format(hint: WorldFormatHint) -> WorldFormat {
+    match hint {
+        WorldFormatHint::Auto | WorldFormatHint::LevelDb => WorldFormat::LevelDb,
+        WorldFormatHint::PocketChunksDat => WorldFormat::PocketChunksDat,
+        WorldFormatHint::Exact(format) => format,
+    }
 }
 
 fn detect_world_format(path: &Path, hint: WorldFormatHint) -> Result<WorldFormat> {
@@ -408,7 +391,29 @@ fn detect_world_format(path: &Path, hint: WorldFormatHint) -> Result<WorldFormat
             }
             Ok(detect_leveldb_world_format(path))
         }
+        WorldFormatHint::Exact(
+            format @ (WorldFormat::LevelDb | WorldFormat::LevelDbLegacyTerrain),
+        ) => {
+            let current = path.join("db").join("CURRENT");
+            if !current.is_file() {
+                return Err(BedrockWorldError::Validation(format!(
+                    "LevelDB world missing {}",
+                    current.display()
+                )));
+            }
+            Ok(format)
+        }
         WorldFormatHint::PocketChunksDat => {
+            let chunks = path.join("chunks.dat");
+            if !chunks.is_file() {
+                return Err(BedrockWorldError::Validation(format!(
+                    "Pocket chunks.dat world missing {}",
+                    chunks.display()
+                )));
+            }
+            Ok(WorldFormat::PocketChunksDat)
+        }
+        WorldFormatHint::Exact(WorldFormat::PocketChunksDat) => {
             let chunks = path.join("chunks.dat");
             if !chunks.is_file() {
                 return Err(BedrockWorldError::Validation(format!(
@@ -422,7 +427,7 @@ fn detect_world_format(path: &Path, hint: WorldFormatHint) -> Result<WorldFormat
 }
 
 fn detect_leveldb_world_format(path: &Path) -> WorldFormat {
-    let Ok(document) = read_level_dat_document(&path.join("level.dat")) else {
+    let Ok(document) = read(&path.join("level.dat")) else {
         return WorldFormat::LevelDb;
     };
     let NbtTag::Compound(root) = &document.root else {

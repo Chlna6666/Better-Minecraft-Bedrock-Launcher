@@ -2,7 +2,7 @@
 
 use super::{MapItemId, SavedData, filled_map_id, remap_filled_map_ids};
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::{NbtTag, parse_root_nbt, serialize_root_nbt};
+use crate::nbt::{NbtTag, parse_root, serialize_root};
 use crate::scan::{decode_map_item, encode_map_item};
 use bytes::Bytes;
 use indexmap::IndexMap;
@@ -195,7 +195,7 @@ impl MapBundle {
             root.insert("grid_rows".to_string(), NbtTag::Int(rows as i32));
         }
         let root = NbtTag::Compound(root);
-        let bytes = serialize_root_nbt(&root)?;
+        let bytes = serialize_root(&root)?;
         if bytes.len() > MAX_BYTES {
             return Err(BedrockWorldError::Validation(
                 "map bundle exceeds 256 MiB".to_string(),
@@ -220,7 +220,7 @@ impl MapBundle {
                 "map bundle exceeds 256 MiB".to_string(),
             ));
         }
-        let NbtTag::Compound(mut root) = parse_root_nbt(bytes)? else {
+        let NbtTag::Compound(mut root) = parse_root(bytes)? else {
             return Err(BedrockWorldError::Validation(
                 "map bundle has no compound root".to_string(),
             ));
@@ -426,7 +426,7 @@ fn validate_refs(value: &NbtTag, ids: &BTreeSet<i64>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map_item::{Pixels, new_filled_map_item};
+    use crate::map_item::{Pixels, new_filled};
 
     #[test]
     fn nbt_bundle_roundtrip_and_import_remap_preserve_map_bytes_and_labels() {
@@ -443,7 +443,7 @@ mod tests {
             0,
         )
         .expect("map");
-        let item = new_filled_map_item(7, 0).expect("item");
+        let item = new_filled(7, 0).expect("item");
         let container = NbtTag::Compound(IndexMap::from([(
             "Items".to_string(),
             NbtTag::List(vec![item]),
@@ -498,7 +498,7 @@ mod tests {
             .collect();
         let items = (0..2)
             .map(|column| {
-                let mut item = new_filled_map_item(column, 0).expect("item");
+                let mut item = new_filled(column, 0).expect("item");
                 crate::item::set_item_display(
                     &mut item,
                     &format!("tile {}", column + 1),
@@ -531,7 +531,7 @@ mod tests {
             0,
         )
         .expect("map");
-        let item = new_filled_map_item(7, 0).expect("item");
+        let item = new_filled(7, 0).expect("item");
         let missing = MapBundle::new(
             vec![map.clone()],
             NbtTag::Compound(IndexMap::from([(

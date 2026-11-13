@@ -72,15 +72,15 @@ impl CardinalDirection {
 
 pub(super) fn cardinal_direction(state: &BlockStateQuery) -> Option<CardinalDirection> {
     state_string(state, "minecraft:cardinal_direction")
-        .and_then(cardinal_direction_from_string)
+        .and_then(from_string)
         .or_else(|| {
-            state_string(state, "cardinal_direction").and_then(cardinal_direction_from_string)
+            state_string(state, "cardinal_direction").and_then(from_string)
         })
-        .or_else(|| state_string(state, "facing").and_then(cardinal_direction_from_string))
+        .or_else(|| state_string(state, "facing").and_then(from_string))
         .or_else(|| {
-            state_string(state, "facing_direction").and_then(cardinal_direction_from_string)
+            state_string(state, "facing_direction").and_then(from_string)
         })
-        .or_else(|| block_face(state).and_then(cardinal_direction_from_string))
+        .or_else(|| block_face(state).and_then(from_string))
         .or_else(|| state_i64(state, "facing_direction").and_then(facing_direction_from_int))
         .or_else(|| state_i64(state, "weirdo_direction").and_then(cardinal_direction_from_int))
         .or_else(|| state_i64(state, "direction").and_then(cardinal_direction_from_int))
@@ -88,12 +88,12 @@ pub(super) fn cardinal_direction(state: &BlockStateQuery) -> Option<CardinalDire
 
 pub(super) fn stair_direction(state: &BlockStateQuery) -> Option<CardinalDirection> {
     state_string(state, "minecraft:cardinal_direction")
-        .and_then(cardinal_direction_from_string)
+        .and_then(from_string)
         .or_else(|| {
-            state_string(state, "cardinal_direction").and_then(cardinal_direction_from_string)
+            state_string(state, "cardinal_direction").and_then(from_string)
         })
-        .or_else(|| state_string(state, "facing").and_then(cardinal_direction_from_string))
-        .or_else(|| state_string(state, "direction").and_then(cardinal_direction_from_string))
+        .or_else(|| state_string(state, "facing").and_then(from_string))
+        .or_else(|| state_string(state, "direction").and_then(from_string))
         .or_else(|| state_i64(state, "weirdo_direction").and_then(stair_direction_from_int))
         .or_else(|| state_i64(state, "direction").and_then(cardinal_direction_from_int))
 }
@@ -116,11 +116,11 @@ pub(super) fn state_bool(state: &BlockStateQuery, key: &str) -> Option<bool> {
     state.state(key)?.as_bool_like()
 }
 
-pub(super) fn direction_connected(state: &BlockStateQuery, direction: CardinalDirection) -> bool {
-    direction_connection(state, direction).is_some_and(DirectionConnection::is_connected)
+pub(super) fn connected(state: &BlockStateQuery, direction: CardinalDirection) -> bool {
+    connection(state, direction).is_some_and(DirectionConnection::is_connected)
 }
 
-pub(super) fn direction_connection(
+pub(super) fn connection(
     state: &BlockStateQuery,
     direction: CardinalDirection,
 ) -> Option<DirectionConnection> {
@@ -148,7 +148,7 @@ pub(super) fn direction_connection(
     })
 }
 
-pub(super) fn cardinal_direction_from_string(value: &str) -> Option<CardinalDirection> {
+pub(super) fn from_string(value: &str) -> Option<CardinalDirection> {
     match normalize_state_literal(value) {
         "north" => Some(CardinalDirection::North),
         "south" => Some(CardinalDirection::South),

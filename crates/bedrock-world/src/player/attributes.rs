@@ -280,7 +280,7 @@ mod tests {
                 ("Unknown".to_string(), NbtTag::Long(9)),
             ]))]),
         )]));
-        let player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        let player = PlayerData::from_nbt(PlayerId::Local, nbt, None).unwrap();
         let attributes = player.attributes().unwrap();
         assert_eq!(attributes[0].name(), Some("minecraft:health"));
         assert_eq!(attributes[0].base().unwrap(), Some(20.0));
@@ -302,7 +302,7 @@ mod tests {
                 ("FutureAttributeField".to_string(), NbtTag::Long(7)),
             ]))]),
         )]));
-        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt, None).unwrap();
 
         assert_eq!(
             player
@@ -337,6 +337,7 @@ mod tests {
                 "Attributes".to_string(),
                 NbtTag::List(Vec::new()),
             )])),
+            None,
         )
         .unwrap();
         assert!(

@@ -181,7 +181,7 @@ impl<S: StorageBackend> World<S> {
     /// # Errors
     ///
     /// Returns validation, missing-chunk, unsupported-version, collision or storage errors.
-    pub fn prepare_map_bundle_new_up_frame(
+    pub fn prepare_map_frame_grid(
         &self,
         bundle: &MapBundle,
         chunk: ChunkPos,

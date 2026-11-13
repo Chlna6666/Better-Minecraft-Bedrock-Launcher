@@ -14,14 +14,14 @@ use std::path::Path;
 
 /// Settings for explicitly copying Pocket terrain records into a LevelDB-compatible target.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PocketChunksDatImportOptions {
+pub struct ImportOptions {
     /// Allows replacing an existing target `LegacyTerrain` record.
     pub overwrite_existing: bool,
 }
 
 /// Preflight information for converting one Pocket `chunks.dat` container to LevelDB records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PocketChunksDatImportCheck {
+pub struct ImportCheck {
     /// Number of historical terrain records found.
     pub terrain_records: usize,
     /// Records that already contain the complete later LevelDB biome/RGB tail.
@@ -32,7 +32,7 @@ pub struct PocketChunksDatImportCheck {
     pub source_bytes: usize,
 }
 
-impl PocketChunksDatImportCheck {
+impl ImportCheck {
     /// Returns whether every terrain record can be copied as a complete LevelDB `LegacyTerrain`
     /// record without synthesising missing biome/RGB data.
     #[must_use]
@@ -43,7 +43,7 @@ impl PocketChunksDatImportCheck {
 
 /// Result of one exact Pocket terrain copy into LevelDB-compatible `LegacyTerrain` records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PocketChunksDatImportReport {
+pub struct ImportReport {
     /// Number of complete `LegacyTerrain` records copied.
     pub terrain_records: usize,
     /// Number of value bytes copied without modification.
@@ -52,11 +52,14 @@ pub struct PocketChunksDatImportReport {
 
 /// Inspects whether a pre-LevelDB Pocket `chunks.dat` can be copied into later `LegacyTerrain`
 /// records without inventing biome/RGB bytes.
-pub fn check_pocket_chunks_dat_leveldb_import(
+///
+/// # Errors
+/// Returns an error if the Pocket world cannot be opened or a terrain record is malformed.
+pub fn check_import(
     source_world_path: impl AsRef<Path>,
-) -> Result<PocketChunksDatImportCheck> {
+) -> Result<ImportCheck> {
     let source = PocketWorldStorage::open(source_world_path)?;
-    let mut report = PocketChunksDatImportCheck::default();
+    let mut report = ImportCheck::default();
     source.for_each_entry(StorageReadOptions::default(), &mut |key, value| {
         let is_legacy_terrain = matches!(
             BedrockDbKey::decode(key),
@@ -89,11 +92,11 @@ pub fn check_pocket_chunks_dat_leveldb_import(
 ///
 /// When every source record is complete, all collisions are checked first and all records are written
 /// through one [`WorldStorage::write_batch`] call.
-pub fn import_pocket_chunks_dat(
+pub fn import(
     source_world_path: impl AsRef<Path>,
     target: &dyn WorldStorage,
-    options: PocketChunksDatImportOptions,
-) -> Result<PocketChunksDatImportReport> {
+    options: ImportOptions,
+) -> Result<ImportReport> {
     let source = PocketWorldStorage::open(source_world_path)?;
     let mut records = Vec::<(Bytes, Bytes)>::new();
     let mut missing_biome_records = 0usize;
@@ -136,7 +139,7 @@ pub fn import_pocket_chunks_dat(
     }
 
     let mut batch = StorageBatch::new();
-    let mut report = PocketChunksDatImportReport::default();
+    let mut report = ImportReport::default();
     for (key, value) in records {
         report.terrain_records = report.terrain_records.saturating_add(1);
         report.bytes_copied = report.bytes_copied.saturating_add(value.len());
