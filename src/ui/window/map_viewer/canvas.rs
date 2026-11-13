@@ -121,7 +121,7 @@ pub(super) enum MapCanvasAction {
     ZoomAt(Point<Pixels>, f32),
     BeginRightSelection(Point<Pixels>),
     EndRightSelection(Point<Pixels>),
-    BeginPastePreviewMove,
+    BeginPastePreviewMove(Point<Pixels>),
     ConfirmPastePreview,
     CancelPastePreview,
     RotatePastePreviewClockwise,
@@ -803,6 +803,7 @@ struct PasteControlsSnapshot {
     layout: RenderLayout,
     colors: ThemeColors,
     paste_preview: Option<PastePreview>,
+    map_frame_preview: Option<MapFrameGridPreview>,
     inset_top: f32,
 }
 
@@ -813,6 +814,7 @@ impl PasteControlsSnapshot {
             layout: snapshot.layout,
             colors: snapshot.colors,
             paste_preview: snapshot.paste_preview.clone(),
+            map_frame_preview: snapshot.map_frame_preview.clone(),
             inset_top: snapshot.paste_controls_inset_top,
         }
     }
@@ -822,6 +824,7 @@ impl PasteControlsSnapshot {
             && self.layout == other.layout
             && self.colors == other.colors
             && self.paste_preview == other.paste_preview
+            && self.map_frame_preview == other.map_frame_preview
             && self.inset_top == other.inset_top
     }
 }
@@ -1037,10 +1040,23 @@ fn render_paste_controls(
     snapshot: &PasteControlsSnapshot,
     cx: &mut Context<MapPasteControlsView>,
 ) -> Option<Div> {
-    let preview = snapshot.paste_preview.as_ref()?;
-    if preview.is_writing() {
+    let map_controls = snapshot
+        .map_frame_preview
+        .as_ref()
+        .and_then(|grid| grid.controls);
+    if snapshot.map_frame_preview.is_some() && map_controls.is_none() {
         return None;
     }
+    let preview = snapshot
+        .paste_preview
+        .as_ref()
+        .filter(|preview| !preview.is_writing());
+    let (transform, tools_expanded) = if let Some(controls) = map_controls {
+        (controls.transform, controls.tools_expanded)
+    } else {
+        let preview = preview?;
+        (preview.transform, preview.tools_expanded)
+    };
     let rect = paste_preview_screen_rect(snapshot, preview)?;
     let controls_width = 292.0_f32.min((snapshot.viewport.width - 16.0).max(180.0));
     let controls_left = (rect.right() / px(1.0) + 10.0)
@@ -1108,8 +1124,8 @@ fn render_paste_controls(
                     .child(
                         paste_control_button(&colors, t!("MapViewer.move")).on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|_this, _event: &MouseDownEvent, _window, cx| {
-                                cx.emit(MapCanvasAction::BeginPastePreviewMove);
+                            cx.listener(|_this, event: &MouseDownEvent, _window, cx| {
+                                cx.emit(MapCanvasAction::BeginPastePreviewMove(event.position));
                                 cx.stop_propagation();
                             }),
                         ),
@@ -1225,16 +1241,18 @@ fn render_paste_controls(
                                             }),
                                         ),
                                 )
-                                .child(
-                                    paste_control_button(&colors, t!("MapViewer.preview_3d"))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|_this, _event, _window, cx| {
-                                                cx.emit(MapCanvasAction::OpenPastePreview3d);
-                                                cx.stop_propagation();
-                                            }),
-                                        ),
-                                ),
+                                .when(map_controls.is_none(), |row| {
+                                    row.child(
+                                        paste_control_button(&colors, t!("MapViewer.preview_3d"))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|_this, _event, _window, cx| {
+                                                    cx.emit(MapCanvasAction::OpenPastePreview3d);
+                                                    cx.stop_propagation();
+                                                }),
+                                            ),
+                                    )
+                                }),
                         )
                         .child(
                             paste_control_button(&colors, t!("MapViewer.collapse")).on_mouse_down(
@@ -1279,12 +1297,28 @@ fn paste_control_button(colors: &ThemeColors, label: impl Into<SharedString>) ->
 
 fn paste_preview_screen_rect(
     snapshot: &PasteControlsSnapshot,
-    preview: &PastePreview,
+    preview: Option<&PastePreview>,
 ) -> Option<Bounds<Pixels>> {
-    let min_x = preview.targets.iter().map(|chunk| chunk.x).min()?;
-    let max_x = preview.targets.iter().map(|chunk| chunk.x).max()?;
-    let min_z = preview.targets.iter().map(|chunk| chunk.z).min()?;
-    let max_z = preview.targets.iter().map(|chunk| chunk.z).max()?;
+    let (min_x, min_z, max_x, max_z) = if let Some(grid) = snapshot
+        .map_frame_preview
+        .as_ref()
+        .filter(|grid| grid.controls.is_some())
+    {
+        (
+            grid.min_block_x,
+            grid.min_block_z,
+            grid.min_block_x.saturating_add(grid.columns as i32),
+            grid.min_block_z.saturating_add(grid.rows as i32),
+        )
+    } else {
+        let preview = preview?;
+        (
+            preview.targets.iter().map(|chunk| chunk.x).min()?.saturating_mul(16),
+            preview.targets.iter().map(|chunk| chunk.z).min()?.saturating_mul(16),
+            preview.targets.iter().map(|chunk| chunk.x).max()?.saturating_add(1).saturating_mul(16),
+            preview.targets.iter().map(|chunk| chunk.z).max()?.saturating_add(1).saturating_mul(16),
+        )
+    };
     let canvas_bounds = Bounds::new(
         point(px(0.0), px(0.0)),
         size(px(snapshot.viewport.width), px(snapshot.viewport.height)),

@@ -194,36 +194,17 @@ impl View {
                                     .text_color(if self.map_frame_confirmed_center().is_some() {
                                         colors.text_primary
                                     } else {
-                                        colors.danger
+                                        colors.text_secondary
                                     })
                                     .child(self.map_frame_confirmed_center().map_or_else(
-                                        || "未选择放置位置：请点击下方按钮，然后在中央地图上点选".to_owned(),
+                                        || "尚未选点 · 在中央地图选择放置中心".to_owned(),
                                         |(x, z)| format!("已选择中心：X {x} · Z {z}"),
                                     )),
                             )
                             .child(
-                                crate::ui::components::button::primary_button(
-                                    colors,
-                                    "map-frame-pick-world-center",
-                                    if self.map_image.picking_frame_center {
-                                        "正在选点 · 点击地图选择位置"
-                                    } else if self.map_frame_confirmed_center().is_some() {
-                                        "重新在地图上选择中心"
-                                    } else {
-                                        "在地图上选择放置位置"
-                                    },
-                                )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _event, _window, cx| {
-                                        this.begin_map_frame_center_pick(cx);
-                                    }),
-                                ),
-                            )
-                            .child(
                                 crate::ui::components::button::secondary_button(
                                     colors, "map-frame-use-viewport-center",
-                                    "使用当前视图中心（主动确认）",
+                                    "以当前视图中心定位",
                                 )
                                 .on_mouse_down(
                                     MouseButton::Left,

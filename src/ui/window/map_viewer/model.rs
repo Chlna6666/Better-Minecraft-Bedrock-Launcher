@@ -1171,6 +1171,7 @@ pub(super) struct PastePreviewImage {
 
 #[derive(Clone)]
 pub(super) struct MapFrameGridPreview {
+    pub(super) controls: Option<MapFrameControls>,
     pub(super) min_block_x: i32,
     pub(super) min_block_z: i32,
     pub(super) columns: u32,
@@ -1195,6 +1196,12 @@ impl PartialEq for MapFrameGridPreview {
 }
 
 impl Eq for MapFrameGridPreview {}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct MapFrameControls {
+    pub(super) transform: PasteTransform,
+    pub(super) tools_expanded: bool,
+}
 
 #[derive(Clone)]
 pub(super) struct CopiedChunkPreviewImage {

@@ -1,6 +1,57 @@
 use super::*;
 
 impl View {
+    pub(in super::super) fn begin_map_frame_drag(
+        &mut self,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.map_image_positioning_frames()
+            || self.map_image_operation_busy()
+            || self.map_write_busy()
+            || self.map_image.placement_preview.is_none()
+            || self.map_image.pending_bundle.is_some()
+            || (!self.map_image.picking_frame_center && self.map_frame_confirmed_center().is_none())
+        {
+            return false;
+        }
+        let pointer = self
+            .viewport
+            .screen_to_block(self.stage_local_position(position), self.active_layout);
+        if !self.map_image.picking_frame_center && self.map_frame_confirmed_center().is_some() {
+            let Some(preview) = self.map_frame_grid_preview() else {
+                return false;
+            };
+            if !frame_grid_contains(&preview, pointer) {
+                return false;
+            }
+        }
+        self.begin_exclusive_pointer_interaction();
+        self.map_image.frame_drag_position = Some(position);
+        self.move_map_frame_drag(position, cx);
+        cx.notify();
+        true
+    }
+
+    pub(in super::super) fn move_map_frame_drag(
+        &mut self,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.map_image.frame_drag_position.is_none() {
+            return;
+        }
+        self.map_image.frame_drag_position = Some(position);
+        let local = self.stage_local_position(position);
+        self.map_image.frame_auto_pan = self.paste_preview_auto_pan(local);
+        self.update_hover_block(local);
+        let anchor = self.viewport.screen_to_block(local, self.active_layout);
+        if self.map_image.picking_frame_center || self.map_frame_confirmed_center() != Some(anchor)
+        {
+            self.set_map_frame_anchor(anchor, cx);
+        }
+    }
+
     /// Route the world context menu to destination selection while this importer owns it.
     pub(in super::super) fn map_image_selecting_block(&self) -> bool {
         self.import_active()
@@ -71,5 +122,37 @@ impl View {
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
         cx.notify();
+    }
+}
+
+fn frame_grid_contains(
+    preview: &super::super::model::MapFrameGridPreview,
+    pointer: (i32, i32),
+) -> bool {
+    pointer.0 >= preview.min_block_x
+        && pointer.1 >= preview.min_block_z
+        && pointer.0 < preview.min_block_x.saturating_add(preview.columns as i32)
+        && pointer.1 < preview.min_block_z.saturating_add(preview.rows as i32)
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::*;
+
+    #[test]
+    fn drag_hit_area_covers_exactly_the_frame_blocks() {
+        let preview = super::super::super::model::MapFrameGridPreview {
+            controls: None,
+            min_block_x: -12,
+            min_block_z: 18,
+            columns: 5,
+            rows: 4,
+            image: None,
+        };
+        assert!(frame_grid_contains(&preview, (-12, 18)));
+        assert!(frame_grid_contains(&preview, (-8, 21)));
+        for pointer in [(-13, 18), (-7, 18), (-12, 17), (-12, 22)] {
+            assert!(!frame_grid_contains(&preview, pointer));
+        }
     }
 }

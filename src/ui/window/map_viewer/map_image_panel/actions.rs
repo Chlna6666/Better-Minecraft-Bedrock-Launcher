@@ -34,20 +34,16 @@ impl View {
         let check_passed = self.map_frame_preflight_passed();
         let action_enabled = (ready || pending.is_some())
             && !busy
-            && !check_running
+            && self.map_image.frame_drag_position.is_none()
+            && (!check_running || needs_position)
             && (!frame_preview || self.map_image.placement_preview.is_some());
-        let (primary, target, tip, target_ready) = match selected {
+        let (primary, target, target_ready) = match selected {
             MapImageInstallDestination::Player => (
                 "写入玩家背包",
                 format!(
                     "玩家：{}",
                     super::super::players::player_id_label(&self.map_image.selected_player)
                 ),
-                if self.map_image.selected_player.storage_key().is_some() {
-                    "地图物品会发放到所选玩家的物品栏或潜影盒，不在世界中建造展示框。"
-                } else {
-                    "当前玩家存储在 level.dat，不能与 map 记录原子写入；请选择列表中可写入的服务器玩家。"
-                },
                 self.map_image.selected_player.storage_key().is_some(),
             ),
             MapImageInstallDestination::SelectedBlock => (
@@ -285,6 +281,51 @@ impl View {
                                 }),
                             )
                         }),
+                    )
+                    .when(
+                        frame_preview && !needs_target_review && !needs_position && !busy,
+                        |bar| {
+                            bar.child(
+                                secondary_button(
+                                    colors,
+                                    "map-import-repick-center",
+                                    if self.map_image.picking_frame_center {
+                                        "取消选点"
+                                    } else {
+                                        "在地图上重新选点"
+                                    },
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        if this.map_image.picking_frame_center {
+                                            this.cancel_map_frame_center_pick(cx);
+                                        } else {
+                                            this.begin_map_frame_center_pick(cx);
+                                        }
+                                    }),
+                                ),
+                            )
+                            .when_some(
+                                self.map_frame_confirmed_center(),
+                                |bar, (x, z)| {
+                                    bar.child(
+                                        secondary_button(
+                                            colors,
+                                            "map-import-focus-center",
+                                            "定位放置位置",
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.center_viewport_on_block(x, z, cx);
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    )
+                                },
+                            )
+                        },
                     )
                     .when(ready && pending.is_none() && !busy, |bar| {
                         bar.child(

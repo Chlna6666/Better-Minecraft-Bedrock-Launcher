@@ -29,6 +29,7 @@ pub(super) struct MapImagePanelState {
     export_task_id: Option<String>,
     install_task_id: Option<String>,
     install_refresh: Option<MapImageInstallRefresh>,
+    install_committed: Arc<std::sync::atomic::AtomicBool>,
     pub(super) install_destination: MapImageInstallDestination,
     selected_player: PlayerId,
     selected_block: Option<(ChunkPos, BlockPos)>,
@@ -36,6 +37,9 @@ pub(super) struct MapImagePanelState {
     frame_anchor: Option<(i32, i32)>,
     frame_anchor_dimension: Option<Dimension>,
     pub(super) picking_frame_center: bool,
+    pub(super) frame_drag_position: Option<Point<Pixels>>,
+    pub(super) frame_auto_pan: Option<super::model::PastePreviewAutoPan>,
+    tools_expanded: bool,
     /// Completed read-only check is bound to one exact world/grid/preview generation.
     frame_check_key: Option<String>,
     frame_check_task_id: Option<String>,
@@ -82,12 +86,16 @@ impl MapImagePanelState {
             export_task_id: None,
             install_task_id: None,
             install_refresh: None,
+            install_committed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             install_destination: MapImageInstallDestination::NewUpFrame,
             selected_player: PlayerId::Local,
             selected_block: None,
             frame_anchor: None,
             frame_anchor_dimension: None,
             picking_frame_center: false,
+            frame_drag_position: None,
+            frame_auto_pan: None,
+            tools_expanded: false,
             frame_check_key: None,
             frame_check_task_id: None,
             player_search,
@@ -166,6 +174,7 @@ impl View {
         self.map_image.install_destination == MapImageInstallDestination::NewUpFrame
             && self.map_frame_confirmed_center().is_some()
             && !self.map_image.picking_frame_center
+            && self.map_image.frame_drag_position.is_none()
             && self.map_image.pending_bundle.is_none()
             && self.map_image.source.is_some()
             && self.map_image.placement_preview.is_some()
@@ -313,6 +322,11 @@ impl View {
                 }
                 let (center_x, center_z) = self.map_frame_confirmed_center()?;
                 Some(super::model::MapFrameGridPreview {
+                    controls: (!self.map_image_operation_busy() && !self.map_image_busy())
+                        .then(|| super::model::MapFrameControls {
+                            transform: self.map_frame_transform(),
+                            tools_expanded: self.map_image.tools_expanded,
+                        }),
                     min_block_x: center_x
                         .saturating_sub((self.map_image.options.columns / 2) as i32),
                     min_block_z: center_z.saturating_sub((self.map_image.options.rows / 2) as i32),
@@ -335,9 +349,11 @@ impl View {
             return;
         }
         if let Some(target) = self.map_image.install_refresh.take() {
-            // A failed preflight/commit must not refresh chunks or history as though
-            // the world had been modified. Keep actionable diagnostics visible.
-            if snapshot.status.as_ref() != "completed" {
+            // History finalization can fail after the world commit has succeeded.
+            // Only preflight/commit failures leave the placement active for retry.
+            let committed = snapshot.status.as_ref() == "completed"
+                || self.map_image.install_committed.load(std::sync::atomic::Ordering::Acquire);
+            if !committed {
                 if snapshot.status.as_ref() == "error" {
                     let reason = snapshot.message.as_deref().unwrap_or("未知写入错误");
                     let reason = reason.strip_prefix("validation failed: ").unwrap_or(reason);
@@ -345,6 +361,14 @@ impl View {
                     toast::error(cx, SharedString::from(format!("地图未写入：{reason}")));
                 }
                 return;
+            }
+            if snapshot.status.as_ref() == "error" {
+                let reason = snapshot.message.as_deref().unwrap_or("撤销历史保存失败");
+                self.status = SharedString::from(reason.to_owned());
+                toast::error(cx, SharedString::from(reason.to_owned()));
+            }
+            if self.map_image.install_destination == MapImageInstallDestination::NewUpFrame {
+                self.clear_map_frame_placement(cx);
             }
             match target {
                 MapImageInstallRefresh::Player(player) => self.load_player_detail(player, cx),
@@ -370,6 +394,8 @@ impl View {
     }
 
     pub(super) fn release_map_image_preview(&mut self) {
+        self.map_image.frame_drag_position = None;
+        self.map_image.frame_auto_pan = None;
         if let Some(task_id) = self.map_image.task_id.take() {
             task_manager::cancel_task(&task_id);
             image_to_map::release_preview(&task_id);

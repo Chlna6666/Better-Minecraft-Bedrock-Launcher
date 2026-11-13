@@ -16,6 +16,7 @@ impl View {
             || self.map_image.placement_preview.is_none()
             || self.map_frame_confirmed_center().is_none()
             || self.map_image.picking_frame_center
+            || self.map_image.frame_drag_position.is_some()
         {
             return;
         }
@@ -120,7 +121,9 @@ impl View {
             return;
         }
         if destination == MapImageInstallDestination::NewUpFrame
-            && (self.map_frame_confirmed_center().is_none() || self.map_image.picking_frame_center)
+            && (self.map_frame_confirmed_center().is_none()
+                || self.map_image.picking_frame_center
+                || self.map_image.frame_drag_position.is_some())
         {
             toast::error(cx, "请先在世界地图上选择展示框网格的实际放置中心".into());
             return;
@@ -186,6 +189,8 @@ impl View {
         };
         let history_path = world_path.clone();
         let history_chunks = refresh_chunks;
+        let install_committed = self.map_image.install_committed.clone();
+        install_committed.store(false, std::sync::atomic::Ordering::Release);
         let history: MapInstallHistory = Box::new(move |ids, affected_chunks| {
             *history_chunks
                 .lock()
@@ -206,6 +211,7 @@ impl View {
                 include_level_dat: false,
             })?;
             Ok(Box::new(move || {
+                install_committed.store(true, std::sync::atomic::Ordering::Release);
                 complete_after(capture, "地图包已写入").map(|_| ())
             }))
         });

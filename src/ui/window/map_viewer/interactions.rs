@@ -670,13 +670,14 @@ impl View {
         source: &'static str,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.map_image.frame_auto_pan = None;
         let release = take_pointer_captures(
             &mut self.drag,
             &mut self.right_selection_drag,
             &mut self.preview_3d.drag,
             &mut self.ui_state.dock_drag,
         );
-        let changed = release.changed();
+        let changed = self.map_image.frame_drag_position.take().is_some() || release.changed();
         if changed {
             log_pointer_capture_release(source, release);
             if release.dock_drag {
@@ -706,13 +707,14 @@ impl View {
         source: &'static str,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.map_image.frame_auto_pan = None;
         let release = take_pointer_captures(
             &mut self.drag,
             &mut self.right_selection_drag,
             &mut self.preview_3d.drag,
             &mut self.ui_state.dock_drag,
         );
-        let changed = release.changed();
+        let changed = self.map_image.frame_drag_position.take().is_some() || release.changed();
         if changed {
             log_pointer_capture_release(source, release);
             if release.dock_drag {
@@ -755,6 +757,8 @@ impl View {
     }
 
     pub(super) fn begin_exclusive_pointer_interaction(&mut self) {
+        self.map_image.frame_drag_position = None;
+        self.map_image.frame_auto_pan = None;
         self.drag = None;
         self.right_selection_drag = None;
         self.preview_3d.drag = None;
@@ -1864,11 +1868,15 @@ impl View {
     }
 
     pub(super) fn tick_paste_preview_auto_pan(&mut self, cx: &mut Context<Self>) -> bool {
-        let auto_pan = self
-            .professional
-            .paste_preview
-            .as_ref()
-            .and_then(|preview| preview.auto_pan);
+        let frame_position = self.map_image.frame_drag_position;
+        let auto_pan = if frame_position.is_some() {
+            self.map_image.frame_auto_pan
+        } else {
+            self.professional
+                .paste_preview
+                .as_ref()
+                .and_then(|preview| preview.auto_pan)
+        };
         let Some(auto_pan) = auto_pan else {
             return false;
         };
@@ -1876,7 +1884,11 @@ impl View {
         self.viewport.offset_y += auto_pan.velocity_y;
         self.pending_viewport_refresh = true;
         self.professional.pending_overlay_refresh = true;
-        self.move_paste_preview(auto_pan.local_position, cx);
+        if let Some(position) = frame_position {
+            self.move_map_frame_drag(position, cx);
+        } else {
+            self.move_paste_preview(auto_pan.local_position, cx);
+        }
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
         true
@@ -2057,17 +2069,25 @@ impl View {
     }
 
     pub(super) fn handle_canvas_action(&mut self, action: MapCanvasAction, cx: &mut Context<Self>) {
+        if self.handle_map_frame_action(&action, cx) {
+            return;
+        }
         match action {
             MapCanvasAction::BeginDrag(position) => {
-                if self.map_image.picking_frame_center && self.map_image_positioning_frames() {
-                    let local = self.stage_local_position(position);
-                    let (x, z) = self.viewport.screen_to_block(local, self.active_layout);
-                    self.set_map_frame_anchor((x, z), cx);
-                } else if !self.begin_paste_preview_move_at(position, cx) {
+                if !self.begin_map_frame_drag(position, cx)
+                    && !self.begin_paste_preview_move_at(position, cx)
+                {
                     self.begin_drag(self.stage_local_position(position), cx);
                 }
             }
             MapCanvasAction::EndDrag(position) => {
+                if self.map_image.frame_drag_position.is_some() {
+                    if self.map_image.frame_drag_position != Some(position) {
+                        self.move_map_frame_drag(position, cx);
+                    }
+                    self.release_pointer_captures("map frame mouse up", cx);
+                    return;
+                }
                 let paste_drag = self
                     .professional
                     .paste_preview
@@ -2108,7 +2128,7 @@ impl View {
                 position,
                 pressed_button,
             } => self.handle_canvas_pointer_moved(position, pressed_button, cx),
-            MapCanvasAction::BeginPastePreviewMove => {
+            MapCanvasAction::BeginPastePreviewMove(_) => {
                 self.begin_paste_preview_move(cx);
             }
             MapCanvasAction::ConfirmPastePreview => self.confirm_paste_preview(cx),
@@ -2136,6 +2156,14 @@ impl View {
         pressed_button: Option<MouseButton>,
         cx: &mut Context<Self>,
     ) {
+        if self.map_image.frame_drag_position.is_some() {
+            if pressed_button == Some(MouseButton::Left) && self.map_image_positioning_frames() {
+                self.move_map_frame_drag(position, cx);
+            } else {
+                self.release_pointer_captures("map frame drag ended", cx);
+            }
+            return;
+        }
         if let Some(drag) = self
             .professional
             .paste_preview
