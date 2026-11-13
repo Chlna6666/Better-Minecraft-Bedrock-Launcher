@@ -64,15 +64,15 @@ where
     Hooks: UseStateHook + UseRefHook,
     View: 'static,
 {
-    let snapshot = hooks.use_state(|| snapshot(cx));
+    let snapshot_state = hooks.use_state(|| snapshot(cx));
     let subscription = hooks.use_ref(|| None::<Subscription>);
 
     if subscription.borrow().is_none() {
-        let snapshot = snapshot.clone();
+        let observed_state = snapshot_state.clone();
         let observer = cx.observe_global::<LauncherState>(move |_, cx| {
             let current = snapshot(cx);
-            if snapshot.with(|value| snapshot_changed(value, &current)) {
-                snapshot.set(current);
+            if observed_state.with(|value| snapshot_changed(value, &current)) {
+                observed_state.set(current);
                 cx.notify();
             }
         });
@@ -80,8 +80,8 @@ where
     }
 
     let current = snapshot(cx);
-    if snapshot.with(|value| snapshot_changed(value, &current)) {
-        snapshot.set(current.clone());
+    if snapshot_state.with(|value| snapshot_changed(value, &current)) {
+        snapshot_state.set(current.clone());
     }
     current
 }

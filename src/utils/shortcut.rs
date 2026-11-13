@@ -3,7 +3,9 @@
     reason = "shortcut creation calls native Windows Shell COM interfaces"
 )]
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(target_os = "windows")]
+use anyhow::Context as _;
 use std::path::PathBuf;
 
 #[cfg(target_os = "windows")]

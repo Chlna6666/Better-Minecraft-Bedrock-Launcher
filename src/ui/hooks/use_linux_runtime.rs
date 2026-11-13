@@ -1,7 +1,7 @@
 use crate::core::linux_runtime::{check_linux_runtime, start_linux_runtime_install};
 use crate::tasks::runtime::BlockingTaskOptions;
 use crate::tasks::runtime::blocking;
-use crate::tasks::task_manager::{self, TaskSnapshot};
+use crate::tasks::task_manager;
 use crate::ui::state::linux_runtime::{LinuxRuntimeState, LinuxRuntimeStatus};
 use anyhow::Error;
 use gpui::{App, AsyncApp, BorrowAppContext as _};
