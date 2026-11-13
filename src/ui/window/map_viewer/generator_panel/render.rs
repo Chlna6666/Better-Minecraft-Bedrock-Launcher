@@ -167,6 +167,10 @@ impl View {
                     })
                     .child(
                         crate::ui::components::inspector::field_group(colors)
+                            .child(self.render_import_height(colors, cx)),
+                    )
+                    .child(
+                        crate::ui::components::inspector::field_group(colors)
                             .child(self.render_obj_parameters(colors, cx)),
                     ),
             )

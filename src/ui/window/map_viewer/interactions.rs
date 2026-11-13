@@ -1103,37 +1103,38 @@ impl View {
 
     pub(super) fn sync_input_values(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for field in [
-            MapInputField::CenterX,
-            MapInputField::CenterZ,
-            MapInputField::ZoomPercent,
-            MapInputField::DimensionId,
-            MapInputField::SelectionMinY,
-            MapInputField::SelectionMaxY,
-            MapInputField::PasteOriginY,
+            InputField::CenterX,
+            InputField::CenterZ,
+            InputField::ZoomPercent,
+            InputField::DimensionId,
+            InputField::SelectionMinY,
+            InputField::SelectionMaxY,
+            InputField::PasteOriginY,
         ] {
-            let value = self.map_input_display_value(field);
+            let value = self.input_display_value(field);
             self.sync_input_value(field, value, window, cx);
         }
     }
 
-    fn map_input_display_value(&self, field: MapInputField) -> String {
+    fn input_display_value(&self, field: InputField) -> String {
         let (center_x, center_z) = self.viewport.center_block(self.active_layout);
         match field {
-            MapInputField::CenterX => center_x.to_string(),
-            MapInputField::CenterZ => center_z.to_string(),
-            MapInputField::ZoomPercent => format!("{:.0}", self.viewport.scale * 100.0),
-            MapInputField::DimensionId => self.dimension.id().to_string(),
-            MapInputField::SelectionMinY => self
+            InputField::CenterX => center_x.to_string(),
+            InputField::CenterZ => center_z.to_string(),
+            InputField::ZoomPercent => format!("{:.0}", self.viewport.scale * 100.0),
+            InputField::DimensionId => self.dimension.id().to_string(),
+            InputField::SelectionMinY => self
                 .professional
                 .volume_selection
                 .map_or(self.y_layer, |volume| volume.min[1])
                 .to_string(),
-            MapInputField::SelectionMaxY => self
+            InputField::SelectionMaxY => self
                 .professional
                 .volume_selection
                 .map_or(self.y_layer, |volume| volume.max[1])
                 .to_string(),
-            MapInputField::PasteOriginY => self
+            InputField::PasteOriginY if self.import_active() => self.import_height().to_string(),
+            InputField::PasteOriginY => self
                 .professional
                 .imported_structure
                 .as_ref()
@@ -1285,10 +1286,15 @@ impl View {
                         ))
                     })
             }
-            MapInputField::PasteOriginY => parse_i32_input(trimmed, "粘贴高度")
+            InputField::PasteOriginY => integer(trimmed, "粘贴高度")
                 .map_err(|message| (field, message))
                 .and_then(|value| {
-                    self.set_2d_paste_height(value, cx)
+                    let result = if self.import_active() {
+                        self.set_import_height(value, cx)
+                    } else {
+                        self.set_2d_paste_height(value, cx)
+                    };
+                    result
                         .map_err(|message| (field, SharedString::from(message)))?;
                     Ok(format!("粘贴目标高度已设为 Y {value}"))
                 }),

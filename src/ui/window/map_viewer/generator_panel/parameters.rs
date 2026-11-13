@@ -9,7 +9,6 @@ impl View {
         let busy = self.generator_busy();
         div().flex().flex_col().gap(px(14.0))
                     .child(inspector::section_title(colors, "目标尺寸"))
-                    .child(self.render_generator_y_control(colors, cx))
                     .child(
                         div()
                             .text_size(px(12.0))

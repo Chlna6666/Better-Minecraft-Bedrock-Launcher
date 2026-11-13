@@ -217,33 +217,10 @@ impl View {
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(colors.text_secondary)
-                                    .child("选点仅确定 X/Z，展示框使用下方 Y 层。已选位置会在世界地图上显示分片占地，移动视口不会改变坐标。"),
+                                    .child("拖动地图画调整位置；浮动工具条支持移动、旋转和镜像。"),
                             ),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(crate::ui::components::numeric_field::numeric_step_button(
-                colors, "Y −1", true,
-            ).on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| this.step_y(-1, cx)),
-                            ))
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(colors.text_primary)
-                                    .child(format!("展示框 Y {} · 支撑 Y {}", self.y_layer, self.y_layer.saturating_sub(1))),
-                            )
-                            .child(crate::ui::components::numeric_field::numeric_step_button(
-                colors, "Y +1", true,
-            ).on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| this.step_y(1, cx)),
-                            )),
-                    )
+                    .child(inspector::field_group(colors).child(self.render_import_height(colors, cx)))
                     .child(div().flex().flex_wrap().gap(px(6.0)).children(
                         [
                             ("minecraft:stone", "石头"),

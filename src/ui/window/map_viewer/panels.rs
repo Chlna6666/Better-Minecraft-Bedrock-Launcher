@@ -937,7 +937,7 @@ impl View {
                         )),
                 );
         }
-        if let (Some(import), Some(preview)) = (
+        if !self.import_active() && let (Some(import), Some(preview)) = (
             self.professional.imported_structure.as_ref(),
             self.professional.paste_preview.as_ref(),
         ) {

@@ -111,13 +111,12 @@ impl View {
                         ))
                     })
                     .child(inspector::section_title(colors, "02  输出尺寸"))
+                    .child(crate::ui::components::inspector::field_group(colors)
+                        .child(self.render_import_height(colors, cx)))
                     .child(
                         crate::ui::components::inspector::field_group(colors)
                             .child(self.render_image_dimension(ImageAxis::Width, colors, cx))
-                            .child(self.render_image_dimension(ImageAxis::Height, colors, cx))
-                            .child(self.render_generator_y_control(colors, cx))
-                            .child(self.render_image_dithering(colors, cx))
-                            .child(self.render_image_depth_controls(colors, cx)),
+                            .child(self.render_image_dimension(ImageAxis::Height, colors, cx)),
                     )
                     .child(crate::ui::components::inspector::result_summary(
                         colors,
