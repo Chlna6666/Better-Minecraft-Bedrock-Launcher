@@ -58,6 +58,7 @@ lucide-gpui = { path = "crates/lucide-gpui" }
 image = { version = "0.25.9", default-features = false, features = ["png", "tga", "jpeg", "webp"] }
 mc-motd = { git = "https://github.com/BE-Community-Dev/mc-motd.git", branch = "main" }
 bedrock-world = { path = "crates/bedrock-world" }
+bedrock-nbt = { path = "crates/bedrock-nbt" }
 bedrock-block-model = { path = "crates/bedrock-block-model" }
 bedrock-light = { path = "crates/bedrock-light" }
 bedrock-voxel = { path = "crates/bedrock-voxel" }
@@ -157,6 +158,7 @@ members = [
     "crates/bedrock-block-model",
     "crates/bedrock-leveldb",
     "crates/bedrock-world",
+    "crates/bedrock-nbt",
     "crates/bedrock-light",
     "crates/bedrock-render",
     "crates/bedrock-voxel",

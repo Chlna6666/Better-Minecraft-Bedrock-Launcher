@@ -1,0 +1,19 @@
+pub(crate) const MAX_NBT_DEPTH: usize = 128;
+pub(crate) const MAX_NBT_CONTAINER_LENGTH: usize = 134_217_728;
+pub(crate) const MAX_NBT_BYTE_LENGTH: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_NBT_STRING_BYTES: usize = u16::MAX as usize;
+
+pub(crate) const TAG_END: u8 = 0x00;
+pub(crate) const TAG_BYTE: u8 = 0x01;
+pub(crate) const TAG_SHORT: u8 = 0x02;
+pub(crate) const TAG_INT: u8 = 0x03;
+pub(crate) const TAG_LONG: u8 = 0x04;
+pub(crate) const TAG_FLOAT: u8 = 0x05;
+pub(crate) const TAG_DOUBLE: u8 = 0x06;
+pub(crate) const TAG_BYTE_ARRAY: u8 = 0x07;
+pub(crate) const TAG_STRING: u8 = 0x08;
+pub(crate) const TAG_LIST: u8 = 0x09;
+pub(crate) const TAG_COMPOUND: u8 = 0x0a;
+pub(crate) const TAG_INT_ARRAY: u8 = 0x0b;
+pub(crate) const TAG_LONG_ARRAY: u8 = 0x0c;
+pub(crate) const TAG_SHORT_ARRAY: u8 = 0x64;

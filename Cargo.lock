@@ -816,6 +816,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bedrock-nbt"
+version = "0.1.0"
+dependencies = [
+ "fearless_simd",
+ "indexmap",
+ "rayon",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "bedrock-render"
 version = "0.7.0"
 dependencies = [
@@ -856,6 +867,7 @@ name = "bedrock-world"
 version = "0.7.0"
 dependencies = [
  "bedrock-leveldb",
+ "bedrock-nbt",
  "bytes",
  "criterion",
  "fearless_simd",
@@ -1115,6 +1127,7 @@ dependencies = [
  "bedrock-block-model",
  "bedrock-leveldb",
  "bedrock-light",
+ "bedrock-nbt",
  "bedrock-render",
  "bedrock-voxel",
  "bedrock-world",

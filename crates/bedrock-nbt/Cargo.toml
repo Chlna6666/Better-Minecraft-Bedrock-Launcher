@@ -1,0 +1,23 @@
+[package]
+name = "bedrock-nbt"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+description = "Bedrock NBT and SNBT codecs independent of world storage and UI"
+
+[features]
+default = ["simd", "parallel"]
+simd = ["dep:fearless_simd"]
+parallel = ["dep:rayon"]
+
+[dependencies]
+fearless_simd = { workspace = true, optional = true }
+indexmap = { version = "2.12.1", features = ["serde"] }
+rayon = { version = "1.11.0", optional = true }
+serde = { version = "1.0.219", features = ["derive"] }
+thiserror = "2.0.17"
+
+[[bench]]
+name = "snbt_scan"
+harness = false
