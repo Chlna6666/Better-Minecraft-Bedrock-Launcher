@@ -37,7 +37,7 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 | CurseForge 资源 | ✅ 支持 | 浏览、筛选、分页、详情、分享导入和 Bedrock 资源安装 |
 | 资源与存档管理 | ✅ 支持 | Mod、资源包、行为包、地图、截图、服务器和备份操作 |
 | 皮肤管理与预览 | ✅ 支持 | 管理皮肤包，预览普通皮肤和 4D / 自定义几何体皮肤，适配 UWP / GDK 版本 |
-| 高级地图窗口 | ✅ 支持 | 2D / 3D 预览、区块与记录编辑、玩家操作、撤销/重做 |
+| 高级地图窗口 | 🧪 测试阶段 | 2D / 3D 地图编辑、OBJ / glTF / GLB 模型导入、图片转方块导入、区块与记录编辑、撤销/重做 |
 | Windows 多用户登录 | ✅ 支持 | 支持 Windows 系统本地 Xbox 账号和 BMCBL 托管的多个账号 |
 | BMCBL 托管账号的 Xbox 成就/在线状态 | ⚠️ 不可用 | 非 Windows 系统本地账号登录时，成就和在线状态无效 |
 | BMCBL 托管账号的新版本云存档 | ⚠️ 不可用 | 新版本游戏的云存档不支持；系统本地账号走微软官方登录路径 |
@@ -104,6 +104,7 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 ### 高级地图窗口
 
 地图窗口是当前 GPUI 版本的重点能力，不只是简单查看存档。
+地图编辑目前处于测试阶段；使用前请先备份存档。
 
 - 2D 地图瓦片渲染：按当前视口流式渲染可见瓦片，不等待完整世界索引。
 - 支持 Surface、Biome、Height、Layer、Cave 等渲染模式。
@@ -116,7 +117,10 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
   HeightMap、Biome Storage、地图记录和全局记录。
 - 复制 / 粘贴区块：支持单区块和多区块复制粘贴、旋转、镜像、粘贴预览和确认写入。
 - `.mcstructure`：支持选区导出为结构文件，也支持导入结构文件并预览 / 粘贴到世界。
-- 3D 预览：支持结构或选区的 3D 预览面板。
+- 3D 编辑器：独立 3D 视窗支持导航、选区、画笔放置、方盒填充、椭球填充、清除，以及将 3D 选区复制回地图剪贴板；编辑写入地图历史，可撤销 / 重做。
+- 3D 模型导入：支持 OBJ（自动关联 MTL）、glTF 和 GLB；可将模型转换为方块，在 3D 预览中定位、旋转、镜像后确认写入。
+- 图片导入：支持 PNG、JPG、TGA 和 WebP 转为方块结构；可调整输出尺寸、抖动和深度，预览后放置到世界。
+- 3D 预览：可查看结构、导入模型及区块选区。
 - 玩家编辑：查看玩家数据，支持移动到地图中心、切换维度、清空背包等快速操作。
 - 历史记录：区块删除、重置、粘贴、记录保存 / 删除、玩家编辑、`level.dat` 保存都会
   捕获历史，可撤销 / 重做，并带有回档保护点。
@@ -284,7 +288,7 @@ cargo build --manifest-path examples/plugins/hello-wasm/Cargo.toml --release --t
 cargo build --manifest-path examples/plugins/bedrock-notes/Cargo.toml --release --target wasm32-unknown-unknown
 ```
 
-示例插件的 `build.rs` 会调用 `bmcbl_plugin_api::pack::auto_pack_from_build_script()`，
+示例插件的 `build.rs` 会调用 `bmcbl_plugin_api::pack::auto_pack()`，
 自动生成 `.bmcblx` 包。也可以使用 `crates/bmcbl-plugin-api` 中的 `bmcbl-plugin-tools`
 进行手动打包。
 

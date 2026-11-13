@@ -15,7 +15,7 @@ English mirrors. Crate `README.md` files are English with a Chinese `README.zh-C
 | [CLI](CLI.en.md) | Terminal subcommands, output format and exit codes |
 | [STARTUP_ARGUMENTS](STARTUP_ARGUMENTS.en.md) | Startup arguments for shortcuts, file associations and the updater, plus legacy aliases |
 | [CAPE_PACK_FORMAT](CAPE_PACK_FORMAT.en.md) | Cape pack manifests, textures, icons, localization and import formats |
-| [NAMING](NAMING.md) | Naming rules (Chinese; wgpu-aligned vocabulary) |
+| [NAMING](NAMING.md) | Naming rules (Chinese; API responsibility, parameters, module paths and files) |
 
 Chinese originals: [README.md](README.md) · [ARCHITECTURE.md](ARCHITECTURE.md) ·
 [BUILD_AND_TEST.md](BUILD_AND_TEST.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CRATES.md](CRATES.md) ·

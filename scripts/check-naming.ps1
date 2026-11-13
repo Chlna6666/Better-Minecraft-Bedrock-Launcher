@@ -1,4 +1,4 @@
-# Naming guard for the nova-gfx/gpui boundary.
+# Naming and source-layout guard for the workspace.
 # Hard failures are only for explicit generic graphics vocabulary contract violations.
 # Long names and words such as 'with' or 'and' are semantic review hints, not errors.
 # Do not treat this output as an automatic rename list.
@@ -6,6 +6,76 @@
 $ErrorActionPreference = "Stop"
 $hard = [System.Collections.Generic.List[string]]::new()
 $soft = [System.Collections.Generic.List[string]]::new()
+
+$repoRoot = Split-Path $PSScriptRoot -Parent
+$sourceRoots = @("src", "crates", "tests", "benches", "examples", "build")
+$rustFiles = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+foreach ($sourceRoot in $sourceRoots) {
+    $root = Join-Path $repoRoot $sourceRoot
+    if (Test-Path $root) {
+        Get-ChildItem -Recurse $root -File -Filter *.rs | ForEach-Object { $rustFiles.Add($_) }
+    }
+}
+$rustFiles.AddRange([System.IO.FileInfo[]](Get-ChildItem $repoRoot -File -Filter *.rs))
+$rustFiles = $rustFiles | Where-Object {
+    $_.FullName -notmatch "[\\/](vendor|target|easytier|raknet)[\\/]"
+}
+
+function Test-PathAttributeAllowed {
+    param(
+        [System.IO.FileInfo]$File,
+        [string]$Source,
+        [System.Text.RegularExpressions.Match]$Attribute
+    )
+
+    if ($File.FullName -match "[\\/](tests|benches)[\\/]" -or $File.Name -match "(^|_)tests?\.rs$") {
+        return $true
+    }
+
+    $attributeBody = $Attribute.Groups["body"].Value
+    if ($attributeBody -match '^\s*cfg_attr\s*\(\s*test\s*,\s*path\s*=') {
+        return $true
+    }
+    if ($attributeBody -match '^\s*cfg_attr\s*\(\s*all\s*\(\s*test\s*,[^\]]*\)\s*,\s*path\s*=') {
+        return $true
+    }
+
+    $prefix = $Source.Substring(0, $Attribute.Index)
+    if ($prefix -match '(?s)#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*$') {
+        return $true
+    }
+    if ($prefix -match '(?s)#\s*\[\s*cfg\s*\(\s*all\s*\(\s*test\s*,[^\]]*\)\s*\)\s*\]\s*$') {
+        return $true
+    }
+    return $false
+}
+
+$pathAttributeCount = 0
+$pathViolations = [System.Collections.Generic.List[string]]::new()
+$attributePattern = [regex]::new(
+    '#\s*\[(?<body>.*?)\]',
+    [System.Text.RegularExpressions.RegexOptions]::Singleline
+)
+foreach ($file in $rustFiles) {
+    $source = [System.IO.File]::ReadAllText($file.FullName)
+    foreach ($attribute in $attributePattern.Matches($source)) {
+        $body = $attribute.Groups["body"].Value
+        $isPath = $body -match '^\s*path\s*='
+        $isConditionalPath = $body -match '^\s*cfg_attr\s*\(' -and $body -match '\bpath\s*='
+        if (-not $isPath -and -not $isConditionalPath) { continue }
+        $pathAttributeCount++
+        if (-not (Test-PathAttributeAllowed -File $file -Source $source -Attribute $attribute)) {
+            $lineNumber = $source.Substring(0, $attribute.Index).Split("`n").Count
+            $pathViolations.Add("$($file.FullName):${lineNumber}: #[path] is restricted to tests and benchmarks")
+        }
+    }
+}
+if ($pathViolations.Count -gt 0) {
+    Write-Host "Production Rust #[path] attributes are not allowed:" -ForegroundColor Red
+    $pathViolations | ForEach-Object { Write-Host "  $_" }
+    exit 1
+}
+Write-Host "Rust #[path] check passed: $pathAttributeCount test/benchmark-only use(s)." -ForegroundColor Green
 
 $novaRoot = Join-Path $PSScriptRoot "..\crates\nova-gfx"
 $gpuiNova = Join-Path $PSScriptRoot "..\crates\gpui\src\platform\nova"

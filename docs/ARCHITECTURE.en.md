@@ -61,6 +61,17 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
   and durable-task abstractions; downloads, worlds and maps remain in `src/`.
 - **Domain crates stay free of UI/GPU policy.** `bedrock-*` handles Bedrock data and CPU
   rendering without depending on `gpui`.
+- **World semantics and database mechanics stay separate.** `bedrock-world` is the reusable
+  semantic layer for parsing, querying, and editing typed world data, including `level.dat`,
+  players, chunks, blocks, biomes, entities, and map items. It accesses records through
+  `WorldStorage`, with transactions validating and committing writes; callers do not need a
+  LevelDB handle and can use in-memory or other storage implementations. New world domains such as
+  events or game ticks belong in their corresponding `bedrock-world` modules. `bedrock-leveldb`
+  owns raw key/value database and file mechanics only, not map semantics.
+- **NBT codecs are independent.** `bedrock-nbt` owns NBT/SNBT values, binary encoding and
+  text parsing without depending on worlds, storage or UI. `bedrock-world` depends on it
+  and retains `level.dat` headers, historical version semantics and world validation.
+  Applications can use `bedrock-nbt` directly.
 
 These constraints define the gpui / nova-gfx boundary; cross-layer changes must update
 this document.

@@ -47,8 +47,9 @@ examples, not library APIs.
 
 | Crate | Path | Responsibility | Status | Docs |
 | --- | --- | --- | --- | --- |
-| `bedrock-world` | `crates/bedrock-world` | World/level.dat/NBT/player/chunk I/O and version semantics | Active | [README](../crates/bedrock-world/README.md) |
-| `bedrock-leveldb` | `crates/bedrock-leveldb` | Modified LevelDB storage engine | Active | [README](../crates/bedrock-leveldb/README.md) |
+| `bedrock-nbt` | `crates/bedrock-nbt` | Independent NBT/SNBT codecs, LE/network encoding, borrowed views and batches | Active | [README](../crates/bedrock-nbt/README.md) |
+| `bedrock-world` | `crates/bedrock-world` | Reusable world semantic layer for parsing, querying and editing `level.dat`, players, chunks, blocks, biomes, entities and map items; abstracts storage through `WorldStorage` and commits through transactions | Active | [README](../crates/bedrock-world/README.md) |
+| `bedrock-leveldb` | `crates/bedrock-leveldb` | Raw Mojang-modified LevelDB key/value and file mechanics; no map-domain semantics | Active | [README](../crates/bedrock-leveldb/README.md) |
 | `bedrock-render` | `crates/bedrock-render` | CPU world tile renderer | Active | [README](../crates/bedrock-render/README.md) |
 | `bedrock-light` | `crates/bedrock-light` | Storage-independent voxel light propagation | Active | [README](../crates/bedrock-light/README.md) |
 | `bedrock-block-model` | `crates/bedrock-block-model` | Resource-pack block model resolution | Active | [README](../crates/bedrock-block-model/README.md) |

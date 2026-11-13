@@ -12,7 +12,6 @@ use std::process::Command;
 
 use pelite::pe64::{Pe, PeFile};
 
-#[path = "build/entity_avatar.rs"]
 mod entity_avatar;
 
 mod build {

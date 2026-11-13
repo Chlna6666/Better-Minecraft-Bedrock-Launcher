@@ -1,269 +1,271 @@
 # 命名规范
 
-本规范统一 BMCBL 工作区的 crate、模块、公共/内部接口与文件命名。规则以
-[Rust API Guidelines](https://rust-lang.github.io/api-guidelines/naming.html) 和
-[wgpu](https://docs.rs/wgpu/latest/wgpu/) 的图形词汇为基准。
+本规范覆盖 BMCBL 工作区的 crate、Rust 标识符、模块路径、源文件名和文档路径。
+命名应让读者从**完整路径、调用表达式和签名**迅速理解主要职责。名称优先表达功能；
+参数值、可选条件和实现步骤由签名、类型和函数体表达。
 
-目标不是最短名称，而是让维护者只读名字就能确定：**动作、对象、所有权、返回类型和失败模式**。
-测试函数名为了描述行为可以更长，不受 40 字符建议限制。
+Rust 的大小写规则仍按 Rust 惯例。JavaScript/TypeScript 的 camelCase、C# 的 PascalCase
+可以作为清晰表达职责的参考，不能照搬到 Rust 标识符上。
 
-## 1. 分层词汇
+## 1. 语言风格与标识符
 
-| 概念 | nova-gfx（wgpu 对齐） | gpui | 禁止 |
-| --- | --- | --- | --- |
-| 图形设备 | `Device` / `Backend` | `NovaBackend` | `GfxDevice` |
-| 提交 | `SubmissionDevice`、`SubmissionId` | `PendingSubmission` | `BackendQueue` |
-| 交换链 | `Swapchain`、`SwapchainId` | `swapchain` 字段 | `backbuffer`（除 DXGI 原生语义） |
-| 绑定资源 | `BindGroup`、`BindGroupLayout`、`BindGroupEntry` | 内部资源绑定 | 新 API 使用 `ResourceSet` |
-| 绘制命令 | `RenderCommand::Draw(DrawCommand)` | `DrawCommand`（打包结果） | `RenderStep` / `draw step` |
-| 一帧 | `PresentFrameDescriptor`、`render_and_present` | `PresentationPacket` | `RenderStepList` |
-| 离屏 pass | `RenderPassCommands`、`render_to_textures` | `PreparedColorLayer` | `TextureRenderStepList` |
-| 呈现设施 | `SurfaceCapabilities`、`PresentTimings`、`PresentedFrame` | `PresentReadiness` | `PresentationCapabilities` |
-| 脏区域 | 边界参数 `present_region` | `DirtyRegion`、`damage` | gfx-core 内使用 `damage` |
-| 保留层 | 不出现 | `retained`、`RetainedPaint` | nova-gfx 出现 `retained` |
-
-## 2. 通用规则
-
-1. **先语义，后形式**：`create_buffer`、`destroy_texture`、`write_texture`、`render_and_present`、
-   `request_frame_ready` 是常见的动词 + 对象风格，但不是重命名模板。对 `handle_*`、
-   `process_*`、`do_*` 等泛动词仅在确实模糊时提出审查建议，不得按词批量替换。
-2. **谓词描述查询意图**：`is_*`、`has_*`、`can_*`、`should_*` 通常返回 `bool`；
-   查询本身可能失败或状态未知时，`Result<bool, E>` / `Option<bool>` 也可能是正确契约，
-   不得为了匹配命名形式而丢弃错误或未知状态。
-3. **转换前缀**：`as_` 零成本借用；`to_` 分配/计算；`into_` 消耗 self；`from_` 构造。
-   不要用 `get_` 修饰普通字段 getter；只有按 key/index 取值才用 `get`/`get_mut`。
-4. **参数对象**：位置参数达到 5 个，或出现 2 个以上同类型参数时，使用
-   `*Descriptor`/`*Options` 结构体。禁止 bool 模式参数，用 enum 或 descriptor 字段。
-5. **精确优先于短小**：`*_and_*`、`*_with_*`、`*_for_*`、`*_if_needed`、
-   `*_this_frame` 及长度超过约 40 字符只属于**人工审查信号**，不是禁令。
-   `with` 可标识有意义的配置或约束，`and` 可表达不可分割的组合动作；不得为了
-   消除匹配模式而丢失限定条件。仅在新名字同样准确且更清楚时才缩短名称。
-6. **术语按概念区分**：同一概念保持一致，不同概念必须分别命名。
-   `step`/`command`、`present`/`presentation`、`surface`/`swapchain`
-   不是字面禁词；应核对真实类型、领域与后端语义，不得强行统一不同概念。
-7. **缩写按单词处理**：`Dx12Device`、`OpenGlDevice`、`Dx11Surface`，不写 `DX12Device`、
-   `OpenGLDevice`。
-8. **可见性最小化**：先私有，再 `pub(crate)`/`pub(super)`，最后 `pub`；公共 API 必须有
-   `///` 文档和 `# Errors`/`# Panics`。
-9. **测试命名**：`行为_条件_期望结果`，允许长名；不要在产品代码里复制测试长句。
-10. **参考专业项目，不自造词**：改名与新增 API 必须先对照同领域成熟项目的既有词汇，
-    不凭语感拼新词。参照基准：
-
-    | 层 / 领域 | 参考项目 | 直接沿用的词汇与形态 |
-    | --- | --- | --- |
-    | `nova-gfx` / `gfx-*` | [wgpu](https://docs.rs/wgpu/latest/wgpu/) | `*Descriptor` + `create_*`/`request_*`；`validate_*` + `*Error` 枚举；`Device::poll`、`PollType`、`SubmissionIndex`；`TextureDescriptor::array_layer_count`；`DeviceError::from_hal` 式 backend→通用错误映射；`dispatch_workgroups`、`transition_buffers` 等「动词 + 对象」 |
-    | `gpui` / UI 侧状态 | [Qt](https://doc.qt.io/qt-6/properties.html) | 属性名 `enabled`/`visible`，访问器 `isEnabled()`/`hasFocus()` → Rust 落为 `is_enabled()`/`has_focus()`；`setEnabled()` → `set_enabled()`；`enabledChanged` 信号 → `*_changed` 事件 |
-    | 任务 / 业务 API | JS/TS 生态 | 一个主入口 + 参数对象（`create(options)`、`update(id, update)`）；能力探测 `CSS.supports()` → `supports_*()`；`Option` 表达可选而非 `_with_*` 重载家族 |
-
-    **参数对象只承载配置，不承担副作用**：`create_task(options)` 是唯一入口并返回
-    `Result`；不得把注册动作藏进 `TaskOptions::create()` 之类的配置对象方法。
-    `new(title, stage)` 是最小必要构造，其余可选字段用 builder（`.detail()`/`.total()`/
-    `.parent()`），不得用 `from_parts(...)` 把一长串位置参数包一层。
-    `from_*` 只表达「有明确来源的转换或构造」，不作为规避 `new_with_*` 限制的改名工具；
-    实际执行初始化的构造用 `new(...)`，带配置的构造用 `with_*` 或 builder。
-    增量、绝对值与元数据更新要在名字和 rustdoc 中区分（如 `ProgressUpdate::advance()`
-    表示增量推进、`total()` 设置绝对上限、`stage()` 设置元数据）。
-
-    **布尔命名按语义分三类，不强制统一前缀**（与第 2 条互补，不是推翻）：
-    - 状态属性查询 → `is_*` / `has_*`（Qt `isEnabled` / `hasFocus`，Rust API Guidelines）。
-      功能开关是否启用用 `is_*_enabled()`；`supports_*` 只用于真正的特性/能力探测，
-      不要用它表达「是否启用」，避免语义混淆。
-    - 能力 / 特性探测 → `supports_*`（JS/TS `CSS.supports()`）。
-    - 可用性 / 状态形容词短语 → `*_enabled` / `*_available` / `*_supported` / `*_valid`。
-    - 「动作 + bool 返回值」表示「是否改变 / 是否成功」（`set_*`、`remove_*`、`pause_*`）
-      不受前缀约束。
-    - 主谓倒装短语（`path_is_under_*`、`model_has_detail_*`）与比较动词
-      （`eq`、`overlaps`、`contains`）视为合法布尔表达，不误报为缺谓词。
-
-    后端专有实现词（如 DXGI `GetDeviceRemovedReason`、`VK_KHR_incremental_present` 的
-    `damage`）只出现在专有实现里，不泄漏为通用接口名；通用错误映射用 `backend_error`
-    一类领域词，不把平台 API 名拼进函数名。
-
-## 3. 名称与契约审查
-
-- 规则覆盖本次新增或实际修改的声明与绑定，包括内部函数、trait 方法、字段、局部变量、模式绑定和闭包参数；不只检查 public API。先读实现、类型和调用方，确认名称描述真实对象、阶段、所有权、错误和副作用。
-- frame 只在实际指代明确帧概念时使用。按行为区分 CPU 准备、命令录制、提交批次、交换链图像、呈现帧、动画帧或网络帧；FrameId、SubmissionId、SwapchainImage、RenderPass 和 PresentedFrame 的含义不可混用。类型或模块已说明上下文时，不要机械追加 frame；也不要批量替换所有含 frame 的名字。
-- Options、Descriptor 等类型只承载配置。业务动作由拥有相应权限和生命周期的服务执行。new/default 用于惯用构造；from_* 应表达真实来源转换，不能只为缩短名称而改名。改接口时保留 Option/Result、默认值、所有权、错误传播、状态更新语义和调用方可观察行为。
-- 命名告警是审查线索，不是自动改名指令。仅处理本次范围及其必要调用链；历史问题先记录，不顺手批量重命名。检查外部 trait、平台实现、FFI、协议和序列化契约，不能只看最终名称是否变短。
-- 工具只能证明其覆盖范围内的结果。命名脚本不是完整 Rust AST 检查器；未由工具覆盖的语义、局部绑定和宏/条件编译路径要明确标为人工审查，不能声称全量自动通过。
-
-### 3.1 纯命名修改的前置条件（强制）
-
-**纯命名修改不等于代码质量提升。** 每一个候选符号都必须经过以下核对，不满足时保留原名：
-
-1. **确认事实**：阅读完整函数体、直接调用方、类型和返回值、rustdoc、测试、公开入口及模块上下文；
-   关注 I/O、CPU 计算、缓存、副作用、错误、取消、数量限制、线程与资源所有权。仅凭 grep、
-   截图或函数名无法确定语义时必须标记待审，不得给出确定性替换。
-2. **证明更准确**：对照改名前后的动作、对象、数据来源、数量、过滤条件、默认行为、
-   结果、错误、性能路径与副作用。若新名更泛化、暗示不存在的限制或丢失关键语义，
-   即使缩短了也属于不合格改名。
-3. **分析入口/实现关系**：`_inner` 并非禁词。公共 wrapper 与内部实现如仅机械转发，
-   应判断是否能保留对外 API 并直接整合实现；不要直接把 `*_inner` 替换为 `collect_*`
-   等模糊动词。泛型、trait、`cfg`、公共 API、多个调用方及依赖关系均需检查。
-4. **保持契约**：纯改名不得顺便更改参数类型或顺序、`Option`/`Result`、默认值、
-   可见性、条件、执行顺序、锁、缓存、取消、错误传播或性能；确需行为变更时必须作为
-   独立的功能变更单独验证。
-5. **控制范围**：只处理当前需求及必要引用。涉及多个模块、几十个文件或用户未提交
-   的修改时，不得用正则批量套用新词，不得一并提交未经语义核验的代码。
-
-### 3.2 动词与限定词的语义（强制）
-
-| 词汇 | 实际语义 | 审查要点 |
+| 对象 | Rust 写法 | 示例 |
 | --- | --- | --- |
-| `query_*` | 向数据源/存储发起查询，可以读取、筛选和构造结果 | 不因结果包含集合就改成 `collect` |
-| `load_*` | 从明确来源加载数据或资源，通常存在读取/缓存路径 | 仅拼接已有对象的情况不宜使用 |
-| `collect_*` | 核心操作是遍历已有数据并聚合成集合 | 不得掩盖主要的查询、哈希、解析或计算 |
-| `fingerprint_*` / `hash_*` | 生成确定性的指纹或哈希值 | 不得因返回 `Vec` 就改为 `collect` |
-| `scan_*` | 逐项扫描并发现/检查源数据 | 不是按已知 key 批量读取的同义词 |
-| `*_many` / `*_batch` | 同级 API 中有意义的批量语义 | 上下文不区分单/多时可人工评估 |
-| `*_inner` | 真实区分包装层和内部实现 | 不得无理由替换；先评估包装层职责 |
-| `*_with_*`、`*_limit` | 限定条件、特殊版本或资源限制真正影响调用 | 可选参数未启用时，不得暗示总是受限 |
-| `build_*`、`encode_*`、`write_*` | 构造、编码、写出各自的结果 | 不可与查询或收集互换 |
+| Cargo package | 小写，通常使用 kebab-case | `bedrock-world` |
+| Rust crate、模块、文件和目录 | `snake_case` | `bedrock_world`、`chunk_records.rs` |
+| 函数、方法、字段、局部变量 | `snake_case` | `load_records`、`record_count` |
+| 类型、trait、enum 变体 | `UpperCamelCase` | `ChunkRecord`、`RecordSource` |
+| 常量、静态变量 | `SCREAMING_SNAKE_CASE` | `MAX_RECORDS` |
+| 缩写 | 按普通单词分段 | `HttpClient`、`parse_url` |
 
-**具体反例（用于判断语义，并非批量重命名映射）：**
+JS/TS 常用 camelCase，C# 常用 PascalCase；这些语言的命名形式各自遵守生态约定。
+跨语言借鉴其清楚表达职责的做法，Rust 代码仍使用 `snake_case` / `UpperCamelCase`。
 
-- `query_chunk_records_many_inner` 具有可选的 `max_actor_records`；
-  `load_chunk_records_with_actor_limit` 会误导读者以为限制在所有调用中生效。
-  首先应确认限制的具体粒度、默认行为和调用入口，再决定名称。
-- 批量区块指纹的核心步骤是 XXH3-128 计算；
-  `collect_chunk_record_fingerprints` 丢失了计算语义，并不是天然优于 `fingerprint_*`。
-- 区域叠加查询涉及范围检查、计算史莱姆区块、加载区块记录、处理实体以及查询村庄；
-  `collect_region_overlays` 过于泛化。仅转发的 `query_region_overlays_inner`
-  包装层可以评估是否合并，但不能仅因 `inner` 后缀就机械改名。
+公开 API、FFI、生成代码、协议字段和已有稳定外部契约可以有局部例外。例外只覆盖
+契约要求的名称，不改变其他 Rust 代码的命名规则。
 
-### 3.3 AI 执行与验收（强制）
+## 2. 函数和方法表达主要职责
 
-- 每次实际改名必须有 **旧符号 → 新符号 → 完整职责 → 更名理由 → 影响调用方**
-  的逐项审查；删除 `inner`、`with`、`many`、`limit`、`async` 等限定词时，
-  必须解释该词为何多余或不正确。无法证明改进就保留原名。
-- 校验差异仅为命名与必要引用变动，再运行受影响的 rustfmt、`cargo check` 和
-  有针对性的测试；涉及宏、feature、外部 API 或跨平台路径时扩大验证。
-- 出现误导性名称应撤销那一处重命名并重新检查；编译通过不等于语义正确。
-- 正则、命名扫描器、长度阈值、字符串替换均不能代替调用图与语义审查，
-  不得生成无条件“修复全部命名问题”的改名清单。
+### 2.1 从调用位置确定上下文
 
-## 4. 边界规则
+先读完整调用位置。模块、类型和 receiver 已经提供的上下文，不要在函数名里重复：
 
-- `nova-gfx` 不得出现 UI 词汇：`Window`（除 native surface target 的平台类型）、`ui`、
-  `widget`、`scene`、`retained`、`damage`、`atlas`、`glyph`、`blur`。这些属于 gpui/gpui-3d。
-- gpui 调用图形 API 时使用 `gfx-core` 能力 trait，不按 backend 分支调用固有方法；缺少的能力
-  先加到 trait，再由各 backend 实现。
-- backend 固有方法不作为公共契约：与 trait 重复的实现应删除或降为 `pub(crate)`，文档只
-  宣传 trait。
-- gpui 渲染器内部按动词族组织：`prepare_*`（CPU 侧准备）、`encode_*`（生成命令）、
-  `submit_*`（提交）、`present_*`（呈现）、`sync_*`（资源同步）。避免 `handle_*`。
+`world::chunk_records::load(options)`
+`ChunkRecordStore::load(options)`
 
-## 5. Rust 文件、模块和目录路径规范
+模块外的独立函数可以写出必要对象，例如 `load_chunk_records(options)`。
+若调用上下文已经是 `chunk_records`，`chunk_records::load_chunk_records(...)` 就重复了。
+同理，方法名不必重复类型名或 receiver 的领域。
 
-本节约束 `src/`、`crates/*/src/` 及工作区自有 Rust 源码的**模块路径与物理文件布局**。
-先读目标模块的 `mod` 声明、公开导出、实际职责和相邻模块；路径名是领域模型的一部分，
-不能只凭字符串长度或文件大小批量改名。测试、平台适配、宏展开及代码生成目录仍需遵循
-相应工具和 Rust 语言的真实路径契约。
+函数名优先表达**主要动作和操作对象**，不要逐项罗列输入、参数名、参数值、配置项、
+可选条件或内部步骤。签名负责表达接受什么值、哪些值可选，以及如何选择行为。
 
-### 5.1 强制规则（新增和本次实际修改的代码）
+### 2.2 参数属于签名，不属于函数名
 
-1. **拼写与一一对应**：Rust 模块、文件名（不含 `.rs`）和目录名采用小写
-   `snake_case`，模块声明 `mod foo;` 与实际文件 `foo.rs` 或 `foo/mod.rs` 对应。
-   crate 的 Cargo 包名可用 `kebab-case`，不得把包名拼写强行复制到 Rust 模块名。
-   Rust 规定的 `lib.rs`、`main.rs`、`mod.rs`、`build.rs` 等入口为合法特例；
-   FFI、生成源码及 `#[path]` 的确切文件名以其显式契约为准。
-2. **文件路径必须表达模块树**：例如 `src/item/format.rs` 对应 `item::format`。
-   同一模块不得同时使用 `foo.rs` 和 `foo/mod.rs` 两个入口。不要为了缩短字符串而
-   滥用 `#[path]`、绕过模块层级或制造文件系统与 Rust API 不一致的隐式映射。
-3. **先定义所有者，再划分目录**：目录按稳定的领域/职责/生命周期边界组织，而不是
-   按 `struct`、`enum`、`fn`、`utils`、`misc`、`common`、`new` 或开发阶段机械分类。
-   同一份核心状态、协议实体或资源的所有权只能有一个明确位置；跨层共享应通过明确
-   的公共模块/API，而不是复制实现或建立循环依赖。
-4. **避免无信息量的路径重复**：同一概念已由父目录提供时，子文件名不应无意义地再
-   拼接相同的领域名，例如在单一物品历史转换模块中反复构造 `*_saved_item.rs`。
-   **但不能机械去词**：当 `saved_item`、`block_state`、`scene_view` 等是区分
-   不同数据模型的完整领域术语时，保留该术语。必须通过职责、同级文件以及最终
-   `crate::...` 模块路径检查是否真的重复；仅凭重复词片段不得判为违规。
-5. **格式/版本/平台限定词必须有真实含义**：`classic`、`medieval`、`modern` 只有
-   在明确对应持久化格式或历史语义时可用；`dx12`、`vulkan`、`windows`、`linux`
-   只放在真正的专有实现边界。禁止以 `new_`、`old_`、`temp_`、`final_`、
-   `copy_`、`v2_`、`v3_`、`dev_`、`fix_` 等名称表达开发迭代阶段。
-   若 `v3` 是线协议/磁盘格式的**不可省略的外部身份**，经核实后可保留；
-   不得把它等同于内部代码的第三版实现。
-6. **模块族必须采用一致维度**：同一组文件要么按领域实体、要么按操作阶段、要么按
-   协议/目标格式组织；禁止同级混合多套互相重叠的分类，令维护者无法判断新功能放哪。
-   每个新文件必须有单一主要职责和明确拥有者；文件不因“超过 N 行”自动拆分，
-   也不因很短就必须与其他文件合并。
-7. **改路径时维护完整依赖契约**：同步核对 `mod`/`pub mod`、`pub use`、
-   `use`、`#[path]`、`include!`、`include_str!`、`include_bytes!`、Cargo 配置、
-   `cfg`/feature、构建脚本、生成代码、测试、文档链接及跨 crate 调用。
-   `pub` 的对外路径变化必须显式审查稳定 API 和破坏性影响，不能用大量兼容别名
-   掩盖边界错误。仅大小写变化的文件名应检查 Windows/git 大小写处理。
-8. **不修改运行时数据路径作为源码整理的副作用**：Minecraft 存档键、
-   `premium_cache`、`mods`、资源包/插件约定目录、用户配置和协议字符串不是
-   Rust 模块路径；不能用源码 `snake_case` 规则改写它们。路径拼装与文件名校验
-   应遵守其数据格式、平台和安全边界。
+不要为一个操作的不同参数组合创建函数名，也不要把参数名或参数约束机械拼进函数名。
+用参数、`Option`、enum 或配置结构体表达调用差异；只有当两个入口代表不同的领域操作时，
+才使用不同函数名。
 
-### 5.2 需要人工审查的建议（不作为自动改名指令）
+例如，`load_chunk_records_with_actor_limit(max_actor_records)` 把一个可选参数写进名称，
+还可能误导读者以为所有调用都受此限制。按上下文使用 `load_chunk_records(options)`，
+或在 `chunk_records` 模块内使用 `load(options)`；`max_actor_records` 保留在签名或选项中。
 
-- **优先看完整路径，而非孤立文件名**：若 `item` 模块已经专门承载保存物品的
-  历史转换，`item/classic.rs`、`item/medieval.rs`、`item/modern.rs`
-  可能比 `item/classic_saved_item.rs` 等更清楚；若 `item` 还包含其他 Classic
-  领域职责，则优先考虑按共同上下文组织为 `item/saved/classic.rs`、
-  `item/saved/medieval.rs`、`item/saved/modern.rs`（仅为候选布局）。
-  必须核对 `saved_item_history`、`format_evidence`、`modern_target` 等
-  的真实职责，不能因为看见 `item` 就批量剥离 `saved_item`。
-- **模块入口优先采用现代扁平形式**：新模块族通常使用 `foo.rs` + `foo/bar.rs`；
-  `foo/mod.rs` 仍是 Rust 支持的合法布局，已有模块无需仅为风格统一而迁移。
-  不要同时创建 `foo.rs` 与 `foo/mod.rs`。选择布局时考虑目录导航和仓库既有习惯。
-- **名字描述核心对象/能力，不描述实现细节**：需要区分解析、校验、转换、写入、
-  存储或渲染时可使用 `parser`、`validation`、`conversion`、`writer`、
-  `storage`、`renderer` 等真实职责词；不是所有模块都必须带后缀。
-  `impl`、`helpers`、`internal` 等只有在职责无法通过领域语义表达且确有边界时才保留。
-- **模块深度按认知成本决定**：优先少量稳定的领域层次，不设机械的最大目录深度。
-  若缩短路径会使模块用途模糊，宁可保持必要限定词；若目录只是重复父目录，不新建层级。
-- **同一文件内的内部类型名与模块名可共用领域词**：模块路径可以短，公开类型仍需
-  可读，例如 `item::classic::ClassicSavedItemCheckReport`。不要强求类型名也一起缩短。
+配置结构体应在参数相互关联、可选项较多或调用需要一个有名字的配置时使用。
+不要求每个函数都包一层 `Options` / `Descriptor`；不要用参数对象掩饰本来应拆开的操作。
+布尔参数只在调用处读起来明确时使用；代表多个模式时优先用 enum。
 
-### 5.3 修改前的人工验收
+### 2.3 选择能说明核心动作的动词
 
-1. 记录当前物理路径、Rust 模块路径、主要公开符号、调用方与真正职责。
-2. 给出最多两个备选布局，比较重复词、歧义、所有权和公开 API 成本；
-   不以“更短”作为唯一理由。
-3. 仅调整被本次需求涉及的模块族，更新真实引用，并按影响范围执行
-   rustfmt、编译或文档检查；只改规则文档时不执行 Rust 编译。
-4. **自动化边界**：脚本可阻止非法字符、非 `snake_case` 或冲突入口，
-   对语义重复、目录合理性、历史术语和公共 API 影响只能报告候选并人工复核。
-   禁止自动批量改名、自动移动文件或生成同义兼容层来“满足命名检查”。
+动词应准确描述函数主要完成的工作。不要仅因返回集合就用 `collect`，也不要因内部
+读取数据就把所有函数都叫 `load`。名称应区分真实不同的操作，例如查询、加载、解析、
+校验、转换、计算指纹、聚合、构建和写出；不要求每个函数遵循固定的动词词典。
 
-### 5.4 非 Rust 源码与文档
+`parse` 只用于把文本或字节表示转换为结构化数据，不是“准备”或“读取”的通用替代词。
+返回 `ScanOptions` 之类配置值的函数应按用途命名为 `scan_options`；不要因为函数返回值
+尚未解析的数据，或因为想让名称听起来像操作，就添加 `parse_`。与 `encode` 成对的二进制
+反向操作通常命名为 `decode`。保留真正执行语法 / 文档解析的 `parse` API，不按动词做全局替换。
 
-- crate 文档：`README.md`（英文）+ `README.zh-CN.md`（中文），成对维护。
-- 集中文档：`docs/UPPER_SNAKE.md`（如 `ARCHITECTURE.md`、`BUILD_AND_TEST.md`），
-  英文镜像使用 `*.en.md`。
-- ADR：`docs/adr/NNNN-kebab-case.md`，按决策顺序编号，不按日期命名。
-- 不使用 `*-audit.md`、`*-migration.md`、`*-rename*.md`、`*-todo.md` 作为长期文档；
-  迁移与待办放在 PR/issue。测试输出、benchmark 原始数据、截图和日志不进入 `docs/`。
+`_blocking` 不是普通同步函数的默认后缀。若同一职责确有异步与阻塞入口，优先将阻塞入口放入
+`blocking` 子模块，使调用路径表达调度方式、函数名仍表达动作，例如
+`request::blocking::fetch_bytes_with_retry`。只有拆分子模块会让职责边界更含糊时，才在函数名保留
+`_blocking`。`_async` 也不应仅因函数声明为 `async fn` 就机械添加；同步 / 异步差异通常由签名表达。
 
-## 6. 评审检查清单
+例如，`collect_chunk_record_fingerprints(records)` 若主要工作是计算指纹，应改为
+`fingerprint_chunks(records)`；如果模块已是 `chunk_records`，可写作
+`chunk_records::fingerprint(records)`。只有遍历已有值并聚合这一行为本身是核心职责时，
+`collect` 才准确。
 
-- [ ] 新名称准确表达真实动作、对象、限制、返回值和副作用，不比旧名更模糊。
-- [ ] 公共 API 没有 `get_` 前缀（除 keyed lookup）。
-- [ ] 没有 bool 模式参数；参数 ≥5 时使用 descriptor。
-- [ ] `inner`、`with`、`legacy`、`compat`、`limit` 等限定词的增删已经逐项说明真实语义依据。
-- [ ] 同一概念在本次改动中只使用一个术语。
-- [ ] 新增 trait 方法同步更新所有 backend 与文档。
-- [ ] 新增/移动 Rust 模块的文件名、模块路径、归属职责与 `mod` 声明对应，无无意义的路径词重复。
-- [ ] 测试名描述行为，不泄漏实现细节。
+`with`、`for`、`many`、`inner`、`limit`、`if_needed` 等不是禁词，也不是默认模板。
+仅当该词表达调用者需要区分的稳定语义时才保留；不要只为了反复参数、条件或实现细节
+而扩展名称。没有固定字符数上限，过长或堆叠多个动作的名字应促使重新检查上下文、
+主要职责和函数拆分，而不是触发自动截短。
 
-## 7. 自动化
+### 2.4 常用 API 语义
 
-```powershell
-pwsh -File scripts/check-nova-gfx-boundary.ps1
-pwsh -File scripts/check-naming.ps1
-pwsh -File scripts/check-docs.ps1
-rustfmt --edition 2024 <改动文件...>
+- 布尔状态查询通常使用 `is_*`、`has_*`、`can_*` 或 `should_*`，并返回 `bool`。
+  `supports_*` 表达能力探测，不用于表达普通开关当前是否启用。
+- 普通属性访问器使用属性名；`get` / `get_mut` 用于 key、index 或容器查询。HTTP 传输层的
+  `get` 可以表示 GET 请求；面向具体远程资源的数据接口应按操作命名为 `fetch`、`search` 等，
+  不用 `get_*` 作为泛化读取动词。
+- 转换方法遵循 [Rust API Guidelines 的 `as_` / `to_` / `into_` 约定](https://rust-lang.github.io/api-guidelines/naming.html#ad-hoc-conversions-follow-as_-to_-into_-conventions-c-conv)：
+  `as_*` 用于无额外运行成本的借用视图，`to_*` 用于保留输入所有权但需要实质转换或计算的结果，
+  `into_*` 消耗 `self` 并转移或拆出其所有权。普通属性读取用属性名，不要因为返回字符串或路径就写成
+  `to_*`；例如枚举返回其固定目录名时应使用 `directory_name()`。有额外区分参数的转换构造器可用
+  `from_*`，否则优先评估标准 `From` / `TryFrom` trait。
+- `new` 用于惯用的最小构造；builder 用于多项可选配置。`create` 表达有意义的创建动作，
+  不与普通构造混用。
+- 错误类型通常以 `Error` 结尾；公开函数应有与实际错误和 panic 契约相符的 rustdoc。
+
+测试名可较长，以表达场景和预期结果；产品 API 不应复制测试句子作为函数名。
+
+### 2.5 审查导入别名 `as`
+
+- `use path::Item as Alias` 只在别名解决真实名称冲突、区分平台 / 后端 / 格式类型，或建立有意的
+  crate 根公开入口时保留。别名不能只是把来源模块名重复到标识符里，也不能为了继续使用旧路径而
+  掩盖模块已经移动或重命名。
+- 同作用域只有一个来源且别名不增加语义时，直接导入原名；若为了缩短路径而加别名，优先导入模块
+  并在调用点写出模块路径。先检查完整调用点，不按 `as` 语法形式批量删除。
+- 如果类型别名会隐藏调用者需要知道的同步 / 异步、平台、格式、安全或性能差异，应在名称中保留该差异，
+  如 `StdMutex` / `AsyncMutex`；不要把 `FxHashMap` 伪装成普通 `HashMap`。只有确实建立了稳定的实现边界时，
+  才可以隐藏这类差异。
+- `as _` 用于只导入 trait 方法而不引入名称，确认对应方法调用后保留。
+- `pub use ... as ...` 可以为类型、trait 或有意设计的公开 facade 建立入口，包括 crate 根入口和领域模块入口。
+  领域自由函数仍以 `domain[::subdomain...]::operation` 为规范路径，不要扁平导出到 crate 根；若来源模块本身
+  仍公开，也不要仅为第二条调用路径创建别名。facade 必须建立清楚的模块职责或唯一公开路径，不能充当旧名兼容包装。
+  名称仍须准确表达对象和动作。除非存在明确的外部兼容契约，不新增兼容别名。
+- 审查别名时核对完整模块路径、导入项、调用点、可见性及是否有同名 API；删除或改名时同步修复
+  文档、测试、宏路径和条件编译分支。
+
+## 3. 模块路径、文件和目录
+
+### 3.1 按职责组织完整路径
+
+Rust 模块、源文件名和目录名使用小写 `snake_case`。模块路径应能对应到文件树，例如：
+
+`src/world/chunk_records.rs` → `world::chunk_records`
+
+按稳定的领域或职责组织目录。父模块已经表达的词，不必在子文件名和每个函数名里重复。
+完整路径可以自然地提供上下文：
+
+`src/world/chunk_records.rs` 中的 `pub fn load(options: LoadOptions)`
+可通过 `world::chunk_records::load(...)` 调用。
+
+模块名应使用准确的领域术语，并把紧密相关的数据与操作放在同一职责模块。公开函数名
+结合模块路径阅读；模块已说明对象时，函数名表达动作即可：
+
+```rust
+bedrock_world::level::parse(data);
+bedrock_world::level::read(path);
+bedrock_world::level::write(path, &document);
 ```
 
-自动命名检查只能阻止**确定性违规**；长名、`with`、`and` 等模式是人工审查提示，
-不能作为自动改名清单或强制失败项。允许清单仅包含已审查的真实契约例外。
+### 3.1.1 领域路径和命名审查（强制）
 
-当前 `check-naming.ps1` 扫描部分 nova-gfx、GPUI Nova 的公开函数名，
-并对部分 GPUI 名称提供提示；它不是 Rust AST 检查器、不覆盖所有工作区源码，
-也不能判断 query/load/collect 是否准确。零警告不代表语义审查通过；
-rustfmt、编译器和命名脚本各自只验证实际覆盖的内容。
+公开的模块级领域操作使用 **`crate::domain[::subdomain...]::operation(...)`**：领域层级标识被操作的
+对象 / 文件 / 格式，最后一段表达动作。自然属于某个类型 receiver 的操作使用 `Type::operation(...)`。
+领域层级必须体现真实职责；不得为了符合形式而创建包装模块或泛化层级。
+
+```rust
+bedrock_world::level::read(path);
+bedrock_world::level::write(path, data);
+bedrock_world::player::read(path);
+```
+
+评审和重命名必须满足以下规则：
+
+1. **禁止无意义的语义重复**：模块路径已明确操作对象时，不得在函数名中再次重复对象；例如优先使用
+   `level::read`，而不是 `level::read_level_dat_document`。
+2. **禁止机械式重命名**：修改前必须检查函数签名、实际行为、所属模块和调用关系，不得只依据函数名称
+   或长度批量替换。
+3. **禁止牺牲语义准确性**：同一模块存在多个操作对象或多种读取行为时，使用更精确的函数名，或拆分为
+   能表达差异的子模块；不得为了短名合并不同语义。
+4. **公共 API 与内部 API 遵循同一模块命名原则**：按完整路径和职责命名，不因函数是 `pub` 就在函数名中
+   重复完整领域名；可见性本身不是命名上下文。
+5. **优先用模块分层消除歧义**：`domain::operation` 不足以表达真实行为时，先评估
+   `domain::subdomain::operation` 等领域层级，再决定是否需要更具体的函数名。只在子领域真实、独立、内聚时
+   增加中间层；禁止 `bedrock_world::write::level_dat(...)` 这类动作在领域前的反向路径。
+6. **不保留无必要的旧名称包装**：确认工作区调用点已经迁移后可以删除重复入口；删除前必须检查外部调用方 / 依赖、
+   宏路径、测试、公开导出和文档示例，并确认符合当前公开 API / 发布契约。crate 根不能把领域自由函数扁平
+   重导出为第二套入口；不要用兼容包装掩盖模块迁移。
+
+领域模块直接使用具体领域名，如 `level`、`player`、`map_item`；不要使用 `*_domains` 聚合多个领域。
+实现增长时可按内聚职责拆入领域目录的子模块，对外路径应继续准确表达真实领域层级。
+
+Rust 库没有统一的读写路径模板：[`serde_json`](https://docs.rs/serde_json/latest/serde_json/)
+和 [`fastnbt`](https://docs.rs/fastnbt/latest/fastnbt/) 在格式命名空间下使用
+`from_slice` / `from_bytes`、`to_writer`；[`std::fs`](https://doc.rust-lang.org/std/fs/)
+和 [`tokio::fs`](https://docs.rs/tokio/latest/tokio/fs/) 使用 `read` / `write`；当读写器
+本身是成组类型时，[`zstd::stream`](https://docs.rs/zstd/latest/zstd/stream/) 还会按 `read` /
+`write` 拆分子模块。这些是按职责选路径的例子，不要求机械照搬某个库的层次。
+
+BMCBL 的领域对象路径采用“领域模块在前、操作在后”，例如 `level::read` 和 `level::write`。
+`level.rs` 作为模块入口；当职责确实增多时，再把内聚实现拆到 `level/` 子模块，保留调用方
+可理解的 `level::动作` 路径。不要创建只为转发单个函数的泛化命名空间或兼容别名。
+
+不要机械地在所有层级重复 `document`。若同一模块内存在读取原始 NBT 根和完整
+`LevelDatDocument` 的不同 API，再按返回对象区分名称；若模块路径和签名已说明目标，
+`parse`、`read`、`write` 等动作名无需追加冗余对象词。命名应与输入、返回类型、错误映射
+和实际副作用一致。
+
+不要只为缩短路径删除必要领域词，也不要因为目录层次变深就机械扁平化。先看新成员属于
+哪个状态、数据模型、职责和生命周期边界，再决定放入现有模块、子模块或新文件。
+
+### 3.2 文件名对应内容，不对应单个函数清单
+
+文件名应概括一个内聚模块的职责或类型族。不要按每个函数单独建文件，也不要把不相关
+职责塞进 `common`、`utils`、`misc` 等泛化文件。模块可以按领域实体、格式、平台边界或
+操作职责组织；同一模块族应使用清楚且一致的分类维度。
+
+避免无信息量重复，例如在职责已由 `item::representation` 表达时，继续把相同领域词堆入每个
+叶子文件名。必要的格式、平台、版本或数据模型限定词应保留，前提是它们区分真实职责
+或外部身份。
+
+Rust 支持 `foo.rs` 与 `foo/bar.rs` 共同构成模块树，也支持 `foo/mod.rs`。新模块通常
+采用 `foo.rs` + `foo/bar.rs`；已有布局只有在本次重组能改善导航或职责边界时再迁移。
+不要同时创建同一模块的两个入口。生产模块必须使用 Rust 常规文件布局；`#[path = "..."]`
+及 `cfg_attr` 中的 `path` 只允许用于测试或性能基准模块，禁止用它映射生产子模块或选择平台实现。平台差异应通过
+常规目录下的 `#[cfg]` 模块组织。
+
+### 3.3 命名重组可以改变源代码路径
+
+当更名或迁移能让模块所有权、职责或调用路径更准确时，可以一起调整函数名、模块名、
+目录和文件名。任务已允许破坏性变更时，不需要为了旧的 Rust 源码路径默认保留兼容别名。
+以完整路径和职责改善为依据，不以“更短”本身为依据，也不做未经语义判断的批量替换。
+
+重组前后要核对 `mod` / `pub mod`、`pub use`、所有 `use` 引用、`#[path]`、`include!`、
+构建脚本、feature / `cfg`、测试和文档链接。若公开 Rust API 的模块路径变化会影响外部
+调用者，按任务授权和项目发布契约处理。
+
+Rust 源文件路径与运行时数据路径是不同契约。不要因源码整理改写存档目录、用户配置、
+资源包/插件约定路径、序列化字段、协议内容、CLI 参数、环境变量或 FFI 符号。
+
+### 3.4 文档路径
+
+- 集中文档使用 `docs/UPPER_SNAKE.md`；存在英文镜像时使用 `*.en.md` 并同步维护。
+- ADR 使用 `docs/adr/NNNN-kebab-case.md`，按决策顺序编号。
+- 文档文件名表达稳定主题，不使用日期、临时阶段或改名审计作为长期命名。
+
+## 4. BMCBL 图形层术语
+
+| 概念 | nova-gfx（wgpu 对齐） | gpui | 约定 |
+| --- | --- | --- | --- |
+| 图形设备 | `Device` / `Backend` | `NovaBackend` | 避免 `GfxDevice` |
+| 提交 | `SubmissionDevice`、`SubmissionId` | `PendingSubmission` | 避免 `BackendQueue` |
+| 交换链 | `Swapchain`、`SwapchainId` | `swapchain` 字段 | `backbuffer` 只用于 DXGI 原生语义 |
+| 绑定资源 | `BindGroup`、`BindGroupLayout` | 内部资源绑定 | 新 API 不用 `ResourceSet` |
+| 绘制命令 | `RenderCommand::Draw(DrawCommand)` | `DrawCommand` | 不用 `RenderStep` 表示命令 |
+| 呈现帧 | `PresentFrameDescriptor`、`render_and_present` | `PresentationPacket` | 按实际帧语义区分 |
+| 离屏 pass | `RenderPassCommands`、`render_to_textures` | `PreparedColorLayer` | 按 pass / layer 类型命名 |
+| 脏区域 | `present_region` 参数 | `DirtyRegion`、`damage` | gfx-core 通用接口不用 `damage` |
+| 保留层 | 不出现 | `retained`、`RetainedPaint` | nova-gfx 不使用 `retained` |
+
+通用 gfx API 不暴露 UI 或产品策略。图形词汇按真实类型和职责使用；不同概念无需为了表面
+一致而强行统一。后端专有词只留在后端边界，不能泄漏为通用契约。
+
+## 5. 命名评审清单
+
+- [ ] 按完整模块路径、类型 / receiver 和调用点判断名称是否重复或缺少上下文。
+- [ ] 函数名表达主要动作与对象；参数、参数值和可选条件由签名或选项类型表达。
+- [ ] 动词描述真实核心操作；查询、加载、计算、聚合、构建等没有被混为一谈。
+- [ ] `use ... as ...` 别名解决真实冲突、表达清晰的 API 层级，或只导入 trait；没有保留过渡 / 兼容旧名。
+- [ ] 领域命名通过 §3.1.1 六项强制规则；删除旧入口前已检查外部调用、宏、测试、公开导出和文档示例。
+- [ ] 公共 API 的模块路径和签名能准确识别操作对象；短名有完整路径语义支撑，`parse` / `read` / `write` 没有机械互换。
+- [ ] 名称符合 Rust 大小写惯例；类型和符号没有无意义重复。
+- [ ] 文件名、目录名、模块路径共同表达内聚职责和领域所有权。
+- [ ] 改路径时核对模块声明、导出、调用方、构建引用、测试和文档。
+- [ ] 破坏性变更按任务授权处理；没有把源码命名规则套到运行时或外部数据契约上。
+- [ ] 测试名称描述行为，不把实现步骤误作产品 API 命名模板。
+
+`scripts/check-naming.ps1` 会检查第一方 Rust 源码中的 `#[path = "..."]` 和
+`cfg_attr(..., path = "...")`（包括多行属性），并拒绝生产用途；它们只允许出现在测试或性能基准代码中。
+脚本也会检查其明确覆盖的图形术语约定。自动脚本不能判断名称
+是否准确表达功能；长名称阈值和匹配词只是审查线索，最终判断应基于调用上下文、签名、实现
+和引用关系。
+
+本仓库现有检查命令：
+
+`pwsh -File scripts/check-nova-gfx-boundary.ps1`
+`pwsh -File scripts/check-naming.ps1`
+`pwsh -File scripts/check-docs.ps1`
+
+命名脚本仅覆盖其明确扫描的文件和符号；零告警不代表所有工作区名称与路径均经过语义审查。

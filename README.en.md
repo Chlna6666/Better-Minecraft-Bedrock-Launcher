@@ -28,8 +28,14 @@ are no longer part of the main UI path.
 - CurseForge browsing/import and management of mods, resource packs, behavior packs, maps,
   screenshots and servers.
 - Skin management and previews, including 4D/custom geometry skins.
-- Advanced map window: streaming 2D tiles, chunk/record editing, undo/redo, player tools,
-  `.mcstructure` import/export and 3D preview.
+- Map editing is in testing; back up your world before using the editor.
+- Advanced map editor: streaming 2D tiles and an independent 3D editor with block placement,
+  cuboid/ellipsoid fill, clearing, selection copy, and shared undo/redo history.
+- 3D model import: OBJ (with its MTL), glTF and GLB models can be converted to blocks, previewed,
+  positioned, rotated and mirrored before writing to the world.
+- Image import: PNG, JPG, TGA and WebP images can be converted to block structures with adjustable
+  output size, dithering and depth, then previewed before placement.
+- `.mcstructure` import/export, chunk/record editing and player tools in the map editor.
 - EasyTier-based multiplayer (Windows stable, Linux testing).
 - WASM plugin host with capability-based permissions and UI injection.
 - Runtime i18n (Simplified/Traditional Chinese, English, Japanese, Korean), themes, fonts,

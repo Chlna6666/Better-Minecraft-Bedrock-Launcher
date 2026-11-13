@@ -36,7 +36,7 @@ foreach ($relative in $viewCallers) {
         $failures.Add("BMCBL 3D view caller missing: $relative")
         continue
     }
-    if (-not (Select-String -LiteralPath $path -SimpleMatch -Pattern 'gpui_3d::scene_view(' -Quiet)) {
+    if (-not (Select-String -LiteralPath $path -SimpleMatch -Pattern 'gpui_3d::scene_view::element(' -Quiet)) {
         $failures.Add("BMCBL 3D view no longer consumes GPUI Sidecar: $relative")
     }
 }

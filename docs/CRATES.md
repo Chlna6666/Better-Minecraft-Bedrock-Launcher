@@ -47,8 +47,9 @@
 
 | crate | 路径 | 职责 | 状态 | 文档 |
 | --- | --- | --- | --- | --- |
-| `bedrock-world` | `crates/bedrock-world` | 世界/level.dat/NBT/玩家/区块读写与版本语义 | 活跃 | [README](../crates/bedrock-world/README.md) |
-| `bedrock-leveldb` | `crates/bedrock-leveldb` | Mojang 修改版 LevelDB 存储引擎 | 活跃 | [README](../crates/bedrock-leveldb/README.md) |
+| `bedrock-nbt` | `crates/bedrock-nbt` | 独立 NBT/SNBT 编解码、小端与网络编码、借用视图及批处理 | 活跃 | [README](../crates/bedrock-nbt/README.md) |
+| `bedrock-world` | `crates/bedrock-world` | 可复用的地图语义中间层：解析、查询和编辑 `level.dat`、玩家、区块、方块、群系、实体、地图物品；以 `WorldStorage` 抽象存储并统一事务提交 | 活跃 | [README](../crates/bedrock-world/README.md) |
+| `bedrock-leveldb` | `crates/bedrock-leveldb` | Mojang 修改版 LevelDB 原始键值与文件存储机制，不处理地图领域语义 | 活跃 | [README](../crates/bedrock-leveldb/README.md) |
 | `bedrock-render` | `crates/bedrock-render` | 世界瓦片 CPU 渲染 | 活跃 | [README](../crates/bedrock-render/README.md) |
 | `bedrock-light` | `crates/bedrock-light` | 无存储依赖的体素光传播 | 活跃 | [README](../crates/bedrock-light/README.md) |
 | `bedrock-block-model` | `crates/bedrock-block-model` | 资源包方块模型解析 | 活跃 | [README](../crates/bedrock-block-model/README.md) |

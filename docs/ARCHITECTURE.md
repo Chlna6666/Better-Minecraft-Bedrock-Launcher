@@ -60,6 +60,14 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 - **应用框架不拥有业务**：`egpui` 只提供生命周期、运行时、UI bridge、i18n 与持久任务抽象；
   下载/存档/地图等语义留在 `src/`。
 - **领域 crate 不依赖 UI/GPU**：`bedrock-*` 负责 Bedrock 数据与 CPU 渲染，不依赖 `gpui`。
+- **世界语义与数据库机制分层**：`bedrock-world` 是可复用的地图数据中间层，负责解析、查询和
+  编辑有类型的世界数据，包括 `level.dat`、玩家、区块、方块、群系、实体和地图物品；通过
+  `WorldStorage` 抽象读写记录，事务统一校验并提交。它不要求调用方直接依赖 LevelDB，可使用
+  内存或其他存储实现。新增世界域（例如事件或游戏刻）应归入相应的 `bedrock-world` 领域模块。
+  `bedrock-leveldb` 只负责原始键值数据库和文件机制，不承载地图数据语义。
+- **NBT 编解码独立**：`bedrock-nbt` 拥有 NBT/SNBT 数据模型、二进制编码与文本解析，
+  不依赖世界、存储或 UI；`bedrock-world` 依赖它，并继续管理 `level.dat` 文件头、
+  历史版本语义和世界数据校验。应用可直接使用 `bedrock-nbt`。
 
 以上约束即 gpui 与 nova-gfx 的边界；跨层变更需同步更新本文。
 

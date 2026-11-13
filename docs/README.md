@@ -15,7 +15,7 @@
 | [CLI](CLI.md) | 终端命令行子命令、输出格式与退出码 |
 | [STARTUP_ARGUMENTS](STARTUP_ARGUMENTS.md) | 快捷方式/文件关联/更新器使用的启动参数与兼容参数 |
 | [CAPE_PACK_FORMAT](CAPE_PACK_FORMAT.md) | 披风包清单、纹理、图标、本地化和导入格式 |
-| [NAMING](NAMING.md) | 命名规范（wgpu 对齐、动词族、公共/内部接口） |
+| [NAMING](NAMING.md) | Rust 命名规范（API 职责、参数、模块路径与文件布局） |
 
 英文镜像：
 [README.en.md](README.en.md) · [ARCHITECTURE.en.md](ARCHITECTURE.en.md) ·
