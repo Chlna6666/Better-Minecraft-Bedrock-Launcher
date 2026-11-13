@@ -1124,12 +1124,17 @@ mod tests {
         // Some backends do not export individual producer SubmissionIds.
         slots.draw_producer_submitted(None);
         let (mut slots, _) = slots.plan(&original[1..]).unwrap();
-        assert!(slots.retired_by_submission.is_empty());
-        assert_eq!(slots.retired_unbound, vec![0]);
+        assert_eq!(slots.retired_by_submission.len(), 1);
+        assert_eq!(slots.retired_by_submission[0].pending, vec![old]);
+        assert!(slots.retired_by_submission[0].needs_ordered_fallback);
         slots.submission_completed(old);
+        // Completing the tracked reader alone does not prove the untracked
+        // producer has stopped using the retired physical address.
         assert!(slots.free.is_empty());
+        assert!(slots.retired_by_submission[0].needs_ordered_fallback);
         let future_consumer = gfx_core::SubmissionId::from_parts(30, 1);
         slots.submission_accepted(future_consumer);
+        assert!(slots.free.is_empty());
         slots.submission_completed(future_consumer);
         assert_eq!(slots.free, vec![0]);
     }
@@ -1238,8 +1243,12 @@ mod tests {
 
         // Once the owner reports the real fence completed, the retired
         // physical row is reused without relocating survivors.
-        let extra = draws(97).pop().unwrap();
-        assert!(!original.iter().any(|draw| draw.node == extra.node));
+        // Prepared draw order is not NodeId order: the final sorted draw
+        // may refer to an earlier node rather than the newly created one.
+        let extra = draws(97)
+            .into_iter()
+            .find(|candidate| !original.iter().any(|draw| draw.node == candidate.node))
+            .expect("the 97th scene must contain a previously unseen node");
         let mut inserted = removed.clone();
         inserted.insert(31, extra);
         let plan = resident
@@ -1499,13 +1508,29 @@ mod tests {
     }
 
     #[test]
-    fn slot_replacement_does_not_grow_capacity() {
+    fn slot_replacement_reuses_storage_only_after_completed_fence() {
         let first_draws = draws(8);
         let (first, _) = StableDrawSlots::default().plan(&first_draws).unwrap();
         let other_draws = draws(8);
-        let (next, mapping) = first.plan(&other_draws).unwrap();
-        assert_eq!(next.high_water(), 8);
+        let (mut next, mapping) = first.plan(&other_draws).unwrap();
+        // Retiring an entire Section does not make its GPU addresses safe
+        // for immediate reuse: a prior upload may still be in flight.
+        assert_eq!(next.high_water(), 16);
         assert_eq!(mapping.len(), 8);
+        assert!(next.free.is_empty());
+        assert_eq!(next.retired_unbound.len(), 8);
+        let owner = gfx_core::SubmissionId::from_parts(50, 1);
+        next.submission_accepted(owner);
+        assert!(next.free.is_empty());
+        next.submission_completed(owner);
+        assert_eq!(next.free.len(), 8);
+
+        // A subsequent replacement can consume proven-completed rows
+        // without growing the resident allocation again.
+        let replacement = draws(8);
+        let (recycled, recycled_mapping) = next.plan(&replacement).unwrap();
+        assert_eq!(recycled.high_water(), 16);
+        assert!(recycled_mapping.iter().all(|&slot| slot < 8));
     }
     #[test]
     fn physical_draw_encoder_avoids_intermediate_table_and_keeps_dirty_rows() {
@@ -1685,8 +1710,8 @@ mod tests {
                 &changed,
                 &mapping,
                 slots.high_water(),
-                &keys,
-                &baseline,
+                &[],
+                &[],
                 &mut next_keys,
                 &mut full,
                 &mut scratch,
@@ -1694,7 +1719,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             patched, full,
-            "sparse GPU patch must match canonical full encode"
+            "sparse GPU patch must match a forced full encode, not a no-op reuse"
         );
     }
 
