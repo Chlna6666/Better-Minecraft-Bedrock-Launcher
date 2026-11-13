@@ -1447,6 +1447,7 @@ impl View {
         self.session_generation = self.session_generation.saturating_add(1);
         self.render_generation = self.render_generation.saturating_add(1);
         self.cancel_metadata_scan();
+        requeue_cancelled_render_tiles(&mut self.tile_manager, &mut self.active_render_tiles);
         self.cancel_active_render();
         self.retire_render_session(cx);
         self.session_loading = true;
@@ -1538,7 +1539,7 @@ impl View {
             affected_tiles = affected_tiles.len(),
             "map_viewer edit_invalidated_occupancy_index"
         );
-        self.refresh_metadata(cx);
+        self.reload_metadata(Some(affected_tiles), cx);
     }
 
     pub(super) fn schedule_chunk_patch_refresh(
@@ -1714,6 +1715,10 @@ impl View {
         .detach();
     }
     pub(super) fn refresh_metadata(&mut self, cx: &mut Context<Self>) {
+        self.reload_metadata(None, cx);
+    }
+
+    fn reload_metadata(&mut self, affected_tiles: Option<&[(i32, i32)]>, cx: &mut Context<Self>) {
         self.cancel_metadata_scan();
         self.cancel_professional_overlay_query();
         self.cancel_slime_farm_candidate_query();
@@ -1727,8 +1732,20 @@ impl View {
         self.render_generation = self.render_generation.saturating_add(1);
         self.cancel_active_render();
         self.metadata_loading = true;
-        Self::drop_render_images(self.tile_manager.clear(), cx);
-        self.clear_canvas_tile_snapshot(cx);
+        if let Some(affected_tiles) = affected_tiles {
+            // Preserve the edit priority so the scheduler uses Refresh rather than
+            // accepting a cached image of the world before undo/redo or placement.
+            Self::drop_render_images(
+                self.tile_manager
+                    .force_refresh_tiles(affected_tiles, TilePriority::EditRefresh),
+                cx,
+            );
+            let colors = self.theme_colors(cx);
+            self.remove_canvas_tiles(affected_tiles, colors, cx);
+        } else {
+            Self::drop_render_images(self.tile_manager.clear(), cx);
+            self.clear_canvas_tile_snapshot(cx);
+        }
         self.last_visible_tile_signature = None;
         self.tile_reveal_state = TileRevealState::default();
         self.metadata_index_ready = false;
@@ -1768,7 +1785,7 @@ impl View {
                 .background_spawn(async move {
                     // level.dat parsing is filesystem-backed too. Keep it on the same background
                     // metadata path instead of delaying map-window construction on the UI thread.
-                    let spawn_center = spawn_block_center(&world_path);
+                    let spawn_center = spawn_center(&world_path);
                     let occupancy = load_index(
                         world_path,
                         dimension,
@@ -3566,4 +3583,15 @@ pub(super) const fn should_probe_edit_refresh_occupancy(
     has_edit_refresh_occupancy: bool,
 ) -> bool {
     has_edit_refresh_occupancy && !occupancy_index_in_flight
+}
+
+fn spawn_center(world_path: &std::path::Path) -> Option<(i32, i32)> {
+    let document = bedrock_world::level::read(&world_path.join("level.dat")).ok()?;
+    let root = match &document.root {
+        NbtTag::Compound(root) => root,
+        _ => return None,
+    };
+    let spawn_x = root.get("SpawnX").and_then(NbtTag::as_i32)?;
+    let spawn_z = root.get("SpawnZ").and_then(NbtTag::as_i32)?;
+    Some((spawn_x, spawn_z))
 }
