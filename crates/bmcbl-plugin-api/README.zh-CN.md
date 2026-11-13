@@ -13,7 +13,7 @@ UI/布局 token、主题/日志/Toast 类型、错误、`#[bmcbl_plugin]`/`#[plu
 ## 打包
 
 插件产物为 `.bmcblx`。推荐在 `build.rs` 调用
-`bmcbl_plugin_api::pack::auto_pack_from_build_script()`；`pack-cli` feature 提供
+`bmcbl_plugin_api::pack::auto_pack()`；`pack-cli` feature 提供
 `bmcbl-plugin-tools` 手动打包工具。
 
 ## 构建与测试

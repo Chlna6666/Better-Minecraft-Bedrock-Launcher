@@ -2354,15 +2354,11 @@ pub fn storage_list(prefix: Option<impl AsRef<str>>) -> PluginResult<Vec<String>
     }
 }
 
-pub fn config_read() -> PluginResult<String> {
-    read_config()
-}
-
 /// Updates plugin configuration through the launcher.
 ///
 /// TOML is validated and the in-memory snapshot updates immediately; atomic disk persistence is
 /// queued on the launcher I/O runtime. Configuration mutation is rejected while rendering plugin UI.
-pub fn config_write(text: impl AsRef<str>) -> PluginResult<()> {
+pub fn write_config(text: impl AsRef<str>) -> PluginResult<()> {
     app_call_unit(
         AppOp::WriteConfig,
         &AppRequest::WriteConfig {
@@ -3015,7 +3011,7 @@ pub mod prelude {
         TaskFinishRequest, TaskUpdateRequest, TextSizeToken, ThemeColor, ThemeMode, ThemeSnapshot,
         ThemeToken, ToastKind, View, ViewNode, ViewStyle, ViewTree, ViewTreeBuilder, Window,
         app_info, badge, badge_styled, bmcbl_plugin, button, button_action, call_plugin_service,
-        call_service, card, checkbox, config_read, config_write, create_task, current_locale,
+        call_service, card, checkbox, create_task, current_locale,
         current_unix_ms, default_style, emit_event, finish_task, http_get_text, icon, image,
         image_options, invalidate, invalidate_all, invalidate_injection, invalidate_page,
         is_dark_mode, link, link_tooltip, log, log_debug, log_error, log_info, log_warn, navigate,
@@ -3024,7 +3020,7 @@ pub mod prelude {
         read_resource_bytes, read_resource_text, register_service, registrations, section, select,
         session_get, session_set, show_toast, sidecar_call, spacer, storage_delete, storage_get,
         storage_list, storage_set, text, theme_accent, theme_snapshot, title, toast, toggle, tr,
-        tr_arg, tr_args, update_task, view, write_clipboard_text,
+        tr_arg, tr_args, update_task, view, write_clipboard_text, write_config,
     };
 }
 

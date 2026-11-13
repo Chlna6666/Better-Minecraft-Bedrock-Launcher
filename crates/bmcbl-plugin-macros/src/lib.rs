@@ -12,7 +12,7 @@ pub fn bmcbl_plugin(attr: TokenStream, item: TokenStream) -> TokenStream {
         return syn::Error::new_spanned(
             input,
             "#[bmcbl_plugin(pack)] has been removed; use build.rs with \
-             bmcbl_plugin_api::pack::auto_pack_from_build_script()",
+             bmcbl_plugin_api::pack::auto_pack()",
         )
         .to_compile_error()
         .into();

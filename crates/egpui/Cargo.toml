@@ -14,7 +14,6 @@ categories = ["gui"]
 
 [lib]
 name = "egpui"
-path = "src/egpui.rs"
 doctest = false
 
 [dependencies]

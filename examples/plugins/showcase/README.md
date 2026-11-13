@@ -12,7 +12,7 @@ rustup target add wasm32-unknown-unknown
 cargo build --release --target wasm32-unknown-unknown --manifest-path examples/plugins/showcase/Cargo.toml
 ```
 
-`build.rs` 会调用 `bmcbl_plugin_api::pack::auto_pack_from_build_script()`：从
+`build.rs` 会调用 `bmcbl_plugin_api::pack::auto_pack()`：从
 `[package.metadata.bmcbl-plugin]` 生成 `plugin.toml`、打包 `.bmcblx` 并解包出可直接加载的插件
 目录，产物位于 `target/bmcbl-plugin-auto-build/bmcbl-showcase/`。把该目录（或 `.bmcblx` 文件）
 放进 BMCBL 的 `plugins/` 目录即可。
@@ -38,7 +38,7 @@ cargo build --release --target wasm32-unknown-unknown --manifest-path examples/p
 - **UI DSL**：容器（行/列）、卡片、分组、标题、正文、徽标、按钮、带值按钮、复选框、开关、下拉框、
   进度条、链接、图标、图片（含 caption/placeholder/fallback）、间隔。
 - **状态**：session 即时值 + storage 持久键值（`storage_get/set/delete/list`），渲染阶段只读会话值。
-- **宿主能力**：`read_config` / `config_write`、`tr!` 本地化、`http_get_text` 异步缓存、
+- **宿主能力**：`read_config` / `write_config`、`tr!` 本地化、`http_get_text` 异步缓存、
   `read_resource_text`、`read_clipboard_text` / `write_clipboard_text`、`open_external_url`、
   `navigate_path`、`create_task` / `update_task` / `finish_task`、`show_toast`、`theme_snapshot`、
   `invalidate!`。
@@ -49,7 +49,7 @@ cargo build --release --target wasm32-unknown-unknown --manifest-path examples/p
 
 1. **渲染只读状态**：`render_page` / `render_injection` 不要读文件、发请求或写配置，把结果放进
    session，渲染时直接投影；需要刷新时用 `invalidate!`。
-2. **持久化放在事件里**：`storage_set`、`config_write` 只在 `init`、`handle_event`、`shutdown` 调用。
+2. **持久化放在事件里**：`storage_set`、`write_config` 只在 `init`、`handle_event`、`shutdown` 调用。
 3. **动作表驱动**：用 `plugin_actions!` 定义 action id，再用一张 `(action, handler)` 表分发，
    避免在一个大 `match` 里堆所有逻辑。
 4. **异步能力要接受“加载中”**：`http_get_text` 首次调用通常返回 `Loading`，

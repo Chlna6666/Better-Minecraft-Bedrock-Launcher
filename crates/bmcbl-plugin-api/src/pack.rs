@@ -124,7 +124,7 @@ struct BmcblPluginLimits {
     max_storage_bytes: Option<u64>,
 }
 
-pub fn pack_plugin(options: PackOptions) -> Result<PackResult> {
+pub fn create(options: PackOptions) -> Result<PackResult> {
     let manifest_path = fs::canonicalize(&options.manifest_path)
         .with_context(|| format!("resolve {}", options.manifest_path.display()))?;
     let manifest_dir = manifest_path
@@ -145,13 +145,13 @@ pub fn pack_plugin(options: PackOptions) -> Result<PackResult> {
     if metadata.capabilities.is_empty() {
         bail!("metadata.bmcbl-plugin.capabilities must not be empty");
     }
-    validate_optional_package_path(metadata.readme.as_deref(), false)?;
-    validate_package_path_map(&metadata.readme_locales, false)?;
-    validate_optional_package_path(metadata.icon.as_deref(), false)?;
-    validate_optional_package_path(metadata.lang_dir.as_deref(), true)?;
-    validate_optional_package_path(metadata.config_default.as_deref(), false)?;
-    validate_optional_package_path(metadata.config_schema.as_deref(), false)?;
-    validate_optional_package_path(metadata.sidecar_dir.as_deref(), true)?;
+    validate_optional_package_path(metadata.readme.as_deref(), PackagePathKind::File)?;
+    validate_package_path_map(&metadata.readme_locales, PackagePathKind::File)?;
+    validate_optional_package_path(metadata.icon.as_deref(), PackagePathKind::File)?;
+    validate_optional_package_path(metadata.lang_dir.as_deref(), PackagePathKind::Directory)?;
+    validate_optional_package_path(metadata.config_default.as_deref(), PackagePathKind::File)?;
+    validate_optional_package_path(metadata.config_schema.as_deref(), PackagePathKind::File)?;
+    validate_optional_package_path(metadata.sidecar_dir.as_deref(), PackagePathKind::Directory)?;
     validate_url_allowlist(
         "permissions.network.allow",
         &metadata.permissions.network.allow,
@@ -521,9 +521,9 @@ fn write_package(
     Ok(())
 }
 
-pub fn auto_pack_from_build_script() -> Result<()> {
+pub fn auto_pack() -> Result<()> {
     if env::var_os("BMCBL_PLUGIN_POST_PACK").is_some() {
-        return run_post_pack_worker_from_env();
+        return run_post_pack_worker();
     }
     if env::var_os("BMCBL_PLUGIN_SKIP_AUTO_PACK").is_some() {
         return Ok(());
@@ -555,7 +555,7 @@ pub fn auto_pack_from_build_script() -> Result<()> {
                 .join("bmcbl-plugin-auto-build")
                 .join(&package_name)
         });
-    let result = pack_plugin(PackOptions {
+    let result = create(PackOptions {
         manifest_path: manifest_path.clone(),
         target_dir: Some(target_dir),
         wasm_path: None,
@@ -660,7 +660,7 @@ fn post_pack_worker_command() -> Result<Command> {
     Ok(command)
 }
 
-pub fn run_post_pack_worker_from_env() -> Result<()> {
+pub fn run_post_pack_worker() -> Result<()> {
     let manifest_path = env_path("BMCBL_PLUGIN_MANIFEST_PATH")?;
     let target_dir = env_path("BMCBL_PLUGIN_TARGET_DIR")?;
     let wasm_path = env_path("BMCBL_PLUGIN_WASM_PATH")?;
@@ -678,7 +678,7 @@ pub fn run_post_pack_worker_from_env() -> Result<()> {
         initial_dep_signature.as_deref(),
         require_fresh_wasm,
     )?;
-    let result = pack_plugin(PackOptions {
+    let result = create(PackOptions {
         manifest_path,
         release,
         out_dir,
@@ -975,11 +975,15 @@ fn write_allowed_resource_entries<W: Write + std::io::Seek>(
 
     for entry in allowed {
         let normalized = normalize_package_path(&entry);
-        let allow_directory = normalized.ends_with('/');
-        let relative_path = validate_package_path(Path::new(&normalized), allow_directory)
+        let kind = if normalized.ends_with('/') {
+            PackagePathKind::Directory
+        } else {
+            PackagePathKind::File
+        };
+        let relative_path = validate_package_path(Path::new(&normalized), kind)
             .with_context(|| format!("validate resource allowlist entry {normalized}"))?;
         let path = plugin_dir.join(&relative_path);
-        if allow_directory {
+        if kind == PackagePathKind::Directory {
             if path.exists() {
                 write_directory(zip, plugin_dir, &path, written_files)?;
             }
@@ -1099,8 +1103,8 @@ fn write_package_file<W: Write + std::io::Seek>(
     source_relative: &Path,
     package_relative: &Path,
 ) -> Result<()> {
-    let source_relative = validate_package_path(source_relative, false)?;
-    let package_relative = validate_package_path(package_relative, false)?;
+    let source_relative = validate_package_path(source_relative, PackagePathKind::File)?;
+    let package_relative = validate_package_path(package_relative, PackagePathKind::File)?;
     let source = plugin_dir.join(source_relative);
     if !source.exists() {
         return Ok(());
@@ -1191,22 +1195,29 @@ fn manifest_limits_section(limits: &BmcblPluginLimits) -> String {
     }
 }
 
-fn validate_optional_package_path(path: Option<&str>, allow_directory: bool) -> Result<()> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PackagePathKind {
+    File,
+    Directory,
+    FileOrDirectory,
+}
+
+fn validate_optional_package_path(path: Option<&str>, kind: PackagePathKind) -> Result<()> {
     if let Some(path) = path {
-        validate_package_path(Path::new(path), allow_directory)?;
+        validate_package_path(Path::new(path), kind)?;
     }
     Ok(())
 }
 
 fn validate_package_path_map(
     paths: &BTreeMap<String, String>,
-    allow_directory: bool,
+    kind: PackagePathKind,
 ) -> Result<()> {
     for (locale, path) in paths {
         if locale.trim().is_empty() {
             bail!("plugin locale keys must not be empty");
         }
-        validate_package_path(Path::new(path), allow_directory)
+        validate_package_path(Path::new(path), kind)
             .with_context(|| format!("validate plugin package path for locale {locale}"))?;
     }
     Ok(())
@@ -1226,13 +1237,13 @@ fn validate_url_allowlist(label: &str, urls: &[String]) -> Result<()> {
 
 fn validate_package_allowlist(label: &str, paths: &[String]) -> Result<()> {
     for path in paths {
-        validate_package_path(Path::new(path), true)
+        validate_package_path(Path::new(path), PackagePathKind::FileOrDirectory)
             .with_context(|| format!("validate plugin package path for {label}"))?;
     }
     Ok(())
 }
 
-fn validate_package_path(path: &Path, allow_directory: bool) -> Result<PathBuf> {
+fn validate_package_path(path: &Path, kind: PackagePathKind) -> Result<PathBuf> {
     if path.as_os_str().is_empty() {
         bail!("plugin package path must not be empty");
     }
@@ -1246,7 +1257,7 @@ fn validate_package_path(path: &Path, allow_directory: bool) -> Result<PathBuf> 
         bail!("plugin package path must stay inside the plugin directory");
     }
     let normalized = normalize_package_path(&path.to_string_lossy());
-    if !allow_directory && normalized.ends_with('/') {
+    if kind == PackagePathKind::File && normalized.ends_with('/') {
         bail!("plugin package file path must not end with /");
     }
     Ok(PathBuf::from(normalized))

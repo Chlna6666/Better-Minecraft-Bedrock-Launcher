@@ -9,7 +9,7 @@ BMCBL 插件过程宏：`#[bmcbl_plugin]` 为插件实现生成 ABI 入口，`#[
 
 - 只包含宏实现；运行时 ABI 在 `bmcbl_plugin_api`。
 - `#[bmcbl_plugin(pack)]` 已移除，请使用 `build.rs` +
-  `bmcbl_plugin_api::pack::auto_pack_from_build_script()`。
+  `bmcbl_plugin_api::pack::auto_pack()`。
 
 ## 构建与测试
 

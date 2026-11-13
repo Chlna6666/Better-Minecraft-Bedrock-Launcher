@@ -31,7 +31,7 @@ fn main() -> Result<()> {
             out_dir,
         } => {
             let result =
-                bmcbl_plugin_api::pack::pack_plugin(bmcbl_plugin_api::pack::PackOptions {
+                bmcbl_plugin_api::pack::create(bmcbl_plugin_api::pack::PackOptions {
                     manifest_path,
                     release,
                     out_dir,

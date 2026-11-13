@@ -138,7 +138,7 @@ fn save_config(_value: Option<&str>) -> PluginResult<()> {
         TASK_TOTAL,
         state::route()
     );
-    config_write(&text)?;
+    write_config(&text)?;
     state::set_config_text(&text)?;
     toast!(success, tr!("showcase.toast.config_saved"))?;
     refresh_main()

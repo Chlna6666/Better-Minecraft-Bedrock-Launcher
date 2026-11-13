@@ -18,5 +18,5 @@ rustup target add wasm32-unknown-unknown
 cargo build --release --target wasm32-unknown-unknown --manifest-path examples/plugins/hello-wasm/Cargo.toml
 ```
 
-构建脚本会通过 `bmcbl_plugin_api::pack::auto_pack_from_build_script()` 生成 `.bmcblx`。
+构建脚本会通过 `bmcbl_plugin_api::pack::auto_pack()` 生成 `.bmcblx`。
 插件 API 版本为 `0.6`。

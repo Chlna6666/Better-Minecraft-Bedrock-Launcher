@@ -13,7 +13,7 @@ plugin context, UI/layout tokens, theme/log/toast types, errors, the `#[bmcbl_pl
 ## Packing
 
 Plugins produce `.bmcblx` packages. The recommended path is a `build.rs` call to
-`bmcbl_plugin_api::pack::auto_pack_from_build_script()`; the `bmcbl-plugin-tools` binary
+`bmcbl_plugin_api::pack::auto_pack()`; the `bmcbl-plugin-tools` binary
 (`pack-cli` feature) supports manual packing.
 
 ## Build and test

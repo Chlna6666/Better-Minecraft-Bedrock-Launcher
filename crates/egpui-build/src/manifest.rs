@@ -9,7 +9,7 @@ use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum ManifestLoadError {
+pub enum ManifestError {
     #[error("failed to read manifest `{path}`: {source}")]
     Read {
         path: PathBuf,
@@ -27,22 +27,21 @@ pub enum ManifestLoadError {
 ///
 /// Tables are merged recursively. Arrays and scalar values from a later
 /// overlay replace the earlier value, making the result deterministic.
-pub fn load_manifest(
+pub fn load(
     manifest_path: impl AsRef<Path>,
     overlay_paths: &[PathBuf],
-) -> Result<AppManifest, ManifestLoadError> {
+) -> Result<AppManifest, ManifestError> {
     let manifest_path = manifest_path.as_ref();
-    let base = fs::read_to_string(manifest_path).map_err(|source| ManifestLoadError::Read {
+    let base = fs::read_to_string(manifest_path).map_err(|source| ManifestError::Read {
         path: manifest_path.to_owned(),
         source,
     })?;
     let mut document = toml::from_str::<toml::Value>(&base)?;
     for overlay_path in overlay_paths {
-        let overlay =
-            fs::read_to_string(overlay_path).map_err(|source| ManifestLoadError::Read {
-                path: overlay_path.clone(),
-                source,
-            })?;
+        let overlay = fs::read_to_string(overlay_path).map_err(|source| ManifestError::Read {
+            path: overlay_path.clone(),
+            source,
+        })?;
         let overlay = toml::from_str::<toml::Value>(&overlay)?;
         merge_toml(&mut document, overlay);
     }
@@ -52,14 +51,14 @@ pub fn load_manifest(
 }
 
 /// Parses and validates a manifest held by a caller.
-pub fn load_manifest_from_str(source: &str) -> Result<AppManifest, ManifestLoadError> {
+pub fn parse(source: &str) -> Result<AppManifest, ManifestError> {
     let manifest = toml::from_str::<toml::Value>(source)?.try_into::<AppManifest>()?;
     manifest.validate()?;
     Ok(manifest)
 }
 
 /// Returns the JSON Schema for the supported `App.toml` model.
-pub fn manifest_schema_json() -> Result<String, ManifestLoadError> {
+pub fn schema_json() -> Result<String, ManifestError> {
     let schema = schema_for!(AppManifest);
     let value = serde_json::to_value(schema)?;
     let mut document = serde_json::Map::new();
@@ -86,7 +85,7 @@ fn merge_toml(base: &mut toml::Value, overlay: toml::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_manifest_from_str, manifest_schema_json};
+    use super::{parse, schema_json};
 
     const VALID: &str = r#"
 schema_version = 1
@@ -119,13 +118,13 @@ targets = ["windows-portable"]
 "#;
 
     #[test]
-    fn loads_and_validates_manifest() {
-        load_manifest_from_str(VALID).expect("valid manifest");
+    fn parses_and_validates_manifest() {
+        parse(VALID).expect("valid manifest");
     }
 
     #[test]
     fn emits_versioned_schema() {
-        let schema = manifest_schema_json().expect("schema");
+        let schema = schema_json().expect("schema");
         assert!(schema.contains("\"schema_version\": 1"));
         assert!(schema.contains("\"AppManifest\""));
     }

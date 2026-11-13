@@ -14,7 +14,6 @@ categories = ["development-tools::build-utils"]
 
 [lib]
 name = "egpui_build"
-path = "src/egpui_build.rs"
 doctest = false
 
 [dependencies]
