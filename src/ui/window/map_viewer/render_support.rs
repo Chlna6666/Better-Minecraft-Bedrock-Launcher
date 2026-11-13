@@ -1,5 +1,4 @@
 use super::model::*;
-use super::panels::*;
 use super::prelude::*;
 
 const MIN_REGION_CACHE_ENTRIES: usize = 131_072;
@@ -24,7 +23,7 @@ pub(super) fn probe_blocking_pool(stage: &'static str) {
     }
 }
 
-pub(super) fn render_io_error(message: impl Into<String>) -> bedrock_render::BedrockRenderError {
+pub(super) fn io_error(message: impl Into<String>) -> bedrock_render::BedrockRenderError {
     let message = message.into();
     bedrock_render::BedrockRenderError::io(message.clone(), std::io::Error::other(message))
 }
@@ -39,7 +38,7 @@ pub(super) fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> S
     "unknown panic payload".to_string()
 }
 
-pub(super) fn render_backend_label(
+pub(super) fn backend_label(
     backend: RenderBackend,
     gpu_backend: RenderGpuBackend,
 ) -> &'static str {
@@ -55,7 +54,7 @@ pub(super) fn render_backend_label(
     }
 }
 
-pub(super) const fn default_render_backend() -> RenderBackend {
+pub(super) const fn default_backend() -> RenderBackend {
     RenderBackend::Auto
 }
 
@@ -132,7 +131,7 @@ fn refresh_available_system_memory_bytes() -> u64 {
     system.available_memory()
 }
 
-pub(super) fn render_cpu_chunk_batch_size(worker_count: usize) -> usize {
+pub(super) fn cpu_chunk_batch_size(worker_count: usize) -> usize {
     worker_count.saturating_mul(4).clamp(4, 32)
 }
 
@@ -178,7 +177,7 @@ pub(super) fn tile_count_for_viewport(viewport: MapViewport, radius: i32) -> Opt
     )
 }
 
-pub(super) fn visible_render_batch_size(
+pub(super) fn visible_batch_size(
     base_batch_size: usize,
     visible_tile_count: usize,
     is_dragging: bool,
@@ -202,7 +201,7 @@ pub(super) fn visible_render_batch_size(
     batch_size
 }
 
-pub(super) fn render_memory_budget_bytes(work_items: usize, cpu_budget: RenderCpuBudget) -> u64 {
+pub(super) fn memory_budget_bytes(work_items: usize, cpu_budget: RenderCpuBudget) -> u64 {
     let per_tile_budget = (DEFAULT_TILE_SIZE as u64)
         .saturating_mul(DEFAULT_TILE_SIZE as u64)
         .saturating_mul(8);
@@ -220,7 +219,7 @@ pub(super) fn render_memory_budget_bytes(work_items: usize, cpu_budget: RenderCp
         )
 }
 
-pub(super) fn render_staging_pool_bytes(work_items: usize, cpu_budget: RenderCpuBudget) -> usize {
+pub(super) fn staging_pool_bytes(work_items: usize, cpu_budget: RenderCpuBudget) -> usize {
     let per_tile_budget = (DEFAULT_TILE_SIZE as usize)
         .saturating_mul(DEFAULT_TILE_SIZE as usize)
         .saturating_mul(4);
@@ -266,7 +265,7 @@ pub(super) fn gpu_status_text(stats: &RenderPipelineStats) -> String {
     )
 }
 
-pub(super) fn render_gpu_backend_label_zh(backend: RenderGpuBackend) -> &'static str {
+pub(super) fn gpu_backend_label_zh(backend: RenderGpuBackend) -> &'static str {
     match backend {
         RenderGpuBackend::Auto => "自动",
         RenderGpuBackend::Dx11 => "DX11",
@@ -275,14 +274,14 @@ pub(super) fn render_gpu_backend_label_zh(backend: RenderGpuBackend) -> &'static
     }
 }
 
-pub(super) fn render_gpu_backend_status_zh(stats: &RenderPipelineStats) -> String {
+pub(super) fn gpu_backend_status_zh(stats: &RenderPipelineStats) -> String {
     if stats.gpu_tiles == 0 && stats.gpu_fallback_reason.is_none() {
         return "GPU 未启用".to_string();
     }
     format!(
         "请求 {} · 实际 {}",
-        render_gpu_backend_label_zh(stats.gpu_requested_backend),
-        render_gpu_backend_label_zh(stats.gpu_actual_backend)
+        gpu_backend_label_zh(stats.gpu_requested_backend),
+        gpu_backend_label_zh(stats.gpu_actual_backend)
     )
 }
 
@@ -328,259 +327,6 @@ pub(super) fn compact_gpu_name(name: &str) -> String {
         .collect::<String>();
     value.push('…');
     value
-}
-
-pub(super) fn spawn_block_center(world_path: &std::path::Path) -> Option<(i32, i32)> {
-    let document = bedrock_world::level::read(&world_path.join("level.dat")).ok()?;
-    let root = match &document.root {
-        NbtTag::Compound(root) => root,
-        _ => return None,
-    };
-    let spawn_x = nbt_i32(root.get("SpawnX")?)?;
-    let spawn_z = nbt_i32(root.get("SpawnZ")?)?;
-    Some((spawn_x, spawn_z))
-}
-
-pub(super) fn nbt_i32(tag: &NbtTag) -> Option<i32> {
-    match tag {
-        NbtTag::Byte(value) => Some(i32::from(*value)),
-        NbtTag::Short(value) => Some(i32::from(*value)),
-        NbtTag::Int(value) => Some(*value),
-        NbtTag::Long(value) => i32::try_from(*value).ok(),
-        _ => None,
-    }
-}
-
-pub(super) fn viewer_mode_from_render_mode(mode: RenderMode) -> ViewerMode {
-    match mode {
-        RenderMode::SurfaceBlocks => ViewerMode::Surface,
-        RenderMode::Biome { .. } | RenderMode::RawBiomeLayer { .. } => ViewerMode::Biome,
-        RenderMode::HeightMap | RenderMode::RawHeightMap => ViewerMode::Height,
-        RenderMode::LayerBlocks { .. } => ViewerMode::Layer,
-        RenderMode::CaveSlice { .. } => ViewerMode::Cave,
-    }
-}
-
-pub(super) fn map_input_state(
-    window: &mut Window,
-    cx: &mut Context<View>,
-    placeholder: &'static str,
-) -> Entity<InputState> {
-    cx.new(|cx| {
-        let mut input = InputState::new(window, cx);
-        input.set_placeholder(SharedString::from(placeholder), cx);
-        input
-    })
-}
-
-pub(super) fn map_input_subscriptions(
-    input_fields: &MapInputFields,
-    cx: &mut Context<View>,
-) -> Vec<Subscription> {
-    [
-        (MapInputField::CenterX, input_fields.center_x.clone()),
-        (MapInputField::CenterZ, input_fields.center_z.clone()),
-        (
-            MapInputField::ZoomPercent,
-            input_fields.zoom_percent.clone(),
-        ),
-        (
-            MapInputField::DimensionId,
-            input_fields.dimension_id.clone(),
-        ),
-        (
-            MapInputField::SelectionMinY,
-            input_fields.selection_min_y.clone(),
-        ),
-        (
-            MapInputField::SelectionMaxY,
-            input_fields.selection_max_y.clone(),
-        ),
-        (
-            MapInputField::PasteOriginY,
-            input_fields.paste_origin_y.clone(),
-        ),
-    ]
-    .into_iter()
-    .map(|(field, input)| {
-        cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
-            this.handle_map_input_event(field, input, event, cx);
-        })
-    })
-    .collect()
-}
-
-pub(super) fn initialize_map_input_values(
-    input_fields: &MapInputFields,
-    values: [(MapInputField, String); 7],
-    window: &mut Window,
-    cx: &mut Context<View>,
-) {
-    for (field, value) in values {
-        input_fields.entity(field).update(cx, |input, cx| {
-            input.set_value(SharedString::from(value), window, cx);
-        });
-    }
-}
-
-pub(super) fn parse_i32_input(value: &str, label: &'static str) -> Result<i32, SharedString> {
-    if value.is_empty() {
-        return Err(SharedString::from(format!("{label} 不能为空")));
-    }
-    value
-        .parse::<i32>()
-        .map_err(|_| SharedString::from(format!("{label} 必须是整数")))
-}
-
-pub(super) fn parse_optional_i32_input(
-    value: &str,
-    label: &'static str,
-    fallback: i32,
-) -> Result<i32, SharedString> {
-    let value = value.trim();
-    if value.is_empty() {
-        Ok(fallback)
-    } else {
-        parse_i32_input(value, label)
-    }
-}
-
-pub(super) fn parse_zoom_scale(value: &str) -> Result<f32, SharedString> {
-    let value = value.trim_end_matches('%').trim();
-    if value.is_empty() {
-        return Err(SharedString::from("缩放不能为空"));
-    }
-    let percent = value
-        .parse::<f32>()
-        .map_err(|_| SharedString::from("缩放必须是数字或百分比"))?;
-    if !percent.is_finite() || percent <= 0.0 {
-        return Err(SharedString::from("缩放必须大于 0"));
-    }
-    Ok((percent / 100.0).clamp(MIN_VIEWPORT_SCALE, MAX_VIEWPORT_SCALE))
-}
-
-pub(super) fn dimension_buttons(
-    active: Dimension,
-    custom_id: i32,
-    colors: &ThemeColors,
-    _i18n: &I18n,
-    cx: &mut Context<View>,
-) -> Vec<AnyElement> {
-    [
-        (Dimension::Overworld, t!("MapViewer.dimension_overworld")),
-        (Dimension::Nether, t!("MapViewer.dimension_nether")),
-        (Dimension::End, t!("MapViewer.dimension_end")),
-        (
-            Dimension::Unknown(custom_id),
-            t!("MapViewer.dimension_custom"),
-        ),
-    ]
-    .into_iter()
-    .map(|(dimension, label)| {
-        mode_button(colors, label, active == dimension)
-            .w(px(122.0))
-            .justify_center()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event, _window, cx| this.set_dimension(dimension, cx)),
-            )
-            .into_any_element()
-    })
-    .collect()
-}
-
-pub(super) fn slime_farm_search_mode_buttons(
-    active: SlimeFarmSearchMode,
-    colors: &ThemeColors,
-    cx: &mut Context<View>,
-) -> Vec<AnyElement> {
-    [
-        (
-            SlimeFarmSearchMode::Quad2x2,
-            t!("MapViewer.slime_mode_quad"),
-        ),
-        (
-            SlimeFarmSearchMode::Rectangle2x3,
-            t!("MapViewer.slime_mode_rect_six"),
-        ),
-        (
-            SlimeFarmSearchMode::Square3x3,
-            t!("MapViewer.slime_mode_square_nine"),
-        ),
-        (
-            SlimeFarmSearchMode::LargestConnected,
-            t!("MapViewer.slime_mode_largest"),
-        ),
-    ]
-    .into_iter()
-    .map(|(mode, label)| {
-        mode_button(colors, label, active == mode)
-            .min_w(px(108.0))
-            .justify_center()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event, _window, cx| {
-                    this.set_slime_farm_search_mode(mode, cx)
-                }),
-            )
-            .into_any_element()
-    })
-    .collect()
-}
-
-pub(super) fn slime_farm_scope_mode_buttons(
-    active: SlimeFarmScopeMode,
-    advanced_active: bool,
-    colors: &ThemeColors,
-    cx: &mut Context<View>,
-) -> Vec<AnyElement> {
-    [
-        (
-            SlimeFarmScopeMode::Auto,
-            t!("MapViewer.slime_scope_mode_auto"),
-        ),
-        (
-            SlimeFarmScopeMode::Viewport,
-            t!("MapViewer.slime_scope_mode_viewport"),
-        ),
-        (
-            SlimeFarmScopeMode::Selection,
-            t!("MapViewer.slime_scope_mode_selection"),
-        ),
-        (
-            SlimeFarmScopeMode::SelectedPlayer,
-            t!("MapViewer.slime_scope_mode_player"),
-        ),
-    ]
-    .into_iter()
-    .map(|(mode, label)| {
-        mode_button(colors, label, !advanced_active && active == mode)
-            .min_w(px(92.0))
-            .justify_center()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event, _window, cx| {
-                    this.set_slime_farm_scope_mode(mode, cx)
-                }),
-            )
-            .into_any_element()
-    })
-    .collect()
-}
-
-pub(super) fn context_menu_chunk(menu: ContextMenuState, dimension: Dimension) -> ChunkPos {
-    chunk_from_block(menu.block_x, menu.block_z, dimension)
-}
-
-pub(super) fn clamp_stage_position(
-    position: Point<Pixels>,
-    viewport_width: f32,
-    viewport_height: f32,
-) -> Point<Pixels> {
-    point(
-        px((position.x / px(1.0)).clamp(0.0, viewport_width.max(1.0))),
-        px((position.y / px(1.0)).clamp(0.0, viewport_height.max(1.0))),
-    )
 }
 
 fn visible_tile_count(viewport: MapViewport, tile_size: usize, radius: i32) -> usize {

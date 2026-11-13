@@ -1,5 +1,7 @@
 use super::editor::{copy_chunks, pasted_chunk_targets};
-use super::helpers::*;
+use super::input::{integer, optional_integer, zoom_scale};
+use super::menus::context_menu_chunk;
+use super::render_support::backend_label;
 use super::import_preview;
 use super::mcstructure;
 use super::model::*;
@@ -192,7 +194,7 @@ impl View {
         }
         self.status = SharedString::from(format!(
             "渲染后端固定为 {} · 缓存签名隔离并从下个批次生效",
-            render_backend_label(self.render_backend, self.render_gpu_backend)
+            backend_label(self.render_backend, self.render_gpu_backend)
         ));
         self.invalidate_tiles(cx);
         self.refresh_render_session(cx);
@@ -1138,7 +1140,7 @@ impl View {
 
     pub(super) fn sync_input_value(
         &mut self,
-        field: MapInputField,
+        field: InputField,
         value: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1157,9 +1159,9 @@ impl View {
         });
     }
 
-    pub(super) fn handle_map_input_event(
+    pub(super) fn handle_input_event(
         &mut self,
-        field: MapInputField,
+        field: InputField,
         input: Entity<InputState>,
         event: &InputEvent,
         cx: &mut Context<Self>,
@@ -1170,7 +1172,7 @@ impl View {
                 cx.notify();
             }
             InputEvent::Change => {
-                if input.read(cx).value().as_ref() == self.map_input_display_value(field) {
+                if input.read(cx).value().as_ref() == self.input_display_value(field) {
                     self.input_fields.dirty_fields.remove(&field);
                     return;
                 }
@@ -1182,7 +1184,7 @@ impl View {
             }
             InputEvent::Blur => {
                 let value = input.read(cx).value();
-                self.apply_map_input_value(field, value, cx);
+                self.apply_input_value(field, value, cx);
                 if self.input_fields.focused_field == Some(field) {
                     self.input_fields.focused_field = None;
                 }
@@ -1190,28 +1192,28 @@ impl View {
             }
             InputEvent::PressEnter { .. } => {
                 let value = input.read(cx).value();
-                self.apply_map_input_value(field, value, cx);
+                self.apply_input_value(field, value, cx);
                 cx.notify();
             }
         }
     }
 
-    pub(super) fn apply_map_input_value(
+    pub(super) fn apply_input_value(
         &mut self,
-        field: MapInputField,
+        field: InputField,
         value: SharedString,
         cx: &mut Context<Self>,
     ) {
         let trimmed = value.as_ref().trim();
-        let result: Result<String, (MapInputField, SharedString)> = match field {
-            MapInputField::CenterX | MapInputField::CenterZ => {
+        let result: Result<String, (InputField, SharedString)> = match field {
+            InputField::CenterX | InputField::CenterZ => {
                 self.apply_coordinate_inputs(field, trimmed, cx)
             }
-            MapInputField::ZoomPercent => {
+            InputField::ZoomPercent => {
                 let scale = if trimmed.is_empty() {
                     Ok(self.viewport.scale)
                 } else {
-                    parse_zoom_scale(trimmed)
+                    zoom_scale(trimmed)
                 };
                 scale
                     .map(|scale| {
@@ -1221,7 +1223,7 @@ impl View {
                     })
                     .map_err(|message| (field, message))
             }
-            MapInputField::DimensionId => parse_i32_input(trimmed, "维度ID")
+            InputField::DimensionId => integer(trimmed, "维度ID")
                 .map(|dimension_id| {
                     self.custom_dimension_id = dimension_id;
                     let dimension = Dimension::from_id(dimension_id);
@@ -1231,8 +1233,8 @@ impl View {
                     format!("维度已设为 {}", dimension_label(dimension))
                 })
                 .map_err(|message| (field, message)),
-            MapInputField::SelectionMinY | MapInputField::SelectionMaxY => {
-                parse_i32_input(trimmed, "选区高度")
+            InputField::SelectionMinY | InputField::SelectionMaxY => {
+                integer(trimmed, "选区高度")
                     .map_err(|message| (field, message))
                     .and_then(|value| {
                         let Some(volume) = self.professional.volume_selection else {
@@ -1244,7 +1246,7 @@ impl View {
                             dimension: volume.dimension,
                         }
                         .y_range(ChunkVersion::New);
-                        let upper = field == MapInputField::SelectionMaxY;
+                        let upper = field == InputField::SelectionMaxY;
                         let valid = (world_min..=world_max).contains(&value)
                             && if upper {
                                 value >= volume.min[1]
@@ -1290,13 +1292,13 @@ impl View {
 
         match result {
             Ok(message) => {
-                if matches!(field, MapInputField::CenterX | MapInputField::CenterZ) {
+                if matches!(field, InputField::CenterX | InputField::CenterZ) {
                     self.input_fields
                         .dirty_fields
-                        .remove(&MapInputField::CenterX);
+                        .remove(&InputField::CenterX);
                     self.input_fields
                         .dirty_fields
-                        .remove(&MapInputField::CenterZ);
+                        .remove(&InputField::CenterZ);
                 } else {
                     self.input_fields.dirty_fields.remove(&field);
                 }
@@ -1314,25 +1316,25 @@ impl View {
 
     fn apply_coordinate_inputs(
         &mut self,
-        active_field: MapInputField,
+        active_field: InputField,
         active_value: &str,
         cx: &mut Context<Self>,
-    ) -> Result<String, (MapInputField, SharedString)> {
+    ) -> Result<String, (InputField, SharedString)> {
         let (current_x, current_z) = self.viewport.center_block(self.active_layout);
-        let x_value = if active_field == MapInputField::CenterX {
+        let x_value = if active_field == InputField::CenterX {
             SharedString::from(active_value.to_string())
         } else {
             self.input_fields.center_x.read(cx).value()
         };
-        let z_value = if active_field == MapInputField::CenterZ {
+        let z_value = if active_field == InputField::CenterZ {
             SharedString::from(active_value.to_string())
         } else {
             self.input_fields.center_z.read(cx).value()
         };
-        let block_x = parse_optional_i32_input(x_value.as_ref().trim(), "X", current_x)
-            .map_err(|message| (MapInputField::CenterX, message))?;
-        let block_z = parse_optional_i32_input(z_value.as_ref().trim(), "Z", current_z)
-            .map_err(|message| (MapInputField::CenterZ, message))?;
+        let block_x = optional_integer(x_value.as_ref().trim(), "X", current_x)
+            .map_err(|message| (InputField::CenterX, message))?;
+        let block_z = optional_integer(z_value.as_ref().trim(), "Z", current_z)
+            .map_err(|message| (InputField::CenterZ, message))?;
         self.center_viewport_on_block(block_x, block_z, cx);
         Ok(format!("已跳转到 X {block_x} · Z {block_z}"))
     }
@@ -1412,11 +1414,12 @@ impl View {
     }
 
     pub(super) fn text_input_focused(&self, window: &Window, cx: &App) -> bool {
-        let map_input_focused = [
-            MapInputField::CenterX,
-            MapInputField::CenterZ,
-            MapInputField::ZoomPercent,
-            MapInputField::DimensionId,
+        let input_focused = [
+            InputField::CenterX,
+            InputField::CenterZ,
+            InputField::ZoomPercent,
+            InputField::DimensionId,
+            InputField::PasteOriginY,
         ]
         .into_iter()
         .any(|field| {
@@ -1447,7 +1450,7 @@ impl View {
                 .search
                 .focus_handle(cx)
                 .is_focused(window)
-            || map_input_focused
+            || input_focused
             || import_numeric_focused
     }
 
@@ -1831,7 +1834,7 @@ impl View {
         false
     }
 
-    fn paste_preview_auto_pan(
+    pub(super) fn paste_preview_auto_pan(
         &self,
         position: Point<Pixels>,
     ) -> Option<PastePreviewAutoPan> {

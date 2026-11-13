@@ -6,7 +6,12 @@ fn screen_image_bounds(
     None
 }
 
-use super::helpers::*;
+use super::input::{self, initialize_values};
+use super::render_support::{
+    default_gpu_backend, default_backend, gpu_status_text, probe_blocking_pool,
+    request_system_memory_refresh, tile_cache_memory_limit, ui_tile_memory_budget_bytes,
+    visible_batch_size,
+};
 use super::model::*;
 use super::players::cached_item_catalog_snapshot;
 use super::prelude::*;
@@ -294,25 +299,25 @@ impl View {
         let world_path = PathBuf::from(init.world_path.as_ref());
         let window_size = window.viewport_size();
         let viewport = MapViewport::new(window_size);
-        let input_fields = MapInputFields::new(window, cx);
+        let input_fields = InputFields::new(window, cx);
         let initial_layout = web_relief_render_layout();
         let (initial_center_x, initial_center_z) = viewport.center_block(initial_layout);
-        initialize_map_input_values(
+        initialize_values(
             &input_fields,
             [
-                (MapInputField::CenterX, initial_center_x.to_string()),
-                (MapInputField::CenterZ, initial_center_z.to_string()),
+                (InputField::CenterX, initial_center_x.to_string()),
+                (InputField::CenterZ, initial_center_z.to_string()),
                 (
-                    MapInputField::ZoomPercent,
+                    InputField::ZoomPercent,
                     format!("{:.0}", viewport.scale * 100.0),
                 ),
                 (
-                    MapInputField::DimensionId,
+                    InputField::DimensionId,
                     Dimension::Overworld.id().to_string(),
                 ),
-                (MapInputField::SelectionMinY, "64".to_string()),
-                (MapInputField::SelectionMaxY, "64".to_string()),
-                (MapInputField::PasteOriginY, "64".to_string()),
+                (InputField::SelectionMinY, "64".to_string()),
+                (InputField::SelectionMaxY, "64".to_string()),
+                (InputField::PasteOriginY, "64".to_string()),
             ],
             window,
             cx,
@@ -373,7 +378,7 @@ impl View {
             window.set_title(title.as_ref());
             cx.notify();
         }));
-        subscriptions.extend(map_input_subscriptions(&input_fields, cx));
+        subscriptions.extend(input::subscriptions(&input_fields, cx));
         subscriptions.extend(player_subscriptions(&player_workspace, cx));
         subscriptions.push(cx.subscribe(
             &map_image.player_search,
@@ -451,7 +456,7 @@ impl View {
             version: init.version,
             asset: init.asset,
             world_path,
-            mode: viewer_mode_from_render_mode(init.initial_mode),
+            mode: viewer_mode(init.initial_mode),
             dimension: Dimension::Overworld,
             custom_dimension_id: 0,
             y_layer: 64,
@@ -465,7 +470,7 @@ impl View {
             window_width: window_size.width / px(1.0),
             window_height: window_size.height / px(1.0),
             cpu_budget: RenderCpuBudget::default(),
-            render_backend: default_render_backend(),
+            render_backend: default_backend(),
             render_gpu_backend: default_gpu_backend(),
             overlay_options: OverlayOptions::default(),
             slime_farm_search_mode: SlimeFarmSearchMode::default(),
@@ -2730,7 +2735,7 @@ impl View {
         if !has_batch_capacity {
             return;
         }
-        let batch_size = visible_render_batch_size(
+        let batch_size = visible_batch_size(
             interactive_tile_batch_size(self.cpu_budget),
             visible_tiles.len(),
             viewport_dragging,

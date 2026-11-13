@@ -13,7 +13,7 @@ impl View {
         cx: &mut Context<Self>,
     ) -> Div {
         div()
-            .h(px(60.0))
+            .h(px(48.0))
             .flex_none()
             .px(px(14.0))
             .border_b_1()

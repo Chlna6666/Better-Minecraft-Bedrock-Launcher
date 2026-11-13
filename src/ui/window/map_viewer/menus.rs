@@ -1,5 +1,5 @@
 use super::editor::*;
-use super::helpers::*;
+use super::render_support::backend_label;
 use super::layout::top_toolbar_layout;
 use super::model::*;
 use super::prelude::*;
@@ -874,7 +874,7 @@ impl View {
                         }
                     })),
                     ContextMenuEntry::item(
-                        ContextMenuItem::new(render_backend_label(
+                        ContextMenuItem::new(backend_label(
                             self.render_backend,
                             self.render_gpu_backend,
                         ))
@@ -1106,4 +1106,8 @@ mod context_write_scope_tests {
         assert!(!write_targets_selection(Some(single)));
         assert!(write_targets_selection(Some(multiple)));
     }
+}
+
+pub(super) fn context_menu_chunk(menu: ContextMenuState, dimension: Dimension) -> ChunkPos {
+    chunk_from_block(menu.block_x, menu.block_z, dimension)
 }

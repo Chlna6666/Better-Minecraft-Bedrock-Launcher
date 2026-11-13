@@ -1,4 +1,7 @@
-use super::helpers::*;
+use super::render_support::{
+    panic_payload_message, io_error, memory_budget_bytes, staging_pool_bytes,
+    tile_cache_memory_limit,
+};
 use super::model::*;
 use super::prelude::*;
 use super::tile_cache::*;
@@ -356,7 +359,7 @@ pub(super) fn render_tile_batch_stream(
                         let ready_tiles = {
                             let mut ready_batcher = ready_batcher
                                 .lock()
-                                .map_err(|_| render_io_error("渲染瓦片批处理状态锁已损坏"))?;
+                                .map_err(|_| io_error("渲染瓦片批处理状态锁已损坏"))?;
                             ready_batcher.push(ReadyTile {
                                 coord,
                                 tile: ViewerTile {
@@ -407,7 +410,7 @@ pub(super) fn render_tile_batch_stream(
                     } => {
                         let ready_tiles = ready_batcher
                             .lock()
-                            .map_err(|_| render_io_error("渲染瓦片批处理状态锁已损坏"))?
+                            .map_err(|_| io_error("渲染瓦片批处理状态锁已损坏"))?
                             .flush();
                         send_ready_tiles_or_cancel(&event_sender, &stream_cancel, ready_tiles)?;
                         stats.planned_tiles = requested_tile_count;
@@ -745,7 +748,7 @@ pub(super) fn interactive_render_options(
         pipeline_level: RenderGpuPipelineLevel::ComposeOnly,
         max_in_flight: gpu_in_flight,
         batch_pixels: tile_pixels,
-        staging_pool_bytes: render_staging_pool_bytes(work_items, cpu_budget),
+        staging_pool_bytes: staging_pool_bytes(work_items, cpu_budget),
         diagnostics: true,
     };
     options.cpu = cpu_budget.render_cpu_pipeline(work_items.max(1));
@@ -754,7 +757,7 @@ pub(super) fn interactive_render_options(
     options.threading = cpu_budget.render_threading(work_items.max(1));
     options.execution_profile = RenderExecutionProfile::Interactive;
     options.memory_budget =
-        RenderMemoryBudget::FixedBytes(render_memory_budget_bytes(work_items, cpu_budget));
+        RenderMemoryBudget::FixedBytes(memory_budget_bytes(work_items, cpu_budget));
     options.pipeline_depth = RENDER_PIPELINE_DEPTH;
     options.cancel = Some(render_cancel);
     options.cache_policy = cache_policy;

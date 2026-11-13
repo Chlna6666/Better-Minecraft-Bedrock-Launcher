@@ -130,7 +130,7 @@ impl View {
                     .p(px(14.0))
                     .flex()
                     .flex_col()
-                    .gap(px(16.0))
+                    .gap(px(12.0))
                     .child(inspector::section_title(colors, "01  素材"))
                     .child(crate::ui::components::inspector::source_card(
                         colors,

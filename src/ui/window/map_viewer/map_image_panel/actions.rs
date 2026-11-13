@@ -2,8 +2,7 @@ use super::*;
 use crate::ui::components::button::{ghost_button, primary_button, secondary_button};
 
 impl View {
-    /// One action bar for all map-image destinations. Selection is kept next to
-    /// the result instead of hidden below a long options form.
+    /// Primary actions and target feedback stay beside the world canvas.
     pub(in super::super) fn render_map_import_actions(
         &self,
         colors: &ThemeColors,
@@ -212,7 +211,7 @@ impl View {
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child(tip),
+                            .child(status),
                     ),
             )
             .when_some(pending, |bar, path| {

@@ -75,7 +75,7 @@ impl View {
                     .p(px(14.0))
                     .flex()
                     .flex_col()
-                    .gap(px(15.0))
+                    .gap(px(12.0))
                     .child(inspector::section_title(colors, "01  素材"))
                     .child(crate::ui::components::inspector::source_card(
                         colors,
@@ -130,6 +130,8 @@ impl View {
                     .child(inspector::section_title(colors, "03  画面与材质"))
                     .child(
                         crate::ui::components::inspector::field_group(colors)
+                            .child(self.render_image_dithering(colors, cx))
+                            .child(self.render_image_depth_controls(colors, cx))
                             .child(self.render_image_appearance(colors, cx)),
                     ),
             )

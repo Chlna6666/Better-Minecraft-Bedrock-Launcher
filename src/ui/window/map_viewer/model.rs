@@ -1,6 +1,7 @@
 use super::editor::*;
 use super::generator_panel::GeneratorPanelState;
-use super::helpers::*;
+use super::input::new_field;
+use super::render_support::cpu_chunk_batch_size;
 use super::image_generator_panel::ImageGeneratorPanelState;
 use super::map_image_panel::MapImagePanelState;
 use super::panels::*;
@@ -177,7 +178,7 @@ impl RenderCpuBudget {
             queue_depth: workers
                 .saturating_mul(2)
                 .max(work_items.min(RENDER_PIPELINE_DEPTH).max(1)),
-            chunk_batch_size: render_cpu_chunk_batch_size(workers).min(RENDER_STREAM_GROUP_TILES),
+            chunk_batch_size: cpu_chunk_batch_size(workers).min(RENDER_STREAM_GROUP_TILES),
             encode_workers: RENDER_CPU_ENCODE_WORKERS,
             max_total_threads: workers,
             max_db_workers: workers,
@@ -1180,7 +1181,8 @@ pub(super) struct MapFrameGridPreview {
 
 impl PartialEq for MapFrameGridPreview {
     fn eq(&self, other: &Self) -> bool {
-        self.min_block_x == other.min_block_x
+        self.controls == other.controls
+            && self.min_block_x == other.min_block_x
             && self.min_block_z == other.min_block_z
             && self.columns == other.columns
             && self.rows == other.rows
@@ -1709,7 +1711,7 @@ impl Default for ToolbarState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(super) enum MapInputField {
+pub(super) enum InputField {
     CenterX,
     CenterZ,
     ZoomPercent,
@@ -1721,11 +1723,11 @@ pub(super) enum MapInputField {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct InputValidationState {
-    pub(super) invalid_field: Option<MapInputField>,
+    pub(super) invalid_field: Option<InputField>,
     pub(super) message: Option<SharedString>,
 }
 
-pub(super) struct MapInputFields {
+pub(super) struct InputFields {
     pub(super) center_x: Entity<InputState>,
     pub(super) center_z: Entity<InputState>,
     pub(super) zoom_percent: Entity<InputState>,
@@ -1734,37 +1736,37 @@ pub(super) struct MapInputFields {
     pub(super) selection_max_y: Entity<InputState>,
     pub(super) paste_origin_y: Entity<InputState>,
     pub(super) height_fill_block: Entity<InputState>,
-    pub(super) focused_field: Option<MapInputField>,
-    pub(super) dirty_fields: BTreeSet<MapInputField>,
+    pub(super) focused_field: Option<InputField>,
+    pub(super) dirty_fields: BTreeSet<InputField>,
     pub(super) validation: InputValidationState,
 }
 
-impl MapInputFields {
+impl InputFields {
     pub(super) fn new(window: &mut Window, cx: &mut Context<View>) -> Self {
         Self {
-            center_x: map_input_state(window, cx, "X"),
-            center_z: map_input_state(window, cx, "Z"),
-            zoom_percent: map_input_state(window, cx, "Zoom %"),
-            dimension_id: map_input_state(window, cx, "Dim ID"),
-            selection_min_y: map_input_state(window, cx, "Y min"),
-            selection_max_y: map_input_state(window, cx, "Y max"),
-            paste_origin_y: map_input_state(window, cx, "Paste Y"),
-            height_fill_block: map_input_state(window, cx, "minecraft:stone"),
+            center_x: new_field(window, cx, "X"),
+            center_z: new_field(window, cx, "Z"),
+            zoom_percent: new_field(window, cx, "Zoom %"),
+            dimension_id: new_field(window, cx, "Dim ID"),
+            selection_min_y: new_field(window, cx, "Y min"),
+            selection_max_y: new_field(window, cx, "Y max"),
+            paste_origin_y: new_field(window, cx, "Paste Y"),
+            height_fill_block: new_field(window, cx, "minecraft:stone"),
             focused_field: None,
             dirty_fields: BTreeSet::new(),
             validation: InputValidationState::default(),
         }
     }
 
-    pub(super) fn entity(&self, field: MapInputField) -> &Entity<InputState> {
+    pub(super) fn entity(&self, field: InputField) -> &Entity<InputState> {
         match field {
-            MapInputField::CenterX => &self.center_x,
-            MapInputField::CenterZ => &self.center_z,
-            MapInputField::ZoomPercent => &self.zoom_percent,
-            MapInputField::DimensionId => &self.dimension_id,
-            MapInputField::SelectionMinY => &self.selection_min_y,
-            MapInputField::SelectionMaxY => &self.selection_max_y,
-            MapInputField::PasteOriginY => &self.paste_origin_y,
+            InputField::CenterX => &self.center_x,
+            InputField::CenterZ => &self.center_z,
+            InputField::ZoomPercent => &self.zoom_percent,
+            InputField::DimensionId => &self.dimension_id,
+            InputField::SelectionMinY => &self.selection_min_y,
+            InputField::SelectionMaxY => &self.selection_max_y,
+            InputField::PasteOriginY => &self.paste_origin_y,
         }
     }
 }
@@ -1911,7 +1913,7 @@ pub struct View {
     pub(super) map_focus_handle: FocusHandle,
     pub(super) preview_3d_focus_handle: FocusHandle,
     pub(super) toolbar_state: ToolbarState,
-    pub(super) input_fields: MapInputFields,
+    pub(super) input_fields: InputFields,
     pub(super) ui_state: MapViewerUiState,
     pub(super) top_bar_view: Entity<MapTopBarView>,
     pub(super) tool_stripe_view: Entity<MapToolStripeView>,
@@ -2012,4 +2014,14 @@ pub(super) struct ViewportCompositeSignature {
     pub(super) visible: Vec<(i32, i32)>,
     pub(super) center: (i32, i32),
     pub(super) chunk_bounds_key: Option<(i32, i32, i32, i32)>,
+}
+
+pub(super) fn viewer_mode(mode: RenderMode) -> ViewerMode {
+    match mode {
+        RenderMode::SurfaceBlocks => ViewerMode::Surface,
+        RenderMode::Biome { .. } | RenderMode::RawBiomeLayer { .. } => ViewerMode::Biome,
+        RenderMode::HeightMap | RenderMode::RawHeightMap => ViewerMode::Height,
+        RenderMode::LayerBlocks { .. } => ViewerMode::Layer,
+        RenderMode::CaveSlice { .. } => ViewerMode::Cave,
+    }
 }

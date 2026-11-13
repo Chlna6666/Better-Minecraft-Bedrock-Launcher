@@ -133,30 +133,6 @@ impl View {
                             .opacity(if preview.is_some() { 1.0 } else { 0.45 }),
                     )
                     .child(
-                        secondary_button(colors, "map-structure-rotate-left", "逆时针旋转")
-                            .when(can_position, |button| {
-                                button.on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.rotate_paste_preview(false, cx);
-                                    }),
-                                )
-                            })
-                            .opacity(if can_position { 1.0 } else { 0.45 }),
-                    )
-                    .child(
-                        secondary_button(colors, "map-structure-rotate-right", "顺时针旋转")
-                            .when(can_position, |button| {
-                                button.on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.rotate_paste_preview(true, cx);
-                                    }),
-                                )
-                            })
-                            .opacity(if can_position { 1.0 } else { 0.45 }),
-                    )
-                    .child(
                         primary_button(
                             colors,
                             "map-structure-confirm-placement",
@@ -172,12 +148,6 @@ impl View {
                         })
                         .opacity(if can_commit { 1.0 } else { 0.45 }),
                     ),
-            )
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(colors.text_secondary)
-                    .child("预览和移动不会修改存档；仅点击“确认写入当前世界”才提交写入任务。"),
             )
     }
 
@@ -197,7 +167,7 @@ impl View {
         div()
             .flex_none()
             .min_w(px(0.0))
-            .max_h(px(220.0))
+            .max_h(px(164.0))
             .overflow_y_scrollbar()
             .mx(px(8.0))
             .mt(px(6.0))
@@ -213,9 +183,7 @@ impl View {
                     // Avoid constructing hidden conversion actions (and their event
                     // handlers) on every world-placement render.
                     let actions = match self.ui_state.active_right_panel {
-                        MapViewerRightPanel::Generator => {
-                            self.obj_import_actions(colors, cx)
-                        }
+                        MapViewerRightPanel::Generator => self.obj_import_actions(colors, cx),
                         MapViewerRightPanel::ImageGenerator => {
                             self.image_import_actions(colors, cx)
                         }
@@ -227,8 +195,9 @@ impl View {
             .when(placement && structure_converter, |bar| {
                 bar.child(self.render_structure_placement_commands(colors, cx))
             })
-            .when_some(task, |bar, task| {
-                bar.child(self.render_import_task_status(colors, task, cx))
-            })
+            .when_some(
+                task.filter(|task| !task.is_terminal() || task.status.as_ref() == "error"),
+                |bar, task| bar.child(self.render_import_task_status(colors, task, cx)),
+            )
     }
 }

@@ -1,6 +1,13 @@
 use super::canvas::*;
 use super::editor::*;
-use super::helpers::*;
+use super::input::{optional_integer, zoom_scale};
+use super::menus::context_menu_chunk;
+use super::render_support::{
+    default_gpu_backend, default_backend, gpu_status_text,
+    gpu_backend_status_zh, tile_count_for_viewport, ui_tile_memory_budget_bytes,
+    visible_batch_size,
+};
+use super::viewport::clamp_stage_position;
 use super::interactions::*;
 use super::layout::{hud_stack_rects, top_toolbar_layout};
 use super::lifecycle::*;
@@ -358,14 +365,14 @@ fn chunk_transfer_task_progress_sync_resets_on_phase_change() {
 
 #[::core::prelude::v1::test]
 fn interactive_render_defaults_request_gpu_with_cpu_fallback() {
-    assert_eq!(default_render_backend(), RenderBackend::Auto);
+    assert_eq!(default_backend(), RenderBackend::Auto);
     assert_eq!(
         default_gpu_backend(),
         RenderGpuBackend::Auto
     );
 
     let options = interactive_render_options(
-        default_render_backend(),
+        default_backend(),
         default_gpu_backend(),
         RenderCpuBudget::default(),
         RenderTilePriority::RowMajor,
@@ -395,7 +402,7 @@ fn gpu_status_text_reports_chinese_states() {
     let cpu_default_text = gpu_status_text(&cpu_default);
     assert!(cpu_default_text.contains("交互默认 CPU"));
     assert_eq!(
-        render_gpu_backend_status_zh(&cpu_default),
+        gpu_backend_status_zh(&cpu_default),
         "GPU 未启用".to_string()
     );
 
@@ -617,7 +624,7 @@ fn low_zoom_ui_tile_memory_budget_covers_all_retained_tiles() {
 
 #[::core::prelude::v1::test]
 fn zoom_input_clamps_to_expanded_minimum_scale() {
-    let scale = parse_zoom_scale("1").expect("zoom scale");
+    let scale = zoom_scale("1").expect("zoom scale");
 
     assert_eq!(scale, MIN_VIEWPORT_SCALE);
 }
@@ -625,11 +632,11 @@ fn zoom_input_clamps_to_expanded_minimum_scale() {
 #[::core::prelude::v1::test]
 fn empty_coordinate_input_uses_current_viewport_coordinate() {
     assert_eq!(
-        parse_optional_i32_input("", "X", -128).expect("fallback coordinate"),
+        optional_integer("", "X", -128).expect("fallback coordinate"),
         -128
     );
     assert_eq!(
-        parse_optional_i32_input(" 42 ", "Z", 0).expect("entered coordinate"),
+        optional_integer(" 42 ", "Z", 0).expect("entered coordinate"),
         42
     );
 }
@@ -3199,19 +3206,19 @@ fn tile_request_plan_keeps_intersecting_batches_and_drops_far_batches() {
 #[::core::prelude::v1::test]
 fn visible_render_batch_size_expands_for_large_overviews() {
     assert_eq!(
-        visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD - 1, false, true),
+        visible_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD - 1, false, true),
         8
     );
     assert_eq!(
-        visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD, false, true),
+        visible_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD, false, true),
         OVERVIEW_VISIBLE_BATCH_LIMIT
     );
     assert_eq!(
-        visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD, false, false),
+        visible_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD, false, false),
         OVERVIEW_VISIBLE_BATCH_LIMIT
     );
     assert_eq!(
-        visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD, true, false),
+        visible_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD, true, false),
         DRAG_VISIBLE_BATCH_LIMIT
     );
 }
@@ -3219,11 +3226,11 @@ fn visible_render_batch_size_expands_for_large_overviews() {
 #[::core::prelude::v1::test]
 fn drag_render_batch_size_is_not_limited_by_first_reveal() {
     assert_eq!(
-        visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD - 1, true, false),
+        visible_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD - 1, true, false),
         8
     );
     assert_eq!(
-        visible_render_batch_size(32, OVERVIEW_VISIBLE_TILE_THRESHOLD - 1, true, false),
+        visible_batch_size(32, OVERVIEW_VISIBLE_TILE_THRESHOLD - 1, true, false),
         DRAG_VISIBLE_BATCH_LIMIT
     );
 }

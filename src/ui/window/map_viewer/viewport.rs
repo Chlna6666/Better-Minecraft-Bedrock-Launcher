@@ -913,3 +913,14 @@ pub(super) fn map_pixel_to_block(value: f32, layout: RenderLayout) -> i32 {
 pub(super) fn coordinate_text(block_x: i32, block_z: i32) -> String {
     format!("X {block_x} · Z {block_z}")
 }
+
+pub(super) fn clamp_stage_position(
+    position: Point<Pixels>,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Point<Pixels> {
+    point(
+        px((position.x / px(1.0)).clamp(0.0, viewport_width.max(1.0))),
+        px((position.y / px(1.0)).clamp(0.0, viewport_height.max(1.0))),
+    )
+}

@@ -20,10 +20,7 @@ impl View {
     }
 
     /// Select an exact world coordinate with the context menu. No world writes occur.
-    pub(in super::super) fn select_map_frame_center(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) {
+    pub(in super::super) fn select_map_frame_center(&mut self, cx: &mut Context<Self>) {
         let Some(menu) = self.context_menu else {
             return;
         };

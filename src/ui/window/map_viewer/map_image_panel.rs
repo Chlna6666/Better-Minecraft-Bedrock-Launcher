@@ -15,6 +15,7 @@ mod comparison;
 mod container_candidates;
 mod controls;
 mod players;
+mod placement;
 mod render;
 mod target;
 
@@ -230,6 +231,8 @@ impl View {
             return;
         }
         self.map_image.picking_frame_center = true;
+        self.context_menu = None;
+        self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Placement, cx);
         self.status =
             SharedString::from("在中央世界地图上左键单击要放置的中心方块（也可右键选择）");
         cx.notify();
@@ -294,6 +297,7 @@ impl View {
                     return None;
                 }
                 Some(super::model::MapFrameGridPreview {
+                    controls: None,
                     min_block_x: block.x,
                     min_block_z: block.z,
                     columns: 1,

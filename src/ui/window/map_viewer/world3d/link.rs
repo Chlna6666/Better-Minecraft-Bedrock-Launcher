@@ -1073,10 +1073,13 @@ fn read_world_spawn(world_path: &Path) -> (Option<[f64; 3]>, Option<BwDimension>
     let NbtTag::Compound(root) = &document.root else {
         return (None, None, "level.dat 根节点不是 compound".to_string());
     };
-    let spawn_x = nbt_i32(root.get("SpawnX"));
-    let spawn_y = nbt_i32(root.get("SpawnY"));
-    let spawn_z = nbt_i32(root.get("SpawnZ"));
-    let dimension = nbt_i32(root.get("SpawnDimension")).map(BwDimension::from_id);
+    let spawn_x = root.get("SpawnX").and_then(NbtTag::as_i32);
+    let spawn_y = root.get("SpawnY").and_then(NbtTag::as_i32);
+    let spawn_z = root.get("SpawnZ").and_then(NbtTag::as_i32);
+    let dimension = root
+        .get("SpawnDimension")
+        .and_then(NbtTag::as_i32)
+        .map(BwDimension::from_id);
     let spawn_dimension = dimension.unwrap_or(BwDimension::Overworld);
     let (min_y, max_y) = match spawn_dimension {
         BwDimension::Overworld => (-64, 319),
@@ -1114,16 +1117,6 @@ fn read_world_spawn(world_path: &Path) -> (Option<[f64; 3]>, Option<BwDimension>
             "level.dat 缺少有效 SpawnX/Y/Z（使用回退坐标）".to_string()
         },
     )
-}
-
-fn nbt_i32(tag: Option<&NbtTag>) -> Option<i32> {
-    match tag {
-        Some(NbtTag::Int(value)) => Some(*value),
-        Some(NbtTag::Short(value)) => Some(i32::from(*value)),
-        Some(NbtTag::Byte(value)) => Some(i32::from(*value)),
-        Some(NbtTag::Long(value)) => i32::try_from(*value).ok(),
-        _ => None,
-    }
 }
 
 impl View {

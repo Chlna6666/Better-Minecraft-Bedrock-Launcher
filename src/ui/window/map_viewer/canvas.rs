@@ -1057,7 +1057,7 @@ fn render_paste_controls(
         controls_top + 48.0
     }
     .clamp(8.0, tools_top_max);
-    let angle_label = preview.transform.label();
+    let angle_label = transform.label();
     let colors = snapshot.colors;
     let _i18n = cx.global::<I18n>().clone();
 
@@ -1131,7 +1131,7 @@ fn render_paste_controls(
                     .child(
                         paste_control_button(
                             &colors,
-                            if preview.tools_expanded {
+                            if tools_expanded {
                                 t!("MapViewer.tools_collapse")
                             } else {
                                 t!("MapViewer.tools_expand")
@@ -1164,7 +1164,7 @@ fn render_paste_controls(
                         ),
                     ),
             )
-            .when(preview.tools_expanded, |this| {
+            .when(tools_expanded, |this| {
                 this.child(
                     div()
                         .absolute()
@@ -1293,25 +1293,25 @@ fn paste_preview_screen_rect(
         canvas_bounds,
         snapshot.viewport,
         snapshot.layout,
-        min_x.saturating_mul(16),
+        min_x,
     );
     let top = block_screen_y(
         canvas_bounds,
         snapshot.viewport,
         snapshot.layout,
-        min_z.saturating_mul(16),
+        min_z,
     );
     let right = block_screen_x(
         canvas_bounds,
         snapshot.viewport,
         snapshot.layout,
-        max_x.saturating_add(1).saturating_mul(16),
+        max_x,
     );
     let bottom = block_screen_y(
         canvas_bounds,
         snapshot.viewport,
         snapshot.layout,
-        max_z.saturating_add(1).saturating_mul(16),
+        max_z,
     );
     if right <= left || bottom <= top {
         return None;

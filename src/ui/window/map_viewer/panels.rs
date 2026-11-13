@@ -1,4 +1,6 @@
-use super::helpers::*;
+use super::render_support::{
+    localize_gpu_reason, gpu_backend_status_zh, resolved_backend_label_zh,
+};
 use super::model::*;
 use super::overlays::SlimeFarmSearchScopeSource;
 use super::prelude::*;
@@ -239,9 +241,9 @@ impl View {
                             )),
                     )
                     .when(matches!(self.dimension, Dimension::Unknown(_)), |this| {
-                        this.child(self.render_map_input(
+                        this.child(self.render_input(
                             colors,
-                            MapInputField::DimensionId,
+                            InputField::DimensionId,
                             t!("MapViewer.dimension_custom_id"),
                             px(252.0),
                         ))
@@ -263,31 +265,31 @@ impl View {
                     .flex_wrap()
                     .items_center()
                     .gap(px(8.0))
-                    .child(self.render_map_input(
+                    .child(self.render_input(
                         colors,
-                        MapInputField::CenterX,
+                        InputField::CenterX,
                         t!("MapViewer.center_x"),
                         px(122.0),
                     ))
-                    .child(self.render_map_input(
+                    .child(self.render_input(
                         colors,
-                        MapInputField::CenterZ,
+                        InputField::CenterZ,
                         t!("MapViewer.center_z"),
                         px(122.0),
                     ))
-                    .child(self.render_map_input(
+                    .child(self.render_input(
                         colors,
-                        MapInputField::ZoomPercent,
+                        InputField::ZoomPercent,
                         t!("MapViewer.zoom_percent"),
                         px(122.0),
                     )),
             )
     }
 
-    pub(super) fn render_map_input(
+    pub(super) fn render_input(
         &self,
         colors: &ThemeColors,
-        field: MapInputField,
+        field: InputField,
         label: impl Into<SharedString>,
         width: Pixels,
     ) -> Div {
@@ -749,15 +751,15 @@ impl View {
                         .flex()
                         .items_center()
                         .gap(px(8.0))
-                        .child(self.render_map_input(
+                        .child(self.render_input(
                             colors,
-                            MapInputField::SelectionMinY,
+                            InputField::SelectionMinY,
                             "下界 Y",
                             px(108.0),
                         ))
-                        .child(self.render_map_input(
+                        .child(self.render_input(
                             colors,
-                            MapInputField::SelectionMaxY,
+                            InputField::SelectionMaxY,
                             "上界 Y",
                             px(108.0),
                         )),
@@ -953,9 +955,9 @@ impl View {
                             .saturating_sub(1),
                     ),
                 ))
-                .child(self.render_map_input(
+                .child(self.render_input(
                     colors,
-                    MapInputField::PasteOriginY,
+                    InputField::PasteOriginY,
                     "粘贴底部 Y",
                     px(132.0),
                 ))
@@ -1200,7 +1202,7 @@ impl View {
                         resolved_backend_label_zh(self.render_stats.resolved_backend),
                         self.render_stats.cpu_tiles,
                         self.render_stats.gpu_tiles,
-                        render_gpu_backend_status_zh(&self.render_stats),
+                        gpu_backend_status_zh(&self.render_stats),
                         self.render_stats.gpu_queue_wait_ms,
                         self.render_stats.gpu_prepare_ms,
                         self.render_stats.gpu_upload_ms,
@@ -1552,4 +1554,113 @@ pub(super) fn danger_button(colors: &ThemeColors, label: impl Into<SharedString>
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(colors.danger)
         .child(label.into())
+}
+
+pub(super) fn dimension_buttons(
+    active: Dimension,
+    custom_id: i32,
+    colors: &ThemeColors,
+    _i18n: &I18n,
+    cx: &mut Context<View>,
+) -> Vec<AnyElement> {
+    [
+        (Dimension::Overworld, t!("MapViewer.dimension_overworld")),
+        (Dimension::Nether, t!("MapViewer.dimension_nether")),
+        (Dimension::End, t!("MapViewer.dimension_end")),
+        (
+            Dimension::Unknown(custom_id),
+            t!("MapViewer.dimension_custom"),
+        ),
+    ]
+    .into_iter()
+    .map(|(dimension, label)| {
+        mode_button(colors, label, active == dimension)
+            .w(px(122.0))
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| this.set_dimension(dimension, cx)),
+            )
+            .into_any_element()
+    })
+    .collect()
+}
+
+pub(super) fn slime_farm_search_mode_buttons(
+    active: SlimeFarmSearchMode,
+    colors: &ThemeColors,
+    cx: &mut Context<View>,
+) -> Vec<AnyElement> {
+    [
+        (
+            SlimeFarmSearchMode::Quad2x2,
+            t!("MapViewer.slime_mode_quad"),
+        ),
+        (
+            SlimeFarmSearchMode::Rectangle2x3,
+            t!("MapViewer.slime_mode_rect_six"),
+        ),
+        (
+            SlimeFarmSearchMode::Square3x3,
+            t!("MapViewer.slime_mode_square_nine"),
+        ),
+        (
+            SlimeFarmSearchMode::LargestConnected,
+            t!("MapViewer.slime_mode_largest"),
+        ),
+    ]
+    .into_iter()
+    .map(|(mode, label)| {
+        mode_button(colors, label, active == mode)
+            .min_w(px(108.0))
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.set_slime_farm_search_mode(mode, cx)
+                }),
+            )
+            .into_any_element()
+    })
+    .collect()
+}
+
+pub(super) fn slime_farm_scope_mode_buttons(
+    active: SlimeFarmScopeMode,
+    advanced_active: bool,
+    colors: &ThemeColors,
+    cx: &mut Context<View>,
+) -> Vec<AnyElement> {
+    [
+        (
+            SlimeFarmScopeMode::Auto,
+            t!("MapViewer.slime_scope_mode_auto"),
+        ),
+        (
+            SlimeFarmScopeMode::Viewport,
+            t!("MapViewer.slime_scope_mode_viewport"),
+        ),
+        (
+            SlimeFarmScopeMode::Selection,
+            t!("MapViewer.slime_scope_mode_selection"),
+        ),
+        (
+            SlimeFarmScopeMode::SelectedPlayer,
+            t!("MapViewer.slime_scope_mode_player"),
+        ),
+    ]
+    .into_iter()
+    .map(|(mode, label)| {
+        mode_button(colors, label, !advanced_active && active == mode)
+            .min_w(px(92.0))
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.set_slime_farm_scope_mode(mode, cx)
+                }),
+            )
+            .into_any_element()
+    })
+    .collect()
 }
