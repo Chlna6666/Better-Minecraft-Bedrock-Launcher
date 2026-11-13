@@ -18,12 +18,16 @@ use super::image::decode_image;
 use crate::tasks::task_manager::ProgressUpdate;
 use crate::tasks::{runtime, task_manager};
 
+pub mod transform;
+
 const RESULT_LIMIT_BYTES: usize = 160 * 1024 * 1024;
 const RESULT_TTL: Duration = Duration::from_secs(15 * 60);
 
 /// Crop and map-grid settings for directly written Bedrock RGBA map pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapPreviewOptions {
+    /// Orientation applied to the source before fitting and generating map records.
+    pub transform: transform::Options,
     /// West-to-east map count, 1–64.
     pub columns: u32,
     /// North-to-south map count, 1–64; product must be at most 1024.
@@ -44,6 +48,7 @@ pub struct MapPreviewOptions {
 impl Default for MapPreviewOptions {
     fn default() -> Self {
         Self {
+            transform: transform::Options::default(),
             columns: 1,
             rows: 1,
             auto_fit: false,
@@ -299,7 +304,10 @@ async fn convert(
     task_id: &str,
     cancel: &CancelFlag,
 ) -> Result<String, String> {
-    let image = runtime::blocking::run_io(move || decode_image(&source)).await??;
+    let image = runtime::blocking::run_io(move || {
+        decode_image(&source).map(|image| transform::apply(image, options.transform))
+    })
+    .await??;
     if cancel.is_cancelled() {
         return Err("地图图片转换已取消".to_owned());
     }
