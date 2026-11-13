@@ -7,6 +7,7 @@ pub mod developer_mode;
 pub mod diagnostics;
 pub mod file_ops;
 pub mod file_picker;
+pub(crate) mod file_watch;
 pub mod font_settings;
 pub mod format_bytes;
 pub(crate) mod gpui_debug_log;

@@ -59,7 +59,7 @@ const HTTP_MAX_BYTES: usize = 512 * 1024;
 const STORAGE_KEY_MAX_BYTES: usize = 128;
 
 static ASYNC_APP_REFRESH_NOTIFICATION: OnceLock<
-    Mutex<Option<crate::plugins::watcher::PluginWatcherSender>>,
+    Mutex<Option<crate::plugins::watcher::Sender>>,
 > = OnceLock::new();
 static PLUGIN_PERSISTENCE_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<PluginPersistenceOp>> =
     OnceLock::new();
@@ -690,7 +690,7 @@ pub struct PluginRegistry {
     module_cache: BTreeMap<String, Module>,
     prepare_cache: PluginPrepareCache,
     generation: u64,
-    reload_tx: Option<crate::plugins::watcher::PluginWatcherSender>,
+    reload_tx: Option<crate::plugins::watcher::Sender>,
     watcher_task: Option<gpui::Task<()>>,
     last_error: Option<SharedString>,
     loaded_once: bool,
@@ -955,11 +955,12 @@ impl PluginRegistry {
             .unwrap_or_else(|| Arc::from([]))
     }
 
-    pub fn translate_plugin_resource(&self, plugin_id: &str, key: &str) -> Option<String> {
-        self.translate_plugin_resource_for_locale(plugin_id, &current_locale_code(), key)
+    pub fn translate_resource(&self, plugin_id: &str, key: &str) -> Option<String> {
+        self.translate_resource_locale(plugin_id, &current_locale_code(), key)
     }
 
-    pub fn translate_plugin_resource_for_locale(
+    /// Translates through a specific locale instead of the launcher UI locale.
+    pub fn translate_resource_locale(
         &self,
         plugin_id: &str,
         locale: &str,
@@ -971,7 +972,7 @@ impl PluginRegistry {
     }
 
     pub fn set_plugin_enabled(&mut self, plugin_id: &str, enabled: bool) -> Result<()> {
-        crate::plugins::state::set_plugin_enabled(&self.plugins_dir, plugin_id, enabled)?;
+        crate::plugins::state::set_enabled(&self.plugins_dir, plugin_id, enabled)?;
         self.reload_all()
     }
 
@@ -2241,7 +2242,7 @@ impl PluginRegistry {
 
     pub fn set_watcher(
         &mut self,
-        sender: crate::plugins::watcher::PluginWatcherSender,
+        sender: crate::plugins::watcher::Sender,
         task: gpui::Task<()>,
     ) {
         self.reload_tx = Some(sender);
@@ -2647,8 +2648,8 @@ fn current_theme_snapshot(cx: &App) -> abi::ThemeSnapshot {
     let theme = cx.global::<ThemeState>();
     let dark_factor = theme.factor(Instant::now());
     let colors = lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        &LightColors::theme(),
+        &DarkColors::theme(),
         dark_factor,
         theme.accent,
     );
@@ -2893,7 +2894,7 @@ fn start_plugin_persistence_worker(
             }
 
             let operations = pending.into_values().collect::<Vec<_>>();
-            let persisted = crate::tasks::runtime::run_io_blocking(move || {
+            let persisted = crate::tasks::runtime::blocking::run_io(move || {
                 operations
                     .into_iter()
                     .map(|operation| {
@@ -2962,7 +2963,7 @@ fn storage_snapshot_next_used_bytes(
     .saturating_add(value.len() as u64)
 }
 
-fn require_non_render_blocking_io(
+fn ensure_blocking_io_allowed(
     render_context: Option<&RenderContext>,
     operation: &'static str,
 ) -> std::result::Result<(), abi::AppError> {
@@ -3236,7 +3237,7 @@ fn handle_app_request(
             if code == abi::AppOp::StorageSet.code() =>
         {
             state.require_capability(PluginCapability::StorageKv)?;
-            require_non_render_blocking_io(state.render_context.as_ref(), "storage set")?;
+            ensure_blocking_io_allowed(state.render_context.as_ref(), "storage set")?;
             validate_storage_key(&key)?;
             let values = state
                 .storage_values
@@ -3271,7 +3272,7 @@ fn handle_app_request(
             if code == abi::AppOp::StorageDelete.code() =>
         {
             state.require_capability(PluginCapability::StorageKv)?;
-            require_non_render_blocking_io(state.render_context.as_ref(), "storage delete")?;
+            ensure_blocking_io_allowed(state.render_context.as_ref(), "storage delete")?;
             validate_storage_key(&key)?;
             let values = state
                 .storage_values
@@ -3321,7 +3322,7 @@ fn handle_app_request(
         }
         (code, abi::AppRequest::WriteConfig { text }) if code == abi::AppOp::WriteConfig.code() => {
             state.require_capability(PluginCapability::ConfigWrite)?;
-            require_non_render_blocking_io(state.render_context.as_ref(), "config write")?;
+            ensure_blocking_io_allowed(state.render_context.as_ref(), "config write")?;
             crate::plugins::manifest::validate_user_config(&state.manifest, &text).map_err(
                 |error| abi::AppError {
                     code: "config-write-failed".to_string(),
@@ -3345,28 +3346,38 @@ fn handle_app_request(
             if code == abi::AppOp::CreateTask.code() =>
         {
             state.require_capability(PluginCapability::TaskProgress)?;
-            let task_id = crate::tasks::task_manager::create_task(
-                crate::tasks::task_manager::TaskOptions::new(request.title, &request.stage)
-                    .id(request.task_id)
-                    .detail(request.detail)
-                    .total(request.total),
-            )
-            .map_err(|error| abi::AppError {
-                code: "task-create-failed".to_string(),
-                message: error,
-            })?;
+            let mut task_options =
+                crate::tasks::task_manager::TaskOptions::new(request.title, &request.stage);
+            if let Some(total) = request.total {
+                task_options = task_options.total(total);
+            }
+            if let Some(task_id) = request.task_id {
+                task_options = task_options.id(task_id);
+            }
+            if let Some(detail) = request.detail {
+                task_options = task_options.detail(detail);
+            }
+            let task_id =
+                crate::tasks::task_manager::create_task(task_options).map_err(|error| {
+                    abi::AppError {
+                        code: "task-create-failed".to_string(),
+                        message: error,
+                    }
+                })?;
             Ok(abi::AppResponse::TaskId(task_id))
         }
         (code, abi::AppRequest::UpdateTask { request })
             if code == abi::AppOp::UpdateTask.code() =>
         {
             state.require_capability(PluginCapability::TaskProgress)?;
-            crate::tasks::task_manager::update_progress(
-                &request.task_id,
-                ProgressUpdate::advance(request.done_delta)
-                    .total(request.total)
-                    .stage(request.stage.as_deref()),
-            );
+            let mut progress = ProgressUpdate::advance(request.done_delta);
+            if let Some(total) = request.total {
+                progress = progress.total(total);
+            }
+            if let Some(stage) = request.stage.as_deref() {
+                progress = progress.stage(stage);
+            }
+            crate::tasks::task_manager::update_progress(&request.task_id, progress);
             if request.message.is_some() {
                 crate::tasks::task_manager::set_task_message(&request.task_id, request.message);
             }
@@ -3385,8 +3396,8 @@ fn handle_app_request(
         }
         (code, abi::AppRequest::AppInfo) if code == abi::AppOp::AppInfo.code() => {
             Ok(abi::AppResponse::AppInfo(abi::AppInfo {
-                version: crate::utils::app_info::get_version().to_string(),
-                build_info: crate::utils::app_info::get_build_info(),
+                version: crate::utils::app_info::version().to_string(),
+                build_info: crate::utils::app_info::build_info(),
                 api_version: abi::API_VERSION.to_string(),
             }))
         }
@@ -3436,7 +3447,7 @@ fn handle_app_request(
 }
 
 fn manifest_has_any_readme(manifest: &PluginManifest) -> bool {
-    manifest.readme_path().is_some_and(|path| path.exists())
+    manifest.readme_path(None).is_some_and(|path| path.exists())
         || manifest
             .readme_locales
             .values()
@@ -3463,7 +3474,7 @@ fn schedule_plugin_sidecar_start(
     let plugin_id = manifest.id.clone();
     crate::tasks::runtime::spawn_io(async move {
         let executable_for_log = executable.clone();
-        let started = crate::tasks::runtime::run_io_blocking(move || {
+        let started = crate::tasks::runtime::blocking::run_io(move || {
             Command::new(&executable)
                 .args(args)
                 .stdin(Stdio::null())
@@ -4301,7 +4312,7 @@ fn spawn_resource_refresh(
     let fallback_sender = sender.clone();
     let fallback_finished_refresh_pending = Arc::clone(&finished_refresh_pending);
     if let Err(error) = crate::tasks::runtime::spawn_io(async move {
-        let loaded = crate::tasks::runtime::run_io_blocking(move || {
+        let loaded = crate::tasks::runtime::blocking::run_io(move || {
             read_plugin_resource_path(&resource_path, max_bytes)
         })
         .await;
@@ -4374,7 +4385,7 @@ async fn fetch_http_text(
     url: &str,
     max_bytes: usize,
 ) -> std::result::Result<(String, u64), String> {
-    let client = crate::http::proxy::get_client_for_proxy()
+    let client = crate::http::proxy::clients::client()
         .map_err(|error| format!("build HTTP client failed: {error}"))?;
     let response = client
         .get(url)
@@ -4708,13 +4719,13 @@ fn uninstall_plugin_files(
     }
     fs::remove_dir_all(&root_dir)
         .with_context(|| format!("remove plugin directory {}", root_dir.display()))?;
-    crate::plugins::state::remove_plugin_state(plugins_dir, plugin_id)
+    crate::plugins::state::remove(plugins_dir, plugin_id)
 }
 
 fn schedule_installed_package_rollback(plugin_id: String, manifest: PluginManifest) {
     let plugin_id_for_log = plugin_id.clone();
     let scheduled = crate::tasks::runtime::spawn_io(async move {
-        let rollback = crate::tasks::runtime::run_io_blocking(move || {
+        let rollback = crate::tasks::runtime::blocking::run_io(move || {
             crate::plugins::manifest::rollback_installed_package(&manifest)
         })
         .await;
@@ -4773,7 +4784,7 @@ fn prepare_plugin_manifests(
     package_cache_dir: &Path,
     prepare_cache: &PluginPrepareCache,
 ) -> PreparedPluginReload {
-    let disabled_plugins = crate::plugins::state::disabled_plugins(plugins_dir);
+    let disabled_plugins = crate::plugins::state::disabled(plugins_dir);
     let mut plugins = Vec::with_capacity(manifests.len());
     let mut installed_dirs = BTreeSet::new();
 
@@ -5027,7 +5038,7 @@ fn spawn_initial_reload_task(cx: &mut App) {
     };
 
     cx.spawn(async move |cx| {
-        let prepared = crate::tasks::runtime::run_io_blocking(move || {
+        let prepared = crate::tasks::runtime::blocking::run_io(move || {
             prepare_plugin_reload_from_sources(
                 &plugins_dir,
                 &package_cache_dir,
@@ -5089,7 +5100,7 @@ pub fn reload_all(cx: &mut App) {
     };
 
     cx.spawn(async move |cx| {
-        let prepared = crate::tasks::runtime::run_io_blocking(move || {
+        let prepared = crate::tasks::runtime::blocking::run_io(move || {
             prepare_plugin_reload_from_sources(
                 &plugins_dir,
                 &package_cache_dir,
@@ -5149,7 +5160,7 @@ pub fn start_watcher(cx: &mut App) {
     }
 
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
-    match crate::plugins::watcher::spawn_plugin_watcher(plugins_dir, cx) {
+    match crate::plugins::watcher::spawn(plugins_dir, cx) {
         Ok((sender, task)) => {
             set_async_app_refresh_sender(sender.clone());
             cx.update_global(|registry: &mut PluginRegistry, _cx| {
@@ -5169,7 +5180,7 @@ pub fn start_watcher(cx: &mut App) {
     }
 }
 
-fn set_async_app_refresh_sender(sender: crate::plugins::watcher::PluginWatcherSender) {
+fn set_async_app_refresh_sender(sender: crate::plugins::watcher::Sender) {
     let slot = ASYNC_APP_REFRESH_NOTIFICATION.get_or_init(|| Mutex::new(None));
     if let Ok(mut current) = slot.lock() {
         *current = Some(sender);
@@ -5187,7 +5198,7 @@ fn notify_async_app_refresh_finished() {
         return;
     };
     if let Err(error) =
-        sender.unbounded_send(crate::plugins::watcher::PluginWatcherMessage::AsyncAppRefresh)
+        sender.unbounded_send(crate::plugins::watcher::Message::AsyncAppRefresh)
     {
         warn!(error = ?error, "plugin HTTP refresh notification receiver dropped");
     }
@@ -5413,19 +5424,19 @@ fn open_modal(cx: &mut App, request: abi::ModalRequest) -> Result<()> {
     Ok(())
 }
 
-pub fn translate_plugin_resource(cx: &App, plugin_id: &str, key: &str) -> Option<String> {
+pub fn translate_resource(cx: &App, plugin_id: &str, key: &str) -> Option<String> {
     cx.global::<PluginRegistry>()
-        .translate_plugin_resource(plugin_id, key)
+        .translate_resource(plugin_id, key)
 }
 
-pub fn translate_plugin_resource_for_locale(
+pub fn translate_resource_locale(
     cx: &App,
     plugin_id: &str,
     locale: &str,
     key: &str,
 ) -> Option<String> {
     cx.global::<PluginRegistry>()
-        .translate_plugin_resource_for_locale(plugin_id, locale, key)
+        .translate_resource_locale(plugin_id, locale, key)
 }
 
 pub fn save_plugin_config<F>(cx: &mut App, plugin_id: String, content: String, on_complete: F)
@@ -5440,7 +5451,7 @@ where
     let plugin_id_for_io = plugin_id.clone();
     let content_for_state = content.clone();
     cx.spawn(async move |cx| {
-        let persisted = crate::tasks::runtime::run_io_blocking(move || {
+        let persisted = crate::tasks::runtime::blocking::run_io(move || {
             crate::plugins::manifest::write_user_config(&manifest, &content)
         })
         .await;
@@ -5510,8 +5521,8 @@ where
 
     cx.spawn(async move |cx| {
         let plugin_id_for_io = plugin_id.clone();
-        let persisted = crate::tasks::runtime::run_io_blocking(move || {
-            crate::plugins::state::set_plugin_enabled(&plugins_dir, &plugin_id_for_io, enabled)
+        let persisted = crate::tasks::runtime::blocking::run_io(move || {
+            crate::plugins::state::set_enabled(&plugins_dir, &plugin_id_for_io, enabled)
         })
         .await;
 
@@ -5554,7 +5565,7 @@ pub fn start_uninstall_plugin_task(cx: &mut App, plugin_id: String) -> Result<St
             return;
         }
 
-        let removed = crate::tasks::runtime::run_io_blocking(move || {
+        let removed = crate::tasks::runtime::blocking::run_io(move || {
             uninstall_plugin_files(&plugins_dir, &manifest, &plugin_id_for_worker)
         })
         .await;
@@ -5657,7 +5668,7 @@ pub fn start_import_plugin_task(cx: &mut App, source_path: PathBuf) -> Result<St
             Some("installing_plugin"),
         );
         let io_task_id = worker_task_id.clone();
-        let imported = crate::tasks::runtime::run_io_blocking(move || {
+        let imported = crate::tasks::runtime::blocking::run_io(move || {
             if crate::tasks::task_manager::is_cancelled(&io_task_id) {
                 bail!("插件导入已取消");
             }
@@ -5997,7 +6008,7 @@ fn apply_open_window(cx: &mut App, request: abi::WindowRequest) {
         ..
     } = request;
     if let Err(error) =
-        crate::plugins::window::open_plugin_window(cx, plugin_id.clone(), page_id, title)
+        crate::plugins::window::open(cx, plugin_id.clone(), page_id, title)
     {
         warn!(error = ?error, "plugin open-window effect failed");
         if let Err(error) = show_toast(cx, &plugin_id, "Unable to open plugin window".to_string()) {
@@ -6023,11 +6034,11 @@ fn apply_open_modal(cx: &mut App, request: abi::ModalRequest) {
 }
 
 fn current_locale_code() -> String {
-    crate::config::config::read_config()
+    crate::config::settings::read()
         .ok()
         .map(|config| config.launcher.language)
         .filter(|language| !language.trim().eq_ignore_ascii_case("auto"))
-        .unwrap_or_else(crate::utils::system_info::get_system_language)
+        .unwrap_or_else(crate::utils::system_info::system_language)
 }
 
 fn load_plugin_translations(
@@ -6170,7 +6181,7 @@ sidecar_dir = "bin"
             page_id: "main".to_string(),
         };
 
-        let error = require_non_render_blocking_io(Some(&context), "storage get")
+        let error = ensure_blocking_io_allowed(Some(&context), "storage get")
             .expect_err("render-time blocking I/O must be rejected");
 
         assert_eq!(error.code, "blocking-io-render-denied");
@@ -6178,7 +6189,7 @@ sidecar_dir = "bin"
 
     #[test]
     fn blocking_app_io_is_allowed_outside_render() {
-        require_non_render_blocking_io(None, "storage get")
+        ensure_blocking_io_allowed(None, "storage get")
             .expect("event/init host I/O remains available");
     }
 

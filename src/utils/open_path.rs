@@ -11,7 +11,7 @@ use windows::{
     core::{HSTRING, PCWSTR},
 };
 
-pub async fn open_path(path: String) -> Result<(), String> {
+pub async fn open(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         unsafe {

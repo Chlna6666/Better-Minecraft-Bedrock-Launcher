@@ -1,9 +1,9 @@
-use super::config::{
+use super::settings::{
     CURRENT_CONFIG_VERSION, Config, DEFAULT_APPX_API, FONT_SOURCE_DEFAULT, FONT_SOURCE_LOCAL,
     FONT_SOURCE_SYSTEM, INCORRECT_MIRROR_APPX_API, LEGACY_DEFAULT_APPX_API,
     RETIRED_DEFAULT_APPX_API, clamp_background_blur, default_error_report_sentry_dsn,
     default_glass_effect_enabled, default_gpu_adapter_name, default_online_player_name,
-    get_default_config, normalize_font_source, normalize_gpu_adapter_name, normalize_language_code,
+    default_config, normalize_font_source, normalize_gpu_adapter_name, normalize_language_code,
     normalize_renderer_backend, normalize_theme_mode,
 };
 use crate::{http::proxy, utils::file_ops};
@@ -15,47 +15,47 @@ use std::time::{Duration, Instant};
 use std::{fs, io};
 use tracing::{debug, error};
 
-static CONFIG_CACHE: Lazy<RwLock<Option<Config>>> = Lazy::new(|| RwLock::new(None));
-static CONFIG_SYNC_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static CACHE: Lazy<RwLock<Option<Config>>> = Lazy::new(|| RwLock::new(None));
+static SYNC_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 /// 配置写盘合并：任意设置项改动先更新内存缓存并标记 dirty，
 /// 由后台线程在 ~500ms 静默期后统一序列化 + fsync + rename，
 /// 避免连续调节设置（如滑块）时每次改动都全量写盘。
-const CONFIG_FLUSH_DEBOUNCE: Duration = Duration::from_millis(500);
+const FLUSH_DEBOUNCE: Duration = Duration::from_millis(500);
 
-struct ConfigFlushState {
+struct FlushState {
     dirty_at: Option<Instant>,
 }
 
-static CONFIG_FLUSH: Lazy<(Mutex<ConfigFlushState>, Condvar)> = Lazy::new(|| {
+static FLUSH: Lazy<(Mutex<FlushState>, Condvar)> = Lazy::new(|| {
     (
-        Mutex::new(ConfigFlushState { dirty_at: None }),
+        Mutex::new(FlushState { dirty_at: None }),
         Condvar::new(),
     )
 });
 
-fn schedule_config_flush() {
-    ensure_config_flush_thread();
-    let (lock, condvar) = &*CONFIG_FLUSH;
+fn schedule_flush() {
+    ensure_flush_thread();
+    let (lock, condvar) = &*FLUSH;
     let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     state.dirty_at = Some(Instant::now());
     condvar.notify_all();
 }
 
-fn ensure_config_flush_thread() {
+fn ensure_flush_thread() {
     static SPAWN_FLUSH_THREAD: Once = Once::new();
     SPAWN_FLUSH_THREAD.call_once(|| {
         if let Err(spawn_error) = std::thread::Builder::new()
             .name("bmcbl-config-flush".to_string())
-            .spawn(config_flush_worker)
+            .spawn(flush_worker)
         {
             error!("Failed to spawn config flush thread: {spawn_error}");
         }
     });
 }
 
-fn config_flush_worker() {
-    let (lock, condvar) = &*CONFIG_FLUSH;
+fn flush_worker() {
+    let (lock, condvar) = &*FLUSH;
     loop {
         let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         while state.dirty_at.is_none() {
@@ -63,17 +63,17 @@ fn config_flush_worker() {
                 .wait(state)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
-        // 静默期等待：期间新的改动会重置计时；flush_config_now 会清空 dirty_at。
+        // 静默期等待：期间新的改动会重置计时；flush_now 会清空 dirty_at。
         loop {
             let Some(dirty_at) = state.dirty_at else {
                 break;
             };
             let elapsed = dirty_at.elapsed();
-            if elapsed >= CONFIG_FLUSH_DEBOUNCE {
+            if elapsed >= FLUSH_DEBOUNCE {
                 break;
             }
             let (guard, _timeout) = condvar
-                .wait_timeout(state, CONFIG_FLUSH_DEBOUNCE - elapsed)
+                .wait_timeout(state, FLUSH_DEBOUNCE - elapsed)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state = guard;
         }
@@ -81,18 +81,18 @@ fn config_flush_worker() {
             continue;
         }
         drop(state);
-        flush_cached_config_to_disk();
+        flush_cached_to_disk();
     }
 }
 
-fn flush_cached_config_to_disk() {
-    let _sync_guard = CONFIG_SYNC_LOCK
+fn flush_cached_to_disk() {
+    let _sync_guard = SYNC_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(config) = read_cached_config() else {
+    let Some(config) = read_cached() else {
         return;
     };
-    if let Err(persist_error) = persist_config_to_disk(&config) {
+    if let Err(persist_error) = persist_to_disk(&config) {
         error!("Failed to persist config to disk: {:?}", persist_error);
     }
 }
@@ -103,39 +103,39 @@ fn flush_cached_config_to_disk() {
 /// keeps a failed language save from making the cache disagree with disk while
 /// leaving unrelated in-memory settings untouched.
 pub fn persist_language(code: &str) -> io::Result<()> {
-    let _sync_guard = CONFIG_SYNC_LOCK
+    let _sync_guard = SYNC_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut candidate = read_cached_config().ok_or_else(config_cache_not_initialized_error)?;
+    let mut candidate = read_cached().ok_or_else(cache_not_initialized_error)?;
     candidate.launcher.language = code.to_string();
-    persist_config_to_disk(&candidate)?;
-    store_cached_config(&candidate);
+    persist_to_disk(&candidate)?;
+    store_cached(&candidate);
 
-    let (lock, _) = &*CONFIG_FLUSH;
+    let (lock, _) = &*FLUSH;
     let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     state.dirty_at = None;
     Ok(())
 }
 
 /// 立即把内存中未落盘的配置写入磁盘（供应用退出路径调用）。
-pub fn flush_config_now() {
-    let (lock, _) = &*CONFIG_FLUSH;
+pub fn flush_now() {
+    let (lock, _) = &*FLUSH;
     {
         let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.dirty_at.take().is_none() {
             return;
         }
     }
-    flush_cached_config_to_disk();
+    flush_cached_to_disk();
 }
 
 #[cfg(test)]
-pub(super) fn clear_config_cache_for_test() -> std::sync::MutexGuard<'static, ()> {
-    let guard = CONFIG_SYNC_LOCK
+pub(super) fn clear_cache_for_test() -> std::sync::MutexGuard<'static, ()> {
+    let guard = SYNC_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     {
-        let mut cache = CONFIG_CACHE
+        let mut cache = CACHE
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *cache = None;
@@ -143,11 +143,11 @@ pub(super) fn clear_config_cache_for_test() -> std::sync::MutexGuard<'static, ()
     guard
 }
 
-pub fn get_config_file_path() -> PathBuf {
+pub fn file_path() -> PathBuf {
     file_ops::config_dir().join("settings.toml")
 }
 
-pub fn ensure_config_dir() -> io::Result<()> {
+pub fn ensure_dir() -> io::Result<()> {
     let config_dir = file_ops::config_dir();
     if !config_dir.exists() {
         fs::create_dir_all(&config_dir)?;
@@ -155,10 +155,10 @@ pub fn ensure_config_dir() -> io::Result<()> {
     Ok(())
 }
 
-pub fn ensure_config_file() -> io::Result<()> {
-    let config_file = get_config_file_path();
+pub fn ensure_file() -> io::Result<()> {
+    let config_file = file_path();
     if !config_file.exists() {
-        let default_config = get_default_config();
+        let default_config = default_config();
         let toml_content = toml::to_string(&default_config).map_err(|error| {
             io::Error::other(format!("Failed to serialize default config: {error}"))
         })?;
@@ -168,52 +168,52 @@ pub fn ensure_config_file() -> io::Result<()> {
     Ok(())
 }
 
-pub fn initialize_config_cache() -> io::Result<Config> {
-    let _sync_guard = CONFIG_SYNC_LOCK
+pub fn initialize_cache() -> io::Result<Config> {
+    let _sync_guard = SYNC_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let config = load_config_from_disk()?;
-    store_cached_config(&config);
+    let config = load_from_disk()?;
+    store_cached(&config);
     Ok(config)
 }
 
-pub fn read_config() -> io::Result<Config> {
-    read_cached_config().ok_or_else(config_cache_not_initialized_error)
+pub fn read() -> io::Result<Config> {
+    read_cached().ok_or_else(cache_not_initialized_error)
 }
 
-fn read_cached_config() -> Option<Config> {
-    CONFIG_CACHE
+fn read_cached() -> Option<Config> {
+    CACHE
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
 }
 
 /// 只读取代理配置：只在缓存读锁内克隆小结构，避免为读一个字段深拷贝整个 Config。
-pub fn read_proxy_config() -> io::Result<super::config::ProxyConfig> {
-    CONFIG_CACHE
+pub fn read_proxy() -> io::Result<super::settings::ProxyConfig> {
+    CACHE
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .as_ref()
         .map(|config| config.launcher.download.proxy.clone())
-        .ok_or_else(config_cache_not_initialized_error)
+        .ok_or_else(cache_not_initialized_error)
 }
 
-fn store_cached_config(config: &Config) {
-    let mut cache = CONFIG_CACHE
+fn store_cached(config: &Config) {
+    let mut cache = CACHE
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     *cache = Some(config.clone());
 }
 
-fn config_cache_not_initialized_error() -> io::Error {
+fn cache_not_initialized_error() -> io::Error {
     io::Error::other("configuration cache is not initialized; initialize it during startup")
 }
 
-fn load_config_from_disk() -> io::Result<Config> {
-    ensure_config_dir()?;
-    ensure_config_file()?;
+fn load_from_disk() -> io::Result<Config> {
+    ensure_dir()?;
+    ensure_file()?;
 
-    let config_file = get_config_file_path();
+    let config_file = file_path();
     let content = fs::read_to_string(&config_file)?;
     let has_legacy_keep_appx = content.contains("keep_appx_after_install");
     let has_config_version = content.contains("config_version");
@@ -243,7 +243,7 @@ fn load_config_from_disk() -> io::Result<Config> {
             if let Ok(toml::Value::Table(existing_table)) = toml::from_str::<toml::Value>(&content)
             {
                 if let Ok(toml::Value::Table(default_table)) =
-                    toml::Value::try_from(&get_default_config())
+                    toml::Value::try_from(&default_config())
                 {
                     let merged_config = merge_tables(default_table, existing_table);
                     match toml::ser::to_string(&toml::Value::Table(merged_config)) {
@@ -263,7 +263,7 @@ fn load_config_from_disk() -> io::Result<Config> {
             let updated_content = fs::read_to_string(&config_file)?;
             toml::from_str(&updated_content).unwrap_or_else(|second_err| {
                 error!("Failed to parse config on second attempt: {:?}", second_err);
-                get_default_config()
+                default_config()
             })
         }
     };
@@ -396,7 +396,7 @@ fn load_config_from_disk() -> io::Result<Config> {
         migrated = true;
     }
     if migrated {
-        if let Err(error) = persist_config_to_disk(&config) {
+        if let Err(error) = persist_to_disk(&config) {
             error!("Failed to persist migrated config: {:?}", error);
         } else {
             debug!("Migrated config");
@@ -411,9 +411,9 @@ pub(super) fn has_obsolete_music_section(content: &str) -> bool {
     content.lines().any(|line| line.trim() == "[music]")
 }
 
-fn persist_config_to_disk(config: &Config) -> io::Result<()> {
-    ensure_config_dir()?;
-    let config_file = get_config_file_path();
+fn persist_to_disk(config: &Config) -> io::Result<()> {
+    ensure_dir()?;
+    let config_file = file_path();
     let temp_file = config_file.with_extension("toml.tmp");
     let toml_content = toml::to_string(config)
         .map_err(|error| io::Error::other(format!("Failed to serialize config: {error}")))?;
@@ -520,30 +520,30 @@ fn merge_tables(
 
 /// 更新配置：直接在缓存上原地修改（避免多次全量 Config 克隆），
 /// 磁盘写入由后台线程按静默期合并执行。
-pub fn update_config<T, F>(mutator: F) -> io::Result<T>
+pub fn update<T, F>(mutator: F) -> io::Result<T>
 where
     F: FnOnce(&mut Config) -> T,
 {
-    let _sync_guard = CONFIG_SYNC_LOCK
+    let _sync_guard = SYNC_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let (result, proxy_changed) = {
-        let mut cache = CONFIG_CACHE
+        let mut cache = CACHE
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(config) = cache.as_mut() else {
-            return Err(config_cache_not_initialized_error());
+            return Err(cache_not_initialized_error());
         };
         let previous_proxy = config.launcher.download.proxy.clone();
         let result = mutator(config);
         let proxy_changed = config.launcher.download.proxy != previous_proxy;
         (result, proxy_changed)
     };
-    schedule_config_flush();
+    schedule_flush();
 
     if proxy_changed {
-        proxy::clear_client_cache();
+        proxy::clients::clear_cache();
     }
 
     Ok(result)

@@ -63,7 +63,7 @@ fn retention_uses_original_log_timestamp_from_archive_name() -> io::Result<()> {
     let current_archive = directory.join(format!("bmcbl-{now_millis:013}-1-00000001-00.log.zst"));
     fs::write(&old_archive, b"old")?;
     fs::write(&current_archive, b"current")?;
-    let policy = LogRetentionPolicy::from(&crate::config::config::LogManagementConfig::default());
+    let policy = LogRetentionPolicy::from(&crate::config::settings::LogManagementConfig::default());
 
     let removed = enforce_retention(&directory, policy)?;
 

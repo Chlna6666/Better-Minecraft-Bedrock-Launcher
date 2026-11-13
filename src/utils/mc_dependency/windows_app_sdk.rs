@@ -10,11 +10,12 @@ use tokio::time::Duration;
 use tracing::{info, warn};
 
 use super::{
-    DependencyEvent, download_file_with_progress, emit_log, emit_progress, is_installed_with_min,
+    DependencyEvent, download_file, emit_log, emit_progress, is_installed,
+    start_dependency_install_task,
     wait_for_condition,
 };
 
-pub const WINDOWS_APP_SDK_RELEASES_URL: &str =
+pub const RELEASES_URL: &str =
     "https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads-archive";
 const WINDOWS_APP_SDK_RUNTIME_PACKAGE_PREFIX: &str = "Microsoft.WindowsAppRuntime.1.8";
 const WINDOWS_APP_SDK_RUNTIME_VERSION_LABEL: &str = "1.8.260529003";
@@ -61,37 +62,47 @@ const WINDOWS_APP_SDK_ARM64_DOWNLOAD_SOURCES: &[WindowsAppSdkDownloadSource] =
     }];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum WindowsAppSdkInstallerSource {
+pub enum InstallerSource {
     Local,
     Download,
 }
 
 #[derive(Debug, Clone)]
-pub struct WindowsAppSdkInstallPlan {
+pub struct InstallPlan {
     pub installer_path: PathBuf,
-    pub source: WindowsAppSdkInstallerSource,
+    pub source: InstallerSource,
     pub version_label: &'static str,
 }
 
-pub fn is_windows_app_sdk_runtime_installed() -> bool {
+pub(crate) fn start(plan: InstallPlan) -> Result<String, String> {
+    let detail = Some(format!("Windows App SDK {}", plan.version_label));
+    start_dependency_install_task(
+        "安装 Windows App SDK Runtime",
+        detail,
+        "installing_windows_app_sdk",
+        move |sender| async move { install_runtime(plan, Some(sender)).await },
+    )
+}
+
+pub fn is_runtime_installed() -> bool {
     if !cfg!(windows) {
         return true;
     }
 
-    is_installed_with_min(WINDOWS_APP_SDK_RUNTIME_PACKAGE_PREFIX, None)
+    is_installed(WINDOWS_APP_SDK_RUNTIME_PACKAGE_PREFIX, None)
 }
 
-pub fn plan_windows_app_sdk_install(package_folder: &str) -> Option<WindowsAppSdkInstallPlan> {
-    if is_windows_app_sdk_runtime_installed() {
+pub fn plan_install(package_folder: &str) -> Option<InstallPlan> {
+    if is_runtime_installed() {
         info!("Windows App SDK Runtime 1.8 已存在，无需安装");
         return None;
     }
 
-    if windows_app_sdk_installer_download_sources().is_none() {
+    if installer_download_sources().is_none() {
         warn!("当前目标架构不支持 Windows App SDK Runtime 1.8 自动下载");
         return None;
     }
-    let Some(installer_file_name) = windows_app_sdk_installer_file_name() else {
+    let Some(installer_file_name) = installer_file_name() else {
         warn!("当前目标架构不支持 Windows App SDK Runtime 1.8 安装器命名");
         return None;
     };
@@ -99,12 +110,12 @@ pub fn plan_windows_app_sdk_install(package_folder: &str) -> Option<WindowsAppSd
         .join("Installers")
         .join(installer_file_name);
     let source = if installer_path.exists() {
-        WindowsAppSdkInstallerSource::Local
+        InstallerSource::Local
     } else {
-        WindowsAppSdkInstallerSource::Download
+        InstallerSource::Download
     };
 
-    let plan = WindowsAppSdkInstallPlan {
+    let plan = InstallPlan {
         installer_path,
         source,
         version_label: WINDOWS_APP_SDK_RUNTIME_VERSION_LABEL,
@@ -119,11 +130,11 @@ pub fn plan_windows_app_sdk_install(package_folder: &str) -> Option<WindowsAppSd
     Some(plan)
 }
 
-pub async fn install_windows_app_sdk_runtime(
-    plan: WindowsAppSdkInstallPlan,
+pub async fn install_runtime(
+    plan: InstallPlan,
     sender: Option<UnboundedSender<DependencyEvent>>,
 ) -> Result<()> {
-    let client = crate::http::proxy::get_download_client_for_proxy()
+    let client = crate::http::proxy::clients::download_client()
         .unwrap_or_else(|_| crate::http::request::GLOBAL_CLIENT.clone());
     let installer_name = plan
         .installer_path
@@ -154,7 +165,7 @@ pub async fn install_windows_app_sdk_runtime(
     wait_for_condition(
         Duration::from_secs(90),
         Duration::from_secs(1),
-        is_windows_app_sdk_runtime_installed,
+        is_runtime_installed,
     )
     .await
     .context("安装后未检测到 Windows App SDK Runtime 1.8")?;
@@ -172,11 +183,11 @@ pub async fn install_windows_app_sdk_runtime(
 
 async fn download_windows_app_sdk_installer(
     client: &Client,
-    plan: &WindowsAppSdkInstallPlan,
+    plan: &InstallPlan,
     installer_name: &str,
     sender: Option<&UnboundedSender<DependencyEvent>>,
 ) -> Result<()> {
-    if matches!(plan.source, WindowsAppSdkInstallerSource::Local) {
+    if matches!(plan.source, InstallerSource::Local) {
         return Ok(());
     }
 
@@ -187,12 +198,12 @@ async fn download_windows_app_sdk_installer(
             name = installer_name.to_string(),
         ),
     );
-    let Some(download_sources) = windows_app_sdk_installer_download_sources() else {
+    let Some(download_sources) = installer_download_sources() else {
         return Err(anyhow::anyhow!(
             "当前目标架构不支持 Windows App SDK Runtime 1.8 自动下载"
         ));
     };
-    let request_headers = windows_app_sdk_download_headers();
+    let request_headers = download_headers();
 
     let mut last_error = None;
     for source in download_sources {
@@ -200,7 +211,7 @@ async fn download_windows_app_sdk_installer(
             crate::github::configured_download_urls(source.url).map_err(anyhow::Error::msg)?;
         for candidate_url in candidates {
             let target_label = download_target_label(installer_name, *source);
-            match download_file_with_progress(
+            match download_file(
                 client,
                 &candidate_url,
                 &plan.installer_path,
@@ -239,11 +250,11 @@ async fn download_windows_app_sdk_installer(
         .unwrap_or_else(|| anyhow::anyhow!("没有可用的 Windows App SDK Runtime 1.8 下载源")))
 }
 
-fn windows_app_sdk_installer_file_name() -> Option<String> {
+fn installer_file_name() -> Option<String> {
     target_arch().map(|arch| format!("{WINDOWS_APP_SDK_INSTALLER_BASE_NAME}-{arch}.exe"))
 }
 
-fn windows_app_sdk_installer_download_sources() -> Option<&'static [WindowsAppSdkDownloadSource]> {
+fn installer_download_sources() -> Option<&'static [WindowsAppSdkDownloadSource]> {
     match target_arch()? {
         "x86" => Some(WINDOWS_APP_SDK_X86_DOWNLOAD_SOURCES),
         "arm64" => Some(WINDOWS_APP_SDK_ARM64_DOWNLOAD_SOURCES),
@@ -252,8 +263,8 @@ fn windows_app_sdk_installer_download_sources() -> Option<&'static [WindowsAppSd
     }
 }
 
-fn windows_app_sdk_download_headers() -> HeaderMap {
-    let mut headers = crate::http::proxy::download_request_headers();
+fn download_headers() -> HeaderMap {
+    let mut headers = crate::http::download::request_headers();
     headers.insert(
         USER_AGENT,
         HeaderValue::from_static(WINDOWS_APP_SDK_DOWNLOAD_USER_AGENT),
@@ -294,7 +305,7 @@ fn target_arch() -> Option<&'static str> {
 #[cfg(windows)]
 fn emit_windows_app_sdk_admin_notice(
     sender: Option<&UnboundedSender<DependencyEvent>>,
-    plan: &WindowsAppSdkInstallPlan,
+    plan: &InstallPlan,
 ) {
     if !crate::utils::developer_mode::is_process_elevated() {
         tracing::warn!(
@@ -311,14 +322,14 @@ fn emit_windows_app_sdk_admin_notice(
 #[cfg(not(windows))]
 fn emit_windows_app_sdk_admin_notice(
     _sender: Option<&UnboundedSender<DependencyEvent>>,
-    _plan: &WindowsAppSdkInstallPlan,
+    _plan: &InstallPlan,
 ) {
 }
 
 #[cfg(windows)]
 async fn install_windows_app_sdk_installer(installer_path: &Path) -> Result<()> {
     let installer_path = installer_path.to_path_buf();
-    crate::tasks::runtime::run_io_blocking(move || {
+    crate::tasks::runtime::blocking::run_io(move || {
         use std::process::Command;
 
         let output = Command::new(&installer_path)
@@ -362,14 +373,14 @@ async fn install_windows_app_sdk_installer(_installer_path: &Path) -> Result<()>
 mod tests {
     use super::{
         WINDOWS_APP_SDK_DOWNLOAD_USER_AGENT, WINDOWS_APP_SDK_X64_GITHUB_DOWNLOAD_URL,
-        WINDOWS_APP_SDK_X64_MICROSOFT_DIRECT_DOWNLOAD_URL, windows_app_sdk_download_headers,
-        windows_app_sdk_installer_download_sources, windows_app_sdk_installer_file_name,
+        WINDOWS_APP_SDK_X64_MICROSOFT_DIRECT_DOWNLOAD_URL, download_headers,
+        installer_download_sources, installer_file_name,
     };
     use reqwest::header::USER_AGENT;
 
     #[test]
     fn installer_file_name_matches_target_architecture() {
-        let file_name = windows_app_sdk_installer_file_name()
+        let file_name = installer_file_name()
             .expect("test target should map to a supported Windows App SDK architecture");
 
         assert!(file_name.starts_with("windowsappruntimeinstall-"));
@@ -378,7 +389,7 @@ mod tests {
 
     #[test]
     fn first_installer_url_points_to_supported_runtime_installer() {
-        let sources = windows_app_sdk_installer_download_sources()
+        let sources = installer_download_sources()
             .expect("test target should map to supported Windows App SDK download sources");
         let Some(first_source) = sources.first() else {
             panic!("supported architecture should have at least one download source");
@@ -400,7 +411,7 @@ mod tests {
             return;
         }
 
-        let sources = windows_app_sdk_installer_download_sources()
+        let sources = installer_download_sources()
             .expect("x64 target should have Windows App SDK download sources");
 
         assert_eq!(
@@ -417,7 +428,7 @@ mod tests {
 
     #[test]
     fn download_headers_use_proxy_accepted_user_agent() {
-        let headers = windows_app_sdk_download_headers();
+        let headers = download_headers();
 
         assert_eq!(
             headers

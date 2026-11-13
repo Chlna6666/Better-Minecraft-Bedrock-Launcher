@@ -1,9 +1,6 @@
-use crate::archive::zip::extract_zip_from_path;
-use crate::config::config::read_config;
-#[cfg(target_os = "windows")]
-use crate::core::minecraft::appx::utils::{get_manifest_identity, patch_manifest};
-#[cfg(target_os = "linux")]
-use crate::core::minecraft::appx_utils::{get_manifest_identity, patch_manifest};
+use crate::archive::zip::{ZipConflictPolicy, extract_from_path};
+use crate::config::settings::read;
+use crate::core::minecraft::appx::utils::{patch_manifest, read_manifest_identity};
 use crate::core::minecraft::key_patcher::{PatchResult, patch_path};
 use crate::result::CoreResult;
 use crate::tasks::runtime::spawn_archive_task;
@@ -126,7 +123,14 @@ async fn run_import_appx_task(task_id: String, source_path: String, file_name: O
         }
     };
 
-    match extract_zip_from_path(source, &extract_to_str, true, task_id.clone()).await {
+    match extract_from_path(
+        source,
+        &extract_to_str,
+        ZipConflictPolicy::Replace,
+        task_id.clone(),
+    )
+    .await
+    {
         Ok(CoreResult::Success(())) => {
             update_progress(
                 &task_id,
@@ -157,15 +161,23 @@ async fn run_import_appx_task(task_id: String, source_path: String, file_name: O
     }
 }
 
+/// Controls installation-specific behavior while extracting an Appx package.
+#[derive(Clone, Copy, Debug)]
+pub struct AppxExtractOptions {
+    /// Select whether existing paths are replaced or preserved.
+    pub conflict_policy: ZipConflictPolicy,
+    /// Remove `AppxSignature.p7x` after extraction.
+    pub remove_signature: bool,
+}
+
 pub async fn extract_zip_appx(
     file_name: String,
     destination: String,
-    force_replace: bool,
-    delete_signature: bool,
+    options: AppxExtractOptions,
 ) -> Result<String, String> {
     debug!(
-        "extract_zip_appx: file_name='{}', destination='{}', force_replace={}, delete_signature={}",
-        file_name, destination, force_replace, delete_signature
+        "extract_zip_appx: file_name='{}', destination='{}', conflict_policy={:?}, remove_signature={}",
+        file_name, destination, options.conflict_policy, options.remove_signature
     );
 
     let task_target = task_target_name(&file_name, "游戏版本");
@@ -183,8 +195,7 @@ pub async fn extract_zip_appx(
                 task_id,
                 file_name,
                 destination,
-                force_replace,
-                delete_signature,
+                options,
             )
             .await;
         }
@@ -199,8 +210,7 @@ async fn run_extract_zip_appx_task(
     task_id: String,
     file_name: String,
     destination: String,
-    force_replace: bool,
-    delete_signature: bool,
+    options: AppxExtractOptions,
 ) {
     update_progress(&task_id, ProgressUpdate::advance(0).stage("starting"));
 
@@ -234,7 +244,7 @@ async fn run_extract_zip_appx_task(
     };
 
     let extract_to: PathBuf = versions_root.join(stem);
-    if extract_to.exists() && !force_replace {
+    if extract_to.exists() && options.conflict_policy == ZipConflictPolicy::PreserveExisting {
         finish_error(
             &task_id,
             format!("安装目录已存在，请显式选择覆盖：{}", extract_to.display()),
@@ -253,10 +263,10 @@ async fn run_extract_zip_appx_task(
         }
     };
 
-    match extract_zip_from_path(
+    match extract_from_path(
         Path::new(&destination),
         &extract_to_str,
-        force_replace,
+        options.conflict_policy,
         task_id.clone(),
     )
     .await
@@ -264,7 +274,7 @@ async fn run_extract_zip_appx_task(
         Ok(CoreResult::Success(())) => {
             // ZIP has crossed its atomic rename boundary. Finish post-processing coherently even
             // if a cancellation request arrives after commit.
-            if !finish_appx_install(&task_id, &extract_to, delete_signature).await {
+            if !finish_appx_install(&task_id, &extract_to, options.remove_signature).await {
                 return;
             }
 
@@ -287,10 +297,10 @@ async fn run_extract_zip_appx_task(
     }
 }
 
-async fn finish_appx_install(task_id: &str, extract_to: &Path, delete_signature: bool) -> bool {
+async fn finish_appx_install(task_id: &str, extract_to: &Path, remove_signature: bool) -> bool {
     update_progress(task_id, ProgressUpdate::advance(0).stage("preparing_files"));
 
-    if delete_signature {
+    if remove_signature {
         let signature_path = extract_to.join("AppxSignature.p7x");
         if !remove_file_if_exists(&signature_path, "删除 AppxSignature.p7x 失败") {
             finish_error(task_id, "删除 AppxSignature.p7x 失败");
@@ -303,7 +313,7 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, delete_signature:
         return false;
     }
 
-    if let Ok(config) = read_config() {
+    if let Ok(config) = read() {
         if config.game.modify_appx_manifest {
             update_progress(task_id, ProgressUpdate::advance(0).stage("patching"));
             match patch_manifest(extract_to) {
@@ -318,7 +328,7 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, delete_signature:
     }
 
     let Ok((_identity_name, version)) =
-        get_manifest_identity(extract_to.to_string_lossy().as_ref()).await
+        read_manifest_identity(std::path::Path::new(extract_to)).await
     else {
         debug!(
             "获取 Manifest Identity 失败，跳过旧版本补丁: {}",
@@ -339,7 +349,7 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, delete_signature:
 
     update_progress(task_id, ProgressUpdate::advance(0).stage("patching"));
     let extract_clone = extract_to.to_path_buf();
-    match crate::tasks::runtime::run_archive_blocking(move || patch_path(&extract_clone)).await {
+    match crate::tasks::runtime::blocking::run_archive(move || patch_path(&extract_clone)).await {
         Ok(Ok(PatchResult::Patched(backup_path))) => {
             info!("旧版补丁应用成功，备份文件：{}", backup_path.display());
             true
@@ -361,8 +371,8 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, delete_signature:
 
 #[cfg(test)]
 mod tests {
-    use super::extract_zip_appx;
-    use crate::tasks::task_manager::{TaskSnapshot, get_snapshot_arc, remove_task};
+    use super::{AppxExtractOptions, ZipConflictPolicy, extract_zip_appx};
+    use crate::tasks::task_manager::{TaskSnapshot, snapshot_arc, remove_task};
     use crate::utils::file_ops;
     use std::path::Path;
     use std::sync::Arc;
@@ -382,7 +392,7 @@ mod tests {
                 timeout
             );
 
-            if let Some(snapshot) = get_snapshot_arc(task_id) {
+            if let Some(snapshot) = snapshot_arc(task_id) {
                 if last_log_at.elapsed() >= Duration::from_secs(10) {
                     println!(
                         "task={} status={} stage={} done={} total={:?} percent={:?} speed={:.2}B/s message={}",
@@ -430,8 +440,10 @@ mod tests {
         let task_id = extract_zip_appx(
             CURL_DOWNLOADED_APPX_NAME.to_string(),
             CURL_DOWNLOADED_APPX_PATH.to_string(),
-            true,
-            true,
+            AppxExtractOptions {
+                conflict_policy: ZipConflictPolicy::Replace,
+                remove_signature: true,
+            },
         )
         .await
         .expect("archive task should be created");

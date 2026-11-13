@@ -7,12 +7,12 @@ use tracing::{debug, info, warn};
 
 const MD5_BUFFER_SIZE: usize = 1024 * 1024;
 
-pub fn is_md5_digest(value: &str) -> bool {
+pub fn is_digest(value: &str) -> bool {
     let value = value.trim();
     value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn compute_md5_blocking(path: &Path) -> io::Result<(String, u64)> {
+fn hash_file(path: &Path) -> io::Result<(String, u64)> {
     let mut file = File::open(path)?;
     let mut buf = vec![0u8; MD5_BUFFER_SIZE];
     let mut ctx = Context::new();
@@ -32,14 +32,14 @@ fn compute_md5_blocking(path: &Path) -> io::Result<(String, u64)> {
 }
 
 /// 返回十六进制小写 MD5 字符串
-pub async fn compute_md5<P: AsRef<Path>>(path: P) -> Result<String, std::io::Error> {
+pub async fn compute<P: AsRef<Path>>(path: P) -> Result<String, std::io::Error> {
     let path_ref = path.as_ref();
     debug!("开始计算文件 MD5: {}", path_ref.display());
 
     let path_buf = path_ref.to_path_buf();
     let display_path = path_buf.display().to_string();
     let (result, total_bytes) =
-        crate::tasks::runtime::run_io_blocking(move || compute_md5_blocking(&path_buf))
+        crate::tasks::runtime::blocking::run_io(move || hash_file(&path_buf))
             .await
             .map_err(|error| {
                 io::Error::other(format!("MD5 worker stopped for {display_path}: {error}"))
@@ -54,13 +54,13 @@ pub async fn compute_md5<P: AsRef<Path>>(path: P) -> Result<String, std::io::Err
 }
 
 /// 校验文件 md5 是否等于 expected（忽略大小写）
-pub async fn verify_md5<P: AsRef<Path>>(path: P, expected: &str) -> Result<bool, std::io::Error> {
+pub async fn verify<P: AsRef<Path>>(path: P, expected: &str) -> Result<bool, std::io::Error> {
     let path_ref = path.as_ref();
     debug!("正在校验文件 MD5: {}", path_ref.display());
 
-    // 注意：这里传入 &path_ref (即 &Path)，因为 compute_md5 接受 impl AsRef<Path>
+    // 注意：这里传入 &path_ref (即 &Path)，因为 compute 接受 impl AsRef<Path>
     // 这样可以防止 path 被 move，从而在下面还能继续使用 path_ref 打印日志
-    let got = compute_md5(path_ref).await?;
+    let got = compute(path_ref).await?;
 
     let is_match = got.eq_ignore_ascii_case(expected);
 
@@ -80,7 +80,7 @@ pub async fn verify_md5<P: AsRef<Path>>(path: P, expected: &str) -> Result<bool,
 
 #[cfg(test)]
 mod tests {
-    use super::verify_md5;
+    use super::verify;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -101,7 +101,7 @@ mod tests {
 
         let path_for_thread = path.clone();
         let handle = std::thread::spawn(move || {
-            futures::executor::block_on(verify_md5(
+            futures::executor::block_on(verify(
                 &path_for_thread,
                 "35b1394f952af8af4e165bc41f15c003",
             ))

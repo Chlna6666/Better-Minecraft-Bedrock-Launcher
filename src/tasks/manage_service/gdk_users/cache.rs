@@ -8,7 +8,9 @@ use std::time::Instant;
 use notify::event::{MetadataKind, ModifyKind};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::tasks::runtime::{BlockingTaskOptions, run_blocking};
+use crate::tasks::runtime::BlockingTaskOptions;
+use crate::tasks::runtime::blocking;
+use crate::utils::file_watch::Directories;
 
 use super::{GdkUserDirectory, scan_user_directories, user_directories};
 
@@ -50,6 +52,7 @@ struct Changes {
     generation: AtomicU64,
     healthy: AtomicBool,
     dirty: AtomicBool,
+    directories: Mutex<Directories>,
 }
 
 impl Changes {
@@ -66,48 +69,47 @@ impl Changes {
     }
 
     fn record(&self, root: &Path, event: notify::Result<Event>) -> bool {
-        match event {
-            Ok(event) => {
-                let ignored = matches!(
-                    event.kind,
-                    EventKind::Access(_)
-                        | EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime))
-                );
-                let structural = event.kind.is_create()
-                    || event.kind.is_remove()
-                    || matches!(event.kind, EventKind::Modify(ModifyKind::Name(_)));
-                if event.need_rescan()
-                    || (!ignored
-                        && (event.paths.is_empty()
-                            || event.paths.iter().any(|path| {
-                                // The parent watch reports Users' own metadata changes,
-                                // including ones caused by registering the recursive watch.
-                                // Only replacement matters there; file activity is observed
-                                // beneath Users by the recursive subscription.
-                                // Windows also reports directory metadata on enumeration;
-                                // it cannot change the latest regular-file timestamp.
-                                // Probe only the notified path, never scan in this callback.
-                                (path != root
-                                    && path.starts_with(root)
-                                    && (structural
-                                        || self.dirty.load(Ordering::Acquire)
-                                        || !fs::symlink_metadata(path)
-                                            .is_ok_and(|metadata| metadata.is_dir())))
-                                    || (structural && root.starts_with(path))
-                            })))
-                {
-                    self.healthy.store(false, Ordering::Release);
-                    self.mark_dirty();
-                    return true;
-                }
-            }
-            Err(_) => {
-                self.healthy.store(false, Ordering::Release);
-                self.mark_dirty();
-                return true;
-            }
+        let changed = match event {
+            Ok(event) => self.relevant(root, &event),
+            Err(_) => true,
+        };
+        if changed {
+            self.healthy.store(false, Ordering::Release);
+            self.mark_dirty();
         }
-        false
+        changed
+    }
+
+    fn relevant(&self, root: &Path, event: &Event) -> bool {
+        if event.need_rescan() {
+            return true;
+        }
+        if matches!(
+            event.kind,
+            EventKind::Access(_)
+                | EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime))
+        ) {
+            return false;
+        }
+        let structural = event.kind.is_create()
+            || event.kind.is_remove()
+            || matches!(event.kind, EventKind::Modify(ModifyKind::Name(_)));
+        let mut directories = self
+            .directories
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        directories.observe(event);
+        // Enumeration metadata on Users or its subdirectories is not a data change.
+        // Directory classifications are bounded and forgotten on replacement.
+        event.paths.is_empty()
+            || event.paths.iter().any(|path| {
+                (path != root
+                    && path.starts_with(root)
+                    && (structural
+                        || self.dirty.load(Ordering::Acquire)
+                        || !directories.is_directory(path)))
+                    || (structural && root.starts_with(path))
+            })
     }
 }
 
@@ -168,7 +170,7 @@ impl Entry {
         let generation = self.changes.generation.load(Ordering::Acquire);
         #[cfg(test)]
         self.scans.fetch_add(1, Ordering::Relaxed);
-        let directories = run_blocking(
+        let directories = blocking::run(
             BlockingTaskOptions::hidden("枚举 GDK 用户"),
             move || user_directories(&root),
         )
@@ -202,7 +204,7 @@ impl Entry {
             let previous = slot.take();
             let id = self.watch_generation.fetch_add(1, Ordering::Relaxed);
             let watched_slot = Arc::downgrade(&self.watcher);
-            *slot = match run_blocking(
+            *slot = match blocking::run(
                 BlockingTaskOptions::hidden("监听 GDK 用户目录"),
                 move || watch(watched_root, changes, previous, watched_slot, id),
             )
@@ -280,7 +282,7 @@ async fn stop_watcher(slot: Weak<WatchSlot>, id: u64) {
         }
     };
     if let Some(stopped) = stopped
-        && let Err(error) = run_blocking(
+        && let Err(error) = blocking::run(
             BlockingTaskOptions::hidden("暂停 GDK 用户监听"),
             move || {
                 drop(stopped);
@@ -300,7 +302,7 @@ pub(super) async fn load(root: PathBuf) -> Result<Vec<GdkUserDirectory>, String>
         .entry(root.clone());
     // The last owner may tear down a native watcher. Never do that under the registry lock.
     if let Some(evicted) = evicted {
-        run_blocking(
+        blocking::run(
             BlockingTaskOptions::hidden("释放 GDK 用户缓存"),
             move || {
                 drop(evicted);

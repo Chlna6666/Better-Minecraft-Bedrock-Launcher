@@ -1,4 +1,4 @@
-use crate::config::config::read_config;
+use crate::config::settings::read;
 use crate::utils::app_info;
 use crate::utils::file_ops;
 use anyhow::{Context, Result};
@@ -138,7 +138,7 @@ pub struct DiagnosticsSharePayload {
 }
 
 pub fn prepare_previous_run_reports() -> Result<()> {
-    ensure_diagnostics_dirs()?;
+    ensure_dirs()?;
 
     if pending_report_path().exists() {
         remove_file_if_exists(&crash_signal_path())?;
@@ -160,12 +160,12 @@ pub fn prepare_previous_run_reports() -> Result<()> {
 }
 
 pub fn mark_session_started() -> Result<()> {
-    ensure_diagnostics_dirs()?;
+    ensure_dirs()?;
     let marker = SessionMarker {
         process_id: std::process::id(),
         started_at: Utc::now().to_rfc3339(),
         clean_shutdown: false,
-        app_version: app_info::get_version().to_string(),
+        app_version: app_info::version().to_string(),
     };
     write_json(&session_marker_path(), &marker)
 }
@@ -197,7 +197,7 @@ pub fn clear_crash_signal() -> Result<()> {
 }
 
 fn record_crash_signal(signal: CrashSignal) -> Result<()> {
-    ensure_diagnostics_dirs()?;
+    ensure_dirs()?;
     write_json(&crash_signal_path(), &signal)
 }
 
@@ -274,7 +274,7 @@ pub fn create_application_error_report(
 }
 
 pub fn persist_report(report: &DiagnosticsReport) -> Result<()> {
-    ensure_diagnostics_dirs()?;
+    ensure_dirs()?;
     write_pending_report(report)?;
     archive_report(report)
 }
@@ -336,14 +336,14 @@ fn sentry_submission_receipt_path(report_id: &str) -> Result<PathBuf> {
     // Only canonical UUID-derived filenames: report contents must never
     // become arbitrary file paths.
     let id = uuid::Uuid::parse_str(report_id).context("invalid diagnostic report ID")?;
-    Ok(diagnostics_dir()
+    Ok(directory()
         .join(SENTRY_RECEIPTS_DIR)
         .join(format!("{id}.json")))
 }
 
 /// Acknowledge only the report the user actually closed. An in-flight Sentry
 /// task may finish after another report has replaced it.
-pub fn acknowledge_pending_report_if_matches(report_id: &str) -> Result<bool> {
+pub fn acknowledge_report(report_id: &str) -> Result<bool> {
     let path = pending_report_path();
     if !path.exists() {
         return Ok(false);
@@ -359,15 +359,7 @@ pub fn acknowledge_pending_report_if_matches(report_id: &str) -> Result<bool> {
     Ok(true)
 }
 
-pub fn acknowledge_pending_report() -> Result<()> {
-    let path = pending_report_path();
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    Ok(())
-}
-
-pub fn diagnostics_share_payload(report: &DiagnosticsReport) -> DiagnosticsSharePayload {
+pub fn share_payload(report: &DiagnosticsReport) -> DiagnosticsSharePayload {
     let report = sanitized_share_report(report);
     let body_markdown = report_markdown(&report);
     let title = format!("[{}] {}", report.kind.label(), report.summary);
@@ -377,8 +369,8 @@ pub fn diagnostics_share_payload(report: &DiagnosticsReport) -> DiagnosticsShare
         title = url::form_urlencoded::byte_serialize(title.as_bytes()).collect::<String>(),
         body = url::form_urlencoded::byte_serialize(body_markdown.as_bytes()).collect::<String>(),
     );
-    let sentry_dsn = read_config().ok().and_then(|config| {
-        crate::config::config::resolved_error_report_sentry_dsn(&config.launcher)
+    let sentry_dsn = read().ok().and_then(|config| {
+        crate::config::settings::resolved_error_report_sentry_dsn(&config.launcher)
     });
 
     DiagnosticsSharePayload {
@@ -532,7 +524,7 @@ fn sanitized_share_report(report: &DiagnosticsReport) -> DiagnosticsReport {
 /// Export a self-contained diagnostic ZIP. The caller must run this on an IO
 /// worker, never the UI/GPU owner thread. Only text diagnostics and bounded log
 /// tails are included; no tokens, profiles, worlds, configs or save files.
-pub fn export_diagnostics_bundle(report: &DiagnosticsReport) -> Result<PathBuf> {
+pub fn export_bundle(report: &DiagnosticsReport) -> Result<PathBuf> {
     let _ = crate::utils::log_manager::flush_async_logs(Duration::from_secs(2));
     let destination = file_ops::logs_dir().join("reports");
     fs::create_dir_all(&destination)?;
@@ -658,8 +650,8 @@ fn build_report_with_log_tail(
         kind,
         severity,
         created_at: Utc::now().to_rfc3339(),
-        app_version: app_info::get_version().to_string(),
-        build_info: app_info::get_build_info(),
+        app_version: app_info::version().to_string(),
+        build_info: app_info::build_info(),
         os: detect_os_summary(),
         process_id: std::process::id(),
         summary,
@@ -688,7 +680,7 @@ fn build_summary(kind: DiagnosticsKind, detail: &DiagnosticsDetail) -> String {
 }
 
 fn archive_report(report: &DiagnosticsReport) -> Result<()> {
-    let archive_dir = diagnostics_dir().join(REPORT_ARCHIVE_DIR);
+    let archive_dir = directory().join(REPORT_ARCHIVE_DIR);
     fs::create_dir_all(&archive_dir)?;
     write_json(&archive_dir.join(format!("{}.json", report.id)), report)
 }
@@ -697,9 +689,9 @@ fn write_pending_report(report: &DiagnosticsReport) -> Result<()> {
     write_json(&pending_report_path(), report)
 }
 
-fn ensure_diagnostics_dirs() -> Result<()> {
-    fs::create_dir_all(diagnostics_dir())?;
-    fs::create_dir_all(diagnostics_dir().join(REPORT_ARCHIVE_DIR))?;
+fn ensure_dirs() -> Result<()> {
+    fs::create_dir_all(directory())?;
+    fs::create_dir_all(directory().join(REPORT_ARCHIVE_DIR))?;
     Ok(())
 }
 
@@ -710,20 +702,20 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn diagnostics_dir() -> PathBuf {
+fn directory() -> PathBuf {
     file_ops::state_subdir(REPORTS_DIR)
 }
 
 fn session_marker_path() -> PathBuf {
-    diagnostics_dir().join(SESSION_FILE)
+    directory().join(SESSION_FILE)
 }
 
 fn pending_report_path() -> PathBuf {
-    diagnostics_dir().join(PENDING_REPORT_FILE)
+    directory().join(PENDING_REPORT_FILE)
 }
 
 fn crash_signal_path() -> PathBuf {
-    diagnostics_dir().join(CRASH_SIGNAL_FILE)
+    directory().join(CRASH_SIGNAL_FILE)
 }
 
 fn latest_log_path() -> PathBuf {
@@ -891,7 +883,7 @@ mod tests {
             },
         );
 
-        let payload = diagnostics_share_payload(&report);
+        let payload = share_payload(&report);
         assert!(payload.github_issue_url.starts_with(GITHUB_ISSUE_BASE_URL));
         assert!(payload.github_issue_url.contains("title="));
         assert!(payload.github_issue_url.contains("body="));

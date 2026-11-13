@@ -5,15 +5,15 @@ use std::time::{Duration, Instant};
 
 use once_cell::sync::OnceCell;
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use tokio::runtime::{Builder as TokioRuntimeBuilder, Handle, Runtime};
+use tokio::runtime::{Handle, Runtime};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
 use tracing::{debug, error, warn};
 
 use super::task_manager::{
-    ProgressUpdate, TaskOptions, TaskVisibility, create_task, finish_task, get_snapshot_arc,
-    is_cancelled, refresh_task_telemetry, register_task_abort_handle,
-    register_task_cooperative_cancel, remove_task, update_progress,
+    ProgressUpdate, TaskOptions, TaskVisibility, create_task, finish_task, snapshot_arc,
+    is_cancelled, refresh_task_telemetry, register_abort_handle,
+    register_cooperative_cancel, remove_task, update_progress,
 };
 
 const DEFAULT_BLOCKING_TIMEOUT: Duration = Duration::from_secs(30);
@@ -44,7 +44,7 @@ fn logical_thread_count() -> usize {
 fn build_download_runtime() -> std::io::Result<Runtime> {
     let logical_threads = logical_thread_count();
     let download_workers = logical_threads.saturating_sub(1).clamp(2, 6);
-    TokioRuntimeBuilder::new_multi_thread()
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(download_workers)
         .max_blocking_threads(logical_threads.saturating_add(2).clamp(4, 8))
@@ -55,7 +55,7 @@ fn build_download_runtime() -> std::io::Result<Runtime> {
 fn build_archive_runtime() -> std::io::Result<Runtime> {
     let logical_threads = logical_thread_count();
     let archive_workers = logical_threads.saturating_sub(1).clamp(2, 4);
-    TokioRuntimeBuilder::new_multi_thread()
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(archive_workers)
         .max_blocking_threads(logical_threads.saturating_add(1).clamp(4, 6))
@@ -70,7 +70,7 @@ impl AppRuntime {
         // io runtime 的 worker 数不再按逻辑核 x2 超订；阻塞线程上限保持 x2。
         let io_workers = logical_threads.max(4);
 
-        let io = TokioRuntimeBuilder::new_multi_thread()
+        let io = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .worker_threads(io_workers)
             .max_blocking_threads(background_threads)
@@ -203,14 +203,6 @@ pub(crate) fn archive_inspection_parallelism() -> usize {
     logical_thread_count().saturating_sub(1).clamp(2, 6)
 }
 
-pub fn spawn_download_blocking<T, F>(operation: F) -> Result<JoinHandle<T>, String>
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    app_runtime()?.spawn_download_blocking(operation)
-}
-
 pub async fn run_cpu<T, F>(operation: F) -> Result<T, String>
 where
     T: Send + 'static,
@@ -230,33 +222,11 @@ where
     Ok(app_runtime()?.cpu.install(operation))
 }
 
-pub async fn run_io_blocking<T, F>(operation: F) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    app_runtime()?
-        .spawn_io_blocking(operation)
-        .await
-        .map_err(|error| format!("后台阻塞任务异常结束: {error}"))
-}
-
-pub async fn run_archive_blocking<T, F>(operation: F) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    app_runtime()?
-        .spawn_archive_blocking(operation)?
-        .await
-        .map_err(|error| format!("安装阻塞任务异常结束: {error}"))
-}
-
 pub fn spawn_download_task<F>(task_id: String, future: F) -> Result<AbortHandle, String>
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    register_task_cooperative_cancel(task_id.clone());
+    register_cooperative_cancel(task_id.clone());
     let runtime = app_runtime()?;
     let task_slots = Arc::clone(&runtime.download_slots);
     let task_id_for_worker = task_id.clone();
@@ -325,7 +295,7 @@ pub fn spawn_archive_task<F>(task_id: String, future: F) -> Result<(), String>
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    register_task_cooperative_cancel(task_id.clone());
+    register_cooperative_cancel(task_id.clone());
     let runtime = app_runtime()?;
     let task_slots = Arc::clone(&runtime.archive_slots);
     let task_id_for_worker = task_id.clone();
@@ -360,7 +330,7 @@ where
         match join_handle.await {
             Ok(()) => {
                 let still_running =
-                    get_snapshot_arc(&task_id).is_some_and(|snapshot| !snapshot.is_terminal());
+                    snapshot_arc(&task_id).is_some_and(|snapshot| !snapshot.is_terminal());
                 if still_running && !is_cancelled(&task_id) {
                     finish_task(&task_id, "error", Some("安装任务未完成就退出".to_string()));
                 }
@@ -445,82 +415,117 @@ impl Drop for HiddenTaskGuard {
     }
 }
 
-pub async fn run_blocking<T, F>(options: BlockingTaskOptions, operation: F) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, String> + Send + 'static,
-{
-    let runtime = app_runtime()?;
-    let permit = Arc::clone(&runtime.blocking_slots)
-        .acquire_owned()
-        .await
-        .map_err(|error| format!("后台任务队列已关闭: {error}"))?;
-    let task_id = create_task(
-        TaskOptions::new(options.title, "running")
-            .detail(options.detail)
-            .visibility(TaskVisibility::Hidden),
-    )?;
-    let started_at = Instant::now();
-    let join_handle = spawn_blocking_with_permit(runtime, permit, operation);
-    let guard = HiddenTaskGuard {
-        task_id: task_id.clone(),
-        abort_handle: join_handle.abort_handle(),
-        completed: false,
-    };
-    register_task_abort_handle(task_id.clone(), guard.abort_handle.clone());
+pub mod blocking {
+    use super::*;
 
-    debug!(
-        task_id,
-        title = options.title,
-        "hidden blocking task started"
-    );
-    let title = options.title;
-    let timeout = options.timeout;
-    let wait_handle = runtime.spawn_io(async move {
-        match timeout {
-            Some(timeout) => tokio::time::timeout(timeout, join_handle)
-                .await
-                .map_err(|_| format!("{title}超时（{} 秒）", timeout.as_secs())),
-            None => Ok(join_handle.await),
-        }
-    });
-    let joined = match wait_handle.await {
-        Ok(joined) => joined,
-        Err(error) => Err(format!("{title}等待任务失败: {error}")),
-    };
-
-    if joined.is_err() {
-        guard.abort_handle.abort();
-    }
-    let outcome = match joined {
-        Ok(Ok(outcome)) => outcome,
-        Ok(Err(error)) => Err(format!("{}任务失败: {error}", options.title)),
-        Err(error) => Err(error),
-    };
-
-    match &outcome {
-        Ok(_) => {
-            debug!(
-                task_id,
-                title = options.title,
-                elapsed_ms = started_at.elapsed().as_millis(),
-                "hidden blocking task completed"
-            );
-            guard.complete("completed", None);
-        }
-        Err(error) => {
-            warn!(
-                task_id,
-                title = options.title,
-                elapsed_ms = started_at.elapsed().as_millis(),
-                %error,
-                "hidden blocking task failed"
-            );
-            guard.complete("error", Some(error.clone()));
-        }
+    pub fn spawn_download<T, F>(operation: F) -> Result<JoinHandle<T>, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        app_runtime()?.spawn_download_blocking(operation)
     }
 
-    outcome
+    pub async fn run_io<T, F>(operation: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        app_runtime()?
+            .spawn_io_blocking(operation)
+            .await
+            .map_err(|error| format!("后台阻塞任务异常结束: {error}"))
+    }
+
+    pub async fn run_archive<T, F>(operation: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        app_runtime()?
+            .spawn_archive_blocking(operation)?
+            .await
+            .map_err(|error| format!("安装阻塞任务异常结束: {error}"))
+    }
+
+    pub async fn run<T, F>(options: BlockingTaskOptions, operation: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T, String> + Send + 'static,
+    {
+        let runtime = app_runtime()?;
+        let permit = Arc::clone(&runtime.blocking_slots)
+            .acquire_owned()
+            .await
+            .map_err(|error| format!("后台任务队列已关闭: {error}"))?;
+        let mut task_options =
+            TaskOptions::new(options.title, "running").visibility(TaskVisibility::Hidden);
+        if let Some(detail) = options.detail {
+            task_options = task_options.detail(detail);
+        }
+        let task_id = create_task(task_options)?;
+        let started_at = Instant::now();
+        let join_handle = spawn_blocking_with_permit(runtime, permit, operation);
+        let guard = HiddenTaskGuard {
+            task_id: task_id.clone(),
+            abort_handle: join_handle.abort_handle(),
+            completed: false,
+        };
+        register_abort_handle(task_id.clone(), guard.abort_handle.clone());
+
+        debug!(
+            task_id,
+            title = options.title,
+            "hidden blocking task started"
+        );
+        let title = options.title;
+        let timeout = options.timeout;
+        let wait_handle = runtime.spawn_io(async move {
+            match timeout {
+                Some(timeout) => tokio::time::timeout(timeout, join_handle)
+                    .await
+                    .map_err(|_| format!("{title}超时（{} 秒）", timeout.as_secs())),
+                None => Ok(join_handle.await),
+            }
+        });
+        let joined = match wait_handle.await {
+            Ok(joined) => joined,
+            Err(error) => Err(format!("{title}等待任务失败: {error}")),
+        };
+
+        if joined.is_err() {
+            guard.abort_handle.abort();
+        }
+        let outcome = match joined {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(error)) => Err(format!("{}任务失败: {error}", options.title)),
+            Err(error) => Err(error),
+        };
+
+        match &outcome {
+            Ok(_) => {
+                debug!(
+                    task_id,
+                    title = options.title,
+                    elapsed_ms = started_at.elapsed().as_millis(),
+                    "hidden blocking task completed"
+                );
+                guard.complete("completed", None);
+            }
+            Err(error) => {
+                warn!(
+                    task_id,
+                    title = options.title,
+                    elapsed_ms = started_at.elapsed().as_millis(),
+                    %error,
+                    "hidden blocking task failed"
+                );
+                guard.complete("error", Some(error.clone()));
+            }
+        }
+
+        outcome
+    }
 }
 
 #[cfg(test)]
@@ -537,7 +542,7 @@ mod tests {
     #[test]
     fn hidden_blocking_task_can_be_awaited_without_tokio_context() {
         initialize_test_runtime();
-        let value = futures::executor::block_on(run_blocking(
+        let value = futures::executor::block_on(blocking::run(
             BlockingTaskOptions::hidden("非 Tokio 上下文任务测试"),
             || Ok(42),
         ))
@@ -549,7 +554,7 @@ mod tests {
     #[tokio::test]
     async fn hidden_blocking_task_returns_result_without_rendering_snapshot() {
         initialize_test_runtime();
-        let value = run_blocking(BlockingTaskOptions::hidden("隐藏任务测试"), || Ok(42))
+        let value = blocking::run(BlockingTaskOptions::hidden("隐藏任务测试"), || Ok(42))
             .await
             .expect("hidden task should complete");
 
@@ -570,7 +575,7 @@ mod tests {
         let mut options = BlockingTaskOptions::hidden("超时任务测试");
         options.timeout = Some(Duration::from_millis(1));
 
-        let error = run_blocking(options, || {
+        let error = blocking::run(options, || {
             std::thread::sleep(Duration::from_millis(20));
             Ok(())
         })

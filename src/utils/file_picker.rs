@@ -1,5 +1,4 @@
 use gpui::Window;
-use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tracing::warn;
@@ -59,19 +58,8 @@ fn try_open_native_file_dialog() -> Option<NativeFileDialogGuard> {
         .then_some(NativeFileDialogGuard)
 }
 
-/// Open a native file picker and return a selected file path.
-pub fn pick_file_path_with_filter(filter_name: &str, extensions: &[&str]) -> Option<String> {
-    let mut dialog = rfd::FileDialog::new();
-    if !extensions.is_empty() {
-        dialog = dialog.add_filter(filter_name, extensions);
-    }
-    let file: Option<PathBuf> = dialog.pick_file();
-
-    file.map(|path| path.to_string_lossy().to_string())
-}
-
 /// Open a native directory picker and return the selected directory path.
-pub fn pick_directory_path_for_window(window: &Window) -> Option<String> {
+pub fn pick_directory_path(window: &Window) -> Option<String> {
     let _dialog_guard = try_open_native_file_dialog()?;
     window.activate_window();
     rfd::FileDialog::new()
@@ -80,16 +68,23 @@ pub fn pick_directory_path_for_window(window: &Window) -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
-/// Open a parent-owned native file picker, suppressing repeated dialog requests.
-pub fn pick_file_path_with_filter_for_window(
-    window: &Window,
+/// Opens a native file picker, optionally parented to a window.
+pub fn pick_file_path(
+    window: Option<&Window>,
     filter_name: &str,
     extensions: &[&str],
 ) -> Option<String> {
-    let _dialog_guard = try_open_native_file_dialog()?;
-    window.activate_window();
+    let _dialog_guard = if window.is_some() {
+        Some(try_open_native_file_dialog()?)
+    } else {
+        None
+    };
 
-    let mut dialog = rfd::FileDialog::new().set_parent(window);
+    let mut dialog = rfd::FileDialog::new();
+    if let Some(window) = window {
+        window.activate_window();
+        dialog = dialog.set_parent(window);
+    }
     if !extensions.is_empty() {
         dialog = dialog.add_filter(filter_name, extensions);
     }
@@ -101,7 +96,8 @@ pub fn pick_file_path_with_filter_for_window(
 
 /// Open a native file picker and return a selected background image path.
 pub fn pick_background_image_path() -> Option<String> {
-    pick_file_path_with_filter(
+    pick_file_path(
+        None,
         "Image",
         &["webp", "gif", "png", "apng", "jpg", "jpeg", "bmp"],
     )
@@ -109,11 +105,11 @@ pub fn pick_background_image_path() -> Option<String> {
 
 /// Open a native file picker and return a selected font path.
 pub fn pick_font_path() -> Option<String> {
-    pick_file_path_with_filter("Font", &["ttf", "otf", "ttc"])
+    pick_file_path(None, "Font", &["ttf", "otf", "ttc"])
 }
 
-/// Open a parent-owned native multi-file picker, suppressing repeated dialog requests.
-pub fn pick_file_paths_with_filter_for_window(
+/// Opens a native multi-file picker parented to `window`.
+pub fn pick_file_paths(
     window: &Window,
     filter_name: &str,
     extensions: &[&str],
@@ -136,7 +132,7 @@ pub fn pick_file_paths_with_filter_for_window(
         .collect()
 }
 
-pub fn pick_save_path_with_filter(
+pub fn pick_save_path(
     filter_name: &str,
     extensions: &[&str],
     default_file_name: &str,

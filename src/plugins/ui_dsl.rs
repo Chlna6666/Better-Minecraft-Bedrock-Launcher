@@ -1029,8 +1029,8 @@ fn image_replacement_element(label: SharedString, colors: ThemeColors) -> gpui::
 fn current_theme_colors(now: std::time::Instant, cx: &App) -> ThemeColors {
     let theme = cx.global::<ThemeState>();
     lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        &LightColors::theme(),
+        &DarkColors::theme(),
         theme.factor(now),
         theme.accent,
     )
@@ -1067,7 +1067,7 @@ fn icon_path(name: &str) -> &'static str {
 }
 
 pub fn fallback_panel(message: impl Into<SharedString>) -> gpui::Div {
-    let colors = LightColors::colors();
+    let colors = LightColors::theme();
     div()
         .flex()
         .flex_col()
@@ -1092,7 +1092,7 @@ pub fn fallback_panel(message: impl Into<SharedString>) -> gpui::Div {
 }
 
 pub fn loading_panel(message: impl Into<SharedString>) -> gpui::Div {
-    let colors = LightColors::colors();
+    let colors = LightColors::theme();
     div()
         .flex()
         .flex_col()

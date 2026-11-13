@@ -46,7 +46,13 @@ fn measure<T>(
         }
     }
     samples.sort_by(f64::total_cmp);
-    Ok((expected, samples[rounds / 2], samples[rounds * 9 / 10]))
+    let median = if rounds % 2 == 0 {
+        (samples[rounds / 2 - 1] + samples[rounds / 2]) / 2.0
+    } else {
+        samples[rounds / 2]
+    };
+    let p90 = samples[(rounds * 9).div_ceil(10) - 1];
+    Ok((expected, median, p90))
 }
 
 fn scan(path: &Path) -> Result<Value> {
@@ -60,7 +66,7 @@ fn scan(path: &Path) -> Result<Value> {
         "nested": result.has_nested_archive, "level_roots": roots,
         "packs": result.packs.iter().map(|pack| json!({
             "root": pack.root, "path": pack.manifest_path, "manifest": pack.manifest,
-            "kind": pack.pack_type.to_dir_name(),
+            "kind": pack.pack_type.directory_name(),
         })).collect::<Vec<_>>()
     }))
 }

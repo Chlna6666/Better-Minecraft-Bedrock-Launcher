@@ -25,7 +25,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, EntityType, ExportKind, ExportSection,
     Function as WasmFunction, FunctionSection, ImportSection, Instruction, MemorySection,
@@ -174,13 +174,32 @@ fn bench_registry_reload(criterion: &mut Criterion) {
             BenchmarkId::new("one_changed", count),
             &count,
             |bencher, _| {
-                bencher.iter_batched(
-                    || changed.clone(),
-                    |batch| black_box(registry.reload_manifests(batch).expect("bench reload")),
-                    BatchSize::SmallInput,
-                );
+                bencher.iter_custom(|iterations| {
+                    let mut elapsed = Duration::ZERO;
+                    for _ in 0..iterations {
+                        let started = Instant::now();
+                        black_box(
+                            registry
+                                .reload_manifests(changed.clone())
+                                .expect("bench reload"),
+                        );
+                        elapsed += started.elapsed();
+
+                        // Restore the unchanged baseline outside the measured interval so every
+                        // sample exercises exactly one changed manifest.
+                        registry
+                            .reload_manifests(manifests.clone())
+                            .expect("reset bench reload");
+                    }
+                    elapsed
+                });
             },
         );
+
+        // Reset the one-changed fixture before measuring the filesystem watcher path.
+        registry
+            .reload_manifests(manifests.clone())
+            .expect("reset bench reload");
 
         // watcher 路径：重新扫描插件目录、读取清单，再走同一套准备与增量应用。
         group.bench_with_input(

@@ -277,13 +277,16 @@ impl PluginManifest {
         if raw.entry.contains('\\') || raw.entry.contains('/') || raw.entry.contains("..") {
             bail!("plugin entry must be a file name inside the plugin directory");
         }
-        validate_optional_package_path(raw.readme.as_deref(), false)?;
-        validate_optional_package_paths(raw.readme_locales.values().map(String::as_str), false)?;
-        validate_optional_package_path(raw.icon.as_deref(), false)?;
-        validate_optional_package_path(raw.lang_dir.as_deref(), true)?;
-        validate_optional_package_path(raw.config_default.as_deref(), false)?;
-        validate_optional_package_path(raw.config_schema.as_deref(), false)?;
-        validate_optional_package_path(raw.sidecar_dir.as_deref(), true)?;
+        validate_optional_package_path(raw.readme.as_deref(), PackagePathKind::File)?;
+        validate_optional_package_paths(
+            raw.readme_locales.values().map(String::as_str),
+            PackagePathKind::File,
+        )?;
+        validate_optional_package_path(raw.icon.as_deref(), PackagePathKind::File)?;
+        validate_optional_package_path(raw.lang_dir.as_deref(), PackagePathKind::Directory)?;
+        validate_optional_package_path(raw.config_default.as_deref(), PackagePathKind::File)?;
+        validate_optional_package_path(raw.config_schema.as_deref(), PackagePathKind::File)?;
+        validate_optional_package_path(raw.sidecar_dir.as_deref(), PackagePathKind::Directory)?;
         let permissions = plugin_permissions_from_raw(raw.permissions)?;
         let limits = plugin_limits_from_raw(raw.limits);
 
@@ -349,23 +352,22 @@ impl PluginManifest {
         self.root_dir.join(&self.entry)
     }
 
-    pub fn readme_path(&self) -> Option<PathBuf> {
-        self.readme.as_ref().map(|path| self.root_dir.join(path))
-    }
-
-    pub fn readme_path_for_locale(&self, locale: &str) -> Option<PathBuf> {
-        for candidate in readme_locale_candidates(locale) {
-            if let Some(path) = self.readme_locales.get(&candidate) {
-                return Some(self.root_dir.join(path));
+    pub fn readme_path(&self, locale: Option<&str>) -> Option<PathBuf> {
+        if let Some(locale) = locale {
+            for candidate in readme_locale_candidates(locale) {
+                if let Some(path) = self.readme_locales.get(&candidate) {
+                    return Some(self.root_dir.join(path));
+                }
             }
         }
 
-        self.readme_path().or_else(|| {
-            self.readme_locales
-                .values()
-                .next()
-                .map(|path| self.root_dir.join(path))
-        })
+        self.readme
+            .as_ref()
+            .map(|path| self.root_dir.join(path))
+            .or_else(|| {
+                locale.and_then(|_| self.readme_locales.values().next())
+                    .map(|path| self.root_dir.join(path))
+            })
     }
 
     pub fn icon_path(&self) -> Option<PathBuf> {
@@ -398,7 +400,7 @@ impl PluginManifest {
             .sidecar_dir
             .as_deref()
             .ok_or_else(|| anyhow!("plugin {} has no sidecar_dir", self.id))?;
-        let file_name = validate_package_path(name, false)?;
+        let file_name = validate_package_path(name, PackagePathKind::File)?;
         if file_name.components().count() != 1 {
             bail!("sidecar name must be a file name");
         }
@@ -430,7 +432,7 @@ impl PluginManifest {
     }
 
     pub fn resource_path(&self, path: &str) -> Result<PathBuf> {
-        let relative_path = validate_package_path(path, false)?;
+        let relative_path = validate_package_path(path, PackagePathKind::File)?;
         let normalized = relative_path.to_string_lossy().replace('\\', "/");
         if !allowlist_contains_path(&self.permissions.resource_allow, &normalized) {
             bail!(
@@ -510,7 +512,8 @@ fn validate_url_allowlist(label: &str, urls: &[String]) -> Result<()> {
 
 fn validate_package_allowlist(label: &str, paths: &[String]) -> Result<()> {
     for path in paths {
-        validate_package_path(path, true).with_context(|| format!("validate {label} entry"))?;
+        validate_package_path(path, PackagePathKind::FileOrDirectory)
+            .with_context(|| format!("validate {label} entry"))?;
     }
     Ok(())
 }
@@ -664,7 +667,7 @@ fn install_packages_in_plugins_dir(plugins_dir: &Path) -> Result<()> {
 
     packages.sort();
     for package_path in packages {
-        if let Err(error) = install_manifest_from_package(&package_path, plugins_dir)
+        if let Err(error) = install_from_package(&package_path, plugins_dir)
             .with_context(|| format!("install plugin package {}", package_path.display()))
         {
             warn!(error = %format_error_chain(&error), "plugin package install failed");
@@ -751,7 +754,7 @@ pub fn load_manifest_from_package(
     Ok(cached_manifest)
 }
 
-pub fn install_manifest_from_package(
+pub fn install_from_package(
     package_path: &Path,
     plugins_dir: &Path,
 ) -> Result<PluginManifest> {
@@ -1034,7 +1037,12 @@ fn unpack_package_resources<R: Read + Seek>(
             continue;
         }
 
-        let relative_path = validate_package_path(&name, name.ends_with('/'))?;
+        let kind = if name.ends_with('/') {
+            PackagePathKind::Directory
+        } else {
+            PackagePathKind::File
+        };
+        let relative_path = validate_package_path(&name, kind)?;
         let output_path = unpack_dir.join(relative_path);
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)?;
@@ -1192,24 +1200,31 @@ fn write_atomic(path: PathBuf, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn validate_optional_package_path(path: Option<&str>, allow_directory: bool) -> Result<()> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PackagePathKind {
+    File,
+    Directory,
+    FileOrDirectory,
+}
+
+fn validate_optional_package_path(path: Option<&str>, kind: PackagePathKind) -> Result<()> {
     if let Some(path) = path {
-        validate_package_path(path, allow_directory)?;
+        validate_package_path(path, kind)?;
     }
     Ok(())
 }
 
 fn validate_optional_package_paths<'a>(
     paths: impl IntoIterator<Item = &'a str>,
-    allow_directory: bool,
+    kind: PackagePathKind,
 ) -> Result<()> {
     for path in paths {
-        validate_package_path(path, allow_directory)?;
+        validate_package_path(path, kind)?;
     }
     Ok(())
 }
 
-fn validate_package_path(path: &str, allow_directory: bool) -> Result<PathBuf> {
+fn validate_package_path(path: &str, kind: PackagePathKind) -> Result<PathBuf> {
     let path = path.trim();
     if path.is_empty() {
         bail!("plugin package path must not be empty");
@@ -1217,7 +1232,7 @@ fn validate_package_path(path: &str, allow_directory: bool) -> Result<PathBuf> {
     if path.contains('\\') {
         bail!("plugin package path must use / separators");
     }
-    if !allow_directory && path.ends_with('/') {
+    if kind == PackagePathKind::File && path.ends_with('/') {
         bail!("plugin package file path must not end with /");
     }
     let relative_path = Path::new(path);
@@ -1455,11 +1470,11 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
             Some("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
         );
         assert_eq!(
-            manifest.readme_path_for_locale("zh-CN"),
+            manifest.readme_path(Some("zh-CN")),
             Some(PathBuf::from("bmcbl-essentials").join("README.zh-CN.md"))
         );
         assert_eq!(
-            manifest.readme_path_for_locale("zh-HK"),
+            manifest.readme_path(Some("zh-HK")),
             Some(PathBuf::from("bmcbl-essentials").join("README.md"))
         );
     }
@@ -1538,7 +1553,7 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
             old_wasm,
             "enabled = true\n",
         );
-        let old_manifest = install_manifest_from_package(&old_package_path, &plugins_dir)
+        let old_manifest = install_from_package(&old_package_path, &plugins_dir)
             .expect("old package should install");
         commit_installed_package(&old_manifest).expect("old install should finalize");
         let user_config_path = old_manifest.user_config_path();
@@ -1556,7 +1571,7 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
             "enabled = true\nnew_value = 7\n",
         );
 
-        let updated_manifest = install_manifest_from_package(&new_package_path, &plugins_dir)
+        let updated_manifest = install_from_package(&new_package_path, &plugins_dir)
             .expect("new package should install");
         let config = std::fs::read_to_string(updated_manifest.user_config_path())
             .expect("merged config should read");
@@ -1617,7 +1632,7 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
         let old_manifest = test_manifest("0.1.0", &old_hash);
         let old_package_path = plugins_dir.join("bmcbl-essentials-0.1.0.bmcblx");
         write_test_package(&old_package_path, &old_manifest, old_wasm);
-        let old_manifest = install_manifest_from_package(&old_package_path, &plugins_dir)
+        let old_manifest = install_from_package(&old_package_path, &plugins_dir)
             .expect("old package should install");
         commit_installed_package(&old_manifest).expect("old install should finalize");
 
@@ -1626,7 +1641,7 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
         let new_manifest = test_manifest("0.2.0", &new_hash);
         let new_package_path = plugins_dir.join("bmcbl-essentials-0.2.0.bmcblx");
         write_test_package(&new_package_path, &new_manifest, new_wasm);
-        let updated_manifest = install_manifest_from_package(&new_package_path, &plugins_dir)
+        let updated_manifest = install_from_package(&new_package_path, &plugins_dir)
             .expect("new package should install");
 
         rollback_installed_package(&updated_manifest).expect("rollback should succeed");
@@ -1651,7 +1666,7 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
         let manifest = test_manifest("0.1.0", &hash);
         let package_path = plugins_dir.join("bmcbl-essentials-0.1.0.bmcblx");
         write_test_package_with_resources(&package_path, &manifest, wasm);
-        let manifest = install_manifest_from_package(&package_path, &plugins_dir)
+        let manifest = install_from_package(&package_path, &plugins_dir)
             .expect("package should install");
 
         assert_eq!(

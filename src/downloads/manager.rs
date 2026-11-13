@@ -1,12 +1,12 @@
 // src/downloads/manager.rs
-use crate::config::config::read_config;
+use crate::config::settings::read;
 use crate::downloads::integrity::{is_appx_download_path, verify_download_integrity};
-use crate::downloads::multi::download_multi;
+use crate::downloads::multi::download;
 use crate::downloads::single::download_file;
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::runtime::spawn_download_task;
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskOptions, create_task, finish_task, register_task_abort_handle,
+    ProgressUpdate, TaskOptions, create_task, finish_task, register_abort_handle,
     reset_progress, task_control, update_progress,
 };
 use num_cpus;
@@ -23,6 +23,33 @@ pub struct DownloadOptions {
     pub headers: Option<HeaderMap>,
     pub md5_expected: Option<String>,
     pub threads: Option<usize>,
+}
+
+/// One download operation: candidate URLs in priority order, the destination
+/// path, and the transfer options. One URL means a single source; `threads`
+/// of `Some(1)` forces a single-threaded transfer.
+#[derive(Debug, Clone)]
+pub struct DownloadRequest {
+    pub task_id: String,
+    pub urls: Vec<String>,
+    pub dest: PathBuf,
+    pub options: DownloadOptions,
+}
+
+impl DownloadRequest {
+    pub fn new(task_id: impl Into<String>, urls: Vec<String>, dest: PathBuf) -> Self {
+        Self {
+            task_id: task_id.into(),
+            urls,
+            dest,
+            options: DownloadOptions::default(),
+        }
+    }
+
+    pub fn options(mut self, options: DownloadOptions) -> Self {
+        self.options = options;
+        self
+    }
 }
 
 impl Default for DownloadOptions {
@@ -313,7 +340,7 @@ fn resolve_thread_count(preferred: Option<usize>) -> usize {
     if let Some(threads) = preferred {
         return threads.clamp(1, MAX_MANUAL_DOWNLOAD_THREADS);
     }
-    let configured_threads = match read_config() {
+    let configured_threads = match read() {
         Ok(config) if config.launcher.download.auto_thread_count => num_cpus::get()
             .saturating_sub(1)
             .clamp(2, MAX_DOWNLOAD_THREADS),
@@ -331,7 +358,20 @@ impl DownloaderManager {
     }
 
     /// 直接执行下载（不创建 task），使用已有 task_id（命令层传入）
-    pub async fn download_with_options(
+    pub async fn download(
+        &self,
+        request: &DownloadRequest,
+    ) -> Result<CoreResult<PathBuf>, CoreError> {
+        let DownloadRequest {
+            task_id,
+            urls,
+            dest,
+            options,
+        } = request;
+        self.download_candidates(task_id, urls, dest, options).await
+    }
+
+    async fn download_one(
         &self,
         task_id: &str,
         url: String,
@@ -359,7 +399,7 @@ impl DownloaderManager {
             reset_progress(task_id, None, Some("downloading"));
             remove_file_if_exists(&temp_dest).await;
             let res = if threads > 1 {
-                download_multi(
+                download(
                     self.client.clone(),
                     task_control.clone(),
                     task_id,
@@ -478,11 +518,11 @@ impl DownloaderManager {
         }
     }
 
-    pub async fn download_with_url_candidates(
+    async fn download_candidates(
         &self,
         task_id: &str,
-        urls: Vec<String>,
-        dest: PathBuf,
+        urls: &[String],
+        dest: &Path,
         options: &DownloadOptions,
     ) -> Result<CoreResult<PathBuf>, CoreError> {
         if urls.is_empty() {
@@ -491,7 +531,7 @@ impl DownloaderManager {
 
         let total = urls.len();
         let mut last_error = None;
-        for (index, url) in urls.into_iter().enumerate() {
+        for (index, url) in urls.iter().cloned().enumerate() {
             info!(
                 target: "bmcbl::operation",
                 candidate = index + 1, candidate_count = total,
@@ -504,7 +544,7 @@ impl DownloaderManager {
                 url
             );
             match self
-                .download_with_options(task_id, url.clone(), dest.clone(), options)
+                .download_one(task_id, url.clone(), dest.to_path_buf(), options)
                 .await
             {
                 Ok(CoreResult::Success(path)) => return Ok(CoreResult::Success(path)),
@@ -553,31 +593,13 @@ impl DownloaderManager {
         Err(last_error.unwrap_or(CoreError::BadUpdateIdentity))
     }
 
-    pub async fn download_single_with_url_candidates(
-        &self,
-        task_id: &str,
-        urls: Vec<String>,
-        dest: PathBuf,
-        headers: Option<HeaderMap>,
-        md5_expected: Option<&str>,
-    ) -> Result<CoreResult<PathBuf>, CoreError> {
-        let options = DownloadOptions {
-            headers,
-            md5_expected: md5_expected.map(String::from),
-            threads: Some(1),
-        };
-        self.download_with_url_candidates(task_id, urls, dest, &options)
-            .await
-    }
-
     /// manager 创建新的 task 并 spawn 后台执行，立即返回 task_id
     pub fn start_download(&self, url: String, dest: PathBuf, options: DownloadOptions) -> String {
-        let task_id = create_task(
-            TaskOptions::new("下载任务", "ready")
-                .detail(download_task_detail(dest.as_path()))
-                .pausable(true),
-        )
-        .expect("task id must be unique");
+        let mut task_options = TaskOptions::new("下载任务", "ready").pausable(true);
+        if let Some(detail) = download_task_detail(dest.as_path()) {
+            task_options = task_options.detail(detail);
+        }
+        let task_id = create_task(task_options).expect("task id must be unique");
         let client = self.client.clone();
 
         let url_clone = url.clone();
@@ -589,9 +611,10 @@ impl DownloaderManager {
 
             let manager = DownloaderManager::with_client(client);
 
-            let res = manager
-                .download_with_options(&task_id_clone, url_clone, dest_clone.clone(), &options)
-                .await;
+            let request =
+                DownloadRequest::new(task_id_clone.clone(), vec![url_clone], dest_clone.clone())
+                    .options(options);
+            let res = manager.download(&request).await;
 
             match res {
                 Ok(CoreResult::Success(final_path)) => {
@@ -625,7 +648,7 @@ impl DownloaderManager {
                 return task_id;
             }
         };
-        register_task_abort_handle(task_id.clone(), abort_handle);
+        register_abort_handle(task_id.clone(), abort_handle);
 
         task_id
     }

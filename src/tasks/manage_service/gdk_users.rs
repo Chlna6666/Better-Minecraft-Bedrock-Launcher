@@ -1,13 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use futures_util::stream::{self, StreamExt as _, TryStreamExt as _};
 
-use crate::core::minecraft::paths::{
-    BuildType, Edition, GamePathOptions, GameTargetDir, get_game_root,
-};
-use crate::tasks::runtime::{BlockingTaskOptions, run_blocking};
+use crate::core::minecraft::paths::{GamePathOptions, GameTargetDir, resolve_game_root};
+use crate::tasks::runtime::BlockingTaskOptions;
+use crate::tasks::runtime::blocking;
 
 const USER_SCAN_CONCURRENCY: usize = 4;
 
@@ -46,11 +45,11 @@ pub struct GdkUserDirectory {
 /// Returns an error if the game root cannot be resolved, `Users` cannot be listed
 /// (except when absent), or an AppRuntime blocking task fails or times out.
 pub async fn load_gdk_users(options: GamePathOptions) -> Result<Vec<GdkUserDirectory>, String> {
-    let root = run_blocking(
+    let root = blocking::run(
         BlockingTaskOptions::hidden("解析 GDK 用户目录"),
         move || {
-            let root =
-                get_game_root(&options).ok_or_else(|| "无法解析 Minecraft 根目录".to_string())?;
+            let root = resolve_game_root(&options)
+                .ok_or_else(|| "无法解析 Minecraft 根目录".to_string())?;
             Ok(root.join("Users"))
         },
     )
@@ -69,44 +68,12 @@ pub fn invalidate_gdk_users() -> Result<(), String> {
     cache::invalidate()
 }
 
-/// Schedules a delayed scan of the startup-selected GDK version's user directory.
-///
-/// AppRuntime owns this read-only warmup independently of a page. After the startup
-/// settle delay it reads the version's current redirection config and populates the
-/// same path cache used by Manage. Cache requests coalesce with any foreground scan.
-/// Failures are logged and remain retryable by a normal Manage request.
-///
-/// # Errors
-/// Returns an error if AppRuntime cannot schedule the warmup.
-pub fn prewarm_gdk_users(folder_name: String, edition: Edition) -> Result<(), String> {
-    crate::tasks::runtime::spawn_io(async move {
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        let result = async {
-            let config = super::load_version_config(folder_name.clone()).await?;
-            load_gdk_users(GamePathOptions {
-                build_type: BuildType::Gdk,
-                edition,
-                version_name: folder_name,
-                enable_isolation: config.enable_redirection,
-                user_id: None,
-                allow_shared_fallback: true,
-            })
-            .await
-        }
-        .await;
-        if let Err(error) = result {
-            tracing::debug!(%error, "startup GDK user cache warmup failed");
-        }
-    })
-    .map(drop)
-}
-
 async fn scan_user_directories(
     directories: Vec<(String, PathBuf)>,
 ) -> Result<Vec<GdkUserDirectory>, String> {
     let mut users = stream::iter(directories)
         .map(|(folder_name, path)| async move {
-            run_blocking(
+            blocking::run(
                 BlockingTaskOptions::hidden("读取 GDK 用户"),
                 move || Ok(scan_user_directory(folder_name, &path)),
             )

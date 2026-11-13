@@ -149,7 +149,7 @@ pub fn trigger_mimalloc_collect(force: bool) {
     }
 }
 
-pub fn force_memory_cleanup_aggressive() -> MemoryStats {
+pub fn force_aggressive_cleanup() -> MemoryStats {
     trigger_mimalloc_collect(true);
     let stats = empty_working_set();
     debug!(

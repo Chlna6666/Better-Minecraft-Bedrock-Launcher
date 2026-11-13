@@ -486,7 +486,7 @@ pub fn subscribe_task_updates() -> TaskUpdateReceiver {
 
 pub async fn wait_for_task(task_id: &str) -> Result<Arc<TaskSnapshot>, String> {
     let mut events = subscribe_task_events();
-    if let Some(snapshot) = get_snapshot_arc(task_id)
+    if let Some(snapshot) = snapshot_arc(task_id)
         && snapshot.is_terminal()
     {
         return Ok(snapshot);
@@ -504,14 +504,14 @@ pub async fn wait_for_task(task_id: &str) -> Result<Arc<TaskSnapshot>, String> {
             }
             Ok(_) => {}
             Err(RecvError::Lagged(_)) => {
-                if let Some(snapshot) = get_snapshot_arc(task_id)
+                if let Some(snapshot) = snapshot_arc(task_id)
                     && snapshot.is_terminal()
                 {
                     return Ok(snapshot);
                 }
             }
             Err(RecvError::Closed) => {
-                return get_snapshot_arc(task_id)
+                return snapshot_arc(task_id)
                     .filter(|snapshot| snapshot.is_terminal())
                     .ok_or_else(|| "任务事件通道已关闭".to_string());
             }
@@ -523,14 +523,14 @@ pub fn is_visualization_enabled() -> bool {
     TASK_VISUALIZATION_ENABLED
 }
 
-pub fn register_task_abort_handle(task_id: impl Into<String>, abort_handle: AbortHandle) {
+pub fn register_abort_handle(task_id: impl Into<String>, abort_handle: AbortHandle) {
     TASK_ABORT_HANDLES
         .lock()
         .unwrap()
         .insert(task_id.into(), abort_handle);
 }
 
-pub fn register_task_cancel_hook(
+pub fn register_cancel_hook(
     task_id: impl Into<String>,
     cancel_hook: impl Fn() + Send + Sync + 'static,
 ) {
@@ -541,7 +541,7 @@ pub fn register_task_cancel_hook(
 }
 
 /// Register a task whose owner must remain alive until cleanup or rollback completes.
-pub fn register_task_cooperative_cancel(task_id: impl Into<String>) {
+pub fn register_cooperative_cancel(task_id: impl Into<String>) {
     TASK_COOPERATIVE_CANCEL
         .lock()
         .unwrap()
@@ -754,23 +754,23 @@ impl TaskOptions {
         }
     }
 
-    /// Accepts a value or an `Option`; `None` leaves the ID unset (generated at creation).
-    pub fn id(mut self, id: impl Into<Option<String>>) -> Self {
-        self.id = id.into();
+    /// Sets an explicit task id. `create_task` rejects ids that are already registered.
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
         self
     }
 
-    /// Accepts a value or an `Option`; `None` leaves the detail unset rather than
-    /// storing an empty string, so no placeholder reaches the UI.
-    pub fn detail(mut self, detail: impl Into<Option<String>>) -> Self {
-        self.detail = detail.into();
+    /// Sets the detail line shown under the title. Callers holding an
+    /// `Option<String>` decide at the call site whether a line is set.
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
         self
     }
 
-    /// Accepts either a plain value or an `Option`, so callers holding an `Option` can
-    /// pass it through unchanged.
-    pub fn total(mut self, total: impl Into<Option<u64>>) -> Self {
-        self.total = total.into();
+    /// Sets the absolute upper bound at creation. Callers that know the total
+    /// always pass a value; `TaskOptions` defaults to `None`.
+    pub fn total(mut self, total: u64) -> Self {
+        self.total = Some(total);
         self
     }
 
@@ -820,7 +820,7 @@ pub struct TaskScope {
 impl TaskScope {
     pub fn new(parent_id: &str) -> Result<Self, String> {
         let parent =
-            get_snapshot_arc(parent_id).ok_or_else(|| format!("父任务不存在: {parent_id}"))?;
+            snapshot_arc(parent_id).ok_or_else(|| format!("父任务不存在: {parent_id}"))?;
         if parent.cancel_requested || parent.is_terminal() {
             return Err(format!("父任务已结束或正在取消: {parent_id}"));
         }
@@ -1000,15 +1000,16 @@ impl ProgressUpdate {
         }
     }
 
-    /// Sets the absolute upper bound. Accepts a value or an `Option`.
-    pub fn total(mut self, total: impl Into<Option<u64>>) -> Self {
-        self.total = total.into();
+    /// Sets the absolute upper bound. `None` means "do not change the total";
+    /// build a `ProgressUpdate` literal when callers need to clear it.
+    pub fn total(mut self, total: u64) -> Self {
+        self.total = Some(total);
         self
     }
 
-    /// Sets the stage metadata. Accepts a borrowed name or an `Option<&str>`.
-    pub fn stage<'a>(mut self, stage: impl Into<Option<&'a str>>) -> Self {
-        self.stage = stage.into().map(Arc::from);
+    /// Sets the stage metadata. `None` means "do not change the stage".
+    pub fn stage(mut self, stage: &str) -> Self {
+        self.stage = Some(Arc::from(stage));
         self
     }
 
@@ -1534,15 +1535,17 @@ pub async fn wait_until_active(control: &TaskControl) -> bool {
     }
 }
 
-pub fn is_cancelled_fast(control: &TaskControl) -> bool {
+/// Reads the cancellation flag straight off an already-resolved control handle.
+/// Callers holding only a task id use [`is_cancelled`].
+pub fn control_cancelled(control: &TaskControl) -> bool {
     control.cancelled.load(Ordering::Relaxed)
 }
 
-pub fn get_snapshot(task_id: &str) -> Option<TaskSnapshot> {
-    get_snapshot_arc(task_id).map(|snapshot| snapshot.as_ref().clone())
+pub fn snapshot(task_id: &str) -> Option<TaskSnapshot> {
+    snapshot_arc(task_id).map(|snapshot| snapshot.as_ref().clone())
 }
 
-pub fn get_snapshot_arc(task_id: &str) -> Option<Arc<TaskSnapshot>> {
+pub fn snapshot_arc(task_id: &str) -> Option<Arc<TaskSnapshot>> {
     let map = TASK_SNAPSHOTS.read().unwrap();
     map.get(task_id).cloned()
 }
@@ -1888,7 +1891,7 @@ mod tests {
             "task-manager-render-active-test-{}",
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        create_task(TaskOptions::new("活动状态渲染测试", "ready").id(Some(task_id.clone())))
+        create_task(TaskOptions::new("活动状态渲染测试", "ready").id(task_id.clone()))
             .expect("task id must be unique");
         {
             let mut tasks = TASKS.lock().expect("task map lock");
@@ -1914,7 +1917,7 @@ mod tests {
             "task-manager-terminal-wait-test-{}",
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        create_task(TaskOptions::new("终态等待测试", "queued").id(Some(task_id.clone())))
+        create_task(TaskOptions::new("终态等待测试", "queued").id(task_id.clone()))
             .expect("task id must be unique");
 
         let task_id_for_waiter = task_id.clone();
@@ -1939,7 +1942,7 @@ mod tests {
         );
         create_task(
             TaskOptions::new("完成进度测试", "testing")
-                .id(Some(task_id.clone()))
+                .id(task_id.clone())
                 .total(672),
         )
         .expect("task id must be unique");
@@ -1950,7 +1953,7 @@ mod tests {
 
         finish_task(&task_id, "completed", None);
 
-        let snapshot = get_snapshot_arc(&task_id).expect("completed task snapshot");
+        let snapshot = snapshot_arc(&task_id).expect("completed task snapshot");
         assert_eq!(snapshot.status.as_ref(), "completed");
         assert_eq!(snapshot.done, 672);
         assert_eq!(snapshot.total, Some(672));
@@ -1966,11 +1969,11 @@ mod tests {
         let hook_ran = Arc::new(AtomicBool::new(false));
         let hook_ran_for_hook = hook_ran.clone();
         let created_task_id =
-            create_task(TaskOptions::new("取消 Hook 测试", "starting").id(Some(task_id.clone())))
+            create_task(TaskOptions::new("取消 Hook 测试", "starting").id(task_id.clone()))
                 .expect("task id must be unique");
         assert_eq!(created_task_id, task_id);
 
-        register_task_cancel_hook(task_id.clone(), move || {
+        register_cancel_hook(task_id.clone(), move || {
             hook_ran_for_hook.store(true, Ordering::SeqCst);
         });
 
@@ -1979,7 +1982,7 @@ mod tests {
         assert!(hook_ran.load(Ordering::SeqCst));
         assert!(!TASK_CANCEL_HOOKS.lock().unwrap().contains_key(&task_id));
         assert_eq!(
-            get_snapshot_arc(&task_id)
+            snapshot_arc(&task_id)
                 .expect("cancelled task snapshot")
                 .status
                 .as_ref(),
@@ -1994,20 +1997,20 @@ mod tests {
             "task-manager-cooperative-cancel-test-{}",
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        create_task(TaskOptions::new("协作取消测试", "running").id(Some(task_id.clone())))
+        create_task(TaskOptions::new("协作取消测试", "running").id(task_id.clone()))
             .expect("task id must be unique");
-        register_task_cooperative_cancel(task_id.clone());
+        register_cooperative_cancel(task_id.clone());
 
         cancel_task(&task_id);
 
-        let cancelling = get_snapshot_arc(&task_id).expect("cancelling task snapshot");
+        let cancelling = snapshot_arc(&task_id).expect("cancelling task snapshot");
         assert_eq!(cancelling.status.as_ref(), "cancelling");
         assert!(cancelling.cancel_requested);
         assert!(!cancelling.is_terminal());
         assert!(is_cancelled(&task_id));
 
         finish_task(&task_id, "cancelled", Some("cleanup complete".to_string()));
-        let cancelled = get_snapshot_arc(&task_id).expect("cancelled task snapshot");
+        let cancelled = snapshot_arc(&task_id).expect("cancelled task snapshot");
         assert_eq!(cancelled.status.as_ref(), "cancelled");
         assert!(cancelled.is_terminal());
         assert!(remove_task(&task_id));
@@ -2020,7 +2023,7 @@ mod tests {
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         let mut events = subscribe_task_events();
-        create_task(TaskOptions::new("取消事件测试", "running").id(Some(task_id.clone())))
+        create_task(TaskOptions::new("取消事件测试", "running").id(task_id.clone()))
             .expect("task id must be unique");
 
         cancel_task(&task_id);
@@ -2055,11 +2058,11 @@ mod tests {
         );
         let stage = "task_manager_registered_stage_label_test";
         let created_task_id =
-            create_task(TaskOptions::new("阶段文案测试", stage).id(Some(task_id.clone())))
+            create_task(TaskOptions::new("阶段文案测试", stage).id(task_id.clone()))
                 .expect("task id must be unique");
         assert_eq!(created_task_id, task_id);
         assert_eq!(
-            get_snapshot_arc(&task_id)
+            snapshot_arc(&task_id)
                 .expect("task snapshot")
                 .stage
                 .as_ref(),
@@ -2083,8 +2086,8 @@ mod tests {
                     .kind(TaskType::Workflow),
             )
             .expect("child task");
-        let root_snapshot = get_snapshot_arc(&root).expect("root snapshot");
-        let child_snapshot = get_snapshot_arc(&child).expect("child snapshot");
+        let root_snapshot = snapshot_arc(&root).expect("root snapshot");
+        let child_snapshot = snapshot_arc(&child).expect("child snapshot");
         assert_eq!(root_snapshot.parent_id, None);
         assert_eq!(child_snapshot.parent_id.as_deref(), Some(root.as_str()));
         assert_eq!(child_snapshot.task_type, TaskType::Workflow);
@@ -2122,10 +2125,10 @@ mod tests {
             })
             .await;
         assert_eq!(
-            get_snapshot_arc(&nested).unwrap().parent_id.as_deref(),
+            snapshot_arc(&nested).unwrap().parent_id.as_deref(),
             Some(parent.as_str()),
         );
-        assert_eq!(get_snapshot_arc(&unrelated).unwrap().parent_id, None);
+        assert_eq!(snapshot_arc(&unrelated).unwrap().parent_id, None);
         finish_task(&nested, "completed", None);
         finish_task(&unrelated, "completed", None);
         finish_task(&parent, "completed", None);
@@ -2161,15 +2164,15 @@ mod tests {
             })
             .await;
         assert_eq!(
-            get_snapshot_arc(&middle).unwrap().parent_id.as_deref(),
+            snapshot_arc(&middle).unwrap().parent_id.as_deref(),
             Some(parent.as_str())
         );
         assert_eq!(
-            get_snapshot_arc(&inner).unwrap().parent_id.as_deref(),
+            snapshot_arc(&inner).unwrap().parent_id.as_deref(),
             Some(middle.as_str())
         );
         assert_eq!(
-            get_snapshot_arc(&sibling).unwrap().parent_id.as_deref(),
+            snapshot_arc(&sibling).unwrap().parent_id.as_deref(),
             Some(parent.as_str())
         );
         for id in [&inner, &sibling, &middle, &parent] {
@@ -2191,11 +2194,11 @@ mod tests {
             !remove_task(&root),
             "active child must block removing the workflow"
         );
-        assert!(get_snapshot_arc(&child).is_some());
+        assert!(snapshot_arc(&child).is_some());
         finish_task(&child, "completed", None);
         assert!(remove_task(&root));
-        assert!(get_snapshot_arc(&root).is_none());
-        assert!(get_snapshot_arc(&child).is_none());
+        assert!(snapshot_arc(&root).is_none());
+        assert!(snapshot_arc(&child).is_none());
         assert!(task_logs(&child).is_empty());
     }
 
@@ -2217,7 +2220,7 @@ mod tests {
         );
         create_task(
             TaskOptions::new("隐藏任务", "running")
-                .id(Some(task_id.clone()))
+                .id(task_id.clone())
                 .visibility(TaskVisibility::Hidden),
         )
         .expect("task id must be unique");

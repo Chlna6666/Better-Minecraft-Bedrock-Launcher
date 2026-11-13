@@ -155,7 +155,7 @@ fn preview_preserves_language_path_case_slashes_and_unicode() {
 #[cfg(target_os = "windows")]
 #[test]
 fn executable_lookup_keeps_common_identity_and_fallback_priority() {
-    use bmcbl::bench_support::{find_any_game_executable_in_dir, find_game_executable_in_dir};
+    use bmcbl::bench_support::{find_any_game_executable, find_game_executable};
     for (names, identity, expected) in [
         (vec!["Report.exe", "custom.EXE"], "", Some("custom.EXE")),
         (
@@ -180,12 +180,12 @@ fn executable_lookup_keeps_common_identity_and_fallback_priority() {
             std::fs::write(directory.path().join(name), b"").unwrap();
         }
         assert_eq!(
-            find_game_executable_in_dir(directory.path(), identity),
+            find_game_executable(directory.path(), identity),
             expected.map(|name| directory.path().join(name))
         );
         if identity.is_empty() {
             assert_eq!(
-                find_any_game_executable_in_dir(directory.path()),
+                find_any_game_executable(directory.path()),
                 expected.map(|name| directory.path().join(name))
             );
         }

@@ -1,4 +1,4 @@
-use crate::config::config::{GithubConfig, GithubSource};
+use crate::config::settings::{GithubConfig, GithubSource};
 
 // Public mirror templates used by BedrockBoot 2.0-develop's SourceList.cs.
 const BUILT_IN_MIRRORS: &[&str] = &[
@@ -23,7 +23,7 @@ pub(crate) fn api_request(client: &reqwest::Client, url: &str) -> reqwest::Reque
             && url.password().is_none()
     });
     if trusted {
-        if let Ok(config) = crate::config::config::read_config() {
+        if let Ok(config) = crate::config::settings::read() {
             let token = config.launcher.download.github.api_token;
             if !token.trim().is_empty() {
                 request = request.bearer_auth(token.trim());
@@ -67,7 +67,7 @@ pub(crate) fn download_urls(url: &str, config: &GithubConfig) -> Vec<String> {
 ///
 /// Returns an error when the startup configuration cache is unavailable.
 pub(crate) fn configured_download_urls(url: &str) -> Result<Vec<String>, String> {
-    let config = crate::config::config::read_config()
+    let config = crate::config::settings::read()
         .map_err(|error| format!("读取 GitHub 下载配置失败：{error}"))?;
     Ok(download_urls(url, &config.launcher.download.github))
 }

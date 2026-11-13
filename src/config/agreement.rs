@@ -42,7 +42,7 @@ fn remove_legacy_agreement_config() -> io::Result<()> {
 
 /// 从统一 settings.toml 读取协议版本；旧 agreement.toml 与旧布尔字段只作为一次性迁移来源。
 pub fn accepted_agreement_version() -> io::Result<u32> {
-    let config = super::config::read_config()?;
+    let config = super::settings::read()?;
     let current = config.app_state.agreement_accepted_version;
     let legacy_path = legacy_agreement_config_file_path();
     let legacy_file_present = legacy_path.is_file();
@@ -53,12 +53,12 @@ pub fn accepted_agreement_version() -> io::Result<u32> {
     let migrated = current.max(legacy_file_version).max(legacy_bool_version);
 
     if migrated != current || legacy_file_present || legacy_bool_present {
-        super::config::update_config(|config| {
+        super::settings::update(|config| {
             config.app_state.agreement_accepted_version = migrated;
             config.agreement_accepted = false;
         })?;
         // 旧状态只有在 settings.toml 已同步落盘后才清理，避免崩溃窗口丢失接受记录。
-        super::config::flush_config_now();
+        super::settings::flush_now();
         remove_legacy_agreement_config()?;
     }
 
@@ -77,11 +77,11 @@ pub fn is_current_agreement_accepted() -> bool {
 }
 
 pub fn accept_current_agreement() -> io::Result<()> {
-    super::config::update_config(|config| {
+    super::settings::update(|config| {
         config.app_state.agreement_accepted_version = CURRENT_AGREEMENT_VERSION;
         config.agreement_accepted = false;
     })?;
-    super::config::flush_config_now();
+    super::settings::flush_now();
     remove_legacy_agreement_config()
 }
 

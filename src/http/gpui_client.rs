@@ -1,4 +1,4 @@
-use crate::http::proxy::get_blocking_client_for_proxy;
+use crate::http::proxy::clients::blocking_client;
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use futures::io::AsyncReadExt as _;
@@ -6,15 +6,15 @@ use gpui::http_client;
 use gpui::http_client::HttpClient;
 use std::sync::Arc;
 
-pub fn create_gpui_http_client() -> Arc<dyn HttpClient> {
-    Arc::new(ReqwestGpuiClient::new())
+pub fn create() -> Arc<dyn HttpClient> {
+    Arc::new(ReqwestClient::new())
 }
 
-struct ReqwestGpuiClient {
+struct ReqwestClient {
     user_agent: http_client::http::HeaderValue,
 }
 
-impl ReqwestGpuiClient {
+impl ReqwestClient {
     fn new() -> Self {
         Self {
             user_agent: http_client::http::HeaderValue::from_static("BMCBL"),
@@ -22,7 +22,7 @@ impl ReqwestGpuiClient {
     }
 }
 
-impl HttpClient for ReqwestGpuiClient {
+impl HttpClient for ReqwestClient {
     fn type_name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
@@ -43,7 +43,7 @@ impl HttpClient for ReqwestGpuiClient {
             let mut body_bytes = Vec::new();
             body.read_to_end(&mut body_bytes).await?;
 
-            send_blocking_request(method, url, parts.headers, body_bytes).await
+            send_on_io(method, url, parts.headers, body_bytes).await
         }
         .boxed()
     }
@@ -53,13 +53,13 @@ impl HttpClient for ReqwestGpuiClient {
     }
 }
 
-async fn send_blocking_request(
+async fn send_on_io(
     method: reqwest::Method,
     url: String,
     headers: http_client::http::HeaderMap,
     body_bytes: Vec<u8>,
 ) -> anyhow::Result<http_client::Response<http_client::AsyncBody>> {
-    crate::tasks::runtime::run_io_blocking(move || {
+    crate::tasks::runtime::blocking::run_io(move || {
         build_blocking_response(method, url, headers, body_bytes)
     })
     .await
@@ -72,7 +72,7 @@ fn build_blocking_response(
     headers: http_client::http::HeaderMap,
     body_bytes: Vec<u8>,
 ) -> anyhow::Result<http_client::Response<http_client::AsyncBody>> {
-    let client = get_blocking_client_for_proxy()
+    let client = blocking_client()
         .map_err(|error| anyhow::anyhow!("blocking client init failed: {error}"))?;
     let mut builder = client.request(method, url);
     for (name, value) in &headers {

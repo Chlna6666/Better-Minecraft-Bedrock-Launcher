@@ -2,7 +2,7 @@ use crate::utils::file_ops;
 use serde::Deserialize;
 use std::{fs, io, path::PathBuf};
 
-use super::config::AppStateConfig;
+use super::settings::AppStateConfig;
 
 /// 当前首次运行引导版本。
 ///
@@ -11,25 +11,25 @@ use super::config::AppStateConfig;
 /// v4 将引导改为自适应聚焦式布局：说明卡根据真实高光区域自动避让，窄窗口
 /// 也保留 spotlight；演示数据只在真实任务/版本为空时出现。
 /// 当后续新增必须再次展示给现有用户的重要功能教学时继续递增。
-pub const CURRENT_ONBOARDING_VERSION: u32 = 4;
+pub const CURRENT_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(default)]
-struct LegacyOnboardingVersionConfig {
+struct LegacyVersionConfig {
     completed_version: u32,
     windows_completed_version: u32,
     linux_completed_version: u32,
 }
 
-fn legacy_onboarding_config_file_path() -> PathBuf {
+fn legacy_file_path() -> PathBuf {
     file_ops::config_dir().join("onboarding.toml")
 }
 
-fn read_legacy_onboarding_config() -> io::Result<LegacyOnboardingVersionConfig> {
-    let content = match fs::read_to_string(legacy_onboarding_config_file_path()) {
+fn read_legacy() -> io::Result<LegacyVersionConfig> {
+    let content = match fs::read_to_string(legacy_file_path()) {
         Ok(content) => content,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(LegacyOnboardingVersionConfig::default());
+            return Ok(LegacyVersionConfig::default());
         }
         Err(error) => return Err(error),
     };
@@ -42,20 +42,20 @@ fn read_legacy_onboarding_config() -> io::Result<LegacyOnboardingVersionConfig> 
     })
 }
 
-fn remove_legacy_onboarding_config() -> io::Result<()> {
-    match fs::remove_file(legacy_onboarding_config_file_path()) {
+fn remove_legacy() -> io::Result<()> {
+    match fs::remove_file(legacy_file_path()) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
 }
 
-fn app_state_with_legacy_migration() -> io::Result<AppStateConfig> {
-    let config = super::config::read_config()?;
+fn load_state() -> io::Result<AppStateConfig> {
+    let config = super::settings::read()?;
     let mut state = config.app_state.clone();
-    let legacy_path = legacy_onboarding_config_file_path();
+    let legacy_path = legacy_file_path();
     let legacy_file_present = legacy_path.is_file();
-    let legacy = read_legacy_onboarding_config()?;
+    let legacy = read_legacy()?;
 
     let unified_version = state
         .onboarding_completed_version
@@ -76,25 +76,25 @@ fn app_state_with_legacy_migration() -> io::Result<AppStateConfig> {
 
     if needs_migration {
         let migrated = state.clone();
-        super::config::update_config(|config| {
+        super::settings::update(|config| {
             config.app_state = migrated;
         })?;
         // 先确保统一状态已写入 settings.toml，再删除旧 onboarding.toml。
-        super::config::flush_config_now();
-        remove_legacy_onboarding_config()?;
+        super::settings::flush_now();
+        remove_legacy()?;
     }
 
     Ok(state)
 }
 
-pub fn completed_onboarding_version() -> io::Result<u32> {
-    Ok(app_state_with_legacy_migration()?.onboarding_completed_version)
+pub fn completed_version() -> io::Result<u32> {
+    Ok(load_state()?.onboarding_completed_version)
 }
 
 #[must_use]
-pub fn is_current_onboarding_completed() -> bool {
-    match completed_onboarding_version() {
-        Ok(version) => version >= CURRENT_ONBOARDING_VERSION,
+pub fn is_complete() -> bool {
+    match completed_version() {
+        Ok(version) => version >= CURRENT_VERSION,
         Err(error) => {
             tracing::warn!(?error, "failed to read onboarding version from main config");
             false
@@ -102,35 +102,35 @@ pub fn is_current_onboarding_completed() -> bool {
     }
 }
 
-pub fn complete_current_onboarding() -> io::Result<()> {
-    super::config::update_config(|config| {
-        config.app_state.onboarding_completed_version = CURRENT_ONBOARDING_VERSION;
+pub fn complete() -> io::Result<()> {
+    super::settings::update(|config| {
+        config.app_state.onboarding_completed_version = CURRENT_VERSION;
         config.app_state.legacy_onboarding_windows_completed_version = 0;
         config.app_state.legacy_onboarding_linux_completed_version = 0;
     })?;
-    super::config::flush_config_now();
-    remove_legacy_onboarding_config()
+    super::settings::flush_now();
+    remove_legacy()
 }
 
 /// 允许调试/迁移场景显式清空首次运行完成状态。
-pub fn reset_onboarding() -> io::Result<()> {
-    super::config::update_config(|config| {
+pub fn reset() -> io::Result<()> {
+    super::settings::update(|config| {
         config.app_state.onboarding_completed_version = 0;
         config.app_state.legacy_onboarding_windows_completed_version = 0;
         config.app_state.legacy_onboarding_linux_completed_version = 0;
     })?;
-    super::config::flush_config_now();
-    remove_legacy_onboarding_config()
+    super::settings::flush_now();
+    remove_legacy()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CURRENT_ONBOARDING_VERSION, LegacyOnboardingVersionConfig};
-    use crate::config::config::AppStateConfig;
+    use super::{CURRENT_VERSION, LegacyVersionConfig};
+    use crate::config::settings::AppStateConfig;
 
     #[test]
     fn legacy_empty_config_defaults_to_incomplete() {
-        let config: LegacyOnboardingVersionConfig =
+        let config: LegacyVersionConfig =
             toml::from_str("").expect("empty legacy onboarding config should deserialize");
         assert_eq!(config.completed_version, 0);
         assert_eq!(config.windows_completed_version, 0);
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn legacy_platform_versions_collapse_to_one_version() {
-        let decoded: LegacyOnboardingVersionConfig = toml::from_str(
+        let decoded: LegacyVersionConfig = toml::from_str(
             "completed_version = 1\nwindows_completed_version = 4\nlinux_completed_version = 3\n",
         )
         .expect("legacy onboarding config should deserialize");
@@ -147,14 +147,14 @@ mod tests {
             .completed_version
             .max(decoded.windows_completed_version)
             .max(decoded.linux_completed_version);
-        assert_eq!(unified, CURRENT_ONBOARDING_VERSION);
+        assert_eq!(unified, CURRENT_VERSION);
     }
 
     #[test]
     fn app_state_serializes_only_cross_platform_versions() {
         let state = AppStateConfig {
             agreement_accepted_version: 2,
-            onboarding_completed_version: CURRENT_ONBOARDING_VERSION,
+            onboarding_completed_version: CURRENT_VERSION,
             legacy_onboarding_windows_completed_version: 4,
             legacy_onboarding_linux_completed_version: 3,
         };

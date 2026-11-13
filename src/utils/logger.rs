@@ -380,7 +380,7 @@ fn install_unhandled_exception_hook() {}
 pub fn init_logging(
     debug_enabled: bool,
     gpui_trace_enabled: bool,
-    log_management: &crate::config::config::LogManagementConfig,
+    log_management: &crate::config::settings::LogManagementConfig,
     console_output: bool,
 ) {
     let logs_dir: PathBuf = file_ops::logs_dir();
@@ -509,7 +509,7 @@ mod tests {
         init_logging(
             true,
             false,
-            &crate::config::config::LogManagementConfig::default(),
+            &crate::config::settings::LogManagementConfig::default(),
             true,
         );
         info!("这是 info 测试日志");

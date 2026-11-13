@@ -6,14 +6,14 @@ use gpui::{
     WindowBounds, WindowOptions, px, size,
 };
 
-pub struct PluginWindowView {
+pub struct View {
     plugin_id: String,
     page_id: String,
     title: SharedString,
     _subscriptions: Vec<Subscription>,
 }
 
-impl PluginWindowView {
+impl View {
     pub fn new(plugin_id: String, page_id: String, title: String, cx: &mut Context<Self>) -> Self {
         crate::plugins::runtime::request_page_render(cx, &plugin_id, &page_id);
         Self {
@@ -32,7 +32,7 @@ impl PluginWindowView {
     }
 }
 
-impl Render for PluginWindowView {
+impl Render for View {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let registry = cx.global::<crate::plugins::runtime::PluginRegistry>();
         if let Some(tree) = registry.cached_page(&self.plugin_id, &self.page_id) {
@@ -47,7 +47,7 @@ impl Render for PluginWindowView {
     }
 }
 
-pub fn open_plugin_window(
+pub fn open(
     cx: &mut App,
     plugin_id: String,
     page_id: String,
@@ -66,7 +66,7 @@ pub fn open_plugin_window(
     let handle = cx.open_window(options, move |window, cx| {
         window.set_title(&window_title);
         window.activate_window();
-        let view = cx.new(|cx| PluginWindowView::new(plugin_id, page_id, title, cx));
+        let view = cx.new(|cx| View::new(plugin_id, page_id, title, cx));
         cx.new(|cx| crate::ui::runtime::root_view::RootView::new(view, window, cx))
     })?;
 

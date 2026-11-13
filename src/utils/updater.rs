@@ -1,9 +1,9 @@
-use crate::config::config::{GithubSource, read_config};
-use crate::downloads::manager::{DownloadOptions, DownloaderManager};
-use crate::http::proxy::get_client_for_proxy;
+use crate::config::settings::{GithubSource, read};
+use crate::downloads::manager::{DownloadOptions, DownloadRequest, DownloaderManager};
+use crate::http::proxy::clients::client;
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{
-    TaskOptions, create_task, finish_task, is_cancelled, register_task_cooperative_cancel,
+    TaskOptions, create_task, finish_task, is_cancelled, register_cooperative_cancel,
     reset_progress, set_task_message,
 };
 use crate::utils::app_info::{self, BuildChannel};
@@ -19,7 +19,7 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 #[derive(Deserialize, Debug)]
-pub struct DownloadAndApplyArgs {
+pub struct UpdateArgs {
     pub url: String,
     pub filename_hint: Option<String>,
     #[serde(alias = "target_exe_path", alias = "targetExePath")]
@@ -96,11 +96,11 @@ fn nightly_update_available(
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
 pub async fn check_updates(owner: String, repo: String) -> Result<serde_json::Value, String> {
-    let config = read_config().map_err(|e| format!("读取配置失败：{}", e))?;
+    let config = read().map_err(|e| format!("读取配置失败：{}", e))?;
     let update_channel = config.launcher.update_channel;
     let github_source = config.launcher.download.github.source;
     let channel = match update_channel {
-        crate::config::config::UpdateChannel::Nightly => "nightly".to_string(),
+        crate::config::settings::UpdateChannel::Nightly => "nightly".to_string(),
         _ => "stable".to_string(),
     };
     let channel = channel.to_lowercase();
@@ -113,7 +113,7 @@ pub async fn check_updates(owner: String, repo: String) -> Result<serde_json::Va
     let url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/releases");
     let start_time = std::time::Instant::now();
 
-    let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败：{}", e))?;
+    let client = client().map_err(|e| format!("构建 HTTP 客户端失败：{}", e))?;
 
     let resp = crate::github::api_request(&client, &url)
         .timeout(Duration::from_secs(15))
@@ -152,7 +152,7 @@ pub async fn check_updates(owner: String, repo: String) -> Result<serde_json::Va
         format!("解析 JSON 失败：{}", error)
     })?;
 
-    let current = app_info::get_version();
+    let current = app_info::version();
     let current_build_channel = app_info::build_channel();
     let current_ver = Version::parse(current).unwrap_or_else(|_| Version::new(0, 0, 0));
 
@@ -282,9 +282,7 @@ pub async fn check_updates(owner: String, repo: String) -> Result<serde_json::Va
     }))
 }
 
-pub async fn download_and_apply_update(
-    args: DownloadAndApplyArgs,
-) -> Result<serde_json::Value, String> {
+pub async fn update(args: UpdateArgs) -> Result<serde_json::Value, String> {
     let url = args.url;
     let filename_hint = args.filename_hint;
 
@@ -292,12 +290,15 @@ pub async fn download_and_apply_update(
     let timeout_secs = args.timeout_secs.unwrap_or(60u64);
     let auto_quit = args.auto_quit.unwrap_or(true);
 
-    let task_id = create_task(
-        TaskOptions::new("下载更新", "ready")
-            .id(args.task_id)
-            .detail(filename_hint.clone()),
-    )?;
-    register_task_cooperative_cancel(task_id.clone());
+    let mut options = TaskOptions::new("下载更新", "ready");
+    if let Some(task_id) = args.task_id {
+        options = options.id(task_id);
+    }
+    if let Some(filename) = filename_hint.clone() {
+        options = options.detail(filename);
+    }
+    let task_id = create_task(options)?;
+    register_cooperative_cancel(task_id.clone());
 
     info!("开始下载并应用：url={} task_id={}", url, task_id);
 
@@ -317,7 +318,7 @@ pub async fn download_and_apply_update(
     let target = downloads_dir.join(&fname);
     info!("保存为：{}", target.display());
 
-    let client = get_client_for_proxy()
+    let client = client()
         .map_err(|e| fail_update_task(&task_id, format!("构建 HTTP 客户端失败：{}", e)))?;
     let manager = DownloaderManager::with_client(client);
     let download_urls =
@@ -335,9 +336,8 @@ pub async fn download_and_apply_update(
         headers: Some(headers),
         ..Default::default()
     };
-    let res = manager
-        .download_with_url_candidates(&task_id, download_urls, target.clone(), &options)
-        .await;
+    let request = DownloadRequest::new(&task_id, download_urls, target.clone()).options(options);
+    let res = manager.download(&request).await;
 
     let bytes_len = match res {
         Ok(CoreResult::Success(_)) => {
@@ -507,16 +507,17 @@ where
     futures::executor::block_on(task).map_err(|error| format!("更新任务异常结束: {error}"))?
 }
 
-/// 阻塞式检查更新函数 - 在 GPUI 线程池中使用
-pub fn check_updates_blocking(owner: String, repo: String) -> Result<serde_json::Value, String> {
-    block_on_app_runtime(check_updates(owner, repo))
-}
+/// Blocking counterparts for update operations, called from the GPUI task pool.
+pub mod blocking {
+    use super::{UpdateArgs, block_on_app_runtime};
 
-/// 阻塞式下载并应用更新函数 - 在 GPUI 线程池中使用
-pub fn download_and_apply_update_blocking(
-    args: DownloadAndApplyArgs,
-) -> Result<serde_json::Value, String> {
-    block_on_app_runtime(download_and_apply_update(args))
+    pub fn check_updates(owner: String, repo: String) -> Result<serde_json::Value, String> {
+        block_on_app_runtime(super::check_updates(owner, repo))
+    }
+
+    pub fn update(args: UpdateArgs) -> Result<serde_json::Value, String> {
+        block_on_app_runtime(super::update(args))
+    }
 }
 
 #[cfg(test)]

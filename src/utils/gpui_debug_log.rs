@@ -1,7 +1,6 @@
-use gpui::{
-    App, PerformanceMetricsSnapshot, Timer, gpu_owner_metrics_snapshot,
-    performance_metrics_snapshot,
-};
+use gpui::diagnostics::gpu_owner::metrics_snapshot;
+use gpui::diagnostics::performance_metrics::{PerformanceMetricsSnapshot, snapshot};
+use gpui::{App, Timer};
 use std::time::Duration;
 
 const LOG_INTERVAL: Duration = Duration::from_secs(5);
@@ -56,12 +55,12 @@ fn duration_micros(duration: Option<Duration>) -> u128 {
 }
 
 pub(crate) fn start(cx: &mut App) {
-    let mut previous = performance_metrics_snapshot();
-    let mut previous_owner_jobs = gpu_owner_metrics_snapshot().completed_jobs;
+    let mut previous = snapshot();
+    let mut previous_owner_jobs = metrics_snapshot().completed_jobs;
     cx.spawn(async move |_cx| {
         loop {
             Timer::after(LOG_INTERVAL).await;
-            let current = performance_metrics_snapshot();
+            let current = snapshot();
             emit_snapshot(&previous, &current);
             emit_gpu_owner_log(&mut previous_owner_jobs);
             previous = current;
@@ -71,7 +70,7 @@ pub(crate) fn start(cx: &mut App) {
 }
 
 fn emit_gpu_owner_log(previous_jobs: &mut u64) {
-    let metrics = gpu_owner_metrics_snapshot();
+    let metrics = metrics_snapshot();
     if metrics.completed_jobs == *previous_jobs {
         return;
     }

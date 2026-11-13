@@ -27,7 +27,7 @@ pub fn detect_system_encoding() -> u32 {
 
 /// 返回系统 UI 语言的标准代码（如 "zh-CN"、"en-US"）
 #[cfg(target_os = "windows")]
-pub fn get_system_language() -> String {
+pub fn system_language() -> String {
     // SAFETY: The fixed buffer is valid for the duration of the Win32 locale query.
     unsafe {
         let lang_id = GetUserDefaultUILanguage();
@@ -42,7 +42,7 @@ pub fn get_system_language() -> String {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn get_system_language() -> String {
+pub fn system_language() -> String {
     resolve_unix_language(
         ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"]
             .into_iter()
@@ -117,7 +117,7 @@ fn normalize_unix_locale(locale: &str) -> Option<String> {
 
 /// 返回 CPU 架构字符串，如 "x86"/"x64"/"ARM"
 #[cfg(target_os = "windows")]
-pub fn get_cpu_architecture() -> String {
+pub fn cpu_architecture() -> String {
     // SAFETY: `GetSystemInfo` initializes the provided `SYSTEM_INFO` buffer.
     unsafe {
         let mut info: SYSTEM_INFO = std::mem::zeroed();
@@ -132,7 +132,7 @@ pub fn get_cpu_architecture() -> String {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn get_cpu_architecture() -> String {
+pub fn cpu_architecture() -> String {
     std::env::consts::ARCH.to_string()
 }
 
@@ -200,8 +200,8 @@ mod tests {
     }
 
     #[test]
-    fn test_get_system_language() {
-        let lang = get_system_language();
+    fn system_language_returns_nonempty_value() {
+        let lang = system_language();
         println!("DETECTED SYSTEM LANGUAGE: {}", lang);
         assert!(!lang.is_empty());
     }

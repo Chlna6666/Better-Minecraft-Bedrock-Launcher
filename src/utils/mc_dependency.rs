@@ -39,18 +39,14 @@ use winreg::RegKey;
 #[cfg(windows)]
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
 
-use crate::http::proxy::get_client_for_proxy;
+use crate::http::proxy::clients::client;
 use crate::http::request::GLOBAL_CLIENT;
 use crate::i18n::LocalizedText;
 use crate::tasks::task_manager::ProgressUpdate;
 #[cfg(windows)]
 use crate::utils::developer_mode;
 
-mod windows_app_sdk;
-pub use windows_app_sdk::{
-    WINDOWS_APP_SDK_RELEASES_URL, WindowsAppSdkInstallPlan, WindowsAppSdkInstallerSource,
-    install_windows_app_sdk_runtime, plan_windows_app_sdk_install,
-};
+pub(crate) mod windows_app_sdk;
 
 pub const GAMEINPUT_RELEASES_URL: &str = "https://github.com/microsoftconnect/GameInput/releases";
 pub const GAMEINPUT_LATEST_DOWNLOAD_URL: &str =
@@ -144,11 +140,11 @@ where
     F: FnOnce(UnboundedSender<DependencyEvent>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<()>> + Send + 'static,
 {
-    let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(title, "queued")
-            .detail(detail)
-            .total(100),
-    )?;
+    let mut task_options = crate::tasks::task_manager::TaskOptions::new(title, "queued").total(100);
+    if let Some(detail) = detail {
+        task_options = task_options.detail(detail);
+    }
+    let task_id = crate::tasks::task_manager::create_task(task_options)?;
     crate::tasks::task_manager::append_task_log(&task_id, format!("{title}：任务已提交"));
 
     // DependencyEvent is an internal producer protocol only. UI never receives this channel;
@@ -246,7 +242,7 @@ where
     Ok(task_id)
 }
 
-pub fn start_missing_uwp_dependencies_task(
+pub fn start_missing_uwp_dependencies(
     dependencies: Vec<MissingUwpDependency>,
 ) -> Result<String, String> {
     let count = dependencies.len();
@@ -258,7 +254,7 @@ pub fn start_missing_uwp_dependencies_task(
     )
 }
 
-pub fn start_game_input_runtime_task(plan: GameInputInstallPlan) -> Result<String, String> {
+pub fn start_game_input_runtime(plan: GameInputInstallPlan) -> Result<String, String> {
     let detail = plan
         .installer_path
         .file_name()
@@ -269,18 +265,6 @@ pub fn start_game_input_runtime_task(plan: GameInputInstallPlan) -> Result<Strin
         detail,
         "installing_game_input",
         move |sender| async move { install_game_input_runtime(plan, Some(sender)).await },
-    )
-}
-
-pub fn start_windows_app_sdk_runtime_task(
-    plan: WindowsAppSdkInstallPlan,
-) -> Result<String, String> {
-    let detail = Some(format!("Windows App SDK {}", plan.version_label));
-    start_dependency_install_task(
-        "安装 Windows App SDK Runtime",
-        detail,
-        "installing_windows_app_sdk",
-        move |sender| async move { install_windows_app_sdk_runtime(plan, Some(sender)).await },
     )
 }
 
@@ -315,7 +299,7 @@ fn compare_versions(left: &str, right: &str) -> Ordering {
     Ordering::Equal
 }
 
-pub fn is_installed_with_min(prefix: &str, min_version: Option<&str>) -> bool {
+pub fn is_installed(prefix: &str, min_version: Option<&str>) -> bool {
     if !cfg!(windows) {
         return true;
     }
@@ -624,7 +608,7 @@ pub async fn install_missing_uwp_dependencies(
         "开始安装缺失的 UWP 依赖"
     );
 
-    let client = get_client_for_proxy().unwrap_or_else(|_| GLOBAL_CLIENT.clone());
+    let client = client().unwrap_or_else(|_| GLOBAL_CLIENT.clone());
     let anchor_regex = Regex::new(r#"<a\s+href=\"(?P<href>[^\"]+)\"[^>]*>(?P<name>[^<]+)</a>"#)?;
 
     emit_log(sender.as_ref(), crate::localized_text!("McDeps.logs.start"));
@@ -708,7 +692,7 @@ pub async fn install_missing_uwp_dependencies(
         );
 
         let download_path = env::temp_dir().join(&asset_name);
-        download_file_with_progress(
+        download_file(
             &client,
             &asset_url,
             &download_path,
@@ -736,7 +720,7 @@ pub async fn install_missing_uwp_dependencies(
         );
 
         wait_for_condition(Duration::from_secs(90), Duration::from_secs(1), || {
-            is_installed_with_min(&dependency.name, dependency.min_version.as_deref())
+            is_installed(&dependency.name, dependency.min_version.as_deref())
         })
         .await
         .with_context(|| format!("安装后未检测到依赖: {}", dependency.name))?;
@@ -765,7 +749,7 @@ pub async fn install_game_input_runtime(
     plan: GameInputInstallPlan,
     sender: Option<UnboundedSender<DependencyEvent>>,
 ) -> Result<()> {
-    let client = get_client_for_proxy().unwrap_or_else(|_| GLOBAL_CLIENT.clone());
+    let client = client().unwrap_or_else(|_| GLOBAL_CLIENT.clone());
     let installer_name = plan
         .installer_path
         .file_name()
@@ -784,7 +768,7 @@ pub async fn install_game_input_runtime(
             sender.as_ref(),
             crate::localized_text!("McDeps.logs.download_start", name = installer_name.clone(),),
         );
-        download_file_with_progress(
+        download_file(
             &client,
             GAMEINPUT_LATEST_DOWNLOAD_URL,
             &plan.installer_path,
@@ -806,7 +790,7 @@ pub async fn install_game_input_runtime(
     );
 
     let installer_path = plan.installer_path.clone();
-    crate::tasks::runtime::run_io_blocking(move || install_game_input_with_msi(&installer_path))
+    crate::tasks::runtime::blocking::run_io(move || install_game_input_with_msi(&installer_path))
         .await
         .map_err(anyhow::Error::msg)
         .context("等待 GameInput MSI 安装线程失败")??;
@@ -881,7 +865,7 @@ fn emit_game_input_admin_notice(
 ) {
 }
 
-async fn download_file_with_progress(
+async fn download_file(
     client: &Client,
     url: &str,
     destination: &Path,
@@ -964,8 +948,8 @@ async fn download_file_with_progress(
 #[cfg(windows)]
 async fn install_appx_package_from_file(package_path: &Path) -> Result<()> {
     let package_path = package_path.to_path_buf();
-    crate::tasks::runtime::run_io_blocking(move || {
-        install_appx_package_from_file_blocking(&package_path)
+    crate::tasks::runtime::blocking::run_io(move || {
+        install_appx_package(&package_path)
     })
     .await
     .map_err(anyhow::Error::msg)
@@ -979,7 +963,7 @@ async fn install_appx_package_from_file(_package_path: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn install_appx_package_from_file_blocking(package_path: &Path) -> Result<()> {
+fn install_appx_package(package_path: &Path) -> Result<()> {
     info!(package_path = %package_path.display(), "开始通过 PackageManager 安装 APPX 依赖");
     let package_manager = PackageManager::new().context("无法创建 PackageManager")?;
     let package_uri = Uri::CreateUri(&HSTRING::from(path_to_file_uri(package_path)?))

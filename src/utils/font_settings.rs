@@ -14,14 +14,14 @@ pub fn default_app_font_config() -> DefaultFontConfig {
     DefaultFontConfig::system_family(DEFAULT_APP_FONT_FAMILY)
 }
 
-pub fn font_config_for_selection(
+pub fn resolve_config(
     font_source: &str,
     local_font_path: &str,
     local_font_family: &str,
     system_font_family: &str,
 ) -> DefaultFontConfig {
-    match crate::config::config::normalize_font_source(font_source).as_str() {
-        crate::config::config::FONT_SOURCE_LOCAL => {
+    match crate::config::settings::normalize_font_source(font_source).as_str() {
+        crate::config::settings::FONT_SOURCE_LOCAL => {
             let path = local_font_path.trim();
             if path.is_empty() || !Path::new(path).is_file() {
                 return default_app_font_config();
@@ -37,7 +37,7 @@ pub fn font_config_for_selection(
                     config.with_path(path)
                 })
         }
-        crate::config::config::FONT_SOURCE_SYSTEM => {
+        crate::config::settings::FONT_SOURCE_SYSTEM => {
             if let Some(family) = non_empty(system_font_family) {
                 DefaultFontConfig::system_family(family)
             } else {
@@ -503,8 +503,8 @@ mod tests {
 
     #[test]
     fn system_font_selection_uses_native_family_without_file_registration() {
-        let config = font_config_for_selection(
-            crate::config::config::FONT_SOURCE_SYSTEM,
+        let config = resolve_config(
+            crate::config::settings::FONT_SOURCE_SYSTEM,
             "",
             "",
             "Segoe UI",

@@ -4,7 +4,7 @@
 )]
 
 use crate::cli::CliAction;
-use crate::core::version::api::get_version_list;
+use crate::core::version::api::list;
 use crate::core::version::launch_versions::{LaunchVersionEntry, select_launch_version};
 use crate::launch::{
     DirectLaunchContext, ImportLaunchContext, LaunchMode, LaunchOptions, LaunchTarget,
@@ -30,7 +30,8 @@ fn bring_main_window_to_foreground() {
     use std::os::windows::ffi::OsStrExt;
     use tracing::warn;
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindow,
+        FindWindowW, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOW, SetForegroundWindow,
+        ShowWindow,
     };
     use windows::core::PCWSTR;
 
@@ -168,7 +169,7 @@ pub(crate) fn run(invocation: Invocation) -> Result<()> {
             crate::utils::logger::init_logging(
                 false,
                 false,
-                &crate::config::config::LogManagementConfig::default(),
+                &crate::config::settings::LogManagementConfig::default(),
                 false,
             );
             return run_list(runtime, json);
@@ -194,7 +195,7 @@ pub(crate) fn run(invocation: Invocation) -> Result<()> {
         crate::utils::logger::init_logging(
             false,
             false,
-            &crate::config::config::LogManagementConfig::default(),
+            &crate::config::settings::LogManagementConfig::default(),
             false,
         );
         return run_updater_mode(context);
@@ -207,7 +208,7 @@ pub(crate) fn run(invocation: Invocation) -> Result<()> {
         .direct_launch()
         .is_some_and(|context| context.silent);
     crate::utils::file_ops::create_initial_directories();
-    let config = match crate::config::config::initialize_config_cache() {
+    let config = match crate::config::settings::initialize_cache() {
         Ok(config) => config,
         Err(error) => {
             let message = format!("读取配置失败: {error:?}\n程序将退出。");
@@ -215,7 +216,7 @@ pub(crate) fn run(invocation: Invocation) -> Result<()> {
             if !is_headless_launch {
                 crate::result::show_startup_failure(
                     "启动失败 - 读取配置",
-                    "initialize_config_cache",
+                    "initialize_cache",
                     &message,
                 );
             }
@@ -238,7 +239,7 @@ pub(crate) fn run(invocation: Invocation) -> Result<()> {
     );
 
     if launch_mode.is_main() {
-        crate::core::bedrock_auth::preload_at_app_startup();
+        crate::core::bedrock_auth::initialize();
         debug!("system-local Xbox probe and BMCBL managed-account restore scheduled independently");
     }
 
@@ -249,7 +250,7 @@ pub(crate) fn run(invocation: Invocation) -> Result<()> {
     }
 
     if launch_mode.is_main() && config.launcher.stats_upload {
-        if let Err(error) = crate::utils::telemetry::spawn_startup_telemetry(&config) {
+        if let Err(error) = crate::utils::telemetry::spawn_startup(&config) {
             warn!(%error, "failed to schedule startup telemetry");
         }
     }
@@ -274,7 +275,7 @@ pub(crate) fn run(invocation: Invocation) -> Result<()> {
     crate::utils::telemetry::shutdown();
 
     // 配置写盘为 ~500ms 合并延迟，退出前把未落盘的改动立即写入磁盘。
-    crate::config::config::flush_config_now();
+    crate::config::settings::flush_now();
 
     // 异步日志线程在退出前排空队列，避免丢失退出前的诊断信息。
     crate::utils::log_manager::flush_async_logs_now();
@@ -323,9 +324,7 @@ fn resolve_direct_launch(
     // The version directory is created on first run; scanning before it
     // exists would report an IO error instead of "no version installed".
     crate::utils::file_ops::create_initial_directories();
-    let versions = runtime
-        .block_on(get_version_list())
-        .context("读取本地版本列表失败")?;
+    let versions = runtime.block_on(list()).context("读取本地版本列表失败")?;
     let entry =
         select_launch_version(&versions, options.version.as_deref()).map_err(anyhow::Error::msg)?;
     let target = launch_target_from_entry(entry);
@@ -334,7 +333,7 @@ fn resolve_direct_launch(
         LaunchUiMode::Gui => false,
         LaunchUiMode::Auto => {
             runtime
-                .block_on(crate::core::version::settings::get_version_config(
+                .block_on(crate::core::version::settings::read_version_config(
                     target.folder.clone(),
                 ))
                 .unwrap_or_else(|error| {
@@ -446,7 +445,7 @@ fn run_headless_launch(runtime: &AppRuntime, context: &DirectLaunchContext) -> R
             Ok(())
         }
         Err(error) => {
-            let cancelled = crate::tasks::task_manager::get_snapshot_arc(&task_id)
+            let cancelled = crate::tasks::task_manager::snapshot_arc(&task_id)
                 .is_some_and(|snapshot| snapshot.status.as_ref() == "cancelled");
             let message = if cancelled {
                 "启动已取消".to_string()
@@ -474,15 +473,13 @@ fn run_headless_launch(runtime: &AppRuntime, context: &DirectLaunchContext) -> R
             .map_err(anyhow::Error::msg)?;
     }
 
-    crate::config::config::flush_config_now();
+    crate::config::settings::flush_now();
     crate::utils::log_manager::flush_async_logs_now();
     result
 }
 
 fn run_list(runtime: &AppRuntime, json_output: bool) -> Result<()> {
-    let versions = runtime
-        .block_on(get_version_list())
-        .context("读取本地版本列表失败")?;
+    let versions = runtime.block_on(list()).context("读取本地版本列表失败")?;
     if json_output {
         let entries = versions
             .iter()
@@ -520,17 +517,17 @@ fn run_info(json_output: bool) -> Result<()> {
         println!(
             "{}",
             json!({
-                "version": crate::utils::app_info::get_version(),
+                "version": crate::utils::app_info::version(),
                 "channel": crate::utils::app_info::build_channel().as_str(),
-                "buildInfo": crate::utils::app_info::get_build_info(),
+                "buildInfo": crate::utils::app_info::build_info(),
                 "executable": executable.as_ref().map(|path| path.to_string_lossy()),
                 "dataDir": data_dir.to_string_lossy(),
                 "versionsDir": versions_dir.to_string_lossy(),
             })
         );
     } else {
-        println!("BMCBL {}", crate::utils::app_info::get_version());
-        println!("{}", crate::utils::app_info::get_build_info());
+        println!("BMCBL {}", crate::utils::app_info::version());
+        println!("{}", crate::utils::app_info::build_info());
         if let Some(executable) = executable {
             println!("可执行文件: {}", executable.display());
         }
@@ -617,7 +614,7 @@ mod runtime_boundary_tests {
 
 fn spawn_noncritical_startup_work() {
     let result = crate::tasks::runtime::spawn_io(async {
-        if let Err(error) = crate::tasks::runtime::run_io_blocking(|| {
+        if let Err(error) = crate::tasks::runtime::blocking::run_io(|| {
             if let Err(error) = crate::utils::diagnostics::prepare_previous_run_reports() {
                 error!(?error, "failed to prepare previous run diagnostics");
             }
@@ -702,7 +699,7 @@ fn log_system_info() {
         sys_name,
         kernel_version,
         os_version,
-        crate::utils::system_info::get_cpu_architecture(),
-        crate::utils::system_info::get_system_language()
+        crate::utils::system_info::cpu_architecture(),
+        crate::utils::system_info::system_language()
     );
 }

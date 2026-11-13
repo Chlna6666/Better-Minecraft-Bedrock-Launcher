@@ -16,7 +16,7 @@ use tracing::{debug, info, warn};
 
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskControl, TaskVisualization, finish_task, is_cancelled, is_cancelled_fast,
+    ProgressUpdate, TaskControl, TaskVisualization, control_cancelled, finish_task, is_cancelled,
     is_visualization_enabled, set_task_visualization, set_total, task_control, update_progress,
 };
 
@@ -24,6 +24,15 @@ use crate::tasks::task_manager::{
 const EXTRACT_PROGRESS_EMIT_BYTES: u64 = 1024 * 1024;
 const EXTRACT_EMIT_INTERVAL_MS: u64 = 200;
 const EXTRACT_COPY_BUFFER_SIZE: usize = 64 * 1024;
+
+/// Controls how ZIP extraction handles paths that already exist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZipConflictPolicy {
+    /// Replace existing files and extraction destinations.
+    Replace,
+    /// Preserve existing paths; transactional extraction refuses an existing destination.
+    PreserveExisting,
+}
 
 /// 预扫描阶段收集的文件条目计划
 struct FileEntryPlan {
@@ -38,7 +47,7 @@ struct ParallelExtractContext<'a> {
     archive_path: &'a Path,
     task_id: &'a str,
     control: Option<&'a TaskControl>,
-    force_replace: bool,
+    conflict_policy: ZipConflictPolicy,
     total_bytes: u64,
     entry_total: u64,
     file_entries: &'a [FileEntryPlan],
@@ -60,7 +69,7 @@ struct ParallelExtractContext<'a> {
 
 impl ParallelExtractContext<'_> {
     fn is_cancelled(&self) -> bool {
-        self.control.is_some_and(is_cancelled_fast)
+        self.control.is_some_and(control_cancelled)
     }
 
     fn has_failed(&self) -> bool {
@@ -154,8 +163,11 @@ impl ParallelExtractContext<'_> {
 
 /// 创建输出文件。返回 Ok(None) 表示文件已存在且不需要覆盖（视为完成）。
 /// 通过 create/create_new 的返回值区分存在性，避免每条目一次 exists() stat。
-fn create_output_file(out_path: &Path, force_replace: bool) -> Result<Option<File>, String> {
-    if force_replace {
+fn create_output_file(
+    out_path: &Path,
+    conflict_policy: ZipConflictPolicy,
+) -> Result<Option<File>, String> {
+    if conflict_policy == ZipConflictPolicy::Replace {
         match File::create(out_path) {
             Ok(file) => Ok(Some(file)),
             Err(_) if out_path.is_dir() => {
@@ -201,7 +213,7 @@ fn extract_single_entry(
         .by_index(plan.index)
         .map_err(|error| format!("读取 zip 条目失败: {} ({error})", plan.display_name))?;
 
-    let file = match create_output_file(&plan.out_path, context.force_replace)? {
+    let file = match create_output_file(&plan.out_path, context.conflict_policy)? {
         Some(file) => file,
         None => {
             // 已存在且不强制替换：视为已完成此 entry 的大小
@@ -284,10 +296,10 @@ fn extraction_worker(context: &ParallelExtractContext<'_>) {
     context.active_workers.fetch_sub(1, Ordering::Relaxed);
 }
 
-fn extract_zip_parallel_blocking(
+fn extract_parallel(
     archive_path: &Path,
     destination: &str,
-    force_replace: bool,
+    conflict_policy: ZipConflictPolicy,
     task_id: &str,
 ) -> Result<bool, String> {
     let mut archive = open_archive_for_worker(archive_path)?;
@@ -300,7 +312,7 @@ fn extract_zip_parallel_blocking(
     let mut file_entries: Vec<FileEntryPlan> = Vec::with_capacity(entry_count);
     let mut dir_paths = Vec::new();
     // 归档内重复的输出路径必须去重：并行时两个 worker 写同一文件会互相踩踏。
-    // 语义与串行版本一致：force_replace 时后出现的条目覆盖先出现的，否则先出现的生效。
+    // 语义与串行版本一致：Replace 时后出现的条目覆盖先出现的，否则先出现的生效。
     let mut planned_paths: std::collections::HashMap<PathBuf, usize> =
         std::collections::HashMap::with_capacity(entry_count);
     let mut skipped_duplicate_bytes: u64 = 0;
@@ -323,7 +335,7 @@ fn extract_zip_parallel_blocking(
         }
         match planned_paths.entry(out_path) {
             std::collections::hash_map::Entry::Occupied(existing) => {
-                let replaced_size = if force_replace {
+                let replaced_size = if conflict_policy == ZipConflictPolicy::Replace {
                     let plan = &mut file_entries[*existing.get()];
                     let previous_size = plan.size;
                     plan.index = i;
@@ -357,7 +369,7 @@ fn extract_zip_parallel_blocking(
 
     // 取一次 Arc<TaskControl>，后续取消检查走原子标志（无全局 RwLock）
     let control = task_control(task_id);
-    let cancelled = || control.as_deref().is_some_and(is_cancelled_fast);
+    let cancelled = || control.as_deref().is_some_and(control_cancelled);
 
     if is_visualization_enabled() {
         set_task_visualization(
@@ -416,7 +428,7 @@ fn extract_zip_parallel_blocking(
         archive_path,
         task_id,
         control: control.as_deref(),
-        force_replace,
+        conflict_policy,
         total_bytes: total,
         entry_total,
         file_entries: &file_entries,
@@ -524,10 +536,10 @@ fn remove_path_if_exists(path: &Path) -> Result<(), String> {
     }
 }
 
-fn extract_zip_transactionally_blocking(
+fn extract_transactionally(
     archive_path: &Path,
     destination: &Path,
-    force_replace: bool,
+    conflict_policy: ZipConflictPolicy,
     task_id: &str,
 ) -> Result<bool, String> {
     let parent = destination
@@ -536,7 +548,7 @@ fn extract_zip_transactionally_blocking(
     fs::create_dir_all(parent)
         .map_err(|error| format!("创建解压父目录失败: {} ({error})", parent.display()))?;
 
-    if destination.exists() && !force_replace {
+    if destination.exists() && conflict_policy == ZipConflictPolicy::PreserveExisting {
         return Err(format!("目标目录已存在: {}", destination.display()));
     }
 
@@ -551,7 +563,12 @@ fn extract_zip_transactionally_blocking(
         .to_str()
         .ok_or_else(|| format!("解压 staging 路径不是 UTF-8: {}", staging.display()))?;
 
-    match extract_zip_parallel_blocking(archive_path, staging_str, true, task_id) {
+    match extract_parallel(
+        archive_path,
+        staging_str,
+        ZipConflictPolicy::Replace,
+        task_id,
+    ) {
         Ok(true) => {}
         Ok(false) => {
             if let Err(error) = remove_path_if_exists(&staging) {
@@ -644,12 +661,12 @@ fn extract_zip_transactionally_blocking(
 
 /// 从磁盘路径解压 zip 到 destination（并行版本）。
 ///
-/// 与 [`extract_zip`] 的任务事件语义一致（开始/完成/失败/取消由调用方与本函数
+/// 与 [`extract`] 的任务事件语义一致（开始/完成/失败/取消由调用方与本函数
 /// 按相同约定处理），但按条目区间在 AppRuntime 的 rayon 池上并行 inflate + 写盘。
-pub async fn extract_zip_from_path(
+pub async fn extract_from_path(
     archive_path: impl AsRef<Path>,
     destination: &str,
-    force_replace: bool,
+    conflict_policy: ZipConflictPolicy,
     task_id: String,
 ) -> Result<CoreResult<()>, CoreError> {
     let archive_path = archive_path.as_ref().to_path_buf();
@@ -659,10 +676,10 @@ pub async fn extract_zip_from_path(
     // The transaction owns staging/rollback inside the blocking closure itself. Aborting the
     // outer future therefore cannot bypass cleanup while a ZIP worker is still unwinding.
     let handle = task::spawn_blocking(move || -> Result<bool, String> {
-        extract_zip_transactionally_blocking(
+        extract_transactionally(
             &archive_path,
             &destination,
-            force_replace,
+            conflict_policy,
             &task_id_for_block,
         )
     });
@@ -677,11 +694,11 @@ pub async fn extract_zip_from_path(
 
 /// 将 archive 解压到 destination（串行兼容版本）。
 /// 注意：新增参数 `task_id`（拥有所有权的 String），用于取消/进度上报。
-/// 已有归档文件路径时请优先使用 [`extract_zip_from_path`]（并行解压）。
-pub async fn extract_zip<R: Read + Seek + Send + 'static>(
+/// 已有归档文件路径时请优先使用 [`extract_from_path`]（并行解压）。
+pub async fn extract<R: Read + Seek + Send + 'static>(
     mut archive: ZipArchive<R>,
     destination: &str,
-    force_replace: bool,
+    conflict_policy: ZipConflictPolicy,
     task_id: String,
 ) -> Result<CoreResult<()>, CoreError> {
     // spawn_blocking 内执行实际解压（IO 密集）
@@ -777,7 +794,7 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
             }
 
             if out_path.exists() {
-                if force_replace {
+                if conflict_policy == ZipConflictPolicy::Replace {
                     if out_path.is_dir() {
                         fs::remove_dir_all(&out_path).map_err(|error| {
                             format!("删除已有目录失败: {} ({error})", out_path.display())

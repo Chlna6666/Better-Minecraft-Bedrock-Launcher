@@ -3,13 +3,13 @@ use std::path::{Path, PathBuf};
 use tracing::debug;
 
 use crate::downloads::integrity::verify_download_integrity;
-use crate::downloads::manager::{DownloadOptions, DownloaderManager};
-use crate::downloads::wu_client::client::WuClient;
-use crate::http::proxy::get_download_client_for_proxy;
+use crate::downloads::manager::{DownloadOptions, DownloadRequest, DownloaderManager};
+use crate::downloads::wu_client::WuClient;
+use crate::http::proxy::clients::download_client;
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{
     ProgressUpdate, TaskOptions, TaskType, create_task, finish_task, is_cancelled,
-    register_task_abort_handle, update_progress,
+    register_abort_handle, update_progress,
 };
 use crate::utils::file_ops;
 
@@ -142,7 +142,7 @@ pub async fn download_appx(
     download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
     let client =
-        get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+        download_client().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
     let parts: Vec<&str> = package_id.split('_').collect();
     if parts.len() != 2 {
@@ -199,7 +199,7 @@ pub async fn download_appx(
 
             let wu_client = WuClient::with_client(client.clone());
             let file_result = match wu_client
-                .get_download_files(&update_id, &revision, &task_id_clone)
+                .fetch_download_files(&update_id, &revision, &task_id_clone)
                 .await
             {
                 Ok(result) => result,
@@ -236,14 +236,10 @@ pub async fn download_appx(
                 options.md5_expected = md5;
             }
             let manager = DownloaderManager::with_client(client);
-            let res = manager
-                .download_with_url_candidates(
-                    &task_id_clone,
-                    candidates,
-                    dest_clone.clone(),
-                    &options,
-                )
-                .await;
+            let request =
+                DownloadRequest::new(task_id_clone.clone(), candidates, dest_clone.clone())
+                    .options(options);
+            let res = manager.download(&request).await;
 
             match res {
                 Ok(CoreResult::Success(final_path)) => {
@@ -270,7 +266,7 @@ pub async fn download_appx(
                 return Ok(task_id);
             }
         };
-    register_task_abort_handle(task_id.clone(), abort_handle);
+    register_abort_handle(task_id.clone(), abort_handle);
 
     Ok(task_id)
 }
@@ -327,7 +323,7 @@ async fn download_resource_to_dir(
 ) -> Result<String, String> {
     let urls = crate::github::configured_download_urls(&url)?;
     let client =
-        get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+        download_client().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
     fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
     let safe_name = safe_file_name(&file_name);
@@ -380,9 +376,9 @@ async fn download_resource_to_dir(
             if options.md5_expected.is_none() {
                 options.md5_expected = md5;
             }
-            let res = manager
-                .download_with_url_candidates(&task_id_clone, urls, dest_clone.clone(), &options)
-                .await;
+            let request = DownloadRequest::new(task_id_clone.clone(), urls, dest_clone.clone())
+                .options(options);
+            let res = manager.download(&request).await;
 
             match res {
                 Ok(CoreResult::Success(final_path)) => {
@@ -409,7 +405,7 @@ async fn download_resource_to_dir(
                 return Ok(task_id);
             }
         };
-    register_task_abort_handle(task_id.clone(), abort_handle);
+    register_abort_handle(task_id.clone(), abort_handle);
 
     Ok(task_id)
 }
@@ -418,7 +414,7 @@ async fn download_resource_to_dir(
 ///
 /// The caller owns task creation and terminal status. This keeps a multi-stage install
 /// (download -> inspect -> import) on one task instead of nesting a second download task.
-pub async fn download_resource_to_cache_in_task(
+pub async fn download_for_task(
     task_id: &str,
     url: String,
     file_name: String,
@@ -427,7 +423,7 @@ pub async fn download_resource_to_cache_in_task(
 ) -> Result<PathBuf, String> {
     let urls = crate::github::configured_download_urls(&url)?;
     let client =
-        get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+        download_client().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
     let cache_dir = file_ops::curseforge_downloads_dir();
     fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
@@ -439,10 +435,8 @@ pub async fn download_resource_to_cache_in_task(
         options.md5_expected = md5;
     }
     let manager = DownloaderManager::with_client(client);
-    match manager
-        .download_with_url_candidates(task_id, urls, dest.clone(), &options)
-        .await
-    {
+    let request = DownloadRequest::new(task_id, urls, dest.clone()).options(options);
+    match manager.download(&request).await {
         Ok(CoreResult::Success(path)) => Ok(path),
         Ok(CoreResult::Cancelled) => Err("下载已取消".to_string()),
         Ok(CoreResult::Error(error)) | Err(error) => {
@@ -465,7 +459,7 @@ pub async fn download_resource_to_cache(
 ) -> Result<String, String> {
     let urls = crate::github::configured_download_urls(&url)?;
     let client =
-        get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+        download_client().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
     let cache_dir = file_ops::curseforge_downloads_dir();
     fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
@@ -501,9 +495,9 @@ pub async fn download_resource_to_cache(
             if options.md5_expected.is_none() {
                 options.md5_expected = md5;
             }
-            let res = manager
-                .download_with_url_candidates(&task_id_clone, urls, dest_clone.clone(), &options)
-                .await;
+            let request = DownloadRequest::new(task_id_clone.clone(), urls, dest_clone.clone())
+                .options(options);
+            let res = manager.download(&request).await;
 
             match res {
                 Ok(CoreResult::Success(final_path)) => {
@@ -530,7 +524,7 @@ pub async fn download_resource_to_cache(
                 return Ok(task_id);
             }
         };
-    register_task_abort_handle(task_id.clone(), abort_handle);
+    register_abort_handle(task_id.clone(), abort_handle);
 
     Ok(task_id)
 }
@@ -538,7 +532,7 @@ pub async fn download_resource_to_cache(
 #[cfg(test)]
 mod tests {
     use super::download_appx;
-    use crate::tasks::task_manager::{TaskSnapshot, get_snapshot_arc, remove_task};
+    use crate::tasks::task_manager::{TaskSnapshot, snapshot_arc, remove_task};
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::Once;
@@ -568,7 +562,7 @@ mod tests {
                 timeout
             );
 
-            if let Some(snapshot) = get_snapshot_arc(task_id) {
+            if let Some(snapshot) = snapshot_arc(task_id) {
                 if last_log_at.elapsed() >= Duration::from_secs(10) {
                     println!(
                         "task={} status={} stage={} done={} total={:?} percent={:?} speed={:.2}B/s message={}",

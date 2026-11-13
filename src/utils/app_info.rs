@@ -20,7 +20,7 @@ const GIT_COMMIT_HASH: &str = env!("GIT_COMMIT_HASH");
 const BUILD_TIME: &str = env!("BUILD_TIME");
 const PACKAGE_NAME: &str = env!("CARGO_PKG_NAME");
 
-pub fn get_version() -> &'static str {
+pub fn version() -> &'static str {
     APP_VERSION
 }
 
@@ -31,11 +31,11 @@ pub fn build_channel() -> BuildChannel {
     }
 }
 
-pub fn get_license() -> &'static str {
+pub fn license() -> &'static str {
     APP_LICENSE
 }
 
-pub fn get_build_info() -> String {
+pub fn build_info() -> String {
     format!(
         "App Version: {}\nBuild Channel: {}\nGit Commit: {}\nBuild Time: {}",
         APP_VERSION,

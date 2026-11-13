@@ -1,4 +1,4 @@
-use super::config::{
+use super::settings::{
     AppStateConfig, BedrockAuthConfig, CURRENT_CONFIG_VERSION, Config, CustomStyle,
     DEFAULT_APPX_API, DEFAULT_ERROR_REPORT_SENTRY_DSN, DEFAULT_TELEMETRY_ENDPOINT,
     DEFAULT_TELEMETRY_KEY, DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, GithubConfig, Launcher,
@@ -89,7 +89,7 @@ pub fn default_font_source() -> String {
 }
 
 pub fn default_theme_mode() -> String {
-    super::config::THEME_MODE_LIGHT.to_string()
+    super::settings::THEME_MODE_LIGHT.to_string()
 }
 
 pub fn default_online_player_name() -> String {
@@ -97,7 +97,7 @@ pub fn default_online_player_name() -> String {
     suffix[..6].to_string()
 }
 
-pub fn get_default_config() -> Config {
+pub fn default_config() -> Config {
     Config {
         config_version: CURRENT_CONFIG_VERSION,
         custom_style: CustomStyle {

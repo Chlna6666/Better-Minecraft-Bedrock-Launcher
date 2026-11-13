@@ -18,7 +18,7 @@ pub fn create_desktop_shortcut(version_folder: &str, display_name: &str) -> Resu
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
     use windows::core::{Interface, PCWSTR};
 
-    let desktop_dir = get_desktop_dir()?;
+    let desktop_dir = resolve_desktop_dir()?;
     let safe_name = sanitize_filename(display_name);
     let shortcut_path = desktop_dir.join(format!("{safe_name}.lnk"));
 
@@ -82,7 +82,7 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn get_desktop_dir() -> Result<PathBuf> {
+fn resolve_desktop_dir() -> Result<PathBuf> {
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::UI::Shell::{FOLDERID_Desktop, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
 

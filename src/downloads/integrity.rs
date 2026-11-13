@@ -19,7 +19,7 @@ pub(crate) fn is_zip_like_path(path: &Path) -> bool {
         })
 }
 
-pub(crate) fn should_verify_zip_during_download(path: &Path) -> bool {
+pub(crate) fn should_verify_zip(path: &Path) -> bool {
     if is_appx_download_path(path) {
         return false;
     }
@@ -89,14 +89,14 @@ pub async fn verify_download_integrity(
 ) -> Result<(), CoreError> {
     if let Some(expected) = md5_expected {
         let expected = expected.trim();
-        if !crate::downloads::md5::is_md5_digest(expected) {
+        if !crate::downloads::md5::is_digest(expected) {
             debug!(
                 "skip non-md5 checksum value for path={} value={}",
                 path.display(),
                 expected
             );
         } else {
-            match crate::downloads::md5::verify_md5(path, expected).await {
+            match crate::downloads::md5::verify(path, expected).await {
                 Ok(true) => return Ok(()),
                 Ok(false) => {
                     return Err(CoreError::ChecksumMismatch(format!(
@@ -109,7 +109,7 @@ pub async fn verify_download_integrity(
         }
     }
 
-    if should_verify_zip_during_download(path) {
+    if should_verify_zip(path) {
         verify_zip_integrity(path).await?;
     }
 

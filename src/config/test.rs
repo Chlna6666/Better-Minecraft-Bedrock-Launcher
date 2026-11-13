@@ -1,14 +1,14 @@
-use super::config::{
+use super::settings::{
     merge_json_values, normalize_gpu_adapter_name, normalize_renderer_backend, normalize_theme_mode,
 };
 use serde_json::json;
 
-fn clear_config_cache_for_test() -> std::sync::MutexGuard<'static, ()> {
-    super::storage::clear_config_cache_for_test()
+fn clear_cache_for_test() -> std::sync::MutexGuard<'static, ()> {
+    super::storage::clear_cache_for_test()
 }
 #[test]
 fn missing_glass_effect_enabled_defaults_to_true() {
-    let config: super::config::Config = toml::from_str(
+    let config: super::settings::Config = toml::from_str(
         r##"
         agreement_accepted = false
 
@@ -50,17 +50,17 @@ fn missing_glass_effect_enabled_defaults_to_true() {
     assert_eq!(config.custom_style.theme_mode, "light");
     assert_eq!(
         config.launcher.gpu_adapter_name,
-        super::config::default_gpu_adapter_name()
+        super::settings::default_gpu_adapter_name()
     );
     assert!(config.launcher.error_report_sentry_enabled);
     assert_eq!(
         config.launcher.error_report_sentry_dsn,
-        super::config::default_error_report_sentry_dsn()
+        super::settings::default_error_report_sentry_dsn()
     );
     assert_eq!(config.launcher.log_management.retention_days, 7);
     assert_eq!(
         config.launcher.download.github.source,
-        super::config::GithubSource::Auto
+        super::settings::GithubSource::Auto
     );
     assert!(config.launcher.download.github.custom_mirror.is_empty());
     assert_eq!(config.online.player_name.len(), 6);
@@ -77,7 +77,7 @@ fn missing_glass_effect_enabled_defaults_to_true() {
 
 #[test]
 fn default_online_player_name_is_six_alphanumeric_characters() {
-    let name = super::config::default_online_player_name();
+    let name = super::settings::default_online_player_name();
     assert_eq!(name.len(), 6);
     assert!(
         name.chars()
@@ -87,14 +87,14 @@ fn default_online_player_name_is_six_alphanumeric_characters() {
 
 #[test]
 fn gpui_trace_is_disabled_by_default_and_compatible_with_legacy_settings() {
-    let mut config = super::config::get_default_config();
+    let mut config = super::settings::default_config();
     assert!(!config.launcher.gpui_trace);
     assert!(!config.launcher.debug);
 
     // This setting is opt-in even when the old file lacks its key.
     let serialized = toml::to_string(&config).expect("default settings must serialize");
     let legacy = serialized.replace("gpui_trace = false\n", "");
-    let restored_legacy: super::config::Config =
+    let restored_legacy: super::settings::Config =
         toml::from_str(&legacy).expect("existing settings must still deserialize");
     assert!(!restored_legacy.launcher.gpui_trace);
 
@@ -102,7 +102,7 @@ fn gpui_trace_is_disabled_by_default_and_compatible_with_legacy_settings() {
     config.launcher.gpui_trace = true;
     let saved = toml::to_string(&config).expect("trace setting must serialize");
     assert!(saved.contains("gpui_trace = true"));
-    let restored: super::config::Config =
+    let restored: super::settings::Config =
         toml::from_str(&saved).expect("trace setting must deserialize");
     assert!(restored.launcher.gpui_trace);
     assert!(!restored.launcher.debug);
@@ -110,8 +110,8 @@ fn gpui_trace_is_disabled_by_default_and_compatible_with_legacy_settings() {
 
 #[test]
 fn login_and_bedrock_auth_are_independent_config_sections() {
-    let mut config = super::config::get_default_config();
-    config.login.provider = super::config::LoginProvider::BedrockAuth;
+    let mut config = super::settings::default_config();
+    config.login.provider = super::settings::LoginProvider::BedrockAuth;
     config.bedrock_auth.device_id = "{123e4567-e89b-12d3-a456-426614174000}".to_string();
 
     let content = toml::to_string(&config).expect("config should serialize");
@@ -120,10 +120,10 @@ fn login_and_bedrock_auth_are_independent_config_sections() {
     assert!(content.contains("[bedrock_auth]"));
     assert!(content.contains("device_id = \"{123e4567-e89b-12d3-a456-426614174000}\""));
 
-    let restored: super::config::Config = toml::from_str(&content).expect("config should parse");
+    let restored: super::settings::Config = toml::from_str(&content).expect("config should parse");
     assert_eq!(
         restored.login.provider,
-        super::config::LoginProvider::BedrockAuth
+        super::settings::LoginProvider::BedrockAuth
     );
     assert_eq!(
         restored.bedrock_auth.device_id,
@@ -135,7 +135,7 @@ fn login_and_bedrock_auth_are_independent_config_sections() {
 #[test]
 fn default_proton_gdk_source_supports_game_login() {
     assert_eq!(
-        super::config::get_default_config()
+        super::settings::default_config()
             .launcher
             .proton_gdk_source,
         "roundmcdev"
@@ -144,7 +144,7 @@ fn default_proton_gdk_source_supports_game_login() {
 
 #[test]
 fn missing_log_management_uses_seven_day_retention() {
-    let config: super::config::LogManagementConfig =
+    let config: super::settings::LogManagementConfig =
         toml::from_str("").expect("log management defaults should deserialize");
 
     assert_eq!(config.retention_days, 7);
@@ -162,13 +162,13 @@ fn obsolete_music_section_triggers_config_cleanup() {
 
 #[test]
 fn config_roundtrip_drops_obsolete_music_settings() {
-    let mut content = toml::to_string(&super::config::get_default_config())
+    let mut content = toml::to_string(&super::settings::default_config())
         .expect("default config should serialize");
     content.push_str(
         "\n[music]\nauto_play_on_startup = true\nvolume = 0.5\nmuted = false\nplayback_mode = \"repeat\"\nlast_track_path = \"old.mp3\"\n",
     );
 
-    let config: super::config::Config =
+    let config: super::settings::Config =
         toml::from_str(&content).expect("legacy music settings should be ignored while loading");
     let rewritten = toml::to_string(&config).expect("migrated config should serialize");
 
@@ -178,7 +178,7 @@ fn config_roundtrip_drops_obsolete_music_settings() {
 
 #[test]
 fn log_management_migration_clamps_unsafe_values() {
-    let mut config = super::config::get_default_config();
+    let mut config = super::settings::default_config();
     config.launcher.log_management.retention_days = 0;
     config.launcher.log_management.active_file_size_mb = u32::MAX;
     config.launcher.log_management.max_archive_files = 0;
@@ -303,39 +303,39 @@ fn theme_mode_normalization_defaults_to_light() {
 
 #[test]
 fn resolved_error_report_sentry_dsn_uses_default_when_enabled() {
-    let mut launcher = super::config::get_default_config().launcher;
+    let mut launcher = super::settings::default_config().launcher;
     launcher.error_report_sentry_dsn.clear();
 
     assert_eq!(
-        super::config::resolved_error_report_sentry_dsn(&launcher).as_deref(),
-        Some(super::config::DEFAULT_ERROR_REPORT_SENTRY_DSN)
+        super::settings::resolved_error_report_sentry_dsn(&launcher).as_deref(),
+        Some(super::settings::DEFAULT_ERROR_REPORT_SENTRY_DSN)
     );
 }
 
 #[test]
 fn resolved_error_report_sentry_dsn_is_none_when_disabled() {
-    let mut launcher = super::config::get_default_config().launcher;
+    let mut launcher = super::settings::default_config().launcher;
     launcher.error_report_sentry_enabled = false;
 
     assert_eq!(
-        super::config::resolved_error_report_sentry_dsn(&launcher),
+        super::settings::resolved_error_report_sentry_dsn(&launcher),
         None
     );
 }
 
 #[test]
 fn error_report_sentry_auto_requires_enabled_reporting() {
-    let mut launcher = super::config::get_default_config().launcher;
+    let mut launcher = super::settings::default_config().launcher;
     launcher.error_report_sentry_auto = true;
-    assert!(super::config::error_report_sentry_auto_enabled(&launcher));
+    assert!(super::settings::error_report_sentry_auto_enabled(&launcher));
 
     launcher.error_report_sentry_enabled = false;
-    assert!(!super::config::error_report_sentry_auto_enabled(&launcher));
+    assert!(!super::settings::error_report_sentry_auto_enabled(&launcher));
 }
 
 #[test]
 fn legacy_check_on_start_migrates_to_auto_check_updates() {
-    let mut config = super::config::get_default_config();
+    let mut config = super::settings::default_config();
     config.launcher.auto_check_updates = true;
     config.launcher.check_on_start = false;
 
@@ -348,31 +348,31 @@ fn legacy_check_on_start_migrates_to_auto_check_updates() {
 
 #[test]
 fn legacy_default_appx_api_migrates_to_accelerated_mirror() {
-    let mut config = super::config::get_default_config();
-    config.launcher.custom_appx_api = super::config::RETIRED_DEFAULT_APPX_API.to_string();
+    let mut config = super::settings::default_config();
+    config.launcher.custom_appx_api = super::settings::RETIRED_DEFAULT_APPX_API.to_string();
 
     assert!(super::storage::normalize_appx_api(&mut config));
     assert_eq!(
         config.launcher.custom_appx_api,
-        super::config::DEFAULT_APPX_API
+        super::settings::DEFAULT_APPX_API
     );
 }
 
 #[test]
 fn incorrect_mirror_appx_api_migrates_to_mcappx_endpoint() {
-    let mut config = super::config::get_default_config();
-    config.launcher.custom_appx_api = super::config::INCORRECT_MIRROR_APPX_API.to_string();
+    let mut config = super::settings::default_config();
+    config.launcher.custom_appx_api = super::settings::INCORRECT_MIRROR_APPX_API.to_string();
 
     assert!(super::storage::normalize_appx_api(&mut config));
     assert_eq!(
         config.launcher.custom_appx_api,
-        super::config::DEFAULT_APPX_API
+        super::settings::DEFAULT_APPX_API
     );
 }
 
 #[test]
 fn custom_appx_api_is_preserved_during_migration() {
-    let mut config = super::config::get_default_config();
+    let mut config = super::settings::default_config();
     config.launcher.custom_appx_api = "https://example.invalid/versions.json".to_string();
 
     assert!(!super::storage::normalize_appx_api(&mut config));
@@ -384,7 +384,7 @@ fn custom_appx_api_is_preserved_during_migration() {
 
 #[test]
 fn auto_check_updates_is_authoritative_when_both_fields_exist() {
-    let mut config = super::config::get_default_config();
+    let mut config = super::settings::default_config();
     config.launcher.auto_check_updates = false;
     config.launcher.check_on_start = true;
 
@@ -397,67 +397,67 @@ fn auto_check_updates_is_authoritative_when_both_fields_exist() {
 
 #[test]
 fn read_config_requires_startup_initialized_cache() {
-    let _guard = clear_config_cache_for_test();
+    let _guard = clear_cache_for_test();
 
-    let error = super::config::read_config().expect_err("read_config should require cache init");
+    let error = super::settings::read().expect_err("read should require cache init");
 
     assert!(error.to_string().contains("not initialized"));
 }
 
 #[test]
 fn update_config_requires_startup_initialized_cache() {
-    let guard = clear_config_cache_for_test();
+    let guard = clear_cache_for_test();
     drop(guard);
 
-    let error = super::config::update_config(|config| {
+    let error = super::settings::update(|config| {
         config.launcher.debug = true;
     })
-    .expect_err("update_config should require cache init");
+    .expect_err("update should require cache init");
 
     assert!(error.to_string().contains("not initialized"));
 }
 
 #[test]
 fn telemetry_defaults_and_resolvers() {
-    let launcher = super::config::get_default_config().launcher;
+    let launcher = super::settings::default_config().launcher;
     assert!(launcher.stats_upload);
     assert_eq!(
         launcher.telemetry_endpoint,
-        super::config::DEFAULT_TELEMETRY_ENDPOINT
+        super::settings::DEFAULT_TELEMETRY_ENDPOINT
     );
-    assert_eq!(launcher.telemetry_key, super::config::DEFAULT_TELEMETRY_KEY);
+    assert_eq!(launcher.telemetry_key, super::settings::DEFAULT_TELEMETRY_KEY);
     assert_eq!(
-        super::config::resolved_telemetry_endpoint(&launcher),
-        super::config::DEFAULT_TELEMETRY_ENDPOINT
+        super::settings::resolved_telemetry_endpoint(&launcher),
+        super::settings::DEFAULT_TELEMETRY_ENDPOINT
     );
     assert_eq!(
-        super::config::resolved_telemetry_key(&launcher),
-        super::config::DEFAULT_TELEMETRY_KEY
+        super::settings::resolved_telemetry_key(&launcher),
+        super::settings::DEFAULT_TELEMETRY_KEY
     );
 
     let mut custom_launcher = launcher;
     custom_launcher.telemetry_endpoint = "https://custom.telemetry.com".to_string();
     custom_launcher.telemetry_key = "custom_key_123".to_string();
     assert_eq!(
-        super::config::resolved_telemetry_endpoint(&custom_launcher),
+        super::settings::resolved_telemetry_endpoint(&custom_launcher),
         "https://custom.telemetry.com"
     );
     assert_eq!(
-        super::config::resolved_telemetry_key(&custom_launcher),
+        super::settings::resolved_telemetry_key(&custom_launcher),
         "custom_key_123"
     );
 }
 
 #[test]
 fn api_credentials_roundtrip_without_debug_exposure() {
-    let mut config = super::config::get_default_config();
+    let mut config = super::settings::default_config();
     assert!(config.launcher.download.github.api_token.is_empty());
     assert!(config.launcher.download.curseforge_api_key.is_empty());
     config.launcher.download.github.api_token = "github-private-test-token".into();
     config.launcher.download.curseforge_api_key = "curseforge-private-test-key".into();
     config.launcher.frame_rate_mode = "vsync".into();
     let saved = toml::to_string(&config).expect("API credentials must serialize");
-    let restored: super::config::Config = toml::from_str(&saved).expect("settings parse");
+    let restored: super::settings::Config = toml::from_str(&saved).expect("settings parse");
     assert_eq!(restored.launcher.download.github.api_token, "github-private-test-token");
     assert_eq!(restored.launcher.download.curseforge_api_key, "curseforge-private-test-key");
     assert_eq!(restored.launcher.frame_rate_mode, "vsync");
@@ -471,7 +471,7 @@ fn api_credentials_roundtrip_without_debug_exposure() {
     let legacy = saved
         .replace("api_token = \"github-private-test-token\"\n", "")
         .replace("curseforge_api_key = \"curseforge-private-test-key\"\n", "");
-    let old: super::config::Config = toml::from_str(&legacy).unwrap();
+    let old: super::settings::Config = toml::from_str(&legacy).unwrap();
     assert!(old.launcher.download.github.api_token.is_empty());
     assert!(old.launcher.download.curseforge_api_key.is_empty());
 }

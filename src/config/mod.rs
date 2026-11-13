@@ -1,7 +1,7 @@
 pub mod agreement;
-pub mod config;
 mod defaults;
 pub mod onboarding;
+pub mod settings;
 mod storage;
 
 #[cfg(test)]

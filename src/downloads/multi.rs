@@ -15,15 +15,16 @@ use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep, timeout};
 use tracing::{debug, error, warn};
 
-use crate::downloads::md5::{is_md5_digest, verify_md5};
+use crate::downloads::md5::{is_digest, verify};
 use crate::downloads::progress_ranges::DownloadedRangeSet;
 use crate::downloads::single::download_file;
-use crate::http::proxy::{apply_download_request_headers, validate_download_response_headers};
+use crate::http::download::{apply_request_headers, validate_response};
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
     ByteRangeVisualization, ProgressUpdate, TaskControl, TaskVisualization, ThreadVisualization,
-    is_cancelled_fast, is_visualization_enabled, set_task_visualization, set_total,
-    update_progress, wait_until_active,
+    control_cancelled, is_visualization_enabled, set_task_visualization,
+    set_total, update_progress,
+    wait_until_active,
 };
 
 // =========================================================================
@@ -507,11 +508,11 @@ async fn resolve_reliable_range_url(
     if let Some(headers) = headers {
         request = request.headers(headers.clone());
     }
-    request = apply_download_request_headers(request);
+    request = apply_request_headers(request);
 
     match request.send().await {
         Ok(response) => {
-            if let Err(error) = validate_download_response_headers(url, &response) {
+            if let Err(error) = validate_response(url, &response) {
                 warn!("server range probe returned transformed response: {error}");
                 return None;
             }
@@ -769,7 +770,7 @@ fn spawn_direct_writer(
     total: u64,
     mut rx: mpsc::Receiver<WriterMsg>,
 ) -> Result<tokio::task::JoinHandle<io::Result<()>>, String> {
-    crate::tasks::runtime::spawn_download_blocking(move || {
+    crate::tasks::runtime::blocking::spawn_download(move || {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -822,7 +823,7 @@ fn log_writer_cleanup_result(result: Result<io::Result<()>, tokio::task::JoinErr
     }
 }
 
-async fn download_multi_partitioned(
+async fn download_partitioned(
     client: reqwest::Client,
     task_control: Arc<TaskControl>,
     task_id: &str,
@@ -904,7 +905,7 @@ async fn download_multi_partitioned(
                     return;
                 }
 
-                if is_cancelled_fast(task_control.as_ref()) || has_error.load(Ordering::Relaxed) {
+                if control_cancelled(task_control.as_ref()) || has_error.load(Ordering::Relaxed) {
                     return;
                 }
 
@@ -1000,7 +1001,7 @@ async fn download_multi_partitioned(
                 if let Some(h) = &headers {
                     req = req.headers(h.clone());
                 }
-                req = apply_download_request_headers(req);
+                req = apply_request_headers(req);
 
                 let chunk_start_time = Instant::now();
                 let mut last_error = None::<String>;
@@ -1027,7 +1028,7 @@ async fn download_multi_partitioned(
                     }
                 };
 
-                if let Err(error) = validate_download_response_headers(url.as_str(), &resp) {
+                if let Err(error) = validate_response(url.as_str(), &resp) {
                     last_error = Some(format!("transformed range response: {error}"));
                     stream_err = true;
                 } else if resp.url().as_str() != url.as_str() {
@@ -1086,7 +1087,7 @@ async fn download_multi_partitioned(
                     };
 
                     if !wait_until_active(task_control.as_ref()).await
-                        || is_cancelled_fast(task_control.as_ref())
+                        || control_cancelled(task_control.as_ref())
                     {
                         break;
                     }
@@ -1345,7 +1346,7 @@ async fn download_multi_partitioned(
         return Err(error);
     }
 
-    if is_cancelled_fast(task_control.as_ref()) {
+    if control_cancelled(task_control.as_ref()) {
         set_task_visualization(task_id, None);
         log_writer_cleanup_result(writer_task.await);
         remove_download_file_if_exists(dest_path.as_path()).await?;
@@ -1388,13 +1389,13 @@ async fn download_multi_partitioned(
 
     if let Some(expected) = md5_expected
         .map(str::trim)
-        .filter(|value| is_md5_digest(value))
+        .filter(|value| is_digest(value))
     {
         update_progress(
             task_id,
             ProgressUpdate::advance(0).total(total).stage("verifying"),
         );
-        match verify_md5(dest_path.as_path(), expected).await {
+        match verify(dest_path.as_path(), expected).await {
             Ok(true) => {}
             Ok(false) => {
                 set_task_visualization(task_id, None);
@@ -1420,7 +1421,7 @@ async fn download_multi_partitioned(
 // 主逻辑
 // =========================================================================
 
-pub async fn download_multi(
+pub async fn download(
     client: reqwest::Client,
     task_control: Arc<TaskControl>,
     task_id: &str,
@@ -1445,11 +1446,11 @@ pub async fn download_multi(
     if let Some(h) = &headers {
         head_req = head_req.headers(h.clone());
     }
-    head_req = apply_download_request_headers(head_req);
+    head_req = apply_request_headers(head_req);
 
     let total = match head_req.send().await {
         Ok(resp) => {
-            if let Err(error) = validate_download_response_headers(url, &resp) {
+            if let Err(error) = validate_response(url, &resp) {
                 warn!("download metadata request returned transformed response: {error}");
                 return download_file(
                     client,
@@ -1506,7 +1507,7 @@ pub async fn download_multi(
         task_id, total, range_url
     );
 
-    let result = download_multi_partitioned(
+    let result = download_partitioned(
         client.clone(),
         task_control.clone(),
         task_id,
@@ -1552,9 +1553,9 @@ mod tests {
     use super::*;
     use crate::result::CoreResult;
     use crate::tasks::task_manager::{TaskOptions, create_task, task_control};
-    use std::io::{Error as IoError, ErrorKind};
+    use std::io::ErrorKind;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::atomic::AtomicUsize;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -1858,7 +1859,7 @@ mod tests {
         let task_id = unique_task_id("multi-range-test");
         create_task(
             TaskOptions::new("background task", "downloading")
-                .id(Some(task_id.clone()))
+                .id(task_id.clone())
                 .pausable(true),
         )
         .expect("task id must be unique");
@@ -1868,7 +1869,7 @@ mod tests {
             .build()
             .expect("test client should build");
 
-        let result = download_multi(
+        let result = download(
             client,
             control,
             &task_id,
@@ -1907,7 +1908,7 @@ mod tests {
         let task_id = unique_task_id("multi-slow-stealing-test");
         create_task(
             TaskOptions::new("background task", "downloading")
-                .id(Some(task_id.clone()))
+                .id(task_id.clone())
                 .pausable(true),
         )
         .expect("task id must be unique");
@@ -1917,7 +1918,7 @@ mod tests {
             .build()
             .expect("test client should build");
 
-        let result = download_multi(client, control, &task_id, &url, &dest, 4, None, None)
+        let result = download(client, control, &task_id, &url, &dest, 4, None, None)
             .await
             .expect("multi download should complete successfully");
 
@@ -1927,7 +1928,7 @@ mod tests {
             .expect("downloaded file should be readable");
         assert_eq!(downloaded, data.as_slice());
 
-        assert!(request_counts.load(AtomicOrdering::Relaxed) > 4);
+        assert!(request_counts.load(Ordering::Relaxed) > 4);
 
         remove_test_file_if_exists(&dest).await;
         server_handle.abort();
@@ -1950,7 +1951,7 @@ mod tests {
         let task_id = unique_task_id("multi-stall-recovery-test");
         create_task(
             TaskOptions::new("background task", "downloading")
-                .id(Some(task_id.clone()))
+                .id(task_id.clone())
                 .pausable(true),
         )
         .expect("task id must be unique");
@@ -1960,7 +1961,7 @@ mod tests {
             .build()
             .expect("test client should build");
 
-        let result = download_multi(client, control, &task_id, &url, &dest, 2, None, None)
+        let result = download(client, control, &task_id, &url, &dest, 2, None, None)
             .await
             .expect("multi download should recover from a stalled range body");
 
@@ -1969,7 +1970,7 @@ mod tests {
             .await
             .expect("downloaded file should be readable");
         assert_eq!(downloaded, data.as_slice());
-        assert!(request_counts.load(AtomicOrdering::Relaxed) >= 5);
+        assert!(request_counts.load(Ordering::Relaxed) >= 5);
 
         remove_test_file_if_exists(&dest).await;
         server_handle.abort();
@@ -1993,7 +1994,7 @@ mod tests {
         let task_id = unique_task_id("multi-range-fallback-test");
         create_task(
             TaskOptions::new("background task", "downloading")
-                .id(Some(task_id.clone()))
+                .id(task_id.clone())
                 .pausable(true),
         )
         .expect("task id must be unique");
@@ -2003,7 +2004,7 @@ mod tests {
             .build()
             .expect("test client should build");
 
-        let result = download_multi(
+        let result = download(
             client,
             control,
             &task_id,
@@ -2153,7 +2154,7 @@ mod tests {
         let total = data.len() as u64;
 
         let request_number =
-            request_counter.map(|counter| counter.fetch_add(1, AtomicOrdering::Relaxed));
+            request_counter.map(|counter| counter.fetch_add(1, Ordering::Relaxed));
 
         if request_line.starts_with("HEAD ") {
             let response =
@@ -2186,13 +2187,13 @@ mod tests {
         }
 
         let start_index = usize::try_from(start).map_err(|error| {
-            IoError::new(
+            io::Error::new(
                 ErrorKind::InvalidInput,
                 format!("range start too large: {error}"),
             )
         })?;
         let end_index = usize::try_from(end).map_err(|error| {
-            IoError::new(
+            io::Error::new(
                 ErrorKind::InvalidInput,
                 format!("range end too large: {error}"),
             )
@@ -2247,7 +2248,7 @@ mod tests {
                 return Ok(request);
             }
             if request.len() > 16 * 1024 {
-                return Err(IoError::new(
+                return Err(io::Error::new(
                     ErrorKind::InvalidData,
                     "test HTTP request headers exceeded 16 KiB",
                 ));

@@ -59,6 +59,6 @@ pub async fn race_ipv4(domain: &str, connect_timeout: Duration) -> Option<Socket
     None
 }
 
-pub async fn get_optimized_ip() -> Option<SocketAddr> {
+pub async fn find_optimized_ip() -> Option<SocketAddr> {
     race_ipv4("cf.090227.xyz:443", Duration::from_secs(2)).await
 }

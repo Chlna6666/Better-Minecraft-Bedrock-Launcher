@@ -1,10 +1,10 @@
 // src/downloads/single.rs
-use crate::downloads::integrity::{has_zip_header, should_verify_zip_during_download};
-use crate::downloads::md5::{is_md5_digest, verify_md5};
-use crate::http::proxy::{apply_download_request_headers, validate_download_response_headers};
+use crate::downloads::integrity::{has_zip_header, should_verify_zip};
+use crate::downloads::md5::{is_digest, verify};
+use crate::http::download::{apply_request_headers, validate_response};
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskControl, TaskVisualization, ThreadVisualization, is_cancelled_fast,
+    ProgressUpdate, TaskControl, TaskVisualization, ThreadVisualization, control_cancelled,
     set_task_visualization, set_total, update_progress, wait_until_active,
 };
 use futures_util::StreamExt;
@@ -19,7 +19,7 @@ use tracing::debug;
 const DISK_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 const DOWNLOAD_REQUEST_TIMEOUT_SECS: u64 = 6 * 60 * 60;
 
-fn build_single_download_visualization(
+fn build_visualization(
     downloaded_bytes: u64,
     total_bytes: Option<u64>,
 ) -> TaskVisualization {
@@ -46,7 +46,7 @@ fn build_single_download_visualization(
     }
 }
 
-fn clear_single_visualization(task_id: &str) {
+fn clear_visualization(task_id: &str) {
     set_task_visualization(task_id, None);
 }
 
@@ -60,7 +60,7 @@ pub async fn download_file(
     md5_expected: Option<&str>,
 ) -> Result<CoreResult<()>, CoreError> {
     let dest_buf = dest.as_ref().to_path_buf();
-    let should_check_zip_header = should_verify_zip_during_download(dest_buf.as_path());
+    let should_check_zip_header = should_verify_zip(dest_buf.as_path());
     let mut retry = 0u8;
     let mut resume_from = tokio::fs::metadata(&dest_buf)
         .await
@@ -83,7 +83,7 @@ pub async fn download_file(
         if let Some(h) = &headers {
             req_builder = req_builder.headers(h.clone());
         }
-        req_builder = apply_download_request_headers(req_builder);
+        req_builder = apply_request_headers(req_builder);
         // 断点续传：本地已有部分文件时请求剩余区间；服务器不支持时会返回 200，走全量重下。
         if resume_from > 0 {
             req_builder = req_builder.header(header::RANGE, format!("bytes={resume_from}-"));
@@ -99,9 +99,9 @@ pub async fn download_file(
                     if remote_total == Some(resume_from) {
                         if let Some(expected) = md5_expected
                             .map(str::trim)
-                            .filter(|value| is_md5_digest(value))
+                            .filter(|value| is_digest(value))
                         {
-                            if !verify_md5(&dest_buf, expected).await.unwrap_or(false) {
+                            if !verify(&dest_buf, expected).await.unwrap_or(false) {
                                 debug!(
                                     "断点续传本地文件 MD5 不匹配，回退全量重新下载: {}",
                                     dest_buf.display()
@@ -119,7 +119,7 @@ pub async fn download_file(
                 }
 
                 let resp = resp.error_for_status()?;
-                validate_download_response_headers(url, &resp)?;
+                validate_response(url, &resp)?;
                 let supports_resume =
                     status == reqwest::StatusCode::PARTIAL_CONTENT && resume_from > 0;
                 if supports_resume && parse_content_range_start(resp.headers()) != Some(resume_from)
@@ -138,17 +138,14 @@ pub async fn download_file(
                     _ => resp.content_length(),
                 };
                 set_total(&task_id, total);
-                if resume_from > 0 {
-                    update_progress(
-                        &task_id,
-                        ProgressUpdate::advance(resume_from)
-                            .total(total)
-                            .stage("downloading"),
-                    );
+                let mut resume_update = ProgressUpdate::advance(resume_from).stage("downloading");
+                if let Some(total) = total {
+                    resume_update = resume_update.total(total);
                 }
+                update_progress(&task_id, resume_update);
                 let _ = set_task_visualization(
                     task_id,
-                    Some(build_single_download_visualization(resume_from, total)),
+                    Some(build_visualization(resume_from, total)),
                 );
 
                 let mut open_options = TokioOpenOptions::new();
@@ -170,14 +167,14 @@ pub async fn download_file(
 
                 while let Some(item) = stream.next().await {
                     if !wait_until_active(task_control.as_ref()).await {
-                        clear_single_visualization(task_id);
+                        clear_visualization(task_id);
                         return Ok(CoreResult::Cancelled);
                     }
 
                     let chunk = match item {
                         Ok(c) => c,
                         Err(e) => {
-                            clear_single_visualization(task_id);
+                            clear_visualization(task_id);
                             return Err(CoreError::Request(e));
                         }
                     };
@@ -185,7 +182,7 @@ pub async fn download_file(
                     if !checked_zip_header && !chunk.is_empty() {
                         checked_zip_header = true;
                         if !has_zip_header(&chunk) {
-                            clear_single_visualization(task_id);
+                            clear_visualization(task_id);
                             return Err(CoreError::ChecksumMismatch(format!(
                                 "invalid zip header for {}",
                                 dest_buf.display()
@@ -199,42 +196,42 @@ pub async fn download_file(
                     downloaded_bytes = downloaded_bytes.saturating_add(len as u64);
 
                     if last_update.elapsed().as_millis() > 100 {
-                        update_progress(
-                            task_id,
-                            ProgressUpdate::advance(pending_progress)
-                                .total(total)
-                                .stage("downloading")
-                                .visualization(build_single_download_visualization(
-                                    downloaded_bytes,
-                                    total,
-                                )),
-                        );
+                        let mut update = ProgressUpdate::advance(pending_progress)
+                            .stage("downloading")
+                            .visualization(build_visualization(
+                                downloaded_bytes,
+                                total,
+                            ));
+                        if let Some(total) = total {
+                            update = update.total(total);
+                        }
+                        update_progress(task_id, update);
                         pending_progress = 0;
                         last_update = Instant::now();
                     }
 
-                    if is_cancelled_fast(task_control.as_ref()) {
-                        clear_single_visualization(task_id);
+                    if control_cancelled(task_control.as_ref()) {
+                        clear_visualization(task_id);
                         return Ok(CoreResult::Cancelled);
                     }
                 }
 
                 if pending_progress > 0 {
-                    update_progress(
-                        task_id,
-                        ProgressUpdate::advance(pending_progress)
-                            .total(total)
-                            .stage("downloading")
-                            .visualization(build_single_download_visualization(
-                                downloaded_bytes,
-                                total,
-                            )),
-                    );
+                    let mut update = ProgressUpdate::advance(pending_progress)
+                        .stage("downloading")
+                        .visualization(build_visualization(
+                            downloaded_bytes,
+                            total,
+                        ));
+                    if let Some(total) = total {
+                        update = update.total(total);
+                    }
+                    update_progress(task_id, update);
                 }
 
                 writer.flush().await.map_err(CoreError::Io)?;
                 drop(writer);
-                clear_single_visualization(task_id);
+                clear_visualization(task_id);
 
                 if should_check_zip_header && !checked_zip_header {
                     return Err(CoreError::ChecksumMismatch(format!(
@@ -263,13 +260,14 @@ pub async fn download_file(
 
                 if let Some(expected) = md5_expected
                     .map(str::trim)
-                    .filter(|value| is_md5_digest(value))
+                    .filter(|value| is_digest(value))
                 {
-                    update_progress(
-                        &task_id,
-                        ProgressUpdate::advance(0).total(total).stage("verifying"),
-                    );
-                    match verify_md5(&dest_buf, expected).await {
+                    let mut verify_update = ProgressUpdate::advance(0).stage("verifying");
+                    if let Some(total) = total {
+                        verify_update = verify_update.total(total);
+                    }
+                    update_progress(&task_id, verify_update);
+                    match verify(&dest_buf, expected).await {
                         Ok(true) => debug!("MD5 OK"),
                         Ok(false) => {
                             return Err(CoreError::ChecksumMismatch(format!(

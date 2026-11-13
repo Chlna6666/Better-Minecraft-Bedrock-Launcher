@@ -54,8 +54,8 @@ struct LogRetentionPolicy {
     compression_level: i32,
 }
 
-impl From<&crate::config::config::LogManagementConfig> for LogRetentionPolicy {
-    fn from(config: &crate::config::config::LogManagementConfig) -> Self {
+impl From<&crate::config::settings::LogManagementConfig> for LogRetentionPolicy {
+    fn from(config: &crate::config::settings::LogManagementConfig) -> Self {
         let config = config.normalized();
         Self {
             max_active_bytes: u64::from(config.active_file_size_mb) * 1024 * 1024,
@@ -108,7 +108,7 @@ pub(crate) struct BufferedLogEvent {
 impl ManagedLogWriter {
     pub(crate) fn initialize(
         logs_directory: &Path,
-        config: &crate::config::config::LogManagementConfig,
+        config: &crate::config::settings::LogManagementConfig,
     ) -> io::Result<Self> {
         let policy = LogRetentionPolicy::from(config);
         fs::create_dir_all(logs_directory)?;
@@ -527,7 +527,7 @@ fn start_archive_worker(
             let policy = *policy
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let result = tasks::runtime::run_archive_blocking(move || {
+            let result = tasks::runtime::blocking::run_archive(move || {
                 maintain_archives(&logs_directory, policy)
             })
             .await;
@@ -699,7 +699,7 @@ fn files_with_extension(directory: &Path, extension: &str) -> io::Result<Vec<Pat
     Ok(paths)
 }
 
-pub(crate) fn apply_runtime_config(config: &crate::config::config::LogManagementConfig) {
+pub(crate) fn apply_runtime_config(config: &crate::config::settings::LogManagementConfig) {
     let Some(controller) = LOG_CONTROLLER.get() else {
         return;
     };

@@ -55,7 +55,7 @@ pub fn is_process_elevated() -> bool {
     elevated
 }
 
-pub fn is_developer_mode_enabled() -> bool {
+pub fn is_enabled() -> bool {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let enabled = hklm
         .open_subkey_with_flags(DEVELOPER_MODE_REG_PATH, KEY_READ | KEY_WOW64_64KEY)
@@ -66,7 +66,7 @@ pub fn is_developer_mode_enabled() -> bool {
     enabled
 }
 
-pub fn try_enable_developer_mode() -> Result<(), DeveloperModeError> {
+pub fn try_enable() -> Result<(), DeveloperModeError> {
     info!("开始通过注册表启用开发者模式");
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let (key, _) = hklm
@@ -79,7 +79,7 @@ pub fn try_enable_developer_mode() -> Result<(), DeveloperModeError> {
     Ok(())
 }
 
-pub fn open_developer_settings() -> Result<(), DeveloperModeError> {
+pub fn open_settings() -> Result<(), DeveloperModeError> {
     info!("准备打开系统开发者模式设置页");
     unsafe {
         let operation = HSTRING::from("open");

@@ -1,3 +1,4 @@
+mod protocol;
 use reqwest::{Client, header};
 use tracing::debug;
 
@@ -62,15 +63,15 @@ impl WuClient {
     /// 获取下载 URL（使用 task_manager 的 task_id 进行取消检查与阶段上报）
     /// 上层调用示例：
     /// let task_id = create_task("resolving_url", None);
-    /// wu_client.get_download_url(update_id, revision, &task_id).await
-    pub async fn get_download_url(
+    /// wu_client.resolve_download_url(update_id, revision, &task_id).await
+    pub async fn resolve_download_url(
         &self,
         update_id: &str,
         revision: &str,
         task_id: &str,
     ) -> Result<CoreResult<String>, CoreError> {
         match self
-            .get_download_files(update_id, revision, task_id)
+            .fetch_download_files(update_id, revision, task_id)
             .await?
         {
             CoreResult::Success(files) => files
@@ -84,14 +85,14 @@ impl WuClient {
         }
     }
 
-    pub async fn get_download_urls(
+    pub async fn resolve_download_urls(
         &self,
         update_id: &str,
         revision: &str,
         task_id: &str,
     ) -> Result<CoreResult<Vec<String>>, CoreError> {
         match self
-            .get_download_files(update_id, revision, task_id)
+            .fetch_download_files(update_id, revision, task_id)
             .await?
         {
             CoreResult::Success(files) => Ok(CoreResult::Success(
@@ -102,7 +103,7 @@ impl WuClient {
         }
     }
 
-    pub async fn get_download_files(
+    pub async fn fetch_download_files(
         &self,
         update_id: &str,
         revision: &str,

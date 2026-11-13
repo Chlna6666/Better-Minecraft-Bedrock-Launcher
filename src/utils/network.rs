@@ -1,10 +1,10 @@
-use crate::http::proxy::get_blocking_client_for_proxy;
+use crate::http::proxy::clients::blocking_client;
 use reqwest::Url;
 use serde::Serialize;
 use std::time::{Duration, Instant};
 
-pub fn test_network_connectivity_blocking(url: String) -> Result<u64, String> {
-    let client = get_blocking_client_for_proxy().map_err(|e| e.to_string())?;
+pub fn measure_response_latency(url: String) -> Result<u64, String> {
+    let client = blocking_client().map_err(|e| e.to_string())?;
 
     let start = Instant::now();
 
@@ -31,12 +31,12 @@ pub struct CdnProbeResponse {
     pub results: Vec<CdnProbeResult>,
 }
 
-pub fn probe_gdk_asset_cdns_blocking(
+pub fn probe_gdk_asset_cdns(
     original_url: String,
     bases: Vec<String>,
 ) -> Result<CdnProbeResponse, String> {
     let original = Url::parse(&original_url).map_err(|e| format!("Invalid original_url: {}", e))?;
-    let client = get_blocking_client_for_proxy().map_err(|e| e.to_string())?;
+    let client = blocking_client().map_err(|e| e.to_string())?;
 
     let mut unique_bases = Vec::new();
     for base in bases {

@@ -3,7 +3,7 @@
     reason = "Windows shell identity API consumes a process-lifetime UTF-16 pointer"
 )]
 
-use crate::http::gpui_client::create_gpui_http_client;
+use crate::http::gpui_client::create;
 use crate::i18n::Locale;
 use crate::launch::LaunchMode;
 use crate::ui::state::i18n::{I18n, LanguageController};
@@ -52,17 +52,17 @@ pub(crate) struct AppBootstrap {
     local_font_path: String,
     local_font_family: String,
     system_font_family: String,
-    config: crate::config::config::Config,
+    config: crate::config::settings::Config,
 }
 
 impl AppBootstrap {
     pub(crate) async fn from_config(
-        config: crate::config::config::Config,
+        config: crate::config::settings::Config,
         launch_mode: LaunchMode,
     ) -> Self {
         let lang = config.launcher.language.trim();
         let locale_code = if lang.eq_ignore_ascii_case("auto") || lang.is_empty() {
-            crate::utils::system_info::get_system_language()
+            crate::utils::system_info::system_language()
         } else {
             lang.replace('_', "-")
         };
@@ -74,10 +74,10 @@ impl AppBootstrap {
         // Legacy agreement/onboarding migration may read, flush, and remove files. Resolve it on
         // the blocking pool before GPUI takes ownership of the foreground thread; UI globals below
         // then initialize from these in-memory booleans only.
-        let startup_gate_state = crate::tasks::runtime::run_io_blocking(|| {
+        let startup_gate_state = crate::tasks::runtime::blocking::run_io(|| {
             (
                 crate::config::agreement::is_current_agreement_accepted(),
-                crate::config::onboarding::is_current_onboarding_completed(),
+                crate::config::onboarding::is_complete(),
             )
         });
         let (gpu_adapter_name, startup_gate_state) =
@@ -90,7 +90,7 @@ impl AppBootstrap {
                     config.app_state.agreement_accepted_version
                         >= crate::config::agreement::CURRENT_AGREEMENT_VERSION,
                     config.app_state.onboarding_completed_version
-                        >= crate::config::onboarding::CURRENT_ONBOARDING_VERSION,
+                        >= crate::config::onboarding::CURRENT_VERSION,
                 )
             }
         };
@@ -117,7 +117,7 @@ impl AppBootstrap {
 }
 
 fn renderer_backend_from_config(renderer_backend: &str) -> gpui::RendererBackend {
-    let normalized = crate::config::config::normalize_renderer_backend(renderer_backend);
+    let normalized = crate::config::settings::normalize_renderer_backend(renderer_backend);
     let configured = normalized
         .parse::<gpui::RendererBackend>()
         .unwrap_or_default();
@@ -135,12 +135,12 @@ async fn gpu_adapter_name_from_config(
     renderer_backend: gpui::RendererBackend,
     gpu_adapter_name: &str,
 ) -> Option<String> {
-    let gpu_adapter_name = crate::config::config::normalize_gpu_adapter_name(gpu_adapter_name);
-    if gpu_adapter_name == crate::config::config::default_gpu_adapter_name() {
+    let gpu_adapter_name = crate::config::settings::normalize_gpu_adapter_name(gpu_adapter_name);
+    if gpu_adapter_name == crate::config::settings::default_gpu_adapter_name() {
         return None;
     }
 
-    let adapters = match crate::tasks::runtime::run_io_blocking(move || {
+    let adapters = match crate::tasks::runtime::blocking::run_io(move || {
         gpui::enumerate_gpu_adapters(renderer_backend)
     })
     .await
@@ -181,8 +181,8 @@ async fn gpu_adapter_name_from_config(
 }
 
 fn reset_gpu_adapter_name_to_auto(gpu_adapter_name: &str) {
-    let default_gpu_adapter_name = crate::config::config::default_gpu_adapter_name();
-    if let Err(error) = crate::config::config::update_config(|config| {
+    let default_gpu_adapter_name = crate::config::settings::default_gpu_adapter_name();
+    if let Err(error) = crate::config::settings::update(|config| {
         config.launcher.gpu_adapter_name = default_gpu_adapter_name;
     }) {
         warn!(
@@ -194,7 +194,7 @@ fn reset_gpu_adapter_name_to_auto(gpu_adapter_name: &str) {
 }
 
 fn application_default_font(bootstrap: &AppBootstrap) -> gpui::DefaultFontConfig {
-    crate::utils::font_settings::font_config_for_selection(
+    crate::utils::font_settings::resolve_config(
         &bootstrap.font_source,
         &bootstrap.local_font_path,
         &bootstrap.local_font_family,
@@ -237,7 +237,7 @@ pub(crate) struct AppSubscriptions {
 impl Global for AppSubscriptions {}
 
 #[cfg(windows)]
-fn configure_platform_app_identity() {
+fn configure_platform_identity() {
     use std::ffi::OsStr;
     #[cfg(target_os = "windows")]
     use std::os::windows::ffi::OsStrExt;
@@ -256,21 +256,17 @@ fn configure_platform_app_identity() {
 }
 
 #[cfg(not(windows))]
-fn configure_platform_app_identity() {}
+fn configure_platform_identity() {}
 
 pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
-    configure_platform_app_identity();
+    configure_platform_identity();
     let io_handle = crate::tasks::runtime::io_handle().map_err(anyhow::Error::msg)?;
 
     let fps_override = crate::startup_args::frame_rate_override();
-    let frame_mode = crate::frame_rate::effective_mode(
-        &bootstrap.config.launcher.frame_rate_mode,
-        fps_override,
-    );
-    let frame_fps = crate::frame_rate::effective_fps(
-        bootstrap.config.launcher.frame_rate_limit,
-        fps_override,
-    );
+    let frame_mode =
+        crate::frame_rate::effective_mode(&bootstrap.config.launcher.frame_rate_mode, fps_override);
+    let frame_fps =
+        crate::frame_rate::effective_fps(bootstrap.config.launcher.frame_rate_limit, fps_override);
     // All BMCBL windows share one default frame clock; frame requests still
     // coalesce per window. Explicit modes select Immediate before GPU creation.
     gpui::set_default_frame_clock(crate::frame_rate::frame_clock(frame_mode, frame_fps));
@@ -296,7 +292,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
         let configure_runtime_elapsed = configure_runtime_started_at.elapsed();
 
         let app_state_started_at = Instant::now();
-        build_app_state(cx, &bootstrap);
+        build_state(cx, &bootstrap);
         let app_state_elapsed = app_state_started_at.elapsed();
 
         if bootstrap.debug_enabled || bootstrap.gpui_trace_enabled {
@@ -314,13 +310,12 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
 
         gpui_router::init(cx);
         if bootstrap.launch_mode.is_main() {
-            let preloaded_backgrounds =
-                crate::ui::main_window::preload_startup_background_bytes_from_values(
-                    &bootstrap.config.custom_style.background_option,
-                    &bootstrap.config.custom_style.local_image_path,
-                    &bootstrap.config.custom_style.network_image_url,
-                    cx,
-                );
+            let preloaded_backgrounds = crate::ui::main_window::preload_background_bytes(
+                &bootstrap.config.custom_style.background_option,
+                &bootstrap.config.custom_style.local_image_path,
+                &bootstrap.config.custom_style.network_image_url,
+                cx,
+            );
             if preloaded_backgrounds > 0 {
                 debug!("startup background compressed image bytes preload scheduled");
             }
@@ -337,11 +332,11 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
                 open_window_elapsed.as_secs_f64() * 1000.0,
             );
             if main_window_opened {
-                schedule_direct_launch(&bootstrap, cx);
-                schedule_post_visible_startup_services(cx);
-                schedule_post_startup_warmups(cx);
+                direct_launch(&bootstrap, cx);
+                start_services_when_visible(cx);
+                warmup(cx);
                 if bootstrap.debug_enabled {
-                    schedule_debug_window_after_main_window_visible(cx);
+                    debug_window(cx);
                 }
             }
         } else if let LaunchMode::Import(ref import_context) = bootstrap.launch_mode {
@@ -352,7 +347,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
             );
         }
 
-        register_app_lifecycle(cx);
+        register_lifecycle(cx);
         if bootstrap.launch_mode.is_main() {
             start_background_maintenance();
         }
@@ -375,7 +370,10 @@ fn start_domain_event_bridges(cx: &mut App) {
         crate::core::version::catalog_events::local_version_changes(),
         |generation, cx| {
             tracing::info!(generation, "refreshing local versions after catalog change");
-            crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(true, cx);
+            crate::ui::hooks::local_versions::ensure_loaded(
+                crate::ui::hooks::local_versions::VersionRefresh::Force,
+                cx,
+            );
         },
     )
     .detach();
@@ -399,10 +397,10 @@ fn configure_runtime(cx: &mut App, launch_mode: &LaunchMode) {
 }
 
 fn install_http_client(cx: &mut App) {
-    cx.set_http_client(create_gpui_http_client());
+    cx.set_http_client(create());
 }
 
-fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
+fn build_state(cx: &mut App, bootstrap: &AppBootstrap) {
     let config = &bootstrap.config;
     if bootstrap.launch_mode.is_main() {
         tracing::info!(
@@ -518,13 +516,12 @@ fn open_main_window(bootstrap: &AppBootstrap, cx: &mut App) -> bool {
     let window_options = main_window_options(&window_title, cx);
     let main_window = cx.open_window(window_options, move |window, cx| {
         window.set_title(&window_title);
-        let preloaded_images =
-            crate::ui::main_window::preload_startup_background_image_from_values(
-                &startup_background_option,
-                &startup_local_image_path,
-                &startup_network_image_url,
-                cx,
-            );
+        let preloaded_images = crate::ui::main_window::preload_background_image(
+            &startup_background_option,
+            &startup_local_image_path,
+            &startup_network_image_url,
+            cx,
+        );
         if preloaded_images > 0 {
             debug!("startup background source image preload scheduled");
         }
@@ -563,7 +560,7 @@ fn open_main_window(bootstrap: &AppBootstrap, cx: &mut App) -> bool {
 /// ready, so the normal UI launch flow (prerequisite checks, modals and error
 /// reporting) is reused instead of duplicating it in the CLI layer.
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-fn schedule_direct_launch(bootstrap: &AppBootstrap, cx: &mut App) {
+fn direct_launch(bootstrap: &AppBootstrap, cx: &mut App) {
     const GATE_WAIT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
     const GATE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -574,7 +571,7 @@ fn schedule_direct_launch(bootstrap: &AppBootstrap, cx: &mut App) {
         return;
     }
 
-    let descriptor = crate::ui::hooks::use_launcher::LaunchVersionDescriptor {
+    let descriptor = crate::ui::hooks::launcher::LaunchVersionDescriptor {
         folder: context.target.folder.clone().into(),
         name: context.target.name.clone().into(),
         version: context.target.version.clone().into(),
@@ -630,18 +627,18 @@ fn schedule_direct_launch(bootstrap: &AppBootstrap, cx: &mut App) {
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn start_direct_launch(
-    descriptor: crate::ui::hooks::use_launcher::LaunchVersionDescriptor,
+    descriptor: crate::ui::hooks::launcher::LaunchVersionDescriptor,
     cx: &mut App,
 ) {
-    if crate::ui::hooks::use_launcher::start_launcher(descriptor, cx).is_none() {
+    if crate::ui::hooks::launcher::start(descriptor, cx).is_none() {
         warn!("command-line launch was ignored because another launch flow is active");
     }
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-fn schedule_direct_launch(_bootstrap: &AppBootstrap, _cx: &mut App) {}
+fn direct_launch(_bootstrap: &AppBootstrap, _cx: &mut App) {}
 
-fn schedule_post_visible_startup_services(cx: &mut App) {
+fn start_services_when_visible(cx: &mut App) {
     cx.spawn(async move |cx| {
         let deadline = Instant::now() + DEBUG_WINDOW_VISIBLE_WAIT_TIMEOUT;
         while !cx.update(main_window_is_visible).unwrap_or(false) {
@@ -656,7 +653,7 @@ fn schedule_post_visible_startup_services(cx: &mut App) {
             crate::plugins::runtime::start_deferred_initial_reload(cx);
             crate::plugins::runtime::start_watcher(cx);
             crate::assets::spawn_deferred_font_load(cx);
-            schedule_pending_diagnostics_load(cx);
+            load_pending_diagnostics(cx);
         }) {
             warn!("deferred post-visible startup services failed: {error:?}");
         }
@@ -666,10 +663,10 @@ fn schedule_post_visible_startup_services(cx: &mut App) {
     .detach();
 }
 
-fn schedule_pending_diagnostics_load(cx: &mut App) {
+fn load_pending_diagnostics(cx: &mut App) {
     cx.spawn(async move |cx| {
         let report =
-            crate::tasks::runtime::run_io_blocking(crate::utils::diagnostics::load_pending_report)
+            crate::tasks::runtime::blocking::run_io(crate::utils::diagnostics::load_pending_report)
                 .await;
         cx.update(|cx| match report {
             Ok(Ok(report)) => {
@@ -699,7 +696,7 @@ fn schedule_pending_diagnostics_load(cx: &mut App) {
 /// debug window's second nova renderer before that competes with the main window's own
 /// first frame — the previous delay-and-first-render gate let the second renderer start
 /// roughly 280ms before the main window appeared.
-fn schedule_debug_window_after_main_window_visible(cx: &mut App) {
+fn debug_window(cx: &mut App) {
     cx.spawn(async move |cx| {
         let deadline = Instant::now() + DEBUG_WINDOW_VISIBLE_WAIT_TIMEOUT;
         while !cx.update(main_window_is_visible).unwrap_or(false) {
@@ -742,21 +739,12 @@ fn main_window_is_visible(cx: &mut App) -> bool {
         .unwrap_or(false)
 }
 
-fn schedule_post_startup_warmups(cx: &mut App) {
+fn warmup(cx: &mut App) {
     cx.spawn(async move |_cx| {
         Timer::after(STARTUP_WARMUP_DELAY).await;
 
-        let markdown_warmup = crate::tasks::runtime::run_io_blocking(
-            crate::ui::components::markdown_renderer::warm_highlighter_assets,
-        );
-        let http_warmup = crate::tasks::runtime::run_io_blocking(
-            crate::http::proxy::prewarm_current_proxy_clients,
-        );
-
-        match markdown_warmup.await {
-            Ok(()) => debug!("post-startup markdown highlighter warmup finished"),
-            Err(error) => warn!("post-startup markdown highlighter warmup failed: {error}"),
-        }
+        let http_warmup =
+            crate::tasks::runtime::blocking::run_io(crate::http::proxy::clients::prewarm);
 
         match http_warmup.await {
             Ok(Ok(())) => debug!("post-startup HTTP client warmup finished"),
@@ -815,9 +803,13 @@ fn open_debug_window(cx: &mut App) {
 #[cfg(any(windows, target_os = "linux"))]
 fn main_window_surface_background() -> WindowBackgroundAppearance {
     #[cfg(windows)]
-    { WindowBackgroundAppearance::Opaque }
+    {
+        WindowBackgroundAppearance::Opaque
+    }
     #[cfg(target_os = "linux")]
-    { WindowBackgroundAppearance::Transparent }
+    {
+        WindowBackgroundAppearance::Transparent
+    }
 }
 
 fn main_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
@@ -888,7 +880,7 @@ fn should_quit_after_window_close(closed: u64, main: Option<u64>, remaining: usi
     }
 }
 
-fn register_app_lifecycle(cx: &mut App) {
+fn register_lifecycle(cx: &mut App) {
     let subscription = cx.on_window_closed_id(|closed_id, cx| {
         let closed_id = closed_id.as_u64();
         let (main_id, debug_id) =

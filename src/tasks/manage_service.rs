@@ -12,12 +12,15 @@ use crate::core::minecraft::screenshots::McScreenshotInfo;
 use crate::core::minecraft::servers::ExternalServerEntry;
 use crate::core::minecraft::skin_packs::McSkinPackInfo;
 use crate::core::minecraft::worlds::WorldSummary;
-use crate::core::version::settings::{VersionConfig, get_version_config_blocking};
+use crate::core::version::settings::VersionConfig;
+use crate::core::version::settings::blocking::read_version_config;
 
-use super::runtime::{BlockingTaskOptions, run_blocking};
+use super::runtime::BlockingTaskOptions;
+use super::runtime::blocking;
 
 mod gdk_users;
-pub use gdk_users::{invalidate_gdk_users, load_gdk_users, prewarm_gdk_users};
+mod scans;
+pub use gdk_users::{invalidate_gdk_users, load_gdk_users};
 
 #[derive(Clone, Copy)]
 pub enum PackKind {
@@ -52,16 +55,16 @@ struct ModManifest {
 }
 
 pub async fn load_version_config(folder_name: String) -> Result<VersionConfig, String> {
-    run_blocking(
+    blocking::run(
         BlockingTaskOptions::hidden("读取版本配置"),
-        move || get_version_config_blocking(&folder_name),
+        move || read_version_config(&folder_name),
     )
     .await
 }
 
 pub async fn load_mods(version_folder: String) -> Result<Vec<ManagedModInfo>, String> {
-    run_blocking(BlockingTaskOptions::hidden("读取 Mod"), move || {
-        load_mods_blocking(&version_folder)
+    scans::run("读取 Mod", move || {
+        scan_mods(&version_folder)
     })
     .await
 }
@@ -70,14 +73,14 @@ pub async fn load_capes(
     options: GamePathOptions,
     lang: String,
 ) -> Result<Vec<CapePackInfo>, String> {
-    run_blocking(BlockingTaskOptions::hidden("读取披风包"), move || {
+    scans::run("读取披风包", move || {
         Ok(list_packs(&options, &lang))
     })
     .await
 }
 
 pub async fn import_cape(options: GamePathOptions, path: PathBuf) -> Result<PathBuf, String> {
-    run_blocking(BlockingTaskOptions::hidden("导入披风包"), move || {
+    blocking::run(BlockingTaskOptions::hidden("导入披风包"), move || {
         import_pack(&options, &path)
     })
     .await
@@ -88,7 +91,7 @@ pub async fn load_packs(
     locale_code: String,
     options: GamePathOptions,
 ) -> Result<Vec<McPackInfo>, String> {
-    run_blocking(BlockingTaskOptions::hidden("读取资源包"), move || {
+    scans::run("读取资源包", move || {
         let kind = match kind {
             PackKind::Resource => "resource_packs",
             PackKind::Behavior => "behavior_packs",
@@ -103,7 +106,7 @@ pub async fn load_skin_packs(
     locale_code: String,
     options: GamePathOptions,
 ) -> Result<Vec<McSkinPackInfo>, String> {
-    run_blocking(BlockingTaskOptions::hidden("读取皮肤包"), move || {
+    scans::run("读取皮肤包", move || {
         crate::core::minecraft::skin_packs::read_skin_packs_standard(&locale_code, &options)
             .map_err(|error| format!("读取皮肤包失败: {error:?}"))
     })
@@ -111,7 +114,7 @@ pub async fn load_skin_packs(
 }
 
 pub async fn load_worlds(options: GamePathOptions) -> Result<Vec<WorldSummary>, String> {
-    run_blocking(BlockingTaskOptions::hidden("读取存档"), move || {
+    scans::run("读取存档", move || {
         crate::core::minecraft::worlds::list(&options)
             .map_err(|error| format!("读取存档失败: {error:?}"))
     })
@@ -119,7 +122,7 @@ pub async fn load_worlds(options: GamePathOptions) -> Result<Vec<WorldSummary>, 
 }
 
 pub async fn load_screenshots(options: GamePathOptions) -> Result<Vec<McScreenshotInfo>, String> {
-    run_blocking(BlockingTaskOptions::hidden("读取截图"), move || {
+    scans::run("读取截图", move || {
         crate::core::minecraft::screenshots::list_screenshots_standard(&options)
             .map_err(|error| format!("读取截图失败: {error:?}"))
     })
@@ -129,7 +132,7 @@ pub async fn load_screenshots(options: GamePathOptions) -> Result<Vec<McScreensh
 pub async fn load_external_servers(
     options: GamePathOptions,
 ) -> Result<Vec<ExternalServerEntry>, String> {
-    run_blocking(BlockingTaskOptions::hidden("读取服务器"), move || {
+    scans::run("读取服务器", move || {
         crate::core::minecraft::servers::read_external_servers(&options)
             .map_err(|error| format!("读取服务器失败: {error:?}"))
     })
@@ -143,7 +146,7 @@ fn is_bloader_mod_type(kind: &str) -> bool {
     )
 }
 
-fn load_mods_blocking(version_folder: &str) -> Result<Vec<ManagedModInfo>, String> {
+fn scan_mods(version_folder: &str) -> Result<Vec<ManagedModInfo>, String> {
     let game_dir = crate::utils::file_ops::bmcbl_subdir("versions").join(version_folder);
     let mut mods = Vec::new();
     for (owner, root) in [
@@ -273,7 +276,7 @@ fn manifest_paths(version_folder: &str, mod_id: &str) -> Result<(PathBuf, PathBu
     Ok((dir.join(base), dir.join(disabled)))
 }
 
-fn editable_manifest_path_blocking(version_folder: &str, mod_id: &str) -> Result<PathBuf, String> {
+fn editable_manifest_path(version_folder: &str, mod_id: &str) -> Result<PathBuf, String> {
     let (enabled, disabled) = manifest_paths(version_folder, mod_id)?;
     if enabled.is_file() {
         return Ok(enabled);
@@ -405,7 +408,7 @@ where
     let task_id = crate::tasks::task_manager::create_task(
         crate::tasks::task_manager::TaskOptions::new(title, stage).detail(detail),
     )?;
-    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
+    crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
 
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
@@ -421,7 +424,7 @@ where
         }
 
         let result =
-            crate::tasks::runtime::run_io_blocking(move || operation(blocking_task_id.as_str()))
+            crate::tasks::runtime::blocking::run_io(move || operation(blocking_task_id.as_str()))
                 .await;
 
         match result {
@@ -451,7 +454,7 @@ where
     let _ = crate::tasks::runtime::spawn_io(async move {
         match workflow.await {
             Ok(()) => {
-                let unfinished = crate::tasks::task_manager::get_snapshot_arc(&monitor_task_id)
+                let unfinished = crate::tasks::task_manager::snapshot_arc(&monitor_task_id)
                     .is_some_and(|snapshot| !snapshot.is_terminal());
                 if unfinished {
                     let status = if crate::tasks::task_manager::is_cancelled(&monitor_task_id) {
@@ -556,7 +559,7 @@ pub fn start_update_mod_settings(
         detail,
         "updating_mod_manifest",
         move |task_id| {
-            let manifest_path = editable_manifest_path_blocking(&version_folder, &mod_id)?;
+            let manifest_path = editable_manifest_path(&version_folder, &mod_id)?;
             let content = fs::read_to_string(&manifest_path)
                 .map_err(|error| format!("读取 Manifest 失败: {error}"))?;
             let mut manifest: ModManifest = serde_json::from_str(&content)
@@ -582,7 +585,7 @@ pub fn start_set_mod_inject_delay(
         detail,
         "updating_mod_manifest",
         move |task_id| {
-            let manifest_path = editable_manifest_path_blocking(&version_folder, &mod_id)?;
+            let manifest_path = editable_manifest_path(&version_folder, &mod_id)?;
             let content = fs::read_to_string(&manifest_path)
                 .map_err(|error| format!("读取 Manifest 失败: {error}"))?;
             let mut manifest: ModManifest = serde_json::from_str(&content)

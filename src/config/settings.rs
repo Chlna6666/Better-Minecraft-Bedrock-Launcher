@@ -14,7 +14,7 @@ use super::defaults::{
 pub use super::defaults::{
     default_background_blur, default_error_report_sentry_dsn, default_font_source,
     default_glass_effect_enabled, default_gpu_adapter_name, default_online_player_name,
-    default_telemetry_endpoint, default_telemetry_key, default_theme_mode, get_default_config,
+    default_telemetry_endpoint, default_telemetry_key, default_theme_mode, default_config,
 };
 
 pub(super) const CURRENT_CONFIG_VERSION: u32 = 6;
@@ -43,24 +43,24 @@ pub const MAX_LOG_TOTAL_SIZE_MB: u32 = 8_192;
 pub const MIN_LOG_COMPRESSION_LEVEL: i32 = 1;
 pub const MAX_LOG_COMPRESSION_LEVEL: i32 = 9;
 
-pub fn initialize_config_cache() -> std::io::Result<Config> {
-    super::storage::initialize_config_cache()
+pub fn initialize_cache() -> std::io::Result<Config> {
+    super::storage::initialize_cache()
 }
 
-pub fn read_config() -> std::io::Result<Config> {
-    super::storage::read_config()
+pub fn read() -> std::io::Result<Config> {
+    super::storage::read()
 }
 
 /// 只读取代理配置（避免深拷贝整个 Config）。
-pub fn read_proxy_config() -> std::io::Result<ProxyConfig> {
-    super::storage::read_proxy_config()
+pub fn read_proxy() -> std::io::Result<ProxyConfig> {
+    super::storage::read_proxy()
 }
 
-pub fn update_config<T, F>(mutator: F) -> std::io::Result<T>
+pub fn update<T, F>(mutator: F) -> std::io::Result<T>
 where
     F: FnOnce(&mut Config) -> T,
 {
-    super::storage::update_config(mutator)
+    super::storage::update(mutator)
 }
 
 pub fn persist_language(code: &str) -> std::io::Result<()> {
@@ -68,8 +68,8 @@ pub fn persist_language(code: &str) -> std::io::Result<()> {
 }
 
 /// 立即把内存中未落盘的配置写入磁盘（供应用退出路径调用）。
-pub fn flush_config_now() {
-    super::storage::flush_config_now()
+pub fn flush_now() {
+    super::storage::flush_now()
 }
 
 pub fn resolved_error_report_sentry_dsn(launcher: &Launcher) -> Option<String> {

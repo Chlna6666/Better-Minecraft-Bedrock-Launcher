@@ -14,23 +14,23 @@ use std::time::Duration;
 use tracing::warn;
 
 pub const HOT_RELOAD_DEBOUNCE: Duration = Duration::from_millis(250);
-pub type PluginWatcherSender = UnboundedSender<PluginWatcherMessage>;
+pub type Sender = UnboundedSender<Message>;
 
 #[derive(Clone, Debug)]
-pub enum PluginWatcherMessage {
+pub enum Message {
     Changed(PathBuf),
     AsyncAppRefresh,
     Stop,
 }
 
-pub fn spawn_plugin_watcher(
+pub fn spawn(
     plugins_dir: PathBuf,
     cx: &mut App,
-) -> Result<(PluginWatcherSender, gpui::Task<()>)> {
+) -> Result<(Sender, gpui::Task<()>)> {
     std::fs::create_dir_all(&plugins_dir)
         .with_context(|| format!("create plugins dir {}", plugins_dir.display()))?;
 
-    let (tx, rx) = unbounded::<PluginWatcherMessage>();
+    let (tx, rx) = unbounded::<Message>();
     let watcher_tx = tx.clone();
     let watched_plugins_dir = plugins_dir.clone();
     let mut watcher = RecommendedWatcher::new(
@@ -46,7 +46,7 @@ pub fn spawn_plugin_watcher(
                     .find(|path| should_reload_for_path(&watched_plugins_dir, path))
                 {
                     if let Err(error) =
-                        watcher_tx.unbounded_send(PluginWatcherMessage::Changed(path))
+                        watcher_tx.unbounded_send(Message::Changed(path))
                     {
                         warn!("plugin watcher channel closed: {error:?}");
                     }
@@ -66,14 +66,14 @@ pub fn spawn_plugin_watcher(
 }
 
 async fn run_watcher_loop(
-    mut rx: UnboundedReceiver<PluginWatcherMessage>,
+    mut rx: UnboundedReceiver<Message>,
     _watcher: RecommendedWatcher,
     cx: &mut gpui::AsyncApp,
 ) {
     while let Some(message) = rx.next().await {
         let (mut change_count, mut last_path) = match message {
-            PluginWatcherMessage::Stop => return,
-            PluginWatcherMessage::AsyncAppRefresh => {
+            Message::Stop => return,
+            Message::AsyncAppRefresh => {
                 let refreshed =
                     cx.update(|cx| crate::plugins::runtime::drain_async_app_refreshes(cx));
                 match refreshed {
@@ -95,7 +95,7 @@ async fn run_watcher_loop(
                 }
                 continue;
             }
-            PluginWatcherMessage::Changed(path) => (1usize, path),
+            Message::Changed(path) => (1usize, path),
         };
 
         loop {
@@ -104,8 +104,8 @@ async fn run_watcher_loop(
             let mut saw_more_changes = false;
             loop {
                 match rx.next().now_or_never() {
-                    Some(Some(PluginWatcherMessage::Stop)) => return,
-                    Some(Some(PluginWatcherMessage::AsyncAppRefresh)) => {
+                    Some(Some(Message::Stop)) => return,
+                    Some(Some(Message::AsyncAppRefresh)) => {
                         let refreshed =
                             cx.update(|cx| crate::plugins::runtime::drain_async_app_refreshes(cx));
                         match refreshed {
@@ -126,7 +126,7 @@ async fn run_watcher_loop(
                             }
                         }
                     }
-                    Some(Some(PluginWatcherMessage::Changed(path))) => {
+                    Some(Some(Message::Changed(path))) => {
                         change_count += 1;
                         last_path = path;
                         saw_more_changes = true;
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn watcher_ignores_runtime_config_writes() {
+    fn watcher_ignores_runtime_write_configs() {
         let plugins_dir = PathBuf::from(r"C:\BMCBL\plugins");
 
         assert!(!should_reload_for_path(

@@ -5,13 +5,13 @@ use once_cell::sync::{Lazy, OnceCell};
 use sonde_sdk::{ErrorEvent, Event, SondeClient};
 use tracing::{debug, warn};
 
-use crate::config::config::Config;
+use crate::config::settings::Config;
 use crate::utils::app_info;
 
 static CLIENT: OnceCell<SondeClient> = OnceCell::new();
 static INITIALIZING: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 
-pub fn spawn_startup_telemetry(config: &Config) -> Result<(), String> {
+pub fn spawn_startup(config: &Config) -> Result<(), String> {
     if !config.launcher.stats_upload {
         debug!("telemetry skipped: stats_upload is disabled");
         return Ok(());
@@ -35,7 +35,7 @@ pub fn spawn_startup_telemetry(config: &Config) -> Result<(), String> {
 pub(crate) fn resolve_telemetry_language(config: &Config) -> String {
     let configured = config.launcher.language.trim();
     if configured.eq_ignore_ascii_case("auto") || configured.is_empty() {
-        crate::utils::system_info::get_system_language()
+        crate::utils::system_info::system_language()
     } else {
         configured.to_string()
     }
@@ -43,15 +43,15 @@ pub(crate) fn resolve_telemetry_language(config: &Config) -> String {
 
 async fn init_telemetry(config: &Config) -> Result<(), String> {
     let device_id = resolve_device_id()?;
-    let endpoint = crate::config::config::resolved_telemetry_endpoint(&config.launcher);
-    let api_key = crate::config::config::resolved_telemetry_key(&config.launcher);
+    let endpoint = crate::config::settings::resolved_telemetry_endpoint(&config.launcher);
+    let api_key = crate::config::settings::resolved_telemetry_key(&config.launcher);
 
     let language = resolve_telemetry_language(config);
     let client = SondeClient::builder(endpoint, api_key, device_id)
-        .app_version(app_info::get_version())
+        .app_version(app_info::version())
         .os(detect_os_string())
         .system_language(&language)
-        .architecture(crate::utils::system_info::get_cpu_architecture())
+        .architecture(crate::utils::system_info::cpu_architecture())
         .connect()
         .await
         .map_err(|e| format!("failed to connect sonde client: {e}"))?;
@@ -99,16 +99,16 @@ pub fn notify_language_changed(new_language: &str) {
         let client = client.clone();
         let resolved =
             if new_language.trim().eq_ignore_ascii_case("auto") || new_language.trim().is_empty() {
-                crate::utils::system_info::get_system_language()
+                crate::utils::system_info::system_language()
             } else {
                 new_language.trim().to_string()
             };
         let _ = crate::tasks::runtime::spawn_io(async move {
             let facts = sonde_sdk::DeviceFacts {
-                app_version: Some(app_info::get_version().to_string()),
+                app_version: Some(app_info::version().to_string()),
                 os: Some(detect_os_string()),
                 system_language: Some(resolved),
-                architecture: Some(crate::utils::system_info::get_cpu_architecture()),
+                architecture: Some(crate::utils::system_info::cpu_architecture()),
             };
             if let Err(e) = client.set_device_facts(facts).await {
                 debug!("failed to update telemetry device facts on language change: {e}");
@@ -217,16 +217,16 @@ mod tests {
 
     #[test]
     fn test_disabled_telemetry_does_not_spawn() {
-        let mut config = crate::config::config::get_default_config();
+        let mut config = crate::config::settings::default_config();
         config.launcher.stats_upload = false;
 
-        let result = spawn_startup_telemetry(&config);
+        let result = spawn_startup(&config);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_resolve_telemetry_language_resolves_auto() {
-        let mut config = crate::config::config::get_default_config();
+        let mut config = crate::config::settings::default_config();
         config.launcher.language = "auto".to_string();
         let resolved = resolve_telemetry_language(&config);
         assert_ne!(resolved, "auto");

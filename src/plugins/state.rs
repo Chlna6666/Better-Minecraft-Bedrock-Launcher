@@ -22,12 +22,12 @@ fn default_enabled() -> bool {
     true
 }
 
-pub fn state_file_path(plugins_dir: &Path) -> PathBuf {
+pub fn path(plugins_dir: &Path) -> PathBuf {
     plugins_dir.join(PLUGIN_STATE_FILE)
 }
 
-pub fn disabled_plugins(plugins_dir: &Path) -> BTreeSet<String> {
-    read_state_file(plugins_dir)
+pub fn disabled(plugins_dir: &Path) -> BTreeSet<String> {
+    read(plugins_dir)
         .map(|state| {
             state
                 .plugins
@@ -38,8 +38,8 @@ pub fn disabled_plugins(plugins_dir: &Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-pub fn set_plugin_enabled(plugins_dir: &Path, plugin_id: &str, enabled: bool) -> Result<()> {
-    let mut state = read_state_file(plugins_dir)?;
+pub fn set_enabled(plugins_dir: &Path, plugin_id: &str, enabled: bool) -> Result<()> {
+    let mut state = read(plugins_dir)?;
     if enabled {
         state.plugins.remove(plugin_id);
     } else {
@@ -47,17 +47,17 @@ pub fn set_plugin_enabled(plugins_dir: &Path, plugin_id: &str, enabled: bool) ->
             .plugins
             .insert(plugin_id.to_string(), PluginStateEntry { enabled: false });
     }
-    write_state_file(plugins_dir, &state)
+    write(plugins_dir, &state)
 }
 
-pub fn remove_plugin_state(plugins_dir: &Path, plugin_id: &str) -> Result<()> {
-    let mut state = read_state_file(plugins_dir)?;
+pub fn remove(plugins_dir: &Path, plugin_id: &str) -> Result<()> {
+    let mut state = read(plugins_dir)?;
     state.plugins.remove(plugin_id);
-    write_state_file(plugins_dir, &state)
+    write(plugins_dir, &state)
 }
 
-fn read_state_file(plugins_dir: &Path) -> Result<PluginStateFile> {
-    let path = state_file_path(plugins_dir);
+fn read(plugins_dir: &Path) -> Result<PluginStateFile> {
+    let path = path(plugins_dir);
     if !path.exists() {
         return Ok(PluginStateFile::default());
     }
@@ -65,10 +65,10 @@ fn read_state_file(plugins_dir: &Path) -> Result<PluginStateFile> {
     toml::from_str(&text).with_context(|| format!("parse {}", path.display()))
 }
 
-fn write_state_file(plugins_dir: &Path, state: &PluginStateFile) -> Result<()> {
+fn write(plugins_dir: &Path, state: &PluginStateFile) -> Result<()> {
     fs::create_dir_all(plugins_dir)
         .with_context(|| format!("create plugin state dir {}", plugins_dir.display()))?;
-    let path = state_file_path(plugins_dir);
+    let path = path(plugins_dir);
     let text = toml::to_string_pretty(state).context("serialize plugin state")?;
     let temp_path = path.with_extension("tmp");
     fs::write(&temp_path, text).with_context(|| format!("write {}", temp_path.display()))?;
@@ -83,13 +83,13 @@ mod tests {
     #[test]
     fn disabled_state_roundtrips() {
         let root = unique_temp_dir("bmcbl-plugin-state");
-        set_plugin_enabled(&root, "hello-plugin", false).expect("disable should persist");
+        set_enabled(&root, "hello-plugin", false).expect("disable should persist");
 
-        let disabled = disabled_plugins(&root);
-        assert!(disabled.contains("hello-plugin"));
+        let disabled_plugins = disabled(&root);
+        assert!(disabled_plugins.contains("hello-plugin"));
 
-        set_plugin_enabled(&root, "hello-plugin", true).expect("enable should persist");
-        assert!(!disabled_plugins(&root).contains("hello-plugin"));
+        set_enabled(&root, "hello-plugin", true).expect("enable should persist");
+        assert!(!disabled(&root).contains("hello-plugin"));
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {

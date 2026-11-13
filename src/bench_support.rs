@@ -14,9 +14,7 @@ pub use crate::plugins::services::DependencyGraph;
 pub use crate::plugins::ui_dsl::ViewTree;
 
 #[cfg(target_os = "windows")]
-pub use crate::core::minecraft::appx::utils::{
-    find_any_game_executable_in_dir, find_game_executable_in_dir,
-};
+pub use crate::core::minecraft::appx::utils::{find_any_game_executable, find_game_executable};
 pub use crate::core::minecraft::import::{inspect_archive, scan_archive};
 
 /// Reads installed-version metadata through the same CPU runtime and scanner as startup.
@@ -26,10 +24,9 @@ pub use crate::core::minecraft::import::{inspect_archive, scan_archive};
 /// Returns runtime initialization/submission or version-directory enumeration errors.
 pub fn scan_local_versions(path: &std::path::Path) -> anyhow::Result<serde_json::Value> {
     crate::tasks::runtime::initialize_app_runtime()?;
-    let versions = crate::tasks::runtime::install_cpu(|| {
-        crate::core::version::version_manager::get_appx_version_list_blocking(path)
-    })
-    .map_err(anyhow::Error::msg)??;
+    let versions =
+        crate::tasks::runtime::install_cpu(|| crate::core::version::installed::scan(path))
+            .map_err(anyhow::Error::msg)??;
     Ok(serde_json::Value::Array(versions.into_iter().map(|version| serde_json::json!({
         "folder": version.folder, "name": version.name, "version": version.version,
         "manifest_version": version.manifest_version, "path": version.path, "kind": version.kind,

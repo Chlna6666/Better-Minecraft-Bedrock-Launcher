@@ -4,12 +4,12 @@
 ///
 /// # 示例
 /// ```
-/// use crate::utils::format_bytes::format_bytes;
-/// assert_eq!(format_bytes(0), "0 B");
-/// assert_eq!(format_bytes(1024), "1.00 KB");
-/// assert_eq!(format_bytes(1048576), "1.00 MB");
+/// use crate::utils::format_bytes::format;
+/// assert_eq!(format(0), "0 B");
+/// assert_eq!(format(1024), "1.00 KB");
+/// assert_eq!(format(1048576), "1.00 MB");
 /// ```
-pub fn format_bytes(bytes: u64) -> String {
+pub fn format(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
     const GB: u64 = MB * 1024;
@@ -26,7 +26,7 @@ pub fn format_bytes(bytes: u64) -> String {
 }
 
 /// 格式化字节大小为紧凑形式（保留一位小数，用于空间有限的 UI）
-pub fn format_bytes_compact(bytes: u64) -> String {
+pub fn compact(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
     const GB: u64 = MB * 1024;
@@ -43,7 +43,7 @@ pub fn format_bytes_compact(bytes: u64) -> String {
 }
 
 /// 格式化字节每秒的速度
-pub fn format_bytes_per_sec(bytes_per_sec: f64) -> String {
+pub fn per_second(bytes_per_sec: f64) -> String {
     if bytes_per_sec < 0.0 {
         return "-- B/s".to_string();
     }
@@ -66,30 +66,30 @@ mod tests {
 
     #[test]
     fn test_format_bytes() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(1024), "1.00 KB");
-        assert_eq!(format_bytes(1536), "1.50 KB");
-        assert_eq!(format_bytes(1048576), "1.00 MB");
-        assert_eq!(format_bytes(1572864), "1.50 MB");
-        assert_eq!(format_bytes(1073741824), "1.00 GB");
+        assert_eq!(format(0), "0 B");
+        assert_eq!(format(512), "512 B");
+        assert_eq!(format(1024), "1.00 KB");
+        assert_eq!(format(1536), "1.50 KB");
+        assert_eq!(format(1048576), "1.00 MB");
+        assert_eq!(format(1572864), "1.50 MB");
+        assert_eq!(format(1073741824), "1.00 GB");
     }
 
     #[test]
     fn test_format_bytes_compact() {
-        assert_eq!(format_bytes_compact(0), "0B");
-        assert_eq!(format_bytes_compact(512), "512B");
-        assert_eq!(format_bytes_compact(1024), "1.0K");
-        assert_eq!(format_bytes_compact(1048576), "1.0M");
-        assert_eq!(format_bytes_compact(1073741824), "1.0G");
+        assert_eq!(compact(0), "0B");
+        assert_eq!(compact(512), "512B");
+        assert_eq!(compact(1024), "1.0K");
+        assert_eq!(compact(1048576), "1.0M");
+        assert_eq!(compact(1073741824), "1.0G");
     }
 
     #[test]
     fn test_format_bytes_per_sec() {
-        assert_eq!(format_bytes_per_sec(0.0), "0 B/s");
-        assert_eq!(format_bytes_per_sec(512.0), "512 B/s");
-        assert_eq!(format_bytes_per_sec(1024.0), "1.00 KB/s");
-        assert_eq!(format_bytes_per_sec(1048576.0), "1.00 MB/s");
-        assert_eq!(format_bytes_per_sec(-1.0), "-- B/s");
+        assert_eq!(per_second(0.0), "0 B/s");
+        assert_eq!(per_second(512.0), "512 B/s");
+        assert_eq!(per_second(1024.0), "1.00 KB/s");
+        assert_eq!(per_second(1048576.0), "1.00 MB/s");
+        assert_eq!(per_second(-1.0), "-- B/s");
     }
 }
