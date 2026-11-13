@@ -8,7 +8,7 @@ $hard = [System.Collections.Generic.List[string]]::new()
 $soft = [System.Collections.Generic.List[string]]::new()
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$sourceRoots = @("src", "crates", "tests", "benches", "examples", "build")
+$sourceRoots = @("src", "crates", "tests", "benches", "examples", "build", "build_support")
 $rustFiles = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
 foreach ($sourceRoot in $sourceRoots) {
     $root = Join-Path $repoRoot $sourceRoot
@@ -83,7 +83,7 @@ if ($pathViolations.Count -gt 0) {
     $pathViolations | ForEach-Object { Write-Host "  $_" }
     exit 1
 }
-Write-Host "Rust #[path] check passed: $pathAttributeCount test/benchmark-only use(s)." -ForegroundColor Green
+Write-Host "Rust #[path] check passed: $pathAttributeCount test/benchmark/build-support-only use(s)." -ForegroundColor Green
 
 $novaRoot = Join-Path $PSScriptRoot "..\crates\nova-gfx"
 $gpuiNova = Join-Path $PSScriptRoot "..\crates\gpui\src\platform\nova"
