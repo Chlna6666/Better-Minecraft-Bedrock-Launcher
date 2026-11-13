@@ -3945,10 +3945,10 @@ fn block_entity_model_states(
         let NbtTag::Compound(nbt) = &entity.nbt else {
             continue;
         };
-        let Some(pair_x) = nbt_i32(nbt.get("pairx")) else {
+        let Some(pair_x) = nbt.get("pairx").and_then(NbtTag::as_i32) else {
             continue;
         };
-        let Some(pair_z) = nbt_i32(nbt.get("pairz")) else {
+        let Some(pair_z) = nbt.get("pairz").and_then(NbtTag::as_i32) else {
             continue;
         };
         let dx = pair_x.saturating_sub(x);
@@ -3973,18 +3973,9 @@ fn block_entity_model_states(
     states
 }
 
-fn nbt_i32(value: Option<&NbtTag>) -> Option<i32> {
-    match value? {
-        NbtTag::Byte(value) => Some(i32::from(*value)),
-        NbtTag::Short(value) => Some(i32::from(*value)),
-        NbtTag::Int(value) => Some(*value),
-        NbtTag::Long(value) => i32::try_from(*value).ok(),
-        _ => None,
-    }
-}
 
 fn nbt_bool(value: Option<&NbtTag>) -> Option<bool> {
-    nbt_i32(value).map(|value| value != 0)
+    value.and_then(NbtTag::as_i32).map(|value| value != 0)
 }
 
 fn detail_shape(
@@ -4416,13 +4407,7 @@ fn state_string<'a>(state: &'a BlockState, key: &str) -> Option<&'a str> {
 }
 
 fn state_i32(state: &BlockState, key: &str) -> Option<i32> {
-    match state_tag(state, key)? {
-        NbtTag::Byte(value) => Some(i32::from(*value)),
-        NbtTag::Short(value) => Some(i32::from(*value)),
-        NbtTag::Int(value) => Some(*value),
-        NbtTag::Long(value) => i32::try_from(*value).ok(),
-        _ => None,
-    }
+    state_tag(state, key).and_then(NbtTag::as_i32)
 }
 
 fn state_bool(state: &BlockState, key: &str) -> Option<bool> {

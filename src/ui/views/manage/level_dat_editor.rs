@@ -1478,13 +1478,7 @@ fn set_bool_value(document: &mut LevelDatDocument, scope: TagScope, key: &str, v
 }
 
 fn read_i32_value(document: &LevelDatDocument, scope: TagScope, key: &str) -> Option<i32> {
-    match read_tag(document, scope, key)? {
-        NbtTag::Byte(value) => Some(i32::from(*value)),
-        NbtTag::Short(value) => Some(i32::from(*value)),
-        NbtTag::Int(value) => Some(*value),
-        NbtTag::Long(value) => i32::try_from(*value).ok(),
-        _ => None,
-    }
+    read_tag(document, scope, key).and_then(NbtTag::as_i32)
 }
 
 fn set_i32_value(document: &mut LevelDatDocument, scope: TagScope, key: &str, value: i32) {

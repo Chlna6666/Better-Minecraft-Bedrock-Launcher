@@ -3073,7 +3073,8 @@ fn player_slot_item(player: &NbtTag, selection: PlayerItemSelection) -> Option<N
         .filter(|index| *index < list.len())
         .or_else(|| {
             list.iter().position(|item| {
-                nbt_compound_ref(item).and_then(|compound| nbt_number_i32(compound.get("Slot")))
+                nbt_compound_ref(item)
+                    .and_then(|compound| compound.get("Slot").and_then(NbtTag::as_i32))
                     == Some(selection.slot)
             })
         })?;
@@ -3107,7 +3108,8 @@ fn replace_player_slot(
         .filter(|index| *index < list.len())
         .or_else(|| {
             list.iter().position(|item| {
-                nbt_compound_ref(item).and_then(|compound| nbt_number_i32(compound.get("Slot")))
+                nbt_compound_ref(item)
+                    .and_then(|compound| compound.get("Slot").and_then(NbtTag::as_i32))
                     == Some(selection.slot)
             })
         });
@@ -3129,16 +3131,6 @@ fn replace_player_slot(
     Ok(())
 }
 
-fn nbt_number_i32(tag: Option<&NbtTag>) -> Option<i32> {
-    match tag? {
-        NbtTag::Byte(value) => Some(i32::from(*value)),
-        NbtTag::Short(value) => Some(i32::from(*value)),
-        NbtTag::Int(value) => Some(*value),
-        NbtTag::Long(value) => i32::try_from(*value).ok(),
-        _ => None,
-    }
-}
-
 fn upsert_workspace_enchant(item: &mut NbtTag, id: i16, level: i16) -> Result<(), String> {
     let item = nbt_compound_mut_ref(item)?;
     let tag = ensure_nested_compound(item, "tag");
@@ -3149,7 +3141,8 @@ fn upsert_workspace_enchant(item: &mut NbtTag, id: i16, level: i16) -> Result<()
         unreachable!();
     };
     if let Some(existing) = ench.iter_mut().find(|entry| {
-        nbt_compound_ref(entry).and_then(|compound| nbt_number_i32(compound.get("id")))
+        nbt_compound_ref(entry)
+            .and_then(|compound| compound.get("id").and_then(NbtTag::as_i32))
             == Some(i32::from(id))
     }) {
         let compound = nbt_compound_mut_ref(existing)?;

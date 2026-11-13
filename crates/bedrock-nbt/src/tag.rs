@@ -38,6 +38,22 @@ pub enum NbtTag {
     ShortArray(Vec<i16>),
 }
 
+impl NbtTag {
+    /// Returns a byte, short, int, or in-range long tag as an `i32`.
+    ///
+    /// Other tag types and out-of-range long values return `None`.
+    #[must_use]
+    pub fn as_i32(&self) -> Option<i32> {
+        match self {
+            Self::Byte(value) => Some(i32::from(*value)),
+            Self::Short(value) => Some(i32::from(*value)),
+            Self::Int(value) => Some(*value),
+            Self::Long(value) => i32::try_from(*value).ok(),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// Borrow-friendly view of an NBT tag.
 pub enum NbtRef<'a> {

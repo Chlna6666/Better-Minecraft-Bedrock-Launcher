@@ -1038,7 +1038,7 @@ fn player_probe(id: &PlayerId, data: &PlayerData) -> Result<PlayerProbe, String>
     };
     let position = nbt_vec3_f64(root.get("Pos"));
     let position = position.filter(|value| value.iter().all(|value| value.is_finite()));
-    let dimension_id = nbt_i32_any(root.get("DimensionId"));
+    let dimension_id = root.get("DimensionId").and_then(NbtTag::as_i32);
     let has_unique_id = nbt_i64(root.get("UniqueID")).is_some();
     let has_position = position.is_some();
     let has_dimension = dimension_id.is_some();
@@ -1111,7 +1111,7 @@ pub(super) fn player_detail_from_data(data: PlayerData) -> Result<PlayerDetail, 
         id: data.id,
         unique_id: nbt_i64(root.get("UniqueID")),
         position: nbt_vec3_f64(root.get("Pos")),
-        dimension_id: nbt_i32_any(root.get("DimensionId")),
+        dimension_id: root.get("DimensionId").and_then(NbtTag::as_i32),
         item_count: items.len(),
         items,
         nbt: data.nbt,
@@ -1144,7 +1144,7 @@ pub(super) fn player_inventory_entries(tag: &NbtTag) -> Vec<PlayerInventoryEntry
             output.push(PlayerInventoryEntry {
                 kind,
                 list_index,
-                slot: nbt_i32_any(compound.get("Slot")).or_else(|| {
+                slot: compound.get("Slot").and_then(NbtTag::as_i32).or_else(|| {
                     (kind == PlayerInventoryKind::Inventory).then_some(list_index as i32)
                 }),
                 item: item_stack_from_compound(compound, item),
@@ -1182,8 +1182,8 @@ fn item_stack_from_compound(
 ) -> bedrock_world::ItemStack {
     bedrock_world::ItemStack {
         name: nbt_string_any(compound.get("Name")),
-        count: nbt_i32_any(compound.get("Count")),
-        damage: nbt_i32_any(compound.get("Damage")),
+        count: compound.get("Count").and_then(NbtTag::as_i32),
+        damage: compound.get("Damage").and_then(NbtTag::as_i32),
         was_picked_up: nbt_bool_any(compound.get("WasPickedUp")),
         has_block: compound.contains_key("Block"),
         has_tag: compound.contains_key("tag"),
@@ -1206,8 +1206,8 @@ pub(super) fn player_item_enchantments(tag: &NbtTag) -> Vec<PlayerEnchantEntry> 
         .enumerate()
         .filter_map(|(list_index, value)| {
             let compound = nbt_compound(value)?;
-            let id = i16::try_from(nbt_i32_any(compound.get("id"))?).ok()?;
-            let level = i16::try_from(nbt_i32_any(compound.get("lvl"))?).ok()?;
+            let id = i16::try_from(compound.get("id").and_then(NbtTag::as_i32)?).ok()?;
+            let level = i16::try_from(compound.get("lvl").and_then(NbtTag::as_i32)?).ok()?;
             Some(PlayerEnchantEntry {
                 list_index,
                 id,
@@ -1376,7 +1376,7 @@ pub(super) fn apply_player_item_mutation(
                 .get(*list_index)
                 .ok_or_else(|| "物品索引已失效，请刷新玩家数据".to_string())?;
             let slot = nbt_compound(item)
-                .and_then(|compound| nbt_i32_any(compound.get("Slot")))
+                .and_then(|compound| compound.get("Slot").and_then(NbtTag::as_i32))
                 .unwrap_or(*list_index as i32);
             list[*list_index] = empty_item_for_slot(slot);
         }
@@ -1403,7 +1403,7 @@ pub(super) fn apply_player_item_mutation(
         } => {
             let item = inventory_item_mut(root, *kind, *list_index)?;
             let compound = item_compound_mut(item)?;
-            let current = nbt_i32_any(compound.get("Count")).unwrap_or(1);
+            let current = compound.get("Count").and_then(NbtTag::as_i32).unwrap_or(1);
             let value = current.saturating_add(*delta).clamp(1, i32::from(i8::MAX)) as i8;
             compound.insert("Count".to_string(), NbtTag::Byte(value));
         }
@@ -1422,7 +1422,7 @@ pub(super) fn apply_player_item_mutation(
         } => {
             let item = inventory_item_mut(root, *kind, *list_index)?;
             let compound = item_compound_mut(item)?;
-            let current = nbt_i32_any(compound.get("Damage")).unwrap_or(0);
+            let current = compound.get("Damage").and_then(NbtTag::as_i32).unwrap_or(0);
             let value = current
                 .saturating_add(*delta)
                 .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
@@ -1472,7 +1472,7 @@ pub(super) fn apply_player_item_mutation(
             let user_tag = nested_compound_mut(compound, "tag");
             let enchantments = nested_list_mut(user_tag, "ench");
             if let Some(existing) = enchantments.iter_mut().find(|value| {
-                nbt_compound(value).and_then(|compound| nbt_i32_any(compound.get("id")))
+                nbt_compound(value).and_then(|compound| compound.get("id").and_then(NbtTag::as_i32))
                     == Some(i32::from(*id))
             }) {
                 let existing = item_compound_mut(existing)?;
@@ -1495,7 +1495,7 @@ pub(super) fn apply_player_item_mutation(
                 .get_mut(*enchant_index)
                 .ok_or_else(|| "附魔索引已失效，请刷新玩家数据".to_string())?;
             let enchantment = item_compound_mut(enchantment)?;
-            let current = nbt_i32_any(enchantment.get("lvl")).unwrap_or(1);
+            let current = enchantment.get("lvl").and_then(NbtTag::as_i32).unwrap_or(1);
             let value = current
                 .saturating_add(i32::from(*delta))
                 .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
@@ -1596,7 +1596,7 @@ fn next_free_slot(items: &[NbtTag], max_slots: i32) -> Option<i32> {
         if name.trim().is_empty() {
             continue;
         }
-        let slot = nbt_i32_any(compound.get("Slot")).unwrap_or(index as i32);
+        let slot = compound.get("Slot").and_then(NbtTag::as_i32).unwrap_or(index as i32);
         occupied.insert(slot);
     }
     (0..max_slots).find(|slot| !occupied.contains(slot))
@@ -1607,7 +1607,7 @@ fn replace_empty_slot_or_push(items: &mut Vec<NbtTag>, slot: i32, item: NbtTag) 
         let Some(compound) = nbt_compound(value) else {
             return false;
         };
-        let value_slot = nbt_i32_any(compound.get("Slot"));
+        let value_slot = compound.get("Slot").and_then(NbtTag::as_i32);
         let empty = nbt_string_any(compound.get("Name")).is_none_or(|name| name.trim().is_empty());
         empty && value_slot == Some(slot)
     }) {
@@ -1856,15 +1856,6 @@ pub(super) fn nbt_i64(tag: Option<&NbtTag>) -> Option<i64> {
     }
 }
 
-pub(super) fn nbt_i32_any(tag: Option<&NbtTag>) -> Option<i32> {
-    match tag? {
-        NbtTag::Byte(value) => Some(i32::from(*value)),
-        NbtTag::Short(value) => Some(i32::from(*value)),
-        NbtTag::Int(value) => Some(*value),
-        NbtTag::Long(value) => i32::try_from(*value).ok(),
-        _ => None,
-    }
-}
 
 pub(super) fn nbt_bool_any(tag: Option<&NbtTag>) -> Option<bool> {
     match tag? {

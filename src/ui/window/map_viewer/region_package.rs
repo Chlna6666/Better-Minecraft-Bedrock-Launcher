@@ -347,28 +347,22 @@ fn nbt_string_field(nbt: &NbtTag, field: &str) -> Option<String> {
     }
 }
 
-fn nbt_i32_field(nbt: &NbtTag, field: &str) -> Option<i32> {
+fn i32_field(nbt: &NbtTag, field: &str) -> Option<i32> {
     let NbtTag::Compound(root) = nbt else {
         return None;
     };
-    match root.get(field) {
-        Some(NbtTag::Byte(value)) => Some(i32::from(*value)),
-        Some(NbtTag::Short(value)) => Some(i32::from(*value)),
-        Some(NbtTag::Int(value)) => Some(*value),
-        Some(NbtTag::Long(value)) => i32::try_from(*value).ok(),
-        _ => None,
-    }
+    root.get(field).and_then(NbtTag::as_i32)
 }
 
 fn nbt_bool_field(nbt: &NbtTag, field: &str) -> Option<bool> {
-    nbt_i32_field(nbt, field).map(|value| value != 0)
+    i32_field(nbt, field).map(|value| value != 0)
 }
 
 fn nbt_block_position(nbt: &NbtTag) -> Option<[i32; 3]> {
     Some([
-        nbt_i32_field(nbt, "x")?,
-        nbt_i32_field(nbt, "y")?,
-        nbt_i32_field(nbt, "z")?,
+        i32_field(nbt, "x")?,
+        i32_field(nbt, "y")?,
+        i32_field(nbt, "z")?,
     ])
 }
 
