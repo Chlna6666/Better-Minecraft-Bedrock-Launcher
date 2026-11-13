@@ -33,12 +33,12 @@ pub struct ObjSourcePreview {
 #[cfg(test)]
 pub fn build_obj_source_preview(model: &ObjModel) -> Result<Arc<ObjSourcePreview>, String> {
     let textures = load_obj_textures(model).map_err(|error| error.to_string())?;
-    build_obj_source_preview_with_textures(model, &textures)
+    build_preview(model, &textures)
 }
 
 /// Uses exactly the same decoded MTL pixels as the voxelizer. The texture data
 /// are shared by Arc, so this only creates lightweight GPU asset handles.
-pub fn build_obj_source_preview_with_textures(
+pub(super) fn build_preview(
     model: &ObjModel,
     decoded_textures: &[Option<Arc<SourceTexture>>],
 ) -> Result<Arc<ObjSourcePreview>, String> {
@@ -222,7 +222,7 @@ pub fn build_obj_source_preview_with_textures(
 /// Reuses a glTF/GLB GPUI-3D scene directly. Unlike rebuilding a preview mesh
 /// from voxel triangles, this retains the source's node hierarchy, materials
 /// and texture handles, with no redundant model decoding.
-pub fn source_preview_from_imported(
+pub(super) fn source_preview_from_imported(
     scene: Arc<ImportedScene>,
     model: &ObjModel,
 ) -> Result<Arc<ObjSourcePreview>, String> {

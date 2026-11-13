@@ -1,7 +1,7 @@
 // src-tauri/src/commands/assets.rs
 use crate::core::minecraft::import::{
-    ImportCheckResult, PackagePreview, check_import_file, import_files_batch,
-    import_files_batch_cancellable, inspect_archive,
+    ImportCheckResult, PackagePreview, check_import_file, files_batch,
+    files_batch_cancellable, inspect_archive,
 };
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, resolve_target_parent};
 use crate::tasks::task_manager::ProgressUpdate;
@@ -231,7 +231,7 @@ fn delete_assets_transactionally(
     )))
 }
 
-pub fn start_delete_game_assets_task(payloads: Vec<DeleteAssetPayload>) -> Result<String, String> {
+pub fn delete(payloads: Vec<DeleteAssetPayload>) -> Result<String, String> {
     if payloads.is_empty() {
         return Err("没有选择要删除的资源".to_string());
     }
@@ -240,12 +240,12 @@ pub fn start_delete_game_assets_task(payloads: Vec<DeleteAssetPayload>) -> Resul
         crate::tasks::task_manager::TaskOptions::new("删除游戏资源", "deleting_assets")
             .detail(detail),
     )?;
-    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
+    crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
 
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
     let workflow = crate::tasks::runtime::spawn_io(async move {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
             delete_assets_transactionally(payloads, &blocking_task_id)
         })
         .await;
@@ -299,15 +299,15 @@ pub fn start_import_assets_task(
     request: ImportAssetsRequest,
     title: impl Into<String>,
 ) -> Result<String, String> {
-    let detail = Some(format!(
+    let detail = format!(
         "{} · {} 个文件",
         request.version_name,
         request.file_paths.len()
-    ));
+    );
     let task_id = crate::tasks::task_manager::create_task(
         crate::tasks::task_manager::TaskOptions::new(title, "queued").detail(detail),
     )?;
-    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
+    crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
 
     let workflow = match crate::tasks::runtime::spawn_io(async move {
@@ -409,13 +409,13 @@ pub(crate) async fn import_assets_for_task(
     let files = request.file_paths;
     let cancel_task_id = task_id.clone();
 
-    let result = crate::tasks::runtime::run_archive_blocking(move || {
+    let result = crate::tasks::runtime::blocking::run_archive(move || {
         if let Some(task_id) = cancel_task_id {
-            import_files_batch_cancellable(files, &options, overwrite, || {
+            files_batch_cancellable(files, &options, overwrite, || {
                 crate::tasks::task_manager::is_cancelled(&task_id)
             })
         } else {
-            import_files_batch(files, &options, overwrite)
+            files_batch(files, &options, overwrite)
         }
     })
     .await
@@ -484,7 +484,7 @@ async fn inspect_import_path(
 
     // ZIP directory traversal, manifest/icon reads and compound fallback extraction are
     // archive work. Keep them off the general IO pool and GPUI foreground executor.
-    let result = crate::tasks::runtime::run_archive_blocking(move || {
+    let result = crate::tasks::runtime::blocking::run_archive(move || {
         if !path.exists() {
             return Err("文件不存在".to_string());
         }
@@ -545,7 +545,7 @@ pub(crate) fn start_import_inspection_task(
         use crate::tasks::task_manager;
 
         let paths_for_metadata = file_paths.clone();
-        let sizes = match crate::tasks::runtime::run_io_blocking(move || {
+        let sizes = match crate::tasks::runtime::blocking::run_io(move || {
             paths_for_metadata
                 .iter()
                 .map(|path| {
@@ -648,7 +648,7 @@ pub(crate) fn start_import_inspection_task(
             task_manager::update_progress(
                 &worker_task_id,
                 ProgressUpdate::advance(size)
-                    .total((total_bytes > 0).then_some(total_bytes))
+                    .total(total_bytes)
                     .stage("inspecting_imports"),
             );
             task_manager::set_task_message(
@@ -714,7 +714,7 @@ pub(crate) fn take_import_inspection_result(task_id: &str) -> Option<Vec<ImportF
 
 /// Discards a stored result for a stale terminal import-inspection task.
 pub(crate) fn discard_import_inspection_result(task_id: &str) {
-    let is_terminal = crate::tasks::task_manager::get_snapshot_arc(task_id)
+    let is_terminal = crate::tasks::task_manager::snapshot_arc(task_id)
         .is_some_and(|snapshot| snapshot.is_terminal());
     if !is_terminal {
         return;
@@ -756,7 +756,7 @@ pub async fn check_import_conflict(
     }
     let path_for_log = path.display().to_string();
 
-    crate::tasks::runtime::run_io_blocking(move || {
+    crate::tasks::runtime::blocking::run_io(move || {
         check_import_file(&path, &options).map_err(|e| e.to_string())
     })
     .await

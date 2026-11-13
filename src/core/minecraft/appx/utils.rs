@@ -230,7 +230,7 @@ pub fn patch_manifest(dir: &Path) -> io::Result<bool> {
 
 /// 获取包信息
 #[cfg(target_os = "windows")]
-pub fn get_package_info(
+pub fn query_package_info(
     app_user_model_id: &str,
 ) -> windows::core::Result<Option<(String, String, String)>> {
     match windows::ApplicationModel::AppInfo::GetFromAppUserModelId(&app_user_model_id.into()) {
@@ -284,7 +284,7 @@ const COMMON_GAME_EXECUTABLES: [&str; 4] = [
     "Minecraft.exe",
 ];
 
-fn collect_game_executable_candidates_in_dir(
+fn game_executable_candidates(
     package_dir: &Path,
     identity_name: Option<&str>,
 ) -> Vec<PathBuf> {
@@ -333,7 +333,7 @@ fn collect_game_executable_candidates_in_dir(
     candidates
 }
 
-pub fn find_game_executable_in_dir(package_dir: &Path, identity_name: &str) -> Option<PathBuf> {
+pub fn find_game_executable(package_dir: &Path, identity_name: &str) -> Option<PathBuf> {
     for name in COMMON_GAME_EXECUTABLES {
         let path = package_dir.join(name);
         if path.exists() {
@@ -359,11 +359,11 @@ pub fn find_game_executable_in_dir(package_dir: &Path, identity_name: &str) -> O
     })
 }
 
-pub fn find_any_game_executable_in_dir(package_dir: &Path) -> Option<PathBuf> {
-    find_game_executable_in_dir(package_dir, "")
+pub fn find_any_game_executable(package_dir: &Path) -> Option<PathBuf> {
+    find_game_executable(package_dir, "")
 }
 
-pub fn get_executable_product_version(exe_path: &Path) -> Result<Option<String>, String> {
+pub fn read_executable_product_version(exe_path: &Path) -> Result<Option<String>, String> {
     let file_map =
         FileMap::open(exe_path).map_err(|error| format!("无法映射 PE 文件: {}", error))?;
     let pe_file =
@@ -394,11 +394,11 @@ pub fn get_executable_product_version(exe_path: &Path) -> Result<Option<String>,
     Ok(product_version)
 }
 
-pub fn resolve_executable_product_version_in_dir(
+pub fn resolve_executable_product_version(
     package_dir: PathBuf,
     identity_name: String,
 ) -> Result<Option<(PathBuf, String)>, String> {
-    let candidates = collect_game_executable_candidates_in_dir(&package_dir, Some(&identity_name));
+    let candidates = game_executable_candidates(&package_dir, Some(&identity_name));
     if candidates.is_empty() {
         debug!(
             "PE ProductVersion 候选为空: dir={}, identity={}",
@@ -421,7 +421,7 @@ pub fn resolve_executable_product_version_in_dir(
             .into_par_iter()
             .map(|candidate| {
                 let task_started_at = Instant::now();
-                let result = get_executable_product_version(&candidate);
+                let result = read_executable_product_version(&candidate);
                 (candidate, task_started_at.elapsed(), result)
             })
             .collect::<Vec<_>>()
@@ -486,9 +486,11 @@ pub fn resolve_executable_product_version_in_dir(
     }
 }
 
-pub fn get_manifest_identity_from_dir_blocking(
-    appx_path: &Path,
-) -> Result<(String, String), String> {
+/// Reads and parses AppX identity metadata with blocking file access.
+///
+/// # Errors
+/// Returns an error when the package manifest is missing, unreadable or malformed.
+pub fn read_identity(appx_path: &Path) -> Result<(String, String), String> {
     let manifest_path = find_manifest_path(appx_path)
         .map_err(|error| format!("无法查找 Manifest 目录 {}: {}", appx_path.display(), error))?
         .ok_or_else(|| {
@@ -570,23 +572,20 @@ fn parse_manifest_identity(xml: &str) -> Result<(String, String), String> {
     }
 }
 
-pub async fn get_manifest_identity_from_dir(appx_path: &Path) -> Result<(String, String), String> {
+/// Reads the AppX manifest identity without blocking the async caller.
+///
+/// # Errors
+/// Returns an error when the package manifest cannot be read or parsed, or its IO task fails.
+pub async fn read_manifest_identity(appx_path: &Path) -> Result<(String, String), String> {
     let appx_path = appx_path.to_path_buf();
-    crate::tasks::runtime::run_io_blocking(move || {
-        get_manifest_identity_from_dir_blocking(&appx_path)
-    })
-    .await
-    .map_err(|error| format!("Manifest 读取后台任务异常退出: {error}"))?
-}
-
-/// 异步获取清单中的 Identity 信息
-pub async fn get_manifest_identity(appx_path: &str) -> Result<(String, String), String> {
-    get_manifest_identity_from_dir(Path::new(appx_path)).await
+    crate::tasks::runtime::blocking::run_io(move || read_identity(&appx_path))
+        .await
+        .map_err(|error| format!("Manifest 读取后台任务异常退出: {error}"))?
 }
 
 #[cfg(test)]
 mod tests {
-    use super::get_manifest_identity_from_dir_blocking;
+    use super::read_identity;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -607,8 +606,7 @@ mod tests {
         )
         .expect("manifest should be written");
 
-        let identity = get_manifest_identity_from_dir_blocking(&directory)
-            .expect("lowercase manifest should be parsed");
+        let identity = read_identity(&directory).expect("lowercase manifest should be parsed");
         assert_eq!(identity, ("Minecraft".to_string(), "1.2.3.4".to_string()));
 
         fs::remove_dir_all(directory).expect("test directory should be removed");

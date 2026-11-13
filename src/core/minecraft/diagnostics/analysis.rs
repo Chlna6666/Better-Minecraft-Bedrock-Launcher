@@ -115,9 +115,7 @@ fn origin(name: &str) -> EvidenceSource {
     else { EvidenceSource::ModLog }
 }
 
-/// Only immutable per-session, bounded snapshots may be supplied as sources.
-/// Stores stable identifiers without sensitive log lines or user file paths.
-pub fn analyze(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<CrashFinding> {
+fn classify_logs(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<CrashFinding> {
     if matches!(report.kind, ExitKind::Normal | ExitKind::Running) {
         return Vec::new();
     }
@@ -231,14 +229,15 @@ pub fn analyze(report: &GameSessionReport, sources: &[(String, String)]) -> Vec<
     findings
 }
 
-/// Correlate structured evidence with the existing log classifier. A minidump
-/// proves a numeric exception, not which mod caused the failure.
-pub fn analyze_with_forensics(
+/// Analyze bounded per-session snapshots and correlate structured evidence.
+/// A minidump proves a numeric exception, not which mod caused the failure.
+/// Findings store stable identifiers without raw log lines or user file paths.
+pub fn analyze(
     report: &GameSessionReport,
     sources: &[(String, String)],
     evidence: &super::forensics::ForensicSummary,
 ) -> Vec<CrashFinding> {
-    let mut findings = analyze(report, sources);
+    let mut findings = classify_logs(report, sources);
     if matches!(report.kind, ExitKind::Normal | ExitKind::Running) {
         return Vec::new();
     }
@@ -287,7 +286,7 @@ pub fn analyze_with_forensics(
     // cause. A logged SEH fault can originate from a helper or injected DLL;
     // it does not identify a responsible mod without stronger evidence.
     for issue in &evidence.loader_issues {
-        use super::forensics::{LoaderIssueKind as Kind, NativeExceptionPhase};
+        use super::forensics::{LoaderIssueKind, NativeExceptionPhase};
         let source = if issue.session_private {
             EvidenceSource::LoaderLog
         } else {
@@ -299,7 +298,7 @@ pub fn analyze_with_forensics(
             Confidence::Low
         };
         match issue.kind {
-            Kind::LoaderLoadFailure => {
+            LoaderIssueKind::LoaderLoadFailure => {
                 let reason = match issue.win32_error {
                     Some(126) => CrashReason::MissingDependency,
                     Some(127) => CrashReason::LoaderSymbolFailure,
@@ -308,22 +307,22 @@ pub fn analyze_with_forensics(
                 };
                 add_or_promote(reason, confidence, source);
             }
-            Kind::ModLoadFailure => {
+            LoaderIssueKind::ModLoadFailure => {
                 add_or_promote(CrashReason::ModLoadFailure, confidence, source);
             }
-            Kind::DependencyFailure => {
+            LoaderIssueKind::DependencyFailure => {
                 add_or_promote(CrashReason::ModDependencyFailure, confidence, source);
             }
-            Kind::SymbolFailure => {
+            LoaderIssueKind::SymbolFailure => {
                 add_or_promote(CrashReason::LoaderSymbolFailure, confidence, source);
             }
-            Kind::HookFailure => {
+            LoaderIssueKind::HookFailure => {
                 add_or_promote(CrashReason::LoaderHookFailure, confidence, source);
             }
-            Kind::RuntimeError => {
+            LoaderIssueKind::RuntimeError => {
                 add_or_promote(CrashReason::LoaderFailure, Confidence::Low, source);
             }
-            Kind::NativeException => {
+            LoaderIssueKind::NativeException => {
                 // VEH can capture first-chance exceptions subsequently handled.
                 let exception_confidence = if issue.phase == Some(NativeExceptionPhase::Veh) {
                     Confidence::Low
@@ -423,7 +422,7 @@ mod tests {
             module: "dxgi.dll".into(),
             exception_code: "c0000005".into(),
         });
-        let findings = analyze(&report, &[
+        let findings = classify_logs(&report, &[
             ("logs/mod-provider-00.log".into(), "failed to load mod OldMod".into()),
         ]);
         let access = findings.iter().find(|finding|
@@ -447,7 +446,7 @@ mod tests {
             (0xC000_0139, CrashReason::InitializationFailure),
         ];
         for (code, reason) in cases {
-            assert_eq!(analyze(&report("gdk", Some(code)), &[])[0].reason, reason);
+            assert_eq!(classify_logs(&report("gdk", Some(code)), &[])[0].reason, reason);
         }
         assert_eq!(wer_exception_code("0xC0000142"), Some(0xC0000142));
         assert_eq!(wer_exception_code("xyz"), None);
@@ -460,7 +459,7 @@ mod tests {
         ).collect::<Vec<_>>();
         files.push(("logs/runner-provider-21.log".into(),
             "vkCreateInstance failed VK_ERROR_INCOMPATIBLE_DRIVER".into()));
-        let findings = analyze(&report("wine", Some(1)), &files);
+        let findings = classify_logs(&report("wine", Some(1)), &files);
         assert!(findings.iter().any(|f| f.reason == CrashReason::VulkanUnavailable));
     }
 
@@ -472,7 +471,7 @@ mod tests {
             "[ERROR] [PreLoader] Can't load LeviLamina.dll\n\
 [ERROR] [PreLoader] Error code: 1114\n".into())];
         let evidence = super::super::forensics::inspect_text(&sources);
-        let findings = analyze_with_forensics(&report, &sources, &evidence);
+        let findings = analyze(&report, &sources, &evidence);
         let finding = findings.iter().find(|finding|
             finding.reason == CrashReason::LoaderInitializationFailure).unwrap();
         assert_eq!(finding.confidence, Confidence::Medium);
@@ -481,7 +480,7 @@ mod tests {
             "[ERROR] [PreLoader] Fail to load plugin [OldMod.dll]\n\
 [ERROR] [PreLoader] Error: Code[127]".into())];
         let evidence = super::super::forensics::inspect_text(&sources);
-        let findings = analyze_with_forensics(&report, &sources, &evidence);
+        let findings = analyze(&report, &sources, &evidence);
         assert!(findings.iter().any(|f| f.reason == CrashReason::ModLoadFailure
             && f.confidence == Confidence::Low));
     }
@@ -493,7 +492,7 @@ mod tests {
             "Raw Seh Exception, from <BLoader.dll>:\n\
 [0xC0000409:ntstatus]\n".into())];
         let evidence = super::super::forensics::inspect_text(&sources);
-        let findings = analyze_with_forensics(&report, &sources, &evidence);
+        let findings = analyze(&report, &sources, &evidence);
         assert!(findings.iter().any(|f| f.reason == CrashReason::FastFail));
         assert!(!findings.iter().any(|f| f.reason == CrashReason::ModLoadFailure));
         assert!(findings.iter().any(|f| f.reason == CrashReason::LoaderFailure
@@ -508,14 +507,14 @@ mod tests {
 [ERROR] [PreLoader] failed to resolve symbol\n\
 [ERROR] [LeviLamina] dependency version mismatch".into())];
         let evidence = super::super::forensics::inspect_text(&sources);
-        let findings = analyze_with_forensics(&report, &sources, &evidence);
+        let findings = analyze(&report, &sources, &evidence);
         assert!(findings.iter().any(|f| f.reason == CrashReason::LoaderHookFailure));
         assert!(findings.iter().any(|f| f.reason == CrashReason::LoaderSymbolFailure));
         assert!(findings.iter().any(|f| f.reason == CrashReason::ModDependencyFailure));
     }
     #[test]
     fn access_violation_without_logs_does_not_blame_mods() {
-        let found = analyze(&report("gdk", Some(0xC0000005)), &[]);
+        let found = classify_logs(&report("gdk", Some(0xC0000005)), &[]);
         assert_eq!(found[0].reason, CrashReason::AccessViolation);
         assert_eq!(found[0].confidence, Confidence::Low);
     }
@@ -523,23 +522,23 @@ mod tests {
     fn wine_vulkan_failure_outranks_generic_runner_exit() {
         let logs = vec![("logs/compatibility-runner.log".into(),
             "DXVK vkCreateInstance failed VK_ERROR_INCOMPATIBLE_DRIVER".into())];
-        let found = analyze(&report("wine", Some(1)), &logs);
+        let found = classify_logs(&report("wine", Some(1)), &logs);
         assert_eq!(found[0].reason, CrashReason::VulkanUnavailable);
     }
     #[test]
     fn mod_presence_is_not_a_mod_crash() {
         let logs = vec![("logs/bloader.log".into(), "BLoader discovered 12 mods".into())];
-        let found = analyze(&report("gdk", Some(0xC0000005)), &logs);
+        let found = classify_logs(&report("gdk", Some(0xC0000005)), &logs);
         assert!(!found.iter().any(|x| x.reason == CrashReason::ModLoadFailure));
         let logs = vec![("logs/bloader.log".into(), "Failed to load mod: example".into())];
-        let found = analyze(&report("gdk", Some(0xC0000005)), &logs);
+        let found = classify_logs(&report("gdk", Some(0xC0000005)), &logs);
         assert_eq!(found[0].reason, CrashReason::ModLoadFailure);
     }
     #[test]
     fn does_not_store_raw_log_evidence() {
         let logs = vec![("logs/game.log".into(),
             "permission denied TOKEN=private-secret".into())];
-        let found = analyze(&report("gdk", Some(7)), &logs);
+        let found = classify_logs(&report("gdk", Some(7)), &logs);
         assert!(!serde_json::to_string(&found).unwrap().contains("private-secret"));
     }
     #[test]
@@ -557,7 +556,7 @@ mod tests {
             let report = report(platform, Some(1));
             let source = vec![("logs/compatibility-runner.log".to_string(), output.to_string())];
             let forensic = super::super::forensics::inspect_text(&source);
-            let findings = analyze_with_forensics(&report, &source, &forensic);
+            let findings = analyze(&report, &source, &forensic);
             assert!(
                 findings.iter().any(|finding| finding.reason == expected),
                 "{platform} must identify {expected:?}: {findings:?}"
@@ -566,7 +565,7 @@ mod tests {
         let report = report("gdk", Some(0xC0000005));
         let mod_logs = vec![("logs/mod-provider-00.log".to_string(), MOD.to_string())];
         let forensic = super::super::forensics::inspect_text(&mod_logs);
-        let findings = analyze_with_forensics(&report, &mod_logs, &forensic);
+        let findings = analyze(&report, &mod_logs, &forensic);
         assert!(findings.iter().any(|f| f.reason == CrashReason::ModLoadFailure));
         assert_eq!(forensic.failed_mods[0].identifier, "BadAddon.dll");
     }
@@ -575,12 +574,12 @@ mod tests {
     fn unowned_provider_logs_never_claim_high_confidence() {
         let logs = vec![("logs/mod-provider-00.log".into(),
             "Failed to load plugin: OldPlugin.dll".into())];
-        let found = analyze(&report("gdk", Some(0xC0000005)), &logs);
+        let found = classify_logs(&report("gdk", Some(0xC0000005)), &logs);
         let issue = found.iter().find(|f| f.reason == CrashReason::ModLoadFailure).unwrap();
         assert_eq!(issue.confidence, Confidence::Low);
         let logs = vec![("logs/mod-provider-00.log".into(),
             "Failed to load dll: optional.dll".into())];
-        let found = analyze(&report("gdk", Some(0xC0000005)), &logs);
+        let found = classify_logs(&report("gdk", Some(0xC0000005)), &logs);
         let issue = found.iter().find(|f| f.reason == CrashReason::MissingDependency).unwrap();
         assert_eq!(issue.confidence, Confidence::Low);
     }
@@ -591,7 +590,7 @@ mod tests {
         let files = vec![("logs/mod-provider-00.log".to_string(),
             "Failed to load mod: OtherInstance.dll".to_string())];
         let evidence = super::super::forensics::inspect_text(&files);
-        let findings = analyze_with_forensics(&report, &files, &evidence);
+        let findings = analyze(&report, &files, &evidence);
         let mod_finding = findings.iter()
             .find(|f| f.reason == CrashReason::ModLoadFailure).unwrap();
         assert_eq!(mod_finding.confidence, Confidence::Low);
@@ -612,7 +611,7 @@ mod tests {
                 fault_module: Some("bloader.dll".into()),
             }],
         };
-        let findings = analyze_with_forensics(&report, &[], &evidence);
+        let findings = analyze(&report, &[], &evidence);
         assert!(!findings.iter().any(|finding|
             matches!(finding.reason, CrashReason::AccessViolation | CrashReason::LoaderFailure)));
     }
@@ -632,7 +631,7 @@ mod tests {
                 fault_module: Some("bloader.dll".to_string()),
             }],
         };
-        let findings = analyze_with_forensics(&report, &[], &evidence);
+        let findings = analyze(&report, &[], &evidence);
         assert!(findings.iter().any(|finding|
             finding.reason == CrashReason::LoaderFailure
                 && finding.confidence == Confidence::Medium
@@ -655,7 +654,7 @@ mod tests {
                 fault_module: None,
             }],
         };
-        let findings = analyze_with_forensics(&report, &[], &evidence);
+        let findings = analyze(&report, &[], &evidence);
         assert_eq!(findings[0].reason, CrashReason::AccessViolation);
         assert_eq!(findings[0].confidence, Confidence::High);
         assert_eq!(findings[0].source, EvidenceSource::CrashDump);

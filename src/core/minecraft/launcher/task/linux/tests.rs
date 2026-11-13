@@ -2,7 +2,7 @@ use super::{
     BLOADER_LEGACY_ORIGINAL_DEBUG_CONSOLE_KEY, BLOADER_LEGACY_STDIO_WORKAROUND_KEY,
     BLOADER_PROCESS_CAPTURE_BLOCKER_MARKER, BLOADER_PROCESS_CAPTURE_DIRECTORY,
     BLOADER_PROCESS_STDOUT_CAPTURE_NAME, LaunchRequest, classify_runner_failure,
-    configure_bloader_linux_stdio_workaround, incompatible_proton_prefix_needs_backup,
+    configure_stdout_capture_blocker, prefix_requires_backup,
     install_roundmcdev_bloader_mod, normalize_runner_output_line, proton_game_input_is_ready,
     proton_wine_prefix_path, remove_legacy_roundmcdev_preload, request_uses_preview_data,
     roundmcdev_prefix_is_ready, runner_supports_winegdk_login, sanitize_instance_folder_name,
@@ -126,7 +126,7 @@ fn wine_created_prefix_without_proton_metadata_requires_backup()
     std::fs::create_dir_all(prefix.join("pfx"))?;
     std::fs::write(prefix.join("pfx/system.reg"), b"WINE REGISTRY Version 2\n")?;
 
-    assert!(incompatible_proton_prefix_needs_backup(&prefix));
+    assert!(prefix_requires_backup(&prefix));
 
     std::fs::remove_dir_all(prefix)?;
     Ok(())
@@ -139,7 +139,7 @@ fn proton_managed_prefix_does_not_require_backup() -> Result<(), Box<dyn std::er
     std::fs::write(prefix.join("pfx/system.reg"), b"WINE REGISTRY Version 2\n")?;
     std::fs::write(prefix.join("version"), b"10-32\n")?;
 
-    assert!(!incompatible_proton_prefix_needs_backup(&prefix));
+    assert!(!prefix_requires_backup(&prefix));
 
     std::fs::remove_dir_all(prefix)?;
     Ok(())
@@ -256,7 +256,7 @@ fn bloader_0_2_11_without_console_blocks_recursive_capture()
         br#"{"enable_debug_console":false,"default_locale":"zh_CN"}"#,
     )?;
 
-    assert!(configure_bloader_linux_stdio_workaround(
+    assert!(configure_stdout_capture_blocker(
         &game_directory,
         "0.2.11.0"
     )?);
@@ -291,7 +291,7 @@ fn bloader_0_2_11_restores_debug_console_after_legacy_workaround()
         ),
     )?;
 
-    assert!(configure_bloader_linux_stdio_workaround(
+    assert!(configure_stdout_capture_blocker(
         &game_directory,
         "0.2.11.0"
     )?);
@@ -320,7 +320,7 @@ fn bloader_0_2_11_with_console_keeps_native_capture_enabled()
         br#"{"enable_debug_console":true}"#,
     )?;
 
-    assert!(!configure_bloader_linux_stdio_workaround(
+    assert!(!configure_stdout_capture_blocker(
         &game_directory,
         "0.2.11.0"
     )?);
@@ -341,12 +341,12 @@ fn fixed_bloader_removes_linux_process_capture_blocker() -> Result<(), Box<dyn s
         game_directory.join("config.json"),
         br#"{"enable_debug_console":false}"#,
     )?;
-    assert!(configure_bloader_linux_stdio_workaround(
+    assert!(configure_stdout_capture_blocker(
         &game_directory,
         "0.2.11.0"
     )?);
 
-    assert!(!configure_bloader_linux_stdio_workaround(
+    assert!(!configure_stdout_capture_blocker(
         &game_directory,
         "0.2.12.0"
     )?);

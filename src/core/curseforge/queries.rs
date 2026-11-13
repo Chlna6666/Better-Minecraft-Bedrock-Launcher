@@ -77,9 +77,12 @@ pub async fn load_mod_page(
     let client = CurseForgeClient::new()?;
     let mod_entry = match cached_mod_entry {
         Some(entry) => entry,
-        None => client.get_mod(mod_id).await?.into(),
+        None => client.fetch_mod(mod_id).await?.into(),
     };
-    let description_html = client.get_mod_description(mod_id).await.unwrap_or_default();
+    let description_html = client
+        .fetch_mod_description(mod_id)
+        .await
+        .unwrap_or_default();
 
     Ok(CurseForgeModPageData {
         mod_entry,
@@ -93,7 +96,7 @@ pub async fn load_mod_files(
 ) -> Result<Vec<CurseForgeFileData>, String> {
     let client = CurseForgeClient::new()?;
     let response = client
-        .get_mod_files(mod_id, normalize_game_version(game_version))
+        .fetch_mod_files(mod_id, normalize_game_version(game_version))
         .await?;
 
     Ok(response.data.into_iter().map(Into::into).collect())

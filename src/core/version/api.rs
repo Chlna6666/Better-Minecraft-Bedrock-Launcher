@@ -4,27 +4,27 @@ use std::path::Path;
 use std::time::Instant;
 use tracing::debug;
 
-use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_versions};
-use crate::core::version::version_manager::get_appx_version_list_blocking;
+use crate::core::version::launch_versions::{self, LaunchVersionEntry};
+use crate::core::version::installed::scan;
 use crate::utils::file_ops;
 
-pub async fn get_version_list() -> Result<Vec<LaunchVersionEntry>> {
+pub async fn list() -> Result<Vec<LaunchVersionEntry>> {
     let path = file_ops::bmcbl_subdir("versions");
     anyhow::ensure!(path.as_os_str().len() > 0, "invalid versions folder path");
-    let versions = crate::tasks::runtime::run_cpu(move || get_appx_version_list_blocking(&path))
+    let versions = crate::tasks::runtime::run_cpu(move || scan(&path))
         .await
         .map_err(anyhow::Error::msg)??;
-    crate::tasks::runtime::run_io_blocking(move || {
+    crate::tasks::runtime::blocking::run_io(move || {
         let mut versions = versions;
         for version in &mut versions {
-            match crate::core::version::game_info::load_game_info(Path::new(version.path.as_ref())) {
+            match crate::core::version::game_info::load(Path::new(version.path.as_ref())) {
                 Ok(game_info) => version.game_info = game_info,
                 Err(error) => {
                     tracing::warn!(folder = %version.folder, %error, "failed to load game statistics");
                 }
             }
         }
-        sort_launch_versions(&mut versions);
+        launch_versions::sort(&mut versions);
         Ok::<_, String>(versions)
     })
     .await
@@ -88,7 +88,7 @@ where
     let task_id = crate::tasks::task_manager::create_task(
         crate::tasks::task_manager::TaskOptions::new(title, stage).detail(detail),
     )?;
-    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
+    crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
 
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
@@ -104,7 +104,7 @@ where
         }
 
         let result =
-            crate::tasks::runtime::run_io_blocking(move || operation(blocking_task_id.as_str()))
+            crate::tasks::runtime::blocking::run_io(move || operation(blocking_task_id.as_str()))
                 .await;
 
         match result {
@@ -138,7 +138,7 @@ where
     if let Err(error) = crate::tasks::runtime::spawn_io(async move {
         match workflow.await {
             Ok(()) => {
-                let unfinished = crate::tasks::task_manager::get_snapshot_arc(&monitor_task_id)
+                let unfinished = crate::tasks::task_manager::snapshot_arc(&monitor_task_id)
                     .is_some_and(|snapshot| !snapshot.is_terminal());
                 if unfinished {
                     let status = if crate::tasks::task_manager::is_cancelled(&monitor_task_id) {

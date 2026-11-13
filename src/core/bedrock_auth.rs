@@ -1,4 +1,3 @@
-#[path = "bedrock_auth/managed/mod.rs"]
 mod managed;
 
 #[cfg(target_os = "linux")]
@@ -25,7 +24,7 @@ const SELECTION_SYSTEM: u8 = 2;
 
 static EVENT_BRIDGE_STARTED: AtomicBool = AtomicBool::new(false);
 static LOCAL_PROBE_STARTED: AtomicBool = AtomicBool::new(false);
-static PRELOAD_STARTED: AtomicBool = AtomicBool::new(false);
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static SELECTION: AtomicU8 = AtomicU8::new(SELECTION_AUTO);
 static AUTH_STATE: Lazy<(watch::Sender<AuthSnapshot>, watch::Receiver<AuthSnapshot>)> =
     Lazy::new(|| watch::channel(managed::AuthSnapshot::signed_out()));
@@ -92,8 +91,8 @@ pub(crate) fn event_stream() -> WatchStream<AuthSnapshot> {
 }
 
 /// 只调度后台任务并立即返回，不在启动线程执行任何凭证、Gaming Runtime 或图片操作。
-pub(crate) fn preload_at_app_startup() {
-    if PRELOAD_STARTED.swap(true, Ordering::AcqRel) {
+pub(crate) fn initialize() {
+    if INITIALIZED.swap(true, Ordering::AcqRel) {
         return;
     }
 
@@ -115,7 +114,7 @@ pub(crate) fn preload_at_app_startup() {
 }
 
 pub(crate) fn start_login() -> Result<(), String> {
-    preload_at_app_startup();
+    initialize();
     select_managed_account();
     managed::start_login()
 }
@@ -125,7 +124,7 @@ pub(crate) fn cancel_login() {
 }
 
 pub(crate) fn switch_account(account_id: String) -> Result<(), String> {
-    preload_at_app_startup();
+    initialize();
     if is_system_local_account(&account_id) {
         SELECTION.store(SELECTION_SYSTEM, Ordering::Release);
         persist_selection_mode(true);
@@ -151,13 +150,13 @@ pub(crate) fn remove_account(account_id: String) -> Result<(), String> {
 pub(crate) async fn prepare_launch(
     prefix_path: &Path,
 ) -> Result<Option<PreparedLaunchAuth>, String> {
-    preload_at_app_startup();
+    initialize();
     managed::prepare_launch(prefix_path).await
 }
 
 #[cfg(target_os = "windows")]
 pub(crate) async fn prepare_launch_windows() -> Result<Option<PreparedLaunchAuth>, String> {
-    preload_at_app_startup();
+    initialize();
     let latest = latest_managed_snapshot();
     if system_account_is_selected(&latest) {
         let local = local_account_snapshot();
@@ -201,7 +200,7 @@ fn start_local_user_probe() {
     }
     let result = crate::tasks::runtime::spawn_io(async move {
         let started = Instant::now();
-        let probe = crate::tasks::runtime::run_io_blocking(|| {
+        let probe = crate::tasks::runtime::blocking::run_io(|| {
             let probe = crate::core::system_xbox_user::probe_default_user();
             match probe {
                 crate::core::system_xbox_user::SystemXboxUserProbe::SignedIn(user) => {
@@ -360,34 +359,34 @@ fn legacy_account_mode_path() -> PathBuf {
 }
 
 fn load_selection_mode() {
-    let provider = crate::config::config::read_config()
+    let provider = crate::config::settings::read()
         .map(|config| config.login.provider)
         .unwrap_or_else(|error| {
             tracing::warn!(%error, "无法读取登录配置，使用自动账号选择");
-            crate::config::config::LoginProvider::Auto
+            crate::config::settings::LoginProvider::Auto
         });
 
     let selection = match provider {
-        crate::config::config::LoginProvider::BedrockAuth => SELECTION_MANAGED,
-        crate::config::config::LoginProvider::System if cfg!(target_os = "windows") => {
+        crate::config::settings::LoginProvider::BedrockAuth => SELECTION_MANAGED,
+        crate::config::settings::LoginProvider::System if cfg!(target_os = "windows") => {
             SELECTION_SYSTEM
         }
-        crate::config::config::LoginProvider::Auto
-        | crate::config::config::LoginProvider::System => SELECTION_AUTO,
+        crate::config::settings::LoginProvider::Auto
+        | crate::config::settings::LoginProvider::System => SELECTION_AUTO,
     };
     SELECTION.store(selection, Ordering::Release);
 
     #[cfg(target_os = "windows")]
-    if matches!(provider, crate::config::config::LoginProvider::Auto)
+    if matches!(provider, crate::config::settings::LoginProvider::Auto)
         && std::fs::read_to_string(legacy_account_mode_path())
             .is_ok_and(|mode| mode.trim().eq_ignore_ascii_case("system"))
     {
-        if let Err(error) = crate::config::config::update_config(|config| {
-            config.login.provider = crate::config::config::LoginProvider::System;
+        if let Err(error) = crate::config::settings::update(|config| {
+            config.login.provider = crate::config::settings::LoginProvider::System;
         }) {
             tracing::warn!(%error, "无法迁移旧 Xbox 账号选择配置");
         } else {
-            crate::config::config::flush_config_now();
+            crate::config::settings::flush_now();
             SELECTION.store(SELECTION_SYSTEM, Ordering::Release);
             remove_legacy_account_mode();
         }
@@ -396,16 +395,16 @@ fn load_selection_mode() {
 
 fn persist_selection_mode(system: bool) {
     let provider = if system {
-        crate::config::config::LoginProvider::System
+        crate::config::settings::LoginProvider::System
     } else {
-        crate::config::config::LoginProvider::BedrockAuth
+        crate::config::settings::LoginProvider::BedrockAuth
     };
-    if let Err(error) = crate::config::config::update_config(|config| {
+    if let Err(error) = crate::config::settings::update(|config| {
         config.login.provider = provider;
     }) {
         tracing::warn!(%error, "无法保存登录来源配置");
     } else {
-        crate::config::config::flush_config_now();
+        crate::config::settings::flush_now();
         remove_legacy_account_mode();
     }
 }

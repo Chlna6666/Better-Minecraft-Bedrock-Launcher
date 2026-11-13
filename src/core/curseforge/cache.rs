@@ -115,7 +115,7 @@ pub(super) async fn store(key: &str, body: Arc<[u8]>) -> Result<(), String> {
     let fetched_at = unix_timestamp();
     memory_cache().insert(key.to_string(), body.clone(), fetched_at);
 
-    let path = cache_path(key);
+    let path = path(key);
     let parent = path
         .parent()
         .ok_or_else(|| "CurseForge cache path has no parent".to_string())?;
@@ -143,7 +143,7 @@ pub(super) async fn store(key: &str, body: Arc<[u8]>) -> Result<(), String> {
 
 pub(super) async fn invalidate(key: &str) {
     memory_cache().remove(key);
-    if let Err(error) = tokio::fs::remove_file(cache_path(key)).await
+    if let Err(error) = tokio::fs::remove_file(path(key)).await
         && error.kind() != std::io::ErrorKind::NotFound
     {
         tracing::debug!("remove invalid CurseForge cache entry failed: {error}");
@@ -196,7 +196,7 @@ impl MemoryCache {
 }
 
 async fn load_disk(key: &str) -> Option<CacheRecord> {
-    let path = cache_path(key);
+    let path = path(key);
     let encoded = tokio::fs::read(&path).await.ok()?;
     let newline = encoded.iter().position(|byte| *byte == b'\n')?;
     let metadata = serde_json::from_slice::<DiskMetadata>(&encoded[..newline]).ok()?;
@@ -270,7 +270,7 @@ async fn prune_disk_cache(root: &Path) {
     }
 }
 
-fn cache_path(key: &str) -> PathBuf {
+fn path(key: &str) -> PathBuf {
     let hash = hex::encode(Sha256::digest(key.as_bytes()));
     crate::utils::file_ops::curseforge_api_cache_dir().join(format!("{hash}.cache"))
 }

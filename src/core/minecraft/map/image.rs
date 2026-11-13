@@ -77,30 +77,14 @@ pub struct MapImageTile {
 ///
 /// No map id is allocated and no stored record is modified. Transparent pixels have zero RGB
 /// so subsequent export cannot leak invisible source color. The 1024-tile limit bounds both
-/// result size (64 MiB) and intermediate image allocations.
+/// result size (64 MiB) and intermediate image allocations. The callback runs on the caller's
+/// thread after each tile is ready, in north-up row-major order.
 ///
 /// # Errors
 ///
 /// Returns validation errors for bad dimensions, RGBA byte counts, crop bounds, arithmetic
 /// overflow, or a grid exceeding 1024 maps.
 pub fn tile_map_image(
-    source_rgba: Vec<u8>,
-    source_width: u32,
-    source_height: u32,
-    options: MapImageOptions,
-) -> Result<Vec<MapImageTile>> {
-    tile_map_image_with_progress(source_rgba, source_width, source_height, options, |_| {})
-}
-
-/// Performs the same conversion as [`tile_map_image`], reporting each completed 128×128 tile.
-///
-/// The callback runs on the caller's thread after a tile is ready, in north-up row-major order.
-/// It can update a visible conversion task without moving image decoding or resizing into UI
-/// rendering. This function reads no world data and writes no map records.
-///
-/// # Errors
-/// Returns the same input validation and image errors as [`tile_map_image`].
-pub fn tile_map_image_with_progress(
     source_rgba: Vec<u8>,
     source_width: u32,
     source_height: u32,
@@ -246,7 +230,7 @@ mod tests {
             source.extend_from_slice(&color);
         }
         let mut completed = Vec::new();
-        let tiles = tile_map_image_with_progress(
+        let tiles = tile_map_image(
             source,
             3,
             1,
@@ -288,7 +272,7 @@ mod tests {
             fit: MapImageFit::Stretch,
             alpha_threshold: 1,
         };
-        assert!(tile_map_image(vec![0; 4], 1, 1, options).is_err());
+        assert!(tile_map_image(vec![0; 4], 1, 1, options, |_| {}).is_err());
         assert!(
             tile_map_image(
                 vec![0; 4],
@@ -301,7 +285,8 @@ mod tests {
                     },
                     columns: 1025,
                     ..options
-                }
+                },
+                |_| {},
             )
             .is_err()
         );
@@ -316,6 +301,7 @@ mod tests {
                 columns: 1, rows: 1, resample: MapResample::Nearest,
                 fit: MapImageFit::Contain, alpha_threshold: 1,
             },
+            |_| {},
         ).expect("fit complete image");
         let pixel = |x: usize, y: usize| {
             let start = (y * 128 + x) * 4;

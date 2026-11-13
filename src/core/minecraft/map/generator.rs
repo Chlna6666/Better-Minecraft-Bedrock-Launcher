@@ -10,25 +10,14 @@ use bedrock_world::{structure::McStructureFile, surface::CancelFlag};
 use crate::tasks::task_manager::ProgressUpdate;
 use crate::tasks::{runtime, task_manager};
 
-mod image;
-mod install;
-mod map_bundle;
-mod map_image;
+pub mod image;
+pub mod install;
+pub mod bundle;
+pub mod image_to_map;
 mod model_export;
 mod model_import;
-mod source_obj_preview;
-mod structure_preview;
-
-pub use image::{
-    Dithering, ImageBlockExportRequest, ImageBlockHeight, ImageBlockOptions, ImageFit,
-    ReliefImageFill, approved_block_names, start_image_block_export,
-};
-pub use install::{
-    MapBundleInstallTarget, MapInstallHistory, start_map_bundle_file_install,
-    start_map_bundle_install, start_map_frame_grid_preflight,
-};
-pub use map_bundle::start_map_bundle_export;
-pub use source_obj_preview::ObjSourcePreview;
+pub mod source_obj_preview;
+pub mod structure_preview;
 
 /// Whether a path is a supported importable model source.
 pub fn is_supported_model(path: &std::path::Path) -> bool {
@@ -44,15 +33,6 @@ pub fn convert_local_model_file(
 ) -> Result<(), String> {
     model_export::export_model_path(source, output, cancel)
 }
-
-pub use map_image::{
-    MapPreviewOptions, get_map_preview, get_map_preview_frame, release_map_preview,
-    start_map_image_preview,
-};
-pub use structure_preview::{
-    StructurePreviewKind, StructurePreviewRequest, get_obj_source_preview, get_structure_preview,
-    release_structure_preview, start_structure_preview,
-};
 
 /// Inputs for one OBJ conversion and Bedrock structure export.
 pub struct ObjExportRequest {
@@ -79,12 +59,14 @@ pub fn start_obj_export(request: ObjExportRequest) -> Result<String, String> {
         .source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());
-    let task_id = task_manager::create_task(
-        task_manager::TaskOptions::new("OBJ 转方块并导出结构", "解析 OBJ").detail(detail),
-    )?;
-    task_manager::register_task_cooperative_cancel(task_id.clone());
+    let mut options = task_manager::TaskOptions::new("OBJ 转方块并导出结构", "解析 OBJ");
+    if let Some(detail) = detail {
+        options = options.detail(detail);
+    }
+    let task_id = task_manager::create_task(options)?;
+    task_manager::register_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
-    task_manager::register_task_cancel_hook(task_id.clone(), {
+    task_manager::register_cancel_hook(task_id.clone(), {
         let cancel = cancel.clone();
         move || cancel.cancel()
     });
@@ -117,7 +99,7 @@ async fn export_obj(
 ) -> Result<String, String> {
     let source = request.source;
     let prepared =
-        runtime::run_io_blocking(move || model_import::prepare_model_for_export(&source)).await??;
+        runtime::blocking::run_io(move || model_import::prepare_model_for_export(&source)).await??;
     let model_import::PreparedMapModel { model, decoded, .. } = prepared;
     if cancel.is_cancelled() {
         return Err("OBJ 转换已取消".to_owned());
@@ -164,7 +146,7 @@ async fn export_obj(
     task_manager::reset_progress(task_id, Some(1), Some("写入 .mcstructure"));
     let output = request.output;
     let output_for_worker = output.clone();
-    runtime::run_io_blocking(move || structure.write_to_path(&output_for_worker))
+    runtime::blocking::run_io(move || structure.write_to_path(&output_for_worker))
         .await?
         .map_err(|error| error.to_string())?;
     task_manager::update_progress(
@@ -208,12 +190,14 @@ pub fn start_model_file_export(request: ModelFileExportRequest) -> Result<String
         .output
         .file_name()
         .map(|s| s.to_string_lossy().into_owned());
-    let task_id = task_manager::create_task(
-        task_manager::TaskOptions::new("模型格式导出", "读取模型").detail(name),
-    )?;
-    task_manager::register_task_cooperative_cancel(task_id.clone());
+    let mut options = task_manager::TaskOptions::new("模型格式导出", "读取模型");
+    if let Some(name) = name {
+        options = options.detail(name);
+    }
+    let task_id = task_manager::create_task(options)?;
+    task_manager::register_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
-    task_manager::register_task_cancel_hook(task_id.clone(), {
+    task_manager::register_cancel_hook(task_id.clone(), {
         let cancel = cancel.clone();
         move || cancel.cancel()
     });
@@ -222,7 +206,7 @@ pub fn start_model_file_export(request: ModelFileExportRequest) -> Result<String
         let result = async {
             let source = request.source;
             let prepared =
-                runtime::run_io_blocking(move || model_import::prepare_model_for_export(&source))
+                runtime::blocking::run_io(move || model_import::prepare_model_for_export(&source))
                     .await??;
             if cancel.is_cancelled() {
                 return Err::<String, String>("模型导出已取消".into());

@@ -1,5 +1,4 @@
 pub(crate) mod api_cache;
-#[path = "bedrock_auth_local.rs"]
 pub(crate) mod bedrock_auth;
 pub mod curseforge;
 pub mod easytier;
@@ -9,7 +8,6 @@ pub mod levilamina;
 pub(crate) mod linux_runtime;
 pub mod minecraft;
 pub mod native_mods;
-#[path = "online/online.rs"]
 pub mod online;
 pub mod sponsors;
 #[cfg(target_os = "windows")]

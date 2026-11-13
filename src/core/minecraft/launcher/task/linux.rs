@@ -1,9 +1,9 @@
-use super::bloader;
+use super::super::bloader;
 use crate::core::linux_runtime::{
     RunnerKind, resolve_runner, runner_runtime_root, validate_proton_game_runtime,
 };
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskOptions, append_task_log, finish_task, register_task_abort_handle,
+    ProgressUpdate, TaskOptions, append_task_log, finish_task, register_abort_handle,
     set_total, update_progress,
 };
 use std::collections::VecDeque;
@@ -231,7 +231,7 @@ fn proton_prefix_has_registry(prefix_path: &Path) -> bool {
     prefix.join("system.reg").is_file() || prefix.join("user.reg").is_file()
 }
 
-fn incompatible_proton_prefix_needs_backup(prefix_path: &Path) -> bool {
+fn prefix_requires_backup(prefix_path: &Path) -> bool {
     proton_prefix_has_registry(prefix_path) && !proton_prefix_has_metadata(prefix_path)
 }
 
@@ -239,7 +239,7 @@ async fn backup_incompatible_proton_prefix(
     prefix_path: &Path,
     task_id: &str,
 ) -> Result<(), String> {
-    if !incompatible_proton_prefix_needs_backup(prefix_path) {
+    if !prefix_requires_backup(prefix_path) {
         return Ok(());
     }
     let timestamp = SystemTime::now()
@@ -317,8 +317,8 @@ async fn initialize_proton_prefix(
         .await
         .map_err(|_| "Proton Prefix 初始化超时".to_string())?
         .map_err(|error| format!("无法启动 Proton Prefix 初始化：{error}"))?;
-    append_command_output(task_id, &output.stdout, false);
-    append_command_output(task_id, &output.stderr, true);
+    append_command_output(task_id, &output.stdout, CommandOutputStream::Stdout);
+    append_command_output(task_id, &output.stderr, CommandOutputStream::Stderr);
     if !output.status.success() {
         return Err(format!(
             "Proton Prefix 初始化失败，退出代码 {}",
@@ -391,8 +391,8 @@ async fn initialize_roundmcdev_prefix(
         .await
         .map_err(|_| "RoundMCDev Wine Prefix 初始化超时".to_string())?
         .map_err(|error| format!("无法启动 RoundMCDev wineboot：{error}"))?;
-    append_command_output(task_id, &output.stdout, false);
-    append_command_output(task_id, &output.stderr, true);
+    append_command_output(task_id, &output.stdout, CommandOutputStream::Stdout);
+    append_command_output(task_id, &output.stderr, CommandOutputStream::Stderr);
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let detail = if stderr.is_empty() {
@@ -577,7 +577,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
             };
         }
     };
-    register_task_abort_handle(task_id.clone(), join_handle.abort_handle());
+    register_abort_handle(task_id.clone(), join_handle.abort_handle());
     LaunchTask {
         task_id,
         completion,
@@ -616,7 +616,7 @@ async fn inject_bloader(exe_path: &Path, task_id: &str) -> Result<(), String> {
         append_task_log(task_id, "游戏 EXE 已包含补丁标记，跳过注入".to_string());
     } else {
         let exe_path = exe_path.to_path_buf();
-        crate::tasks::runtime::run_io_blocking(move || {
+        crate::tasks::runtime::blocking::run_io(move || {
             crate::core::inject::pe::ensure_backup(&exe_path)
                 .map_err(|error| format!("创建 EXE 备份失败：{error}"))?;
             crate::core::inject::pe::restore_original_pe(&exe_path)
@@ -632,7 +632,7 @@ async fn inject_bloader(exe_path: &Path, task_id: &str) -> Result<(), String> {
 }
 
 async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u32>, String> {
-    let runner = crate::tasks::runtime::run_io_blocking(resolve_runner)
+    let runner = crate::tasks::runtime::blocking::run_io(resolve_runner)
         .await
         .map_err(|error| format!("检测 Proton/Wine 任务失败：{error}"))??;
     append_task_log(
@@ -648,7 +648,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
 
     let package_path = PathBuf::from(request.package_folder.as_ref());
     let package_path_for_probe = package_path.clone();
-    let game_executable = crate::tasks::runtime::run_io_blocking(move || {
+    let game_executable = crate::tasks::runtime::blocking::run_io(move || {
         resolve_game_executable(&package_path_for_probe)
     })
     .await
@@ -669,7 +669,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     // runtime 1.8 and the game exits with code 3.
     inject_bloader(&game_executable, task_id).await?;
 
-    crate::tasks::runtime::run_io_blocking({
+    crate::tasks::runtime::blocking::run_io({
         let runner = runner.clone();
         move || validate_proton_game_runtime(&runner)
     })
@@ -869,7 +869,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             spawn_output_pump(
                 task_id.to_string(),
                 stdout,
-                false,
+                CommandOutputStream::Stdout,
                 recent_output.clone(),
                 None,
                 Some(publish_startup_output.clone()),
@@ -884,7 +884,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             spawn_output_pump(
                 task_id.to_string(),
                 stderr,
-                true,
+                CommandOutputStream::Stderr,
                 recent_output.clone(),
                 None,
                 Some(publish_startup_output.clone()),
@@ -910,7 +910,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let code = status.code().map_or(u32::MAX, |exit_code| exit_code as u32);
-            match crate::tasks::runtime::run_io_blocking(move || {
+            match crate::tasks::runtime::blocking::run_io(move || {
                 report.finish_compatibility(Ok(code), &output, true)
             })
             .await
@@ -1067,7 +1067,7 @@ async fn install_roundmcdev_cryptbase(
     };
     let source = proton_root.join("files/lib/wine/x86_64-windows/cryptbase.dll");
     let destination = wine_prefix.join("drive_c/windows/system32/cryptbase.dll");
-    let copied = crate::tasks::runtime::run_io_blocking(move || {
+    let copied = crate::tasks::runtime::blocking::run_io(move || {
         if !source.is_file() || destination.is_file() {
             return Ok(false);
         }
@@ -1099,7 +1099,7 @@ async fn apply_roundmcdev_proton_patches(
     let proton_root_for_task = proton_root.clone();
     let package_path = package_path.to_path_buf();
     let game_executable = game_executable.to_path_buf();
-    let report = crate::tasks::runtime::run_io_blocking(move || {
+    let report = crate::tasks::runtime::blocking::run_io(move || {
         let mut changes = Vec::new();
         let wine_directory = proton_root_for_task.join("files/lib/wine/x86_64-windows");
         if patch_roundmcdev_combase(&wine_directory.join("combase.dll"))? {
@@ -1351,7 +1351,7 @@ async fn apply_roundmcdev_game_fixes(
         .to_path_buf();
     let game_directory_for_log = game_directory.clone();
     let bundle_root_for_log = bundle_root.clone();
-    let stdio_workaround_enabled = crate::tasks::runtime::run_io_blocking(move || {
+    let stdio_workaround_enabled = crate::tasks::runtime::blocking::run_io(move || {
         copy_directory_contents(&game_fix, &game_directory)
             .map_err(|error| format!("复制 RoundMCDev gameFix 失败：{error}"))?;
         install_roundmcdev_bloader_mod(
@@ -1360,10 +1360,7 @@ async fn apply_roundmcdev_game_fixes(
             ROUNDMCDEV_BLOADER_MOD_VERSION,
         )?;
         remove_legacy_roundmcdev_preload(&game_directory)?;
-        configure_bloader_linux_stdio_workaround(
-            &game_directory,
-            bloader::embedded_version_string(),
-        )
+        configure_stdout_capture_blocker(&game_directory, bloader::embedded_version_string())
     })
     .await
     .map_err(|error| format!("应用 RoundMCDev 游戏修复任务失败：{error}"))??;
@@ -1441,27 +1438,27 @@ fn remove_legacy_roundmcdev_preload(game_directory: &Path) -> Result<(), String>
         .map_err(|error| format!("清理错误启动链路遗留的 preload GamePatch 失败：{error}"))
 }
 
-fn configure_bloader_linux_stdio_workaround(
+fn configure_stdout_capture_blocker(
     game_directory: &Path,
     bloader_version: &str,
 ) -> Result<bool, String> {
     let config_path = game_directory.join("config.json");
-    let debug_console_enabled = restore_legacy_bloader_stdio_workaround(&config_path)?;
+    let debug_console_enabled = migrate_bloader_stdio_config(&config_path)?;
     let vulnerable = bloader_version.starts_with(BLOADER_STDIO_RECURSION_VERSION_PREFIX);
     let capture_path = game_directory
         .join(BLOADER_PROCESS_CAPTURE_DIRECTORY)
         .join(BLOADER_PROCESS_STDOUT_CAPTURE_NAME);
 
     if !vulnerable || debug_console_enabled {
-        remove_bloader_process_capture_blocker(&capture_path)?;
+        remove_capture_blocker(&capture_path)?;
         return Ok(false);
     }
 
-    install_bloader_process_capture_blocker(&capture_path)?;
+    install_capture_blocker(&capture_path)?;
     Ok(true)
 }
 
-fn restore_legacy_bloader_stdio_workaround(config_path: &Path) -> Result<bool, String> {
+fn migrate_bloader_stdio_config(config_path: &Path) -> Result<bool, String> {
     if !config_path.is_file() {
         return Ok(false);
     }
@@ -1516,7 +1513,7 @@ fn restore_legacy_bloader_stdio_workaround(config_path: &Path) -> Result<bool, S
     Ok(debug_console_enabled)
 }
 
-fn install_bloader_process_capture_blocker(capture_path: &Path) -> Result<(), String> {
+fn install_capture_blocker(capture_path: &Path) -> Result<(), String> {
     let capture_directory = capture_path
         .parent()
         .ok_or_else(|| "BLoader stdout 捕获路径没有有效的父目录".to_string())?;
@@ -1539,7 +1536,7 @@ fn install_bloader_process_capture_blocker(capture_path: &Path) -> Result<(), St
     .map_err(|error| format!("写入 BLoader stdout 捕获阻断标记失败：{error}"))
 }
 
-fn remove_bloader_process_capture_blocker(capture_path: &Path) -> Result<(), String> {
+fn remove_capture_blocker(capture_path: &Path) -> Result<(), String> {
     let marker_path = capture_path.join(BLOADER_PROCESS_CAPTURE_BLOCKER_MARKER);
     if !marker_path.is_file() {
         return Ok(());
@@ -1609,8 +1606,8 @@ async fn stop_lingering_proton_processes(
         .await
         .map_err(|_| "清理遗留的 Wine 进程超时".to_string())?
         .map_err(|error| format!("无法执行 wineserver {} 清理：{error}", wineserver.display()))?;
-    append_command_output(task_id, &output.stdout, false);
-    append_command_output(task_id, &output.stderr, true);
+    append_command_output(task_id, &output.stdout, CommandOutputStream::Stdout);
+    append_command_output(task_id, &output.stderr, CommandOutputStream::Stderr);
     if !output.status.success() {
         // `wineserver -k` returns exit code 1 when no Wine process is running
         // for this prefix — the normal case on a fresh or cleanly-closed
@@ -1664,8 +1661,8 @@ async fn initialize_wine_prefix(
     .map_err(|_| "初始化 Wine prefix 超时".to_string())?
     .map_err(|error| format!("无法执行 wineboot {}：{error}", wineboot.display()))?;
 
-    append_command_output(task_id, &output.stdout, false);
-    append_command_output(task_id, &output.stderr, true);
+    append_command_output(task_id, &output.stdout, CommandOutputStream::Stdout);
+    append_command_output(task_id, &output.stderr, CommandOutputStream::Stderr);
     if !output.status.success() {
         return Err(format!(
             "Wine prefix 初始化失败，退出代码 {}",
@@ -1732,8 +1729,8 @@ async fn install_wine_game_input(
     .map_err(|_| "安装 Wine GameInput 超时".to_string())?
     .map_err(|error| format!("无法启动 Wine Installer {}：{error}", msiexec.display()))?;
 
-    append_command_output(task_id, &output.stdout, false);
-    append_command_output(task_id, &output.stderr, true);
+    append_command_output(task_id, &output.stdout, CommandOutputStream::Stdout);
+    append_command_output(task_id, &output.stderr, CommandOutputStream::Stderr);
     if !output.status.success() {
         append_task_log(
             task_id,
@@ -1855,7 +1852,7 @@ async fn install_proton_game_input(
             spawn_output_pump(
                 task_id.to_string(),
                 stdout,
-                false,
+                CommandOutputStream::Stdout,
                 recent_output.clone(),
                 Some(failure_sender.clone()),
                 None,
@@ -1870,7 +1867,7 @@ async fn install_proton_game_input(
             spawn_output_pump(
                 task_id.to_string(),
                 stderr,
-                true,
+                CommandOutputStream::Stderr,
                 recent_output.clone(),
                 Some(failure_sender),
                 None,
@@ -2041,8 +2038,17 @@ fn find_game_input_installer(package_path: &Path) -> Option<PathBuf> {
     .find(|candidate| candidate.is_file())
 }
 
-fn append_command_output(task_id: &str, output: &[u8], is_error: bool) {
-    let stream = if is_error { "stderr" } else { "stdout" };
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandOutputStream {
+    Stdout,
+    Stderr,
+}
+
+fn append_command_output(task_id: &str, output: &[u8], output_stream: CommandOutputStream) {
+    let stream = match output_stream {
+        CommandOutputStream::Stdout => "stdout",
+        CommandOutputStream::Stderr => "stderr",
+    };
     let text = String::from_utf8_lossy(output);
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         append_task_log(task_id, format!("{stream}: {line}"));
@@ -2088,7 +2094,7 @@ fn sanitize_instance_folder_name(folder_name: &str) -> String {
 fn spawn_output_pump<R>(
     task_id: String,
     reader: R,
-    is_error: bool,
+    output_stream: CommandOutputStream,
     recent_output: Arc<Mutex<VecDeque<String>>>,
     failure_sender: Option<mpsc::UnboundedSender<String>>,
     publish_to_task: Option<Arc<AtomicBool>>,
@@ -2108,7 +2114,10 @@ where
         let mut line_bytes = Vec::with_capacity(MAX_RUNNER_LINE);
         let record = |bytes: &[u8]| {
             let line = String::from_utf8_lossy(bytes);
-            let prefix = if is_error { "runner stderr" } else { "runner" };
+            let prefix = match output_stream {
+                CommandOutputStream::Stdout => "runner",
+                CommandOutputStream::Stderr => "runner stderr",
+            };
             if let Some(kind) =
                 crate::core::minecraft::diagnostics::classify_compatibility_output(&line)
                 && let Some(first_fault) = &first_fault
@@ -2131,7 +2140,7 @@ where
                 .is_none_or(|publish| publish.load(Ordering::Acquire))
             {
                 append_task_log(&task_id, log_line.clone());
-            } else if is_error {
+            } else if output_stream == CommandOutputStream::Stderr {
                 debug!(task_id, line=%displayed, "compatibility runner stderr");
             }
             if let Some(failure) = classify_runner_failure(&line)
@@ -2299,7 +2308,7 @@ fn spawn_process_monitor(
         // File writes and log redaction must not block the I/O runtime while
         // waiting for the final stdout/stderr pumps and game-time checkpoint.
         let output = recent_runner_output(&recent_output);
-        match crate::tasks::runtime::run_io_blocking(move || {
+        match crate::tasks::runtime::blocking::run_io(move || {
             crash_report.finish_compatibility(result_for_report, &output, false)
         })
         .await
@@ -2341,5 +2350,4 @@ fn spawn_process_monitor(
 }
 
 #[cfg(test)]
-#[path = "task_linux_tests.rs"]
 mod tests;

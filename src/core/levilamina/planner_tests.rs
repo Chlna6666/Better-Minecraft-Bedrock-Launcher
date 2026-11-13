@@ -27,8 +27,8 @@ async fn exact_dependency_version_does_not_request_version_list() -> Result<(), 
     Ok(())
 }
 
-fn support_database() -> super::super::LeviLaminaSupportDatabase {
-    super::super::LeviLaminaSupportDatabase {
+fn support_database() -> super::super::support::Database {
+    super::super::support::Database {
         format_version: 2,
         versions: HashMap::from([("1.26.20.04".to_string(), vec!["26.20.7".to_string()])]),
     }

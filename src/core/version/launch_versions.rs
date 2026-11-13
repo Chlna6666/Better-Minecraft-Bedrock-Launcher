@@ -74,7 +74,7 @@ pub(crate) fn compare_versions_desc(left: &str, right: &str) -> Ordering {
     }
 }
 
-pub(crate) fn sort_launch_versions(versions: &mut [LaunchVersionEntry]) {
+pub(crate) fn sort(versions: &mut [LaunchVersionEntry]) {
     versions.sort_by(|left, right| {
         right
             .game_info
@@ -92,7 +92,7 @@ fn normalized_path_components(path: &str) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn version_folder_matches(left: &str, right: &str) -> bool {
+pub(crate) fn folder_matches(left: &str, right: &str) -> bool {
     let left = normalized_path_components(left);
     let right = normalized_path_components(right);
 
@@ -137,7 +137,7 @@ pub(crate) fn select_launch_version<'a>(
 
     if let Some(entry) = versions
         .iter()
-        .find(|entry| version_folder_matches(&entry.folder, query))
+        .find(|entry| folder_matches(&entry.folder, query))
     {
         return Ok(entry);
     }
@@ -190,20 +190,20 @@ mod tests {
     #[test]
     fn sessions_take_priority_over_version() {
         let mut versions = vec![version("new", "1.21.0", 1), version("old", "1.20.0", 3)];
-        sort_launch_versions(&mut versions);
+        sort(&mut versions);
         assert_eq!(versions[0].folder.as_ref(), "old");
     }
 
     #[test]
     fn zero_statistics_use_default_version_order() {
         let mut versions = vec![version("old", "1.20.0", 0), version("new", "1.21.0", 0)];
-        sort_launch_versions(&mut versions);
+        sort(&mut versions);
         assert_eq!(versions[0].folder.as_ref(), "new");
     }
 
     #[test]
     fn folder_identity_normalizes_redundant_path_syntax() {
-        assert!(version_folder_matches(
+        assert!(folder_matches(
             "versions/./stable/",
             "versions/stable"
         ));
@@ -212,7 +212,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn folder_identity_uses_windows_path_semantics() {
-        assert!(version_folder_matches(
+        assert!(folder_matches(
             r"C:\\Games\\BMCBL\\ZH-Test",
             "c:/games/bmcbl/zh-test/",
         ));
@@ -221,7 +221,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn folder_identity_preserves_case_on_unix() {
-        assert!(!version_folder_matches(
+        assert!(!folder_matches(
             "versions/Stable",
             "versions/stable"
         ));

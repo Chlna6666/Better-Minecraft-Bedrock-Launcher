@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::http::proxy::get_client_for_proxy;
+use crate::http::proxy::clients::client;
 
 use super::install::{LEVILAMINA_PACKAGE, MAX_RESOLVED_PACKAGES, PRELOADER_PACKAGE};
 use super::installation_state::InstalledPackage;
@@ -38,7 +38,7 @@ pub(super) async fn resolve_packages(
     game_version: &str,
     installed_packages: &[InstalledPackage],
 ) -> Result<Vec<ResolvedPackage>, String> {
-    let support = super::support_database().await?;
+    let support = super::support::database().await?;
     let mut pending = vec![root];
     let mut resolved = Vec::<ResolvedPackage>::new();
     while let Some(package) = pending.pop() {
@@ -122,7 +122,7 @@ fn reusable_package_version<'a>(
     package: &PendingPackage,
     installed_packages: &'a [InstalledPackage],
     game_version: &str,
-    support: &super::LeviLaminaSupportDatabase,
+    support: &super::support::Database,
 ) -> Option<&'a str> {
     if package.explicit {
         return None;
@@ -142,7 +142,7 @@ fn reusable_package_version<'a>(
 async fn select_package_version(
     package: &PendingPackage,
     game_version: &str,
-    support: &super::LeviLaminaSupportDatabase,
+    support: &super::support::Database,
 ) -> Result<String, String> {
     if let Some(version) = &package.explicit_version {
         if package.id.path.eq_ignore_ascii_case(LEVILAMINA_PACKAGE)
@@ -239,7 +239,7 @@ async fn fetch_manifest(package_path: &str, version: &str) -> Result<PackageMani
 }
 
 async fn fetch_text(url: &str) -> Result<String, String> {
-    let client = get_client_for_proxy().map_err(|error| error.to_string())?;
+    let client = client().map_err(|error| error.to_string())?;
     crate::github::get(&client, url)
         .await
         .map_err(|error| format!("Lip 请求失败 {url}: {error}"))?

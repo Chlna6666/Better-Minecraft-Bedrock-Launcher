@@ -31,7 +31,7 @@ const PRE_RELEASE_GUID_STR: &str = "1f49d63f-8bf5-1f8d-ed7e-dbd89477dad9";
 // 引入生成的常量文件
 include!(concat!(env!("OUT_DIR"), "/secrets.rs"));
 
-fn get_release_key_bytes() -> Option<Vec<u8>> {
+fn load_release_key_bytes() -> Option<Vec<u8>> {
     if let Some(hex_str) = RELEASE_KEY_HEX {
         if let Ok(bytes) = hex::decode(hex_str) {
             return Some(bytes);
@@ -52,7 +52,7 @@ fn get_release_key_bytes() -> Option<Vec<u8>> {
     None
 }
 
-fn get_pre_release_key_bytes() -> Option<Vec<u8>> {
+fn load_pre_release_key_bytes() -> Option<Vec<u8>> {
     if let Some(hex_str) = PREVIEW_KEY_HEX {
         if let Ok(bytes) = hex::decode(hex_str) {
             return Some(bytes);
@@ -249,8 +249,8 @@ impl MsiXVDStream {
     fn select_cik(&self) -> Result<CikKey, String> {
         let mut candidates: Vec<(Option<Vec<u8>>, &str, &str)> = Vec::new();
 
-        candidates.push((get_release_key_bytes(), RELEASE_GUID_STR, "Release"));
-        candidates.push((get_pre_release_key_bytes(), PRE_RELEASE_GUID_STR, "Preview"));
+        candidates.push((load_release_key_bytes(), RELEASE_GUID_STR, "Release"));
+        candidates.push((load_pre_release_key_bytes(), PRE_RELEASE_GUID_STR, "Preview"));
 
         for file_key_id in &self.encryption_key_ids {
             for (key_bytes_opt, guid_str, name) in candidates.iter() {
@@ -273,9 +273,9 @@ impl MsiXVDStream {
 
         warn!("未能在已知库中找到匹配的 KeyID，尝试回退...");
         let (fallback_key_opt, fallback_guid) = if self.header.package_version2 == 0 {
-            (get_pre_release_key_bytes(), PRE_RELEASE_GUID_STR)
+            (load_pre_release_key_bytes(), PRE_RELEASE_GUID_STR)
         } else {
-            (get_release_key_bytes(), RELEASE_GUID_STR)
+            (load_release_key_bytes(), RELEASE_GUID_STR)
         };
 
         if let Some(key_bytes) = fallback_key_opt {
@@ -609,9 +609,9 @@ impl MsiXVDStream {
                 || last_progress_emit.elapsed() >= StdDuration::from_millis(200)
             {
                 let stage = if job.should_decrypt {
-                    Some("decrypting")
+                    "decrypting"
                 } else {
-                    Some("extracting")
+                    "extracting"
                 };
                 update_progress(
                     task_id,
@@ -629,9 +629,9 @@ impl MsiXVDStream {
 
         if pending_progress > 0 {
             let stage = if job.should_decrypt {
-                Some("decrypting")
+                "decrypting"
             } else {
-                Some("extracting")
+                "extracting"
             };
             update_progress(
                 task_id,

@@ -31,10 +31,10 @@ impl Release {
 ///
 /// # Errors
 /// Returns an error for a non-GitHub repository, HTTP failure, or malformed release response.
-pub(crate) async fn releases(repository: &str) -> Result<Vec<Release>, String> {
+pub(crate) async fn fetch(repository: &str) -> Result<Vec<Release>, String> {
     let repository = github_repository(repository)
         .ok_or_else(|| format!("原生 Mod 仓库不是 GitHub 地址：{repository}"))?;
-    let client = crate::http::proxy::get_client_for_proxy().map_err(|error| error.to_string())?;
+    let client = crate::http::proxy::clients::client().map_err(|error| error.to_string())?;
     let url = format!("https://api.github.com/repos/{repository}/releases");
     let mut releases = Vec::new();
     for page in 1u32.. {

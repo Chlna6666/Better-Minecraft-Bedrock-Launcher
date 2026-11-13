@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 
 use super::McSkinPackSkinInfo;
-use crate::core::minecraft::skin_pack_preview::{generate_skin_preview, skin_texture_dimensions};
+use crate::core::minecraft::skin_pack_preview::{generate, skin_texture_dimensions};
 
 const SKIN_MIN_TEXTURE_WIDTH: u32 = 64;
 const SKIN_MIN_TEXTURE_HEIGHT: u32 = 32;
@@ -47,7 +47,7 @@ fn skin_texture_paths(folder_path: &Path) -> Vec<PathBuf> {
 }
 
 fn skin_info_from_texture_path(texture_path: &Path) -> McSkinPackSkinInfo {
-    let preview_path = match generate_skin_preview(texture_path) {
+    let preview_path = match generate(texture_path) {
         Ok(path) => Some(path.to_string_lossy().to_string()),
         Err(error) => {
             warn!(

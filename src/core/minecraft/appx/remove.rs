@@ -23,7 +23,7 @@ struct RemovalTarget {
 /// 保留 LocalState。Store/外部注册在卸载前必须先完成可验证的外部数据备份；
 /// 备份失败则拒绝卸载。资源包（ResourceId 非空）由部署系统随主包处理，不参与
 /// 注册来源判定，也不单独执行 RemovePackageWithOptionsAsync。
-pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
+pub async fn package(package_family_name: &str) -> WinResult<()> {
     let package_manager = PackageManager::new().map_err(|e| {
         error!("无法创建 PackageManager: {:?}", e);
         e
@@ -83,7 +83,7 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
 
     let has_external_registration = targets.iter().any(|target| !target.bmcbl_managed);
     if has_external_registration {
-        match crate::core::minecraft::uwp_migration::prepare_external_registration_backup(
+        match crate::core::minecraft::uwp_migration::prepare_backup(
             package_family_name,
         ) {
             Ok(Some(path)) => info!(

@@ -7,8 +7,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 mod install;
-mod releases;
-pub(crate) use releases::{Release, releases};
+pub(crate) mod releases;
 
 pub use install::{
     NativeModImportItem, NativeModImportRequest, NativeModInstallRequest, start_import,
@@ -113,7 +112,7 @@ fn api_cache_path() -> PathBuf {
 
 async fn read_api_cache() -> Option<Vec<NativeModEntry>> {
     let path = api_cache_path();
-    match crate::tasks::runtime::run_io_blocking(move || {
+    match crate::tasks::runtime::blocking::run_io(move || {
         crate::core::api_cache::read_fresh(&path, API_CACHE_TTL)
     })
     .await
@@ -128,7 +127,7 @@ async fn read_api_cache() -> Option<Vec<NativeModEntry>> {
 
 async fn write_api_cache(entries: Vec<NativeModEntry>) {
     let path = api_cache_path();
-    if let Err(error) = crate::tasks::runtime::run_io_blocking(move || {
+    if let Err(error) = crate::tasks::runtime::blocking::run_io(move || {
         crate::core::api_cache::write(&path, &entries)
     })
     .await
@@ -138,7 +137,7 @@ async fn write_api_cache(entries: Vec<NativeModEntry>) {
 }
 
 async fn fetch_index() -> Result<Vec<NativeModEntry>, String> {
-    let client = crate::http::proxy::get_client_for_proxy().map_err(|error| error.to_string())?;
+    let client = crate::http::proxy::clients::client().map_err(|error| error.to_string())?;
     let response = client
         .get(INDEX_URL)
         .send()

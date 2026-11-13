@@ -24,7 +24,7 @@ fn loader_versions_match_current_game_revision_alias() {
 
 #[test]
 fn all_loader_versions_include_current_26_51_release() {
-    let database = LeviLaminaSupportDatabase {
+    let database = Database {
         format_version: 1,
         versions: HashMap::from([(
             "1.26.51.01".to_string(),

@@ -240,7 +240,7 @@ pub fn grant_all_application_packages_access(path: &Path) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub async fn launch_win32_with_injection(
+pub async fn launch_win32(
     exe_path: &str,
     args: Option<&str>,
     dll_paths: Vec<String>,
@@ -253,7 +253,7 @@ pub async fn launch_win32_with_injection(
     let callback = on_progress.clone();
     let (xuser_payload, terminal_host_pid) = take_launch_metadata(launch_metadata);
 
-    crate::tasks::runtime::run_io_blocking(move || -> Result<u32> {
+    crate::tasks::runtime::blocking::run_io(move || -> Result<u32> {
         unsafe {
             let log = |message: &str| {
                 if let Some(callback) = &callback {
@@ -616,7 +616,7 @@ pub async fn inject_existing_process(
 ) -> Result<()> {
     let callback = on_progress.clone();
 
-    crate::tasks::runtime::run_io_blocking(move || -> Result<()> {
+    crate::tasks::runtime::blocking::run_io(move || -> Result<()> {
         unsafe {
             let log = |message: &str| {
                 if let Some(callback) = &callback {

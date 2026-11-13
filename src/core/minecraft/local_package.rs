@@ -5,7 +5,7 @@ use crate::core::minecraft::gdk::unpack::start_unpack_gdk_task;
 
 pub const LOCAL_GAME_PACKAGE_EXTENSIONS: &[&str] = &["appx", "zip", "msixvc"];
 
-pub async fn start_local_game_package_import(path: impl Into<PathBuf>) -> Result<String, String> {
+pub async fn start_import(path: impl Into<PathBuf>) -> Result<String, String> {
     let path = path.into();
     let extension = path
         .extension()

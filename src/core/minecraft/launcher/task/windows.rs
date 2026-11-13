@@ -1,0 +1,1048 @@
+#![cfg(target_os = "windows")]
+use super::super::bloader;
+use crate::config::settings::read;
+use crate::core::inject::pe::{ensure_backup, inject_dll_import, is_file_patched, restore_original_pe};
+use crate::core::inject::runtime::{
+    grant_all_application_packages_access, inject_existing_process, launch_win32,
+    terminal_host_launch_metadata,
+};
+use crate::core::minecraft::appx::utils::{query_package_info, read_manifest_identity};
+use crate::core::minecraft::appx::{register, remove};
+use crate::core::minecraft::launcher::start::{
+    launch_uwp_command_only, wait_for_process_exit, wait_for_uwp_pid,
+};
+use super::super::preloader::resolve_bootstrap;
+use crate::core::minecraft::mouse_lock::start_window_monitor;
+use crate::core::minecraft::uwp_minimize_fix::enable_debugging_for_package;
+use crate::core::version::settings::read_version_config;
+use crate::tasks::task_manager::{
+    ProgressUpdate, TaskControl, TaskOptions, append_task_log, create_task, finish_task,
+    is_cancelled, register_abort_handle, set_task_labels, set_task_message, set_total,
+    task_control, update_progress,
+};
+use serde_json::{Value, json};
+use std::cmp::Ordering;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::task::JoinHandle;
+use tokio::time::sleep;
+use tracing::{debug, error, info, warn};
+use windows::Management::Deployment::PackageManager;
+use windows::core::HSTRING;
+
+use crate::utils::file_ops;
+
+const LAUNCH_TOTAL_STEPS: u64 = 5;
+const GAME_INFO_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const BLOADER_DEFAULT_REDIRECTION_ROOT: &str = "Minecraft Bedrock";
+const LEGACY_UWP_RUNTIME_INJECTION_CUTOFF: &str = "1.21.0.0";
+
+#[cfg(test)]
+mod tests;
+
+#[derive(Clone, Debug)]
+pub struct LaunchRequest {
+    pub folder_name: Arc<str>,
+    pub display_name: Arc<str>,
+    pub version: Arc<str>,
+    pub package_folder: Arc<str>,
+    pub auto_start: bool,
+    pub launch_args: Option<Arc<str>>,
+}
+
+impl LaunchRequest {
+    pub fn new(
+        folder_name: impl Into<String>,
+        display_name: impl Into<String>,
+        version: impl Into<String>,
+        package_folder: impl Into<String>,
+    ) -> Self {
+        Self {
+            folder_name: Arc::from(folder_name.into()),
+            display_name: Arc::from(display_name.into()),
+            version: Arc::from(version.into()),
+            package_folder: Arc::from(package_folder.into()),
+            auto_start: true,
+            launch_args: None,
+        }
+    }
+}
+
+/// A started launch task plus the structured result channel used by the
+/// command-line launch mode. The GUI still calls start_launch_task and
+/// ignores the channel.
+pub(crate) struct LaunchTask {
+    task_id: String,
+    completion: tokio::sync::oneshot::Receiver<Result<Option<u32>, String>>,
+    session_monitor: tokio::sync::oneshot::Receiver<Option<JoinHandle<()>>>,
+    spawn_error: Option<String>,
+}
+
+impl LaunchTask {
+    pub(crate) fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
+    pub(crate) async fn wait(&mut self) -> Result<Option<u32>, String> {
+        if let Some(error) = self.spawn_error.take() {
+            return Err(error);
+        }
+        (&mut self.completion)
+            .await
+            .map_err(|_| "启动任务未返回结果".to_string())?
+    }
+
+    pub(crate) async fn wait_for_session(self) -> Result<(), String> {
+        if let Some(monitor) = self
+            .session_monitor
+            .await
+            .map_err(|_| "启动任务未返回计时任务".to_string())?
+        {
+            monitor
+                .await
+                .map_err(|error| format!("游戏计时任务失败：{error}"))?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
+    let title = format!("启动 {}", request.display_name);
+    let detail = request.version.to_string();
+    let task_id = create_task(
+        TaskOptions::new(title, "starting")
+            .detail(detail)
+            .total(LAUNCH_TOTAL_STEPS),
+    )
+    .expect("task id must be unique");
+    let _ = set_total(&task_id, Some(LAUNCH_TOTAL_STEPS));
+    append_log(&task_id, format!("准备启动 {}", request.display_name));
+    info!(
+        task_id = %task_id,
+        display_name = %request.display_name,
+        version = %request.version,
+        package_folder = %request.package_folder,
+        auto_start = request.auto_start,
+        has_launch_args = request.launch_args.is_some(),
+        "已创建游戏启动任务"
+    );
+
+    let (completion_tx, completion) = tokio::sync::oneshot::channel();
+    let (session_monitor_tx, session_monitor) = tokio::sync::oneshot::channel();
+    let task_id_for_task = task_id.clone();
+    let join_handle = match crate::tasks::runtime::spawn_io(async move {
+        info!(
+            task_id = %task_id_for_task,
+            display_name = %request.display_name,
+            version = %request.version,
+            "游戏启动任务开始执行"
+        );
+        // The manifest identity is the single source of truth for UWP vs GDK.
+        // The user-selected display version may be renamed or contain aliases.
+        // Capture the original log sizes before launch_game can start or
+        // inject the client; otherwise the earliest failure lines are lost.
+        let log_offsets = crate::core::minecraft::diagnostics::capture_log_offsets(Path::new(
+            request.package_folder.as_ref(),
+        ));
+        let mut detected_platform = "unknown";
+        let result = launch_game(&request, &task_id_for_task, &mut detected_platform).await;
+        let mut monitor = None;
+        match &result {
+            Ok(Some(pid)) => {
+                // Capture PID generation before the async game-time database call.
+                // Very early game exits must not be lost while initializing stats.
+                let crash_record = crate::core::minecraft::diagnostics::GameSessionReport::begin(
+                    &task_id_for_task,
+                    request.version.as_ref(),
+                    Path::new(request.package_folder.as_ref()),
+                    detected_platform,
+                    *pid,
+                    None,
+                    None,
+                    log_offsets,
+                );
+                let session = crate::core::version::game_info::GameSession::start(
+                    PathBuf::from(request.package_folder.as_ref()),
+                    *pid,
+                )
+                .await;
+                let session = match session {
+                    Ok(session) => session,
+                    Err(error) => {
+                        append_log(&task_id_for_task, format!("记录游戏启动统计失败：{error}"));
+                        None
+                    }
+                };
+                let pid = *pid;
+                let process_created_at = crash_record.process_created_at;
+                let monitor_task_id = task_id_for_task.clone();
+                match crate::tasks::runtime::spawn_io(async move {
+                    let process_exit = wait_for_process_exit(pid, process_created_at);
+                    tokio::pin!(process_exit);
+                    let mut checkpoint = tokio::time::interval(GAME_INFO_CHECKPOINT_INTERVAL);
+                    checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    checkpoint.tick().await;
+                    let mut session = session;
+                    loop {
+                        tokio::select! {
+                            result = &mut process_exit => {
+                                if let Err(error) = &result {
+                                    append_log(&monitor_task_id, format!("等待游戏退出失败：{error}"));
+                                }
+                                // JSON serialization, log tail extraction, and fsync work
+                                // must never block the Tokio I/O driver.
+                                let completed = match crate::tasks::runtime::blocking::run_io(
+                                    move || crash_record.finish(result)
+                                ).await {
+                                    Ok(completed) => completed,
+                                    Err(error) => {
+                                        warn!(%error, %pid, "无法完成游戏诊断会话持久化");
+                                        break;
+                                    }
+                                };
+                                #[cfg(target_os = "windows")]
+                                let completed = crate::core::minecraft::diagnostics::enrich_windows_wer(completed).await;
+                                #[cfg(target_os = "windows")]
+                                crate::core::minecraft::diagnostics::publish_unconfirmed_windows_exit(&completed);
+                                if completed.kind.is_abnormal() {
+                                    append_log(&monitor_task_id, completed.summary.clone());
+                                    warn!(session_id = %completed.id, %pid, "游戏异常退出");
+                                }
+                                break;
+                            }
+                            _ = checkpoint.tick() => {
+                                if let Some(session) = session.as_mut()
+                                    && let Err(error) = session.checkpoint().await
+                                {
+                                    append_log(&monitor_task_id, format!("定时保存游戏时间失败：{error}"));
+                                }
+                            }
+                        }
+                    }
+                    if let Some(session) = session
+                        && let Err(error) = session.finish().await
+                    {
+                        append_log(&monitor_task_id, format!("保存游戏时间失败：{error}"));
+                    }
+                }) {
+                    Ok(handle) => monitor = Some(handle),
+                    Err(error) => {
+                        append_log(&task_id_for_task, format!("无法调度游戏退出监控：{error}"));
+                    }
+                }
+                info!(
+                    task_id = %task_id_for_task,
+                    pid,
+                    "游戏启动任务执行完成，已获得进程 PID"
+                );
+                append_log(&task_id_for_task, format!("游戏已启动，PID {pid}"));
+                finish_task(&task_id_for_task, "completed", Some("启动完成".to_string()));
+            }
+            Ok(None) => {
+                info!(
+                    task_id = %task_id_for_task,
+                    "游戏启动任务执行完成，当前流程未实际拉起游戏进程"
+                );
+                append_log(&task_id_for_task, "启动流程完成".to_string());
+                finish_task(&task_id_for_task, "completed", Some("启动完成".to_string()));
+            }
+            Err(error) => {
+                if is_cancelled(&task_id_for_task) {
+                    append_log(&task_id_for_task, "启动已取消".to_string());
+                    finish_task(
+                        &task_id_for_task,
+                        "cancelled",
+                        Some("启动已取消".to_string()),
+                    );
+                    let _ = completion_tx.send(Err("启动已取消".to_string()));
+                    return;
+                }
+
+                error!("launch task failed: {error}");
+                append_log(&task_id_for_task, format!("启动失败: {error}"));
+                finish_task(&task_id_for_task, "error", Some(error.clone()));
+            }
+        }
+        let _ = session_monitor_tx.send(monitor);
+        let _ = completion_tx.send(result);
+    }) {
+        Ok(join_handle) => join_handle,
+        Err(error) => {
+            append_log(&task_id, format!("无法调度启动任务: {error}"));
+            finish_task(&task_id, "error", Some(error.clone()));
+            return LaunchTask {
+                task_id,
+                completion,
+                session_monitor,
+                spawn_error: Some(error),
+            };
+        }
+    };
+    register_abort_handle(task_id.clone(), join_handle.abort_handle());
+    LaunchTask {
+        task_id,
+        completion,
+        session_monitor,
+        spawn_error: None,
+    }
+}
+
+pub fn start_launch_task(request: LaunchRequest) -> String {
+    start_launch_task_observed(request).task_id
+}
+
+fn append_log(task_id: &str, line: impl Into<String>) {
+    let line = line.into();
+    let _ = append_task_log(task_id, line.clone());
+    let _ = set_task_message(task_id, Some(line));
+}
+
+fn advance_step(task_id: &str, stage: &str, message: impl Into<String>) {
+    let message = message.into();
+    append_log(task_id, message);
+    update_progress(
+        task_id,
+        ProgressUpdate::advance(1)
+            .total(LAUNCH_TOTAL_STEPS)
+            .stage(stage),
+    );
+}
+
+fn check_cancelled(task_id: &str) -> Result<(), String> {
+    if is_cancelled(task_id) {
+        Err("启动已取消".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn check_cancelled_control(control: Option<&TaskControl>) -> Result<(), String> {
+    if control.is_some_and(crate::tasks::task_manager::control_cancelled) {
+        Err("启动已取消".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn remove_readonly(path: &Path) {
+    if let Ok(metadata) = fs::metadata(path) {
+        let mut perms = metadata.permissions();
+        if perms.readonly() {
+            perms.set_readonly(false);
+            if let Err(error) = fs::set_permissions(path, perms) {
+                warn!("尝试移除只读属性失败: {} ({error})", path.display());
+            }
+        }
+    }
+}
+
+fn ensure_file_in_dir(dir: &Path, filename: &str, content: &[u8]) -> Result<PathBuf, String> {
+    let target = dir.join(filename);
+    if target.exists() {
+        remove_readonly(&target);
+    }
+    fs::write(&target, content).map_err(|error| format!("写入 {filename} 失败: {error}"))?;
+    let _ = grant_all_application_packages_access(&target);
+    Ok(target)
+}
+
+fn write_bloader_config(
+    dir: &Path,
+    disable_mod_loading: bool,
+    enable_cosmetics: bool,
+    enable_debug_console: bool,
+    enable_redirection: bool,
+    file_redirections: Value,
+    mods: Value,
+) -> Result<PathBuf, String> {
+    let config_path = dir.join("config.json");
+    let mut config = fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+
+    config.insert(
+        "disable_mod_loading".to_string(),
+        json!(disable_mod_loading),
+    );
+    config.insert("enable_cosmetics".to_string(), json!(enable_cosmetics));
+    config.insert(
+        "enable_debug_console".to_string(),
+        json!(enable_debug_console),
+    );
+    config.insert("enable_redirection".to_string(), json!(enable_redirection));
+    config.insert(
+        "redirection_root".to_string(),
+        json!(BLOADER_DEFAULT_REDIRECTION_ROOT),
+    );
+    config.insert("file_redirections".to_string(), file_redirections);
+    config.insert("mods".to_string(), mods);
+
+    let config_content = serde_json::to_string_pretty(&Value::Object(config))
+        .map_err(|error| format!("写入 BLoader 配置失败: {error}"))?;
+    ensure_file_in_dir(dir, "config.json", config_content.as_bytes())
+}
+
+fn remove_legacy_preloader_config(dir: &Path) {
+    let legacy_path = dir.join("preloader.json");
+    if !legacy_path.exists() {
+        return;
+    }
+
+    remove_readonly(&legacy_path);
+    if let Err(error) = fs::remove_file(&legacy_path) {
+        warn!(
+            "无法删除旧 BLoader preloader.json 配置 {}: {error}",
+            legacy_path.display()
+        );
+    }
+}
+
+fn remove_appx_signature_if_present(package_folder: &str) -> Result<bool, String> {
+    let signature_path = Path::new(package_folder).join("AppxSignature.p7x");
+    if !signature_path.exists() {
+        return Ok(false);
+    }
+
+    remove_readonly(&signature_path);
+    fs::remove_file(&signature_path)
+        .map_err(|error| format!("删除 AppxSignature.p7x 失败: {error}"))?;
+    Ok(true)
+}
+
+fn identity_to_aumid(identity: &str) -> String {
+    match identity {
+        "Microsoft.MinecraftWindowsBeta" => "Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe!App",
+        "Microsoft.MinecraftEducationEdition" => {
+            "Microsoft.MinecraftEducationEdition_8wekyb3d8bbwe!Microsoft.MinecraftEducationEdition"
+        }
+        "Microsoft.MinecraftEducationPreview" => {
+            "Microsoft.MinecraftEducationPreview_8wekyb3d8bbwe!Microsoft.MinecraftEducationEdition"
+        }
+        _ => "Microsoft.MinecraftUWP_8wekyb3d8bbwe!App",
+    }
+    .to_string()
+}
+
+fn find_launch_executable(package_folder: &str, identity_name: &str) -> Option<PathBuf> {
+    let folder = Path::new(package_folder);
+    let common_names = [
+        "Minecraft.Windows.exe",
+        "Minecraft.Education.exe",
+        &format!("{identity_name}.exe"),
+    ];
+    for name in common_names {
+        let path = folder.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    let entries = fs::read_dir(folder).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(ext) = path.extension() else {
+            continue;
+        };
+        if !ext.eq_ignore_ascii_case("exe") {
+            continue;
+        }
+
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !file_name.contains("CrashSender") && !file_name.contains("Report") {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+fn get_registered_path(family_name: &str) -> Option<PathBuf> {
+    let pm = PackageManager::new().ok()?;
+    let packages = pm
+        .FindPackagesByUserSecurityIdPackageFamilyName(&HSTRING::new(), &HSTRING::from(family_name))
+        .ok()?;
+    for pkg in packages {
+        if let Ok(location) = pkg.InstalledLocation()
+            && let Ok(path) = location.Path()
+        {
+            return Some(PathBuf::from(path.to_string_lossy().to_string()));
+        }
+    }
+    None
+}
+
+fn parse_version_to_vec_simple(version: &str) -> Vec<u64> {
+    version
+        .split('.')
+        .map(|segment| segment.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+fn compare_versions(left: &str, right: &str) -> Ordering {
+    parse_version_to_vec_simple(left).cmp(&parse_version_to_vec_simple(right))
+}
+
+fn build_editor_deeplink(is_win32: bool, is_preview: bool) -> String {
+    let scheme = if is_preview {
+        "minecraft-preview"
+    } else {
+        "minecraft"
+    };
+    if is_win32 {
+        format!("{scheme}://creator/?Editor=true")
+    } else {
+        format!("{scheme}://?Editor=true")
+    }
+}
+
+fn is_win32_version(version: &str) -> bool {
+    if version.starts_with("1.22.") || version.starts_with("1.23.") {
+        return true;
+    }
+    let parsed = parse_version_to_vec_simple(version);
+    if parsed.len() >= 3 && parsed[0] == 1 && parsed[1] == 21 && parsed[2] >= 12201 {
+        return true;
+    }
+    compare_versions(version, "1.21.12000.21") != Ordering::Less
+}
+
+fn is_legacy_uwp_runtime_injection_only(version: &str, is_win32: bool) -> bool {
+    !is_win32 && compare_versions(version, LEGACY_UWP_RUNTIME_INJECTION_CUTOFF) == Ordering::Less
+}
+
+pub fn embedded_dll_version_string() -> Option<String> {
+    Some(bloader::embedded_version_string().to_string())
+}
+
+async fn prepare_direct_win32_auth(
+    task_id: &str,
+) -> Result<(Option<Vec<(String, String)>>, Option<String>), String> {
+    let launch_auth = crate::core::bedrock_auth::prepare_launch_windows().await?;
+    let launch_gamertag = launch_auth.as_ref().map(|auth| auth.gamertag.clone());
+    let Some(auth) = launch_auth.as_ref() else {
+        append_task_log(
+            task_id,
+            "未检测到有效 Xbox 会话；不会创建 BLoader XUser 安全管道，游戏将使用微软官方登录",
+        );
+        info!(
+            task_id = %task_id,
+            "未检测到有效 Xbox 会话；BLoader 不会接管 QueryApiImpl，游戏将使用微软官方 XUser 登录"
+        );
+        return Ok((None, None));
+    };
+
+    append_task_log(
+        task_id,
+        format!("已准备 BLoader XUser 安全会话：{}", auth.gamertag),
+    );
+    info!(
+        task_id = %task_id,
+        gamertag = %auth.gamertag,
+        "检测到有效的 Xbox 会话，将通过 BMCBL 一次性安全管道传递给 BLoader"
+    );
+    let metadata = auth.take_secure_launch_metadata();
+    if metadata.is_empty() {
+        return Err("无法登记 BLoader XUser 一次性安全会话".to_string());
+    }
+    debug!(
+        task_id = %task_id,
+        gamertag = %auth.gamertag,
+        "Xbox 会话已登记到 BMCBL 进程内存；将在获取 Minecraft PID 后创建一次性安全管道"
+    );
+    Ok((Some(metadata), launch_gamertag))
+}
+
+async fn launch_game(
+    request: &LaunchRequest,
+    task_id: &str,
+    detected_platform: &mut &'static str,
+) -> Result<Option<u32>, String> {
+    let control = task_control(task_id);
+    check_cancelled(task_id)?;
+    check_cancelled_control(control.as_deref())?;
+
+    let package_folder = request.package_folder.as_ref();
+    let config = read().map_err(|error| error.to_string())?;
+    let game_cfg = &config.game;
+    let mods_dir = Path::new(package_folder).join("mods");
+    let folder_name = request.folder_name.to_string();
+    let version_config = read_version_config(folder_name.clone())
+        .await
+        .unwrap_or_default();
+
+    let _ = set_task_labels(
+        task_id,
+        format!("启动 {}", request.display_name),
+        Some(request.version.to_string()),
+    );
+    info!(
+        task_id = %task_id,
+        display_name = %request.display_name,
+        version = %request.version,
+        package_folder,
+        "进入游戏启动主流程"
+    );
+
+    append_log(task_id, format!("版本目录: {package_folder}"));
+    let injector_version = bloader::embedded_version_string();
+    append_log(task_id, format!("预加载器版本: {injector_version}"));
+
+    let (identity_name, identity_version) =
+        read_manifest_identity(std::path::Path::new(package_folder))
+        .await
+        .map_err(|error| format!("Manifest 解析失败: {error}"))?;
+    let is_win32 = is_win32_version(&identity_version);
+    *detected_platform = if is_win32 { "gdk" } else { "uwp" };
+    let legacy_uwp_runtime_injection_only =
+        is_legacy_uwp_runtime_injection_only(&identity_version, is_win32);
+    info!(
+        task_id = %task_id,
+        identity_name = %identity_name,
+        identity_version = %identity_version,
+        is_win32,
+        legacy_uwp_runtime_injection_only,
+        "游戏包 Manifest 解析完成"
+    );
+    advance_step(
+        task_id,
+        "parsing",
+        format!("版本信息已解析: {identity_version} ({identity_name})"),
+    );
+    if legacy_uwp_runtime_injection_only {
+        append_log(
+            task_id,
+            "检测到 1.21 以下 UWP：禁用 BLoader 静态部署与 PE 修补，仅使用运行时 DLL 注入"
+                .to_string(),
+        );
+    }
+
+    let mut final_launch_args = request.launch_args.as_ref().map(ToString::to_string);
+    if version_config.editor_mode
+        && compare_versions(&identity_version, "1.19.80.20") != Ordering::Less
+    {
+        if final_launch_args.is_some() {
+            append_log(
+                task_id,
+                "检测到编辑器模式，但调用方已提供启动参数，保留调用方参数".to_string(),
+            );
+        } else {
+            let is_preview = identity_name.contains("Beta") || identity_name.contains("Preview");
+            final_launch_args = Some(build_editor_deeplink(is_win32, is_preview));
+            append_log(
+                task_id,
+                "检测到编辑器模式，已生成 Deeplink 参数".to_string(),
+            );
+        }
+    }
+
+    check_cancelled(task_id)?;
+    // Never move/delete PreLoader files during game startup. Installation
+    // repair runs as an explicit, logged installer operation instead. A
+    // launch must not mutate third-party Mod directories.
+    // Modern GDK/UWP: BLoader boots mods/PreLoader (preloader-bootstrap)
+    // and owns its independent BLoader/mods runtime. PreLoader manages
+    // preload-native, and LeviLamina manages native in mods/.
+    // None of these DLLs belongs in BMCBL's launcher-side injection list.
+    let startup_mods_relative_paths: Vec<String> = Vec::new();
+    let mut startup_mods_direct_paths = Vec::new();
+    let delayed_mods: Vec<(String, u64)> = Vec::new();
+    if request.auto_start
+        && legacy_uwp_runtime_injection_only
+        && !version_config.disable_mod_loading
+    {
+        if let Some(path) = resolve_bootstrap(&mods_dir)
+            .await
+            .map_err(|error| format!("获取旧版 UWP PreLoader 启动路径失败: {error}"))?
+        {
+            let path_string = path.to_string_lossy().into_owned();
+            let _ = grant_all_application_packages_access(&path);
+            startup_mods_direct_paths.push(path_string);
+        }
+    }
+    debug!(
+        task_id = %task_id,
+        startup_mods = startup_mods_relative_paths.len() + startup_mods_direct_paths.len(),
+        startup_mods_direct = startup_mods_direct_paths.len(),
+        delayed_mods = delayed_mods.len(),
+        disable_mod_loading = version_config.disable_mod_loading,
+        "模组注入计划已生成"
+    );
+    advance_step(
+        task_id,
+        "preparing_files",
+        format!(
+            "已准备模组加载信息，立即注入 {} 个，延迟注入 {} 个",
+            startup_mods_relative_paths.len() + startup_mods_direct_paths.len(),
+            delayed_mods.len()
+        ),
+    );
+
+    check_cancelled(task_id)?;
+    if request.auto_start
+        && let Some(exe_path) = find_launch_executable(package_folder, &identity_name)
+    {
+        debug!(
+            task_id = %task_id,
+            exe_path = %exe_path.display(),
+            "已定位游戏可执行文件"
+        );
+
+        if legacy_uwp_runtime_injection_only {
+            if is_file_patched(&exe_path) {
+                remove_readonly(&exe_path);
+                restore_original_pe(&exe_path)
+                    .map_err(|error| format!("清理旧版 UWP PE 补丁失败: {error}"))?;
+                if is_file_patched(&exe_path) {
+                    return Err("清理旧版 UWP PE 补丁后仍检测到补丁标记".to_string());
+                }
+                append_log(
+                    task_id,
+                    "已还原历史 BMCBL PE 补丁；后续不再修改 1.21 以下 UWP 的 EXE".to_string(),
+                );
+            }
+            append_log(
+                task_id,
+                "1.21 以下 UWP 已跳过 BLoader.dll/config.json 部署和 PE 静态导入修补".to_string(),
+            );
+        } else {
+            let exe_dir = exe_path.parent().ok_or("无效的游戏目录".to_string())?;
+            let local_data_root = exe_dir.join(BLOADER_DEFAULT_REDIRECTION_ROOT);
+            if !local_data_root.exists() {
+                fs::create_dir_all(&local_data_root)
+                    .map_err(|error| format!("创建重定向目录失败: {error}"))?;
+            }
+            let _ = grant_all_application_packages_access(&local_data_root);
+
+            let injector_name = "BLoader.dll";
+            let injector_target_path = exe_dir.join(injector_name);
+            let mut need_update = true;
+            if injector_target_path.exists() {
+                remove_readonly(&injector_target_path);
+                if let Ok(disk_bytes) = fs::read(&injector_target_path) {
+                    need_update = bloader::version_string(&disk_bytes).as_deref()
+                        != Some(bloader::embedded_version_string());
+                }
+            }
+
+            if need_update {
+                let injector_bytes = bloader::bytes()?;
+                ensure_file_in_dir(exe_dir, injector_name, injector_bytes)?;
+            }
+
+            let file_redirections =
+                version_config.effective_file_redirections(Path::new(package_folder));
+            if !file_redirections.is_empty() {
+                append_log(
+                    task_id,
+                    format!("已配置 {} 条文件重定向", file_redirections.len()),
+                );
+            }
+
+            let _ = write_bloader_config(
+                exe_dir,
+                version_config.disable_mod_loading,
+                version_config.enable_cosmetics,
+                version_config.enable_debug_console,
+                version_config.enable_redirection,
+                json!(file_redirections),
+                json!(startup_mods_relative_paths),
+            )?;
+            remove_legacy_preloader_config(exe_dir);
+
+            if let Err(error) = ensure_backup(&exe_path) {
+                warn!("无法创建 EXE 备份，将继续使用自标记还原机制: {error}");
+            }
+
+            if is_file_patched(&exe_path) {
+                append_log(task_id, "检测到 PE 已包含补丁标记，跳过修补".to_string());
+            } else {
+                let _ = restore_original_pe(&exe_path);
+                remove_readonly(&exe_path);
+                inject_dll_import(&exe_path, injector_name, None)
+                    .map_err(|error| format!("PE 修改失败: {error}"))?;
+                append_log(task_id, "静态注入环境已部署".to_string());
+            }
+        }
+    }
+    advance_step(task_id, "patching", "启动环境准备完成".to_string());
+
+    check_cancelled(task_id)?;
+    if !is_win32 {
+        if remove_appx_signature_if_present(package_folder)? {
+            append_log(task_id, "检测到 AppxSignature.p7x，已删除".to_string());
+        }
+
+        let aumid = identity_to_aumid(&identity_name);
+        let family_name = aumid.split('!').next().unwrap_or("");
+        let mut need_remove = false;
+        let mut need_register = true;
+
+        if let Ok(Some((installed_version, _, _))) = query_package_info(&aumid) {
+            let is_path_diff = if let Some(registered_path) = get_registered_path(family_name) {
+                let registered_path =
+                    fs::canonicalize(&registered_path).unwrap_or(registered_path.clone());
+                let target_path = fs::canonicalize(Path::new(package_folder))
+                    .unwrap_or_else(|_| PathBuf::from(package_folder));
+                registered_path != target_path
+            } else {
+                true
+            };
+            let compare_result = compare_versions(&installed_version, &identity_version);
+            if is_path_diff || compare_result == Ordering::Greater {
+                need_remove = true;
+            } else if installed_version == identity_version {
+                need_register = false;
+            }
+        }
+
+        if need_remove {
+            info!(
+                task_id = %task_id,
+                family_name,
+                "检测到旧注册信息，准备移除已注册包"
+            );
+            remove::package(family_name)
+                .await
+                .map_err(|error| format!("卸载旧包失败 ({family_name}): {error:?}"))?;
+            sleep(Duration::from_millis(500)).await;
+        }
+        if need_register {
+            info!(task_id = %task_id, package_folder, "准备注册 APPX 包");
+            register::package(package_folder)
+                .await
+                .map_err(|error| format!("注册 APPX 失败 ({package_folder}): {error:?}"))?;
+        }
+        advance_step(task_id, "initializing", "APPX 注册状态已就绪".to_string());
+    } else {
+        advance_step(
+            task_id,
+            "initializing",
+            "Win32 版本无需重新注册".to_string(),
+        );
+    }
+
+    check_cancelled(task_id)?;
+    if !request.auto_start {
+        info!(task_id = %task_id, "本次仅执行准备流程，不实际启动游戏");
+        advance_step(task_id, "launching", "已完成准备，未执行启动".to_string());
+        return Ok(None);
+    }
+
+    if !is_win32 && game_cfg.uwp_minimize_fix {
+        if let Ok(Some((_, _, package_name))) =
+            query_package_info(&identity_to_aumid(&identity_name))
+        {
+            let _ = enable_debugging_for_package(&package_name);
+        }
+    }
+
+    let launch_gamertag: Option<String>;
+    let pid = if is_win32 {
+        let exe_path = find_launch_executable(package_folder, &identity_name)
+            .ok_or("未找到游戏 EXE".to_string())?;
+        let exe_path = exe_path
+            .to_str()
+            .ok_or("游戏 EXE 路径包含无效字符".to_string())?;
+        let log_task_id = task_id.to_string();
+        let log_callback = Arc::new(move |message: String| {
+            append_log(&log_task_id, message);
+        });
+
+        info!(
+            task_id = %task_id,
+            exe_path,
+            debug_console = version_config.enable_debug_console,
+            "准备启动 Win32 版本"
+        );
+
+        // Windows Terminal is only a console owner. The original BMCBL process
+        // remains the sole Minecraft launcher and XUser credential owner.
+        let terminal_host = if version_config.enable_debug_console {
+            append_log(
+                task_id,
+                "调试控制台已启用：正在建立 Windows Terminal；Minecraft 与 XUser 仍由当前 BMCBL 进程启动".to_string(),
+            );
+            crate::core::windows_terminal::start_host().await?
+        } else {
+            None
+        };
+
+        let (mut secure_launch_metadata, gamertag) = prepare_direct_win32_auth(task_id).await?;
+        launch_gamertag = gamertag;
+
+        let pid = if let Some(host) = terminal_host {
+            let host_pid = host.host_pid;
+            if let Some(metadata) = terminal_host_launch_metadata(host_pid) {
+                secure_launch_metadata
+                    .get_or_insert_with(Vec::new)
+                    .push(metadata);
+            }
+
+            let pid = launch_win32(
+                exe_path,
+                final_launch_args.as_deref(),
+                Vec::new(),
+                secure_launch_metadata,
+                false,
+                Some(log_callback.clone()),
+            )
+            .await
+            .map_err(|error| format!("启动失败: {error:?}"))?;
+
+            match host.bind_minecraft(pid) {
+                Ok(()) => append_log(
+                    task_id,
+                    format!("Windows Terminal 已绑定 Minecraft PID {pid}"),
+                ),
+                Err(error) => {
+                    warn!(task_id = %task_id, pid, error = %error, "Windows Terminal Host 绑定 Minecraft 失败");
+                    append_log(
+                        task_id,
+                        format!(
+                            "Windows Terminal Host 绑定失败，BLoader 将自行回退控制台：{error}"
+                        ),
+                    );
+                }
+            }
+            pid
+        } else {
+            if version_config.enable_debug_console {
+                append_log(
+                    task_id,
+                    "Windows Terminal 不可用，回退到系统独立控制台".to_string(),
+                );
+            }
+            launch_win32(
+                exe_path,
+                final_launch_args.as_deref(),
+                Vec::new(),
+                secure_launch_metadata,
+                version_config.enable_debug_console,
+                Some(log_callback.clone()),
+            )
+            .await
+            .map_err(|error| format!("启动失败: {error:?}"))?
+        };
+
+        if let Some(gamertag) = launch_gamertag.as_deref() {
+            append_task_log(
+                task_id,
+                format!(
+                    "Xbox 安全会话载荷已传输至目标进程：{gamertag}；请以 BLoader xuser-bridge 日志确认系统 Runtime 与 QueryApiImpl Hook 状态"
+                ),
+            );
+            info!(
+                task_id = %task_id,
+                pid,
+                gamertag,
+                "Xbox 安全会话载荷已通过一次性管道传输；BMCBL 不推断 Hook 成功，最终状态以 BLoader xuser-bridge 日志为准"
+            );
+        }
+
+        if !version_config.disable_mod_loading {
+            handle_delayed_injection(pid, delayed_mods, log_callback, false);
+        }
+
+        info!(task_id = %task_id, pid, "Win32 版本启动成功");
+        pid
+    } else {
+        let aumid = identity_to_aumid(&identity_name);
+        info!(
+            task_id = %task_id,
+            aumid = %aumid,
+            launch_args = ?final_launch_args.as_deref(),
+            legacy_uwp_runtime_injection_only,
+            "准备启动 UWP 版本"
+        );
+        let target_exe = if identity_name.contains("Education") {
+            "Minecraft.Education.exe"
+        } else {
+            "Minecraft.Windows.exe"
+        };
+        let pfn = aumid.split('!').next().unwrap_or("").to_string();
+        let before_activation =
+            crate::core::minecraft::launcher::start::process_ids_by_name(target_exe);
+        let activated_pid =
+            launch_uwp_command_only(&aumid, final_launch_args.as_deref().or(Some("")))
+                .await
+                .map_err(|error| format!("启动请求失败: {error:?}"))?;
+        let pid = match activated_pid {
+            Some(pid)
+                if pid > 0
+                    && crate::core::minecraft::launcher::start::is_process_in_package(
+                        pid, &pfn,
+                    ) =>
+            {
+                pid
+            }
+            _ => wait_for_uwp_pid(target_exe, &pfn, &before_activation)
+                .await
+                .ok_or("无法确认新启动的 UWP 游戏进程；不会附着到其他实例".to_string())?,
+        };
+        if !version_config.disable_mod_loading {
+            let log_task_id = task_id.to_string();
+            let log_callback = Arc::new(move |message: String| {
+                append_log(&log_task_id, message);
+            });
+
+            if legacy_uwp_runtime_injection_only {
+                for path in startup_mods_direct_paths {
+                    inject_existing_process(
+                        pid,
+                        path.clone(),
+                        Some(log_callback.clone()),
+                        true,
+                        false,
+                    )
+                    .await
+                    .map_err(|error| format!("旧版 UWP 运行时注入失败 ({path}): {error:?}"))?;
+                }
+            }
+
+            handle_delayed_injection(pid, delayed_mods, log_callback, false);
+        }
+        info!(task_id = %task_id, pid, "UWP 版本启动成功");
+        pid
+    };
+
+    if version_config.lock_mouse_on_launch {
+        start_window_monitor(
+            "Minecraft",
+            &version_config.unlock_mouse_hotkey,
+            version_config.reduce_pixels,
+        );
+    }
+
+    advance_step(task_id, "launching", format!("游戏已成功拉起，PID {pid}"));
+    info!(task_id = %task_id, pid, "游戏启动流程已完成");
+    Ok(Some(pid))
+}
+
+fn handle_delayed_injection(
+    pid: u32,
+    mods: Vec<(String, u64)>,
+    log_callback: Arc<dyn Fn(String) + Send + Sync>,
+    show_console: bool,
+) {
+    if mods.is_empty() {
+        return;
+    }
+
+    tokio::spawn(async move {
+        for (path, delay) in mods {
+            sleep(Duration::from_millis(delay)).await;
+            let _ =
+                inject_existing_process(pid, path, Some(log_callback.clone()), true, show_console)
+                    .await;
+        }
+    });
+}
+pub fn build_package_folder(folder_name: &str) -> PathBuf {
+    file_ops::bmcbl_subdir("versions").join(folder_name)
+}

@@ -1,6 +1,6 @@
-use crate::config::config::read_config;
-use crate::http::proxy::get_client_for_proxy;
-use crate::http::request::{GLOBAL_CLIENT, RequestOptions, send_request_with_options};
+use crate::config::settings::read;
+use crate::http::proxy::clients::client;
+use crate::http::request::{GLOBAL_CLIENT, RequestOptions, send};
 use crate::utils::file_ops;
 use anyhow::{Context as _, Result};
 use futures_util::StreamExt as _;
@@ -104,7 +104,7 @@ fn write_cache(cache: &CacheFile) {
 }
 
 async fn read_cache_off_thread() -> Option<CacheFile> {
-    match crate::tasks::runtime::run_io_blocking(read_cache).await {
+    match crate::tasks::runtime::blocking::run_io(read_cache).await {
         Ok(cache) => cache,
         Err(error) => {
             tracing::warn!(%error, "remote versions cache read worker failed");
@@ -114,7 +114,7 @@ async fn read_cache_off_thread() -> Option<CacheFile> {
 }
 
 async fn write_cache_off_thread(cache: CacheFile) {
-    if let Err(error) = crate::tasks::runtime::run_io_blocking(move || write_cache(&cache)).await {
+    if let Err(error) = crate::tasks::runtime::blocking::run_io(move || write_cache(&cache)).await {
         tracing::warn!(%error, "remote versions cache write worker failed");
     }
 }
@@ -357,7 +357,7 @@ fn parse_api_reader_streaming<R: std::io::Read>(
     Ok((parsed.creation_time, parsed.versions))
 }
 
-async fn load_or_fetch_versions_once(force_refresh: bool) -> Result<Vec<RemoteMinecraftVersion>> {
+async fn load_once(force_refresh: bool) -> Result<Vec<RemoteMinecraftVersion>> {
     if !force_refresh {
         if let Some(cache) = read_cache_off_thread().await {
             let age = Duration::from_millis(unix_now_ms().saturating_sub(cache.ts_unix_ms));
@@ -367,9 +367,9 @@ async fn load_or_fetch_versions_once(force_refresh: bool) -> Result<Vec<RemoteMi
         }
     }
 
-    let cfg = read_config().unwrap_or_else(|_| crate::config::config::get_default_config());
+    let cfg = read().unwrap_or_else(|_| crate::config::settings::default_config());
     let api = if cfg.launcher.custom_appx_api.trim().is_empty() {
-        crate::config::config::get_default_config()
+        crate::config::settings::default_config()
             .launcher
             .custom_appx_api
     } else {
@@ -377,7 +377,7 @@ async fn load_or_fetch_versions_once(force_refresh: bool) -> Result<Vec<RemoteMi
     };
     let url = Url::parse(&api).with_context(|| format!("invalid custom_appx_api url: {api}"))?;
 
-    let client = get_client_for_proxy().unwrap_or_else(|e| {
+    let client = client().unwrap_or_else(|e| {
         debug!("proxy client build failed, using global client: {e:?}");
         GLOBAL_CLIENT.clone()
     });
@@ -392,7 +392,7 @@ async fn load_or_fetch_versions_once(force_refresh: bool) -> Result<Vec<RemoteMi
         allow_redirects: Some(true),
     };
 
-    let resp = send_request_with_options(&client, &url, &opts)
+    let resp = send(&client, &url, &opts)
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
     let resp = resp
@@ -421,7 +421,7 @@ async fn load_or_fetch_versions_once(force_refresh: bool) -> Result<Vec<RemoteMi
     }
 
     let tmp_path_for_parse = tmp_path.clone();
-    let (creation_time, versions) = crate::tasks::runtime::run_io_blocking(move || {
+    let (creation_time, versions) = crate::tasks::runtime::blocking::run_io(move || {
         let file = std::fs::File::open(&tmp_path_for_parse).with_context(|| {
             format!(
                 "open temp api body file failed: {}",
@@ -454,11 +454,11 @@ async fn load_or_fetch_versions_once(force_refresh: bool) -> Result<Vec<RemoteMi
     Ok(versions)
 }
 
-pub async fn load_or_fetch_versions(force_refresh: bool) -> Result<Vec<RemoteMinecraftVersion>> {
+pub async fn load(force_refresh: bool) -> Result<Vec<RemoteMinecraftVersion>> {
     let mut last_error = None;
 
     for attempt in 0..REMOTE_VERSIONS_MAX_ATTEMPTS {
-        match load_or_fetch_versions_once(force_refresh).await {
+        match load_once(force_refresh).await {
             Ok(versions) => return Ok(versions),
             Err(error) => {
                 last_error = Some(error);

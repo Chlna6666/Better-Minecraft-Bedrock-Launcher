@@ -139,7 +139,7 @@ async fn download_and_cache(xuid: &str, url: &str) -> Result<PathBuf, String> {
 
     let xuid = xuid.to_string();
     let bytes = bytes.to_vec();
-    crate::tasks::runtime::run_io_blocking(move || write_cache_entry(&xuid, &bytes))
+    crate::tasks::runtime::blocking::run_io(move || write_cache_entry(&xuid, &bytes))
         .await
         .map_err(|error| format!("头像缓存后台任务失败：{error}"))?
 }

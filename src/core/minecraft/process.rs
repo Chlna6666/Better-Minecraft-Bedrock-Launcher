@@ -19,10 +19,10 @@ pub struct PortOwnerTermination {
 }
 
 pub async fn terminate_discovery_port_owners() -> Result<PortOwnerTermination, String> {
-    crate::tasks::runtime::run_io_blocking(terminate_discovery_port_owners_blocking).await?
+    crate::tasks::runtime::blocking::run_io(terminate_port_owners).await?
 }
 
-fn terminate_discovery_port_owners_blocking() -> Result<PortOwnerTermination, String> {
+fn terminate_port_owners() -> Result<PortOwnerTermination, String> {
     let current_process_id = std::process::id();
     let process_ids = discovery_port_owner_pids(DISCOVERY_PORT)?
         .into_iter()

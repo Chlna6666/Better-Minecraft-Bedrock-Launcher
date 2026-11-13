@@ -188,12 +188,12 @@ pub fn start_delete_screenshot_task(info: McScreenshotInfo) -> Result<String, St
         crate::tasks::task_manager::TaskOptions::new("删除截图", "deleting_screenshot")
             .detail(detail),
     )?;
-    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
+    crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
 
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
     let workflow = crate::tasks::runtime::spawn_io(async move {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
             delete_screenshot_transactionally(&info, &blocking_task_id)
         })
         .await;
@@ -414,7 +414,7 @@ mod tests {
         );
         crate::tasks::task_manager::create_task(
             crate::tasks::task_manager::TaskOptions::new("截图删除测试", "running")
-                .id(Some(task_id.clone())),
+                .id(task_id.clone()),
         )
         .expect("task id must be unique");
         let outcome =

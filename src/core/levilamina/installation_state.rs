@@ -36,7 +36,7 @@ pub(super) struct InstalledPackage {
 pub(super) async fn inspect_installation(
     game_directory: PathBuf,
 ) -> Result<LeviLaminaInstallation, String> {
-    crate::tasks::runtime::run_io_blocking(move || inspect_installation_sync(&game_directory))
+    crate::tasks::runtime::blocking::run_io(move || inspect_installation_sync(&game_directory))
         .await?
 }
 
@@ -44,7 +44,7 @@ pub(super) async fn read_installed_packages(
     game_directory: &Path,
 ) -> Result<Vec<InstalledPackage>, String> {
     let game_directory = game_directory.to_path_buf();
-    crate::tasks::runtime::run_io_blocking(move || read_installed_packages_sync(&game_directory))
+    crate::tasks::runtime::blocking::run_io(move || read_installed_packages_sync(&game_directory))
         .await?
 }
 
@@ -54,7 +54,7 @@ pub(super) async fn write_preloader_manifest(
 ) -> Result<PathBuf, String> {
     let game_directory = game_directory.to_path_buf();
     let version = version.to_string();
-    crate::tasks::runtime::run_archive_blocking(move || {
+    crate::tasks::runtime::blocking::run_archive(move || {
         let path = game_directory.join("mods/PreLoader/bloader.json");
         let parent = path
             .parent()
@@ -96,7 +96,7 @@ pub(super) async fn update_lock(
     let package_id = package.id.clone();
     let version = package.manifest.version.clone();
     let explicit = package.explicit;
-    crate::tasks::runtime::run_archive_blocking(move || {
+    crate::tasks::runtime::blocking::run_archive(move || {
         let mut lock = read_lock(&game_directory)?;
         remove_locked_package(&mut lock, &package_id);
         let relative_files = files
@@ -126,7 +126,7 @@ pub(super) async fn prepare_package_install(
 ) -> Result<(), String> {
     let game_directory = game_directory.to_path_buf();
     let package_id = package_id.clone();
-    crate::tasks::runtime::run_archive_blocking(move || {
+    crate::tasks::runtime::blocking::run_archive(move || {
         let mut lock = read_lock(&game_directory)?;
         let removed_files = remove_locked_package(&mut lock, &package_id);
         remove_relative_files(&game_directory, &removed_files)?;
@@ -137,7 +137,7 @@ pub(super) async fn prepare_package_install(
 
 pub(super) async fn uninstall_loader(game_directory: &Path) -> Result<(), String> {
     let game_directory = game_directory.to_path_buf();
-    crate::tasks::runtime::run_archive_blocking(move || {
+    crate::tasks::runtime::blocking::run_archive(move || {
         let mut lock = read_lock(&game_directory)?;
         let mut retained = Vec::with_capacity(lock.packages.len());
         for package in lock.packages {

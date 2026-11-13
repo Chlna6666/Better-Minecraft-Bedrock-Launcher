@@ -3,10 +3,7 @@ use super::paperconnect::{PaperConnectProtocol, ServerInfo};
 use super::paperconnect_discovery::{
     RakNetServerInfo, scan_local_raknet, start_fake_raknet_server,
 };
-use super::paperconnect_guest::{
-    bind_listener as bind_guest_listener, connect_raknet as connect_guest_raknet,
-    is_port_occupied as is_discovery_port_occupied,
-};
+use super::paperconnect_guest;
 use super::paperconnect_tunnel::{TunnelDecoder, encode_packet};
 use bytes::Bytes;
 use nethernet::{LanSignaling, NethernetSession, NethernetStream, ServerData};
@@ -160,7 +157,7 @@ async fn detect_local_nethernet() -> Result<ServerData, String> {
 }
 
 async fn start_nethernet_host() -> Result<HostTransportInfo, String> {
-    let game_port = super::paperconnect_pick_udp_port()?;
+    let game_port = super::paperconnect::pick_udp_port()?;
     let mut server = RakServer::new(SocketAddr::from(([0, 0, 0, 0], game_port)), |config| {
         config.max_connections = MAX_HOST_SESSIONS;
         config.max_mtu_size = RAKNET_MTU;
@@ -264,7 +261,7 @@ async fn start_nethernet_guest(
     player_name: &str,
 ) -> Result<PaperConnectClientState, String> {
     let (mut raknet_client, mut raknet) =
-        connect_guest_raknet(proxy_port, RAKNET_MTU, RAKNET_CONNECT_TIMEOUT).await?;
+        paperconnect_guest::connect_raknet(proxy_port, RAKNET_MTU, RAKNET_CONNECT_TIMEOUT).await?;
     tracing::info!(proxy_port, "PaperConnect 成员步骤 3/6：RakNet 隧道握手成功");
 
     let server_data = ServerData {
@@ -286,9 +283,9 @@ async fn start_nethernet_guest(
         proxy_port,
         "PaperConnect 成员步骤 4/6：开始检测本机 UDP 7551 占用"
     );
-    let listener = match bind_guest_listener(discovery_addr, server_data, proxy_port).await {
+    let listener = match paperconnect_guest::bind_listener(discovery_addr, server_data, proxy_port).await {
         Ok(listener) => listener,
-        Err(error) if is_discovery_port_occupied(&error) => {
+        Err(error) if paperconnect_guest::is_port_occupied(&error) => {
             tracing::warn!(
                 port = NETHERNET_DISCOVERY_PORT,
                 "PaperConnect 成员步骤 4/6：UDP 7551 已被占用，本机游戏代理未启动；EasyTier 房间保持连接"
@@ -346,7 +343,7 @@ async fn start_nethernet_guest(
                     raknet_client.stop();
                     tracing::info!(proxy_port, "正在重连 PaperConnect 成员 RakNet 隧道");
                     let reconnect =
-                        connect_guest_raknet(proxy_port, RAKNET_MTU, RAKNET_CONNECT_TIMEOUT);
+                        paperconnect_guest::connect_raknet(proxy_port, RAKNET_MTU, RAKNET_CONNECT_TIMEOUT);
                     tokio::pin!(reconnect);
                     tokio::select! {
                         _ = &mut cancel_receiver => break,

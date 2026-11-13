@@ -2,7 +2,7 @@ mod cache;
 pub mod install;
 pub mod queries;
 
-use crate::config::config::read_config;
+use crate::config::settings::read;
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -39,7 +39,7 @@ impl CurseForgeClient {
     pub fn new() -> Result<Self, String> {
         let client = build_http_client()?.clone();
         let (base_v1, base_v2, mirror_failover) = build_base_urls()?;
-        let auth_config = read_config()
+        let auth_config = read()
             .map_err(|error| format!("读取 CurseForge API Key 配置失败：{error}"))?;
         let api_key = auth_config.launcher.download.curseforge_api_key;
         let custom_endpoint = auth_config.launcher.download.curseforge_api_source == "custom";
@@ -88,12 +88,12 @@ impl CurseForgeClient {
             && mirror_in_cooldown()
         {
             return self
-                .get_one::<T>(official.clone(), false)
+                .request_one::<T>(official.clone(), false)
                 .await
                 .map_err(|error| format!("CurseForge 镜像暂不可用，官方 API 请求失败：{}", error.message));
         }
 
-        match self.get_one::<T>(url.clone(), alternative.is_some()).await {
+        match self.request_one::<T>(url.clone(), alternative.is_some()).await {
             Ok(value) => Ok(value),
             Err(error) if error.fallback_allowed && alternative.is_some() => {
                 if error.mirror_health_failure {
@@ -104,7 +104,7 @@ impl CurseForgeClient {
                     reason = %error.message,
                     "CurseForge 镜像请求失败，自动回退官方 API"
                 );
-                self.get_one::<T>(alternative.expect("checked fallback presence"), false)
+                self.request_one::<T>(alternative.expect("checked fallback presence"), false)
                     .await
                     .map_err(|official_error| format!(
                         "CurseForge 镜像失败（{}），官方 API 也失败（{}）",
@@ -124,7 +124,7 @@ impl CurseForgeClient {
 
     // Each endpoint owns its own cache key. A successful official fallback must
     // never be stored as if it had come from the mirror.
-    async fn get_one<T>(&self, url: Url, mirror_request: bool) -> Result<T, FetchError>
+    async fn request_one<T>(&self, url: Url, mirror_request: bool) -> Result<T, FetchError>
     where
         T: DeserializeOwned + Send + 'static,
     {
@@ -217,7 +217,7 @@ impl CurseForgeClient {
 
             if mirror_request && mirror_in_cooldown() {
                 if let Some(official) = client.official_fallback_url(&url) {
-                    let _ = client.get_one::<T>(official, false).await;
+                    let _ = client.request_one::<T>(official, false).await;
                 }
                 return;
             }
@@ -250,7 +250,7 @@ impl CurseForgeClient {
                         "CurseForge 镜像后台刷新失败，转用官方 API"
                     );
                     if let Some(official) = client.official_fallback_url(&url)
-                        && let Err(error) = client.get_one::<T>(official, false).await
+                        && let Err(error) = client.request_one::<T>(official, false).await
                     {
                         tracing::debug!("CurseForge 官方 API 后台刷新也失败：{}", error.message);
                     }
@@ -329,7 +329,7 @@ impl CurseForgeClient {
         ))
     }
 
-    pub async fn get_categories(&self) -> Result<Vec<Category>, String> {
+    pub async fn fetch_categories(&self) -> Result<Vec<Category>, String> {
         let mut url =
             Url::parse(&format!("{}/categories", self.base_v1)).map_err(|e| e.to_string())?;
         url.query_pairs_mut().append_pair("gameId", GAME_ID);
@@ -337,7 +337,7 @@ impl CurseForgeClient {
         Ok(response.data)
     }
 
-    pub async fn get_minecraft_versions(&self) -> Result<Vec<String>, String> {
+    pub async fn fetch_game_versions(&self) -> Result<Vec<String>, String> {
         let url_primary = Url::parse(&format!("{}/games/{}/versions", self.base_v2, GAME_ID))
             .map_err(|e| e.to_string())?;
         let response = match self.get::<GetVersionsV2Response>(url_primary).await {
@@ -421,7 +421,7 @@ impl CurseForgeClient {
         self.get::<SearchResponse>(url).await
     }
 
-    pub async fn get_mod_files(
+    pub async fn fetch_mod_files(
         &self,
         mod_id: i32,
         game_version: Option<String>,
@@ -442,14 +442,14 @@ impl CurseForgeClient {
         self.get::<GetModFilesResponse>(url).await
     }
 
-    pub async fn get_mod(&self, mod_id: i32) -> Result<CurseForgeMod, String> {
+    pub async fn fetch_mod(&self, mod_id: i32) -> Result<CurseForgeMod, String> {
         let url =
             Url::parse(&format!("{}/mods/{}", self.base_v1, mod_id)).map_err(|e| e.to_string())?;
         let response = self.get::<GetModResponse>(url).await?;
         Ok(response.data)
     }
 
-    pub async fn get_mod_description(&self, mod_id: i32) -> Result<String, String> {
+    pub async fn fetch_mod_description(&self, mod_id: i32) -> Result<String, String> {
         let url = Url::parse(&format!("{}/mods/{}/description", self.base_v1, mod_id))
             .map_err(|e| e.to_string())?;
         let response = self.get::<GetStringResponse>(url).await?;
@@ -461,7 +461,7 @@ pub fn prewarm() -> Result<(), String> {
     let client = CurseForgeClient::new()?;
     crate::tasks::runtime::spawn_io(async move {
         let (categories, versions) =
-            tokio::join!(client.get_categories(), client.get_minecraft_versions());
+            tokio::join!(client.fetch_categories(), client.fetch_game_versions());
         if let Err(error) = categories {
             tracing::debug!("CurseForge category prewarm failed: {error}");
         }
@@ -599,7 +599,7 @@ fn mirror_mark_healthy() {
 // Resolve at client construction rather than pinning the first launch setting for
 // the process lifetime. HTTP connection pooling remains shared by build_http_client().
 fn build_base_urls() -> Result<(String, String, bool), String> {
-    let (source, custom_base) = read_config()
+    let (source, custom_base) = read()
         .ok()
         .map(|config| (
             config.launcher.download.curseforge_api_source,

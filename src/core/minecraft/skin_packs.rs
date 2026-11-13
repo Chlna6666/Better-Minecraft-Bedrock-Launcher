@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 
 use crate::core::minecraft::paths::{GamePathOptions, GameTargetDir, game_target_dirs};
 use crate::core::minecraft::resource_packs::{Header, Module, load_lang_map_for_pack};
-use crate::core::minecraft::skin_pack_preview::generate_skin_preview;
+use crate::core::minecraft::skin_pack_preview::generate;
 
 mod fallback;
 
@@ -291,7 +291,7 @@ fn skin_info_from_json(
         .and_then(|_| skin_geometry_path(folder_path));
     let preview_path = texture_path
         .as_ref()
-        .and_then(|path| match generate_skin_preview(path) {
+        .and_then(|path| match generate(path) {
             Ok(path) => Some(path.to_string_lossy().to_string()),
             Err(error) => {
                 warn!("generate skin preview failed {}: {error:?}", path.display());

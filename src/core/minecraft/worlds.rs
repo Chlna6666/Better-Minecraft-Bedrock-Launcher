@@ -1,7 +1,7 @@
 //! Minecraft Bedrock world discovery and summary metadata.
 use crate::core::minecraft::paths::{GamePathOptions, GameTargetDir, game_target_dirs};
 use anyhow::Result;
-use bedrock_world::discover::{WorldDiscovery, discover_worlds};
+use bedrock_world::discover::{WorldDiscovery, worlds};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -55,7 +55,7 @@ pub(crate) fn list(options: &GamePathOptions) -> Result<Vec<WorldSummary>> {
         roots: world_dirs,
         size_scan_file_limit: WORLD_SIZE_SCAN_FILE_LIMIT,
     };
-    let results = discover_worlds(&discovery)?
+    let results = worlds(&discovery)?
         .into_iter()
         .map(|world| {
             let gdk_user = if world.folder_path.to_string_lossy().contains("Users") {
@@ -325,7 +325,7 @@ fn bytes_to_human(bytes: u64) -> String {
 }
 
 #[cfg(test)]
-fn get_dir_size_sync_limited(path: &Path, file_limit: usize) -> Option<u64> {
+fn directory_size(path: &Path, file_limit: usize) -> Option<u64> {
     let mut total: u64 = 0;
     let mut files_seen = 0usize;
     for entry in WalkDir::new(path)
@@ -368,8 +368,8 @@ mod tests {
             file.write_all(&[1, 2, 3, 4]).expect("write test file");
         }
 
-        assert_eq!(get_dir_size_sync_limited(&test_dir, 4), Some(12));
-        assert_eq!(get_dir_size_sync_limited(&test_dir, 2), None);
+        assert_eq!(directory_size(&test_dir, 4), Some(12));
+        assert_eq!(directory_size(&test_dir, 2), None);
 
         fs::remove_dir_all(&test_dir).expect("remove test dir");
     }

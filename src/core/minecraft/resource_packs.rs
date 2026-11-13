@@ -123,7 +123,7 @@ pub(crate) fn read_packs_standard(
 
             // 本地化
             if let Some(lang_map) = load_lang_map_for_pack(&folder_path, lang) {
-                replace_header_with_lang(&mut manifest_value, &lang_map);
+                localize_manifest(&mut manifest_value, &lang_map);
             }
 
             let manifest_parsed: Option<Manifest> =
@@ -567,7 +567,7 @@ pub fn load_lang_map_for_pack(folder: &PathBuf, lang: &str) -> Option<HashMap<St
     None
 }
 
-pub fn replace_header_with_lang(manifest_value: &mut Value, lang_map: &HashMap<String, String>) {
+pub fn localize_manifest(manifest_value: &mut Value, lang_map: &HashMap<String, String>) {
     if let Value::Object(root) = manifest_value {
         if let Some(Value::Object(header)) = root.get_mut("header") {
             if let Some(Value::String(name_s)) = header.get("name") {

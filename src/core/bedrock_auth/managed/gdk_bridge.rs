@@ -26,7 +26,7 @@ impl PreparedLaunchAuth {
         if payload.is_empty() {
             return Vec::new();
         }
-        let handle = crate::core::inject::inject::register_xuser_launch_payload(payload);
+        let handle = crate::core::inject::runtime::register_xuser_launch_payload(payload);
         vec![(INTERNAL_SESSION_KEY.to_string(), handle)]
     }
 }

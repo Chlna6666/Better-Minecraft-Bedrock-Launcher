@@ -61,7 +61,7 @@ impl GameSession {
 
         let started_at = Utc::now();
         let path_for_write = instance_path.clone();
-        let write_result = crate::tasks::runtime::run_io_blocking(move || {
+        let write_result = crate::tasks::runtime::blocking::run_io(move || {
             record_session_start(&path_for_write, started_at)
         })
         .await;
@@ -94,7 +94,7 @@ impl GameSession {
         }
         let instance_path = self.instance_path.clone();
         let saved_through = self.saved_through;
-        let result = crate::tasks::runtime::run_io_blocking(move || {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
             record_session_duration(&instance_path, saved_through, checkpoint_at, elapsed)
         })
         .await
@@ -118,15 +118,15 @@ impl GameSession {
 }
 
 #[must_use]
-pub fn game_info_path(instance_path: &Path) -> PathBuf {
+pub fn path(instance_path: &Path) -> PathBuf {
     instance_path.join(CONFIG_DIRECTORY).join(GAME_INFO_FILE)
 }
 
-pub fn load_game_info(instance_path: &Path) -> Result<GameInfo, String> {
-    load_game_info_path(&game_info_path(instance_path))
+pub fn load(instance_path: &Path) -> Result<GameInfo, String> {
+    read(&path(instance_path))
 }
 
-fn load_game_info_path(path: &Path) -> Result<GameInfo, String> {
+fn read(path: &Path) -> Result<GameInfo, String> {
     if !path.exists() {
         return Ok(GameInfo::default());
     }
@@ -151,7 +151,7 @@ fn load_game_info_path(path: &Path) -> Result<GameInfo, String> {
 }
 
 fn record_session_start(instance_path: &Path, started_at: DateTime<Utc>) -> Result<(), String> {
-    update_game_info(instance_path, |info| {
+    update(instance_path, |info| {
         info.total_sessions = info.total_sessions.saturating_add(1);
         info.first_play_time.get_or_insert(started_at);
         info.last_play_time = Some(started_at);
@@ -166,7 +166,7 @@ fn record_session_duration(
     finished_at: DateTime<Utc>,
     elapsed: Duration,
 ) -> Result<(), String> {
-    update_game_info(instance_path, |info| {
+    update(instance_path, |info| {
         info.total_play_time = info.total_play_time.saturating_add(elapsed.as_secs());
         add_daily_play_time(info, started_at, finished_at);
     })
@@ -192,16 +192,16 @@ fn add_daily_play_time(info: &mut GameInfo, mut cursor: DateTime<Utc>, finished_
     }
 }
 
-fn update_game_info(
+fn update(
     instance_path: &Path,
     update: impl FnOnce(&mut GameInfo),
 ) -> Result<(), String> {
     let _write_guard = GAME_INFO_WRITE_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let mut info = load_game_info(instance_path)?;
+    let mut info = load(instance_path)?;
     update(&mut info);
-    write_json_atomically(&game_info_path(instance_path), &info)
+    write_json_atomically(&path(instance_path), &info)
 }
 
 pub(crate) fn write_json_atomically(path: &Path, value: &impl Serialize) -> Result<(), String> {
@@ -238,7 +238,7 @@ mod tests {
         )
         .map_err(|error| error.to_string())?;
 
-        let info = load_game_info_path(&path)?;
+        let info = read(&path)?;
         assert_eq!(info.total_play_time, 42);
         assert_eq!(info.total_sessions, 3);
         Ok(())
@@ -248,7 +248,7 @@ mod tests {
     fn wrapped_unknown_fields_are_preserved_when_normalized() -> Result<(), String> {
         let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
         let instance_path = directory.path();
-        let path = game_info_path(instance_path);
+        let path = path(instance_path);
         std::fs::create_dir_all(path.parent().ok_or("missing parent")?)
             .map_err(|error| error.to_string())?;
         std::fs::write(

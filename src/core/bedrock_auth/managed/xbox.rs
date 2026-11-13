@@ -267,7 +267,7 @@ pub(super) async fn authenticate(
 }
 
 async fn load_or_create_device_identity() -> Result<DeviceIdentity, AuthError> {
-    crate::tasks::runtime::run_io_blocking(|| {
+    crate::tasks::runtime::blocking::run_io(|| {
         let _guard = super::ACCOUNT_LOCK
             .lock()
             .map_err(|_| "Xbox 设备身份锁已损坏".to_string())?;
@@ -293,7 +293,7 @@ async fn load_or_create_device_identity() -> Result<DeviceIdentity, AuthError> {
 }
 
 fn load_or_create_device_id(has_stored_key: bool) -> Result<String, String> {
-    let configured = crate::config::config::read_config()
+    let configured = crate::config::settings::read()
         .map_err(|error| format!("读取 BMCBL 配置失败：{error}"))?
         .bedrock_auth
         .device_id;
@@ -319,11 +319,11 @@ fn load_or_create_device_id(has_stored_key: bool) -> Result<String, String> {
         super::secret_store::store_device_id(&device_id)?;
     }
     if configured.trim() != device_id {
-        crate::config::config::update_config(|config| {
+        crate::config::settings::update(|config| {
             config.bedrock_auth.device_id = device_id.clone();
         })
         .map_err(|error| format!("保存 Bedrock Auth 配置失败：{error}"))?;
-        crate::config::config::flush_config_now();
+        crate::config::settings::flush_now();
     }
 
     if legacy_path.is_file() {
@@ -545,7 +545,7 @@ where
     if !status.is_success() {
         let error_code = serde_json::from_slice::<Value>(&bytes)
             .ok()
-            .and_then(|payload| xbox_error_code(&payload));
+            .and_then(|payload| error_code(&payload));
         return Err(AuthError::XboxService {
             stage,
             status: status.as_u16(),
@@ -556,7 +556,7 @@ where
         .map_err(|_| AuthError::InvalidResponse("Xbox 服务返回了无效 JSON"))
 }
 
-fn xbox_error_code(payload: &Value) -> Option<u64> {
+fn error_code(payload: &Value) -> Option<u64> {
     payload
         .get("XErr")
         .or_else(|| payload.get("xerr"))

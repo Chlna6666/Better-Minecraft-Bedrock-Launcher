@@ -1,5 +1,3 @@
-#[path = "inject_runtime.rs"]
-pub mod inject;
-#[path = "inject.rs"]
-mod inject_legacy;
+mod legacy;
 pub mod pe;
+pub mod runtime;

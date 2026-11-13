@@ -7,15 +7,15 @@ use bedrock_world::{
     OpenOptions, PlayerId, World,
     block::BlockState,
     map_item::{MapBundle, filled_map_id},
-    nbt::{NbtTag, parse_root_nbt},
+    nbt::{NbtTag, parse_root},
     surface::CancelFlag,
 };
 use indexmap::IndexMap;
 use std::collections::BTreeSet;
 
 use super::{
-    map_bundle::build_bundle,
-    map_image::{MapPreviewResult, get_map_preview},
+    bundle::build_bundle,
+    image_to_map::{MapPreviewResult, get_preview},
 };
 use crate::tasks::task_manager::ProgressUpdate;
 use crate::tasks::{runtime, task_manager};
@@ -96,14 +96,14 @@ impl Prepared {
 ///
 /// Returns a missing/expired preview or worker-submission error. Preparation, conflicts, capacity,
 /// storage and history failures appear on the returned task's terminal snapshot.
-pub fn start_map_bundle_install(
+pub fn start_bundle(
     preview_task_id: &str,
     world_path: PathBuf,
     title: String,
     target: MapBundleInstallTarget,
     history: MapInstallHistory,
 ) -> Result<String, String> {
-    let preview = get_map_preview(preview_task_id)
+    let preview = get_preview(preview_task_id)
         .ok_or_else(|| "地图预览已释放或过期，请重新转换".to_owned())?;
     start_install_task(
         InstallSource::Preview(preview, title.clone()),
@@ -124,7 +124,7 @@ pub fn start_map_bundle_install(
 /// # Errors
 ///
 /// Returns a worker-submission error. File read, decode and world errors are task failures.
-pub fn start_map_bundle_file_install(
+pub fn start_bundle_file(
     input: PathBuf,
     world_path: PathBuf,
     target: MapBundleInstallTarget,
@@ -145,7 +145,7 @@ pub fn start_map_bundle_file_install(
 
 /// Schedule a non-mutating check of the currently selected map-frame area.
 /// The actual installation always checks the same world state again at commit.
-pub fn start_map_frame_grid_preflight(
+pub fn start_frame_grid_preflight(
     world_path: PathBuf,
     chunk: ChunkPos,
     center: BlockPos,
@@ -156,15 +156,15 @@ pub fn start_map_frame_grid_preflight(
     let task_id = task_manager::create_task(
         task_manager::TaskOptions::new("检查展示框放置区域", "检查展示框放置区域").total(1),
     )?;
-    task_manager::register_task_cooperative_cancel(task_id.clone());
+    task_manager::register_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
-    task_manager::register_task_cancel_hook(task_id.clone(), {
+    task_manager::register_cancel_hook(task_id.clone(), {
         let cancel = cancel.clone();
         move || cancel.cancel()
     });
     let worker_id = task_id.clone();
     if let Err(error) = runtime::spawn_io(async move {
-        let result = runtime::run_io_blocking(move || {
+        let result = runtime::blocking::run_io(move || {
             if cancel.is_cancelled() {
                 return Err("展示框位置检查已取消".to_owned());
             }
@@ -213,9 +213,9 @@ fn start_install_task(
             .detail(title)
             .total(total),
     )?;
-    task_manager::register_task_cooperative_cancel(task_id.clone());
+    task_manager::register_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
-    task_manager::register_task_cancel_hook(task_id.clone(), {
+    task_manager::register_cancel_hook(task_id.clone(), {
         let cancel = cancel.clone();
         move || cancel.cancel()
     });
@@ -269,7 +269,7 @@ async fn install(
             )
         }
         InstallSource::File(input) => {
-            let imported = runtime::run_io_blocking(move || read_map_import(&input)).await??;
+            let imported = runtime::blocking::run_io(move || read_map_import(&input)).await??;
             task_manager::update_progress(
                 task_id,
                 ProgressUpdate::advance(1).total(1).stage("读取地图包"),
@@ -283,7 +283,7 @@ async fn install(
     task_manager::reset_progress(task_id, Some(1), Some("检查目标与地图 ID"));
     let worker_cancel = cancel.clone();
     let task_id = task_id.to_owned();
-    let result = runtime::run_io_blocking(move || {
+    let result = runtime::blocking::run_io(move || {
         let mut options = OpenOptions::default();
         options.read_only = false;
         let world = World::open(&world_path, options).map_err(|error| error.to_string())?;
@@ -318,7 +318,7 @@ async fn install(
             }
             MapBundleInstallTarget::NewUpFrame(chunk, position, support) => Prepared::Frame(
                 world
-                    .prepare_map_bundle_new_up_frame(&bundle, chunk, position, support)
+                    .prepare_map_frame_grid(&bundle, chunk, position, support)
                     .map_err(|error| error.to_string())?,
             ),
         };
@@ -376,7 +376,7 @@ fn read_map_import(input: &std::path::Path) -> Result<ImportedBundle, String> {
         Ok(bundle) => return Ok(ImportedBundle::Portable(bundle)),
         Err(error) => error.to_string(),
     };
-    let root = parse_root_nbt(&bytes)
+    let root = parse_root(&bytes)
         .map_err(|error| format!("文件不是可读取的 Bedrock NBT 地图包或容器：{error}"))?;
     if matches!(
         &root,
@@ -447,7 +447,7 @@ fn resolve_container_maps(world: &World, items: Vec<NbtTag>) -> Result<MapBundle
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bedrock_world::map_item::new_filled_map_item;
+    use bedrock_world::map_item::new_filled;
 
     #[test]
     fn collects_maps_from_chest_and_nested_shulker_items() {
@@ -460,13 +460,13 @@ mod tests {
                 "tag".to_owned(),
                 NbtTag::Compound(IndexMap::from([(
                     "Items".to_owned(),
-                    NbtTag::List(vec![new_filled_map_item(12, 0).expect("map item")]),
+                    NbtTag::List(vec![new_filled(12, 0).expect("map item")]),
                 )])),
             ),
         ]));
         let root = NbtTag::Compound(IndexMap::from([(
             "Items".to_owned(),
-            NbtTag::List(vec![new_filled_map_item(11, 0).expect("map item"), nested]),
+            NbtTag::List(vec![new_filled(11, 0).expect("map item"), nested]),
         )]));
         let mut items = Vec::new();
         let mut ids = BTreeSet::new();
@@ -481,8 +481,8 @@ mod tests {
         let root = NbtTag::Compound(IndexMap::from([(
             "Items".to_owned(),
             NbtTag::List(vec![
-                new_filled_map_item(11, 0).expect("map item"),
-                new_filled_map_item(11, 1).expect("map item"),
+                new_filled(11, 0).expect("map item"),
+                new_filled(11, 1).expect("map item"),
             ]),
         )]));
         let error = collect_filled_maps(&root, &mut Vec::new(), &mut BTreeSet::new())

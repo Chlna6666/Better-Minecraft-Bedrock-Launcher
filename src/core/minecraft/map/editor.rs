@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use bedrock_world::{
-    Global,
+    global::Record,
     biome::{Biome3d, HeightMap2d},
     block::{BlockEntity, BlockEntityRecord, BlockPos},
     chunk::{ChunkPos, ChunkVersion, GlobalRecordKind, HardcodedSpawnArea},
@@ -26,14 +26,14 @@ use bedrock_world::{
 /// affected chunks imply tile/image refresh, overlay changes imply region
 /// overlay reload, and metadata changes imply a manifest/index reload.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MapEditInvalidation {
+pub struct EditInvalidation {
     affected_chunks: BTreeSet<ChunkPos>,
     refresh_metadata: bool,
     refresh_overlays: bool,
     clear_tile_cache: bool,
 }
 
-impl MapEditInvalidation {
+impl EditInvalidation {
     /// Creates an invalidation that only refreshes metadata panels or indices.
     #[must_use]
     pub const fn metadata() -> Self {
@@ -138,11 +138,11 @@ impl MapEditInvalidation {
 /// [`World`] is opened with `read_only = false`; callers are still
 /// expected to collect explicit user confirmation before invoking mutating
 /// methods.
-pub struct MapWorldEditor {
+pub struct WorldEditor {
     world: World,
 }
 
-impl MapWorldEditor {
+impl WorldEditor {
     /// Opens a writable Bedrock world from the world folder path.
     ///
     /// The path must be the Minecraft world root, not the nested `db`
@@ -158,7 +158,7 @@ impl MapWorldEditor {
             read_only: false,
             ..OpenOptions::default()
         };
-        Self::open_with_options(world_path, options)
+        Self::open(world_path, options)
     }
 
     /// Opens a world with custom options.
@@ -170,7 +170,7 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns world-format detection, storage, or `LevelDB` open errors.
-    pub fn open_with_options(world_path: impl AsRef<Path>, options: OpenOptions) -> Result<Self> {
+    pub fn open(world_path: impl AsRef<Path>, options: OpenOptions) -> Result<Self> {
         let world = World::open(world_path, options)?;
         Ok(Self { world })
     }
@@ -198,7 +198,7 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns storage or NBT parse errors.
-    pub fn map_item(&self, id: &MapItemId) -> Result<Option<SavedData>> {
+    pub fn item(&self, id: &MapItemId) -> Result<Option<SavedData>> {
         Ok(self.world.map_item(id)?)
     }
 
@@ -207,7 +207,7 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns storage, cancellation, or NBT parse errors.
-    pub fn map_items(&self, options: WorldScanOptions) -> Result<Vec<SavedData>> {
+    pub fn items(&self, options: WorldScanOptions) -> Result<Vec<SavedData>> {
         Ok(self.world.map_items(options)?)
     }
 
@@ -216,9 +216,9 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns read-only, validation, serialization, or storage errors.
-    pub fn save_map_item(&self, item: &SavedData) -> Result<MapEditInvalidation> {
+    pub fn save_item(&self, item: &SavedData) -> Result<EditInvalidation> {
         self.world.save_map_item(item)?;
-        Ok(MapEditInvalidation::metadata())
+        Ok(EditInvalidation::metadata())
     }
 
     /// Deletes one Bedrock map item.
@@ -226,9 +226,9 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns read-only or storage errors.
-    pub fn delete_map_item(&self, id: &MapItemId) -> Result<MapEditInvalidation> {
+    pub fn delete_item(&self, id: &MapItemId) -> Result<EditInvalidation> {
         self.world.delete_map_item(id)?;
-        Ok(MapEditInvalidation::metadata())
+        Ok(EditInvalidation::metadata())
     }
 
     /// Reads one global record by kind.
@@ -236,7 +236,7 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns storage or NBT parse errors.
-    pub fn global(&self, kind: GlobalRecordKind) -> Result<Option<Global>> {
+    pub fn global(&self, kind: GlobalRecordKind) -> Result<Option<Record>> {
         Ok(self.world.global(kind)?)
     }
 
@@ -245,7 +245,7 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns storage, cancellation, or NBT parse errors.
-    pub fn globals(&self, options: WorldScanOptions) -> Result<Vec<Global>> {
+    pub fn globals(&self, options: WorldScanOptions) -> Result<Vec<Record>> {
         Ok(self.world.globals(options)?)
     }
 
@@ -254,9 +254,9 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns read-only, validation, serialization, or storage errors.
-    pub fn save_global(&self, record: &Global) -> Result<MapEditInvalidation> {
+    pub fn save_global(&self, record: &Record) -> Result<EditInvalidation> {
         self.world.save_global(record)?;
-        Ok(MapEditInvalidation::metadata())
+        Ok(EditInvalidation::metadata())
     }
 
     /// Deletes one global record.
@@ -264,9 +264,9 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns read-only or storage errors.
-    pub fn delete_global(&self, kind: GlobalRecordKind) -> Result<MapEditInvalidation> {
+    pub fn delete_global(&self, kind: GlobalRecordKind) -> Result<EditInvalidation> {
         self.world.delete_global(kind)?;
-        Ok(MapEditInvalidation::metadata())
+        Ok(EditInvalidation::metadata())
     }
 
     /// Reads the 16x16 height map from `Data2D` or `Data3D`.
@@ -288,9 +288,9 @@ impl MapWorldEditor {
         pos: ChunkPos,
         version: ChunkVersion,
         height_map: HeightMap2d,
-    ) -> Result<MapEditInvalidation> {
+    ) -> Result<EditInvalidation> {
         self.world.put_heightmap(pos, version, height_map)?;
-        Ok(MapEditInvalidation::chunk(pos).with_metadata())
+        Ok(EditInvalidation::chunk(pos).with_metadata())
     }
 
     /// Writes a full `Data3D` biome payload for a chunk.
@@ -298,9 +298,9 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns read-only, validation, serialization, or storage errors.
-    pub fn put_biome_storage(&self, pos: ChunkPos, biome: Biome3d) -> Result<MapEditInvalidation> {
+    pub fn put_biome_storage(&self, pos: ChunkPos, biome: Biome3d) -> Result<EditInvalidation> {
         self.world.put_biome_storage(pos, biome)?;
-        Ok(MapEditInvalidation::chunk(pos).with_metadata())
+        Ok(EditInvalidation::chunk(pos).with_metadata())
     }
 
     /// Scans hardcoded spawn areas.
@@ -324,9 +324,9 @@ impl MapWorldEditor {
         &self,
         pos: ChunkPos,
         areas: &[HardcodedSpawnArea],
-    ) -> Result<MapEditInvalidation> {
+    ) -> Result<EditInvalidation> {
         self.world.save_hardcoded_spawn_areas(pos, areas)?;
-        Ok(MapEditInvalidation::chunk(pos).with_metadata())
+        Ok(EditInvalidation::chunk(pos).with_metadata())
     }
 
     /// Deletes hardcoded spawn areas for one chunk.
@@ -334,9 +334,9 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns read-only or storage errors.
-    pub fn delete_hardcoded_spawn_areas(&self, pos: ChunkPos) -> Result<MapEditInvalidation> {
+    pub fn delete_hardcoded_spawn_areas(&self, pos: ChunkPos) -> Result<EditInvalidation> {
         self.world.delete_hardcoded_spawn_areas(pos)?;
-        Ok(MapEditInvalidation::chunk(pos).with_metadata())
+        Ok(EditInvalidation::chunk(pos).with_metadata())
     }
 
     /// Reads all block entities from a chunk.
@@ -357,9 +357,9 @@ impl MapWorldEditor {
         &self,
         pos: ChunkPos,
         entities: &[BlockEntity],
-    ) -> Result<MapEditInvalidation> {
+    ) -> Result<EditInvalidation> {
         self.world.put_block_entities(pos, entities)?;
-        Ok(MapEditInvalidation::chunk(pos).with_metadata())
+        Ok(EditInvalidation::chunk(pos).with_metadata())
     }
 
     /// Edits one block entity in place.
@@ -372,12 +372,12 @@ impl MapWorldEditor {
         pos: ChunkPos,
         block: BlockPos,
         edit: F,
-    ) -> Result<MapEditInvalidation>
+    ) -> Result<EditInvalidation>
     where
         F: FnOnce(&mut NbtTag) -> bedrock_world::error::Result<()>,
     {
         self.world.edit_block_entity_at(pos, block, edit)?;
-        Ok(MapEditInvalidation::chunk(pos).with_metadata())
+        Ok(EditInvalidation::chunk(pos).with_metadata())
     }
 
     /// Deletes one block entity by absolute block position.
@@ -389,9 +389,9 @@ impl MapWorldEditor {
         &self,
         pos: ChunkPos,
         block: BlockPos,
-    ) -> Result<MapEditInvalidation> {
+    ) -> Result<EditInvalidation> {
         self.world.delete_block_entity_at(pos, block)?;
-        Ok(MapEditInvalidation::chunk(pos).with_metadata())
+        Ok(EditInvalidation::chunk(pos).with_metadata())
     }
 
     /// Reads modern and legacy actors associated with a chunk.
@@ -408,9 +408,9 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns read-only, validation, serialization, or storage errors.
-    pub fn put_actor(&self, pos: ChunkPos, actor: &Actor) -> Result<MapEditInvalidation> {
+    pub fn put_actor(&self, pos: ChunkPos, actor: &Actor) -> Result<EditInvalidation> {
         self.world.put_actor(pos, actor)?;
-        Ok(MapEditInvalidation::chunk(pos).with_metadata())
+        Ok(EditInvalidation::chunk(pos).with_metadata())
     }
 
     /// Deletes a modern actor and removes it from the chunk `digp` digest.
@@ -418,9 +418,9 @@ impl MapWorldEditor {
     /// # Errors
     ///
     /// Returns read-only, digest validation, or storage errors.
-    pub fn delete_actor(&self, pos: ChunkPos, uid: ActorUid) -> Result<MapEditInvalidation> {
+    pub fn delete_actor(&self, pos: ChunkPos, uid: ActorUid) -> Result<EditInvalidation> {
         self.world.delete_actor(pos, uid)?;
-        Ok(MapEditInvalidation::chunk(pos).with_metadata())
+        Ok(EditInvalidation::chunk(pos).with_metadata())
     }
 
     /// Moves a modern actor between chunk digests.
@@ -433,15 +433,15 @@ impl MapWorldEditor {
         from: ChunkPos,
         to: ChunkPos,
         actor: &Actor,
-    ) -> Result<MapEditInvalidation> {
+    ) -> Result<EditInvalidation> {
         self.world.move_actor(from, to, actor)?;
-        Ok(MapEditInvalidation::chunks([from, to]).with_metadata())
+        Ok(EditInvalidation::chunks([from, to]).with_metadata())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ChunkPos, MapEditInvalidation};
+    use super::{ChunkPos, EditInvalidation};
     use bedrock_world::chunk::Dimension;
 
     fn chunk(x: i32, z: i32) -> ChunkPos {
@@ -454,9 +454,9 @@ mod tests {
 
     #[test]
     fn invalidation_merges_chunk_and_metadata_flags() {
-        let mut invalidation = MapEditInvalidation::chunk(chunk(1, 2));
-        invalidation.merge(MapEditInvalidation::metadata());
-        invalidation.merge(MapEditInvalidation::chunk(chunk(3, 4)));
+        let mut invalidation = EditInvalidation::chunk(chunk(1, 2));
+        invalidation.merge(EditInvalidation::metadata());
+        invalidation.merge(EditInvalidation::chunk(chunk(3, 4)));
 
         assert!(invalidation.refresh_metadata());
         assert!(invalidation.refresh_overlays());

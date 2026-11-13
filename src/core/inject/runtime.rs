@@ -28,8 +28,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::PCSTR;
 
-pub use super::inject_legacy::{
-    InjectProgressCb, launch_win32_with_injection, register_xuser_launch_payload,
+pub use super::legacy::{
+    InjectProgressCb, launch_win32, register_xuser_launch_payload,
     terminal_host_launch_metadata,
 };
 
@@ -250,7 +250,7 @@ pub async fn inject_existing_process(
 ) -> Result<()> {
     let callback = on_progress.clone();
 
-    crate::tasks::runtime::run_io_blocking(move || -> Result<()> {
+    crate::tasks::runtime::blocking::run_io(move || -> Result<()> {
         let log = |message: &str| {
             if let Some(callback) = &callback {
                 callback(message.to_string());

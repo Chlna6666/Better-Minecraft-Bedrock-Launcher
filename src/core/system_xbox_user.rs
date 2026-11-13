@@ -1,8 +1,6 @@
 #![cfg(target_os = "windows")]
 
-#[cfg(target_os = "windows")]
-#[path = "system_xbox_user_wam.rs"]
-mod system_xbox_user_wam;
+mod wam;
 
 use serde_json::Value;
 use std::env;
@@ -97,7 +95,7 @@ pub(crate) fn probe_default_user() -> SystemXboxUserProbe {
 
 #[cfg(target_os = "windows")]
 fn attach_gamer_picture(mut user: SystemXboxUser) -> SystemXboxUser {
-    match system_xbox_user_wam::gamer_picture_for_xuid(user.xuid) {
+    match wam::gamer_picture_for_xuid(user.xuid) {
         Ok(Some(picture)) => {
             tracing::info!(
                 xuid = user.xuid,

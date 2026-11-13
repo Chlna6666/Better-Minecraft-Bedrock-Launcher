@@ -29,13 +29,13 @@ enum ExternalServerLine {
     Raw(String),
 }
 
-pub fn resolve_external_servers_file(options: &GamePathOptions) -> Option<PathBuf> {
+pub fn resolve_external_file(options: &GamePathOptions) -> Option<PathBuf> {
     resolve_game_target_parent(options, GameTargetDir::MinecraftPe, false)
         .map(|path| path.join(SERVER_FILE_NAME))
 }
 
 pub fn read_external_servers(options: &GamePathOptions) -> Result<Vec<ExternalServerEntry>> {
-    let file_path = match resolve_external_servers_file(options) {
+    let file_path = match resolve_external_file(options) {
         Some(path) => path,
         None => return Ok(Vec::new()),
     };
@@ -209,7 +209,7 @@ fn apply_server_mutation(
         ));
     }
 
-    let file_path = resolve_external_servers_file(options)
+    let file_path = resolve_external_file(options)
         .ok_or_else(|| "无法解析 external_servers.txt 路径".to_string())?;
     let mut lines = read_external_server_lines(&file_path).map_err(|error| error.to_string())?;
 
@@ -303,12 +303,12 @@ fn start_server_mutation_task(
     let task_id = crate::tasks::task_manager::create_task(
         crate::tasks::task_manager::TaskOptions::new(title, "updating_servers").detail(detail),
     )?;
-    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
+    crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
 
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
     let workflow = crate::tasks::runtime::spawn_io(async move {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
             apply_server_mutation(&options, mutation, &blocking_task_id)
         })
         .await;
@@ -358,7 +358,7 @@ fn start_server_mutation_task(
     Ok(task_id)
 }
 
-pub fn start_add_external_server_task(
+pub fn start_add(
     options: GamePathOptions,
     name: String,
     address: String,
@@ -378,7 +378,7 @@ pub fn start_add_external_server_task(
     )
 }
 
-pub fn start_update_external_server_task(
+pub fn start_update(
     options: GamePathOptions,
     key: String,
     name: String,
@@ -400,7 +400,7 @@ pub fn start_update_external_server_task(
     )
 }
 
-pub fn start_delete_external_server_task(
+pub fn start_delete(
     options: GamePathOptions,
     key: String,
     detail: String,

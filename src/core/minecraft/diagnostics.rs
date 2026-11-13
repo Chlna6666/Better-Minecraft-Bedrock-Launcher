@@ -49,7 +49,7 @@ impl CrashExportOptions {
             || self.include_windows || self.include_dumps
     }
 
-    pub fn needs_confirmation(self) -> bool {
+    pub fn confirmation_required(self) -> bool {
         !self.redact_text || self.include_dumps
     }
 }
@@ -485,7 +485,7 @@ impl GameSessionReport {
         // before that evidence has been checked by the launch monitor.
         // Normal/unknown exits still publish to drive launcher visibility.
         if !cfg!(target_os = "windows")
-            || !needs_windows_wer_before_popup(&self)
+            || !wer_correlation_required(&self)
         {
             let _ = event_bus().send(self.clone());
         }
@@ -497,7 +497,7 @@ impl GameSessionReport {
             if let Err(error) = crate::tasks::runtime::spawn_io(async move {
                 // One bounded rescan, never polling on the UI/render thread.
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                match crate::tasks::runtime::run_io_blocking(move || {
+                match crate::tasks::runtime::blocking::run_io(move || {
                     refresh_late_compatibility_dumps(&id)
                 }).await {
                     Ok(Ok(())) => {}
@@ -645,7 +645,7 @@ fn classify_linux_runner_signal(signal: i32) -> ExitKind {
 
 /// True for native Windows suspects whose preliminary diagnosis is still
 /// waiting for independent WER correlation.
-fn needs_windows_wer_before_popup(report: &GameSessionReport) -> bool {
+fn wer_correlation_required(report: &GameSessionReport) -> bool {
     matches!(report.kind, ExitKind::SuspectedCrash | ExitKind::Unknown)
         && matches!(report.platform.as_str(), "gdk" | "uwp" | "win32")
         && report.exit_code.is_some_and(|code|
@@ -657,7 +657,7 @@ fn needs_windows_wer_before_popup(report: &GameSessionReport) -> bool {
 /// WER-confirmed incidents are published by enrich_windows_wer itself.
 #[cfg(target_os = "windows")]
 pub fn publish_unconfirmed_windows_exit(report: &GameSessionReport) {
-    if !needs_windows_wer_before_popup(report) {
+    if !wer_correlation_required(report) {
         return;
     }
     // Respect an acknowledgement if another UI path dismissed the report.
@@ -1174,7 +1174,7 @@ fn analyze_snapshot(
         }
     }
     evidence.minidumps = forensics::inspect_dumps(&dump_candidates(report));
-    let findings = analysis::analyze_with_forensics(report, &sources, &evidence);
+    let findings = analysis::analyze(report, &sources, &evidence);
     (findings, evidence)
 }
 
@@ -1332,7 +1332,7 @@ fn dump_candidates(report: &GameSessionReport) -> Vec<PathBuf> {
 /// Every text source comes from the immutable per-session snapshot, not from
 /// a rotating global latest.log. The default redact_text=true scrubs on export.
 /// No automatic upload is performed. DMPs are never text-redacted.
-pub fn export_zip_with_options(
+pub fn export_zip(
     id: &str,
     destination: &Path,
     options: CrashExportOptions,
@@ -1477,17 +1477,17 @@ mod tests {
             findings: Vec::new(), forensics: forensics::ForensicSummary::default(),
             log_offsets: HashMap::new(),
         };
-        assert!(needs_windows_wer_before_popup(&report));
-        assert!(needs_windows_wer_before_popup(&GameSessionReport {
+        assert!(wer_correlation_required(&report));
+        assert!(wer_correlation_required(&GameSessionReport {
             kind: ExitKind::Unknown, exit_code: Some(1), ..report.clone()
         }));
-        assert!(!needs_windows_wer_before_popup(&GameSessionReport {
+        assert!(!wer_correlation_required(&GameSessionReport {
             kind: ExitKind::Normal, exit_code: Some(0), ..report.clone()
         }));
-        assert!(!needs_windows_wer_before_popup(&GameSessionReport {
+        assert!(!wer_correlation_required(&GameSessionReport {
             kind: ExitKind::Unknown, exit_code: Some(WINDOWS_CONTROL_C_EXIT), ..report.clone()
         }));
-        assert!(!needs_windows_wer_before_popup(&GameSessionReport {
+        assert!(!wer_correlation_required(&GameSessionReport {
             platform: "proton".into(), ..report
         }));
     }
@@ -1606,7 +1606,7 @@ mod tests {
         let options = CrashExportOptions::default();
         assert!(options.redact_text);
         assert!(!options.include_dumps);
-        assert!(!options.needs_confirmation());
+        assert!(!options.confirmation_required());
         assert_eq!(evidence_category("logs/launch-task.log"), EvidenceCategory::Launcher);
         assert_eq!(evidence_category("logs/game.log"), EvidenceCategory::Game);
         assert_eq!(evidence_category("logs/provider-00.log"), EvidenceCategory::Extension);
@@ -1615,9 +1615,9 @@ mod tests {
     #[test]
     fn risky_export_requires_confirmation() {
         let options = CrashExportOptions { redact_text: false, ..Default::default() };
-        assert!(options.needs_confirmation());
+        assert!(options.confirmation_required());
         let options = CrashExportOptions { include_dumps: true, ..Default::default() };
-        assert!(options.needs_confirmation());
+        assert!(options.confirmation_required());
     }
 
     #[test]

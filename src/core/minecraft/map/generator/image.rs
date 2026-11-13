@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use bedrock_voxel::{
     FlatImageInput, FlatImageOptions, ReliefImageOptions, default_block_candidates,
-    flat_block_plan_tracked, relief_block_plan_tracked,
+    plan_flat_image_tracked, plan_relief_image,
 };
 use bedrock_world::{editor::BlockPlacementPlan, structure::McStructureFile, surface::CancelFlag};
 use image::{ImageReader, Limits, RgbaImage, imageops};
@@ -115,7 +115,7 @@ pub struct ImageBlockExportRequest {
 /// # Errors
 /// Returns a runtime submission error; decode, conversion, and file errors
 /// are reported on the returned task.
-pub fn start_image_block_export(request: ImageBlockExportRequest) -> Result<String, String> {
+pub fn start_block_export(request: ImageBlockExportRequest) -> Result<String, String> {
     validate_options(&request.options)?;
     let detail = request
         .source
@@ -125,12 +125,14 @@ pub fn start_image_block_export(request: ImageBlockExportRequest) -> Result<Stri
         ImageBlockHeight::Flat => "图片转 Flat 方块并导出结构",
         ImageBlockHeight::LuminanceRelief { .. } => "图片转亮度阶梯并导出结构",
     };
-    let task_id = task_manager::create_task(
-        task_manager::TaskOptions::new(title, "解码图片").detail(detail),
-    )?;
-    task_manager::register_task_cooperative_cancel(task_id.clone());
+    let mut options = task_manager::TaskOptions::new(title, "解码图片");
+    if let Some(detail) = detail {
+        options = options.detail(detail);
+    }
+    let task_id = task_manager::create_task(options)?;
+    task_manager::register_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
-    task_manager::register_task_cancel_hook(task_id.clone(), {
+    task_manager::register_cancel_hook(task_id.clone(), {
         let cancel = cancel.clone();
         move || cancel.cancel()
     });
@@ -162,7 +164,7 @@ async fn export_image(
     cancel: &CancelFlag,
 ) -> Result<String, String> {
     let source = request.source;
-    let decoded = runtime::run_io_blocking(move || decode_image(&source)).await??;
+    let decoded = runtime::blocking::run_io(move || decode_image(&source)).await??;
     if cancel.is_cancelled() {
         return Err("图片转换已取消".to_owned());
     }
@@ -186,7 +188,7 @@ async fn export_image(
             ImageBlockHeight::Flat => "裁剪、缩放与方块匹配",
             ImageBlockHeight::LuminanceRelief { .. } => "匹配方块并构建亮度阶梯",
         };
-        let plan = image_block_plan_with_progress(
+        let plan = plan_blocks(
             &decoded,
             &options,
             &worker_cancel,
@@ -222,7 +224,7 @@ async fn export_image(
     task_manager::reset_progress(task_id, Some(1), Some("写入 .mcstructure"));
     let output = request.output;
     let worker_output = output.clone();
-    runtime::run_io_blocking(move || structure.write_to_path(&worker_output))
+    runtime::blocking::run_io(move || structure.write_to_path(&worker_output))
         .await?
         .map_err(|error| error.to_string())?;
     task_manager::update_progress(
@@ -251,14 +253,14 @@ pub fn approved_block_names() -> Vec<String> {
         .collect()
 }
 
-pub(super) fn image_block_plan_with_progress(
-    source: &RgbaImage,
+pub(super) fn plan_blocks(
+    image: &RgbaImage,
     options: &ImageBlockOptions,
     cancel: &CancelFlag,
     mut progress: impl FnMut(u64, u64),
 ) -> Result<BlockPlacementPlan, String> {
     validate_options(options)?;
-    let scaled = resize_image(source, options)?;
+    let scaled = resize_image(image, options)?;
     let candidates = default_block_candidates();
     let transparent_fill = options
         .transparent_fill
@@ -284,12 +286,12 @@ pub(super) fn image_block_plan_with_progress(
     };
     match options.depth {
         ImageBlockHeight::Flat => {
-            flat_block_plan_tracked(input, candidates, image_options, cancel, |done, total| {
+            plan_flat_image_tracked(input, candidates, image_options, cancel, |done, total| {
                 progress(u64::from(done), u64::from(total))
             })
             .map_err(|error| error.to_string())
         }
-        ImageBlockHeight::LuminanceRelief { max_height, fill } => relief_block_plan_tracked(
+        ImageBlockHeight::LuminanceRelief { max_height, fill } => plan_relief_image(
             input,
             candidates,
             image_options,

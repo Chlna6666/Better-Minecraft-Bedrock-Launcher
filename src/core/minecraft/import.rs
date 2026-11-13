@@ -1,7 +1,8 @@
 // src/core/minecraft/import.rs
 
 use anyhow::{Context, Result};
-use gpui::image::ImageFormat as DecodedImageFormat;
+use bedrock_nbt::NbtTag;
+use gpui::image::ImageFormat;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,7 +15,7 @@ use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
 use zip::ZipArchive;
 
-use crate::core::minecraft::nbt::{NbtTag, parse_root_nbt_with_header};
+use crate::core::minecraft::level::decode_root;
 use crate::core::minecraft::paths::{GamePathOptions, resolve_target_parent};
 
 mod entries;
@@ -58,7 +59,7 @@ fn normalize_preview_icon(bytes: Vec<u8>) -> Result<(PreviewIconData, u32, u32)>
 
     let mut encoded = Cursor::new(Vec::new());
     decoded
-        .write_to(&mut encoded, DecodedImageFormat::Png)
+        .write_to(&mut encoded, ImageFormat::Png)
         .context("failed to normalize preview icon into png")?;
 
     Ok((
@@ -117,7 +118,7 @@ pub enum ImportTargetType {
 }
 
 impl ImportTargetType {
-    pub fn to_dir_name(&self) -> &'static str {
+    pub fn directory_name(&self) -> &'static str {
         match self {
             ImportTargetType::World => "minecraftWorlds",
             ImportTargetType::WorldTemplate => "world_templates",
@@ -127,8 +128,8 @@ impl ImportTargetType {
             _ => "unknown_imported",
         }
     }
-    // 用于前端显示的友好名称
-    pub fn to_display_name(&self) -> &'static str {
+    // 返回供界面本地化显示的标签键。
+    pub fn label_key(&self) -> &'static str {
         match self {
             ImportTargetType::World => "Import.minecraftWorlds",
             ImportTargetType::WorldTemplate => "Import.worldTemplates",
@@ -259,11 +260,11 @@ fn version_to_string(version: &ManifestVersion) -> String {
     }
 }
 
-fn world_pack_type_display_name(file_name: &str) -> &'static str {
+fn world_pack_type_label_key(file_name: &str) -> &'static str {
     if file_name.eq_ignore_ascii_case("world_behavior_packs.json") {
-        ImportTargetType::BehaviorPack.to_display_name()
+        ImportTargetType::BehaviorPack.label_key()
     } else {
-        ImportTargetType::ResourcePack.to_display_name()
+        ImportTargetType::ResourcePack.label_key()
     }
 }
 
@@ -286,7 +287,7 @@ fn parse_world_pack_reference_version(value: &serde_json::Value) -> Option<Strin
     }
 }
 
-fn parse_world_pack_references_from_text(
+fn parse_world_pack_references(
     content: &str,
     file_name: &str,
 ) -> Vec<WorldPackReference> {
@@ -310,7 +311,7 @@ fn parse_world_pack_references_from_text(
                 .to_string();
 
             Some(WorldPackReference {
-                pack_type: world_pack_type_display_name(file_name).to_string(),
+                pack_type: world_pack_type_label_key(file_name).to_string(),
                 order: index + 1,
                 uuid,
                 version: object
@@ -333,7 +334,7 @@ fn world_pack_references_from_zip<R: Read + Seek>(
     for file_name in ["world_behavior_packs.json", "world_resource_packs.json"] {
         let path = format!("{root_prefix}{file_name}");
         if let Some(content) = read_zip_text_case_insensitive(archive, &path) {
-            references.extend(parse_world_pack_references_from_text(&content, file_name));
+            references.extend(parse_world_pack_references(&content, file_name));
         }
     }
     references
@@ -349,7 +350,7 @@ fn world_pack_references_from_dir(dir: &Path) -> Vec<WorldPackReference> {
         let Ok(content) = fs::read_to_string(path) else {
             continue;
         };
-        references.extend(parse_world_pack_references_from_text(&content, file_name));
+        references.extend(parse_world_pack_references(&content, file_name));
     }
     references
 }
@@ -394,7 +395,7 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
                 world_root,
                 scan.packs.len()
             );
-            if let Ok(world_preview) = get_world_info_from_zip(&mut archive, &world_root) {
+            if let Ok(world_preview) = world_preview_from_zip(&mut archive, &world_root) {
                 if !world_preview.name.trim().is_empty() {
                     name = world_preview.name;
                 }
@@ -423,7 +424,7 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
                 if !seen.insert(pack.manifest_path.clone()) {
                     continue;
                 }
-                if let Ok(preview) = get_pack_info_from_zip(&mut archive, pack, preferred_lang) {
+                if let Ok(preview) = pack_preview_from_zip(&mut archive, pack, preferred_lang) {
                     sub_packs.push(preview);
                 }
             }
@@ -432,21 +433,21 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
         // --- 复合包处理（优先快速预览，避免全量解压）---
         if !scan.has_nested_archive {
             // 快速路径：外层 zip 已包含包目录
-            let filtered_packs = filter_packs_excluding_template_internal(&scan.packs);
+            let filtered_packs = filter_packs_excluding_template(&scan.packs);
             let mut seen = std::collections::HashSet::new();
             for pack in &filtered_packs {
                 if !seen.insert(pack.manifest_path.clone()) {
                     continue;
                 }
-                if let Ok(preview) = get_pack_info_from_zip(&mut archive, pack, preferred_lang) {
+                if let Ok(preview) = pack_preview_from_zip(&mut archive, pack, preferred_lang) {
                     sub_packs.push(preview);
                 }
             }
             let filtered_level_roots =
-                filter_level_roots_excluding_template_internal(&scan.level_roots, &scan.packs);
+                filter_level_roots(&scan.level_roots, &scan.packs);
             for root in &filtered_level_roots {
                 if !root.is_empty() {
-                    if let Ok(preview) = get_world_info_from_zip(&mut archive, root) {
+                    if let Ok(preview) = world_preview_from_zip(&mut archive, root) {
                         sub_packs.push(preview);
                     }
                 }
@@ -476,12 +477,12 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
                 for dir in pack_dirs {
                     if dir.join("manifest.json").is_file() {
                         if let Ok(preview) =
-                            get_pack_info_from_dir(&dir, &ImportTargetType::Unknown, preferred_lang)
+                            pack_preview_from_dir(&dir, &ImportTargetType::Unknown, preferred_lang)
                         {
                             sub_packs.push(preview);
                         }
                     } else if dir.join("level.dat").is_file() {
-                        if let Ok(preview) = get_world_info_from_dir(&dir) {
+                        if let Ok(preview) = world_preview_from_dir(&dir) {
                             sub_packs.push(preview);
                         }
                     }
@@ -509,7 +510,7 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
         if !sub_packs.is_empty() {
             let primary = sub_packs
                 .iter()
-                .find(|p| p.kind == ImportTargetType::WorldTemplate.to_display_name())
+                .find(|p| p.kind == ImportTargetType::WorldTemplate.label_key())
                 .or_else(|| sub_packs.first());
             if let Some(p) = primary {
                 name = p.name.clone();
@@ -709,7 +710,7 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
                     continue;
                 }
 
-                if let Ok(preview) = get_pack_info_from_zip(&mut archive, pack, preferred_lang) {
+                if let Ok(preview) = pack_preview_from_zip(&mut archive, pack, preferred_lang) {
                     sub_packs.push(preview);
                 }
             }
@@ -739,13 +740,13 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
         kind: if effective_type == ImportTargetType::Compound && !sub_packs.is_empty() {
             let primary = sub_packs
                 .iter()
-                .find(|p| p.kind == ImportTargetType::WorldTemplate.to_display_name())
+                .find(|p| p.kind == ImportTargetType::WorldTemplate.label_key())
                 .or_else(|| sub_packs.first());
             primary
                 .map(|p| p.kind.clone())
-                .unwrap_or_else(|| effective_type.to_display_name().to_string())
+                .unwrap_or_else(|| effective_type.label_key().to_string())
         } else {
-            effective_type.to_display_name().to_string()
+            effective_type.label_key().to_string()
         },
         version: version_str,
         size: file_size,
@@ -800,7 +801,7 @@ pub fn check_import_file(file_path: &Path, options: &GamePathOptions) -> Result<
         Some(uuid) => pack_folder_name(uuid),
         None => sanitize_filename(&strip_minecraft_formatting(&internal_name)),
     };
-    let target_dir_name = target_type.to_dir_name();
+    let target_dir_name = target_type.directory_name();
     let is_shared_preferred = is_shared_pack_type(&target_type);
 
     let parent_dir = match resolve_target_parent(options, target_dir_name, is_shared_preferred) {
@@ -854,10 +855,10 @@ pub fn check_import_file(file_path: &Path, options: &GamePathOptions) -> Result<
         }
 
         if let Some(new_uuid) = &pack_uuid {
-            if let Some(existing_uuid) = get_pack_uuid_from_dir(&current_dest) {
+            if let Some(existing_uuid) = pack_uuid_from_dir(&current_dest) {
                 if existing_uuid == *new_uuid {
                     let existing_pack_info =
-                        get_pack_info_from_dir(&current_dest, &target_type, None).ok();
+                        pack_preview_from_dir(&current_dest, &target_type, None).ok();
                     let target_name = existing_pack_info
                         .as_ref()
                         .map(|p| p.name.clone())
@@ -940,7 +941,7 @@ fn normalize_lang_code(lang: &str) -> String {
     lang.trim().replace('_', "-")
 }
 
-fn filter_level_roots_excluding_template_internal(
+fn filter_level_roots(
     level_roots: &[String],
     packs: &[PackEntry],
 ) -> Vec<String> {
@@ -966,15 +967,15 @@ fn filter_level_roots_excluding_template_internal(
 
 // --- 以下是原有的导入逻辑 (基本保持不变) ---
 
-pub fn import_files_batch(
+pub fn files_batch(
     files: Vec<String>,
     options: &GamePathOptions,
     overwrite: bool,
 ) -> Result<(usize, usize)> {
-    import_files_batch_cancellable(files, options, overwrite, || false)
+    files_batch_cancellable(files, options, overwrite, || false)
 }
 
-pub fn import_files_batch_cancellable(
+pub fn files_batch_cancellable(
     files: Vec<String>,
     options: &GamePathOptions,
     overwrite: bool,
@@ -1094,7 +1095,7 @@ fn process_single_archive(
         Some(uuid) => pack_folder_name(uuid),
         None => sanitize_filename(&strip_minecraft_formatting(&internal_name)),
     };
-    let target_dir_name = target_type.to_dir_name();
+    let target_dir_name = target_type.directory_name();
 
     let is_shared_preferred = is_shared_pack_type(&target_type);
 
@@ -1119,7 +1120,7 @@ fn process_single_archive(
 
         let mut allow_overwrite = false;
         if let Some(new_uuid) = &pack_uuid {
-            if let Some(existing_uuid) = get_pack_uuid_from_dir(&final_dest) {
+            if let Some(existing_uuid) = pack_uuid_from_dir(&final_dest) {
                 if existing_uuid == *new_uuid {
                     if overwrite {
                         info!(
@@ -1522,7 +1523,7 @@ fn process_compound_archive(
                 );
                 let mut _inner_archives = Vec::new();
                 let mut pack_dirs = Vec::new();
-                collect_inner_archives_and_dirs(
+                scan_nested_packages(
                     &work_dir,
                     &mut _inner_archives,
                     &mut pack_dirs,
@@ -1530,7 +1531,7 @@ fn process_compound_archive(
                 )?;
 
                 debug!("Compound import (cache): pack_dirs={}", pack_dirs.len());
-                let res = import_from_cache_dirs(&pack_dirs, options, overwrite);
+                let res = from_cache_dirs(&pack_dirs, options, overwrite);
                 if let Err(error) = fs::remove_dir_all(&work_dir) {
                     warn!(
                         "Failed to remove compound cache dir {:?}: {error}",
@@ -1550,7 +1551,7 @@ fn process_compound_archive(
         work_dir,
         pack_dirs.len()
     );
-    let res = import_from_cache_dirs(&pack_dirs, options, overwrite);
+    let res = from_cache_dirs(&pack_dirs, options, overwrite);
     if let Err(error) = fs::remove_dir_all(&work_dir) {
         warn!(
             "Failed to remove compound cache dir {:?}: {error}",
@@ -1998,7 +1999,7 @@ fn extract_to_cache_with_nested(
         let mut inner_archives = Vec::new();
         let mut dirs = Vec::new();
         if let Err(error) =
-            collect_inner_archives_and_dirs(&work_dir, &mut inner_archives, &mut dirs, 2)
+            scan_nested_packages(&work_dir, &mut inner_archives, &mut dirs, 2)
         {
             let _ = fs::remove_dir_all(&work_dir);
             return Err(error);
@@ -2040,7 +2041,7 @@ fn extract_to_cache_with_nested(
             let mut inner_archives = Vec::new();
             let mut dirs = Vec::new();
             if let Err(error) =
-                collect_inner_archives_and_dirs(&dir, &mut inner_archives, &mut dirs, 2)
+                scan_nested_packages(&dir, &mut inner_archives, &mut dirs, 2)
                     .with_context(|| format!("Failed to scan nested package {}", dir.display()))
             {
                 let _ = fs::remove_dir_all(&work_dir);
@@ -2065,7 +2066,7 @@ fn extract_to_cache_with_nested(
     Ok((work_dir, pack_dirs))
 }
 
-fn import_from_cache_dirs(
+fn from_cache_dirs(
     pack_dirs: &[PathBuf],
     options: &GamePathOptions,
     overwrite: bool,
@@ -2074,9 +2075,9 @@ fn import_from_cache_dirs(
         .par_iter()
         .filter_map(|dir| {
             let result = if dir.join("manifest.json").is_file() {
-                import_pack_dir(dir, options, overwrite)
+                pack_dir(dir, options, overwrite)
             } else if dir.join("level.dat").is_file() {
-                import_world_dir(dir, options, overwrite)
+                world_dir(dir, options, overwrite)
             } else {
                 Ok(())
             };
@@ -2098,7 +2099,7 @@ fn import_from_cache_dirs(
     Ok(())
 }
 
-fn get_world_info_from_dir(dir: &Path) -> Result<PackagePreview> {
+fn world_preview_from_dir(dir: &Path) -> Result<PackagePreview> {
     let mut name = dir
         .file_name()
         .unwrap_or_default()
@@ -2115,7 +2116,7 @@ fn get_world_info_from_dir(dir: &Path) -> Result<PackagePreview> {
     let level_path = dir.join("level.dat");
     if level_path.exists() {
         let buf = fs::read(&level_path)?;
-        if let Ok(NbtTag::Compound(root)) = parse_root_nbt_with_header(&buf) {
+        if let Ok(NbtTag::Compound(root)) = decode_root(&buf) {
             if let Some(NbtTag::String(n)) = root.get("LevelName") {
                 name = n.clone();
             }
@@ -2185,7 +2186,7 @@ fn get_world_info_from_dir(dir: &Path) -> Result<PackagePreview> {
         name,
         description,
         icon,
-        kind: ImportTargetType::World.to_display_name().to_string(),
+        kind: ImportTargetType::World.label_key().to_string(),
         version: None,
         size,
         manifest: None,
@@ -2196,11 +2197,11 @@ fn get_world_info_from_dir(dir: &Path) -> Result<PackagePreview> {
     })
 }
 
-fn import_world_dir(dir: &Path, options: &GamePathOptions, overwrite: bool) -> Result<()> {
-    let parent_dir = resolve_target_parent(options, ImportTargetType::World.to_dir_name(), false)
+fn world_dir(dir: &Path, options: &GamePathOptions, overwrite: bool) -> Result<()> {
+    let parent_dir = resolve_target_parent(options, ImportTargetType::World.directory_name(), false)
         .ok_or_else(|| anyhow::anyhow!("无法解析目标安装路径"))?;
 
-    let preview = get_world_info_from_dir(dir).unwrap_or(PackagePreview {
+    let preview = world_preview_from_dir(dir).unwrap_or(PackagePreview {
         name: dir
             .file_name()
             .unwrap_or_default()
@@ -2208,7 +2209,7 @@ fn import_world_dir(dir: &Path, options: &GamePathOptions, overwrite: bool) -> R
             .to_string(),
         description: "".into(),
         icon: None,
-        kind: ImportTargetType::World.to_display_name().to_string(),
+        kind: ImportTargetType::World.label_key().to_string(),
         version: None,
         size: 0,
         manifest: None,
@@ -2273,7 +2274,7 @@ fn dir_size(path: &Path) -> Result<u64> {
 /// 规则：
 /// - 如果目录已包含 manifest.json 或 level.dat，则不再深入扫描其子目录
 /// - 最大扫描深度可控，避免大目录遍历
-fn collect_inner_archives_and_dirs(
+fn scan_nested_packages(
     root: &Path,
     inner_archives: &mut Vec<PathBuf>,
     pack_dirs: &mut Vec<PathBuf>,
@@ -2462,7 +2463,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-fn import_pack_dir(dir: &Path, options: &GamePathOptions, overwrite: bool) -> Result<()> {
+fn pack_dir(dir: &Path, options: &GamePathOptions, overwrite: bool) -> Result<()> {
     // 读取 manifest.json
     let manifest_path = dir.join("manifest.json");
     if !manifest_path.exists() {
@@ -2498,7 +2499,7 @@ fn import_pack_dir(dir: &Path, options: &GamePathOptions, overwrite: bool) -> Re
         Some(uuid) => pack_folder_name(uuid),
         None => sanitize_filename(&strip_minecraft_formatting(&internal_name)),
     };
-    let target_dir_name = target_type.to_dir_name();
+    let target_dir_name = target_type.directory_name();
 
     let is_shared_preferred = is_shared_pack_type(&target_type);
 
@@ -2523,7 +2524,7 @@ fn import_pack_dir(dir: &Path, options: &GamePathOptions, overwrite: bool) -> Re
 
         let mut allow_overwrite = false;
         if let Some(new_uuid) = &pack_uuid {
-            if let Some(existing_uuid) = get_pack_uuid_from_dir(&final_dest) {
+            if let Some(existing_uuid) = pack_uuid_from_dir(&final_dest) {
                 if existing_uuid == *new_uuid {
                     if overwrite {
                         info!(
@@ -2558,7 +2559,7 @@ fn import_pack_dir(dir: &Path, options: &GamePathOptions, overwrite: bool) -> Re
     Ok(())
 }
 
-fn get_pack_uuid_from_dir(dir: &Path) -> Option<String> {
+fn pack_uuid_from_dir(dir: &Path) -> Option<String> {
     let manifest_path = dir.join("manifest.json");
     if !manifest_path.exists() {
         return None;
@@ -2569,7 +2570,7 @@ fn get_pack_uuid_from_dir(dir: &Path) -> Option<String> {
     manifest.header.and_then(|h| h.uuid)
 }
 
-fn get_pack_info_from_dir(
+fn pack_preview_from_dir(
     dir: &Path,
     target_type: &ImportTargetType,
     preferred_lang: Option<&str>,
@@ -2663,7 +2664,7 @@ fn get_pack_info_from_dir(
         name,
         description,
         icon,
-        kind: detected_type.to_display_name().to_string(),
+        kind: detected_type.label_key().to_string(),
         version: version_str,
         size,
         manifest: Some(manifest),
@@ -2999,7 +3000,7 @@ fn list_nested_archives<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Vec<Stri
     paths
 }
 
-fn filter_packs_excluding_template_internal(packs: &[PackEntry]) -> Vec<PackEntry> {
+fn filter_packs_excluding_template(packs: &[PackEntry]) -> Vec<PackEntry> {
     let template_roots: Vec<String> = packs
         .iter()
         .filter(|p| p.pack_type == ImportTargetType::WorldTemplate)
@@ -3061,20 +3062,20 @@ fn inspect_nested_archives_quick(
         };
 
         let scan = scan_archive(&mut nested)?;
-        let filtered_packs = filter_packs_excluding_template_internal(&scan.packs);
+        let filtered_packs = filter_packs_excluding_template(&scan.packs);
         let mut seen = std::collections::HashSet::new();
         for pack in &filtered_packs {
             if !seen.insert(pack.manifest_path.clone()) {
                 continue;
             }
-            if let Ok(p) = get_pack_info_from_zip(&mut nested, pack, preferred_lang) {
+            if let Ok(p) = pack_preview_from_zip(&mut nested, pack, preferred_lang) {
                 previews.push(p);
             }
         }
         let filtered_level_roots =
-            filter_level_roots_excluding_template_internal(&scan.level_roots, &scan.packs);
+            filter_level_roots(&scan.level_roots, &scan.packs);
         for root in &filtered_level_roots {
-            if let Ok(p) = get_world_info_from_zip(&mut nested, root) {
+            if let Ok(p) = world_preview_from_zip(&mut nested, root) {
                 previews.push(p);
             }
         }
@@ -3241,7 +3242,7 @@ fn find_any_lang_in_texts<R: Read + Seek>(
     None
 }
 
-fn get_pack_info_from_zip<R: Read + Seek>(
+fn pack_preview_from_zip<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     pack: &PackEntry,
     preferred_lang: Option<&str>,
@@ -3351,7 +3352,7 @@ fn get_pack_info_from_zip<R: Read + Seek>(
         name,
         description,
         icon,
-        kind: pack.pack_type.to_display_name().to_string(),
+        kind: pack.pack_type.label_key().to_string(),
         version: version_str,
         size: 0,
         manifest: Some(manifest),
@@ -3362,7 +3363,7 @@ fn get_pack_info_from_zip<R: Read + Seek>(
     })
 }
 
-fn get_world_info_from_zip<R: Read + Seek>(
+fn world_preview_from_zip<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     root_prefix: &str,
 ) -> Result<PackagePreview> {
@@ -3376,7 +3377,7 @@ fn get_world_info_from_zip<R: Read + Seek>(
 
     let level_path = format!("{}level.dat", root_prefix);
     if let Some(buf) = read_zip_bytes_case_insensitive(archive, &level_path) {
-        if let Ok(NbtTag::Compound(root)) = parse_root_nbt_with_header(&buf) {
+        if let Ok(NbtTag::Compound(root)) = decode_root(&buf) {
             if let Some(NbtTag::String(n)) = root.get("LevelName") {
                 name = n.clone();
             }
@@ -3433,7 +3434,7 @@ fn get_world_info_from_zip<R: Read + Seek>(
         name,
         description,
         icon,
-        kind: ImportTargetType::World.to_display_name().to_string(),
+        kind: ImportTargetType::World.label_key().to_string(),
         version: None,
         size: 0,
         manifest: None,
@@ -3444,7 +3445,7 @@ fn get_world_info_from_zip<R: Read + Seek>(
     })
 }
 
-pub fn import_archive_optimized(
+pub fn archive_optimized(
     file_path: &Path,
     options: &GamePathOptions,
     overwrite: bool,
@@ -3467,7 +3468,7 @@ pub fn import_archive_optimized(
     let groups = group_packs(&scan);
 
     for (pack_type, packs) in groups {
-        let dir_name = pack_type.to_dir_name();
+        let dir_name = pack_type.directory_name();
         let is_shared = is_shared_pack_type(&pack_type);
 
         let parent = resolve_target_parent(options, dir_name, is_shared)

@@ -38,10 +38,10 @@ pub fn start_install(request: NativeModInstallRequest) -> Result<String, String>
                 request.mod_entry.name, request.file_name
             )),
     )?;
-    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
+    crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
     let active_child_task = Arc::new(Mutex::new(None::<String>));
     let cancel_child = Arc::clone(&active_child_task);
-    crate::tasks::task_manager::register_task_cancel_hook(task_id.clone(), move || {
+    crate::tasks::task_manager::register_cancel_hook(task_id.clone(), move || {
         if let Some(child) = cancel_child.lock().ok().and_then(|guard| guard.clone()) {
             crate::tasks::task_manager::cancel_task(&child);
         }
@@ -101,7 +101,7 @@ pub fn start_import(request: NativeModImportRequest) -> Result<String, String> {
             .detail(format!("{} · {} 个文件", request.version_folder, count))
             .total(count as u64),
     )?;
-    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
+    crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
     let workflow = crate::tasks::runtime::spawn_io(async move {
         let result = import_local_mods(request, &worker_task_id).await;

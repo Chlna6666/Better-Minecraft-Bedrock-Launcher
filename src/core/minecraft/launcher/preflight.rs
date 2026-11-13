@@ -1,8 +1,9 @@
 use crate::utils::developer_mode;
 use crate::utils::mc_dependency::{
-    GameInputInstallPlan, MissingUwpDependency, WindowsAppSdkInstallPlan,
-    compute_missing_uwp_dependencies, plan_game_input_install, plan_windows_app_sdk_install,
+    GameInputInstallPlan, MissingUwpDependency, compute_missing_uwp_dependencies,
+    plan_game_input_install,
 };
+use crate::utils::mc_dependency::windows_app_sdk::{self, InstallPlan};
 use tracing::info;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17,7 +18,7 @@ pub struct LaunchPrerequisiteCheck {
     pub developer_mode_required: bool,
     pub missing_uwp_dependencies: Vec<MissingUwpDependency>,
     pub game_input_plan: Option<GameInputInstallPlan>,
-    pub windows_app_sdk_plan: Option<WindowsAppSdkInstallPlan>,
+    pub windows_app_sdk_plan: Option<InstallPlan>,
 }
 
 impl LaunchPrerequisiteCheck {
@@ -29,7 +30,7 @@ impl LaunchPrerequisiteCheck {
     }
 }
 
-pub fn detect_launch_platform(kind: &str) -> LaunchPlatform {
+pub fn detect_platform(kind: &str) -> LaunchPlatform {
     if kind.eq_ignore_ascii_case("gdk") {
         LaunchPlatform::Gdk
     } else {
@@ -37,12 +38,12 @@ pub fn detect_launch_platform(kind: &str) -> LaunchPlatform {
     }
 }
 
-pub fn check_launch_prerequisites(kind: &str, package_folder: &str) -> LaunchPrerequisiteCheck {
-    let platform = detect_launch_platform(kind);
+pub fn check_prerequisites(kind: &str, package_folder: &str) -> LaunchPrerequisiteCheck {
+    let platform = detect_platform(kind);
     let check = match platform {
         LaunchPlatform::Uwp => LaunchPrerequisiteCheck {
             platform,
-            developer_mode_required: !developer_mode::is_developer_mode_enabled(),
+            developer_mode_required: !developer_mode::is_enabled(),
             missing_uwp_dependencies: compute_missing_uwp_dependencies(),
             game_input_plan: None,
             windows_app_sdk_plan: None,
@@ -55,7 +56,7 @@ pub fn check_launch_prerequisites(kind: &str, package_folder: &str) -> LaunchPre
             // launch instead of waiting for Minecraft to fail with a missing DLL.
             missing_uwp_dependencies: compute_missing_uwp_dependencies(),
             game_input_plan: plan_game_input_install(package_folder),
-            windows_app_sdk_plan: plan_windows_app_sdk_install(package_folder),
+            windows_app_sdk_plan: windows_app_sdk::plan_install(package_folder),
         },
     };
 
@@ -74,13 +75,13 @@ pub fn check_launch_prerequisites(kind: &str, package_folder: &str) -> LaunchPre
 
 #[cfg(test)]
 mod tests {
-    use super::{LaunchPlatform, detect_launch_platform};
+    use super::{LaunchPlatform, detect_platform};
 
     #[test]
     fn detects_platform_without_changing_the_mapping() {
-        assert_eq!(detect_launch_platform("GDK"), LaunchPlatform::Gdk);
-        assert_eq!(detect_launch_platform("gdk"), LaunchPlatform::Gdk);
-        assert_eq!(detect_launch_platform("UWP"), LaunchPlatform::Uwp);
-        assert_eq!(detect_launch_platform("release"), LaunchPlatform::Uwp);
+        assert_eq!(detect_platform("GDK"), LaunchPlatform::Gdk);
+        assert_eq!(detect_platform("gdk"), LaunchPlatform::Gdk);
+        assert_eq!(detect_platform("UWP"), LaunchPlatform::Uwp);
+        assert_eq!(detect_platform("release"), LaunchPlatform::Uwp);
     }
 }

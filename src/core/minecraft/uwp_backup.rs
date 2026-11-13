@@ -79,7 +79,7 @@ pub fn export_user_data_backup(
     family_name: &str,
     destination_directory: &Path,
 ) -> Result<ManualUwpBackupResult, String> {
-    export_user_data_backup_inner(family_name, destination_directory, None)
+    export_user_data_backup_with_task(family_name, destination_directory, None)
 }
 
 pub fn start_user_data_backup_task(
@@ -90,7 +90,7 @@ pub fn start_user_data_backup_task(
         crate::tasks::task_manager::TaskOptions::new("导出 Minecraft UWP 备份", "queued")
             .detail(destination_directory.display().to_string()),
     )?;
-    crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
+    crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
     let workflow = match crate::tasks::runtime::spawn_io(async move {
@@ -100,8 +100,8 @@ pub fn start_user_data_backup_task(
             Some("正在扫描并压缩 Minecraft UWP 用户数据".to_string()),
         );
 
-        let result = crate::tasks::runtime::run_archive_blocking(move || {
-            export_user_data_backup_inner(
+        let result = crate::tasks::runtime::blocking::run_archive(move || {
+            export_user_data_backup_with_task(
                 &family_name,
                 &destination_directory,
                 Some(blocking_task_id.as_str()),
@@ -168,7 +168,7 @@ fn ensure_backup_task_active(task_id: Option<&str>) -> Result<(), String> {
     }
 }
 
-fn export_user_data_backup_inner(
+fn export_user_data_backup_with_task(
     family_name: &str,
     destination_directory: &Path,
     task_id: Option<&str>,

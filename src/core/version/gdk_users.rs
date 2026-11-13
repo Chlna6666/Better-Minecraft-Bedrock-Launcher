@@ -13,10 +13,10 @@ pub struct GdkUser {
     pub user_id: Option<u64>,
 }
 
-pub fn get_gdk_users(edition: String) -> Result<Vec<GdkUser>, String> {
+pub fn scan(edition: String) -> Result<Vec<GdkUser>, String> {
     let mut res: Vec<GdkUser> = Vec::new();
 
-    debug!("get_gdk_users called (edition='{}')", edition);
+    debug!("scan GDK users (edition='{}')", edition);
 
     let roaming_os = std::env::var_os("APPDATA");
     let roaming = match roaming_os {

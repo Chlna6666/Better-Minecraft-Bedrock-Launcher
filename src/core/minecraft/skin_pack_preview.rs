@@ -11,14 +11,14 @@ const SKIN_PREVIEW_CANVAS_SIZE: u32 = 64;
 const SKIN_PREVIEW_HEAD_OFFSET: u32 = 0;
 const SKIN_PREVIEW_SCALE: u32 = 8;
 
-pub(crate) fn generate_skin_preview(texture_path: &Path) -> Result<PathBuf> {
+pub(crate) fn generate(texture_path: &Path) -> Result<PathBuf> {
     let output_path = preview_cache_path(texture_path, "head-front-v2")?;
     if output_path.is_file() {
         return Ok(output_path);
     }
 
     let image = open_skin_texture(texture_path)?;
-    let preview = build_skin_preview_image(&image)?;
+    let preview = build_image(&image)?;
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -60,7 +60,7 @@ fn preview_cache_path(texture_path: &Path, variant: &str) -> Result<PathBuf> {
     Ok(crate::utils::file_ops::cache_subdir("skin_previews").join(file_name))
 }
 
-fn build_skin_preview_image(source: &DynamicImage) -> Result<RgbaImage> {
+fn build_image(source: &DynamicImage) -> Result<RgbaImage> {
     let (width, height) = source.dimensions();
     if width < 64 || height < 32 {
         anyhow::bail!("skin texture is too small: {width}x{height}");
@@ -171,7 +171,7 @@ mod tests {
         let source =
             DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 32, Rgba([128, 64, 32, 255])));
 
-        let preview = build_skin_preview_image(&source)
+        let preview = build_image(&source)
             .unwrap_or_else(|error| panic!("preview should render: {error}"));
 
         assert_eq!(

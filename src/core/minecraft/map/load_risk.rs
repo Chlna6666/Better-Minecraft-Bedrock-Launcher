@@ -1,6 +1,6 @@
 //! Offline screening of saved chunk contents, never measured MSPT or TPS.
 
-use super::viewer_cache::MapInfoOverlaySnapshot;
+use super::info_cache::OverlaySnapshot;
 use bedrock_world::nbt::NbtTag;
 use bedrock_world::query::RegionOverlayQuery;
 use std::collections::{BTreeMap, BTreeSet};
@@ -101,7 +101,7 @@ impl Loads {
     }
 }
 
-pub(crate) fn from_snapshot(snapshot: &MapInfoOverlaySnapshot) -> Vec<ChunkLoad> {
+pub(crate) fn from_snapshot(snapshot: &OverlaySnapshot) -> Vec<ChunkLoad> {
     let mut loads = Loads::default();
     for entity in &snapshot.entities {
         loads.entity(

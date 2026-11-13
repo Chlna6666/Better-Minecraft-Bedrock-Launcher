@@ -1,12 +1,5 @@
-#[cfg(target_os = "windows")]
 use crate::core::minecraft::appx::utils::{
-    find_any_game_executable_in_dir, get_executable_product_version,
-    get_manifest_identity_from_dir_blocking,
-};
-#[cfg(target_os = "linux")]
-use crate::core::minecraft::appx_utils::{
-    find_any_game_executable_in_dir, get_executable_product_version,
-    get_manifest_identity_from_dir_blocking,
+    find_any_game_executable, read_executable_product_version, read_identity,
 };
 use crate::core::version::launch_versions::LaunchVersionEntry;
 use anyhow::{Context as _, Result};
@@ -117,7 +110,7 @@ fn read_appx_version_entry(entry: DirEntry, root: &Path) -> Option<LaunchVersion
     };
 
     let display_path = absolute_display_path(root, &path);
-    let executable_path = match find_any_game_executable_in_dir(&path) {
+    let executable_path = match find_any_game_executable(&path) {
         Some(executable_path) => executable_path,
         None => {
             debug!("跳过无效版本目录（缺少 exe）: {}", path.display());
@@ -125,8 +118,8 @@ fn read_appx_version_entry(entry: DirEntry, root: &Path) -> Option<LaunchVersion
         }
     };
 
-    let manifest_result = get_manifest_identity_from_dir_blocking(&path);
-    let pe_result = get_executable_product_version(&executable_path);
+    let manifest_result = read_identity(&path);
+    let pe_result = read_executable_product_version(&executable_path);
 
     let (name, manifest_version) = match manifest_result {
         Ok(identity) => identity,
@@ -200,14 +193,14 @@ fn absolute_display_path(root: &Path, path: &Path) -> String {
     root.join(path).to_string_lossy().into_owned()
 }
 
-pub async fn get_appx_version_list(folder: &Path) -> Result<Vec<LaunchVersionEntry>> {
+pub async fn list(folder: &Path) -> Result<Vec<LaunchVersionEntry>> {
     let folder = folder.to_path_buf();
-    crate::tasks::runtime::run_cpu(move || get_appx_version_list_blocking(&folder))
+    crate::tasks::runtime::run_cpu(move || scan(&folder))
         .await
         .map_err(anyhow::Error::msg)?
 }
 
-pub(crate) fn get_appx_version_list_blocking(folder: &Path) -> Result<Vec<LaunchVersionEntry>> {
+pub(crate) fn scan(folder: &Path) -> Result<Vec<LaunchVersionEntry>> {
     let start = Instant::now();
     debug!("开始读取目录: {}", folder.display());
 
@@ -228,7 +221,7 @@ pub(crate) fn get_appx_version_list_blocking(folder: &Path) -> Result<Vec<Launch
         .collect::<Vec<_>>();
 
     debug!(
-        "get_appx_version_list 完成，用时: {:?}, 并发度: {}, 条目数: {}",
+        "版本目录扫描完成，用时: {:?}, 并发度: {}, 条目数: {}",
         start.elapsed(),
         concurrency,
         versions.len()
@@ -238,7 +231,7 @@ pub(crate) fn get_appx_version_list_blocking(folder: &Path) -> Result<Vec<Launch
 
 #[cfg(test)]
 mod tests {
-    use super::get_appx_version_list;
+    use super::list;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -273,7 +266,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&test_dir).expect("test directory should be created");
         let result = runtime.block_on(async {
-            tokio::time::timeout(Duration::from_millis(500), get_appx_version_list(&test_dir)).await
+            tokio::time::timeout(Duration::from_millis(500), list(&test_dir)).await
         });
 
         release_blocking_sender

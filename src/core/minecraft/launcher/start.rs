@@ -63,7 +63,7 @@ pub fn is_process_in_package(pid: u32, target_family_name: &str) -> bool {
 }
 
 // 获取系统当前所有匹配名称的 PID
-pub fn get_pids_by_name(exe_name: &str) -> Vec<u32> {
+pub fn process_ids_by_name(exe_name: &str) -> Vec<u32> {
     let mut pids = Vec::new();
     unsafe {
         let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
@@ -145,7 +145,7 @@ pub async fn wait_for_uwp_pid(target_exe: &str, package_family_name: &str, pids_
     let start = Instant::now();
 
     while start.elapsed() < Duration::from_secs(15) {
-        let current_pids = get_pids_by_name(target_exe);
+        let current_pids = process_ids_by_name(target_exe);
 
         for pid in &current_pids {
             if !pids_before.contains(pid) && is_process_in_package(*pid, package_family_name) {
@@ -169,7 +169,7 @@ pub async fn wait_for_process_exit(
 ) -> Result<u32, String> {
     // Keep the HANDLE alive across the entire wait so the PID cannot silently
     // switch to a different process while the game is running.
-    crate::tasks::runtime::run_io_blocking(move || unsafe {
+    crate::tasks::runtime::blocking::run_io(move || unsafe {
         use windows::Win32::Foundation::FILETIME;
         use windows::Win32::System::Threading::{GetExitCodeProcess, GetProcessTimes};
         // SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
@@ -275,7 +275,7 @@ pub async fn launch_uwp(edition: &str, launch_args: Option<&str>) -> io::Result<
         "Minecraft.Windows.exe"
     };
 
-    let pids_before = get_pids_by_name(target_exe_name);
+    let pids_before = process_ids_by_name(target_exe_name);
     debug!("PIDs before launch: {:?}", pids_before);
 
     let mut launched_via_uri = false;
@@ -317,7 +317,7 @@ pub async fn launch_uwp(edition: &str, launch_args: Option<&str>) -> io::Result<
     info!("Waiting for process {}...", target_exe_name);
 
     while start_time.elapsed() < timeout {
-        let pids_now = get_pids_by_name(target_exe_name);
+        let pids_now = process_ids_by_name(target_exe_name);
 
         // 1. 检查新增进程
         let new_pids: Vec<u32> = pids_now

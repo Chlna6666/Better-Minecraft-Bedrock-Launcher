@@ -94,7 +94,7 @@ fn verify_development_registration(
     ))))
 }
 
-pub async fn register_appx_package_async(package_folder: &str) -> WinResult<DeploymentResult> {
+pub async fn package(package_folder: &str) -> WinResult<DeploymentResult> {
     // 使用散装 AppX 的开发者注册模式，这样当前用户可直接注册，无需管理员。
     let mut manifest_path = package_folder.replace('\\', "/");
     if manifest_path.ends_with('/') {
@@ -102,16 +102,14 @@ pub async fn register_appx_package_async(package_folder: &str) -> WinResult<Depl
     }
 
     let identity_name =
-        crate::core::minecraft::appx::utils::get_manifest_identity_from_dir_blocking(Path::new(
-            package_folder,
-        ))
-        .map(|(name, _version)| name)
-        .map_err(|error| {
-            WinError::from(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("解析 AppX Identity 失败: {error}"),
-            ))
-        })?;
+        crate::core::minecraft::appx::utils::read_identity(Path::new(package_folder))
+            .map(|(name, _version)| name)
+            .map_err(|error| {
+                WinError::from(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("解析 AppX Identity 失败: {error}"),
+                ))
+            })?;
 
     let manifest_file = format!("{}/AppxManifest.xml", manifest_path);
     let absolute_path = std::fs::canonicalize(&manifest_file).map_err(|e| {
@@ -146,7 +144,7 @@ pub async fn register_appx_package_async(package_folder: &str) -> WinResult<Depl
         );
         verify_development_registration(&package_manager, &identity_name, package_folder)?;
 
-        match crate::core::minecraft::uwp_migration::restore_pending_backup_for_identity(
+        match crate::core::minecraft::uwp_migration::restore_pending_backup(
             &identity_name,
         ) {
             Ok(Some(path)) => info!(

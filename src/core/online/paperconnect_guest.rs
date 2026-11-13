@@ -8,6 +8,46 @@ use raknet_tokio::prelude::{RakClient, RakSession};
 use std::net::SocketAddr;
 use std::time::Duration;
 
+pub async fn start(
+    server: super::paperconnect::ServerInfo,
+    player_name: String,
+) -> Result<super::PaperConnectClientState, String> {
+    super::paperconnect::start_client(server.host.clone(), server.server_port, player_name.clone())
+        .await?;
+    *super::ONLINE_STATE
+        .paperconnect_guest_transport
+        .lock()
+        .map_err(|_| "PaperConnect 成员传输状态锁已损坏".to_string())? =
+        Some((server.clone(), player_name.clone()));
+    match super::paperconnect_transport::start_guest(&server, &player_name).await {
+        Ok(state) => Ok(state),
+        Err(error) => {
+            if let Ok(mut transport) = super::ONLINE_STATE.paperconnect_guest_transport.lock() {
+                *transport = None;
+            } else {
+                tracing::warn!("PaperConnect 成员传输状态锁已损坏");
+            }
+            super::paperconnect::stop_client();
+            Err(error)
+        }
+    }
+}
+
+pub async fn retry_transport() -> Result<super::PaperConnectClientState, String> {
+    let (server, player_name) = super::ONLINE_STATE
+        .paperconnect_guest_transport
+        .lock()
+        .map_err(|_| "PaperConnect 成员传输状态锁已损坏".to_string())?
+        .clone()
+        .ok_or_else(|| "当前房间没有可重新启动的成员游戏代理".to_string())?;
+
+    tracing::info!(
+        proxy_port = server.game_port,
+        "PaperConnect 成员重新检测 UDP 7551 并启动本机模拟代理"
+    );
+    super::paperconnect_transport::start_guest(&server, &player_name).await
+}
+
 const GUEST_NEGOTIATION_CONFIG: NegotiationConfig = NegotiationConfig::non_trickle();
 
 #[cfg(windows)]

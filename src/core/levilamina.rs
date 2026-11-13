@@ -1,4 +1,4 @@
-use crate::http::proxy::get_client_for_proxy;
+use crate::http::proxy::clients::client;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -11,15 +11,12 @@ mod install;
 mod installation_state;
 mod lip;
 mod planner;
-mod support;
+pub(crate) mod support;
 
 pub use install::{
     LeviLaminaInstallHandle, LeviLaminaInstallRequest, LeviLaminaInstallStage,
     LeviLaminaInstallation, inspect_installation, start_install, start_install_under_parent,
     start_uninstall,
-};
-pub use support::{
-    LeviLaminaSupportDatabase, clear_cache as clear_support_cache, support_database,
 };
 
 const LEVILAUNCHER_INDEX_URL: &str = "https://lipr.levimc.org/levilauncher.json";
@@ -100,7 +97,7 @@ pub fn compare_version_desc(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 async fn fetch_levilamina_index() -> Result<LeviLaminaIndexResult, String> {
-    let client = get_client_for_proxy().map_err(|e| e.to_string())?;
+    let client = client().map_err(|e| e.to_string())?;
     let response = client
         .get(LEVILAUNCHER_INDEX_URL)
         .send()
@@ -258,7 +255,7 @@ fn api_cache_path() -> PathBuf {
 
 async fn read_api_cache() -> Option<LeviLaminaIndexResult> {
     let path = api_cache_path();
-    match crate::tasks::runtime::run_io_blocking(move || {
+    match crate::tasks::runtime::blocking::run_io(move || {
         crate::core::api_cache::read_fresh(&path, API_CACHE_TTL)
     })
     .await
@@ -274,7 +271,7 @@ async fn read_api_cache() -> Option<LeviLaminaIndexResult> {
 async fn write_api_cache(index: LeviLaminaIndexResult) {
     let path = api_cache_path();
     if let Err(error) =
-        crate::tasks::runtime::run_io_blocking(move || crate::core::api_cache::write(&path, &index))
+        crate::tasks::runtime::blocking::run_io(move || crate::core::api_cache::write(&path, &index))
             .await
     {
         tracing::warn!(%error, "LeviLamina API cache write worker failed");

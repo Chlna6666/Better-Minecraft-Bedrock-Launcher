@@ -28,7 +28,7 @@ pub struct GameInstallRequest {
     pub source: GamePackageSource,
 }
 
-pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, String> {
+pub fn start(request: GameInstallRequest) -> Result<Arc<str>, String> {
     let operation_id = Arc::<str>::from(format!(
         "game-install-{}",
         NEXT_GAME_INSTALL_ID.fetch_add(1, Ordering::Relaxed)
@@ -42,11 +42,11 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
     )?;
     let scope = TaskScope::new(&operation_id)?;
     task_manager::set_task_message(&operation_id, Some("正在准备安装".to_string()));
-    task_manager::register_task_cooperative_cancel(operation_id.to_string());
+    task_manager::register_cooperative_cancel(operation_id.to_string());
 
     let active_child_task = Arc::new(Mutex::new(None::<String>));
     let cancel_child = Arc::clone(&active_child_task);
-    task_manager::register_task_cancel_hook(operation_id.to_string(), move || {
+    task_manager::register_cancel_hook(operation_id.to_string(), move || {
         let child = cancel_child.lock().ok().and_then(|guard| guard.clone());
         if let Some(child) = child {
             task_manager::cancel_task(&child);
@@ -56,7 +56,7 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
     let worker_operation_id = Arc::clone(&operation_id);
     let worker_child_task = Arc::clone(&active_child_task);
     let workflow = match scope.spawn_io(async move {
-        let outcome = run_game_install(&request, &worker_operation_id, &worker_child_task).await;
+        let outcome = run(&request, &worker_operation_id, &worker_child_task).await;
         match outcome {
             Ok(local_path) => {
                 // A successful return means every child transaction crossed its commit point.
@@ -102,7 +102,7 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
 
     Ok(operation_id)
 }
-async fn run_game_install(
+async fn run(
     request: &GameInstallRequest,
     operation_id: &str,
     active_child_task: &Arc<Mutex<Option<String>>>,
@@ -265,8 +265,10 @@ async fn start_extract(request: &GameInstallRequest, package_path: &str) -> Resu
             crate::archive::api::extract_zip_appx(
                 format!("{}.appx", request.install_folder),
                 package_path.to_string(),
-                true,
-                true,
+                crate::archive::api::AppxExtractOptions {
+                    conflict_policy: crate::archive::zip::ZipConflictPolicy::Replace,
+                    remove_signature: true,
+                },
             )
             .await
         }
@@ -302,7 +304,7 @@ fn set_game_install_stage(operation_id: &str, stage: &'static str, message: Stri
 }
 
 fn set_game_install_progress(operation_id: &str, target: u64, stage: &'static str) {
-    if let Some(current) = task_manager::get_snapshot_arc(operation_id) {
+    if let Some(current) = task_manager::snapshot_arc(operation_id) {
         let delta = target
             .min(INSTALL_PROGRESS_TOTAL)
             .saturating_sub(current.done);
@@ -333,7 +335,7 @@ async fn wait_for_child_progress(
 ) -> Result<Arc<TaskSnapshot>, String> {
     let mut events = task_manager::subscribe_task_events();
     loop {
-        let snapshot = task_manager::get_snapshot_arc(child_id)
+        let snapshot = task_manager::snapshot_arc(child_id)
             .ok_or_else(|| format!("子任务已不存在: {child_id}"))?;
         let ratio = if snapshot.status.as_ref() == "completed" {
             1.0

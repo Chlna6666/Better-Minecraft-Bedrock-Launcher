@@ -13,7 +13,7 @@ use bedrock_voxel::{
 use bedrock_world::{structure::McStructureFile, surface::CancelFlag};
 
 use super::image::{
-    ImageBlockHeight, ImageBlockOptions, decode_image, image_block_plan_with_progress,
+    ImageBlockHeight, ImageBlockOptions, decode_image, plan_blocks,
 };
 use super::model_import::prepare_map_model;
 use super::source_obj_preview::ObjSourcePreview;
@@ -117,7 +117,7 @@ impl PreviewStore {
 /// Consume this from a task event, outside GPUI render. The bytes preserve exact
 /// converted block states and can be decoded on a background worker.
 #[must_use]
-pub fn get_structure_preview(task_id: &str) -> Option<Arc<Vec<u8>>> {
+pub fn get(task_id: &str) -> Option<Arc<Vec<u8>>> {
     let mut store = previews().lock().ok()?;
     store.expire();
     store.entries.get(task_id).map(|(bytes, _)| bytes.clone())
@@ -125,7 +125,7 @@ pub fn get_structure_preview(task_id: &str) -> Option<Arc<Vec<u8>>> {
 
 /// Actual source OBJ geometry, never the voxelized structure.
 #[must_use]
-pub fn get_obj_source_preview(task_id: &str) -> Option<Arc<ObjSourcePreview>> {
+pub fn get_obj_source(task_id: &str) -> Option<Arc<ObjSourcePreview>> {
     let mut store = previews().lock().ok()?;
     store.expire();
     store
@@ -135,7 +135,7 @@ pub fn get_obj_source_preview(task_id: &str) -> Option<Arc<ObjSourcePreview>> {
 }
 
 /// Drops a superseded result and prevents its running task from publishing later.
-pub fn release_structure_preview(task_id: &str) {
+pub fn release(task_id: &str) {
     if let Ok(mut store) = previews().lock() {
         store.entries.remove(task_id);
         store.original_obj.remove(task_id);
@@ -151,7 +151,7 @@ pub fn release_structure_preview(task_id: &str) {
 /// # Errors
 /// Returns a runtime submission error. Parse, conversion, and size failures are
 /// reported through the returned task snapshot.
-pub fn start_structure_preview(request: StructurePreviewRequest) -> Result<String, String> {
+pub fn start(request: StructurePreviewRequest) -> Result<String, String> {
     let name = match &request.kind {
         StructurePreviewKind::Image(ImageBlockOptions {
             depth: ImageBlockHeight::LuminanceRelief { .. },
@@ -164,12 +164,14 @@ pub fn start_structure_preview(request: StructurePreviewRequest) -> Result<Strin
         .source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());
-    let task_id = task_manager::create_task(
-        task_manager::TaskOptions::new(name, "读取源文件").detail(detail),
-    )?;
-    task_manager::register_task_cooperative_cancel(task_id.clone());
+    let mut options = task_manager::TaskOptions::new(name, "读取源文件");
+    if let Some(detail) = detail {
+        options = options.detail(detail);
+    }
+    let task_id = task_manager::create_task(options)?;
+    task_manager::register_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
-    task_manager::register_task_cancel_hook(task_id.clone(), {
+    task_manager::register_cancel_hook(task_id.clone(), {
         let cancel = cancel.clone();
         move || cancel.cancel()
     });
@@ -205,7 +207,7 @@ async fn generate_preview(
     let (structure, original_obj) = match request.kind {
         StructurePreviewKind::Image(options) => {
             let source = request.source;
-            let decoded = runtime::run_io_blocking(move || decode_image(&source)).await??;
+            let decoded = runtime::blocking::run_io(move || decode_image(&source)).await??;
             if cancel.is_cancelled() {
                 return Err("图片预览已取消".to_owned());
             }
@@ -218,7 +220,7 @@ async fn generate_preview(
             let structure = runtime::run_cpu(move || {
                 let mut previous = 0_u64;
                 let mut previous_total = total;
-                let plan = image_block_plan_with_progress(
+                let plan = plan_blocks(
                     &decoded,
                     &options,
                     &worker_cancel,
@@ -250,7 +252,7 @@ async fn generate_preview(
         }
         StructurePreviewKind::Obj(options) => {
             let source = request.source;
-            let prepared = runtime::run_io_blocking(move || prepare_map_model(&source)).await??;
+            let prepared = runtime::blocking::run_io(move || prepare_map_model(&source)).await??;
             let super::model_import::PreparedMapModel {
                 model,
                 decoded,

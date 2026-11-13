@@ -1,5 +1,6 @@
 use crate::core::minecraft::gdk::stream::MsiXVDStream;
-use crate::tasks::runtime::{run_archive_blocking, spawn_archive_task};
+use crate::tasks::runtime::blocking;
+use crate::tasks::runtime::spawn_archive_task;
 use crate::tasks::task_manager::{
     ProgressUpdate, TaskOptions, TaskType, create_task, finish_task, is_cancelled, update_progress,
 };
@@ -31,7 +32,7 @@ pub fn start_unpack_gdk_task(
         let task_id = task_id.clone();
         async move {
             let task_id_for_error = task_id.clone();
-            if let Err(error) = run_archive_blocking(move || {
+            if let Err(error) = blocking::run_archive(move || {
                 run_unpack_gdk_task(task_id, input_path_buf, version_dir);
             })
             .await

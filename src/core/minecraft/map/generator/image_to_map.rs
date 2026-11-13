@@ -9,7 +9,7 @@ use std::{
 
 use crate::core::minecraft::map::image::{
     MapImageCrop, MapImageFit, MapImageOptions, MapImageTile, MapResample,
-    tile_map_image_with_progress,
+    tile_map_image,
 };
 use bedrock_world::surface::CancelFlag;
 use image::{Rgba, RgbaImage, imageops};
@@ -216,7 +216,7 @@ impl PreviewStore {
 /// This is intended for foreground event consumers, not `Render`. The returned
 /// Arc keeps the immutable result alive only while the caller needs it.
 #[must_use]
-pub fn get_map_preview(task_id: &str) -> Option<Arc<MapPreviewResult>> {
+pub fn get_preview(task_id: &str) -> Option<Arc<MapPreviewResult>> {
     let mut store = previews().lock().ok()?;
     store.expire();
     store.entries.get(task_id).map(|entry| entry.result.clone())
@@ -227,7 +227,7 @@ pub fn get_map_preview(task_id: &str) -> Option<Arc<MapPreviewResult>> {
 /// At most eight frames are cached, each at most 611×611 RGBA pixels. This is a
 /// read-only UI snapshot; the returned pixels never become `map_<id>` record bytes.
 #[must_use]
-pub fn get_map_preview_frame(task_id: &str) -> Option<Arc<MapPreviewFrame>> {
+pub fn get_preview_frame(task_id: &str) -> Option<Arc<MapPreviewFrame>> {
     let mut store = previews().lock().ok()?;
     store.expire();
     store.frames.get(task_id).map(|(frame, _)| frame.clone())
@@ -236,7 +236,7 @@ pub fn get_map_preview_frame(task_id: &str) -> Option<Arc<MapPreviewFrame>> {
 /// Releases a preview and prevents a still-running conversion from storing it.
 ///
 /// Call this when a panel closes or a newer conversion supersedes the task.
-pub fn release_map_preview(task_id: &str) {
+pub fn release_preview(task_id: &str) {
     if let Ok(mut store) = previews().lock() {
         store.remove(task_id);
         store.discarded.insert(task_id.to_owned(), Instant::now());
@@ -246,12 +246,12 @@ pub fn release_map_preview(task_id: &str) {
 /// Starts a visible conversion that leaves the original image and world untouched.
 ///
 /// The result is held in a 160 MiB task-ID store for up to 15 minutes; closing
-/// the panel or starting a newer conversion should call [`release_map_preview`].
+/// the panel or starting a newer conversion should call [`release_preview`].
 ///
 /// # Errors
 /// Returns invalid grid settings or a runtime submission error. Decode and
 /// conversion failures are reported on the returned task.
-pub fn start_map_image_preview(
+pub fn start_preview(
     source: PathBuf,
     options: MapPreviewOptions,
 ) -> Result<String, String> {
@@ -259,12 +259,15 @@ pub fn start_map_image_preview(
     let detail = source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());
-    let task_id = task_manager::create_task(
-        task_manager::TaskOptions::new("图片转 Bedrock 地图像素预览", "解码图片").detail(detail),
-    )?;
-    task_manager::register_task_cooperative_cancel(task_id.clone());
+    let mut task_options =
+        task_manager::TaskOptions::new("图片转 Bedrock 地图像素预览", "解码图片");
+    if let Some(detail) = detail {
+        task_options = task_options.detail(detail);
+    }
+    let task_id = task_manager::create_task(task_options)?;
+    task_manager::register_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
-    task_manager::register_task_cancel_hook(task_id.clone(), {
+    task_manager::register_cancel_hook(task_id.clone(), {
         let cancel = cancel.clone();
         move || cancel.cancel()
     });
@@ -296,7 +299,7 @@ async fn convert(
     task_id: &str,
     cancel: &CancelFlag,
 ) -> Result<String, String> {
-    let image = runtime::run_io_blocking(move || decode_image(&source)).await??;
+    let image = runtime::blocking::run_io(move || decode_image(&source)).await??;
     if cancel.is_cancelled() {
         return Err("地图图片转换已取消".to_owned());
     }
@@ -340,7 +343,7 @@ async fn convert(
     let worker_cancel = cancel.clone();
     let worker_id = task_id.to_owned();
     let result = runtime::run_cpu(move || {
-        let tiles = tile_map_image_with_progress(
+        let tiles = tile_map_image(
             image.into_raw(),
             crop.source_width,
             crop.source_height,
@@ -757,6 +760,7 @@ mod tests {
                 fit: MapImageFit::Stretch,
                 alpha_threshold: 1,
             },
+            |_| {},
         )
         .expect("tiles");
         let mut frames = Vec::new();
@@ -809,6 +813,7 @@ mod tests {
                 resample: MapResample::Nearest,
                 alpha_threshold: 1,
             },
+            |_| {},
         )
         .expect("two map records");
         assert_eq!(tiles.len(), 2);
@@ -873,6 +878,7 @@ mod tests {
                 resample: MapResample::Nearest,
                 alpha_threshold: 1,
             },
+            |_| {},
         )
         .expect("tiles");
         let (width, height, rgba) = build_placement_preview(&tiles, options).expect("preview");
@@ -886,7 +892,7 @@ mod tests {
     #[test]
     fn released_task_cannot_reinsert_late_result() {
         let id = "map-preview-release-test";
-        release_map_preview(id);
+        release_preview(id);
         let result = MapPreviewResult {
             source_width: 1,
             source_height: 1,
@@ -911,7 +917,7 @@ mod tests {
             .expect("store")
             .insert(id.to_owned(), result)
             .expect("discard");
-        assert!(get_map_preview(id).is_none());
+        assert!(get_preview(id).is_none());
         previews().lock().expect("store").publish_frame(
             id,
             MapPreviewFrame {
@@ -931,6 +937,6 @@ mod tests {
                 rgba: vec![0; 4],
             },
         );
-        assert!(get_map_preview_frame(id).is_none());
+        assert!(get_preview_frame(id).is_none());
     }
 }

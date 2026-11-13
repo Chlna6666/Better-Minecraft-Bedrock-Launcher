@@ -102,40 +102,24 @@ pub fn game_target_dirs(options: &GamePathOptions, target: GameTargetDir) -> Vec
     scan_game_dirs(options, target.name())
 }
 
-pub fn vanilla_resource_pack_roots(package_path: &Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    push_unique_path(&mut roots, package_path.to_path_buf());
-    if path_file_name_eq(package_path, "textures") {
-        if let Some(parent) = package_path.parent() {
-            push_unique_path(&mut roots, parent.to_path_buf());
-        }
-    }
-    push_vanilla_resource_pack_roots(
-        &mut roots,
-        &package_path.join("data").join("resource_packs"),
-    );
-    push_vanilla_resource_pack_roots(&mut roots, &package_path.join("data").join("resourcepacks"));
-    roots
-}
-
 pub fn has_vanilla_resource_pack(package_path: &Path) -> bool {
-    vanilla_resource_pack_roots(package_path)
+    bedrock_block_model::resource_pack::vanilla_roots(package_path)
         .into_iter()
         .any(|root| root.join("textures").is_dir())
 }
 
-pub fn discover_local_package_roots_with_vanilla() -> Vec<PathBuf> {
+pub fn discover_local_package_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    push_direct_child_package_roots_with_vanilla(
+    push_child_package_roots(
         crate::utils::file_ops::bmcbl_subdir("versions").as_path(),
         &mut roots,
     );
 
     if let Ok(appdata) = env::var("APPDATA") {
         let appdata = PathBuf::from(appdata);
-        push_package_root_with_vanilla(&mut roots, appdata.join("Minecraft Bedrock"));
-        push_package_root_with_vanilla(&mut roots, appdata.join("Minecraft Bedrock Preview"));
-        push_direct_child_package_roots_with_vanilla(
+        push_package_root(&mut roots, appdata.join("Minecraft Bedrock"));
+        push_package_root(&mut roots, appdata.join("Minecraft Bedrock Preview"));
+        push_child_package_roots(
             appdata.join("LeviLauncher.exe").join("versions").as_path(),
             &mut roots,
         );
@@ -149,96 +133,34 @@ pub fn discover_local_package_roots_with_vanilla() -> Vec<PathBuf> {
             "Microsoft.MinecraftEducationEdition_8wekyb3d8bbwe",
             "Microsoft.MinecraftEducationEditionBeta_8wekyb3d8bbwe",
         ] {
-            push_package_root_with_vanilla(&mut roots, packages.join(package_name));
-            push_package_root_with_vanilla(
-                &mut roots,
-                packages.join(package_name).join("LocalState"),
-            );
+            push_package_root(&mut roots, packages.join(package_name));
+            push_package_root(&mut roots, packages.join(package_name).join("LocalState"));
         }
     }
 
     roots
 }
 
-fn push_package_root_with_vanilla(paths: &mut Vec<PathBuf>, path: PathBuf) {
+fn push_package_root(paths: &mut Vec<PathBuf>, path: PathBuf) {
     if has_vanilla_resource_pack(&path) {
         push_unique_path(paths, path);
     }
 }
 
-fn push_direct_child_package_roots_with_vanilla(parent: &Path, paths: &mut Vec<PathBuf>) {
+fn push_child_package_roots(parent: &Path, paths: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(parent) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            push_package_root_with_vanilla(paths, path.clone());
-            push_package_root_with_vanilla(paths, path.join("Minecraft Bedrock"));
+            push_package_root(paths, path.clone());
+            push_package_root(paths, path.join("Minecraft Bedrock"));
         }
     }
 }
 
-fn push_vanilla_resource_pack_roots(roots: &mut Vec<PathBuf>, resource_packs_dir: &Path) {
-    let vanilla = resource_packs_dir.join("vanilla");
-    push_unique_path(roots, vanilla.join("client"));
-    push_unique_path(roots, vanilla);
-
-    let Ok(entries) = fs::read_dir(resource_packs_dir) else {
-        return;
-    };
-    let mut vanilla_overlay_roots = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_dir()
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(is_vanilla_resource_pack_overlay_name)
-        })
-        .collect::<Vec<_>>();
-    vanilla_overlay_roots.sort_by(|left, right| {
-        let left_version = left
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(vanilla_resource_pack_overlay_version);
-        let right_version = right
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(vanilla_resource_pack_overlay_version);
-        left_version
-            .cmp(&right_version)
-            .then_with(|| left.cmp(right))
-    });
-
-    for root in vanilla_overlay_roots {
-        push_unique_path(roots, root.join("client"));
-        push_unique_path(roots, root);
-    }
-}
-
-fn is_vanilla_resource_pack_overlay_name(name: &str) -> bool {
-    vanilla_resource_pack_overlay_version(name).is_some()
-}
-
-fn vanilla_resource_pack_overlay_version(name: &str) -> Option<Vec<u32>> {
-    let version = name.strip_prefix("vanilla_").or_else(|| {
-        name.get(..8)
-            .filter(|prefix| prefix.eq_ignore_ascii_case("vanilla_"))
-            .and_then(|_| name.get(8..))
-    })?;
-    let mut parts = Vec::new();
-    for part in version.split('.') {
-        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
-            return None;
-        }
-        parts.push(part.parse().ok()?);
-    }
-    (!parts.is_empty()).then_some(parts)
-}
-
-pub fn infer_package_roots_from_world_path(world_path: &Path) -> Vec<PathBuf> {
+pub fn infer_package_roots(world_path: &Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     for ancestor in world_path.ancestors() {
         if !path_file_name_eq(ancestor, "minecraftWorlds") {
@@ -313,7 +235,7 @@ pub fn normalize_game_path_options(options: &GamePathOptions) -> GamePathOptions
 /// GDK: .../Users/<uid> (如果不传uid，返回上一级 Users)
 /// Linux GDK: .../prefixes/<ver>/pfx/drive_c/users/steamuser/AppData/Roaming/...
 /// Isolation: .../versions/<ver>/Minecraft Bedrock/...
-pub fn get_game_root(options: &GamePathOptions) -> Option<PathBuf> {
+pub fn resolve_game_root(options: &GamePathOptions) -> Option<PathBuf> {
     let options = normalize_game_path_options(options);
     if options.enable_isolation {
         let root = crate::utils::file_ops::bmcbl_subdir("versions")
@@ -369,7 +291,7 @@ pub fn get_game_root(options: &GamePathOptions) -> Option<PathBuf> {
 /// 实际上我们传入 "minecraftWorlds", "resource_packs" 这种顶层名称
 pub fn scan_game_dirs(options: &GamePathOptions, target_dir_name: &str) -> Vec<PathBuf> {
     let options = normalize_game_path_options(options);
-    let root = match get_game_root(&options) {
+    let root = match resolve_game_root(&options) {
         Some(p) => p,
         None => return vec![],
     };
@@ -442,7 +364,7 @@ pub fn resolve_target_parent(
     is_shared_preferred: bool,
 ) -> Option<PathBuf> {
     let options = normalize_game_path_options(options);
-    let root = get_game_root(&options)?;
+    let root = resolve_game_root(&options)?;
 
     match options.build_type {
         BuildType::Uwp => Some(com_mojang_dir(&root).join(target_dir_name)),
@@ -560,7 +482,7 @@ mod tests {
         };
 
         assert_eq!(
-            get_game_root(&options),
+            resolve_game_root(&options),
             Some(
                 crate::utils::file_ops::prefixes_dir()
                     .join("26.50.20")
@@ -570,40 +492,17 @@ mod tests {
     }
 
     #[test]
-    fn vanilla_resource_pack_roots_include_versioned_overlays_after_base_vanilla() {
+    fn installed_package_finds_vanilla_overlay_textures() {
         let root = unique_temp_dir("bmcbl-paths-vanilla-roots");
-        let resource_packs = root.join("data").join("resource_packs");
-        std::fs::create_dir_all(resource_packs.join("vanilla").join("textures"))
-            .unwrap_or_else(|error| panic!("create vanilla pack: {error}"));
-        std::fs::create_dir_all(resource_packs.join("vanilla_1.17.0").join("textures"))
-            .unwrap_or_else(|error| panic!("create older vanilla overlay pack: {error}"));
-        std::fs::create_dir_all(resource_packs.join("vanilla_1.21.90").join("textures"))
-            .unwrap_or_else(|error| panic!("create newer vanilla overlay pack: {error}"));
-        std::fs::create_dir_all(resource_packs.join("vanilla_music").join("textures"))
-            .unwrap_or_else(|error| panic!("create vanilla music pack: {error}"));
+        let overlay_textures = root
+            .join("data")
+            .join("resource_packs")
+            .join("vanilla_1.21.90")
+            .join("textures");
+        std::fs::create_dir_all(&overlay_textures)
+            .unwrap_or_else(|error| panic!("create vanilla overlay textures: {error}"));
 
-        let roots = vanilla_resource_pack_roots(&root);
-
-        let base_index = roots
-            .iter()
-            .position(|path| path == &resource_packs.join("vanilla"))
-            .unwrap_or_else(|| panic!("missing base vanilla root"));
-        let overlay_index = roots
-            .iter()
-            .position(|path| path == &resource_packs.join("vanilla_1.17.0"))
-            .unwrap_or_else(|| panic!("missing versioned vanilla overlay root"));
-        let newer_overlay_index = roots
-            .iter()
-            .position(|path| path == &resource_packs.join("vanilla_1.21.90"))
-            .unwrap_or_else(|| panic!("missing newer versioned vanilla overlay root"));
-        assert!(base_index < overlay_index);
-        assert!(base_index < newer_overlay_index);
-        assert!(overlay_index < newer_overlay_index);
-        assert!(
-            !roots
-                .iter()
-                .any(|path| path == &resource_packs.join("vanilla_music"))
-        );
+        assert!(has_vanilla_resource_pack(&root));
 
         if let Err(error) = std::fs::remove_dir_all(&root) {
             eprintln!("cleanup test package root {}: {error}", root.display());

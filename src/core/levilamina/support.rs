@@ -6,22 +6,22 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::http::proxy::get_client_for_proxy;
+use crate::http::proxy::clients::client;
 
 const VERSION_DATABASE_URL: &str =
     "https://fastly.jsdelivr.net/gh/LiteLDev/levilamina-client-version-db@main/v2/version-db.json";
 const API_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
-static SUPPORT_DATABASE_CACHE: Lazy<Mutex<Option<LeviLaminaSupportDatabase>>> =
+static SUPPORT_DATABASE_CACHE: Lazy<Mutex<Option<Database>>> =
     Lazy::new(|| Mutex::new(None));
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct LeviLaminaSupportDatabase {
+pub struct Database {
     pub format_version: u32,
     #[serde(default)]
     pub versions: HashMap<String, Vec<String>>,
 }
 
-impl LeviLaminaSupportDatabase {
+impl Database {
     /// Returns every loader version published by the compatibility database, sorted newest first.
     #[must_use]
     pub fn all_loader_versions(&self) -> Vec<String> {
@@ -54,13 +54,13 @@ impl LeviLaminaSupportDatabase {
     }
 }
 
-async fn fetch_support_database() -> Result<LeviLaminaSupportDatabase, String> {
-    let client = get_client_for_proxy().map_err(|error| error.to_string())?;
+async fn fetch_support_database() -> Result<Database, String> {
+    let client = client().map_err(|error| error.to_string())?;
     let response = crate::github::get(&client, VERSION_DATABASE_URL)
         .await
         .map_err(|error| format!("获取 LeviLamina 版本数据库失败: {error}"))?;
     let mut database = response
-        .json::<LeviLaminaSupportDatabase>()
+        .json::<Database>()
         .await
         .map_err(|error| format!("解析 LeviLamina 版本数据库失败: {error}"))?;
     for versions in database.versions.values_mut() {
@@ -74,9 +74,9 @@ fn api_cache_path() -> PathBuf {
     crate::utils::file_ops::levilamina_api_cache_dir().join("version-db.json")
 }
 
-async fn read_api_cache() -> Option<LeviLaminaSupportDatabase> {
+async fn read_api_cache() -> Option<Database> {
     let path = api_cache_path();
-    match crate::tasks::runtime::run_io_blocking(move || {
+    match crate::tasks::runtime::blocking::run_io(move || {
         crate::core::api_cache::read_fresh(&path, API_CACHE_TTL)
     })
     .await
@@ -89,9 +89,9 @@ async fn read_api_cache() -> Option<LeviLaminaSupportDatabase> {
     }
 }
 
-async fn write_api_cache(database: LeviLaminaSupportDatabase) {
+async fn write_api_cache(database: Database) {
     let path = api_cache_path();
-    if let Err(error) = crate::tasks::runtime::run_io_blocking(move || {
+    if let Err(error) = crate::tasks::runtime::blocking::run_io(move || {
         crate::core::api_cache::write(&path, &database)
     })
     .await
@@ -114,7 +114,7 @@ pub fn clear_cache() {
 /// Returns the LeviLamina compatibility database cached for this process.
 ///
 /// A failed request is not stored, allowing a later request to retry.
-pub async fn support_database() -> Result<LeviLaminaSupportDatabase, String> {
+pub async fn database() -> Result<Database, String> {
     if let Some(database) = SUPPORT_DATABASE_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

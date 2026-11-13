@@ -251,7 +251,7 @@ pub(crate) async fn prepare_launch(
     prefix_path: &Path,
 ) -> Result<Option<PreparedLaunchAuth>, String> {
     let generation = FLOW_GENERATION.load(Ordering::Acquire);
-    let active_account = crate::tasks::runtime::run_io_blocking(|| {
+    let active_account = crate::tasks::runtime::blocking::run_io(|| {
         let _guard = ACCOUNT_LOCK
             .lock()
             .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
@@ -281,7 +281,7 @@ pub(crate) async fn prepare_launch(
         let profile_for_storage = expected_profile.clone();
         let prefix_path = prefix_path.to_path_buf();
 
-        let prepared = crate::tasks::runtime::run_io_blocking(move || {
+        let prepared = crate::tasks::runtime::blocking::run_io(move || {
             let _guard = ACCOUNT_LOCK
                 .lock()
                 .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
@@ -314,7 +314,7 @@ pub(crate) async fn prepare_launch(
         .map_err(|error| error.user_message())?;
     let prefix_path = prefix_path.to_path_buf();
     let profile_for_storage = profile.clone();
-    let prepared = crate::tasks::runtime::run_io_blocking(move || {
+    let prepared = crate::tasks::runtime::blocking::run_io(move || {
         let _guard = ACCOUNT_LOCK
             .lock()
             .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
@@ -339,7 +339,7 @@ pub(crate) async fn prepare_launch(
 #[cfg(target_os = "windows")]
 pub(crate) async fn prepare_launch_windows() -> Result<Option<PreparedLaunchAuth>, String> {
     let generation = FLOW_GENERATION.load(Ordering::Acquire);
-    let active_account = crate::tasks::runtime::run_io_blocking(|| {
+    let active_account = crate::tasks::runtime::blocking::run_io(|| {
         let _guard = ACCOUNT_LOCK
             .lock()
             .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
@@ -368,7 +368,7 @@ pub(crate) async fn prepare_launch_windows() -> Result<Option<PreparedLaunchAuth
     if let Some(device_json) = cached_device_json {
         let profile_for_storage = expected_profile.clone();
 
-        let prepared = crate::tasks::runtime::run_io_blocking(move || {
+        let prepared = crate::tasks::runtime::blocking::run_io(move || {
             let _guard = ACCOUNT_LOCK
                 .lock()
                 .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
@@ -404,7 +404,7 @@ pub(crate) async fn prepare_launch_windows() -> Result<Option<PreparedLaunchAuth
         .winegdk_json()
         .map_err(|error| error.user_message())?;
     let profile_for_storage = profile.clone();
-    let prepared = crate::tasks::runtime::run_io_blocking(move || {
+    let prepared = crate::tasks::runtime::blocking::run_io(move || {
         let _guard = ACCOUNT_LOCK
             .lock()
             .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
@@ -477,11 +477,21 @@ async fn interactive_login(generation: u64) -> Result<AuthSnapshot, AuthError> {
     ) {
         return Err(AuthError::Cancelled);
     }
-    finish_authentication(client, token, generation, None, false, true).await
+    finish_authentication(
+        client,
+        token,
+        generation,
+        None,
+        AuthenticationCleanup {
+            clear_prefix_credentials: true,
+            ..AuthenticationCleanup::default()
+        },
+    )
+    .await
 }
 
 async fn restore_session(generation: u64) -> Result<AuthSnapshot, AuthError> {
-    let candidate = crate::tasks::runtime::run_io_blocking(|| {
+    let candidate = crate::tasks::runtime::blocking::run_io(|| {
         let _guard = ACCOUNT_LOCK
             .lock()
             .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
@@ -541,10 +551,18 @@ async fn restore_session(generation: u64) -> Result<AuthSnapshot, AuthError> {
         token,
         generation,
         expected_account_id,
-        candidate.legacy,
-        false,
+        AuthenticationCleanup {
+            delete_legacy_token: candidate.legacy,
+            ..AuthenticationCleanup::default()
+        },
     )
     .await
+}
+
+#[derive(Clone, Copy, Default)]
+struct AuthenticationCleanup {
+    delete_legacy_token: bool,
+    clear_prefix_credentials: bool,
 }
 
 async fn finish_authentication(
@@ -552,8 +570,7 @@ async fn finish_authentication(
     token: msa::MsaToken,
     generation: u64,
     expected_account_id: Option<String>,
-    delete_legacy_token: bool,
-    clear_prefix_credentials: bool,
+    cleanup: AuthenticationCleanup,
 ) -> Result<AuthSnapshot, AuthError> {
     let preauth = xbox::authenticate(&client, &token.access_token).await?;
     if !current_generation(generation) {
@@ -580,19 +597,19 @@ async fn finish_authentication(
     let profile = preauth.profile;
 
     let profile_for_storage = profile.clone();
-    let catalog = crate::tasks::runtime::run_io_blocking(move || {
+    let catalog = crate::tasks::runtime::blocking::run_io(move || {
         let _guard = ACCOUNT_LOCK
             .lock()
             .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
         if !current_generation(generation) {
             return Ok(None);
         }
-        if clear_prefix_credentials {
+        if cleanup.clear_prefix_credentials {
             #[cfg(target_os = "linux")]
             wine_bridge::clear_all_prefix_credentials()?;
         }
         let catalog = secret_store::store_account(&profile_for_storage, &token.refresh_token)?;
-        if delete_legacy_token {
+        if cleanup.delete_legacy_token {
             secret_store::delete_legacy_refresh_token()?;
         }
         Ok(Some(catalog))
@@ -612,7 +629,7 @@ async fn switch_account_flow(
     account_id: String,
     generation: u64,
 ) -> Result<AuthSnapshot, AuthError> {
-    let (mut catalog, profile, refresh_token) = crate::tasks::runtime::run_io_blocking(move || {
+    let (mut catalog, profile, refresh_token) = crate::tasks::runtime::blocking::run_io(move || {
         let _guard = ACCOUNT_LOCK
             .lock()
             .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
@@ -637,7 +654,17 @@ async fn switch_account_flow(
     }
     let client = msa::client()?;
     let token = msa::refresh(&client, &refresh_token).await?;
-    finish_authentication(client, token, generation, Some(profile.xuid), false, true).await
+    finish_authentication(
+        client,
+        token,
+        generation,
+        Some(profile.xuid),
+        AuthenticationCleanup {
+            clear_prefix_credentials: true,
+            ..AuthenticationCleanup::default()
+        },
+    )
+    .await
 }
 
 async fn remove_account_flow(
@@ -645,7 +672,7 @@ async fn remove_account_flow(
     generation: u64,
 ) -> Result<AuthSnapshot, AuthError> {
     let previous_profile = current_snapshot().profile;
-    let (catalog, was_active, next_account) = crate::tasks::runtime::run_io_blocking(move || {
+    let (catalog, was_active, next_account) = crate::tasks::runtime::blocking::run_io(move || {
         let _guard = ACCOUNT_LOCK
             .lock()
             .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
@@ -702,7 +729,14 @@ async fn remove_account_flow(
     }
     let client = msa::client()?;
     let token = msa::refresh(&client, &refresh_token).await?;
-    finish_authentication(client, token, generation, Some(profile.xuid), false, false).await
+    finish_authentication(
+        client,
+        token,
+        generation,
+        Some(profile.xuid),
+        AuthenticationCleanup::default(),
+    )
+    .await
 }
 
 fn current_snapshot() -> AuthSnapshot {

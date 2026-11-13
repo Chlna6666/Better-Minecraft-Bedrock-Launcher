@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::watch;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::tasks::task_manager::{
     self, ProgressUpdate, TaskOptions, TaskScope, TaskSnapshot, TaskType,
@@ -12,9 +12,8 @@ use crate::tasks::task_manager::{
 
 use super::archive::{install_uncompressed_asset, install_zip_asset};
 use super::installation_state::{
-    inspect_installation as inspect_installation_state, prepare_package_install,
-    read_installed_packages, uninstall_loader, update_lock, validated_preloader_version,
-    write_preloader_manifest,
+    prepare_package_install, read_installed_packages, uninstall_loader, update_lock,
+    validated_preloader_version, write_preloader_manifest,
 };
 use super::lip::{AssetKind, PackageId, render_template};
 use super::planner::{
@@ -138,7 +137,7 @@ pub fn start_uninstall(game_directory: PathBuf) -> Result<LeviLaminaInstallHandl
     )
 }
 
-pub async fn install_loader(
+pub async fn loader(
     game_directory: PathBuf,
     game_version: String,
     loader_version: String,
@@ -158,7 +157,7 @@ pub async fn install_loader(
 pub async fn inspect_installation(
     game_directory: PathBuf,
 ) -> Result<LeviLaminaInstallation, String> {
-    inspect_installation_state(game_directory).await
+    super::installation_state::inspect_installation(game_directory).await
 }
 
 fn start_operation<F, Fut>(
@@ -203,7 +202,7 @@ where
             return Err(error);
         }
     };
-    task_manager::register_task_abort_handle(operation_id.to_string(), workflow.abort_handle());
+    task_manager::register_abort_handle(operation_id.to_string(), workflow.abort_handle());
     crate::tasks::runtime::spawn_io(async move {
         if let Err(error) = workflow.await
             && !error.is_cancelled()
@@ -361,7 +360,7 @@ fn root_package(
 
 async fn validate_game_directory(game_directory: &Path) -> Result<(), String> {
     let directory = game_directory.to_path_buf();
-    crate::tasks::runtime::run_io_blocking(move || {
+    crate::tasks::runtime::blocking::run_io(move || {
         if !directory.is_dir() {
             return Err(format!("游戏目录不存在: {}", directory.display()));
         }
@@ -419,7 +418,7 @@ async fn install_package(
                     download_asset_urls(&asset.urls, package, asset_index, updates).await?;
                 let game_directory = game_directory.to_path_buf();
                 let placements = asset.placements.clone();
-                let installed = crate::tasks::runtime::run_archive_blocking(move || {
+                let installed = crate::tasks::runtime::blocking::run_archive(move || {
                     install_uncompressed_asset(&source, &game_directory, &placements)
                 })
                 .await??;
@@ -440,7 +439,7 @@ async fn install_package(
         let game_directory = game_directory.to_path_buf();
         let placements = asset.placements.clone();
         files.extend(
-            crate::tasks::runtime::run_archive_blocking(move || {
+            crate::tasks::runtime::blocking::run_archive(move || {
                 install_zip_asset(&archive_path, &game_directory, &placements, strip_root)
             })
             .await??,

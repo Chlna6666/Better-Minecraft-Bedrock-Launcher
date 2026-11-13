@@ -4,13 +4,13 @@ use std::path::PathBuf;
 
 use bedrock_world::{
     item::set_item_display,
-    map_item::{MapBundle, SavedData, new_filled_map_item},
+    map_item::{MapBundle, SavedData, new_filled},
     nbt::NbtTag,
     surface::CancelFlag,
 };
 use indexmap::IndexMap;
 
-use super::map_image::{MapPreviewResult, get_map_preview};
+use super::image_to_map::{MapPreviewResult, get_preview};
 use crate::tasks::task_manager::ProgressUpdate;
 use crate::tasks::{runtime, task_manager};
 
@@ -23,25 +23,25 @@ use crate::tasks::{runtime, task_manager};
 /// # Errors
 /// Returns an expired preview or runtime submission error. Encoding and file errors
 /// are reported on the returned visible task.
-pub fn start_map_bundle_export(
+pub fn start_export(
     preview_task_id: &str,
     output: PathBuf,
     title: String,
 ) -> Result<String, String> {
-    let preview = get_map_preview(preview_task_id)
+    let preview = get_preview(preview_task_id)
         .ok_or_else(|| "地图预览已释放或过期，请重新转换".to_owned())?;
-    let task_id = task_manager::create_task(
-        task_manager::TaskOptions::new("导出可移植地图包", "生成地图记录")
-            .detail(
-                output
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned()),
-            )
-            .total(preview.tiles.len() as u64),
-    )?;
-    task_manager::register_task_cooperative_cancel(task_id.clone());
+    let mut options = task_manager::TaskOptions::new("导出可移植地图包", "生成地图记录")
+        .total(preview.tiles.len() as u64);
+    if let Some(detail) = output
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+    {
+        options = options.detail(detail);
+    }
+    let task_id = task_manager::create_task(options)?;
+    task_manager::register_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
-    task_manager::register_task_cancel_hook(task_id.clone(), {
+    task_manager::register_cancel_hook(task_id.clone(), {
         let cancel = cancel.clone();
         move || cancel.cancel()
     });
@@ -94,7 +94,7 @@ async fn export(
     }
     task_manager::reset_progress(task_id, Some(1), Some("写入地图包"));
     let written = output.clone();
-    runtime::run_io_blocking(move || std::fs::write(&written, bytes))
+    runtime::blocking::run_io(move || std::fs::write(&written, bytes))
         .await?
         .map_err(|error| error.to_string())?;
     task_manager::update_progress(
@@ -122,7 +122,7 @@ pub(super) fn build_bundle(
                 .map_err(|error| error.to_string())?,
         );
         // Slot numbers belong to an eventual chest/shulker target, not this portable list.
-        let mut item = new_filled_map_item(id, 0).map_err(|error| error.to_string())?;
+        let mut item = new_filled(id, 0).map_err(|error| error.to_string())?;
         let label = format!("{title} · ({},{})", tile.column + 1, tile.row + 1);
         let lore = vec![format!(
             "BMCBL · 北向上 · 列 {}/{} · 行 {}/{}",

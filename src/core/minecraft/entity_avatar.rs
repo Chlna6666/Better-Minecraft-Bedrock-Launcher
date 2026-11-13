@@ -10,7 +10,7 @@ include!(concat!(env!("OUT_DIR"), "/entity_avatar_assets.rs"));
 /// generated PNG files are application assets, so the resource pack version
 /// cannot leave stale avatar files behind and the first map view uses one
 /// deterministic catalog for every world.
-pub(crate) fn load_generated_entity_avatars_rgba() -> Vec<(String, u32, u32, Vec<u8>)> {
+pub(crate) fn load() -> Vec<(String, u32, u32, Vec<u8>)> {
     let mut avatars = Vec::with_capacity(ENTITY_AVATAR_ASSETS.len());
     for &(identifier, path) in ENTITY_AVATAR_ASSETS {
         let Some(bytes) = crate::assets::asset_source::load_image_asset(path)
@@ -49,7 +49,7 @@ mod tests {
 
     #[test]
     fn generated_entity_avatar_catalog_is_decodable() {
-        let avatars = load_generated_entity_avatars_rgba();
+        let avatars = load();
         let actual_identifiers = avatars
             .iter()
             .map(|(identifier, ..)| identifier.as_str())

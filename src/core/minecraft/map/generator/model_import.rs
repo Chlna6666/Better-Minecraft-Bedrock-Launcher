@@ -11,9 +11,7 @@ use bedrock_voxel::{
 };
 use gpui_3d::{GltfLoadOptions, ImportedScene, MaterialId, TextureAssetId};
 
-use super::source_obj_preview::{
-    ObjSourcePreview, build_obj_source_preview_with_textures, source_preview_from_imported,
-};
+use super::source_obj_preview::{ObjSourcePreview, build_preview, source_preview_from_imported};
 
 pub(super) struct PreparedMapModel {
     pub model: ObjModel,
@@ -21,6 +19,12 @@ pub(super) struct PreparedMapModel {
     pub preview: Option<Arc<ObjSourcePreview>>,
     /// Kept resident while downstream consumers share this source.
     pub scene: Option<Arc<ImportedScene>>,
+}
+
+#[derive(Clone, Copy)]
+enum ModelPreparation {
+    Preview,
+    Export,
 }
 
 pub(super) fn recognized_model(path: &Path) -> bool {
@@ -35,16 +39,16 @@ pub(super) fn recognized_model(path: &Path) -> bool {
 }
 
 pub(super) fn prepare_map_model(path: &Path) -> Result<PreparedMapModel, String> {
-    prepare_model(path, true)
+    prepare_model(path, ModelPreparation::Preview)
 }
 
 /// Export tasks only need source triangles + decoded materials, not an
 /// additional render-preview mesh or SceneView.
 pub(super) fn prepare_model_for_export(path: &Path) -> Result<PreparedMapModel, String> {
-    prepare_model(path, false)
+    prepare_model(path, ModelPreparation::Export)
 }
 
-fn prepare_model(path: &Path, build_preview: bool) -> Result<PreparedMapModel, String> {
+fn prepare_model(path: &Path, preparation: ModelPreparation) -> Result<PreparedMapModel, String> {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -54,10 +58,9 @@ fn prepare_model(path: &Path, build_preview: bool) -> Result<PreparedMapModel, S
         "obj" => {
             let model = load_obj_model(path).map_err(|error| error.to_string())?;
             let decoded = load_obj_textures(&model).map_err(|error| error.to_string())?;
-            let preview = if build_preview {
-                build_obj_source_preview_with_textures(&model, &decoded).ok()
-            } else {
-                None
+            let preview = match preparation {
+                ModelPreparation::Preview => build_preview(&model, &decoded).ok(),
+                ModelPreparation::Export => None,
             };
             let scene = preview.as_ref().map(|p| p.imported_scene.clone());
             Ok(PreparedMapModel {
@@ -74,10 +77,11 @@ fn prepare_model(path: &Path, build_preview: bool) -> Result<PreparedMapModel, S
                     .map_err(|error| format!("读取 glTF/GLB 失败：{error}"))?,
             );
             let (model, decoded) = raster_input_from_scene(&imported)?;
-            let preview = if build_preview {
-                source_preview_from_imported(imported.clone(), &model).ok()
-            } else {
-                None
+            let preview = match preparation {
+                ModelPreparation::Preview => {
+                    source_preview_from_imported(imported.clone(), &model).ok()
+                }
+                ModelPreparation::Export => None,
             };
             Ok(PreparedMapModel {
                 model,

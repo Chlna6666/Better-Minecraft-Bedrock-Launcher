@@ -1,4 +1,4 @@
-use crate::downloads::manager::{DownloadOptions, DownloaderManager};
+use crate::downloads::manager::{DownloadOptions, DownloadRequest, DownloaderManager};
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{
     ProgressUpdate, TaskOptions, append_task_log, finish_task, set_task_message, update_progress,
@@ -297,7 +297,7 @@ pub(crate) fn check_linux_runtime() -> LinuxRuntimeCheck {
                     missing_reason: Some(Arc::from(reason)),
                     install_plan: missing_i386_loader
                         .then(|| {
-                            build_proton_host_dependencies_plan(
+                            plan_i386_glibc_install(
                                 &os_release,
                                 distribution_name.clone(),
                             )
@@ -486,7 +486,7 @@ async fn install_latest_proton_gdk(
             finalize_proton_gdk_install(source, &install_path, &proton, &metadata).await?;
             return Ok(install_path);
         }
-        preserve_incomplete_proton_gdk_install(&install_path).await?;
+        preserve_incomplete_install(&install_path).await?;
     }
 
     let download_dir = file_ops::runtime_downloads_dir()
@@ -610,7 +610,7 @@ async fn install_roundmcdev_bundle(
             finalize_roundmcdev_install(&install_path, &metadata, task_id).await?;
             return Ok(install_path);
         }
-        preserve_incomplete_proton_gdk_install(&install_path).await?;
+        preserve_incomplete_install(&install_path).await?;
     }
 
     let download_dir = file_ops::runtime_downloads_dir()
@@ -714,8 +714,8 @@ async fn finalize_roundmcdev_install(
         ));
     }
     let install_path_for_permissions = install_path.to_path_buf();
-    crate::tasks::runtime::run_io_blocking(move || {
-        make_roundmcdev_bundle_files_executable(&install_path_for_permissions)
+    crate::tasks::runtime::blocking::run_io(move || {
+        make_bundle_files_executable(&install_path_for_permissions)
     })
     .await
     .map_err(|error| format!("设置 RoundMCDev 运行包权限任务失败：{error}"))??;
@@ -751,7 +751,7 @@ async fn finalize_roundmcdev_install(
         ),
     );
     let selected_runner = umu_runner.to_string_lossy().into_owned();
-    crate::config::config::update_config(|config| {
+    crate::config::settings::update(|config| {
         config.launcher.proton_gdk_runner = selected_runner.clone();
         config.launcher.proton_gdk_source = ProtonGdkSource::RoundMcDev.config_value().to_string();
     })
@@ -768,7 +768,7 @@ async fn finalize_roundmcdev_install(
     Ok(())
 }
 
-fn make_roundmcdev_bundle_files_executable(bundle_root: &Path) -> Result<(), String> {
+fn make_bundle_files_executable(bundle_root: &Path) -> Result<(), String> {
     let entries = std::fs::read_dir(bundle_root)
         .map_err(|error| format!("读取 RoundMCDev 运行包失败：{error}"))?;
     for entry in entries {
@@ -780,7 +780,7 @@ fn make_roundmcdev_bundle_files_executable(bundle_root: &Path) -> Result<(), Str
             continue;
         }
         if metadata.is_dir() {
-            make_roundmcdev_bundle_files_executable(&path)?;
+            make_bundle_files_executable(&path)?;
             continue;
         }
         let mut permissions = metadata.permissions();
@@ -831,7 +831,7 @@ async fn finalize_proton_gdk_install(
         .ok_or_else(|| "无法确定 Proton-GDK 安装记录目录".to_string())?;
     write_proton_gdk_metadata(&runner_root, metadata).await?;
     let selected_runner = proton.to_string_lossy().into_owned();
-    crate::config::config::update_config(|config| {
+    crate::config::settings::update(|config| {
         config.launcher.proton_gdk_runner = selected_runner.clone();
         config.launcher.proton_gdk_source = source.config_value().to_string();
     })
@@ -845,7 +845,7 @@ async fn finalize_proton_gdk_install(
     Ok(())
 }
 
-async fn preserve_incomplete_proton_gdk_install(install_path: &Path) -> Result<(), String> {
+async fn preserve_incomplete_install(install_path: &Path) -> Result<(), String> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| format!("生成 Proton-GDK 残留目录时间戳失败：{error}"))?
@@ -905,7 +905,8 @@ async fn download_proton_gdk_asset(
     update_progress(
         task_id,
         ProgressUpdate::advance(0)
-            .total((expected_size > 0).then_some(expected_size))
+            .total(expected_size)
+            // Expected sizes of 0 mean "unknown"; reset_progress below clears the bound.
             .stage("downloading_proton_gdk"),
     );
     set_task_message(task_id, Some(format!("正在下载 {asset_name}")));
@@ -914,8 +915,9 @@ async fn download_proton_gdk_asset(
     let manager = DownloaderManager::with_client(client.clone());
     let options = DownloadOptions::default();
     let urls = crate::github::configured_download_urls(asset_url)?;
+    let request = DownloadRequest::new(task_id, urls, archive_path.to_path_buf()).options(options);
     let result = manager
-        .download_with_url_candidates(task_id, urls, archive_path.to_path_buf(), &options)
+        .download(&request)
         .await
         .map_err(|error| format!("下载 Proton-GDK 失败：{error:?}"))?;
 
@@ -951,8 +953,8 @@ async fn extract_roundmcdev_asset(
     if asset_name.ends_with(".zip") {
         let archive_path = archive_path.to_path_buf();
         let destination = destination.to_path_buf();
-        crate::tasks::runtime::run_archive_blocking(move || {
-            extract_roundmcdev_zip_blocking(&archive_path, &destination)
+        crate::tasks::runtime::blocking::run_archive(move || {
+            extract_roundmcdev_zip(&archive_path, &destination)
         })
         .await
         .map_err(|error| format!("解压 {asset_name} 的归档任务失败：{error}"))??;
@@ -976,7 +978,7 @@ async fn extract_roundmcdev_asset(
     Ok(())
 }
 
-fn extract_roundmcdev_zip_blocking(archive_path: &Path, destination: &Path) -> Result<(), String> {
+fn extract_roundmcdev_zip(archive_path: &Path, destination: &Path) -> Result<(), String> {
     let file = File::open(archive_path)
         .map_err(|error| format!("打开 {} 失败：{error}", archive_path.display()))?;
     let mut archive = zip::ZipArchive::new(file)
@@ -1119,7 +1121,7 @@ fn proton_gdk_install_directory_name(source: ProtonGdkSource, release_name: &str
 }
 
 pub(crate) fn resolve_runner() -> Result<Runner, String> {
-    if let Ok(config) = crate::config::config::read_config()
+    if let Ok(config) = crate::config::settings::read()
         && !config.launcher.proton_gdk_runner.trim().is_empty()
     {
         return runner_from_explicit_path(PathBuf::from(config.launcher.proton_gdk_runner));
@@ -1164,10 +1166,10 @@ pub(crate) fn remove_managed_proton_gdk_runner(
     executable: &Path,
 ) -> Result<Option<PathBuf>, String> {
     let runners_root = file_ops::runners_dir();
-    remove_managed_proton_gdk_runner_from_root(executable, &runners_root)
+    remove_managed_runner(executable, &runners_root)
 }
 
-fn remove_managed_proton_gdk_runner_from_root(
+fn remove_managed_runner(
     executable: &Path,
     runners_root: &Path,
 ) -> Result<Option<PathBuf>, String> {
@@ -1285,7 +1287,7 @@ pub(crate) fn installed_proton_gdk_runner(executable: PathBuf) -> InstalledProto
         .and_then(|name| name.to_str())
         .unwrap_or("Proton-GDK")
         .to_string();
-    let source = infer_proton_gdk_source_from_directory(&directory_name);
+    let source = infer_proton_gdk_source(&directory_name);
     InstalledProtonGdkRunner {
         executable,
         display_name: directory_name,
@@ -1361,7 +1363,7 @@ fn read_proton_gdk_metadata(runner_root: &Path) -> Option<ProtonGdkRunnerMetadat
     serde_json::from_slice(&contents).ok()
 }
 
-fn infer_proton_gdk_source_from_directory(directory_name: &str) -> Option<ProtonGdkSource> {
+fn infer_proton_gdk_source(directory_name: &str) -> Option<ProtonGdkSource> {
     let directory_name = directory_name.to_ascii_lowercase();
     if directory_name.starts_with("roundmcdev-") {
         Some(ProtonGdkSource::RoundMcDev)
@@ -1450,11 +1452,15 @@ async fn run_install_command(plan: &LinuxInstallPlan, task_id: &str) -> Result<(
     let stdout_task = child
         .stdout
         .take()
-        .map(|stdout| spawn_install_output_pump(task_id.to_string(), stdout, false));
+        .map(|stdout| {
+            spawn_install_output_pump(task_id.to_string(), stdout, OutputStream::Stdout)
+        });
     let stderr_task = child
         .stderr
         .take()
-        .map(|stderr| spawn_install_output_pump(task_id.to_string(), stderr, true));
+        .map(|stderr| {
+            spawn_install_output_pump(task_id.to_string(), stderr, OutputStream::Stderr)
+        });
     let status = child
         .wait()
         .await
@@ -1480,10 +1486,16 @@ async fn run_install_command(plan: &LinuxInstallPlan, task_id: &str) -> Result<(
     }
 }
 
+#[derive(Clone, Copy)]
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
 fn spawn_install_output_pump<R>(
     task_id: String,
     reader: R,
-    is_error: bool,
+    output_stream: OutputStream,
 ) -> tokio::task::JoinHandle<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -1493,7 +1505,10 @@ where
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) => {
-                    let stream = if is_error { "stderr" } else { "stdout" };
+                    let stream = match output_stream {
+                        OutputStream::Stdout => "stdout",
+                        OutputStream::Stderr => "stderr",
+                    };
                     append_task_log(&task_id, format!("{stream}: {line}"));
                     update_progress(&task_id, ProgressUpdate::advance(0));
                 }
@@ -1508,7 +1523,7 @@ where
     })
 }
 
-fn build_proton_host_dependencies_plan(
+fn plan_i386_glibc_install(
     os_release: &OsRelease,
     distribution_name: Arc<str>,
 ) -> Option<LinuxInstallPlan> {
@@ -1748,9 +1763,9 @@ mod tests {
         PROTON_GDK_METADATA_FILE, PROTON_GDK_METADATA_SCHEMA_VERSION, ProtonGdkIdentity,
         ProtonGdkRunnerMetadata, ProtonGdkSource, ROUNDMCDEV_ASSETS, ROUNDMCDEV_RELEASE_NAME,
         ROUNDMCDEV_RELEASE_TAG, find_gdk_proton_root, find_proton_file,
-        infer_proton_gdk_source_from_directory, installed_proton_gdk_runner, parse_os_release,
+        infer_proton_gdk_source, installed_proton_gdk_runner, parse_os_release,
         promote_staged_proton_gdk, proton_gdk_install_directory_name, proton_gdk_runner_root,
-        remove_managed_proton_gdk_runner_from_root, roundmcdev_bundle_is_complete,
+        remove_managed_runner, roundmcdev_bundle_is_complete,
         runner_install_root_for_path,
     };
     use std::path::PathBuf;
@@ -1833,15 +1848,15 @@ mod tests {
     #[test]
     fn legacy_directory_inference_requires_unambiguous_source_name() {
         assert_eq!(
-            infer_proton_gdk_source_from_directory("lukaspah-GDK-Proton-Custom"),
+            infer_proton_gdk_source("lukaspah-GDK-Proton-Custom"),
             Some(ProtonGdkSource::LukasPah)
         );
         assert_eq!(
-            infer_proton_gdk_source_from_directory("weather-os-GDK-Proton10-32"),
+            infer_proton_gdk_source("weather-os-GDK-Proton10-32"),
             Some(ProtonGdkSource::WeatherOs)
         );
         assert_eq!(
-            infer_proton_gdk_source_from_directory("GDK-Proton10-32"),
+            infer_proton_gdk_source("GDK-Proton10-32"),
             None
         );
     }
@@ -1889,7 +1904,7 @@ mod tests {
         )
         .expect("staging directory should be created");
 
-        let removed = remove_managed_proton_gdk_runner_from_root(
+        let removed = remove_managed_runner(
             &managed_root.join("umu/umu-run"),
             &runners_root,
         )

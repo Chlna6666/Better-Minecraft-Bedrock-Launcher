@@ -1,4 +1,4 @@
-use crate::http::proxy::get_client_for_proxy;
+use crate::http::proxy::clients::client;
 use serde::Deserialize;
 use std::fs;
 use std::io;
@@ -50,7 +50,7 @@ pub(crate) async fn load_sponsors() -> Result<Vec<SponsorRecord>, String> {
         return Err("host not allowed".to_string());
     }
 
-    let client = get_client_for_proxy().map_err(|error| error.to_string())?;
+    let client = client().map_err(|error| error.to_string())?;
     let response = client
         .get(parsed_url)
         .send()

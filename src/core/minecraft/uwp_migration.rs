@@ -276,7 +276,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(u64, u64), String> {
 
 /// Store/外部注册切换为 BMCBL DevelopmentMode 前的强制安全门。
 /// 无有效数据时返回 Ok(None)；有数据时只有完成并校验外部备份才允许继续卸载。
-pub fn prepare_external_registration_backup(family_name: &str) -> Result<Option<PathBuf>, String> {
+pub fn prepare_backup(family_name: &str) -> Result<Option<PathBuf>, String> {
     let Some(local_state) = local_state_for_family(family_name) else {
         return Ok(None);
     };
@@ -377,7 +377,7 @@ fn read_pending_root_for_family(family_name: &str) -> Result<Option<(PathBuf, Pa
 ///
 /// 恢复动作必须与刚注册的 Minecraft Identity 匹配。不同包家族使用独立 pending 标记，
 /// Release/Preview 可各自保留待恢复迁移；同时拒绝覆盖已经出现新文件的目标 com.mojang。
-pub fn restore_pending_backup_for_identity(identity_name: &str) -> Result<Option<PathBuf>, String> {
+pub fn restore_pending_backup(identity_name: &str) -> Result<Option<PathBuf>, String> {
     let Some(expected_family) = package_family_for_identity(identity_name) else {
         return Ok(None);
     };

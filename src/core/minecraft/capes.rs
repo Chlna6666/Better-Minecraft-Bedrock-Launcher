@@ -750,14 +750,18 @@ fn extract_zip_pack(source: &Path, target: &Path) -> Result<(), String> {
         if relative.is_empty() {
             continue;
         }
-        if !safe_member(relative) {
-            return Err(format!("披风包包含无效路径：{relative}"));
-        }
         let member = archive
             .by_name(raw_name)
             .map_err(|error| format!("读取披风包文件失败：{error}"))?;
         if member.is_dir() {
+            let directory = relative.strip_suffix('/').unwrap_or(relative);
+            if !safe_member(directory) {
+                return Err(format!("披风包包含无效路径：{relative}"));
+            }
             continue;
+        }
+        if !safe_member(relative) {
+            return Err(format!("披风包包含无效路径：{relative}"));
         }
         total_bytes = total_bytes.saturating_add(member.size());
         if total_bytes > MAX_PACK_BYTES || member.size() > MAX_PACK_BYTES {

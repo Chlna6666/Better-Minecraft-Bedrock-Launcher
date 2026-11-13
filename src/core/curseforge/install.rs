@@ -4,7 +4,7 @@ use crate::core::minecraft::assets::{
 };
 use crate::core::minecraft::paths::{BuildType, Edition};
 use crate::tasks::task_manager::{
-    TaskOptions, create_task, finish_task, is_cancelled, register_task_abort_handle, reset_progress,
+    TaskOptions, create_task, finish_task, is_cancelled, register_abort_handle, reset_progress,
 };
 
 #[derive(Clone, Debug)]
@@ -69,7 +69,7 @@ pub fn start_install(request: CurseForgeInstallRequest) -> Result<String, String
                 return Err(error);
             }
         };
-    register_task_abort_handle(task_id.clone(), abort_handle);
+    register_abort_handle(task_id.clone(), abort_handle);
     Ok(task_id)
 }
 
@@ -77,7 +77,7 @@ async fn run_install(
     task_id: &str,
     request: CurseForgeInstallRequest,
 ) -> Result<CurseForgeInstallResult, String> {
-    let downloaded = crate::downloads::api::download_resource_to_cache_in_task(
+    let downloaded = crate::downloads::api::download_for_task(
         task_id,
         request.download_url,
         request.file_name,

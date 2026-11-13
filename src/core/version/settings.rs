@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::fs as std_fs;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -230,7 +229,7 @@ fn read_json_object(path: &Path) -> Result<serde_json::Map<String, serde_json::V
     if !path.exists() {
         return Ok(serde_json::Map::new());
     }
-    let contents = std_fs::read_to_string(path)
+    let contents = std::fs::read_to_string(path)
         .map_err(|error| format!("无法读取配置文件 {}：{error}", path.display()))?;
     serde_json::from_str::<serde_json::Value>(&contents)
         .map_err(|error| format!("无法解析配置文件 {}：{error}", path.display()))?
@@ -336,19 +335,23 @@ fn save_version_config_to_directory(
     write_json_atomically(&root_path, &serde_json::Value::Object(root))
 }
 
-pub fn get_version_config_blocking(folder_name: &str) -> Result<VersionConfig, String> {
-    load_version_config_from_directory(&instance_directory(folder_name))
+pub mod blocking {
+    use super::{VersionConfig, instance_directory, load_version_config_from_directory};
+
+    pub fn read_version_config(folder_name: &str) -> Result<VersionConfig, String> {
+        load_version_config_from_directory(&instance_directory(folder_name))
+    }
 }
 
-pub async fn get_version_config(folder_name: String) -> Result<VersionConfig, String> {
-    crate::tasks::runtime::run_io_blocking(move || get_version_config_blocking(&folder_name))
+pub async fn read_version_config(folder_name: String) -> Result<VersionConfig, String> {
+    crate::tasks::runtime::blocking::run_io(move || blocking::read_version_config(&folder_name))
         .await
         .map_err(|error| format!("读取实例配置任务失败：{error}"))?
 }
 
 pub async fn save_version_config(folder_name: String, config: VersionConfig) -> Result<(), String> {
     let folder_name_for_log = folder_name.clone();
-    crate::tasks::runtime::run_io_blocking(move || {
+    crate::tasks::runtime::blocking::run_io(move || {
         let directory = instance_directory(&folder_name);
         if !directory.exists() {
             return Err("版本目录不存在".to_string());
