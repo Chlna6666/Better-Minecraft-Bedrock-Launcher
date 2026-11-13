@@ -63,7 +63,7 @@ impl UpdateCheckOutcome {
     }
 }
 
-pub(crate) fn check_for_updates_blocking() -> UpdateCheckOutcome {
+pub(crate) fn check() -> UpdateCheckOutcome {
     let started_at = Instant::now();
     tracing::info!(
         thread = ?std::thread::current().id(),
@@ -71,8 +71,8 @@ pub(crate) fn check_for_updates_blocking() -> UpdateCheckOutcome {
     );
 
     let outcome =
-        match crate::utils::updater::check_updates_blocking(OWNER.to_string(), REPO.to_string()) {
-            Ok(value) => update_check_outcome_from_value(value),
+        match crate::utils::updater::blocking::check_updates(OWNER.to_string(), REPO.to_string()) {
+            Ok(value) => outcome_from_value(value),
             Err(error) => UpdateCheckOutcome::with_error(error),
         };
 
@@ -102,7 +102,7 @@ pub(crate) fn spawn_update_check_thread(
     let worker_sender = Arc::clone(&sender);
     let spawn_result = crate::tasks::runtime::spawn_io(async move {
         tracing::info!(reason, "update check worker started");
-        let outcome = match crate::tasks::runtime::run_io_blocking(check_for_updates_blocking).await
+        let outcome = match crate::tasks::runtime::blocking::run_io(check).await
         {
             Ok(outcome) => outcome,
             Err(error) => UpdateCheckOutcome::with_error(error),
@@ -138,7 +138,7 @@ pub(crate) fn spawn_update_check_thread(
     receiver
 }
 
-pub(crate) fn update_check_outcome_from_value(value: serde_json::Value) -> UpdateCheckOutcome {
+pub(crate) fn outcome_from_value(value: serde_json::Value) -> UpdateCheckOutcome {
     let update_available = value
         .get("update_available")
         .and_then(|flag| flag.as_bool())
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn no_update_has_no_release_or_error() {
-        let outcome = update_check_outcome_from_value(json!({
+        let outcome = outcome_from_value(json!({
             "update_available": false,
             "selected_release": release_value(),
         }));
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn update_available_returns_selected_release() {
-        let outcome = update_check_outcome_from_value(json!({
+        let outcome = outcome_from_value(json!({
             "update_available": true,
             "selected_release": release_value(),
         }));
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn malformed_selected_release_returns_visible_error() {
-        let outcome = update_check_outcome_from_value(json!({
+        let outcome = outcome_from_value(json!({
             "update_available": true,
             "selected_release": {
                 "name": "missing required fields"

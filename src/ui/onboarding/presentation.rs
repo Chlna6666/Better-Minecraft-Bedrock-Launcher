@@ -6,7 +6,7 @@ use super::state::{OnboardingAnchor, OnboardingScene, OnboardingTourState};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
 const WELCOME_WIDE_WIDTH: f32 = 548.0;
 const WELCOME_REGULAR_WIDTH: f32 = 492.0;
@@ -32,8 +32,8 @@ pub fn render_onboarding_tour(
     let now = window.animation_time();
     let theme = cx.global::<ThemeState>();
     let colors = lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        &LightColors::theme(),
+        &DarkColors::theme(),
         theme.factor(now),
         theme.accent,
     );
@@ -69,8 +69,8 @@ fn render_welcome(state: &OnboardingTourState, window: &mut Window, cx: &App) ->
     let now = window.animation_time();
     let theme = cx.global::<ThemeState>();
     let colors = lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        &LightColors::theme(),
+        &DarkColors::theme(),
         theme.factor(now),
         theme.accent,
     );

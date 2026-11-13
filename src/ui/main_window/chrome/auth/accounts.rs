@@ -80,6 +80,7 @@ fn account(row: &Row, state: &RenderState, colors: &ThemeColors) -> AnyElement {
                 state,
                 colors,
                 can_switch,
+                0.45,
             )
             // A current account is static, not visually disabled.
             .opacity(1.0)
@@ -127,6 +128,7 @@ fn account(row: &Row, state: &RenderState, colors: &ThemeColors) -> AnyElement {
                         state,
                         colors,
                         enabled,
+                        0.45,
                     )
                     .size(px(30.))
                     .bg(if confirming {
@@ -159,6 +161,7 @@ fn account(row: &Row, state: &RenderState, colors: &ThemeColors) -> AnyElement {
                             state,
                             colors,
                             enabled,
+                            0.45,
                         )
                         .size(px(26.))
                         .child(icon(

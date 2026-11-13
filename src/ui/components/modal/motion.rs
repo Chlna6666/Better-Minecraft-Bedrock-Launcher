@@ -1,15 +1,15 @@
 use super::*;
 
-pub(super) fn transition(control: ModalAnimationControl) -> (f32, f32, Animation) {
+pub(super) fn transition(control: AnimationControl) -> (f32, f32, Animation) {
     let (from, to, duration, easing) = if control.closing_started_at.is_some() {
         (
             control.closing_from,
             0.0,
-            MODAL_CLOSE_DURATION,
+            CLOSE_DURATION,
             Easing::InCubic,
         )
     } else {
-        (0.0, 1.0, MODAL_OPEN_DURATION, Easing::OutCubic)
+        (0.0, 1.0, OPEN_DURATION, Easing::OutCubic)
     };
     let animation = Animation::from_spec(
         AnimationSpec::new(duration)
@@ -23,7 +23,7 @@ pub(super) fn backdrop(background: Hsla, from: f32, to: f32, animation: Animatio
     let overlay = Hsla {
         a: background
             .a
-            .clamp(MODAL_BACKDROP_MIN_ALPHA, MODAL_BACKDROP_MAX_ALPHA),
+            .clamp(BACKDROP_MIN_ALPHA, BACKDROP_MAX_ALPHA),
         ..black()
     };
     div()

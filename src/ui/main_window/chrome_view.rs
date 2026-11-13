@@ -101,7 +101,7 @@ impl Render for AppChromeView {
             "chrome view render"
         );
         if theme_animating {
-            crate::ui::animation::request_layout_animation_frame_if(window, true);
+            crate::ui::animation::request_layout_frame(window);
         }
         chrome::render_shell(
             &colors,
@@ -169,7 +169,7 @@ impl Render for BrandChromeView {
             "chrome view render"
         );
         if animating {
-            crate::ui::animation::request_layout_animation_frame_if(window, true);
+            crate::ui::animation::request_layout_frame(window);
         }
         div()
             .size_full()
@@ -325,7 +325,7 @@ impl Render for NavChromeView {
         // Do not pause them merely because WM_EXITSIZEMOVE has not fired: a
         // stationary held border must still finish the navigation transition.
         if theme_animating {
-            crate::ui::animation::request_layout_animation_frame_if(window, true);
+            crate::ui::animation::request_layout_frame(window);
         }
         let nav = cx.global::<NavState>();
         let labels_animating = nav.labels_animating(now);
@@ -459,7 +459,7 @@ impl Render for AuthChromeView {
         )
         .blocked(self.blocked);
         if theme_animating {
-            crate::ui::animation::request_layout_animation_frame_if(window, true);
+            crate::ui::animation::request_layout_frame(window);
         }
         div()
             .absolute()
@@ -508,7 +508,7 @@ impl Render for WindowControlsView {
             "chrome view render"
         );
         if animating {
-            crate::ui::animation::request_layout_animation_frame_if(window, true);
+            crate::ui::animation::request_layout_frame(window);
         }
         div()
             .size_full()

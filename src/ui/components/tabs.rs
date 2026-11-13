@@ -1,6 +1,6 @@
 use crate::ui::animation::{apple_spring, settled_animation, spring_motion};
 use crate::ui::components::scroll::ScrollableElement as _;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::rc::Rc;

@@ -98,7 +98,7 @@ impl AppBackgroundView {
             background_option: settings.background_option.to_string(),
             local_image_path: settings.local_image_path.to_string(),
             network_image_url: settings.network_image_url.to_string(),
-            background_blur: crate::config::config::clamp_background_blur(
+            background_blur: crate::config::settings::clamp_background_blur(
                 settings.background_blur_preview,
             ),
             network_image_refresh_nonce: settings.network_image_refresh_nonce,
@@ -106,7 +106,7 @@ impl AppBackgroundView {
     }
 
     fn animation_policy(&self, window: &Window) -> ImageAnimationPolicy {
-        background_animation_policy(self.animation_suppressed, window.is_minimized())
+        animation_policy(self.animation_suppressed, window.is_minimized())
     }
 
     fn render_background_layer(
@@ -151,7 +151,7 @@ impl AppBackgroundView {
         animation_policy: ImageAnimationPolicy,
     ) -> Div {
         let container = div().absolute().inset_0().bg(gpui::transparent_black());
-        let blur = crate::config::config::clamp_background_blur(blur);
+        let blur = crate::config::settings::clamp_background_blur(blur);
         let container = match source {
             Some(source) => container.child(self.render_background_layer(source, animation_policy)),
             None => container,
@@ -164,10 +164,10 @@ impl AppBackgroundView {
         let overlay = div()
             .absolute()
             .inset_0()
-            .bg(background_blur_overlay_color(blur));
+            .bg(blur_overlay_color(blur));
 
-        if background_uses_gpu_blur(blur) {
-            container.child(overlay.background_blur(background_backdrop_blur_style(blur)))
+        if uses_gpu_blur(blur) {
+            container.child(overlay.background_blur(backdrop_blur_style(blur)))
         } else {
             container.child(overlay)
         }
@@ -183,14 +183,14 @@ impl AppBackgroundView {
         }
 
         let source = if settings.loaded {
-            resolve_background_source_from_values(
+            resolve_background_source(
                 &settings.background_option,
                 &settings.local_image_path,
                 &settings.network_image_url,
                 settings.network_image_refresh_nonce,
             )
         } else {
-            resolve_background_source_from_values(
+            resolve_background_source(
                 self.bootstrap_background_option.as_ref(),
                 self.bootstrap_local_image_path.as_ref(),
                 self.bootstrap_network_image_url.as_ref(),
@@ -231,11 +231,11 @@ impl AppBackgroundView {
     }
 }
 
-fn background_uses_gpu_blur(blur: f32) -> bool {
+fn uses_gpu_blur(blur: f32) -> bool {
     BACKGROUND_GPU_BACKDROP_BLUR_ENABLED && blur.is_finite() && blur >= BACKGROUND_GPU_BLUR_MIN_PX
 }
 
-fn background_backdrop_blur_style(blur: f32) -> BackdropBlurStyle {
+fn backdrop_blur_style(blur: f32) -> BackdropBlurStyle {
     // This is a fullscreen image effect, unlike small UI glass. Preserve native sampling for low
     // blur values, then explicitly halve the filter resolution once the requested softness hides
     // individual source pixels. The final composite remains full-resolution and keeps the same
@@ -250,7 +250,7 @@ fn background_backdrop_blur_style(blur: f32) -> BackdropBlurStyle {
         .downsample(downsample)
 }
 
-fn background_blur_overlay_color(blur: f32) -> gpui::Hsla {
+fn blur_overlay_color(blur: f32) -> gpui::Hsla {
     let alpha = (blur / BACKGROUND_BLUR_OVERLAY_REFERENCE_PX).clamp(0.0, 1.0)
         * BACKGROUND_BLUR_OVERLAY_MAX_ALPHA;
     gpui::Hsla {
@@ -259,7 +259,7 @@ fn background_blur_overlay_color(blur: f32) -> gpui::Hsla {
     }
 }
 
-fn background_animation_policy(
+fn animation_policy(
     animation_suppressed: bool,
     window_minimized: bool,
 ) -> ImageAnimationPolicy {
@@ -286,7 +286,7 @@ impl Render for AppBackgroundView {
             let default_background = default_background_source();
             return self.render_background_container(
                 Some(&default_background),
-                crate::config::config::default_background_blur(),
+                crate::config::settings::default_background_blur(),
                 animation_policy,
             );
         }
@@ -319,25 +319,25 @@ mod tests {
         BACKGROUND_ANIMATION_INACTIVE_MAX_FPS, BACKGROUND_ANIMATION_PRESENTATION_CEILING_FPS,
         BACKGROUND_BLUR_OVERLAY_MAX_ALPHA, BACKGROUND_GPU_BACKDROP_BLUR_ENABLED,
         BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX, animation_suppression_changed,
-        background_animation_policy, background_backdrop_blur_style, background_blur_overlay_color,
-        background_uses_gpu_blur,
+        animation_policy, backdrop_blur_style, blur_overlay_color,
+        uses_gpu_blur,
     };
 
     #[test]
     fn background_animation_policy_pauses_when_suppressed() {
-        let policy = background_animation_policy(true, false);
+        let policy = animation_policy(true, false);
         assert!(!policy.play);
     }
 
     #[test]
     fn background_animation_policy_pauses_when_window_minimized() {
-        let policy = background_animation_policy(false, true);
+        let policy = animation_policy(false, true);
         assert!(!policy.play);
     }
 
     #[test]
     fn background_animation_policy_uses_gpui_pacing_with_inactive_cap() {
-        let policy = background_animation_policy(false, false);
+        let policy = animation_policy(false, false);
         assert!(policy.play);
         assert_eq!(
             policy.max_fps,
@@ -358,13 +358,13 @@ mod tests {
     #[test]
     fn subpixel_background_blur_skips_invisible_gpu_work() {
         assert!(BACKGROUND_GPU_BACKDROP_BLUR_ENABLED);
-        assert!(!background_uses_gpu_blur(0.0));
-        assert!(!background_uses_gpu_blur(0.1));
-        assert!(!background_uses_gpu_blur(0.5));
-        assert!(background_uses_gpu_blur(1.0));
-        assert_eq!(background_blur_overlay_color(0.0).a, 0.0);
+        assert!(!uses_gpu_blur(0.0));
+        assert!(!uses_gpu_blur(0.1));
+        assert!(!uses_gpu_blur(0.5));
+        assert!(uses_gpu_blur(1.0));
+        assert_eq!(blur_overlay_color(0.0).a, 0.0);
         assert_eq!(
-            background_blur_overlay_color(f32::MAX).a,
+            blur_overlay_color(f32::MAX).a,
             BACKGROUND_BLUR_OVERLAY_MAX_ALPHA
         );
     }
@@ -372,11 +372,11 @@ mod tests {
     #[test]
     fn fullscreen_background_blur_downsamples_only_visible_strengths() {
         let below = (BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX - 0.1).max(0.0);
-        assert_eq!(background_backdrop_blur_style(below).downsample, 1);
+        assert_eq!(backdrop_blur_style(below).downsample, 1);
         assert_eq!(
-            background_backdrop_blur_style(BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX).downsample,
+            backdrop_blur_style(BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX).downsample,
             2
         );
-        assert_eq!(background_backdrop_blur_style(10.0).downsample, 2);
+        assert_eq!(backdrop_blur_style(10.0).downsample, 2);
     }
 }

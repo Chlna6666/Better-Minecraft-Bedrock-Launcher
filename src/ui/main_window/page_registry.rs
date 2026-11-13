@@ -51,7 +51,7 @@ impl MainWindowView {
         }
     }
 
-    pub(super) fn ensure_page_view_for_route(&mut self, route: AppRoute, cx: &mut Context<Self>) {
+    pub(super) fn ensure_builtin_page(&mut self, route: AppRoute, cx: &mut Context<Self>) {
         match route {
             AppRoute::Home => {
                 let _ = get_or_create_page_view(&mut self.home_page_view, cx, |cx| {
@@ -86,11 +86,11 @@ impl MainWindowView {
         }
     }
 
-    pub(super) fn prewarm_page_view_for_route(&mut self, route: AppRoute, cx: &mut Context<Self>) {
+    pub(super) fn prewarm_page(&mut self, route: AppRoute, cx: &mut Context<Self>) {
         let current_route = crate::ui::navigation::current_route_target(cx);
         let target = RouteTarget::Builtin(route);
         if current_route == target {
-            self.ensure_page_view_for_route(route, cx);
+            self.ensure_builtin_page(route, cx);
             self.sync_page_active_flags(&current_route, cx);
             return;
         }
@@ -99,7 +99,7 @@ impl MainWindowView {
             return;
         }
 
-        self.ensure_page_view_for_route(route, cx);
+        self.ensure_builtin_page(route, cx);
         self.recent_page_target = Some(target.clone());
         self.evict_nonresident_pages(&current_route, Some(&target), cx);
         self.sync_page_active_flags(&current_route, cx);
@@ -113,14 +113,14 @@ impl MainWindowView {
         )
     }
 
-    pub(super) fn ensure_page_view_for_target(
+    pub(super) fn ensure_page_view(
         &mut self,
         target: &RouteTarget,
         cx: &mut Context<Self>,
     ) {
         match target {
             RouteTarget::Builtin(route) => {
-                self.ensure_page_view_for_route(*route, cx);
+                self.ensure_builtin_page(*route, cx);
             }
             RouteTarget::Plugin { plugin_id, page_id } => {
                 let key = (plugin_id.clone(), page_id.clone());
@@ -191,7 +191,7 @@ impl MainWindowView {
                 let route_changed = this.last_route_for_side_effects.as_ref() != Some(&route);
                 // RouterState also publishes same-route history changes. Keep the page-data
                 // reconciliation, but only rebuild the root when the visible route changes.
-                this.handle_route_change_without_window(route, cx);
+                this.handle_route_change(route, cx);
                 if route_changed {
                     cx.notify();
                 }
@@ -202,7 +202,7 @@ impl MainWindowView {
                 let now = Instant::now();
                 let changed = this.sync_update_state(now, cx)
                     | this.ensure_update_download_listener(cx)
-                    | this.sync_current_background_animation_policy(now, cx);
+                    | this.sync_current_animation_policy(now, cx);
                 let update_state = cx.global::<UpdateState>();
                 let update_modal_needs_render =
                     update_state.modal_pending_open || update_state.should_render_modal(now);
@@ -212,7 +212,7 @@ impl MainWindowView {
             }));
         self._reactor_subscriptions
             .push(cx.observe_global::<DebugState>(|this, cx| {
-                if this.sync_current_background_animation_policy(Instant::now(), cx) {
+                if this.sync_current_animation_policy(Instant::now(), cx) {
                     cx.notify();
                 }
             }));
@@ -225,9 +225,9 @@ impl MainWindowView {
                 let now = Instant::now();
                 let state = cx.global::<LauncherState>();
                 let previous = this.launcher_snapshot.clone();
-                let current = crate::ui::hooks::use_launcher::read_launcher_snapshot(cx);
+                let current = crate::ui::hooks::launcher::snapshot(cx);
                 let changed =
-                    crate::ui::hooks::use_launcher::launcher_snapshot_changed(&previous, &current);
+                    crate::ui::hooks::launcher::snapshot_changed(&previous, &current);
                 if changed {
                     this.launcher_snapshot = Arc::new(current);
                 }
@@ -334,7 +334,7 @@ impl MainWindowView {
             .push(cx.observe_global::<I18n>(|this, cx| {
                 let locale_code = cx.global::<I18n>().locale().code().to_string();
                 let agreement_visible = cx.update_global(|agreement: &mut AgreementState, _cx| {
-                    let _ = agreement.get_or_cache_document(&locale_code);
+                    let _ = agreement.document(&locale_code);
                     agreement.is_visible()
                 });
                 if agreement_visible {
@@ -355,7 +355,7 @@ impl MainWindowView {
         self._window_subscriptions
             .push(cx.observe_window_activation(window, |this, window, cx| {
                 this.maybe_trim_working_set_on_minimize(window, cx);
-                if this.sync_current_background_animation_policy(Instant::now(), cx) {
+                if this.sync_current_animation_policy(Instant::now(), cx) {
                     cx.notify();
                 }
             }));
@@ -618,7 +618,7 @@ impl MainWindowView {
     fn cache_agreement_document(cx: &mut Context<Self>) {
         let locale_code = cx.global::<I18n>().locale().code().to_string();
         cx.update_global(|agreement: &mut AgreementState, _cx| {
-            let _document = agreement.get_or_cache_document(&locale_code);
+            let _document = agreement.document(&locale_code);
         });
     }
 
@@ -642,7 +642,7 @@ impl MainWindowView {
                 let now = Instant::now();
                 let changed = this.sync_update_state(now, cx)
                     | this.ensure_update_download_listener(cx)
-                    | this.sync_current_background_animation_policy(now, cx);
+                    | this.sync_current_animation_policy(now, cx);
                 if changed {
                     tracing::debug!("startup deferred work changed render state");
                 }
@@ -668,7 +668,7 @@ impl MainWindowView {
 
             Timer::after(STARTUP_INTERACTION_WARMUP_STEP_DELAY).await;
             if let Err(error) = handle.update(cx, |this, cx| {
-                this.prewarm_page_view_for_route(AppRoute::Tasks, cx);
+                this.prewarm_page(AppRoute::Tasks, cx);
                 tracing::debug!("startup interaction warmup scheduled: tasks_view=true");
             }) {
                 warn!("startup tasks warmup failed: {error:?}");
@@ -704,7 +704,7 @@ impl MainWindowView {
         });
 
         let launcher_snapshot =
-            Arc::new(crate::ui::hooks::use_launcher::read_launcher_snapshot(cx));
+            Arc::new(crate::ui::hooks::launcher::snapshot(cx));
         let diagnostics_state = cx.global::<crate::ui::state::diagnostics::DiagnosticsState>();
         let diagnostics_visible = diagnostics_state.has_visible_report();
         let diagnostics_signature = (
@@ -807,7 +807,7 @@ impl MainWindowView {
         this.install_easter_egg_interceptor(window, cx);
         let _ = this.ensure_download_prefs_loaded(cx);
         if let Err(error) = crate::tasks::runtime::spawn_io(async {
-            if let Err(error) = crate::tasks::runtime::run_io_blocking(
+            if let Err(error) = crate::tasks::runtime::blocking::run_io(
                 crate::core::ui_prefs::load_map_viewer_window_prefs,
             )
             .await

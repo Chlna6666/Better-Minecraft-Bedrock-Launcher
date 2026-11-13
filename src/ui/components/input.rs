@@ -1,5 +1,5 @@
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, lerp_theme_colors};
 use gpui::{
     App, Bounds, BoxShadow, ClipboardItem, Context, CursorStyle, Element, ElementId,
     ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
@@ -255,23 +255,6 @@ impl InputState {
     }
 
     pub fn set_placeholder(
-        &mut self,
-        placeholder: impl Into<SharedString>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.set_placeholder_value(placeholder, cx);
-    }
-
-    pub(crate) fn set_placeholder_without_window(
-        &mut self,
-        placeholder: impl Into<SharedString>,
-        cx: &mut Context<Self>,
-    ) {
-        self.set_placeholder_value(placeholder, cx);
-    }
-
-    fn set_placeholder_value(
         &mut self,
         placeholder: impl Into<SharedString>,
         cx: &mut Context<Self>,
@@ -1051,7 +1034,7 @@ impl Element for TextElement {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui::diagnostics::inspector::InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
@@ -1064,7 +1047,7 @@ impl Element for TextElement {
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui::diagnostics::inspector::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
@@ -1081,8 +1064,8 @@ impl Element for TextElement {
         let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let theme_colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme.factor(now),
             theme.accent,
         );
@@ -1207,7 +1190,7 @@ impl Element for TextElement {
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui::diagnostics::inspector::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         prepaint: &mut Self::PrepaintState,
@@ -1370,8 +1353,8 @@ impl RenderOnce for Input {
         let metrics = self.size.metrics();
         let theme = cx.global::<ThemeState>();
         let theme_colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme.factor(window.animation_time()),
             theme.accent,
         );

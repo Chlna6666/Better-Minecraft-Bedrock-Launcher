@@ -1,14 +1,14 @@
 use crate::tasks::task_manager::{self, TaskSnapshot};
 use crate::ui::animation::repeating_linear_motion;
-use crate::ui::components::adaptive::{AdaptiveModalSpec, WindowMetrics, adaptive_modal_size};
-use crate::ui::components::markdown_renderer::{
-    MarkdownDocument, MarkdownItem, render_markdown_item,
+use crate::ui::components::adaptive::{ModalSpec, WindowMetrics, modal_size};
+use crate::ui::components::markdown::{
+    Document, Item, render_item,
 };
 use crate::ui::components::modal;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::update::UpdateState;
 use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
-use crate::utils::format_bytes::{format_bytes, format_bytes_per_sec};
+use crate::utils::format_bytes::{format, per_second};
 use crate::utils::updater::ReleaseSummary;
 use gpui::AnimationExt;
 use gpui::list;
@@ -30,8 +30,8 @@ const UPDATE_CHANGELOG_MAX_SCROLL_PX: f32 = 340.0;
 
 pub struct UpdateMarkdownView {
     release_tag: String,
-    document: Arc<MarkdownDocument>,
-    items: Arc<Vec<MarkdownItem>>,
+    document: Arc<Document>,
+    items: Arc<Vec<Item>>,
     colors: ThemeColors,
     dark: bool,
     active: bool,
@@ -41,7 +41,7 @@ pub struct UpdateMarkdownView {
 impl UpdateMarkdownView {
     pub fn new(
         release_tag: String,
-        document: Arc<MarkdownDocument>,
+        document: Arc<Document>,
         colors: ThemeColors,
         dark: bool,
     ) -> Self {
@@ -61,7 +61,7 @@ impl UpdateMarkdownView {
     pub fn matches(
         &self,
         release_tag: &str,
-        document: &Arc<MarkdownDocument>,
+        document: &Arc<Document>,
         colors: &ThemeColors,
         dark: bool,
     ) -> bool {
@@ -71,10 +71,10 @@ impl UpdateMarkdownView {
             && self.colors == *colors
     }
 
-    pub fn update(
+    pub fn sync(
         &mut self,
         release_tag: String,
-        document: Arc<MarkdownDocument>,
+        document: Arc<Document>,
         colors: ThemeColors,
         dark: bool,
     ) {
@@ -121,7 +121,7 @@ impl Render for UpdateMarkdownView {
 
         list(self.list_state.clone(), move |index, _window, _cx| {
             if let Some(item) = items.get(index) {
-                render_markdown_item(item, &colors, is_dark)
+                render_item(item, &colors, is_dark)
             } else {
                 div().into_any_element()
             }
@@ -160,7 +160,7 @@ fn with_alpha(color: Hsla, alpha: f32) -> Hsla {
     }
 }
 
-pub fn render_update_modal(
+pub fn render_modal(
     release: ReleaseSummary,
     markdown_view: Option<Entity<UpdateMarkdownView>>,
     _changelog_scroll_handle: ScrollHandle,
@@ -184,11 +184,11 @@ pub fn render_update_modal(
     let date = format_date(release.published_at.clone(), i18n);
     let size = release
         .asset_size
-        .map(format_bytes)
+        .map(format)
         .unwrap_or_else(|| t!("UpdateModal.size.unknown").to_string());
     let colors = lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        &LightColors::theme(),
+        &DarkColors::theme(),
         theme_factor,
         accent_override,
     );
@@ -227,9 +227,9 @@ pub fn render_update_modal(
     } else {
         UPDATE_INFO_MAX_HEIGHT_PX
     };
-    let modal_size = adaptive_modal_size(
+    let modal_size = modal_size(
         window_metrics,
-        AdaptiveModalSpec {
+        ModalSpec {
             min_width: UPDATE_MODAL_MIN_WIDTH_PX,
             max_width: UPDATE_MODAL_MAX_WIDTH_PX,
             min_height: UPDATE_MODAL_MIN_HEIGHT_PX,
@@ -372,7 +372,7 @@ pub fn render_update_modal(
         let total_label = if display_total == 0 {
             t!("UpdateModal.no_file").to_string()
         } else {
-            format_bytes(display_total)
+            format(display_total)
         };
         let is_indeterminate = snapshot_total == 0;
         let progress_ratio = ((percent as f32) / 100.0).clamp(0.0, 1.0);
@@ -547,7 +547,7 @@ pub fn render_update_modal(
                     .justify_between()
                     .text_size(px(12.))
                     .text_color(colors.text_secondary)
-                    .child(div().child(format!("{} / {}", format_bytes(done), total_label)))
+                    .child(div().child(format!("{} / {}", format(done), total_label)))
                     .child(
                         div()
                             .flex()
@@ -556,7 +556,7 @@ pub fn render_update_modal(
                             .child(
                                 div()
                                     .text_color(colors.text_muted)
-                                    .child(format_bytes_per_sec(speed)),
+                                    .child(per_second(speed)),
                             )
                             .child(div().text_color(colors.text_muted).child(format!(
                                 "{}: {}",
@@ -653,7 +653,7 @@ pub fn render_update_modal(
                     u.begin_download(task_id.clone(), task_manager::subscribe_task_updates());
                 });
                 cx.spawn(async move |cx| {
-                    let args = crate::utils::updater::DownloadAndApplyArgs {
+                    let args = crate::utils::updater::UpdateArgs {
                         url,
                         filename_hint,
                         target_exe_path: None,
@@ -663,7 +663,7 @@ pub fn render_update_modal(
                     };
                     let result = cx
                         .background_spawn(async move {
-                            crate::utils::updater::download_and_apply_update_blocking(args)
+                            crate::utils::updater::blocking::update(args)
                         })
                         .await;
 
@@ -674,7 +674,7 @@ pub fn render_update_modal(
                                 .and_then(serde_json::Value::as_bool)
                                 .unwrap_or(false)
                             {
-                                tracing::info!("download_and_apply_update cancelled by user");
+                                tracing::info!("update cancelled by user");
                                 let _ = cx.update_global(|u: &mut UpdateState, _cx| {
                                     u.cancel_download();
                                 });
@@ -682,14 +682,14 @@ pub fn render_update_modal(
                         }
                         Err(err) => {
                             if crate::ui::state::update::is_cancelled_download_error(&err) {
-                                tracing::info!("download_and_apply_update cancelled by user");
+                                tracing::info!("update cancelled by user");
                                 let _ = cx.update_global(|u: &mut UpdateState, _cx| {
                                     u.cancel_download();
                                 });
                                 return;
                             }
 
-                            tracing::error!("download_and_apply_update error: {err}");
+                            tracing::error!("update error: {err}");
                             let _ = cx.update_global(|u: &mut UpdateState, _cx| {
                                 u.fail_download(err.to_string());
                             });
@@ -815,7 +815,7 @@ pub fn render_update_modal(
         .justify_center()
         .child(card);
 
-    modal::retained_modal_layer(
+    modal::retained_layer(
         card_shell,
         overlay_bg,
         modal_visible,

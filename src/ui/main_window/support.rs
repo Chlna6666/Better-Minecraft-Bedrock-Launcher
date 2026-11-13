@@ -7,7 +7,7 @@ where
     view.update(cx, |_view, cx| cx.notify());
 }
 
-pub(super) fn notify_weak_view_async<T>(
+pub(super) fn notify_weak_view<T>(
     view: &WeakEntity<T>,
     cx: &mut AsyncApp,
 ) -> anyhow::Result<()>

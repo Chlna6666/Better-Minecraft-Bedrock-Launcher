@@ -12,7 +12,7 @@ mod accounts;
 mod actions;
 mod login;
 
-use actions::{Action, button, button_with_disabled_opacity};
+use actions::{Action, button};
 
 pub(in crate::ui::main_window) struct Row {
     profile: XboxProfile,
@@ -212,7 +212,7 @@ pub(in crate::ui::main_window) fn trigger(state: &RenderState, colors: &ThemeCol
             state.dialog_animating,
         );
 
-    button_with_disabled_opacity(
+    button(
         "xbox-auth-status",
         Action::Toggle {
             panel: state.panel_focus.clone(),
@@ -320,6 +320,7 @@ fn header(state: &RenderState, colors: &ThemeColors) -> AnyElement {
                 state,
                 colors,
                 state.open,
+                0.45,
             )
             .size(px(30.))
             .child(icon(lucide_gpui::icon!(x), colors.text_secondary, 15.)),

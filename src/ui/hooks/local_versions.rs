@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use tracing::{info, warn};
 
-use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, get_game_root};
-use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_versions};
+use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, resolve_game_root};
+use crate::core::version::launch_versions::{self, LaunchVersionEntry};
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::local_versions::LocalVersionsState;
 use crate::ui::views::manage::state::{ManagePageState, ManagedModLoader, ManagedVersionEntry};
@@ -22,6 +22,12 @@ pub struct LocalVersionsSnapshot {
     pub loading: bool,
     pub error: Option<SharedString>,
     pub versions: Arc<[LaunchVersionEntry]>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VersionRefresh {
+    IfNeeded,
+    Force,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -39,7 +45,7 @@ impl From<LaunchVersionIcon> for ImageSource {
     }
 }
 
-pub fn launch_version_icon_path(custom_icon_path: Option<&str>, name: &str) -> LaunchVersionIcon {
+pub fn icon(custom_icon_path: Option<&str>, name: &str) -> LaunchVersionIcon {
     if let Some(custom_icon_path) = custom_icon_path {
         return LaunchVersionIcon::Local(PathBuf::from(custom_icon_path));
     }
@@ -74,7 +80,7 @@ pub fn game_info_summary(
     )
 }
 
-pub fn read_local_versions_snapshot(cx: &App) -> LocalVersionsSnapshot {
+pub fn snapshot(cx: &App) -> LocalVersionsSnapshot {
     cx.read_global(|state: &LocalVersionsState, _cx| LocalVersionsSnapshot {
         revision: state.snapshot_revision,
         loaded: state.loaded,
@@ -84,7 +90,7 @@ pub fn read_local_versions_snapshot(cx: &App) -> LocalVersionsSnapshot {
     })
 }
 
-fn managed_versions_from_local_versions(state: &LocalVersionsSnapshot) -> Vec<ManagedVersionEntry> {
+fn managed_versions_from_snapshot(state: &LocalVersionsSnapshot) -> Vec<ManagedVersionEntry> {
     state
         .versions
         .iter()
@@ -126,43 +132,40 @@ fn local_versions_snapshot_changed(
         || previous.error != current.error
 }
 
-pub fn use_local_versions<Hooks, View>(
-    hooks: &Hooks,
-    cx: &mut Context<View>,
-) -> LocalVersionsSnapshot
+pub fn use_versions<Hooks, View>(hooks: &Hooks, cx: &mut Context<View>) -> LocalVersionsSnapshot
 where
     Hooks: UseStateHook + UseRefHook,
     View: 'static,
 {
-    let snapshot = hooks.use_state(|| read_local_versions_snapshot(cx));
+    let snapshot_state = hooks.use_state(|| snapshot(cx));
     let subscription = hooks.use_ref(|| None::<Subscription>);
 
     if subscription.borrow().is_none() {
-        let snapshot = snapshot.clone();
+        let snapshot_state = snapshot_state.clone();
         let observer = cx.observe_global::<LocalVersionsState>(move |_, cx| {
-            let current = read_local_versions_snapshot(cx);
-            if snapshot.with(|value| local_versions_snapshot_changed(value, &current)) {
-                snapshot.set(current);
+            let current = snapshot(cx);
+            if snapshot_state.with(|value| local_versions_snapshot_changed(value, &current)) {
+                snapshot_state.set(current);
                 cx.notify();
             }
         });
         *subscription.borrow_mut() = Some(observer);
     }
 
-    let current = read_local_versions_snapshot(cx);
-    if snapshot.with(|value| local_versions_snapshot_changed(value, &current)) {
-        snapshot.set(current.clone());
+    let current = snapshot(cx);
+    if snapshot_state.with(|value| local_versions_snapshot_changed(value, &current)) {
+        snapshot_state.set(current.clone());
     }
 
     if !current.loaded && !current.loading && current.versions.is_empty() {
-        ensure_local_versions_loaded(false, cx);
+        ensure_loaded(VersionRefresh::IfNeeded, cx);
     }
 
     current
 }
 
-fn sync_manage_page_state_from_local_versions(cx: &mut App) {
-    let snapshot = read_local_versions_snapshot(cx);
+fn sync_manage_page_state(cx: &mut App) {
+    let snapshot = snapshot(cx);
     let already_synced = cx.read_global(|state: &ManagePageState, _cx| {
         state.versions_revision == snapshot.revision
             && state.loaded == snapshot.loaded
@@ -180,7 +183,7 @@ fn sync_manage_page_state_from_local_versions(cx: &mut App) {
         state.error = snapshot.error.clone();
         // Reuse the already-converted list for cache-prime/loading revisions.
         if !Arc::ptr_eq(&state.versions_source, &snapshot.versions) {
-            state.versions = Arc::from(managed_versions_from_local_versions(&snapshot));
+            state.versions = Arc::from(managed_versions_from_snapshot(&snapshot));
             state.versions_source = snapshot.versions.clone();
         }
 
@@ -199,7 +202,7 @@ fn sync_manage_page_state_from_local_versions(cx: &mut App) {
     });
 }
 
-pub fn seed_local_versions(versions: &[LaunchVersionEntry], cx: &mut App) {
+pub fn seed(versions: &[LaunchVersionEntry], cx: &mut App) {
     if cx.read_global(|state: &LocalVersionsState, _| {
         state.loaded || state.loading || !state.versions.is_empty()
     }) {
@@ -207,11 +210,15 @@ pub fn seed_local_versions(versions: &[LaunchVersionEntry], cx: &mut App) {
     }
 
     let mut sorted = versions.to_vec();
-    sort_launch_versions(&mut sorted);
+    launch_versions::sort(&mut sorted);
     let versions: Arc<[LaunchVersionEntry]> = Arc::from(sorted);
     let catalog_generation = crate::core::version::catalog_events::local_version_generation();
 
     let versions_for_cache = versions.clone();
+    crate::ui::views::manage::snapshots::prewarm(
+        versions.clone(),
+        cx.global::<I18n>().locale().code().to_string(),
+    );
     cx.update_global(|state: &mut LocalVersionsState, _cx| {
         if state.loaded || state.loading || !state.versions.is_empty() {
             return;
@@ -223,10 +230,10 @@ pub fn seed_local_versions(versions: &[LaunchVersionEntry], cx: &mut App) {
         state.loading = false;
         state.error = None;
     });
-    sync_manage_page_state_from_local_versions(cx);
+    sync_manage_page_state(cx);
 
     let cache_task = gpui_tokio::Tokio::spawn_result(cx, async move {
-        crate::tasks::runtime::run_io_blocking(move || {
+        crate::tasks::runtime::blocking::run_io(move || {
             prime_version_isolation_cache(&versions_for_cache);
         })
         .await
@@ -244,13 +251,13 @@ pub fn seed_local_versions(versions: &[LaunchVersionEntry], cx: &mut App) {
         cx.update_global(|state: &mut LocalVersionsState, _cx| {
             state.snapshot_revision = state.snapshot_revision.wrapping_add(1);
         })?;
-        cx.update(sync_manage_page_state_from_local_versions)?;
+        cx.update(sync_manage_page_state)?;
         Ok::<(), anyhow::Error>(())
     })
     .detach_logged(cx);
 }
 
-pub fn remove_local_version(folder_name: &str, cx: &mut App) {
+pub fn remove(folder_name: &str, cx: &mut App) {
     let folder_name = folder_name.to_string();
 
     cx.update_global(|state: &mut LocalVersionsState, _cx| {
@@ -260,7 +267,7 @@ pub fn remove_local_version(folder_name: &str, cx: &mut App) {
             .filter(|version| version.folder.as_ref() != folder_name)
             .cloned()
             .collect::<Vec<_>>();
-        sort_launch_versions(&mut versions);
+        launch_versions::sort(&mut versions);
         state.versions = Arc::from(versions);
         state.snapshot_revision = state.snapshot_revision.wrapping_add(1);
         state.loaded = true;
@@ -268,7 +275,7 @@ pub fn remove_local_version(folder_name: &str, cx: &mut App) {
         state.error = None;
     });
 
-    sync_manage_page_state_from_local_versions(cx);
+    sync_manage_page_state(cx);
 }
 
 fn request_local_versions_refresh(
@@ -297,7 +304,8 @@ fn take_pending_local_versions_refresh(state: &mut LocalVersionsState) -> bool {
     std::mem::take(&mut state.refresh_pending)
 }
 
-pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
+pub fn ensure_loaded(refresh: VersionRefresh, cx: &mut App) {
+    let force_refresh = refresh == VersionRefresh::Force;
     let catalog_generation = crate::core::version::catalog_events::local_version_generation();
     let (skip_without_mutation, initial_load) =
         cx.read_global(|state: &LocalVersionsState, _cx| {
@@ -324,15 +332,16 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
         refresh_id,
         force_refresh, catalog_generation, "local version refresh started"
     );
-    sync_manage_page_state_from_local_versions(cx);
+    sync_manage_page_state(cx);
+    let locale = cx.global::<I18n>().locale().code().to_string();
     let load_task = gpui_tokio::Tokio::spawn_result(cx, async move {
-        let mut versions = crate::core::version::api::get_version_list().await?;
-        sort_launch_versions(&mut versions);
+        let mut versions = crate::core::version::api::list().await?;
+        launch_versions::sort(&mut versions);
 
         // Share one immutable parsed catalog with cache priming and GPUI.
         let versions: Arc<[LaunchVersionEntry]> = Arc::from(versions);
         let versions_for_cache = versions.clone();
-        if let Err(error) = crate::tasks::runtime::run_io_blocking(move || {
+        if let Err(error) = crate::tasks::runtime::blocking::run_io(move || {
             prime_version_isolation_cache(&versions_for_cache);
         })
         .await
@@ -340,17 +349,8 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
             warn!(%error, "local-version isolation cache prime failed");
         }
 
-        // The first sorted item is Home's startup selection. Schedule only after the
-        // catalog exists, so a slow initial catalog load cannot miss the warmup.
-        if initial_load
-            && let Some(version) = versions.first()
-            && version.kind.eq_ignore_ascii_case("gdk")
-            && let Err(error) = crate::tasks::manage_service::prewarm_gdk_users(
-                version.folder.to_string(),
-                version_edition(version),
-            )
-        {
-            warn!(%error, "startup GDK user warmup was not scheduled");
+        if initial_load {
+            crate::ui::views::manage::snapshots::prewarm(versions.clone(), locale);
         }
 
         Ok::<_, anyhow::Error>(versions)
@@ -426,16 +426,16 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
             }
         };
 
-        cx.update(sync_manage_page_state_from_local_versions)?;
+        cx.update(sync_manage_page_state)?;
         if refresh_again {
-            cx.update(|cx| ensure_local_versions_loaded(true, cx))?;
+            cx.update(|cx| ensure_loaded(VersionRefresh::Force, cx))?;
         }
         Ok::<(), anyhow::Error>(())
     })
     .detach_logged(cx);
 }
 
-pub fn version_build_type(version: &LaunchVersionEntry) -> BuildType {
+pub fn build_type(version: &LaunchVersionEntry) -> BuildType {
     if version.kind.eq_ignore_ascii_case("gdk") {
         BuildType::Gdk
     } else {
@@ -443,7 +443,7 @@ pub fn version_build_type(version: &LaunchVersionEntry) -> BuildType {
     }
 }
 
-pub fn version_edition(version: &LaunchVersionEntry) -> Edition {
+pub fn edition(version: &LaunchVersionEntry) -> Edition {
     if version.name.contains("Preview") || version.name.contains("Beta") {
         Edition::Preview
     } else {
@@ -451,7 +451,7 @@ pub fn version_edition(version: &LaunchVersionEntry) -> Edition {
     }
 }
 
-pub fn version_channel_label(_i18n: &I18n, name: &str) -> SharedString {
+pub fn channel_label(_i18n: &I18n, name: &str) -> SharedString {
     if name.contains("Beta") {
         t!("common.beta")
     } else if name.contains("Preview") {
@@ -500,7 +500,7 @@ fn prime_version_isolation_cache(versions: &[LaunchVersionEntry]) {
     *cache = next;
 }
 
-pub fn version_enable_isolation(version: &LaunchVersionEntry) -> bool {
+pub fn enable_isolation(version: &LaunchVersionEntry) -> bool {
     let config_path = std::path::Path::new(version.path.as_ref()).join("config.json");
     let Some(cache) = VERSION_ISOLATION_CACHE.get() else {
         return false;
@@ -511,10 +511,10 @@ pub fn version_enable_isolation(version: &LaunchVersionEntry) -> bool {
     cache.get(&config_path).copied().unwrap_or(false)
 }
 
-pub fn version_target_root_path(version: &LaunchVersionEntry) -> Option<SharedString> {
-    let build_type = version_build_type(version);
-    let edition = version_edition(version);
-    let enable_isolation = version_enable_isolation(version);
+pub fn target_root_path(version: &LaunchVersionEntry) -> Option<SharedString> {
+    let build_type = build_type(version);
+    let edition = edition(version);
+    let enable_isolation = enable_isolation(version);
     let options = GamePathOptions {
         build_type,
         edition,
@@ -523,18 +523,18 @@ pub fn version_target_root_path(version: &LaunchVersionEntry) -> Option<SharedSt
         user_id: None,
         allow_shared_fallback: false,
     };
-    get_game_root(&options).map(|path| SharedString::from(path.to_string_lossy().to_string()))
+    resolve_game_root(&options).map(|path| SharedString::from(path.to_string_lossy().to_string()))
 }
 
-pub fn version_isolation_label(version: &LaunchVersionEntry, _i18n: &I18n) -> SharedString {
-    if version_enable_isolation(version) {
+pub fn isolation_label(version: &LaunchVersionEntry, _i18n: &I18n) -> SharedString {
+    if enable_isolation(version) {
         t!("LocalVersions.isolated")
     } else {
         t!("LocalVersions.system_path")
     }
 }
 
-pub fn version_type_summary_label(version: &LaunchVersionEntry, _i18n: &I18n) -> SharedString {
+pub fn type_summary_label(version: &LaunchVersionEntry, _i18n: &I18n) -> SharedString {
     let platform = if version.kind.eq_ignore_ascii_case("gdk") {
         t!("common.gdk")
     } else {
@@ -548,7 +548,7 @@ pub fn version_type_summary_label(version: &LaunchVersionEntry, _i18n: &I18n) ->
     SharedString::from(format!("{platform} · {edition}"))
 }
 
-pub fn launch_version_display_name(version: &LaunchVersionEntry) -> SharedString {
+pub fn display_name(version: &LaunchVersionEntry) -> SharedString {
     let ver = version.version.trim();
     if !ver.is_empty() {
         SharedString::from(ver.to_string())
@@ -562,7 +562,7 @@ pub fn launch_version_display_name(version: &LaunchVersionEntry) -> SharedString
     }
 }
 
-pub fn launch_version_display_type(version: &LaunchVersionEntry, _i18n: &I18n) -> SharedString {
+pub fn display_type(version: &LaunchVersionEntry, _i18n: &I18n) -> SharedString {
     if version.name.contains("Preview")
         || version.name.contains("Beta")
         || version.folder.contains("Preview")
@@ -574,13 +574,13 @@ pub fn launch_version_display_type(version: &LaunchVersionEntry, _i18n: &I18n) -
     }
 }
 
-pub fn launch_version_dropdown_label(version: &LaunchVersionEntry, i18n: &I18n) -> SharedString {
-    let name = launch_version_display_name(version);
-    let type_str = launch_version_display_type(version, i18n);
+pub fn dropdown_label(version: &LaunchVersionEntry, i18n: &I18n) -> SharedString {
+    let name = display_name(version);
+    let type_str = display_type(version, i18n);
     SharedString::from(format!("{} ({})", name, type_str))
 }
 
-pub fn version_primary_label(version: &LaunchVersionEntry) -> SharedString {
+pub fn primary_label(version: &LaunchVersionEntry) -> SharedString {
     if !version.folder.is_empty() {
         return SharedString::from(version.folder.clone());
     }
@@ -593,7 +593,7 @@ pub fn version_primary_label(version: &LaunchVersionEntry) -> SharedString {
     SharedString::from("Unknown")
 }
 
-pub fn version_detail_label(version: &LaunchVersionEntry) -> SharedString {
+pub fn detail_label(version: &LaunchVersionEntry) -> SharedString {
     let mut parts = Vec::new();
     if !version.version.is_empty() && version.version.as_ref() != version.folder.as_ref() {
         parts.push(version.version.as_ref());
@@ -613,24 +613,24 @@ pub fn version_detail_label(version: &LaunchVersionEntry) -> SharedString {
 #[cfg(test)]
 mod tests {
     use super::{
-        LaunchVersionIcon, launch_version_icon_path, request_local_versions_refresh,
+        LaunchVersionIcon, icon, request_local_versions_refresh,
         take_pending_local_versions_refresh,
     };
     use crate::ui::state::local_versions::LocalVersionsState;
     use std::path::PathBuf;
 
     #[test]
-    fn launch_version_icon_path_prefers_saved_custom_icon() {
+    fn icon_prefers_saved_custom_icon() {
         assert_eq!(
-            launch_version_icon_path(Some("C:\\Game\\icon.png"), "Minecraft"),
+            icon(Some("C:\\Game\\icon.png"), "Minecraft"),
             LaunchVersionIcon::Local(PathBuf::from("C:\\Game\\icon.png"))
         );
     }
 
     #[test]
-    fn launch_version_icon_path_falls_back_to_preview_asset_without_custom_icon() {
+    fn icon_falls_back_to_preview_asset_without_custom_icon() {
         assert_eq!(
-            launch_version_icon_path(None, "Minecraft Preview"),
+            icon(None, "Minecraft Preview"),
             LaunchVersionIcon::Embedded("images/minecraft/Preview.png")
         );
     }

@@ -1,11 +1,9 @@
 use crate::ui::components::modal;
-use crate::ui::hooks::use_launcher::{
-    LauncherSnapshot, cancel_launcher, close_launcher, copy_launcher_error, minimize_launcher,
-    retry_launcher,
-};
+use crate::ui::hooks::launcher;
+use crate::ui::hooks::launcher::LauncherSnapshot;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::time::Duration;
@@ -42,8 +40,8 @@ pub fn render_launcher_overlay(
     let theme_state = cx.global::<ThemeState>();
     let _i18n = cx.global::<I18n>().clone();
     let colors = lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        &LightColors::theme(),
+        &DarkColors::theme(),
         theme_state.factor(now),
         theme_state.accent,
     );
@@ -227,7 +225,7 @@ pub fn render_launcher_overlay(
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             move |_ev, _window, cx| {
-                                                let _ = copy_launcher_error(cx);
+                                                let _ = launcher::copy_error(cx);
                                                 cx.stop_propagation();
                                             },
                                         )
@@ -249,7 +247,7 @@ pub fn render_launcher_overlay(
                                         .justify_center()
                                         .hover(|style| style.bg(colors.surface_hover))
                                         .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-                                            minimize_launcher(cx);
+                                            launcher::minimize(cx);
                                             cx.stop_propagation();
                                         })
                                         .child(
@@ -382,9 +380,9 @@ pub fn render_launcher_overlay(
                                             MouseButton::Left,
                                             move |_ev, _window, cx| {
                                                 if is_completed || is_cancelled {
-                                                    close_launcher(cx);
+                                                    launcher::close(cx);
                                                 } else {
-                                                    cancel_launcher(cx);
+                                                    launcher::cancel(cx);
                                                 }
                                             },
                                         ),
@@ -421,7 +419,7 @@ pub fn render_launcher_overlay(
                                                     .on_mouse_down(
                                                         MouseButton::Left,
                                                         move |_ev, _window, cx| {
-                                                            let _ = copy_launcher_error(cx);
+                                                            let _ = launcher::copy_error(cx);
                                                             cx.stop_propagation();
                                                         },
                                                     ),
@@ -435,7 +433,7 @@ pub fn render_launcher_overlay(
                                                 .on_mouse_down(
                                                     MouseButton::Left,
                                                     move |_ev, _window, cx| {
-                                                        let _ = retry_launcher(cx);
+                                                        let _ = launcher::retry(cx);
                                                         cx.stop_propagation();
                                                     },
                                                 ),
@@ -446,7 +444,7 @@ pub fn render_launcher_overlay(
                 ),
         );
 
-    modal::retained_modal_layer(
+    modal::retained_layer(
         card,
         hsla(0.0, 0.0, 0.0, 0.30),
         snapshot.modal_visible,

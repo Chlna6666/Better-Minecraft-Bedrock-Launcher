@@ -26,7 +26,7 @@ impl MainWindowView {
             crate::ui::views::download::state::DownloadTab::ResourcePack => {
                 self.ensure_manage_page_loaded(cx);
                 self.ensure_curseforge_loaded(cx);
-                self.ensure_curseforge_results_loaded(false, cx);
+                crate::ui::views::download::curseforge::ensure_results_loaded(cx);
             }
             crate::ui::views::download::state::DownloadTab::Mod => {
                 // Mod catalogs and install targets are independent from the remote game-version
@@ -51,7 +51,10 @@ impl MainWindowView {
     pub(super) fn ensure_manage_page_loaded(&mut self, cx: &mut Context<Self>) {
         // LocalVersionsState drives ManagePageState and the view observes that global directly.
         // Avoid an unconditional extra notify when the snapshot is already current.
-        crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(false, cx);
+        crate::ui::hooks::local_versions::ensure_loaded(
+            crate::ui::hooks::local_versions::VersionRefresh::IfNeeded,
+            cx,
+        );
     }
 
     pub(super) fn ensure_settings_loaded(&mut self, cx: &mut Context<Self>) {

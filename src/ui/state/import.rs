@@ -2,7 +2,7 @@ use gpui::{App, AppContext as _, BorrowAppContext as _, Entity, Global, SharedSt
 use std::path::PathBuf;
 
 use crate::launch::ImportLaunchContext;
-use crate::ui::components::modal::ModalDismissHandle;
+use crate::ui::components::modal::DismissHandle;
 use crate::ui::window::import::ImportWindowView;
 use crate::ui::window::import::{ImportWindowTarget, view::ImportPresentation};
 
@@ -17,7 +17,7 @@ impl Global for ImportCompletionState {}
 #[derive(Clone)]
 pub struct ImportOverlayEntry {
     pub view: Entity<ImportWindowView>,
-    pub dismiss: ModalDismissHandle,
+    pub dismiss: DismissHandle,
     pub owner_window_id: u64,
 }
 
@@ -80,7 +80,7 @@ pub fn show_import_overlay_batch(
     });
     let entry = ImportOverlayEntry {
         view,
-        dismiss: ModalDismissHandle::new(),
+        dismiss: DismissHandle::new(),
         owner_window_id,
     };
     cx.update_global(|state: &mut ImportOverlayState, _cx| {

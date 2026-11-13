@@ -18,6 +18,7 @@ fn add_account(state: &RenderState, colors: &ThemeColors) -> AnyElement {
         state,
         colors,
         state.interactive(),
+        0.45,
     )
     .w_full()
     .h(px(40.))
@@ -81,6 +82,7 @@ fn device_code(state: &RenderState, colors: &ThemeColors) -> AnyElement {
                         state,
                         colors,
                         state.open && has_code,
+                        0.45,
                     )
                     .size(px(34.))
                     .child(icon(
@@ -101,6 +103,7 @@ fn device_code(state: &RenderState, colors: &ThemeColors) -> AnyElement {
                 state,
                 colors,
                 state.open && has_link,
+                0.45,
             )
             .h(px(40.))
             .bg(colors.accent.opacity(0.12))
@@ -114,6 +117,7 @@ fn device_code(state: &RenderState, colors: &ThemeColors) -> AnyElement {
                 state,
                 colors,
                 state.open && has_link,
+                0.45,
             )
             .h(px(38.))
             .border_1()
@@ -136,6 +140,7 @@ fn device_code(state: &RenderState, colors: &ThemeColors) -> AnyElement {
                 state,
                 colors,
                 state.open,
+                0.45,
             )
             .h(px(32.))
             .child(t!("Auth.cancel_login")),
@@ -174,6 +179,7 @@ fn error(state: &RenderState, colors: &ThemeColors) -> AnyElement {
                 state,
                 colors,
                 state.interactive(),
+                0.45,
             )
             .h(px(38.))
             .bg(colors.accent.opacity(0.12))

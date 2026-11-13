@@ -2,7 +2,7 @@
 use crate::core::minecraft::diagnostics::{self, CrashExportOptions, ExitKind, GameSessionReport, CrashFinding, CrashReason, Confidence, EvidenceSource};
 use crate::ui::state::game_diagnostics::GameDiagnosticsState;
 use crate::ui::components::modal;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::components::scroll::ScrollableElement as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -341,15 +341,15 @@ fn start_export(cx: &mut App, id: String, options: CrashExportOptions) {
     cx.spawn(async move |cx| {
         let identity = id.clone();
         let filename = format!("BMCBL-Game-Crash-{id}.zip");
-        let outcome = crate::tasks::runtime::run_io_blocking(move || {
-            let chosen = crate::utils::file_picker::pick_save_path_with_filter(
+        let outcome = crate::tasks::runtime::blocking::run_io(move || {
+            let chosen = crate::utils::file_picker::pick_save_path(
                 &t!("GameCrash.ui.zipFilter"), &["zip"], &filename,
             );
             let Some(chosen) = chosen else {
                 return Ok::<Option<String>, String>(None);
             };
             let path = PathBuf::from(chosen);
-            diagnostics::export_zip_with_options(&identity, &path, options)?;
+            diagnostics::export_zip(&identity, &path, options)?;
             Ok(Some(path.to_string_lossy().into_owned()))
         }).await;
 
@@ -387,7 +387,7 @@ fn request_export(cx: &mut App, id: String) {
             state.export_status = Some(t!("GameCrash.ui.selectEvidence").to_string());
             return None;
         }
-        if state.options.needs_confirmation() {
+        if state.options.confirmation_required() {
             state.awaiting_sensitive_confirmation = true;
             state.export_status = None;
             return None;
@@ -401,15 +401,15 @@ fn request_export(cx: &mut App, id: String) {
 
 
 fn loader_kind_label(kind: crate::core::minecraft::diagnostics::forensics::LoaderIssueKind) -> SharedString {
-    use crate::core::minecraft::diagnostics::forensics::LoaderIssueKind as Kind;
+    use crate::core::minecraft::diagnostics::forensics::LoaderIssueKind;
     match kind {
-        Kind::NativeException => t!("GameCrash.loader.NativeException"),
-        Kind::LoaderLoadFailure => t!("GameCrash.loader.LoaderLoadFailure"),
-        Kind::ModLoadFailure => t!("GameCrash.loader.ModLoadFailure"),
-        Kind::DependencyFailure => t!("GameCrash.loader.DependencyFailure"),
-        Kind::SymbolFailure => t!("GameCrash.loader.SymbolFailure"),
-        Kind::HookFailure => t!("GameCrash.loader.HookFailure"),
-        Kind::RuntimeError => t!("GameCrash.loader.RuntimeError"),
+        LoaderIssueKind::NativeException => t!("GameCrash.loader.NativeException"),
+        LoaderIssueKind::LoaderLoadFailure => t!("GameCrash.loader.LoaderLoadFailure"),
+        LoaderIssueKind::ModLoadFailure => t!("GameCrash.loader.ModLoadFailure"),
+        LoaderIssueKind::DependencyFailure => t!("GameCrash.loader.DependencyFailure"),
+        LoaderIssueKind::SymbolFailure => t!("GameCrash.loader.SymbolFailure"),
+        LoaderIssueKind::HookFailure => t!("GameCrash.loader.HookFailure"),
+        LoaderIssueKind::RuntimeError => t!("GameCrash.loader.RuntimeError"),
     }
 }
 
@@ -617,7 +617,7 @@ fn dialog_geometry(window_width: Pixels, window_height: Pixels) -> DialogGeometr
     }
 }
 
-pub fn render_game_diagnostics_overlay(
+pub fn render(
     colors: &ThemeColors,
     window_width: Pixels,
     window_height: Pixels,
@@ -647,7 +647,7 @@ pub fn render_game_diagnostics_overlay(
     };
     let show_technical = state.show_technical;
     let findings = if report.findings.is_empty() {
-        diagnostics::analysis::analyze(&report, &[])
+        diagnostics::analysis::analyze(&report, &[], &report.forensics)
     } else {
         report.findings.clone()
     };
@@ -662,7 +662,7 @@ pub fn render_game_diagnostics_overlay(
         t!("GameCrash.ui.riskDump")
     };
 
-    let body = modal::modal_surface(
+    let body = modal::surface(
         opaque(colors.settings_panel_bg),
         colors.border,
         card_width,
@@ -978,7 +978,7 @@ pub fn render_game_diagnostics_overlay(
                                             action("game-export-confirm", t!("GameCrash.ui.confirmExport"), true, !exporting, colors)
                                                 .on_click(move |_, _, cx| {
                                                     let options = cx.global::<GameDiagnosticsState>().options;
-                                                    if options.needs_confirmation() {
+                                                    if options.confirmation_required() {
                                                         start_export(cx, id_for_confirm.clone(), options);
                                                     }
                                                 }),
@@ -1061,7 +1061,7 @@ pub fn render_game_diagnostics_overlay(
                                             );
                                             if dismissed {
                                                 let _ = crate::tasks::runtime::spawn_io(async move {
-                                                    let _ = crate::tasks::runtime::run_io_blocking(
+                                                    let _ = crate::tasks::runtime::blocking::run_io(
                                                         move || diagnostics::acknowledge(&id),
                                                     ).await;
                                                 });
@@ -1075,9 +1075,9 @@ pub fn render_game_diagnostics_overlay(
     // Use the shared modal backdrop and surface instead of a custom transparent overlay.
     let backdrop = hsla(0., 0., 0., 0.60);
     if crate::core::ui_prefs::reduced_motion() {
-        Some(modal::animated_modal_layer(body, backdrop, 1.0, true).into_any_element())
+        Some(modal::animated_layer(body, backdrop, 1.0, true).into_any_element())
     } else {
-        Some(modal::modal_layer(body, backdrop))
+        Some(modal::layer(body, backdrop))
     }
 }
 

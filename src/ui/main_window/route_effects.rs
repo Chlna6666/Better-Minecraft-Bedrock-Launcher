@@ -25,7 +25,7 @@ impl MainWindowView {
                     state.curseforge_mod_page_error = None;
                     state.curseforge_mod_page_mod_id = None;
                     state.curseforge_mod_page_mod = None;
-                    state.set_curseforge_mod_page_description(SharedString::from(""));
+                    state.set_mod_page_description(SharedString::from(""));
                     state.curseforge_install_open = false;
                 },
             );
@@ -42,7 +42,7 @@ impl MainWindowView {
     }
 
     fn on_route_changed_registry(&mut self, route: &RouteTarget, cx: &mut Context<Self>) {
-        self.ensure_page_view_for_target(route, cx);
+        self.ensure_page_view(route, cx);
         self.sync_page_active_flags(route, cx);
     }
 
@@ -58,7 +58,7 @@ impl MainWindowView {
         self.ensure_route_page_data_loaded(*route, cx);
     }
 
-    pub(super) fn handle_route_change_without_window(
+    pub(super) fn handle_route_change(
         &mut self,
         route: RouteTarget,
         cx: &mut Context<Self>,
@@ -77,7 +77,7 @@ impl MainWindowView {
             let now = Instant::now();
             let debug_enabled = cx.global::<DebugState>().enabled;
             let update_render_state = self.read_update_render_state(now, debug_enabled, cx);
-            if self.sync_background_animation_policy_for_route(&route, &update_render_state, cx) {
+            if self.sync_animation_policy(&update_render_state, cx) {
                 cx.notify();
             }
         } else {

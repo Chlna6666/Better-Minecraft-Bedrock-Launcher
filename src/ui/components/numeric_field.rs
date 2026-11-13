@@ -4,7 +4,7 @@
 use super::input::{Input, InputSize, InputState};
 use gpui::FluentBuilder as _;
 use gpui::{App, AppContext as _, Context, Div, Entity, IntoElement, ParentElement, SharedString, Styled, Window, div, px};
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use std::{cell::Cell, rc::Rc};
 
 /// Independent text edit state; callers commit on Enter/blur and retain their domain constraints.
@@ -40,7 +40,7 @@ impl NumericField {
     }
 
     /// Shared compact numeric edit surface for settings. The surrounding
-    /// settings_control_box owns the field's background, focus ring and border;
+    /// control_box owns the field's background, focus ring and border;
     /// do not nest a second Input shell or show a destructive clear button.
     pub(crate) fn settings_control(state: &Entity<InputState>) -> Input {
         Input::new(state)

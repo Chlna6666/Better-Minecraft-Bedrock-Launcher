@@ -1,6 +1,6 @@
 use crate::tasks::task_manager::TaskSnapshot;
 use crate::ui::animation::{ease_in_cubic, ease_out_back, is_running};
-use crate::ui::components::markdown_renderer::MarkdownDocument;
+use crate::ui::components::markdown::Document;
 use crate::utils::updater::ReleaseSummary;
 use gpui::{Global, ScrollHandle};
 use std::sync::Arc;
@@ -34,7 +34,7 @@ pub struct UpdateState {
 
     // Cached parsed markdown for the current release to avoid re-parsing on every render
     pub(crate) cached_release_tag: Option<String>,
-    pub(crate) cached_md_document: Arc<MarkdownDocument>,
+    pub(crate) cached_md_document: Arc<Document>,
     pub markdown_cache_refresh_inflight: bool,
     pub changelog_scroll_handle: ScrollHandle,
 }
@@ -90,7 +90,7 @@ impl UpdateState {
         self.modal_shown_once = true;
         self.modal_open_requested_at = Some(now);
         self.modal_pending_open = true;
-        if self.needs_md_cache_refresh() {
+        if self.md_cache_refresh_required() {
             self.modal_animation_started_at = None;
             self.modal_animation_duration = Duration::from_millis(190);
             self.modal_visible = false;
@@ -187,13 +187,13 @@ impl UpdateState {
         true
     }
 
-    pub fn needs_md_cache_refresh(&self) -> bool {
+    pub fn md_cache_refresh_required(&self) -> bool {
         self.available
             .as_ref()
             .is_some_and(|release| self.cached_release_tag.as_ref() != Some(&release.tag))
     }
 
-    pub fn cached_md_document(&self) -> Arc<MarkdownDocument> {
+    pub fn cached_md_document(&self) -> Arc<Document> {
         self.cached_md_document.clone()
     }
 }

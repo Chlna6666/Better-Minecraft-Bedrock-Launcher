@@ -1,5 +1,6 @@
 use crate::core::linux_runtime::{check_linux_runtime, start_linux_runtime_install};
-use crate::tasks::runtime::{BlockingTaskOptions, run_blocking};
+use crate::tasks::runtime::BlockingTaskOptions;
+use crate::tasks::runtime::blocking;
 use crate::tasks::task_manager::{self, TaskSnapshot};
 use crate::ui::state::linux_runtime::{LinuxRuntimeState, LinuxRuntimeStatus};
 use anyhow::Error;
@@ -64,7 +65,7 @@ fn spawn_install_snapshot_pump(
     mut log_updates: tokio::sync::broadcast::Receiver<Arc<str>>,
     cx: &mut App,
 ) {
-    let initial_snapshot = task_manager::get_snapshot_arc(task_id.as_ref());
+    let initial_snapshot = task_manager::snapshot_arc(task_id.as_ref());
     let initial_logs = task_manager::task_logs_snapshot(task_id.as_ref());
     cx.update_global(|state: &mut LinuxRuntimeState, _cx| {
         if let Some(snapshot) = initial_snapshot {
@@ -85,7 +86,7 @@ fn spawn_install_snapshot_pump(
                     Ok(snapshot) => Some(snapshot),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(request_id, skipped, "Linux install progress updates lagged");
-                        task_manager::get_snapshot_arc(task_id.as_ref())
+                        task_manager::snapshot_arc(task_id.as_ref())
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         cx.update_global(|state: &mut LinuxRuntimeState, _cx| {
@@ -170,7 +171,7 @@ fn spawn_install_snapshot_pump(
 }
 
 async fn verify_installed_runtime(request_id: u64, cx: &mut AsyncApp) -> Result<(), Error> {
-    let check = run_blocking(
+    let check = blocking::run(
         BlockingTaskOptions::hidden("重新检测 Linux 兼容环境"),
         || Ok(check_linux_runtime()),
     )
@@ -209,7 +210,7 @@ async fn verify_installed_runtime(request_id: u64, cx: &mut AsyncApp) -> Result<
 
 fn spawn_check(request_id: u64, cx: &mut App) {
     cx.spawn(async move |cx| {
-        let check = run_blocking(
+        let check = blocking::run(
             BlockingTaskOptions::hidden("检测 Linux 兼容环境"),
             || Ok(check_linux_runtime()),
         )

@@ -11,7 +11,7 @@ use crate::ui::state::i18n::I18n;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
-use crate::ui::theme::colors::{DarkColors, LightColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, lerp_theme_colors};
 use crate::utils::updater::ReleaseSummary;
 use gpui::AnimationExt as _;
 use gpui::*;
@@ -49,36 +49,28 @@ const STARTUP_UPDATE_CHECK_DELAY: Duration = Duration::from_millis(900);
 const STARTUP_INTERACTION_WARMUP_DELAY: Duration = Duration::from_millis(1500);
 const STARTUP_INTERACTION_WARMUP_STEP_DELAY: Duration = Duration::from_millis(80);
 
-pub(crate) fn preload_startup_background_bytes_from_values(
+pub(crate) fn preload_background_bytes(
     background_option: &str,
     local_image_path: &str,
     network_image_url: &str,
     cx: &mut App,
 ) -> usize {
-    let source = resolve_background_source_from_values(
-        background_option,
-        local_image_path,
-        network_image_url,
-        0,
-    );
+    let source =
+        resolve_background_source(background_option, local_image_path, network_image_url, 0);
 
     background_resource(&source)
         .map(|resource| cx.preload_compressed_image_resources([resource]).len())
         .unwrap_or(0)
 }
 
-pub(crate) fn preload_startup_background_image_from_values(
+pub(crate) fn preload_background_image(
     background_option: &str,
     local_image_path: &str,
     network_image_url: &str,
     cx: &mut App,
 ) -> usize {
-    let source = resolve_background_source_from_values(
-        background_option,
-        local_image_path,
-        network_image_url,
-        0,
-    );
+    let source =
+        resolve_background_source(background_option, local_image_path, network_image_url, 0);
 
     // Match AppBackgroundView's source-based loader; a viewport-sized request is a separate
     // decode that the displayed background never consumes.
@@ -178,7 +170,7 @@ struct UpdateRenderState {
 #[derive(Clone)]
 struct AgreementRenderState {
     visible: bool,
-    document: std::sync::Arc<crate::ui::components::markdown_renderer::MarkdownDocument>,
+    document: std::sync::Arc<crate::ui::components::markdown::Document>,
     scroll_handle: ScrollHandle,
     accept_unlocked: bool,
 }
@@ -189,7 +181,7 @@ struct MainWindowRenderModel {
     builtin_route: AppRoute,
     theme_k: f32,
     theme_accent: Option<Hsla>,
-    theme_colors: crate::ui::theme::colors::ThemeColors,
+    theme_colors: crate::ui::theme::ThemeColors,
     theme_animating: bool,
     debug_enabled: bool,
     window_width: Pixels,
@@ -201,7 +193,7 @@ struct MainWindowRenderModel {
     update_modal_visible: bool,
     update_modal_animating: bool,
     diagnostics_visible: bool,
-    launcher_snapshot: Arc<crate::ui::hooks::use_launcher::LauncherSnapshot>,
+    launcher_snapshot: Arc<crate::ui::hooks::launcher::LauncherSnapshot>,
     #[cfg(target_os = "windows")]
     launch_prereq_visible: bool,
     toast_visible: bool,
@@ -214,7 +206,7 @@ struct MainWindowRenderModel {
 struct ThemeColorCache {
     factor: f32,
     accent: Option<Hsla>,
-    colors: crate::ui::theme::colors::ThemeColors,
+    colors: crate::ui::theme::ThemeColors,
 }
 
 pub struct MainWindowView {
@@ -255,7 +247,7 @@ pub struct MainWindowView {
     _reactor_subscriptions: Vec<Subscription>,
     _window_subscriptions: Vec<Subscription>,
     update_download_listener_running: bool,
-    launcher_snapshot: Arc<crate::ui::hooks::use_launcher::LauncherSnapshot>,
+    launcher_snapshot: Arc<crate::ui::hooks::launcher::LauncherSnapshot>,
     update_markdown_view: Option<Entity<crate::ui::overlays::update::UpdateMarkdownView>>,
     settings_load_started: bool,
     background_animation_suppressed: bool,
@@ -314,7 +306,7 @@ impl MainWindowView {
         let mut events = crate::core::minecraft::diagnostics::subscribe();
         let main_window = window.window_handle();
         cx.spawn(async move |handle, cx| {
-            let interrupted = crate::tasks::runtime::run_io_blocking(|| {
+            let interrupted = crate::tasks::runtime::blocking::run_io(|| {
                 crate::core::minecraft::diagnostics::recover_interrupted_sessions()
             }).await.unwrap_or_default();
             #[cfg(target_os = "windows")]
@@ -327,7 +319,7 @@ impl MainWindowView {
             }
             #[cfg(not(target_os = "windows"))]
             let _ = interrupted;
-            let pending = crate::tasks::runtime::run_io_blocking(|| {
+            let pending = crate::tasks::runtime::blocking::run_io(|| {
                 crate::core::minecraft::diagnostics::recent_reports(1, true)
                     .into_iter().next()
             }).await.ok().flatten();
@@ -371,7 +363,7 @@ impl MainWindowView {
                         });
                     }
                 } else if crate::core::minecraft::diagnostics::active_sessions() == 0
-                    && crate::config::config::read_config()
+                    && crate::config::settings::read()
                         .is_ok_and(|cfg| cfg.game.launcher_visibility == "close")
                 {
                     // The user requested a closed window. Once the last game
@@ -387,7 +379,7 @@ impl MainWindowView {
 
     fn maybe_apply_launcher_visibility(
         &mut self,
-        snapshot: &crate::ui::hooks::use_launcher::LauncherSnapshot,
+        snapshot: &crate::ui::hooks::launcher::LauncherSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -404,7 +396,7 @@ impl MainWindowView {
             return;
         }
         self.last_handled_game_launch = Some(task_id.to_string());
-        let mode = crate::config::config::read_config()
+        let mode = crate::config::settings::read()
             .map(|config| config.game.launcher_visibility)
             .unwrap_or_else(|_| "keep".to_string());
         if mode == "keep" {
@@ -450,7 +442,7 @@ impl MainWindowView {
         }
 
         let initial_route = crate::ui::navigation::current_route_target(cx);
-        self.handle_route_change_without_window(initial_route, cx);
+        self.handle_route_change(initial_route, cx);
         self.startup_route_bootstrapped = true;
     }
 
@@ -486,7 +478,7 @@ impl MainWindowView {
     ) -> (
         f32,
         Option<Hsla>,
-        crate::ui::theme::colors::ThemeColors,
+        crate::ui::theme::ThemeColors,
         bool,
     ) {
         let (theme_k, theme_accent, theme_animating) = {
@@ -503,8 +495,8 @@ impl MainWindowView {
         }
 
         let theme_colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme_k,
             theme_accent,
         );
@@ -712,7 +704,7 @@ impl MainWindowView {
 
         if model.builtin_route == AppRoute::Tasks
             && let Some(tasks_page_view) = &self.tasks_page_view
-            && let Some(tasks_overlay) = crate::ui::views::tasks::render_tasks_overlay(
+            && let Some(tasks_overlay) = crate::ui::views::tasks::render_overlay(
                 &model.theme_colors,
                 tasks_page_view,
                 cx,
@@ -727,7 +719,7 @@ impl MainWindowView {
             let agreement_title = t!("UserAgreement.title");
             let agreement_accept_label = t!("UserAgreement.accept_button");
             root = root.child(
-                crate::ui::overlays::user_agreement::render_user_agreement_modal(
+                crate::ui::overlays::user_agreement::render(
                     model.agreement_render_state.document.clone(),
                     model.window_width,
                     model.window_height,
@@ -814,7 +806,7 @@ impl MainWindowView {
                     self.pause_update_markdown_view(cx);
                 }
 
-                root = root.child(crate::ui::overlays::update::render_update_modal(
+                root = root.child(crate::ui::overlays::update::render_modal(
                     release,
                     markdown_view,
                     changelog_scroll_handle,
@@ -845,7 +837,7 @@ impl MainWindowView {
             {
                 auth_blocked = true;
                 root = root.child(
-                    crate::ui::overlays::linux_runtime::render_linux_runtime_overlay(
+                    crate::ui::overlays::linux_runtime::render(
                         cx.global::<crate::ui::state::linux_runtime::LinuxRuntimeState>(),
                         &model.theme_colors,
                         cx.global::<I18n>(),
@@ -868,7 +860,7 @@ impl MainWindowView {
                 let launch_prereq_state =
                     cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
                 root = root.child(
-                    crate::ui::overlays::launch_prereq::render_launch_prereq_overlay(
+                    crate::ui::overlays::launch_prereq::render(
                         launch_prereq_state,
                         window,
                         cx,
@@ -886,7 +878,7 @@ impl MainWindowView {
 
         if !model.agreement_render_state.visible
             && let Some(dialog) =
-                crate::ui::views::tools::online::render_minecraft_termination_dialog(
+                crate::ui::views::tools::online::render_termination_dialog(
                     &model.theme_colors,
                     cx.global::<crate::ui::views::tools::state::ToolsPageState>(),
                     cx.global::<I18n>(),
@@ -904,6 +896,7 @@ impl MainWindowView {
                 &model.theme_colors,
                 model.now,
                 toast_state,
+                toast_state.overlay_options(),
             ));
         }
 
@@ -939,7 +932,7 @@ impl MainWindowView {
         if !model.agreement_render_state.visible
             && !model.diagnostics_visible
             && let Some(game_diagnostics) =
-                crate::ui::overlays::game_diagnostics::render_game_diagnostics_overlay(
+                crate::ui::overlays::game_diagnostics::render(
                     &model.theme_colors,
                     model.window_width,
                     model.window_height,
@@ -1072,25 +1065,18 @@ impl MainWindowView {
                     .child(page),
             );
 
-        crate::ui::components::modal::modal_layer_dismissible(
+        crate::ui::components::modal::dismissible_layer(
             content,
             Hsla {
                 a: 0.28,
                 ..gpui::black()
             },
             close,
+            crate::ui::components::modal::DismissOptions::default(),
         )
     }
 
-    fn read_background_animation_suppressed(
-        &self,
-        actual_route: &RouteTarget,
-        suppress_background_animation_frames: bool,
-    ) -> bool {
-        background_animation_suppressed(actual_route, suppress_background_animation_frames)
-    }
-
-    fn sync_background_animation_suppressed(
+    fn sync_animation_suppressed(
         &mut self,
         suppressed: bool,
         cx: &mut Context<Self>,
@@ -1108,35 +1094,32 @@ impl MainWindowView {
         true
     }
 
-    fn sync_background_animation_policy_for_route(
+    fn sync_animation_policy(
         &mut self,
-        route: &RouteTarget,
         update_render_state: &UpdateRenderState,
         cx: &mut Context<Self>,
     ) -> bool {
-        let should_suppress_background_animation = self.read_background_animation_suppressed(
-            route,
+        self.sync_animation_suppressed(
             update_render_state.suppress_background_animation_frames,
-        );
-        self.sync_background_animation_suppressed(should_suppress_background_animation, cx)
+            cx,
+        )
     }
 
-    fn sync_current_background_animation_policy(
+    fn sync_current_animation_policy(
         &mut self,
         now: Instant,
         cx: &mut Context<Self>,
     ) -> bool {
-        let route = crate::ui::navigation::current_route_target(cx);
         let debug_enabled = cx.global::<DebugState>().enabled;
         let update_render_state = self.read_update_render_state(now, debug_enabled, cx);
-        self.sync_background_animation_policy_for_route(&route, &update_render_state, cx)
+        self.sync_animation_policy(&update_render_state, cx)
     }
 
     fn sync_update_markdown_view(
         &mut self,
         release: &ReleaseSummary,
-        document: Arc<crate::ui::components::markdown_renderer::MarkdownDocument>,
-        colors: crate::ui::theme::colors::ThemeColors,
+        document: Arc<crate::ui::components::markdown::Document>,
+        colors: crate::ui::theme::ThemeColors,
         dark: bool,
         cx: &mut Context<Self>,
     ) -> Entity<crate::ui::overlays::update::UpdateMarkdownView> {
@@ -1154,7 +1137,7 @@ impl MainWindowView {
             }
 
             view.update(cx, |view, cx| {
-                view.update(release.tag.clone(), document.clone(), colors, dark);
+                view.sync(release.tag.clone(), document.clone(), colors, dark);
                 cx.notify();
             });
             return view.clone();
@@ -1228,7 +1211,7 @@ impl MainWindowView {
         self.notify_download_page(cx);
 
         let load_task = gpui_tokio::Tokio::spawn_result(cx, async move {
-            let remote = remote_versions::load_or_fetch_versions(force_refresh).await?;
+            let remote = remote_versions::load(force_refresh).await?;
             let versions = remote
                 .into_iter()
                 .map(
@@ -1270,7 +1253,7 @@ impl MainWindowView {
                     )?;
                     if applied {
                         if let Some(view) = &download_page_view {
-                            notify_weak_view_async(view, cx)?;
+                            notify_weak_view(view, cx)?;
                         }
                         if refresh_again {
                             handle.update(cx, |this, cx| {
@@ -1292,7 +1275,7 @@ impl MainWindowView {
                     )?;
                     if applied {
                         if let Some(view) = &download_page_view {
-                            notify_weak_view_async(view, cx)?;
+                            notify_weak_view(view, cx)?;
                         }
                     }
                 }
@@ -1335,7 +1318,7 @@ impl MainWindowView {
             let client =
                 crate::core::curseforge::CurseForgeClient::new().map_err(anyhow::Error::msg)?;
             let (categories, versions) =
-                tokio::join!(client.get_categories(), client.get_minecraft_versions());
+                tokio::join!(client.fetch_categories(), client.fetch_game_versions());
 
             let mut entries = categories
                 .map_err(anyhow::Error::msg)?
@@ -1387,7 +1370,7 @@ impl MainWindowView {
                     ) {
                         Ok(true) => {
                             if let Some(view) = &download_page_view {
-                                notify_weak_view_async(view, cx)?;
+                                notify_weak_view(view, cx)?;
                             }
                         }
                         Ok(false) => {}
@@ -1409,7 +1392,7 @@ impl MainWindowView {
                     ) {
                         Ok(true) => {
                             if let Some(view) = &download_page_view {
-                                notify_weak_view_async(view, cx)?;
+                                notify_weak_view(view, cx)?;
                             }
                         }
                         Ok(false) => {}
@@ -1424,10 +1407,6 @@ impl MainWindowView {
     }
 
     fn ensure_curseforge_controls(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
-
-    fn ensure_curseforge_results_loaded(&mut self, force_refresh: bool, cx: &mut Context<Self>) {
-        crate::ui::views::download::curseforge::ensure_results_loaded(force_refresh, cx);
-    }
 
     fn ensure_downloads_index(&mut self, cx: &mut Context<Self>) {
         let (loaded, loading) = {
@@ -1451,7 +1430,7 @@ impl MainWindowView {
         let download_page_view = self.download_page_view.as_ref().map(Entity::downgrade);
         cx.spawn(async move |handle, cx| {
             let dir = crate::utils::file_ops::game_downloads_dir();
-            let result = crate::tasks::runtime::run_io_blocking(move || {
+            let result = crate::tasks::runtime::blocking::run_io(move || {
                 let mut out = std::collections::HashSet::new();
                 let rd = std::fs::read_dir(dir).map_err(|error| error.to_string())?;
                 for entry in rd {
@@ -1491,7 +1470,7 @@ impl MainWindowView {
             )?;
             if applied {
                 if let Some(view) = &download_page_view {
-                    notify_weak_view_async(view, cx)?;
+                    notify_weak_view(view, cx)?;
                 }
                 handle.update(cx, |_, cx| cx.notify())?;
             }
@@ -1511,7 +1490,7 @@ impl MainWindowView {
 
         self.download_prefs_load_started = true;
         cx.spawn(async move |handle, cx| {
-            let result = crate::tasks::runtime::run_io_blocking(
+            let result = crate::tasks::runtime::blocking::run_io(
                 crate::core::ui_prefs::load_download_ui_prefs,
             )
             .await;
@@ -1591,7 +1570,7 @@ impl MainWindowView {
                 if s.search_input.is_none() {
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(search_placeholder.clone(), window, cx);
+                        st.set_placeholder(search_placeholder.clone(), cx);
                         st
                     });
                     s.search_input = Some(input);
@@ -1600,7 +1579,7 @@ impl MainWindowView {
                 if s.page_jump_input.is_none() {
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(SharedString::from("1/1"), window, cx);
+                        st.set_placeholder(SharedString::from("1/1"), cx);
                         st
                     });
                     s.page_jump_input = Some(input);
@@ -1665,7 +1644,7 @@ impl MainWindowView {
                 if !curseforge_loaded && !curseforge_loading {
                     this.ensure_curseforge_loaded(cx);
                 }
-                this.ensure_curseforge_results_loaded(false, cx);
+                crate::ui::views::download::curseforge::ensure_results_loaded(cx);
                 this.notify_download_page(cx);
             },
         );
@@ -1742,7 +1721,7 @@ impl MainWindowView {
                                         s.page_index = 0;
                                         s.curseforge_page_index = 0;
                                         crate::ui::views::download::curseforge::
-                                            schedule_invalidate_results_in_state(s, cx);
+                                            schedule_invalidation(s, cx);
                                     },
                                 );
                             });
@@ -1828,13 +1807,6 @@ impl MainWindowView {
     }
 }
 
-fn background_animation_suppressed(
-    _actual_route: &RouteTarget,
-    suppress_background_animation_frames: bool,
-) -> bool {
-    suppress_background_animation_frames
-}
-
 fn same_theme_factor(left: f32, right: f32) -> bool {
     (left - right).abs() <= f32::EPSILON
 }
@@ -1869,12 +1841,8 @@ impl Render for MainWindowView {
         let update_state_changed = self.sync_update_state(frame_now, cx);
         let model = self.build_render_model(frame_now, window, cx);
         self.maybe_apply_launcher_visibility(&model.launcher_snapshot, window, cx);
-        let _ = self.sync_background_animation_policy_for_route(
-            &model.route,
-            &model.update_render_state,
-            cx,
-        );
-        crate::ui::hooks::use_launcher::sync_launcher_state(frame_now, cx);
+        let _ = self.sync_animation_policy(&model.update_render_state, cx);
+        crate::ui::hooks::launcher::sync_state(frame_now, cx);
         self.ensure_chrome_view_loaded(window, cx);
         if self.startup_deferred_ready {
             self.ensure_startup_route_bootstrapped(cx);
@@ -1958,7 +1926,7 @@ impl Render for MainWindowView {
         }
 
         if model.theme_animating {
-            crate::ui::animation::request_layout_animation_frame_if(window, true);
+            crate::ui::animation::request_layout_frame(window);
         }
 
         root
@@ -1967,7 +1935,7 @@ impl Render for MainWindowView {
 
 #[cfg(test)]
 mod tests {
-    use super::{background_animation_suppressed, route_transition_direction};
+    use super::route_transition_direction;
     use crate::ui::navigation::{AppRoute, RouteTarget};
 
     #[test]
@@ -1985,19 +1953,6 @@ mod tests {
         assert_eq!(route_transition_direction(None, 3), 0.0);
     }
 
-    #[test]
-    fn non_home_route_does_not_suppress_background_animation() {
-        let route = RouteTarget::Builtin(AppRoute::Download);
-
-        assert!(!background_animation_suppressed(&route, false));
-    }
-
-    #[test]
-    fn modal_suppression_still_pauses_background_animation() {
-        let route = RouteTarget::Builtin(AppRoute::Home);
-
-        assert!(background_animation_suppressed(&route, true));
-    }
     struct TransitionProbe {
         states: std::rc::Rc<std::cell::RefCell<Vec<gpui::EntityId>>>,
     }

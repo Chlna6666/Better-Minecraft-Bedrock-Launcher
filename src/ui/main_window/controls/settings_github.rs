@@ -14,7 +14,6 @@ impl MainWindowView {
                         let mut input = InputState::new(window, cx);
                         input.set_placeholder(
                             SharedString::from("https://mirror.example/{url}"),
-                            window,
                             cx,
                         );
                         if !initial.trim().is_empty() {
@@ -58,8 +57,8 @@ impl MainWindowView {
 
 fn persist_custom_mirror(custom_mirror: String, cx: &mut Context<MainWindowView>) {
     cx.spawn(async move |_this, _cx| {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
-            crate::config::config::update_config(|config| {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
+            crate::config::settings::update(|config| {
                 config.launcher.download.github.custom_mirror = custom_mirror;
             })?;
             Ok::<(), std::io::Error>(())

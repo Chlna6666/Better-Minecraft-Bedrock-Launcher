@@ -1,5 +1,5 @@
 use crate::ui::animation::ease_out_cubic_motion;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::AnimationExt as _;
 use gpui::*;
 use std::rc::Rc;
@@ -250,12 +250,12 @@ fn knob_shadow() -> Vec<BoxShadow> {
 #[cfg(test)]
 mod tests {
     use super::{ANIMATION_DURATION, TogglePhase, ToggleSwitchView};
-    use crate::ui::theme::colors::LightColors;
+    use crate::ui::theme::LightColors;
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
     fn test_view(enabled: bool) -> ToggleSwitchView {
-        ToggleSwitchView::new(LightColors::colors(), enabled, Rc::new(|_| {}))
+        ToggleSwitchView::new(LightColors::theme(), enabled, Rc::new(|_| {}))
     }
 
     #[test]
@@ -268,14 +268,14 @@ mod tests {
     fn sync_records_only_real_state_transitions() {
         let now = Instant::now();
         let mut view = test_view(false);
-        assert!(!view.sync(LightColors::colors(), false, Rc::new(|_| {}), now));
+        assert!(!view.sync(LightColors::theme(), false, Rc::new(|_| {}), now));
         assert_eq!(view.phase, TogglePhase::Stable);
 
-        assert!(view.sync(LightColors::colors(), true, Rc::new(|_| {}), now));
+        assert!(view.sync(LightColors::theme(), true, Rc::new(|_| {}), now));
         assert_eq!(view.phase, TogglePhase::Opening { at: now });
 
         let later = now + Duration::from_millis(20);
-        assert!(view.sync(LightColors::colors(), false, Rc::new(|_| {}), later));
+        assert!(view.sync(LightColors::theme(), false, Rc::new(|_| {}), later));
         assert_eq!(view.phase, TogglePhase::Closing { at: later });
     }
 
@@ -283,7 +283,7 @@ mod tests {
     fn completed_closing_phase_settles_to_static_off_state() {
         let started_at = Instant::now();
         let mut view = test_view(true);
-        assert!(view.sync(LightColors::colors(), false, Rc::new(|_| {}), started_at,));
+        assert!(view.sync(LightColors::theme(), false, Rc::new(|_| {}), started_at,));
         assert!(
             !view
                 .settle_completed_phase(started_at + ANIMATION_DURATION - Duration::from_millis(1))

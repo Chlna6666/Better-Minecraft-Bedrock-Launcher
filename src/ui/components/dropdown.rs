@@ -1,5 +1,5 @@
 use crate::ui::animation::ease_out_cubic;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -232,7 +232,7 @@ fn closing_progress(now: Instant, at: Instant) -> f32 {
     1.0 - ease_out_cubic(t)
 }
 
-fn dropdown_progress(phase: DropdownPhase, now: Instant) -> f32 {
+fn phase_progress(phase: DropdownPhase, now: Instant) -> f32 {
     match phase {
         DropdownPhase::Closed => 0.0,
         DropdownPhase::Open => 1.0,
@@ -270,10 +270,10 @@ fn toggle_dropdown_phase(phase: DropdownPhase, now: Instant) -> DropdownPhase {
         DropdownPhase::Closed => DropdownPhase::Opening { at: now },
         DropdownPhase::Open => DropdownPhase::Closing { at: now },
         DropdownPhase::Opening { .. } => {
-            closing_phase_from_progress(now, dropdown_progress(phase, now))
+            closing_phase_from_progress(now, phase_progress(phase, now))
         }
         DropdownPhase::Closing { .. } => {
-            opening_phase_from_progress(now, dropdown_progress(phase, now))
+            opening_phase_from_progress(now, phase_progress(phase, now))
         }
     }
 }
@@ -283,7 +283,7 @@ fn begin_dropdown_close(phase: DropdownPhase, now: Instant) -> DropdownPhase {
         DropdownPhase::Closed | DropdownPhase::Closing { .. } => phase,
         DropdownPhase::Open => DropdownPhase::Closing { at: now },
         DropdownPhase::Opening { .. } => {
-            closing_phase_from_progress(now, dropdown_progress(phase, now))
+            closing_phase_from_progress(now, phase_progress(phase, now))
         }
     }
 }
@@ -305,7 +305,7 @@ fn phase_after_deadline(phase: DropdownPhase, now: Instant) -> DropdownPhase {
     }
 }
 
-fn dropdown_min_preview_height() -> Pixels {
+fn min_preview_height() -> Pixels {
     desired_dropdown_height(MENU_MIN_PREVIEW_ROWS)
 }
 
@@ -339,7 +339,7 @@ fn effective_dropdown_height(available_height: Pixels, desired_height: Pixels) -
         return px(0.0);
     }
 
-    let minimum_preview = dropdown_min_preview_height().min(desired_height);
+    let minimum_preview = min_preview_height().min(desired_height);
     if available_height >= minimum_preview {
         desired_height.min(available_height)
     } else {
@@ -361,7 +361,7 @@ fn desired_dropdown_menu_width(
         .min(max_width)
 }
 
-fn dropdown_option_row(context: &DropdownOptionContext, index: usize) -> AnyElement {
+fn option_row(context: &DropdownOptionContext, index: usize) -> AnyElement {
     let option = &context.options[index];
     let is_selected = index == context.selected_index;
     let item_bg = if is_selected {
@@ -483,7 +483,7 @@ pub fn render_overlay(window: &mut Window, state: &DropdownOverlayState) -> AnyE
         option_count,
         move |range, _window, _cx| {
             range
-                .map(|index| dropdown_option_row(&option_context, index))
+                .map(|index| option_row(&option_context, index))
                 .collect::<Vec<_>>()
         },
     )
@@ -950,7 +950,7 @@ impl RenderOnce for Dropdown {
                     return true;
                 }
 
-                let minimum_preview = dropdown_min_preview_height().min(capped_h);
+                let minimum_preview = min_preview_height().min(capped_h);
                 below < minimum_preview && above > below
             })
             .unwrap_or(false);
@@ -1092,7 +1092,7 @@ mod tests {
         assert_eq!(desired_dropdown_height(0.0), px(12.0));
         assert_eq!(desired_dropdown_height(1.0), px(50.0));
         assert_eq!(desired_dropdown_height(3.0), px(126.0));
-        assert_eq!(dropdown_min_preview_height(), px(126.0));
+        assert_eq!(min_preview_height(), px(126.0));
     }
 
     #[::core::prelude::v1::test]
@@ -1100,7 +1100,7 @@ mod tests {
         let start = Instant::now();
         let reverse_at = start + Duration::from_millis(100);
         let opening = DropdownPhase::Opening { at: start };
-        let progress = dropdown_progress(opening, reverse_at);
+        let opening_progress = phase_progress(opening, reverse_at);
         let mut state = DropdownState {
             phase: opening,
             animation_duration: Duration::from_secs_f32(OPEN_DURATION_SECS),
@@ -1114,8 +1114,8 @@ mod tests {
         assert!(state.animation_duration > Duration::ZERO);
         assert!(state.animation_duration < Duration::from_secs_f32(CLOSE_DURATION_SECS));
         let halfway = state.animation_duration.mul_f32(0.5);
-        let legacy_sample = dropdown_progress(state.phase, reverse_at + halfway);
-        let retained_sample = progress * (1.0 - ease_out_cubic(0.5));
+        let legacy_sample = phase_progress(state.phase, reverse_at + halfway);
+        let retained_sample = opening_progress * (1.0 - ease_out_cubic(0.5));
         assert!((legacy_sample - retained_sample).abs() < 0.0001);
         let duration = state.animation_duration;
         state.set_phase(state.phase, reverse_at + halfway);

@@ -1,4 +1,4 @@
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, Element, ElementId,
     ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font,
@@ -982,7 +982,7 @@ impl CodeEditorState {
             self.hovered_gutter_line = hovered_gutter_line;
             cx.notify();
         }
-        let release = release_stale_code_editor_pointer_interaction(
+        let release = release_stale_pointer_interaction(
             &mut self.is_selecting,
             &mut self.scrollbar_drag,
             event.pressed_button,
@@ -1038,7 +1038,7 @@ impl CodeEditorState {
 
         self.mouse_over = true;
         let delta = event.delta.pixel_delta(window.line_height());
-        let scroll_delta = scroll_offset_delta_from_wheel_delta(delta, event.modifiers.shift);
+        let scroll_delta = scroll_offset_delta(delta, event.modifiers.shift);
         self.is_selecting = false;
         self.scroll_by(scroll_delta, cx);
         cx.stop_propagation();
@@ -1230,7 +1230,7 @@ impl CodeEditorState {
     }
 }
 
-fn release_stale_code_editor_pointer_interaction(
+fn release_stale_pointer_interaction(
     is_selecting: &mut bool,
     scrollbar_drag: &mut Option<ScrollbarDrag>,
     pressed_button: Option<MouseButton>,
@@ -1436,7 +1436,7 @@ impl Element for EditorElement {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui::diagnostics::inspector::InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
@@ -1454,7 +1454,7 @@ impl Element for EditorElement {
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui::diagnostics::inspector::InspectorElementId>,
         bounds: Bounds<Pixels>,
         request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
@@ -1690,7 +1690,7 @@ impl Element for EditorElement {
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui::diagnostics::inspector::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         prepaint: &mut Self::PrepaintState,
@@ -2274,7 +2274,7 @@ fn visible_line_range(
             .min(line_count)
 }
 
-fn scroll_offset_delta_from_wheel_delta(delta: Point<Pixels>, shift: bool) -> Point<Pixels> {
+fn scroll_offset_delta(delta: Point<Pixels>, shift: bool) -> Point<Pixels> {
     if shift && delta.x == px(0.0) {
         return point(px(0.0) - delta.y, px(0.0));
     }
@@ -2833,7 +2833,7 @@ mod tests {
     #[test]
     fn json_nbt_highlights_keys_and_literals() {
         let text = r#"{"Name": true, "Count": 3}"#;
-        let colors = crate::ui::theme::colors::LightColors::colors();
+        let colors = crate::ui::theme::LightColors::theme();
         let highlights =
             code_highlights(text, CodeEditorLanguage::JsonNbt, &syntax_palette(&colors));
 
@@ -2869,7 +2869,7 @@ mod tests {
     #[test]
     fn comments_keep_their_color_and_do_not_create_folds() {
         let text = "// fn hidden() {\nfn visible() {\n  /* } */\n}\n";
-        let palette = syntax_palette(&crate::ui::theme::colors::LightColors::colors());
+        let palette = syntax_palette(&crate::ui::theme::LightColors::theme());
         let highlights = code_highlights(text, CodeEditorLanguage::GenericCode, &palette);
         assert_eq!(highlights[0].color, palette.comment);
         assert!(!highlights.iter().any(|range| {
@@ -2944,7 +2944,7 @@ mod tests {
     #[test]
     fn diagnostics_mark_unclosed_string_and_bad_bracket() {
         let text = r#"{"Name": "Steve]"#;
-        let colors = crate::ui::theme::colors::LightColors::colors();
+        let colors = crate::ui::theme::LightColors::theme();
         let diagnostics =
             format_diagnostics(text, CodeEditorLanguage::JsonNbt, &syntax_palette(&colors));
 
@@ -2954,7 +2954,7 @@ mod tests {
     #[test]
     fn json_highlights_use_multiple_colors() {
         let text = r#"{"Name": true, "Count": 3}"#;
-        let colors = crate::ui::theme::colors::LightColors::colors();
+        let colors = crate::ui::theme::LightColors::theme();
         let highlights =
             code_highlights(text, CodeEditorLanguage::JsonNbt, &syntax_palette(&colors));
 
@@ -2980,8 +2980,8 @@ mod tests {
 
     #[test]
     fn syntax_palette_changes_between_light_and_dark_themes() {
-        let light = syntax_palette(&crate::ui::theme::colors::LightColors::colors());
-        let dark = syntax_palette(&crate::ui::theme::colors::DarkColors::colors());
+        let light = syntax_palette(&crate::ui::theme::LightColors::theme());
+        let dark = syntax_palette(&crate::ui::theme::DarkColors::theme());
 
         assert_ne!(light.key, dark.key);
         assert_ne!(light.string, dark.string);
@@ -3096,11 +3096,11 @@ mod tests {
     #[test]
     fn wheel_delta_maps_to_positive_scroll_offset_when_scrolling_down() {
         assert_eq!(
-            scroll_offset_delta_from_wheel_delta(point(px(0.0), px(-40.0)), false),
+            scroll_offset_delta(point(px(0.0), px(-40.0)), false),
             point(px(0.0), px(40.0))
         );
         assert_eq!(
-            scroll_offset_delta_from_wheel_delta(point(px(0.0), px(-40.0)), true),
+            scroll_offset_delta(point(px(0.0), px(-40.0)), true),
             point(px(40.0), px(0.0))
         );
     }
@@ -3145,7 +3145,7 @@ mod tests {
             scroll_origin: point(px(0.0), px(0.0)),
         });
 
-        let release = release_stale_code_editor_pointer_interaction(
+        let release = release_stale_pointer_interaction(
             &mut is_selecting,
             &mut scrollbar_drag,
             Some(MouseButton::Left),
@@ -3165,11 +3165,8 @@ mod tests {
             scroll_origin: point(px(3.0), px(4.0)),
         });
 
-        let release = release_stale_code_editor_pointer_interaction(
-            &mut is_selecting,
-            &mut scrollbar_drag,
-            None,
-        );
+        let release =
+            release_stale_pointer_interaction(&mut is_selecting, &mut scrollbar_drag, None);
 
         assert_eq!(
             release,

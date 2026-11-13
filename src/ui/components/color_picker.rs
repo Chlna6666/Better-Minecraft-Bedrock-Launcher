@@ -1,5 +1,5 @@
 use crate::ui::components::input::{Input, InputState};
-use crate::ui::theme::colors::{ThemeColors, parse_hex_color_to_hsla};
+use crate::ui::theme::{ThemeColors, parse_hex_color};
 use crate::ui::views::settings::state::SettingsPageState;
 use gpui::*;
 
@@ -283,7 +283,7 @@ fn hsva_to_hex(hue: f32, saturation: f32, value: f32, alpha: f32) -> String {
     rgba_to_hex_string(red, green, blue, alpha_byte)
 }
 
-fn to_number(value: Pixels) -> f32 {
+fn pixels_to_number(value: Pixels) -> f32 {
     value / px(1.0)
 }
 
@@ -292,7 +292,7 @@ fn clamp_unit(value: f32) -> f32 {
 }
 
 fn ratio_from_bounds(position: Pixels, start: Pixels, length: f32) -> f32 {
-    clamp_unit(to_number(position - start) / length)
+    clamp_unit(pixels_to_number(position - start) / length)
 }
 
 fn saturation_value_from_bounds(position: Point<Pixels>, bounds: Bounds<Pixels>) -> (f32, f32) {
@@ -301,7 +301,7 @@ fn saturation_value_from_bounds(position: Point<Pixels>, bounds: Bounds<Pixels>)
     (saturation, value)
 }
 
-pub fn color_picker_control(
+pub fn control(
     id: &'static str,
     colors: &ThemeColors,
     current_hex: &str,
@@ -320,7 +320,7 @@ pub fn color_picker_control(
     on_pick: impl Fn(&str, &mut Window, &mut App) + Clone + 'static,
 ) -> Stateful<Div> {
     let normalized = normalize_hex_color(current_hex).unwrap_or_else(|| "#a0d9b6".to_string());
-    let preview = parse_hex_color_to_hsla(&normalized).unwrap_or(colors.accent);
+    let preview = parse_hex_color(&normalized).unwrap_or(colors.accent);
     let preview_swatch = Hsla { a: 1.0, ..preview };
     let (red, green, blue, alpha_byte) =
         parse_normalized_hex_to_rgba(&normalized).unwrap_or((160, 217, 182, 255));
@@ -390,7 +390,7 @@ pub fn color_picker_control(
         let on_pick = on_pick.clone();
         let normalized_preset = normalize_hex_color(preset).unwrap_or_else(|| preset.to_string());
         let active = normalized_preset.eq_ignore_ascii_case(&normalized);
-        let swatch = parse_hex_color_to_hsla(&normalized_preset).unwrap_or(colors.accent);
+        let swatch = parse_hex_color(&normalized_preset).unwrap_or(colors.accent);
         let mut chip = div()
             .w(px(PRESET_CHIP_SIZE))
             .h(px(PRESET_CHIP_SIZE))
@@ -423,9 +423,9 @@ pub fn color_picker_control(
     let hue_cursor_x = ((current_hue / 360.0) * HUE_BAR_WIDTH).clamp(0.0, HUE_BAR_WIDTH);
     let alpha_cursor_x = (current_alpha * ALPHA_BAR_WIDTH).clamp(0.0, ALPHA_BAR_WIDTH);
     let hue_preview_hex = hsva_to_hex(current_hue, 1.0, 1.0, 1.0);
-    let hue_preview = parse_hex_color_to_hsla(&hue_preview_hex).unwrap_or(colors.accent);
+    let hue_preview = parse_hex_color(&hue_preview_hex).unwrap_or(colors.accent);
     let opaque_preview_hex = hsva_to_hex(current_hue, current_saturation, current_value, 1.0);
-    let opaque_preview = parse_hex_color_to_hsla(&opaque_preview_hex).unwrap_or(colors.accent);
+    let opaque_preview = parse_hex_color(&opaque_preview_hex).unwrap_or(colors.accent);
 
     let saturation_value_surface = div()
         .relative()
@@ -459,10 +459,10 @@ pub fn color_picker_control(
     for segment in 0..HUE_SEGMENTS {
         let start_hue = 360.0 * segment as f32 / HUE_SEGMENTS as f32;
         let end_hue = 360.0 * (segment + 1) as f32 / HUE_SEGMENTS as f32;
-        let start_color = parse_hex_color_to_hsla(&hsva_to_hex(start_hue, 1.0, 1.0, 1.0))
+        let start_color = parse_hex_color(&hsva_to_hex(start_hue, 1.0, 1.0, 1.0))
             .unwrap_or(colors.accent);
         let end_color =
-            parse_hex_color_to_hsla(&hsva_to_hex(end_hue, 1.0, 1.0, 1.0)).unwrap_or(colors.accent);
+            parse_hex_color(&hsva_to_hex(end_hue, 1.0, 1.0, 1.0)).unwrap_or(colors.accent);
         hue_bar_fill = hue_bar_fill.child(div().flex_1().h_full().bg(linear_gradient(
             90.0,
             linear_color_stop(start_color, 0.0),
@@ -587,8 +587,10 @@ pub fn color_picker_control(
                         cx.update_global(|state: &mut SettingsPageState, _cx| {
                             state.theme_color_picker_popup_open = true;
                             state.theme_color_picker_drag_target = SharedString::from("sv");
-                            state.theme_color_picker_drag_origin_x = to_number(event.position.x);
-                            state.theme_color_picker_drag_origin_y = to_number(event.position.y);
+                            state.theme_color_picker_drag_origin_x =
+                                pixels_to_number(event.position.x);
+                            state.theme_color_picker_drag_origin_y =
+                                pixels_to_number(event.position.y);
                             state.theme_color_picker_drag_origin_hue = current_hue;
                             state.theme_color_picker_drag_origin_saturation = current_saturation;
                             state.theme_color_picker_drag_origin_value = current_value;
@@ -650,8 +652,10 @@ pub fn color_picker_control(
                         cx.update_global(|state: &mut SettingsPageState, _cx| {
                             state.theme_color_picker_popup_open = true;
                             state.theme_color_picker_drag_target = SharedString::from("hue");
-                            state.theme_color_picker_drag_origin_x = to_number(event.position.x);
-                            state.theme_color_picker_drag_origin_y = to_number(event.position.y);
+                            state.theme_color_picker_drag_origin_x =
+                                pixels_to_number(event.position.x);
+                            state.theme_color_picker_drag_origin_y =
+                                pixels_to_number(event.position.y);
                             state.theme_color_picker_drag_origin_hue = current_hue;
                             state.theme_color_picker_drag_origin_saturation = current_saturation;
                             state.theme_color_picker_drag_origin_value = current_value;
@@ -731,8 +735,10 @@ pub fn color_picker_control(
                         cx.update_global(|state: &mut SettingsPageState, _cx| {
                             state.theme_color_picker_popup_open = true;
                             state.theme_color_picker_drag_target = SharedString::from("alpha");
-                            state.theme_color_picker_drag_origin_x = to_number(event.position.x);
-                            state.theme_color_picker_drag_origin_y = to_number(event.position.y);
+                            state.theme_color_picker_drag_origin_x =
+                                pixels_to_number(event.position.x);
+                            state.theme_color_picker_drag_origin_y =
+                                pixels_to_number(event.position.y);
                             state.theme_color_picker_drag_origin_hue = current_hue;
                             state.theme_color_picker_drag_origin_saturation = current_saturation;
                             state.theme_color_picker_drag_origin_value = current_value;
@@ -838,8 +844,8 @@ pub fn color_picker_control(
             cx.stop_propagation();
             cx.update_global(|state: &mut SettingsPageState, _cx| {
                 state.theme_color_picker_popup_open = !state.theme_color_picker_popup_open;
-                state.theme_color_picker_popup_anchor_x = to_number(event.position.x);
-                state.theme_color_picker_popup_anchor_y = to_number(event.position.y);
+                state.theme_color_picker_popup_anchor_x = pixels_to_number(event.position.x);
+                state.theme_color_picker_popup_anchor_y = pixels_to_number(event.position.y);
                 if !state.theme_color_picker_popup_open {
                     state.theme_color_picker_drag_target = SharedString::from("");
                 }

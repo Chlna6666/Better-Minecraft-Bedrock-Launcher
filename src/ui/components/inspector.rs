@@ -4,11 +4,11 @@
 use std::path::Path;
 
 use gpui::{div, px, Div, FontWeight, IntoElement, ParentElement, SharedString, Styled};
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 
 /// A restrained, high-contrast section separator for long parameter inspectors.
 /// Unlike a button this carries no hover or interaction state.
-pub(crate) fn inspector_section_title(
+pub(crate) fn section_title(
     colors: &ThemeColors,
     title: impl Into<SharedString>,
 ) -> Div {
@@ -38,7 +38,7 @@ pub(crate) fn inspector_section_title(
 
 /// A stable file-identity card, independent of the OS path length. Source status,
 /// browse action, and drag/drop affordance remain visually grouped.
-pub(crate) fn inspector_source_card(
+pub(crate) fn source_card(
     colors: &ThemeColors,
     kind: &'static str,
     source: Option<&Path>,
@@ -122,7 +122,7 @@ pub(crate) fn inspector_source_card(
 }
 
 /// Compact editor result identity, kept separate from primary actions.
-pub(crate) fn inspector_result_summary(
+pub(crate) fn result_summary(
     colors: &ThemeColors,
     label: &'static str,
     value: impl Into<SharedString>,
@@ -147,7 +147,7 @@ pub(crate) fn inspector_result_summary(
 
  /// A navigable workflow step. The caller provides the actual action, so there
  /// are no placeholder clicks or state machines inside this presentation primitive.
-pub(crate) fn inspector_stage_tab(
+pub(crate) fn stage_tab(
     colors: &ThemeColors,
     ordinal: &'static str,
     label: &'static str,
@@ -181,7 +181,7 @@ pub(crate) fn inspector_stage_tab(
 
  /// Surface for a cohesive field set. The owner adds its real inputs as children;
  /// no duplicate form state or validation lives here.
-pub(crate) fn inspector_field_group(colors: &ThemeColors) -> Div {
+pub(crate) fn field_group(colors: &ThemeColors) -> Div {
     div()
         .min_w(px(0.0))
         .p(px(12.0))

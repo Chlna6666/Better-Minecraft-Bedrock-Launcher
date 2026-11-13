@@ -1,5 +1,5 @@
 use crate::config::agreement;
-use crate::ui::components::markdown_renderer::{MarkdownDocument, render_markdown_document};
+use crate::ui::components::markdown::{Document, render_document};
 use crate::ui::components::modal;
 use crate::ui::components::scroll::Scrollbar;
 use crate::ui::state::agreement::AgreementState;
@@ -40,8 +40,8 @@ fn check_acceptance(_window: &mut Window, cx: &mut App) {
     });
 }
 
-pub fn render_user_agreement_modal(
-    markdown_document: Arc<MarkdownDocument>,
+pub fn render(
+    markdown_document: Arc<Document>,
     window_width: Pixels,
     window_height: Pixels,
     theme_factor: f32,
@@ -53,14 +53,14 @@ pub fn render_user_agreement_modal(
     options: UserAgreementModalOptions,
 ) -> impl IntoElement {
     let colors = lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        &LightColors::theme(),
+        &DarkColors::theme(),
         theme_factor,
         accent_override,
     );
     let card_w = (window_width - px(40.)).max(px(360.)).min(px(560.));
     let card_h = px(((window_height / px(1.)) * 0.82).clamp(420.0, 700.0));
-    let content = render_markdown_document(markdown_document.as_ref(), &colors, theme_factor > 0.5);
+    let content = render_document(markdown_document.as_ref(), &colors, theme_factor > 0.5);
     let overlay_bg = hsla(0., 0., 0.12, 0.30);
 
     let mut header = div()
@@ -212,7 +212,7 @@ pub fn render_user_agreement_modal(
 
                 if let Err(error) = crate::tasks::runtime::spawn_io(async {
                     let result =
-                        crate::tasks::runtime::run_io_blocking(agreement::accept_current_agreement)
+                        crate::tasks::runtime::blocking::run_io(agreement::accept_current_agreement)
                             .await;
 
                     match result {
@@ -282,7 +282,7 @@ pub fn render_user_agreement_modal(
     div()
         .absolute()
         .inset_0()
-        .child(modal::modal_backdrop(overlay_bg))
+        .child(modal::backdrop(overlay_bg))
         .child(
             div()
                 .absolute()

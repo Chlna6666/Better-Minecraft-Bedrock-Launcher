@@ -1,7 +1,7 @@
 use gpui::{Pixels, px};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AdaptiveSizeClass {
+pub enum SizeClass {
     Compact,
     Regular,
     Spacious,
@@ -11,12 +11,12 @@ pub enum AdaptiveSizeClass {
 pub struct WindowMetrics {
     pub width: Pixels,
     pub height: Pixels,
-    pub width_class: AdaptiveSizeClass,
-    pub height_class: AdaptiveSizeClass,
+    pub width_class: SizeClass,
+    pub height_class: SizeClass,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AdaptiveModalSpec {
+pub struct ModalSpec {
     pub min_width: f32,
     pub max_width: f32,
     pub min_height: f32,
@@ -25,7 +25,7 @@ pub struct AdaptiveModalSpec {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AdaptiveModalSize {
+pub struct ModalSize {
     pub width: Pixels,
     pub height: Pixels,
     pub available_height: Pixels,
@@ -47,22 +47,22 @@ impl WindowMetrics {
 }
 
 #[must_use]
-pub fn adaptive_modal_size(metrics: WindowMetrics, spec: AdaptiveModalSpec) -> AdaptiveModalSize {
-    adaptive_modal_size_from_px(metrics.width / px(1.0), metrics.height / px(1.0), spec)
+pub fn modal_size(metrics: WindowMetrics, spec: ModalSpec) -> ModalSize {
+    modal_size_from_px(metrics.width / px(1.0), metrics.height / px(1.0), spec)
 }
 
-fn adaptive_modal_size_from_px(
+fn modal_size_from_px(
     window_width: f32,
     window_height: f32,
-    spec: AdaptiveModalSpec,
-) -> AdaptiveModalSize {
+    spec: ModalSpec,
+) -> ModalSize {
     let margin = spec.margin.max(0.0);
     let available_width = (window_width - margin).max(0.0);
     let available_height = (window_height - margin).max(0.0);
     let width = axis_size(available_width, spec.min_width, spec.max_width);
     let height = axis_size(available_height, spec.min_height, spec.max_height);
 
-    AdaptiveModalSize {
+    ModalSize {
         width: px(width),
         height: px(height),
         available_height: px(available_height),
@@ -77,13 +77,13 @@ fn axis_size(available: f32, minimum: f32, maximum: f32) -> f32 {
     }
 }
 
-fn size_class(value: f32) -> AdaptiveSizeClass {
+fn size_class(value: f32) -> SizeClass {
     if value < 640.0 {
-        AdaptiveSizeClass::Compact
+        SizeClass::Compact
     } else if value < 1040.0 {
-        AdaptiveSizeClass::Regular
+        SizeClass::Regular
     } else {
-        AdaptiveSizeClass::Spacious
+        SizeClass::Spacious
     }
 }
 
@@ -91,7 +91,7 @@ fn size_class(value: f32) -> AdaptiveSizeClass {
 mod tests {
     use super::*;
 
-    const SPEC: AdaptiveModalSpec = AdaptiveModalSpec {
+    const SPEC: ModalSpec = ModalSpec {
         min_width: 320.0,
         max_width: 520.0,
         min_height: 360.0,
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn adaptive_modal_size_does_not_overflow_small_window() {
         let metrics = WindowMetrics::new(px(300.0), px(340.0));
-        let size = adaptive_modal_size(metrics, SPEC);
+        let size = modal_size(metrics, SPEC);
 
         assert_eq!(size.width, px(260.0));
         assert_eq!(size.height, px(300.0));
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn adaptive_modal_size_caps_large_window_height() {
         let metrics = WindowMetrics::new(px(1920.0), px(1032.0));
-        let size = adaptive_modal_size(metrics, SPEC);
+        let size = modal_size(metrics, SPEC);
 
         assert_eq!(size.width, px(520.0));
         assert_eq!(size.height, px(640.0));
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn adaptive_modal_size_clamps_regular_window_between_bounds() {
         let metrics = WindowMetrics::new(px(720.0), px(560.0));
-        let size = adaptive_modal_size(metrics, SPEC);
+        let size = modal_size(metrics, SPEC);
 
         assert_eq!(size.width, px(520.0));
         assert_eq!(size.height, px(520.0));
@@ -133,8 +133,8 @@ mod tests {
         let regular = WindowMetrics::new(px(800.0), px(760.0));
         let spacious = WindowMetrics::new(px(1280.0), px(1100.0));
 
-        assert_eq!(compact.width_class, AdaptiveSizeClass::Compact);
-        assert_eq!(regular.width_class, AdaptiveSizeClass::Regular);
-        assert_eq!(spacious.height_class, AdaptiveSizeClass::Spacious);
+        assert_eq!(compact.width_class, SizeClass::Compact);
+        assert_eq!(regular.width_class, SizeClass::Regular);
+        assert_eq!(spacious.height_class, SizeClass::Spacious);
     }
 }

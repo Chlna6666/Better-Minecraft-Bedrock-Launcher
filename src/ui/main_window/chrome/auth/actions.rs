@@ -24,16 +24,6 @@ pub(super) fn button(
     state: &RenderState,
     colors: &ThemeColors,
     enabled: bool,
-) -> Stateful<Div> {
-    button_with_disabled_opacity(id, action, state, colors, enabled, 0.45)
-}
-
-pub(super) fn button_with_disabled_opacity(
-    id: impl Into<ElementId>,
-    action: Action,
-    state: &RenderState,
-    colors: &ThemeColors,
-    enabled: bool,
     disabled_opacity: f32,
 ) -> Stateful<Div> {
     let hover = colors.text_primary.opacity(0.06);

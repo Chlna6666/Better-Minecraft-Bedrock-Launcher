@@ -6,13 +6,13 @@ use crate::ui::hooks::use_linux_runtime::{
 };
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::linux_runtime::{LinuxRuntimeState, LinuxRuntimeStatus};
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::time::Duration;
 
-pub fn render_linux_runtime_overlay(
+pub fn render(
     state: &LinuxRuntimeState,
     colors: &ThemeColors,
     i18n: &I18n,
@@ -147,7 +147,7 @@ pub fn render_linux_runtime_overlay(
             });
     }
 
-    let surface = modal::modal_surface(
+    let surface = modal::surface(
         colors.settings_panel_bg,
         colors.border,
         px(620.),
@@ -276,7 +276,7 @@ pub fn render_linux_runtime_overlay(
             .child(action_button),
     );
 
-    modal::modal_layer(surface, Hsla { a: 0.52, ..black() })
+    modal::layer(surface, Hsla { a: 0.52, ..black() })
 }
 
 fn install_progress(

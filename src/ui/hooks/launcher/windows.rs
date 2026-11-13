@@ -9,9 +9,9 @@ use gpui_hooks::hooks::{UseRefHook, UseStateHook};
 use tracing::{debug, info, warn};
 
 #[cfg(target_os = "windows")]
-use crate::core::minecraft::launcher::preflight::{LaunchPlatform, detect_launch_platform};
+use crate::core::minecraft::launcher::preflight::{LaunchPlatform, detect_platform};
 use crate::core::minecraft::launcher::preflight::{
-    LaunchPrerequisiteCheck, check_launch_prerequisites,
+    LaunchPrerequisiteCheck, check_prerequisites,
 };
 use crate::core::minecraft::launcher::task::embedded_dll_version_string;
 use crate::core::minecraft::launcher::{LaunchRequest, start_launch_task};
@@ -59,7 +59,7 @@ struct ActiveLaunchPrereq {
     busy: bool,
 }
 
-pub fn read_launcher_snapshot(cx: &App) -> LauncherSnapshot {
+pub fn snapshot(cx: &App) -> LauncherSnapshot {
     cx.read_global(|state: &LauncherState, _cx| {
         let logs = state.task_logs.clone();
         let log_version = state.task_log_version;
@@ -80,30 +80,30 @@ pub fn read_launcher_snapshot(cx: &App) -> LauncherSnapshot {
     })
 }
 
-pub fn use_launcher<Hooks, View>(hooks: &Hooks, cx: &mut Context<View>) -> LauncherSnapshot
+pub fn use_snapshot<Hooks, View>(hooks: &Hooks, cx: &mut Context<View>) -> LauncherSnapshot
 where
     Hooks: UseStateHook + UseRefHook,
     View: 'static,
 {
-    let snapshot = hooks.use_state(|| read_launcher_snapshot(cx));
+    let snapshot_state = hooks.use_state(|| snapshot(cx));
     let subscription = hooks.use_ref(|| None::<Subscription>);
 
     if subscription.borrow().is_none() {
-        let snapshot = snapshot.clone();
+        let snapshot_state = snapshot_state.clone();
         let observer = cx.observe_global::<LauncherState>(move |_, cx| {
-            let current = read_launcher_snapshot(cx);
-            if snapshot.with(|value| launcher_snapshot_changed(value, &current)) {
-                snapshot.set(current);
+            let current = snapshot(cx);
+            if snapshot_state.with(|value| snapshot_changed(value, &current)) {
+                snapshot_state.set(current);
                 cx.notify();
             }
         });
         *subscription.borrow_mut() = Some(observer);
     }
 
-    snapshot.with(Clone::clone)
+    snapshot_state.with(Clone::clone)
 }
 
-pub fn start_launcher(version: LaunchVersionDescriptor, cx: &mut App) -> Option<Arc<str>> {
+pub fn start(version: LaunchVersionDescriptor, cx: &mut App) -> Option<Arc<str>> {
     if version.path.is_empty() {
         warn!(
             version_name = %version.name,
@@ -127,7 +127,7 @@ pub fn start_launcher(version: LaunchVersionDescriptor, cx: &mut App) -> Option<
 
     let pending_version = pending_launch_version(&version);
     #[cfg(target_os = "windows")]
-    if detect_launch_platform(version.kind.as_ref()) == LaunchPlatform::Uwp {
+    if detect_platform(version.kind.as_ref()) == LaunchPlatform::Uwp {
         let request_id = crate::ui::onboarding::uwp_safety::request_launch(pending_version, cx);
         info!(
             request_id,
@@ -140,11 +140,11 @@ pub fn start_launcher(version: LaunchVersionDescriptor, cx: &mut App) -> Option<
         return Some(Arc::from(format!("uwp-safety-{request_id}")));
     }
 
-    Some(begin_launch_prereq(pending_version, cx))
+    Some(begin_prerequisite_check(pending_version, cx))
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn continue_launcher_after_uwp_check(version: PendingLaunchVersion, cx: &mut App) {
+pub(crate) fn resume_after_uwp_check(version: PendingLaunchVersion, cx: &mut App) {
     if launch_flow_is_busy(cx) {
         warn!(
             version_name = %version.name,
@@ -153,10 +153,10 @@ pub(crate) fn continue_launcher_after_uwp_check(version: PendingLaunchVersion, c
         );
         return;
     }
-    let _ = begin_launch_prereq(version, cx);
+    let _ = begin_prerequisite_check(version, cx);
 }
 
-fn begin_launch_prereq(pending_version: PendingLaunchVersion, cx: &mut App) -> Arc<str> {
+fn begin_prerequisite_check(pending_version: PendingLaunchVersion, cx: &mut App) -> Arc<str> {
     let request_id =
         cx.update_global(|state: &mut LaunchPrereqState, _cx| state.begin(pending_version.clone()));
     info!(
@@ -167,8 +167,8 @@ fn begin_launch_prereq(pending_version: PendingLaunchVersion, cx: &mut App) -> A
         package_path = %pending_version.path,
         "收到启动请求，开始执行启动前检查"
     );
-    spawn_launch_prereq_check_for_request(pending_version, request_id, cx);
-    launch_prereq_ticket(request_id)
+    spawn_prereq_check(pending_version, request_id, cx);
+    prerequisite_ticket(request_id)
 }
 
 fn launch_flow_is_busy(cx: &App) -> bool {
@@ -183,20 +183,20 @@ fn launch_flow_is_busy(cx: &App) -> bool {
     prereq_busy || launcher_busy || uwp_safety_busy
 }
 
-pub fn close_launcher(cx: &mut App) {
+pub fn close(cx: &mut App) {
     let now = std::time::Instant::now();
     cx.update_global(|state: &mut LauncherState, _cx| {
         state.request_close(now);
     });
 }
 
-pub fn minimize_launcher(cx: &mut App) {
+pub fn minimize(cx: &mut App) {
     cx.update_global(|state: &mut LauncherState, _cx| {
         state.dismiss_modal();
     });
 }
 
-pub fn cancel_launcher(cx: &mut App) {
+pub fn cancel(cx: &mut App) {
     let task_id = cx
         .global::<LauncherState>()
         .task_id
@@ -214,7 +214,7 @@ pub fn cancel_launcher(cx: &mut App) {
     }
 }
 
-pub fn retry_launcher(cx: &mut App) -> Option<Arc<str>> {
+pub fn retry(cx: &mut App) -> Option<Arc<str>> {
     let descriptor = cx.read_global(|state: &LauncherState, _cx| {
         let is_error = state
             .last_snapshot
@@ -234,10 +234,10 @@ pub fn retry_launcher(cx: &mut App) -> Option<Arc<str>> {
         })
     });
 
-    descriptor.and_then(|version| start_launcher(version, cx))
+    descriptor.and_then(|version| start(version, cx))
 }
 
-pub fn copy_launcher_error(cx: &mut App) -> bool {
+pub fn copy_error(cx: &mut App) -> bool {
     let copy_text = cx.read_global(|state: &LauncherState, _cx| {
         let logs = state
             .task_id
@@ -278,7 +278,7 @@ pub fn copy_launcher_error(cx: &mut App) -> bool {
     false
 }
 
-pub fn sync_launcher_state(now: std::time::Instant, cx: &mut App) {
+pub fn sync_state(now: std::time::Instant, cx: &mut App) {
     let should_finish_close = {
         let state = cx.global::<LauncherState>();
         state.show_modal && !state.modal_visible && !state.is_modal_animating(now)
@@ -290,7 +290,7 @@ pub fn sync_launcher_state(now: std::time::Instant, cx: &mut App) {
     }
 }
 
-pub fn dismiss_launch_prereq(cx: &mut App) {
+pub fn dismiss_prerequisites(cx: &mut App) {
     cx.update_global(|state: &mut LaunchPrereqState, _cx| {
         if state.is_busy() {
             return;
@@ -299,7 +299,7 @@ pub fn dismiss_launch_prereq(cx: &mut App) {
     });
 }
 
-pub fn cancel_launch_prereq(cx: &mut App) {
+pub fn cancel_prerequisites(cx: &mut App) {
     let cancelled = cx.update_global(|state: &mut LaunchPrereqState, _cx| {
         let version = state.version.as_ref().map(|version| version.name.clone());
         let request_id = state.cancel_active_request();
@@ -315,7 +315,7 @@ pub fn cancel_launch_prereq(cx: &mut App) {
     }
 }
 
-pub fn recheck_launch_prereq(cx: &mut App) {
+pub fn recheck_prerequisites(cx: &mut App) {
     let version = cx.read_global(|state: &LaunchPrereqState, _cx| {
         if state.is_busy() {
             return None;
@@ -335,11 +335,11 @@ pub fn recheck_launch_prereq(cx: &mut App) {
         kind = %version.kind,
         "用户请求重新执行启动前检查"
     );
-    spawn_launch_prereq_check_for_request(version, request_id, cx);
+    spawn_prereq_check(version, request_id, cx);
 }
 
-pub fn open_launch_prereq_developer_settings(cx: &mut App) {
-    let context = read_active_launch_prereq(cx);
+pub fn open_developer_mode_settings(cx: &mut App) {
+    let context = active_prerequisite(cx);
     let Some(context) = context else {
         return;
     };
@@ -364,7 +364,7 @@ pub fn open_launch_prereq_developer_settings(cx: &mut App) {
 
     cx.spawn(async move |cx| {
         let result =
-            crate::tasks::runtime::run_io_blocking(developer_mode::open_developer_settings).await;
+            crate::tasks::runtime::blocking::run_io(developer_mode::open_settings).await;
         match result {
             Ok(Ok(())) => {
                 info!(
@@ -394,7 +394,7 @@ pub fn open_launch_prereq_developer_settings(cx: &mut App) {
                     error = %error,
                     "打开开发者模式设置页失败"
                 );
-                apply_launch_prereq_failure(
+                apply_prerequisite_failure(
                     context.request_id,
                     "LaunchPrereq.errors.openSettingsFailed",
                     &error.to_string(),
@@ -408,7 +408,7 @@ pub fn open_launch_prereq_developer_settings(cx: &mut App) {
                     error = %error,
                     "开发者模式设置页任务执行失败"
                 );
-                apply_launch_prereq_failure(
+                apply_prerequisite_failure(
                     context.request_id,
                     "LaunchPrereq.errors.openSettingsFailed",
                     &error.to_string(),
@@ -422,8 +422,8 @@ pub fn open_launch_prereq_developer_settings(cx: &mut App) {
     .detach();
 }
 
-pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
-    let context = read_active_launch_prereq(cx);
+pub fn enable_developer_mode(cx: &mut App) {
+    let context = active_prerequisite(cx);
     let Some(context) = context else {
         return;
     };
@@ -448,7 +448,7 @@ pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
 
     cx.spawn(async move |cx| {
         let result =
-            crate::tasks::runtime::run_io_blocking(developer_mode::try_enable_developer_mode).await;
+            crate::tasks::runtime::blocking::run_io(developer_mode::try_enable).await;
         match result {
             Ok(Ok(())) => {
                 info!(
@@ -457,7 +457,7 @@ pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
                     "开发者模式启用成功，准备重新检查依赖"
                 );
                 if let Err(error) =
-                    schedule_launch_prereq_check(context.version, context.request_id, cx)
+                    schedule_prerequisite_check(context.version, context.request_id, cx)
                 {
                     warn!("schedule developer mode recheck failed: {error:?}");
                 }
@@ -483,8 +483,8 @@ pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
                     state.admin_notice = Some(admin_notice);
                 });
 
-                match crate::tasks::runtime::run_io_blocking(
-                    developer_mode::open_developer_settings,
+                match crate::tasks::runtime::blocking::run_io(
+                    developer_mode::open_settings,
                 )
                 .await
                 {
@@ -494,10 +494,10 @@ pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
                             version_name = %context.version.name,
                             "已打开开发者模式设置页"
                         );
-                        toast::push_async(cx, toast::ToastKind::Info, manual_toast);
+                        toast::async_app::push(cx, toast::ToastKind::Info, manual_toast);
                     }
                     Ok(Err(error)) => {
-                        apply_launch_prereq_failure(
+                        apply_prerequisite_failure(
                             context.request_id,
                             "LaunchPrereq.errors.openSettingsFailed",
                             &error.to_string(),
@@ -505,7 +505,7 @@ pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
                         );
                     }
                     Err(error) => {
-                        apply_launch_prereq_failure(
+                        apply_prerequisite_failure(
                             context.request_id,
                             "LaunchPrereq.errors.openSettingsFailed",
                             &error.to_string(),
@@ -521,7 +521,7 @@ pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
                     error = %error,
                     "启用开发者模式失败"
                 );
-                apply_launch_prereq_failure(
+                apply_prerequisite_failure(
                     context.request_id,
                     "LaunchPrereq.errors.enableDeveloperModeFailed",
                     &error.to_string(),
@@ -535,7 +535,7 @@ pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
                     error = %error,
                     "启用开发者模式任务执行失败"
                 );
-                apply_launch_prereq_failure(
+                apply_prerequisite_failure(
                     context.request_id,
                     "LaunchPrereq.errors.enableDeveloperModeFailed",
                     &error.to_string(),
@@ -549,8 +549,8 @@ pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
     .detach();
 }
 
-pub fn install_launch_prereq_uwp_dependencies(cx: &mut App) {
-    let Some(context) = read_active_launch_prereq(cx) else {
+pub fn install_uwp_dependencies(cx: &mut App) {
+    let Some(context) = active_prerequisite(cx) else {
         return;
     };
     if context.busy {
@@ -574,7 +574,7 @@ pub fn install_launch_prereq_uwp_dependencies(cx: &mut App) {
         }
     });
 
-    match mc_dependency::start_missing_uwp_dependencies_task(check.missing_uwp_dependencies) {
+    match mc_dependency::start_missing_uwp_dependencies(check.missing_uwp_dependencies) {
         Ok(task_id) => {
             info!(
                 request_id = context.request_id,
@@ -582,7 +582,7 @@ pub fn install_launch_prereq_uwp_dependencies(cx: &mut App) {
                 task_id = %task_id,
                 "UWP 依赖安装已注册为 BMCBL 任务"
             );
-            watch_launch_prereq_dependency_task(
+            watch_prerequisite_task(
                 context,
                 task_id,
                 "LaunchPrereq.errors.installUwpFailed",
@@ -593,7 +593,7 @@ pub fn install_launch_prereq_uwp_dependencies(cx: &mut App) {
         Err(error) => {
             let request_id = context.request_id;
             cx.spawn(async move |cx| {
-                apply_launch_prereq_failure(
+                apply_prerequisite_failure(
                     request_id,
                     "LaunchPrereq.errors.installUwpFailed",
                     &error,
@@ -605,8 +605,8 @@ pub fn install_launch_prereq_uwp_dependencies(cx: &mut App) {
     }
 }
 
-pub fn install_launch_prereq_game_input(cx: &mut App) {
-    let Some(context) = read_active_launch_prereq(cx) else {
+pub fn install_game_input(cx: &mut App) {
+    let Some(context) = active_prerequisite(cx) else {
         return;
     };
     if context.busy {
@@ -631,7 +631,7 @@ pub fn install_launch_prereq_game_input(cx: &mut App) {
         }
     });
 
-    match mc_dependency::start_game_input_runtime_task(plan) {
+    match mc_dependency::start_game_input_runtime(plan) {
         Ok(task_id) => {
             info!(
                 request_id = context.request_id,
@@ -639,7 +639,7 @@ pub fn install_launch_prereq_game_input(cx: &mut App) {
                 task_id = %task_id,
                 "GameInput Runtime 安装已注册为 BMCBL 任务"
             );
-            watch_launch_prereq_dependency_task(
+            watch_prerequisite_task(
                 context,
                 task_id,
                 "LaunchPrereq.errors.installGameInputFailed",
@@ -650,7 +650,7 @@ pub fn install_launch_prereq_game_input(cx: &mut App) {
         Err(error) => {
             let request_id = context.request_id;
             cx.spawn(async move |cx| {
-                apply_launch_prereq_failure(
+                apply_prerequisite_failure(
                     request_id,
                     "LaunchPrereq.errors.installGameInputFailed",
                     &error,
@@ -662,8 +662,8 @@ pub fn install_launch_prereq_game_input(cx: &mut App) {
     }
 }
 
-pub fn install_launch_prereq_windows_app_sdk(cx: &mut App) {
-    let Some(context) = read_active_launch_prereq(cx) else {
+pub fn install_windows_app_sdk(cx: &mut App) {
+    let Some(context) = active_prerequisite(cx) else {
         return;
     };
     if context.busy {
@@ -688,7 +688,7 @@ pub fn install_launch_prereq_windows_app_sdk(cx: &mut App) {
         }
     });
 
-    match mc_dependency::start_windows_app_sdk_runtime_task(plan) {
+    match mc_dependency::windows_app_sdk::start(plan) {
         Ok(task_id) => {
             info!(
                 request_id = context.request_id,
@@ -696,7 +696,7 @@ pub fn install_launch_prereq_windows_app_sdk(cx: &mut App) {
                 task_id = %task_id,
                 "Windows App SDK Runtime 安装已注册为 BMCBL 任务"
             );
-            watch_launch_prereq_dependency_task(
+            watch_prerequisite_task(
                 context,
                 task_id,
                 "LaunchPrereq.errors.installWindowsAppSdkFailed",
@@ -707,7 +707,7 @@ pub fn install_launch_prereq_windows_app_sdk(cx: &mut App) {
         Err(error) => {
             let request_id = context.request_id;
             cx.spawn(async move |cx| {
-                apply_launch_prereq_failure(
+                apply_prerequisite_failure(
                     request_id,
                     "LaunchPrereq.errors.installWindowsAppSdkFailed",
                     &error,
@@ -787,11 +787,11 @@ fn launch_version_from_pending(version: &PendingLaunchVersion) -> LaunchVersionD
     }
 }
 
-fn launch_prereq_ticket(request_id: u64) -> Arc<str> {
+fn prerequisite_ticket(request_id: u64) -> Arc<str> {
     Arc::from(format!("launch-prereq-{request_id}"))
 }
 
-fn read_active_launch_prereq(cx: &App) -> Option<ActiveLaunchPrereq> {
+fn active_prerequisite(cx: &App) -> Option<ActiveLaunchPrereq> {
     cx.read_global(|state: &LaunchPrereqState, _cx| {
         Some(ActiveLaunchPrereq {
             request_id: state.request_id,
@@ -802,7 +802,7 @@ fn read_active_launch_prereq(cx: &App) -> Option<ActiveLaunchPrereq> {
     })
 }
 
-fn spawn_launch_prereq_check_for_request(
+fn spawn_prereq_check(
     version: PendingLaunchVersion,
     request_id: u64,
     cx: &mut App,
@@ -819,8 +819,8 @@ fn spawn_launch_prereq_check_for_request(
     );
 
     cx.spawn(async move |cx| {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
-            check_launch_prerequisites(&kind, &package_path)
+        let result = crate::tasks::runtime::blocking::run_io(move || {
+            check_prerequisites(&kind, &package_path)
         })
         .await;
 
@@ -854,7 +854,7 @@ fn spawn_launch_prereq_check_for_request(
                     platform = ?check.platform,
                     "启动前检查通过，进入正式启动"
                 );
-                if let Err(error) = finish_launch_prereq_and_start_launch(version, request_id, cx) {
+                if let Err(error) = start_launch_after_prerequisites(version, request_id, cx) {
                     warn!("finish launch prereq failed: {error:?}");
                 }
             }
@@ -866,7 +866,7 @@ fn spawn_launch_prereq_check_for_request(
                     error = %error,
                     "启动前检查任务执行失败"
                 );
-                apply_launch_prereq_failure(
+                apply_prerequisite_failure(
                     request_id,
                     "LaunchPrereq.errors.checkFailed",
                     &error.to_string(),
@@ -880,7 +880,7 @@ fn spawn_launch_prereq_check_for_request(
     .detach();
 }
 
-fn finish_launch_prereq_and_start_launch(
+fn start_launch_after_prerequisites(
     version: PendingLaunchVersion,
     request_id: u64,
     cx: &mut AsyncApp,
@@ -912,7 +912,7 @@ fn finish_launch_prereq_and_start_launch(
     Ok(())
 }
 
-fn schedule_launch_prereq_check(
+fn schedule_prerequisite_check(
     version: PendingLaunchVersion,
     request_id: u64,
     cx: &mut AsyncApp,
@@ -927,12 +927,12 @@ fn schedule_launch_prereq_check(
         cx.update_global(|state: &mut LaunchPrereqState, _cx| {
             let _ = state.set_operation_if_matches(request_id, LaunchPrereqOperation::Checking);
         });
-        spawn_launch_prereq_check_for_request(version, request_id, cx);
+        spawn_prereq_check(version, request_id, cx);
     })?;
     Ok(())
 }
 
-fn watch_launch_prereq_dependency_task(
+fn watch_prerequisite_task(
     context: ActiveLaunchPrereq,
     task_id: String,
     error_key: &'static str,
@@ -957,7 +957,7 @@ fn watch_launch_prereq_dependency_task(
                     "启动依赖安装完成，准备重新检查"
                 );
                 if let Err(error) =
-                    schedule_launch_prereq_check(context.version, context.request_id, cx)
+                    schedule_prerequisite_check(context.version, context.request_id, cx)
                 {
                     warn!("schedule dependency recheck failed: {error:?}");
                 }
@@ -976,7 +976,7 @@ fn watch_launch_prereq_dependency_task(
                     error = %message,
                     "启动依赖 BMCBL 任务未成功完成"
                 );
-                apply_launch_prereq_failure(context.request_id, error_key, &message, cx);
+                apply_prerequisite_failure(context.request_id, error_key, &message, cx);
             }
             Err(error) => {
                 warn!(
@@ -987,7 +987,7 @@ fn watch_launch_prereq_dependency_task(
                     error = %error,
                     "等待启动依赖 BMCBL 任务终态失败"
                 );
-                apply_launch_prereq_failure(context.request_id, error_key, &error.to_string(), cx);
+                apply_prerequisite_failure(context.request_id, error_key, &error.to_string(), cx);
             }
         }
         Ok::<(), Error>(())
@@ -995,7 +995,7 @@ fn watch_launch_prereq_dependency_task(
     .detach();
 }
 
-fn apply_launch_prereq_failure(request_id: u64, key: &str, message: &str, cx: &mut AsyncApp) {
+fn apply_prerequisite_failure(request_id: u64, key: &str, message: &str, cx: &mut AsyncApp) {
     warn!(
         request_id,
         error_key = key,
@@ -1174,18 +1174,18 @@ fn build_issue_logs(check: &LaunchPrerequisiteCheck, cx: &mut AsyncApp) -> Vec<S
 
     if let Some(plan) = check.windows_app_sdk_plan.as_ref() {
         match plan.source {
-            mc_dependency::WindowsAppSdkInstallerSource::Local => {
+            mc_dependency::windows_app_sdk::InstallerSource::Local => {
                 logs.push(async_i18n_text_path(
                     cx,
                     "LaunchPrereq.logs.missingWindowsAppSdkLocal",
                     &plan.installer_path.display().to_string(),
                 ));
             }
-            mc_dependency::WindowsAppSdkInstallerSource::Download => {
+            mc_dependency::windows_app_sdk::InstallerSource::Download => {
                 logs.push(async_i18n_text_url(
                     cx,
                     "LaunchPrereq.logs.missingWindowsAppSdkDownload",
-                    mc_dependency::WINDOWS_APP_SDK_RELEASES_URL,
+                    mc_dependency::windows_app_sdk::RELEASES_URL,
                 ));
             }
         }
@@ -1248,7 +1248,7 @@ fn requires_admin_notice(message: &str) -> bool {
 fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
     let mut updates = task_manager::subscribe_task_updates();
     let mut log_updates = task_manager::subscribe_task_log_updates();
-    let initial_snapshot = task_manager::get_snapshot_arc(task_id.as_ref());
+    let initial_snapshot = task_manager::snapshot_arc(task_id.as_ref());
     let initial_logs = task_manager::task_logs_snapshot(task_id.as_ref());
     cx.update_global(|state: &mut LauncherState, _cx| {
         if state.task_id.as_deref() == Some(task_id.as_ref()) {
@@ -1268,7 +1268,7 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
                         Ok(snapshot) => Some(snapshot),
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                             warn!(skipped, "launcher snapshot pump lagged; resyncing");
-                            task_manager::get_snapshot_arc(task_id.as_ref())
+                            task_manager::snapshot_arc(task_id.as_ref())
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             warn!("launcher snapshot pump closed");
@@ -1354,7 +1354,7 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
     .detach();
 }
 
-pub(crate) fn launcher_snapshot_changed(
+pub(crate) fn snapshot_changed(
     previous: &LauncherSnapshot,
     current: &LauncherSnapshot,
 ) -> bool {

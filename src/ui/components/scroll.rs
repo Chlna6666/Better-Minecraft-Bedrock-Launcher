@@ -1,4 +1,4 @@
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, Div, ElementId, Entity, Hsla, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,

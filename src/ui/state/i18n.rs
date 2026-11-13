@@ -143,7 +143,7 @@ impl I18nCacheStamp {
         }
     }
 
-    pub fn needs_refresh(self, i18n: &I18n, data_revision: u64) -> bool {
+    pub fn refresh_required(self, i18n: &I18n, data_revision: u64) -> bool {
         self != Self::new(i18n, data_revision)
     }
 }
@@ -369,12 +369,12 @@ mod tests {
     fn cache_stamp_tracks_language_and_domain_versions() {
         let i18n = I18n::default();
         let stamp = I18nCacheStamp::new(&i18n, 7);
-        assert!(!stamp.needs_refresh(&i18n, 7));
-        assert!(stamp.needs_refresh(&i18n, 8));
+        assert!(!stamp.refresh_required(&i18n, 7));
+        assert!(stamp.refresh_required(&i18n, 8));
 
         let mut i18n = i18n;
         i18n.set_locale(Locale::EnUs);
-        assert!(stamp.needs_refresh(&i18n, 7));
+        assert!(stamp.refresh_required(&i18n, 7));
     }
 
     #[test]

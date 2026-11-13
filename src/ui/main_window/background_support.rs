@@ -92,7 +92,7 @@ pub(super) fn uses_embedded_default_background(
     network_image_refresh_nonce: u64,
 ) -> bool {
     matches!(
-        resolve_background_source_from_values(
+        resolve_background_source(
             background_option,
             local_image_path,
             network_image_url,
@@ -122,7 +122,7 @@ impl BackgroundSettingsSnapshot {
     }
 }
 
-pub(super) fn resolve_background_source_from_values(
+pub(super) fn resolve_background_source(
     background_option: &str,
     local_image_path: &str,
     network_image_url: &str,

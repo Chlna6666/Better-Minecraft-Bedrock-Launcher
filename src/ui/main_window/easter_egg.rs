@@ -132,7 +132,7 @@ impl MainWindowView {
             return;
         }
 
-        let Some(digit) = easter_egg_digit(&event.keystroke) else {
+        let Some(digit) = digit(&event.keystroke) else {
             self.easter_egg.matcher.reset();
             return;
         };
@@ -236,7 +236,7 @@ impl MainWindowView {
                 native_positioning,
                 ..
             } => {
-                crate::ui::animation::request_layout_animation_frame_if(window, true);
+                crate::ui::animation::request_layout_frame(window);
                 let elapsed = now.saturating_duration_since(started_at);
                 let offset = shake_offset(elapsed);
                 if native_positioning {
@@ -271,7 +271,7 @@ impl MainWindowView {
     }
 }
 
-fn easter_egg_digit(keystroke: &Keystroke) -> Option<u8> {
+fn digit(keystroke: &Keystroke) -> Option<u8> {
     let key = keystroke.key.as_bytes();
     match key {
         [digit @ b'0'..=b'9'] => Some(*digit),
@@ -430,7 +430,7 @@ pub(super) fn verify_easter_egg_logic() {
 
     for key in ["7", "num7"] {
         assert_eq!(
-            easter_egg_digit(&Keystroke {
+            digit(&Keystroke {
                 key: key.to_string(),
                 ..Keystroke::default()
             }),
@@ -438,7 +438,7 @@ pub(super) fn verify_easter_egg_logic() {
         );
     }
     assert_eq!(
-        easter_egg_digit(&Keystroke {
+        digit(&Keystroke {
             key: "f7".to_string(),
             ..Keystroke::default()
         }),

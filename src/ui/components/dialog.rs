@@ -2,7 +2,7 @@ use crate::ui::state::i18n::I18n;
 use crate::ui::{
     components::{
         button::{ghost_button, primary_button},
-        modal::{self, ModalDismissHandle},
+        modal::{self, DismissHandle},
         scroll::ScrollableElement,
     },
     theme::ThemeColors,
@@ -11,7 +11,7 @@ use gpui::*;
 use std::rc::Rc;
 
 /// Reusable modal dialog container shell with consistent styling, padding, and layout.
-pub fn dialog_container(colors: &ThemeColors, max_width: Pixels) -> Div {
+pub fn container(colors: &ThemeColors, max_width: Pixels) -> Div {
     div()
         .w_full()
         .max_w(max_width)
@@ -29,7 +29,7 @@ pub fn dialog_container(colors: &ThemeColors, max_width: Pixels) -> Div {
 }
 
 /// Header section for standard dialogs (Title + optional Description).
-pub fn dialog_header(
+pub fn header(
     colors: &ThemeColors,
     title: impl Into<SharedString>,
     description: Option<impl Into<SharedString>>,
@@ -56,7 +56,7 @@ pub fn dialog_header(
 }
 
 /// Action buttons footer for standard dialogs.
-pub fn dialog_actions(
+pub fn actions(
     _colors: &ThemeColors,
     cancel_button: impl IntoElement,
     confirm_button: impl IntoElement,
@@ -83,7 +83,7 @@ pub fn confirm_dialog(
     confirm_label: impl Into<SharedString>,
     danger: bool,
     pending: bool,
-    dismiss_handle: ModalDismissHandle,
+    dismiss_handle: DismissHandle,
     on_dismiss: Rc<dyn Fn(&mut App)>,
     on_confirm: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
@@ -116,16 +116,21 @@ pub fn confirm_dialog(
         confirm_button = confirm_button.on_mouse_down(MouseButton::Left, on_confirm);
     }
 
-    let content = dialog_container(colors, px(480.))
+    let content = container(colors, px(480.))
         .child(
-            dialog_header(colors, title, Some(description))
+            header(colors, title, Some(description))
                 .flex_1()
                 .min_h(px(0.))
                 .overflow_y_scrollbar(),
         )
-        .child(dialog_actions(colors, cancel_button, confirm_button));
+        .child(actions(colors, cancel_button, confirm_button));
 
-    modal::modal_layer_dismissible_with_handle(dismiss_handle, content, colors.backdrop, on_dismiss)
+    modal::dismissible_layer(
+        content,
+        colors.backdrop,
+        on_dismiss,
+        modal::DismissOptions::default().with_handle(dismiss_handle),
+    )
 }
 
 /// Unified Single-Input Prompt Dialog Component.
@@ -137,14 +142,14 @@ pub fn prompt_dialog(
     input_element: impl IntoElement,
     confirm_label: impl Into<SharedString>,
     pending: bool,
-    dismiss_handle: ModalDismissHandle,
+    dismiss_handle: DismissHandle,
     on_dismiss: Rc<dyn Fn(&mut App)>,
     on_confirm: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let cancel_dismiss = dismiss_handle.clone();
     let confirm_label: SharedString = confirm_label.into();
 
-    let content = dialog_container(colors, px(520.))
+    let content = container(colors, px(520.))
         .child(
             div()
                 .flex_1()
@@ -170,7 +175,7 @@ pub fn prompt_dialog(
                 )
                 .child(input_element),
         )
-        .child(dialog_actions(
+        .child(actions(
             colors,
             ghost_button(
                 colors,
@@ -193,18 +198,23 @@ pub fn prompt_dialog(
             .on_mouse_down(MouseButton::Left, on_confirm),
         ));
 
-    modal::modal_layer_dismissible_with_handle(dismiss_handle, content, colors.backdrop, on_dismiss)
+    modal::dismissible_layer(
+        content,
+        colors.backdrop,
+        on_dismiss,
+        modal::DismissOptions::default().with_handle(dismiss_handle),
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{dialog_actions, dialog_container};
+    use super::{actions, container};
     use crate::ui::theme::light_colors;
     use gpui::{AlignItems, Overflow, Refineable, Style, Styled, div, px, relative};
 
     #[test]
     fn dialog_container_is_bounded_by_the_available_window_height() {
-        let mut container = dialog_container(light_colors(), px(480.));
+        let mut container = container(light_colors(), px(480.));
         let mut style = Style::default();
         style.refine(container.style());
 
@@ -215,7 +225,7 @@ mod tests {
 
     #[test]
     fn dialog_actions_reserve_button_height_and_bottom_spacing() {
-        let mut actions = dialog_actions(light_colors(), div(), div());
+        let mut actions = actions(light_colors(), div(), div());
         let mut style = Style::default();
         style.refine(actions.style());
 

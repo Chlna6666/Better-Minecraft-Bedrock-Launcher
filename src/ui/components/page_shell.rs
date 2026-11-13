@@ -8,7 +8,7 @@
 //!
 //! 圆角/间距/字号一律使用 `crate::ui::theme::tokens`。
 
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::theme::tokens::{font, radius};
 use gpui::{
     BoxShadow, Div, Hsla, IntoElement, ParentElement, Pixels, SharedString, Styled, div,

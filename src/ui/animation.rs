@@ -385,33 +385,15 @@ pub fn repeating_linear_motion(duration: Duration) -> Animation {
 /// only that subtree. Calls made before an element boundary exists conservatively fall back to the
 /// owning view. Prefer `AnimationExt::with_layout_animation_target` for caller-sampled View code.
 #[track_caller]
-pub fn request_layout_animation_frame_if(window: &mut Window, animating: bool) {
-    if animating {
-        window.request_animation_engine_frame(AnimationDriver::Layout);
-    }
-}
-
-/// Active-window variant of [`request_layout_animation_frame_if`].
-#[track_caller]
-pub fn request_layout_animation_frame_if_active(window: &mut Window, animating: bool) {
-    if animating && window.is_window_active() {
-        window.request_animation_engine_frame(AnimationDriver::Layout);
-    }
+pub fn request_layout_frame(window: &mut Window) {
+    window.request_animation_engine_frame(AnimationDriver::Layout);
 }
 
 /// Request layout-animation samples until the supplied deadline.
 #[track_caller]
-pub fn request_layout_animation_frame_until(window: &mut Window, deadline: Option<Instant>) {
+pub fn request_layout_frame_until(window: &mut Window, deadline: Option<Instant>) {
     if deadline.is_some_and(|deadline| window.animation_time() < deadline) {
         window.request_animation_engine_frame(AnimationDriver::Layout);
-    }
-}
-
-/// Active-window variant of [`request_layout_animation_frame_until`].
-#[track_caller]
-pub fn request_layout_animation_frame_until_active(window: &mut Window, deadline: Option<Instant>) {
-    if window.is_window_active() {
-        request_layout_animation_frame_until(window, deadline);
     }
 }
 

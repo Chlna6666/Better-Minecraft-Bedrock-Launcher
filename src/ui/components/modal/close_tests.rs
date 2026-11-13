@@ -12,7 +12,7 @@ impl Render for DialogState {
 
 struct DialogHost {
     state: Entity<DialogState>,
-    dismiss: ModalDismissHandle,
+    dismiss: DismissHandle,
     cleanup_ran: Rc<Cell<bool>>,
     closed_frames: Rc<Cell<usize>>,
 }
@@ -24,11 +24,9 @@ impl Render for DialogHost {
             let state = self.state.clone();
             let cleanup = self.cleanup_ran.clone();
             let cleanup_before_dismiss = cleanup.clone();
-            root = root.child(modal_layer_dismissible_with_handle_and_cleanup(
-                self.dismiss.clone(),
+            root = root.child(dismissible_layer(
                 div().size(px(40.0)).bg(white()),
                 black(),
-                Rc::new(move |_| cleanup.set(true)),
                 Rc::new(move |cx| {
                     assert!(cleanup_before_dismiss.get());
                     state.update(cx, |state, cx| {
@@ -36,6 +34,9 @@ impl Render for DialogHost {
                         cx.notify();
                     });
                 }),
+                DismissOptions::default()
+                    .with_handle(self.dismiss.clone())
+                    .on_cleanup(Rc::new(move |_| cleanup.set(true))),
             ));
         } else {
             self.closed_frames.set(self.closed_frames.get() + 1);
@@ -48,7 +49,7 @@ impl Render for DialogHost {
 fn close_completion_redraws_host_without_another_input(cx: &mut TestAppContext) {
     let (host, cx) = cx.add_window_view(|_, cx| DialogHost {
         state: cx.new(|_| DialogState { open: true }),
-        dismiss: ModalDismissHandle::new(),
+        dismiss: DismissHandle::new(),
         cleanup_ran: Rc::new(Cell::new(false)),
         closed_frames: Rc::new(Cell::new(0)),
     });

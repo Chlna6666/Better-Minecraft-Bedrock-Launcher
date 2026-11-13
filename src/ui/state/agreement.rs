@@ -1,4 +1,4 @@
-use crate::ui::components::markdown_renderer::{MarkdownDocument, parse_markdown_document};
+use crate::ui::components::markdown::{Document, parse_document};
 use gpui::{Global, ScrollHandle, px};
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ pub struct AgreementState {
     pub agreement_scroll_handle: ScrollHandle,
     pub accept_unlocked: bool,
     cached_locale_key: Option<String>,
-    cached_document: Arc<MarkdownDocument>,
+    cached_document: Arc<Document>,
 }
 
 impl Global for AgreementState {}
@@ -41,7 +41,7 @@ impl AgreementState {
         self.show_modal && !self.accepted
     }
 
-    pub fn get_or_cache_document(&mut self, locale_code: &str) -> Arc<MarkdownDocument> {
+    pub fn document(&mut self, locale_code: &str) -> Arc<Document> {
         let locale_key = if locale_code.to_ascii_lowercase().starts_with("zh") {
             "zh"
         } else {
@@ -55,14 +55,14 @@ impl AgreementState {
             } else {
                 AGREEMENT_EN_MD
             };
-            self.cached_document = Arc::new(parse_markdown_document(markdown));
+            self.cached_document = Arc::new(parse_document(markdown));
             self.cached_locale_key = Some(locale_key.to_string());
         }
 
         self.cached_document.clone()
     }
 
-    pub fn cached_document(&self) -> Arc<MarkdownDocument> {
+    pub fn cached_document(&self) -> Arc<Document> {
         self.cached_document.clone()
     }
 

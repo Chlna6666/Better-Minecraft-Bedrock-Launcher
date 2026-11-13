@@ -12,7 +12,7 @@ use crate::i18n::LocalizedText;
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
 #[derive(Default)]
 pub struct UwpBackupToolsState {
@@ -113,7 +113,7 @@ pub fn sync_from_safety(cx: &mut App) {
     };
 
     cx.spawn(async move |cx| {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
             let summary = crate::core::minecraft::uwp_migration::summarize_family(&family_name);
             let path = user_data_path(&summary);
             let available_path = path.is_dir().then_some(path);
@@ -140,7 +140,7 @@ pub fn sync_from_safety(cx: &mut App) {
     .detach();
 }
 
-fn format_bytes(bytes: u64) -> String {
+fn format(bytes: u64) -> String {
     const KIB: f64 = 1024.0;
     const MIB: f64 = 1024.0 * KIB;
     const GIB: f64 = 1024.0 * MIB;
@@ -190,7 +190,7 @@ fn start_export(window: &mut Window, cx: &mut App) {
         return;
     }
 
-    let Some(destination) = crate::utils::file_picker::pick_directory_path_for_window(window)
+    let Some(destination) = crate::utils::file_picker::pick_directory_path(window)
     else {
         return;
     };
@@ -257,7 +257,7 @@ fn start_export(window: &mut Window, cx: &mut App) {
 fn open_directory_in_background(path: PathBuf, create_if_missing: bool, cx: &mut App) {
     let display_path = path.display().to_string();
     cx.spawn(async move |cx| {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
             if create_if_missing {
                 std::fs::create_dir_all(&path).map_err(|error| {
                     format!("Failed to create directory {}: {error}", path.display())
@@ -391,8 +391,8 @@ pub fn render_uwp_backup_tools(
     let i18n = cx.global::<I18n>().clone();
     let theme = cx.global::<ThemeState>();
     let colors = lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        &LightColors::theme(),
+        &DarkColors::theme(),
         theme.factor(now),
         theme.accent,
     );
@@ -413,7 +413,7 @@ pub fn render_uwp_backup_tools(
             t!(
                 "UwpBackup.files_summary",
                 files = summary.file_count,
-                size = format_bytes(summary.total_size),
+                size = format(summary.total_size),
                 worlds = summary.worlds,
                 resource_packs = summary.resource_packs,
                 behavior_packs = summary.behavior_packs,
@@ -433,7 +433,7 @@ pub fn render_uwp_backup_tools(
     let exporting = state
         .export_task_id
         .as_ref()
-        .and_then(|task_id| crate::tasks::task_manager::get_snapshot_arc(task_id.as_ref()))
+        .and_then(|task_id| crate::tasks::task_manager::snapshot_arc(task_id.as_ref()))
         .is_some_and(|snapshot| !snapshot.is_terminal());
     let can_export = !state.scanning
         && !exporting
@@ -451,7 +451,7 @@ pub fn render_uwp_backup_tools(
             .map(|summary| {
                 t!(
                     "UwpBackup.compact_data",
-                    size = format_bytes(summary.total_size)
+                    size = format(summary.total_size)
                 )
                 .to_string()
             })

@@ -33,9 +33,9 @@ impl ThemeState {
     pub fn sync_component_theme(_dark: bool, _cx: &mut App) {}
 
     pub fn apply_startup_config(theme_color_hex: &str, theme_mode: &str, cx: &mut App) {
-        let target_dark = crate::config::config::normalize_theme_mode(theme_mode)
-            == crate::config::config::THEME_MODE_DARK;
-        let accent = crate::ui::theme::parse_hex_color_to_hsla(theme_color_hex);
+        let target_dark = crate::config::settings::normalize_theme_mode(theme_mode)
+            == crate::config::settings::THEME_MODE_DARK;
+        let accent = crate::ui::theme::parse_hex_color(theme_color_hex);
         cx.update_global(|theme: &mut ThemeState, cx| {
             theme.target_dark = target_dark;
             theme.from = if target_dark { 1.0 } else { 0.0 };
@@ -48,7 +48,7 @@ impl ThemeState {
     }
 
     pub fn set_accent_hex(hex: &str, cx: &mut App) {
-        let accent = crate::ui::theme::parse_hex_color_to_hsla(hex);
+        let accent = crate::ui::theme::parse_hex_color(hex);
         let theme = cx.global::<ThemeState>();
         if theme.accent_hex.as_ref() == hex && theme.accent == accent {
             return;
@@ -100,15 +100,15 @@ impl ThemeState {
 
     fn persist_theme_mode(target_dark: bool, cx: &mut App) {
         let theme_mode = if target_dark {
-            crate::config::config::THEME_MODE_DARK
+            crate::config::settings::THEME_MODE_DARK
         } else {
-            crate::config::config::THEME_MODE_LIGHT
+            crate::config::settings::THEME_MODE_LIGHT
         }
         .to_string();
 
         cx.spawn(async move |_cx| {
-            let result = crate::tasks::runtime::run_io_blocking(move || {
-                crate::config::config::update_config(|config| {
+            let result = crate::tasks::runtime::blocking::run_io(move || {
+                crate::config::settings::update(|config| {
                     config.custom_style.theme_mode = theme_mode;
                 })
             })

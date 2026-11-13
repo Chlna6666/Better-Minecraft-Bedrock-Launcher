@@ -40,7 +40,7 @@ impl MainWindowView {
                     let initial = s.search_query.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(search_placeholder.clone(), window, cx);
+                        st.set_placeholder(search_placeholder.clone(), cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -84,7 +84,7 @@ impl MainWindowView {
                     let initial = s.room_code.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(SharedString::from("P/NNNN-NNNN-SSSS-SSSS"), window, cx);
+                        st.set_placeholder(SharedString::from("P/NNNN-NNNN-SSSS-SSSS"), cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -97,7 +97,7 @@ impl MainWindowView {
                     let initial = s.bootstrap_peers.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(t!("Online.bootstrap_peer_placeholder"), window, cx);
+                        st.set_placeholder(t!("Online.bootstrap_peer_placeholder"), cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -110,7 +110,7 @@ impl MainWindowView {
                     let initial = s.player_name.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(t!("Online.player_name_placeholder"), window, cx);
+                        st.set_placeholder(t!("Online.player_name_placeholder"), cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -123,7 +123,7 @@ impl MainWindowView {
                     let initial = s.game_ports.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(t!("Online.open_ports_placeholder"), window, cx);
+                        st.set_placeholder(t!("Online.open_ports_placeholder"), cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -165,7 +165,7 @@ impl MainWindowView {
                             s.bootstrap_peers = value;
                         },
                     );
-                    crate::ui::views::tools::online::persist_tools_online_settings(cx);
+                    crate::ui::views::tools::online::persist_settings(cx);
                     this.notify_tools_page(cx);
                 }
             });
@@ -181,7 +181,7 @@ impl MainWindowView {
                             s.player_name = value;
                         },
                     );
-                    crate::ui::views::tools::online::persist_tools_online_settings(cx);
+                    crate::ui::views::tools::online::persist_settings(cx);
                     this.notify_tools_page(cx);
                 }
             });
@@ -197,7 +197,7 @@ impl MainWindowView {
                             s.game_ports = value;
                         },
                     );
-                    crate::ui::views::tools::online::persist_tools_online_settings(cx);
+                    crate::ui::views::tools::online::persist_settings(cx);
                     this.notify_tools_page(cx);
                 }
             });
@@ -207,8 +207,8 @@ impl MainWindowView {
 
     pub(super) fn persist_frame_rate_limit(&mut self, limit: u32, cx: &mut Context<Self>) {
         cx.spawn(async move |_this, cx| {
-            let result = crate::tasks::runtime::run_io_blocking(move || {
-                crate::config::config::update_config(|cfg| {
+            let result = crate::tasks::runtime::blocking::run_io(move || {
+                crate::config::settings::update(|cfg| {
                     cfg.launcher.frame_rate_limit = limit;
                 })?;
                 Ok::<(), std::io::Error>(())
@@ -235,7 +235,7 @@ impl MainWindowView {
         .detach();
     }
 
-    pub(super) fn persist_settings_launcher_download_texts(
+    pub(super) fn persist_download_settings(
         &mut self,
         curseforge_api_base: String,
         http_proxy_url: String,
@@ -243,9 +243,9 @@ impl MainWindowView {
         cx: &mut Context<Self>,
     ) {
         cx.spawn(async move |_this, cx| {
-            let res = crate::tasks::runtime::run_io_blocking(move || {
+            let res = crate::tasks::runtime::blocking::run_io(move || {
                 let mut curseforge_source_changed = false;
-                crate::config::config::update_config(|cfg| {
+                crate::config::settings::update(|cfg| {
                     curseforge_source_changed =
                         cfg.launcher.download.curseforge_api_base != curseforge_api_base;
                     cfg.launcher.download.curseforge_api_base = curseforge_api_base;
@@ -289,11 +289,11 @@ impl MainWindowView {
         cx: &mut Context<Self>,
     ) {
         let normalized_theme_color = normalize_hex_color(&theme_color).unwrap_or(theme_color);
-        let background_blur = crate::config::config::clamp_background_blur(background_blur);
-        let font_source = crate::config::config::normalize_font_source(&font_source);
+        let background_blur = crate::config::settings::clamp_background_blur(background_blur);
+        let font_source = crate::config::settings::normalize_font_source(&font_source);
         cx.spawn(async move |_this, _cx| {
-            let res = crate::tasks::runtime::run_io_blocking(move || {
-                crate::config::config::update_config(|cfg| {
+            let res = crate::tasks::runtime::blocking::run_io(move || {
+                crate::config::settings::update(|cfg| {
                     cfg.custom_style.theme_color = normalized_theme_color;
                     cfg.custom_style.background_option = background_option;
                     cfg.custom_style.local_image_path = local_image_path;
@@ -347,7 +347,7 @@ impl MainWindowView {
                     let initial = s.frame_rate_limit.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(SharedString::from("120"), window, cx);
+                        st.set_placeholder(SharedString::from("120"), cx);
                         st.set_value(SharedString::from(initial), window, cx);
                         st
                     });
@@ -364,7 +364,6 @@ impl MainWindowView {
                             let mut input = InputState::new(window, cx);
                             input.set_placeholder(
                                 SharedString::from("Paste API key / token"),
-                                window,
                                 cx,
                             );
                             input
@@ -377,7 +376,6 @@ impl MainWindowView {
                         let mut st = InputState::new(window, cx);
                         st.set_placeholder(
                             SharedString::from("https://mod.mcimirror.top/curseforge"),
-                            window,
                             cx,
                         );
                         if !initial.trim().is_empty() {
@@ -392,7 +390,7 @@ impl MainWindowView {
                     let initial = s.download_http_proxy_url.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(SharedString::from("http(s)://host:port"), window, cx);
+                        st.set_placeholder(SharedString::from("http(s)://host:port"), cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -405,7 +403,7 @@ impl MainWindowView {
                     let initial = s.download_socks_proxy_url.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(SharedString::from("socks5://host:port"), window, cx);
+                        st.set_placeholder(SharedString::from("socks5://host:port"), cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -420,7 +418,6 @@ impl MainWindowView {
                         let mut st = InputState::new(window, cx);
                         st.set_placeholder(
                             SharedString::from("#a0d9b6 / rgba(59,130,246,0.6)"),
-                            window,
                             cx,
                         );
                         if !initial.trim().is_empty() {
@@ -435,7 +432,7 @@ impl MainWindowView {
                     let initial = s.local_image_path.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(SharedString::from("C:/.../image.webp"), window, cx);
+                        st.set_placeholder(SharedString::from("C:/.../image.webp"), cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -448,7 +445,7 @@ impl MainWindowView {
                     let initial = s.network_image_url.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(SharedString::from("https://host/bg.webp"), window, cx);
+                        st.set_placeholder(SharedString::from("https://host/bg.webp"), cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -562,7 +559,7 @@ impl MainWindowView {
                                 )
                             },
                         );
-                        this.persist_settings_launcher_download_texts(base, http, socks, cx);
+                        this.persist_download_settings(base, http, socks, cx);
                     }
                     _ => {}
                 },
@@ -592,7 +589,7 @@ impl MainWindowView {
                                 )
                             },
                         );
-                        this.persist_settings_launcher_download_texts(base, http, socks, cx);
+                        this.persist_download_settings(base, http, socks, cx);
                     }
                     _ => {}
                 },
@@ -622,7 +619,7 @@ impl MainWindowView {
                                 )
                             },
                         );
-                        this.persist_settings_launcher_download_texts(base, http, socks, cx);
+                        this.persist_download_settings(base, http, socks, cx);
                     }
                     _ => {}
                 },

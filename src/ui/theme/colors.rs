@@ -4,7 +4,7 @@
 
 use gpui::*;
 
-pub fn parse_hex_color_to_hsla(input: &str) -> Option<Hsla> {
+pub fn parse_hex_color(input: &str) -> Option<Hsla> {
     let s = input.trim().trim_start_matches('#');
     if s.len() != 6 && s.len() != 8 {
         return None;
@@ -86,7 +86,7 @@ pub struct ThemeColors {
 }
 
 impl LightColors {
-    pub fn colors() -> ThemeColors {
+    pub fn theme() -> ThemeColors {
         ThemeColors {
             // 基础颜色 - 暖纸张：微暖米白底 + 暖炭色文字
             bg: rgb(0xfaf8f4).into(),             // 暖纸张白
@@ -160,7 +160,7 @@ impl LightColors {
 }
 
 impl DarkColors {
-    pub fn colors() -> ThemeColors {
+    pub fn theme() -> ThemeColors {
         ThemeColors {
             // 基础颜色 - 暖炭底：微暖深棕灰 + 暖纸色文字
             bg: rgb(0x211e1a).into(),             // 暖炭

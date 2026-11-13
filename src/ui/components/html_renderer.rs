@@ -64,7 +64,7 @@ impl HtmlRenderOptions {
 
 /// Synchronous adapter for applications that already have a local stylesheet
 /// cache. Async applications should discover first, fetch asynchronously, and
-/// call [`parse_html_document_with_options`] with the loaded sheets.
+/// call [`parse_document`] with the loaded sheets.
 pub trait HtmlStylesheetLoader {
     fn load_stylesheet(&self, request: &HtmlStylesheetRequest) -> Result<Option<String>, String>;
 }
@@ -646,11 +646,7 @@ fn discover_html_stylesheets_in_fragment(
     requests
 }
 
-pub fn parse_html_document(html: &str) -> HtmlDocument {
-    parse_html_document_with_options(html, &HtmlRenderOptions::default())
-}
-
-pub fn parse_html_document_with_loader<L: HtmlStylesheetLoader>(
+pub fn parse_document_with_loader<L: HtmlStylesheetLoader>(
     html: &str,
     options: &HtmlRenderOptions,
     loader: &L,
@@ -678,12 +674,12 @@ pub fn parse_html_document_with_loader<L: HtmlStylesheetLoader>(
         }
     }
     let css = CompiledHtmlCss::compile_fragment(&fragment, &resolved);
-    let mut document = parse_html_document_with_compiled_css(&fragment, &css, &resolved);
+    let mut document = parse_with_compiled_css(&fragment, &css, &resolved);
     document.css_diagnostics.extend(load_diagnostics);
     document
 }
 
-pub fn parse_html_document_with_options(html: &str, options: &HtmlRenderOptions) -> HtmlDocument {
+pub fn parse_document(html: &str, options: &HtmlRenderOptions) -> HtmlDocument {
     let html = html.trim();
     if html.is_empty() {
         return HtmlDocument::default();
@@ -691,10 +687,10 @@ pub fn parse_html_document_with_options(html: &str, options: &HtmlRenderOptions)
 
     let fragment = Html::parse_fragment(html);
     let css = CompiledHtmlCss::compile_fragment(&fragment, options);
-    parse_html_document_with_compiled_css(&fragment, &css, options)
+    parse_with_compiled_css(&fragment, &css, options)
 }
 
-pub fn parse_html_document_with_precompiled_css(
+pub fn parse_document_with_css(
     html: &str,
     css: &CompiledHtmlCss,
     options: &HtmlRenderOptions,
@@ -704,10 +700,10 @@ pub fn parse_html_document_with_precompiled_css(
         return HtmlDocument::default();
     }
     let fragment = Html::parse_fragment(html);
-    parse_html_document_with_compiled_css(&fragment, css, options)
+    parse_with_compiled_css(&fragment, css, options)
 }
 
-fn parse_html_document_with_compiled_css(
+fn parse_with_compiled_css(
     fragment: &Html,
     css: &CompiledHtmlCss,
     options: &HtmlRenderOptions,
@@ -745,7 +741,7 @@ fn parse_html_document_with_compiled_css(
     }
 }
 
-pub fn render_html_document(
+pub fn render_document(
     document: &HtmlDocument,
     colors: &ThemeColors,
     i18n: &I18n,
@@ -3485,8 +3481,8 @@ fn render_inline_text(
 #[cfg(test)]
 mod tests {
     use super::{
-        HtmlBlock, HtmlInlineStyle, discover_html_stylesheets, inline_metrics_compatible,
-        parse_html_document,
+        HtmlBlock, HtmlInlineStyle, HtmlRenderOptions, discover_html_stylesheets,
+        inline_metrics_compatible, parse_document,
     };
 
     #[test]
@@ -3498,7 +3494,7 @@ mod tests {
             </style>
             <div class="card"><p>Hello <strong>world</strong></p></div>
         "#;
-        let document = parse_html_document(html);
+        let document = parse_document(html, &HtmlRenderOptions::default());
         assert_eq!(document.blocks.len(), 1);
         assert!(document.block_styles[0].padding.top >= 12.0);
         let HtmlBlock::Group { blocks, .. } = &document.blocks[0] else {
@@ -3525,8 +3521,9 @@ mod tests {
 
     #[test]
     fn display_none_removes_elements() {
-        let document = parse_html_document(
+        let document = parse_document(
             r#"<style>.hidden { display: none }</style><p>A</p><p class="hidden">B</p>"#,
+            &HtmlRenderOptions::default(),
         );
         assert_eq!(document.blocks.len(), 1);
     }
@@ -3536,7 +3533,10 @@ mod tests {
         let style = HtmlInlineStyle::default();
         assert!(inline_metrics_compatible(&style, &style));
 
-        let document = parse_html_document(&format!("<p>{}</p>", "如图".repeat(4_096)));
+        let document = parse_document(
+            &format!("<p>{}</p>", "如图".repeat(4_096)),
+            &HtmlRenderOptions::default(),
+        );
         let HtmlBlock::Paragraph { spans } = &document.blocks[0] else {
             panic!("expected paragraph");
         };

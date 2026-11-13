@@ -1,4 +1,4 @@
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::*;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;

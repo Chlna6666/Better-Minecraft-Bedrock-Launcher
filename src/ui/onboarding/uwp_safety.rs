@@ -8,7 +8,7 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::launch_prereq::PendingLaunchVersion;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::download::state::{DownloadPageState, GameDialogState};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -246,7 +246,7 @@ pub fn activate_pending(cx: &mut App) {
 
 fn start_system_registration_check(request_id: u64, trigger: UwpSafetyGuideTrigger, cx: &mut App) {
     cx.spawn(async move |cx| {
-        let result = crate::tasks::runtime::run_io_blocking(move || match trigger {
+        let result = crate::tasks::runtime::blocking::run_io(move || match trigger {
             UwpSafetyGuideTrigger::DownloadRelease => {
                 crate::core::minecraft::uwp_registration::system_registration(
                     MinecraftUwpChannel::Release,
@@ -301,7 +301,7 @@ fn continue_without_guide(cx: &mut App) {
         pending_launch
     });
     if let Some(version) = pending_launch {
-        crate::ui::hooks::use_launcher::continue_launcher_after_uwp_check(version, cx);
+        crate::ui::hooks::launcher::resume_after_uwp_check(version, cx);
     } else {
         restore_download_dialog(cx);
     }
@@ -339,8 +339,8 @@ pub fn render_uwp_safety_guide(
     let now = window.animation_time();
     let theme = cx.global::<ThemeState>();
     let colors = lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        &LightColors::theme(),
+        &DarkColors::theme(),
         theme.factor(now),
         theme.accent,
     );

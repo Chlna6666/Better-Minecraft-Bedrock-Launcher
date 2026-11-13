@@ -4,9 +4,9 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::components::toast;
 use crate::ui::state::diagnostics::DiagnosticsState;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::utils::diagnostics::{
-    DiagnosticsDetail, DiagnosticsReport, diagnostics_share_payload, submit_report_to_sentry,
+    DiagnosticsDetail, DiagnosticsReport, share_payload, submit_report_to_sentry,
 };
 use gpui::*;
 
@@ -28,7 +28,7 @@ pub fn render_diagnostics_overlay(
         .pending_report
         .clone()
         .or_else(|| state.active_operation_report().cloned())?;
-    let share_payload = diagnostics_share_payload(&report);
+    let share_payload = share_payload(&report);
     let card_width = (window_width - px(48.)).max(px(360.)).min(px(760.));
     let card_height = (window_height - px(72.)).max(px(420.)).min(px(720.));
     let overlay_bg = hsla(0.0, 0.0, 0.0, 0.34);
@@ -296,7 +296,7 @@ pub fn render_diagnostics_overlay(
                                     let report = report.clone();
                                     cx.spawn(async move |cx| {
                                         let result = cx.background_spawn(async move {
-                                            crate::utils::diagnostics::export_diagnostics_bundle(
+                                            crate::utils::diagnostics::export_bundle(
                                                 &report
                                             )
                                         }).await;
@@ -316,7 +316,7 @@ pub fn render_diagnostics_overlay(
                                                         let directory =
                                                             directory.to_string_lossy().to_string();
                                                         cx.spawn(async move |_cx| {
-                                                            let _ = crate::utils::open_path::open_path(
+                                                            let _ = crate::utils::open_path::open(
                                                                 directory
                                                             ).await;
                                                             Ok::<(), anyhow::Error>(())
@@ -398,7 +398,7 @@ pub fn render_diagnostics_overlay(
                             )
                             .on_click(move |_event, _window, cx| {
                                 if persisted_report {
-                                    match crate::utils::diagnostics::acknowledge_pending_report_if_matches(&report.id) {
+                                    match crate::utils::diagnostics::acknowledge_report(&report.id) {
                                         Ok(true) => {
                                             clear_diagnostics_marker_files();
                                             cx.update_global(
@@ -439,7 +439,7 @@ pub fn render_diagnostics_overlay(
                 ),
         );
 
-    Some(modal::modal_layer(modal_body, overlay_bg).into_any_element())
+    Some(modal::layer(modal_body, overlay_bg).into_any_element())
 }
 
 pub fn trigger_auto_sentry_submit(cx: &mut App) {
@@ -464,7 +464,7 @@ pub fn trigger_auto_sentry_submit(cx: &mut App) {
     let Some(report) = report else {
         return;
     };
-    let Some(dsn) = diagnostics_share_payload(&report).sentry_dsn else {
+    let Some(dsn) = share_payload(&report).sentry_dsn else {
         return;
     };
     spawn_sentry_submission(cx, report, dsn, true);

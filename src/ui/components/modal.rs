@@ -1,3 +1,4 @@
+use gpui::diagnostics::inspector::InspectorElementId;
 use gpui::*;
 use std::{
     cell::Cell,
@@ -9,17 +10,16 @@ use std::{
 mod motion;
 
 #[cfg(test)]
-#[path = "modal/close_tests.rs"]
 mod close_tests;
 
-const MODAL_BACKDROP_MIN_ALPHA: f32 = 0.56;
-const MODAL_BACKDROP_MAX_ALPHA: f32 = 0.72;
-const MODAL_MIN_SCALE: f32 = 0.94;
-const MODAL_OPEN_DURATION: Duration = Duration::from_millis(240);
-const MODAL_CLOSE_DURATION: Duration = Duration::from_millis(220);
+const BACKDROP_MIN_ALPHA: f32 = 0.56;
+const BACKDROP_MAX_ALPHA: f32 = 0.72;
+const MIN_SCALE: f32 = 0.94;
+const OPEN_DURATION: Duration = Duration::from_millis(240);
+const CLOSE_DURATION: Duration = Duration::from_millis(220);
 
-fn modal_content_scale(progress: f32) -> f32 {
-    MODAL_MIN_SCALE + (1.0 - MODAL_MIN_SCALE) * progress.clamp(0.0, 1.0)
+fn content_scale(progress: f32) -> f32 {
+    MIN_SCALE + (1.0 - MIN_SCALE) * progress.clamp(0.0, 1.0)
 }
 
 fn frosted_backdrop_base(background: Hsla) -> Div {
@@ -31,7 +31,7 @@ fn frosted_backdrop_base_with_overlay(background: Hsla, progress: f32) -> Div {
     let overlay = Hsla {
         a: background
             .a
-            .clamp(MODAL_BACKDROP_MIN_ALPHA, MODAL_BACKDROP_MAX_ALPHA)
+            .clamp(BACKDROP_MIN_ALPHA, BACKDROP_MAX_ALPHA)
             * progress,
         ..black()
     };
@@ -55,16 +55,16 @@ fn frosted_backdrop_base_with_overlay(background: Hsla, progress: f32) -> Div {
 }
 
 /// Fullscreen backdrop that intercepts mouse interaction "outside" a modal.
-pub fn modal_backdrop(background: Hsla) -> Div {
+pub fn backdrop(background: Hsla) -> Div {
     intercepting_backdrop(frosted_backdrop_base(background))
 }
 
 /// Animated fullscreen backdrop for modal open/close transitions.
-pub fn animated_modal_backdrop(background: Hsla, progress: f32) -> Div {
+pub fn animated_backdrop(background: Hsla, progress: f32) -> Div {
     intercepting_backdrop(frosted_backdrop_base_with_overlay(background, progress))
 }
 
-fn default_modal_content_offset(progress: f32, visible: bool) -> Pixels {
+fn default_content_offset(progress: f32, visible: bool) -> Pixels {
     if visible {
         px((1.0 - progress) * 14.0)
     } else {
@@ -88,18 +88,18 @@ fn intercepting_backdrop(backdrop: Div) -> Div {
 
 /// Places `content` on top of a fullscreen modal layer and animates the backdrop
 /// and content with the same progress value.
-pub fn animated_modal_layer(
+pub fn animated_layer(
     content: impl IntoElement,
     background: Hsla,
     progress: f32,
     visible: bool,
 ) -> Div {
     let progress = progress.clamp(0.0, 1.0);
-    let content_offset = default_modal_content_offset(progress, visible);
+    let content_offset = default_content_offset(progress, visible);
     div()
         .absolute()
         .inset_0()
-        .child(animated_modal_backdrop(background, progress))
+        .child(animated_backdrop(background, progress))
         .child(
             div()
                 .absolute()
@@ -120,46 +120,7 @@ pub fn animated_modal_layer(
                         .items_center()
                         .justify_center()
                         .mt(content_offset)
-                        .scale(modal_content_scale(progress))
-                        .opacity(progress)
-                        .child(content),
-                ),
-        )
-}
-
-/// Like [`animated_modal_layer`], but allows callers to keep custom vertical motion.
-pub fn animated_modal_layer_with_content_offset(
-    content: impl IntoElement,
-    background: Hsla,
-    progress: f32,
-    content_offset_y: Pixels,
-) -> Div {
-    let progress = progress.clamp(0.0, 1.0);
-    div()
-        .absolute()
-        .inset_0()
-        .child(animated_modal_backdrop(background, progress))
-        .child(
-            div()
-                .absolute()
-                .inset_0()
-                .p(px(16.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .occlude()
-                .child(
-                    div()
-                        .percentage_passthrough()
-                        .w_full()
-                        .h_full()
-                        .max_w(relative(1.0))
-                        .max_h(relative(1.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .mt(content_offset_y)
-                        .scale(modal_content_scale(progress))
+                        .scale(content_scale(progress))
                         .opacity(progress)
                         .child(content),
                 ),
@@ -167,7 +128,7 @@ pub fn animated_modal_layer_with_content_offset(
 }
 
 /// Places a modal on a stable layout and gives its backdrop and content retained visual tracks.
-pub fn retained_modal_layer(
+pub fn retained_layer(
     content: impl IntoElement,
     background: Hsla,
     visible: bool,
@@ -175,14 +136,14 @@ pub fn retained_modal_layer(
     duration: Duration,
 ) -> AnyElement {
     let (from, to, from_y, to_y, from_scale, to_scale, easing) = if visible {
-        (0.0, 1.0, 14.0, 0.0, MODAL_MIN_SCALE, 1.0, Easing::OutCubic)
+        (0.0, 1.0, 14.0, 0.0, MIN_SCALE, 1.0, Easing::OutCubic)
     } else {
-        (1.0, 0.0, 0.0, 10.0, 1.0, MODAL_MIN_SCALE, Easing::InCubic)
+        (1.0, 0.0, 0.0, 10.0, 1.0, MIN_SCALE, Easing::InCubic)
     };
     let duration = duration.max(Duration::from_millis(1));
     let overlay_alpha = background
         .a
-        .clamp(MODAL_BACKDROP_MIN_ALPHA, MODAL_BACKDROP_MAX_ALPHA);
+        .clamp(BACKDROP_MIN_ALPHA, BACKDROP_MAX_ALPHA);
     let base_animation = || {
         Animation::from_spec(
             AnimationSpec::new(duration)
@@ -260,7 +221,7 @@ pub fn retained_modal_layer(
         .into_any_element()
 }
 
-pub fn modal_layer(content: impl IntoElement, background: Hsla) -> AnyElement {
+pub fn layer(content: impl IntoElement, background: Hsla) -> AnyElement {
     let animated_inner = div()
         .absolute()
         .inset_0()
@@ -285,7 +246,7 @@ pub fn modal_layer(content: impl IntoElement, background: Hsla) -> AnyElement {
             "modal-layer-content-zoom",
             crate::ui::animation::ease_out_cubic_motion(std::time::Duration::from_millis(240))
                 .with_property(AnimationProperty::scale_opacity(
-                    MODAL_MIN_SCALE,
+                    MIN_SCALE,
                     1.0,
                     0.0,
                     1.0,
@@ -299,13 +260,13 @@ pub fn modal_layer(content: impl IntoElement, background: Hsla) -> AnyElement {
     div()
         .absolute()
         .inset_0()
-        .child(modal_backdrop(background))
+        .child(backdrop(background))
         .child(animated_inner)
         .into_any_element()
 }
 
 /// Shared modal card shell used inside modal layers.
-pub fn modal_surface(
+pub fn surface(
     background: Hsla,
     border: Hsla,
     width: Pixels,
@@ -327,20 +288,20 @@ pub fn modal_surface(
 }
 
 #[derive(Clone)]
-pub struct ModalDismissHandle {
-    control: Rc<Cell<ModalAnimationControl>>,
+pub struct DismissHandle {
+    control: Rc<Cell<AnimationControl>>,
 }
 
-impl Default for ModalDismissHandle {
+impl Default for DismissHandle {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ModalDismissHandle {
+impl DismissHandle {
     pub fn new() -> Self {
         Self {
-            control: Rc::new(Cell::new(ModalAnimationControl::default())),
+            control: Rc::new(Cell::new(AnimationControl::default())),
         }
     }
 
@@ -358,66 +319,46 @@ impl ModalDismissHandle {
         }
     }
 
-    fn control(&self) -> Rc<Cell<ModalAnimationControl>> {
+    fn control(&self) -> Rc<Cell<AnimationControl>> {
         self.control.clone()
     }
 }
 
-/// Like [`modal_layer`], but clicking the backdrop dismisses the modal.
-#[track_caller]
-pub fn modal_layer_dismissible(
-    content: impl IntoElement + 'static,
-    background: Hsla,
-    on_dismiss: Rc<dyn Fn(&mut App)>,
-) -> AnyElement {
-    modal_layer_dismissible_with_cleanup(content, background, Rc::new(|_: &mut App| {}), on_dismiss)
+/// Optional controls for a dismissible modal's close lifecycle.
+#[derive(Default)]
+pub struct DismissOptions {
+    handle: Option<DismissHandle>,
+    on_cleanup: Option<Rc<dyn Fn(&mut App)>>,
 }
 
-/// Like [`modal_layer_dismissible`], but allows callers to trigger close manually via handle.
-#[track_caller]
-pub fn modal_layer_dismissible_with_handle(
-    handle: ModalDismissHandle,
-    content: impl IntoElement + 'static,
-    background: Hsla,
-    on_dismiss: Rc<dyn Fn(&mut App)>,
-) -> AnyElement {
-    modal_layer_dismissible_with_handle_and_cleanup(
-        handle,
-        content,
-        background,
-        Rc::new(|_: &mut App| {}),
-        on_dismiss,
-    )
+impl DismissOptions {
+    #[must_use]
+    pub fn with_handle(mut self, handle: DismissHandle) -> Self {
+        self.handle = Some(handle);
+        self
+    }
+
+    #[must_use]
+    pub fn on_cleanup(mut self, callback: Rc<dyn Fn(&mut App)>) -> Self {
+        self.on_cleanup = Some(callback);
+        self
+    }
 }
 
-/// Like [`modal_layer_dismissible`], but runs `on_cleanup` before `on_dismiss`.
+/// Places a dismissible modal and configures its optional close lifecycle behavior.
 #[track_caller]
-pub fn modal_layer_dismissible_with_cleanup(
+pub fn dismissible_layer(
     content: impl IntoElement + 'static,
     background: Hsla,
-    on_cleanup: Rc<dyn Fn(&mut App)>,
     on_dismiss: Rc<dyn Fn(&mut App)>,
-) -> AnyElement {
-    modal_layer_dismissible_with_handle_and_cleanup(
-        ModalDismissHandle::new(),
-        content,
-        background,
-        on_cleanup,
-        on_dismiss,
-    )
-}
-
-/// Like [`modal_layer_dismissible_with_cleanup`], but allows callers to trigger close manually via handle.
-#[track_caller]
-pub fn modal_layer_dismissible_with_handle_and_cleanup(
-    handle: ModalDismissHandle,
-    content: impl IntoElement + 'static,
-    background: Hsla,
-    on_cleanup: Rc<dyn Fn(&mut App)>,
-    on_dismiss: Rc<dyn Fn(&mut App)>,
+    options: DismissOptions,
 ) -> AnyElement {
     let source_location = Location::caller();
-    DismissibleModal {
+    let handle = options.handle.unwrap_or_default();
+    let on_cleanup = options
+        .on_cleanup
+        .unwrap_or_else(|| Rc::new(|_: &mut App| {}));
+    Dismissible {
         id: source_location.into(),
         content: Some(content),
         background,
@@ -430,7 +371,7 @@ pub fn modal_layer_dismissible_with_handle_and_cleanup(
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct ModalAnimationControl {
+struct AnimationControl {
     owner: Option<EntityId>,
     opened_at: Option<Instant>,
     progress: f32,
@@ -438,7 +379,7 @@ struct ModalAnimationControl {
     closing_from: f32,
 }
 
-impl ModalAnimationControl {
+impl AnimationControl {
     fn begin_close(&mut self, now: Instant) {
         if self.closing_started_at.is_none() {
             if let Some(opened_at) = self.opened_at {
@@ -449,19 +390,19 @@ impl ModalAnimationControl {
         }
     }
 
-    fn sample(&mut self, now: Instant, opened_at: Instant) -> ModalAnimationSample {
+    fn sample(&mut self, now: Instant, opened_at: Instant) -> AnimationSample {
         let (progress, animating) = if let Some(started_at) = self.closing_started_at {
-            let raw = crate::ui::animation::raw_progress(now, started_at, MODAL_CLOSE_DURATION);
+            let raw = crate::ui::animation::raw_progress(now, started_at, CLOSE_DURATION);
             (
                 self.closing_from * (1.0 - crate::ui::animation::ease_in_cubic(raw)),
                 raw < 1.0,
             )
         } else {
-            let raw = crate::ui::animation::raw_progress(now, opened_at, MODAL_OPEN_DURATION);
+            let raw = crate::ui::animation::raw_progress(now, opened_at, OPEN_DURATION);
             (crate::ui::animation::ease_out_cubic(raw), raw < 1.0)
         };
         self.progress = progress.clamp(0.0, 1.0);
-        ModalAnimationSample {
+        AnimationSample {
             #[cfg(test)]
             progress: self.progress,
             #[cfg(test)]
@@ -472,7 +413,7 @@ impl ModalAnimationControl {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ModalAnimationSample {
+struct AnimationSample {
     #[cfg(test)]
     progress: f32,
     #[cfg(test)]
@@ -480,13 +421,13 @@ struct ModalAnimationSample {
     close_completed: bool,
 }
 
-struct DismissibleModalState {
+struct DismissibleState {
     opened_at: Instant,
-    control: Rc<Cell<ModalAnimationControl>>,
+    control: Rc<Cell<AnimationControl>>,
     completion_fired: bool,
 }
 
-impl DismissibleModalState {
+impl DismissibleState {
     fn take_close_completion(&mut self, close_completed: bool) -> bool {
         if !close_completed || self.completion_fired {
             return false;
@@ -496,17 +437,17 @@ impl DismissibleModalState {
     }
 }
 
-struct DismissibleModal<E> {
+struct Dismissible<E> {
     id: ElementId,
     content: Option<E>,
     background: Hsla,
     on_cleanup: Rc<dyn Fn(&mut App)>,
     on_dismiss: Rc<dyn Fn(&mut App)>,
-    control: Rc<Cell<ModalAnimationControl>>,
+    control: Rc<Cell<AnimationControl>>,
     source_location: &'static Location<'static>,
 }
 
-impl<E: IntoElement + 'static> IntoElement for DismissibleModal<E> {
+impl<E: IntoElement + 'static> IntoElement for Dismissible<E> {
     type Element = Self;
 
     fn into_element(self) -> Self::Element {
@@ -514,7 +455,7 @@ impl<E: IntoElement + 'static> IntoElement for DismissibleModal<E> {
     }
 }
 
-impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
+impl<E: IntoElement + 'static> Element for Dismissible<E> {
     type RequestLayoutState = AnyElement;
     type PrepaintState = ();
 
@@ -533,23 +474,23 @@ impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let global_id = global_id.expect("DismissibleModal always supplies an element id");
+        let global_id = global_id.expect("Dismissible always supplies an element id");
         let content = self
             .content
             .take()
-            .expect("DismissibleModal layout is requested once per frame");
+            .expect("Dismissible layout is requested once per frame");
         let current_control = self.control.clone();
 
         window.with_element_state(global_id, |state, window| {
             let now = window.animation_time();
-            let mut state = state.unwrap_or_else(|| DismissibleModalState {
+            let mut state = state.unwrap_or_else(|| DismissibleState {
                 opened_at: now,
                 control: current_control.clone(),
                 completion_fired: false,
             });
             if state.completion_fired {
                 state.opened_at = now;
-                state.control.set(ModalAnimationControl::default());
+                state.control.set(AnimationControl::default());
                 state.completion_fired = false;
             }
 
@@ -562,7 +503,7 @@ impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
 
             // The presentation lane owns the frames between state changes. Its completion
             // invalidates the owner once so close cleanup can remove the modal.
-            let mut element = dismissible_modal_layer(content, self.background, current_control)
+            let mut element = animated_dismissible_layer(content, self.background, current_control)
                 .into_any_element();
             let layout_id = element.request_layout(window, cx);
 
@@ -607,10 +548,10 @@ impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
     }
 }
 
-fn dismissible_modal_layer(
+fn animated_dismissible_layer(
     content: impl IntoElement,
     background: Hsla,
-    control: Rc<Cell<ModalAnimationControl>>,
+    control: Rc<Cell<AnimationControl>>,
 ) -> Div {
     let dismiss_control = control.clone();
     let (from, to, animation) = motion::transition(control.get());
@@ -659,8 +600,8 @@ fn dismissible_modal_layer(
                         .with_visual_animation(
                             "dismissible-modal-content",
                             animation.with_property(AnimationProperty::scale_opacity(
-                                modal_content_scale(from),
-                                modal_content_scale(to),
+                                content_scale(from),
+                                content_scale(to),
                                 from,
                                 to,
                                 TransformOrigin::new(0.5, 0.5),
@@ -674,7 +615,7 @@ fn dismissible_modal_layer(
 #[cfg(test)]
 mod tests {
     use super::{
-        DismissibleModalState, MODAL_CLOSE_DURATION, MODAL_OPEN_DURATION, ModalAnimationControl,
+        DismissibleState, CLOSE_DURATION, OPEN_DURATION, AnimationControl,
     };
     use std::{
         cell::Cell,
@@ -685,10 +626,10 @@ mod tests {
     #[test]
     fn modal_opens_from_zero_to_one() {
         let opened_at = Instant::now();
-        let mut control = ModalAnimationControl::default();
+        let mut control = AnimationControl::default();
 
         assert_eq!(control.sample(opened_at, opened_at).progress, 0.0);
-        let finished = control.sample(opened_at + MODAL_OPEN_DURATION, opened_at);
+        let finished = control.sample(opened_at + OPEN_DURATION, opened_at);
         assert_eq!(finished.progress, 1.0);
         assert!(!finished.animating);
     }
@@ -696,13 +637,13 @@ mod tests {
     #[test]
     fn modal_close_reverses_from_current_progress() {
         let opened_at = Instant::now();
-        let mut control = ModalAnimationControl::default();
-        let halfway = opened_at + MODAL_OPEN_DURATION / 2;
+        let mut control = AnimationControl::default();
+        let halfway = opened_at + OPEN_DURATION / 2;
         let before_close = control.sample(halfway, opened_at).progress;
 
         control.begin_close(halfway);
         assert_eq!(control.sample(halfway, opened_at).progress, before_close);
-        let finished = control.sample(halfway + MODAL_CLOSE_DURATION, opened_at);
+        let finished = control.sample(halfway + CLOSE_DURATION, opened_at);
         assert_eq!(finished.progress, 0.0);
         assert!(finished.close_completed);
     }
@@ -710,9 +651,9 @@ mod tests {
     #[test]
     fn repeated_close_does_not_restart_the_animation() {
         let opened_at = Instant::now();
-        let mut control = ModalAnimationControl::default();
-        control.sample(opened_at + MODAL_OPEN_DURATION, opened_at);
-        let first_close = opened_at + MODAL_OPEN_DURATION;
+        let mut control = AnimationControl::default();
+        control.sample(opened_at + OPEN_DURATION, opened_at);
+        let first_close = opened_at + OPEN_DURATION;
         control.begin_close(first_close);
         control.begin_close(first_close + Duration::from_millis(80));
 
@@ -723,9 +664,9 @@ mod tests {
     #[test]
     fn close_completion_is_consumed_once() {
         let opened_at = Instant::now();
-        let mut state = DismissibleModalState {
+        let mut state = DismissibleState {
             opened_at,
-            control: Rc::new(Cell::new(ModalAnimationControl::default())),
+            control: Rc::new(Cell::new(AnimationControl::default())),
             completion_fired: false,
         };
 

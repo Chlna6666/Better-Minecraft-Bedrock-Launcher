@@ -69,7 +69,7 @@ impl Global for LaunchPrereqState {}
 
 impl Default for LaunchPrereqState {
     fn default() -> Self {
-        let onboarding_visible = !crate::config::onboarding::is_current_onboarding_completed();
+        let onboarding_visible = !crate::config::onboarding::is_complete();
         Self {
             visible: onboarding_visible,
             mode: if onboarding_visible {

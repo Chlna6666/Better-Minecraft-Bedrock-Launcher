@@ -1,5 +1,5 @@
 use crate::ui::components::scroll::ScrollableElement as _;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Bounds, BoxShadow, CursorStyle, Div, Hsla, InteractiveElement, IntoElement, MouseButton,
@@ -54,7 +54,7 @@ pub fn place_context_menu(
 }
 
 #[must_use]
-pub fn place_context_menu_at_anchor(
+pub fn place_at_anchor(
     anchor: ContextMenuAnchor,
     viewport_width: f32,
     viewport_height: f32,
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn context_menu_rect_anchor_places_menu_below_button() {
         let button = Bounds::new(point(px(680.0), px(8.0)), size(px(96.0), px(36.0)));
-        let placement = place_context_menu_at_anchor(
+        let placement = place_at_anchor(
             ContextMenuAnchor::RectEdge(button),
             800.0,
             600.0,

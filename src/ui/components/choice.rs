@@ -1,12 +1,12 @@
 //! Lightweight, reusable selection chip for compact tool inspectors.
 //! This is a presentation primitive only; the owner supplies the action and state.
 
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::{div, px, Div, FontWeight, ParentElement, SharedString, Styled};
 
 /// A compact mutually-selectable option. Unlike a primary action button, this
 /// communicates state and deliberately does not launch any command by itself.
-pub(crate) fn choice_chip(
+pub(crate) fn chip(
     colors: &ThemeColors,
     label: impl Into<SharedString>,
     selected: bool,

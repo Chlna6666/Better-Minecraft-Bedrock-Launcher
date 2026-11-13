@@ -48,7 +48,7 @@ pub fn resize_aware_overscan(normal: usize, native_resizing: bool) -> usize {
     }
 }
 
-pub fn compute_virtual_list_plan(
+pub fn slice_virtual_list(
     total_items: usize,
     item_pitch_px: f32,
     scroll_offset_y: Pixels,
@@ -109,7 +109,7 @@ pub fn compute_windowed_list_slice(
     viewport_height: Pixels,
     overscan: usize,
 ) -> WindowedListSlice {
-    compute_virtual_list_plan(
+    slice_virtual_list(
         total_items,
         item_pitch_px,
         scroll_offset_y,
@@ -130,8 +130,8 @@ mod tests {
         assert_eq!(resize_aware_overscan(8, true), 1);
         assert_eq!(resize_aware_overscan(2, true), 1);
         assert_eq!(resize_aware_overscan(0, true), 0);
-        let normal = compute_virtual_list_plan(100, 84.0, px(-840.0), px(420.0), 8, 12);
-        let resizing = compute_virtual_list_plan(
+        let normal = slice_virtual_list(100, 84.0, px(-840.0), px(420.0), 8, 12);
+        let resizing = slice_virtual_list(
             100,
             84.0,
             px(-840.0),
@@ -146,7 +146,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn virtual_list_clamps_overscrolled_short_list() {
-        let plan = compute_virtual_list_plan(2, 68.0, px(-680.0), px(340.0), 8, 24);
+        let plan = slice_virtual_list(2, 68.0, px(-680.0), px(340.0), 8, 24);
 
         assert_eq!(plan.render_slice.start_index, 0);
         assert_eq!(plan.render_slice.end_index, 2);
@@ -160,7 +160,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn virtual_list_limits_heavy_slice_to_budget() {
-        let plan = compute_virtual_list_plan(100, 68.0, px(-680.0), px(340.0), 8, 3);
+        let plan = slice_virtual_list(100, 68.0, px(-680.0), px(340.0), 8, 3);
 
         assert_eq!(plan.visible_slice.start_index, 10);
         assert_eq!(plan.visible_slice.end_index, 16);
@@ -171,7 +171,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn virtual_list_keeps_overscan_rows_heavy_within_budget() {
-        let plan = compute_virtual_list_plan(100, 68.0, px(-680.0), px(340.0), 8, 24);
+        let plan = slice_virtual_list(100, 68.0, px(-680.0), px(340.0), 8, 24);
 
         assert_eq!(plan.render_slice.start_index, 2);
         assert_eq!(plan.render_slice.end_index, 24);

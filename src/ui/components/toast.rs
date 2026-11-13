@@ -1,6 +1,6 @@
 use crate::ui::animation::{ease_in_cubic, ease_out_back, ease_out_cubic};
 use crate::ui::components::page_shell::card_shadow;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::AnimationExt as _;
 use gpui::*;
 use std::collections::VecDeque;
@@ -36,7 +36,7 @@ const ERROR_TOAST_SLOT_H_PX: f32 = 80.0;
 const ENTER_SLIDE_PX: f32 = 56.0; // 入场时从屏外滑入的距离
 const EXIT_SLIDE_PX: f32 = 24.0; // 退场时滑走的距离
 
-fn toast_width_for_message(message: &str) -> Pixels {
+fn width_for_message(message: &str) -> Pixels {
     let mut body_width = 0.0;
     for character in message.chars() {
         body_width += if character.is_ascii() {
@@ -62,7 +62,7 @@ fn toast_width_for_message(message: &str) -> Pixels {
     px(estimated_width.clamp(TOAST_MIN_WIDTH_PX, TOAST_MAX_WIDTH_PX))
 }
 
-fn toast_slide_translation(direction: ToastSlideDirection, distance: f32) -> Point<Pixels> {
+fn slide_translation(direction: ToastSlideDirection, distance: f32) -> Point<Pixels> {
     match direction {
         ToastSlideDirection::FromTop => point(px(0.0), px(-distance)),
         ToastSlideDirection::FromBottom => point(px(0.0), px(distance)),
@@ -71,7 +71,7 @@ fn toast_slide_translation(direction: ToastSlideDirection, distance: f32) -> Poi
     }
 }
 
-fn toast_visual_animating(
+fn visual_animating(
     now: Instant,
     visible_from: Instant,
     appear_t: f32,
@@ -580,132 +580,128 @@ pub fn push_breadcrumb(cx: &mut App, parts: &[SharedString]) -> ToastId {
     })
 }
 
-pub fn push_async(cx: &mut AsyncApp, kind: ToastKind, message: SharedString) -> ToastId {
-    let now = Instant::now();
-    let diagnostic_id = if kind == ToastKind::Error {
-        let safe = crate::utils::log_privacy::redact_log_text(message.as_ref());
-        tracing::error!(target: "bmcbl::operation", reason = %safe, "异步错误通知");
-        cx.update_global(
-            |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
-                state.record_operation_error("notification", message.as_ref())
-            },
-        ).ok()
-    } else {
-        None
-    };
-    let target_window = cx
-        .read_global::<ToastState, _>(|_, cx| target_window(cx))
-        .ok()
-        .flatten();
-    match cx.update_global(|state: &mut ToastState, _cx| {
-        state.prune_expired(now);
-        let id = state.push(target_window, kind, message, DEFAULT_DURATION, now);
-        if let Some(report_id) = diagnostic_id {
-            state.attach_diagnostic(id, report_id);
-        }
-        id
-    }) {
-        Ok(id) => id,
-        Err(err) => {
-            tracing::warn!("toast push_async: update_global failed: {err:?}");
-            ToastId(0)
-        }
-    }
-}
+pub mod async_app {
+    use super::*;
 
-pub fn pending_async(cx: &mut AsyncApp, message: SharedString) -> ToastId {
-    let now = Instant::now();
-    let target_window = cx
-        .read_global::<ToastState, _>(|_, cx| target_window(cx))
-        .ok()
-        .flatten();
-    match cx.update_global(|state: &mut ToastState, _cx| {
-        state.prune_expired(now);
-        let id = state.push(
-            target_window,
-            ToastKind::Info,
-            message,
-            Duration::from_secs(60),
-            now,
-        );
-        id
-    }) {
-        Ok(id) => id,
-        Err(err) => {
-            tracing::warn!("toast pending_async: update_global failed: {err:?}");
-            ToastId(0)
+    pub fn push(cx: &mut AsyncApp, kind: ToastKind, message: SharedString) -> ToastId {
+        let now = Instant::now();
+        let diagnostic_id = if kind == ToastKind::Error {
+            let safe = crate::utils::log_privacy::redact_log_text(message.as_ref());
+            tracing::error!(target: "bmcbl::operation", reason = %safe, "异步错误通知");
+            cx.update_global(
+                |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
+                    state.record_operation_error("notification", message.as_ref())
+                },
+            )
+            .ok()
+        } else {
+            None
+        };
+        let target_window = cx
+            .read_global::<ToastState, _>(|_, cx| target_window(cx))
+            .ok()
+            .flatten();
+        match cx.update_global(|state: &mut ToastState, _cx| {
+            state.prune_expired(now);
+            let id = state.push(target_window, kind, message, DEFAULT_DURATION, now);
+            if let Some(report_id) = diagnostic_id {
+                state.attach_diagnostic(id, report_id);
+            }
+            id
+        }) {
+            Ok(id) => id,
+            Err(err) => {
+                tracing::warn!("toast async_app::push: update_global failed: {err:?}");
+                ToastId(0)
+            }
         }
     }
-}
 
-pub fn resolve_async(cx: &mut AsyncApp, id: ToastId, kind: ToastKind, message: SharedString) {
-    let now = Instant::now();
-    let diagnostic_id = if kind == ToastKind::Error {
-        let safe = crate::utils::log_privacy::redact_log_text(message.as_ref());
-        tracing::error!(target: "bmcbl::operation", reason = %safe, "异步任务错误通知");
-        cx.update_global(
-            |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
-                state.record_operation_error("notification", message.as_ref())
-            },
-        ).ok()
-    } else {
-        None
-    };
-    if let Err(err) = cx.update_global(|state: &mut ToastState, _cx| {
-        state.prune_expired(now);
-        state.resolve(id, kind, message, now);
-        if let Some(report_id) = diagnostic_id {
-            state.attach_diagnostic(id, report_id);
+    pub fn pending(cx: &mut AsyncApp, message: SharedString) -> ToastId {
+        let now = Instant::now();
+        let target_window = cx
+            .read_global::<ToastState, _>(|_, cx| target_window(cx))
+            .ok()
+            .flatten();
+        match cx.update_global(|state: &mut ToastState, _cx| {
+            state.prune_expired(now);
+            let id = state.push(
+                target_window,
+                ToastKind::Info,
+                message,
+                Duration::from_secs(60),
+                now,
+            );
+            id
+        }) {
+            Ok(id) => id,
+            Err(err) => {
+                tracing::warn!("toast async_app::pending: update_global failed: {err:?}");
+                ToastId(0)
+            }
         }
-    }) {
-        tracing::warn!("toast resolve_async: update_global failed: {err:?}");
     }
-}
 
-pub fn push_breadcrumb_async(cx: &mut AsyncApp, parts: &[SharedString]) -> ToastId {
-    let mut message = String::new();
-    for part in parts {
-        let trimmed = part.as_ref().trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if !message.is_empty() {
-            message.push_str(" / ");
-        }
-        message.push_str(trimmed);
-        if message.len() >= 220 {
-            break;
+    pub fn resolve(cx: &mut AsyncApp, id: ToastId, kind: ToastKind, message: SharedString) {
+        let now = Instant::now();
+        let diagnostic_id = if kind == ToastKind::Error {
+            let safe = crate::utils::log_privacy::redact_log_text(message.as_ref());
+            tracing::error!(target: "bmcbl::operation", reason = %safe, "异步任务错误通知");
+            cx.update_global(
+                |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
+                    state.record_operation_error("notification", message.as_ref())
+                },
+            )
+            .ok()
+        } else {
+            None
+        };
+        if let Err(err) = cx.update_global(|state: &mut ToastState, _cx| {
+            state.prune_expired(now);
+            state.resolve(id, kind, message, now);
+            if let Some(report_id) = diagnostic_id {
+                state.attach_diagnostic(id, report_id);
+            }
+        }) {
+            tracing::warn!("toast async_app::resolve: update_global failed: {err:?}");
         }
     }
-    let now = Instant::now();
-    let target_window = cx
-        .read_global::<ToastState, _>(|_, cx| target_window(cx))
-        .ok()
-        .flatten();
-    match cx.update_global(|state: &mut ToastState, _cx| {
-        state.prune_expired(now);
-        let id = state.push_breadcrumb(target_window, SharedString::from(message), now);
-        id
-    }) {
-        Ok(id) => id,
-        Err(err) => {
-            tracing::warn!("toast push_breadcrumb_async: update_global failed: {err:?}");
-            ToastId(0)
+
+    pub fn push_breadcrumb(cx: &mut AsyncApp, parts: &[SharedString]) -> ToastId {
+        let mut message = String::new();
+        for part in parts {
+            let trimmed = part.as_ref().trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if !message.is_empty() {
+                message.push_str(" / ");
+            }
+            message.push_str(trimmed);
+            if message.len() >= 220 {
+                break;
+            }
+        }
+        let now = Instant::now();
+        let target_window = cx
+            .read_global::<ToastState, _>(|_, cx| target_window(cx))
+            .ok()
+            .flatten();
+        match cx.update_global(|state: &mut ToastState, _cx| {
+            state.prune_expired(now);
+            let id = state.push_breadcrumb(target_window, SharedString::from(message), now);
+            id
+        }) {
+            Ok(id) => id,
+            Err(err) => {
+                tracing::warn!("toast async_app::push_breadcrumb: update_global failed: {err:?}");
+                ToastId(0)
+            }
         }
     }
 }
 
 pub fn render_overlay(
-    window: &mut Window,
-    cx: &App,
-    colors: &ThemeColors,
-    now: Instant,
-    state: &ToastState,
-) -> AnyElement {
-    render_overlay_with_options(window, cx, colors, now, state, state.overlay_options())
-}
-
-pub fn render_overlay_with_options(
     window: &mut Window,
     cx: &App,
     colors: &ThemeColors,
@@ -762,7 +758,7 @@ pub fn render_overlay_with_options(
             0.0
         };
         let item_animating =
-            toast_visual_animating(now, visible_from, appear_t, fade_from, disappear_t);
+            visual_animating(now, visible_from, appear_t, fade_from, disappear_t);
         any_animating |= item_animating;
         let disappear_k = ease_out_cubic(disappear_t);
 
@@ -772,8 +768,8 @@ pub fn render_overlay_with_options(
 
         let toast_id = item.id;
         let diagnostic_report_id = item.diagnostic_report_id.clone();
-        let toast_width = toast_width_for_message(item.message.as_ref());
-        let shell = toast_shell(colors, item);
+        let toast_width = width_for_message(item.message.as_ref());
+        let shell = shell(colors, item);
 
         layout_items.push((
             toast_id,
@@ -863,7 +859,7 @@ pub fn render_overlay_with_options(
         };
 
         let translation =
-            toast_slide_translation(options.slide_direction, enter_slide + exit_slide);
+            slide_translation(options.slide_direction, enter_slide + exit_slide);
         let toast = toast
             .child(shell)
             .composite_layer()
@@ -939,17 +935,17 @@ pub fn render_breadcrumb_overlay(
     let opacity = (appear_t * (1.0 - disappear_k)).clamp(0.0, 1.0);
     let slide_distance =
         (1.0 - ease_out_back(appear_t, 2.35)) * 16.0 + ease_in_cubic(disappear_t) * 10.0;
-    let animating = toast_visual_animating(now, visible_from, appear_t, fade_from, disappear_t);
+    let animating = visual_animating(now, visible_from, appear_t, fade_from, disappear_t);
 
     let toast = div()
         .absolute()
-        .w(toast_width_for_message(item.message.as_ref()))
+        .w(width_for_message(item.message.as_ref()))
         .top(px(10.0))
         .child(
             div()
                 .max_w(px(TOAST_MAX_WIDTH_PX))
                 .min_w(px(TOAST_MIN_WIDTH_PX))
-                .child(toast_shell(colors, item)),
+                .child(shell(colors, item)),
         );
 
     let toast = match state.slide_direction {
@@ -958,7 +954,7 @@ pub fn render_breadcrumb_overlay(
         | ToastSlideDirection::FromTop
         | ToastSlideDirection::FromBottom => toast.right(px(0.0)),
     };
-    let translation = toast_slide_translation(state.slide_direction, slide_distance);
+    let translation = slide_translation(state.slide_direction, slide_distance);
 
     if !animating
         && disappear_t <= 0.0
@@ -1026,7 +1022,7 @@ pub(crate) fn window_content_revision(window_id: WindowId, state: &ToastState) -
 mod tests {
     use super::{
         DEFAULT_DURATION, FADE_IN, FADE_OUT, ToastKind, ToastState, has_visible_toasts,
-        toast_visual_animating,
+        visual_animating,
     };
     use gpui::{SharedString, WindowId};
     use std::time::{Duration, Instant};
@@ -1075,7 +1071,7 @@ mod tests {
         let visible_from = now - FADE_IN - Duration::from_millis(1);
         let fade_from = now + Duration::from_secs(2);
 
-        assert!(!toast_visual_animating(
+        assert!(!visual_animating(
             now,
             visible_from,
             1.0,
@@ -1155,7 +1151,7 @@ mod tests {
     }
 }
 
-fn toast_shell(colors: &ThemeColors, item: &ToastItem) -> impl IntoElement {
+fn shell(colors: &ThemeColors, item: &ToastItem) -> impl IntoElement {
     let (accent, icon) = match item.kind {
         ToastKind::Info => (colors.accent, lucide_gpui::icon!(info)),
         ToastKind::Success => (

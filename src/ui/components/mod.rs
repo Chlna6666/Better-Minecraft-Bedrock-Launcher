@@ -11,7 +11,7 @@ pub mod icon;
 pub mod input;
 pub mod inspector;
 pub mod numeric_field;
-pub mod markdown_renderer;
+pub mod markdown;
 pub mod minecraft_text;
 pub mod modal;
 pub mod page_shell;

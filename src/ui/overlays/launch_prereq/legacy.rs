@@ -1,0 +1,1198 @@
+use gpui::prelude::FluentBuilder as _;
+use gpui::*;
+
+use crate::core::minecraft::launcher::preflight::{LaunchPlatform, detect_platform};
+use crate::ui::components::modal;
+use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::hooks::launcher::{
+    cancel_prerequisites, dismiss_prerequisites, enable_developer_mode, install_game_input,
+    install_uwp_dependencies,
+    install_windows_app_sdk, open_developer_mode_settings,
+    recheck_prerequisites,
+};
+use crate::ui::state::i18n::I18n;
+use crate::ui::state::launch_prereq::{LaunchPrereqOperation, LaunchPrereqState};
+use crate::ui::state::theme::ThemeState;
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::utils::mc_dependency::{
+    GAMEINPUT_RELEASES_URL, GameInputInstallerSource,
+};
+use crate::utils::mc_dependency::windows_app_sdk::{
+    RELEASES_URL, InstallerSource,
+};
+
+pub(super) fn render(
+    state: &LaunchPrereqState,
+    window: &mut Window,
+    cx: &App,
+) -> AnyElement {
+    if !state.visible {
+        return div().into_any_element();
+    }
+
+    let now = window.animation_time();
+    let theme_state = cx.global::<ThemeState>();
+    let colors = lerp_theme_colors(
+        &LightColors::theme(),
+        &DarkColors::theme(),
+        theme_state.factor(now),
+        theme_state.accent,
+    );
+    let i18n = cx.global::<I18n>();
+    let version = state.version.as_ref();
+    let platform = state
+        .check
+        .as_ref()
+        .map(|check| check.platform)
+        .or_else(|| version.map(|version| detect_platform(version.kind.as_ref())))
+        .unwrap_or(LaunchPlatform::Uwp);
+    let platform_label = match platform {
+        LaunchPlatform::Uwp => t!("common.uwp"),
+        LaunchPlatform::Gdk => t!("common.gdk"),
+    };
+    let subtitle = version
+        .map(|version| {
+            t!(
+                "LaunchPrereq.subtitle",
+                name = &version.name,
+                folder = &version.folder,
+                version = &version.version
+            )
+        })
+        .unwrap_or_else(|| t!("LaunchPrereq.waitingAction"));
+    let operation_text = state
+        .operation
+        .map(|operation| operation_label(operation, i18n))
+        .unwrap_or_else(|| t!("McDeps.waitingAction"));
+    let progress_percent = state
+        .progress_percent
+        .unwrap_or(match state.operation {
+            Some(LaunchPrereqOperation::Checking) => 12,
+            Some(LaunchPrereqOperation::OpeningDeveloperSettings) => 18,
+            _ => 0,
+        })
+        .min(100);
+    let progress_ratio = (progress_percent as f32 / 100.0).clamp(0.0, 1.0);
+    let action_enabled = !state.is_busy();
+
+    let mut content = div()
+        .flex_1()
+        .min_h(px(0.))
+        .overflow_y_scrollbar()
+        .scrollbar_width(px(0.))
+        .flex()
+        .flex_col()
+        .gap(px(12.));
+
+    if let Some(admin_notice) = state.admin_notice.as_ref() {
+        content = content.child(status_banner(
+            &colors,
+            lucide_gpui::icon!(shield_alert),
+            colors.stat_orange_bg,
+            colors.stat_orange_text,
+            admin_notice.clone(),
+        ));
+    }
+    if let Some(error_message) = state.error_message.as_ref() {
+        content = content.child(status_banner(
+            &colors,
+            lucide_gpui::icon!(circle_x),
+            Hsla {
+                a: 0.14,
+                ..colors.danger
+            },
+            colors.danger,
+            error_message.clone(),
+        ));
+    }
+
+    content = content.child(render_progress_section(
+        state,
+        &colors,
+        operation_text,
+        progress_percent,
+        progress_ratio,
+    ));
+    content = content.child(render_issue_sections(state, &colors, action_enabled, i18n));
+    content = content.child(render_logs_section(state, &colors, i18n));
+
+    let mut recheck_button = secondary_button(&colors, t!("LaunchPrereq.recheck"), action_enabled);
+    if action_enabled {
+        recheck_button = recheck_button.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+            recheck_prerequisites(cx);
+        });
+    }
+    let mut close_button = secondary_button(&colors, t!("common.cancel"), true);
+    close_button = close_button.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+        if cx.global::<LaunchPrereqState>().is_busy() {
+            cancel_prerequisites(cx);
+        } else {
+            dismiss_prerequisites(cx);
+        }
+    });
+
+    modal::layer(
+        render_shell(
+            &colors,
+            t!("LaunchPrereq.title"),
+            subtitle,
+            platform,
+            platform_label,
+            t!("LaunchPrereq.footerHint"),
+            content,
+            recheck_button,
+            close_button,
+        ),
+        hsla(0.0, 0.0, 0.0, 0.34),
+    )
+    .into_any_element()
+}
+
+fn render_progress_section(
+    state: &LaunchPrereqState,
+    colors: &ThemeColors,
+    operation_text: SharedString,
+    progress_percent: u32,
+    progress_ratio: f32,
+) -> AnyElement {
+    let show = state.operation.is_some() || state.check.is_none();
+    if !show {
+        return Empty {}.into_any_element();
+    }
+
+    let progress_target = state.progress_target.clone();
+    let progress_stage = if state.progress_stage.is_empty() {
+        operation_text.clone()
+    } else {
+        state.progress_stage.clone()
+    };
+
+    section_card(colors)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(spinning_icon_shell(
+                            colors,
+                            lucide_gpui::icon!(loader_circle),
+                            colors.accent,
+                            state.is_busy(),
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(colors.text_primary)
+                                        .child(operation_text),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(colors.text_secondary)
+                                        .child(progress_stage),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors.text_secondary)
+                        .child(format!("{progress_percent}%")),
+                ),
+        )
+        .child(progress_bar(colors, progress_ratio))
+        .when_some(progress_target, |this, target| {
+            this.child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(colors.text_muted)
+                    .child(target),
+            )
+        })
+        .into_any_element()
+}
+
+fn render_issue_sections(
+    state: &LaunchPrereqState,
+    colors: &ThemeColors,
+    close_enabled: bool,
+    i18n: &I18n,
+) -> AnyElement {
+    let Some(check) = state.check.as_ref() else {
+        return Empty {}.into_any_element();
+    };
+
+    let mut sections = div().flex().flex_col().gap(px(12.));
+
+    if check.developer_mode_required {
+        let mut open_settings_button = secondary_button(
+            colors,
+            t!("LaunchPrereq.issueDeveloperMode.openSettings"),
+            close_enabled,
+        );
+        if close_enabled {
+            open_settings_button = open_settings_button
+                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                    open_developer_mode_settings(cx)
+                });
+        }
+        let mut modify_registry_button = primary_button(
+            colors,
+            t!("LaunchPrereq.issueDeveloperMode.modifyRegistry"),
+            close_enabled,
+        );
+        if close_enabled {
+            modify_registry_button = modify_registry_button
+                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                    enable_developer_mode(cx)
+                });
+        }
+
+        sections = sections.child(issue_card(
+            colors,
+            lucide_gpui::icon!(wrench),
+            colors.stat_orange_text,
+            t!("LaunchPrereq.issueDeveloperMode.title"),
+            t!("LaunchPrereq.issueDeveloperMode.description"),
+            vec![developer_mode_actions(
+                open_settings_button,
+                modify_registry_button,
+            )],
+        ));
+    }
+
+    if !check.missing_uwp_dependencies.is_empty() {
+        let mut install_button = primary_button(
+            colors,
+            t!("LaunchPrereq.issueUwpDependencies.install"),
+            close_enabled,
+        );
+        if close_enabled {
+            install_button = install_button
+                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                    install_uwp_dependencies(cx)
+                });
+        }
+
+        let issue_rows = check
+            .missing_uwp_dependencies
+            .iter()
+            .map(|dependency| render_uwp_dependency_issue_row(colors, dependency, i18n))
+            .collect::<Vec<_>>();
+
+        sections = sections.child(
+            section_card(colors).child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .gap(px(12.))
+                            .items_start()
+                            .child(icon_shell(
+                                colors,
+                                lucide_gpui::icon!(package_plus),
+                                colors.accent,
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(colors.text_primary)
+                                            .child(t!("LaunchPrereq.issueUwpDependencies.title")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(relative(1.45))
+                                            .text_color(colors.text_secondary)
+                                            .child(t!(
+                                                "LaunchPrereq.issueUwpDependencies.description"
+                                            )),
+                                    )
+                                    .child(
+                                        div().flex().flex_col().gap(px(8.)).children(issue_rows),
+                                    ),
+                            ),
+                    )
+                    .child(install_button),
+            ),
+        );
+    }
+
+    if let Some(plan) = check.game_input_plan.as_ref() {
+        let mut install_button = primary_button(
+            colors,
+            t!("LaunchPrereq.issueGameInput.install"),
+            close_enabled,
+        );
+        if close_enabled {
+            install_button = install_button
+                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                    install_game_input(cx)
+                });
+        }
+
+        let description = match plan.source {
+            GameInputInstallerSource::Local => {
+                t!("LaunchPrereq.issueGameInput.descriptionLocal")
+            }
+            GameInputInstallerSource::Download => {
+                t!("LaunchPrereq.issueGameInput.descriptionDownload")
+            }
+        };
+        let source_label = match plan.source {
+            GameInputInstallerSource::Local => {
+                SharedString::from(plan.installer_path.display().to_string())
+            }
+            GameInputInstallerSource::Download => SharedString::from(GAMEINPUT_RELEASES_URL),
+        };
+
+        sections = sections.child(
+            section_card(colors).child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .items_start()
+                            .gap(px(12.))
+                            .child(icon_shell(
+                                colors,
+                                lucide_gpui::icon!(gamepad_2),
+                                colors.stat_green_text,
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(colors.text_primary)
+                                            .child(t!("LaunchPrereq.issueGameInput.title")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(relative(1.45))
+                                            .text_color(colors.text_secondary)
+                                            .child(description),
+                                    )
+                                    .child(metadata_chip(colors, source_label)),
+                            ),
+                    )
+                    .child(install_button),
+            ),
+        );
+    }
+
+    if let Some(plan) = check.windows_app_sdk_plan.as_ref() {
+        let mut install_button = primary_button(
+            colors,
+            t!("LaunchPrereq.issueWindowsAppSdk.install"),
+            close_enabled,
+        );
+        if close_enabled {
+            install_button = install_button
+                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                    install_windows_app_sdk(cx)
+                });
+        }
+
+        let description = match plan.source {
+            InstallerSource::Local => {
+                t!("LaunchPrereq.issueWindowsAppSdk.descriptionLocal")
+            }
+            InstallerSource::Download => {
+                t!("LaunchPrereq.issueWindowsAppSdk.descriptionDownload")
+            }
+        };
+        let source_label = match plan.source {
+            InstallerSource::Local => {
+                SharedString::from(plan.installer_path.display().to_string())
+            }
+            InstallerSource::Download => {
+                SharedString::from(RELEASES_URL)
+            }
+        };
+
+        sections = sections.child(
+            section_card(colors).child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .items_start()
+                            .gap(px(12.))
+                            .child(icon_shell(
+                                colors,
+                                lucide_gpui::icon!(package),
+                                colors.stat_orange_text,
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(colors.text_primary)
+                                            .child(t!("LaunchPrereq.issueWindowsAppSdk.title")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(relative(1.45))
+                                            .text_color(colors.text_secondary)
+                                            .child(description),
+                                    )
+                                    .child(metadata_chip(colors, source_label)),
+                            ),
+                    )
+                    .child(install_button),
+            ),
+        );
+    }
+
+    sections.into_any_element()
+}
+
+fn render_logs_section(
+    state: &LaunchPrereqState,
+    colors: &ThemeColors,
+    _i18n: &I18n,
+) -> AnyElement {
+    let logs = state.log_lines();
+    div()
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .bg(section_bg(colors))
+        .border_1()
+        .border_color(section_border(colors))
+        .p(px(14.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(
+            div().flex().items_center().gap(px(8.)).child(
+                div()
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(colors.text_primary)
+                    .child(t!("LaunchPrereq.logs.title")),
+            ),
+        )
+        .child(
+            div()
+                .min_h(px(0.))
+                .max_h(px(156.))
+                .overflow_y_scrollbar()
+                .scrollbar_width(px(6.))
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .min_h(px(76.))
+                .children(if logs.is_empty() {
+                    vec![
+                        div()
+                            .text_size(px(12.))
+                            .text_color(colors.text_muted)
+                            .child(t!("McDeps.noLogs"))
+                            .into_any_element(),
+                    ]
+                } else {
+                    logs.into_iter()
+                        .map(|line| {
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(18.))
+                                .text_color(log_color(colors, line.as_ref()))
+                                .child(line)
+                                .into_any_element()
+                        })
+                        .collect::<Vec<_>>()
+                }),
+        )
+        .into_any_element()
+}
+
+fn render_shell(
+    colors: &ThemeColors,
+    title: SharedString,
+    subtitle: SharedString,
+    platform: LaunchPlatform,
+    platform_label: SharedString,
+    footer_hint: SharedString,
+    content: impl IntoElement,
+    recheck_button: Div,
+    close_button: Div,
+) -> Div {
+    let shell_radius = px(crate::ui::theme::tokens::radius::MD);
+
+    div()
+        .w(px(696.))
+        .max_w(relative(1.0))
+        .max_h(relative(1.0))
+        .rounded(shell_radius)
+        .bg(shell_bg(colors))
+        .border_1()
+        .border_color(shell_border(colors))
+        .shadow(shell_shadow(colors))
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .bg(header_bg(colors))
+                .rounded_t(shell_radius)
+                .px(px(22.))
+                .py(px(18.))
+                .border_b_1()
+                .border_color(section_border(colors))
+                .flex()
+                .items_start()
+                .justify_between()
+                .gap(px(16.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .items_start()
+                        .gap(px(12.))
+                        .child(icon_shell(
+                            colors,
+                            lucide_gpui::icon!(shield_check),
+                            colors.accent,
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .text_size(px(18.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(colors.text_primary)
+                                        .child(title),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(relative(1.45))
+                                        .text_color(colors.text_secondary)
+                                        .child(subtitle),
+                                ),
+                        ),
+                )
+                .child(platform_badge(colors, platform, platform_label)),
+        )
+        .child(
+            div()
+                .bg(body_bg(colors))
+                .flex_1()
+                .min_h(px(0.))
+                .p(px(18.))
+                .flex()
+                .flex_col()
+                .child(content),
+        )
+        .child(
+            div()
+                .bg(footer_bg(colors))
+                .rounded_b(shell_radius)
+                .px(px(18.))
+                .py(px(14.))
+                .border_t_1()
+                .border_color(section_border(colors))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(colors.text_muted)
+                        .child(footer_hint),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .child(recheck_button)
+                        .child(close_button),
+                ),
+        )
+}
+
+fn issue_card(
+    colors: &ThemeColors,
+    icon_path: &'static str,
+    icon_color: Hsla,
+    title: SharedString,
+    description: SharedString,
+    actions: Vec<AnyElement>,
+) -> AnyElement {
+    section_card(colors)
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .justify_between()
+                .gap(px(14.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .items_start()
+                        .gap(px(12.))
+                        .child(icon_shell(colors, icon_path, icon_color))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(colors.text_primary)
+                                        .child(title),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(relative(1.45))
+                                        .text_color(colors.text_secondary)
+                                        .child(description),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .justify_end()
+                        .gap(px(8.))
+                        .children(actions),
+                ),
+        )
+        .into_any_element()
+}
+
+fn section_card(colors: &ThemeColors) -> Div {
+    div()
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .bg(section_bg(colors))
+        .border_1()
+        .border_color(section_border(colors))
+        .p(px(14.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+}
+
+fn developer_mode_actions(open_settings_button: Div, modify_registry_button: Div) -> AnyElement {
+    div()
+        .flex_none()
+        .w(px(200.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(open_settings_button.flex_1())
+        .child(modify_registry_button.flex_1())
+        .into_any_element()
+}
+
+fn icon_shell(colors: &ThemeColors, icon_path: &'static str, icon_color: Hsla) -> Div {
+    div()
+        .w(px(36.))
+        .h(px(36.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(Hsla {
+            a: 0.16,
+            ..colors.surface
+        })
+        .child(svg().path(icon_path).size(px(18.)).text_color(icon_color))
+}
+
+fn spinning_icon_shell(
+    colors: &ThemeColors,
+    icon_path: &'static str,
+    icon_color: Hsla,
+    busy: bool,
+) -> Div {
+    let glyph = svg().path(icon_path).size(px(18.)).text_color(icon_color);
+    let glyph: AnyElement = if busy {
+        glyph
+            .with_visual_animation(
+                "launch-prereq-busy-spinner",
+                Animation::new(std::time::Duration::from_millis(900))
+                    .repeat()
+                    .with_property(AnimationProperty::rotation(
+                        radians(0.0),
+                        radians(std::f32::consts::TAU),
+                    )),
+            )
+            .expect("prerequisite spinner rotation is a renderer visual property")
+            .into_any_element()
+    } else {
+        glyph.into_any_element()
+    };
+    div()
+        .w(px(36.))
+        .h(px(36.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(Hsla {
+            a: 0.16,
+            ..colors.surface
+        })
+        .child(glyph)
+}
+
+fn progress_bar(colors: &ThemeColors, ratio: f32) -> Div {
+    div()
+        .w_full()
+        .h(px(8.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
+        .bg(Hsla {
+            a: 0.72,
+            ..colors.progress_track
+        })
+        .overflow_hidden()
+        .child(
+            div()
+                .h_full()
+                .w(relative(ratio.clamp(0.0, 1.0)))
+                .bg(colors.progress_fill)
+                .rounded(px(crate::ui::theme::tokens::radius::FULL)),
+        )
+}
+
+fn metadata_chip(colors: &ThemeColors, label: SharedString) -> AnyElement {
+    div()
+        .px(px(8.))
+        .py(px(5.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
+        .bg(nested_bg(colors))
+        .border_1()
+        .border_color(colors.border)
+        .text_size(px(10.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(colors.text_secondary)
+        .child(label)
+        .into_any_element()
+}
+
+fn render_uwp_dependency_issue_row(
+    colors: &ThemeColors,
+    dependency: &crate::utils::mc_dependency::MissingUwpDependency,
+    i18n: &I18n,
+) -> AnyElement {
+    let reason = format_uwp_dependency_issue_reason(dependency, i18n);
+    let badge_label = match &dependency.issue_kind {
+        crate::utils::mc_dependency::UwpDependencyIssueKind::Missing => {
+            t!("LaunchPrereq.issueUwpDependencies.reasonMissing")
+        }
+        crate::utils::mc_dependency::UwpDependencyIssueKind::VersionMismatch { .. } => {
+            t!("LaunchPrereq.issueUwpDependencies.reasonVersionShort")
+        }
+    };
+    let badge_color = match &dependency.issue_kind {
+        crate::utils::mc_dependency::UwpDependencyIssueKind::Missing => colors.stat_orange_text,
+        crate::utils::mc_dependency::UwpDependencyIssueKind::VersionMismatch { .. } => {
+            colors.badge_beta_text
+        }
+    };
+
+    div()
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .bg(issue_row_bg(colors, &dependency.issue_kind))
+        .border_1()
+        .border_color(issue_row_border(
+            colors,
+            &dependency.issue_kind,
+        ))
+        .px(px(12.))
+        .py(px(10.))
+        .flex()
+        .items_start()
+        .justify_between()
+        .gap(px(12.))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(colors.text_primary)
+                        .child(SharedString::from(dependency.name.clone())),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .line_height(relative(1.45))
+                        .text_color(colors.text_secondary)
+                        .child(reason),
+                ),
+        )
+        .child(metadata_chip_with_color(colors, badge_label, badge_color))
+        .into_any_element()
+}
+
+fn format_uwp_dependency_issue_reason(
+    dependency: &crate::utils::mc_dependency::MissingUwpDependency,
+    _i18n: &I18n,
+) -> SharedString {
+    match &dependency.issue_kind {
+        crate::utils::mc_dependency::UwpDependencyIssueKind::Missing => {
+            t!("LaunchPrereq.issueUwpDependencies.reasonMissing")
+        }
+        crate::utils::mc_dependency::UwpDependencyIssueKind::VersionMismatch {
+            installed_version: Some(installed_version),
+            required_version,
+        } => t!(
+            "LaunchPrereq.issueUwpDependencies.reasonVersionMismatch",
+            current = installed_version,
+            required = required_version
+        ),
+        crate::utils::mc_dependency::UwpDependencyIssueKind::VersionMismatch {
+            installed_version: None,
+            required_version,
+        } => t!(
+            "LaunchPrereq.issueUwpDependencies.reasonVersionUnknown",
+            required = required_version
+        ),
+    }
+}
+
+fn metadata_chip_with_color(
+    colors: &ThemeColors,
+    label: SharedString,
+    foreground: Hsla,
+) -> AnyElement {
+    div()
+        .px(px(8.))
+        .py(px(5.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
+        .bg(nested_bg(colors))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.14,
+            ..foreground
+        })
+        .text_size(px(10.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(foreground)
+        .child(label)
+        .into_any_element()
+}
+
+fn status_banner(
+    colors: &ThemeColors,
+    icon_path: &'static str,
+    background: Hsla,
+    foreground: Hsla,
+    message: SharedString,
+) -> AnyElement {
+    div()
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .bg(background)
+        .border_1()
+        .border_color(Hsla {
+            a: 0.14,
+            ..foreground
+        })
+        .px(px(14.))
+        .py(px(12.))
+        .flex()
+        .items_start()
+        .gap(px(10.))
+        .child(svg().path(icon_path).size(px(16.)).text_color(foreground))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .text_size(px(12.))
+                .line_height(relative(1.45))
+                .text_color(if foreground.a < 0.99 {
+                    colors.text_primary
+                } else {
+                    foreground
+                })
+                .child(message),
+        )
+        .into_any_element()
+}
+
+fn platform_badge(
+    colors: &ThemeColors,
+    platform: LaunchPlatform,
+    label: SharedString,
+) -> AnyElement {
+    let (background, foreground) = match platform {
+        LaunchPlatform::Uwp => (colors.badge_stable_bg, colors.badge_stable_text),
+        LaunchPlatform::Gdk => (colors.badge_beta_bg, colors.badge_beta_text),
+    };
+
+    div()
+        .px(px(10.))
+        .py(px(6.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
+        .bg(background)
+        .text_size(px(11.))
+        .font_weight(FontWeight::BOLD)
+        .text_color(foreground)
+        .child(label)
+        .into_any_element()
+}
+
+fn primary_button(colors: &ThemeColors, label: SharedString, enabled: bool) -> Div {
+    div()
+        .h(px(36.))
+        .min_w(px(82.))
+        .px(px(14.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(colors.accent)
+        .text_size(px(13.))
+        .font_weight(FontWeight::BOLD)
+        .text_color(colors.btn_primary_text)
+        .when(enabled, |this| {
+            this.cursor_pointer()
+                .hover(|style| style.bg(colors.accent_hover))
+        })
+        .when(!enabled, |this| this.opacity(0.45))
+        .child(label)
+}
+
+fn secondary_button(colors: &ThemeColors, label: SharedString, enabled: bool) -> Div {
+    div()
+        .h(px(36.))
+        .min_w(px(82.))
+        .px(px(14.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(Hsla {
+            a: 0.68,
+            ..colors.settings_field_bg
+        })
+        .border_1()
+        .border_color(Hsla {
+            a: 0.10,
+            ..colors.border
+        })
+        .text_size(px(13.))
+        .font_weight(FontWeight::BOLD)
+        .text_color(colors.text_primary)
+        .when(enabled, |this| {
+            this.cursor_pointer()
+                .hover(|style| style.bg(colors.surface_hover))
+        })
+        .when(!enabled, |this| this.opacity(0.45))
+        .child(label)
+}
+
+fn operation_label(operation: LaunchPrereqOperation, _i18n: &I18n) -> SharedString {
+    match operation {
+        LaunchPrereqOperation::Checking => t!("LaunchPrereq.operation.checking"),
+        LaunchPrereqOperation::OpeningDeveloperSettings => {
+            t!("LaunchPrereq.operation.openingDeveloperSettings")
+        }
+        LaunchPrereqOperation::EnablingDeveloperMode => {
+            t!("LaunchPrereq.operation.enablingDeveloperMode")
+        }
+        LaunchPrereqOperation::InstallingUwpDependencies => {
+            t!("LaunchPrereq.operation.installingUwpDependencies")
+        }
+        LaunchPrereqOperation::InstallingGameInput => {
+            t!("LaunchPrereq.operation.installingGameInput")
+        }
+        LaunchPrereqOperation::InstallingWindowsAppSdk => {
+            t!("LaunchPrereq.operation.installingWindowsAppSdk")
+        }
+    }
+}
+
+fn log_color(colors: &ThemeColors, line: &str) -> Hsla {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("error")
+        || line.contains("失败")
+        || line.contains("错误")
+        || lower.contains("hresult")
+    {
+        colors.danger
+    } else if lower.contains("warn") || line.contains("警告") {
+        colors.stat_orange_text
+    } else if line.contains("完成") || line.contains("成功") || lower.contains("done") {
+        colors.stat_green_text
+    } else {
+        colors.text_secondary
+    }
+}
+
+fn is_dark(colors: &ThemeColors) -> bool {
+    colors.bg.l < 0.45
+}
+
+fn shell_bg(colors: &ThemeColors) -> Hsla {
+    Hsla {
+        a: 0.98,
+        ..colors.bg
+    }
+}
+
+fn shell_border(colors: &ThemeColors) -> Hsla {
+    colors.border
+}
+
+fn shell_shadow(colors: &ThemeColors) -> Vec<BoxShadow> {
+    let shadow_alpha = if is_dark(colors) {
+        0.18
+    } else {
+        0.14
+    };
+
+    vec![BoxShadow {
+        color: hsla(0.0, 0.0, 0.0, shadow_alpha),
+        blur_radius: px(24.),
+        spread_radius: px(-12.),
+        offset: point(px(0.), px(12.)),
+    }]
+}
+
+fn header_bg(colors: &ThemeColors) -> Hsla {
+    colors.surface
+}
+
+fn body_bg(colors: &ThemeColors) -> Hsla {
+    colors.bg
+}
+
+fn footer_bg(colors: &ThemeColors) -> Hsla {
+    colors.surface
+}
+
+fn section_bg(colors: &ThemeColors) -> Hsla {
+    colors.settings_card_bg
+}
+
+fn section_border(colors: &ThemeColors) -> Hsla {
+    colors.border
+}
+
+fn nested_bg(colors: &ThemeColors) -> Hsla {
+    colors.settings_field_bg
+}
+
+fn issue_row_bg(
+    colors: &ThemeColors,
+    issue_kind: &crate::utils::mc_dependency::UwpDependencyIssueKind,
+) -> Hsla {
+    match issue_kind {
+        crate::utils::mc_dependency::UwpDependencyIssueKind::Missing => Hsla {
+            a: if is_dark(colors) {
+                0.20
+            } else {
+                0.46
+            },
+            ..colors.stat_orange_bg
+        },
+        crate::utils::mc_dependency::UwpDependencyIssueKind::VersionMismatch { .. } => Hsla {
+            a: if is_dark(colors) {
+                0.24
+            } else {
+                0.40
+            },
+            ..colors.badge_beta_bg
+        },
+    }
+}
+
+fn issue_row_border(
+    colors: &ThemeColors,
+    issue_kind: &crate::utils::mc_dependency::UwpDependencyIssueKind,
+) -> Hsla {
+    let foreground = match issue_kind {
+        crate::utils::mc_dependency::UwpDependencyIssueKind::Missing => colors.stat_orange_text,
+        crate::utils::mc_dependency::UwpDependencyIssueKind::VersionMismatch { .. } => {
+            colors.badge_beta_text
+        }
+    };
+
+    Hsla {
+        a: if is_dark(colors) {
+            0.30
+        } else {
+            0.18
+        },
+        ..foreground
+    }
+}

@@ -269,12 +269,14 @@ impl Render for PageOverlayView {
         let factor = theme.factor(now);
         let accent = theme.accent;
         let colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             factor,
             accent,
         );
-        crate::ui::animation::request_layout_animation_frame_if(window, theme.is_animating(now));
+        if theme.is_animating(now) {
+            crate::ui::animation::request_layout_frame(window);
+        }
         let overlay = match self.route {
             AppRoute::Settings => crate::ui::views::settings::render_settings_overlay(
                 &colors,

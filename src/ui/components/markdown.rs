@@ -4,73 +4,73 @@ use gpui::*;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 #[derive(Debug, Clone, Default)]
-pub struct MarkdownDocument {
-    pub blocks: Vec<MarkdownBlock>,
+pub struct Document {
+    pub blocks: Vec<Block>,
 }
 
 #[derive(Debug, Clone)]
-pub enum MarkdownBlock {
+pub enum Block {
     Heading {
         level: u8,
-        spans: Vec<InlineSpan>,
+        spans: Vec<Span>,
     },
     Paragraph {
-        spans: Vec<InlineSpan>,
+        spans: Vec<Span>,
     },
     List {
         ordered: bool,
-        items: Vec<Vec<InlineSpan>>,
+        items: Vec<Vec<Span>>,
     },
     CodeBlock {
         language: Option<String>,
         code: String,
     },
     Quote {
-        spans: Vec<InlineSpan>,
+        spans: Vec<Span>,
     },
     Rule,
 }
 
 #[derive(Debug, Clone)]
-pub enum MarkdownItem {
+pub enum Item {
     Heading {
         level: u8,
-        spans: Vec<InlineSpan>,
+        spans: Vec<Span>,
     },
     Paragraph {
-        spans: Vec<InlineSpan>,
+        spans: Vec<Span>,
     },
     ListItem {
         marker: String,
-        spans: Vec<InlineSpan>,
+        spans: Vec<Span>,
     },
     CodeBlock {
         language: Option<String>,
         code: String,
     },
     Quote {
-        spans: Vec<InlineSpan>,
+        spans: Vec<Span>,
     },
     Rule,
 }
 
-impl MarkdownDocument {
-    pub fn linearize(&self) -> Vec<MarkdownItem> {
+impl Document {
+    pub fn linearize(&self) -> Vec<Item> {
         let mut items = Vec::with_capacity(self.blocks.len() * 2);
         for block in &self.blocks {
             match block {
-                MarkdownBlock::Heading { level, spans } => {
-                    items.push(MarkdownItem::Heading {
+                Block::Heading { level, spans } => {
+                    items.push(Item::Heading {
                         level: *level,
                         spans: spans.clone(),
                     });
                 }
-                MarkdownBlock::Paragraph { spans } => {
-                    items.push(MarkdownItem::Paragraph {
+                Block::Paragraph { spans } => {
+                    items.push(Item::Paragraph {
                         spans: spans.clone(),
                     });
                 }
-                MarkdownBlock::List {
+                Block::List {
                     ordered,
                     items: list_items,
                 } => {
@@ -80,25 +80,25 @@ impl MarkdownDocument {
                         } else {
                             "•".to_string()
                         };
-                        items.push(MarkdownItem::ListItem {
+                        items.push(Item::ListItem {
                             marker,
                             spans: item_spans.clone(),
                         });
                     }
                 }
-                MarkdownBlock::CodeBlock { language, code } => {
-                    items.push(MarkdownItem::CodeBlock {
+                Block::CodeBlock { language, code } => {
+                    items.push(Item::CodeBlock {
                         language: language.clone(),
                         code: code.clone(),
                     });
                 }
-                MarkdownBlock::Quote { spans } => {
-                    items.push(MarkdownItem::Quote {
+                Block::Quote { spans } => {
+                    items.push(Item::Quote {
                         spans: spans.clone(),
                     });
                 }
-                MarkdownBlock::Rule => {
-                    items.push(MarkdownItem::Rule);
+                Block::Rule => {
+                    items.push(Item::Rule);
                 }
             }
         }
@@ -107,13 +107,13 @@ impl MarkdownDocument {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InlineSpan {
+pub struct Span {
     pub text: String,
-    pub style: InlineStyle,
+    pub style: Style,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct InlineStyle {
+pub struct Style {
     pub bold: bool,
     pub italic: bool,
     pub strike: bool,
@@ -123,10 +123,10 @@ pub struct InlineStyle {
 
 #[derive(Debug, Clone, Default)]
 struct ParseState {
-    current_heading: Option<(u8, Vec<InlineSpan>)>,
-    current_paragraph: Option<Vec<InlineSpan>>,
-    item_stack: Vec<Vec<InlineSpan>>,
-    list_items: Vec<Vec<InlineSpan>>,
+    current_heading: Option<(u8, Vec<Span>)>,
+    current_paragraph: Option<Vec<Span>>,
+    item_stack: Vec<Vec<Span>>,
+    list_items: Vec<Vec<Span>>,
     list_depth: usize,
     list_ordered: bool,
     blockquote_depth: usize,
@@ -138,9 +138,7 @@ struct ParseState {
     active_link: Option<String>,
 }
 
-pub fn warm_highlighter_assets() {}
-
-pub fn parse_markdown_document(markdown: &str) -> MarkdownDocument {
+pub fn parse_document(markdown: &str) -> Document {
     let markdown = markdown.strip_prefix('\u{feff}').unwrap_or(markdown);
     let normalized_markdown = normalize_update_metadata_lines(markdown);
     let mut options = Options::empty();
@@ -160,13 +158,13 @@ pub fn parse_markdown_document(markdown: &str) -> MarkdownDocument {
             Event::Text(text) => push_text(&text, &mut state, false),
             Event::Code(code) => push_text(&code, &mut state, true),
             Event::SoftBreak | Event::HardBreak => push_text("\n", &mut state, false),
-            Event::Rule => blocks.push(MarkdownBlock::Rule),
+            Event::Rule => blocks.push(Block::Rule),
             _ => {}
         }
     }
 
     flush_unclosed_state(&mut state, &mut blocks);
-    MarkdownDocument { blocks }
+    Document { blocks }
 }
 
 fn normalize_update_metadata_lines(markdown: &str) -> String {
@@ -184,23 +182,14 @@ fn normalize_update_metadata_lines(markdown: &str) -> String {
     normalized
 }
 
-pub fn render_markdown_document(
-    document: &MarkdownDocument,
+pub fn render_document(
+    document: &Document,
     colors: &ThemeColors,
     is_dark: bool,
-) -> Div {
-    render_markdown_document_limited(document, colors, is_dark, document.blocks.len())
-}
-
-pub fn render_markdown_document_limited(
-    document: &MarkdownDocument,
-    colors: &ThemeColors,
-    is_dark: bool,
-    max_blocks: usize,
 ) -> Div {
     let mut column = div().flex().flex_col().gap(px(6.));
 
-    for block in document.blocks.iter().take(max_blocks) {
+    for block in &document.blocks {
         column = column.child(render_block(block, colors, is_dark));
     }
 
@@ -245,13 +234,13 @@ fn start_tag(tag: Tag<'_>, state: &mut ParseState) {
     }
 }
 
-fn end_tag(tag_end: TagEnd, state: &mut ParseState, blocks: &mut Vec<MarkdownBlock>) {
+fn end_tag(tag_end: TagEnd, state: &mut ParseState, blocks: &mut Vec<Block>) {
     match tag_end {
         TagEnd::Heading { .. } => {
             if let Some((level, spans)) = state.current_heading.take()
                 && !spans.is_empty()
             {
-                blocks.push(MarkdownBlock::Heading { level, spans });
+                blocks.push(Block::Heading { level, spans });
             }
         }
         TagEnd::Paragraph => {
@@ -259,9 +248,9 @@ fn end_tag(tag_end: TagEnd, state: &mut ParseState, blocks: &mut Vec<MarkdownBlo
                 && !spans.is_empty()
             {
                 if state.blockquote_depth > 0 {
-                    blocks.push(MarkdownBlock::Quote { spans });
+                    blocks.push(Block::Quote { spans });
                 } else if state.item_stack.is_empty() {
-                    blocks.push(MarkdownBlock::Paragraph { spans });
+                    blocks.push(Block::Paragraph { spans });
                 } else {
                     append_spans_to_current_item(spans, state);
                 }
@@ -273,14 +262,14 @@ fn end_tag(tag_end: TagEnd, state: &mut ParseState, blocks: &mut Vec<MarkdownBlo
             {
                 if let Some(parent) = state.item_stack.last_mut() {
                     if !parent.is_empty() {
-                        parent.push(InlineSpan {
+                        parent.push(Span {
                             text: "\n".to_string(),
-                            style: InlineStyle::default(),
+                            style: Style::default(),
                         });
                     }
-                    parent.push(InlineSpan {
+                    parent.push(Span {
                         text: "  • ".to_string(),
-                        style: InlineStyle::default(),
+                        style: Style::default(),
                     });
                     parent.extend(spans);
                 } else {
@@ -294,7 +283,7 @@ fn end_tag(tag_end: TagEnd, state: &mut ParseState, blocks: &mut Vec<MarkdownBlo
             }
             if state.list_depth == 0 {
                 if !state.list_items.is_empty() {
-                    blocks.push(MarkdownBlock::List {
+                    blocks.push(Block::List {
                         ordered: state.list_ordered,
                         items: std::mem::take(&mut state.list_items),
                     });
@@ -322,7 +311,7 @@ fn end_tag(tag_end: TagEnd, state: &mut ParseState, blocks: &mut Vec<MarkdownBlo
                         Some(trimmed.to_string())
                     }
                 });
-                blocks.push(MarkdownBlock::CodeBlock { language, code });
+                blocks.push(Block::CodeBlock { language, code });
             }
         }
         _ => {}
@@ -339,7 +328,7 @@ fn push_text(text: &str, state: &mut ParseState, is_inline_code: bool) {
         return;
     }
 
-    let style = InlineStyle {
+    let style = Style {
         bold: state.strong_depth > 0,
         italic: state.emphasis_depth > 0,
         strike: state.strike_depth > 0,
@@ -352,7 +341,7 @@ fn push_text(text: &str, state: &mut ParseState, is_inline_code: bool) {
     }
 }
 
-fn push_span(spans: &mut Vec<InlineSpan>, text: &str, style: InlineStyle) {
+fn push_span(spans: &mut Vec<Span>, text: &str, style: Style) {
     if let Some(last) = spans.last_mut()
         && last.style == style
     {
@@ -360,25 +349,25 @@ fn push_span(spans: &mut Vec<InlineSpan>, text: &str, style: InlineStyle) {
         return;
     }
 
-    spans.push(InlineSpan {
+    spans.push(Span {
         text: text.to_string(),
         style,
     });
 }
 
-fn append_spans_to_current_item(spans: Vec<InlineSpan>, state: &mut ParseState) {
+fn append_spans_to_current_item(spans: Vec<Span>, state: &mut ParseState) {
     if let Some(item_spans) = state.item_stack.last_mut() {
         if !item_spans.is_empty() {
-            item_spans.push(InlineSpan {
+            item_spans.push(Span {
                 text: "\n".to_string(),
-                style: InlineStyle::default(),
+                style: Style::default(),
             });
         }
         item_spans.extend(spans);
     }
 }
 
-fn active_spans_mut(state: &mut ParseState) -> Option<&mut Vec<InlineSpan>> {
+fn active_spans_mut(state: &mut ParseState) -> Option<&mut Vec<Span>> {
     if let Some((_, spans)) = state.current_heading.as_mut() {
         return Some(spans);
     }
@@ -388,11 +377,11 @@ fn active_spans_mut(state: &mut ParseState) -> Option<&mut Vec<InlineSpan>> {
     state.current_paragraph.as_mut()
 }
 
-fn flush_unclosed_state(state: &mut ParseState, blocks: &mut Vec<MarkdownBlock>) {
+fn flush_unclosed_state(state: &mut ParseState, blocks: &mut Vec<Block>) {
     if let Some((level, spans)) = state.current_heading.take()
         && !spans.is_empty()
     {
-        blocks.push(MarkdownBlock::Heading { level, spans });
+        blocks.push(Block::Heading { level, spans });
     }
 
     while let Some(spans) = state.item_stack.pop() {
@@ -402,7 +391,7 @@ fn flush_unclosed_state(state: &mut ParseState, blocks: &mut Vec<MarkdownBlock>)
     }
 
     if !state.list_items.is_empty() {
-        blocks.push(MarkdownBlock::List {
+        blocks.push(Block::List {
             ordered: state.list_ordered,
             items: std::mem::take(&mut state.list_items),
         });
@@ -411,23 +400,23 @@ fn flush_unclosed_state(state: &mut ParseState, blocks: &mut Vec<MarkdownBlock>)
     if let Some(spans) = state.current_paragraph.take()
         && !spans.is_empty()
     {
-        blocks.push(MarkdownBlock::Paragraph { spans });
+        blocks.push(Block::Paragraph { spans });
     }
 
     if !state.code_block_content.trim().is_empty() {
         let language = state.code_block_language.take();
         let code = std::mem::take(&mut state.code_block_content);
-        blocks.push(MarkdownBlock::CodeBlock { language, code });
+        blocks.push(Block::CodeBlock { language, code });
     }
 }
 
-pub fn render_markdown_item(
-    item: &MarkdownItem,
+pub fn render_item(
+    item: &Item,
     colors: &ThemeColors,
     is_dark: bool,
 ) -> AnyElement {
     match item {
-        MarkdownItem::Heading { level, spans } => {
+        Item::Heading { level, spans } => {
             let (font_size, line_height, padding_bottom, with_divider) = match *level {
                 1 => (px(20.), px(28.), px(8.), true),
                 2 => (px(17.), px(25.), px(6.), true),
@@ -452,7 +441,7 @@ pub fn render_markdown_item(
                 ))
                 .into_any_element()
         }
-        MarkdownItem::Paragraph { spans } => div()
+        Item::Paragraph { spans } => div()
             .w_full()
             .py(px(2.))
             .child(render_inline_styled_text(
@@ -465,7 +454,7 @@ pub fn render_markdown_item(
                 true,
             ))
             .into_any_element(),
-        MarkdownItem::ListItem { marker, spans } => div()
+        Item::ListItem { marker, spans } => div()
             .w_full()
             .py(px(2.))
             .flex()
@@ -496,7 +485,7 @@ pub fn render_markdown_item(
                     )),
             )
             .into_any_element(),
-        MarkdownItem::CodeBlock { language, code } => div()
+        Item::CodeBlock { language, code } => div()
             .w_full()
             .py(px(4.))
             .child(render_code_block(
@@ -506,7 +495,7 @@ pub fn render_markdown_item(
                 is_dark,
             ))
             .into_any_element(),
-        MarkdownItem::Quote { spans } => div()
+        Item::Quote { spans } => div()
             .w_full()
             .py(px(2.))
             .pl(px(10.))
@@ -522,7 +511,7 @@ pub fn render_markdown_item(
                 true,
             ))
             .into_any_element(),
-        MarkdownItem::Rule => div()
+        Item::Rule => div()
             .h(px(1.))
             .my(px(4.))
             .w_full()
@@ -531,9 +520,9 @@ pub fn render_markdown_item(
     }
 }
 
-fn render_block(block: &MarkdownBlock, colors: &ThemeColors, is_dark: bool) -> AnyElement {
+fn render_block(block: &Block, colors: &ThemeColors, is_dark: bool) -> AnyElement {
     match block {
-        MarkdownBlock::Heading { level, spans } => {
+        Block::Heading { level, spans } => {
             let (font_size, line_height, padding_bottom, with_divider) = match *level {
                 1 => (px(21.), px(30.), px(8.), true),
                 2 => (px(18.), px(27.), px(7.), true),
@@ -558,7 +547,7 @@ fn render_block(block: &MarkdownBlock, colors: &ThemeColors, is_dark: bool) -> A
                 ))
                 .into_any_element()
         }
-        MarkdownBlock::Paragraph { spans } => div()
+        Block::Paragraph { spans } => div()
             .w_full()
             .child(render_inline_styled_text(
                 spans,
@@ -570,7 +559,7 @@ fn render_block(block: &MarkdownBlock, colors: &ThemeColors, is_dark: bool) -> A
                 true,
             ))
             .into_any_element(),
-        MarkdownBlock::Quote { spans } => div()
+        Block::Quote { spans } => div()
             .w_full()
             .pl(px(10.))
             .border_l_2()
@@ -585,7 +574,7 @@ fn render_block(block: &MarkdownBlock, colors: &ThemeColors, is_dark: bool) -> A
                 true,
             ))
             .into_any_element(),
-        MarkdownBlock::List { ordered, items } => {
+        Block::List { ordered, items } => {
             let mut list = div().flex().flex_col().gap(px(4.));
             for (index, item_spans) in items.iter().enumerate() {
                 let marker = if *ordered {
@@ -626,10 +615,10 @@ fn render_block(block: &MarkdownBlock, colors: &ThemeColors, is_dark: bool) -> A
             }
             list.into_any_element()
         }
-        MarkdownBlock::CodeBlock { language, code } => {
+        Block::CodeBlock { language, code } => {
             render_code_block(language.as_deref(), code, colors, is_dark).into_any_element()
         }
-        MarkdownBlock::Rule => div()
+        Block::Rule => div()
             .h(px(1.))
             .w_full()
             .bg(colors.border)
@@ -638,7 +627,7 @@ fn render_block(block: &MarkdownBlock, colors: &ThemeColors, is_dark: bool) -> A
 }
 
 fn render_inline_styled_text(
-    spans: &[InlineSpan],
+    spans: &[Span],
     colors: &ThemeColors,
     font_size: Pixels,
     line_height: Pixels,
@@ -836,7 +825,7 @@ fn soft_wrap_markdown_text(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::ui::components::markdown_renderer::{MarkdownBlock, parse_markdown_document};
+    use crate::ui::components::markdown::{Block, parse_document};
 
     #[test]
     fn parses_complete_markdown_list_items() {
@@ -845,13 +834,13 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let document = parse_markdown_document(&markdown);
+        let document = parse_document(&markdown);
 
         let list_item_count = document
             .blocks
             .iter()
             .filter_map(|block| match block {
-                MarkdownBlock::List { items, .. } => Some(items.len()),
+                Block::List { items, .. } => Some(items.len()),
                 _ => None,
             })
             .sum::<usize>();

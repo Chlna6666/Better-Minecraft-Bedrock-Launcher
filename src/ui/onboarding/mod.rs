@@ -27,9 +27,9 @@ pub(crate) fn select_curseforge_source(source: &'static str, cx: &mut App) {
         },
     );
     cx.spawn(async move |cx| {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
             let mut changed = false;
-            crate::config::config::update_config(|config| {
+            crate::config::settings::update(|config| {
                 changed = config.launcher.download.curseforge_api_source != source;
                 config.launcher.download.curseforge_api_source = source.to_string();
             })?;
@@ -113,8 +113,8 @@ fn complete(cx: &mut App, route: Option<crate::ui::navigation::AppRoute>) {
     cx.update_global(|state: &mut OnboardingTourState, _cx| state.finish());
 
     cx.spawn(async move |cx| {
-        let persisted = crate::tasks::runtime::run_io_blocking(
-            crate::config::onboarding::complete_current_onboarding,
+        let persisted = crate::tasks::runtime::blocking::run_io(
+            crate::config::onboarding::complete,
         )
         .await;
 
@@ -272,7 +272,7 @@ fn start_platform_scan(cx: &mut App) {
         cx.update_global(|state: &mut OnboardingTourState, _cx| state.begin_platform_scan());
 
     cx.spawn(async move |cx| {
-        let result = crate::tasks::runtime::run_io_blocking(build_platform_summary).await;
+        let result = crate::tasks::runtime::blocking::run_io(build_platform_summary).await;
         cx.update(|cx| match result {
             Ok(summary) => {
                 cx.update_global(|state: &mut OnboardingTourState, _cx| {

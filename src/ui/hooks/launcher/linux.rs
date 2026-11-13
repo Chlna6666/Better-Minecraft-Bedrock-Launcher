@@ -38,7 +38,7 @@ pub struct LaunchVersionDescriptor {
     pub launch_args: Option<SharedString>,
 }
 
-pub fn read_launcher_snapshot(cx: &App) -> LauncherSnapshot {
+pub fn snapshot(cx: &App) -> LauncherSnapshot {
     cx.read_global(|state: &LauncherState, _cx| {
         let logs = state.task_logs.clone();
         let log_version = state.task_log_version;
@@ -59,19 +59,19 @@ pub fn read_launcher_snapshot(cx: &App) -> LauncherSnapshot {
     })
 }
 
-pub fn use_launcher<Hooks, View>(hooks: &Hooks, cx: &mut Context<View>) -> LauncherSnapshot
+pub fn use_snapshot<Hooks, View>(hooks: &Hooks, cx: &mut Context<View>) -> LauncherSnapshot
 where
     Hooks: UseStateHook + UseRefHook,
     View: 'static,
 {
-    let snapshot = hooks.use_state(|| read_launcher_snapshot(cx));
+    let snapshot = hooks.use_state(|| snapshot(cx));
     let subscription = hooks.use_ref(|| None::<Subscription>);
 
     if subscription.borrow().is_none() {
         let snapshot = snapshot.clone();
         let observer = cx.observe_global::<LauncherState>(move |_, cx| {
-            let current = read_launcher_snapshot(cx);
-            if snapshot.with(|value| launcher_snapshot_changed(value, &current)) {
+            let current = snapshot(cx);
+            if snapshot.with(|value| snapshot_changed(value, &current)) {
                 snapshot.set(current);
                 cx.notify();
             }
@@ -79,14 +79,14 @@ where
         *subscription.borrow_mut() = Some(observer);
     }
 
-    let current = read_launcher_snapshot(cx);
-    if snapshot.with(|value| launcher_snapshot_changed(value, &current)) {
+    let current = snapshot(cx);
+    if snapshot.with(|value| snapshot_changed(value, &current)) {
         snapshot.set(current.clone());
     }
     current
 }
 
-pub fn start_launcher(version: LaunchVersionDescriptor, cx: &mut App) -> Option<Arc<str>> {
+pub fn start(version: LaunchVersionDescriptor, cx: &mut App) -> Option<Arc<str>> {
     if version.path.is_empty() {
         warn!(version_name = %version.name, "Linux launch request has no package path");
         return None;
@@ -111,16 +111,16 @@ pub fn start_launcher(version: LaunchVersionDescriptor, cx: &mut App) -> Option<
     Some(begin_launch_task(version, cx))
 }
 
-pub fn close_launcher(cx: &mut App) {
+pub fn close(cx: &mut App) {
     let now = std::time::Instant::now();
     cx.update_global(|state: &mut LauncherState, _cx| state.request_close(now));
 }
 
-pub fn minimize_launcher(cx: &mut App) {
+pub fn minimize(cx: &mut App) {
     cx.update_global(|state: &mut LauncherState, _cx| state.dismiss_modal());
 }
 
-pub fn cancel_launcher(cx: &mut App) {
+pub fn cancel(cx: &mut App) {
     let task_id = cx
         .global::<LauncherState>()
         .task_id
@@ -137,7 +137,7 @@ pub fn cancel_launcher(cx: &mut App) {
     }
 }
 
-pub fn retry_launcher(cx: &mut App) -> Option<Arc<str>> {
+pub fn retry(cx: &mut App) -> Option<Arc<str>> {
     let descriptor = cx.read_global(|state: &LauncherState, _cx| {
         let failed = state
             .last_snapshot
@@ -155,10 +155,10 @@ pub fn retry_launcher(cx: &mut App) -> Option<Arc<str>> {
             launch_args: (!state.launch_args.is_empty()).then(|| state.launch_args.clone()),
         })
     });
-    descriptor.and_then(|version| start_launcher(version, cx))
+    descriptor.and_then(|version| start(version, cx))
 }
 
-pub fn copy_launcher_error(cx: &mut App) -> bool {
+pub fn copy_error(cx: &mut App) -> bool {
     let copy_text = cx.read_global(|state: &LauncherState, _cx| {
         let logs = state
             .task_id
@@ -194,7 +194,7 @@ pub fn copy_launcher_error(cx: &mut App) -> bool {
     debug!(
         has_text,
         text_len = copy_text.as_ref().map(|text| text.len()).unwrap_or(0),
-        "copy_launcher_error invoked"
+        "copy_error invoked"
     );
     if let Some(text) = copy_text.filter(|text| !text.is_empty()) {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -203,7 +203,7 @@ pub fn copy_launcher_error(cx: &mut App) -> bool {
     false
 }
 
-pub fn sync_launcher_state(now: std::time::Instant, cx: &mut App) {
+pub fn sync_state(now: std::time::Instant, cx: &mut App) {
     let should_finish_close = {
         let state = cx.global::<LauncherState>();
         state.show_modal && !state.modal_visible && !state.is_modal_animating(now)
@@ -252,7 +252,7 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
     // Subscribe before reading current state so a fast update cannot be lost.
     let mut updates = task_manager::subscribe_task_updates();
     let mut log_updates = task_manager::subscribe_task_log_updates();
-    let initial_snapshot = task_manager::get_snapshot_arc(task_id.as_ref());
+    let initial_snapshot = task_manager::snapshot_arc(task_id.as_ref());
     let initial_logs = task_manager::task_logs_snapshot(task_id.as_ref());
     cx.update_global(|state: &mut LauncherState, _cx| {
         if state.task_id.as_deref() == Some(task_id.as_ref()) {
@@ -272,7 +272,7 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
                         Ok(snapshot) => Some(snapshot),
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                             warn!(skipped, "Linux launcher snapshot pump lagged; resyncing");
-                            task_manager::get_snapshot_arc(task_id.as_ref())
+                            task_manager::snapshot_arc(task_id.as_ref())
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             warn!("Linux launcher snapshot pump closed");
@@ -362,7 +362,7 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
     .detach();
 }
 
-pub(crate) fn launcher_snapshot_changed(previous: &LauncherSnapshot, current: &LauncherSnapshot) -> bool {
+pub(crate) fn snapshot_changed(previous: &LauncherSnapshot, current: &LauncherSnapshot) -> bool {
     previous.show_modal != current.show_modal
         || previous.modal_visible != current.modal_visible
         || previous.task_id != current.task_id

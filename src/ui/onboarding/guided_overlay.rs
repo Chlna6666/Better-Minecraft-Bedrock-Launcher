@@ -5,7 +5,7 @@ use crate::ui::components::input::Input;
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
 const VIEWPORT_MARGIN: f32 = 14.0;
 const PANEL_GAP: f32 = 14.0;
@@ -106,8 +106,8 @@ pub fn render_onboarding_tour(
     let theme = cx.global::<ThemeState>();
     let i18n = cx.global::<I18n>();
     let colors = lerp_theme_colors(
-        &LightColors::colors(),
-        &DarkColors::colors(),
+        &LightColors::theme(),
+        &DarkColors::theme(),
         theme.factor(now),
         theme.accent,
     );

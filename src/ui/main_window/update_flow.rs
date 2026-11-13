@@ -33,9 +33,8 @@ impl MainWindowView {
 
         cx.spawn(async move |_handle, cx| {
             tracing::debug!("update markdown cache task started release_tag={release_tag}");
-            let parsed = crate::tasks::runtime::run_io_blocking(move || {
-                crate::ui::components::markdown_renderer::warm_highlighter_assets();
-                crate::ui::components::markdown_renderer::parse_markdown_document(&release_body)
+            let parsed = crate::tasks::runtime::blocking::run_io(move || {
+                crate::ui::components::markdown::parse_document(&release_body)
             })
             .await;
 
@@ -140,7 +139,7 @@ impl MainWindowView {
     pub(super) fn sync_update_state(&mut self, now: Instant, cx: &mut Context<Self>) -> bool {
         let (modal_pending_open, needs_markdown_cache, cache_inflight, release, should_hide_modal) = {
             let update_state = cx.global::<UpdateState>();
-            let needs_markdown_cache = update_state.needs_md_cache_refresh();
+            let needs_markdown_cache = update_state.md_cache_refresh_required();
             let should_hide_modal = update_state.show_modal
                 && !update_state.modal_visible
                 && !update_state.is_modal_animating(now);
@@ -165,7 +164,7 @@ impl MainWindowView {
         {
             let scheduled = cx.update_global(|update_state: &mut UpdateState, _cx| {
                 if update_state.markdown_cache_refresh_inflight
-                    || !update_state.needs_md_cache_refresh()
+                    || !update_state.md_cache_refresh_required()
                 {
                     return false;
                 }
@@ -196,7 +195,7 @@ impl MainWindowView {
             if modal_pending_open
                 && update_state.modal_pending_open
                 && !update_state.markdown_cache_refresh_inflight
-                && !update_state.needs_md_cache_refresh()
+                && !update_state.md_cache_refresh_required()
             {
                 update_state.modal_pending_open = false;
                 update_state.set_show_modal(true, now);
@@ -259,7 +258,7 @@ impl MainWindowView {
                             task_id = %task_id,
                             "update download listener lagged; resyncing"
                         );
-                        let Some(snapshot) = crate::tasks::task_manager::get_snapshot_arc(&task_id)
+                        let Some(snapshot) = crate::tasks::task_manager::snapshot_arc(&task_id)
                         else {
                             continue;
                         };
