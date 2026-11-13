@@ -58,7 +58,7 @@ where
         let set = device
             .create_bind_group(&BindGroupDescriptor {
                 label: None,
-                layout: resources.backdrop_blur_pass_resource_set_layout,
+                layout: resources.backdrop_blur_pass_bind_group_layout,
                 entries: backdrop_blur_pass_resource_bindings(
                     &buffers,
                     input,
@@ -88,8 +88,8 @@ where
                 clear_region: None,
                 depth_attachment: None,
                 viewport: None,
-            resolve_target: None,
-        }])
+                resolve_target: None,
+            }])
             .expect("Gaussian pass");
     }
     let pixels = device.read_texture(target).expect("blur readback");

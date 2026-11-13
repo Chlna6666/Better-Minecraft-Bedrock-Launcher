@@ -44,7 +44,7 @@ pub(super) fn verify(
             original,
             "closing the popup must preserve the static root texture"
         );
-        let source = crate::diagnostics::performance_metrics::performance_metrics_snapshot()
+        let source = crate::diagnostics::performance_metrics::snapshot()
             .backdrop_blur_source_pixels;
         assert!(
             source
@@ -66,7 +66,7 @@ pub(super) fn verify(
             original,
             "reopening the popup must reuse the static root texture"
         );
-        let source = crate::diagnostics::performance_metrics::performance_metrics_snapshot()
+        let source = crate::diagnostics::performance_metrics::snapshot()
             .backdrop_blur_source_pixels;
         assert!(
             source
@@ -132,7 +132,7 @@ fn verify_root_without_filters(renderer: &mut NovaRenderer, target: (TextureId, 
         "Filter invalidation must not rasterize unchanged Root"
     );
     assert_eq!(
-        crate::diagnostics::performance_metrics::performance_metrics_snapshot()
+        crate::diagnostics::performance_metrics::snapshot()
             .backdrop_blur_source_pixels,
         0,
     );
@@ -160,8 +160,8 @@ fn verify_filter_retirement_keeps_root(
         .target
         .as_ref()
         .expect("window Root owner");
-    let pass_sets = root.pass_resource_sets.clone();
-    let composite_sets = root.composite_resource_sets.clone();
+    let pass_sets = root.pass_bind_groups.clone();
+    let composite_sets = root.composite_bind_groups.clone();
     let baseline = pixels(renderer, scene, target, 0.8, [sample(0.8)], false);
     let version = renderer.root_color.content_version();
     renderer
@@ -182,8 +182,8 @@ fn verify_filter_retirement_keeps_root(
         .target
         .as_ref()
         .expect("same window Root owner");
-    assert_eq!(root.pass_resource_sets, pass_sets);
-    assert_eq!(root.composite_resource_sets, composite_sets);
+    assert_eq!(root.pass_bind_groups, pass_sets);
+    assert_eq!(root.composite_bind_groups, composite_sets);
     eprintln!(
         "root lifetime gate backend={:?} filter_chain_recreated=true root_texture_reallocated=false root_descriptors_rebuilt=false pixels_equal=true",
         renderer.backend_info.label()

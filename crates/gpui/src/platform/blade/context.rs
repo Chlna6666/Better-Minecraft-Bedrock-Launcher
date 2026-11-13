@@ -1,11 +1,10 @@
 use anyhow::Context as _;
-use blade_graphics as gpu;
 use std::sync::Arc;
 use util::ResultExt;
 
 #[derive(Clone)]
 pub struct BladeContext {
-    pub(super) gpu: Arc<gpu::Context>,
+    pub(super) gpu: Arc<blade_graphics::Context>,
 }
 
 impl BladeContext {
@@ -23,7 +22,7 @@ impl BladeContext {
         };
         let gpu = Arc::new(
             unsafe {
-                gpu::Context::init(gpu::ContextDesc {
+                blade_graphics::Context::init(blade_graphics::ContextDesc {
                     presentation: true,
                     validation: false,
                     device_id: device_id_forced,

@@ -5,7 +5,7 @@ use super::super::store::{WindowMetrics, shared_metrics};
 
 /// Backend readiness wake counts and event-queue delay for one window.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WindowBackendReadyMetricsSnapshot {
+pub struct BackendReadyMetricsSnapshot {
     /// Current backend-ready notifications accepted by the Windows native owner.
     pub wake_count: usize,
     /// Median time from the backend callback enqueue to native event delivery, in microseconds.
@@ -18,9 +18,9 @@ pub struct WindowBackendReadyMetricsSnapshot {
     pub queue_delay_sample_count: usize,
 }
 
-pub(super) fn snapshot(metrics: &WindowMetrics) -> WindowBackendReadyMetricsSnapshot {
+pub(super) fn snapshot(metrics: &WindowMetrics) -> BackendReadyMetricsSnapshot {
     let queue_delay = metrics.backend_ready_queue_delay_samples.percentiles();
-    WindowBackendReadyMetricsSnapshot {
+    BackendReadyMetricsSnapshot {
         wake_count: metrics.backend_ready_wake_count as usize,
         queue_delay_p50_micros: queue_delay.p50_micros as usize,
         queue_delay_p95_micros: queue_delay.p95_micros as usize,
@@ -29,7 +29,7 @@ pub(super) fn snapshot(metrics: &WindowMetrics) -> WindowBackendReadyMetricsSnap
     }
 }
 
-pub(crate) fn record_window_backend_ready_wake(
+pub(crate) fn record_backend_ready_wake(
     window_id: u64,
     enqueued_at: Instant,
     event_received_at: Instant,
@@ -45,7 +45,7 @@ pub(crate) fn record_window_backend_ready_wake(
 
 #[cfg(test)]
 mod tests {
-    use super::record_window_backend_ready_wake;
+    use super::record_backend_ready_wake;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
@@ -55,13 +55,13 @@ mod tests {
     fn records_backend_ready_wakes_separately_from_dwm_wakes() {
         let window_id = NEXT_WINDOW_ID.fetch_sub(1, Ordering::Relaxed);
         let enqueued_at = Instant::now();
-        record_window_backend_ready_wake(
+        record_backend_ready_wake(
             window_id,
             enqueued_at,
             enqueued_at + Duration::from_micros(137),
         );
 
-        let metrics = super::super::window_metrics_snapshot()
+        let metrics = super::super::snapshot()
             .into_iter()
             .find(|metrics| metrics.window_id == window_id)
             .expect("the recorded window is present in the snapshot");

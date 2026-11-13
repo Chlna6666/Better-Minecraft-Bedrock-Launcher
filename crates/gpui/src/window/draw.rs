@@ -156,7 +156,7 @@ impl Window {
             .deadline_remaining_at_layout_start_us = None;
         self.last_generation_stats
             .deadline_remaining_at_paint_start_us = None;
-        record_window_layout_recompute(self.handle.window_id().as_u64());
+        record_layout_recompute(self.handle.window_id().as_u64());
         if let Some(started_at) = self.invalidator.take_dirty_to_present_start() {
             self.active_dirty_to_present_started_at = Some(
                 self.active_dirty_to_present_started_at
@@ -268,7 +268,7 @@ impl Window {
             .borrow()
             .scene_values(self.animation_time());
         let accumulate_unpresented_damage = self.needs_present.get();
-        let mut backdrop_blur_damage_plan = crate::paint::backdrop_blur_damage_plan(
+        let mut backdrop_blur_damage = crate::paint::compute_backdrop_blur_damage(
             self.next_frame.scene(),
             self.rendered_frame.scene(),
             &scene_animation_values,
@@ -276,9 +276,9 @@ impl Window {
                 .animation_values_snapshot(self.rendered_frame.scene()),
         );
         if accumulate_unpresented_damage {
-            backdrop_blur_damage_plan.merge_from(&self.backdrop_blur_damage_plan);
+            backdrop_blur_damage.merge_from(&self.backdrop_blur_damage);
         }
-        self.backdrop_blur_damage_plan = backdrop_blur_damage_plan;
+        self.backdrop_blur_damage = backdrop_blur_damage;
         self.prepare_render_plan_for_next_frame(
             previous_scene_was_empty || force_full_redraw || self.draw_was_degraded,
             directly_dirty_views,
@@ -604,7 +604,7 @@ impl Window {
                 // Preserve the union of OLD and NEW output clips. Removal needs
                 // the old pixels restored; addition needs the new pixels filled.
                 // The Gaussian source halo remains the filter cache's separate
-                // responsibility via backdrop_blur_damage_plan.
+                // responsibility via backdrop_blur_damage.
                 for blur in self
                     .rendered_frame
                     .scene()
@@ -636,7 +636,7 @@ impl Window {
 
             for bounds in crate::paint::backdrop_blur_output_damage(
                 self.next_frame.scene(),
-                &self.backdrop_blur_damage_plan,
+                &self.backdrop_blur_damage,
             ) {
                 dirty_region.push(bounds);
             }
@@ -802,7 +802,7 @@ impl Window {
             timelines,
             self.animation_time(),
             self.render_dirty_region.clone(),
-            self.backdrop_blur_damage_plan.clone(),
+            self.backdrop_blur_damage.clone(),
             self.render_present_mode,
         );
         packet.window_id = self.handle.window_id().as_u64();

@@ -1,16 +1,9 @@
 mod bench;
-mod derive_action;
-mod derive_app_context;
-mod derive_into_element;
-mod derive_render;
-mod derive_visual_context;
+mod derive;
 mod property_test;
 mod register_action;
 mod styles;
 mod test;
-
-#[cfg(any(feature = "inspector", debug_assertions))]
-mod derive_inspector_reflection;
 
 use proc_macro::TokenStream;
 use syn::{DeriveInput, Ident};
@@ -18,7 +11,7 @@ use syn::{DeriveInput, Ident};
 /// `Action` derive macro - see the trait documentation for details.
 #[proc_macro_derive(Action, attributes(action))]
 pub fn derive_action(input: TokenStream) -> TokenStream {
-    derive_action::derive_action(input)
+    derive::derive_action(input)
 }
 
 /// This can be used to register an action with the GPUI runtime when you want to manually implement
@@ -33,13 +26,13 @@ pub fn register_action(ident: TokenStream) -> TokenStream {
 /// type, wrapping it in a `Component` so it can be used as a child.
 #[proc_macro_derive(IntoElement)]
 pub fn derive_into_element(input: TokenStream) -> TokenStream {
-    derive_into_element::derive_into_element(input)
+    derive::derive_into_element(input)
 }
 
 #[proc_macro_derive(Render)]
 #[doc(hidden)]
 pub fn derive_render(input: TokenStream) -> TokenStream {
-    derive_render::derive_render(input)
+    derive::derive_render(input)
 }
 
 /// #[derive(AppContext)] is used to create a context out of anything that holds a `&mut App`
@@ -57,7 +50,7 @@ pub fn derive_render(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_derive(AppContext, attributes(app))]
 pub fn derive_app_context(input: TokenStream) -> TokenStream {
-    derive_app_context::derive_app_context(input)
+    derive::derive_app_context(input)
 }
 
 /// #[derive(VisualContext)] is used to create a visual context out of anything that holds a `&mut Window` and
@@ -90,7 +83,7 @@ pub fn derive_app_context(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_derive(VisualContext, attributes(window, app))]
 pub fn derive_visual_context(input: TokenStream) -> TokenStream {
-    derive_visual_context::derive_visual_context(input)
+    derive::derive_visual_context(input)
 }
 
 /// Used by GPUI to generate the style helpers.
@@ -297,7 +290,7 @@ pub fn property_test(args: TokenStream, function: TokenStream) -> TokenStream {
 #[cfg(any(feature = "inspector", debug_assertions))]
 #[proc_macro_attribute]
 pub fn derive_inspector_reflection(_args: TokenStream, input: TokenStream) -> TokenStream {
-    derive_inspector_reflection::derive_inspector_reflection(_args, input)
+    derive::derive_inspector_reflection(_args, input)
 }
 
 pub(crate) fn get_simple_attribute_field(ast: &DeriveInput, name: &'static str) -> Option<Ident> {

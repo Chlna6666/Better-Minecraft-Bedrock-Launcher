@@ -191,7 +191,7 @@ fn verify_case(cx: &mut TestAppContext, backend: RendererBackend, backdrop: bool
         .find(|quad| quad.background.solid == crate::rgb(0x0000ff))
         .expect("changed leaf quad")
         .bounds;
-    let blur_damage = crate::paint::backdrop_blur_damage_plan(&after, &before, &[], &[]);
+    let blur_damage = crate::paint::compute_backdrop_blur_damage(&after, &before, &[], &[]);
     if backdrop {
         assert!(blur_damage.refresh_required());
     }

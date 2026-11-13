@@ -16,7 +16,7 @@ fn lock_performance_metrics() -> MutexGuard<'static, ()> {
 #[test]
 fn records_aggregate_image_processing_metrics() {
     let _lock = lock_performance_metrics();
-    let before = performance_metrics_snapshot();
+    let before = snapshot();
 
     record_image_metrics(
         10,
@@ -33,7 +33,7 @@ fn records_aggregate_image_processing_metrics() {
         Duration::from_millis(10),
     );
 
-    let snapshot = performance_metrics_snapshot();
+    let snapshot = snapshot();
     assert!(snapshot.image_processing_count >= before.image_processing_count + 2);
     assert!(
         snapshot.image_processing_compressed_bytes >= before.image_processing_compressed_bytes + 40
@@ -58,7 +58,7 @@ fn records_aggregate_image_processing_metrics() {
 #[test]
 fn records_animation_stream_metrics() {
     let _lock = lock_performance_metrics();
-    let before = performance_metrics_snapshot().animation;
+    let before = snapshot().animation;
 
     record_animation_loop_restart(Duration::from_micros(7), true);
     record_animation_loop_restart(Duration::from_micros(11), false);
@@ -66,7 +66,7 @@ fn records_animation_stream_metrics() {
     record_animation_stale_frame_count(3);
     record_animation_worker_pool_wake();
 
-    let animation = performance_metrics_snapshot().animation;
+    let animation = snapshot().animation;
     assert!(animation.loop_restarts >= before.loop_restarts + 2);
     assert!(animation.loop_restart_failures > before.loop_restart_failures);
     assert!(
@@ -105,7 +105,7 @@ fn records_retained_image_asset_metrics() {
         },
     );
 
-    let snapshot = performance_metrics_snapshot();
+    let snapshot = snapshot();
     assert!(snapshot.image_asset_retained_count >= 1);
     assert!(snapshot.image_asset_resident_bytes >= 2_073_600);
     assert!(snapshot.image_asset_largest_resident_bytes >= 2_073_600);
@@ -122,7 +122,7 @@ fn records_retained_image_asset_metrics() {
 fn records_extended_gpu_metrics() {
     let _lock = lock_performance_metrics();
     reset_frame_upload_metrics();
-    let before = performance_metrics_snapshot();
+    let before = snapshot();
     record_scene_pack_time(Duration::from_micros(11));
     record_nova_scene_prepare_metrics(
         Duration::from_micros(7),
@@ -192,7 +192,7 @@ fn records_extended_gpu_metrics() {
     record_full_redraw_fallback();
     record_gpu_retained_bytes(123_456);
 
-    let snapshot = performance_metrics_snapshot();
+    let snapshot = snapshot();
     assert_eq!(snapshot.prepared_command_count, 32);
     assert_eq!(snapshot.gpu_surface_format, "Bgra8Unorm");
     assert_eq!(snapshot.gpu_surface_alpha_mode, "PreMultiplied");
@@ -344,7 +344,7 @@ fn resets_latest_nova_scene_prepare_metrics() {
     });
 
     reset_frame_upload_metrics();
-    let snapshot = performance_metrics_snapshot();
+    let snapshot = snapshot();
     assert_eq!(snapshot.scene_encode_time, None);
     assert_eq!(snapshot.scene_signature_time, None);
     assert_eq!(snapshot.scene_hashed_bytes, 0);
@@ -377,12 +377,12 @@ fn records_scene_and_refresh_metrics() {
         segment_reuse_count: 4,
         retained_capacity: 0,
     });
-    let before = performance_metrics_snapshot().coalesced_refresh_count;
+    let before = snapshot().coalesced_refresh_count;
     record_coalesced_refresh();
-    let before_effects = performance_metrics_snapshot().coalesced_refresh_effect_count;
+    let before_effects = snapshot().coalesced_refresh_effect_count;
     record_coalesced_refresh_effect();
     record_inactive_present_skip();
-    let before_pointer_skips = performance_metrics_snapshot().skipped_pointer_frame_count;
+    let before_pointer_skips = snapshot().skipped_pointer_frame_count;
     record_skipped_pointer_frame();
     record_layout_cache_metrics(8, 2);
     record_text_layout_cache_metrics(3, 4, 5);
@@ -392,7 +392,7 @@ fn records_scene_and_refresh_metrics() {
     reset_frame_upload_metrics();
     record_pod_upload_bytes(4096);
 
-    let snapshot = performance_metrics_snapshot();
+    let snapshot = snapshot();
     assert_eq!(snapshot.scene_primitives, 7);
     assert_eq!(snapshot.scene_batches, 3);
     assert_eq!(snapshot.scene_segments, 2);
@@ -420,37 +420,37 @@ fn records_scene_and_refresh_metrics() {
 #[test]
 fn records_window_scoped_metrics() {
     let _lock = lock_performance_metrics();
-    record_window_request_redraw(10);
-    record_window_frame_disposition(
+    record_redraw_request(10);
+    record_frame_disposition(
         10,
-        WindowFrameDisposition {
+        FrameDisposition {
             drew_frame: true,
             frame_duration: Some(Duration::from_micros(4_000)),
             presented_frame: true,
             skipped_frame: false,
         },
     );
-    record_window_frame_disposition(
+    record_frame_disposition(
         10,
-        WindowFrameDisposition {
+        FrameDisposition {
             drew_frame: false,
             frame_duration: None,
             presented_frame: false,
             skipped_frame: true,
         },
     );
-    record_window_runtime_state(10, 972.0, 600.0, 1.25, true, false, true);
-    record_window_gpu_surface_metrics(10, 4, 1);
-    record_window_layout_recompute(10);
-    record_window_upload_bytes(10, 2048);
+    record_runtime_state(10, 972.0, 600.0, 1.25, true, false, true);
+    window::record_gpu_surface_metrics(10, 4, 1);
+    record_layout_recompute(10);
+    window::record_upload_bytes(10, 2048);
 
-    let snapshot = performance_metrics_snapshot();
+    let snapshot = snapshot();
     let window = snapshot
         .window_metrics
         .into_iter()
         .find(|window| window.window_id == 10)
         .expect("window metrics should be tracked");
-    let lightweight_window = window_metrics_snapshot()
+    let lightweight_window = window::snapshot()
         .into_iter()
         .find(|window| window.window_id == 10)
         .expect("lightweight window metrics should be tracked");
@@ -526,7 +526,7 @@ fn records_per_present_animation_sample_continuity() {
     let _lock = lock_performance_metrics();
     use crate::{SceneAnimationId, SceneAnimationValue, TransitionProperty};
 
-    let before = window_metrics_snapshot()
+    let before = window::snapshot()
         .into_iter()
         .find(|window| window.window_id == 12)
         .unwrap_or_default();
@@ -564,7 +564,7 @@ fn records_per_present_animation_sample_continuity() {
         None,
     );
 
-    let after = window_metrics_snapshot()
+    let after = window::snapshot()
         .into_iter()
         .find(|window| window.window_id == 12)
         .expect("animation sample metrics should be tracked");
@@ -592,7 +592,7 @@ fn retains_ordered_active_animation_samples_after_a_cursor() {
     use crate::{SceneAnimationId, SceneAnimationValue, TransitionProperty};
 
     let window_id = 91_743;
-    let initial = window_animation_samples_since(window_id, 0);
+    let initial = window::animation_samples_since(window_id, 0);
     assert!(initial.is_none());
 
     let make_sample = |progress| {
@@ -605,7 +605,7 @@ fn retains_ordered_active_animation_samples_after_a_cursor() {
         }]
     };
     super::renderer::record_presentation_animation_sample(window_id, &make_sample(0.0), None, None);
-    let cursor = window_metrics_snapshot()
+    let cursor = window::snapshot()
         .into_iter()
         .find(|window| window.window_id == window_id)
         .expect("animation sample metrics should be tracked")
@@ -620,7 +620,7 @@ fn retains_ordered_active_animation_samples_after_a_cursor() {
     super::renderer::record_presentation_animation_sample(window_id, &make_sample(0.5), None, None);
     super::renderer::record_presentation_animation_sample(window_id, &make_sample(0.5), None, None);
 
-    let samples = window_animation_samples_since(window_id, cursor)
+    let samples = window::animation_samples_since(window_id, cursor)
         .expect("animation sample history should be tracked");
     assert_eq!(samples.after_sequence, cursor);
     assert_eq!(samples.latest_sequence, cursor + 3);
@@ -692,7 +692,7 @@ fn records_windows_vsync_stages_with_the_successful_animation_sample() {
         }),
     );
 
-    let samples = window_animation_samples_since(window_id, 0)
+    let samples = window::animation_samples_since(window_id, 0)
         .expect("animation sample history should be tracked");
     let timing = samples.samples[0]
         .presentation_timing
@@ -734,9 +734,9 @@ fn records_windows_vsync_stages_with_the_successful_animation_sample() {
 #[test]
 fn records_extension_only_presentation_stages_without_animation_samples() {
     let _lock = lock_performance_metrics();
-    let window_id = 91_743;
+    let window_id = 91_745;
     for extension_us in [250, 750] {
-        super::window::record_window_extension_present(
+        super::window::record_extension_present(
             window_id,
             crate::ActivePresentationTiming {
                 frame_pacing_wait: Duration::ZERO,
@@ -757,7 +757,7 @@ fn records_extension_only_presentation_stages_without_animation_samples() {
             },
         );
     }
-    let sample = window_metrics_snapshot()
+    let sample = window::snapshot()
         .into_iter()
         .find(|sample| sample.window_id == window_id)
         .expect("extension presentation should have window metrics");
@@ -791,7 +791,7 @@ fn reports_active_animation_sample_history_overflow() {
         super::renderer::record_presentation_animation_sample(window_id, &value, None, None);
     }
 
-    let samples = window_animation_samples_since(window_id, 0)
+    let samples = window::animation_samples_since(window_id, 0)
         .expect("animation sample history should be tracked");
     assert_eq!(samples.latest_sequence as usize, sample_capacity + 1);
     assert!(samples.history_overflowed);

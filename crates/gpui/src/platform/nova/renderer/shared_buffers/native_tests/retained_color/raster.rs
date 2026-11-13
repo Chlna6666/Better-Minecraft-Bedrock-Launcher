@@ -126,7 +126,7 @@ fn verify_samples(
         "exercise in-place uniform update"
     );
     assert!(
-        crate::performance_metrics_snapshot().backdrop_blur_source_pixels > 0,
+        crate::snapshot().backdrop_blur_source_pixels > 0,
         "changed text shader context must repaint retained glyphs"
     );
     let expected = pixels(renderer, scene, target, 0.9, [sample(0.9)], true);
@@ -143,7 +143,7 @@ fn verify_samples(
     let unchanged = pixels(renderer, scene, target, 0.9, [sample(0.9)], false);
     assert!(unchanged == actual);
     assert_eq!(
-        crate::performance_metrics_snapshot().backdrop_blur_source_pixels,
+        crate::snapshot().backdrop_blur_source_pixels,
         0,
         "submitted text context must not force subsequent refreshes"
     );

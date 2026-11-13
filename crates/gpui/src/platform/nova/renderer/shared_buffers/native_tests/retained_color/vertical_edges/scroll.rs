@@ -142,7 +142,7 @@ fn advance_animation(
             .wait_pending_submissions()
             .expect("sample retirement");
         packet.consume_submitted_damage();
-        let metrics = crate::performance_metrics_snapshot();
+        let metrics = crate::snapshot();
         let writes = crate::platform::nova::renderer::buffer_upload::TEST_QUAD_UPLOAD_BYTES.get();
         if index > 0 {
             assert_eq!(
@@ -262,7 +262,7 @@ fn verify(cx: &mut TestAppContext, backend: RendererBackend) {
     let requested = platform
         .last_requested_frame()
         .expect("wheel must request a frame");
-    assert!(requested.needs_ui_commit());
+    assert!(requested.ui_commit_required());
     platform.simulate_request_frame(requested);
     visual.run_until_parked();
     let packet = visual.update(|window, _| {
@@ -329,7 +329,7 @@ fn verify(cx: &mut TestAppContext, backend: RendererBackend) {
             .present_framebuffer_only(packet)
             .expect("first-scroll native present")
     );
-    let metrics = crate::performance_metrics_snapshot();
+    let metrics = crate::snapshot();
     let actual = read_pixels(&native, target);
     assert!(
         reference

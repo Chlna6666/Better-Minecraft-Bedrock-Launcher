@@ -186,7 +186,7 @@ fn static_frame(
 ) -> Result<ImageFrames> {
     let source_size = frame.size().map(|dimension| u32::from(dimension));
     let fitted_size = size.fit(source_size, object_fit);
-    let first_frame = resample_bgra_frame(frame, fitted_size)?;
+    let first_frame = bgra_frame(frame, fitted_size)?;
     Ok(ImageFrames {
         first_frame,
         remaining_frames: SmallVec::new(),
@@ -210,7 +210,7 @@ fn initial_frames_from_iter(
     let first_frame = first_frame?;
     let source_size = size(first_frame.buffer().width(), first_frame.buffer().height());
     let fitted_target = target.fit(source_size, object_fit);
-    let first_frame = resample_rgba_frame(0, first_frame, fitted_target)?;
+    let first_frame = rgba_frame(0, first_frame, fitted_target)?;
     let mut remaining_frames = SmallVec::<[AnimatedFrame; 8]>::new();
 
     for (sequence, frame) in frames {
@@ -224,7 +224,7 @@ fn initial_frames_from_iter(
             });
         }
 
-        remaining_frames.push(resample_rgba_frame(sequence, frame?, fitted_target)?);
+        remaining_frames.push(rgba_frame(sequence, frame?, fitted_target)?);
     }
 
     Ok(ImageFrames {
@@ -236,7 +236,7 @@ fn initial_frames_from_iter(
     })
 }
 
-pub(in crate::assets) fn resample_rgba_frame(
+pub(in crate::assets) fn rgba_frame(
     sequence: usize,
     frame: Frame,
     target: ImageRenderSize,
@@ -244,7 +244,7 @@ pub(in crate::assets) fn resample_rgba_frame(
     let source = frame.buffer();
     let source_size = size(source.width(), source.height());
     if source_size == size(target.width, target.height) {
-        return Ok(AnimatedFrame::from_rgba_frame(sequence, frame));
+        return Ok(AnimatedFrame::from_rgba_frame_as_bgra(sequence, frame));
     }
     anyhow::ensure!(
         source_size.width > 0 && source_size.height > 0,
@@ -271,7 +271,7 @@ pub(in crate::assets) fn resample_rgba_frame(
     })
 }
 
-pub(crate) fn resample_bgra_frame(
+pub(crate) fn bgra_frame(
     frame: AnimatedFrame,
     target: ImageRenderSize,
 ) -> Result<AnimatedFrame> {

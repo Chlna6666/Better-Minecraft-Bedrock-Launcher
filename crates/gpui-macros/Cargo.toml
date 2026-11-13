@@ -24,7 +24,6 @@ default = []
 inspector = []
 
 [lib]
-path = "src/gpui_macros.rs"
 proc-macro = true
 doctest = true
 test = false

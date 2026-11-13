@@ -1,6 +1,6 @@
 #[cfg(any(feature = "inspector", debug_assertions))]
 use crate::Inspector;
-use crate::diagnostics::performance_metrics::record_window_visibility;
+use crate::diagnostics::performance_metrics::record_visibility;
 use crate::{
     Action, AnimatedFrame, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App,
     AppContext, Arena, Asset, AsyncApp, AsyncWindowContext, AtlasTile, AvailableSpace,
@@ -20,7 +20,7 @@ use crate::{
     SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, SceneFrameMetrics, Shadow, SharedString,
     SingleSubscriberSet, Size, StrikethroughStyle, Style, Subscription, TaffyLayoutEngine, Task,
     TextStyle, TextStyleRefinement, TransformationMatrix, Underline, UnderlineStyle,
-    WindowFrameDisposition, WindowTab, WindowTabRegistry, WindowTextSystem, WindowVisibility,
+    FrameDisposition, WindowTab, WindowTabRegistry, WindowTextSystem, WindowVisibility,
     animation::{
         AnimationDriver, AnimationEngine, AnimationGroupId, AnimationGroupSample,
         AnimationParallel, AnimationSequence, AnimationStagger, merge_requested_drivers,
@@ -33,8 +33,8 @@ use crate::{
     record_frame_phase_metrics, record_frame_retained_capacity, record_image_drop,
     record_inactive_present_skip, record_layout_cache_metrics, record_layout_frame_metrics,
     record_retained_frame_skip, record_scene_frame_metrics, record_skipped_pointer_frame,
-    record_window_dirty_to_present, record_window_frame_disposition,
-    record_window_layout_recompute, record_window_runtime_state, rems, size, transparent_black,
+    record_dirty_to_present, record_frame_disposition,
+    record_layout_recompute, record_runtime_state, rems, size, transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};

@@ -226,9 +226,17 @@ mod native {
         for fail in [false, true] {
             registry.begin_frame();
             input.accepted.store(false, Ordering::SeqCst);
+            let mut accepted_submissions = Vec::new();
             registry
-                .prepare(&input, &mut device, context.clone(), &mut Vec::new())
+                .prepare(
+                    &input,
+                    &mut device,
+                    context.clone(),
+                    &mut Vec::new(),
+                    |submission| accepted_submissions.push(submission),
+                )
                 .unwrap();
+            assert_eq!(accepted_submissions.len(), 1);
             let result = execute_frame_graph_offscreen(
                 &mut device,
                 &graph,

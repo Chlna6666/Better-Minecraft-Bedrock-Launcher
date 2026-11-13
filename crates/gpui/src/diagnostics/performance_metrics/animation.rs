@@ -25,7 +25,7 @@ pub struct AnimationMetricsSnapshot {
     pub worker_pool_wake_count: usize,
 }
 
-pub(super) fn animation_metrics_snapshot() -> AnimationMetricsSnapshot {
+pub(super) fn metrics_snapshot() -> AnimationMetricsSnapshot {
     let metrics = shared_metrics();
     let loop_restart_total_micros = metrics
         .animation_loop_restart_total_micros

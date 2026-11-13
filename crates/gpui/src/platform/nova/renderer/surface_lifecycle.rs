@@ -103,7 +103,7 @@ impl NovaRenderer {
         let next_path_mask_size =
             planned_path_mask_size(self.path_texture_size, self.current_size, target_size)?;
         // Most windows never render a path mask; their 1x1 placeholder and
-        // frame-slot resource sets are still valid after a drawable resize.
+        // frame-slot bind groups are still valid after a drawable resize.
         // Reusing this object avoids per-WM_SIZE texture/view/set retirement and
         // driver allocations. A promoted path mask changes size and is rebuilt.
         let reuse_path_mask_target = next_path_mask_size == self.path_texture_size;
@@ -414,7 +414,7 @@ impl NovaRenderer {
         self.path_texture_view = next_path_mask_target.texture_view;
         self.path_texture_size = next_path_mask_size;
         if !reuse_path_mask_target {
-            self.update_path_mask_resource_sets(&next_path_mask_target.bind_groups)?;
+            self.update_path_mask_bind_groups(&next_path_mask_target.bind_groups)?;
         }
         self.filters.targets = None;
         self.invalidate_backdrop_blur_cache();
@@ -429,7 +429,7 @@ impl NovaRenderer {
         // separately prepared physical targets as one transaction. These
         // targets have NO valid retained texels until the subsequent Main
         // Present publishes the new Root/Filter content versions.
-        self.publish_pending_offscreen_after_resize(next_size);
+        self.publish_pending_offscreen(next_size);
         self.swapchain_warmup_frames = SWAPCHAIN_WARMUP_FRAME_COUNT;
         let total = resize_started_at.elapsed();
         let resources = total.saturating_sub(submission_wait.saturating_add(swapchain_resize));
@@ -836,7 +836,7 @@ impl NovaRenderer {
         self.path_texture = next_path_mask_target.texture;
         self.path_texture_view = next_path_mask_target.texture_view;
         self.path_texture_size = next_path_mask_size;
-        self.update_path_mask_resource_sets(&next_path_mask_target.bind_groups)?;
+        self.update_path_mask_bind_groups(&next_path_mask_target.bind_groups)?;
         self.filters.targets = next_backdrop_blur_targets;
         self.invalidate_backdrop_blur_cache();
         self.swapchain_warmup_frames = SWAPCHAIN_WARMUP_FRAME_COUNT;
@@ -852,7 +852,7 @@ impl NovaRenderer {
             bind_groups: self
                 .frame_resources
                 .iter()
-                .map(|resources| resources.path_resource_set)
+                .map(|resources| resources.path_bind_group)
                 .collect(),
         }
     }
@@ -865,7 +865,7 @@ impl NovaRenderer {
         PathMaskTargetDescriptor {
             size,
             format: self.surface_format,
-            bind_group_layout: self.path_resource_set_layout,
+            bind_group_layout: self.path_bind_group_layout,
             frame_buffers: self.frame_resource_buffers(),
             sampler: self.atlas_sampler,
         }
@@ -889,8 +889,8 @@ impl NovaRenderer {
             configs: self.frame_upload.backdrop_blur_configs().to_vec(),
             needs_root_source: super::present::has_root_backdrop_blurs(&self.frame_upload),
             isolated_source_indices,
-            pass_resource_set_layout: self.backdrop_blur_pass_resource_set_layout,
-            blur_resource_set_layout: self.backdrop_blur_resource_set_layout,
+            pass_bind_group_layout: self.backdrop_blur_pass_bind_group_layout,
+            blur_bind_group_layout: self.backdrop_blur_bind_group_layout,
             frame_buffers: self.frame_resource_buffers(),
             sampler: self.atlas_sampler,
         }

@@ -57,7 +57,7 @@ pub(super) fn verify(renderer: &mut NovaRenderer, target: (TextureId, TextureVie
         "CPU Paint payload stays shared"
     );
     let local = pixels(renderer, &replayed, target, 0., [sample(0.8)], false);
-    let metrics = crate::performance_metrics_snapshot();
+    let metrics = crate::snapshot();
     assert_eq!(
         metrics.backdrop_blur_source_pixels, 0,
         "a new Paint revision must retain background color"
@@ -83,12 +83,12 @@ pub(super) fn verify(renderer: &mut NovaRenderer, target: (TextureId, TextureVie
         pixels(renderer, &split, target, 0.8, [sample(0.8)], false)
     );
     assert_eq!(
-        crate::performance_metrics_snapshot().backdrop_blur_source_pixels,
+        crate::snapshot().backdrop_blur_source_pixels,
         0
     );
     let changed = page(None, crate::rgb(0x406080), 64, 104);
     let updated = pixels(renderer, &changed, target, 0.8, [sample(0.2)], false);
-    assert!(crate::performance_metrics_snapshot().backdrop_blur_source_pixels > 0);
+    assert!(crate::snapshot().backdrop_blur_source_pixels > 0);
     let direct = page(None, crate::rgb(0x406080), 32, 0);
     assert_eq!(
         updated,

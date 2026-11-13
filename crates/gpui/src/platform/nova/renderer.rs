@@ -188,22 +188,22 @@ pub(crate) struct NovaRenderer {
     backdrop_blur_pass_buffer: BufferId,
     backdrop_blur_buffer: BufferId,
     animation_value_buffer: BufferId,
-    quad_resource_set: BindGroupId,
-    quad_resource_set_layout: BindGroupLayoutId,
-    shadow_resource_set_layout: BindGroupLayoutId,
-    underline_resource_set_layout: BindGroupLayoutId,
-    shadow_resource_set: BindGroupId,
-    path_rasterization_resource_set: BindGroupId,
-    path_rasterization_resource_set_layout: BindGroupLayoutId,
-    path_resource_set_layout: BindGroupLayoutId,
-    path_resource_set: BindGroupId,
-    mono_sprite_resource_set_layout: BindGroupLayoutId,
-    poly_sprite_resource_set_layout: BindGroupLayoutId,
+    quad_bind_group: BindGroupId,
+    quad_bind_group_layout: BindGroupLayoutId,
+    shadow_bind_group_layout: BindGroupLayoutId,
+    underline_bind_group_layout: BindGroupLayoutId,
+    shadow_bind_group: BindGroupId,
+    path_rasterization_bind_group: BindGroupId,
+    path_rasterization_bind_group_layout: BindGroupLayoutId,
+    path_bind_group_layout: BindGroupLayoutId,
+    path_bind_group: BindGroupId,
+    mono_sprite_bind_group_layout: BindGroupLayoutId,
+    poly_sprite_bind_group_layout: BindGroupLayoutId,
     gpu_atlas_textures: FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
     synced_atlas_texture_generation: Option<u64>,
-    underline_resource_set: BindGroupId,
-    backdrop_blur_pass_resource_set_layout: BindGroupLayoutId,
-    backdrop_blur_resource_set_layout: BindGroupLayoutId,
+    underline_bind_group: BindGroupId,
+    backdrop_blur_pass_bind_group_layout: BindGroupLayoutId,
+    backdrop_blur_bind_group_layout: BindGroupLayoutId,
     filters: filters::FilterRegistry,
     root_color: root_color::RootColor,
     /// At most one unsubmitted independent Root/Filter generation.
@@ -369,7 +369,7 @@ where
     let mut next_buffers = current_buffers;
     next_buffers.quad_buffer = buffer;
     next_buffers.quad_capacity = new_capacity;
-    match create_quad_resource_set(device, label, layout, &next_buffers) {
+    match create_quad_bind_group(device, label, layout, &next_buffers) {
         Ok(bind_group) => Ok((buffer, bind_group)),
         Err(error) => {
             if let Err(destroy_error) = device.destroy_buffer(buffer) {
@@ -389,7 +389,7 @@ fn retire_replaced_quad_resources<D>(
     D: ResourceDevice,
 {
     if let Err(error) = device.destroy_bind_group(bind_group) {
-        log::debug!("failed to retire {label} old quad resource set: {error}");
+        log::debug!("failed to retire {label} old quad bind group: {error}");
     }
     if let Some(buffer) = buffer {
         if let Err(error) = device.destroy_buffer(buffer) {
@@ -417,7 +417,7 @@ where
     let mut next_buffers = current_buffers;
     next_buffers.path_rasterization_vertex_buffer = buffer;
     next_buffers.path_rasterization_vertex_capacity = new_capacity;
-    match create_path_rasterization_resource_set(device, label, layout, &next_buffers) {
+    match create_path_rasterization_bind_group(device, label, layout, &next_buffers) {
         Ok(bind_group) => Ok((buffer, bind_group)),
         Err(error) => {
             if let Err(destroy_error) = device.destroy_buffer(buffer) {
@@ -437,7 +437,7 @@ fn retire_replaced_path_rasterization_resources<D>(
     D: ResourceDevice,
 {
     if let Err(error) = device.destroy_bind_group(bind_group) {
-        log::debug!("failed to retire {label} old path resource set: {error}");
+        log::debug!("failed to retire {label} old path bind group: {error}");
     }
     if let Some(buffer) = buffer {
         if let Err(error) = device.destroy_buffer(buffer) {
@@ -540,7 +540,7 @@ impl NovaRenderer {
             if packet.has_time_dependent_extensions()
                 && let Some(timing) = presentation_timing
             {
-                crate::diagnostics::performance_metrics::record_window_extension_present(
+                crate::diagnostics::performance_metrics::record_extension_present(
                     packet.window_id,
                     timing,
                 );
@@ -614,7 +614,7 @@ impl NovaRenderer {
             // The backbuffer/retained target dimensions changed. A full Present
             // mode alone does not expand Scene/GPU Layer scissors from old dirty
             // rectangles; the first successful frame must repaint the new extent.
-            force_full_drawable_damage_after_resize(packet, self.active_size);
+            force_full_drawable_damage(packet, self.active_size);
         }
         if self.defer_full_queue_before_pack()? {
             return Ok(false);
@@ -651,7 +651,7 @@ impl NovaRenderer {
         );
         if requires_full_drawable_damage(self.live_resize_active, self.swapchain_warmup_frames != 0)
         {
-            force_full_drawable_damage_after_resize(packet, self.active_size);
+            force_full_drawable_damage(packet, self.active_size);
             self.observe_presentation_packet(packet);
         }
         if !self.frame_submission_is_ready(&packet.paint.scene)? {
@@ -666,7 +666,7 @@ impl NovaRenderer {
         if let Some(timing) = presentation_timing.as_mut() {
             timing.renderer_extension_prepare = extension_started.elapsed();
         }
-        self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
+        self.refresh_backdrop_blur_cache(backdrop_blur_quality);
         if !self.frame_upload.backdrop_blurs.is_empty() {
             self.ensure_backdrop_blur_targets()?;
         }
@@ -689,7 +689,7 @@ impl NovaRenderer {
         // Promotion destroys the old 1x1 path mask texture and rebinds all
         // frame-slot descriptor sets. An earlier frame may still sample its
         // image on the GPU even though the owner thread has moved on.
-        // Retire tracked submissions before any view/resource-set replacement.
+        // Retire tracked submissions before any view/bind-group replacement.
         if !self.pending_submissions.is_empty() {
             self.wait_pending_submissions()?;
         }
@@ -740,7 +740,7 @@ impl NovaRenderer {
             }
         };
 
-        self.update_path_mask_resource_sets(&next_target.bind_groups)?;
+        self.update_path_mask_bind_groups(&next_target.bind_groups)?;
         self.path_texture = next_target.texture;
         self.path_texture_view = next_target.texture_view;
         self.path_texture_size = target_size;
@@ -1037,7 +1037,7 @@ impl NovaRenderer {
         if let Some(old) = self.filters.targets.replace(next_backdrop_blur_targets) {
             self.retire_offscreen_targets(None, Some(old));
         }
-        // Cached steps borrow target resource-set handles. Fence retirement
+        // Cached steps borrow target bind-group handles. Fence retirement
         // protects submitted work, but these CPU copies also outlive a slot.
         self.invalidate_command_cache();
         self.invalidate_backdrop_blur_cache();
@@ -1125,7 +1125,7 @@ impl NovaRenderer {
                     .partial_presentation;
             resolve_surface_packet(&mut packet, !supports_partial);
             if self.swapchain_warmup_frames != 0 {
-                force_full_drawable_damage_after_resize(&mut packet, self.active_size);
+                force_full_drawable_damage(&mut packet, self.active_size);
             }
             if self.defer_full_queue_before_pack()? {
                 return Ok(false);
@@ -1162,7 +1162,7 @@ impl NovaRenderer {
                 self.live_resize_active,
                 self.swapchain_warmup_frames != 0,
             ) {
-                force_full_drawable_damage_after_resize(&mut packet, self.active_size);
+                force_full_drawable_damage(&mut packet, self.active_size);
                 self.observe_presentation_packet(&packet);
             }
             if !self.frame_submission_is_ready(&packet.paint.scene)? {
@@ -1173,7 +1173,7 @@ impl NovaRenderer {
                 let _phase = gpu_owner::phases::enter(gpu_owner::phases::Phase::ExtensionPrepare);
                 self.prepare_renderer_extensions(packet.frame_time)?;
             }
-            self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
+            self.refresh_backdrop_blur_cache(backdrop_blur_quality);
             if !self.frame_upload.backdrop_blurs.is_empty() {
                 self.ensure_backdrop_blur_targets()?;
             }
@@ -1190,7 +1190,7 @@ impl NovaRenderer {
             if packet.has_time_dependent_extensions()
                 && let Some(timing) = presentation_timing
             {
-                crate::diagnostics::performance_metrics::record_window_extension_present(
+                crate::diagnostics::performance_metrics::record_extension_present(
                     packet.window_id,
                     timing,
                 );
@@ -1266,7 +1266,7 @@ impl NovaRenderer {
             if packet.has_time_dependent_extensions()
                 && let Some(timing) = presentation_timing
             {
-                crate::diagnostics::performance_metrics::record_window_extension_present(
+                crate::diagnostics::performance_metrics::record_extension_present(
                     packet.window_id,
                     timing,
                 );
@@ -1531,13 +1531,13 @@ impl NovaRenderer {
         }
         // Filter input damage needs the same last-successful-presentation baseline.
         // A replacement/deferred packet can carry a newer intermediate sample.
-        let filter_damage = crate::paint::backdrop_blur_animation_damage_plan(
+        let filter_damage = crate::paint::compute_backdrop_blur_animation_damage(
             &packet.paint.scene,
             self.root_color.animation_values(),
             &self.frame_upload.sampled_animation_values,
         );
-        packet.backdrop_blur_damage_plan.merge_from(&filter_damage);
-        self.command_scratch.backdrop_blur_damage_plan = packet.backdrop_blur_damage_plan.clone();
+        packet.backdrop_blur_damage.merge_from(&filter_damage);
+        self.command_scratch.backdrop_blur_damage = packet.backdrop_blur_damage.clone();
         // The same repaired region must control root source clearing, texture
         // draw-step scissors and swapchain partial eligibility.
         self.command_scratch.backdrop_blur_damage_region = packet.dirty_region.clone();
@@ -1545,14 +1545,14 @@ impl NovaRenderer {
 
     fn observe_presentation_packet(&mut self, packet: &PresentationPacket) {
         self.command_scratch.backdrop_blur_damage_region = packet.dirty_region.clone();
-        self.command_scratch.backdrop_blur_damage_plan = packet.backdrop_blur_damage_plan.clone();
+        self.command_scratch.backdrop_blur_damage = packet.backdrop_blur_damage.clone();
         self.command_scratch.force_full_backdrop_blur_refresh = force_full_backdrop_blur_refresh(
             self.filters.is_valid(),
             packet.force_full_backdrop_blur_refresh,
         );
     }
 
-    fn update_backdrop_blur_cache_plan(&mut self, quality: BackdropBlurQuality) {
+    fn refresh_backdrop_blur_cache(&mut self, quality: BackdropBlurQuality) {
         if self.filters.quality != Some(quality) {
             self.command_scratch.force_full_backdrop_blur_refresh = true;
         }
@@ -1617,10 +1617,10 @@ impl NovaRenderer {
             .max(current_capacity.saturating_mul(2))
             .min(MAX_QUADS);
         let old_buffer = current.buffers.quad_buffer;
-        let old_resource_set = current.bind_groups.quad_resource_set;
-        let layout = self.quad_resource_set_layout;
+        let old_bind_group = current.bind_groups.quad_bind_group;
+        let layout = self.quad_bind_group_layout;
 
-        let (new_buffer, new_resource_set) = match &mut *lock_backend(&self.backend) {
+        let (new_buffer, new_bind_group) = match &mut *lock_backend(&self.backend) {
             #[cfg(all(
                 feature = "nova-gfx-opengl",
                 any(target_os = "windows", target_os = "linux")
@@ -1688,10 +1688,10 @@ impl NovaRenderer {
         if let Some(resources) = self.frame_resources.get_mut(index) {
             resources.buffers.quad_buffer = new_buffer;
             resources.buffers.quad_capacity = new_capacity;
-            resources.bind_groups.quad_resource_set = new_resource_set;
+            resources.bind_groups.quad_bind_group = new_bind_group;
         }
         self.quad_buffer = new_buffer;
-        self.quad_resource_set = new_resource_set;
+        self.quad_bind_group = new_bind_group;
         self.retained_upload.invalidate_quad_slot(index);
         let old_buffer = (!self.buffer_is_referenced(old_buffer)).then_some(old_buffer);
 
@@ -1703,28 +1703,22 @@ impl NovaRenderer {
             NovaBackend::OpenGl(device) => retire_replaced_quad_resources(
                 device,
                 "gpui nova opengl",
-                old_resource_set,
+                old_bind_group,
                 old_buffer,
             ),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) => retire_replaced_quad_resources(
-                device,
-                "gpui nova dx11",
-                old_resource_set,
-                old_buffer,
-            ),
+            NovaBackend::Dx11(device) => {
+                retire_replaced_quad_resources(device, "gpui nova dx11", old_bind_group, old_buffer)
+            }
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => retire_replaced_quad_resources(
-                device,
-                "gpui nova dx12",
-                old_resource_set,
-                old_buffer,
-            ),
+            NovaBackend::Dx12(device) => {
+                retire_replaced_quad_resources(device, "gpui nova dx12", old_bind_group, old_buffer)
+            }
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             NovaBackend::Metal(device) => retire_replaced_quad_resources(
                 device,
                 "gpui nova metal",
-                old_resource_set,
+                old_bind_group,
                 old_buffer,
             ),
             #[cfg(all(
@@ -1734,7 +1728,7 @@ impl NovaRenderer {
             NovaBackend::Vulkan(device) => retire_replaced_quad_resources(
                 device,
                 "gpui nova vulkan",
-                old_resource_set,
+                old_bind_group,
                 old_buffer,
             ),
             #[cfg(not(any(
@@ -1792,10 +1786,10 @@ impl NovaRenderer {
             .max(current_capacity.saturating_mul(2))
             .min(MAX_PATH_VERTICES);
         let old_buffer = current.buffers.path_rasterization_vertex_buffer;
-        let old_resource_set = current.bind_groups.path_rasterization_resource_set;
-        let layout = self.path_rasterization_resource_set_layout;
+        let old_bind_group = current.bind_groups.path_rasterization_bind_group;
+        let layout = self.path_rasterization_bind_group_layout;
 
-        let (new_buffer, new_resource_set) = match &mut *lock_backend(&self.backend) {
+        let (new_buffer, new_bind_group) = match &mut *lock_backend(&self.backend) {
             #[cfg(all(
                 feature = "nova-gfx-opengl",
                 any(target_os = "windows", target_os = "linux")
@@ -1863,10 +1857,10 @@ impl NovaRenderer {
         if let Some(resources) = self.frame_resources.get_mut(index) {
             resources.buffers.path_rasterization_vertex_buffer = new_buffer;
             resources.buffers.path_rasterization_vertex_capacity = new_capacity;
-            resources.bind_groups.path_rasterization_resource_set = new_resource_set;
+            resources.bind_groups.path_rasterization_bind_group = new_bind_group;
         }
         self.path_rasterization_vertex_buffer = new_buffer;
-        self.path_rasterization_resource_set = new_resource_set;
+        self.path_rasterization_bind_group = new_bind_group;
         self.retained_upload
             .invalidate_path_rasterization_slot(index);
         let old_buffer = (!self.buffer_is_referenced(old_buffer)).then_some(old_buffer);
@@ -1879,28 +1873,28 @@ impl NovaRenderer {
             NovaBackend::OpenGl(device) => retire_replaced_path_rasterization_resources(
                 device,
                 "gpui nova opengl",
-                old_resource_set,
+                old_bind_group,
                 old_buffer,
             ),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
             NovaBackend::Dx11(device) => retire_replaced_path_rasterization_resources(
                 device,
                 "gpui nova dx11",
-                old_resource_set,
+                old_bind_group,
                 old_buffer,
             ),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => retire_replaced_path_rasterization_resources(
                 device,
                 "gpui nova dx12",
-                old_resource_set,
+                old_bind_group,
                 old_buffer,
             ),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             NovaBackend::Metal(device) => retire_replaced_path_rasterization_resources(
                 device,
                 "gpui nova metal",
-                old_resource_set,
+                old_bind_group,
                 old_buffer,
             ),
             #[cfg(all(
@@ -1910,7 +1904,7 @@ impl NovaRenderer {
             NovaBackend::Vulkan(device) => retire_replaced_path_rasterization_resources(
                 device,
                 "gpui nova vulkan",
-                old_resource_set,
+                old_bind_group,
                 old_buffer,
             ),
             #[cfg(not(any(
@@ -1955,12 +1949,11 @@ impl NovaRenderer {
         self.backdrop_blur_pass_buffer = resources.buffers.backdrop_blur_pass_buffer;
         self.backdrop_blur_buffer = resources.buffers.backdrop_blur_buffer;
         self.animation_value_buffer = resources.buffers.animation_value_buffer;
-        self.quad_resource_set = resources.bind_groups.quad_resource_set;
-        self.shadow_resource_set = resources.bind_groups.shadow_resource_set;
-        self.path_rasterization_resource_set =
-            resources.bind_groups.path_rasterization_resource_set;
-        self.path_resource_set = resources.path_resource_set;
-        self.underline_resource_set = resources.bind_groups.underline_resource_set;
+        self.quad_bind_group = resources.bind_groups.quad_bind_group;
+        self.shadow_bind_group = resources.bind_groups.shadow_bind_group;
+        self.path_rasterization_bind_group = resources.bind_groups.path_rasterization_bind_group;
+        self.path_bind_group = resources.path_bind_group;
+        self.underline_bind_group = resources.bind_groups.underline_bind_group;
         Ok(())
     }
 
@@ -1971,23 +1964,23 @@ impl NovaRenderer {
             .collect()
     }
 
-    pub(super) fn update_path_mask_resource_sets(
+    pub(super) fn update_path_mask_bind_groups(
         &mut self,
         bind_groups: &[BindGroupId],
     ) -> Result<()> {
         if bind_groups.len() != self.frame_resources.len() {
-            anyhow::bail!("path mask frame resource set count does not match frame resources");
+            anyhow::bail!("path mask frame bind group count does not match frame resources");
         }
         for (resources, bind_group) in self.frame_resources.iter_mut().zip(bind_groups) {
-            resources.path_resource_set = *bind_group;
+            resources.path_bind_group = *bind_group;
         }
         Ok(())
     }
 
     fn atlas_resource_descriptor(&self) -> AtlasResourceDescriptor {
         AtlasResourceDescriptor {
-            mono_sprite_resource_set_layout: self.mono_sprite_resource_set_layout,
-            poly_sprite_resource_set_layout: self.poly_sprite_resource_set_layout,
+            mono_sprite_bind_group_layout: self.mono_sprite_bind_group_layout,
+            poly_sprite_bind_group_layout: self.poly_sprite_bind_group_layout,
             frame_buffers: self
                 .frame_resources
                 .iter()

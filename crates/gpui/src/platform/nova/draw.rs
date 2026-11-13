@@ -47,12 +47,12 @@ pub(super) fn encode_draw_commands(
     upload: &FrameUpload,
     pipelines: &Pipelines,
     blend_pipelines: BlendPipelines,
-    quad_resource_set: BindGroupId,
-    shadow_resource_set: BindGroupId,
-    path_resource_set: BindGroupId,
-    sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<BindGroupId>,
-    underline_resource_set: BindGroupId,
-    backdrop_blur_resource_set: BindGroupId,
+    quad_bind_group: BindGroupId,
+    shadow_bind_group: BindGroupId,
+    path_bind_group: BindGroupId,
+    sprite_bind_group: impl FnMut(AtlasTextureId) -> Option<BindGroupId>,
+    underline_bind_group: BindGroupId,
+    backdrop_blur_bind_group: BindGroupId,
     mode: DrawMode,
 ) -> Vec<RenderCommand> {
     let mut steps = Vec::new();
@@ -60,12 +60,12 @@ pub(super) fn encode_draw_commands(
         upload,
         pipelines,
         blend_pipelines,
-        quad_resource_set,
-        shadow_resource_set,
-        path_resource_set,
-        sprite_resource_set,
-        underline_resource_set,
-        |_| Some(backdrop_blur_resource_set),
+        quad_bind_group,
+        shadow_bind_group,
+        path_bind_group,
+        sprite_bind_group,
+        underline_bind_group,
+        |_| Some(backdrop_blur_bind_group),
         mode,
         &mut steps,
     );
@@ -76,12 +76,12 @@ pub(super) fn encode_draw_commands_into(
     upload: &FrameUpload,
     pipelines: &Pipelines,
     blend_pipelines: BlendPipelines,
-    quad_resource_set: BindGroupId,
-    shadow_resource_set: BindGroupId,
-    path_resource_set: BindGroupId,
-    sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<BindGroupId>,
-    underline_resource_set: BindGroupId,
-    backdrop_blur_resource_set: impl FnMut(BackdropBlurConfig) -> Option<BindGroupId>,
+    quad_bind_group: BindGroupId,
+    shadow_bind_group: BindGroupId,
+    path_bind_group: BindGroupId,
+    sprite_bind_group: impl FnMut(AtlasTextureId) -> Option<BindGroupId>,
+    underline_bind_group: BindGroupId,
+    backdrop_blur_bind_group: impl FnMut(BackdropBlurConfig) -> Option<BindGroupId>,
     mode: DrawMode,
     steps: &mut Vec<RenderCommand>,
 ) {
@@ -89,12 +89,12 @@ pub(super) fn encode_draw_commands_into(
         upload,
         pipelines,
         blend_pipelines,
-        quad_resource_set,
-        shadow_resource_set,
-        path_resource_set,
-        sprite_resource_set,
-        underline_resource_set,
-        backdrop_blur_resource_set,
+        quad_bind_group,
+        shadow_bind_group,
+        path_bind_group,
+        sprite_bind_group,
+        underline_bind_group,
+        backdrop_blur_bind_group,
         mode,
         None,
         steps,
@@ -107,12 +107,12 @@ pub(super) fn encode_clipped_draw_commands(
     upload: &FrameUpload,
     pipelines: &Pipelines,
     blend_pipelines: BlendPipelines,
-    quad_resource_set: BindGroupId,
-    shadow_resource_set: BindGroupId,
-    path_resource_set: BindGroupId,
-    mut sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<BindGroupId>,
-    underline_resource_set: BindGroupId,
-    mut backdrop_blur_resource_set: impl FnMut(BackdropBlurConfig) -> Option<BindGroupId>,
+    quad_bind_group: BindGroupId,
+    shadow_bind_group: BindGroupId,
+    path_bind_group: BindGroupId,
+    mut sprite_bind_group: impl FnMut(AtlasTextureId) -> Option<BindGroupId>,
+    underline_bind_group: BindGroupId,
+    mut backdrop_blur_bind_group: impl FnMut(BackdropBlurConfig) -> Option<BindGroupId>,
     mode: DrawMode,
     source_scissor: Option<ScissorRect>,
     steps: &mut Vec<RenderCommand>,
@@ -160,7 +160,7 @@ pub(super) fn encode_clipped_draw_commands(
                     push_blur_composite_step(
                         upload,
                         blend_pipelines.backdrop_blurs,
-                        &mut backdrop_blur_resource_set,
+                        &mut backdrop_blur_bind_group,
                         index,
                         steps,
                     );
@@ -175,7 +175,7 @@ pub(super) fn encode_clipped_draw_commands(
                 steps,
                 DrawCommand {
                     pipeline: blend_pipelines.solid_quads,
-                    bind_groups: bind_group_list([quad_resource_set]),
+                    bind_groups: bind_group_list([quad_bind_group]),
                     vertex_count: 4,
                     first_vertex: 0,
                     instance_count: count,
@@ -187,7 +187,7 @@ pub(super) fn encode_clipped_draw_commands(
                 steps,
                 DrawCommand {
                     pipeline: blend_pipelines.quads,
-                    bind_groups: bind_group_list([quad_resource_set]),
+                    bind_groups: bind_group_list([quad_bind_group]),
                     vertex_count: 4,
                     first_vertex: 0,
                     instance_count: count,
@@ -199,7 +199,7 @@ pub(super) fn encode_clipped_draw_commands(
                 steps,
                 DrawCommand {
                     pipeline: blend_pipelines.shadows,
-                    bind_groups: bind_group_list([shadow_resource_set]),
+                    bind_groups: bind_group_list([shadow_bind_group]),
                     vertex_count: 4,
                     first_vertex: 0,
                     instance_count: count,
@@ -212,7 +212,7 @@ pub(super) fn encode_clipped_draw_commands(
                 steps,
                 DrawCommand {
                     pipeline: pipelines.paths,
-                    bind_groups: bind_group_list([path_resource_set]),
+                    bind_groups: bind_group_list([path_bind_group]),
                     vertex_count: 4,
                     first_vertex: 0,
                     instance_count: count,
@@ -225,7 +225,7 @@ pub(super) fn encode_clipped_draw_commands(
                 first,
                 count,
             } => {
-                if let Some(bind_group) = sprite_resource_set(texture_id) {
+                if let Some(bind_group) = sprite_bind_group(texture_id) {
                     #[cfg(target_os = "windows")]
                     let pipeline = if texture_id.kind == AtlasTextureKind::Subpixel {
                         blend_pipelines.subpixel_sprites
@@ -253,7 +253,7 @@ pub(super) fn encode_clipped_draw_commands(
                 first,
                 count,
             } => {
-                if let Some(bind_group) = sprite_resource_set(texture_id) {
+                if let Some(bind_group) = sprite_bind_group(texture_id) {
                     push_draw_command(
                         steps,
                         DrawCommand {
@@ -272,7 +272,7 @@ pub(super) fn encode_clipped_draw_commands(
                 steps,
                 DrawCommand {
                     pipeline: blend_pipelines.underlines,
-                    bind_groups: bind_group_list([underline_resource_set]),
+                    bind_groups: bind_group_list([underline_bind_group]),
                     vertex_count: 4,
                     first_vertex: 0,
                     instance_count: count,
@@ -282,7 +282,7 @@ pub(super) fn encode_clipped_draw_commands(
             ),
             UploadedBatch::BackdropBlurs { first, count } => {
                 upload.for_each_backdrop_blur_run(first, count, |run| {
-                    let Some(bind_group) = backdrop_blur_resource_set(run.config) else {
+                    let Some(bind_group) = backdrop_blur_bind_group(run.config) else {
                         return;
                     };
                     push_draw_command(
@@ -316,7 +316,7 @@ pub(super) fn encode_clipped_draw_commands(
     if steps.is_empty() && source_scissor.is_none() {
         steps.push(RenderCommand::Draw(DrawCommand {
             pipeline: blend_pipelines.solid_quads,
-            bind_groups: bind_group_list([quad_resource_set]),
+            bind_groups: bind_group_list([quad_bind_group]),
             vertex_count: 4,
             first_vertex: 0,
             instance_count: 0,
@@ -347,14 +347,14 @@ fn static_batch_misses_scissor(
 fn push_blur_composite_step(
     upload: &FrameUpload,
     pipeline: RenderPipelineId,
-    backdrop_blur_resource_set: &mut impl FnMut(BackdropBlurConfig) -> Option<BindGroupId>,
+    backdrop_blur_bind_group: &mut impl FnMut(BackdropBlurConfig) -> Option<BindGroupId>,
     index: u32,
     steps: &mut Vec<RenderCommand>,
 ) {
     let Some(config) = upload.blur_config_at(index) else {
         return;
     };
-    let Some(bind_group) = backdrop_blur_resource_set(config) else {
+    let Some(bind_group) = backdrop_blur_bind_group(config) else {
         return;
     };
     push_draw_command(
@@ -376,7 +376,7 @@ fn push_draw_command(steps: &mut Vec<RenderCommand>, step: DrawCommand) {
         return;
     }
     if let Some(RenderCommand::Draw(previous)) = steps.last_mut()
-        && draw_commands_can_merge(previous, &step)
+        && commands_can_merge(previous, &step)
         && let Some(instance_count) = previous.instance_count.checked_add(step.instance_count)
     {
         previous.instance_count = instance_count;
@@ -385,7 +385,7 @@ fn push_draw_command(steps: &mut Vec<RenderCommand>, step: DrawCommand) {
     steps.push(RenderCommand::Draw(step));
 }
 
-fn draw_commands_can_merge(previous: &DrawCommand, next: &DrawCommand) -> bool {
+fn commands_can_merge(previous: &DrawCommand, next: &DrawCommand) -> bool {
     previous.pipeline == next.pipeline
         && previous.bind_groups == next.bind_groups
         && previous.vertex_count == next.vertex_count
@@ -476,8 +476,8 @@ pub(super) fn encode_blur_config_passes(
     configs: &[BackdropBlurConfig],
     passes: &mut Vec<BackdropBlurRenderPass>,
 ) {
-    let Some(source_resource_set) = targets
-        .source_pass_resource_sets
+    let Some(source_bind_group) = targets
+        .source_pass_bind_groups
         .get(frame_resource_index)
         .copied()
     else {
@@ -489,7 +489,7 @@ pub(super) fn encode_blur_config_passes(
         targets,
         frame_resource_index,
         configs,
-        source_resource_set,
+        source_bind_group,
         passes,
     );
 }
@@ -499,7 +499,7 @@ pub(super) fn encode_blur_source_passes(
     targets: &BackdropBlurTargets,
     frame_resource_index: usize,
     configs: &[BackdropBlurConfig],
-    source_resource_set: BindGroupId,
+    source_bind_group: BindGroupId,
     passes: &mut Vec<BackdropBlurRenderPass>,
 ) {
     passes.clear();
@@ -518,8 +518,8 @@ pub(super) fn encode_blur_source_passes(
         let [horizontal, vertical] = variant.levels.as_slice() else {
             continue;
         };
-        let Some(horizontal_resource_set) = horizontal
-            .pass_resource_sets
+        let Some(horizontal_bind_group) = horizontal
+            .pass_bind_groups
             .get(frame_resource_index)
             .copied()
         else {
@@ -533,7 +533,7 @@ pub(super) fn encode_blur_source_passes(
             target_texture_view: horizontal.texture_view,
             step: RenderCommand::Draw(DrawCommand {
                 pipeline: pipelines.backdrop_blur_downsample,
-                bind_groups: bind_group_list([source_resource_set]),
+                bind_groups: bind_group_list([source_bind_group]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 1,
@@ -545,7 +545,7 @@ pub(super) fn encode_blur_source_passes(
             target_texture_view: vertical.texture_view,
             step: RenderCommand::Draw(DrawCommand {
                 pipeline: pipelines.backdrop_blur_upsample,
-                bind_groups: bind_group_list([horizontal_resource_set]),
+                bind_groups: bind_group_list([horizontal_bind_group]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 1,
@@ -560,13 +560,13 @@ pub(super) fn encode_blur_source_passes(
 pub(super) fn encoded_path_commands(
     upload: &FrameUpload,
     pipelines: &Pipelines,
-    path_rasterization_resource_set: BindGroupId,
+    path_rasterization_bind_group: BindGroupId,
 ) -> Vec<RenderCommand> {
     let mut steps = Vec::new();
     encode_path_commands(
         upload,
         pipelines,
-        path_rasterization_resource_set,
+        path_rasterization_bind_group,
         &mut steps,
     );
     steps
@@ -575,7 +575,7 @@ pub(super) fn encoded_path_commands(
 pub(super) fn encode_path_commands(
     upload: &FrameUpload,
     pipelines: &Pipelines,
-    path_rasterization_resource_set: BindGroupId,
+    path_rasterization_bind_group: BindGroupId,
     steps: &mut Vec<RenderCommand>,
 ) {
     steps.clear();
@@ -589,7 +589,7 @@ pub(super) fn encode_path_commands(
                 steps,
                 DrawCommand {
                     pipeline: pipelines.path_rasterization,
-                    bind_groups: bind_group_list([path_rasterization_resource_set]),
+                    bind_groups: bind_group_list([path_rasterization_bind_group]),
                     vertex_count,
                     first_vertex,
                     instance_count: 1,

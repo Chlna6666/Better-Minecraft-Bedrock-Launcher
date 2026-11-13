@@ -1226,7 +1226,7 @@ fn trim_deque_capacity<T>(deque: &mut VecDeque<T>, floor: usize, multiplier: usi
 mod tests {
     use super::*;
     use crate::{
-        FontId, GlyphId, GpuiMemoryTrimLevel, NoopTextSystem, Point, performance_metrics_snapshot,
+        FontId, GlyphId, GpuiMemoryTrimLevel, NoopTextSystem, Point, snapshot,
         point, px,
     };
 
@@ -1548,7 +1548,7 @@ mod tests {
         let second = cache.layout_line("hello", px(14.), &runs, None);
         cache.finish_frame();
 
-        let metrics = performance_metrics_snapshot();
+        let metrics = snapshot();
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(metrics.text_layout_hits, 1);
         assert_eq!(metrics.text_layout_reuses, 0);
@@ -1569,7 +1569,7 @@ mod tests {
         let second = cache.layout_line("hello", px(14.), &runs, None);
         cache.finish_frame();
 
-        let metrics = performance_metrics_snapshot();
+        let metrics = snapshot();
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(metrics.text_layout_hits, 0);
         assert_eq!(metrics.text_layout_reuses, 1);

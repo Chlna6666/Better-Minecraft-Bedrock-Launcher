@@ -1,4 +1,4 @@
-use super::resample::resample_rgba_frame;
+use super::resample::rgba_frame;
 use super::{AnimatedFrame, EncodedImage, ImageRenderSize};
 use crate::Result;
 use image::{
@@ -288,7 +288,7 @@ impl AnimationWork {
                     }
                 };
                 let frame = if let Some(target) = state.target {
-                    match resample_rgba_frame(self.next_sequence, frame, target) {
+                    match rgba_frame(self.next_sequence, frame, target) {
                         Ok(frame) => frame,
                         Err(error) => {
                             log::debug!("animated image resize failed: {error}");
@@ -298,7 +298,7 @@ impl AnimationWork {
                         }
                     }
                 } else {
-                    AnimatedFrame::from_rgba_frame(self.next_sequence, frame)
+                    AnimatedFrame::from_rgba_frame_as_bgra(self.next_sequence, frame)
                 };
                 break frame;
             }

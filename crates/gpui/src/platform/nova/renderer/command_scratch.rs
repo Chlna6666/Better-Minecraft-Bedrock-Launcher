@@ -14,7 +14,7 @@ pub(super) struct CommandScratch {
     prepared_path_mask_slot: Option<usize>,
     pub(super) path_mask_cache_hit: bool,
     pub(super) backdrop_blur_damage_region: DirtyRegion,
-    pub(super) backdrop_blur_damage_plan: crate::BackdropBlurDamagePlan,
+    pub(super) backdrop_blur_damage: crate::BackdropBlurDamagePlan,
     pub(super) force_full_backdrop_blur_refresh: bool,
 }
 
@@ -40,7 +40,7 @@ struct CommandCacheEntry {
 pub(super) struct PathMaskCacheKey {
     pub(super) scene_revision: u64,
     pub(super) encode_generation: u64,
-    pub(super) path_rasterization_resource_set: BindGroupId,
+    pub(super) path_rasterization_bind_group: BindGroupId,
 }
 
 #[derive(Default)]
@@ -94,7 +94,7 @@ impl CommandScratch {
                 self.path_mask_cache_hit = true;
                 return;
             }
-            // The resource set belongs to this frame slot. Retain that slot's descriptors
+            // The bind group belongs to this frame slot. Retain that slot's descriptors
             // directly, and publish the key only after the complete list has been built.
             cache.key = None;
             build(&mut cache.steps);
@@ -198,11 +198,11 @@ mod tests {
     }
 
     #[test]
-    fn path_mask_cache_invalidates_resource_sets_and_revisions() {
+    fn path_mask_cache_invalidates_bind_groups_and_revisions() {
         let mut scratch = CommandScratch::default();
         let mut key = path_key(0, 1);
         scratch.prepare_path_steps(key, 0, 2, |steps| steps.push(path_step(1)));
-        key.path_rasterization_resource_set = BindGroupId::new(99);
+        key.path_rasterization_bind_group = BindGroupId::new(99);
         for revision in [1, 2, 0] {
             key.scene_revision = revision;
             scratch.prepare_path_steps(key, 0, 2, |steps| {
@@ -413,7 +413,7 @@ mod tests {
         PathMaskCacheKey {
             scene_revision: revision,
             encode_generation: 1,
-            path_rasterization_resource_set: BindGroupId::new(slot as u64 + 1),
+            path_rasterization_bind_group: BindGroupId::new(slot as u64 + 1),
         }
     }
 

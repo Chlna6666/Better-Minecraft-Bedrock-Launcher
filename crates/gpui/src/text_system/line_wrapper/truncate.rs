@@ -2,7 +2,7 @@ use crate::{Pixels, SharedString, TextRun, px};
 
 use super::LineWrapper;
 
-pub(super) fn truncate_line(
+pub(super) fn line(
     wrapper: &mut LineWrapper,
     line: SharedString,
     truncate_width: Pixels,

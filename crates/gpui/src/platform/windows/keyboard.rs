@@ -282,7 +282,7 @@ pub(crate) fn generate_key_char(
     }
 }
 
-pub(crate) fn key_from_physical_key(
+pub(crate) fn key_from_physical(
     physical_key: &winit::keyboard::PhysicalKey,
     modifiers: Modifiers,
 ) -> Option<(String, Option<String>)> {

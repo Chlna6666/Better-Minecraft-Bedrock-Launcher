@@ -32,6 +32,10 @@ fn encode_paint(upload: &mut FrameUpload, painter: &crate::scene::Painter) -> Fr
             width: 64,
             height: 64,
         },
+        DrawableSize {
+            width: 64,
+            height: 64,
+        },
         &RenderingParameters::system(),
         false,
         BackdropBlurQuality::Full,
@@ -194,6 +198,10 @@ fn encode(sprites: &[crate::MonochromeSprite]) -> FrameUpload {
         &painter,
         &crate::window::retained::RetainedPaint::default(),
         &[],
+        DrawableSize {
+            width: 64,
+            height: 64,
+        },
         DrawableSize {
             width: 64,
             height: 64,

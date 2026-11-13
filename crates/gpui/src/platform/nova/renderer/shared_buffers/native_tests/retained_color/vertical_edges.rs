@@ -88,7 +88,7 @@ fn verify_scale(renderer: &mut NovaRenderer, reference_renderer: &mut NovaRender
             [value(progress, scale)],
             stable_quads.is_none(),
         );
-        let metrics = crate::performance_metrics_snapshot();
+        let metrics = crate::snapshot();
         let quad_writes =
             crate::platform::nova::renderer::buffer_upload::TEST_QUAD_UPLOAD_BYTES.get();
         if stable_quads.is_some() {

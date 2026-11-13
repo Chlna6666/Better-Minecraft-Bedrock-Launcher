@@ -10,9 +10,8 @@ use crate::{Bounds, ContentMask, ScaledPixels, SceneAnimationId};
 use super::DrawOrder;
 
 pub use super::extension_device::ExtensionDevice;
-#[path = "extension_pass.rs"]
-mod extension_pass;
-pub use extension_pass::{RendererExtensionComputePass, RendererExtensionPass};
+mod pass;
+pub use pass::{RendererExtensionComputePass, RendererExtensionPass};
 pub use gfx_core::{MemoryTrimLevel, RenderCommand, RenderPassId, ScissorRect};
 
 /// Frame-local information passed to a Nova renderer extension.

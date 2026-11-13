@@ -1,8 +1,8 @@
 use super::*;
 
 pub(super) struct AtlasResourceDescriptor {
-    pub(super) mono_sprite_resource_set_layout: BindGroupLayoutId,
-    pub(super) poly_sprite_resource_set_layout: BindGroupLayoutId,
+    pub(super) mono_sprite_bind_group_layout: BindGroupLayoutId,
+    pub(super) poly_sprite_bind_group_layout: BindGroupLayoutId,
     pub(super) frame_buffers: Vec<FrameResourceBuffers>,
     pub(super) sampler: SamplerId,
 }

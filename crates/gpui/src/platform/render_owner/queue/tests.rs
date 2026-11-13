@@ -512,8 +512,8 @@ fn replaced_scene_keeps_earlier_backdrop_source_damage() {
     let latest = scene(80.0);
     let blur_order = latest.backdrop_blurs[0].order;
     let intermediate_plan =
-        crate::paint::backdrop_blur_damage_plan(&intermediate, &previous, &[], &[]);
-    let latest_plan = crate::paint::backdrop_blur_damage_plan(&latest, &intermediate, &[], &[]);
+        crate::paint::compute_backdrop_blur_damage(&intermediate, &previous, &[], &[]);
+    let latest_plan = crate::paint::compute_backdrop_blur_damage(&latest, &intermediate, &[], &[]);
     assert!(intermediate_plan.refresh_required());
     assert!(latest_plan.refresh_required());
     let mut intermediate = packet(
@@ -524,7 +524,7 @@ fn replaced_scene_keeps_earlier_backdrop_source_damage() {
         )),
         40.0,
     );
-    intermediate.backdrop_blur_damage_plan = intermediate_plan;
+    intermediate.backdrop_blur_damage = intermediate_plan;
     let mut latest = packet(
         Arc::new(crate::window::Paint::new(
             latest.into_scene(),
@@ -533,7 +533,7 @@ fn replaced_scene_keeps_earlier_backdrop_source_damage() {
         )),
         80.0,
     );
-    latest.backdrop_blur_damage_plan = latest_plan;
+    latest.backdrop_blur_damage = latest_plan;
     let queue = Queue::default();
     queue.enqueue(draw(intermediate), || Ok(())).unwrap();
     queue
@@ -543,7 +543,7 @@ fn replaced_scene_keeps_earlier_backdrop_source_damage() {
         panic!("expected scene");
     };
     let (full_refresh, damage) = packet
-        .backdrop_blur_damage_plan
+        .backdrop_blur_damage
         .order_source_damage(blur_order, blur_order);
     let damage: Vec<_> = damage.collect();
     assert!(!full_refresh);

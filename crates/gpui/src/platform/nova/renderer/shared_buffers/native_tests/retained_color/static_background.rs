@@ -87,7 +87,7 @@ fn verify(backend: RendererBackend) {
             [sample(current)],
             false,
         );
-        let source_pixels = crate::performance_metrics_snapshot().backdrop_blur_source_pixels;
+        let source_pixels = crate::snapshot().backdrop_blur_source_pixels;
         assert_eq!(
             source_pixels, 0,
             "foreground motion must not rasterize static background"
@@ -121,7 +121,7 @@ fn verify(backend: RendererBackend) {
     let unchanged = page(renderer.current_size, 2, crate::rgb(0x204060), false);
     pixels(&mut renderer, &unchanged, target, 0., [sample(0.8)], false);
     assert_eq!(
-        crate::performance_metrics_snapshot().backdrop_blur_source_pixels,
+        crate::snapshot().backdrop_blur_source_pixels,
         0
     );
     // A new Paint generation shares real Shadow/operation allocations and
@@ -160,7 +160,7 @@ fn verify(backend: RendererBackend) {
     ));
     let local = pixels(&mut renderer, &replayed, target, 0.8, [sample(0.2)], false);
     assert_eq!(
-        crate::performance_metrics_snapshot().backdrop_blur_source_pixels,
+        crate::snapshot().backdrop_blur_source_pixels,
         0
     );
     assert_eq!(
@@ -182,7 +182,7 @@ fn verify(backend: RendererBackend) {
     );
     let changed = page(renderer.current_size, 3, crate::rgb(0x406080), false);
     let local = pixels(&mut renderer, &changed, target, 0.8, [sample(0.2)], false);
-    assert!(crate::performance_metrics_snapshot().backdrop_blur_source_pixels > 0);
+    assert!(crate::snapshot().backdrop_blur_source_pixels > 0);
     let changed_direct = page(renderer.current_size, 0, crate::rgb(0x406080), false);
     let full = pixels(
         &mut renderer,

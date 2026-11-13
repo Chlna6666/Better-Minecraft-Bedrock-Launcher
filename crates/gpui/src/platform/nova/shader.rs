@@ -133,7 +133,7 @@ pub(super) struct ShaderBinaries {
 
 type ShaderCacheEntry = std::result::Result<ShaderBinaries, Arc<str>>;
 
-fn cached_nova_shader_binaries(
+fn cached_shader_binaries(
     cache: &'static std::sync::OnceLock<ShaderCacheEntry>,
     resolve: fn(&str) -> Option<gfx_core::EmbeddedShader>,
 ) -> Result<ShaderBinaries> {
@@ -242,33 +242,33 @@ fn generated_nova_shader_binaries(
     feature = "nova-gfx-opengl",
     any(target_os = "windows", target_os = "linux")
 ))]
-pub(super) fn cached_nova_opengl_shader_binaries() -> Result<ShaderBinaries> {
+pub(super) fn cached_opengl_shader_binaries() -> Result<ShaderBinaries> {
     static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
     static REPORTED: std::sync::Once = std::sync::Once::new();
 
-    let binaries = cached_nova_shader_binaries(&CACHE, nova_opengl_shader)?;
+    let binaries = cached_shader_binaries(&CACHE, nova_opengl_shader)?;
     REPORTED.call_once(|| {
         log::info!("nova OpenGL shader artifacts: {NOVA_OPENGL_SHADER_ARTIFACT_KIND}");
     });
     Ok(binaries)
 }
 #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-pub(super) fn cached_nova_dx11_shader_binaries() -> Result<ShaderBinaries> {
+pub(super) fn cached_dx11_shader_binaries() -> Result<ShaderBinaries> {
     static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
     static REPORTED: std::sync::Once = std::sync::Once::new();
 
-    let binaries = cached_nova_shader_binaries(&CACHE, nova_dx11_shader)?;
+    let binaries = cached_shader_binaries(&CACHE, nova_dx11_shader)?;
     REPORTED.call_once(|| {
         log::info!("nova DX11 shader artifacts: {NOVA_DX11_SHADER_ARTIFACT_KIND}");
     });
     Ok(binaries)
 }
 #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-pub(super) fn cached_nova_dx12_shader_binaries() -> Result<ShaderBinaries> {
+pub(super) fn cached_dx12_shader_binaries() -> Result<ShaderBinaries> {
     static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
     static REPORTED: std::sync::Once = std::sync::Once::new();
 
-    let binaries = cached_nova_shader_binaries(&CACHE, nova_dx12_shader)?;
+    let binaries = cached_shader_binaries(&CACHE, nova_dx12_shader)?;
     REPORTED.call_once(|| {
         log::info!("nova DX12 shader artifacts: {NOVA_DX12_SHADER_ARTIFACT_KIND}");
     });
@@ -276,11 +276,11 @@ pub(super) fn cached_nova_dx12_shader_binaries() -> Result<ShaderBinaries> {
 }
 
 #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-pub(super) fn cached_nova_metal_shader_binaries() -> Result<ShaderBinaries> {
+pub(super) fn cached_metal_shader_binaries() -> Result<ShaderBinaries> {
     static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
     static REPORTED: std::sync::Once = std::sync::Once::new();
 
-    let binaries = cached_nova_shader_binaries(&CACHE, nova_metal_shader)?;
+    let binaries = cached_shader_binaries(&CACHE, nova_metal_shader)?;
     REPORTED.call_once(|| {
         log::info!("nova Metal shader artifacts: {NOVA_METAL_SHADER_ARTIFACT_KIND}");
     });
@@ -291,11 +291,11 @@ pub(super) fn cached_nova_metal_shader_binaries() -> Result<ShaderBinaries> {
     feature = "nova-gfx-vulkan",
     any(target_os = "windows", target_os = "linux", target_os = "freebsd")
 ))]
-pub(super) fn cached_nova_vulkan_shader_binaries() -> Result<ShaderBinaries> {
+pub(super) fn cached_vulkan_shader_binaries() -> Result<ShaderBinaries> {
     static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
     static REPORTED: std::sync::Once = std::sync::Once::new();
 
-    let binaries = cached_nova_shader_binaries(&CACHE, nova_vulkan_shader)?;
+    let binaries = cached_shader_binaries(&CACHE, nova_vulkan_shader)?;
     REPORTED.call_once(|| {
         log::info!("nova Vulkan shader artifacts: {NOVA_VULKAN_SHADER_ARTIFACT_KIND}");
     });

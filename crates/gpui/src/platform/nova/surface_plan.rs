@@ -43,7 +43,7 @@ pub(super) fn requires_full_drawable_damage(
 /// Partial GPU scissor and retained target damage must therefore cover its
 /// entire current extent for the first *successfully presented* new-size frame.
 /// The caller keeps `swapchain_warmup_frames` armed on a deferred/failed Present.
-pub(super) fn force_full_drawable_damage_after_resize(
+pub(super) fn force_full_drawable_damage(
     packet: &mut PresentationPacket,
     drawable_size: super::renderer::DrawableSize,
 ) {

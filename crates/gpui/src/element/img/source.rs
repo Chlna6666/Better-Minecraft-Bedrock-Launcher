@@ -1,4 +1,4 @@
-use super::element::*;
+use super::component::*;
 use super::error::ImageCacheError;
 use crate::{
     AnyImageCache, App, Asset, AssetLocation, AssetLogger, ClipboardImage, CompressedImageBytes,

@@ -22,7 +22,7 @@ pub struct ProcessMemorySnapshot {
         reason = "Win32 process counters require FFI with a sized, live output buffer"
     )
 )]
-pub fn process_memory_snapshot() -> anyhow::Result<Option<ProcessMemorySnapshot>> {
+pub fn snapshot() -> anyhow::Result<Option<ProcessMemorySnapshot>> {
     #[cfg(windows)]
     {
         use windows::Win32::System::{

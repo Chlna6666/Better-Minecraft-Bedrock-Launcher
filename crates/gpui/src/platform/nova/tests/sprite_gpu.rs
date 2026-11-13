@@ -16,7 +16,7 @@ fn dx11_production_glyphs_and_images_reach_native_pixels() {
     println!("GPUI DX11 sprite adapter: {}", device.adapter_name());
     verify_sprite_pixels(
         &mut device,
-        cached_nova_dx11_shader_binaries().expect("DX11 artifacts"),
+        cached_dx11_shader_binaries().expect("DX11 artifacts"),
     );
 }
 
@@ -28,7 +28,7 @@ fn dx12_production_glyphs_and_images_reach_native_pixels() {
     println!("GPUI DX12 sprite adapter: {}", device.adapter_name());
     verify_sprite_pixels(
         &mut device,
-        cached_nova_dx12_shader_binaries().expect("DX12 artifacts"),
+        cached_dx12_shader_binaries().expect("DX12 artifacts"),
     );
 }
 
@@ -40,7 +40,7 @@ fn vulkan_production_glyphs_and_images_reach_native_pixels() {
     println!("GPUI Vulkan sprite adapter: {}", device.adapter_name());
     verify_sprite_pixels(
         &mut device,
-        cached_nova_vulkan_shader_binaries().expect("Vulkan artifacts"),
+        cached_vulkan_shader_binaries().expect("Vulkan artifacts"),
     );
 }
 
@@ -60,7 +60,7 @@ fn opengl_production_glyphs_and_images_reach_native_pixels() {
     .expect("OpenGL 4.5 device");
     verify_sprite_pixels(
         &mut device,
-        cached_nova_opengl_shader_binaries().expect("GLSL artifacts"),
+        cached_opengl_shader_binaries().expect("GLSL artifacts"),
     );
 }
 
@@ -136,11 +136,11 @@ where
                     depth_attachment: Some(gfx_core::DepthAttachment {
                         target: resources.depth_texture_view,
                         depth_load_op: LoadOp::Clear(1.0),
-            stencil_load_op: None,
-        }),
+                        stencil_load_op: None,
+                    }),
                     viewport: None,
-            resolve_target: None,
-        }])
+                    resolve_target: None,
+                }])
                 .expect("production sprite draw");
             let pixels = device.read_texture(target).expect("GPU sprite readback");
             let expected = if matches!(
@@ -272,6 +272,10 @@ fn upload_globals<D: ResourceDevice>(device: &mut D, buffers: resources::FrameRe
             width: 16,
             height: 16,
         },
+        DrawableSize {
+            width: 16,
+            height: 16,
+        },
         &RenderingParameters::system(),
         false,
         BackdropBlurQuality::Full,
@@ -295,12 +299,12 @@ fn atlas_texture<D: ResourceDevice>(
         AtlasTextureId { index: 1, kind },
         size(DevicePixels(16), DevicePixels(16)),
         &AtlasResourceDescriptor {
-            mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
-            poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
+            mono_sprite_bind_group_layout: resources.mono_sprite_bind_group_layout,
+            poly_sprite_bind_group_layout: resources.poly_sprite_bind_group_layout,
             frame_buffers: vec![resources.frame_resources[0].buffers],
             sampler: resources.atlas_sampler,
         },
-        NovaAtlasResourceSetMode::UsedByTextureKind,
+        NovaAtlasBindGroupMode::UsedByTextureKind,
     )
     .expect("production atlas");
     let source = match kind {
@@ -311,7 +315,7 @@ fn atlas_texture<D: ResourceDevice>(
     };
     let bytes_per_pixel = atlas_bytes_per_pixel(kind);
     let mut tile = vec![0; 64 * bytes_per_pixel];
-    frame_upload::upload_encoding::encode_atlas_upload(
+    frame_upload::atlas_encoding::encode_atlas_upload(
         &mut tile,
         size(DevicePixels(8), DevicePixels(8)),
         &source,
@@ -393,7 +397,7 @@ fn upload_sprite<D: ResourceDevice>(
             } else {
                 pipelines.mono_sprites
             },
-            atlas.mono_resource_sets[0],
+            atlas.mono_bind_groups[0],
         )
     } else {
         write_polychrome_sprite(
@@ -413,7 +417,7 @@ fn upload_sprite<D: ResourceDevice>(
         device
             .write_buffer(buffers.poly_sprite_buffer, 0, &bytes)
             .expect("image packer upload");
-        (pipelines.poly_sprites, atlas.poly_resource_sets[0])
+        (pipelines.poly_sprites, atlas.poly_bind_groups[0])
     }
 }
 
@@ -463,11 +467,11 @@ fn verify_mono_tint<D>(
                 depth_attachment: Some(gfx_core::DepthAttachment {
                     target: resources.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
-            stencil_load_op: None,
-        }),
+                    stencil_load_op: None,
+                }),
                 viewport: None,
-            resolve_target: None,
-        }])
+                resolve_target: None,
+            }])
             .expect("same R8 atlas with changed text color/alpha");
         let pixels = device.read_texture(target).expect("tint readback");
         let offset = 8 * pixels.bytes_per_row as usize + 8 * 4;

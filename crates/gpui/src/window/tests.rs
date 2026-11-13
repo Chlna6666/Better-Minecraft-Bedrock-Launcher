@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     Animation, AnimationDriver, AnimationExt, AnimationProperty, AnimationSequence, AnimationSpec,
     Easing, ElementId, GlobalElementId, InspectorElementId, PaintOperation, Primitive, RepeatMode,
-    TestAppContext, TransitionProperty, WindowOptions, performance_metrics_snapshot, point, px,
+    TestAppContext, TransitionProperty, WindowOptions, snapshot, point, px,
     size,
 };
 use std::{cell::Cell, cell::RefCell, rc::Rc};
@@ -536,7 +536,7 @@ fn appearance_change_is_deferred_outside_current_app_update(cx: &mut TestAppCont
 
 #[gpui::test]
 fn repeated_refresh_requests_are_coalesced(cx: &mut TestAppContext) {
-    let before = performance_metrics_snapshot().coalesced_refresh_count;
+    let before = snapshot().coalesced_refresh_count;
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| EmptyTestView))
             .unwrap()
@@ -550,7 +550,7 @@ fn repeated_refresh_requests_are_coalesced(cx: &mut TestAppContext) {
         })
         .unwrap();
 
-    assert!(performance_metrics_snapshot().coalesced_refresh_count > before);
+    assert!(snapshot().coalesced_refresh_count > before);
 }
 
 #[gpui::test]
@@ -776,14 +776,14 @@ fn paint_images_budgeted_defers_uncached_images_after_the_frame_budget(cx: &mut 
 
 #[gpui::test]
 fn repeated_refresh_windows_effects_are_coalesced(cx: &mut TestAppContext) {
-    let before = performance_metrics_snapshot().coalesced_refresh_effect_count;
+    let before = snapshot().coalesced_refresh_effect_count;
 
     cx.update(|cx| {
         cx.refresh_windows();
         cx.refresh_windows();
     });
 
-    assert!(performance_metrics_snapshot().coalesced_refresh_effect_count > before);
+    assert!(snapshot().coalesced_refresh_effect_count > before);
 }
 
 #[gpui::test]

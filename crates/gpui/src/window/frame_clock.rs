@@ -311,8 +311,8 @@ mod unpaced_tests {
         else {
             panic!("native callback should deliver immediately");
         };
-        assert!(merged.needs_ui_commit());
-        assert!(merged.needs_presentation());
+        assert!(merged.ui_commit_required());
+        assert!(merged.presentation_required());
         assert!(!state.platform_request_pending);
         assert!(state.pending_request.is_none());
         assert!(matches!(

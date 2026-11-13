@@ -93,7 +93,7 @@ impl BackdropBlurDamagePlan {
 }
 
 /// Computes spatial source damage independently for every backdrop draw-order barrier.
-pub(crate) fn backdrop_blur_damage_plan(
+pub(crate) fn compute_backdrop_blur_damage(
     scene: &Scene,
     previous: &Scene,
     presentation_values: &[SceneAnimationValue],
@@ -143,7 +143,7 @@ pub(crate) fn backdrop_blur_damage_plan(
 }
 
 /// Computes per-backdrop source damage for an animation-only retained-scene frame.
-pub(crate) fn backdrop_blur_animation_damage_plan(
+pub(crate) fn compute_backdrop_blur_animation_damage(
     scene: &Scene,
     previous_presentation_values: &[SceneAnimationValue],
     presentation_values: &[SceneAnimationValue],

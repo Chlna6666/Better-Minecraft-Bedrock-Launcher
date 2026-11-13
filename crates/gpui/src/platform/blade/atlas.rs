@@ -4,7 +4,6 @@ use crate::{
     GlyphRasterization, PlatformAtlas, Point, RenderGlyphParams, Size, platform::AtlasTextureList,
 };
 use anyhow::Result;
-use blade_graphics as gpu;
 use blade_util::{BufferBelt, BufferBeltDescriptor};
 use collections::FxHashMap;
 use etagere::BucketedAtlasAllocator;
@@ -16,7 +15,7 @@ pub(crate) struct BladeAtlas(Mutex<BladeAtlasState>);
 struct PendingUpload {
     id: AtlasTextureId,
     bounds: Bounds<DevicePixels>,
-    data: gpu::BufferPiece,
+    data: blade_graphics::BufferPiece,
 }
 
 struct PendingEmojiLayer {
@@ -24,13 +23,13 @@ struct PendingEmojiLayer {
     target_bounds: Bounds<DevicePixels>,
     clear_target: bool,
     layer: ColorGlyphLayer,
-    mask_texture: gpu::Texture,
-    mask_view: gpu::TextureView,
-    mask_data: gpu::BufferPiece,
+    mask_texture: blade_graphics::Texture,
+    mask_view: blade_graphics::TextureView,
+    mask_data: blade_graphics::BufferPiece,
 }
 
 struct BladeAtlasState {
-    gpu: Arc<gpu::Context>,
+    gpu: Arc<blade_graphics::Context>,
     upload_belt: BufferBelt,
     storage: BladeAtlasStorage,
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
@@ -54,15 +53,15 @@ impl BladeAtlasState {
 }
 
 pub struct BladeTextureInfo {
-    pub raw_view: gpu::TextureView,
+    pub raw_view: blade_graphics::TextureView,
 }
 
 impl BladeAtlas {
-    pub(crate) fn new(gpu: &Arc<gpu::Context>) -> Self {
+    pub(crate) fn new(gpu: &Arc<blade_graphics::Context>) -> Self {
         BladeAtlas(Mutex::new(BladeAtlasState {
             gpu: Arc::clone(gpu),
             upload_belt: BufferBelt::new(BufferBeltDescriptor {
-                memory: gpu::Memory::Upload,
+                memory: blade_graphics::Memory::Upload,
                 min_chunk_size: 0x10000,
                 alignment: 64, // Vulkan `optimalBufferCopyOffsetAlignment` on Intel XE
             }),
@@ -80,15 +79,15 @@ impl BladeAtlas {
 
     pub fn before_frame(
         &self,
-        gpu_encoder: &mut gpu::CommandEncoder,
-        emoji_pipeline: &gpu::RenderPipeline,
-        emoji_sampler: gpu::Sampler,
+        gpu_encoder: &mut blade_graphics::CommandEncoder,
+        emoji_pipeline: &blade_graphics::RenderPipeline,
+        emoji_sampler: blade_graphics::Sampler,
     ) {
         let mut lock = self.0.lock();
         lock.flush(gpu_encoder, emoji_pipeline, emoji_sampler);
     }
 
-    pub fn after_frame(&self, sync_point: &gpu::SyncPoint) {
+    pub fn after_frame(&self, sync_point: &blade_graphics::SyncPoint) {
         let mut lock = self.0.lock();
         lock.upload_belt.flush(sync_point);
     }
@@ -269,25 +268,25 @@ impl BladeAtlasState {
         let usage;
         match kind {
             AtlasTextureKind::Monochrome => {
-                format = gpu::TextureFormat::R8Unorm;
-                usage = gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE;
+                format = blade_graphics::TextureFormat::R8Unorm;
+                usage = blade_graphics::TextureUsage::COPY | blade_graphics::TextureUsage::RESOURCE;
             }
             AtlasTextureKind::Bgra => {
-                format = gpu::TextureFormat::Bgra8Unorm;
-                usage = gpu::TextureUsage::COPY
-                    | gpu::TextureUsage::RESOURCE
-                    | gpu::TextureUsage::TARGET;
+                format = blade_graphics::TextureFormat::Bgra8Unorm;
+                usage = blade_graphics::TextureUsage::COPY
+                    | blade_graphics::TextureUsage::RESOURCE
+                    | blade_graphics::TextureUsage::TARGET;
             }
             AtlasTextureKind::Rgba => {
-                format = gpu::TextureFormat::Rgba8Unorm;
-                usage = gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE;
+                format = blade_graphics::TextureFormat::Rgba8Unorm;
+                usage = blade_graphics::TextureUsage::COPY | blade_graphics::TextureUsage::RESOURCE;
             }
         }
 
-        let raw = self.gpu.create_texture(gpu::TextureDescriptor {
+        let raw = self.gpu.create_texture(blade_graphics::TextureDescriptor {
             name: "atlas",
             format,
-            size: gpu::Extent {
+            size: blade_graphics::Extent {
                 width: size.width.into(),
                 height: size.height.into(),
                 depth: 1,
@@ -295,16 +294,16 @@ impl BladeAtlasState {
             array_layer_count: 1,
             mip_level_count: 1,
             sample_count: 1,
-            dimension: gpu::TextureDimension::D2,
+            dimension: blade_graphics::TextureDimension::D2,
             usage,
             external: None,
         });
         let raw_view = self.gpu.create_texture_view(
             raw,
-            gpu::TextureViewDescriptor {
+            blade_graphics::TextureViewDescriptor {
                 name: "",
                 format,
-                dimension: gpu::ViewDimension::D2,
+                dimension: blade_graphics::ViewDimension::D2,
                 subresources: &Default::default(),
             },
         );
@@ -348,10 +347,10 @@ impl BladeAtlasState {
         layers: Vec<ColorGlyphLayer>,
     ) -> Result<()> {
         for (ix, layer) in layers.into_iter().enumerate() {
-            let texture = self.gpu.create_texture(gpu::TextureDescriptor {
+            let texture = self.gpu.create_texture(blade_graphics::TextureDescriptor {
                 name: "emoji layer mask",
-                format: gpu::TextureFormat::R8Unorm,
-                size: gpu::Extent {
+                format: blade_graphics::TextureFormat::R8Unorm,
+                size: blade_graphics::Extent {
                     width: layer.bounds.size.width.0.max(1) as u32,
                     height: layer.bounds.size.height.0.max(1) as u32,
                     depth: 1,
@@ -359,16 +358,16 @@ impl BladeAtlasState {
                 array_layer_count: 1,
                 mip_level_count: 1,
                 sample_count: 1,
-                dimension: gpu::TextureDimension::D2,
-                usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE,
+                dimension: blade_graphics::TextureDimension::D2,
+                usage: blade_graphics::TextureUsage::COPY | blade_graphics::TextureUsage::RESOURCE,
                 external: None,
             });
             let view = self.gpu.create_texture_view(
                 texture,
-                gpu::TextureViewDescriptor {
+                blade_graphics::TextureViewDescriptor {
                     name: "emoji layer mask view",
-                    format: gpu::TextureFormat::R8Unorm,
-                    dimension: gpu::ViewDimension::D2,
+                    format: blade_graphics::TextureFormat::R8Unorm,
+                    dimension: blade_graphics::ViewDimension::D2,
                     subresources: &Default::default(),
                 },
             );
@@ -386,7 +385,7 @@ impl BladeAtlasState {
         Ok(())
     }
 
-    fn flush_initializations(&mut self, encoder: &mut gpu::CommandEncoder) {
+    fn flush_initializations(&mut self, encoder: &mut blade_graphics::CommandEncoder) {
         for id in self.initializations.drain(..) {
             let texture = &self.storage[id];
             encoder.init_texture(texture.raw);
@@ -395,9 +394,9 @@ impl BladeAtlasState {
 
     fn flush(
         &mut self,
-        encoder: &mut gpu::CommandEncoder,
-        emoji_pipeline: &gpu::RenderPipeline,
-        emoji_sampler: gpu::Sampler,
+        encoder: &mut blade_graphics::CommandEncoder,
+        emoji_pipeline: &blade_graphics::RenderPipeline,
+        emoji_sampler: blade_graphics::Sampler,
     ) {
         self.flush_initializations(encoder);
 
@@ -407,7 +406,7 @@ impl BladeAtlasState {
             transfers.copy_buffer_to_texture(
                 upload.data,
                 upload.bounds.size.width.to_bytes(texture.bytes_per_pixel()),
-                gpu::TexturePiece {
+                blade_graphics::TexturePiece {
                     texture: texture.raw,
                     mip_level: 0,
                     array_layer: 0,
@@ -417,7 +416,7 @@ impl BladeAtlasState {
                         0,
                     ],
                 },
-                gpu::Extent {
+                blade_graphics::Extent {
                     width: upload.bounds.size.width.into(),
                     height: upload.bounds.size.height.into(),
                     depth: 1,
@@ -428,13 +427,13 @@ impl BladeAtlasState {
             transfers.copy_buffer_to_texture(
                 layer.mask_data,
                 layer.layer.bounds.size.width.to_bytes(1),
-                gpu::TexturePiece {
+                blade_graphics::TexturePiece {
                     texture: layer.mask_texture,
                     mip_level: 0,
                     array_layer: 0,
                     origin: [0, 0, 0],
                 },
-                gpu::Extent {
+                blade_graphics::Extent {
                     width: layer.layer.bounds.size.width.into(),
                     height: layer.layer.bounds.size.height.into(),
                     depth: 1,
@@ -447,26 +446,26 @@ impl BladeAtlasState {
 
     fn flush_emoji_layers(
         &mut self,
-        encoder: &mut gpu::CommandEncoder,
-        emoji_pipeline: &gpu::RenderPipeline,
-        emoji_sampler: gpu::Sampler,
+        encoder: &mut blade_graphics::CommandEncoder,
+        emoji_pipeline: &blade_graphics::RenderPipeline,
+        emoji_sampler: blade_graphics::Sampler,
     ) {
         for layer in self.emoji_layers.drain(..) {
             encoder.init_texture(layer.mask_texture);
             let target = &self.storage[layer.target_id];
             let texture_size = target.size;
-            let render_target = gpu::RenderTarget {
+            let render_target = blade_graphics::RenderTarget {
                 view: target.raw_view,
                 init_op: if layer.clear_target {
-                    gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack)
+                    blade_graphics::InitOp::Clear(blade_graphics::TextureColor::TransparentBlack)
                 } else {
-                    gpu::InitOp::Load
+                    blade_graphics::InitOp::Load
                 },
-                finish_op: gpu::FinishOp::Store,
+                finish_op: blade_graphics::FinishOp::Store,
             };
             if let mut pass = encoder.render(
                 "emoji layer",
-                gpu::RenderTargetSet {
+                blade_graphics::RenderTargetSet {
                     colors: &[render_target],
                     depth_stencil: None,
                 },
@@ -533,7 +532,7 @@ impl ops::Index<AtlasTextureId> for BladeAtlasStorage {
 }
 
 impl BladeAtlasStorage {
-    fn destroy(&mut self, gpu: &gpu::Context) {
+    fn destroy(&mut self, gpu: &blade_graphics::Context) {
         for mut texture in self.monochrome_textures.drain().flatten() {
             texture.destroy(gpu);
         }
@@ -550,9 +549,9 @@ struct BladeAtlasTexture {
     id: AtlasTextureId,
     size: Size<DevicePixels>,
     allocator: BucketedAtlasAllocator,
-    raw: gpu::Texture,
-    raw_view: gpu::TextureView,
-    format: gpu::TextureFormat,
+    raw: blade_graphics::Texture,
+    raw_view: blade_graphics::TextureView,
+    format: blade_graphics::TextureFormat,
     live_atlas_keys: u32,
 }
 
@@ -572,7 +571,7 @@ impl BladeAtlasTexture {
         Some(tile)
     }
 
-    fn destroy(&mut self, gpu: &gpu::Context) {
+    fn destroy(&mut self, gpu: &blade_graphics::Context) {
         gpu.destroy_texture(self.raw);
         gpu.destroy_texture_view(self.raw_view);
     }

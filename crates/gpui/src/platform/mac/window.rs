@@ -57,7 +57,7 @@ use std::{
     time::Duration,
 };
 use util::ResultExt;
-use winit::raw_window_handle as rwh;
+use winit::raw_window_handle;
 
 const WINDOW_STATE_IVAR: &str = "windowState";
 
@@ -1029,7 +1029,7 @@ impl PlatformWindow for MacWindow {
 
     fn merge_all_windows(&self) {
         let native_window = self.0.lock().native_window;
-        unsafe extern "C" fn merge_windows_async(context: *mut std::ffi::c_void) {
+        unsafe extern "C" fn merge_windows(context: *mut std::ffi::c_void) {
             let native_window = context as id;
             let _: () = msg_send![native_window, mergeAllWindows:nil];
         }
@@ -1038,14 +1038,14 @@ impl PlatformWindow for MacWindow {
             dispatch_async_f(
                 dispatch_get_main_queue(),
                 native_window as *mut std::ffi::c_void,
-                Some(merge_windows_async),
+                Some(merge_windows),
             );
         }
     }
 
     fn move_tab_to_new_window(&self) {
         let native_window = self.0.lock().native_window;
-        unsafe extern "C" fn move_tab_async(context: *mut std::ffi::c_void) {
+        unsafe extern "C" fn move_tab(context: *mut std::ffi::c_void) {
             let native_window = context as id;
             let _: () = msg_send![native_window, moveTabToNewWindow:nil];
             let _: () = msg_send![native_window, makeKeyAndOrderFront: nil];
@@ -1055,7 +1055,7 @@ impl PlatformWindow for MacWindow {
             dispatch_async_f(
                 dispatch_get_main_queue(),
                 native_window as *mut std::ffi::c_void,
-                Some(move_tab_async),
+                Some(move_tab),
             );
         }
     }
@@ -1296,7 +1296,7 @@ impl PlatformWindow for MacWindow {
             if title.is_null() {
                 "".to_string()
             } else {
-                title.to_str().to_string()
+                title.as_str().to_string()
             }
         }
     }
@@ -1499,7 +1499,7 @@ impl PlatformWindow for MacWindow {
                 if msg_send![window, isKindOfClass: WINDOW_CLASS] {
                     let handle = window_state(&*window).lock().handle;
                     let title: id = msg_send![window, title];
-                    let title = SharedString::from(title.to_str().to_string());
+                    let title = SharedString::from(title.as_str().to_string());
 
                     result.push(WindowTab::new(title, handle));
                 }
@@ -1618,23 +1618,29 @@ impl PlatformWindow for MacWindow {
     }
 }
 
-impl rwh::HasWindowHandle for MacWindow {
-    fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+impl raw_window_handle::HasWindowHandle for MacWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
         // SAFETY: The AppKitWindowHandle is a wrapper around a pointer to an NSView
         unsafe {
-            Ok(rwh::WindowHandle::borrow_raw(rwh::RawWindowHandle::AppKit(
-                rwh::AppKitWindowHandle::new(self.0.lock().native_view.cast()),
-            )))
+            Ok(raw_window_handle::WindowHandle::borrow_raw(
+                raw_window_handle::RawWindowHandle::AppKit(
+                    raw_window_handle::AppKitWindowHandle::new(self.0.lock().native_view.cast()),
+                ),
+            ))
         }
     }
 }
 
-impl rwh::HasDisplayHandle for MacWindow {
-    fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
+impl raw_window_handle::HasDisplayHandle for MacWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
         // SAFETY: This is a no-op on macOS
         unsafe {
-            Ok(rwh::DisplayHandle::borrow_raw(
-                rwh::AppKitDisplayHandle::new().into(),
+            Ok(raw_window_handle::DisplayHandle::borrow_raw(
+                raw_window_handle::AppKitDisplayHandle::new().into(),
             ))
         }
     }
@@ -2406,7 +2412,7 @@ extern "C" fn insert_text(this: &Object, _: Sel, text: id, replacement_range: NS
             text
         };
 
-        let text = text.to_str();
+        let text = text.as_str();
         let replacement_range = replacement_range.to_range();
         with_input_handler(this, |input_handler| {
             input_handler.replace_text_in_range(replacement_range, text)
@@ -2431,7 +2437,7 @@ extern "C" fn set_marked_text(
         };
         let selected_range = selected_range.to_range();
         let replacement_range = replacement_range.to_range();
-        let text = text.to_str();
+        let text = text.as_str();
         with_input_handler(this, |input_handler| {
             input_handler.replace_and_mark_text_in_range(replacement_range, text, selected_range)
         });

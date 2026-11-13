@@ -6,7 +6,7 @@ use crate::diagnostics::performance_metrics::store::WindowTimingSamples;
 /// CPU timings measure the backend pass call, including any synchronous driver waits; they
 /// are not GPU execution times. Skips do not contribute zero-duration timing samples.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WindowPathMaskMetricsSnapshot {
+pub struct PathMaskMetricsSnapshot {
     /// Submitted frames that rasterized a nonempty path mask.
     pub rendered_frames: u64,
     /// Submitted frames that reused resident mask pixels instead of rasterizing them.
@@ -48,9 +48,9 @@ impl Metrics {
 
     pub(in crate::diagnostics::performance_metrics) fn snapshot(
         &self,
-    ) -> WindowPathMaskMetricsSnapshot {
+    ) -> PathMaskMetricsSnapshot {
         let samples = self.samples.percentiles();
-        WindowPathMaskMetricsSnapshot {
+        PathMaskMetricsSnapshot {
             rendered_frames: self.rendered,
             skipped_frames: self.skipped,
             pass_cpu_last_us: self.last_us,
@@ -63,7 +63,7 @@ impl Metrics {
     }
 }
 
-pub(crate) fn record_window_path_mask(window_id: u64, rendered: bool, elapsed: Duration) {
+pub(crate) fn record_path_mask(window_id: u64, rendered: bool, elapsed: Duration) {
     if let Ok(mut windows) = shared_metrics().window_metrics.lock() {
         windows
             .entry(window_id)

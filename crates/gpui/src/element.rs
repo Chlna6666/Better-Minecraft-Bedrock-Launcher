@@ -33,7 +33,7 @@
 
 mod anchored;
 mod animation;
-mod any_element;
+mod any;
 mod any_view;
 mod bounds_observer;
 mod canvas;
@@ -62,7 +62,7 @@ mod retained_sibling_tests;
 
 pub use anchored::*;
 pub use animation::*;
-pub use any_element::*;
+pub use any::*;
 pub use any_view::*;
 pub use bounds_observer::*;
 pub use canvas::*;

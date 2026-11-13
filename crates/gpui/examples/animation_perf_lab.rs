@@ -29,8 +29,9 @@ use std::{
 use gpui::{
     App, Application, AssetSource, Bounds, Context, RendererBackend, RendererOptions, SharedString,
     Timer, TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions, div,
-    prelude::*, px, rgb, size, window_metrics_snapshot,
+    prelude::*, px, rgb, size,
 };
+use gpui::diagnostics::performance_metrics::window;
 
 mod animation_perf_lab_support;
 
@@ -91,7 +92,7 @@ impl Render for AnimationLab {
         if self.block_next_render {
             self.block_next_render = false;
             let block_sender = self.block_started.take();
-            let block_metrics = window_metrics_snapshot()
+            let block_metrics = window::snapshot()
                 .into_iter()
                 .find(|metrics| metrics.window_id == self.window_id);
             if !block_metrics
@@ -139,7 +140,7 @@ impl Render for AnimationLab {
             }
             // The native presentation owner must keep sampling the committed scene here.
             thread::sleep(UI_RENDER_BLOCK);
-            let final_window_metrics = window_metrics_snapshot()
+            let final_window_metrics = window::snapshot()
                 .into_iter()
                 .find(|metrics| metrics.window_id == self.window_id);
             let native_vsync = final_window_metrics
@@ -321,7 +322,7 @@ fn open_lab(
         let history_deadline = Instant::now() + GATE_WINDOW;
         let mut foreground_sample_start = None;
         loop {
-            let Some(metrics) = window_metrics_snapshot()
+            let Some(metrics) = window::snapshot()
                 .into_iter()
                 .find(|window| window.window_id == window_id)
             else {
@@ -352,7 +353,7 @@ fn open_lab(
         let baseline_started = Instant::now();
         let baseline_sample_count = animation_sample_count(window_id);
         Timer::after(Duration::from_millis(500)).await;
-        let Some(baseline_metrics) = window_metrics_snapshot()
+        let Some(baseline_metrics) = window::snapshot()
             .into_iter()
             .find(|window| window.window_id == window_id)
         else {
@@ -436,7 +437,7 @@ fn open_lab(
 }
 
 fn animation_sample_count(window_id: u64) -> usize {
-    window_metrics_snapshot()
+    window::snapshot()
         .into_iter()
         .find(|window| window.window_id == window_id)
         .map_or(0, |window| window.animation_sampled_present_count)

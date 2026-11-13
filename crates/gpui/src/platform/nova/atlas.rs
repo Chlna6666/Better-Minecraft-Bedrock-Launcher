@@ -8,10 +8,10 @@ use std::sync::{
 };
 
 #[cfg(test)]
-pub(super) use super::upload_encoding::encode_atlas_upload;
-use super::upload_encoding::{atlas_kind_index, fallback_atlas_bytes};
-pub(super) use super::upload_queue::AtlasUploadStats;
-use super::upload_queue::PendingAtlasUpload;
+pub(super) use super::atlas_encoding::encode_atlas_upload;
+use super::atlas_encoding::{atlas_kind_index, fallback_atlas_bytes};
+pub(super) use super::queue::AtlasUploadStats;
+use super::queue::PendingAtlasUpload;
 
 /// Small first-page size used by each atlas kind for fallback pixels and typical first-frame
 /// glyph/icon traffic. When this page fills, normal allocation keeps using 2048px pages.

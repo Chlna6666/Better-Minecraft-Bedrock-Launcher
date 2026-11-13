@@ -38,7 +38,7 @@ fn dx12_resident_mask_preserves_pixels_across_repeated_presentations() {
         updated, first,
         "quad pixels changed without rerasterizing the mask"
     );
-    let metrics = crate::window_metrics_snapshot()
+    let metrics = crate::diagnostics::performance_metrics::window::snapshot()
         .into_iter()
         .find(|metrics| metrics.window_id == window_id)
         .expect("window mask metrics");
@@ -49,7 +49,7 @@ fn dx12_resident_mask_preserves_pixels_across_repeated_presentations() {
     let changed = pixels(&renderer, target);
     assert_eq!(&changed[(4 * 16 + 4) * 4..][..4], &[0, 255, 0, 255]);
     assert_ne!(changed, first);
-    let metrics = crate::window_metrics_snapshot()
+    let metrics = crate::diagnostics::performance_metrics::window::snapshot()
         .into_iter()
         .find(|metrics| metrics.window_id == window_id)
         .expect("updated mask metrics");
@@ -62,7 +62,7 @@ fn dx12_resident_mask_preserves_pixels_across_repeated_presentations() {
         let scene = changed_scene(0x00ff00, 0xffff00, variant);
         present(&mut renderer, &scene, window_id);
         assert_ne!(pixels(&renderer, target), changed, "path pixels changed");
-        let metrics = crate::window_metrics_snapshot()
+        let metrics = crate::diagnostics::performance_metrics::window::snapshot()
             .into_iter()
             .find(|metrics| metrics.window_id == window_id)
             .expect("changed path metrics");

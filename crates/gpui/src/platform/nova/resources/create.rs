@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use super::super::*;
-use super::bind_groups::create_renderer_resource_sets;
+use super::bind_groups::create_renderer_bind_groups;
 use super::buffers::create_resource_buffers;
 use super::depth::create_depth_texture;
 use super::pipelines::create_renderer_pipelines;
@@ -14,7 +14,7 @@ use super::{FrameResources, RendererCore, RendererResources};
 /// compiled shader modules, and the render pipelines. None of them depend on a window's size, so
 /// a second window reuses them instead of paying for another shader compile and driver pipeline
 /// build.
-pub(in crate::platform::nova) fn create_renderer_core<D>(
+pub(in crate::platform::nova) fn renderer_core<D>(
     device: &mut D,
     surface_config: SurfaceConfig,
     label: &str,
@@ -67,7 +67,7 @@ where
 }
 
 /// Creates the renderer resources sized to one window, reusing `core` for the shared parts.
-pub(in crate::platform::nova) fn create_renderer_resources<D>(
+pub(in crate::platform::nova) fn renderer_resources<D>(
     device: &mut D,
     surface_config: SurfaceConfig,
     label: &str,
@@ -90,7 +90,7 @@ where
         PathMaskTargetDescriptor {
             size: startup_path_mask_size,
             format: surface_config.format,
-            bind_group_layout: layouts.path_resource_set_layout,
+            bind_group_layout: layouts.path_bind_group_layout,
             frame_buffers: frame_buffers.clone(),
             sampler: shared_buffers.atlas_sampler,
         },
@@ -107,18 +107,18 @@ where
             height: DevicePixels(i32::try_from(NOVA_STARTUP_ATLAS_SIZE).unwrap_or(i32::MAX)),
         },
         &AtlasResourceDescriptor {
-            mono_sprite_resource_set_layout: layouts.mono_resource_set_layout,
-            poly_sprite_resource_set_layout: layouts.poly_resource_set_layout,
+            mono_sprite_bind_group_layout: layouts.mono_bind_group_layout,
+            poly_sprite_bind_group_layout: layouts.poly_bind_group_layout,
             frame_buffers: frame_buffers.clone(),
             sampler: shared_buffers.atlas_sampler,
         },
-        NovaAtlasResourceSetMode::All,
+        NovaAtlasBindGroupMode::All,
     )?;
     let textures_elapsed = textures_started_at.elapsed();
     let bindings_started_at = std::time::Instant::now();
     let mut frame_resources = Vec::with_capacity(frame_buffers.len());
     for (index, frame_buffers) in frame_buffers.iter().copied().enumerate() {
-        let bind_groups = create_renderer_resource_sets(
+        let bind_groups = create_renderer_bind_groups(
             device,
             &format!("{label} frame {index}"),
             &layouts,
@@ -127,21 +127,21 @@ where
         frame_resources.push(FrameResources {
             buffers: frame_buffers,
             bind_groups,
-            path_resource_set: path_mask_target
+            path_bind_group: path_mask_target
                 .bind_groups
                 .get(index)
                 .copied()
-                .context("missing path mask frame resource set")?,
-            mono_sprite_resource_set: atlas_resources
-                .mono_resource_sets
+                .context("missing path mask frame bind group")?,
+            mono_sprite_bind_group: atlas_resources
+                .mono_bind_groups
                 .get(index)
                 .copied()
-                .context("missing atlas mono frame resource set")?,
-            poly_sprite_resource_set: atlas_resources
-                .poly_resource_sets
+                .context("missing atlas mono frame bind group")?,
+            poly_sprite_bind_group: atlas_resources
+                .poly_bind_groups
                 .get(index)
                 .copied()
-                .context("missing atlas poly frame resource set")?,
+                .context("missing atlas poly frame bind group")?,
         });
     }
     let bindings_elapsed = bindings_started_at.elapsed();
@@ -170,15 +170,15 @@ where
         depth_texture,
         depth_texture_view,
         frame_resources,
-        quad_resource_set_layout: layouts.quad_resource_set_layout,
-        shadow_resource_set_layout: layouts.shadow_resource_set_layout,
-        underline_resource_set_layout: layouts.underline_resource_set_layout,
-        path_rasterization_resource_set_layout: layouts.path_rasterization_resource_set_layout,
-        path_resource_set_layout: layouts.path_resource_set_layout,
-        mono_sprite_resource_set_layout: layouts.mono_resource_set_layout,
-        poly_sprite_resource_set_layout: layouts.poly_resource_set_layout,
-        backdrop_blur_pass_resource_set_layout: layouts.backdrop_blur_pass_resource_set_layout,
-        backdrop_blur_resource_set_layout: layouts.backdrop_blur_resource_set_layout,
+        quad_bind_group_layout: layouts.quad_bind_group_layout,
+        shadow_bind_group_layout: layouts.shadow_bind_group_layout,
+        underline_bind_group_layout: layouts.underline_bind_group_layout,
+        path_rasterization_bind_group_layout: layouts.path_rasterization_bind_group_layout,
+        path_bind_group_layout: layouts.path_bind_group_layout,
+        mono_sprite_bind_group_layout: layouts.mono_bind_group_layout,
+        poly_sprite_bind_group_layout: layouts.poly_bind_group_layout,
+        backdrop_blur_pass_bind_group_layout: layouts.backdrop_blur_pass_bind_group_layout,
+        backdrop_blur_bind_group_layout: layouts.backdrop_blur_bind_group_layout,
         backdrop_blur_targets: None,
         atlas_texture: atlas_resources.texture,
         atlas_texture_view: atlas_resources.texture_view,

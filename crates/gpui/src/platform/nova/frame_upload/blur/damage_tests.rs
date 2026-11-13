@@ -1,6 +1,6 @@
 use super::*;
 use crate::platform::nova::DrawableSize;
-use crate::platform::nova::blur_damage::blur_damage_scissors;
+use crate::platform::nova::blur_damage::scissors;
 use crate::{DirtyRegion, ScaledPixels};
 use gfx_core::ScissorRect;
 
@@ -16,7 +16,7 @@ fn downsampled_damage_refreshes_composite_edge_sampling_dependencies() {
         crate::point(ScaledPixels(8.), ScaledPixels(8.)),
         crate::size(ScaledPixels(16.), ScaledPixels(16.)),
     ));
-    let scissors = blur_damage_scissors(config, drawable, &damage).unwrap();
+    let scissors = scissors(config, drawable, &damage).unwrap();
     // Final target texels 2 and 13 contribute to screen pixels 6 and 25 under linear sampling.
     assert_eq!(
         scissors.final_output,
@@ -60,7 +60,7 @@ fn identity_damage_needs_no_downsample_sampling_halo() {
         crate::size(ScaledPixels(16.), ScaledPixels(16.)),
     ));
     assert_eq!(
-        blur_damage_scissors(config, drawable, &damage)
+        scissors(config, drawable, &damage)
             .unwrap()
             .final_output,
         ScissorRect {

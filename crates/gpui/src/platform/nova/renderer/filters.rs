@@ -495,6 +495,13 @@ impl FilterRegistry {
 mod tests {
     use super::*;
 
+    fn completed_version(filters: &FilterRegistry, index: u32) -> Option<TextureContentVersion> {
+        filters
+            .source_at(index)
+            .map(|source| source.completed_version)
+            .filter(|version| version.0 != 0)
+    }
+
     #[test]
     fn filter_fence_completion_matches_only_current_content_generation() {
         let bounds = crate::bounds(
@@ -510,22 +517,22 @@ mod tests {
         let mut filters = FilterRegistry::new(None);
         filters.record_element_blur_inputs(&[(3, source.clone())], &[], [3]);
         let first = filters.layer_content_version(3).unwrap();
-        assert_eq!(filters.completed_layer_content_version(3), None);
+        assert_eq!(completed_version(&filters, 3), None);
 
         filters.record_element_blur_inputs(&[(3, source.clone())], &[], [3]);
         let second = filters.layer_content_version(3).unwrap();
         assert_ne!(first, second);
         filters.complete_submission(3, first);
-        assert_eq!(filters.completed_layer_content_version(3), None);
+        assert_eq!(completed_version(&filters, 3), None);
         filters.complete_submission(3, second);
-        assert_eq!(filters.completed_layer_content_version(3), Some(second));
+        assert_eq!(completed_version(&filters, 3), Some(second));
 
         filters.invalidate_inflight_layer_writes([3]);
-        assert_eq!(filters.completed_layer_content_version(3), None);
+        assert_eq!(completed_version(&filters, 3), None);
         filters.complete_submission(3, second);
-        assert_eq!(filters.completed_layer_content_version(3), None);
+        assert_eq!(completed_version(&filters, 3), None);
         filters.record_element_blur_inputs(&[(3, source)], &[], [3]);
-        assert_eq!(filters.completed_layer_content_version(3), None);
+        assert_eq!(completed_version(&filters, 3), None);
     }
 
     #[test]

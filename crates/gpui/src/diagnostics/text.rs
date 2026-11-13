@@ -141,7 +141,7 @@ pub(crate) fn record(
 /// Returns only observed backend/operation rows. Percentiles use at most 256 recent calls;
 /// lifetime totals continue beyond history eviction. Sorting is outside the recorder lock.
 /// Reading does not wake workers, shape text, access fonts or query graphics resources.
-pub fn text_metrics_snapshot() -> Vec<TextOperationMetricsSnapshot> {
+pub fn snapshot() -> Vec<TextOperationMetricsSnapshot> {
     let metrics = store().lock().clone();
     metrics
         .into_iter()

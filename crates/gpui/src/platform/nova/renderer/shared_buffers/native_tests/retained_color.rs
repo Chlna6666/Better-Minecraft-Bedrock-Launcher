@@ -213,7 +213,7 @@ fn pixels<const N: usize>(
         assert!(!damage.is_full());
     }
     let blur_damage =
-        crate::paint::backdrop_blur_animation_damage_plan(&scene, &previous_values, &values);
+        crate::paint::compute_backdrop_blur_animation_damage(&scene, &previous_values, &values);
     let mut packet = crate::PresentationPacket::new(
         Arc::clone(scene),
         values,
@@ -367,11 +367,11 @@ fn verify(backend: RendererBackend) {
                     false,
                 );
                 let total_source_pixels =
-                    crate::diagnostics::performance_metrics::performance_metrics_snapshot()
+                    crate::diagnostics::performance_metrics::snapshot()
                         .backdrop_blur_source_pixels;
                 if backdrop {
                     let filter_pixels =
-                        crate::performance_metrics_snapshot().backdrop_blur_target_pixels;
+                        crate::snapshot().backdrop_blur_target_pixels;
                     assert_eq!(
                         filter_pixels, 0,
                         "foreground popup must reuse backdrop Gaussian output: backend={backend:?} placement={placement:?}"

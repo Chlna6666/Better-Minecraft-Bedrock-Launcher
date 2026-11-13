@@ -31,7 +31,7 @@ use crate::{
     Render, SharedString, SingleSubscriberSet, SubscriberSet, Subscription, SvgRenderer, Task,
     TextStyle, TextSystem, Window, WindowHandle, WindowId, WindowInvalidator, WindowTabRegistry,
     colors::{Colors, GlobalColors},
-    init_app_menus, record_coalesced_refresh_effect, reset_present_timing_after_interruption,
+    init_app_menus, record_coalesced_refresh_effect, reset_present_timing,
 };
 
 mod events;
@@ -263,7 +263,7 @@ impl App {
                     let cx = &mut app.borrow_mut();
                     #[cfg(feature = "profiler")]
                     crate::diagnostics::foreground_profiler::record_power_state(false);
-                    reset_present_timing_after_interruption();
+                    reset_present_timing();
                     for window in cx.windows.values_mut().flatten() {
                         window.reset_dirty_to_present_timing(false);
                     }
@@ -281,7 +281,7 @@ impl App {
                     let cx = &mut app.borrow_mut();
                     #[cfg(feature = "profiler")]
                     crate::diagnostics::foreground_profiler::record_power_state(true);
-                    reset_present_timing_after_interruption();
+                    reset_present_timing();
                     let windows = cx.windows();
                     for handle in windows {
                         let _ = handle.update(&mut ***cx, |_, window, cx| {

@@ -1,6 +1,6 @@
 use super::*;
 
-pub(in crate::platform::nova) fn compact_atlas<D: ResourceDevice>(
+pub(in crate::platform::nova) fn atlas<D: ResourceDevice>(
     atlas: &NovaAtlas,
     textures: &mut FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
     device: &mut D,
@@ -20,7 +20,7 @@ pub(in crate::platform::nova) fn compact_atlas<D: ResourceDevice>(
                 plan.destination.id,
                 plan.destination.size,
                 descriptor,
-                NovaAtlasResourceSetMode::UsedByTextureKind,
+                NovaAtlasBindGroupMode::UsedByTextureKind,
             )?)
         };
         let destination = created
@@ -82,7 +82,7 @@ impl NovaRenderer {
         let mut backend = lock_backend(&self.backend);
         macro_rules! compact {
             ($device:expr) => {
-                compact_atlas(
+                atlas(
                     &self.atlas,
                     &mut self.gpu_atlas_textures,
                     $device,

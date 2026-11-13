@@ -21,7 +21,7 @@ fn pooled_resize_preserves_bgra_pixels_and_sequence() {
             [201, 93, 17, 255].repeat(9),
         );
         let target = ImageRenderSize::new(dimension, dimension).unwrap();
-        let resized = resample_bgra_frame(frame, target).unwrap();
+        let resized = bgra_frame(frame, target).unwrap();
         assert_eq!(resized.sequence(), 7);
         assert_eq!(resized.size(), target.size());
         assert_eq!(
@@ -34,7 +34,7 @@ fn pooled_resize_preserves_bgra_pixels_and_sequence() {
 #[test]
 fn pooled_resize_rejects_incomplete_source_pixels() {
     let frame = AnimatedFrame::from_bgra_bytes(0, size(3.into(), 3.into()), vec![0; 35]);
-    assert!(resample_bgra_frame(frame, ImageRenderSize::new(2, 2).unwrap()).is_err());
+    assert!(bgra_frame(frame, ImageRenderSize::new(2, 2).unwrap()).is_err());
 }
 
 #[test]
@@ -63,8 +63,12 @@ fn fused_rgba_sampling_preserves_pixels_sequence_and_delay() {
         let frame = Frame::from_parts(pixels.clone(), 3, 5, delay);
         let target = ImageRenderSize::new(width, height).unwrap();
         let reference =
-            resample_bgra_frame(AnimatedFrame::from_rgba_frame(42, frame.clone()), target).unwrap();
-        let actual = resample_rgba_frame(42, frame, target).unwrap();
+            bgra_frame(
+                AnimatedFrame::from_rgba_frame_as_bgra(42, frame.clone()),
+                target,
+            )
+            .unwrap();
+        let actual = rgba_frame(42, frame, target).unwrap();
         assert_eq!(actual.bytes(), reference.bytes());
         assert_eq!(actual.size(), reference.size());
         assert_eq!(actual.sequence(), reference.sequence());
@@ -82,5 +86,5 @@ fn direct_bgra_resize_rejects_incomplete_pixels() {
 #[test]
 fn fused_rgba_sampling_rejects_empty_source() {
     let frame = Frame::new(RgbaImage::new(0, 0));
-    assert!(resample_rgba_frame(0, frame, ImageRenderSize::new(2, 2).unwrap()).is_err());
+    assert!(rgba_frame(0, frame, ImageRenderSize::new(2, 2).unwrap()).is_err());
 }

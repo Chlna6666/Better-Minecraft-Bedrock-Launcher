@@ -176,7 +176,7 @@ pub(crate) fn record_presentation_animation_sample(
             .presentation_animation_distinct_sample_count
             .fetch_add(1, Ordering::Relaxed);
     }
-    super::window::record_window_animation_sample(
+    super::window::record_animation_sample(
         window_id,
         sample,
         presentation_timing,

@@ -179,7 +179,7 @@ fn registry() -> &'static Mutex<Registry> {
 
 /// Reads the last observations published by GPU owners, without querying a
 /// device or waking idle windows. Sample ages expose observations' freshness.
-pub fn memory_profile_snapshot() -> MemoryProfileSnapshot {
+pub fn snapshot() -> MemoryProfileSnapshot {
     let registry = registry().lock();
     let now = Instant::now();
     MemoryProfileSnapshot {

@@ -8,7 +8,6 @@ use crate::{
     diagnostics::performance_metrics::{record_backdrop_blur_primitive_count, record_draw_time},
 };
 use anyhow::{Context as _, Result};
-use blade_graphics as gpu;
 use blade_util::{BufferBelt, BufferBeltDescriptor};
 use bytemuck::{Pod, Zeroable};
 #[cfg(target_os = "macos")]
@@ -55,33 +54,33 @@ struct SurfaceParams {
 #[derive(blade_macros::ShaderData)]
 struct ShaderQuadsData {
     globals: GlobalParams,
-    b_quads: gpu::BufferPiece,
+    b_quads: blade_graphics::BufferPiece,
 }
 
 #[derive(blade_macros::ShaderData)]
 struct ShaderShadowsData {
     globals: GlobalParams,
-    b_shadows: gpu::BufferPiece,
+    b_shadows: blade_graphics::BufferPiece,
 }
 
 #[derive(blade_macros::ShaderData)]
 struct ShaderPathRasterizationData {
     globals: GlobalParams,
-    b_path_vertices: gpu::BufferPiece,
+    b_path_vertices: blade_graphics::BufferPiece,
 }
 
 #[derive(blade_macros::ShaderData)]
 struct ShaderPathsData {
     globals: GlobalParams,
-    t_sprite: gpu::TextureView,
-    s_sprite: gpu::Sampler,
-    b_path_sprites: gpu::BufferPiece,
+    t_sprite: blade_graphics::TextureView,
+    s_sprite: blade_graphics::Sampler,
+    b_path_sprites: blade_graphics::BufferPiece,
 }
 
 #[derive(blade_macros::ShaderData)]
 struct ShaderUnderlinesData {
     globals: GlobalParams,
-    b_underlines: gpu::BufferPiece,
+    b_underlines: blade_graphics::BufferPiece,
 }
 
 #[derive(blade_macros::ShaderData)]
@@ -89,33 +88,33 @@ struct ShaderMonoSpritesData {
     globals: GlobalParams,
     gamma_ratios: [f32; 4],
     grayscale_enhanced_contrast: f32,
-    t_sprite: gpu::TextureView,
-    s_sprite: gpu::Sampler,
-    b_mono_sprites: gpu::BufferPiece,
+    t_sprite: blade_graphics::TextureView,
+    s_sprite: blade_graphics::Sampler,
+    b_mono_sprites: blade_graphics::BufferPiece,
 }
 
 #[derive(blade_macros::ShaderData)]
 struct ShaderPolySpritesData {
     globals: GlobalParams,
-    t_sprite: gpu::TextureView,
-    s_sprite: gpu::Sampler,
-    b_poly_sprites: gpu::BufferPiece,
+    t_sprite: blade_graphics::TextureView,
+    s_sprite: blade_graphics::Sampler,
+    b_poly_sprites: blade_graphics::BufferPiece,
 }
 
 #[derive(blade_macros::ShaderData)]
 struct ShaderSurfacesData {
     globals: GlobalParams,
     surface_locals: SurfaceParams,
-    t_y: gpu::TextureView,
-    t_cb_cr: gpu::TextureView,
-    s_surface: gpu::Sampler,
+    t_y: blade_graphics::TextureView,
+    t_cb_cr: blade_graphics::TextureView,
+    s_surface: blade_graphics::Sampler,
 }
 
 #[derive(blade_macros::ShaderData)]
 pub(crate) struct ShaderEmojiLayerData {
     pub(crate) layer: EmojiLayerParams,
-    pub(crate) t_sprite: gpu::TextureView,
-    pub(crate) s_sprite: gpu::Sampler,
+    pub(crate) t_sprite: blade_graphics::TextureView,
+    pub(crate) s_sprite: blade_graphics::Sampler,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,31 +165,31 @@ impl EmojiLayerParams {
 }
 
 struct BladePipelines {
-    quads: gpu::RenderPipeline,
-    shadows: gpu::RenderPipeline,
-    path_rasterization: gpu::RenderPipeline,
-    paths: gpu::RenderPipeline,
-    underlines: gpu::RenderPipeline,
-    mono_sprites: gpu::RenderPipeline,
-    poly_sprites: gpu::RenderPipeline,
-    surfaces: gpu::RenderPipeline,
-    emoji_layer: gpu::RenderPipeline,
+    quads: blade_graphics::RenderPipeline,
+    shadows: blade_graphics::RenderPipeline,
+    path_rasterization: blade_graphics::RenderPipeline,
+    paths: blade_graphics::RenderPipeline,
+    underlines: blade_graphics::RenderPipeline,
+    mono_sprites: blade_graphics::RenderPipeline,
+    poly_sprites: blade_graphics::RenderPipeline,
+    surfaces: blade_graphics::RenderPipeline,
+    emoji_layer: blade_graphics::RenderPipeline,
 }
 
 impl BladePipelines {
     fn new(
-        gpu: &gpu::Context,
-        surface_info: gpu::SurfaceInfo,
+        gpu: &blade_graphics::Context,
+        surface_info: blade_graphics::SurfaceInfo,
         path_sample_count: u32,
     ) -> Result<Self> {
-        use gpu::ShaderData as _;
+        use blade_graphics::ShaderData as _;
 
         log::info!(
             "Initializing Blade pipelines for surface {:?}",
             surface_info
         );
         let shader = gpu
-            .try_create_shader(gpu::ShaderDesc {
+            .try_create_shader(blade_graphics::ShaderDesc {
                 source: include_str!("shaders.wgsl"),
                 naga_module: None,
             })
@@ -209,172 +208,176 @@ impl BladePipelines {
 
         // See https://apoorvaj.io/alpha-compositing-opengl-blending-and-premultiplied-alpha/
         let blend_mode = match surface_info.alpha {
-            gpu::AlphaMode::Ignored => gpu::BlendState::ALPHA_BLENDING,
-            gpu::AlphaMode::PreMultiplied => gpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-            gpu::AlphaMode::PostMultiplied => gpu::BlendState::ALPHA_BLENDING,
+            blade_graphics::AlphaMode::Ignored => blade_graphics::BlendState::ALPHA_BLENDING,
+            blade_graphics::AlphaMode::PreMultiplied => {
+                blade_graphics::BlendState::PREMULTIPLIED_ALPHA_BLENDING
+            }
+            blade_graphics::AlphaMode::PostMultiplied => blade_graphics::BlendState::ALPHA_BLENDING,
         };
-        let color_targets = &[gpu::ColorTargetState {
+        let color_targets = &[blade_graphics::ColorTargetState {
             format: surface_info.format,
             blend: Some(blend_mode),
-            write_mask: gpu::ColorWrites::default(),
+            write_mask: blade_graphics::ColorWrites::default(),
         }];
 
         Ok(Self {
-            quads: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
+            quads: gpu.create_render_pipeline(blade_graphics::RenderPipelineDescriptor {
                 name: "quads",
                 data_layouts: &[&ShaderQuadsData::layout()],
                 vertex: shader.at("vs_quad"),
                 vertex_fetches: &[],
-                primitive: gpu::PrimitiveState {
-                    topology: gpu::PrimitiveTopology::TriangleStrip,
+                primitive: blade_graphics::PrimitiveState {
+                    topology: blade_graphics::PrimitiveTopology::TriangleStrip,
                     ..Default::default()
                 },
                 depth_stencil: None,
                 fragment: Some(shader.at("fs_quad")),
                 color_targets,
-                multisample_state: gpu::MultisampleState::default(),
+                multisample_state: blade_graphics::MultisampleState::default(),
             }),
-            shadows: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
+            shadows: gpu.create_render_pipeline(blade_graphics::RenderPipelineDescriptor {
                 name: "shadows",
                 data_layouts: &[&ShaderShadowsData::layout()],
                 vertex: shader.at("vs_shadow"),
                 vertex_fetches: &[],
-                primitive: gpu::PrimitiveState {
-                    topology: gpu::PrimitiveTopology::TriangleStrip,
+                primitive: blade_graphics::PrimitiveState {
+                    topology: blade_graphics::PrimitiveTopology::TriangleStrip,
                     ..Default::default()
                 },
                 depth_stencil: None,
                 fragment: Some(shader.at("fs_shadow")),
                 color_targets,
-                multisample_state: gpu::MultisampleState::default(),
+                multisample_state: blade_graphics::MultisampleState::default(),
             }),
-            path_rasterization: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
-                name: "path_rasterization",
-                data_layouts: &[&ShaderPathRasterizationData::layout()],
-                vertex: shader.at("vs_path_rasterization"),
-                vertex_fetches: &[],
-                primitive: gpu::PrimitiveState {
-                    topology: gpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
+            path_rasterization: gpu.create_render_pipeline(
+                blade_graphics::RenderPipelineDescriptor {
+                    name: "path_rasterization",
+                    data_layouts: &[&ShaderPathRasterizationData::layout()],
+                    vertex: shader.at("vs_path_rasterization"),
+                    vertex_fetches: &[],
+                    primitive: blade_graphics::PrimitiveState {
+                        topology: blade_graphics::PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    fragment: Some(shader.at("fs_path_rasterization")),
+                    // The original implementation was using ADDITIVE blende mode,
+                    // I don't know why
+                    // color_targets: &[blade_graphics::ColorTargetState {
+                    //     format: PATH_TEXTURE_FORMAT,
+                    //     blend: Some(blade_graphics::BlendState::ADDITIVE),
+                    //     write_mask: blade_graphics::ColorWrites::default(),
+                    // }],
+                    color_targets: &[blade_graphics::ColorTargetState {
+                        format: surface_info.format,
+                        blend: Some(blade_graphics::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: blade_graphics::ColorWrites::default(),
+                    }],
+                    multisample_state: blade_graphics::MultisampleState {
+                        sample_count: path_sample_count,
+                        ..Default::default()
+                    },
                 },
-                depth_stencil: None,
-                fragment: Some(shader.at("fs_path_rasterization")),
-                // The original implementation was using ADDITIVE blende mode,
-                // I don't know why
-                // color_targets: &[gpu::ColorTargetState {
-                //     format: PATH_TEXTURE_FORMAT,
-                //     blend: Some(gpu::BlendState::ADDITIVE),
-                //     write_mask: gpu::ColorWrites::default(),
-                // }],
-                color_targets: &[gpu::ColorTargetState {
-                    format: surface_info.format,
-                    blend: Some(gpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: gpu::ColorWrites::default(),
-                }],
-                multisample_state: gpu::MultisampleState {
-                    sample_count: path_sample_count,
-                    ..Default::default()
-                },
-            }),
-            paths: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
+            ),
+            paths: gpu.create_render_pipeline(blade_graphics::RenderPipelineDescriptor {
                 name: "paths",
                 data_layouts: &[&ShaderPathsData::layout()],
                 vertex: shader.at("vs_path"),
                 vertex_fetches: &[],
-                primitive: gpu::PrimitiveState {
-                    topology: gpu::PrimitiveTopology::TriangleStrip,
+                primitive: blade_graphics::PrimitiveState {
+                    topology: blade_graphics::PrimitiveTopology::TriangleStrip,
                     ..Default::default()
                 },
                 depth_stencil: None,
                 fragment: Some(shader.at("fs_path")),
-                color_targets: &[gpu::ColorTargetState {
+                color_targets: &[blade_graphics::ColorTargetState {
                     format: surface_info.format,
-                    blend: Some(gpu::BlendState {
-                        color: gpu::BlendComponent::OVER,
-                        alpha: gpu::BlendComponent::ADDITIVE,
+                    blend: Some(blade_graphics::BlendState {
+                        color: blade_graphics::BlendComponent::OVER,
+                        alpha: blade_graphics::BlendComponent::ADDITIVE,
                     }),
-                    write_mask: gpu::ColorWrites::default(),
+                    write_mask: blade_graphics::ColorWrites::default(),
                 }],
-                multisample_state: gpu::MultisampleState::default(),
+                multisample_state: blade_graphics::MultisampleState::default(),
             }),
-            underlines: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
+            underlines: gpu.create_render_pipeline(blade_graphics::RenderPipelineDescriptor {
                 name: "underlines",
                 data_layouts: &[&ShaderUnderlinesData::layout()],
                 vertex: shader.at("vs_underline"),
                 vertex_fetches: &[],
-                primitive: gpu::PrimitiveState {
-                    topology: gpu::PrimitiveTopology::TriangleStrip,
+                primitive: blade_graphics::PrimitiveState {
+                    topology: blade_graphics::PrimitiveTopology::TriangleStrip,
                     ..Default::default()
                 },
                 depth_stencil: None,
                 fragment: Some(shader.at("fs_underline")),
                 color_targets,
-                multisample_state: gpu::MultisampleState::default(),
+                multisample_state: blade_graphics::MultisampleState::default(),
             }),
-            mono_sprites: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
+            mono_sprites: gpu.create_render_pipeline(blade_graphics::RenderPipelineDescriptor {
                 name: "mono-sprites",
                 data_layouts: &[&ShaderMonoSpritesData::layout()],
                 vertex: shader.at("vs_mono_sprite"),
                 vertex_fetches: &[],
-                primitive: gpu::PrimitiveState {
-                    topology: gpu::PrimitiveTopology::TriangleStrip,
+                primitive: blade_graphics::PrimitiveState {
+                    topology: blade_graphics::PrimitiveTopology::TriangleStrip,
                     ..Default::default()
                 },
                 depth_stencil: None,
                 fragment: Some(shader.at("fs_mono_sprite")),
                 color_targets,
-                multisample_state: gpu::MultisampleState::default(),
+                multisample_state: blade_graphics::MultisampleState::default(),
             }),
-            poly_sprites: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
+            poly_sprites: gpu.create_render_pipeline(blade_graphics::RenderPipelineDescriptor {
                 name: "poly-sprites",
                 data_layouts: &[&ShaderPolySpritesData::layout()],
                 vertex: shader.at("vs_poly_sprite"),
                 vertex_fetches: &[],
-                primitive: gpu::PrimitiveState {
-                    topology: gpu::PrimitiveTopology::TriangleStrip,
+                primitive: blade_graphics::PrimitiveState {
+                    topology: blade_graphics::PrimitiveTopology::TriangleStrip,
                     ..Default::default()
                 },
                 depth_stencil: None,
                 fragment: Some(shader.at("fs_poly_sprite")),
                 color_targets,
-                multisample_state: gpu::MultisampleState::default(),
+                multisample_state: blade_graphics::MultisampleState::default(),
             }),
-            surfaces: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
+            surfaces: gpu.create_render_pipeline(blade_graphics::RenderPipelineDescriptor {
                 name: "surfaces",
                 data_layouts: &[&ShaderSurfacesData::layout()],
                 vertex: shader.at("vs_surface"),
                 vertex_fetches: &[],
-                primitive: gpu::PrimitiveState {
-                    topology: gpu::PrimitiveTopology::TriangleStrip,
+                primitive: blade_graphics::PrimitiveState {
+                    topology: blade_graphics::PrimitiveTopology::TriangleStrip,
                     ..Default::default()
                 },
                 depth_stencil: None,
                 fragment: Some(shader.at("fs_surface")),
                 color_targets,
-                multisample_state: gpu::MultisampleState::default(),
+                multisample_state: blade_graphics::MultisampleState::default(),
             }),
-            emoji_layer: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
+            emoji_layer: gpu.create_render_pipeline(blade_graphics::RenderPipelineDescriptor {
                 name: "emoji-layer",
                 data_layouts: &[&ShaderEmojiLayerData::layout()],
                 vertex: shader.at("vs_emoji_layer"),
                 vertex_fetches: &[],
-                primitive: gpu::PrimitiveState {
-                    topology: gpu::PrimitiveTopology::TriangleStrip,
+                primitive: blade_graphics::PrimitiveState {
+                    topology: blade_graphics::PrimitiveTopology::TriangleStrip,
                     ..Default::default()
                 },
                 depth_stencil: None,
                 fragment: Some(shader.at("fs_emoji_layer")),
-                color_targets: &[gpu::ColorTargetState {
-                    format: gpu::TextureFormat::Bgra8Unorm,
-                    blend: Some(gpu::BlendState::ALPHA_BLENDING),
-                    write_mask: gpu::ColorWrites::default(),
+                color_targets: &[blade_graphics::ColorTargetState {
+                    format: blade_graphics::TextureFormat::Bgra8Unorm,
+                    blend: Some(blade_graphics::BlendState::ALPHA_BLENDING),
+                    write_mask: blade_graphics::ColorWrites::default(),
                 }],
-                multisample_state: gpu::MultisampleState::default(),
+                multisample_state: blade_graphics::MultisampleState::default(),
             }),
         })
     }
 
-    fn destroy(&mut self, gpu: &gpu::Context) {
+    fn destroy(&mut self, gpu: &blade_graphics::Context) {
         gpu.destroy_render_pipeline(&mut self.quads);
         gpu.destroy_render_pipeline(&mut self.shadows);
         gpu.destroy_render_pipeline(&mut self.path_rasterization);
@@ -388,7 +391,7 @@ impl BladePipelines {
 }
 
 pub struct BladeSurfaceConfig {
-    pub size: gpu::Extent,
+    pub size: blade_graphics::Extent,
     pub transparent: bool,
 }
 
@@ -397,21 +400,21 @@ pub struct BladeSurfaceConfig {
 // But that is complicated by the fact that pipelines depend on
 // the format and alpha mode.
 pub struct BladeRenderer {
-    gpu: Arc<gpu::Context>,
-    surface: gpu::Surface,
-    surface_config: gpu::SurfaceConfig,
-    command_encoder: gpu::CommandEncoder,
-    last_sync_point: Option<gpu::SyncPoint>,
+    gpu: Arc<blade_graphics::Context>,
+    surface: blade_graphics::Surface,
+    surface_config: blade_graphics::SurfaceConfig,
+    command_encoder: blade_graphics::CommandEncoder,
+    last_sync_point: Option<blade_graphics::SyncPoint>,
     pipelines: BladePipelines,
     instance_belt: BufferBelt,
     atlas: Arc<BladeAtlas>,
-    atlas_sampler: gpu::Sampler,
+    atlas_sampler: blade_graphics::Sampler,
     #[cfg(target_os = "macos")]
     core_video_texture_cache: CVMetalTextureCache,
-    path_intermediate_texture: Option<gpu::Texture>,
-    path_intermediate_texture_view: Option<gpu::TextureView>,
-    path_intermediate_msaa_texture: Option<gpu::Texture>,
-    path_intermediate_msaa_texture_view: Option<gpu::TextureView>,
+    path_intermediate_texture: Option<blade_graphics::Texture>,
+    path_intermediate_texture_view: Option<blade_graphics::TextureView>,
+    path_intermediate_msaa_texture: Option<blade_graphics::Texture>,
+    path_intermediate_msaa_texture_view: Option<blade_graphics::TextureView>,
     rendering_parameters: RenderingParameters,
     clear_only_frames: u32,
 }
@@ -424,11 +427,11 @@ impl BladeRenderer {
         window: &I,
         config: BladeSurfaceConfig,
     ) -> anyhow::Result<Self> {
-        let surface_config = gpu::SurfaceConfig {
+        let surface_config = blade_graphics::SurfaceConfig {
             size: config.size,
-            usage: gpu::TextureUsage::TARGET,
-            display_sync: gpu::DisplaySync::Recent,
-            color_space: gpu::ColorSpace::Srgb,
+            usage: blade_graphics::TextureUsage::TARGET,
+            display_sync: blade_graphics::DisplaySync::Recent,
+            color_space: blade_graphics::ColorSpace::Srgb,
             allow_exclusive_full_screen: false,
             transparent: config.transparent,
         };
@@ -437,12 +440,13 @@ impl BladeRenderer {
             .create_surface_configured(window, surface_config)
             .map_err(|err| anyhow::anyhow!("Failed to create surface: {err:?}"))?;
 
-        let command_encoder = context
-            .gpu
-            .create_command_encoder(gpu::CommandEncoderDescriptor {
-                name: "main",
-                buffer_count: 2,
-            });
+        let command_encoder =
+            context
+                .gpu
+                .create_command_encoder(blade_graphics::CommandEncoderDescriptor {
+                    name: "main",
+                    buffer_count: 2,
+                });
         let rendering_parameters = RenderingParameters::from_env(context);
         let pipelines = BladePipelines::new(
             &context.gpu,
@@ -451,16 +455,18 @@ impl BladeRenderer {
         )
         .context("Creating Blade render pipelines")?;
         let instance_belt = BufferBelt::new(BufferBeltDescriptor {
-            memory: gpu::Memory::Shared,
+            memory: blade_graphics::Memory::Shared,
             min_chunk_size: 0x1000,
             alignment: 0x40, // Vulkan `minStorageBufferOffsetAlignment` on Intel Xe
         });
-        let atlas_sampler = context.gpu.create_sampler(gpu::SamplerDescriptor {
-            name: "path rasterization sampler",
-            mag_filter: gpu::FilterMode::Linear,
-            min_filter: gpu::FilterMode::Linear,
-            ..Default::default()
-        });
+        let atlas_sampler = context
+            .gpu
+            .create_sampler(blade_graphics::SamplerDescriptor {
+                name: "path rasterization sampler",
+                mag_filter: blade_graphics::FilterMode::Linear,
+                min_filter: blade_graphics::FilterMode::Linear,
+                ..Default::default()
+            });
         let atlas = Arc::new(BladeAtlas::new(&context.gpu));
 
         #[cfg(target_os = "macos")]
@@ -542,7 +548,7 @@ impl BladeRenderer {
     }
 
     fn resize_drawable(&mut self, size: Size<DevicePixels>, force_resize: bool) {
-        let gpu_size = gpu::Extent {
+        let gpu_size = blade_graphics::Extent {
             width: size.width.0 as u32,
             height: size.height.0 as u32,
             depth: 1,
@@ -591,7 +597,7 @@ impl BladeRenderer {
         any(target_os = "macos", feature = "wayland", target_os = "windows"),
         allow(dead_code)
     )]
-    pub fn viewport_size(&self) -> gpu::Extent {
+    pub fn viewport_size(&self) -> blade_graphics::Extent {
         self.surface_config.size
     }
 
@@ -624,10 +630,10 @@ impl BladeRenderer {
     fn ensure_path_intermediate_textures(
         &mut self,
     ) -> Option<(
-        gpu::Texture,
-        gpu::TextureView,
-        Option<gpu::Texture>,
-        Option<gpu::TextureView>,
+        blade_graphics::Texture,
+        blade_graphics::TextureView,
+        Option<blade_graphics::Texture>,
+        Option<blade_graphics::TextureView>,
     )> {
         if self.path_intermediate_texture.is_none() {
             let size = self.surface_config.size;
@@ -699,21 +705,25 @@ impl BladeRenderer {
         }
 
         let target = if let Some(msaa_view) = path_msaa_texture_view {
-            gpu::RenderTarget {
+            blade_graphics::RenderTarget {
                 view: msaa_view,
-                init_op: gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack),
-                finish_op: gpu::FinishOp::ResolveTo(path_texture_view),
+                init_op: blade_graphics::InitOp::Clear(
+                    blade_graphics::TextureColor::TransparentBlack,
+                ),
+                finish_op: blade_graphics::FinishOp::ResolveTo(path_texture_view),
             }
         } else {
-            gpu::RenderTarget {
+            blade_graphics::RenderTarget {
                 view: path_texture_view,
-                init_op: gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack),
-                finish_op: gpu::FinishOp::Store,
+                init_op: blade_graphics::InitOp::Clear(
+                    blade_graphics::TextureColor::TransparentBlack,
+                ),
+                finish_op: blade_graphics::FinishOp::Store,
             }
         };
         if let mut pass = self.command_encoder.render(
             "rasterize paths",
-            gpu::RenderTargetSet {
+            blade_graphics::RenderTargetSet {
                 colors: &[target],
                 depth_stencil: None,
             },
@@ -808,19 +818,21 @@ impl BladeRenderer {
                 self.surface_config.size.height as f32,
             ],
             premultiplied_alpha: match self.surface.info().alpha {
-                gpu::AlphaMode::Ignored | gpu::AlphaMode::PostMultiplied => 0,
-                gpu::AlphaMode::PreMultiplied => 1,
+                blade_graphics::AlphaMode::Ignored | blade_graphics::AlphaMode::PostMultiplied => 0,
+                blade_graphics::AlphaMode::PreMultiplied => 1,
             },
             pad: 0,
         };
 
         let mut pass = self.command_encoder.render(
             "main",
-            gpu::RenderTargetSet {
-                colors: &[gpu::RenderTarget {
+            blade_graphics::RenderTargetSet {
+                colors: &[blade_graphics::RenderTarget {
                     view: frame.texture_view(),
-                    init_op: gpu::InitOp::Clear(gpu::TextureColor::TransparentBlack),
-                    finish_op: gpu::FinishOp::Store,
+                    init_op: blade_graphics::InitOp::Clear(
+                        blade_graphics::TextureColor::TransparentBlack,
+                    ),
+                    finish_op: blade_graphics::FinishOp::Store,
                 }],
                 depth_stencil: None,
             },
@@ -866,11 +878,11 @@ impl BladeRenderer {
                     );
                     pass = self.command_encoder.render(
                         "main",
-                        gpu::RenderTargetSet {
-                            colors: &[gpu::RenderTarget {
+                        blade_graphics::RenderTargetSet {
+                            colors: &[blade_graphics::RenderTarget {
                                 view: frame.texture_view(),
-                                init_op: gpu::InitOp::Load,
-                                finish_op: gpu::FinishOp::Store,
+                                init_op: blade_graphics::InitOp::Load,
+                                finish_op: blade_graphics::FinishOp::Store,
                             }],
                             depth_stencil: None,
                         },
@@ -1013,7 +1025,7 @@ impl BladeRenderer {
                                     )
                                     .unwrap();
                                 (
-                                    gpu::TextureView::from_metal_texture(
+                                    blade_graphics::TextureView::from_metal_texture(
                                         &objc2::rc::Retained::retain(
                                             foreign_types::ForeignTypeRef::as_ptr(
                                                 y_texture.as_texture_ref(),
@@ -1023,9 +1035,9 @@ impl BladeRenderer {
                                                 >,
                                         )
                                         .unwrap(),
-                                        gpu::TexelAspects::COLOR,
+                                        blade_graphics::TexelAspects::COLOR,
                                     ),
-                                    gpu::TextureView::from_metal_texture(
+                                    blade_graphics::TextureView::from_metal_texture(
                                         &objc2::rc::Retained::retain(
                                             foreign_types::ForeignTypeRef::as_ptr(
                                                 cb_cr_texture.as_texture_ref(),
@@ -1035,7 +1047,7 @@ impl BladeRenderer {
                                                 >,
                                         )
                                         .unwrap(),
-                                        gpu::TexelAspects::COLOR,
+                                        blade_graphics::TexelAspects::COLOR,
                                     ),
                                 )
                             };
@@ -1096,15 +1108,15 @@ impl BladeRenderer {
 }
 
 fn create_path_intermediate_texture(
-    gpu: &gpu::Context,
-    format: gpu::TextureFormat,
+    gpu: &blade_graphics::Context,
+    format: blade_graphics::TextureFormat,
     width: u32,
     height: u32,
-) -> (gpu::Texture, gpu::TextureView) {
-    let texture = gpu.create_texture(gpu::TextureDescriptor {
+) -> (blade_graphics::Texture, blade_graphics::TextureView) {
+    let texture = gpu.create_texture(blade_graphics::TextureDescriptor {
         name: "path intermediate",
         format,
-        size: gpu::Extent {
+        size: blade_graphics::Extent {
             width,
             height,
             depth: 1,
@@ -1112,16 +1124,18 @@ fn create_path_intermediate_texture(
         array_layer_count: 1,
         mip_level_count: 1,
         sample_count: 1,
-        dimension: gpu::TextureDimension::D2,
-        usage: gpu::TextureUsage::COPY | gpu::TextureUsage::RESOURCE | gpu::TextureUsage::TARGET,
+        dimension: blade_graphics::TextureDimension::D2,
+        usage: blade_graphics::TextureUsage::COPY
+            | blade_graphics::TextureUsage::RESOURCE
+            | blade_graphics::TextureUsage::TARGET,
         external: None,
     });
     let texture_view = gpu.create_texture_view(
         texture,
-        gpu::TextureViewDescriptor {
+        blade_graphics::TextureViewDescriptor {
             name: "path intermediate view",
             format,
-            dimension: gpu::ViewDimension::D2,
+            dimension: blade_graphics::ViewDimension::D2,
             subresources: &Default::default(),
         },
     );
@@ -1129,19 +1143,19 @@ fn create_path_intermediate_texture(
 }
 
 fn create_msaa_texture(
-    gpu: &gpu::Context,
-    format: gpu::TextureFormat,
+    gpu: &blade_graphics::Context,
+    format: blade_graphics::TextureFormat,
     width: u32,
     height: u32,
     sample_count: u32,
-) -> Option<(gpu::Texture, gpu::TextureView)> {
+) -> Option<(blade_graphics::Texture, blade_graphics::TextureView)> {
     if sample_count <= 1 {
         return None;
     }
-    let texture_msaa = gpu.create_texture(gpu::TextureDescriptor {
+    let texture_msaa = gpu.create_texture(blade_graphics::TextureDescriptor {
         name: "path intermediate msaa",
         format,
-        size: gpu::Extent {
+        size: blade_graphics::Extent {
             width,
             height,
             depth: 1,
@@ -1149,16 +1163,16 @@ fn create_msaa_texture(
         array_layer_count: 1,
         mip_level_count: 1,
         sample_count,
-        dimension: gpu::TextureDimension::D2,
-        usage: gpu::TextureUsage::TARGET,
+        dimension: blade_graphics::TextureDimension::D2,
+        usage: blade_graphics::TextureUsage::TARGET,
         external: None,
     });
     let texture_view_msaa = gpu.create_texture_view(
         texture_msaa,
-        gpu::TextureViewDescriptor {
+        blade_graphics::TextureViewDescriptor {
             name: "path intermediate msaa view",
             format,
-            dimension: gpu::ViewDimension::D2,
+            dimension: blade_graphics::ViewDimension::D2,
             subresources: &Default::default(),
         },
     );

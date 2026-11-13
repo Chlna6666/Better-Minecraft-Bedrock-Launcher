@@ -87,7 +87,7 @@ impl App {
     }
 
     /// Get a map from a deprecated action name to the canonical name.
-    pub fn deprecated_actions_to_preferred_actions(&self) -> &HashMap<&'static str, &'static str> {
+    pub fn deprecated_aliases(&self) -> &HashMap<&'static str, &'static str> {
         self.actions.deprecated_aliases()
     }
 

@@ -301,7 +301,7 @@ unsafe fn parse_keystroke(native_event: id) -> Keystroke {
 
         let mut characters = native_event
             .charactersIgnoringModifiers()
-            .to_str()
+            .as_str()
             .to_string();
         let mut key_char = None;
         let first_char = characters.chars().next().map(|ch| ch as u16);

@@ -232,11 +232,11 @@ fn backdrop_blur_animation_refreshes_when_source_enters_region() {
         to: [120.0, 0.0, 0.0, 0.0],
     };
     assert!(
-        !crate::paint::backdrop_blur_animation_damage_plan(&scene, &[value], &[value])
+        !crate::paint::compute_backdrop_blur_animation_damage(&scene, &[value], &[value])
             .refresh_required()
     );
     assert!(
-        crate::paint::backdrop_blur_animation_damage_plan(
+        crate::paint::compute_backdrop_blur_animation_damage(
             &scene,
             &[value],
             &[SceneAnimationValue {
@@ -278,7 +278,7 @@ fn backdrop_blur_animation_ignores_disjoint_translation_sweep() {
         to: [20.0, 0.0, 0.0, 0.0],
     };
 
-    let plan = crate::paint::backdrop_blur_animation_damage_plan(
+    let plan = crate::paint::compute_backdrop_blur_animation_damage(
         &scene,
         &[value],
         &[SceneAnimationValue {
@@ -310,7 +310,7 @@ fn transform_after_blur_never_invalidates_that_blur() {
         to: [20.0, 0.0, 0.0, 0.0],
     };
 
-    let plan = crate::paint::backdrop_blur_animation_damage_plan(
+    let plan = crate::paint::compute_backdrop_blur_animation_damage(
         &scene,
         &[value],
         &[SceneAnimationValue {
@@ -352,7 +352,7 @@ fn spring_translation_sweep_uses_consecutive_overshoot_samples() {
         to: [100.0, 0.0, 0.0, 0.0],
     };
 
-    let plan = crate::paint::backdrop_blur_animation_damage_plan(
+    let plan = crate::paint::compute_backdrop_blur_animation_damage(
         &scene,
         &[value],
         &[SceneAnimationValue {
@@ -730,7 +730,7 @@ fn backdrop_opacity_animation_reuses_gaussian_but_dirties_later_filter_input() {
         from: [0.0; 4],
         to: [1.0, 0.0, 0.0, 0.0],
     };
-    let plan = crate::paint::backdrop_blur_animation_damage_plan(
+    let plan = crate::paint::compute_backdrop_blur_animation_damage(
         &scene,
         &[opacity(0.25)],
         &[opacity(0.75)],
@@ -749,7 +749,7 @@ fn backdrop_opacity_animation_reuses_gaussian_but_dirties_later_filter_input() {
     blur.animation_id = Some(animation_id);
     only_self.insert_primitive(blur);
     assert!(
-        !crate::paint::backdrop_blur_animation_damage_plan(
+        !crate::paint::compute_backdrop_blur_animation_damage(
             &only_self,
             &[opacity(0.25)],
             &[opacity(0.75)]
@@ -775,7 +775,7 @@ fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
     ));
 
     assert!(
-        !crate::paint::backdrop_blur_damage_plan(&top_layer_changed, &previous, &[], &[])
+        !crate::paint::compute_backdrop_blur_damage(&top_layer_changed, &previous, &[], &[])
             .refresh_required()
     );
 
@@ -788,7 +788,7 @@ fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
     source_changed.insert_primitive(monochrome_sprite(2, MonochromeSpriteSampling::Glyph as u32));
 
     assert!(
-        crate::paint::backdrop_blur_damage_plan(&source_changed, &previous, &[], &[])
+        crate::paint::compute_backdrop_blur_damage(&source_changed, &previous, &[], &[])
             .refresh_required()
     );
 }
@@ -824,7 +824,7 @@ fn later_blur_damage_does_not_dirty_earlier_full_window_blur() {
     ));
     current.insert_primitive(titlebar_blur);
 
-    let plan = crate::paint::backdrop_blur_damage_plan(&current, &previous, &[], &[]);
+    let plan = crate::paint::compute_backdrop_blur_damage(&current, &previous, &[], &[]);
     let background_order = current.backdrop_blurs[0].order;
     let titlebar_order = current.backdrop_blurs[1].order;
     let (background_full, mut background_damage) =

@@ -11,7 +11,7 @@ impl FrameUpload {
     ) {
         // The full static encode is complete here, so flattened underline indices are final. Capture
         // their scene animation ownership before indexed promotion repurposes the packed pad lane.
-        self.prepare_gpu_indexed_special_primitives(scene);
+        self.prepare_underline_owners(scene);
 
         let mut blurs = Vec::new();
         collect_element_blurs(scene, &mut blurs);

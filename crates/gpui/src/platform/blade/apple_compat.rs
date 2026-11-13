@@ -1,5 +1,4 @@
 use super::{BladeContext, BladeRenderer, BladeSurfaceConfig};
-use blade_graphics as gpu;
 use std::{ffi::c_void, ptr::NonNull};
 
 #[derive(Clone)]
@@ -23,22 +22,26 @@ pub unsafe fn new_renderer(
     bounds: crate::Size<f32>,
     transparent: bool,
 ) -> Renderer {
-    use ::winit::raw_window_handle as rwh;
+    use ::winit::raw_window_handle;
     struct RawWindow {
         view: *mut c_void,
     }
 
-    impl rwh::HasWindowHandle for RawWindow {
-        fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+    impl raw_window_handle::HasWindowHandle for RawWindow {
+        fn window_handle(
+            &self,
+        ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
             let view = NonNull::new(self.view).unwrap();
-            let handle = rwh::AppKitWindowHandle::new(view);
-            Ok(unsafe { rwh::WindowHandle::borrow_raw(handle.into()) })
+            let handle = raw_window_handle::AppKitWindowHandle::new(view);
+            Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(handle.into()) })
         }
     }
-    impl rwh::HasDisplayHandle for RawWindow {
-        fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
-            let handle = rwh::AppKitDisplayHandle::new();
-            Ok(unsafe { rwh::DisplayHandle::borrow_raw(handle.into()) })
+    impl raw_window_handle::HasDisplayHandle for RawWindow {
+        fn display_handle(
+            &self,
+        ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+            let handle = raw_window_handle::AppKitDisplayHandle::new();
+            Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(handle.into()) })
         }
     }
 
@@ -48,7 +51,7 @@ pub unsafe fn new_renderer(
             view: native_view as *mut _,
         },
         BladeSurfaceConfig {
-            size: gpu::Extent {
+            size: blade_graphics::Extent {
                 width: bounds.width as u32,
                 height: bounds.height as u32,
                 depth: 1,

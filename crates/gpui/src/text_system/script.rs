@@ -67,7 +67,7 @@ impl TextClusterProperties {
 
     /// Whether shaping/raster should probe font coverage for this cluster instead of assuming that
     /// the primary face can draw it. This is a Unicode-wide policy, not a CJK-only trigger.
-    pub fn needs_font_coverage_probe(self) -> bool {
+    pub fn font_coverage_probe_required(self) -> bool {
         self.script.is_real()
             || self.requires_bidi_resolution
             || self.contains_emoji
@@ -230,7 +230,7 @@ pub(crate) fn char_cluster_properties(character: char) -> TextClusterProperties 
 /// coverage before shaping/raster fallback chooses a substitute face.
 #[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
 pub(crate) fn character_needs_font_coverage_probe(character: char) -> bool {
-    !character.is_ascii() && char_cluster_properties(character).needs_font_coverage_probe()
+    !character.is_ascii() && char_cluster_properties(character).font_coverage_probe_required()
 }
 
 /// Returns the first scalar value that should drive a font coverage probe for this shaping cluster.

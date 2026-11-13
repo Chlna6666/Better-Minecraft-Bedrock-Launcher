@@ -8,7 +8,7 @@ use std::fmt::Debug;
 use util::ResultExt;
 
 use super::drag_drop::{DragMoveEvent, GroupStyle};
-use super::element::Stateful;
+use super::component::Stateful;
 use super::interactivity::Interactivity;
 use super::scroll::{ScrollAnchor, ScrollHandle};
 

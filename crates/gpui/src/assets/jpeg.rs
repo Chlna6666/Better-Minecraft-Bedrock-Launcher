@@ -8,13 +8,13 @@ use crate::assets::{AnimatedFrame, RenderImage};
 use crate::assets::{ImageRenderInfo, ImageRenderSize};
 
 pub(super) fn frame(bytes: &[u8]) -> Result<AnimatedFrame> {
-    let orientation = jpeg_orientation(bytes);
+    let orientation = orientation(bytes);
     let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(bytes));
     let pixels = decoder.decode()?;
     let info = decoder
         .info()
         .ok_or_else(|| anyhow::anyhow!("JPEG decoder did not report image dimensions"))?;
-    let bgra = apply_orientation(jpeg_pixels_to_bgra_image(pixels, info)?, orientation);
+    let bgra = apply_orientation(pixels_to_bgra_image(pixels, info)?, orientation);
     Ok(AnimatedFrame::from_bgra_image(0, bgra))
 }
 
@@ -28,7 +28,7 @@ pub(super) fn render_sized(
     let original_info = decoder
         .info()
         .ok_or_else(|| anyhow::anyhow!("JPEG decoder did not report image dimensions"))?;
-    let orientation = jpeg_orientation(bytes);
+    let orientation = orientation(bytes);
     let encoded_size = size(
         u32::from(original_info.width),
         u32::from(original_info.height),
@@ -60,7 +60,7 @@ pub(super) fn render_sized(
     let scaled_info = decoder
         .info()
         .ok_or_else(|| anyhow::anyhow!("JPEG decoder did not report scaled dimensions"))?;
-    let bgra = apply_orientation(jpeg_pixels_to_bgra_image(pixels, scaled_info)?, orientation);
+    let bgra = apply_orientation(pixels_to_bgra_image(pixels, scaled_info)?, orientation);
     // Orientation and resizing operate on each channel independently, including BGRA buffers.
     let (bgra, render_path) = resize_rgba_frame(bgra, fitted_target, "jpeg_scaled")?;
     let frame = AnimatedFrame::from_bgra_image(0, bgra);
@@ -103,7 +103,7 @@ fn apply_orientation(rgba: RgbaImage, orientation: Orientation) -> RgbaImage {
 /// The scan stops at SOS because APP segments are metadata and should precede entropy-coded image
 /// data. Invalid/truncated metadata is deliberately treated as no transform so a decodable JPEG is
 /// never rejected solely because of malformed EXIF.
-fn jpeg_orientation(bytes: &[u8]) -> Orientation {
+fn orientation(bytes: &[u8]) -> Orientation {
     if bytes.len() < 4 || bytes[0..2] != [0xff, 0xd8] {
         return Orientation::NoTransforms;
     }
@@ -151,7 +151,7 @@ fn jpeg_orientation(bytes: &[u8]) -> Orientation {
     Orientation::NoTransforms
 }
 
-fn jpeg_pixels_to_bgra_image(
+fn pixels_to_bgra_image(
     mut pixels: Vec<u8>,
     info: jpeg_decoder::ImageInfo,
 ) -> Result<RgbaImage> {
@@ -226,7 +226,7 @@ mod tests {
             (RGB24, vec![11, 23, 37], [37, 23, 11, 255]),
             (CMYK32, vec![11, 23, 37, 79], [151, 161, 169, 255]),
         ] {
-            let output = jpeg_pixels_to_bgra_image(input, image_info(format)).unwrap();
+            let output = pixels_to_bgra_image(input, image_info(format)).unwrap();
             assert_eq!(output.as_raw(), &expected);
         }
     }
@@ -236,12 +236,12 @@ mod tests {
         use jpeg_decoder::PixelFormat::CMYK32;
         let pixels = vec![0, 255, 127, 0];
         let pointer = pixels.as_ptr();
-        let output = jpeg_pixels_to_bgra_image(pixels, image_info(CMYK32)).unwrap();
+        let output = pixels_to_bgra_image(pixels, image_info(CMYK32)).unwrap();
         assert_eq!(output.as_raw().as_ptr(), pointer);
         assert_eq!(output.as_raw(), &[128, 0, 255, 255]);
-        let output = jpeg_pixels_to_bgra_image(vec![255, 0, 127, 255], image_info(CMYK32)).unwrap();
+        let output = pixels_to_bgra_image(vec![255, 0, 127, 255], image_info(CMYK32)).unwrap();
         assert_eq!(output.as_raw(), &[0, 0, 0, 255]);
-        assert!(jpeg_pixels_to_bgra_image(vec![0; 3], image_info(CMYK32)).is_err());
+        assert!(pixels_to_bgra_image(vec![0; 3], image_info(CMYK32)).is_err());
         assert!(frame(b"not a JPEG").is_err());
     }
 
@@ -273,7 +273,7 @@ mod tests {
                 .collect();
             let mut expected = apply_orientation(
                 RgbaImage::from_raw(3, 2, rgba).unwrap(),
-                jpeg_orientation(&oriented),
+                orientation(&oriented),
             );
             for pixel in expected.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
@@ -331,11 +331,11 @@ mod tests {
     #[test]
     fn reads_exif_orientation_without_decoding_pixels() {
         assert_eq!(
-            jpeg_orientation(&jpeg_with_little_endian_orientation(6)),
+            orientation(&jpeg_with_little_endian_orientation(6)),
             Orientation::Rotate90
         );
         assert_eq!(
-            jpeg_orientation(&jpeg_with_little_endian_orientation(1)),
+            orientation(&jpeg_with_little_endian_orientation(1)),
             Orientation::NoTransforms
         );
     }

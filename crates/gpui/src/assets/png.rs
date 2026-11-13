@@ -1,7 +1,4 @@
-use super::resample::{
-    bgra_byte_len, intermediate_sample_size, render_sized as render_animated_image,
-    resize_bgra_bytes, scaled_axis,
-};
+use super::resample::{bgra_byte_len, intermediate_sample_size, resize_bgra_bytes, scaled_axis};
 use crate::assets::{AnimatedFrame, EncodedImage, RenderImage};
 use crate::assets::{AnimatedImageConfig, ImageRenderInfo, ImageRenderSize};
 use crate::{ObjectFit, Result, size};
@@ -21,7 +18,7 @@ pub(super) fn render_sized(
 
     if info.animation_control.is_some() || info.interlaced {
         drop(reader);
-        return render_animated_image(source, config, target, object_fit);
+        return super::resample::render_sized(source, config, target, object_fit);
     }
 
     let original_size = size(info.width, info.height);
@@ -174,7 +171,7 @@ pub(super) fn frame(bytes: &[u8]) -> Result<AnimatedFrame> {
     };
     let output_info = reader.next_frame(&mut pixels)?;
     pixels.truncate(output_info.buffer_size());
-    let bgra = png_pixels_to_bgra_bytes(
+    let bgra = pixels_to_bgra_bytes(
         pixels,
         output_info.color_type,
         output_info.width,
@@ -187,7 +184,7 @@ pub(super) fn frame(bytes: &[u8]) -> Result<AnimatedFrame> {
     ))
 }
 
-fn png_pixels_to_bgra_bytes(
+fn pixels_to_bgra_bytes(
     mut pixels: Vec<u8>,
     color_type: png::ColorType,
     width: u32,
@@ -244,7 +241,7 @@ mod tests {
         let pixels = vec![11, 22, 33, 0, 44, 55, 66, 127, 77, 88, 99, 255];
         let address = pixels.as_ptr();
         let output =
-            png_pixels_to_bgra_bytes(pixels, png::ColorType::Rgba, 3, 1).expect("valid pixels");
+            pixels_to_bgra_bytes(pixels, png::ColorType::Rgba, 3, 1).expect("valid pixels");
         assert_eq!(output.as_ptr(), address);
         assert_eq!(output, [33, 22, 11, 0, 66, 55, 44, 127, 99, 88, 77, 255]);
     }
@@ -258,7 +255,7 @@ mod tests {
         }
         let address = pixels.as_ptr();
         let output =
-            png_pixels_to_bgra_bytes(pixels, png::ColorType::Rgba, 17, 3).expect("valid pixels");
+            pixels_to_bgra_bytes(pixels, png::ColorType::Rgba, 17, 3).expect("valid pixels");
         assert_eq!(output.as_ptr(), address);
         assert_eq!(output, expected);
     }
@@ -287,6 +284,6 @@ mod tests {
 
     #[test]
     fn rgba_conversion_rejects_invalid_dimensions() {
-        assert!(png_pixels_to_bgra_bytes(vec![1, 2, 3], png::ColorType::Rgba, 1, 1).is_err());
+        assert!(pixels_to_bgra_bytes(vec![1, 2, 3], png::ColorType::Rgba, 1, 1).is_err());
     }
 }

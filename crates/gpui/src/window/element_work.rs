@@ -5,6 +5,7 @@
 //! nested element can perturb the very 240Hz frame budget being measured.
 
 use std::cell::RefCell;
+#[cfg(debug_assertions)]
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -28,8 +29,15 @@ struct ElementWorkFrame {
 }
 
 pub(crate) fn enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("BMCBL_GPUI_ELEMENT_WORK").is_ok_and(|v| v == "1"))
+    #[cfg(debug_assertions)]
+    {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var("BMCBL_GPUI_ELEMENT_WORK").is_ok_and(|v| v == "1"))
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
 }
 
 /// Per-frame element work summary.

@@ -1,7 +1,7 @@
 use super::*;
 
 impl Window {
-    pub(in crate::window::input) fn window_control_area_under_mouse(
+    pub(in crate::window::input) fn control_area_under_mouse(
         &self,
     ) -> Option<WindowControlArea> {
         let frontmost_hitbox = self.mouse_hit_test.ids.first().copied();
@@ -63,7 +63,7 @@ impl Window {
             .max_by(|left, right| left.partial_cmp(right).unwrap_or(cmp::Ordering::Equal));
     }
 
-    pub(in crate::window::input) fn dispatch_window_control_mouse_event(
+    pub(in crate::window::input) fn dispatch_control_mouse_event(
         &mut self,
         event: &dyn Any,
         cx: &mut App,
@@ -72,7 +72,7 @@ impl Window {
             .downcast_ref::<MouseDownEvent>()
             .filter(|mouse_down| mouse_down.button == MouseButton::Left)
         {
-            if self.window_control_area_under_mouse() == Some(WindowControlArea::Drag) {
+            if self.control_area_under_mouse() == Some(WindowControlArea::Drag) {
                 let mut gesture = mem::take(&mut self.window_control_drag_gesture);
                 if gesture.mouse_down(mouse_down, Instant::now()) {
                     self.titlebar_double_click();

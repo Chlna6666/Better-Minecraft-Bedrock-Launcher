@@ -135,7 +135,7 @@ pub fn record_inactive_present_skip() {
 ///
 /// Sleeping is not a slow frame. Starting a new timing epoch prevents stale pre-suspend FPS from
 /// being reused immediately after resume and keeps the suspension interval out of smoothing.
-pub(crate) fn reset_present_timing_after_interruption() {
+pub(crate) fn reset_present_timing() {
     let metrics = shared_metrics();
     if let Ok(mut last_present_at) = metrics.last_present_at.lock() {
         *last_present_at = None;

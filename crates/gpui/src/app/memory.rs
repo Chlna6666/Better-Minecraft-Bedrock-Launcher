@@ -2,7 +2,7 @@ use std::{any::TypeId, sync::Arc};
 
 use crate::{
     AnimationQueueSnapshot, App, BitmapPoolSnapshot, ImageCacheError, RenderImage,
-    compressed_cache_snapshot, performance_metrics_snapshot,
+    compressed_cache_snapshot, snapshot,
 };
 use anyhow::Result;
 
@@ -52,7 +52,7 @@ pub struct GpuiMemorySnapshot {
     pub image_cache_over_budget_bytes: usize,
     /// Cached per-window and shared-device renderer observations, with sample ages.
     /// Image CPU counters below are overlapping cache views, not additive heap totals.
-    pub renderer: crate::MemoryProfileSnapshot,
+    pub renderer: crate::diagnostics::memory_profile::MemoryProfileSnapshot,
     /// Number of entries retained by GPUI image caches.
     pub image_asset_cache_entries: usize,
     /// Encoded bytes retained by compressed image assets.
@@ -118,7 +118,7 @@ impl GpuiMemorySnapshot {
             image_cache_budget_bytes: global_assets.cache_budget_bytes,
             image_cache_cost_bytes: global_assets.cache_cost_bytes,
             image_cache_over_budget_bytes: global_assets.over_budget_bytes,
-            renderer: crate::memory_profile_snapshot(),
+            renderer: crate::diagnostics::memory_profile::snapshot(),
             image_asset_cache_entries: metrics
                 .image_asset_cache_entries
                 .saturating_add(global_entries),
@@ -222,7 +222,7 @@ impl App {
     pub fn gpui_memory_snapshot(&self) -> GpuiMemorySnapshot {
         GpuiMemorySnapshot::from_metrics(
             self.global_image_asset_cache_snapshot(),
-            performance_metrics_snapshot(),
+            snapshot(),
         )
     }
 }

@@ -520,7 +520,7 @@ pub struct Window {
     pub(super) animation_dirty_region: DirtyRegion,
     pub(super) render_present_mode: PartialPresentMode,
     pub(super) render_trim_policy: RetainedResourceTrimPolicy,
-    pub(super) backdrop_blur_damage_plan: BackdropBlurDamagePlan,
+    pub(super) backdrop_blur_damage: BackdropBlurDamagePlan,
     pub(super) force_full_redraw: Cell<bool>,
     pub(super) force_view_cache_refresh: bool,
     pub(super) idle_render_frames: u16,
@@ -699,6 +699,17 @@ mod presentation_extent_tests {
     use super::PresentationState;
     use std::sync::Arc;
 
+    fn active_layout(presentation: &PresentationState) -> Option<(Option<(u32, u32)>, u64, f32)> {
+        presentation.active_paint().map(|paint| {
+            let geometry = paint.geometry;
+            (
+                geometry.layout_extent,
+                geometry.layout_epoch,
+                geometry.scale_factor,
+            )
+        })
+    }
+
     #[test]
     fn latest_pending_paint_keeps_its_retention_owner() {
         let mut presentation = PresentationState::default();
@@ -770,11 +781,12 @@ mod presentation_extent_tests {
             )),
             [],
         );
-        assert_eq!(presentation.active_layout_extent(), None);
+        assert_eq!(active_layout(&presentation), None);
         assert!(presentation.activate_pending());
-        assert_eq!(presentation.active_layout_extent(), Some((1200, 800)));
-        assert_eq!(presentation.active_layout_epoch(), 1);
-        assert_eq!(presentation.active_layout_scale_factor(), Some(1.0));
+        assert_eq!(
+            active_layout(&presentation),
+            Some((Some((1200, 800)), 1, 1.0))
+        );
 
         presentation.publish_pending(
             std::sync::Arc::new(crate::window::Paint::new(
@@ -801,13 +813,15 @@ mod presentation_extent_tests {
             [],
         );
         // Before activation, the active GPU scene still belongs to 1200x800.
-        assert_eq!(presentation.active_layout_extent(), Some((1200, 800)));
-        assert_eq!(presentation.active_layout_epoch(), 1);
-        assert_eq!(presentation.active_layout_scale_factor(), Some(1.0));
+        assert_eq!(
+            active_layout(&presentation),
+            Some((Some((1200, 800)), 1, 1.0))
+        );
         assert!(presentation.activate_pending());
-        assert_eq!(presentation.active_layout_extent(), Some((1400, 900)));
-        assert_eq!(presentation.active_layout_epoch(), 3);
-        assert_eq!(presentation.active_layout_scale_factor(), Some(1.5));
+        assert_eq!(
+            active_layout(&presentation),
+            Some((Some((1400, 900)), 3, 1.5))
+        );
     }
 }
 

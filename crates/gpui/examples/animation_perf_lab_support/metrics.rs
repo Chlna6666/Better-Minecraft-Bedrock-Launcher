@@ -8,10 +8,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::{
-    WindowAnimationPresentationTiming, WindowAnimationSamples, WindowBackendReadyMetricsSnapshot,
-    WindowVSyncMetricsSnapshot, performance_metrics_snapshot, window_animation_samples_since,
-    window_metrics_snapshot,
+use gpui::diagnostics::performance_metrics::{
+    snapshot,
+    window::{
+        self, AnimationPresentationTiming, AnimationSamples, BackendReadyMetricsSnapshot,
+        VSyncMetricsSnapshot,
+    },
 };
 
 use crate::{
@@ -26,7 +28,7 @@ pub(crate) struct GateBaseline {
     pub(crate) changed_sample_count: u64,
     pub(crate) unchanged_sample_count: u64,
     pub(crate) skipped_frame_count: u64,
-    pub(crate) native_vsync: Option<WindowVSyncMetricsSnapshot>,
+    pub(crate) native_vsync: Option<VSyncMetricsSnapshot>,
     pub(crate) backend_ready_wake_count: usize,
     pub(crate) started_at: Instant,
     pub(crate) render_count: usize,
@@ -37,8 +39,8 @@ pub(crate) enum BlockEvent {
     Finished {
         ended_at: Instant,
         render_count: usize,
-        native_vsync: Option<WindowVSyncMetricsSnapshot>,
-        backend_ready: Option<WindowBackendReadyMetricsSnapshot>,
+        native_vsync: Option<VSyncMetricsSnapshot>,
+        backend_ready: Option<BackendReadyMetricsSnapshot>,
     },
 }
 
@@ -157,7 +159,7 @@ pub(crate) fn observe(
     let block_finished_at = block_finished_at.unwrap_or_else(Instant::now);
     let block_duration = block_finished_at.saturating_duration_since(block_started_at);
     let block_samples =
-        window_animation_samples_since(baseline.window_id, baseline.sample_sequence);
+        window::animation_samples_since(baseline.window_id, baseline.sample_sequence);
     let block_continuity =
         block_sample_continuity(block_samples.as_ref(), block_started_at, block_finished_at);
     let expected = expected_samples(baseline.sample_rate, block_duration);
@@ -373,7 +375,7 @@ struct WindowSample {
 }
 
 fn window_sample(window_id: u64) -> Option<WindowSample> {
-    window_metrics_snapshot()
+    window::snapshot()
         .into_iter()
         .find(|window| window.window_id == window_id)
         .map(|window| WindowSample {
@@ -426,7 +428,7 @@ struct BlockSampleContinuity {
     start_gap_micros: u64,
     end_gap_micros: u64,
     worst_gap_after_sequence: Option<u64>,
-    worst_gap_timing: Option<gpui::WindowAnimationPresentationTiming>,
+    worst_gap_timing: Option<gpui::diagnostics::performance_metrics::window::AnimationPresentationTiming>,
     history_overflowed: bool,
     timing_sample_count: usize,
     timing_max_micros: [u64; 4],
@@ -435,7 +437,7 @@ struct BlockSampleContinuity {
 }
 
 fn block_sample_continuity(
-    history: Option<&WindowAnimationSamples>,
+    history: Option<&AnimationSamples>,
     started_at: Instant,
     ended_at: Instant,
 ) -> BlockSampleContinuity {
@@ -566,7 +568,7 @@ fn backend_command_timing_ms(timings: Option<gfx_core::PresentTimings>) -> [f64;
     .map(|duration| micros_to_millis(duration_micros(duration) as usize))
 }
 
-fn renderer_timing_ms(timing: Option<WindowAnimationPresentationTiming>) -> [f64; 6] {
+fn renderer_timing_ms(timing: Option<AnimationPresentationTiming>) -> [f64; 6] {
     let Some(timing) = timing else {
         return [0.0; 6];
     };
@@ -581,7 +583,7 @@ fn renderer_timing_ms(timing: Option<WindowAnimationPresentationTiming>) -> [f64
     .map(|duration| micros_to_millis(duration_micros(duration) as usize))
 }
 
-fn renderer_substage_timing_ms(timing: WindowAnimationPresentationTiming) -> [f64; 4] {
+fn renderer_substage_timing_ms(timing: AnimationPresentationTiming) -> [f64; 4] {
     [
         timing.command_prepare,
         timing.buffer_upload,
@@ -594,29 +596,29 @@ fn renderer_substage_timing_ms(timing: WindowAnimationPresentationTiming) -> [f6
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{WindowAnimationSample, WindowAnimationSamples};
+    use gpui::diagnostics::performance_metrics::window::{AnimationSample, AnimationSamples};
 
     #[test]
     fn checks_each_sample_and_both_block_boundaries() {
         let started_at = Instant::now();
-        let samples = WindowAnimationSamples {
+        let samples = AnimationSamples {
             after_sequence: 10,
             latest_sequence: 13,
             history_overflowed: false,
             samples: vec![
-                WindowAnimationSample {
+                AnimationSample {
                     sequence: 11,
                     presented_at: started_at + Duration::from_millis(4),
                     changed_from_previous: Some(true),
                     presentation_timing: None,
                 },
-                WindowAnimationSample {
+                AnimationSample {
                     sequence: 12,
                     presented_at: started_at + Duration::from_millis(8),
                     changed_from_previous: Some(true),
                     presentation_timing: None,
                 },
-                WindowAnimationSample {
+                AnimationSample {
                     sequence: 13,
                     presented_at: started_at + Duration::from_millis(12),
                     changed_from_previous: Some(true),
@@ -642,7 +644,7 @@ mod tests {
     #[test]
     fn associates_the_largest_inter_sample_gap_with_its_presentation_stages() {
         let started_at = Instant::now();
-        let timing = gpui::WindowAnimationPresentationTiming {
+        let timing = gpui::diagnostics::performance_metrics::window::AnimationPresentationTiming {
             frame_pacing_wait: Duration::from_millis(2),
             vsync_event_queue_delay: Duration::from_millis(3),
             window_dispatch_delay: Duration::from_millis(1),
@@ -657,18 +659,18 @@ mod tests {
             }),
             ..Default::default()
         };
-        let samples = WindowAnimationSamples {
+        let samples = AnimationSamples {
             after_sequence: 40,
             latest_sequence: 42,
             history_overflowed: false,
             samples: vec![
-                WindowAnimationSample {
+                AnimationSample {
                     sequence: 41,
                     presented_at: started_at + Duration::from_millis(4),
                     changed_from_previous: Some(true),
                     presentation_timing: Some(Default::default()),
                 },
-                WindowAnimationSample {
+                AnimationSample {
                     sequence: 42,
                     presented_at: started_at + Duration::from_millis(12),
                     changed_from_previous: Some(true),
@@ -699,18 +701,18 @@ mod tests {
     #[test]
     fn rejects_a_frozen_frame_even_when_the_animation_has_samples() {
         let started_at = Instant::now();
-        let samples = WindowAnimationSamples {
+        let samples = AnimationSamples {
             after_sequence: 20,
             latest_sequence: 22,
             history_overflowed: false,
             samples: vec![
-                WindowAnimationSample {
+                AnimationSample {
                     sequence: 21,
                     presented_at: started_at + Duration::from_millis(4),
                     changed_from_previous: Some(true),
                     presentation_timing: None,
                 },
-                WindowAnimationSample {
+                AnimationSample {
                     sequence: 22,
                     presented_at: started_at + Duration::from_millis(12),
                     changed_from_previous: Some(false),
@@ -733,7 +735,7 @@ mod tests {
     #[test]
     fn summarizes_windows_stage_timings_only_inside_the_interval() {
         let started_at = Instant::now();
-        let timing = gpui::WindowAnimationPresentationTiming {
+        let timing = gpui::diagnostics::performance_metrics::window::AnimationPresentationTiming {
             frame_pacing_wait: Duration::from_millis(3),
             vsync_event_queue_delay: Duration::from_millis(2),
             window_dispatch_delay: Duration::from_millis(1),
@@ -751,18 +753,18 @@ mod tests {
             }),
             ..Default::default()
         };
-        let samples = WindowAnimationSamples {
+        let samples = AnimationSamples {
             after_sequence: 30,
             latest_sequence: 32,
             history_overflowed: false,
             samples: vec![
-                WindowAnimationSample {
+                AnimationSample {
                     sequence: 31,
                     presented_at: started_at + Duration::from_millis(4),
                     changed_from_previous: Some(true),
                     presentation_timing: Some(timing),
                 },
-                WindowAnimationSample {
+                AnimationSample {
                     sequence: 32,
                     presented_at: started_at + Duration::from_millis(20),
                     changed_from_previous: Some(true),
@@ -817,7 +819,7 @@ fn print_interval_report(
     after_renders: usize,
     require_quiet_ui: bool,
 ) -> bool {
-    let samples = window_animation_samples_since(
+    let samples = window::animation_samples_since(
         before_window.window_id,
         before_window.animation_sampled_present_count,
     );
@@ -910,7 +912,7 @@ struct Counters {
 }
 
 fn counter_snapshot() -> Counters {
-    let metrics = performance_metrics_snapshot();
+    let metrics = snapshot();
     Counters {
         presents: metrics.direct_present_count + metrics.retained_present_count,
         animation_samples: metrics.presentation_animation_distinct_sample_count,
@@ -924,10 +926,10 @@ fn print_snapshot(
     render_count: usize,
     window_id: u64,
 ) {
-    let snapshot = performance_metrics_snapshot();
+    let snapshot = snapshot();
     let window = window_sample(window_id);
     let native_vsync = if label == "final" {
-        window_metrics_snapshot()
+        window::snapshot()
             .into_iter()
             .find(|window| window.window_id == window_id)
             .map(|window| window.native_vsync)
@@ -1014,8 +1016,8 @@ fn print_snapshot(
 }
 
 fn print_native_vsync_gate_delta(
-    before: Option<&WindowVSyncMetricsSnapshot>,
-    after: Option<&WindowVSyncMetricsSnapshot>,
+    before: Option<&VSyncMetricsSnapshot>,
+    after: Option<&VSyncMetricsSnapshot>,
 ) {
     let (Some(before), Some(after)) = (before, after) else {
         println!("  native_vsync_gate_delta[boundary_counters]=unavailable");
@@ -1041,7 +1043,7 @@ fn print_native_vsync_gate_delta(
 
 fn print_backend_ready_gate_delta_and_final_queue_delay(
     baseline_wake_count: usize,
-    final_snapshot: Option<&WindowBackendReadyMetricsSnapshot>,
+    final_snapshot: Option<&BackendReadyMetricsSnapshot>,
 ) {
     let Some(final_snapshot) = final_snapshot else {
         println!("  backend_ready_gate_delta: unavailable");
@@ -1063,7 +1065,7 @@ fn print_backend_ready_gate_delta_and_final_queue_delay(
     );
 }
 
-fn print_native_vsync_snapshot(snapshot: &WindowVSyncMetricsSnapshot) {
+fn print_native_vsync_snapshot(snapshot: &VSyncMetricsSnapshot) {
     let refresh_rate_p50_hz = if snapshot.refresh_period_p50_micros == 0 {
         0.0
     } else {

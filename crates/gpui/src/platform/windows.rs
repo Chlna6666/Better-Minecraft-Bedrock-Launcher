@@ -11,7 +11,7 @@ mod display_events;
 mod input;
 mod keyboard;
 mod library;
-mod platform;
+mod implementation;
 mod vsync;
 mod window;
 
@@ -27,7 +27,7 @@ pub(crate) use display::*;
 pub(crate) use input::*;
 pub(crate) use keyboard::{WindowsKeyboardLayout, WindowsKeyboardMapper};
 pub(crate) use library::*;
-pub(crate) use platform::{WindowCreationInfo, WindowsPlatform, WindowsUserEvent};
+pub(crate) use implementation::{WindowCreationInfo, WindowsPlatform, WindowsUserEvent};
 pub(crate) use window::*;
 
 #[allow(unsafe_code)]

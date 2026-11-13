@@ -6,6 +6,7 @@ fn owner(pending: bool) -> (RenderOwner, mpsc::Receiver<Job>) {
         id: 1,
         queue: Arc::new(Queue::default()),
         sender,
+        #[cfg(not(target_os = "windows"))]
         owner_thread: thread::current().id(),
         status: Arc::new(Status {
             pending: AtomicBool::new(pending),

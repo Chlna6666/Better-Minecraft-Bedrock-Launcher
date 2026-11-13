@@ -776,7 +776,7 @@ impl Window {
         let plain_text_proven = plain_text_key
             .zip(retained.plain_text_key.as_ref())
             .is_some_and(|(current, previous)| {
-                current == previous && retained_plain_text_range_is_side_effect_free(retained)
+                current == previous && plain_text_range_is_side_effect_free(retained)
             });
         let div_semantics_proven = self.retained_div_semantics_match(retained, layout_id);
 
@@ -786,12 +786,10 @@ impl Window {
         // background/text/border changes propagate through semantic child generations and change
         // the second. Unknown/custom/interactive subtrees remain conservative.
         if targeted_replay
-            && self
-                .invalidator
-                .retained_path_requires_reconciliation_for_view_route(
-                    retained_id,
-                    &target_owner_shares_current_view_route,
-                )
+            && self.invalidator.requires_reconciliation_for_route(
+                retained_id,
+                &target_owner_shares_current_view_route,
+            )
         {
             if retained.layout_fingerprint.is_none()
                 || retained.layout_fingerprint != layout_fingerprint
@@ -810,7 +808,7 @@ impl Window {
                     return None;
                 }
             } else if retained_id_is_anonymous(retained_id)
-                && retained_range_contains_frame_bound_interactivity(retained)
+                && retained_range_has_frame_interactivity(retained)
             {
                 return None;
             }
@@ -1058,7 +1056,7 @@ fn retained_id_is_anonymous(retained_id: &GlobalElementId) -> bool {
     matches!(retained_id.0.last(), Some(ElementId::InstanceSlot(_)))
 }
 
-fn retained_plain_text_range_is_side_effect_free(retained: &RetainedElementRange) -> bool {
+fn plain_text_range_is_side_effect_free(retained: &RetainedElementRange) -> bool {
     let prepaint = &retained.prepaint_range;
     let paint = &retained.paint_range;
 
@@ -1076,7 +1074,7 @@ fn retained_plain_text_range_is_side_effect_free(retained: &RetainedElementRange
         && paint.start.tab_handle_index == paint.end.tab_handle_index
 }
 
-fn retained_range_contains_frame_bound_interactivity(retained: &RetainedElementRange) -> bool {
+fn retained_range_has_frame_interactivity(retained: &RetainedElementRange) -> bool {
     let prepaint = &retained.prepaint_range;
     let paint = &retained.paint_range;
 

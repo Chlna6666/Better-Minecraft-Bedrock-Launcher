@@ -74,9 +74,7 @@ fn replay_with_gap(
 fn draw_all(renderer: &NovaRenderer, view: TextureViewId, slot: usize) {
     let steps = [RenderCommand::Draw(DrawCommand {
         instance_count: (renderer.frame_upload.quads.len() / PACKED_QUAD_BYTES) as u32,
-        bind_groups: bind_group_list([renderer.frame_resources[slot]
-            .bind_groups
-            .quad_resource_set]),
+        bind_groups: bind_group_list([renderer.frame_resources[slot].bind_groups.quad_bind_group]),
         ..quad_step(renderer)
     })];
     device!(renderer, device, {

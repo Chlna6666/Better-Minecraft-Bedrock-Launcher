@@ -84,7 +84,7 @@ enum ClipboardFormatType {
 }
 
 pub(crate) fn write_to_clipboard(item: ClipboardItem) -> Result<()> {
-    with_clipboard(|| write_to_clipboard_inner(item))?
+    with_clipboard(|| write_clipboard_item(item))?
 }
 
 pub(crate) fn read_from_clipboard() -> Option<ClipboardItem> {
@@ -182,7 +182,7 @@ fn format_to_type(item_format: u32) -> &'static ClipboardFormatType {
 }
 
 // Currently, we only write the first item.
-fn write_to_clipboard_inner(item: ClipboardItem) -> Result<()> {
+fn write_clipboard_item(item: ClipboardItem) -> Result<()> {
     unsafe {
         EmptyClipboard()?;
     }
@@ -387,13 +387,13 @@ fn read_utf16_from_clipboard(format: u32) -> Option<String> {
 }
 
 fn read_image_from_clipboard(format: u32) -> Option<ClipboardEntry> {
-    let image_format = format_number_to_image_format(format)?;
+    let image_format = image_format_for_clipboard_id(format)?;
     read_image_for_type(format, *image_format)
 }
 
 #[inline]
-fn format_number_to_image_format(format_number: u32) -> Option<&'static ImageFormat> {
-    IMAGE_FORMATS_MAP.get(&format_number)
+fn image_format_for_clipboard_id(format_id: u32) -> Option<&'static ImageFormat> {
+    IMAGE_FORMATS_MAP.get(&format_id)
 }
 
 fn read_image_for_type(format_number: u32, format: ImageFormat) -> Option<ClipboardEntry> {

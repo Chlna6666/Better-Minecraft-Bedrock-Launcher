@@ -93,6 +93,8 @@ fn compile_fxc(
         (ShaderStage::Fragment, BackendKind::Dx11) => b"ps_5_0\0",
         (ShaderStage::Vertex, _) => b"vs_5_1\0",
         (ShaderStage::Fragment, _) => b"ps_5_1\0",
+        (ShaderStage::Compute, BackendKind::Dx11) => b"cs_5_0\0",
+        (ShaderStage::Compute, _) => b"cs_5_1\0",
     };
     let mut code = None;
     let mut errors = None;

@@ -149,7 +149,7 @@ impl NovaRenderer {
                     DeviceKey {
                         backend: RendererBackend::NovaOpenGl,
                         adapter_name: renderer_options.adapter_name.clone(),
-                        power_preference: nova_power_preference(renderer_options),
+                        power_preference: power_preference(renderer_options),
                         pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                         native_display: Some(window.display_handle()?.as_raw()),
                     },
@@ -159,7 +159,7 @@ impl NovaRenderer {
                             device,
                             surface_config,
                             "gpui nova opengl",
-                            cached_nova_opengl_shader_binaries()?,
+                            cached_opengl_shader_binaries()?,
                         )
                     },
                 )?;
@@ -221,7 +221,7 @@ impl NovaRenderer {
                     DeviceKey {
                         backend: RendererBackend::NovaDx11,
                         adapter_name: renderer_options.adapter_name.clone(),
-                        power_preference: nova_power_preference(renderer_options),
+                        power_preference: power_preference(renderer_options),
                         pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                         native_display: None,
                     },
@@ -231,7 +231,7 @@ impl NovaRenderer {
                             device,
                             surface_config,
                             "gpui nova dx11",
-                            cached_nova_dx11_shader_binaries()?,
+                            cached_dx11_shader_binaries()?,
                         )
                     },
                 )?;
@@ -293,7 +293,7 @@ impl NovaRenderer {
                     DeviceKey {
                         backend: RendererBackend::NovaDx12,
                         adapter_name: renderer_options.adapter_name.clone(),
-                        power_preference: nova_power_preference(renderer_options),
+                        power_preference: power_preference(renderer_options),
                         pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                         native_display: None,
                     },
@@ -303,7 +303,7 @@ impl NovaRenderer {
                             device,
                             surface_config,
                             "gpui nova dx12",
-                            cached_nova_dx12_shader_binaries()?,
+                            cached_dx12_shader_binaries()?,
                         )
                     },
                 )?;
@@ -367,7 +367,7 @@ impl NovaRenderer {
                     DeviceKey {
                         backend: RendererBackend::NovaMetal,
                         adapter_name: renderer_options.adapter_name.clone(),
-                        power_preference: nova_power_preference(renderer_options),
+                        power_preference: power_preference(renderer_options),
                         pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                         native_display: None,
                     },
@@ -377,7 +377,7 @@ impl NovaRenderer {
                             device,
                             surface_config,
                             "gpui nova metal",
-                            cached_nova_metal_shader_binaries()?,
+                            cached_metal_shader_binaries()?,
                         )
                     },
                 )?;
@@ -449,7 +449,7 @@ impl NovaRenderer {
                     DeviceKey {
                         backend: RendererBackend::NovaVulkan,
                         adapter_name: renderer_options.adapter_name.clone(),
-                        power_preference: nova_power_preference(renderer_options),
+                        power_preference: power_preference(renderer_options),
                         pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                         native_display: None,
                     },
@@ -459,7 +459,7 @@ impl NovaRenderer {
                             device,
                             surface_config,
                             "gpui nova vulkan",
-                            cached_nova_vulkan_shader_binaries()?,
+                            cached_vulkan_shader_binaries()?,
                         )
                     },
                 )?;

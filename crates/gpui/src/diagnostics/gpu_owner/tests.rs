@@ -176,12 +176,12 @@ fn destruction_removes_window_history_and_cursor_queries() {
         now,
         now + Duration::from_micros(100),
     );
-    assert_eq!(gpu_owner_samples_since(id, 0).len(), 1);
-    assert!(gpu_owner_samples_since(id, 1).is_empty());
+    assert_eq!(samples_since(id, 0).len(), 1);
+    assert!(samples_since(id, 1).is_empty());
     unregister(id);
-    assert!(gpu_owner_samples_since(id, 0).is_empty());
+    assert!(samples_since(id, 0).is_empty());
     assert!(
-        !gpu_owner_metrics_snapshot()
+        !metrics_snapshot()
             .windows
             .iter()
             .any(|window| window.owner_id == id)

@@ -13,11 +13,11 @@ fn slot_bindings(
         &mut renderer.frame_resources[slot],
         &buffers,
         (
-            renderer.quad_resource_set_layout,
-            renderer.shadow_resource_set_layout,
-            renderer.underline_resource_set_layout,
-            renderer.path_resource_set_layout,
-            renderer.path_rasterization_resource_set_layout,
+            renderer.quad_bind_group_layout,
+            renderer.shadow_bind_group_layout,
+            renderer.underline_bind_group_layout,
+            renderer.path_bind_group_layout,
+            renderer.path_rasterization_bind_group_layout,
         ),
         (renderer.path_texture_view, sampler),
     );
@@ -27,8 +27,8 @@ fn slot_bindings(
         (slot, buffers),
         sampler,
         (
-            renderer.mono_sprite_resource_set_layout,
-            renderer.poly_sprite_resource_set_layout,
+            renderer.mono_sprite_bind_group_layout,
+            renderer.poly_sprite_bind_group_layout,
         ),
     );
     if let Some(targets) = renderer.filters.targets.as_mut() {
@@ -38,20 +38,20 @@ fn slot_bindings(
             (slot, &buffers),
             sampler,
             (
-                renderer.backdrop_blur_pass_resource_set_layout,
-                renderer.backdrop_blur_resource_set_layout,
+                renderer.backdrop_blur_pass_bind_group_layout,
+                renderer.backdrop_blur_bind_group_layout,
             ),
         );
     }
     if let Some(root) = renderer.root_color.target.as_mut() {
         bindings.push((
-            &mut root.composite_resource_sets[slot],
-            renderer.backdrop_blur_resource_set_layout,
+            &mut root.composite_bind_groups[slot],
+            renderer.backdrop_blur_bind_group_layout,
             backdrop_blur_resource_bindings(&buffers, root.target.texture_view, sampler),
         ));
         bindings.push((
-            &mut root.pass_resource_sets[slot],
-            renderer.backdrop_blur_pass_resource_set_layout,
+            &mut root.pass_bind_groups[slot],
+            renderer.backdrop_blur_pass_bind_group_layout,
             backdrop_blur_pass_resource_bindings(&buffers, root.target.texture_view, sampler),
         ));
     }
@@ -72,27 +72,27 @@ fn frame_bindings<'a>(
 ) -> Vec<SlotBinding<'a>> {
     vec![
         (
-            &mut frame.bind_groups.path_rasterization_resource_set,
+            &mut frame.bind_groups.path_rasterization_bind_group,
             layouts.4,
             path_rasterization_resource_bindings(buffers),
         ),
         (
-            &mut frame.bind_groups.quad_resource_set,
+            &mut frame.bind_groups.quad_bind_group,
             layouts.0,
             quad_resource_bindings(buffers),
         ),
         (
-            &mut frame.bind_groups.shadow_resource_set,
+            &mut frame.bind_groups.shadow_bind_group,
             layouts.1,
             shadow_resource_bindings(buffers),
         ),
         (
-            &mut frame.bind_groups.underline_resource_set,
+            &mut frame.bind_groups.underline_bind_group,
             layouts.2,
             underline_resource_bindings(buffers),
         ),
         (
-            &mut frame.path_resource_set,
+            &mut frame.path_bind_group,
             layouts.3,
             path_resource_bindings(buffers, path.0, path.1),
         ),
@@ -108,14 +108,14 @@ fn append_atlas_bindings<'a>(
 ) {
     let (slot, buffers) = frame;
     for texture in textures.values_mut() {
-        if let Some(bind_group) = texture.mono_resource_sets.get_mut(slot) {
+        if let Some(bind_group) = texture.mono_bind_groups.get_mut(slot) {
             bindings.push((
                 bind_group,
                 layouts.0,
                 mono_atlas_resource_bindings(buffers, texture.texture_view, sampler),
             ));
         }
-        if let Some(bind_group) = texture.poly_resource_sets.get_mut(slot) {
+        if let Some(bind_group) = texture.poly_bind_groups.get_mut(slot) {
             bindings.push((
                 bind_group,
                 layouts.1,
@@ -135,14 +135,14 @@ fn append_blur_bindings<'a>(
     let (slot, buffers) = frame;
     if let Some(source) = targets.source {
         bindings.push((
-            &mut targets.source_pass_resource_sets[slot],
+            &mut targets.source_pass_bind_groups[slot],
             layouts.0,
             backdrop_blur_pass_resource_bindings(buffers, source.texture_view, sampler),
         ));
     }
     for source in &mut targets.isolated_sources {
         bindings.push((
-            &mut source.pass_resource_sets[slot],
+            &mut source.pass_bind_groups[slot],
             layouts.0,
             backdrop_blur_pass_resource_bindings(buffers, source.target.texture_view, sampler),
         ));
@@ -154,13 +154,13 @@ fn append_blur_bindings<'a>(
             .expect("every blur variant owns at least one target")
             .texture_view;
         bindings.push((
-            &mut variant.target_resource_sets[slot],
+            &mut variant.target_bind_groups[slot],
             layouts.1,
             backdrop_blur_resource_bindings(buffers, source_view, sampler),
         ));
         for level in &mut variant.levels {
             bindings.push((
-                &mut level.pass_resource_sets[slot],
+                &mut level.pass_bind_groups[slot],
                 layouts.0,
                 backdrop_blur_pass_resource_bindings(buffers, level.texture_view, sampler),
             ));
@@ -171,7 +171,7 @@ fn append_blur_bindings<'a>(
 fn release_sets<D: ResourceDevice>(device: &mut D, sets: impl IntoIterator<Item = BindGroupId>) {
     for set in sets {
         if let Err(error) = device.destroy_bind_group(set) {
-            log::error!("failed to retire nova grown resource set: {error}");
+            log::error!("failed to retire nova grown bind group: {error}");
         }
     }
 }
@@ -203,11 +203,11 @@ pub(in crate::platform::nova::renderer) fn rebind_slot<D: ResourceDevice>(
     }
     let frame = &mut renderer.frame_resources[renderer.current_frame_resource_index];
     for (old, new) in &replaced {
-        if frame.mono_sprite_resource_set == *old {
-            frame.mono_sprite_resource_set = *new;
+        if frame.mono_sprite_bind_group == *old {
+            frame.mono_sprite_bind_group = *new;
         }
-        if frame.poly_sprite_resource_set == *old {
-            frame.poly_sprite_resource_set = *new;
+        if frame.poly_sprite_bind_group == *old {
+            frame.poly_sprite_bind_group = *new;
         }
     }
     // Root descriptors belong exclusively to RootColorTarget. The matching

@@ -391,13 +391,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::{ToTaffy, border_widths_to_taffy};
-    use crate::{AbsoluteLength, Edges, LayoutStyle, Style, performance_metrics_snapshot, px};
+    use crate::{AbsoluteLength, Edges, LayoutStyle, Style, snapshot, px};
 
     #[test]
     fn style_to_taffy_records_single_conversion() {
-        let before = performance_metrics_snapshot().layout_conversion_count;
+        let before = snapshot().layout_conversion_count;
         let _ = Style::default().to_taffy(px(16.), 1.0);
-        let after = performance_metrics_snapshot().layout_conversion_count;
+        let after = snapshot().layout_conversion_count;
         assert_eq!(after, before + 1);
     }
 

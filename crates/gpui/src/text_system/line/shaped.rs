@@ -1,4 +1,4 @@
-use super::{DecorationRun, background::paint_line_background, paint::paint_line};
+use super::{DecorationRun, background::paint_line_background, paint};
 use crate::{App, LineLayout, Pixels, Point, Result, SharedString, TextAlign, Window, point, px};
 use derive_more::{Deref, DerefMut};
 use smallvec::SmallVec;
@@ -139,7 +139,7 @@ impl ShapedLine {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<()> {
-        paint_line(
+    paint::line(
             origin,
             &self.layout,
             line_height,
@@ -189,7 +189,7 @@ impl LineLayout {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<()> {
-        paint_line(
+    paint::line(
             origin,
             self,
             line_height,

@@ -78,14 +78,14 @@ use upload_packing::*;
 
 #[cfg(feature = "bench-support")]
 pub(crate) use frame_upload::{
-    upload_encoding::AtlasPixelEncodingBenchmarkCore, upload_queue::AtlasUploadBenchmarkCore,
+    atlas_encoding::AtlasPixelEncodingBenchmarkCore, queue::AtlasUploadBenchmarkCore,
 };
 
 #[cfg(feature = "bench-support")]
 pub(crate) struct FrameUploadBenchmarkCore {
     scene: crate::Scene,
     upload: FrameUpload,
-    quad_chunks: RetainedQuadChunkCache,
+    quad_chunks: RetainedChunkCache,
     rendering_parameters: RenderingParameters,
 }
 
@@ -95,21 +95,23 @@ impl FrameUploadBenchmarkCore {
         Self {
             scene,
             upload: FrameUpload::default(),
-            quad_chunks: RetainedQuadChunkCache::default(),
+            quad_chunks: RetainedChunkCache::default(),
             rendering_parameters: RenderingParameters::system(),
         }
     }
 
     pub(crate) fn next_frame(&mut self) -> (usize, usize, usize, usize, usize) {
+        let size = DrawableSize {
+            width: 1_920,
+            height: 1_080,
+        };
         let summary = self.upload.encode(
             &mut self.quad_chunks,
             &self.scene,
             &crate::window::retained::RetainedPaint::default(),
             &[],
-            DrawableSize {
-                width: 1_920,
-                height: 1_080,
-            },
+            size,
+            size,
             &self.rendering_parameters,
             true,
             BackdropBlurQuality::Full,
@@ -119,7 +121,22 @@ impl FrameUploadBenchmarkCore {
                 .unwrap_or(usize::MAX)
                 .saturating_add(usize::try_from(summary.backdrop_blur_count).unwrap_or(usize::MAX)),
             self.upload.batches.len(),
-            self.upload.uploaded_bytes(),
+            [
+                self.upload.globals.len(),
+                self.upload.text_raster_params.len(),
+                self.upload.quads.len(),
+                self.upload.shadows.len(),
+                self.upload.path_rasterization_vertices.len(),
+                self.upload.path_sprites.len(),
+                self.upload.mono_sprites.len(),
+                self.upload.poly_sprites.len(),
+                self.upload.underlines.len(),
+                self.upload.backdrop_blur_passes.len(),
+                self.upload.backdrop_blurs.len(),
+                self.upload.animation_values.len(),
+            ]
+            .into_iter()
+            .fold(0usize, usize::saturating_add),
             self.upload.retained_byte_capacity(&self.quad_chunks),
             self.upload.backdrop_blur_configs().len(),
         )
@@ -130,7 +147,7 @@ impl FrameUploadBenchmarkCore {
 pub(crate) struct PathPackingBenchmarkCore {
     scene: crate::Scene,
     upload: FrameUpload,
-    quad_chunks: RetainedQuadChunkCache,
+    quad_chunks: RetainedChunkCache,
     rendering_parameters: RenderingParameters,
 }
 
@@ -140,7 +157,7 @@ impl PathPackingBenchmarkCore {
         Self {
             scene,
             upload: FrameUpload::default(),
-            quad_chunks: RetainedQuadChunkCache::default(),
+            quad_chunks: RetainedChunkCache::default(),
             rendering_parameters: RenderingParameters::system(),
         }
     }
@@ -148,15 +165,17 @@ impl PathPackingBenchmarkCore {
     pub(crate) fn encode_cache_miss(&mut self) -> usize {
         self.upload.path_rasterization_cache.clear();
         self.upload.path_geometry_hash_memo.clear();
+        let size = DrawableSize {
+            width: 1_920,
+            height: 1_080,
+        };
         let summary = self.upload.encode(
             &mut self.quad_chunks,
             &self.scene,
             &crate::window::retained::RetainedPaint::default(),
             &[],
-            DrawableSize {
-                width: 1_920,
-                height: 1_080,
-            },
+            size,
+            size,
             &self.rendering_parameters,
             true,
             BackdropBlurQuality::Full,

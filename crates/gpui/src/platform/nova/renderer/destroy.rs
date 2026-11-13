@@ -18,7 +18,7 @@ struct WindowResources {
 
 impl NovaRenderer {
     pub(super) fn destroy_window_resources(&mut self) {
-        let resources = WindowResources {
+        let window_resources = WindowResources {
             path: self.current_path_mask_target(),
             blur: self.filters.targets.take(),
             root: self.root_color.take_target(),
@@ -43,18 +43,18 @@ impl NovaRenderer {
                 feature = "nova-gfx-opengl",
                 any(target_os = "windows", target_os = "linux")
             ))]
-            NovaBackend::OpenGl(device) => destroy_resources(device, resources, "OpenGL"),
+            NovaBackend::OpenGl(device) => resources(device, window_resources, "OpenGL"),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) => destroy_resources(device, resources, "DX11"),
+            NovaBackend::Dx11(device) => resources(device, window_resources, "DX11"),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => destroy_resources(device, resources, "DX12"),
+            NovaBackend::Dx12(device) => resources(device, window_resources, "DX12"),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) => destroy_resources(device, resources, "Metal"),
+            NovaBackend::Metal(device) => resources(device, window_resources, "Metal"),
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            NovaBackend::Vulkan(device) => destroy_resources(device, resources, "Vulkan"),
+            NovaBackend::Vulkan(device) => resources(device, window_resources, "Vulkan"),
             #[cfg(not(any(
                 all(
                     feature = "nova-gfx-opengl",
@@ -73,7 +73,7 @@ impl NovaRenderer {
     }
 }
 
-fn destroy_resources<D: ResourceDevice + SurfaceDevice + PipelineDevice>(
+fn resources<D: ResourceDevice + SurfaceDevice + PipelineDevice>(
     device: &mut D,
     resources: WindowResources,
     backend: &str,
@@ -110,8 +110,8 @@ fn destroy_resources<D: ResourceDevice + SurfaceDevice + PipelineDevice>(
         .iter()
         .flat_map(|frame| frame.buffers.ids())
         .collect();
-    for frame in resources.frames {
-        destroy_frame(device, frame);
+    for frame_resources in resources.frames {
+        frame(device, frame_resources);
     }
     for buffer in buffers {
         release(device.destroy_buffer(buffer), "frame buffer");
@@ -138,15 +138,15 @@ fn destroy_resources<D: ResourceDevice + SurfaceDevice + PipelineDevice>(
     );
 }
 
-fn destroy_frame<D: ResourceDevice>(device: &mut D, frame: FrameResources) {
+fn frame<D: ResourceDevice>(device: &mut D, frame: FrameResources) {
     let sets = frame.bind_groups;
     for bind_group in [
-        sets.quad_resource_set,
-        sets.shadow_resource_set,
-        sets.path_rasterization_resource_set,
-        sets.underline_resource_set,
+        sets.quad_bind_group,
+        sets.shadow_bind_group,
+        sets.path_rasterization_bind_group,
+        sets.underline_bind_group,
     ] {
-        release(device.destroy_bind_group(bind_group), "frame resource set");
+        release(device.destroy_bind_group(bind_group), "frame bind group");
     }
     // Path and sprite sets are owned by the path/atlas targets, not duplicated here.
 }

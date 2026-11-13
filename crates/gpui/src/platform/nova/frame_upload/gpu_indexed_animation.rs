@@ -155,10 +155,7 @@ impl FrameUpload {
     /// This traversal deliberately mirrors recursive `encode_scene` order. Underline ownership can
     /// therefore be retained beside the static 96-byte records without adding a binding stream or
     /// touching the encode hot path.
-    pub(in crate::platform::nova) fn prepare_gpu_indexed_special_primitives(
-        &mut self,
-        scene: &crate::Scene,
-    ) {
+    pub(in crate::platform::nova) fn prepare_underline_owners(&mut self, scene: &crate::Scene) {
         let packed_underline_count = self.underlines.len() / PACKED_UNDERLINE_BYTES;
         self.gpu_indexed_underline_animation_ids.clear();
         trim_indexed_vec_capacity(

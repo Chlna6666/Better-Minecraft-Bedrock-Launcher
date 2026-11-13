@@ -3,7 +3,7 @@ use super::*;
 use crate::gestures::RecognizedTouchGesture;
 use crate::{ExternalPaths, TouchEvent, TouchPhase};
 
-mod window_control;
+mod control;
 
 impl Window {
     /// Sets an input handler, such as [`ElementInputHandler`][element_input_handler], which interfaces with the
@@ -658,7 +658,7 @@ impl Window {
             }
         }
 
-        self.dispatch_window_control_mouse_event(event, cx);
+        self.dispatch_control_mouse_event(event, cx);
         if !cx.propagate_event {
             return;
         }

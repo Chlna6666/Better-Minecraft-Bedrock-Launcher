@@ -1,5 +1,4 @@
-#[path = "length_serialization.rs"]
-mod length_serialization;
+mod serialization;
 
 use derive_more::{Div, Mul, Neg, Sub};
 use std::{

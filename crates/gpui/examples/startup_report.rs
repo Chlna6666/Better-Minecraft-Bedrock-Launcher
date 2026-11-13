@@ -17,7 +17,7 @@ struct StartupProcessSample {
 #[derive(Serialize)]
 struct StartupReport {
     process: StartupProcessSample,
-    gpui: gpui::PerformanceMetricsSnapshot,
+    gpui: gpui::diagnostics::performance_metrics::PerformanceMetricsSnapshot,
 }
 
 pub(crate) fn report_path() -> Option<PathBuf> {
@@ -35,7 +35,7 @@ pub(crate) fn write_if_requested() {
 
     let report = StartupReport {
         process: process_memory_sample(),
-        gpui: gpui::performance_metrics_snapshot(),
+        gpui: gpui::diagnostics::performance_metrics::snapshot(),
     };
 
     match serde_json::to_string_pretty(&report) {

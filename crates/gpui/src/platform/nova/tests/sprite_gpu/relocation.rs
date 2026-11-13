@@ -37,8 +37,8 @@ pub(super) fn verify_atlas_compaction<D>(
             .expect("fixture allocation")
             .expect("tile");
         let descriptor = || AtlasResourceDescriptor {
-            mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
-            poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
+            mono_sprite_bind_group_layout: resources.mono_sprite_bind_group_layout,
+            poly_sprite_bind_group_layout: resources.poly_sprite_bind_group_layout,
             frame_buffers: vec![resources.frame_resources[0].buffers],
             sampler: resources.atlas_sampler,
         };
@@ -52,7 +52,7 @@ pub(super) fn verify_atlas_compaction<D>(
         )
         .expect("source page");
         upload_pending_atlas(
-            frame_upload::upload_queue::AtlasUpload::new(&atlas),
+            frame_upload::queue::AtlasUpload::new(&atlas),
             device,
             &mut textures,
             "compact hardware gate",
@@ -96,7 +96,7 @@ pub(super) fn verify_atlas_compaction<D>(
         }
         scene.finish();
         assert!(
-            renderer::compact::compact_atlas(
+            renderer::compact::atlas(
                 &atlas,
                 &mut textures,
                 device,
@@ -148,6 +148,10 @@ pub(super) fn verify_atlas_compaction<D>(
                 width: 16,
                 height: 16,
             },
+            DrawableSize {
+                width: 16,
+                height: 16,
+            },
             &RenderingParameters::system(),
             false,
             BackdropBlurQuality::Full,
@@ -166,7 +170,7 @@ pub(super) fn verify_atlas_compaction<D>(
                 resources.frame_resources[0].buffers.mono_sprite_buffer,
                 &mono_bytes,
                 resources.pipelines.alpha.mono_sprites,
-                destination.mono_resource_sets[0],
+                destination.mono_bind_groups[0],
             )
         } else {
             assert!(
@@ -176,7 +180,7 @@ pub(super) fn verify_atlas_compaction<D>(
                 resources.frame_resources[0].buffers.poly_sprite_buffer,
                 &upload.poly_sprites,
                 resources.pipelines.alpha.poly_sprites,
-                destination.poly_resource_sets[0],
+                destination.poly_bind_groups[0],
             )
         };
         device
@@ -206,11 +210,11 @@ pub(super) fn verify_atlas_compaction<D>(
                 depth_attachment: Some(gfx_core::DepthAttachment {
                     target: resources.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.0),
-            stencil_load_op: None,
-        }),
+                    stencil_load_op: None,
+                }),
                 viewport: None,
-            resolve_target: None,
-        }])
+                resolve_target: None,
+            }])
             .expect("old Scene draws relocated tile");
         let drawn = device.read_texture(target).expect("relocated Scene output");
         let center = 8 * drawn.bytes_per_row as usize + 8 * 4;
@@ -346,7 +350,7 @@ pub(super) fn compact_heap<D: gfx_core::Device>(device: &mut D, buffers: Option<
         );
         assert!(report.moved_bytes <= 8 * 1024 * 1024 && report.moved_resources <= 128);
         // Same public ID must still accept writes. The following production draws verify the
-        // existing texture-view/resource-set IDs now refer to preserved replacement objects.
+        // existing texture-view/bind-group IDs now refer to preserved replacement objects.
         device
             .write_buffer(survivor, 256, &[0x91; 256])
             .expect("stable buffer ID after relocation");

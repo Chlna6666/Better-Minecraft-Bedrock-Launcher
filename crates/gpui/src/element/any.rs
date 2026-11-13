@@ -138,7 +138,7 @@ fn paint_component(
     cx: &mut App,
 ) {
     // Component is a lifecycle wrapper only; the rendered child owns every scene primitive.
-    window.record_debug_element_traversal_only(bounds, cx);
+    window.record_element_traversal_only(bounds, cx);
     window.with_id(ElementId::Name(name.into()), |window| {
         element.paint(window, cx);
     });
@@ -298,7 +298,7 @@ impl Element for AnyElement {
         cx: &mut App,
     ) {
         // This wrapper only forwards into the erased drawable.
-        window.record_debug_element_traversal_only(bounds, cx);
+        window.record_element_traversal_only(bounds, cx);
         self.paint(window, cx);
     }
 }

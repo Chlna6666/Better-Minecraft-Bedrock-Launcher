@@ -1,7 +1,7 @@
 mod dispatcher;
 mod headless;
 mod keyboard;
-mod platform;
+mod implementation;
 #[cfg(feature = "wayland")]
 mod wayland;
 #[cfg(feature = "x11")]
@@ -13,7 +13,7 @@ mod xdg_desktop_portal;
 pub(crate) use dispatcher::*;
 pub(crate) use headless::*;
 pub(crate) use keyboard::*;
-pub(crate) use platform::*;
+pub(crate) use implementation::*;
 #[cfg(feature = "wayland")]
 pub(crate) use wayland::*;
 #[cfg(feature = "x11")]

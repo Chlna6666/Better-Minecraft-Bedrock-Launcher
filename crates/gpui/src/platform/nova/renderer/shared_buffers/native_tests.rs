@@ -170,7 +170,7 @@ fn target(renderer: &NovaRenderer) -> (TextureId, TextureViewId) {
 fn quad_step(renderer: &NovaRenderer) -> DrawCommand {
     DrawCommand {
         pipeline: renderer.pipelines.alpha.quads,
-        bind_groups: bind_group_list([renderer.quad_resource_set]),
+        bind_groups: bind_group_list([renderer.quad_bind_group]),
         vertex_count: 4,
         instance_count: 1,
         first_vertex: 0,
@@ -181,9 +181,7 @@ fn quad_step(renderer: &NovaRenderer) -> DrawCommand {
 
 fn draw(renderer: &NovaRenderer, view: TextureViewId, slot: usize) {
     let step = RenderCommand::Draw(DrawCommand {
-        bind_groups: bind_group_list([renderer.frame_resources[slot]
-            .bind_groups
-            .quad_resource_set]),
+        bind_groups: bind_group_list([renderer.frame_resources[slot].bind_groups.quad_bind_group]),
         ..quad_step(renderer)
     });
     device!(renderer, device, {
@@ -317,13 +315,13 @@ fn verify(backend: RendererBackend) {
     );
     let old_ids = renderer.frame_resources[0].buffers.ids();
     let count = device!(renderer, device, { device.resource_stats().buffers });
-    let layout = renderer.quad_resource_set_layout;
-    renderer.quad_resource_set_layout = BindGroupLayoutId::from_parts(u32::MAX, u32::MAX);
+    let layout = renderer.quad_bind_group_layout;
+    renderer.quad_bind_group_layout = BindGroupLayoutId::from_parts(u32::MAX, u32::MAX);
     assert!(
         renderer.prepare_static_buffers().is_err(),
         "rebind failure is reported"
     );
-    renderer.quad_resource_set_layout = layout;
+    renderer.quad_bind_group_layout = layout;
     assert_eq!(renderer.frame_resources[0].buffers.ids(), old_ids);
     assert_eq!(
         device!(renderer, device, { device.resource_stats().buffers }),

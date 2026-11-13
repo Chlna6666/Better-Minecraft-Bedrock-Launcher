@@ -15,8 +15,8 @@ use std::{
 
 use gpui::{
     Animation, AnimationExt as _, AnimationGroup, App, Application, Bounds, Context, Point,
-    RendererBackend, RendererOptions, Window, WindowBounds, WindowOptions, div,
-    performance_metrics_snapshot, prelude::*, px, rgb, size,
+    RendererBackend, RendererOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    rgb, size,
 };
 
 const BLOCK_DURATION: Duration = Duration::from_millis(200);
@@ -24,7 +24,7 @@ const INITIAL_PRESENT_TIMEOUT: Duration = Duration::from_secs(30);
 const UI_BLOCK_TIMEOUT: Duration = Duration::from_secs(35);
 
 fn native_presents() -> (usize, usize) {
-    let metrics = performance_metrics_snapshot();
+    let metrics = gpui::diagnostics::performance_metrics::snapshot();
     (
         metrics.direct_present_count + metrics.retained_present_count,
         metrics.presentation_animation_distinct_sample_count,

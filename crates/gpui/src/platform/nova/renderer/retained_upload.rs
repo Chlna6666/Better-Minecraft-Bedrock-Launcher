@@ -888,7 +888,7 @@ impl NovaRenderer {
                 .set_atlas_placement_generation(self.atlas.placement_generation());
             self.atlas
                 .copy_placements_into(&mut self.frame_upload.atlas_placements);
-            summary = self.frame_upload.encode_frame(
+            summary = self.frame_upload.encode(
                 &mut self.retained_upload.retained_chunks,
                 scene,
                 retained_paint,
@@ -930,11 +930,8 @@ impl NovaRenderer {
                     )
                     || should_retain_complex_scene_color(scene, &summary))
             {
-                self.frame_upload.append_root_color_sized(
-                    render_size,
-                    self.current_size,
-                    &mut summary,
-                );
+                self.frame_upload
+                    .append_root_color(render_size, self.current_size, &mut summary);
             }
             log::trace!(
                 target: "gpui::diagnostics",
@@ -1201,11 +1198,12 @@ mod tests {
             &crate::window::retained::RetainedPaint::default(),
             &[],
             size,
+            size,
             &RenderingParameters::system(),
             false,
             BackdropBlurQuality::Full,
         );
-        assert!(upload.capture_encoded_static_prefix(&captured, size, &mut summary));
+        assert!(upload.capture_static_prefix(&captured, size, &mut summary));
         assert_eq!(
             upload.element_blur_inputs.len(),
             2,
@@ -1297,7 +1295,6 @@ mod tests {
         assert_eq!(split.static_prefix, 12);
         assert_eq!(split.animated, 1);
         assert_eq!(split.static_after_dynamic, 0);
-        assert!(split.has_contiguous_static_background());
         assert!(split.has_proven_static_majority());
 
         let mut interleaved = background;
@@ -1306,7 +1303,6 @@ mod tests {
         }));
         let mixed = classify_static_foreground(&interleaved);
         assert_eq!(mixed.static_after_dynamic, 12);
-        assert!(!mixed.has_contiguous_static_background());
         assert!(!mixed.has_proven_static_majority());
     }
 

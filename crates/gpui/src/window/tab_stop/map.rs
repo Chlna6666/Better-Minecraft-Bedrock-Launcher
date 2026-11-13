@@ -100,7 +100,7 @@ impl TabStopMap {
                 return self.focus_handle_for_order(first);
             } else {
                 return self
-                    .next_inner(first)
+                    .next_tab_stop_node(first)
                     .and_then(|order| self.focus_handle_for_order(order));
             }
         };
@@ -108,7 +108,7 @@ impl TabStopMap {
         let Some(node) = self.tab_node_for_focus_id(focused_id) else {
             return self.next(None);
         };
-        let item = self.next_inner(node);
+        let item = self.next_tab_stop_node(node);
 
         if let Some(item) = item {
             self.focus_handle_for_order(item)
@@ -117,7 +117,7 @@ impl TabStopMap {
         }
     }
 
-    fn next_inner(&self, node: &TabStopNode) -> Option<&TabStopNode> {
+    fn next_tab_stop_node(&self, node: &TabStopNode) -> Option<&TabStopNode> {
         let mut cursor = self.order.cursor::<TabStopNode>(());
         cursor.seek(node, Bias::Left);
         cursor.next();
@@ -137,7 +137,7 @@ impl TabStopMap {
                 return self.focus_handle_for_order(last);
             } else {
                 return self
-                    .prev_inner(last)
+                    .previous_tab_stop_node(last)
                     .and_then(|order| self.focus_handle_for_order(order));
             }
         };
@@ -145,7 +145,7 @@ impl TabStopMap {
         let Some(node) = self.tab_node_for_focus_id(focused_id) else {
             return self.prev(None);
         };
-        let item = self.prev_inner(node);
+        let item = self.previous_tab_stop_node(node);
 
         if let Some(item) = item {
             self.focus_handle_for_order(item)
@@ -154,7 +154,7 @@ impl TabStopMap {
         }
     }
 
-    fn prev_inner(&self, node: &TabStopNode) -> Option<&TabStopNode> {
+    fn previous_tab_stop_node(&self, node: &TabStopNode) -> Option<&TabStopNode> {
         let mut cursor = self.order.cursor::<TabStopNode>(());
         cursor.seek(node, Bias::Left);
         cursor.prev();

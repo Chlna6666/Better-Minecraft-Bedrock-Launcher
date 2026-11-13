@@ -5,12 +5,12 @@ pub(super) struct NovaGpuAtlasTexture {
     pub(super) size: Size<DevicePixels>,
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
-    pub(super) mono_resource_sets: Vec<BindGroupId>,
-    pub(super) poly_resource_sets: Vec<BindGroupId>,
+    pub(super) mono_bind_groups: Vec<BindGroupId>,
+    pub(super) poly_bind_groups: Vec<BindGroupId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum NovaAtlasResourceSetMode {
+pub(super) enum NovaAtlasBindGroupMode {
     All,
     UsedByTextureKind,
 }
@@ -35,15 +35,15 @@ pub(super) fn initial_gpu_atlas_textures(
             size: startup_atlas_texture_size(),
             texture: resources.atlas_texture,
             texture_view: resources.atlas_texture_view,
-            mono_resource_sets: resources
+            mono_bind_groups: resources
                 .frame_resources
                 .iter()
-                .map(|resources| resources.mono_sprite_resource_set)
+                .map(|resources| resources.mono_sprite_bind_group)
                 .collect(),
-            poly_resource_sets: resources
+            poly_bind_groups: resources
                 .frame_resources
                 .iter()
-                .map(|resources| resources.poly_sprite_resource_set)
+                .map(|resources| resources.poly_sprite_bind_group)
                 .collect(),
         },
     );
@@ -58,19 +58,19 @@ pub(super) fn destroy_gpu_atlas_texture<D>(
 ) where
     D: ResourceDevice,
 {
-    for bind_group in texture.mono_resource_sets {
+    for bind_group in texture.mono_bind_groups {
         if let Err(error) = device.destroy_bind_group(bind_group) {
             log::debug!(
-                "failed to destroy {backend_name} atlas {:?}/{} mono resource set: {error}",
+                "failed to destroy {backend_name} atlas {:?}/{} mono bind group: {error}",
                 atlas_id.kind,
                 atlas_id.index
             );
         }
     }
-    for bind_group in texture.poly_resource_sets {
+    for bind_group in texture.poly_bind_groups {
         if let Err(error) = device.destroy_bind_group(bind_group) {
             log::debug!(
-                "failed to destroy {backend_name} atlas {:?}/{} poly resource set: {error}",
+                "failed to destroy {backend_name} atlas {:?}/{} poly bind group: {error}",
                 atlas_id.kind,
                 atlas_id.index
             );
@@ -126,7 +126,7 @@ where
             texture_info.id,
             texture_info.size,
             &descriptor,
-            NovaAtlasResourceSetMode::UsedByTextureKind,
+            NovaAtlasBindGroupMode::UsedByTextureKind,
         ) {
             Ok(texture) => texture,
             Err(error) => {
@@ -159,7 +159,7 @@ pub(super) fn create_atlas_texture_resources<D>(
     atlas_id: AtlasTextureId,
     size: Size<DevicePixels>,
     descriptor: &AtlasResourceDescriptor,
-    resource_set_mode: NovaAtlasResourceSetMode,
+    bind_group_mode: NovaAtlasBindGroupMode,
 ) -> Result<NovaGpuAtlasTexture>
 where
     D: ResourceDevice,
@@ -203,16 +203,16 @@ where
             return Err(error.into());
         }
     };
-    let mut mono_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
-    let mut poly_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
-    let create_mono_resource_sets =
-        uses_mono_sprite_resource_sets(atlas_id.kind, resource_set_mode);
-    let create_poly_resource_sets =
-        uses_poly_sprite_resource_sets(atlas_id.kind, resource_set_mode);
+    let mut mono_bind_groups = Vec::with_capacity(descriptor.frame_buffers.len());
+    let mut poly_bind_groups = Vec::with_capacity(descriptor.frame_buffers.len());
+    let create_mono_bind_groups =
+        uses_mono_sprite_bind_groups(atlas_id.kind, bind_group_mode);
+    let create_poly_bind_groups =
+        uses_poly_sprite_bind_groups(atlas_id.kind, bind_group_mode);
     let bind_groups = (|| -> Result<()> {
         for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-            if create_mono_resource_sets {
-                mono_resource_sets.push(create_mono_atlas_resource_set(
+            if create_mono_bind_groups {
+                mono_bind_groups.push(create_mono_atlas_bind_group(
                     device,
                     label,
                     atlas_id,
@@ -222,8 +222,8 @@ where
                     descriptor,
                 )?);
             }
-            if create_poly_resource_sets {
-                poly_resource_sets.push(create_poly_atlas_resource_set(
+            if create_poly_bind_groups {
+                poly_bind_groups.push(create_poly_atlas_bind_group(
                     device,
                     label,
                     atlas_id,
@@ -243,8 +243,8 @@ where
                 size,
                 texture,
                 texture_view,
-                mono_resource_sets,
-                poly_resource_sets,
+                mono_bind_groups,
+                poly_bind_groups,
             },
             label,
             atlas_id,
@@ -256,27 +256,27 @@ where
         size,
         texture,
         texture_view,
-        mono_resource_sets,
-        poly_resource_sets,
+        mono_bind_groups,
+        poly_bind_groups,
     })
 }
 
-fn uses_mono_sprite_resource_sets(
+fn uses_mono_sprite_bind_groups(
     texture_kind: AtlasTextureKind,
-    mode: NovaAtlasResourceSetMode,
+    mode: NovaAtlasBindGroupMode,
 ) -> bool {
-    mode == NovaAtlasResourceSetMode::All
+    mode == NovaAtlasBindGroupMode::All
         || matches!(
             texture_kind,
             AtlasTextureKind::Monochrome | AtlasTextureKind::Subpixel
         )
 }
 
-fn uses_poly_sprite_resource_sets(
+fn uses_poly_sprite_bind_groups(
     texture_kind: AtlasTextureKind,
-    mode: NovaAtlasResourceSetMode,
+    mode: NovaAtlasBindGroupMode,
 ) -> bool {
-    mode == NovaAtlasResourceSetMode::All
+    mode == NovaAtlasBindGroupMode::All
         || matches!(
             texture_kind,
             AtlasTextureKind::Bgra | AtlasTextureKind::Rgba
@@ -295,7 +295,7 @@ fn indexed_animation_binding(buffers: FrameResourceBuffers) -> BindGroupEntry {
     }
 }
 
-fn create_mono_atlas_resource_set<D>(
+fn create_mono_atlas_bind_group<D>(
     device: &mut D,
     label: &str,
     atlas_id: AtlasTextureId,
@@ -309,15 +309,15 @@ where
 {
     Ok(device.create_bind_group(&BindGroupDescriptor {
         label: Some(format!(
-            "{label} atlas {:?}/{} frame {frame_index} mono resource set",
+            "{label} atlas {:?}/{} frame {frame_index} mono bind group",
             atlas_id.kind, atlas_id.index
         )),
-        layout: descriptor.mono_sprite_resource_set_layout,
+        layout: descriptor.mono_sprite_bind_group_layout,
         entries: mono_atlas_resource_bindings(buffers, texture_view, descriptor.sampler),
     })?)
 }
 
-fn create_poly_atlas_resource_set<D>(
+fn create_poly_atlas_bind_group<D>(
     device: &mut D,
     label: &str,
     atlas_id: AtlasTextureId,
@@ -331,10 +331,10 @@ where
 {
     Ok(device.create_bind_group(&BindGroupDescriptor {
         label: Some(format!(
-            "{label} atlas {:?}/{} frame {frame_index} poly resource set",
+            "{label} atlas {:?}/{} frame {frame_index} poly bind group",
             atlas_id.kind, atlas_id.index
         )),
-        layout: descriptor.poly_sprite_resource_set_layout,
+        layout: descriptor.poly_sprite_bind_group_layout,
         entries: poly_atlas_resource_bindings(buffers, texture_view, descriptor.sampler),
     })?)
 }
@@ -352,39 +352,39 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_atlas_textures_only_create_used_sprite_resource_sets() {
+    fn dynamic_atlas_textures_only_create_used_sprite_bind_groups() {
         for texture_kind in [AtlasTextureKind::Bgra, AtlasTextureKind::Rgba] {
-            assert!(!uses_mono_sprite_resource_sets(
+            assert!(!uses_mono_sprite_bind_groups(
                 texture_kind,
-                NovaAtlasResourceSetMode::UsedByTextureKind
+                NovaAtlasBindGroupMode::UsedByTextureKind
             ));
-            assert!(uses_poly_sprite_resource_sets(
+            assert!(uses_poly_sprite_bind_groups(
                 texture_kind,
-                NovaAtlasResourceSetMode::UsedByTextureKind
+                NovaAtlasBindGroupMode::UsedByTextureKind
             ));
         }
         for texture_kind in [AtlasTextureKind::Monochrome, AtlasTextureKind::Subpixel] {
-            assert!(uses_mono_sprite_resource_sets(
+            assert!(uses_mono_sprite_bind_groups(
                 texture_kind,
-                NovaAtlasResourceSetMode::UsedByTextureKind
+                NovaAtlasBindGroupMode::UsedByTextureKind
             ));
-            assert!(!uses_poly_sprite_resource_sets(
+            assert!(!uses_poly_sprite_bind_groups(
                 texture_kind,
-                NovaAtlasResourceSetMode::UsedByTextureKind
+                NovaAtlasBindGroupMode::UsedByTextureKind
             ));
         }
     }
 
     #[test]
-    fn initial_atlas_texture_can_create_both_resource_set_kinds() {
+    fn initial_atlas_texture_can_create_both_bind_group_kinds() {
         for texture_kind in NOVA_ATLAS_TEXTURE_KINDS {
-            assert!(uses_mono_sprite_resource_sets(
+            assert!(uses_mono_sprite_bind_groups(
                 texture_kind,
-                NovaAtlasResourceSetMode::All
+                NovaAtlasBindGroupMode::All
             ));
-            assert!(uses_poly_sprite_resource_sets(
+            assert!(uses_poly_sprite_bind_groups(
                 texture_kind,
-                NovaAtlasResourceSetMode::All
+                NovaAtlasBindGroupMode::All
             ));
         }
     }

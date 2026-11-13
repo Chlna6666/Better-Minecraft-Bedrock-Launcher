@@ -1,4 +1,4 @@
-use super::upload_encoding::{atlas_source_byte_len, encode_padded_atlas_upload};
+use super::atlas_encoding::{atlas_source_byte_len, encode_padded_atlas_upload};
 use super::*;
 mod batch;
 mod damage;

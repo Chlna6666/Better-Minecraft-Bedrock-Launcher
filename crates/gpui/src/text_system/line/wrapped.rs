@@ -1,4 +1,4 @@
-use super::{DecorationRun, background::paint_line_background, paint::paint_line};
+use super::{DecorationRun, background::paint_line_background, paint};
 use crate::{App, Bounds, Pixels, Result, SharedString, TextAlign, Window, WrappedLineLayout};
 use derive_more::{Deref, DerefMut};
 use smallvec::SmallVec;
@@ -33,7 +33,7 @@ impl WrappedLine {
         cx: &mut App,
     ) -> Result<()> {
         let width = bounds.map_or(self.layout.wrap_width, |bounds| Some(bounds.size.width));
-        paint_line(
+    paint::line(
             origin,
             &self.layout.unwrapped_layout,
             line_height,

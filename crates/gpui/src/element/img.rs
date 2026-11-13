@@ -1,4 +1,4 @@
-mod element;
+mod component;
 mod error;
 mod layout;
 mod loader;
@@ -8,7 +8,7 @@ mod sizing;
 mod source;
 mod style;
 
-pub use element::*;
+pub use component::*;
 pub use error::*;
 pub use loader::*;
 pub(crate) use loader::{compressed_cache_snapshot, trim_compressed_cache};

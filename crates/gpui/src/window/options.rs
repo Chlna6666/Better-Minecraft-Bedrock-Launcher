@@ -531,32 +531,54 @@ impl WindowBackgroundCapabilities {
 
 #[cfg(test)]
 mod background_tests {
-    use super::{WindowBackgroundAppearance as Appearance, WindowBackgroundCapabilities};
+    use super::{WindowBackgroundAppearance, WindowBackgroundCapabilities};
 
     #[test]
     fn unsupported_materials_fall_back_without_changing_plain_backgrounds() {
         let none = WindowBackgroundCapabilities::default();
-        assert_eq!(none.resolve(Appearance::Opaque), Appearance::Opaque);
         assert_eq!(
-            none.resolve(Appearance::Transparent),
-            Appearance::Transparent
+            none.resolve(WindowBackgroundAppearance::Opaque),
+            WindowBackgroundAppearance::Opaque
         );
-        for material in [Appearance::Blurred, Appearance::Mica, Appearance::MicaAlt] {
+        assert_eq!(
+            none.resolve(WindowBackgroundAppearance::Transparent),
+            WindowBackgroundAppearance::Transparent
+        );
+        for material in [
+            WindowBackgroundAppearance::Blurred,
+            WindowBackgroundAppearance::Mica,
+            WindowBackgroundAppearance::MicaAlt,
+        ] {
             assert!(!none.supports(material));
-            assert_eq!(none.resolve(material), Appearance::Transparent);
+            assert_eq!(
+                none.resolve(material),
+                WindowBackgroundAppearance::Transparent
+            );
         }
         let blur = WindowBackgroundCapabilities {
             blurred: true,
             ..none
         };
-        assert_eq!(blur.resolve(Appearance::Mica), Appearance::Blurred);
-        assert_eq!(blur.resolve(Appearance::MicaAlt), Appearance::Blurred);
+        assert_eq!(
+            blur.resolve(WindowBackgroundAppearance::Mica),
+            WindowBackgroundAppearance::Blurred
+        );
+        assert_eq!(
+            blur.resolve(WindowBackgroundAppearance::MicaAlt),
+            WindowBackgroundAppearance::Blurred
+        );
         let mica = WindowBackgroundCapabilities {
             mica: true,
             mica_alt: true,
             ..blur
         };
-        assert_eq!(mica.resolve(Appearance::Mica), Appearance::Mica);
-        assert_eq!(mica.resolve(Appearance::MicaAlt), Appearance::MicaAlt);
+        assert_eq!(
+            mica.resolve(WindowBackgroundAppearance::Mica),
+            WindowBackgroundAppearance::Mica
+        );
+        assert_eq!(
+            mica.resolve(WindowBackgroundAppearance::MicaAlt),
+            WindowBackgroundAppearance::MicaAlt
+        );
     }
 }

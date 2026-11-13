@@ -10,19 +10,19 @@ mod backend_ready;
 mod native_vsync;
 pub(super) mod path_mask;
 
-pub use backend_ready::WindowBackendReadyMetricsSnapshot;
-pub(crate) use backend_ready::record_window_backend_ready_wake;
-pub use native_vsync::WindowVSyncMetricsSnapshot;
+pub use backend_ready::BackendReadyMetricsSnapshot;
+pub(crate) use backend_ready::record_backend_ready_wake;
+pub use native_vsync::VSyncMetricsSnapshot;
 pub(crate) use native_vsync::{
     record_present_attempt, record_present_preflight_deferred,
-    record_window_active_presentation_retry, record_window_native_vsync_wake,
+    record_active_presentation_retry, record_native_vsync_wake,
 };
-pub use path_mask::WindowPathMaskMetricsSnapshot;
-pub(crate) use path_mask::record_window_path_mask;
+pub use path_mask::PathMaskMetricsSnapshot;
+pub(crate) use path_mask::record_path_mask;
 
 /// Recent successful compositor frames driven by a time-dependent renderer extension.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WindowExtensionPresentMetricsSnapshot {
+pub struct ExtensionPresentMetricsSnapshot {
     /// Number of retained timing samples; zero means no measured submission.
     pub sample_count: usize,
     /// 95th percentile from GPU-owner frame start through submission, in microseconds.
@@ -45,7 +45,7 @@ pub struct WindowExtensionPresentMetricsSnapshot {
 
 /// Metrics for one window.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WindowMetricsSnapshot {
+pub struct MetricsSnapshot {
     /// Platform window identifier.
     pub window_id: u64,
     /// Per-window present rate in milli-FPS. This is never shared across windows.
@@ -111,13 +111,13 @@ pub struct WindowMetricsSnapshot {
     /// Number of recent active-animation presentation intervals retained.
     pub animation_sample_interval_sample_count: usize,
     /// Timing of compositor frames driven by time-dependent renderer extensions.
-    pub extension_present: WindowExtensionPresentMetricsSnapshot,
+    pub extension_present: ExtensionPresentMetricsSnapshot,
     /// DWM pacing and active-presentation counters for this window.
-    pub native_vsync: WindowVSyncMetricsSnapshot,
+    pub native_vsync: VSyncMetricsSnapshot,
     /// Backend readiness wake counts and queue delay, separate from DWM pacing.
-    pub backend_ready: WindowBackendReadyMetricsSnapshot,
+    pub backend_ready: BackendReadyMetricsSnapshot,
     /// Submitted path-mask rasterizations, pixel-cache reuse and CPU pass-call timing.
-    pub path_mask: WindowPathMaskMetricsSnapshot,
+    pub path_mask: PathMaskMetricsSnapshot,
     /// Skipped frame decisions.
     pub skip_count: usize,
     /// Skipped frame opportunities.
@@ -134,7 +134,7 @@ pub struct WindowMetricsSnapshot {
 
 /// A successful presentation that sampled an active visual animation.
 #[derive(Clone, Copy, Debug)]
-pub struct WindowAnimationSample {
+pub struct AnimationSample {
     /// Monotonically increasing sequence number within the window.
     pub sequence: u64,
     /// Time at which the successful presentation sample was recorded.
@@ -143,12 +143,12 @@ pub struct WindowAnimationSample {
     /// This is `None` when the window had no previous active-animation sample.
     pub changed_from_previous: Option<bool>,
     /// Windows pacing and active-present timings when this frame was initiated by a VSync event.
-    pub presentation_timing: Option<WindowAnimationPresentationTiming>,
+    pub presentation_timing: Option<AnimationPresentationTiming>,
 }
 
 /// Windows frame-pacing stages measured for one successful active-animation presentation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct WindowAnimationPresentationTiming {
+pub struct AnimationPresentationTiming {
     /// Time spent waiting for DWM pacing or the inactive-window cadence.
     pub frame_pacing_wait: Duration,
     /// Time from enqueueing the VSync event until winit delivered it.
@@ -186,15 +186,15 @@ pub struct WindowAnimationPresentationTiming {
 
 /// Recent successful active-animation samples for one window.
 #[derive(Clone, Debug)]
-pub struct WindowAnimationSamples {
-    /// Sequence supplied to `window_animation_samples_since`.
+pub struct AnimationSamples {
+    /// Sequence supplied to `animation_samples_since`.
     pub after_sequence: u64,
     /// Sequence of the newest recorded active-animation presentation.
     pub latest_sequence: u64,
     /// Whether one or more requested samples were evicted from the bounded history.
     pub history_overflowed: bool,
     /// Retained samples newer than `after_sequence`, in presentation order.
-    pub samples: Vec<WindowAnimationSample>,
+    pub samples: Vec<AnimationSample>,
 }
 
 /// Returns recent successful active-animation samples newer than `after_sequence`.
@@ -206,10 +206,10 @@ pub struct WindowAnimationSamples {
 /// # Returns
 ///
 /// Returns `None` when the window has no metrics entry or the metrics lock is poisoned.
-pub fn window_animation_samples_since(
+pub fn animation_samples_since(
     window_id: u64,
     after_sequence: u64,
-) -> Option<WindowAnimationSamples> {
+) -> Option<AnimationSamples> {
     let shared_metrics = shared_metrics();
     let window_metrics = shared_metrics.window_metrics.lock().ok()?;
     let metrics = window_metrics.get(&window_id)?;
@@ -219,7 +219,7 @@ pub fn window_animation_samples_since(
         |(sequence, _, _, _)| *sequence,
     );
 
-    Some(WindowAnimationSamples {
+    Some(AnimationSamples {
         after_sequence,
         latest_sequence,
         history_overflowed: after_sequence.saturating_add(1) < first_retained_sequence,
@@ -229,7 +229,7 @@ pub fn window_animation_samples_since(
             .filter(|(sequence, _, _, _)| *sequence > after_sequence)
             .map(
                 |(sequence, presented_at, changed_from_previous, presentation_timing)| {
-                    WindowAnimationSample {
+                    AnimationSample {
                         sequence: *sequence,
                         presented_at: *presented_at,
                         changed_from_previous: *changed_from_previous,
@@ -243,9 +243,9 @@ pub fn window_animation_samples_since(
 
 /// Returns a lightweight point-in-time snapshot of all window-local metrics.
 ///
-/// Unlike `performance_metrics_snapshot`, this only locks the per-window metrics table. It is
+/// Unlike `snapshot`, this only locks the per-window metrics table. It is
 /// intended for high-frequency diagnostics that must not scan allocator/image/renderer state.
-pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
+pub fn snapshot() -> Vec<MetricsSnapshot> {
     let now = Instant::now();
     shared_metrics()
         .window_metrics
@@ -273,7 +273,7 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                     let animation_sample_interval =
                         metrics.animation_sample_interval_samples.percentiles();
                     let extension_total = metrics.extension_present_total_samples.percentiles();
-                    let extension_present = WindowExtensionPresentMetricsSnapshot {
+                    let extension_present = ExtensionPresentMetricsSnapshot {
                         sample_count: extension_total.count,
                         total_p95_micros: extension_total.p95_micros as usize,
                         scene_prepare_p95_micros: metrics
@@ -307,7 +307,7 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                         other_p95_micros: metrics.extension_other_samples.percentiles().p95_micros
                             as usize,
                     };
-                    WindowMetricsSnapshot {
+                    MetricsSnapshot {
                         window_id,
                         present_fps_milli,
                         dirty_to_present_average_micros: dirty_to_present_average_micros as usize,
@@ -369,7 +369,7 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
         .unwrap_or_default()
 }
 
-pub(crate) fn record_window_extension_present(
+pub(crate) fn record_extension_present(
     window_id: u64,
     timing: crate::ActivePresentationTiming,
 ) {
@@ -408,7 +408,7 @@ pub(crate) fn record_window_extension_present(
 
 /// Per-window frame accounting for one frame decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct WindowFrameDisposition {
+pub struct FrameDisposition {
     /// Whether the frame produced freshly drawn scene content.
     pub drew_frame: bool,
     /// End-to-end duration of this platform frame callback when it drew fresh scene content.
@@ -420,7 +420,7 @@ pub struct WindowFrameDisposition {
 }
 
 /// Records that a specific window requested a redraw.
-pub fn record_window_request_redraw(window_id: u64) {
+pub fn record_redraw_request(window_id: u64) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();
         metrics.request_redraw_count = metrics.request_redraw_count.saturating_add(1);
@@ -428,7 +428,7 @@ pub fn record_window_request_redraw(window_id: u64) {
 }
 
 /// Records the disposition of a specific window frame.
-pub fn record_window_frame_disposition(window_id: u64, disposition: WindowFrameDisposition) {
+pub fn record_frame_disposition(window_id: u64, disposition: FrameDisposition) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();
         if disposition.drew_frame {
@@ -470,7 +470,7 @@ pub fn record_window_frame_disposition(window_id: u64, disposition: WindowFrameD
 }
 
 /// Records the combined active-animation sample carried by a successful presentation.
-pub(crate) fn record_window_animation_sample(
+pub(crate) fn record_animation_sample(
     window_id: u64,
     sample_hash: u64,
     presentation_timing: Option<crate::ActivePresentationTiming>,
@@ -480,7 +480,7 @@ pub(crate) fn record_window_animation_sample(
     let presentation_timing =
         (presentation_timing.is_some() || backend_timings.is_some()).then(|| {
             let timing = presentation_timing;
-            WindowAnimationPresentationTiming {
+            AnimationPresentationTiming {
                 frame_pacing_wait: timing.map_or(Duration::ZERO, |timing| timing.frame_pacing_wait),
                 vsync_event_queue_delay: timing
                     .map_or(Duration::ZERO, |timing| timing.vsync_event_queue_delay),
@@ -547,7 +547,7 @@ pub(crate) fn record_window_animation_sample(
 }
 
 /// Records one end-to-end latency sample from the first dirty edge to a submitted presentation.
-pub fn record_window_dirty_to_present(window_id: u64, duration: Duration) {
+pub fn record_dirty_to_present(window_id: u64, duration: Duration) {
     let micros = duration.as_micros().min(u64::MAX as u128) as u64;
     let shared = shared_metrics();
     shared
@@ -570,7 +570,7 @@ pub fn record_window_dirty_to_present(window_id: u64, duration: Duration) {
 }
 
 /// Records current per-window geometry and activation state.
-pub fn record_window_runtime_state(
+pub fn record_runtime_state(
     window_id: u64,
     logical_width: f32,
     logical_height: f32,
@@ -613,7 +613,7 @@ pub fn record_window_runtime_state(
 ///
 /// Hiding starts a new presentation timing epoch. The first frame after becoming visible establishes
 /// a fresh baseline instead of being compared with the last pre-hide presentation.
-pub fn record_window_visibility(window_id: u64, visible: bool) {
+pub fn record_visibility(window_id: u64, visible: bool) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();
         if metrics.visible != visible {
@@ -627,7 +627,7 @@ pub fn record_window_visibility(window_id: u64, visible: bool) {
 }
 
 /// Records per-window gpu surface diagnostics.
-pub fn record_window_gpu_surface_metrics(
+pub fn record_gpu_surface_metrics(
     window_id: u64,
     surface_reconfigure_count: usize,
     surface_error_count: usize,
@@ -640,7 +640,7 @@ pub fn record_window_gpu_surface_metrics(
 }
 
 /// Records a layout recompute for a specific window.
-pub fn record_window_layout_recompute(window_id: u64) {
+pub fn record_layout_recompute(window_id: u64) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();
         metrics.layout_recompute_count = metrics.layout_recompute_count.saturating_add(1);
@@ -648,7 +648,7 @@ pub fn record_window_layout_recompute(window_id: u64) {
 }
 
 /// Records bytes uploaded for a specific window during the latest renderer submission.
-pub fn record_window_upload_bytes(window_id: u64, bytes: usize) {
+pub fn record_upload_bytes(window_id: u64, bytes: usize) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();
         metrics.upload_bytes = bytes as u64;

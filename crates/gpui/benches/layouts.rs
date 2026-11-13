@@ -1,7 +1,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use gpui::{
     PerformanceMetricsSnapshot, Pixels, SharedString, TestAppContext, VisualTestContext,
-    benchmark::LayoutBenchmark, performance_metrics_snapshot, px,
+    benchmark::LayoutBenchmark, snapshot, px,
 };
 
 const NODE_COUNTS: [usize; 3] = [128, 1_024, 4_096];
@@ -196,7 +196,7 @@ fn shape_text_frame(
         let _ = window.draw(cx);
     });
 
-    text_cache_sample_from_snapshot(performance_metrics_snapshot())
+    text_cache_sample_from_snapshot(snapshot())
 }
 
 fn text_cache_sample_from_snapshot(snapshot: PerformanceMetricsSnapshot) -> TextCacheSample {

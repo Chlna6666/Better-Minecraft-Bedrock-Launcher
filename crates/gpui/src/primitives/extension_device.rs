@@ -36,7 +36,7 @@ pub trait ExtensionDevice {
         &mut self,
         _passes: &[gfx_core::RenderPassCommands<'_>],
         _tags: &[Option<GpuTimestampTag>],
-        _independent: bool,
+        _queue: OffscreenQueuePreference,
     ) -> Result<Option<gfx_core::SubmissionId>> {
         Err(gfx_core::Error::Unavailable(
             "native offscreen graphics submission is unsupported".into(),
@@ -52,27 +52,16 @@ pub trait ExtensionDevice {
 
     /// Submit actual Compute commands on the exact native queue and return a
     /// producer fence. Never replace this with a checkpoint on an idle queue.
-    /// Unlike the legacy batch API this is explicitly opt-in.
-    fn submit_compute_batch_on_queue(
+    /// When `timestamp_tag` is set the backend must record the tag in the
+    /// exact producer command list; a missing hardware clock does not permit
+    /// inventing a sample.
+    fn submit_compute(
         &mut self,
-        _queue: gfx_core::GpuQueueId,
-        _dispatches: &[gfx_core::ComputeDispatch<'_>],
+        _submit: gfx_core::ComputeSubmit<'_>,
     ) -> Result<gfx_core::SubmissionId> {
         Err(gfx_core::Error::Unavailable(
             "native queue compute dispatch is unsupported".into(),
         ))
-    }
-
-    /// Native buffer-only Compute with hardware timestamp correlation. The
-    /// backend must record the tag in the exact producer command list; a
-    /// missing hardware clock does not permit inventing a sample.
-    fn submit_compute_batch_profiled_on_queue(
-        &mut self,
-        queue: gfx_core::GpuQueueId,
-        dispatches: &[gfx_core::ComputeDispatch<'_>],
-        _tag: GpuTimestampTag,
-    ) -> Result<gfx_core::SubmissionId> {
-        self.submit_compute_batch_on_queue(queue, dispatches)
     }
 
     /// Execute GPU->GPU buffer relocation on a real native Transfer queue.
@@ -422,18 +411,9 @@ where
         &mut self,
         passes: &[gfx_core::RenderPassCommands<'_>],
         tags: &[Option<GpuTimestampTag>],
-        independent: bool,
+        queue: OffscreenQueuePreference,
     ) -> Result<Option<gfx_core::SubmissionId>> {
-        OffscreenSubmissionDevice::submit_offscreen_graphics(
-            self,
-            passes,
-            tags,
-            if independent {
-                OffscreenQueuePreference::IndependentGraphicsIfAvailable
-            } else {
-                OffscreenQueuePreference::OrderedGraphics
-            },
-        )
+        OffscreenSubmissionDevice::submit_offscreen_graphics(self, passes, tags, queue)
     }
 
     fn independent_graphics_queue_available(&self) -> bool {
@@ -444,23 +424,11 @@ where
         gfx_core::SubmissionDevice::independent_queue(self, stage)
     }
 
-    fn submit_compute_batch_on_queue(
+    fn submit_compute(
         &mut self,
-        queue: gfx_core::GpuQueueId,
-        dispatches: &[gfx_core::ComputeDispatch<'_>],
+        submit: gfx_core::ComputeSubmit<'_>,
     ) -> Result<gfx_core::SubmissionId> {
-        gfx_core::SubmissionDevice::submit_compute_batch_on_queue(self, queue, dispatches)
-    }
-
-    fn submit_compute_batch_profiled_on_queue(
-        &mut self,
-        queue: gfx_core::GpuQueueId,
-        dispatches: &[gfx_core::ComputeDispatch<'_>],
-        tag: GpuTimestampTag,
-    ) -> Result<gfx_core::SubmissionId> {
-        gfx_core::SubmissionDevice::submit_compute_batch_profiled_on_queue(
-            self, queue, dispatches, tag,
-        )
+        gfx_core::SubmissionDevice::submit_compute(self, submit)
     }
 
     fn submit_buffer_copies_on_queue(
@@ -472,14 +440,16 @@ where
     }
 
     fn enqueue_gpu_queue_wait(
-        &mut self, target: gfx_core::GpuQueueId,
+        &mut self,
+        target: gfx_core::GpuQueueId,
         producer: gfx_core::SubmissionId,
     ) -> Result<gfx_core::GpuNativeWaitProof> {
         gfx_core::SubmissionDevice::enqueue_gpu_queue_wait(self, target, producer)
     }
 
     fn checkpoint_gpu_queue(
-        &mut self, queue: gfx_core::GpuQueueId,
+        &mut self,
+        queue: gfx_core::GpuQueueId,
     ) -> Result<gfx_core::SubmissionId> {
         gfx_core::SubmissionDevice::checkpoint_gpu_queue(self, queue)
     }

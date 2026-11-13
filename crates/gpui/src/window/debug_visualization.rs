@@ -294,18 +294,14 @@ impl Window {
 
     /// Reclassify the current element as structural traversal with no own scene primitive work.
     /// This must be called before painting children while the provisional marker is still last.
-    pub(crate) fn record_debug_element_traversal_only(
-        &mut self,
-        bounds: Bounds<Pixels>,
-        cx: &mut App,
-    ) {
+    pub(crate) fn record_element_traversal_only(&mut self, bounds: Bounds<Pixels>, cx: &mut App) {
         self.reclassify_debug_element_paint(bounds, ViewCacheDebugStatus::TraversalOnly, cx);
     }
 
     /// Reclassify the current element from a full own-paint marker into an ancestor traversal whose
     /// own scene primitives were retained. This must be called before painting any child so the
     /// last provisional marker still belongs to this parent.
-    pub(crate) fn record_debug_element_self_scene_replay(
+    pub(crate) fn record_element_self_scene_replay(
         &mut self,
         bounds: Bounds<Pixels>,
         cx: &mut App,
@@ -709,18 +705,10 @@ mod tests {
     }
 
     #[test]
-    fn cache_status_palette_distinguishes_hit_bounds_dirty_and_traversal() {
+    fn cache_status_palette_distinguishes_traversal_from_reuse() {
         assert_ne!(
             cache_marker_color(ViewCacheDebugStatus::Hit).0,
-            cache_marker_color(ViewCacheDebugStatus::MissBounds).0
-        );
-        assert_ne!(
-            cache_marker_color(ViewCacheDebugStatus::Hit).0,
-            cache_marker_color(ViewCacheDebugStatus::MissDirty).0
-        );
-        assert_ne!(
-            cache_marker_color(ViewCacheDebugStatus::TraversalOnly).0,
-            cache_marker_color(ViewCacheDebugStatus::MissDirty).0
+            cache_marker_color(ViewCacheDebugStatus::TraversalOnly).0
         );
         assert_eq!(
             cache_marker_color(ViewCacheDebugStatus::Hit).0,

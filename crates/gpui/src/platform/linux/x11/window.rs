@@ -19,7 +19,7 @@ use crate::{
 };
 
 use util::{ResultExt, maybe};
-use winit::raw_window_handle as rwh;
+use winit::raw_window_handle;
 use x11rb::{
     connection::Connection,
     cookie::{Cookie, VoidCookie},
@@ -400,57 +400,67 @@ impl X11WindowStatePtr {
     }
 }
 
-impl rwh::HasWindowHandle for RawWindow {
-    fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+impl raw_window_handle::HasWindowHandle for RawWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
         let Some(non_zero) = NonZeroU32::new(self.window_id) else {
             log::error!("RawWindow.window_id zero when getting window handle.");
-            return Err(rwh::HandleError::Unavailable);
+            return Err(raw_window_handle::HandleError::Unavailable);
         };
-        let mut handle = rwh::XcbWindowHandle::new(non_zero);
+        let mut handle = raw_window_handle::XcbWindowHandle::new(non_zero);
         handle.visual_id = NonZeroU32::new(self.visual_id);
-        Ok(unsafe { rwh::WindowHandle::borrow_raw(handle.into()) })
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(handle.into()) })
     }
 }
-impl rwh::HasDisplayHandle for RawWindow {
-    fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
+impl raw_window_handle::HasDisplayHandle for RawWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
         let Some(non_zero) = NonNull::new(self.connection as *mut c_void) else {
             log::error!("Null RawWindow.connection when getting display handle.");
-            return Err(rwh::HandleError::Unavailable);
+            return Err(raw_window_handle::HandleError::Unavailable);
         };
-        let handle = rwh::XcbDisplayHandle::new(Some(non_zero), self.screen_id as i32);
-        Ok(unsafe { rwh::DisplayHandle::borrow_raw(handle.into()) })
+        let handle =
+            raw_window_handle::XcbDisplayHandle::new(Some(non_zero), self.screen_id as i32);
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(handle.into()) })
     }
 }
 
-impl rwh::HasWindowHandle for X11Window {
-    fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+impl raw_window_handle::HasWindowHandle for X11Window {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
         let state = self.0.state.borrow();
         let Some(window_id) = NonZeroU32::new(self.0.x_window) else {
             log::error!("X11Window.x_window zero when getting window handle.");
-            return Err(rwh::HandleError::Unavailable);
+            return Err(raw_window_handle::HandleError::Unavailable);
         };
 
-        let mut handle = rwh::XcbWindowHandle::new(window_id);
+        let mut handle = raw_window_handle::XcbWindowHandle::new(window_id);
         handle.visual_id = NonZeroU32::new(state.visual_id);
         // SAFETY: The XCB window id is owned by this X11Window and remains valid for
         // the duration of the returned borrowed raw handle.
-        Ok(unsafe { rwh::WindowHandle::borrow_raw(handle.into()) })
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(handle.into()) })
     }
 }
-impl rwh::HasDisplayHandle for X11Window {
-    fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
+impl raw_window_handle::HasDisplayHandle for X11Window {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
         let state = self.0.state.borrow();
         let Some(connection) = NonNull::new(
             as_raw_xcb_connection::AsRawXcbConnection::as_raw_xcb_connection(&self.0.xcb) as *mut _,
         ) else {
             log::error!("Null X11Window.xcb connection when getting display handle.");
-            return Err(rwh::HandleError::Unavailable);
+            return Err(raw_window_handle::HandleError::Unavailable);
         };
 
-        let handle = rwh::XcbDisplayHandle::new(Some(connection), state.screen_id as i32);
+        let handle =
+            raw_window_handle::XcbDisplayHandle::new(Some(connection), state.screen_id as i32);
         // SAFETY: The XCB connection is retained by this X11Window for at least the
         // duration of the returned borrowed raw handle.
-        Ok(unsafe { rwh::DisplayHandle::borrow_raw(handle.into()) })
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(handle.into()) })
     }
 }
 
@@ -1663,7 +1673,7 @@ impl PlatformWindow for X11Window {
             .set_frame_request_sender(sender);
     }
 
-    fn set_presentation_animation_completion_sender(
+    fn set_animation_completion_sender(
         &self,
         sender: crate::platform::frame::SceneAnimationCompletionSender,
     ) {

@@ -56,13 +56,6 @@ impl NovaRenderDiagnostics {
     }
 }
 
-pub(super) fn nova_power_preference(renderer_options: &RendererOptions) -> PowerPreference {
-    match renderer_options.power_preference {
-        crate::GpuPowerPreference::AutoLowPower => PowerPreference::LowPower,
-        crate::GpuPowerPreference::HighPerformance => PowerPreference::HighPerformance,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

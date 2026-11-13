@@ -18,7 +18,7 @@ fn presentation_clock_snapshot(frame_time: Instant) -> [u8; 24] {
 /// Dynamic Scenes, including retained custom renderer extensions, retain the
 /// exact frame-owned clock sample even when they expose no CPU animation
 /// primitives. Never decide this from the dirty region alone.
-fn needs_presentation_clock_upload(upload: &FrameUpload) -> bool {
+fn presentation_clock_upload_required(upload: &FrameUpload) -> bool {
     !upload.renderer_extensions.is_empty()
         || !upload.sampled_animation_values.is_empty()
         || !upload.gpu_indexed_animation_slots.is_empty()
@@ -87,7 +87,7 @@ fn mark_failed_submission_for_retry(
     committed_drawable: DrawableSize,
 ) {
     let size = packet_drawable_size(packet, committed_drawable);
-    force_full_drawable_damage_after_resize(packet, size);
+    force_full_drawable_damage(packet, size);
 }
 
 impl NovaRenderer {
@@ -198,7 +198,7 @@ impl NovaRenderer {
     /// Writes dynamic presentation state only after activating a fence-safe resource slot.
     fn upload_presentation_buffers(&mut self, frame_time: Instant) -> Result<()> {
         let plan_started = Instant::now(); // CPU upload planning, separate from frame_time.
-        let dynamic_clock = needs_presentation_clock_upload(&self.frame_upload);
+        let dynamic_clock = presentation_clock_upload_required(&self.frame_upload);
         let clock = dynamic_clock.then(|| presentation_clock_snapshot(frame_time));
         if let Some(clock) = &clock
             && self.frame_upload.globals.len() >= clock.len()
@@ -586,7 +586,7 @@ mod presentation_clock_upload_tests {
     #[test]
     fn genuinely_static_present_has_no_gpu_clock_write() {
         let upload = FrameUpload::default();
-        assert!(!needs_presentation_clock_upload(&upload));
+        assert!(!presentation_clock_upload_required(&upload));
         assert!(upload.gpu_indexed_animation_values.is_empty());
     }
 
@@ -597,7 +597,7 @@ mod presentation_clock_upload_tests {
             .gpu_indexed_animation_slots
             .insert(crate::SceneAnimationId(11), 0);
         assert!(
-            needs_presentation_clock_upload(&upload),
+            presentation_clock_upload_required(&upload),
             "retained GPU timelines must not freeze just because values are absent"
         );
     }
@@ -614,7 +614,7 @@ mod presentation_clock_upload_tests {
             }],
             ..Default::default()
         };
-        assert!(needs_presentation_clock_upload(&upload));
+        assert!(presentation_clock_upload_required(&upload));
     }
 
     #[test]

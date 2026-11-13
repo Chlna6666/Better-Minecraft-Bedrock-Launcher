@@ -5,7 +5,7 @@ use super::super::store::{WindowMetrics, shared_metrics};
 
 /// Native VSync cadence and active-presentation outcomes for one window.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WindowVSyncMetricsSnapshot {
+pub struct VSyncMetricsSnapshot {
     /// VSync events delivered to this window, including events with no pending frame request.
     pub wake_count: usize,
     /// Delivered events without a valid DWM QPC refresh-period sample, including background cadence.
@@ -48,12 +48,12 @@ pub struct WindowVSyncMetricsSnapshot {
     pub active_presentation_retry_count: usize,
 }
 
-pub(super) fn snapshot(metrics: &WindowMetrics) -> WindowVSyncMetricsSnapshot {
+pub(super) fn snapshot(metrics: &WindowMetrics) -> VSyncMetricsSnapshot {
     let wake_interval = metrics.native_vsync_interval_samples.percentiles();
     let refresh_period = metrics.dwm_refresh_period_samples.percentiles();
     let composition_period = metrics.dwm_composition_period_samples.percentiles();
 
-    WindowVSyncMetricsSnapshot {
+    VSyncMetricsSnapshot {
         wake_count: metrics.native_vsync_wake_count as usize,
         fallback_wake_count: metrics.native_vsync_fallback_wake_count as usize,
         wake_interval_p50_micros: wake_interval.p50_micros as usize,
@@ -79,7 +79,7 @@ pub(super) fn snapshot(metrics: &WindowMetrics) -> WindowVSyncMetricsSnapshot {
     }
 }
 
-pub(crate) fn record_window_native_vsync_wake(
+pub(crate) fn record_native_vsync_wake(
     window_id: u64,
     reported_refresh_period: Option<Duration>,
     reported_composition_period: Option<Duration>,
@@ -124,7 +124,7 @@ pub(crate) fn record_present_preflight_deferred(window_id: u64) {
     }
 }
 
-pub(crate) fn record_window_active_presentation_retry(window_id: u64) {
+pub(crate) fn record_active_presentation_retry(window_id: u64) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();
         metrics.active_presentation_retry_count =
@@ -136,7 +136,7 @@ pub(crate) fn record_window_active_presentation_retry(window_id: u64) {
 mod tests {
     use super::{
         record_present_attempt, record_present_preflight_deferred,
-        record_window_active_presentation_retry, record_window_native_vsync_wake,
+        record_active_presentation_retry, record_native_vsync_wake,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
@@ -147,13 +147,13 @@ mod tests {
     fn records_native_vsync_periods_and_active_presentation_outcomes() {
         let window_id = NEXT_WINDOW_ID.fetch_sub(1, Ordering::Relaxed);
         let first_wake_at = Instant::now();
-        record_window_native_vsync_wake(
+        record_native_vsync_wake(
             window_id,
             Some(Duration::from_micros(4_167)),
             Some(Duration::from_micros(8_333)),
             first_wake_at,
         );
-        record_window_native_vsync_wake(
+        record_native_vsync_wake(
             window_id,
             None,
             None,
@@ -161,9 +161,9 @@ mod tests {
         );
         record_present_attempt(window_id);
         record_present_preflight_deferred(window_id);
-        record_window_active_presentation_retry(window_id);
+        record_active_presentation_retry(window_id);
 
-        let metrics = super::super::window_metrics_snapshot()
+        let metrics = super::super::snapshot()
             .into_iter()
             .find(|metrics| metrics.window_id == window_id)
             .expect("the recorded window is present in the snapshot");

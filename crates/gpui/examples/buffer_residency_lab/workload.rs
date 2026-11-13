@@ -12,7 +12,7 @@ struct Target {
     texture: TextureId,
     view: TextureViewId,
     pass: RenderPassId,
-    steps: Vec<DrawCommand>,
+    steps: Vec<RenderCommand>,
 }
 
 pub(super) fn run<D: Device + TextureTransferDevice>(
@@ -135,22 +135,35 @@ fn update_payload<D: ResourceDevice>(
 
 fn draw<D: Device + TextureTransferDevice>(device: &mut D, target: &Target) -> Result<[f64; 3]> {
     let started = Instant::now();
-    device
-        .render_step_list_to_texture_compat(
-            target.view,
-            target.pass,
-            RenderStepList::Draw(&target.steps),
-            LoadOp::Clear(ClearColor {
+    let submission = device
+        .render_to_textures(&[RenderPassCommands {
+            color_attachments: std::slice::from_ref(&target.view),
+            render_pass: target.pass,
+            commands: &target.steps,
+            color_load_op: LoadOp::Clear(ClearColor {
                 red: 0.0,
                 green: 0.0,
                 blue: 0.0,
                 alpha: 1.0,
             }),
-            None,
-        )
-        .context("offscreen helper")?;
+            clear_region: None,
+            depth_attachment: None,
+            viewport: None,
+            resolve_target: None,
+        }])
+        .context("offscreen pass")?;
     let call = started.elapsed();
     let started = Instant::now();
+    if let Some(submission) = submission {
+        device
+            .wait_submission(submission)
+            .context("completion wait")?;
+        return Ok([
+            call.as_secs_f64() * 1e6,
+            0.0,
+            started.elapsed().as_secs_f64() * 1e6,
+        ]);
+    }
     // These existing backend hooks drain all queued work, including offscreen draws.
     if matches!(D::BACKEND_KIND, BackendKind::Dx12 | BackendKind::Vulkan) {
         device.wait_texture_transfers().context("completion wait")?;
@@ -195,6 +208,7 @@ fn target<D: Device>(
         usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
+        sample_count: 1,
     })?;
     let view = device.create_texture_view(&TextureViewDescriptor {
         label: None,
@@ -217,15 +231,15 @@ fn target<D: Device>(
         })?;
     let pipeline = pipeline(device, bytes, pass, layout)?;
     let steps = vec![
-        DrawCommand {
+        RenderCommand::Draw(DrawCommand {
             pipeline,
             bind_groups: bind_group_list([set]),
             vertex_count: 3,
             first_vertex: 0,
             instance_count: 1,
             first_instance: 0,
-            scissor: None
-        };
+            scissor: None,
+        });
         draws
     ];
     Ok(Target {
@@ -253,7 +267,7 @@ fn storage_binding<D: Device>(
     let set = device.create_bind_group(&BindGroupDescriptor {
         label: None,
         layout,
-        bindings: vec![BindGroupEntry {
+        entries: vec![BindGroupEntry {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer,

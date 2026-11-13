@@ -34,7 +34,7 @@ fn verify_samples(
     let mut previous_pixels = pixels(renderer, scene, target, 0., [sample(0.)], true);
     for progress in [0.8, 0.2, 1., 0.] {
         let actual = pixels(renderer, scene, target, previous, [sample(progress)], false);
-        let metrics = crate::performance_metrics_snapshot();
+        let metrics = crate::snapshot();
         assert!(
             renderer.frame_upload.root_color.is_some(),
             "exercise retained Root"
@@ -64,7 +64,7 @@ fn verify_samples(
     // A non-spatial invalidation must override an empty per-order plan.
     renderer.invalidate_backdrop_blur_cache();
     let actual = pixels(renderer, scene, target, 0., [sample(0.)], false);
-    assert!(crate::performance_metrics_snapshot().backdrop_blur_target_pixels > 0);
+    assert!(crate::snapshot().backdrop_blur_target_pixels > 0);
     let expected = pixels(renderer, scene, target, 0., [sample(0.)], true);
     assert!(
         actual == expected,
@@ -129,7 +129,7 @@ fn verify_repaired_sample(
             .expect("repaired sample")
     );
     assert!(
-        crate::performance_metrics_snapshot().backdrop_blur_target_pixels > 0,
+        crate::snapshot().backdrop_blur_target_pixels > 0,
         "last successful Root sample must repair backdrop source damage"
     );
     // Re-present the same value without any new source damage, preserving

@@ -117,7 +117,7 @@ pub(crate) fn keystroke_from_winit(
             {
                 return Some(committed);
             }
-            let (key, key_char) = super::keyboard::key_from_physical_key(physical_key, modifiers)?;
+            let (key, key_char) = super::keyboard::key_from_physical(physical_key, modifiers)?;
             return Some(Keystroke {
                 modifiers,
                 key,

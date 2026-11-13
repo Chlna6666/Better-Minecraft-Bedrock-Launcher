@@ -20,7 +20,7 @@ pub(super) struct BlurDamageScissors {
 /// one support in X from the source capture. This keeps a small animation under a full-window blur
 /// local without reading undefined pixels from the cleared scratch source. Downsampled output
 /// includes the composite's neighboring linear-sampling texels and their convolution inputs.
-pub(super) fn blur_damage_scissors(
+pub(super) fn scissors(
     config: BackdropBlurConfig,
     drawable_size: DrawableSize,
     dirty_region: &DirtyRegion,

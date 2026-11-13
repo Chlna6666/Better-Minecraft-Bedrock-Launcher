@@ -611,7 +611,7 @@ impl WindowInvalidator {
     /// Such an element is not known dirty, but an ancestor cannot hide it by replaying an old
     /// subtree solely because its own bounds stayed fixed. Callers may still reuse the element when
     /// they possess a semantic proof for the current frame (for example exact plain-text output).
-    pub(in crate::window) fn retained_path_requires_reconciliation_for_view_route(
+    pub(in crate::window) fn requires_reconciliation_for_route(
         &self,
         global_id: &GlobalElementId,
         owner_shares_view_route: &impl Fn(EntityId) -> bool,
@@ -632,7 +632,7 @@ impl WindowInvalidator {
 
     #[cfg(test)]
     fn retained_path_requires_reconciliation(&self, global_id: &GlobalElementId) -> bool {
-        self.retained_path_requires_reconciliation_for_view_route(global_id, &|_| true)
+        self.requires_reconciliation_for_route(global_id, &|_| true)
     }
 
     /// Returns true when `global_id` executes only because it is a structural ancestor of one or
@@ -779,45 +779,26 @@ mod retained_dirty_scope_tests {
     }
 
     #[test]
-    fn nested_reconcile_targets_keep_the_outermost_direct_owner() {
+    fn reconcile_targets_only_apply_to_descendants_on_shared_routes() {
         let owner = EntityId::from(1);
-        let parent = path(&[0, 1]);
+        let target = path(&[0, 1]);
         let child = path(&[0, 1, 2]);
         let sibling = path(&[0, 3]);
+        let invalidator = WindowInvalidator::new();
+        invalidator.set_dirty(false);
+        assert!(invalidator.invalidate_retained_path_scoped(
+            owner,
+            Some(&target),
+            RetainedInvalidationScope::ReconcileSubtree,
+        ));
+        invalidator.set_dirty(false);
 
-        for (first, second) in [
-            (parent.clone(), child.clone()),
-            (child.clone(), parent.clone()),
-        ] {
-            let mut selected = None;
-            let ancestor = path(&[0]);
-            assert!(merge_reconcile_target(
-                &mut selected,
-                owner,
-                &first,
-                &ancestor,
-            ));
-            assert!(merge_reconcile_target(
-                &mut selected,
-                owner,
-                &second,
-                &ancestor,
-            ));
-            assert_eq!(selected, Some((owner, parent.clone())));
-
-            assert!(!merge_reconcile_target(
-                &mut selected,
-                owner,
-                &sibling,
-                &ancestor,
-            ));
-            assert!(!merge_reconcile_target(
-                &mut selected,
-                EntityId::from(2),
-                &child,
-                &ancestor,
-            ));
-        }
+        assert!(
+            invalidator
+                .requires_reconciliation_for_route(&child, &|route_owner| { route_owner == owner })
+        );
+        assert!(!invalidator.requires_reconciliation_for_route(&sibling, &|_| true));
+        assert!(!invalidator.requires_reconciliation_for_route(&child, &|_| false));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::{
     },
     platform::{
         self,
-        mac::{platform::NSViewLayerContentsRedrawDuringViewResize, renderer::Renderer},
+        mac::{implementation::NSViewLayerContentsRedrawDuringViewResize, renderer::Renderer},
         Event, FontSystem, WindowBounds,
     },
     Scene,

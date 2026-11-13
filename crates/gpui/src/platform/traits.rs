@@ -326,11 +326,7 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// for a presentation thread. Every platform must explicitly declare its owner; platforms
     /// sampled by the UI return false.
     fn owns_scene_animations(&self) -> bool;
-    fn set_presentation_animation_completion_sender(
-        &self,
-        _sender: SceneAnimationCompletionSender,
-    ) {
-    }
+    fn set_animation_completion_sender(&self, _sender: SceneAnimationCompletionSender) {}
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
 

@@ -52,7 +52,7 @@ impl KeyBindingContextPredicate {
     pub fn depth_of(&self, contexts: &[KeyContext]) -> Option<usize> {
         for depth in (0..=contexts.len()).rev() {
             let context_slice = &contexts[0..depth];
-            if self.eval_inner(context_slice, contexts) {
+            if self.eval_in_stack(context_slice, contexts) {
                 return Some(depth);
             }
         }
@@ -62,11 +62,11 @@ impl KeyBindingContextPredicate {
     /// Eval a predicate against a set of contexts, arranged from lowest to highest.
     #[allow(unused)]
     pub(crate) fn eval(&self, contexts: &[KeyContext]) -> bool {
-        self.eval_inner(contexts, contexts)
+        self.eval_in_stack(contexts, contexts)
     }
 
     /// Eval a predicate against a set of contexts, arranged from lowest to highest.
-    pub fn eval_inner(&self, contexts: &[KeyContext], all_contexts: &[KeyContext]) -> bool {
+    pub fn eval_in_stack(&self, contexts: &[KeyContext], all_contexts: &[KeyContext]) -> bool {
         let Some(context) = contexts.last() else {
             return false;
         };
@@ -82,7 +82,7 @@ impl KeyBindingContextPredicate {
                 .unwrap_or(true),
             Self::Not(pred) => {
                 for i in 0..all_contexts.len() {
-                    if pred.eval_inner(&all_contexts[..=i], all_contexts) {
+                    if pred.eval_in_stack(&all_contexts[..=i], all_contexts) {
                         return false;
                     }
                 }
@@ -97,8 +97,8 @@ impl KeyBindingContextPredicate {
             Self::Descendant(parent, child) => {
                 for i in 0..contexts.len() - 1 {
                     // [Workspace >  Pane], [Editor]
-                    if parent.eval_inner(&contexts[..=i], all_contexts) {
-                        if !child.eval_inner(&contexts[i + 1..], &contexts[i + 1..]) {
+                    if parent.eval_in_stack(&contexts[..=i], all_contexts) {
+                        if !child.eval_in_stack(&contexts[i + 1..], &contexts[i + 1..]) {
                             return false;
                         }
                         return true;
@@ -107,10 +107,12 @@ impl KeyBindingContextPredicate {
                 false
             }
             Self::And(left, right) => {
-                left.eval_inner(contexts, all_contexts) && right.eval_inner(contexts, all_contexts)
+                left.eval_in_stack(contexts, all_contexts)
+                    && right.eval_in_stack(contexts, all_contexts)
             }
             Self::Or(left, right) => {
-                left.eval_inner(contexts, all_contexts) || right.eval_inner(contexts, all_contexts)
+                left.eval_in_stack(contexts, all_contexts)
+                    || right.eval_in_stack(contexts, all_contexts)
             }
         }
     }

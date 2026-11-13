@@ -138,7 +138,7 @@ impl RenderImage {
                     .into_iter()
                     .enumerate()
                     .map(|(sequence, frame)| {
-                        AnimatedFrame::from_rgba_frame_without_conversion(sequence, frame)
+                        AnimatedFrame::from_rgba_frame_as_rgba(sequence, frame)
                     })
                     .collect(),
             ),

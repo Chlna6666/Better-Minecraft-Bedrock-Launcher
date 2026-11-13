@@ -4,7 +4,7 @@ use super::*;
 /// includes page metadata, so later atlas allocation cannot change this batch.
 /// An error before consumption automatically restores its queued writes.
 pub(super) fn upload_pending_atlas<D>(
-    batch: frame_upload::upload_queue::AtlasUpload<'_>,
+    batch: frame_upload::queue::AtlasUpload<'_>,
     device: &mut D,
     gpu_textures: &mut FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
     backend_name: &str,
@@ -32,7 +32,7 @@ where
             info.id,
             info.size,
             descriptor,
-            NovaAtlasResourceSetMode::UsedByTextureKind,
+            NovaAtlasBindGroupMode::UsedByTextureKind,
         )?;
         if let Some(replaced) = gpu_textures.insert(info.id, new_texture) {
             destroy_gpu_atlas_texture(device, replaced, backend_name, info.id);

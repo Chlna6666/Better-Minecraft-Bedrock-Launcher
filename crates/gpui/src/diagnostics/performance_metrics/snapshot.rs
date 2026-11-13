@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use super::{
-    AllocatorBucketMetricsSnapshot, AnimationMetricsSnapshot, ImageRenderRecord,
-    WindowMetricsSnapshot,
+    window::MetricsSnapshot, AllocatorBucketMetricsSnapshot, AnimationMetricsSnapshot,
+    ImageRenderRecord,
 };
 
 /// Per-process GPUI rendering and resource metrics.
@@ -405,7 +405,7 @@ pub struct PerformanceMetricsSnapshot {
     /// Peak pending staging buffer count.
     pub core_staging_buffer_peak_pending_count: usize,
     /// Window-scoped metrics captured by the latest updates.
-    pub window_metrics: Vec<WindowMetricsSnapshot>,
+    pub window_metrics: Vec<MetricsSnapshot>,
 }
 
 /// Global wrapper for [`PerformanceMetricsSnapshot`].

@@ -6,15 +6,15 @@ use super::*;
 /// renderer instead of re-creating the layout set per window.
 #[derive(Clone, Copy)]
 pub(super) struct ResourceLayouts {
-    pub(super) quad_resource_set_layout: BindGroupLayoutId,
-    pub(super) shadow_resource_set_layout: BindGroupLayoutId,
-    pub(super) path_rasterization_resource_set_layout: BindGroupLayoutId,
-    pub(super) path_resource_set_layout: BindGroupLayoutId,
-    pub(super) mono_resource_set_layout: BindGroupLayoutId,
-    pub(super) poly_resource_set_layout: BindGroupLayoutId,
-    pub(super) underline_resource_set_layout: BindGroupLayoutId,
-    pub(super) backdrop_blur_pass_resource_set_layout: BindGroupLayoutId,
-    pub(super) backdrop_blur_resource_set_layout: BindGroupLayoutId,
+    pub(super) quad_bind_group_layout: BindGroupLayoutId,
+    pub(super) shadow_bind_group_layout: BindGroupLayoutId,
+    pub(super) path_rasterization_bind_group_layout: BindGroupLayoutId,
+    pub(super) path_bind_group_layout: BindGroupLayoutId,
+    pub(super) mono_bind_group_layout: BindGroupLayoutId,
+    pub(super) poly_bind_group_layout: BindGroupLayoutId,
+    pub(super) underline_bind_group_layout: BindGroupLayoutId,
+    pub(super) backdrop_blur_pass_bind_group_layout: BindGroupLayoutId,
+    pub(super) backdrop_blur_bind_group_layout: BindGroupLayoutId,
     pub(super) quad_pipeline_layout: PipelineLayoutId,
     pub(super) shadow_pipeline_layout: PipelineLayoutId,
     pub(super) path_rasterization_pipeline_layout: PipelineLayoutId,
@@ -30,7 +30,7 @@ pub(super) fn create_resource_layouts<D>(device: &mut D, label: &str) -> Result<
 where
     D: ResourceDevice + PipelineDevice,
 {
-    let quad_resource_set_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+    let quad_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some(format!("{label} quad layout")),
         entries: vec![
             BindGroupLayoutEntry {
@@ -50,7 +50,7 @@ where
             },
         ],
     })?;
-    let shadow_resource_set_layout =
+    let shadow_bind_group_layout =
         device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some(format!("{label} shadow layout")),
             entries: vec![
@@ -71,7 +71,7 @@ where
                 },
             ],
         })?;
-    let path_rasterization_resource_set_layout =
+    let path_rasterization_bind_group_layout =
         device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some(format!("{label} path rasterization layout")),
             entries: vec![
@@ -87,7 +87,7 @@ where
                 },
             ],
         })?;
-    let path_resource_set_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+    let path_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some(format!("{label} path layout")),
         entries: vec![
             BindGroupLayoutEntry {
@@ -112,7 +112,7 @@ where
             },
         ],
     })?;
-    let mono_resource_set_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+    let mono_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some(format!("{label} mono sprite layout")),
         entries: vec![
             BindGroupLayoutEntry {
@@ -147,7 +147,7 @@ where
             },
         ],
     })?;
-    let poly_resource_set_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+    let poly_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some(format!("{label} poly sprite layout")),
         entries: vec![
             BindGroupLayoutEntry {
@@ -177,7 +177,7 @@ where
             },
         ],
     })?;
-    let underline_resource_set_layout =
+    let underline_bind_group_layout =
         device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some(format!("{label} underline layout")),
             entries: vec![
@@ -198,7 +198,7 @@ where
                 },
             ],
         })?;
-    let backdrop_blur_pass_resource_set_layout =
+    let backdrop_blur_pass_bind_group_layout =
         device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some(format!("{label} backdrop blur pass layout")),
             entries: vec![
@@ -224,7 +224,7 @@ where
                 },
             ],
         })?;
-    let backdrop_blur_resource_set_layout =
+    let backdrop_blur_bind_group_layout =
         device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some(format!("{label} backdrop blur layout")),
             entries: vec![
@@ -257,54 +257,54 @@ where
         })?;
     let quad_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some(format!("{label} quad pipeline layout")),
-        bind_group_layouts: vec![quad_resource_set_layout],
+        bind_group_layouts: vec![quad_bind_group_layout],
     })?;
     let shadow_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some(format!("{label} shadow pipeline layout")),
-        bind_group_layouts: vec![shadow_resource_set_layout],
+        bind_group_layouts: vec![shadow_bind_group_layout],
     })?;
     let path_rasterization_pipeline_layout =
         device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some(format!("{label} path rasterization pipeline layout")),
-            bind_group_layouts: vec![path_rasterization_resource_set_layout],
+            bind_group_layouts: vec![path_rasterization_bind_group_layout],
         })?;
     let path_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some(format!("{label} path pipeline layout")),
-        bind_group_layouts: vec![path_resource_set_layout],
+        bind_group_layouts: vec![path_bind_group_layout],
     })?;
     let mono_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some(format!("{label} mono sprite pipeline layout")),
-        bind_group_layouts: vec![mono_resource_set_layout],
+        bind_group_layouts: vec![mono_bind_group_layout],
     })?;
     let poly_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some(format!("{label} poly sprite pipeline layout")),
-        bind_group_layouts: vec![poly_resource_set_layout],
+        bind_group_layouts: vec![poly_bind_group_layout],
     })?;
     let underline_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some(format!("{label} underline pipeline layout")),
-        bind_group_layouts: vec![underline_resource_set_layout],
+        bind_group_layouts: vec![underline_bind_group_layout],
     })?;
     let backdrop_blur_pass_pipeline_layout =
         device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some(format!("{label} backdrop blur pass pipeline layout")),
-            bind_group_layouts: vec![backdrop_blur_pass_resource_set_layout],
+            bind_group_layouts: vec![backdrop_blur_pass_bind_group_layout],
         })?;
     let backdrop_blur_pipeline_layout =
         device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some(format!("{label} backdrop blur pipeline layout")),
-            bind_group_layouts: vec![backdrop_blur_resource_set_layout],
+            bind_group_layouts: vec![backdrop_blur_bind_group_layout],
         })?;
 
     Ok(ResourceLayouts {
-        quad_resource_set_layout,
-        shadow_resource_set_layout,
-        path_rasterization_resource_set_layout,
-        path_resource_set_layout,
-        mono_resource_set_layout,
-        poly_resource_set_layout,
-        underline_resource_set_layout,
-        backdrop_blur_pass_resource_set_layout,
-        backdrop_blur_resource_set_layout,
+        quad_bind_group_layout,
+        shadow_bind_group_layout,
+        path_rasterization_bind_group_layout,
+        path_bind_group_layout,
+        mono_bind_group_layout,
+        poly_bind_group_layout,
+        underline_bind_group_layout,
+        backdrop_blur_pass_bind_group_layout,
+        backdrop_blur_bind_group_layout,
         quad_pipeline_layout,
         shadow_pipeline_layout,
         path_rasterization_pipeline_layout,

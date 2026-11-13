@@ -19,7 +19,7 @@ const MAX_QUAD_ANIMATION_TRANSITIONS: usize = 8;
 /// instead of rescanning every retained chunk for each prepared Quad batch.
 /// Keep the paint-order range check at the caller: chunks may not cross a
 /// prepared batch's solid/non-solid draw-state boundary.
-fn retained_chunks_overlapping(
+fn chunks_overlapping(
     chunks: &[crate::PreparedRetainedQuadChunk],
     range: Range<usize>,
 ) -> &[crate::PreparedRetainedQuadChunk] {
@@ -31,7 +31,7 @@ fn retained_chunks_overlapping(
     &chunks[start..end]
 }
 
-fn retained_monochrome_sprite_chunks_overlapping(
+fn monochrome_sprite_chunks_overlapping(
     chunks: &[crate::window::retained::PreparedRetainedMonochromeSpriteChunk],
     range: Range<usize>,
 ) -> &[crate::window::retained::PreparedRetainedMonochromeSpriteChunk] {
@@ -43,7 +43,7 @@ fn retained_monochrome_sprite_chunks_overlapping(
     &chunks[start..end]
 }
 
-fn retained_monochrome_sprite_bounds(
+fn monochrome_sprite_bounds(
     sprites: &[crate::MonochromeSprite],
     atlas_placements: &collections::FxHashMap<crate::TileId, crate::AtlasTile>,
 ) -> Option<crate::Bounds<crate::ScaledPixels>> {
@@ -85,7 +85,7 @@ impl FrameUpload {
         summary: &mut FrameUploadSummary,
     ) {
         let mut cursor = range.start;
-        for chunk in retained_monochrome_sprite_chunks_overlapping(retained_chunks, range.clone()) {
+        for chunk in monochrome_sprite_chunks_overlapping(retained_chunks, range.clone()) {
             if chunk.sprite_range.start < cursor
                 || chunk.sprite_range.end > range.end
                 || chunk.texture_id != texture_id
@@ -97,16 +97,16 @@ impl FrameUpload {
                 &scene.monochrome_sprites[cursor..chunk.sprite_range.start],
                 summary,
             );
-            if !self.reuse_retained_monochrome_sprite_chunk(cache, chunk, summary) {
+            if !self.reuse_monochrome_sprite_chunk(cache, chunk, summary) {
                 summary.retained_chunk_misses = summary.retained_chunk_misses.saturating_add(1);
-                self.encode_retained_monochrome_sprite_chunk(cache, scene, chunk, summary);
+                self.encode_monochrome_sprite_chunk(cache, scene, chunk, summary);
             }
             cursor = chunk.sprite_range.end;
         }
         self.encode_monochrome_sprites(&scene.monochrome_sprites[cursor..range.end], summary);
     }
 
-    fn encode_retained_monochrome_sprite_chunk(
+    fn encode_monochrome_sprite_chunk(
         &mut self,
         cache: &mut RetainedChunkCache,
         scene: &crate::Scene,
@@ -126,7 +126,7 @@ impl FrameUpload {
         }
         let byte_start = self.mono_sprites.len();
         let atlas_start = self.mono_atlas_tiles.len();
-        let visual_bounds = retained_monochrome_sprite_bounds(sprites, &self.atlas_placements);
+        let visual_bounds = monochrome_sprite_bounds(sprites, &self.atlas_placements);
         let mut packed_bytes = Vec::with_capacity(visible_count * PACKED_MONO_SPRITE_BYTES);
         let first_sprite = (byte_start / PACKED_MONO_SPRITE_BYTES) as u32;
         let mut sprite_count = 0_u32;
@@ -172,7 +172,7 @@ impl FrameUpload {
         );
     }
 
-    fn reuse_retained_monochrome_sprite_chunk(
+    fn reuse_monochrome_sprite_chunk(
         &mut self,
         cache: &mut RetainedChunkCache,
         chunk: &crate::window::retained::PreparedRetainedMonochromeSpriteChunk,
@@ -232,7 +232,7 @@ impl FrameUpload {
         summary: &mut FrameUploadSummary,
     ) {
         let mut cursor = range.start;
-        for chunk in retained_chunks_overlapping(retained_chunks, range.clone()) {
+        for chunk in chunks_overlapping(retained_chunks, range.clone()) {
             if chunk.quad_range.start < cursor
                 || chunk.quad_range.end > range.end
                 || chunk.is_solid != is_solid
@@ -244,9 +244,9 @@ impl FrameUpload {
                 is_solid,
                 summary,
             );
-            if !self.reuse_retained_quad_chunk(cache, chunk, summary) {
+            if !self.reuse_quad_chunk(cache, chunk, summary) {
                 summary.retained_chunk_misses = summary.retained_chunk_misses.saturating_add(1);
-                self.encode_retained_quad_chunk(cache, scene, chunk, summary);
+                self.encode_quad_chunk(cache, scene, chunk, summary);
             }
             cursor = chunk.quad_range.end;
         }
@@ -257,7 +257,7 @@ impl FrameUpload {
         );
     }
 
-    fn encode_retained_quad_chunk(
+    fn encode_quad_chunk(
         &mut self,
         cache: &mut RetainedChunkCache,
         scene: &crate::Scene,
@@ -345,7 +345,7 @@ impl FrameUpload {
         (bytes, count, visual_bounds)
     }
 
-    fn reuse_retained_quad_chunk(
+    fn reuse_quad_chunk(
         &mut self,
         cache: &mut RetainedChunkCache,
         chunk: &crate::PreparedRetainedQuadChunk,
@@ -593,14 +593,14 @@ mod static_dynamic_batch_tests {
                     .filter(|chunk| chunk.quad_range.end > start && chunk.quad_range.start < end)
                     .map(|chunk| &chunk.id)
                     .collect();
-                let actual: Vec<_> = retained_chunks_overlapping(&chunks, start..end)
+                let actual: Vec<_> = chunks_overlapping(&chunks, start..end)
                     .iter()
                     .map(|chunk| &chunk.id)
                     .collect();
                 assert_eq!(actual, expected, "batch={start}..{end}");
             }
         }
-        assert!(retained_chunks_overlapping(&chunks, 16..16).is_empty());
+        assert!(chunks_overlapping(&chunks, 16..16).is_empty());
     }
 
     #[test]
@@ -804,6 +804,10 @@ mod retained_monochrome_sprite_tests {
             &fixture.paint,
             &fixture.retention,
             &[],
+            DrawableSize {
+                width: 128,
+                height: 64,
+            },
             DrawableSize {
                 width: 128,
                 height: 64,

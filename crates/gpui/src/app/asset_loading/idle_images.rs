@@ -103,15 +103,15 @@ impl App {
                 .idle_sized_images
                 .insert(asset_id, image.cache_cost_byte_len())
             {
-                self.retire_sized_image(evicted, None, current_window.as_deref_mut());
+                self.retire_idle_sized_image(evicted, None, current_window.as_deref_mut());
             }
             return;
         }
 
-        self.retire_sized_image(asset_id, fallback_image, current_window);
+        self.retire_idle_sized_image(asset_id, fallback_image, current_window);
     }
 
-    pub(super) fn retire_sized_image(
+    pub(super) fn retire_idle_sized_image(
         &mut self,
         asset_id: AssetId,
         fallback_image: Option<Arc<RenderImage>>,

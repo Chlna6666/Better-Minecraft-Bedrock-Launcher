@@ -245,7 +245,7 @@ fn style_allows_self_scene_replay(style: &Style, window: &Window, cx: &App) -> b
         }
 }
 
-fn retained_div_self_scene_style_if_replayable(
+fn self_scene_style_if_replayable(
     style: &Style,
     window: &Window,
     cx: &App,
@@ -253,7 +253,7 @@ fn retained_div_self_scene_style_if_replayable(
     style_allows_self_scene_replay(style, window, cx).then(|| retained_div_self_scene_style(style))
 }
 
-fn retained_div_semantic_key_if_replayable(
+fn semantic_key_if_replayable(
     style: &Style,
     window: &Window,
     cx: &App,
@@ -350,7 +350,7 @@ impl Element for Div {
                 cx,
                 |style, window, cx| {
                     retained_semantic_key = semantic_candidate
-                        .then(|| retained_div_semantic_key_if_replayable(&style, window, cx))
+                        .then(|| semantic_key_if_replayable(&style, window, cx))
                         .flatten();
                     window.with_text_style(style.text_style().cloned(), |window| {
                         child_layout_ids = self
@@ -483,7 +483,7 @@ impl Element for Div {
         cx: &mut App,
     ) {
         if prepaint.reconciliation_transparent {
-            window.record_debug_element_traversal_only(bounds, cx);
+            window.record_element_traversal_only(bounds, cx);
             for child in &mut self.children {
                 child.paint(window, cx);
             }
@@ -506,10 +506,10 @@ impl Element for Div {
                 cx,
                 |style, window, cx| {
                     let self_scene_style =
-                        retained_div_self_scene_style_if_replayable(style, window, cx)?;
+                        self_scene_style_if_replayable(style, window, cx)?;
 
                     if !style_has_self_scene_primitives(style) {
-                        window.record_debug_element_traversal_only(bounds, cx);
+                        window.record_element_traversal_only(bounds, cx);
                         return None;
                     }
 
@@ -517,7 +517,7 @@ impl Element for Div {
                     if ranges.prefix.is_empty() && ranges.suffix.is_empty() {
                         return None;
                     }
-                    window.record_debug_element_self_scene_replay(bounds, cx);
+                    window.record_element_self_scene_replay(bounds, cx);
                     Some((ranges.prefix, ranges.suffix))
                 },
                 |style, window, cx| {
@@ -536,7 +536,7 @@ impl Element for Div {
         });
 
         prepaint.self_scene_style =
-            retained_div_self_scene_style_if_replayable(&final_style, window, cx);
+            self_scene_style_if_replayable(&final_style, window, cx);
         prepaint.self_scene_child_range = if prepaint.self_scene_style.is_some() {
             child_scene_range
         } else {

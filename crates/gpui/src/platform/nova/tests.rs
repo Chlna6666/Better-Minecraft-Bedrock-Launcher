@@ -78,7 +78,7 @@ fn glyph_test_bytes(texture_kind: AtlasTextureKind, pixel_count: usize, coverage
     }
 }
 
-fn test_sprite_resource_set(
+fn test_sprite_bind_group(
     texture_id: AtlasTextureId,
     mono_set: BindGroupId,
     poly_set: BindGroupId,
@@ -571,7 +571,7 @@ fn pending_atlas_upload_borrows_pixels_without_repeating_clean_upload() {
         .expect("insert should succeed")
         .expect("image should allocate a tile");
 
-    frame_upload::upload_queue::AtlasUpload::new(&atlas)
+    frame_upload::queue::AtlasUpload::new(&atlas)
         .upload(
             |_| Ok(TextureId::from_parts(0, 0)),
             |writes| {
@@ -604,7 +604,7 @@ fn pending_atlas_upload_borrows_pixels_without_repeating_clean_upload() {
             },
         )
         .expect("initial dirty upload should succeed");
-    frame_upload::upload_queue::AtlasUpload::new(&atlas)
+    frame_upload::queue::AtlasUpload::new(&atlas)
         .upload(
             |_| Ok(TextureId::from_parts(0, 0)),
             |writes| {
@@ -654,7 +654,7 @@ fn pending_atlas_upload_updates_existing_tile_in_place() {
         .expect("second update should succeed");
 
     assert_eq!(atlas.pending_upload_count_for_test(), 1);
-    frame_upload::upload_queue::AtlasUpload::new(&atlas)
+    frame_upload::queue::AtlasUpload::new(&atlas)
         .upload(
             |_| Ok(TextureId::from_parts(0, 0)),
             |writes| {
@@ -889,6 +889,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
         &crate::window::retained::RetainedPaint::default(),
         &[],
         drawable_size,
+        drawable_size,
         &rendering_parameters,
         false,
         BackdropBlurQuality::Full,
@@ -900,6 +901,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
         &scene,
         &crate::window::retained::RetainedPaint::default(),
         &[],
+        drawable_size,
         drawable_size,
         &rendering_parameters,
         true,
@@ -923,6 +925,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         &previous,
         &previous.retention,
         &[],
+        drawable_size,
         drawable_size,
         &rendering_parameters,
         false,
@@ -977,6 +980,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         &same_generation.retention,
         &[],
         drawable_size,
+        drawable_size,
         &rendering_parameters,
         false,
         BackdropBlurQuality::Full,
@@ -1016,6 +1020,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         &partially_dirty,
         &partially_dirty.retention,
         &[],
+        drawable_size,
         drawable_size,
         &rendering_parameters,
         false,
@@ -1064,6 +1069,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         &changed_generation,
         &changed_generation.retention,
         &[],
+        drawable_size,
         drawable_size,
         &rendering_parameters,
         false,
@@ -1116,6 +1122,7 @@ fn mismatched_quad_count_never_reuses_old_resident_payload() {
         &previous.retention,
         &[],
         size,
+        size,
         &params,
         false,
         BackdropBlurQuality::Full,
@@ -1126,6 +1133,7 @@ fn mismatched_quad_count_never_reuses_old_resident_payload() {
         &replayed,
         &replayed.retention,
         &[],
+        size,
         size,
         &params,
         false,
@@ -1154,6 +1162,7 @@ fn retained_quad_payload_outlives_per_frame_packing_scratch() {
         &previous.retention,
         &[],
         size,
+        size,
         &params,
         false,
         BackdropBlurQuality::Full,
@@ -1176,6 +1185,7 @@ fn retained_quad_payload_outlives_per_frame_packing_scratch() {
         &replayed.retention,
         &[],
         size,
+        size,
         &params,
         false,
         BackdropBlurQuality::Full,
@@ -1196,7 +1206,9 @@ fn nested_element_retained_chunks_survive_root_pruning() {
     let bounds = bounds(point(px(0.0), px(0.0)), size(px(640.0), px(480.0))).scale(1.0);
     let root = |content: crate::window::retained::PaintFixture| {
         let mut scene = crate::window::retained::PaintFixture::default();
-        scene.retention.include(content.retention);
+        scene
+            .retention
+            .replay(0..content.len(), &content.retention, scene.len());
         scene.insert_primitive(crate::PaintBlur {
             order: 0,
             animation_id: None,
@@ -1225,6 +1237,7 @@ fn nested_element_retained_chunks_survive_root_pruning() {
         &first.retention,
         &[],
         size,
+        size,
         &params,
         false,
         BackdropBlurQuality::Full,
@@ -1241,6 +1254,7 @@ fn nested_element_retained_chunks_survive_root_pruning() {
         &second,
         &second.retention,
         &[],
+        size,
         size,
         &params,
         false,
@@ -1263,7 +1277,8 @@ fn sibling_element_blurs_keep_recursive_quad_batch_bounds_aligned() {
     let mut root = crate::window::retained::PaintFixture::default();
     for generation in 1..=2 {
         let child = retained_quad_scene(generation);
-        root.retention.include(child.retention);
+        root.retention
+            .replay(0..child.len(), &child.retention, root.len());
         root.insert_primitive(crate::PaintBlur {
             order: 0,
             animation_id: None,
@@ -1283,6 +1298,10 @@ fn sibling_element_blurs_keep_recursive_quad_batch_bounds_aligned() {
         &root,
         &root.retention,
         &[],
+        DrawableSize {
+            width: 640,
+            height: 480,
+        },
         DrawableSize {
             width: 640,
             height: 480,
@@ -1355,6 +1374,10 @@ fn frame_upload_records_scene_animation_bindings() {
             width: 64,
             height: 64,
         },
+        DrawableSize {
+            width: 64,
+            height: 64,
+        },
         &RenderingParameters::system(),
         true,
         BackdropBlurQuality::Full,
@@ -1397,6 +1420,10 @@ fn frame_upload_records_scene_animation_values() {
             width: 64,
             height: 64,
         },
+        DrawableSize {
+            width: 64,
+            height: 64,
+        },
         &RenderingParameters::system(),
         true,
         BackdropBlurQuality::Full,
@@ -1431,6 +1458,10 @@ fn frame_upload_accepts_presentation_animation_values_outside_scene() {
         &scene,
         &crate::window::retained::RetainedPaint::default(),
         &[presentation_value],
+        DrawableSize {
+            width: 64,
+            height: 64,
+        },
         DrawableSize {
             width: 64,
             height: 64,
@@ -1503,6 +1534,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
         &crate::window::retained::RetainedPaint::default(),
         &[],
         drawable_size,
+        drawable_size,
         &RenderingParameters::system(),
         true,
         BackdropBlurQuality::Full,
@@ -1522,6 +1554,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
         &scene,
         &crate::window::retained::RetainedPaint::default(),
         &[],
+        drawable_size,
         drawable_size,
         &RenderingParameters::system(),
         true,
@@ -1658,6 +1691,10 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
             width: 640,
             height: 480,
         },
+        DrawableSize {
+            width: 640,
+            height: 480,
+        },
         &RenderingParameters::system(),
         true,
         BackdropBlurQuality::Full,
@@ -1706,6 +1743,10 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
         &scene,
         &crate::window::retained::RetainedPaint::default(),
         &[],
+        DrawableSize {
+            width: 640,
+            height: 480,
+        },
         DrawableSize {
             width: 640,
             height: 480,
@@ -1769,13 +1810,13 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
         .push(UploadedBatch::BackdropBlurs { first: 0, count: 1 });
     let pipelines = test_pipelines();
     let blend_pipelines = pipelines.alpha;
-    let quad_set = test_resource_set_id(10);
-    let shadow_set = test_resource_set_id(11);
-    let path_set = test_resource_set_id(12);
-    let mono_set = test_resource_set_id(13);
-    let poly_set = test_resource_set_id(14);
-    let underline_set = test_resource_set_id(15);
-    let backdrop_blur_set = test_resource_set_id(16);
+    let quad_set = test_bind_group_id(10);
+    let shadow_set = test_bind_group_id(11);
+    let path_set = test_bind_group_id(12);
+    let mono_set = test_bind_group_id(13);
+    let poly_set = test_bind_group_id(14);
+    let underline_set = test_bind_group_id(15);
+    let backdrop_blur_set = test_bind_group_id(16);
 
     let steps = encode_draw_commands(
         &upload,
@@ -1784,7 +1825,7 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
         quad_set,
         shadow_set,
         path_set,
-        |texture_id| test_sprite_resource_set(texture_id, mono_set, poly_set),
+        |texture_id| test_sprite_bind_group(texture_id, mono_set, poly_set),
         underline_set,
         backdrop_blur_set,
         DrawMode::Present,
@@ -1901,7 +1942,7 @@ fn path_mask_draw_steps_merge_adjacent_contiguous_vertices() {
     });
 
     let pipelines = test_pipelines();
-    let path_set = test_resource_set_id(12);
+    let path_set = test_bind_group_id(12);
     let steps = encoded_path_commands(&upload, &pipelines, path_set);
 
     assert_eq!(
@@ -1958,19 +1999,19 @@ fn draw_steps_merge_adjacent_compatible_draw_batches() {
 
     let pipelines = test_pipelines();
     let blend_pipelines = pipelines.alpha;
-    let quad_set = test_resource_set_id(10);
-    let mono_set = test_resource_set_id(11);
+    let quad_set = test_bind_group_id(10);
+    let mono_set = test_bind_group_id(11);
 
     let steps = encode_draw_commands(
         &upload,
         &pipelines,
         blend_pipelines,
         quad_set,
-        test_resource_set_id(12),
-        test_resource_set_id(13),
-        |texture_id| test_sprite_resource_set(texture_id, mono_set, test_resource_set_id(14)),
-        test_resource_set_id(15),
-        test_resource_set_id(16),
+        test_bind_group_id(12),
+        test_bind_group_id(13),
+        |texture_id| test_sprite_bind_group(texture_id, mono_set, test_bind_group_id(14)),
+        test_bind_group_id(15),
+        test_bind_group_id(16),
         DrawMode::Present,
     );
 
@@ -2013,24 +2054,20 @@ fn draw_steps_emit_zero_instance_clear_step_when_scene_is_empty() {
     let upload = FrameUpload::default();
     let pipelines = test_pipelines();
     let blend_pipelines = pipelines.premultiplied;
-    let quad_set = test_resource_set_id(10);
+    let quad_set = test_bind_group_id(10);
 
     let steps = encode_draw_commands(
         &upload,
         &pipelines,
         blend_pipelines,
         quad_set,
-        test_resource_set_id(11),
-        test_resource_set_id(12),
+        test_bind_group_id(11),
+        test_bind_group_id(12),
         |texture_id| {
-            test_sprite_resource_set(
-                texture_id,
-                test_resource_set_id(11),
-                test_resource_set_id(12),
-            )
+            test_sprite_bind_group(texture_id, test_bind_group_id(11), test_bind_group_id(12))
         },
-        test_resource_set_id(13),
-        test_resource_set_id(14),
+        test_bind_group_id(13),
+        test_bind_group_id(14),
         DrawMode::Present,
     );
 
@@ -2068,24 +2105,20 @@ fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
     });
     let pipelines = test_pipelines();
     let blend_pipelines = pipelines.alpha;
-    let quad_set = test_resource_set_id(10);
+    let quad_set = test_bind_group_id(10);
 
     let steps = encode_draw_commands(
         &upload,
         &pipelines,
         blend_pipelines,
         quad_set,
-        test_resource_set_id(11),
-        test_resource_set_id(12),
+        test_bind_group_id(11),
+        test_bind_group_id(12),
         |texture_id| {
-            test_sprite_resource_set(
-                texture_id,
-                test_resource_set_id(13),
-                test_resource_set_id(14),
-            )
+            test_sprite_bind_group(texture_id, test_bind_group_id(13), test_bind_group_id(14))
         },
-        test_resource_set_id(15),
-        test_resource_set_id(16),
+        test_bind_group_id(15),
+        test_bind_group_id(16),
         DrawMode::BackdropSegment {
             batch_start: 0,
             batch_end: 1,
@@ -2132,18 +2165,14 @@ fn present_draw_steps_continue_after_backdrop_blur_batch() {
         &upload,
         &pipelines,
         blend_pipelines,
-        test_resource_set_id(10),
-        test_resource_set_id(11),
-        test_resource_set_id(12),
+        test_bind_group_id(10),
+        test_bind_group_id(11),
+        test_bind_group_id(12),
         |texture_id| {
-            test_sprite_resource_set(
-                texture_id,
-                test_resource_set_id(13),
-                test_resource_set_id(14),
-            )
+            test_sprite_bind_group(texture_id, test_bind_group_id(13), test_bind_group_id(14))
         },
-        test_resource_set_id(15),
-        test_resource_set_id(16),
+        test_bind_group_id(15),
+        test_bind_group_id(16),
         DrawMode::Present,
     );
 
@@ -2168,7 +2197,7 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
         },
         size(crate::ScaledPixels(20.0), crate::ScaledPixels(20.0)),
     ));
-    let backdrop_blur_damage_plan = crate::BackdropBlurDamagePlan::default();
+    let backdrop_blur_damage = crate::BackdropBlurDamagePlan::default();
     let partial_packet = || {
         PresentationPacket::new(
             Arc::clone(&scene),
@@ -2176,7 +2205,7 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
             [],
             std::time::Instant::now(),
             dirty_region.clone(),
-            backdrop_blur_damage_plan.clone(),
+            backdrop_blur_damage.clone(),
             PartialPresentMode::Partial,
         )
     };
@@ -2208,13 +2237,13 @@ fn auto_static_target_keeps_exact_native_view_across_popup_reorders() {
             byte_size: 64 * 32 * 4,
             texture: test_texture_id(index + 1),
             texture_view: test_texture_view_id(index + 1),
-            pass_resource_sets: vec![test_resource_set_id(index + 1)],
+            pass_bind_groups: vec![test_bind_group_id(index + 1)],
         }],
-        target_resource_sets: vec![test_resource_set_id(index + 11)],
+        target_bind_groups: vec![test_bind_group_id(index + 11)],
     };
     let mut targets = BackdropBlurTargets {
         source: None,
-        source_pass_resource_sets: Vec::new(),
+        source_pass_bind_groups: Vec::new(),
         isolated_sources: Vec::new(),
         active_isolated_source_count: 0,
         variants: (0..5).map(make_variant).collect(),
@@ -2259,13 +2288,13 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
             byte_size: 64 * 32 * 4,
             texture: test_texture_id(index + 1),
             texture_view: test_texture_view_id(index + 1),
-            pass_resource_sets: vec![test_resource_set_id(index + 1)],
+            pass_bind_groups: vec![test_bind_group_id(index + 1)],
         }],
-        target_resource_sets: vec![test_resource_set_id(index + 11)],
+        target_bind_groups: vec![test_bind_group_id(index + 11)],
     };
     let mut targets = BackdropBlurTargets {
         source: None,
-        source_pass_resource_sets: Vec::new(),
+        source_pass_bind_groups: Vec::new(),
         isolated_sources: Vec::new(),
         active_isolated_source_count: 0,
         variants: (0..5).map(make_variant).collect(),
@@ -2312,10 +2341,10 @@ fn warmed_gaussian_sources_survive_popup_shrink_and_regrowth() {
                     byte_size: 64 * 32 * 4,
                     texture: test_texture_id(100 + index * 2 + axis),
                     texture_view: test_texture_view_id(100 + index * 2 + axis),
-                    pass_resource_sets: vec![test_resource_set_id(100 + index * 2 + axis)],
+                    pass_bind_groups: vec![test_bind_group_id(100 + index * 2 + axis)],
                 })
                 .collect(),
-            target_resource_sets: vec![test_resource_set_id(index + 40)],
+            target_bind_groups: vec![test_bind_group_id(index + 40)],
         }
     };
     let source = |index: u32| IsolatedBlurSource {
@@ -2325,11 +2354,11 @@ fn warmed_gaussian_sources_survive_popup_shrink_and_regrowth() {
             texture: test_texture_id(index + 200),
             texture_view: test_texture_view_id(index + 200),
         },
-        pass_resource_sets: vec![test_resource_set_id(index + 200)],
+        pass_bind_groups: vec![test_bind_group_id(index + 200)],
     };
     let mut targets = BackdropBlurTargets {
         source: None,
-        source_pass_resource_sets: Vec::new(),
+        source_pass_bind_groups: Vec::new(),
         isolated_sources: (0..5).map(source).collect(),
         active_isolated_source_count: 5,
         variants: (0..6).map(make_variant).collect(),
@@ -2407,15 +2436,15 @@ fn filter_reindex_preserves_compatible_source_and_output_allocations() {
                     byte_size: 64 * 32 * 4,
                     texture: test_texture_id(10 + index * 2 + axis),
                     texture_view: test_texture_view_id(10 + index * 2 + axis),
-                    pass_resource_sets: vec![test_resource_set_id(10 + index * 2 + axis)],
+                    pass_bind_groups: vec![test_bind_group_id(10 + index * 2 + axis)],
                 })
                 .collect(),
-            target_resource_sets: vec![test_resource_set_id(100 + index)],
+            target_bind_groups: vec![test_bind_group_id(100 + index)],
         }
     };
     let mut targets = BackdropBlurTargets {
         source: None,
-        source_pass_resource_sets: Vec::new(),
+        source_pass_bind_groups: Vec::new(),
         isolated_sources: (0..2)
             .map(|index| IsolatedBlurSource {
                 index,
@@ -2424,7 +2453,7 @@ fn filter_reindex_preserves_compatible_source_and_output_allocations() {
                     texture: test_texture_id(200 + index),
                     texture_view: test_texture_view_id(200 + index),
                 },
-                pass_resource_sets: vec![test_resource_set_id(200 + index)],
+                pass_bind_groups: vec![test_bind_group_id(200 + index)],
             })
             .collect(),
         active_isolated_source_count: 2,
@@ -2465,7 +2494,7 @@ fn filter_reindex_preserves_compatible_source_and_output_allocations() {
     );
     assert_eq!(
         targets.config_bind_group(next[1], 0),
-        Some(test_resource_set_id(102))
+        Some(test_bind_group_id(102))
     );
     let before: Vec<_> = targets
         .variants
@@ -2499,10 +2528,10 @@ fn zero_radius_fallback_never_steals_gaussian_or_mutates_failed_layout() {
                 byte_size: 64 * 32 * 4,
                 texture: test_texture_id(40 + index * 2 + axis),
                 texture_view: test_texture_view_id(40 + index * 2 + axis),
-                pass_resource_sets: vec![test_resource_set_id(40 + index * 2 + axis)],
+                pass_bind_groups: vec![test_bind_group_id(40 + index * 2 + axis)],
             })
             .collect(),
-        target_resource_sets: vec![test_resource_set_id(70 + index)],
+        target_bind_groups: vec![test_bind_group_id(70 + index)],
     };
     let make_source = |index: u32| IsolatedBlurSource {
         index,
@@ -2511,11 +2540,11 @@ fn zero_radius_fallback_never_steals_gaussian_or_mutates_failed_layout() {
             texture: test_texture_id(90 + index),
             texture_view: test_texture_view_id(90 + index),
         },
-        pass_resource_sets: vec![test_resource_set_id(90 + index)],
+        pass_bind_groups: vec![test_bind_group_id(90 + index)],
     };
     let mut targets = BackdropBlurTargets {
         source: None,
-        source_pass_resource_sets: Vec::new(),
+        source_pass_bind_groups: Vec::new(),
         isolated_sources: (0..2).map(make_source).collect(),
         active_isolated_source_count: 2,
         variants: (0..3).map(make_variant).collect(),
@@ -2577,7 +2606,7 @@ fn gaussian_source_capacity_overflow_keeps_layout_unchanged() {
     let config = test_backdrop_blur_config(0, 2);
     let mut targets = BackdropBlurTargets {
         source: None,
-        source_pass_resource_sets: Vec::new(),
+        source_pass_bind_groups: Vec::new(),
         isolated_sources: vec![IsolatedBlurSource {
             index: 0,
             target: RenderTarget {
@@ -2585,7 +2614,7 @@ fn gaussian_source_capacity_overflow_keeps_layout_unchanged() {
                 texture: test_texture_id(80),
                 texture_view: test_texture_view_id(80),
             },
-            pass_resource_sets: vec![test_resource_set_id(80)],
+            pass_bind_groups: vec![test_bind_group_id(80)],
         }],
         active_isolated_source_count: 1,
         variants: vec![BackdropBlurVariantTargets {
@@ -2595,10 +2624,10 @@ fn gaussian_source_capacity_overflow_keeps_layout_unchanged() {
                     byte_size: 256,
                     texture: test_texture_id(90 + axis),
                     texture_view: test_texture_view_id(90 + axis),
-                    pass_resource_sets: vec![test_resource_set_id(90 + axis)],
+                    pass_bind_groups: vec![test_bind_group_id(90 + axis)],
                 })
                 .collect(),
-            target_resource_sets: vec![test_resource_set_id(91)],
+            target_bind_groups: vec![test_bind_group_id(91)],
         }],
         active_variant_count: 1,
     };
@@ -2618,10 +2647,10 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
                 byte_size: 64 * 32 * 4,
                 texture: test_texture_id(index * 2 + axis + 1),
                 texture_view: test_texture_view_id(index * 2 + axis + 1),
-                pass_resource_sets: vec![test_resource_set_id(index * 2 + axis + 1)],
+                pass_bind_groups: vec![test_bind_group_id(index * 2 + axis + 1)],
             })
             .collect(),
-        target_resource_sets: vec![test_resource_set_id(index + 20)],
+        target_bind_groups: vec![test_bind_group_id(index + 20)],
     };
     let mut targets = BackdropBlurTargets {
         source: Some(RenderTarget {
@@ -2629,7 +2658,7 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
             texture: test_texture_id(30),
             texture_view: test_texture_view_id(30),
         }),
-        source_pass_resource_sets: vec![test_resource_set_id(30)],
+        source_pass_bind_groups: vec![test_bind_group_id(30)],
         isolated_sources: Vec::new(),
         active_isolated_source_count: 0,
         variants: (0..4).map(make_variant).collect(),
@@ -2677,10 +2706,10 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
                 byte_size: 64 * 32 * 4,
                 texture: test_texture_id(index * 2 + axis + 1),
                 texture_view: test_texture_view_id(index * 2 + axis + 1),
-                pass_resource_sets: vec![test_resource_set_id(index * 2 + axis + 1)],
+                pass_bind_groups: vec![test_bind_group_id(index * 2 + axis + 1)],
             })
             .collect(),
-        target_resource_sets: vec![test_resource_set_id(index + 20)],
+        target_bind_groups: vec![test_bind_group_id(index + 20)],
     };
     let mut targets = BackdropBlurTargets {
         source: Some(RenderTarget {
@@ -2688,7 +2717,7 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
             texture: test_texture_id(30),
             texture_view: test_texture_view_id(30),
         }),
-        source_pass_resource_sets: vec![test_resource_set_id(30)],
+        source_pass_bind_groups: vec![test_bind_group_id(30)],
         isolated_sources: Vec::new(),
         active_isolated_source_count: 0,
         variants: (0..4).map(make_variant).collect(),
@@ -2749,7 +2778,7 @@ fn backdrop_blur_render_passes_blur_each_axis() {
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
         }),
-        source_pass_resource_sets: vec![test_resource_set_id(11)],
+        source_pass_bind_groups: vec![test_bind_group_id(11)],
         isolated_sources: Vec::new(),
         active_isolated_source_count: 0,
         variants: vec![BackdropBlurVariantTargets {
@@ -2759,16 +2788,16 @@ fn backdrop_blur_render_passes_blur_each_axis() {
                     byte_size: 0,
                     texture: test_texture_id(2),
                     texture_view: test_texture_view_id(2),
-                    pass_resource_sets: vec![test_resource_set_id(12)],
+                    pass_bind_groups: vec![test_bind_group_id(12)],
                 },
                 BackdropBlurLevelTarget {
                     byte_size: 0,
                     texture: test_texture_id(3),
                     texture_view: test_texture_view_id(3),
-                    pass_resource_sets: vec![test_resource_set_id(13)],
+                    pass_bind_groups: vec![test_bind_group_id(13)],
                 },
             ],
-            target_resource_sets: vec![test_resource_set_id(15)],
+            target_bind_groups: vec![test_bind_group_id(15)],
         }],
     };
 
@@ -2799,8 +2828,8 @@ fn backdrop_blur_render_passes_blur_each_axis() {
             .map(|pass| pass.step.bind_groups())
             .collect::<Vec<_>>(),
         vec![
-            [test_resource_set_id(11)].as_slice(),
-            [test_resource_set_id(12)].as_slice(),
+            [test_bind_group_id(11)].as_slice(),
+            [test_bind_group_id(12)].as_slice(),
         ]
     );
 }
@@ -2815,7 +2844,7 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
         }),
-        source_pass_resource_sets: vec![test_resource_set_id(11)],
+        source_pass_bind_groups: vec![test_bind_group_id(11)],
         isolated_sources: Vec::new(),
         active_isolated_source_count: 0,
         variants: Vec::new(),
@@ -3961,7 +3990,7 @@ fn shader_function_source<'a>(shader_name: &str, source: &'a str, function_name:
 
 #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
 #[test]
-fn nova_sprite_hlsl_bindings_match_dx12_resource_sets() {
+fn nova_sprite_hlsl_bindings_match_dx12_bind_groups() {
     let mono_source = NOVA_MONO_SPRITE_SHADER_SOURCE;
     let gfx_core::ShaderCode::Hlsl(mono_hlsl) =
         compile_wgsl_to_hlsl(mono_source, ShaderStage::Fragment, "fs_mono_sprite")
@@ -4066,7 +4095,7 @@ fn test_pipelines() -> Pipelines {
     }
 }
 
-fn test_resource_set_id(index: u32) -> BindGroupId {
+fn test_bind_group_id(index: u32) -> BindGroupId {
     BindGroupId::from_parts(index, 1)
 }
 
@@ -4162,7 +4191,7 @@ fn nova_resize_warmup_promotes_partial_damage_to_full_drawable() {
         crate::BackdropBlurDamagePlan::default(),
         PartialPresentMode::Partial,
     );
-    force_full_drawable_damage_after_resize(
+    force_full_drawable_damage(
         &mut packet,
         crate::platform::nova::renderer::DrawableSize {
             width: 1280,
@@ -4277,7 +4306,7 @@ fn nested_element_capture_animation_keeps_local_damage_even_with_full_swapchain_
 
     // A real drawable-size transition remains conservatively full.
     assert!(requires_full_drawable_damage(false, true));
-    force_full_drawable_damage_after_resize(
+    force_full_drawable_damage(
         &mut packet,
         DrawableSize {
             width: 972,

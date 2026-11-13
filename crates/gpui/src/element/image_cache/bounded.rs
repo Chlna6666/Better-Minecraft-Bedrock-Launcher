@@ -303,7 +303,7 @@ fn estimated_render_image_bytes(image: &RenderImage) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{TestAppContext, performance_metrics_snapshot};
+    use crate::{TestAppContext, snapshot};
     use image::{Frame, RgbaImage};
     use smallvec::smallvec;
 
@@ -311,7 +311,7 @@ mod tests {
     fn bounded_cache_eviction_drops_loaded_images(cx: &mut TestAppContext) {
         let window = cx.add_empty_window();
         window.update(|window, cx| {
-            let before = performance_metrics_snapshot();
+            let before = snapshot();
             let image = Arc::new(RenderImage::new(smallvec![Frame::new(RgbaImage::new(
                 1, 1,
             ))]));
@@ -343,7 +343,7 @@ mod tests {
 
             cache.enforce_limits(Some(protected_hash), window, cx);
 
-            let after = performance_metrics_snapshot();
+            let after = snapshot();
             assert!(!cache.entries.contains_key(&image_hash));
             assert!(cache.entries.contains_key(&protected_hash));
             assert!(after.image_cache_evictions > before.image_cache_evictions);

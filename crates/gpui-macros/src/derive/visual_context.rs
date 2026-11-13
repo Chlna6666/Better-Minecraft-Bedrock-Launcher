@@ -2,7 +2,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
 
-use super::get_simple_attribute_field;
+use crate::get_simple_attribute_field;
 
 pub fn derive_visual_context(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);

@@ -2,7 +2,7 @@ use super::super::blur_damage::{bounds_to_scissor, intersect_scissor_rects};
 use super::*;
 
 mod backdrop;
-use backdrop::{backdrop_config_damage, blur_refresh_configs};
+use backdrop::{blur_refresh_configs, config_damage};
 
 pub(super) struct PreparedBackdropBlurGroup {
     /// Scene segment that advances the shared backdrop source from the previous blur barrier to this
@@ -43,7 +43,7 @@ fn command_cache_revision(scene_revision: u64, has_renderer_extensions: bool) ->
 
 /// Retain each extension's vector allocation while dropping all previous-frame
 /// commands, even when the next prepare exits early due to empty visibility.
-fn prepare_renderer_extension_step_storage<T>(steps: &mut Vec<Vec<T>>, extension_count: usize) {
+fn reset_extension_steps<T>(steps: &mut Vec<Vec<T>>, extension_count: usize) {
     steps.resize_with(extension_count, Vec::new);
     steps.truncate(extension_count);
     for extension_steps in steps {
@@ -83,15 +83,15 @@ impl NovaRenderer {
                     &self.frame_upload,
                     &self.pipelines,
                     blend_pipelines,
-                    self.quad_resource_set,
-                    self.shadow_resource_set,
-                    self.path_resource_set,
+                    self.quad_bind_group,
+                    self.shadow_bind_group,
+                    self.path_bind_group,
                     |texture_id| {
-                        sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
+                        sprite_bind_group(gpu_atlas_textures, texture_id, frame_resource_index)
                     },
-                    self.underline_resource_set,
+                    self.underline_bind_group,
                     |config| {
-                        root_color::composite_resource_set(
+                        root_color::composite_bind_group(
                             &self.root_color,
                             self.frame_upload.root_color.map(|root| root.index),
                             backdrop_blur_targets,
@@ -108,7 +108,7 @@ impl NovaRenderer {
     pub(super) fn prepare_renderer_extensions(&mut self, frame_time: Instant) -> Result<()> {
         self.renderer_registry.begin_frame();
         let extension_count = self.frame_upload.renderer_extensions.len();
-        prepare_renderer_extension_step_storage(
+        reset_extension_steps(
             &mut self.frame_upload.renderer_extension_steps,
             extension_count,
         );
@@ -249,9 +249,7 @@ impl NovaRenderer {
         let force_full = self.command_scratch.force_full_backdrop_blur_refresh;
         let group_damage: Vec<_> = blur_groups
             .iter()
-            .map(|(_, configs)| {
-                backdrop_config_damage(&self.command_scratch.backdrop_blur_damage_plan, configs)
-            })
+            .map(|(_, configs)| config_damage(&self.command_scratch.backdrop_blur_damage, configs))
             .collect();
         let dirty_configs: Vec<Vec<BackdropBlurConfig>> = blur_groups
             .iter()
@@ -306,15 +304,15 @@ impl NovaRenderer {
                 &self.frame_upload,
                 &self.pipelines,
                 blend_pipelines,
-                self.quad_resource_set,
-                self.shadow_resource_set,
-                self.path_resource_set,
+                self.quad_bind_group,
+                self.shadow_bind_group,
+                self.path_bind_group,
                 |texture_id| {
-                    sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
+                    sprite_bind_group(gpu_atlas_textures, texture_id, frame_resource_index)
                 },
-                self.underline_resource_set,
+                self.underline_bind_group,
                 |config| {
-                    root_color::composite_resource_set(
+                    root_color::composite_bind_group(
                         &self.root_color,
                         self.frame_upload.root_color.map(|root| root.index),
                         Some(targets),
@@ -409,7 +407,7 @@ impl NovaRenderer {
         {
             // The input-dependency check already selected exactly which filter
             // outputs need rebuilding. Skip clean layers BEFORE creating their
-            // source draw steps, resource-set bindings and Gaussian pass lists.
+            // source draw steps, bind-group bindings and Gaussian pass lists.
             // This matters with nested filters and high-Hz animation frames.
             if !dirty_indices.contains(&range.index) {
                 continue;
@@ -558,9 +556,9 @@ impl NovaRenderer {
                     continue;
                 };
 
-                let (source_texture_view, source_resource_set) =
+                let (source_texture_view, source_bind_group) =
                     if let Some(ref target) = direct_composite_target {
-                        (target.texture_view, target.source_resource_set)
+                        (target.texture_view, target.source_bind_group)
                     } else {
                         let Some(targets) = targets else { continue };
                         let Some(source_texture_view) =
@@ -568,12 +566,12 @@ impl NovaRenderer {
                         else {
                             continue;
                         };
-                        let Some(source_resource_set) =
-                            targets.isolated_source_resource_set(range.index, frame_resource_index)
+                        let Some(source_bind_group) =
+                            targets.isolated_source_bind_group(range.index, frame_resource_index)
                         else {
                             continue;
                         };
-                        (source_texture_view, source_resource_set)
+                        (source_texture_view, source_bind_group)
                     };
 
                 // Every segment contributes to one accumulated scene-color source. For a normal
@@ -602,7 +600,7 @@ impl NovaRenderer {
                         segment_start,
                         barrier.batch_index,
                         &barrier.configs,
-                        source_resource_set,
+                        source_bind_group,
                         targets.expect("backdrop barriers require allocated Filter targets"),
                         source_scissor,
                         &barrier.damage,
@@ -616,15 +614,15 @@ impl NovaRenderer {
                     &self.frame_upload,
                     &self.pipelines,
                     blend_pipelines,
-                    self.quad_resource_set,
-                    self.shadow_resource_set,
-                    self.path_resource_set,
+                    self.quad_bind_group,
+                    self.shadow_bind_group,
+                    self.path_bind_group,
                     |texture_id| {
-                        sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
+                        sprite_bind_group(gpu_atlas_textures, texture_id, frame_resource_index)
                     },
-                    self.underline_resource_set,
+                    self.underline_bind_group,
                     |blur_config| {
-                        root_color::composite_resource_set(
+                        root_color::composite_bind_group(
                             &self.root_color,
                             self.frame_upload.root_color.map(|root| root.index),
                             targets,
@@ -648,7 +646,7 @@ impl NovaRenderer {
                         targets.expect("isolated source lookup proved Filter target allocation"),
                         frame_resource_index,
                         std::slice::from_ref(&config),
-                        source_resource_set,
+                        source_bind_group,
                         &mut filter_passes,
                     );
                     apply_filter_refresh_scissors(
@@ -676,7 +674,7 @@ impl NovaRenderer {
                             0,
                             RenderCommand::Draw(DrawCommand {
                                 pipeline: self.pipelines.retained_clear,
-                                bind_groups: bind_group_list([self.quad_resource_set]),
+                                bind_groups: bind_group_list([self.quad_bind_group]),
                                 vertex_count: 4,
                                 first_vertex: 0,
                                 instance_count: 1,
@@ -710,7 +708,7 @@ impl NovaRenderer {
         batch_start: usize,
         batch_end: usize,
         configs: &[BackdropBlurConfig],
-        source_resource_set: BindGroupId,
+        source_bind_group: BindGroupId,
         targets: &BackdropBlurTargets,
         source_scissor: ScissorRect,
         dirty_region: &DirtyRegion,
@@ -724,13 +722,13 @@ impl NovaRenderer {
             &self.frame_upload,
             &self.pipelines,
             blend_pipelines,
-            self.quad_resource_set,
-            self.shadow_resource_set,
-            self.path_resource_set,
-            |texture_id| sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index),
-            self.underline_resource_set,
+            self.quad_bind_group,
+            self.shadow_bind_group,
+            self.path_bind_group,
+            |texture_id| sprite_bind_group(gpu_atlas_textures, texture_id, frame_resource_index),
+            self.underline_bind_group,
             |blur_config| {
-                root_color::composite_resource_set(
+                root_color::composite_bind_group(
                     &self.root_color,
                     self.frame_upload.root_color.map(|root| root.index),
                     Some(targets),
@@ -754,7 +752,7 @@ impl NovaRenderer {
                 targets,
                 frame_resource_index,
                 configs,
-                source_resource_set,
+                source_bind_group,
                 &mut filter_passes,
             );
             apply_filter_refresh_scissors(
@@ -789,7 +787,7 @@ impl NovaRenderer {
         let cache_key = PathMaskCacheKey {
             scene_revision,
             encode_generation: self.frame_upload.encode_generation,
-            path_rasterization_resource_set: self.path_rasterization_resource_set,
+            path_rasterization_bind_group: self.path_rasterization_bind_group,
         };
         self.command_scratch.prepare_path_steps(
             cache_key,
@@ -799,7 +797,7 @@ impl NovaRenderer {
                 encode_path_commands(
                     &self.frame_upload,
                     &self.pipelines,
-                    self.path_rasterization_resource_set,
+                    self.path_rasterization_bind_group,
                     steps,
                 );
             },
@@ -811,17 +809,15 @@ impl NovaRenderer {
     }
 }
 
-fn sprite_resource_set(
+fn sprite_bind_group(
     gpu_atlas_textures: &FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
     texture_id: AtlasTextureId,
     frame_resource_index: usize,
 ) -> Option<BindGroupId> {
     gpu_atlas_textures.get(&texture_id).and_then(|texture| {
         let bind_groups = match texture_id.kind {
-            AtlasTextureKind::Monochrome | AtlasTextureKind::Subpixel => {
-                &texture.mono_resource_sets
-            }
-            AtlasTextureKind::Bgra | AtlasTextureKind::Rgba => &texture.poly_resource_sets,
+            AtlasTextureKind::Monochrome | AtlasTextureKind::Subpixel => &texture.mono_bind_groups,
+            AtlasTextureKind::Bgra | AtlasTextureKind::Rgba => &texture.poly_bind_groups,
         };
         bind_groups.get(frame_resource_index).copied()
     })
@@ -984,8 +980,7 @@ fn requires_full_isolated_layer_refresh(
     window_damage: &DirtyRegion,
 ) -> bool {
     global_force_full
-        || (!is_retained_root
-            && blur_damage_scissors(config, drawable_size, window_damage).is_none())
+        || (!is_retained_root && scissors(config, drawable_size, window_damage).is_none())
 }
 
 fn blur_source_scissor_for_refresh(
@@ -997,8 +992,7 @@ fn blur_source_scissor_for_refresh(
     if force_full {
         blur_full_source_scissor(config, drawable_size)
     } else {
-        blur_damage_scissors(config, drawable_size, dirty_region)
-            .map(|damage| damage.source_capture)
+        scissors(config, drawable_size, dirty_region).map(|damage| damage.source_capture)
     }
 }
 
@@ -1051,7 +1045,7 @@ fn apply_filter_pass_damage_scissors(
         let [horizontal, vertical] = pass_pair else {
             continue;
         };
-        let Some(damage) = blur_damage_scissors(*config, drawable_size, dirty_region) else {
+        let Some(damage) = scissors(*config, drawable_size, dirty_region) else {
             continue;
         };
         let horizontal_scissor =
@@ -1442,17 +1436,17 @@ mod renderer_extension_cache_tests {
     fn clipped_extension_discards_old_steps_before_scissor_check() {
         let mut steps = vec![vec![4u8, 5, 6], vec![7, 8]];
         let first_capacity = steps[0].capacity();
-        prepare_renderer_extension_step_storage(&mut steps, 2);
+        reset_extension_steps(&mut steps, 2);
         assert_eq!(steps.len(), 2);
         assert!(steps.iter().all(Vec::is_empty));
         assert_eq!(steps[0].capacity(), first_capacity);
 
         steps[0].push(9);
-        prepare_renderer_extension_step_storage(&mut steps, 1);
+        reset_extension_steps(&mut steps, 1);
         assert_eq!(steps.len(), 1);
         assert!(steps[0].is_empty());
 
-        prepare_renderer_extension_step_storage(&mut steps, 0);
+        reset_extension_steps(&mut steps, 0);
         assert!(steps.is_empty());
     }
 }

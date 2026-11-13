@@ -32,7 +32,7 @@ impl RootColor {
         let root = self.target.as_ref()?;
         Some(DirectCompositeTarget {
             texture_view: root.target.texture_view,
-            source_resource_set: *root.pass_resource_sets.get(slot)?,
+            source_bind_group: *root.pass_bind_groups.get(slot)?,
         })
     }
 
@@ -104,7 +104,7 @@ impl RootColor {
 }
 
 /// Resolve compositor bindings from their actual GPU owner. Root does not depend on a Filter slot.
-pub(super) fn composite_resource_set(
+pub(super) fn composite_bind_group(
     root: &RootColor,
     root_index: Option<u32>,
     filters: Option<&BackdropBlurTargets>,
@@ -114,7 +114,7 @@ pub(super) fn composite_resource_set(
     if root_index.is_some_and(|index| config.exclusively_contains_member_index(index)) {
         root.target
             .as_ref()?
-            .composite_resource_sets
+            .composite_bind_groups
             .get(slot)
             .copied()
     } else {
@@ -132,11 +132,11 @@ pub(super) fn create_target<D: ResourceDevice + PipelineDevice>(
         descriptor.size,
         descriptor.format,
     )?;
-    let mut pass_resource_sets = Vec::with_capacity(descriptor.frames.len());
-    let mut composite_resource_sets = Vec::with_capacity(descriptor.frames.len());
+    let mut pass_bind_groups = Vec::with_capacity(descriptor.frames.len());
+    let mut composite_bind_groups = Vec::with_capacity(descriptor.frames.len());
     let result = (|| -> Result<()> {
         for buffers in &descriptor.frames {
-            pass_resource_sets.push(device.create_bind_group(&BindGroupDescriptor {
+            pass_bind_groups.push(device.create_bind_group(&BindGroupDescriptor {
                 label: Some("gpui root color source binding".into()),
                 layout: descriptor.pass_layout,
                 entries: backdrop_blur_pass_resource_bindings(
@@ -145,7 +145,7 @@ pub(super) fn create_target<D: ResourceDevice + PipelineDevice>(
                     descriptor.sampler,
                 ),
             })?);
-            composite_resource_sets.push(device.create_bind_group(&BindGroupDescriptor {
+            composite_bind_groups.push(device.create_bind_group(&BindGroupDescriptor {
                 label: Some("gpui root color composite binding".into()),
                 layout: descriptor.composite_layout,
                 entries: backdrop_blur_resource_bindings(
@@ -159,8 +159,8 @@ pub(super) fn create_target<D: ResourceDevice + PipelineDevice>(
     })();
     let root = RootColorTarget {
         target,
-        pass_resource_sets,
-        composite_resource_sets,
+        pass_bind_groups,
+        composite_bind_groups,
     };
     if let Err(error) = result {
         destroy_target(device, root);
@@ -175,9 +175,9 @@ pub(super) fn destroy_target<D: ResourceDevice + PipelineDevice>(
     root: RootColorTarget,
 ) {
     for set in root
-        .composite_resource_sets
+        .composite_bind_groups
         .into_iter()
-        .chain(root.pass_resource_sets)
+        .chain(root.pass_bind_groups)
     {
         if let Err(error) = device.destroy_bind_group(set) {
             log::debug!("failed to retire root color descriptor: {error}");
@@ -202,8 +202,8 @@ impl NovaRenderer {
         let descriptor = Descriptor {
             size: Extent2d::new(self.current_size.width, self.current_size.height)?,
             format: self.surface_format,
-            pass_layout: self.backdrop_blur_pass_resource_set_layout,
-            composite_layout: self.backdrop_blur_resource_set_layout,
+            pass_layout: self.backdrop_blur_pass_bind_group_layout,
+            composite_layout: self.backdrop_blur_bind_group_layout,
             frames: self.frame_resource_buffers(),
             sampler: self.atlas_sampler,
         };
@@ -255,8 +255,8 @@ mod tests {
                 texture: TextureId::from_parts(texture, 1),
                 texture_view: TextureViewId::from_parts(texture, 1),
             },
-            pass_resource_sets: vec![BindGroupId::from_parts(20, 1)],
-            composite_resource_sets: vec![BindGroupId::from_parts(21, 1)],
+            pass_bind_groups: vec![BindGroupId::from_parts(20, 1)],
+            composite_bind_groups: vec![BindGroupId::from_parts(21, 1)],
         }
     }
 
@@ -266,15 +266,15 @@ mod tests {
         root.target = Some(target(1));
         let config = test_zero_radius_blur_config(3);
         assert_eq!(
-            composite_resource_set(&root, Some(3), None, config, 0),
+            composite_bind_group(&root, Some(3), None, config, 0),
             Some(BindGroupId::from_parts(21, 1))
         );
         assert_eq!(
-            root.source_target(0).unwrap().source_resource_set,
+            root.source_target(0).unwrap().source_bind_group,
             BindGroupId::from_parts(20, 1)
         );
-        assert!(composite_resource_set(&root, Some(2), None, config, 0).is_none());
-        assert!(composite_resource_set(&root, Some(3), None, config, 1).is_none());
+        assert!(composite_bind_group(&root, Some(2), None, config, 0).is_none());
+        assert!(composite_bind_group(&root, Some(3), None, config, 1).is_none());
     }
 
     #[test]

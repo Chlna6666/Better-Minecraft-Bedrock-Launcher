@@ -116,7 +116,7 @@ x11 = [
 
 [lib]
 name = "gpui"
-path = "src/gpui.rs"
+path = "src/lib.rs"
 doctest = false
 
 [[bench]]
@@ -205,7 +205,7 @@ path = "examples/hello_world.rs"
 
 [[example]]
 name = "image"
-path = "examples/image/image.rs"
+path = "examples/image/main.rs"
 
 [[example]]
 name = "image_gallery"
@@ -261,7 +261,7 @@ path = "examples/shadow.rs"
 
 [[example]]
 name = "svg"
-path = "examples/svg/svg.rs"
+path = "examples/svg/main.rs"
 
 [[example]]
 name = "tab_stop"

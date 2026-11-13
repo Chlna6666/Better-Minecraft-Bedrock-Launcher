@@ -23,7 +23,7 @@ mod open_type;
 
 mod text_system;
 
-mod platform;
+mod implementation;
 mod window;
 mod window_appearance;
 
@@ -43,7 +43,7 @@ pub(crate) use dispatcher::*;
 pub(crate) use display::*;
 pub(crate) use display_link::*;
 pub(crate) use keyboard::*;
-pub(crate) use platform::*;
+pub(crate) use implementation::*;
 pub(crate) use text_system::*;
 pub(crate) use window::*;
 
@@ -58,11 +58,11 @@ impl BoolExt for bool {
 }
 
 trait NSStringExt {
-    unsafe fn to_str(&self) -> &str;
+    unsafe fn as_str(&self) -> &str;
 }
 
 impl NSStringExt for id {
-    unsafe fn to_str(&self) -> &str {
+    unsafe fn as_str(&self) -> &str {
         unsafe {
             let cstr = self.UTF8String();
             if cstr.is_null() {

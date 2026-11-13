@@ -4,14 +4,14 @@ use super::super::*;
 use super::buffers::FrameResourceBuffers;
 
 #[derive(Clone, Copy)]
-pub(in crate::platform::nova) struct FrameResourceSets {
-    pub(in crate::platform::nova) quad_resource_set: BindGroupId,
-    pub(in crate::platform::nova) shadow_resource_set: BindGroupId,
-    pub(in crate::platform::nova) path_rasterization_resource_set: BindGroupId,
-    pub(in crate::platform::nova) underline_resource_set: BindGroupId,
+pub(in crate::platform::nova) struct FrameBindGroups {
+    pub(in crate::platform::nova) quad_bind_group: BindGroupId,
+    pub(in crate::platform::nova) shadow_bind_group: BindGroupId,
+    pub(in crate::platform::nova) path_rasterization_bind_group: BindGroupId,
+    pub(in crate::platform::nova) underline_bind_group: BindGroupId,
 }
 
-pub(in crate::platform::nova) fn create_path_rasterization_resource_set<D>(
+pub(in crate::platform::nova) fn create_path_rasterization_bind_group<D>(
     device: &mut D,
     label: &str,
     layout: BindGroupLayoutId,
@@ -21,7 +21,7 @@ where
     D: ResourceDevice,
 {
     Ok(device.create_bind_group(&BindGroupDescriptor {
-        label: Some(format!("{label} path rasterization resource set")),
+        label: Some(format!("{label} path rasterization bind group")),
         layout,
         entries: path_rasterization_resource_bindings(buffers),
     })?)
@@ -65,7 +65,7 @@ fn animation_value_binding(buffers: &FrameResourceBuffers) -> BindGroupEntry {
     }
 }
 
-pub(in crate::platform::nova) fn create_quad_resource_set<D>(
+pub(in crate::platform::nova) fn create_quad_bind_group<D>(
     device: &mut D,
     label: &str,
     layout: BindGroupLayoutId,
@@ -75,44 +75,44 @@ where
     D: ResourceDevice,
 {
     Ok(device.create_bind_group(&BindGroupDescriptor {
-        label: Some(format!("{label} quad resource set")),
+        label: Some(format!("{label} quad bind group")),
         layout,
         entries: quad_resource_bindings(buffers),
     })?)
 }
 
-pub(super) fn create_renderer_resource_sets<D>(
+pub(super) fn create_renderer_bind_groups<D>(
     device: &mut D,
     label: &str,
     layouts: &ResourceLayouts,
     buffers: &FrameResourceBuffers,
-) -> Result<FrameResourceSets>
+) -> Result<FrameBindGroups>
 where
     D: ResourceDevice,
 {
-    let quad_resource_set =
-        create_quad_resource_set(device, label, layouts.quad_resource_set_layout, buffers)?;
-    let shadow_resource_set = device.create_bind_group(&BindGroupDescriptor {
-        label: Some(format!("{label} shadow resource set")),
-        layout: layouts.shadow_resource_set_layout,
+    let quad_bind_group =
+        create_quad_bind_group(device, label, layouts.quad_bind_group_layout, buffers)?;
+    let shadow_bind_group = device.create_bind_group(&BindGroupDescriptor {
+        label: Some(format!("{label} shadow bind group")),
+        layout: layouts.shadow_bind_group_layout,
         entries: shadow_resource_bindings(buffers),
     })?;
-    let path_rasterization_resource_set = create_path_rasterization_resource_set(
+    let path_rasterization_bind_group = create_path_rasterization_bind_group(
         device,
         label,
-        layouts.path_rasterization_resource_set_layout,
+        layouts.path_rasterization_bind_group_layout,
         buffers,
     )?;
-    let underline_resource_set = device.create_bind_group(&BindGroupDescriptor {
-        label: Some(format!("{label} underline resource set")),
-        layout: layouts.underline_resource_set_layout,
+    let underline_bind_group = device.create_bind_group(&BindGroupDescriptor {
+        label: Some(format!("{label} underline bind group")),
+        layout: layouts.underline_bind_group_layout,
         entries: underline_resource_bindings(buffers),
     })?;
-    Ok(FrameResourceSets {
-        quad_resource_set,
-        shadow_resource_set,
-        path_rasterization_resource_set,
-        underline_resource_set,
+    Ok(FrameBindGroups {
+        quad_bind_group,
+        shadow_bind_group,
+        path_rasterization_bind_group,
+        underline_bind_group,
     })
 }
 

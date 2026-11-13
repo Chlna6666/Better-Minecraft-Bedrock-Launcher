@@ -580,7 +580,7 @@ impl CosmicTextSystemState {
 
         let best_face = probe_character
             .and_then(|character| {
-                best_system_text_fallback_face_for_character(&self.font_system, character)
+                best_system_text_probe_fallback_face(&self.font_system, character)
             })
             .or_else(|| self.system_coverage_fallback_face());
         if let Some(best_face) = best_face
@@ -1774,7 +1774,7 @@ fn best_system_text_fallback_face(font_system: &FontSystem) -> Option<SystemFall
         })
 }
 
-fn best_system_text_fallback_face_for_character(
+fn best_system_text_probe_fallback_face(
     font_system: &FontSystem,
     probe_character: char,
 ) -> Option<SystemFallbackFace> {
@@ -3200,7 +3200,7 @@ mod tests {
         use crate::{TextBackend, TextOperation};
 
         let text_system = CosmicTextSystem::new();
-        let calls_before = crate::text_metrics_snapshot()
+        let calls_before = crate::diagnostics::text::snapshot()
             .iter()
             .filter(|row| {
                 row.backend == TextBackend::Cosmic && row.operation == TextOperation::Shape
@@ -3224,7 +3224,7 @@ mod tests {
                 .expect("worker completes after lock release");
         });
         assert!(text_system.0.try_write().is_some());
-        let row = crate::text_metrics_snapshot()
+        let row = crate::diagnostics::text::snapshot()
             .into_iter()
             .find(|row| row.backend == TextBackend::Cosmic && row.operation == TextOperation::Shape)
             .expect("observed operation");

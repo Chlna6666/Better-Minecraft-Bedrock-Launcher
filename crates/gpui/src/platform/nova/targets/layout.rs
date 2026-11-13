@@ -106,9 +106,9 @@ fn target_fits(variant: &BackdropBlurVariantTargets, config: BackdropBlurConfig)
     gaussian == (variant.config.radius() > 0.0)
         && (!gaussian || variant.config.downsample() == config.downsample())
         && variant.levels.len() == blur_variant_level_count(config)
-        && !variant.target_resource_sets.is_empty()
+        && !variant.target_bind_groups.is_empty()
         && variant
             .levels
             .iter()
-            .all(|level| level.pass_resource_sets.len() == variant.target_resource_sets.len())
+            .all(|level| level.pass_bind_groups.len() == variant.target_bind_groups.len())
 }

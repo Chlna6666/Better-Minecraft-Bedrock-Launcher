@@ -38,7 +38,7 @@ use wayland_protocols::{
     xdg::shell::client::xdg_toplevel::XdgToplevel,
 };
 use wayland_protocols_plasma::blur::client::org_kde_kwin_blur;
-use winit::raw_window_handle as rwh;
+use winit::raw_window_handle;
 
 use crate::WindowKind;
 use crate::{
@@ -91,18 +91,22 @@ impl WaylandSurface for BaseSurface {
     }
 }
 
-impl rwh::HasWindowHandle for RawWindow {
-    fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+impl raw_window_handle::HasWindowHandle for RawWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
         let window = NonNull::new(self.window as *mut c_void).expect("live Wayland surface");
-        let handle = rwh::WaylandWindowHandle::new(window);
-        Ok(unsafe { rwh::WindowHandle::borrow_raw(handle.into()) })
+        let handle = raw_window_handle::WaylandWindowHandle::new(window);
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(handle.into()) })
     }
 }
-impl rwh::HasDisplayHandle for RawWindow {
-    fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
+impl raw_window_handle::HasDisplayHandle for RawWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
         let display = NonNull::new(self.display as *mut c_void).expect("live Wayland display");
-        let handle = rwh::WaylandDisplayHandle::new(display);
-        Ok(unsafe { rwh::DisplayHandle::borrow_raw(handle.into()) })
+        let handle = raw_window_handle::WaylandDisplayHandle::new(display);
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(handle.into()) })
     }
 }
 
@@ -1405,30 +1409,34 @@ where
         .flat_map(S::try_from)
 }
 
-impl rwh::HasWindowHandle for WaylandWindow {
-    fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+impl raw_window_handle::HasWindowHandle for WaylandWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
         let surface = self.0.surface().id().as_ptr() as *mut libc::c_void;
-        let c_ptr = NonNull::new(surface).ok_or(rwh::HandleError::Unavailable)?;
-        let handle = rwh::WaylandWindowHandle::new(c_ptr);
-        let raw_handle = rwh::RawWindowHandle::Wayland(handle);
-        Ok(unsafe { rwh::WindowHandle::borrow_raw(raw_handle) })
+        let c_ptr = NonNull::new(surface).ok_or(raw_window_handle::HandleError::Unavailable)?;
+        let handle = raw_window_handle::WaylandWindowHandle::new(c_ptr);
+        let raw_handle = raw_window_handle::RawWindowHandle::Wayland(handle);
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw_handle) })
     }
 }
 
-impl rwh::HasDisplayHandle for WaylandWindow {
-    fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
+impl raw_window_handle::HasDisplayHandle for WaylandWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
         let display = self
             .0
             .surface()
             .backend()
             .upgrade()
-            .ok_or(rwh::HandleError::Unavailable)?
+            .ok_or(raw_window_handle::HandleError::Unavailable)?
             .display_ptr() as *mut libc::c_void;
 
-        let c_ptr = NonNull::new(display).ok_or(rwh::HandleError::Unavailable)?;
-        let handle = rwh::WaylandDisplayHandle::new(c_ptr);
-        let raw_handle = rwh::RawDisplayHandle::Wayland(handle);
-        Ok(unsafe { rwh::DisplayHandle::borrow_raw(raw_handle) })
+        let c_ptr = NonNull::new(display).ok_or(raw_window_handle::HandleError::Unavailable)?;
+        let handle = raw_window_handle::WaylandDisplayHandle::new(c_ptr);
+        let raw_handle = raw_window_handle::RawDisplayHandle::Wayland(handle);
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(raw_handle) })
     }
 }
 
@@ -1668,7 +1676,7 @@ impl PlatformWindow for WaylandWindow {
         }
     }
 
-    fn set_presentation_animation_completion_sender(
+    fn set_animation_completion_sender(
         &self,
         sender: crate::platform::frame::SceneAnimationCompletionSender,
     ) {

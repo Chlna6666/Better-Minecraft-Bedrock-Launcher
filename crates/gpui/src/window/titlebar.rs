@@ -298,7 +298,7 @@ impl TitlebarGesture {
 
     /// Returns whether a mouse down should trigger the platform titlebar double-click action.
     pub fn mouse_down(&mut self, event: &MouseDownEvent, now: Instant) -> bool {
-        let (double_duration, double_delta_x, double_delta_y) = titlebar_double_click_settings();
+        let (double_duration, double_delta_x, double_delta_y) = double_click_settings();
 
         let mut is_double = event.click_count == 2;
         if !is_double && let Some(last_down_at) = self.last_down_at {
@@ -355,7 +355,7 @@ impl TitlebarGesture {
     }
 }
 
-fn titlebar_double_click_settings() -> (Duration, f32, f32) {
+fn double_click_settings() -> (Duration, f32, f32) {
     (Duration::from_millis(500), 6.0, 6.0)
 }
 

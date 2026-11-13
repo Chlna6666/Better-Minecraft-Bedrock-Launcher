@@ -24,7 +24,7 @@ pub(super) const INITIAL_MONO_SPRITES: usize = 256;
 pub(super) const INITIAL_POLY_SPRITES: usize = 64;
 pub(super) const INITIAL_ANIMATION_VALUES: usize = 64;
 // CPU-visible frame upload buffers are rewritten every frame. Keep one
-// buffer/resource-set slot per deferred submission so the CPU can upload the
+// buffer/bind-group slot per deferred submission so the CPU can upload the
 // next frame without overwriting data still referenced by the GPU queue.
 pub(super) const MAX_IN_FLIGHT_SUBMISSIONS: usize = 2;
 pub(super) const GLOBAL_UPLOAD_BYTES: usize = 24;

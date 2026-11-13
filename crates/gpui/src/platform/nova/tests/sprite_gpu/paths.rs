@@ -15,7 +15,7 @@ pub(super) fn verify_pixels<D>(
         PathMaskTargetDescriptor {
             size: Extent2d::new(16, 16).expect("extent"),
             format: Format::Bgra8Unorm,
-            bind_group_layout: resources.path_resource_set_layout,
+            bind_group_layout: resources.path_bind_group_layout,
             frame_buffers: vec![frame.buffers],
             sampler: resources.atlas_sampler,
         },
@@ -50,7 +50,7 @@ pub(super) fn verify_pixels<D>(
         mask.texture_view,
         DrawCommand {
             pipeline: resources.pipelines.path_rasterization,
-            bind_groups: bind_group_list([frame.bind_groups.path_rasterization_resource_set]),
+            bind_groups: bind_group_list([frame.bind_groups.path_rasterization_bind_group]),
             vertex_count: 3,
             instance_count: 1,
             first_vertex: 0,

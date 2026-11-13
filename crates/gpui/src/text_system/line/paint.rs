@@ -7,7 +7,7 @@ use super::DecorationRun;
 use super::alignment::{aligned_origin_x, snap_baseline_offset_to_device_pixels};
 use super::background::max_background_padding;
 
-pub(super) fn paint_line(
+pub(super) fn line(
     origin: Point<Pixels>,
     layout: &LineLayout,
     line_height: Pixels,

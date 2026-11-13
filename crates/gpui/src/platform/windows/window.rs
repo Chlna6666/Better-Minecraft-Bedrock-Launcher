@@ -54,12 +54,12 @@ use windows::{
     core::*,
 };
 
-use super::platform::WindowsUserEvent;
+use super::implementation::WindowsUserEvent;
 use crate::diagnostics::performance_metrics::{
     record_frame_request, record_gpu_adapter_diagnostics, record_present_attempt,
-    record_renderer_backend, record_window_active_presentation_retry,
-    record_window_backend_ready_wake, record_window_native_vsync_wake,
-    record_window_request_redraw,
+    record_renderer_backend, record_active_presentation_retry,
+    record_backend_ready_wake, record_native_vsync_wake,
+    record_redraw_request,
 };
 use crate::platform::winit::{
     maximize_window, minimize_window, request_window_inner_size,
@@ -72,7 +72,7 @@ use crate::*;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows, WindowExtWindows};
-use winit::raw_window_handle as rwh;
+use winit::raw_window_handle;
 use winit::raw_window_handle::HasWindowHandle as _;
 use winit::window::Window as WinitWindow;
 
@@ -223,8 +223,8 @@ fn native_resize_needs_matching_scene(
 /// whole GPUI page in the Win32 modal frame handler. Reserve the inline UI
 /// owner path for a genuinely uncommitted client geometry generation; unrelated
 /// StateNotify/layout animation work uses the coalesced foreground sender.
-fn needs_inline_resize_commit(
-    needs_ui_commit: bool,
+fn inline_resize_commit_required(
+    ui_commit_required: bool,
     live_resizing: bool,
     pending_renderer_resize: bool,
     pending_native_resize: bool,
@@ -232,7 +232,7 @@ fn needs_inline_resize_commit(
     native_epoch: u64,
     committed_epoch: u64,
 ) -> bool {
-    needs_ui_commit
+    ui_commit_required
         && (pending_renderer_resize
             || (live_resizing
                 && native_resize_needs_matching_scene(
@@ -469,7 +469,7 @@ fn dispatch_size_move_frame(hwnd: HWND) {
     // foreground tasks that may build the newest UI Scene. Flush any work queued
     // by those callbacks in the same nested message-loop turn.
     dispatch_modal_window_updates(hwnd, None);
-    let needs_more_tasks = super::platform::poll_modal_foreground_tasks();
+    let needs_more_tasks = super::implementation::poll_modal_foreground_tasks();
     dispatch_modal_window_updates(hwnd, None);
     if needs_more_tasks && let Some(window) = native_window(hwnd) {
         window.0.vsync_scheduler.wake_modal_ui_tasks();
@@ -634,7 +634,7 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                 // Even if this HWND is in the native modal loop, other GPUI windows
                 // can have pending animation/presentation work. Never tick idle windows.
                 dispatch_modal_window_updates(hwnd, Some(timing));
-                if super::platform::poll_modal_foreground_tasks() {
+                if super::implementation::poll_modal_foreground_tasks() {
                     window.0.vsync_scheduler.wake_modal_ui_tasks();
                 }
             }
@@ -650,7 +650,7 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                 // GPU reports may be the only reason for this wake. Drain them
                 // independently; pending native resize work is dispatched below.
                 drain_modal_gpu_reports();
-                let needs_more_tasks = super::platform::poll_modal_foreground_tasks();
+                let needs_more_tasks = super::implementation::poll_modal_foreground_tasks();
                 // A foreground runnable can enqueue the newest frame request. Flush
                 // it here rather than waiting for an outer winit user event which
                 // cannot run until the native resize loop exits.
@@ -720,14 +720,14 @@ fn renderer_backend_candidates(
 }
 
 fn configure_renderer_window_style(
-    window: &impl rwh::HasWindowHandle,
+    window: &impl raw_window_handle::HasWindowHandle,
     no_redirection: bool,
 ) -> Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::{
         GWL_EXSTYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
         SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WS_EX_NOREDIRECTIONBITMAP,
     };
-    let rwh::RawWindowHandle::Win32(handle) = window.window_handle()?.as_raw() else {
+    let raw_window_handle::RawWindowHandle::Win32(handle) = window.window_handle()?.as_raw() else {
         anyhow::bail!("Windows renderer requires HWND");
     };
     let hwnd = HWND(handle.hwnd.get() as *mut _);
@@ -786,7 +786,7 @@ fn native_system_backdrop(hwnd: HWND) -> windows::core::Result<DWM_SYSTEMBACKDRO
     Ok(backdrop)
 }
 
-fn window_corner_preference_to_windows(
+fn corner_preference_to_windows(
     preference: WindowCornerPreference,
 ) -> Option<CornerPreference> {
     match preference {
@@ -943,7 +943,9 @@ impl WindowsWindow {
     pub(crate) fn native_hwnd(&self) -> Option<HWND> {
         let raw_handle = self.window().window_handle().ok()?.as_raw();
         match raw_handle {
-            rwh::RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as *mut _)),
+            raw_window_handle::RawWindowHandle::Win32(handle) => {
+                Some(HWND(handle.hwnd.get() as *mut _))
+            }
             _ => None,
         }
     }
@@ -1039,8 +1041,8 @@ impl WindowsWindow {
         // An already-committed native size must not pull an unrelated
         // ManageTabBody/Download StateNotify through a synchronous full UI draw
         // merely because the mouse button remains held on a resize border.
-        if needs_inline_resize_commit(
-            options.needs_ui_commit(),
+        if inline_resize_commit_required(
+            options.ui_commit_required(),
             self.is_live_resizing(),
             self.0.pending_renderer_size.get().is_some(),
             self.0.pending_resize.get().is_some(),
@@ -1087,7 +1089,7 @@ impl WindowsWindow {
         if !self.0.queue_frame_request(options) {
             return;
         }
-        record_window_request_redraw(self.0.handle.window_id().data().as_ffi());
+        record_redraw_request(self.0.handle.window_id().data().as_ffi());
         if !self.0.vsync_scheduler.request_frame() {
             self.window().request_redraw();
         }
@@ -1395,7 +1397,7 @@ struct WindowsRendererInitialization {
 
 struct WindowsRendererWindowHandle {
     _window: Arc<WinitWindow>,
-    raw_window_handle: rwh::RawWindowHandle,
+    raw_window_handle: raw_window_handle::RawWindowHandle,
 }
 
 impl WindowsRendererWindowHandle {
@@ -1405,7 +1407,10 @@ impl WindowsRendererWindowHandle {
             .context("capturing Windows renderer window handle")?
             .as_raw();
         anyhow::ensure!(
-            matches!(raw_window_handle, rwh::RawWindowHandle::Win32(_)),
+            matches!(
+                raw_window_handle,
+                raw_window_handle::RawWindowHandle::Win32(_)
+            ),
             "Windows renderer requires a Win32 window handle"
         );
         Ok(Self {
@@ -1420,16 +1425,22 @@ impl WindowsRendererWindowHandle {
 // HWND/HINSTANCE values to create a graphics surface; it never calls winit APIs off-thread.
 unsafe impl Send for WindowsRendererWindowHandle {}
 
-impl rwh::HasWindowHandle for WindowsRendererWindowHandle {
-    fn window_handle(&self) -> std::result::Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+impl raw_window_handle::HasWindowHandle for WindowsRendererWindowHandle {
+    fn window_handle(
+        &self,
+    ) -> std::result::Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
+    {
         // SAFETY: The raw handle lifetime is bounded by self, which keeps the winit window alive.
-        Ok(unsafe { rwh::WindowHandle::borrow_raw(self.raw_window_handle) })
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(self.raw_window_handle) })
     }
 }
 
-impl rwh::HasDisplayHandle for WindowsRendererWindowHandle {
-    fn display_handle(&self) -> std::result::Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
-        Ok(rwh::DisplayHandle::windows())
+impl raw_window_handle::HasDisplayHandle for WindowsRendererWindowHandle {
+    fn display_handle(
+        &self,
+    ) -> std::result::Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError>
+    {
+        Ok(raw_window_handle::DisplayHandle::windows())
     }
 }
 
@@ -1591,7 +1602,7 @@ impl WindowsWindow {
             self.mark_first_frame_presented();
         }
         if let Some(enqueued_at) = frame.ready_enqueued_at {
-            record_window_backend_ready_wake(
+            record_backend_ready_wake(
                 self.0.handle.window_id().data().as_ffi(),
                 enqueued_at,
                 Instant::now(),
@@ -1724,7 +1735,7 @@ impl WindowsWindow {
             should_use_no_redirection_bitmap(disable_direct_composition, true, renderer_backend);
         let use_native_decorations = should_use_native_decorations(&params);
         let client_corner_preference =
-            window_corner_preference_to_windows(params.window_corner_preference);
+            corner_preference_to_windows(params.window_corner_preference);
         let renderer_backend_candidates = renderer_backend_candidates(
             &renderer_options,
             renderer_backend,
@@ -2066,7 +2077,9 @@ impl WindowsWindow {
     fn native_hwnd_from_winit_window(window: &WinitWindow) -> Option<HWND> {
         let raw_handle = window.window_handle().ok()?.as_raw();
         match raw_handle {
-            rwh::RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as *mut _)),
+            raw_window_handle::RawWindowHandle::Win32(handle) => {
+                Some(HWND(handle.hwnd.get() as *mut _))
+            }
             _ => None,
         }
     }
@@ -2286,7 +2299,7 @@ impl WindowsWindow {
         timing: super::vsync::VSyncEventTiming,
         event_received_at: Instant,
     ) {
-        record_window_native_vsync_wake(
+        record_native_vsync_wake(
             self.0.handle.window_id().data().as_ffi(),
             timing.reported_refresh_period,
             timing.reported_composition_period,
@@ -2320,7 +2333,7 @@ impl WindowsWindow {
         self.dispatch_pending_resize();
         let options = self.take_pending_frame_request();
         if options.requires_frame() {
-            if !options.needs_ui_commit() {
+            if !options.ui_commit_required() {
                 self.recover_stale_pending_renderer_resize();
             }
             let had_active_presentation = self.has_active_presentation_animations();
@@ -2401,12 +2414,12 @@ impl WindowsWindow {
                 && !presented
                 && matches!(self.current_visibility(), WindowVisibility::Visible)
             {
-                record_window_active_presentation_retry(self.0.handle.window_id().data().as_ffi());
+                record_active_presentation_retry(self.0.handle.window_id().data().as_ffi());
                 // A saturated DXGI frame-latency queue is transient. Retry on the native
                 // cadence without waiting for a UI commit to unblock the compositor.
                 self.request_frame(PlatformFrameRequest::presentation());
             }
-            if options.needs_ui_commit() || (!presented && !had_active_presentation) {
+            if options.ui_commit_required() || (!presented && !had_active_presentation) {
                 // Build the newest size on this native tick even while an older
                 // GPU packet waits for readiness. The owner replaces queued
                 // Resize/Draw pairs; waiting here would force the old layout to
@@ -2489,7 +2502,7 @@ impl WindowsWindow {
         // own matching geometry. Reentrant borrows are treated as "queued" so a
         // presentation callback never steals a generation that is being built.
         let ui_commit_pending = match self.0.state.try_borrow() {
-            Ok(state) => state.pending_frame_request.get().needs_ui_commit(),
+            Ok(state) => state.pending_frame_request.get().ui_commit_required(),
             Err(_) => true,
         };
         let Some((width, height, epoch)) = stale_pending_resize_recovery(
@@ -2566,15 +2579,21 @@ impl WindowsWindow {
     }
 }
 
-impl rwh::HasWindowHandle for WindowsWindow {
-    fn window_handle(&self) -> std::result::Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+impl raw_window_handle::HasWindowHandle for WindowsWindow {
+    fn window_handle(
+        &self,
+    ) -> std::result::Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
+    {
         self.window().window_handle()
     }
 }
 
-impl rwh::HasDisplayHandle for WindowsWindow {
-    fn display_handle(&self) -> std::result::Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
-        Ok(rwh::DisplayHandle::windows())
+impl raw_window_handle::HasDisplayHandle for WindowsWindow {
+    fn display_handle(
+        &self,
+    ) -> std::result::Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError>
+    {
+        Ok(raw_window_handle::DisplayHandle::windows())
     }
 }
 
@@ -3006,7 +3025,7 @@ impl PlatformWindow for WindowsWindow {
         self.0.state.borrow_mut().callbacks.live_resize_frame = Some(callback);
     }
 
-    fn set_presentation_animation_completion_sender(
+    fn set_animation_completion_sender(
         &self,
         sender: crate::platform::frame::SceneAnimationCompletionSender,
     ) {
@@ -3582,37 +3601,37 @@ mod tests {
 
     #[test]
     fn inline_resize_commit_requires_an_uncommitted_geometry_generation() {
-        use super::needs_inline_resize_commit;
+        use super::inline_resize_commit_required;
 
         // A held WM_ENTERSIZEMOVE gesture with already-matched Scene geometry
         // must NOT synchronously invoke unrelated UI StateNotify work.
-        assert!(!needs_inline_resize_commit(
+        assert!(!inline_resize_commit_required(
             true, true, false, false, false, 12, 12
         ));
-        assert!(!needs_inline_resize_commit(
+        assert!(!inline_resize_commit_required(
             true, false, false, false, false, 12, 12
         ));
 
         // A newly queued Win32 size or a size newer than the committed Scene
         // must still use the prompt geometry path while live resizing.
-        assert!(needs_inline_resize_commit(
+        assert!(inline_resize_commit_required(
             true, true, false, true, false, 13, 12
         ));
-        assert!(needs_inline_resize_commit(
+        assert!(inline_resize_commit_required(
             true, true, false, false, true, 13, 12
         ));
-        assert!(needs_inline_resize_commit(
+        assert!(inline_resize_commit_required(
             true, true, false, false, false, 13, 12
         ));
 
         // The renderer may still have to consume the resize even if the native
         // gesture ended before the corresponding UI Scene was published.
-        assert!(needs_inline_resize_commit(
+        assert!(inline_resize_commit_required(
             true, false, true, false, false, 13, 13
         ));
 
         // Presentation-only animation frames must never invoke the UI callback.
-        assert!(!needs_inline_resize_commit(
+        assert!(!inline_resize_commit_required(
             false, true, true, true, true, 13, 12
         ));
     }

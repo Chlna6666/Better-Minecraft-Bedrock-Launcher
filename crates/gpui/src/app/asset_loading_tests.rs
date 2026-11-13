@@ -199,7 +199,7 @@ fn explicit_image_removal_retires_after_last_element_releases() {
     });
     test.run_until_parked();
     test.update(|cx| {
-        assert!(cx.remove_image_render_request_in(&request, None).is_some());
+        assert!(cx.retire_image_render_request(&request, None).is_some());
         assert!(
             cx.cached_asset_lease::<crate::SizedImageLoader>(&request)
                 .is_some()
@@ -338,7 +338,7 @@ fn sized_image_preload_reuses_equivalent_scale_factor_targets() {
         let _equivalent_preload = cx.preload_sized_image(equivalent_target.clone());
         let after_second_preload = cx.asset_entries.len();
 
-        cx.remove_image_render_request_in(&equivalent_target, None);
+        cx.retire_image_render_request(&equivalent_target, None);
         let after_remove = cx.asset_entries.len();
 
         assert_eq!(after_first_preload, initial_assets + 2);

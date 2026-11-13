@@ -305,7 +305,7 @@ pub(super) struct WindowMetrics {
         u64,
         Instant,
         Option<bool>,
-        Option<super::window::WindowAnimationPresentationTiming>,
+        Option<super::window::AnimationPresentationTiming>,
     )>,
     pub(super) logical_width_milli: u64,
     pub(super) logical_height_milli: u64,

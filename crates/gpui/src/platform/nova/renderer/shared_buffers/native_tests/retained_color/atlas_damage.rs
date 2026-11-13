@@ -161,7 +161,7 @@ impl Fixture {
             self.tiles[changed]
         );
         let actual = pixels(&mut self.renderer, &self.scene, self.target, 0., [], false);
-        let source_pixels = crate::performance_metrics_snapshot().backdrop_blur_source_pixels;
+        let source_pixels = crate::snapshot().backdrop_blur_source_pixels;
         let after = versions(&self.renderer);
         for (position, ((index, previous), (_, current))) in before.iter().zip(&after).enumerate() {
             let dependent = position < self.depth || position == changed + self.depth;
@@ -174,7 +174,7 @@ impl Fixture {
         }
         let reference = pixels(&mut self.renderer, &self.scene, self.target, 0., [], true);
         let reference_source_pixels =
-            crate::performance_metrics_snapshot().backdrop_blur_source_pixels;
+            crate::snapshot().backdrop_blur_source_pixels;
         assert!(
             actual == reference,
             "atlas refresh must match complete redraw: depth={} changed={changed}",

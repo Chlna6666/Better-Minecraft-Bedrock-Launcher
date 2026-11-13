@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let started_at = Instant::now();
     let backend = requested_backend()?;
     let first_frame_printed = Arc::new(AtomicBool::new(false));
-    let initial_presents = gpui::performance_metrics_snapshot().direct_present_count;
+    let initial_presents = gpui::diagnostics::performance_metrics::snapshot().direct_present_count;
     let image = Arc::new(RenderImage::from_raw_pixels(
         2,
         2,
@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 async move |cx| {
                     for _ in 0..200 {
                         Timer::after(Duration::from_millis(50)).await;
-                        let metrics = gpui::performance_metrics_snapshot();
+                        let metrics = gpui::diagnostics::performance_metrics::snapshot();
                         if metrics.direct_present_count > initial_presents {
                             first_frame_printed.store(true, Ordering::SeqCst);
                             println!(

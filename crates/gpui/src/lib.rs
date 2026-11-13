@@ -12,7 +12,8 @@ mod app;
 
 mod animation;
 mod assets;
-mod diagnostics;
+/// Diagnostic snapshots and profiling data exposed by GPUI.
+pub mod diagnostics;
 mod element;
 mod foundation;
 mod geometry;
@@ -65,7 +66,7 @@ pub use anyhow::Result;
 pub use app::*;
 pub use assets::*;
 pub use ctor::ctor;
-pub use diagnostics::*;
+pub(crate) use diagnostics::*;
 pub use element::*;
 pub use foundation::*;
 pub use geometry::*;

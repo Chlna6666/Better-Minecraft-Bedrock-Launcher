@@ -10,7 +10,7 @@ use super::{
 type BatchCandidate = (Option<DrawOrder>, PrimitiveKind);
 type BatchSortKey = (DrawOrder, PrimitiveKind);
 
-fn batch_sort_key((order, kind): BatchCandidate) -> BatchSortKey {
+fn sort_key((order, kind): BatchCandidate) -> BatchSortKey {
     (order.unwrap_or(u32::MAX), kind)
 }
 
@@ -18,18 +18,18 @@ fn first_two_batch_candidates(
     candidates: [BatchCandidate; 10],
 ) -> (BatchCandidate, BatchCandidate) {
     let [first, second, rest @ ..] = candidates;
-    let (mut first, mut second) = if batch_sort_key(second) < batch_sort_key(first) {
+    let (mut first, mut second) = if sort_key(second) < sort_key(first) {
         (second, first)
     } else {
         (first, second)
     };
 
     for candidate in rest {
-        let candidate_key = batch_sort_key(candidate);
-        if candidate_key < batch_sort_key(first) {
+        let candidate_key = sort_key(candidate);
+        if candidate_key < sort_key(first) {
             second = first;
             first = candidate;
-        } else if candidate_key < batch_sort_key(second) {
+        } else if candidate_key < sort_key(second) {
             second = candidate;
         }
     }
@@ -110,7 +110,7 @@ impl<'a> Iterator for BatchIterator<'a> {
         ]);
 
         let (batch_kind, max_order_and_kind) = if first.0.is_some() {
-            (first.1, batch_sort_key(second))
+            (first.1, sort_key(second))
         } else {
             return None;
         };

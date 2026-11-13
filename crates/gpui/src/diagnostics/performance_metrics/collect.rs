@@ -2,12 +2,12 @@ use crate::RendererBackend;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use super::animation::animation_metrics_snapshot;
+use super::animation::metrics_snapshot;
 use super::store::shared_metrics;
 use super::{AllocatorBucketMetricsSnapshot, PerformanceMetricsSnapshot};
 
 /// Returns a point-in-time snapshot of GPUI performance metrics.
-pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
+pub fn snapshot() -> PerformanceMetricsSnapshot {
     let memory = crate::diagnostics::memory_profile_totals();
     let gpu_bytes = if memory.windows > 0 {
         memory.gpu_bytes
@@ -170,7 +170,7 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         .lock()
         .map(|value| value.clone())
         .unwrap_or_default();
-    let window_metrics = super::window::window_metrics_snapshot();
+    let window_metrics = super::window::snapshot();
     let dirty_to_present_count = shared_metrics()
         .dirty_to_present_count
         .load(Ordering::Relaxed);
@@ -382,7 +382,7 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         image_processing_slow_count: shared_metrics()
             .image_processing_slow_count
             .load(Ordering::Relaxed) as usize,
-        animation: animation_metrics_snapshot(),
+        animation: metrics_snapshot(),
         image_asset_resident_bytes,
         image_asset_retained_count,
         image_asset_largest_resident_bytes,

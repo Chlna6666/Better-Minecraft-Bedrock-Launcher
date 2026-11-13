@@ -32,10 +32,7 @@ impl NovaRenderer {
                 // Isolated captures can rebase/transform their inputs, so keep their
                 // existing conservative local damage path.
                 let (source_full, source_damage) = if is_root {
-                    backdrop_config_damage(
-                        &self.command_scratch.backdrop_blur_damage_plan,
-                        &configs,
-                    )
+                    config_damage(&self.command_scratch.backdrop_blur_damage, &configs)
                 } else {
                     (false, damage.clone())
                 };
@@ -54,7 +51,7 @@ impl NovaRenderer {
     }
 }
 
-pub(super) fn backdrop_config_damage(
+pub(super) fn config_damage(
     plan: &crate::BackdropBlurDamagePlan,
     configs: &[BackdropBlurConfig],
 ) -> (bool, DirtyRegion) {
@@ -90,6 +87,6 @@ pub(super) fn blur_refresh_configs(
     configs
         .iter()
         .copied()
-        .filter(|config| blur_damage_scissors(*config, drawable_size, dirty_region).is_some())
+        .filter(|config| scissors(*config, drawable_size, dirty_region).is_some())
         .collect()
 }

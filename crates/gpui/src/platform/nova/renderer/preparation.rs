@@ -22,7 +22,7 @@ impl NovaRenderer {
         let key = DeviceKey {
             backend: options.backend,
             adapter_name: options.adapter_name.clone(),
-            power_preference: nova_power_preference(options),
+            power_preference: power_preference(options),
             pipeline_cache_dir: options.pipeline_cache_dir.clone(),
             native_display: None,
         };
@@ -35,7 +35,7 @@ impl NovaRenderer {
                         device,
                         config,
                         "gpui nova dx11",
-                        cached_nova_dx11_shader_binaries()?,
+                        cached_dx11_shader_binaries()?,
                     )
                 })?;
             }
@@ -46,7 +46,7 @@ impl NovaRenderer {
                         device,
                         config,
                         "gpui nova dx12",
-                        cached_nova_dx12_shader_binaries()?,
+                        cached_dx12_shader_binaries()?,
                     )
                 })?;
             }
@@ -57,7 +57,7 @@ impl NovaRenderer {
                         device,
                         config,
                         "gpui nova vulkan",
-                        cached_nova_vulkan_shader_binaries()?,
+                        cached_vulkan_shader_binaries()?,
                     )
                 })?;
             }

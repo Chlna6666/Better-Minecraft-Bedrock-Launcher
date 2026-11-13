@@ -29,7 +29,7 @@ use super::{
     DecorationRun, Font, FontId, FontMetrics, FontRun, FontWeight, LineLayout, LineLayoutCache,
     LineLayoutFrameMetrics, LineLayoutIndex, LineWrapper, MissingGlyphReceiver,
     MissingGlyphReporter, RenderGlyphParams, ShapedLine, TextRun, WrappedLine, font,
-    font_catalog::FontCatalog, missing_glyph_channel,
+    font_catalog::FontCatalog, missing_glyph::channel,
 };
 
 pub(super) const MAX_WRAPPER_POOL_KEYS: usize = 128;
@@ -288,7 +288,7 @@ impl RasterBoundsCache {
 
 impl TextSystem {
     pub(crate) fn new(platform_text_system: Arc<dyn PlatformTextSystem>) -> Self {
-        let (missing_glyph_reporter, missing_glyph_receiver) = missing_glyph_channel();
+        let (missing_glyph_reporter, missing_glyph_receiver) = channel();
         TextSystem {
             platform_text_system,
             system_font_family: RwLock::default(),

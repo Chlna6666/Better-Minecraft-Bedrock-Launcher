@@ -144,7 +144,7 @@ impl AnimatedFrame {
         }
     }
 
-    pub(crate) fn from_rgba_frame(sequence: usize, frame: Frame) -> Self {
+    pub(crate) fn from_rgba_frame_as_bgra(sequence: usize, frame: Frame) -> Self {
         let delay = frame.delay();
         let mut data = frame.into_buffer();
         let (width, height) = data.dimensions();
@@ -158,7 +158,7 @@ impl AnimatedFrame {
         }
     }
 
-    pub(crate) fn from_rgba_frame_without_conversion(sequence: usize, frame: Frame) -> Self {
+    pub(crate) fn from_rgba_frame_as_rgba(sequence: usize, frame: Frame) -> Self {
         let delay = frame.delay();
         let data = frame.into_buffer();
         let (width, height) = data.dimensions();
@@ -258,7 +258,7 @@ fn resident_frames(
     let Some((_, first_frame)) = frames.next() else {
         return Err(anyhow::anyhow!("animated image did not contain any frames"));
     };
-    let first_frame = AnimatedFrame::from_rgba_frame(0, first_frame?);
+    let first_frame = AnimatedFrame::from_rgba_frame_as_bgra(0, first_frame?);
     let mut remaining_frames = SmallVec::<[AnimatedFrame; 8]>::new();
 
     for (sequence, frame) in frames {
@@ -269,7 +269,7 @@ fn resident_frames(
                 is_complete: false,
             });
         }
-        remaining_frames.push(AnimatedFrame::from_rgba_frame(sequence, frame?));
+        remaining_frames.push(AnimatedFrame::from_rgba_frame_as_bgra(sequence, frame?));
     }
 
     Ok(AnimatedImageFrames {

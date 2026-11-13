@@ -165,7 +165,7 @@ fn clip_is_degenerate(mask: &crate::ContentMask<crate::ScaledPixels>) -> bool {
 }
 
 impl FrameUpload {
-    pub(in crate::platform::nova) fn encode_frame(
+    pub(in crate::platform::nova) fn encode(
         &mut self,
         cache: &mut RetainedChunkCache,
         scene: &crate::Scene,
@@ -221,7 +221,7 @@ impl FrameUpload {
     /// Records independent window-color raster work and its final compositor descriptor.
     /// The descriptor shares the compositor shader ABI; it creates no Filter scope,
     /// Gaussian work, Filter target or texture copy.
-    pub(in crate::platform::nova) fn append_root_color_sized(
+    pub(in crate::platform::nova) fn append_root_color(
         &mut self,
         drawable_size: DrawableSize,
         target_size: DrawableSize,
@@ -695,6 +695,7 @@ mod retained_root_tests {
             &crate::window::retained::RetainedPaint::default(),
             &[],
             drawable,
+            drawable,
             &RenderingParameters::system(),
             false,
             BackdropBlurQuality::Full,
@@ -708,6 +709,7 @@ mod retained_root_tests {
             &scene,
             &crate::window::retained::RetainedPaint::default(),
             &[],
+            drawable,
             drawable,
             &RenderingParameters::system(),
             false,
@@ -764,11 +766,12 @@ mod retained_root_tests {
                 &crate::window::retained::RetainedPaint::default(),
                 &[],
                 size,
+                size,
                 &RenderingParameters::system(),
                 false,
                 BackdropBlurQuality::Full,
             );
-            assert!(upload.capture_encoded_static_prefix(
+            assert!(upload.capture_static_prefix(
                 &StaticPrefix {
                     bounds: viewport,
                     content_mask: crate::ContentMask::new(viewport),
@@ -838,12 +841,13 @@ mod retained_root_tests {
             &crate::window::retained::RetainedPaint::default(),
             &[],
             size,
+            size,
             &RenderingParameters::system(),
             false,
             BackdropBlurQuality::Full,
         );
         let old_quad_len = upload.quads.len();
-        assert!(upload.capture_encoded_static_prefix(
+        assert!(upload.capture_static_prefix(
             &StaticPrefix {
                 bounds: capture.bounds,
                 content_mask: capture.content_mask,
@@ -929,12 +933,13 @@ mod retained_root_tests {
             &crate::window::retained::RetainedPaint::default(),
             &[],
             size,
+            size,
             &RenderingParameters::system(),
             false,
             BackdropBlurQuality::Full,
         );
         let original_bytes = upload.shadows.clone();
-        assert!(upload.capture_encoded_static_prefix(
+        assert!(upload.capture_static_prefix(
             &StaticPrefix {
                 bounds: blur.bounds,
                 content_mask: blur.content_mask,
@@ -1001,12 +1006,13 @@ mod retained_root_tests {
             &crate::window::retained::RetainedPaint::default(),
             &[],
             size,
+            size,
             &RenderingParameters::system(),
             false,
             BackdropBlurQuality::Full,
         );
         let previous_len = upload.batches.len();
-        assert!(!upload.capture_encoded_static_prefix(
+        assert!(!upload.capture_static_prefix(
             &StaticPrefix {
                 bounds: blur.bounds,
                 content_mask: blur.content_mask,
@@ -1085,7 +1091,7 @@ mod retained_root_tests {
             height: 480,
         };
         let mut summary = FrameUploadSummary::default();
-        assert!(upload.append_root_color(size, &mut summary));
+        assert!(upload.append_root_color(size, size, &mut summary));
         assert_eq!(upload.root_color.map(|root| root.index), Some(0));
         assert_eq!(upload.root_color.map(|root| root.clear_quad), Some(0));
         assert_eq!(upload.quads.len(), PACKED_QUAD_BYTES);
@@ -1186,6 +1192,10 @@ mod retained_root_tests {
                 width: 640,
                 height: 480,
             },
+            DrawableSize {
+                width: 640,
+                height: 480,
+            },
             &RenderingParameters::system(),
             false,
             BackdropBlurQuality::Full,
@@ -1237,6 +1247,10 @@ mod retained_root_tests {
                 width: 640,
                 height: 480,
             },
+            DrawableSize {
+                width: 640,
+                height: 480,
+            },
             &RenderingParameters::system(),
             false,
             BackdropBlurQuality::Full,
@@ -1256,13 +1270,11 @@ mod retained_root_tests {
             .backdrop_blurs
             .resize(MAX_BACKDROP_BLURS * PACKED_BACKDROP_BLUR_BYTES, 0);
         let mut summary = FrameUploadSummary::default();
-        assert!(!upload.append_root_color(
-            DrawableSize {
-                width: 8,
-                height: 8
-            },
-            &mut summary
-        ));
+        let size = DrawableSize {
+            width: 8,
+            height: 8,
+        };
+        assert!(!upload.append_root_color(size, size, &mut summary));
         assert_eq!(summary.backdrop_blur_count, 0);
         assert!(upload.root_color.is_none());
     }

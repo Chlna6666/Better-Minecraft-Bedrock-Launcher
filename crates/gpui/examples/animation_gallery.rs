@@ -21,8 +21,9 @@ use std::{
 use gpui::{
     App, Application, AssetSource, Bounds, Context, RendererBackend, RendererOptions, SharedString,
     Timer, TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions, div,
-    prelude::*, px, rgb, size, window_metrics_snapshot,
+    prelude::*, px, rgb, size,
 };
+use gpui::diagnostics::performance_metrics::window;
 
 mod animation_gallery_support;
 
@@ -249,7 +250,7 @@ fn open_lab(cx: &mut App, config: Config) {
 }
 
 fn animation_sample_count(window_id: u64) -> usize {
-    window_metrics_snapshot()
+    window::snapshot()
         .into_iter()
         .find(|window| window.window_id == window_id)
         .map_or(0, |window| window.animation_sampled_present_count)

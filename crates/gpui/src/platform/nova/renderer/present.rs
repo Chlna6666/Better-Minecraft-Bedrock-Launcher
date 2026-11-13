@@ -6,7 +6,6 @@ use super::*;
 use crate::diagnostics::gpu_owner::phases::{self, Phase};
 use std::time::Duration;
 #[cfg(test)]
-#[path = "present/extension_tests.rs"]
 mod extension_tests;
 
 #[derive(Default)]
@@ -48,15 +47,23 @@ enum SidecarBridgeCpuPhase {
 // debug_assertions: ordinary GPUI frames use the same consumer path.
 const SIDECAR_BRIDGE_REPORT_INTERVAL: Duration = Duration::from_secs(5);
 
+#[cfg(debug_assertions)]
 fn explicit_sidecar_bridge_trace(value: Option<&str>) -> bool {
     matches!(value, Some("1" | "true"))
 }
 
 fn sidecar_bridge_trace_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        explicit_sidecar_bridge_trace(std::env::var("GPUI_3D_TRACE_TIMINGS").ok().as_deref())
-    })
+    #[cfg(debug_assertions)]
+    {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            explicit_sidecar_bridge_trace(std::env::var("GPUI_3D_TRACE_TIMINGS").ok().as_deref())
+        })
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
 }
 
 impl SidecarBridgeCpuTrace {
@@ -149,7 +156,7 @@ struct MainPresentDescriptor<'a> {
     damage: Option<ScissorRect>,
 }
 
-fn present_main_frame<D>(
+fn main_frame<D>(
     device: &mut D,
     descriptor: MainPresentDescriptor<'_>,
     commands: &[RenderCommand],
@@ -217,15 +224,15 @@ impl ExtensionSubmission<'_> {
             .iter()
             .map(|pass| pass.gpu_work_tag)
             .collect::<Vec<_>>();
-        let timed = tags.iter().any(Option::is_some);
-        let submission = if independent && timed {
-            device.render_to_textures_independent_profiled(&passes, &tags)?
-        } else if independent {
-            device.render_to_textures_independent(&passes)?
-        } else if timed {
-            device.render_to_textures_profiled(&passes, &tags)?
+        let preference = if independent {
+            gfx_core::OffscreenQueuePreference::IndependentGraphicsIfAvailable
         } else {
-            device.render_to_textures(&passes)?
+            gfx_core::OffscreenQueuePreference::OrderedGraphics
+        };
+        let submission = if independent {
+            device.render_to_textures_independent(&passes, &tags, preference)?
+        } else {
+            device.render_to_textures_on_queue(&passes, &tags, preference)?
         };
         if let Some(submission) = submission {
             self.pending.push(PendingSubmission {
@@ -313,11 +320,18 @@ impl ExtensionSubmission<'_> {
             // must transition the preceding attachments to shader-readable
             // states and make any Compute writes visible to the next Graphics
             // run. No CPU fence wait is permitted between these operations.
-            if let Some(tag) = stage.gpu_work_tag {
-                ResourceDevice::dispatch_compute_bind_group_profiled(device, &stage.dispatch, tag)?;
+            let tagged;
+            let dispatch = if stage.gpu_work_tag.is_some() && stage.dispatch.gpu_work_tag.is_none()
+            {
+                tagged = gfx_core::ComputeBindGroupDispatch {
+                    gpu_work_tag: stage.gpu_work_tag,
+                    ..stage.dispatch
+                };
+                &tagged
             } else {
-                ResourceDevice::dispatch_compute_bind_group(device, &stage.dispatch)?;
-            }
+                &stage.dispatch
+            };
+            ResourceDevice::dispatch_compute_bind_group(device, dispatch)?;
             cursor = stage.after_graphics_pass;
         }
         if let Some(submission) = self.submit_graphics(device, cursor..count, independent)? {
@@ -821,15 +835,19 @@ impl NovaRenderer {
         backdrop_blur_quality: BackdropBlurQuality,
         presentation_timing: &mut Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> Result<bool> {
-        let result =
-            self.draw_present_inner(upload, packet, backdrop_blur_quality, presentation_timing);
+        let result = self.record_and_submit_present(
+            upload,
+            packet,
+            backdrop_blur_quality,
+            presentation_timing,
+        );
         // Failed/declined presentation can follow a partial write into a uniquely owned version.
         // Do not advertise its previous content token to another slot on the next scene switch.
         if !matches!(result, Ok(true)) {
             self.retained_upload
                 .invalidate_slot(self.current_frame_resource_index);
             // Root is invalidated only when its source pass may write, in
-            // draw_present_inner before backend execution. A failed preflight
+            // record_and_submit_present before backend execution. A failed preflight
             // or a compositor-only Present cannot evict untouched root pixels.
         } else if let Err(error) = self.coalesce_idle_static_buffers() {
             // This frame is already submitted; a failed rebind retains the old idle version.
@@ -841,7 +859,7 @@ impl NovaRenderer {
         result
     }
 
-    fn draw_present_inner(
+    fn record_and_submit_present(
         &mut self,
         upload: FrameUploadSummary,
         packet: &mut PresentationPacket,
@@ -925,7 +943,7 @@ impl NovaRenderer {
             Default::default()
         };
         let atlas = Arc::clone(&self.atlas);
-        let atlas_upload = frame_upload::upload_queue::AtlasUpload::new(&atlas);
+        let atlas_upload = frame_upload::queue::AtlasUpload::new(&atlas);
         let atlas_content_generation = atlas_upload.content_generation();
         let atlas_generation_changed = self.filters.atlas_generation != atlas_content_generation;
         let text_raster = self.retained_upload.text_raster_token();
@@ -959,7 +977,7 @@ impl NovaRenderer {
         self.command_scratch.force_full_backdrop_blur_refresh |= atlas_source_dirty;
         let backdrop_blur_refresh_required = has_root_backdrop_blurs
             && (packet.force_full_backdrop_blur_refresh
-                || packet.backdrop_blur_damage_plan.refresh_required()
+                || packet.backdrop_blur_damage.refresh_required()
                 || atlas_source_dirty
                 || shared_blur_cache_invalid);
         let mut dirty_element_indices = dirty_element_blur_indices(
@@ -1065,7 +1083,7 @@ impl NovaRenderer {
         let path_draw_plan = path_mask::ordered_draw_plan_token(
             self.command_scratch.path_commands(),
             self.pipelines.path_rasterization,
-            self.path_rasterization_resource_set,
+            self.path_rasterization_bind_group,
             upload.path_vertex_count,
             self.frame_upload.path_rasterization_vertices.len(),
         );
@@ -1436,7 +1454,7 @@ impl NovaRenderer {
                         timing.frame_prepare_upload =
                             present_started.saturating_duration_since(frame_started);
                     }
-                    let presentation_frame = present_main_frame(
+                    let presentation_frame = main_frame(
                         device,
                         MainPresentDescriptor {
                             extension_submission,
@@ -1582,7 +1600,7 @@ impl NovaRenderer {
                         timing.frame_prepare_upload =
                             present_started.saturating_duration_since(frame_started);
                     }
-                    let presentation_frame = present_main_frame(
+                    let presentation_frame = main_frame(
                         device,
                         MainPresentDescriptor {
                             extension_submission,
@@ -1728,7 +1746,7 @@ impl NovaRenderer {
                         timing.frame_prepare_upload =
                             present_started.saturating_duration_since(frame_started);
                     }
-                    let presentation_frame = present_main_frame(
+                    let presentation_frame = main_frame(
                         device,
                         MainPresentDescriptor {
                             extension_submission,
@@ -1856,7 +1874,7 @@ impl NovaRenderer {
                         timing.frame_prepare_upload =
                             present_started.saturating_duration_since(frame_started);
                     }
-                    let presentation_frame = present_main_frame(
+                    let presentation_frame = main_frame(
                         device,
                         MainPresentDescriptor {
                             extension_submission,
@@ -1970,7 +1988,7 @@ impl NovaRenderer {
                         timing.frame_prepare_upload =
                             present_started.saturating_duration_since(frame_started);
                     }
-                    let presentation_frame = present_main_frame(
+                    let presentation_frame = main_frame(
                         device,
                         MainPresentDescriptor {
                             extension_submission,
@@ -2119,7 +2137,7 @@ impl NovaRenderer {
         }
         if path_command_count != 0 {
             self.path_mask_residency.commit(path_mask_key);
-            crate::diagnostics::performance_metrics::record_window_path_mask(
+            crate::diagnostics::performance_metrics::record_path_mask(
                 packet.window_id,
                 render_path_mask,
                 path_mask_cpu_elapsed,

@@ -36,7 +36,7 @@ impl Window {
 
         self.visibility = visibility;
         self.reset_dirty_to_present_timing(visibility.is_visible());
-        record_window_visibility(self.handle.window_id().as_u64(), visibility.is_visible());
+        record_visibility(self.handle.window_id().as_u64(), visibility.is_visible());
         #[cfg(feature = "profiler")]
         crate::diagnostics::foreground_profiler::record_window_visibility(
             self.handle.window_id().as_u64(),
@@ -224,7 +224,7 @@ impl Window {
             };
         })
         .detach();
-        platform_window.set_presentation_animation_completion_sender(animation_completion_sender);
+        platform_window.set_animation_completion_sender(animation_completion_sender);
         platform_window.on_resize(Box::new({
             let mut cx = cx.to_async();
             let foreground_executor = cx.foreground_executor().clone();
@@ -464,7 +464,7 @@ impl Window {
         // Initialize from the mapped native state rather than retaining the pre-map hidden state.
         let visibility = platform_window.visibility();
         invalidator.reset_dirty_to_present_epoch(visibility.is_visible());
-        record_window_visibility(handle.window_id().as_u64(), visibility.is_visible());
+        record_visibility(handle.window_id().as_u64(), visibility.is_visible());
         #[cfg(feature = "profiler")]
         crate::diagnostics::foreground_profiler::record_window_visibility(
             handle.window_id().as_u64(),
@@ -533,7 +533,7 @@ impl Window {
             animation_dirty_region: DirtyRegion::empty(),
             render_present_mode: PartialPresentMode::FullRedraw,
             render_trim_policy: RetainedResourceTrimPolicy::None,
-            backdrop_blur_damage_plan: BackdropBlurDamagePlan::default(),
+            backdrop_blur_damage: BackdropBlurDamagePlan::default(),
             force_full_redraw: Cell::new(true),
             force_view_cache_refresh: true,
             idle_render_frames: 0,

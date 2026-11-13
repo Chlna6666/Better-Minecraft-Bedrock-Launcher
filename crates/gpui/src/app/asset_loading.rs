@@ -338,11 +338,11 @@ impl App {
         self.remove_image_render_request(&target_source)
     }
 
-    /// Removes a target-size image processing and drops its completed render image from window atlases.
+    /// Retires a target-size image request and drops its completed render image from window atlases.
     ///
     /// Active element owners take precedence over explicit cache removal: their GPU resource stays
     /// drawable until the final element releases the request.
-    pub fn remove_image_render_request_in(
+    pub fn retire_image_render_request(
         &mut self,
         target_source: &ImageRenderRequest,
         current_window: Option<&mut Window>,
@@ -367,8 +367,8 @@ impl App {
         Some(preload)
     }
 
-    /// Removes a target-size image processing and drops its completed render image from window atlases.
-    pub fn remove_sized_image_from_windows(
+    /// Retires a target-size image request and drops its completed render image from window atlases.
+    pub fn retire_sized_image(
         &mut self,
         source: &AssetLocation,
         logical_size: Size<Pixels>,
@@ -378,7 +378,7 @@ impl App {
     ) -> Option<SizedImagePreload> {
         let target_source =
             self.image_render_request(source.clone(), logical_size, scale_factor, object_fit)?;
-        self.remove_image_render_request_in(&target_source, current_window)
+        self.retire_image_render_request(&target_source, current_window)
     }
 
     /// Retires an image's window-side lookup state and GPU atlas allocations.

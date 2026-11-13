@@ -1,4 +1,4 @@
-use super::upload_encoding::encode_padded_atlas_upload;
+use super::atlas_encoding::encode_padded_atlas_upload;
 use super::*;
 use crate::size;
 

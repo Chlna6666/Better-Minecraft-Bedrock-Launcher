@@ -142,7 +142,7 @@ pub(super) fn destroy<D: ResourceDevice + PipelineDevice>(
 
 impl NovaRenderer {
     /// Prepare at most ONE independent size generation. Never mutate the
-    /// Active Root/Filter views, resource sets or versions in this phase.
+    /// Active Root/Filter views, bind groups or versions in this phase.
     ///
     /// A fast WM_SIZE burst may supersede the prepared extent. Do not
     /// repeatedly allocate on every intermediate pixel size: discard that
@@ -161,8 +161,8 @@ impl NovaRenderer {
         let root_descriptor = root_needed.then(|| root_color::Descriptor {
             size: extent,
             format: self.surface_format,
-            pass_layout: self.backdrop_blur_pass_resource_set_layout,
-            composite_layout: self.backdrop_blur_resource_set_layout,
+            pass_layout: self.backdrop_blur_pass_bind_group_layout,
+            composite_layout: self.backdrop_blur_bind_group_layout,
             frames: self.frame_resource_buffers(),
             sampler: self.atlas_sampler,
         });
@@ -225,7 +225,7 @@ impl NovaRenderer {
     /// Resize. An obsolete Pending never gains active identity or content
     /// validity. A matching bundle atomically installs its physical targets;
     /// the next actual GPU Present separately publishes their texel versions.
-    pub(super) fn publish_pending_offscreen_after_resize(&mut self, size: DrawableSize) {
+    pub(super) fn publish_pending_offscreen(&mut self, size: DrawableSize) {
         let Some(pending) = self.pending_offscreen_targets.take() else {
             return;
         };

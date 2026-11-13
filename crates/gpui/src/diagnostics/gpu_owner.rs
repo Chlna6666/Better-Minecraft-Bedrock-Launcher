@@ -155,7 +155,7 @@ pub enum GpuOwnerExtensionPhase {
 /// Attributes work on the GPU owner thread until the returned guard is dropped.
 /// Calls outside an active owner job are inert.
 #[must_use]
-pub fn gpu_owner_extension_phase(phase: GpuOwnerExtensionPhase) -> impl Drop {
+pub fn extension_phase(phase: GpuOwnerExtensionPhase) -> impl Drop {
     let phase = match phase {
         GpuOwnerExtensionPhase::ScenePrepare => phases::Phase::ExtensionScenePrepare,
         GpuOwnerExtensionPhase::CameraCull => phases::Phase::ExtensionCameraCull,
@@ -443,7 +443,7 @@ impl WindowMetrics {
 /// releasing the observation lock. Histories contain at most 1,024 completed jobs per live
 /// owner; global totals include initialization and destroyed windows. This is a diagnostic
 /// read, not a frame clock or evidence of physical scanout. Unsupported CPU timing is None.
-pub fn gpu_owner_metrics_snapshot() -> GpuOwnerMetricsSnapshot {
+pub fn metrics_snapshot() -> GpuOwnerMetricsSnapshot {
     let metrics = store().lock().clone();
     let now = Instant::now();
     let elapsed = metrics
@@ -477,7 +477,7 @@ pub fn gpu_owner_metrics_snapshot() -> GpuOwnerMetricsSnapshot {
 /// Copies retained completed jobs with job_id greater than after_job_id for one owner proxy.
 /// A gap can mean history eviction; use the first returned ID to detect it. Destroyed or
 /// unknown owners return an empty vector. Querying neither wakes nor waits for the GPU owner.
-pub fn gpu_owner_samples_since(owner_id: u64, after_job_id: u64) -> Vec<GpuOwnerJobSample> {
+pub fn samples_since(owner_id: u64, after_job_id: u64) -> Vec<GpuOwnerJobSample> {
     store()
         .lock()
         .windows

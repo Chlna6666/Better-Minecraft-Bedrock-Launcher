@@ -2676,16 +2676,16 @@ mod tests {
     fn expose_requests_presentation() {
         let options = frame_request_after_expose(PlatformFrameRequest::default(), true);
 
-        assert!(options.needs_presentation());
-        assert!(!options.needs_ui_commit());
+        assert!(options.presentation_required());
+        assert!(!options.ui_commit_required());
     }
 
     #[test]
     fn expose_preserves_pending_ui_commit() {
         let options = frame_request_after_expose(PlatformFrameRequest::ui_commit(), true);
 
-        assert!(options.needs_presentation());
-        assert!(options.needs_ui_commit());
+        assert!(options.presentation_required());
+        assert!(options.ui_commit_required());
     }
 
     #[test]

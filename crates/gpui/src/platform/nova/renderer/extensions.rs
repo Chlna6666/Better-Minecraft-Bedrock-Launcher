@@ -260,6 +260,8 @@ mod tests {
             shader: gfx_core::ShaderModuleId::from_parts(1, 1),
             bind_group: BindGroupId::from_parts(2, 1),
             workgroups: [1; 3],
+
+            gpu_work_tag: None,
         };
         let make = |after_graphics_pass| crate::RendererExtensionComputePass {
             after_graphics_pass,

@@ -35,7 +35,7 @@ pub(super) fn verify_pixels<D>(
         resources,
         view,
         pipelines.quads,
-        frame.bind_groups.quad_resource_set,
+        frame.bind_groups.quad_bind_group,
     );
     let pixels = device.read_texture(target).expect("quad readback");
     assert_eq!(pixel(&pixels, 8, 8), [0, 0, 255, 255], "quad interior");
@@ -61,7 +61,7 @@ pub(super) fn verify_pixels<D>(
         resources,
         view,
         pipelines.shadows,
-        frame.bind_groups.shadow_resource_set,
+        frame.bind_groups.shadow_bind_group,
     );
     let pixels = device.read_texture(target).expect("shadow readback");
     assert!(pixel(&pixels, 8, 8)[2] > 200, "shadow center");
@@ -88,7 +88,7 @@ pub(super) fn verify_pixels<D>(
         resources,
         view,
         pipelines.underlines,
-        frame.bind_groups.underline_resource_set,
+        frame.bind_groups.underline_bind_group,
     );
     let pixels = device.read_texture(target).expect("underline readback");
     assert_eq!(pixel(&pixels, 8, 8), [0, 0, 255, 255], "underline interior");

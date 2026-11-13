@@ -1,6 +1,6 @@
 use super::*;
 use crate::assets::render_image::RenderImageStorage;
-use crate::{ObjectFit, Result, performance_metrics_snapshot, size};
+use crate::{ObjectFit, Result, snapshot, size};
 use image::{
     Delay, ExtendedColorType, Frame, ImageBuffer, ImageEncoder as _, ImageFormat, RgbaImage,
     codecs::gif::{GifEncoder, Repeat},
@@ -9,7 +9,7 @@ use std::io::Cursor;
 use std::sync::{Arc, atomic::Ordering};
 use std::time::{Duration, Instant};
 
-mod webp_tests;
+mod webp;
 
 fn render_image(
     bytes: &[u8],
@@ -117,7 +117,7 @@ fn decoded_animation_frames_keep_allocation_alpha_delay_and_simd_tails() {
             pixel.swap(0, 2);
         }
         let frame = Frame::from_parts(RgbaImage::from_raw(width, 3, bytes).unwrap(), 0, 0, delay);
-        let decoded = AnimatedFrame::from_rgba_frame(7, frame);
+        let decoded = AnimatedFrame::from_rgba_frame_as_bgra(7, frame);
         assert_eq!(decoded.bytes.as_slice().as_ptr(), pointer);
         assert_eq!(decoded.bytes.as_slice(), expected);
         assert_eq!(decoded.delay, delay);
@@ -372,9 +372,9 @@ fn streaming_animation_releases_stale_frames() {
         std::thread::yield_now();
     }
     assert!(image.resident_byte_len() > first_frame_bytes);
-    let stale_frames = performance_metrics_snapshot().animation.stale_frame_count;
+    let stale_frames = snapshot().animation.stale_frame_count;
     assert!(image.next_streaming_frame(usize::MAX).is_none());
-    assert!(performance_metrics_snapshot().animation.stale_frame_count > stale_frames);
+    assert!(snapshot().animation.stale_frame_count > stale_frames);
 }
 
 #[test]
@@ -413,7 +413,7 @@ fn streaming_animation_keeps_worker_running_while_queue_is_full() {
 
 #[test]
 fn streaming_animation_records_loop_restart() {
-    let before = performance_metrics_snapshot().animation.loop_restarts;
+    let before = snapshot().animation.loop_restarts;
     let bytes = animated_png_bytes();
     let config = AnimatedImageConfig {
         prefetch_frames: 2,
@@ -432,7 +432,7 @@ fn streaming_animation_records_loop_restart() {
     }
 
     assert_eq!(sequence, 2);
-    assert!(performance_metrics_snapshot().animation.loop_restarts > before);
+    assert!(snapshot().animation.loop_restarts > before);
 }
 
 fn animated_png_bytes() -> Vec<u8> {

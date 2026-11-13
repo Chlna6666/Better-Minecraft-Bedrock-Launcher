@@ -2265,10 +2265,10 @@ mod tests {
 
     #[test]
     fn text_metrics_record_calls_after_state_lock_release() -> anyhow::Result<()> {
-        use crate::{TextBackend, TextOperation};
+        use crate::diagnostics::text::{TextBackend, TextOperation, snapshot};
 
         let text_system = DirectWriteTextSystem::new(RendererCapabilities::default())?;
-        let calls_before = crate::text_metrics_snapshot()
+        let calls_before = snapshot()
             .iter()
             .filter(|row| {
                 row.backend == TextBackend::DirectWrite
@@ -2293,7 +2293,7 @@ mod tests {
                 .expect("worker completes after lock release");
         });
         assert!(text_system.state.try_write().is_some());
-        let row = crate::text_metrics_snapshot()
+        let row = snapshot()
             .into_iter()
             .find(|row| {
                 row.backend == TextBackend::DirectWrite

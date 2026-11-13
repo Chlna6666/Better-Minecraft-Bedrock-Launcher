@@ -1,20 +1,24 @@
 #[cfg(feature = "profiler")]
-pub(crate) mod foreground_profiler;
-pub(crate) mod gpu_owner;
-mod inspector;
-mod memory_profile;
-pub(crate) mod performance_metrics;
-mod process_memory;
-pub(crate) mod text;
+/// Foreground work timing and hang diagnostics.
+pub mod foreground_profiler;
+/// GPU-owner job and extension-phase diagnostics.
+pub mod gpu_owner;
+/// Inspector identifiers and reflection support.
+pub mod inspector;
+/// Memory usage snapshots for renderer resources.
+pub mod memory_profile;
+/// Window, frame, renderer, and upload performance metrics.
+pub mod performance_metrics;
+/// Process memory snapshots.
+pub mod process_memory;
+/// Text operation timing and backend metrics.
+pub mod text;
 
 #[cfg(feature = "profiler")]
-pub use foreground_profiler::*;
-pub use gpu_owner::*;
-pub use inspector::*;
-pub use memory_profile::*;
-pub use performance_metrics::*;
-pub use process_memory::*;
-pub use text::{
-    TextBackend, TextDurationDistribution, TextOperation, TextOperationMetricsSnapshot,
-    text_metrics_snapshot,
+pub(crate) use foreground_profiler::*;
+pub(crate) use inspector::*;
+pub(crate) use memory_profile::{
+    BufferMemoryProfile, DeviceMemoryProfile, MemoryBudgetProfile, MemoryProfileRegistration,
+    MemoryUsage, RendererMemoryProfile, memory_profile_totals,
 };
+pub(crate) use performance_metrics::*;

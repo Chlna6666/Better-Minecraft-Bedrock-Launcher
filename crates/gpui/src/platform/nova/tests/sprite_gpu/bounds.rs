@@ -45,6 +45,10 @@ pub(super) fn verify<D>(
             width: 16,
             height: 16,
         },
+        DrawableSize {
+            width: 16,
+            height: 16,
+        },
         &RenderingParameters::system(),
         false,
         BackdropBlurQuality::Full,
@@ -66,11 +70,11 @@ pub(super) fn verify<D>(
         &upload,
         &resources.pipelines,
         resources.pipelines.alpha,
-        frame.bind_groups.quad_resource_set,
-        frame.bind_groups.shadow_resource_set,
-        frame.path_resource_set,
-        |_| Some(atlas.mono_resource_sets[0]),
-        frame.bind_groups.underline_resource_set,
+        frame.bind_groups.quad_bind_group,
+        frame.bind_groups.shadow_bind_group,
+        frame.path_bind_group,
+        |_| Some(atlas.mono_bind_groups[0]),
+        frame.bind_groups.underline_bind_group,
         |_| None,
         DrawMode::Present,
         Some(ScissorRect {
@@ -102,8 +106,8 @@ pub(super) fn verify<D>(
             depth_attachment: Some(gfx_core::DepthAttachment {
                 target: resources.depth_texture_view,
                 depth_load_op: LoadOp::Clear(1.),
-            stencil_load_op: None,
-        }),
+                stencil_load_op: None,
+            }),
             viewport: None,
             resolve_target: None,
         }])

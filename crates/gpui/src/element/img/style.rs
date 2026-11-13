@@ -1,5 +1,5 @@
 use super::super::Stateful;
-use super::element::*;
+use super::component::*;
 use crate::{AnyElement, Bounds, DevicePixels, ObjectFit, Pixels, Point, Size};
 
 /// The style of an image element.

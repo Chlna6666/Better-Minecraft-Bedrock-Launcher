@@ -6,6 +6,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+pub(super) fn power_preference(options: &RendererOptions) -> PowerPreference {
+    match options.power_preference {
+        crate::GpuPowerPreference::AutoLowPower => PowerPreference::LowPower,
+        crate::GpuPowerPreference::HighPerformance => PowerPreference::HighPerformance,
+    }
+}
+
 /// Identifies the backend device a window should render with.
 ///
 /// Windows that agree on this key share one device; a different adapter or power preference
@@ -71,7 +78,7 @@ pub(super) fn shared_device(
     let key = DeviceKey {
         backend,
         adapter_name: options.adapter_name.clone(),
-        power_preference: nova_power_preference(options),
+        power_preference: power_preference(options),
         pipeline_cache_dir: options.pipeline_cache_dir.clone(),
         native_display: None,
     };
@@ -87,7 +94,7 @@ pub(super) fn shared_device(
         let descriptor = DeviceDescriptor {
             application_name: application_name.to_string(),
             adapter_name: options.adapter_name.clone(),
-            power_preference: nova_power_preference(options),
+            power_preference: power_preference(options),
             pipeline_cache_dir: options.pipeline_cache_dir.clone(),
             tuning: gfx_core::DeviceTuning::default(),
         };
@@ -130,7 +137,7 @@ pub(super) fn discard_unused_device(
     let key = DeviceKey {
         backend,
         adapter_name: options.adapter_name.clone(),
-        power_preference: nova_power_preference(options),
+        power_preference: power_preference(options),
         pipeline_cache_dir: options.pipeline_cache_dir.clone(),
         native_display: if backend == RendererBackend::NovaOpenGl {
             native_display
@@ -166,7 +173,7 @@ pub(super) fn shared_opengl_device(
     let key = DeviceKey {
         backend: RendererBackend::NovaOpenGl,
         adapter_name: options.adapter_name.clone(),
-        power_preference: nova_power_preference(options),
+        power_preference: power_preference(options),
         pipeline_cache_dir: options.pipeline_cache_dir.clone(),
         native_display: Some(display),
     };
@@ -174,7 +181,7 @@ pub(super) fn shared_opengl_device(
         let descriptor = DeviceDescriptor {
             application_name: "gpui nova opengl".into(),
             adapter_name: options.adapter_name.clone(),
-            power_preference: nova_power_preference(options),
+            power_preference: power_preference(options),
             pipeline_cache_dir: options.pipeline_cache_dir.clone(),
             tuning: gfx_core::DeviceTuning::default(),
         };

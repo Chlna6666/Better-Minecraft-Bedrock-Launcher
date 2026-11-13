@@ -3,7 +3,7 @@ mod events;
 mod file_drop;
 mod keyboard;
 mod mouse;
-mod platform_input;
+mod platform_events;
 mod touch;
 
 #[cfg(test)]
@@ -14,5 +14,5 @@ pub use events::*;
 pub use file_drop::*;
 pub use keyboard::*;
 pub use mouse::*;
-pub use platform_input::*;
+pub use platform_events::*;
 pub use touch::*;

@@ -121,7 +121,7 @@ fn verify(backend: RendererBackend, animation_growth: bool) {
         pixels(&mut renderer, &scene, target, 0.8, samples(), true);
     }
     pixels(&mut renderer, &scene, target, 0.8, samples(), true);
-    let full_filter_pixels = crate::performance_metrics_snapshot().backdrop_blur_target_pixels;
+    let full_filter_pixels = crate::snapshot().backdrop_blur_target_pixels;
     verify_rebinding(&mut renderer, &scene, target, animation_growth);
     eprintln!(
         "buffer filter gate backend={backend:?} animation_growth={animation_growth} full_filter_pixels={full_filter_pixels} rebound_filter_pixels=0 rebound_source_pixels=0 pixels_equal=true"
@@ -159,7 +159,7 @@ fn verify_rebinding(
     );
     renderer.retained_upload.invalidate_encode_key();
     let actual = pixels(renderer, scene, target, 0.8, samples(), false);
-    let metrics = crate::performance_metrics_snapshot();
+    let metrics = crate::snapshot();
     assert_eq!(
         metrics.backdrop_blur_target_pixels, 0,
         "rebinding must not rerun Gaussian passes"

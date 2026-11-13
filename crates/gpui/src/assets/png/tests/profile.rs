@@ -34,7 +34,7 @@ fn decode_buffer_reuse_profile() {
         let info = reader.next_frame(&mut pixels).expect("frame");
         pixels.truncate(info.buffer_size());
         let output =
-            png_pixels_to_bgra_bytes(pixels, info.color_type, WIDTH, HEIGHT).expect("valid pixels");
+            pixels_to_bgra_bytes(pixels, info.color_type, WIDTH, HEIGHT).expect("valid pixels");
         assert_eq!(output, expected);
         crate::release_bitmap_buffer(output);
     }

@@ -673,7 +673,7 @@ impl Window {
     }
 
     fn arm_platform_frame_watchdog(&self, options: PlatformFrameRequest) {
-        if !options.needs_ui_commit() && !options.needs_presentation() {
+        if !options.ui_commit_required() && !options.presentation_required() {
             return;
         }
 
@@ -794,8 +794,8 @@ impl Window {
             self.invalidator.is_dirty(),
             self.refreshing,
             self.dirty_frame_scheduled,
-            frame_request.needs_ui_commit(),
-            frame_request.needs_presentation()
+            frame_request.ui_commit_required(),
+            frame_request.presentation_required()
         );
 
         // Keep the window's native frame source as the only cadence owner. Running the frame
@@ -913,7 +913,7 @@ impl Window {
             if (!presentation.submitted_early || !decision.drew_frame())
                 && let Some(started_at) = self.active_dirty_to_present_started_at.take()
             {
-                record_window_dirty_to_present(
+                record_dirty_to_present(
                     window_id,
                     frame_completed_at.saturating_duration_since(started_at),
                 );
@@ -924,7 +924,7 @@ impl Window {
             #[cfg(feature = "profiler")]
             crate::diagnostics::foreground_profiler::record_frame_no_present(window_id);
         }
-        record_window_runtime_state(
+        record_runtime_state(
             window_id,
             self.viewport_size.width / px(1.0),
             self.viewport_size.height / px(1.0),
@@ -933,7 +933,7 @@ impl Window {
             activity.minimized,
             self.visibility.is_visible(),
         );
-        record_window_frame_disposition(
+        record_frame_disposition(
             window_id,
             decision.disposition(
                 presented_frame,
@@ -976,7 +976,7 @@ impl Window {
         // A plain cadence wake is not a guaranteed image change. If it carried no
         // animation damage and no older pending frame, do not submit a redundant
         // full Swapchain pass. Explicit presentation requests retain priority.
-        let cadence_present_requested = frame_request.needs_presentation();
+        let cadence_present_requested = frame_request.presentation_required();
         let frame_request = frame_request.resolve_animation_presentation(presentation_ready);
         let submitted_early = should_present_before_ui_commit(
             presentation_ready,
@@ -1000,8 +1000,8 @@ impl Window {
                 presentation_tick,
                 presentation_ready,
                 cadence_present_requested,
-                frame_request.needs_presentation(),
-                frame_request.needs_ui_commit(),
+                frame_request.presentation_required(),
+                frame_request.ui_commit_required(),
                 self.has_completed_rendered_frame,
                 self.visibility.is_visible(),
                 self.platform_window.is_minimized(),
@@ -1099,15 +1099,15 @@ impl Window {
                 previous_values,
                 &tick.scene_values,
             );
-            let mut tick_blur_damage = crate::paint::backdrop_blur_animation_damage_plan(
+            let mut tick_blur_damage = crate::paint::compute_backdrop_blur_animation_damage(
                 &presentation_scene,
                 previous_values,
                 &tick.scene_values,
             );
             if preserve_unpresented_damage {
-                tick_blur_damage.merge_from(&self.backdrop_blur_damage_plan);
+                tick_blur_damage.merge_from(&self.backdrop_blur_damage);
             }
-            self.backdrop_blur_damage_plan = tick_blur_damage;
+            self.backdrop_blur_damage = tick_blur_damage;
             pixel_damage
         };
         self.presentation_state
@@ -1138,7 +1138,7 @@ impl Window {
             self.presentation_state
                 .active_scene()
                 .unwrap_or(self.rendered_frame.scene()),
-            &self.backdrop_blur_damage_plan,
+            &self.backdrop_blur_damage,
         )
         .collect::<SmallVec<[_; 4]>>();
         for bounds in backdrop_output_damage {
@@ -1190,14 +1190,14 @@ impl Window {
             frame_started_at,
         );
         let draw_frame =
-            !defer_inactive_dirty_draw && (activity.dirty || frame_request.needs_ui_rebuild());
-        let degrade_to_present = draw_frame
-            && self.should_degrade_dirty_frame_to_retained_present(frame_request, frame_started_at);
+            !defer_inactive_dirty_draw && (activity.dirty || frame_request.ui_rebuild_required());
+        let degrade_to_present =
+            draw_frame && self.should_present_retained_scene(frame_request, frame_started_at);
         let submit_visible_frame = draw_frame
             || degrade_to_present
-            || (!draw_frame && (frame_request.needs_presentation() || activity.pending_present));
+            || (!draw_frame && (frame_request.presentation_required() || activity.pending_present));
         let present_frame = degrade_to_present
-            || (!draw_frame && (frame_request.needs_presentation() || activity.pending_present));
+            || (!draw_frame && (frame_request.presentation_required() || activity.pending_present));
         let skip_frame = !draw_frame && !submit_visible_frame;
         FrameWorkDecision {
             activity,
@@ -1224,8 +1224,8 @@ impl Window {
                 "gpui frame work: window={} dirty={} ui_commit={} presentation={} pending_present={} active={} minimized={} draw={} present={} skip={} defer_inactive_dirty={} request_reasons=0x{:04x} first_request_reason={:?} first_request_source={:?} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
                 self.handle.window_id().as_u64(),
                 decision.activity.dirty,
-                frame_request.needs_ui_commit(),
-                frame_request.needs_presentation(),
+                frame_request.ui_commit_required(),
+                frame_request.presentation_required(),
                 decision.activity.pending_present,
                 decision.activity.active,
                 decision.activity.minimized,
@@ -1277,13 +1277,13 @@ impl Window {
                 self.handle.window_id().as_u64(),
                 0,
                 decision.activity.dirty,
-                frame_request.needs_ui_commit(),
+                frame_request.ui_commit_required(),
                 decision.activity.pending_present,
                 self.rendered_frame.scene().len()
             );
             false
         } else if decision.draw_frame {
-            self.draw_visible_frame(frame_request.needs_presentation(), frame_budget, cx)
+            self.draw_visible_frame(frame_request.presentation_required(), frame_budget, cx)
         } else if decision.present_frame {
             self.present_framebuffer_only().is_accepted()
         } else if decision.activity.active {
@@ -1448,8 +1448,8 @@ impl Window {
         now: Instant,
     ) -> bool {
         load.dirty
-            && options.needs_ui_commit()
-            && !options.needs_presentation()
+            && options.ui_commit_required()
+            && !options.presentation_required()
             && !load.pending_present
             && !load.active
             && (!self.inactive_dirty_redraw_enabled || load.minimized)
@@ -1458,13 +1458,9 @@ impl Window {
             && (self.rendered_frame.scene().len() != 0 || load.minimized)
     }
 
-    fn should_degrade_dirty_frame_to_retained_present(
-        &self,
-        options: PlatformFrameRequest,
-        now: Instant,
-    ) -> bool {
-        !options.needs_ui_commit()
-            && !options.needs_presentation()
+    fn should_present_retained_scene(&self, options: PlatformFrameRequest, now: Instant) -> bool {
+        !options.ui_commit_required()
+            && !options.presentation_required()
             && self.transparent_caption_height.is_none()
             && self.dirty_views.is_empty()
             && self.animation_dirty_region.is_empty()
@@ -1676,8 +1672,8 @@ impl FrameWorkDecision {
         self,
         presented_frame: bool,
         frame_duration: Option<Duration>,
-    ) -> WindowFrameDisposition {
-        WindowFrameDisposition {
+    ) -> FrameDisposition {
+        FrameDisposition {
             drew_frame: self.drew_frame(),
             frame_duration,
             presented_frame,
@@ -1694,8 +1690,8 @@ fn should_present_before_ui_commit(
     minimized: bool,
 ) -> bool {
     presentation_ready
-        && frame_request.needs_presentation()
-        && !frame_request.needs_ui_commit()
+        && frame_request.presentation_required()
+        && !frame_request.ui_commit_required()
         && has_committed_scene
         && visible
         && !minimized

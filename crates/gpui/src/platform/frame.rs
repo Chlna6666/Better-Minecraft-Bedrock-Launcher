@@ -74,17 +74,17 @@ impl PlatformFrameRequest {
     }
 
     /// Whether the UI owner must process this wake before native presentation continues.
-    /// Only `needs_ui_rebuild()` forces rebuilding an otherwise clean scene.
-    pub(crate) const fn needs_ui_commit(self) -> bool {
+    /// Only `ui_rebuild_required()` forces rebuilding an otherwise clean scene.
+    pub(crate) const fn ui_commit_required(self) -> bool {
         !matches!(self.ui_commit, UiCommitRequest::None)
     }
 
     /// Whether the caller explicitly requires a scene rebuild, rather than just a UI tick.
-    pub(crate) const fn needs_ui_rebuild(self) -> bool {
+    pub(crate) const fn ui_rebuild_required(self) -> bool {
         matches!(self.ui_commit, UiCommitRequest::Required)
     }
 
-    pub(crate) const fn needs_presentation(self) -> bool {
+    pub(crate) const fn presentation_required(self) -> bool {
         !matches!(self.presentation, PresentationRequest::None)
     }
 
@@ -102,18 +102,18 @@ impl PlatformFrameRequest {
     }
 
     pub(crate) const fn is_presentation_only(self) -> bool {
-        self.needs_presentation() && !self.needs_ui_commit()
+        self.presentation_required() && !self.ui_commit_required()
     }
 
     pub(crate) const fn requires_frame(self) -> bool {
-        self.needs_ui_commit() || self.needs_presentation()
+        self.ui_commit_required() || self.presentation_required()
     }
 
     pub(crate) const fn merge(self, request: Self) -> Self {
         Self {
-            ui_commit: if self.needs_ui_rebuild() || request.needs_ui_rebuild() {
+            ui_commit: if self.ui_rebuild_required() || request.ui_rebuild_required() {
                 UiCommitRequest::Required
-            } else if self.needs_ui_commit() || request.needs_ui_commit() {
+            } else if self.ui_commit_required() || request.ui_commit_required() {
                 UiCommitRequest::AnimationTick
             } else {
                 UiCommitRequest::None
@@ -122,7 +122,7 @@ impl PlatformFrameRequest {
                 || matches!(request.presentation, PresentationRequest::Required)
             {
                 PresentationRequest::Required
-            } else if self.needs_presentation() || request.needs_presentation() {
+            } else if self.presentation_required() || request.presentation_required() {
                 PresentationRequest::AnimationTick
             } else {
                 PresentationRequest::None
@@ -458,14 +458,14 @@ mod tests {
     #[test]
     fn unchanged_animation_cadence_does_not_force_a_swapchain_present() {
         let cadence = PlatformFrameRequest::animation_tick();
-        assert!(cadence.needs_ui_commit());
-        assert!(cadence.needs_presentation());
+        assert!(cadence.ui_commit_required());
+        assert!(cadence.presentation_required());
         let resolved = cadence.resolve_animation_presentation(false);
         assert!(
-            resolved.needs_ui_commit(),
+            resolved.ui_commit_required(),
             "the UI tick must still progress"
         );
-        assert!(!resolved.needs_presentation(), "no pixels changed");
+        assert!(!resolved.presentation_required(), "no pixels changed");
         assert!(
             resolved.requires_frame(),
             "the UI callback was not discarded"
@@ -478,18 +478,18 @@ mod tests {
         let merged = PlatformFrameRequest::animation_tick().merge(wsi);
         let resolved = merged.resolve_animation_presentation(false);
         assert!(
-            resolved.needs_presentation(),
+            resolved.presentation_required(),
             "explicit WSI present is mandatory"
         );
-        assert!(resolved.needs_ui_commit(), "the animation tick is not lost");
+        assert!(resolved.ui_commit_required(), "the animation tick is not lost");
         assert!(
             wsi.resolve_animation_presentation(false)
-                .needs_presentation()
+                .presentation_required()
         );
         assert!(
             PlatformFrameRequest::ui_commit_and_presentation()
                 .resolve_animation_presentation(false)
-                .needs_presentation()
+                .presentation_required()
         );
     }
 
@@ -497,8 +497,8 @@ mod tests {
     fn animation_with_damage_preserves_present_cadence() {
         let cadence = PlatformFrameRequest::animation_tick();
         let resolved = cadence.resolve_animation_presentation(true);
-        assert!(resolved.needs_presentation());
-        assert!(resolved.needs_ui_commit());
+        assert!(resolved.presentation_required());
+        assert!(resolved.ui_commit_required());
     }
 
     #[test]
@@ -647,8 +647,8 @@ mod tests {
     #[test]
     fn animation_tick_keeps_ui_ownership_without_forcing_rebuild() {
         let tick = PlatformFrameRequest::animation_tick();
-        assert!(tick.needs_ui_commit());
-        assert!(!tick.needs_ui_rebuild());
+        assert!(tick.ui_commit_required());
+        assert!(!tick.ui_rebuild_required());
         assert!(!tick.is_presentation_only());
         let tick_with_present = PlatformFrameRequest {
             ui_commit: UiCommitRequest::AnimationTick,
@@ -663,12 +663,12 @@ mod tests {
             tick_with_present,
         );
         let merged = tick.merge(PlatformFrameRequest::ui_commit());
-        assert!(merged.needs_ui_rebuild());
-        assert!(merged.needs_presentation());
+        assert!(merged.ui_rebuild_required());
+        assert!(merged.presentation_required());
         assert!(
             !merged
                 .resolve_animation_presentation(false)
-                .needs_presentation()
+                .presentation_required()
         );
         assert_eq!(PlatformFrameRequest::ui_commit().merge(tick), merged);
     }
@@ -679,27 +679,27 @@ mod tests {
         assert!(
             !tick
                 .resolve_animation_presentation(false)
-                .needs_presentation()
+                .presentation_required()
         );
-        assert!(tick.resolve_animation_presentation(false).needs_ui_commit());
+        assert!(tick.resolve_animation_presentation(false).ui_commit_required());
         assert!(
             tick.resolve_animation_presentation(true)
-                .needs_presentation()
+                .presentation_required()
         );
         assert!(
             PlatformFrameRequest::presentation()
                 .resolve_animation_presentation(false)
-                .needs_presentation()
+                .presentation_required()
         );
         assert!(
             PlatformFrameRequest::ui_commit_and_presentation()
                 .resolve_animation_presentation(false)
-                .needs_presentation()
+                .presentation_required()
         );
         assert!(
             tick.merge(PlatformFrameRequest::presentation())
                 .resolve_animation_presentation(false)
-                .needs_presentation()
+                .presentation_required()
         );
     }
 
@@ -713,8 +713,8 @@ mod tests {
 
         let request = futures::executor::block_on(requests.next())
             .expect("a submitted frame request should wake the UI owner");
-        assert!(request.needs_ui_commit());
-        assert!(request.needs_presentation());
+        assert!(request.ui_commit_required());
+        assert!(request.presentation_required());
     }
 
     #[test]
@@ -934,9 +934,9 @@ mod tests {
         );
         for index in 1..=40 {
             packet.sample_animations(started_at + Duration::from_millis(index * 10));
-            assert!(packet.backdrop_blur_damage_plan.refresh_required());
+            assert!(packet.backdrop_blur_damage.refresh_required());
             let (full, damage) = packet
-                .backdrop_blur_damage_plan
+                .backdrop_blur_damage
                 .order_source_damage(0, u32::MAX);
             assert!(
                 !full,
@@ -945,7 +945,7 @@ mod tests {
             assert!(damage.count() <= 2);
             packet.consume_submitted_damage();
             assert!(packet.dirty_region.is_empty());
-            assert!(packet.backdrop_blur_damage_plan.is_empty());
+            assert!(packet.backdrop_blur_damage.is_empty());
         }
         // A deferred frame does not consume damage. Keep every swept region until submission.
         for index in 41..=60 {
@@ -953,16 +953,16 @@ mod tests {
         }
         assert!(
             packet
-                .backdrop_blur_damage_plan
+                .backdrop_blur_damage
                 .order_source_damage(0, u32::MAX)
                 .0
         );
         packet.consume_submitted_damage();
         packet.sample_animations(started_at + Duration::from_millis(610));
-        assert!(packet.backdrop_blur_damage_plan.refresh_required());
+        assert!(packet.backdrop_blur_damage.refresh_required());
         assert!(
             !packet
-                .backdrop_blur_damage_plan
+                .backdrop_blur_damage
                 .order_source_damage(0, u32::MAX)
                 .0
         );
@@ -1357,7 +1357,7 @@ pub(crate) struct PresentationPacket {
     pub(crate) presentation_animation_timelines: SmallVec<[SceneAnimationTimeline; 4]>,
     pub(crate) frame_time: Instant,
     pub(crate) dirty_region: DirtyRegion,
-    pub(crate) backdrop_blur_damage_plan: BackdropBlurDamagePlan,
+    pub(crate) backdrop_blur_damage: BackdropBlurDamagePlan,
     pub(crate) partial_present_mode: PartialPresentMode,
     pub(crate) force_full_backdrop_blur_refresh: bool,
     frame_interval: Option<Duration>,
@@ -1387,7 +1387,7 @@ impl PresentationPacket {
     /// Deferred submissions keep accumulating damage until it reaches the surface.
     pub(crate) fn consume_submitted_damage(&mut self) {
         self.dirty_region = DirtyRegion::empty();
-        self.backdrop_blur_damage_plan = BackdropBlurDamagePlan::default();
+        self.backdrop_blur_damage = BackdropBlurDamagePlan::default();
         self.force_full_backdrop_blur_refresh = false;
         // FullRedraw describes the consumed damage, not a permanent surface policy. A retained
         // timeline's next sample has fresh local damage. Backend/alpha/backdrop safety gates still
@@ -1415,14 +1415,14 @@ impl PresentationPacket {
                 crate::size(ScaledPixels(width as f32), ScaledPixels(height as f32)),
             );
             self.dirty_region.mark_full(extent);
-            self.backdrop_blur_damage_plan = BackdropBlurDamagePlan::default();
+            self.backdrop_blur_damage = BackdropBlurDamagePlan::default();
             self.force_full_backdrop_blur_refresh = true;
             self.partial_present_mode = PartialPresentMode::FullRedraw;
             return;
         }
         self.dirty_region.merge_from(&previous.dirty_region);
-        self.backdrop_blur_damage_plan
-            .merge_from(&previous.backdrop_blur_damage_plan);
+        self.backdrop_blur_damage
+            .merge_from(&previous.backdrop_blur_damage);
         self.force_full_backdrop_blur_refresh |= previous.force_full_backdrop_blur_refresh;
     }
 
@@ -1432,7 +1432,7 @@ impl PresentationPacket {
         presentation_animation_timelines: impl IntoIterator<Item = SceneAnimationTimeline>,
         frame_time: Instant,
         dirty_region: DirtyRegion,
-        backdrop_blur_damage_plan: BackdropBlurDamagePlan,
+        backdrop_blur_damage: BackdropBlurDamagePlan,
         partial_present_mode: PartialPresentMode,
     ) -> Self {
         let presentation_animation_tracks: SmallVec<[SceneAnimationValue; 4]> =
@@ -1483,7 +1483,7 @@ impl PresentationPacket {
             presentation_animation_timelines,
             frame_time,
             dirty_region,
-            backdrop_blur_damage_plan,
+            backdrop_blur_damage,
             partial_present_mode,
             force_full_backdrop_blur_refresh: false,
             frame_interval: None,
@@ -1597,15 +1597,15 @@ impl PresentationPacket {
         ) {
             self.dirty_region.push(bounds);
         }
-        let animation_damage = crate::paint::backdrop_blur_animation_damage_plan(
+        let animation_damage = crate::paint::compute_backdrop_blur_animation_damage(
             &self.paint.scene,
             &self.previous_presentation_animation_values,
             &self.presentation_animation_values,
         );
-        self.backdrop_blur_damage_plan.merge_from(&animation_damage);
+        self.backdrop_blur_damage.merge_from(&animation_damage);
         for bounds in crate::paint::backdrop_blur_output_damage(
             &self.paint.scene,
-            &self.backdrop_blur_damage_plan,
+            &self.backdrop_blur_damage,
         ) {
             self.dirty_region.push(bounds);
         }

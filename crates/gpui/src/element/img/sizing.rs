@@ -1,4 +1,4 @@
-use super::element::SizedImageLoader;
+use super::component::SizedImageLoader;
 use super::layout::ImageLayout;
 use super::loader::{ImageRenderRequest, image_size_for_window};
 use super::playback::{schedule_next_frame, select_animation_frame, should_animate};

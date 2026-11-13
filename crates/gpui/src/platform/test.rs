@@ -1,9 +1,9 @@
 mod dispatcher;
 mod display;
-mod platform;
+mod implementation;
 mod window;
 
 pub use dispatcher::*;
 pub(crate) use display::*;
-pub(crate) use platform::*;
+pub(crate) use implementation::*;
 pub(crate) use window::*;

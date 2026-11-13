@@ -185,7 +185,7 @@ impl Drop for MissingGlyphReceiver {
     }
 }
 
-pub(super) fn missing_glyph_channel() -> (Arc<MissingGlyphReporter>, MissingGlyphReceiver) {
+pub(super) fn channel() -> (Arc<MissingGlyphReporter>, MissingGlyphReceiver) {
     let (sender, receiver) = async_channel::bounded(MAX_REPORTED_MISSING_GLYPHS);
     let generation = Arc::<AtomicUsize>::default();
     (
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn receiver_deduplicates_reports_without_producer_mutex() {
-        let (reporter, mut receiver) = missing_glyph_channel();
+        let (reporter, mut receiver) = channel();
         reporter.report(vec![missing("a"), missing("a"), missing("b")]);
 
         let first = receiver
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn dropping_receiver_closes_nonblocking_producer() {
-        let (reporter, receiver) = missing_glyph_channel();
+        let (reporter, receiver) = channel();
         drop(receiver);
         assert!(reporter.sender.is_closed());
         reporter.report(vec![missing("closed")]);

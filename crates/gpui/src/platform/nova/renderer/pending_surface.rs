@@ -110,7 +110,7 @@ pub(super) fn acquire_resize_attachments<D: ResourceDevice + PipelineDevice>(
 
 impl NovaRenderer {
     /// Prepare once per window while its previous native GPU readers are
-    /// in flight. Do not mutate Active path resource sets or its depth view.
+    /// in flight. Do not mutate Active path bind groups or its depth view.
     pub(super) fn prepare_pending_surface_attachments(
         &mut self,
         requested: DrawableSize,

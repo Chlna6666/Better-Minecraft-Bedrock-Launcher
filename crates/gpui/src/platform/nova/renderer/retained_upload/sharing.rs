@@ -344,6 +344,10 @@ mod tests {
                     width: 16,
                     height: 16,
                 },
+                DrawableSize {
+                    width: 16,
+                    height: 16,
+                },
                 &RenderingParameters::system(),
                 false,
                 BackdropBlurQuality::Full,

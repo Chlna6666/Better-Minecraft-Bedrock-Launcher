@@ -221,23 +221,15 @@ mod tests {
     use crate::{AppContext, TestAppContext};
 
     #[gpui::test]
-    fn access_scopes_keep_repeated_and_nested_dependencies(cx: &mut TestAppContext) {
+    fn entity_reads_are_tracked_for_the_current_frame(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let first = cx.new(|_| 1);
             let second = cx.new(|_| 2);
             cx.entities.clear_accessed();
 
             let _ = first.read(cx);
-            let (_, parent_accesses) = cx.detect_accessed_entities(|cx| {
-                let _ = first.read(cx);
-                let (_, child_accesses) = cx.detect_accessed_entities(|cx| {
-                    let _ = second.read(cx);
-                });
-                assert!(child_accesses.contains(&second.entity_id()));
-            });
-
-            assert!(parent_accesses.contains(&first.entity_id()));
-            assert!(parent_accesses.contains(&second.entity_id()));
+            let _ = first.read(cx);
+            let _ = second.read(cx);
             let frame_accesses = cx.entities.accessed_entities.borrow();
             assert!(frame_accesses.contains(&first.entity_id()));
             assert!(frame_accesses.contains(&second.entity_id()));

@@ -7,11 +7,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use gpui::diagnostics::{gpu_owner, performance_metrics, process_memory, text};
+use gpui::diagnostics::performance_metrics::PerformanceMetricsSnapshot;
 use gpui::{
-    App, Application, AssetSource, Bounds, Context, Entity, PerformanceMetricsSnapshot,
+    App, Application, AssetSource, Bounds, Context, Entity,
     PresentModePreference, RenderPolicy, RendererBackend, RendererOptions, ScrollHandle,
     SharedString, Window, WindowBounds, WindowOptions, div, hsla, img,
-    performance_metrics_snapshot, prelude::*, px, rgb, size,
+    prelude::*, px, rgb, size,
 };
 use serde::Serialize;
 use std::{
@@ -145,12 +147,12 @@ impl From<&PerformanceMetricsSnapshot> for FrameSample {
 
 #[derive(Serialize)]
 struct LabReport {
-    window_metrics: Vec<gpui::WindowMetricsSnapshot>,
-    text_metrics: Vec<gpui::TextOperationMetricsSnapshot>,
-    gpu_owner: gpui::GpuOwnerMetricsSnapshot,
-    gpu_owner_samples: Vec<gpui::GpuOwnerJobSample>,
+    window_metrics: Vec<gpui::diagnostics::performance_metrics::window::MetricsSnapshot>,
+    text_metrics: Vec<gpui::diagnostics::text::TextOperationMetricsSnapshot>,
+    gpu_owner: gpui::diagnostics::gpu_owner::GpuOwnerMetricsSnapshot,
+    gpu_owner_samples: Vec<gpui::diagnostics::gpu_owner::GpuOwnerJobSample>,
     memory: gpui::GpuiMemorySnapshot,
-    process_memory: Option<gpui::ProcessMemorySnapshot>,
+    process_memory: Option<gpui::diagnostics::process_memory::ProcessMemorySnapshot>,
     process_memory_error: Option<String>,
     schema_version: u32,
     backend: &'static str,
@@ -269,7 +271,7 @@ impl Render for PerfLab {
                 && self.samples.len() < self.config.frames
             {
                 self.samples
-                    .push(FrameSample::from(&performance_metrics_snapshot()));
+                    .push(FrameSample::from(&performance_metrics::snapshot()));
             }
             if self.samples.len() == self.config.frames && !self.finished {
                 self.finish(cx);
@@ -457,7 +459,7 @@ fn schedule_traversal_frame(
             {
                 traversal
                     .samples
-                    .push(FrameSample::from(&performance_metrics_snapshot()));
+                    .push(FrameSample::from(&performance_metrics::snapshot()));
             }
             if traversal.samples.len() == config.frames {
                 Some((
@@ -821,30 +823,30 @@ fn print_report(
     traversal_render_counts: Option<TraversalRenderCounts>,
     memory: gpui::GpuiMemorySnapshot,
 ) {
-    let snapshot = performance_metrics_snapshot();
-    let window_metrics = gpui::window_metrics_snapshot();
+    let snapshot = performance_metrics::snapshot();
+    let window_metrics = performance_metrics::window::snapshot();
     let (width, height) = window_metrics
         .first()
         .map(|window| (window.physical_width_px, window.physical_height_px))
         .unwrap_or_default();
-    let gpu_owner = gpui::gpu_owner_metrics_snapshot();
+    let gpu_owner = gpu_owner::metrics_snapshot();
     let gpu_owner_samples = gpu_owner
         .windows
         .iter()
         .flat_map(|window| {
-            gpui::gpu_owner_samples_since(window.owner_id, 0)
+            gpu_owner::samples_since(window.owner_id, 0)
                 .into_iter()
                 .filter(|sample| sample.job_id <= window.completed_jobs)
         })
         .collect();
     let summary = summarize(&samples);
-    let (process_memory, process_memory_error) = match gpui::process_memory_snapshot() {
+    let (process_memory, process_memory_error) = match process_memory::snapshot() {
         Ok(sample) => (sample, None),
         Err(error) => (None, Some(error.to_string())),
     };
     let report = LabReport {
         window_metrics,
-        text_metrics: gpui::text_metrics_snapshot(),
+        text_metrics: text::snapshot(),
         schema_version: 6,
         gpu_owner,
         gpu_owner_samples,
