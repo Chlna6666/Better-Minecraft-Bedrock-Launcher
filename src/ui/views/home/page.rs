@@ -1,13 +1,13 @@
-use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_versions};
+use crate::core::version::launch_versions::{self, LaunchVersionEntry};
 use crate::plugins::events::{
     CompactBehavior, InjectionLayout, InjectionSlot, PluginInjectionRegistration,
 };
 use crate::ui::animation::{SpringValue, spring_bouncy, spring_snappy};
 use crate::ui::components::scroll::ScrollableElement as _;
-use crate::ui::hooks::use_launcher::{LaunchVersionDescriptor, start_launcher};
-use crate::ui::hooks::use_local_versions::{
-    LocalVersionsSnapshot, launch_version_icon_path, read_local_versions_snapshot,
-    use_local_versions, version_channel_label,
+use crate::ui::hooks::launcher;
+use crate::ui::hooks::launcher::LaunchVersionDescriptor;
+use crate::ui::hooks::local_versions::{
+    LocalVersionsSnapshot, VersionRefresh, channel_label, icon, snapshot, use_versions,
 };
 use crate::ui::navigation::{AppRoute, set_route};
 use crate::ui::state::i18n::I18n;
@@ -122,7 +122,7 @@ impl HomePageView {
         let prefetched_seed = prefetched_versions.clone();
         let (versions, selected_folder, versions_started, versions_loading, versions_error) =
             if let Some(mut prefetched_versions) = prefetched_versions {
-                sort_launch_versions(&mut prefetched_versions);
+                launch_versions::sort(&mut prefetched_versions);
                 let first = prefetched_versions
                     .first()
                     .map(|version| SharedString::from(version.folder.clone()));
@@ -166,10 +166,10 @@ impl HomePageView {
         };
 
         if let Some(versions) = prefetched_seed.as_deref() {
-            crate::ui::hooks::use_local_versions::seed_local_versions(versions, cx);
+            crate::ui::hooks::local_versions::seed(versions, cx);
         }
 
-        let snapshot = read_local_versions_snapshot(cx);
+        let snapshot = snapshot(cx);
         this.apply_local_versions_snapshot(&snapshot);
         this
     }
@@ -188,13 +188,13 @@ impl HomePageView {
             return;
         }
 
-        self.ensure_versions_loaded(false, cx);
+        self.ensure_versions_loaded(VersionRefresh::IfNeeded, cx);
         cx.notify();
     }
 
-    fn ensure_versions_loaded(&mut self, force_refresh: bool, cx: &mut Context<Self>) {
+    fn ensure_versions_loaded(&mut self, refresh: VersionRefresh, cx: &mut Context<Self>) {
         self.versions_started = true;
-        crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(force_refresh, cx);
+        crate::ui::hooks::local_versions::ensure_loaded(refresh, cx);
     }
 
     fn refresh_version_kind_labels(&mut self, i18n: &I18n) {
@@ -245,7 +245,7 @@ impl HomePageView {
 
     fn render_dropdown(
         &self,
-        theme_colors: &crate::ui::theme::colors::ThemeColors,
+        theme_colors: &crate::ui::theme::ThemeColors,
         accent: Hsla,
         list_bg: Hsla,
         list_border: Hsla,
@@ -337,7 +337,7 @@ impl HomePageView {
         &self,
         version: &LaunchVersionEntry,
         kind_label_text: SharedString,
-        theme_colors: &crate::ui::theme::colors::ThemeColors,
+        theme_colors: &crate::ui::theme::ThemeColors,
         accent: Hsla,
         item_height_px: f32,
         cx: &mut Context<Self>,
@@ -390,10 +390,9 @@ impl HomePageView {
                 rgb(0x64748b).into(),
             )
         };
-        let icon =
-            launch_version_icon_path(version.custom_icon_path.as_deref(), version.name.as_ref());
+        let version_icon = icon(version.custom_icon_path.as_deref(), version.name.as_ref());
         let is_preview = version.name.contains("Preview") || version.name.contains("Beta");
-        let channel_label = version_channel_label(cx.global::<I18n>(), version.name.as_ref());
+        let channel_label = channel_label(cx.global::<I18n>(), version.name.as_ref());
         let channel_color = if is_preview {
             theme_colors.danger
         } else {
@@ -426,7 +425,7 @@ impl HomePageView {
                     .items_center()
                     .justify_center()
                     .child(
-                        img(icon)
+                        img(version_icon)
                             .size_full()
                             .rounded(px(crate::ui::theme::tokens::radius::SM))
                             .object_fit(ObjectFit::Cover),
@@ -593,7 +592,7 @@ impl HomePageView {
                 MouseButton::Left,
                 cx.listener(move |_this, _event, _window, cx| {
                     if let Some(version) = selected_version.clone() {
-                        let _ = start_launcher(version, cx);
+                        let _ = launcher::start(version, cx);
                     } else {
                         set_route(cx, AppRoute::Download);
                     }
@@ -662,7 +661,7 @@ impl HomePageView {
     fn render_home_sidebar(
         &self,
         layout: InjectionLayout,
-        theme_colors: &crate::ui::theme::colors::ThemeColors,
+        theme_colors: &crate::ui::theme::ThemeColors,
         theme_dark: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -787,7 +786,7 @@ fn merged_home_sidebar_layout(registrations: &[PluginInjectionRegistration]) -> 
 #[hook_render]
 impl Render for HomePageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let local_versions = use_local_versions(self, cx);
+        let local_versions = use_versions(self, cx);
         self.apply_local_versions_snapshot(&local_versions);
 
         if !self.active {
@@ -799,8 +798,8 @@ impl Render for HomePageView {
         let theme_k = theme.factor(now);
         let theme_dark = theme.target_dark;
         let theme_colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme_k,
             theme.accent,
         );

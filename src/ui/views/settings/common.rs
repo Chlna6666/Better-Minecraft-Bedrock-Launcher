@@ -1,8 +1,8 @@
-use crate::config::config::ProxyType;
+use crate::config::settings::ProxyType;
 use crate::ui::components::input::{Input, InputState};
 use crate::ui::components::toast::{self, ToastKind};
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::{LauncherDisplayMode, SettingsPageState};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -79,7 +79,7 @@ pub(super) fn snapshot_from_state(state: &SettingsPageState) -> SettingsSnapshot
         background_option: state.background_option.to_string(),
         local_image_path: state.local_image_path.to_string(),
         network_image_url: state.network_image_url.to_string(),
-        background_blur: crate::config::config::clamp_background_blur(state.background_blur),
+        background_blur: crate::config::settings::clamp_background_blur(state.background_blur),
         show_launch_animation: state.show_launch_animation,
         font_source: state.font_source.to_string(),
         local_font_path: state.local_font_path.to_string(),
@@ -88,11 +88,7 @@ pub(super) fn snapshot_from_state(state: &SettingsPageState) -> SettingsSnapshot
     }
 }
 
-pub(super) fn spawn_persist_settings(snapshot: SettingsSnapshot, cx: &mut App) {
-    spawn_persist_settings_with_success(snapshot, None, cx);
-}
-
-pub(super) fn spawn_persist_settings_with_success(
+pub(super) fn spawn_persist_settings(
     snapshot: SettingsSnapshot,
     on_success: Option<Rc<dyn Fn(&mut App)>>,
     cx: &mut App,
@@ -110,9 +106,9 @@ pub(super) fn spawn_persist_settings_with_success(
     let selected_frame_limit = snapshot.frame_rate_limit;
 
     cx.spawn(async move |cx| {
-        let res = crate::tasks::runtime::run_io_blocking(move || {
+        let res = crate::tasks::runtime::blocking::run_io(move || {
             let mut curseforge_source_changed = false;
-            crate::config::config::update_config(|cfg| {
+            crate::config::settings::update(|cfg| {
                 cfg.game.launcher_visibility = match snapshot.launcher_display_mode {
                     LauncherDisplayMode::MinimizeOnLaunch => "minimize".to_string(),
                     LauncherDisplayMode::CloseOnLaunch => "close".to_string(),
@@ -127,21 +123,21 @@ pub(super) fn spawn_persist_settings_with_success(
                     crate::frame_rate::normalized_mode(&snapshot.frame_rate_mode).to_string();
                 cfg.launcher.frame_rate_limit = snapshot.frame_rate_limit.clamp(1, 1000);
                 cfg.launcher.renderer_backend =
-                    crate::config::config::normalize_renderer_backend(&snapshot.renderer_backend);
+                    crate::config::settings::normalize_renderer_backend(&snapshot.renderer_backend);
                 cfg.launcher.gpu_adapter_name =
-                    crate::config::config::normalize_gpu_adapter_name(&snapshot.gpu_adapter_name);
+                    crate::config::settings::normalize_gpu_adapter_name(&snapshot.gpu_adapter_name);
                 cfg.launcher.stats_upload = snapshot.stats_upload;
                 cfg.launcher.error_report_sentry_enabled = snapshot.error_report_sentry_enabled;
                 if cfg.launcher.error_report_sentry_dsn.trim().is_empty() {
                     cfg.launcher.error_report_sentry_dsn =
-                        crate::config::config::default_error_report_sentry_dsn();
+                        crate::config::settings::default_error_report_sentry_dsn();
                 }
                 cfg.launcher.error_report_sentry_auto =
                     snapshot.error_report_sentry_enabled && snapshot.error_report_sentry_auto;
                 cfg.launcher.update_channel = if snapshot.update_channel_nightly {
-                    crate::config::config::UpdateChannel::Nightly
+                    crate::config::settings::UpdateChannel::Nightly
                 } else {
-                    crate::config::config::UpdateChannel::Stable
+                    crate::config::settings::UpdateChannel::Stable
                 };
                 cfg.launcher.auto_check_updates = snapshot.auto_check_updates;
                 cfg.launcher.download.multi_thread = snapshot.download_multi_thread;
@@ -156,9 +152,9 @@ pub(super) fn spawn_persist_settings_with_success(
                     };
                 cfg.launcher.download.github.source =
                     match snapshot.download_github_source.to_lowercase().as_str() {
-                        "direct" => crate::config::config::GithubSource::Direct,
-                        "custom" => crate::config::config::GithubSource::Custom,
-                        _ => crate::config::config::GithubSource::Auto,
+                        "direct" => crate::config::settings::GithubSource::Direct,
+                        "custom" => crate::config::settings::GithubSource::Custom,
+                        _ => crate::config::settings::GithubSource::Auto,
                     };
                 cfg.launcher.download.github.custom_mirror = snapshot.download_github_custom_mirror;
                 let old_curseforge_source = cfg.launcher.download.curseforge_api_source.clone();
@@ -183,10 +179,10 @@ pub(super) fn spawn_persist_settings_with_success(
                 cfg.custom_style.local_image_path = snapshot.local_image_path;
                 cfg.custom_style.network_image_url = snapshot.network_image_url;
                 cfg.custom_style.background_blur =
-                    crate::config::config::clamp_background_blur(snapshot.background_blur);
+                    crate::config::settings::clamp_background_blur(snapshot.background_blur);
                 cfg.custom_style.show_launch_animation = snapshot.show_launch_animation;
                 cfg.custom_style.font_source =
-                    crate::config::config::normalize_font_source(&snapshot.font_source);
+                    crate::config::settings::normalize_font_source(&snapshot.font_source);
                 cfg.custom_style.local_font_path = snapshot.local_font_path;
                 cfg.custom_style.local_font_family = snapshot.local_font_family;
                 cfg.custom_style.system_font_family = snapshot.system_font_family;
@@ -198,11 +194,11 @@ pub(super) fn spawn_persist_settings_with_success(
         let curseforge_source_changed = matches!(&res, Ok(Ok(true)));
         if let Err(join_err) = res {
             warn!("persist settings join error: {join_err}");
-            toast::resolve_async(cx, toast_id, ToastKind::Error, t!("Settings.save_failed"));
+            toast::async_app::resolve(cx, toast_id, ToastKind::Error, t!("Settings.save_failed"));
         } else if let Ok(Err(io_err)) = res {
             warn!("persist settings failed: {io_err}");
             let error_text = io_err.to_string();
-            toast::resolve_async(
+            toast::async_app::resolve(
                 cx,
                 toast_id,
                 ToastKind::Error,
@@ -227,7 +223,7 @@ pub(super) fn spawn_persist_settings_with_success(
                     warn!("invalidate CurseForge source state failed: {error:?}");
                 }
             }
-            toast::resolve_async(cx, toast_id, ToastKind::Success, t!("Settings.saved"));
+            toast::async_app::resolve(cx, toast_id, ToastKind::Success, t!("Settings.saved"));
             if let Some(on_success) = on_success {
                 if let Err(error) = cx.update(move |cx| {
                     on_success(cx);
@@ -241,10 +237,10 @@ pub(super) fn spawn_persist_settings_with_success(
 }
 
 pub(super) fn spawn_persist_background_blur(blur: f32, cx: &mut App) {
-    let blur = crate::config::config::clamp_background_blur(blur);
+    let blur = crate::config::settings::clamp_background_blur(blur);
     cx.spawn(async move |_cx| {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
-            crate::config::config::update_config(|cfg| {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
+            crate::config::settings::update(|cfg| {
                 cfg.custom_style.background_blur = blur;
             })?;
             Ok::<(), std::io::Error>(())
@@ -260,7 +256,7 @@ pub(super) fn spawn_persist_background_blur(blur: f32, cx: &mut App) {
     .detach();
 }
 
-pub(super) fn settings_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
+pub(super) fn card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
     // 设置页位于可自定义背景之上：提高表面不透明度，保证文字对比度稳定。
     crate::ui::components::page_shell::glass_card(colors)
         .shadow(Vec::new())
@@ -289,7 +285,7 @@ pub(super) fn settings_card(colors: &ThemeColors, id: &'static str) -> Stateful<
         )
 }
 
-pub(super) fn settings_flat_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
+pub(super) fn flat_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
     div()
         .id(id)
         .relative()
@@ -319,8 +315,8 @@ pub(super) fn settings_flat_card(colors: &ThemeColors, id: &'static str) -> Stat
         )
 }
 
-pub(super) fn settings_inline_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
-    settings_card(colors, id)
+pub(super) fn inline_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
+    card(colors, id)
         .px(px(16.))
         .py(px(16.))
         .flex()
@@ -339,8 +335,8 @@ pub(super) fn settings_inline_card(colors: &ThemeColors, id: &'static str) -> St
         })
 }
 
-pub(super) fn settings_flat_inline_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
-    settings_flat_card(colors, id)
+pub(super) fn flat_inline_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
+    flat_card(colors, id)
         .px(px(16.))
         .py(px(16.))
         .flex()
@@ -359,7 +355,7 @@ pub(super) fn settings_flat_inline_card(colors: &ThemeColors, id: &'static str) 
         })
 }
 
-pub(super) fn settings_card_header(
+pub(super) fn card_header(
     colors: &ThemeColors,
     title: SharedString,
     desc: SharedString,
@@ -372,10 +368,10 @@ pub(super) fn settings_card_header(
         .items_center()
         .justify_between()
         .gap(px(14.))
-        .child(settings_card_text(colors, title, desc))
+        .child(card_text(colors, title, desc))
 }
 
-pub(super) fn settings_card_text(
+pub(super) fn card_text(
     colors: &ThemeColors,
     title: SharedString,
     desc: SharedString,
@@ -405,7 +401,7 @@ pub(super) fn settings_card_text(
         )
 }
 
-pub(super) fn settings_badge(colors: &ThemeColors, label: SharedString) -> Div {
+pub(super) fn badge(colors: &ThemeColors, label: SharedString) -> Div {
     div()
         .max_w(px(260.))
         .h(px(28.))
@@ -433,7 +429,7 @@ pub(super) fn settings_badge(colors: &ThemeColors, label: SharedString) -> Div {
         )
 }
 
-pub(super) fn settings_option_row_shell(
+pub(super) fn option_row_shell(
     colors: &ThemeColors,
     label: SharedString,
     desc: SharedString,
@@ -499,7 +495,7 @@ pub(super) fn settings_option_row_shell(
         )
 }
 
-pub(super) fn settings_control_box(
+pub(super) fn control_box(
     colors: &ThemeColors,
     active: bool,
     width: Pixels,
@@ -526,13 +522,13 @@ pub(super) fn settings_control_box(
         .child(control)
 }
 
-pub(super) fn settings_value_box(
+pub(super) fn value_box(
     colors: &ThemeColors,
     display: SharedString,
     active: bool,
     width: Pixels,
 ) -> Div {
-    settings_control_box(
+    control_box(
         colors,
         active,
         width,
@@ -548,7 +544,7 @@ pub(super) fn settings_value_box(
     )
 }
 
-pub(super) fn settings_action_button(
+pub(super) fn action_button(
     colors: &ThemeColors,
     label: SharedString,
     enabled: bool,
@@ -581,7 +577,7 @@ pub(super) fn settings_action_button(
         )
 }
 
-pub(super) fn settings_sub_row(
+pub(super) fn sub_row(
     colors: &ThemeColors,
     label: SharedString,
     control: impl IntoElement,
@@ -613,7 +609,7 @@ pub(super) fn settings_sub_row(
 
 /// Compact numeric setting, aligned with the 180px dropdown in the card
 /// header. Unlike the URL editor, this has no clear button or nested border.
-pub(super) fn settings_sub_numeric_row(
+pub(super) fn sub_numeric_row(
     colors: &ThemeColors,
     label: SharedString,
     input: Option<&Entity<InputState>>,
@@ -633,17 +629,17 @@ pub(super) fn settings_sub_numeric_row(
                 .into_any_element()
         },
     );
-    settings_sub_row(
+    sub_row(
         colors,
         label,
-        settings_control_box(colors, false, px(180.), control),
+        control_box(colors, false, px(180.), control),
     )
 }
 
 /// Saved API credentials never enter the SettingsSnapshot or input widget.
 /// The editor is write-only: paste a new credential, Enter/blur to commit,
 /// or explicitly clear it. Avoid displaying saved tokens on screen.
-pub(super) fn settings_sub_api_key_row(
+pub(super) fn sub_api_key_row(
     colors: &ThemeColors,
     label: SharedString,
     input: Option<&Entity<InputState>>,
@@ -693,14 +689,14 @@ pub(super) fn settings_sub_api_key_row(
                 }),
         );
     }
-    settings_sub_row(
+    sub_row(
         colors,
         label,
         div()
             .flex()
             .items_center()
             .gap(px(9.))
-            .child(settings_control_box(colors, false, px(180.), control))
+            .child(control_box(colors, false, px(180.), control))
             .child(trailing),
     )
 }
@@ -708,9 +704,9 @@ pub(super) fn settings_sub_api_key_row(
 pub(crate) fn persist_download_api_key(kind: &'static str, secret: String, cx: &mut App) {
     // Never put a credential into a toast, tracing span, or error string.
     cx.spawn(async move |cx| {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
             let configured = !secret.is_empty();
-            crate::config::config::update_config(|config| match kind {
+            crate::config::settings::update(|config| match kind {
                 "curseforge" => config.launcher.download.curseforge_api_key = secret,
                 "github" => config.launcher.download.github.api_token = secret,
                 _ => {}
@@ -740,7 +736,7 @@ pub(crate) fn persist_download_api_key(kind: &'static str, secret: String, cx: &
     .detach();
 }
 
-pub(super) fn settings_sub_input_row(
+pub(super) fn sub_input_row(
     colors: &ThemeColors,
     label: SharedString,
     input: Option<&Entity<InputState>>,
@@ -773,10 +769,10 @@ pub(super) fn settings_sub_input_row(
             .into_any_element()
     };
 
-    settings_sub_row(
+    sub_row(
         colors,
         label,
-        settings_control_box(colors, false, px(280.), control),
+        control_box(colors, false, px(280.), control),
     )
 }
 

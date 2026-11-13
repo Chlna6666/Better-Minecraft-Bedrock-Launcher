@@ -169,7 +169,7 @@ pub(super) fn render_screenshot_list(
     }
 
     let scroll_handle_for_event = scroll_handle.clone();
-    let virtual_list_plan = compute_virtual_list_plan(
+    let virtual_list_plan = slice_virtual_list(
         filtered_indices.len(),
         MANAGE_ASSET_ROW_PITCH_PX,
         scroll_handle.offset().y,

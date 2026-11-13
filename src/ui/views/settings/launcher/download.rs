@@ -1,12 +1,12 @@
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::SettingsPageState;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
 use super::super::common::{
-    settings_card, settings_card_header, settings_sub_api_key_row, settings_sub_input_row,
+    card, card_header, sub_api_key_row, sub_input_row,
     snapshot_from_state, spawn_persist_settings,
 };
 use super::super::rows::setting_dropdown_row;
@@ -22,16 +22,16 @@ pub(super) fn render_download_settings(
         .flex()
         .flex_col()
         .gap(px(10.))
-        .child(download_section_title(colors, i18n))
-        .child(launcher_multi_thread_row(colors, i18n, state))
-        .child(launcher_auto_thread_count_row(colors, i18n, state))
-        .child(launcher_max_threads_row(colors, i18n, state))
-        .child(launcher_proxy_mode_row(colors, i18n, state))
-        .child(launcher_github_source_row(colors, i18n, state))
-        .child(launcher_curseforge_source_row(colors, i18n, state))
+        .child(section_title(colors, i18n))
+        .child(multi_thread_row(colors, i18n, state))
+        .child(auto_thread_count_row(colors, i18n, state))
+        .child(max_threads_row(colors, i18n, state))
+        .child(proxy_mode_row(colors, i18n, state))
+        .child(github_source_row(colors, i18n, state))
+        .child(curseforge_source_row(colors, i18n, state))
 }
 
-fn launcher_github_source_row(
+fn github_source_row(
     colors: &ThemeColors,
     _i18n: &I18n,
     state: &SettingsPageState,
@@ -71,13 +71,13 @@ fn launcher_github_source_row(
                 settings.download_github_source = selected;
                 snapshot_from_state(settings)
             });
-            spawn_persist_settings(snapshot, cx);
+            spawn_persist_settings(snapshot, None, cx);
         },
     );
 
-    settings_card(colors, "settings-launcher-download-github-source")
+    card(colors, "settings-launcher-download-github-source")
         .child(
-            settings_card_header(
+            card_header(
                 colors,
                 t!("LauncherSettings.download.github_source"),
                 t!("LauncherSettings.download.github_source_desc"),
@@ -85,14 +85,14 @@ fn launcher_github_source_row(
             .child(source_dropdown),
         )
         .when(state.download_github_source.as_ref() == "custom", |this| {
-            this.child(settings_sub_input_row(
+            this.child(sub_input_row(
                 colors,
                 t!("LauncherSettings.download.github_custom_mirror"),
                 state.download_github_custom_mirror_input.as_ref(),
                 "https://mirror.example/{url}",
             ))
         })
-        .child(settings_sub_api_key_row(
+        .child(sub_api_key_row(
             colors,
             t!("LauncherSettings.download.github_api_token"),
             state.download_github_key_input.as_ref(),
@@ -101,7 +101,7 @@ fn launcher_github_source_row(
         ))
 }
 
-fn download_section_title(colors: &ThemeColors, _i18n: &I18n) -> impl IntoElement {
+fn section_title(colors: &ThemeColors, _i18n: &I18n) -> impl IntoElement {
     div()
         .w_full()
         .pt(px(12.))
@@ -117,7 +117,7 @@ fn download_section_title(colors: &ThemeColors, _i18n: &I18n) -> impl IntoElemen
         )
 }
 
-fn launcher_multi_thread_row(
+fn multi_thread_row(
     colors: &ThemeColors,
     _i18n: &I18n,
     state: &SettingsPageState,
@@ -139,7 +139,7 @@ fn launcher_multi_thread_row(
     )
 }
 
-fn launcher_auto_thread_count_row(
+fn auto_thread_count_row(
     colors: &ThemeColors,
     _i18n: &I18n,
     state: &SettingsPageState,
@@ -161,7 +161,7 @@ fn launcher_auto_thread_count_row(
     )
 }
 
-fn launcher_max_threads_row(
+fn max_threads_row(
     colors: &ThemeColors,
     _i18n: &I18n,
     state: &SettingsPageState,
@@ -193,12 +193,12 @@ fn launcher_max_threads_row(
                 settings.download_max_threads = value;
                 snapshot_from_state(settings)
             });
-            spawn_persist_settings(snapshot, cx);
+            spawn_persist_settings(snapshot, None, cx);
         },
     )
 }
 
-fn launcher_proxy_mode_row(
+fn proxy_mode_row(
     colors: &ThemeColors,
     _i18n: &I18n,
     state: &SettingsPageState,
@@ -240,13 +240,13 @@ fn launcher_proxy_mode_row(
                 settings.download_proxy_type = selected.clone();
                 snapshot_from_state(settings)
             });
-            spawn_persist_settings(snapshot, cx);
+            spawn_persist_settings(snapshot, None, cx);
         },
     );
 
-    settings_card(colors, "settings-launcher-download-proxy-mode")
+    card(colors, "settings-launcher-download-proxy-mode")
         .child(
-            settings_card_header(
+            card_header(
                 colors,
                 t!("LauncherSettings.download.proxy.mode"),
                 t!("LauncherSettings.download.proxy.mode_desc"),
@@ -254,7 +254,7 @@ fn launcher_proxy_mode_row(
             .child(mode_dropdown),
         )
         .when(state.download_proxy_type.as_ref() == "http", |this| {
-            this.child(settings_sub_input_row(
+            this.child(sub_input_row(
                 colors,
                 t!("LauncherSettings.download.proxy.http_proxy_url"),
                 state.download_http_proxy_url_input.as_ref(),
@@ -262,7 +262,7 @@ fn launcher_proxy_mode_row(
             ))
         })
         .when(state.download_proxy_type.as_ref() == "socks5", |this| {
-            this.child(settings_sub_input_row(
+            this.child(sub_input_row(
                 colors,
                 t!("LauncherSettings.download.proxy.socks_proxy_url"),
                 state.download_socks_proxy_url_input.as_ref(),
@@ -271,7 +271,7 @@ fn launcher_proxy_mode_row(
         })
 }
 
-fn launcher_curseforge_source_row(
+fn curseforge_source_row(
     colors: &ThemeColors,
     _i18n: &I18n,
     state: &SettingsPageState,
@@ -313,13 +313,13 @@ fn launcher_curseforge_source_row(
                 settings.download_curseforge_api_source = selected.clone();
                 snapshot_from_state(settings)
             });
-            spawn_persist_settings(snapshot, cx);
+            spawn_persist_settings(snapshot, None, cx);
         },
     );
 
-    settings_card(colors, "settings-launcher-download-cf-source")
+    card(colors, "settings-launcher-download-cf-source")
         .child(
-            settings_card_header(
+            card_header(
                 colors,
                 t!("LauncherSettings.download.curseforge_api_source"),
                 t!("LauncherSettings.download.curseforge_api_source_desc"),
@@ -329,7 +329,7 @@ fn launcher_curseforge_source_row(
         .when(
             state.download_curseforge_api_source.as_ref() == "custom",
             |this| {
-                this.child(settings_sub_input_row(
+                this.child(sub_input_row(
                     colors,
                     t!("LauncherSettings.download.curseforge_api_base"),
                     state.download_curseforge_api_base_input.as_ref(),
@@ -337,7 +337,7 @@ fn launcher_curseforge_source_row(
                 ))
             },
         )
-        .child(settings_sub_api_key_row(
+        .child(sub_api_key_row(
             colors,
             t!("LauncherSettings.download.curseforge_api_key"),
             state.download_curseforge_key_input.as_ref(),

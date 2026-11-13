@@ -5,9 +5,9 @@ use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{Input, InputState};
 use crate::ui::components::scroll::ScrollableElement;
 use crate::ui::components::toast;
-use crate::ui::components::virtual_list::compute_virtual_list_plan;
+use crate::ui::components::virtual_list::slice_virtual_list;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::download::state::{
     DownloadChannelFilter, DownloadLoaderFilter, DownloadPageState, GameDialogCdnResult,
     GameDialogKind, GameDialogState,
@@ -215,9 +215,9 @@ impl Render for DownloadGamePanelView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
         let theme = cx.global::<crate::ui::state::theme::ThemeState>();
-        let colors = crate::ui::theme::colors::lerp_theme_colors(
-            &crate::ui::theme::colors::LightColors::colors(),
-            &crate::ui::theme::colors::DarkColors::colors(),
+        let colors = crate::ui::theme::lerp_theme_colors(
+            &crate::ui::theme::LightColors::theme(),
+            &crate::ui::theme::DarkColors::theme(),
             theme.factor(now),
             theme.accent,
         );
@@ -444,7 +444,7 @@ fn stable_game_row_element_id(package_id: &SharedString) -> u64 {
     render_fingerprint(package_id)
 }
 
-fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &DownloadPageState) -> Div {
+fn render_loading_placeholder(colors: &ThemeColors, state: &DownloadPageState) -> Div {
     let skeleton_bar = |width: Pixels, height: Pixels| {
         div()
             .w(width)
@@ -650,7 +650,7 @@ pub(super) fn render_game_panel(
         .min_w(px(0.));
 
     if (state.loading || state.force_refresh_next) && state.versions.is_empty() {
-        return panel.child(render_game_loading_placeholder_aligned(colors, state));
+        return panel.child(render_loading_placeholder(colors, state));
     }
 
     if let Some(err) = state.error.clone() {
@@ -676,7 +676,7 @@ pub(super) fn render_game_panel(
         cache.page_rows.clone(),
     );
 
-    let virtual_list_plan = compute_virtual_list_plan(
+    let virtual_list_plan = slice_virtual_list(
         page_rows.len(),
         GAME_ROW_PITCH_PX,
         state.game_rows_scroll.offset().y,
@@ -880,7 +880,7 @@ fn render_pager(
     if let Some(input) = &page_jump_input {
         let placeholder = format!("{}/{}", page_index + 1, total_pages);
         let _ = input.update(cx, |st, cx| {
-            st.set_placeholder(SharedString::from(placeholder), window, cx);
+            st.set_placeholder(SharedString::from(placeholder), cx);
         });
     }
 
@@ -1451,7 +1451,7 @@ fn open_game_dialog(window: &mut Window, cx: &mut App, dialog: GameDialogState) 
         let version_name_label = t!("DownloadPage.version_name");
         let folder_input = cx.new(|cx| {
             let mut input = InputState::new(window, cx);
-            input.set_placeholder(version_name_label.clone(), window, cx);
+            input.set_placeholder(version_name_label.clone(), cx);
             input.set_value(initial_version.clone(), window, cx);
             input
         });
@@ -1599,7 +1599,7 @@ pub(super) fn refresh_game_dialog_cdn(cx: &mut App) {
             .collect::<Vec<_>>();
         let response = cx
             .background_spawn(async move {
-                crate::utils::network::probe_gdk_asset_cdns_blocking(package_id.to_string(), bases)
+                crate::utils::network::probe_gdk_asset_cdns(package_id.to_string(), bases)
             })
             .await;
 
@@ -1704,7 +1704,7 @@ fn start_game_operation(
 
     close_game_dialog(cx);
 
-    let task_id = match crate::core::minecraft::install::start_game_install(request) {
+    let task_id = match crate::core::minecraft::install::start(request) {
         Ok(task_id) => task_id,
         Err(error) => {
             toast::error(cx, SharedString::from(error));
@@ -1712,7 +1712,7 @@ fn start_game_operation(
         }
     };
     let task_key = SharedString::from(task_id.to_string());
-    let task_snapshot = task_manager::get_snapshot_arc(task_id.as_ref());
+    let task_snapshot = task_manager::snapshot_arc(task_id.as_ref());
     cx.update_global(|state: &mut DownloadPageState, _cx| {
         state.operations_by_package.insert(
             package_id.clone(),
@@ -2125,7 +2125,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, i18n: &I18n, dialog: GameDi
                                     .parent()
                                     .map(|value| value.to_string_lossy().to_string())
                                     .unwrap_or_else(|| path.to_string());
-                                let _ = crate::utils::open_path::open_path(open_target).await;
+                                let _ = crate::utils::open_path::open(open_target).await;
                                 Ok::<(), anyhow::Error>(())
                             })
                             .detach();

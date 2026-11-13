@@ -87,7 +87,7 @@ fn header_stat(colors: &ThemeColors, label: SharedString, value: impl ToString) 
         )
 }
 
-fn render_task_list<'a>(
+fn task_list<'a>(
     colors: &ThemeColors,
     this: &'a TasksPageView,
     items: impl IntoIterator<Item = &'a TaskCardViewModel>,
@@ -119,13 +119,13 @@ fn render_task_list<'a>(
     });
 
     for (model, motion) in entries {
-        list = list.child(render_task_card(colors, model, motion, cx));
+        list = list.child(super::card::render(colors, model, motion, cx));
     }
 
     list
 }
 
-fn render_tasks_body<'a>(
+fn body<'a>(
     colors: &ThemeColors,
     this: &'a TasksPageView,
     render_model: &'a TasksPageRenderModel,
@@ -141,10 +141,10 @@ fn render_tasks_body<'a>(
             return empty_state(colors, i18n);
         }
 
-        return render_task_list(colors, this, std::iter::empty(), cx).into_any_element();
+        return task_list(colors, this, std::iter::empty(), cx).into_any_element();
     }
 
-    render_task_list(
+    task_list(
         colors,
         this,
         render_model
@@ -156,7 +156,7 @@ fn render_tasks_body<'a>(
     .into_any_element()
 }
 
-pub(super) fn render_tasks_page(
+pub(super) fn render(
     colors: ThemeColors,
     this: &TasksPageView,
     _window: &mut Window,
@@ -202,7 +202,7 @@ pub(super) fn render_tasks_page(
                 )),
         );
 
-    let list_body = render_tasks_body(&colors, this, &this.render_model, &i18n, cx);
+    let list_body = body(&colors, this, &this.render_model, &i18n, cx);
     let body = div()
         .flex_1()
         .min_h(px(0.))

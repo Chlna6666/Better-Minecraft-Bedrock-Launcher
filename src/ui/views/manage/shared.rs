@@ -93,7 +93,7 @@ pub(super) fn create_text_input(
 ) -> Option<Entity<InputState>> {
     Some(cx.new(|cx| {
         let mut input = InputState::new(window, cx);
-        input.set_placeholder(SharedString::from(placeholder.to_string()), window, cx);
+        input.set_placeholder(SharedString::from(placeholder.to_string()), cx);
         if !initial.trim().is_empty() {
             input.set_value(SharedString::from(initial.to_string()), window, cx);
         }
@@ -105,12 +105,12 @@ pub(super) fn watch_import_task(task_id: String, cx: &mut App) {
     let task_id: Arc<str> = Arc::from(task_id);
     let mut updates = task_manager::subscribe_task_updates();
 
-    if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref()) {
+    if let Some(snapshot) = task_manager::snapshot_arc(task_id.as_ref()) {
         if matches!(
             snapshot.status.as_ref(),
             "completed" | "cancelled" | "error"
         ) {
-            ensure_local_versions_loaded(true, cx);
+            ensure_loaded(VersionRefresh::Force, cx);
             return;
         }
     }
@@ -123,7 +123,7 @@ pub(super) fn watch_import_task(task_id: String, cx: &mut App) {
                     Ok(snapshot) => snapshot,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(skipped, "manage import task watcher lagged; resyncing");
-                        let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref())
+                        let Some(snapshot) = task_manager::snapshot_arc(task_id.as_ref())
                         else {
                             continue;
                         };
@@ -146,7 +146,7 @@ pub(super) fn watch_import_task(task_id: String, cx: &mut App) {
 
                 let snapshot_clone = snapshot.clone();
                 let _ = cx.update(|cx| {
-                    ensure_local_versions_loaded(true, cx);
+                    ensure_loaded(VersionRefresh::Force, cx);
                     let _i18n = cx.global::<I18n>();
                     match snapshot_clone.status.as_ref() {
                         "completed" => {
@@ -201,7 +201,7 @@ pub(super) fn watch_version_mutation_task(
         let task_id = task_id.clone();
         async move |cx| {
             let snapshot = loop {
-                if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref())
+                if let Some(snapshot) = task_manager::snapshot_arc(task_id.as_ref())
                     && snapshot.is_terminal()
                 {
                     break snapshot;
@@ -234,7 +234,7 @@ pub(super) fn watch_version_mutation_task(
                     "completed" => {
                         match &completion {
                             VersionMutationUiCompletion::Deleted { folder } => {
-                                remove_local_version(folder, cx);
+                                remove(folder, cx);
                             }
                             VersionMutationUiCompletion::Renamed { new_name } => {
                                 cx.update_global(|state: &mut ManagePageState, _cx| {
@@ -247,15 +247,15 @@ pub(super) fn watch_version_mutation_task(
                             this.invalidate_version_dependent_data(cx);
                             cx.notify();
                         });
-                        ensure_local_versions_loaded(true, cx);
+                        ensure_loaded(VersionRefresh::Force, cx);
                         toast::success(cx, success_message);
                     }
                     "cancelled" => {
-                        ensure_local_versions_loaded(true, cx);
+                        ensure_loaded(VersionRefresh::Force, cx);
                         toast::push(cx, t!("Tasks.status.cancelled"));
                     }
                     "error" => {
-                        ensure_local_versions_loaded(true, cx);
+                        ensure_loaded(VersionRefresh::Force, cx);
                         let message = snapshot
                             .message
                             .as_ref()
@@ -272,7 +272,7 @@ pub(super) fn watch_version_mutation_task(
     .detach();
 }
 
-pub(super) fn watch_manage_asset_mutation_task(
+pub(super) fn watch_asset_mutation(
     task_id: String,
     success_message: SharedString,
     cx: &mut App,
@@ -284,7 +284,7 @@ pub(super) fn watch_manage_asset_mutation_task(
         let task_id = task_id.clone();
         async move |cx| {
             let snapshot = loop {
-                if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref())
+                if let Some(snapshot) = task_manager::snapshot_arc(task_id.as_ref())
                     && snapshot.is_terminal()
                 {
                     break snapshot;
@@ -350,7 +350,7 @@ pub(super) fn watch_screenshot_mutation_task(
         let task_id = task_id.clone();
         async move |cx| {
             let snapshot = loop {
-                if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref())
+                if let Some(snapshot) = task_manager::snapshot_arc(task_id.as_ref())
                     && snapshot.is_terminal()
                 {
                     break snapshot;
@@ -425,7 +425,7 @@ pub(super) fn watch_server_mutation_task(
         let task_id = task_id.clone();
         async move |cx| {
             let snapshot = loop {
-                if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref())
+                if let Some(snapshot) = task_manager::snapshot_arc(task_id.as_ref())
                     && snapshot.is_terminal()
                 {
                     break snapshot;
@@ -502,7 +502,7 @@ pub(super) fn watch_levilamina_install_task(task_id: String, cx: &mut App) {
             .await
             .is_ok_and(|snapshot| snapshot.status.as_ref() == "completed")
         {
-            cx.update(|cx| ensure_local_versions_loaded(true, cx))?;
+            cx.update(|cx| ensure_loaded(VersionRefresh::Force, cx))?;
         }
         Ok::<(), anyhow::Error>(())
     })
@@ -525,7 +525,7 @@ pub(super) fn launch_map_version(
             "minecraft://?load={encoded_folder}"
         ))),
     };
-    let _ = start_launcher(descriptor, cx);
+    let _ = launcher::start(descriptor, cx);
 }
 pub(super) fn selected_asset_folder_names(state: &ManagePageState) -> Vec<String> {
     let selected_keys = state

@@ -1,11 +1,10 @@
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::toast::{self, ToastKind};
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::common::{
-    settings_action_button, settings_badge, settings_card, settings_card_header,
-    settings_option_row_shell, settings_value_box, snapshot_from_state,
-    spawn_persist_settings_with_success,
+    action_button, badge, card, card_header,
+    option_row_shell, value_box, snapshot_from_state, spawn_persist_settings,
 };
 use crate::ui::views::settings::state::SettingsPageState;
 use crate::utils::file_picker::pick_font_path;
@@ -23,7 +22,7 @@ pub(super) fn render_font_card(
     let custom_option_label = custom_font_option_label(i18n, state);
     let font_names = dropdown_font_names(system_font_names, custom_option_label.as_ref());
     let selected_index = selected_font_index(&font_names, state);
-    let selected_label = font_dropdown_label(&font_names, selected_index);
+    let selected_label = dropdown_label(&font_names, selected_index);
     let options = font_names
         .iter()
         .cloned()
@@ -35,10 +34,10 @@ pub(super) fn render_font_card(
         crate::utils::font_settings::default_app_font_display()
     ));
 
-    settings_card(colors, "settings-custom-font")
+    card(colors, "settings-custom-font")
         .child(
-            settings_card_header(colors, t!("CustomizationSettings.font"), font_desc)
-                .child(settings_badge(colors, current_font_label(i18n, state))),
+            card_header(colors, t!("CustomizationSettings.font"), font_desc)
+                .child(badge(colors, current_font_label(i18n, state))),
         )
         .child(system_font_row(
             colors,
@@ -49,10 +48,10 @@ pub(super) fn render_font_card(
             selected_index,
             font_names,
             custom_option_label,
-            state.font_source.as_ref() != crate::config::config::FONT_SOURCE_LOCAL,
+            state.font_source.as_ref() != crate::config::settings::FONT_SOURCE_LOCAL,
         ))
         .when(
-            state.font_source.as_ref() == crate::config::config::FONT_SOURCE_LOCAL,
+            state.font_source.as_ref() == crate::config::settings::FONT_SOURCE_LOCAL,
             |this| {
                 this.child(local_font_row(
                     colors,
@@ -60,7 +59,7 @@ pub(super) fn render_font_card(
                     t!("CustomizationSettings.local_font_desc"),
                     local_font_display(i18n, state),
                     t!("CustomizationSettings.select_font"),
-                    state.font_source.as_ref() == crate::config::config::FONT_SOURCE_LOCAL,
+                    state.font_source.as_ref() == crate::config::settings::FONT_SOURCE_LOCAL,
                 ))
             },
         )
@@ -74,16 +73,16 @@ fn local_font_row(
     button_label: SharedString,
     active: bool,
 ) -> Div {
-    settings_option_row_shell(colors, label, desc, active).child(
+    option_row_shell(colors, label, desc, active).child(
         div()
             .w(px(420.))
             .flex()
             .items_center()
             .justify_end()
             .gap(px(8.))
-            .child(settings_value_box(colors, display, active, px(300.)))
+            .child(value_box(colors, display, active, px(300.)))
             .child(
-                settings_action_button(colors, button_label, true).on_mouse_up(
+                action_button(colors, button_label, true).on_mouse_up(
                     MouseButton::Left,
                     move |_, window, cx| {
                         window.defer(cx, |_window, cx| {
@@ -99,7 +98,7 @@ fn local_font_row(
                                 }
 
                                 let selected =
-                                    crate::tasks::runtime::run_io_blocking(pick_font_path).await;
+                                    crate::tasks::runtime::blocking::run_io(pick_font_path).await;
                                 let path = match selected {
                                     Ok(Some(path)) => path,
                                     Ok(None) => return,
@@ -109,7 +108,7 @@ fn local_font_row(
                                     }
                                 };
 
-                                let font_family = crate::tasks::runtime::run_io_blocking({
+                                let font_family = crate::tasks::runtime::blocking::run_io({
                                     let path = path.clone();
                                     move || {
                                         crate::utils::font_settings::read_local_font_family(&path)
@@ -119,7 +118,7 @@ fn local_font_row(
                                 let family = match font_family {
                                     Ok(Ok(family)) => family,
                                     Ok(Err(error)) => {
-                                        toast::push_async(
+                                        toast::async_app::push(
                                             cx,
                                             ToastKind::Error,
                                             SharedString::from(format!("读取字体失败: {error:#}")),
@@ -138,7 +137,7 @@ fn local_font_row(
                                     move |cx| {
                                         cx.update_global(|state: &mut SettingsPageState, _cx| {
                                             state.font_source = SharedString::from(
-                                                crate::config::config::FONT_SOURCE_LOCAL,
+                                                crate::config::settings::FONT_SOURCE_LOCAL,
                                             );
                                             state.local_font_path = SharedString::from(path);
                                             state.local_font_family = SharedString::from(family);
@@ -180,7 +179,7 @@ fn system_font_row(
     custom_option_label: SharedString,
     active: bool,
 ) -> Div {
-    settings_option_row_shell(colors, label, desc, active).child(
+    option_row_shell(colors, label, desc, active).child(
         div()
             .w(px(420.))
             .flex()
@@ -202,7 +201,7 @@ fn system_font_row(
                     if selected == crate::utils::font_settings::default_app_font_display() {
                         let snapshot = cx.update_global(|state: &mut SettingsPageState, _cx| {
                             state.font_source =
-                                SharedString::from(crate::config::config::FONT_SOURCE_DEFAULT);
+                                SharedString::from(crate::config::settings::FONT_SOURCE_DEFAULT);
                             snapshot_from_state(state)
                         });
                         persist_font_settings_and_apply(snapshot, cx);
@@ -222,7 +221,7 @@ fn system_font_row(
 
                         let snapshot = cx.update_global(|state: &mut SettingsPageState, _cx| {
                             state.font_source =
-                                SharedString::from(crate::config::config::FONT_SOURCE_LOCAL);
+                                SharedString::from(crate::config::settings::FONT_SOURCE_LOCAL);
                             snapshot_from_state(state)
                         });
                         if has_local_font {
@@ -233,7 +232,7 @@ fn system_font_row(
 
                     let snapshot = cx.update_global(|state: &mut SettingsPageState, _cx| {
                         state.font_source =
-                            SharedString::from(crate::config::config::FONT_SOURCE_SYSTEM);
+                            SharedString::from(crate::config::settings::FONT_SOURCE_SYSTEM);
                         state.system_font_family = SharedString::from(selected.clone());
                         snapshot_from_state(state)
                     });
@@ -247,13 +246,13 @@ fn persist_font_settings_and_apply(
     snapshot: crate::ui::views::settings::common::SettingsSnapshot,
     cx: &mut App,
 ) {
-    let font_config = crate::utils::font_settings::font_config_for_selection(
+    let font_config = crate::utils::font_settings::resolve_config(
         &snapshot.font_source,
         &snapshot.local_font_path,
         &snapshot.local_font_family,
         &snapshot.system_font_family,
     );
-    spawn_persist_settings_with_success(
+    spawn_persist_settings(
         snapshot,
         Some(Rc::new(move |cx| {
             if let Err(error) = cx.set_default_font(font_config.clone()) {
@@ -296,11 +295,11 @@ fn dropdown_font_names(system_font_names: &[String], custom_option_label: &str) 
 
 fn selected_font_index(font_names: &[String], state: &SettingsPageState) -> usize {
     match state.font_source.as_ref() {
-        crate::config::config::FONT_SOURCE_DEFAULT => return 0,
-        crate::config::config::FONT_SOURCE_LOCAL => {
+        crate::config::settings::FONT_SOURCE_DEFAULT => return 0,
+        crate::config::settings::FONT_SOURCE_LOCAL => {
             return 1.min(font_names.len().saturating_sub(1));
         }
-        crate::config::config::FONT_SOURCE_SYSTEM => {}
+        crate::config::settings::FONT_SOURCE_SYSTEM => {}
         _ => return 0,
     }
 
@@ -315,7 +314,7 @@ fn selected_font_index(font_names: &[String], state: &SettingsPageState) -> usiz
         .unwrap_or(usize::MAX)
 }
 
-fn font_dropdown_label(font_names: &[String], selected_index: usize) -> SharedString {
+fn dropdown_label(font_names: &[String], selected_index: usize) -> SharedString {
     font_names
         .get(selected_index)
         .cloned()
@@ -327,7 +326,7 @@ fn font_dropdown_label(font_names: &[String], selected_index: usize) -> SharedSt
 
 fn current_font_label(_i18n: &I18n, state: &SettingsPageState) -> SharedString {
     match state.font_source.as_ref() {
-        crate::config::config::FONT_SOURCE_LOCAL => {
+        crate::config::settings::FONT_SOURCE_LOCAL => {
             let family = state.local_font_family.as_ref().trim();
             if !family.is_empty() {
                 SharedString::from(format!(
@@ -339,7 +338,7 @@ fn current_font_label(_i18n: &I18n, state: &SettingsPageState) -> SharedString {
                 t!("CustomizationSettings.local_font")
             }
         }
-        crate::config::config::FONT_SOURCE_SYSTEM => {
+        crate::config::settings::FONT_SOURCE_SYSTEM => {
             let family = state.system_font_family.as_ref().trim();
             if !family.is_empty() {
                 SharedString::from(format!(

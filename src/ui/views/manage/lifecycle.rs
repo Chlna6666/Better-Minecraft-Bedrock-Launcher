@@ -276,7 +276,7 @@ impl ManagePageView {
             let initial = state.asset_search_query.to_string();
             cx.new(|cx| {
                 let mut input_state = InputState::new(window, cx);
-                input_state.set_placeholder(t!("Manage.search_assets"), window, cx);
+                input_state.set_placeholder(t!("Manage.search_assets"), cx);
                 if !initial.trim().is_empty() {
                     input_state.set_value(SharedString::from(initial), window, cx);
                 }
@@ -317,7 +317,7 @@ impl ManagePageView {
             let initial = state.screenshot_search_query.to_string();
             cx.new(|cx| {
                 let mut input_state = InputState::new(window, cx);
-                input_state.set_placeholder(t!("Manage.search_screenshots"), window, cx);
+                input_state.set_placeholder(t!("Manage.search_screenshots"), cx);
                 if !initial.trim().is_empty() {
                     input_state.set_value(SharedString::from(initial), window, cx);
                 }
@@ -358,7 +358,7 @@ impl ManagePageView {
             let initial = state.server_search_query.to_string();
             cx.new(|cx| {
                 let mut input_state = InputState::new(window, cx);
-                input_state.set_placeholder(t!("Manage.search_servers"), window, cx);
+                input_state.set_placeholder(t!("Manage.search_servers"), cx);
                 if !initial.trim().is_empty() {
                     input_state.set_value(SharedString::from(initial), window, cx);
                 }
@@ -398,6 +398,7 @@ impl ManagePageView {
             "manage selected instance snapshot changed; invalidating dependent requests"
         );
         self.last_selected_instance_revision = selected_instance_revision;
+        self.snapshot_observation = None;
         self.reset_asset_list_view();
         self.reset_screenshot_list_view();
         self.reset_server_list_view();
@@ -500,6 +501,16 @@ impl ManagePageView {
     /// actually needs an owned snapshot. The previous implementation cloned the
     /// selected version on every Manage frame.
     pub(super) fn sync_data_requests(&mut self, cx: &mut Context<Self>) {
+        let state = cx.global::<ManagePageState>();
+        let reading = state.version_config_loading
+            || state.gdk_users_loading
+            || state.assets_loading
+            || state.screenshots_loading
+            || state.servers_loading;
+        if self.snapshot_refresh_pending && !reading {
+            self.snapshot_refresh_pending = false;
+            self.refresh_changed_snapshots(cx);
+        }
         let Some(snapshot) = self.version_request_snapshot(cx) else {
             return;
         };
@@ -712,9 +723,12 @@ impl ManagePageView {
         cx.spawn(async move |handle, cx| {
             let version_for_load = version.clone();
             let result = gpui_tokio::Tokio::spawn_result(cx, async move {
-                data::load_version_config(&version_for_load)
-                    .await
-                    .map_err(anyhow::Error::msg)
+                let observation = snapshots::Observation::new(&version_for_load).await;
+                if let Err(error) = &observation {
+                    tracing::debug!(%error, "Manage change observation unavailable");
+                }
+                let config = data::load_version_config(&version_for_load).await;
+                Ok::<_, anyhow::Error>((config, observation.ok()))
             })
             .await;
             let applied = cx.update_global(|state: &mut ManagePageState, _cx| {
@@ -725,9 +739,12 @@ impl ManagePageView {
                 }
                 state.version_config_loading = false;
                 match result {
-                    Ok(ref config) => {
+                    Ok((Ok(ref config), _)) => {
                         state.version_config = config.clone();
                         state.version_config_error = None;
+                    }
+                    Ok((Err(ref error), _)) => {
+                        state.version_config_error = Some(SharedString::from(error.to_string()));
                     }
                     Err(ref error) => {
                         state.version_config_error = Some(SharedString::from(error.to_string()));
@@ -737,6 +754,9 @@ impl ManagePageView {
             })?;
             if applied
                 && let Err(error) = handle.update(cx, |this, cx| {
+                    if let Ok((_, observation)) = result {
+                        this.snapshot_observation = observation;
+                    }
                     this.sync_data_requests(cx);
                 })
             {
@@ -907,7 +927,7 @@ impl ManagePageView {
         cx.spawn(async move |handle, cx| {
             let version_for_load = version.clone();
             let result = gpui_tokio::Tokio::spawn_result(cx, async move {
-                data::load_assets(
+                snapshots::load_assets(
                     &version_for_load,
                     &config,
                     tab,
@@ -979,7 +999,7 @@ impl ManagePageView {
         cx.spawn(async move |handle, cx| {
             let version_for_load = version.clone();
             let result = gpui_tokio::Tokio::spawn_result(cx, async move {
-                data::load_screenshots(
+                snapshots::load_screenshots(
                     &version_for_load,
                     &config,
                     selected_gdk_user.as_ref().map(SharedString::as_ref),
@@ -1044,7 +1064,7 @@ impl ManagePageView {
         cx.spawn(async move |handle, cx| {
             let version_for_load = version.clone();
             let result = gpui_tokio::Tokio::spawn_result(cx, async move {
-                data::load_external_servers(
+                snapshots::load_external_servers(
                     &version_for_load,
                     &config,
                     selected_gdk_user.as_ref().map(SharedString::as_ref),

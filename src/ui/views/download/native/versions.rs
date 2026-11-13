@@ -1,7 +1,8 @@
-use crate::core::native_mods::{NativeModEntry, Release};
+use crate::core::native_mods::NativeModEntry;
+use crate::core::native_mods::releases::{Release, fetch};
 use crate::ui::components::button::Button;
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::download::state::DownloadPageState;
 use gpui::*;
 
@@ -81,7 +82,7 @@ pub(super) fn load(cx: &mut App) {
     };
     let task = cx.spawn(async move |cx| {
         let result = gpui_tokio::Tokio::spawn_result(cx, async move {
-            crate::core::native_mods::releases(&repository)
+            fetch(&repository)
                 .await
                 .map_err(anyhow::Error::msg)
         })

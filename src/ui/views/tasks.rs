@@ -6,12 +6,10 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[path = "tasks/data.rs"]
 mod data;
-#[path = "tasks/render.rs"]
 mod render;
 
-pub use render::render_tasks_overlay;
+pub use render::render_overlay;
 
 const MAX_RENDER_ACTIVE_TASKS: usize = 12;
 const MAX_FINISHED_TASKS_IN_LIST: usize = 120;
@@ -614,7 +612,7 @@ impl TasksPageView {
         build_render_model_from_snapshots(self.task_snapshots.values().cloned())
     }
 
-    pub(super) fn replace_task_snapshots_from_manager(&mut self) {
+    pub(super) fn refresh_task_snapshots(&mut self) {
         self.task_snapshots = task_manager::snapshot_arcs_map();
     }
 

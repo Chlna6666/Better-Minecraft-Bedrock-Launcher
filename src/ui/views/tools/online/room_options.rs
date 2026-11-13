@@ -1,7 +1,7 @@
 use crate::ui::animation::{spring_bouncy, spring_motion};
 use crate::ui::components::input::Input;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::theme::tokens::motion;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::AnimationExt as _;

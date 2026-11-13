@@ -8,20 +8,17 @@ use zip::write::SimpleFileOptions;
 
 use crate::core::minecraft::assets::{
     CheckImportRequest, DeleteAssetPayload, check_import_conflict, inspect_import_file,
-    start_delete_game_assets_task,
+    delete,
 };
 use crate::core::minecraft::import::{ImportCheckResult, PackagePreview};
-pub use crate::core::minecraft::nbt::LevelDatDocument;
-use crate::core::minecraft::nbt::{
-    read_level_dat_document as read_level_dat_file_document,
-    write_level_dat_document as write_level_dat_file_document,
-};
+pub use crate::core::minecraft::level::LevelDatDocument;
 use crate::core::minecraft::paths::GamePathOptions;
 use crate::core::minecraft::resource_packs::{Header, McPackInfo};
 use crate::core::minecraft::skin_packs::McSkinPackInfo;
 use crate::core::minecraft::worlds::WorldSummary;
 use crate::core::version::settings::{
-    VANILLA_SKIN_PACK_REDIRECTION_SOURCE, VersionConfig, get_version_config, save_version_config,
+    VANILLA_SKIN_PACK_REDIRECTION_SOURCE, VersionConfig, read_version_config,
+    save_version_config,
 };
 use crate::tasks::manage_service::{self, ManagedModInfo, PackKind};
 use crate::ui::views::manage::state::{
@@ -41,14 +38,14 @@ pub async fn load_version_config(
     version: &ManagedVersionEntry,
 ) -> Result<ManageVersionConfig, String> {
     let config = manage_service::load_version_config(version.folder.to_string()).await?;
-    Ok(manage_version_config_from_core(config))
+    Ok(version_config_from_core(config))
 }
 
 pub async fn save_manage_version_config(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
 ) -> Result<(), String> {
-    let mut core_config = get_version_config(version.folder.to_string())
+    let mut core_config = read_version_config(version.folder.to_string())
         .await
         .unwrap_or_default();
     core_config.enable_debug_console = config.enable_debug_console;
@@ -95,7 +92,7 @@ pub async fn load_gdk_users(
         .collect())
 }
 
-pub async fn load_assets(
+pub(super) async fn scan_assets(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     tab: ManageTab,
@@ -161,7 +158,7 @@ pub fn start_delete_assets_task(
                     name: folder_name,
                 })
                 .collect::<Vec<_>>();
-            start_delete_game_assets_task(payloads)
+            delete(payloads)
         }
         ManageTab::Statistics | ManageTab::Screenshot | ManageTab::Server => {
             Err("当前标签不支持资源删除".to_string())
@@ -169,7 +166,7 @@ pub fn start_delete_assets_task(
     }
 }
 
-pub async fn load_screenshots(
+pub(super) async fn scan_screenshots(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     selected_gdk_user: Option<&str>,
@@ -186,7 +183,7 @@ pub async fn load_screenshots(
 
     Ok(entries
         .into_iter()
-        .map(manage_screenshot_from_core)
+        .map(screenshot_from_core)
         .collect())
 }
 
@@ -223,7 +220,7 @@ pub fn start_delete_screenshot_task(entry: &ManageScreenshotEntry) -> Result<Str
     )
 }
 
-pub async fn load_external_servers(
+pub(super) async fn scan_external_servers(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     selected_gdk_user: Option<&str>,
@@ -231,10 +228,10 @@ pub async fn load_external_servers(
     let options = external_server_options(version, config, selected_gdk_user);
     let entries = manage_service::load_external_servers(options).await?;
 
-    Ok(entries.into_iter().map(manage_server_from_core).collect())
+    Ok(entries.into_iter().map(server_from_core).collect())
 }
 
-pub fn start_add_external_server_task(
+pub fn start_add_server(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     selected_gdk_user: Option<&str>,
@@ -242,7 +239,7 @@ pub fn start_add_external_server_task(
     address: String,
     port: u16,
 ) -> Result<String, String> {
-    crate::core::minecraft::servers::start_add_external_server_task(
+    crate::core::minecraft::servers::start_add(
         external_server_options(version, config, selected_gdk_user),
         name,
         address,
@@ -250,7 +247,7 @@ pub fn start_add_external_server_task(
     )
 }
 
-pub fn start_update_external_server_task(
+pub fn start_update_server(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     selected_gdk_user: Option<&str>,
@@ -259,7 +256,7 @@ pub fn start_update_external_server_task(
     address: String,
     port: u16,
 ) -> Result<String, String> {
-    crate::core::minecraft::servers::start_update_external_server_task(
+    crate::core::minecraft::servers::start_update(
         external_server_options(version, config, selected_gdk_user),
         key,
         name,
@@ -268,13 +265,13 @@ pub fn start_update_external_server_task(
     )
 }
 
-pub fn start_delete_external_server_task(
+pub fn start_delete_server(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     selected_gdk_user: Option<&str>,
     entry: &ManageServerEntry,
 ) -> Result<String, String> {
-    crate::core::minecraft::servers::start_delete_external_server_task(
+    crate::core::minecraft::servers::start_delete(
         external_server_options(version, config, selected_gdk_user),
         entry.key.to_string(),
         format!("{} · {}:{}", entry.name, entry.address, entry.port),
@@ -287,7 +284,7 @@ pub async fn query_server_motd_batch(
     stream::iter(servers)
         .map(|server| async move {
             let key = server.key.clone();
-            let status = query_server_motd_with_retries(&server).await;
+            let status = query_server_motd(&server).await;
             (key, status)
         })
         .buffer_unordered(8)
@@ -295,7 +292,7 @@ pub async fn query_server_motd_batch(
         .await
 }
 
-async fn query_server_motd_with_retries(server: &ManageServerMotdTarget) -> ManageServerMotdStatus {
+async fn query_server_motd(server: &ManageServerMotdTarget) -> ManageServerMotdStatus {
     let mut last_error = String::new();
 
     for attempt in 0..=SERVER_MOTD_RETRY_COUNT {
@@ -414,18 +411,15 @@ pub async fn check_asset_import_conflict(
     .await
 }
 
-pub fn read_level_dat_document(folder_path: &str) -> Result<LevelDatDocument, String> {
+pub fn read_level_dat(folder_path: &str) -> Result<LevelDatDocument, String> {
     let level_dat_path = PathBuf::from(folder_path).join("level.dat");
-    read_level_dat_file_document(&level_dat_path)
+    crate::core::minecraft::level::read(&level_dat_path)
         .map_err(|error| format!("读取 level.dat 失败: {error}"))
 }
 
-pub fn write_level_dat_document(
-    folder_path: &str,
-    document: &LevelDatDocument,
-) -> Result<(), String> {
+pub fn write_level_dat(folder_path: &str, document: &LevelDatDocument) -> Result<(), String> {
     let level_dat_path = PathBuf::from(folder_path).join("level.dat");
-    write_level_dat_file_document(&level_dat_path, document)
+    crate::core::minecraft::level::write(&level_dat_path, document)
         .map_err(|error| format!("写入 level.dat 失败: {error}"))
 }
 
@@ -456,7 +450,7 @@ pub fn backup_map(folder_path: &str, map_name: &str) -> Result<String, String> {
     Ok(target_path.to_string_lossy().to_string())
 }
 
-fn manage_version_config_from_core(config: VersionConfig) -> ManageVersionConfig {
+fn version_config_from_core(config: VersionConfig) -> ManageVersionConfig {
     ManageVersionConfig {
         enable_debug_console: config.enable_debug_console,
         enable_redirection: config.enable_redirection,
@@ -475,7 +469,7 @@ async fn load_mod_assets(version: &ManagedVersionEntry) -> Result<Vec<ManageAsse
     Ok(manage_service::load_mods(version.folder.to_string())
         .await?
         .into_iter()
-        .map(manage_asset_from_mod)
+        .map(asset_from_mod)
         .collect())
 }
 
@@ -502,7 +496,7 @@ async fn load_pack_assets(
 
     Ok(entries
         .into_iter()
-        .map(|pack| manage_asset_from_pack(pack, pack_subtype))
+        .map(|pack| asset_from_pack(pack, pack_subtype))
         .collect())
 }
 
@@ -523,7 +517,7 @@ async fn load_skin_pack_assets(
 
     Ok(entries
         .into_iter()
-        .map(manage_asset_from_skin_pack)
+        .map(asset_from_skin_pack)
         .collect())
 }
 
@@ -543,11 +537,11 @@ async fn load_cape_assets(
     Ok(manage_service::load_capes(options, locale_code.to_string())
         .await?
         .into_iter()
-        .map(manage_asset_from_cape)
+        .map(asset_from_cape)
         .collect())
 }
 
-fn manage_asset_from_cape(pack: crate::core::minecraft::capes::CapePackInfo) -> ManageAssetEntry {
+fn asset_from_cape(pack: crate::core::minecraft::capes::CapePackInfo) -> ManageAssetEntry {
     let folder_name = pack
         .path
         .file_name()
@@ -628,10 +622,10 @@ async fn load_map_assets(
     };
     let entries = manage_service::load_worlds(options).await?;
 
-    Ok(entries.into_iter().map(manage_asset_from_world).collect())
+    Ok(entries.into_iter().map(asset_from_world).collect())
 }
 
-fn manage_asset_from_mod(managed_mod: ManagedModInfo) -> ManageAssetEntry {
+fn asset_from_mod(managed_mod: ManagedModInfo) -> ManageAssetEntry {
     let mut detail = managed_mod
         .version
         .filter(|version| !version.trim().is_empty())
@@ -672,7 +666,7 @@ fn manage_asset_from_mod(managed_mod: ManagedModInfo) -> ManageAssetEntry {
     }
 }
 
-fn manage_asset_from_pack(pack: McPackInfo, pack_subtype: ManagePackSubtype) -> ManageAssetEntry {
+fn asset_from_pack(pack: McPackInfo, pack_subtype: ManagePackSubtype) -> ManageAssetEntry {
     let manifest_header = pack
         .manifest_parsed
         .as_ref()
@@ -729,7 +723,7 @@ fn manage_asset_from_pack(pack: McPackInfo, pack_subtype: ManagePackSubtype) -> 
     }
 }
 
-fn manage_asset_from_skin_pack(pack: McSkinPackInfo) -> ManageAssetEntry {
+fn asset_from_skin_pack(pack: McSkinPackInfo) -> ManageAssetEntry {
     let mut detail_parts = Vec::new();
     detail_parts.push(format!("{} 个皮肤", pack.skin_count));
     if pack.slim_skin_count > 0 {
@@ -802,7 +796,7 @@ fn skin_previews_from_pack(pack: &McSkinPackInfo) -> Option<Arc<[ManageSkinPrevi
     (!previews.is_empty()).then(|| Arc::from(previews.into_boxed_slice()))
 }
 
-fn manage_asset_from_world(world: WorldSummary) -> ManageAssetEntry {
+fn asset_from_world(world: WorldSummary) -> ManageAssetEntry {
     let display_name = world
         .level_name
         .clone()
@@ -851,7 +845,7 @@ fn manage_asset_from_world(world: WorldSummary) -> ManageAssetEntry {
     }
 }
 
-fn manage_screenshot_from_core(
+fn screenshot_from_core(
     screenshot: crate::core::minecraft::screenshots::McScreenshotInfo,
 ) -> ManageScreenshotEntry {
     ManageScreenshotEntry {
@@ -880,7 +874,7 @@ fn manage_screenshot_from_core(
     }
 }
 
-fn manage_server_from_core(
+fn server_from_core(
     server: crate::core::minecraft::servers::ExternalServerEntry,
 ) -> ManageServerEntry {
     ManageServerEntry {

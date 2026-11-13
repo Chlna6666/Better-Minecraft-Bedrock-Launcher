@@ -208,7 +208,7 @@ impl ManagePageView {
         let editing_key = dialog.editing_key.clone();
         let editing = editing_key.is_some();
         let task_result = if let Some(key) = editing_key {
-            data::start_update_external_server_task(
+            data::start_update_server(
                 &version,
                 &config,
                 selected_gdk_user.as_ref().map(SharedString::as_ref),
@@ -218,7 +218,7 @@ impl ManagePageView {
                 port,
             )
         } else {
-            data::start_add_external_server_task(
+            data::start_add_server(
                 &version,
                 &config,
                 selected_gdk_user.as_ref().map(SharedString::as_ref),
@@ -363,7 +363,7 @@ pub(super) fn render_server_list(
     }
 
     let scroll_handle_for_event = scroll_handle.clone();
-    let virtual_list_plan = compute_virtual_list_plan(
+    let virtual_list_plan = slice_virtual_list(
         filtered_indices.len(),
         MANAGE_ASSET_ROW_PITCH_PX,
         scroll_handle.offset().y,
@@ -682,7 +682,7 @@ pub(super) fn render_server_editor_dialog(
             .child(Input::new(input).with_size(InputSize::Medium).w_full())
     };
 
-    modal::modal_layer_dismissible(
+    modal::dismissible_layer(
         div()
             .w_full()
             .max_w(px(520.))
@@ -768,6 +768,7 @@ pub(super) fn render_server_editor_dialog(
             ),
         colors.backdrop,
         dismiss,
+        modal::DismissOptions::default(),
     )
     .into_any_element()
 }

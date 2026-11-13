@@ -1,6 +1,6 @@
 use crate::ui::components::modal;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::{AboutSponsorEntry, SettingsPageState};
 use gpui::*;
 use std::path::PathBuf;
@@ -125,7 +125,7 @@ pub(super) fn render_sponsors_modal(
         .child(header)
         .child(render_sponsors_body(colors, i18n, settings));
 
-    modal::modal_layer_dismissible(
+    modal::dismissible_layer(
         div()
             .w_full()
             .h_full()
@@ -136,6 +136,7 @@ pub(super) fn render_sponsors_modal(
             .child(card),
         overlay_background,
         close,
+        modal::DismissOptions::default(),
     )
 }
 
@@ -192,7 +193,7 @@ fn spawn_load_sponsors(cx: &mut App) {
     .detach();
 
     let load_task = gpui_tokio::Tokio::spawn_result(cx, async {
-        crate::tasks::runtime::run_io_blocking(crate::core::sponsors::clear_avatar_cache)
+        crate::tasks::runtime::blocking::run_io(crate::core::sponsors::clear_avatar_cache)
             .await
             .map_err(anyhow::Error::msg)?
             .map_err(anyhow::Error::from)?;

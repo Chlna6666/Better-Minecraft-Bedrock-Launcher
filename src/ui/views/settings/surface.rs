@@ -1,4 +1,4 @@
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::layout::SettingsLayout;
 use gpui::*;
 

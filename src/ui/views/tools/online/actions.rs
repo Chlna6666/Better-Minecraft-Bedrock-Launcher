@@ -1,8 +1,7 @@
 use std::future::Future;
 
-use crate::core::online::{
-    EasyTierPeer, EasyTierStartOptions, EasyTierStartRequest, PaperConnectPlayer, PaperConnectRoom,
-};
+use crate::core::online::paperconnect::{self, Player, Room};
+use crate::core::online::{EasyTierPeer, EasyTierStartOptions, EasyTierStartRequest};
 use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
 use crate::ui::views::tools::state::{
@@ -95,7 +94,7 @@ fn prepare_room_request(intent: RoomIntent, cx: &mut App) -> Option<RoomRequest>
     };
 
     let server_port = if matches!(intent, RoomIntent::Create) {
-        match crate::core::online::paperconnect_pick_listen_port() {
+        match crate::core::online::paperconnect::pick_listen_port() {
             Ok(port) => Some(port),
             Err(error) => {
                 cx.update_global(|state: &mut ToolsPageState, _cx| {
@@ -133,7 +132,7 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
         player_name,
         game_port,
     } = request;
-    let room = match run_online(cx, async move { resolve_room(intent, room_code).await }).await {
+    let room = match run_online(cx, async move { resolve_room(intent, room_code) }).await {
         Ok(room) => room,
         Err(error) => {
             apply_room_error(generation, action, error, cx);
@@ -167,7 +166,7 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
         game_port,
         options: Some(options),
     };
-    if let Err(error) = run_online(cx, crate::core::online::easytier_start(start_request)).await {
+    if let Err(error) = run_online(cx, crate::core::online::easytier::start(start_request)).await {
         apply_room_error(generation, action, error, cx);
         return;
     }
@@ -182,7 +181,7 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
         }
     };
     if !still_active {
-        if let Err(error) = run_online(cx, crate::core::online::easytier_stop()).await {
+        if let Err(error) = run_online(cx, crate::core::online::easytier::stop()).await {
             warn!("failed to stop cancelled online operation: {error}");
         }
         return;
@@ -194,10 +193,10 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
             network_name = %room.network_name,
             "PaperConnect 成员步骤 1/6：EasyTier 房间连接成功"
         );
-        let server = match run_online(cx, crate::core::online::paperconnect_probe_server()).await {
+        let server = match run_online(cx, crate::core::online::paperconnect::probe_server()).await {
             Ok(server) => server,
             Err(error) => {
-                if let Err(stop_error) = run_online(cx, crate::core::online::easytier_stop()).await
+                if let Err(stop_error) = run_online(cx, crate::core::online::easytier::stop()).await
                 {
                     warn!("failed to stop after PaperConnect discovery failure: {stop_error}");
                 }
@@ -207,13 +206,13 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
         };
         match run_online(
             cx,
-            crate::core::online::paperconnect_start_client(server, player_name.clone()),
+            crate::core::online::paperconnect_guest::start(server, player_name.clone()),
         )
         .await
         {
             Ok(state) => client_state = Some(state),
             Err(error) => {
-                if let Err(stop_error) = run_online(cx, crate::core::online::easytier_stop()).await
+                if let Err(stop_error) = run_online(cx, crate::core::online::easytier::stop()).await
                 {
                     warn!(
                         "failed to stop after PaperConnect player heartbeat failure: {stop_error}"
@@ -232,8 +231,8 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
 
     let (status_result, peers_result) = run_online(cx, async {
         let results = tokio::join!(
-            crate::core::online::easytier_embedded_status(),
-            crate::core::online::easytier_embedded_peers(),
+            crate::core::online::easytier::status(),
+            crate::core::online::easytier::peers(),
         );
         Ok(results)
     })
@@ -241,7 +240,7 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
     .unwrap_or_else(|error| (Err(error.clone()), Err(error)));
     let status = status_result.ok().flatten();
     let peers = peers_result.map(peer_entries).unwrap_or_default();
-    let players = player_entries(crate::core::online::paperconnect_players());
+    let players = player_entries(paperconnect::players());
     apply_room_success(
         generation,
         intent,
@@ -254,10 +253,10 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
     );
 }
 
-async fn resolve_room(intent: RoomIntent, room_code: String) -> Result<PaperConnectRoom, String> {
+fn resolve_room(intent: RoomIntent, room_code: String) -> Result<Room, String> {
     match intent {
-        RoomIntent::Create => crate::core::online::paperconnect_generate_room().await,
-        RoomIntent::Join => crate::core::online::paperconnect_parse_room_code(room_code).await,
+        RoomIntent::Create => Ok(paperconnect::generate_room()),
+        RoomIntent::Join => paperconnect::room_from_code(&room_code),
     }
 }
 
@@ -272,7 +271,7 @@ where
 }
 
 fn apply_room_error(generation: u64, action: &'static str, error: String, cx: &mut AsyncApp) {
-    let abandoned_connectors = crate::core::online::easytier_take_abandoned_connectors();
+    let abandoned_connectors = crate::core::online::easytier::take_abandoned_connectors();
     let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
         if !state.finish_room_operation(generation) {
             return false;
@@ -301,7 +300,7 @@ fn apply_room_error(generation: u64, action: &'static str, error: String, cx: &m
 fn apply_room_success(
     generation: u64,
     intent: RoomIntent,
-    room: PaperConnectRoom,
+    room: Room,
     status: Option<crate::core::online::EasyTierEmbeddedStatus>,
     players: Vec<OnlinePlayerEntry>,
     peers: Vec<OnlinePeerEntry>,
@@ -309,7 +308,7 @@ fn apply_room_success(
     cx: &mut AsyncApp,
 ) {
     let room_code = room.room_code.clone();
-    let abandoned_connectors = crate::core::online::easytier_take_abandoned_connectors();
+    let abandoned_connectors = crate::core::online::easytier::take_abandoned_connectors();
     let discovery_port_occupied = matches!(
         client_state,
         Some(crate::core::online::PaperConnectClientState::DiscoveryPortOccupied)
@@ -397,7 +396,7 @@ pub(super) fn retry_discovery_proxy(cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = run_online(
             cx,
-            crate::core::online::paperconnect_retry_guest_transport(),
+            crate::core::online::paperconnect_guest::retry_transport(),
         )
         .await;
         let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
@@ -458,21 +457,21 @@ pub(super) fn retry_discovery_proxy(cx: &mut App) {
     .detach();
 }
 
-pub(super) fn open_minecraft_termination_dialog(cx: &mut App) {
+pub(super) fn open_termination_dialog(cx: &mut App) {
     cx.update_global(|state: &mut ToolsPageState, _cx| {
-        state.open_minecraft_termination_dialog();
+        state.open_termination_dialog();
     });
 }
 
-pub(super) fn dismiss_minecraft_termination_dialog(cx: &mut App) {
+pub(super) fn dismiss_termination_dialog(cx: &mut App) {
     cx.update_global(|state: &mut ToolsPageState, _cx| {
-        state.dismiss_minecraft_termination_dialog();
+        state.dismiss_termination_dialog();
     });
 }
 
-pub(super) fn confirm_minecraft_termination(cx: &mut App) {
+pub(super) fn confirm_termination(cx: &mut App) {
     let started =
-        cx.update_global(|state: &mut ToolsPageState, _cx| state.begin_minecraft_termination());
+        cx.update_global(|state: &mut ToolsPageState, _cx| state.begin_termination());
     if !started {
         return;
     }
@@ -489,7 +488,7 @@ pub(super) fn confirm_minecraft_termination(cx: &mut App) {
             .map(|_| ())
             .map_err(|error| SharedString::from(format!("结束 UDP 7551 占用应用失败：{error}")));
         let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
-            state.finish_minecraft_termination(state_result)
+            state.finish_termination(state_result)
         });
 
         match applied {
@@ -545,7 +544,7 @@ pub(super) fn stop_session(cx: &mut App) {
     append_online_log("正在断开 EasyTier", cx);
 
     cx.spawn(async move |cx| {
-        let result = run_online(cx, crate::core::online::easytier_stop()).await;
+        let result = run_online(cx, crate::core::online::easytier::stop()).await;
         let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
             if !state.finish_online_operation(generation) {
                 return false;
@@ -594,15 +593,15 @@ pub(crate) fn refresh_status(cx: &mut App) {
     cx.spawn(async move |cx| {
         let (status_result, peers_result) = run_online(cx, async {
             let results = tokio::join!(
-                crate::core::online::easytier_embedded_status(),
-                crate::core::online::easytier_embedded_peers(),
+                crate::core::online::easytier::status(),
+                crate::core::online::easytier::peers(),
             );
             Ok(results)
         })
         .await
         .unwrap_or_else(|error| (Err(error.clone()), Err(error)));
-        let players = player_entries(crate::core::online::paperconnect_players());
-        let abandoned_connectors = crate::core::online::easytier_take_abandoned_connectors();
+        let players = player_entries(paperconnect::players());
+        let abandoned_connectors = crate::core::online::easytier::take_abandoned_connectors();
         let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
             if !state.finish_status_refresh(generation) {
                 return false;
@@ -698,8 +697,8 @@ pub(super) fn refresh_peers(cx: &mut App) {
     };
 
     cx.spawn(async move |cx| {
-        let result = run_online(cx, crate::core::online::easytier_embedded_peers()).await;
-        let players = player_entries(crate::core::online::paperconnect_players());
+        let result = run_online(cx, crate::core::online::easytier::peers()).await;
+        let players = player_entries(paperconnect::players());
         let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
             if !state.finish_online_operation(generation) {
                 return false;
@@ -785,7 +784,7 @@ fn peer_entries(peers: Vec<EasyTierPeer>) -> Vec<OnlinePeerEntry> {
         .collect()
 }
 
-fn player_entries(players: Vec<PaperConnectPlayer>) -> Vec<OnlinePlayerEntry> {
+fn player_entries(players: Vec<Player>) -> Vec<OnlinePlayerEntry> {
     players
         .into_iter()
         .map(|player| OnlinePlayerEntry {

@@ -4,7 +4,7 @@ use crate::ui::components::button::{Button, IconButton};
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::download::state::DownloadPageState;
 use gpui::*;
 

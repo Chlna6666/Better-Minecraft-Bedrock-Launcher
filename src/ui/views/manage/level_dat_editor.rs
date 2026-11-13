@@ -1,5 +1,4 @@
 use super::ManagePageView;
-use crate::core::minecraft::nbt::NbtTag;
 use crate::ui::components::code_editor::{CodeEditor, CodeEditorState};
 use crate::ui::components::input::{Input, InputState};
 use crate::ui::components::minecraft_text::MinecraftFormattedText;
@@ -8,13 +7,14 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::components::tabs::{AnimatedSegmentTabs, TabItem};
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::manage::common::{
     card_title, panel_shell, primary_button, secondary_button, subtle_badge,
 };
 use crate::ui::views::manage::data::LevelDatDocument;
 use crate::ui::views::manage::level_dat_schema;
 use crate::ui::views::manage::state::{ManageAssetEntry, ManagedVersionEntry};
+use bedrock_nbt::NbtTag;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use indexmap::IndexMap;
@@ -137,7 +137,7 @@ fn render_surface(
     if page_mode {
         content.into_any_element()
     } else {
-        modal::modal_layer(content, colors.backdrop).into_any_element()
+        modal::layer(content, colors.backdrop).into_any_element()
     }
 }
 
@@ -383,7 +383,7 @@ fn render_header(
                     }
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         let _ = view_handle.update(cx, |this, cx| {
-                            this.open_level_dat_editor_code_window(cx);
+                            this.open_code_window(cx);
                         });
                     })
                 })

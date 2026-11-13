@@ -1,10 +1,10 @@
 use super::common::{
-    settings_card_text, settings_flat_inline_card, settings_inline_card, snapshot_from_state,
+    card_text, flat_inline_card, inline_card, snapshot_from_state,
     spawn_persist_settings,
 };
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::toggle_switch::ToggleSwitch;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::SettingsPageState;
 use gpui::*;
 
@@ -65,8 +65,8 @@ pub(super) fn setting_dropdown_row(
     on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let _option_labels: Vec<SharedString> = options.iter().map(|opt| opt.label.clone()).collect();
-    settings_inline_card(colors, id)
-        .child(settings_card_text(colors, title.clone(), desc))
+    inline_card(colors, id)
+        .child(card_text(colors, title.clone(), desc))
         .child(div().flex_shrink_0().pt(px(2.)).child(Dropdown::new(
             SharedString::from(format!("{id}-dropdown")),
             colors,
@@ -96,8 +96,8 @@ pub(super) fn setting_flat_dropdown_row(
     on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let _option_labels: Vec<SharedString> = options.iter().map(|opt| opt.label.clone()).collect();
-    settings_flat_inline_card(colors, id)
-        .child(settings_card_text(colors, title.clone(), desc))
+    flat_inline_card(colors, id)
+        .child(card_text(colors, title.clone(), desc))
         .child(div().flex_shrink_0().pt(px(2.)).child(Dropdown::new(
             SharedString::from(format!("{id}-dropdown")),
             colors,
@@ -121,8 +121,8 @@ pub(super) fn setting_toggle_row(
     id: &'static str,
     on_toggle: fn(&mut SettingsPageState),
 ) -> impl IntoElement {
-    settings_inline_card(colors, id)
-        .child(settings_card_text(colors, title.clone(), desc))
+    inline_card(colors, id)
+        .child(card_text(colors, title.clone(), desc))
         .child(div().flex_shrink_0().pt(px(4.)).child(ToggleSwitch::new(
             SharedString::from(format!("{id}-toggle")),
             colors,
@@ -133,7 +133,7 @@ pub(super) fn setting_toggle_row(
                     on_toggle(s);
                     snapshot_from_state(s)
                 });
-                spawn_persist_settings(snapshot, cx);
+                spawn_persist_settings(snapshot, None, cx);
             },
         )))
 }

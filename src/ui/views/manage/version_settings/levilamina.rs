@@ -4,7 +4,7 @@ use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::manage::ManagePageView;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -275,7 +275,7 @@ impl ManagePageView {
         let game_version = version.version.to_string();
         cx.spawn(async move |handle, cx| {
             let task = gpui_tokio::Tokio::spawn_result(cx, async move {
-                let database = crate::core::levilamina::support_database()
+                let database = crate::core::levilamina::support::database()
                     .await
                     .map_err(anyhow::Error::msg)?;
                 let installation = crate::core::levilamina::inspect_installation(game_directory)
@@ -407,8 +407,9 @@ impl ManagePageView {
                                 state.levilamina_busy = false;
                             }
                             this.invalidate_version_dependent_data(cx);
-                            crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(
-                                true, cx,
+                            crate::ui::hooks::local_versions::ensure_loaded(
+                                crate::ui::hooks::local_versions::VersionRefresh::Force,
+                                cx,
                             );
                             toast::success(cx, SharedString::from(message.to_string()));
                             if let Some(version) = version {

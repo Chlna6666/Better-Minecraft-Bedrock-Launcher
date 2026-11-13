@@ -3,7 +3,7 @@ use crate::ui::components::modal;
 use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
 use gpui::*;
 use std::rc::Rc;
@@ -182,7 +182,7 @@ pub(crate) fn start_task_event_bridge(cx: &mut App) {
         |delivery, cx| match delivery {
             crate::tasks::task_manager::TaskEventDelivery::Event(event) => {
                 let relevant = cx.read_global(|state: &DownloadPageState, _cx| {
-                    task_event_relevant_to_download_state(state, &event)
+                    is_download_event_relevant(state, &event)
                 });
                 if !relevant {
                     return;
@@ -207,7 +207,7 @@ pub(crate) fn start_task_event_bridge(cx: &mut App) {
                 let any_relevant = cx.read_global(|state: &DownloadPageState, _cx| {
                     events
                         .iter()
-                        .any(|event| task_event_relevant_to_download_state(state, event))
+                        .any(|event| is_download_event_relevant(state, event))
                 });
                 if !any_relevant {
                     return;
@@ -247,7 +247,7 @@ pub(crate) fn start_task_event_bridge(cx: &mut App) {
                 let snapshots = task_ids
                     .into_iter()
                     .filter_map(|task_id| {
-                        crate::tasks::task_manager::get_snapshot_arc(task_id.as_ref())
+                        crate::tasks::task_manager::snapshot_arc(task_id.as_ref())
                             .filter(|snapshot| {
                                 snapshot.visibility
                                     != crate::tasks::task_manager::TaskVisibility::Hidden
@@ -272,7 +272,7 @@ fn download_state_tracks_task(state: &DownloadPageState, task_id: &str) -> bool 
         .any(|operation| operation.task_id.as_ref() == task_id)
 }
 
-fn task_event_relevant_to_download_state(
+fn is_download_event_relevant(
     state: &DownloadPageState,
     event: &crate::tasks::task_manager::TaskEvent,
 ) -> bool {
@@ -344,7 +344,7 @@ fn apply_task_event_to_download_state(
 
 pub struct DownloadPageView {
     _subscriptions: Vec<Subscription>,
-    curseforge_resource_panel: Entity<curseforge::CurseForgeResourcePanelView>,
+    curseforge_resource_panel: Entity<curseforge::ResourcePanelView>,
     game_panel_view: Option<Entity<game::DownloadGamePanelView>>,
     mod_panel_cache: mods::ModPanelRenderCache,
     native_mod_panel_cache: native::NativeModPanelRenderCache,
@@ -499,12 +499,8 @@ impl DownloadPageView {
                                         s.curseforge_page_index = target_page;
                                         s.curseforge_page_commit_task.take();
                                         s.curseforge_pending_page_index = None;
-                                        curseforge::begin_page_results_transition_in_state(s, cx);
-                                        curseforge::ensure_results_loaded_after_page_transition(
-                                            false,
-                                            target_page,
-                                            cx,
-                                        );
+                                        curseforge::begin_page_transition(s, cx);
+                                        curseforge::load_page_results(target_page, cx);
                                     }
                                 }
                             }
@@ -527,7 +523,7 @@ impl DownloadPageView {
 
         Self {
             _subscriptions: subscriptions,
-            curseforge_resource_panel: cx.new(curseforge::CurseForgeResourcePanelView::new),
+            curseforge_resource_panel: cx.new(curseforge::ResourcePanelView::new),
             game_panel_view,
             mod_panel_cache: mods::ModPanelRenderCache::default(),
             native_mod_panel_cache: native::NativeModPanelRenderCache::default(),
@@ -555,8 +551,7 @@ impl DownloadPageView {
         }
 
         let view = cx.new(game::DownloadGamePanelView::new);
-        let active = self.active
-            && cx.global::<DownloadPageState>().tab == DownloadTab::Game;
+        let active = self.active && cx.global::<DownloadPageState>().tab == DownloadTab::Game;
         let _ = view.update(cx, |view, cx| {
             view.set_active(active, cx);
             Ok::<(), anyhow::Error>(())
@@ -625,8 +620,8 @@ impl Render for DownloadPageView {
         let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme.factor(now),
             theme.accent,
         );
@@ -701,7 +696,7 @@ pub(super) fn render_download_page(
     colors: ThemeColors,
     _window_width: Pixels,
     window_height: Pixels,
-    curseforge_resource_panel: &Entity<curseforge::CurseForgeResourcePanelView>,
+    curseforge_resource_panel: &Entity<curseforge::ResourcePanelView>,
     game_panel_view: Option<&Entity<game::DownloadGamePanelView>>,
     mod_panel_cache: &mut mods::ModPanelRenderCache,
     native_mod_panel_cache: &mut native::NativeModPanelRenderCache,
@@ -863,7 +858,7 @@ pub fn render_download_overlay(
 
         if let Some(dialog) = dialog {
             return Some(
-                modal::modal_layer_dismissible(
+                modal::dismissible_layer(
                     game::render_game_dialog(
                         colors,
                         cx.global::<crate::ui::state::i18n::I18n>(),
@@ -880,6 +875,7 @@ pub fn render_download_overlay(
                     ),
                     hsla(0.0, 0.0, 0.0, 0.28),
                     Rc::new(dismiss_game_dialog),
+                    modal::DismissOptions::default(),
                 )
                 .into_any_element(),
             );
@@ -901,10 +897,11 @@ pub fn render_download_overlay(
         });
 
         return Some(
-            modal::modal_layer_dismissible(
+            modal::dismissible_layer(
                 mods::render_detail_modal_content(colors, cx, &mod_entry),
                 hsla(0.0, 0.0, 0.0, 0.45),
                 dismiss_fn,
+                modal::DismissOptions::default(),
             )
             .into_any_element(),
         );
@@ -918,16 +915,17 @@ pub fn render_download_overlay(
             native::dismiss_modal(cx);
         });
         return Some(
-            modal::modal_layer_dismissible(
+            modal::dismissible_layer(
                 native::render_detail_modal_content(colors, cx, &mod_entry),
                 hsla(0.0, 0.0, 0.0, 0.45),
                 dismiss_fn,
+                modal::DismissOptions::default(),
             )
             .into_any_element(),
         );
     }
 
-    curseforge::render_curseforge_install_overlay(colors, window, cx)
+    curseforge::render_install_overlay(colors, window, cx)
 }
 
 fn merge_support_loader_versions(state: &mut DownloadPageState) {
@@ -1036,7 +1034,7 @@ pub fn ensure_levilamina_support_loaded(cx: &mut App) {
         state.levilamina_support_error = None;
     });
     let load_task = gpui_tokio::Tokio::spawn_result(cx, async {
-        crate::core::levilamina::support_database()
+        crate::core::levilamina::support::database()
             .await
             .map_err(anyhow::Error::msg)
     });

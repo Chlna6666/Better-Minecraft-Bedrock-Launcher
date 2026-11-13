@@ -79,12 +79,12 @@ fn task_amount_text(_i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
     if model.task_type == task_manager::TaskType::Workflow {
         return SharedString::from(format!("{:.1}%", model.percent.unwrap_or(0.0)));
     }
-    let done = crate::utils::format_bytes::format_bytes_compact(model.done);
+    let done = crate::utils::format_bytes::compact(model.done);
     match model.total {
         Some(total) => SharedString::from(format!(
             "{} / {}",
             done,
-            crate::utils::format_bytes::format_bytes_compact(total)
+            crate::utils::format_bytes::compact(total)
         )),
         None => t!("Tasks.completed_amount", done = done),
     }
@@ -147,7 +147,7 @@ fn header_right_text(i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
         .unwrap_or_else(|| status_label(i18n, model))
 }
 
-pub(crate) fn render_task_card(
+pub(super) fn render(
     colors: &ThemeColors,
     model: &TaskCardViewModel,
     motion: Option<TaskCardMotionKind>,
@@ -354,7 +354,7 @@ pub(crate) fn render_task_card(
                                 .child(header_right_value),
                         ),
                 )
-                .child(div().w_full().child(progress_panel(
+                .child(div().w_full().child(super::progress::panel(
                     task_id.as_ref(),
                     kind,
                     colors,
@@ -402,7 +402,7 @@ pub(crate) fn render_task_card(
                                             .child(SharedString::from(child.title.clone())))
                                         .child(div().flex_none().text_size(px(11.))
                                             .text_color(color).child(label)))
-                                    .child(progress_panel(
+                                    .child(super::progress::panel(
                                         child.id.as_ref(), kind, colors,
                                         child.status.as_ref(), child.percent, None, &[],
                                     ))

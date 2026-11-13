@@ -2,14 +2,14 @@ use crate::plugins::runtime::{PluginLogEntry, PluginStatus};
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{Input, InputSize, InputState};
-use crate::ui::components::markdown_renderer::{parse_markdown_document, render_markdown_document};
+use crate::ui::components::markdown::{parse_document, render_document};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::components::toast;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::common::{
-    settings_action_button, settings_card, settings_control_box, settings_value_box,
+    action_button, card, control_box, value_box,
 };
 use crate::ui::views::settings::state::{
     PluginReadmeCacheKey, PluginResourceCacheKey, PluginSettingsSubTab, SettingsPageState,
@@ -28,7 +28,7 @@ use tracing::warn;
 pub(in crate::ui::views) struct PluginSettingsModel {
     statuses: Vec<PluginStatus>,
     selected_id: Option<String>,
-    readme: Option<Arc<crate::ui::components::markdown_renderer::MarkdownDocument>>,
+    readme: Option<Arc<crate::ui::components::markdown::Document>>,
     config_text: Option<String>,
     config_schema: Option<Arc<PluginConfigSchema>>,
     logs: Arc<[PluginLogEntry]>,
@@ -124,7 +124,7 @@ impl PluginSettingsModel {
                         localized_schema_keys(schema)
                             .into_iter()
                             .filter_map(|key| {
-                                crate::plugins::runtime::translate_plugin_resource_for_locale(
+                                crate::plugins::runtime::translate_resource_locale(
                                     cx,
                                     &status.id,
                                     state.plugin_cached_locale.as_ref(),
@@ -301,11 +301,11 @@ pub(super) fn ensure_plugin_resources<T: 'static>(
 
     if let Some((key, manifest, locale)) = readme_load {
         cx.spawn(async move |handle, cx| {
-            let loaded = crate::tasks::runtime::run_io_blocking(move || {
+            let loaded = crate::tasks::runtime::blocking::run_io(move || {
                 let text = manifest
-                    .readme_path_for_locale(&locale)
+                    .readme_path(Some(locale.as_str()))
                     .and_then(|path| std::fs::read_to_string(path).ok());
-                text.map(|text| Arc::new(parse_markdown_document(&text)))
+                text.map(|text| Arc::new(parse_document(&text)))
             })
             .await;
 
@@ -323,7 +323,7 @@ pub(super) fn ensure_plugin_resources<T: 'static>(
 
     if let Some((key, manifest)) = config_load {
         cx.spawn(async move |handle, cx| {
-            let loaded = crate::tasks::runtime::run_io_blocking(move || {
+            let loaded = crate::tasks::runtime::blocking::run_io(move || {
                 crate::plugins::manifest::read_user_config(&manifest)
                     .ok()
                     .filter(|text| !text.is_empty())
@@ -344,7 +344,7 @@ pub(super) fn ensure_plugin_resources<T: 'static>(
 
     if let Some((key, manifest)) = schema_load {
         cx.spawn(async move |handle, cx| {
-            let loaded = crate::tasks::runtime::run_io_blocking(move || {
+            let loaded = crate::tasks::runtime::blocking::run_io(move || {
                 manifest
                     .config_schema_path()
                     .and_then(|path| std::fs::read_to_string(path).ok())
@@ -455,7 +455,7 @@ fn ensure_config_inputs_from_cache<T: 'static>(
             let input = cx.new(|cx| {
                 let mut input = InputState::new(window, cx);
                 if !placeholder.is_empty() {
-                    input.set_placeholder(placeholder, window, cx);
+                    input.set_placeholder(placeholder, cx);
                 }
                 if !initial.is_empty() {
                     input.set_value(initial, window, cx);
@@ -592,7 +592,7 @@ fn plugin_list(
     selected_id: Option<&str>,
     compact: bool,
 ) -> Stateful<Div> {
-    let list = settings_card(colors, "settings-plugins-list")
+    let list = card(colors, "settings-plugins-list")
         .when(compact, |this| this.w_full().h(px(190.)))
         .when(!compact, |this| this.w(px(250.)).h_full())
         .flex_shrink_0()
@@ -772,7 +772,7 @@ fn plugin_detail(
     selected: Option<&PluginStatus>,
 ) -> Stateful<Div> {
     let Some(status) = selected else {
-        return settings_card(colors, "settings-plugin-detail")
+        return card(colors, "settings-plugin-detail")
             .flex_1()
             .p(px(16.))
             .child(
@@ -783,7 +783,7 @@ fn plugin_detail(
             );
     };
 
-    settings_card(colors, "settings-plugin-detail")
+    card(colors, "settings-plugin-detail")
         .flex_1()
         .min_w(px(0.))
         .min_h(px(0.))
@@ -910,7 +910,7 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                 )
                 .child(
                     div().flex().items_center().gap(px(8.)).child(
-                        settings_action_button(
+                        action_button(
                             colors,
                             if enabled {
                                 SharedString::from("禁用")
@@ -1046,7 +1046,7 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                                             task_id,
                                             SharedString::from("插件已卸载"),
                                             SharedString::from("卸载失败"),
-                                            true,
+                                            PluginTaskSelection::Clear,
                                             None,
                                         ),
                                         Err(error) => {
@@ -1163,7 +1163,7 @@ fn plugin_readme_panel(
     div()
         .w_full()
         .p(px(2.))
-        .child(render_markdown_document(
+        .child(render_document(
             document.as_ref(),
             colors,
             model.is_dark,
@@ -1296,7 +1296,7 @@ fn plugin_config_panel(
             .flex_col()
             .gap(px(8.))
             .child(div().flex().justify_end().child(
-                settings_action_button(colors, t!("PluginSettings.save"), true).on_mouse_down(
+                action_button(colors, t!("PluginSettings.save"), true).on_mouse_down(
                     MouseButton::Left,
                     move |_event, _window, cx| {
                         let content =
@@ -1544,7 +1544,7 @@ fn render_value_control(
     if let Some(max) = field.max {
         display.push_str(&format!("  max {max}"));
     }
-    settings_value_box(colors, SharedString::from(display), false, px(260.)).into_any_element()
+    value_box(colors, SharedString::from(display), false, px(260.)).into_any_element()
 }
 
 fn render_input_control(
@@ -1582,7 +1582,7 @@ fn render_input_control(
             .into_any_element()
     };
 
-    settings_control_box(colors, true, px(260.), control).into_any_element()
+    control_box(colors, true, px(260.), control).into_any_element()
 }
 
 fn raw_config_panel(colors: &ThemeColors, _i18n: &I18n, content: &str) -> AnyElement {
@@ -1727,12 +1727,18 @@ fn icon_only_button(colors: &ThemeColors, icon_path: &'static str, enabled: bool
         .child(themed_icon(icon_path, 14.0, colors.text_secondary))
 }
 
+#[derive(Clone, Copy)]
+enum PluginTaskSelection {
+    Clear,
+    Keep,
+}
+
 fn observe_plugin_task(
     cx: &mut App,
     task_id: String,
     success_message: SharedString,
     failed_message: SharedString,
-    clear_selection: bool,
+    selection_after_success: PluginTaskSelection,
     source_for_log: Option<PathBuf>,
 ) {
     let wait_task_id = task_id.clone();
@@ -1746,7 +1752,7 @@ fn observe_plugin_task(
         cx.update(|cx| match snapshot {
             Ok(snapshot) if snapshot.status.as_ref() == "completed" => {
                 crate::plugins::runtime::reload_plugins(cx);
-                if clear_selection {
+                if matches!(selection_after_success, PluginTaskSelection::Clear) {
                     cx.update_global(|state: &mut SettingsPageState, _cx| {
                         state.selected_plugin_id = None;
                     });
@@ -1785,7 +1791,7 @@ fn observe_plugin_task(
 
 fn import_plugin_package_from_picker(cx: &mut App) {
     let Some(path) =
-        crate::utils::file_picker::pick_file_path_with_filter("BMCBL Plugin", &["bmcblx"])
+        crate::utils::file_picker::pick_file_path(None,"BMCBL Plugin", &["bmcblx"])
     else {
         return;
     };
@@ -1803,7 +1809,7 @@ fn import_plugin_package_from_picker(cx: &mut App) {
             task_id,
             success_message,
             failed_message,
-            false,
+            PluginTaskSelection::Keep,
             Some(source_for_log),
         ),
         Err(error) => {

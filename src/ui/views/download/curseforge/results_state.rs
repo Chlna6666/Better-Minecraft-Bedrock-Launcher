@@ -2,7 +2,7 @@ use crate::ui::views::download::state::DownloadPageState;
 use gpui::*;
 use std::time::Duration;
 
-pub(crate) fn invalidate_results_in_state(state: &mut DownloadPageState, _cx: &mut App) {
+pub(crate) fn invalidate_results(state: &mut DownloadPageState, _cx: &mut App) {
     state.curseforge_page_commit_task.take();
     state.curseforge_pending_page_index = None;
     if let Some(handle) = state.curseforge_results_abort_handle.take() {
@@ -19,7 +19,7 @@ pub(crate) fn invalidate_results_in_state(state: &mut DownloadPageState, _cx: &m
     state.curseforge_mod_page_error = None;
     state.curseforge_mod_page_mod_id = None;
     state.curseforge_mod_page_mod = None;
-    state.set_curseforge_mod_page_description(SharedString::from(""));
+    state.set_mod_page_description(SharedString::from(""));
     state.curseforge_disable_result_logos = true;
     // 关键：分类切换时不立即重置滚动条，等待新数据加载完成后再重置
     // state.curseforge_results_scroll.set_offset(point(px(0.), px(0.)));
@@ -28,13 +28,13 @@ pub(crate) fn invalidate_results_in_state(state: &mut DownloadPageState, _cx: &m
     state.curseforge_pending_scroll_reset_to_top = true;
 }
 
-pub(crate) fn invalidate_results_now_in_state(state: &mut DownloadPageState, cx: &mut App) {
+pub(crate) fn invalidate_results_now(state: &mut DownloadPageState, cx: &mut App) {
     state.curseforge_invalidate_task.take();
     state.curseforge_invalidate_seq = state.curseforge_invalidate_seq.wrapping_add(1);
-    invalidate_results_in_state(state, cx);
+    invalidate_results(state, cx);
 }
 
-pub(crate) fn begin_page_results_transition_in_state(state: &mut DownloadPageState, _cx: &mut App) {
+pub(crate) fn begin_page_transition(state: &mut DownloadPageState, _cx: &mut App) {
     if let Some(handle) = state.curseforge_results_abort_handle.take() {
         handle.abort();
     }
@@ -51,7 +51,7 @@ pub(crate) fn begin_page_results_transition_in_state(state: &mut DownloadPageSta
     state.curseforge_results_transition_at = None;
 }
 
-pub(crate) fn schedule_invalidate_results_in_state(state: &mut DownloadPageState, cx: &mut App) {
+pub(crate) fn schedule_invalidation(state: &mut DownloadPageState, cx: &mut App) {
     state.curseforge_invalidate_task.take();
     state.curseforge_invalidate_seq = state.curseforge_invalidate_seq.wrapping_add(1);
     let seq = state.curseforge_invalidate_seq;
@@ -62,7 +62,7 @@ pub(crate) fn schedule_invalidate_results_in_state(state: &mut DownloadPageState
                 return false;
             }
             state.curseforge_invalidate_task = None;
-            invalidate_results_in_state(state, cx);
+            invalidate_results(state, cx);
             true
         }) {
             Ok(should_load) => should_load,
@@ -77,7 +77,7 @@ pub(crate) fn schedule_invalidate_results_in_state(state: &mut DownloadPageState
     state.curseforge_invalidate_task = Some(task);
 }
 
-pub(crate) fn apply_results_query_change_in_state(
+pub(crate) fn apply_query_change(
     state: &mut DownloadPageState,
     cx: &mut App,
     update_state: impl FnOnce(&mut DownloadPageState) -> bool,
@@ -89,33 +89,22 @@ pub(crate) fn apply_results_query_change_in_state(
     // 关键：root/sub/search/sort 变化和翻页统一走同一个静止窗口
     state.curseforge_disable_result_logos = true;
 
-    invalidate_results_now_in_state(state, cx);
+    invalidate_results_now(state, cx);
 }
 
-pub(crate) fn ensure_results_loaded(force_refresh: bool, cx: &mut App) {
-    load_results(force_refresh, false, None, cx);
+pub(crate) fn ensure_results_loaded(cx: &mut App) {
+    load(None, cx);
 }
 
-pub(crate) fn ensure_results_loaded_after_page_transition(
-    force_refresh: bool,
-    target_page_index: usize,
-    cx: &mut App,
-) {
-    load_results(force_refresh, true, Some(target_page_index), cx);
+pub(crate) fn load_page_results(target_page_index: usize, cx: &mut App) {
+    load(Some(target_page_index), cx);
 }
 
-fn load_results(
-    force_refresh: bool,
-    state_already_invalidated: bool,
-    page_index_override: Option<usize>,
-    cx: &mut App,
-) {
+fn load(page_index_override: Option<usize>, cx: &mut App) {
     let (
         invalidate_pending,
-        is_loading,
         last_key,
         key,
-        _current_mod_count,
         page_index,
         class_id,
         category_id,
@@ -143,10 +132,8 @@ fn load_results(
         );
         (
             state.curseforge_invalidate_task.is_some(),
-            state.curseforge_results_loading,
             state.curseforge_last_query_key.to_string(),
             key,
-            state.curseforge_mods.len(),
             page_index,
             state.curseforge_selected_root_id,
             state.curseforge_selected_sub_id,
@@ -160,21 +147,18 @@ fn load_results(
         )
     });
 
-    if invalidate_pending && !force_refresh {
+    if invalidate_pending {
         return;
     }
-    if is_loading && !force_refresh && last_key == key {
-        return;
-    }
-    if !force_refresh && last_key == key {
+    if last_key == key {
         return;
     }
 
-    let state_already_invalidated = state_already_invalidated || last_key.is_empty();
+    let state_already_invalidated = page_index_override.is_some() || last_key.is_empty();
 
     if last_key != key && !state_already_invalidated {
         let _ = cx.update_global(|state: &mut DownloadPageState, cx| {
-            invalidate_results_in_state(state, cx);
+            invalidate_results(state, cx);
         });
     }
 

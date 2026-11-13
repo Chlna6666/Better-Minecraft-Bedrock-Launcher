@@ -1,14 +1,14 @@
 use crate::ui::components::color_picker::{
-    DEFAULT_THEME_COLOR_PRESETS, color_picker_control, normalize_hex_color,
+    DEFAULT_THEME_COLOR_PRESETS, control, normalize_hex_color,
 };
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::SettingsPageState;
 use gpui::*;
 
 use crate::ui::views::settings::common::{
-    settings_card, settings_card_header, snapshot_from_state, spawn_persist_settings,
+    card, card_header, snapshot_from_state, spawn_persist_settings,
 };
 
 const THEME_COLOR_PERSIST_DEBOUNCE_MS: u64 = 260;
@@ -18,13 +18,13 @@ pub(super) fn render_theme_color_card(
     _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
-    settings_card(colors, "settings-theme-color").child(
-        settings_card_header(
+    card(colors, "settings-theme-color").child(
+        card_header(
             colors,
             t!("CustomizationSettings.theme_color"),
             t!("CustomizationSettings.theme_color_desc"),
         )
-        .child(color_picker_control(
+        .child(control(
             "settings-theme-color-picker",
             colors,
             state.theme_color.as_ref(),
@@ -49,13 +49,13 @@ pub(super) fn render_theme_color_card(
 
                 ThemeState::set_accent_hex(&normalized, cx);
 
-                schedule_theme_color_persist_debounced(cx);
+                schedule_theme_color_persist(cx);
             },
         )),
     )
 }
 
-fn schedule_theme_color_persist_debounced(cx: &mut App) {
+fn schedule_theme_color_persist(cx: &mut App) {
     let should_spawn = cx.update_global(|state: &mut SettingsPageState, _cx| {
         state.theme_color_persist_revision = state.theme_color_persist_revision.saturating_add(1);
         if state.theme_color_persist_task_running {
@@ -99,7 +99,7 @@ fn schedule_theme_color_persist_debounced(cx: &mut App) {
                 .update({
                     let snapshot = snapshot.clone();
                     move |cx| {
-                        spawn_persist_settings(snapshot.clone(), cx);
+                        spawn_persist_settings(snapshot.clone(), None, cx);
                     }
                 })
                 .is_err()

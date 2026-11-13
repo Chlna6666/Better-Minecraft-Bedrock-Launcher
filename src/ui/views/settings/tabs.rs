@@ -1,6 +1,6 @@
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
 use gpui::*;
 
@@ -13,7 +13,7 @@ pub(super) fn refresh_gpu_adapters(cx: &mut App) {
     }
 
     let renderer_backend = cx.read_global(|state: &SettingsPageState, _cx| {
-        crate::config::config::normalize_renderer_backend(state.renderer_backend.as_ref())
+        crate::config::settings::normalize_renderer_backend(state.renderer_backend.as_ref())
     });
     refresh_gpu_adapters_for_backend(renderer_backend, cx);
 }
@@ -21,7 +21,7 @@ pub(super) fn refresh_gpu_adapters(cx: &mut App) {
 pub(super) fn refresh_gpu_adapters_for_backend(renderer_backend: String, cx: &mut App) {
     cx.spawn(async move |cx| {
         let requested_renderer_backend = renderer_backend.clone();
-        let adapters = crate::tasks::runtime::run_io_blocking(move || {
+        let adapters = crate::tasks::runtime::blocking::run_io(move || {
             let backend = renderer_backend
                 .parse::<gpui::RendererBackend>()
                 .unwrap_or_default();
@@ -35,7 +35,7 @@ pub(super) fn refresh_gpu_adapters_for_backend(renderer_backend: String, cx: &mu
 
         let _ = cx.update_global(|state: &mut SettingsPageState, _cx| {
             let current_renderer_backend =
-                crate::config::config::normalize_renderer_backend(state.renderer_backend.as_ref());
+                crate::config::settings::normalize_renderer_backend(state.renderer_backend.as_ref());
             if current_renderer_backend != requested_renderer_backend {
                 return;
             }

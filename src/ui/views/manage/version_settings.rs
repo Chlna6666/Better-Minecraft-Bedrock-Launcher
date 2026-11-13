@@ -3,7 +3,7 @@ use crate::ui::components::modal;
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::manage::common::{
     card_title, ghost_button, panel_shell, primary_button, secondary_button,
 };
@@ -51,7 +51,7 @@ pub fn render(
 ) -> AnyElement {
     let can_use_editor = supports_editor_mode(&state.version);
     let is_gdk = state.version.is_gdk();
-    let modal_dismiss_handle = modal::ModalDismissHandle::new();
+    let modal_dismiss_handle = modal::DismissHandle::new();
     let dismiss_handle = view_handle.clone();
     let dismiss = Rc::new(move |cx: &mut App| {
         let _ = dismiss_handle.update(cx, |this, cx| {
@@ -60,8 +60,7 @@ pub fn render(
     });
 
     let cancel_dismiss = modal_dismiss_handle.clone();
-    modal::modal_layer_dismissible_with_handle(
-        modal_dismiss_handle,
+    modal::dismissible_layer(
         div()
             .w(px(640.))
             .max_w(relative(1.0))
@@ -203,6 +202,7 @@ pub fn render(
             ),
         colors.backdrop,
         dismiss,
+        modal::DismissOptions::default().with_handle(modal_dismiss_handle),
     )
     .into_any_element()
 }

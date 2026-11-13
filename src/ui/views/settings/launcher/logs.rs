@@ -1,17 +1,17 @@
-use crate::config::config::LogManagementConfig;
+use crate::config::settings::LogManagementConfig;
 use crate::ui::components::dropdown::DropdownOption;
 use crate::ui::components::toast::{self, ToastKind};
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::SettingsPageState;
-use crate::utils::format_bytes::format_bytes;
+use crate::utils::format_bytes::format;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use tracing::warn;
 
 use super::super::common::{
-    settings_action_button, settings_card_header, settings_flat_card, settings_sub_row,
+    action_button, card_header, flat_card, sub_row,
 };
 use super::super::rows::setting_flat_dropdown_row;
 
@@ -26,7 +26,7 @@ pub(super) fn render(
             .items_center()
             .gap(px(8.))
             .child(
-                settings_action_button(
+                action_button(
                     colors,
                     t!("LauncherSettings.logs.refresh"),
                     !state.log_storage_loading,
@@ -36,13 +36,13 @@ pub(super) fn render(
                 }),
             )
             .child(
-                settings_action_button(colors, t!("LauncherSettings.logs.open"), true)
+                action_button(colors, t!("LauncherSettings.logs.open"), true)
                     .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                         open_log_directory(cx);
                     }),
             )
             .child(
-                settings_action_button(
+                action_button(
                     colors,
                     t!("LauncherSettings.logs.clean"),
                     !state.log_cleanup_running,
@@ -52,7 +52,7 @@ pub(super) fn render(
                 }),
             )
             .child(
-                settings_action_button(colors, t!("LauncherSettings.logs.recent_errors"), true)
+                action_button(colors, t!("LauncherSettings.logs.recent_errors"), true)
                     .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                         let opened = cx.update_global(
                             |state: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
@@ -65,9 +65,9 @@ pub(super) fn render(
                     }),
             );
 
-    let card = settings_flat_card(colors, "settings-launcher-log-management")
+    let card = flat_card(colors, "settings-launcher-log-management")
         .child(
-            settings_card_header(
+            card_header(
                 colors,
                 t!("LauncherSettings.logs.title"),
                 t!("LauncherSettings.logs.desc"),
@@ -99,7 +99,7 @@ fn storage_summary(
     let metrics = [
         (
             t!("LauncherSettings.logs.total_size"),
-            SharedString::from(format_bytes(state.log_total_bytes)),
+            SharedString::from(format(state.log_total_bytes)),
         ),
         (
             t!("LauncherSettings.logs.file_count"),
@@ -115,11 +115,11 @@ fn storage_summary(
         ),
         (
             t!("LauncherSettings.logs.active_size"),
-            SharedString::from(format_bytes(state.log_active_bytes)),
+            SharedString::from(format(state.log_active_bytes)),
         ),
         (
             t!("LauncherSettings.logs.previous_size"),
-            SharedString::from(format_bytes(state.log_previous_bytes)),
+            SharedString::from(format(state.log_previous_bytes)),
         ),
         (t!("LauncherSettings.logs.oldest"), oldest),
     ];
@@ -319,7 +319,7 @@ fn advanced_toggle_row(
     _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
-    settings_sub_row(
+    sub_row(
         colors,
         t!("LauncherSettings.logs.advanced"),
         ToggleSwitch::new(
@@ -351,8 +351,8 @@ fn persist_log_config(cx: &mut App) {
     let toast_id = toast::pending(cx, t!("LauncherSettings.logs.saving"));
     cx.spawn(async move |cx| {
         let config_for_storage = config.clone();
-        let result = crate::tasks::runtime::run_io_blocking(move || {
-            crate::config::config::update_config(|root| {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
+            crate::config::settings::update(|root| {
                 root.launcher.log_management = config_for_storage;
             })
         })
@@ -361,20 +361,20 @@ fn persist_log_config(cx: &mut App) {
         match result {
             Ok(Ok(())) => {
                 crate::utils::log_manager::apply_runtime_config(&config);
-                toast::resolve_async(
+                toast::async_app::resolve(
                     cx,
                     toast_id,
                     ToastKind::Success,
                     SharedString::from("日志策略已保存"),
                 );
             }
-            Ok(Err(error)) => toast::resolve_async(
+            Ok(Err(error)) => toast::async_app::resolve(
                 cx,
                 toast_id,
                 ToastKind::Error,
                 SharedString::from(format!("保存日志策略失败：{error}")),
             ),
-            Err(error) => toast::resolve_async(
+            Err(error) => toast::async_app::resolve(
                 cx,
                 toast_id,
                 ToastKind::Error,
@@ -400,7 +400,7 @@ pub(crate) fn refresh_log_stats(cx: &mut App) {
 
     cx.spawn(async move |cx| {
         let result =
-            crate::tasks::runtime::run_io_blocking(crate::utils::log_manager::inspect_log_storage)
+            crate::tasks::runtime::blocking::run_io(crate::utils::log_manager::inspect_log_storage)
                 .await;
         if let Err(error) = cx.update_global(|state: &mut SettingsPageState, _cx| {
             state.log_storage_loading = false;
@@ -446,7 +446,7 @@ fn clean_inactive_logs(cx: &mut App) {
     }
     let toast_id = toast::pending(cx, t!("LauncherSettings.logs.cleaning"));
     cx.spawn(async move |cx| {
-        let result = crate::tasks::runtime::run_archive_blocking(|| {
+        let result = crate::tasks::runtime::blocking::run_archive(|| {
             let report = crate::utils::log_manager::clear_inactive_logs()?;
             let stats = crate::utils::log_manager::inspect_log_storage()?;
             Ok::<_, std::io::Error>((report, stats))
@@ -462,7 +462,7 @@ fn clean_inactive_logs(cx: &mut App) {
         }
 
         match result {
-            Ok(Ok((report, _))) => toast::resolve_async(
+            Ok(Ok((report, _))) => toast::async_app::resolve(
                 cx,
                 toast_id,
                 if report.failed_files == 0 {
@@ -473,17 +473,17 @@ fn clean_inactive_logs(cx: &mut App) {
                 SharedString::from(format!(
                     "已清理 {} 个日志文件，释放 {}，{} 个文件未能删除",
                     report.removed_files,
-                    format_bytes(report.freed_bytes),
+                    format(report.freed_bytes),
                     report.failed_files
                 )),
             ),
-            Ok(Err(error)) => toast::resolve_async(
+            Ok(Err(error)) => toast::async_app::resolve(
                 cx,
                 toast_id,
                 ToastKind::Error,
                 SharedString::from(format!("清理日志失败：{error}")),
             ),
-            Err(error) => toast::resolve_async(
+            Err(error) => toast::async_app::resolve(
                 cx,
                 toast_id,
                 ToastKind::Error,
@@ -499,7 +499,7 @@ fn open_log_directory(cx: &mut App) {
         .to_string_lossy()
         .into_owned();
     cx.spawn(async move |_cx| {
-        if let Err(error) = crate::utils::open_path::open_path(path).await {
+        if let Err(error) = crate::utils::open_path::open(path).await {
             warn!("open log directory failed: {error}");
         }
     })

@@ -1,6 +1,6 @@
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::update::UpdateState;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::SettingsPageState;
 use crate::utils::app_info;
 use gpui::prelude::FluentBuilder as _;
@@ -37,7 +37,7 @@ pub(super) fn render_about_tab(
 ) -> Div {
     let section = t!("Settings.tabs.about");
 
-    let app_version = SharedString::from(app_info::get_version());
+    let app_version = SharedString::from(app_info::version());
 
     let version_line = t!(
         "AboutSection.app.version",
@@ -53,7 +53,7 @@ pub(super) fn render_about_tab(
     };
     let no_update_msg = t!("AboutSection.update.no_update");
 
-    let dev_card = about_big_card(
+    let dev_card = big_card(
         colors,
         "about-dev",
         img(IMG_DEV)
@@ -73,7 +73,7 @@ pub(super) fn render_about_tab(
         }),
     );
 
-    let app_card = about_big_card(
+    let app_card = big_card(
         colors,
         "about-app",
         img(IMG_LOGO)
@@ -159,7 +159,7 @@ pub(super) fn render_engine_label(window: &Window) -> SharedString {
 }
 
 fn gpui_backend_name() -> &'static str {
-    match gpui::performance_metrics_snapshot().renderer_backend {
+    match gpui::diagnostics::performance_metrics::snapshot().renderer_backend {
         gpui::RendererBackend::NovaOpenGl => "OpenGL 4.5",
         gpui::RendererBackend::NovaDx11 => "DirectX 11",
         gpui::RendererBackend::NovaDx12 => "DirectX 12",
@@ -296,7 +296,7 @@ fn icon_btn(
     btn
 }
 
-fn about_big_card(
+fn big_card(
     colors: &ThemeColors,
     id: &'static str,
     icon: impl IntoElement,
@@ -594,7 +594,7 @@ fn thanks_card(
 }
 
 fn render_legal_cards(colors: &ThemeColors, _i18n: &I18n, _settings: &SettingsPageState) -> Div {
-    let license = SharedString::from(app_info::get_license());
+    let license = SharedString::from(app_info::license());
     let open_agreement = Rc::new(|cx: &mut App| {
         cx.update_global(|state: &mut SettingsPageState, _cx| {
             state.about_agreement_open = true;

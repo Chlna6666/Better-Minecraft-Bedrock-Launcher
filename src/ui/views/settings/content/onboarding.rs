@@ -3,7 +3,7 @@
 use gpui::*;
 
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 
 pub(super) fn render_onboarding_card(colors: &ThemeColors, _i18n: &I18n) -> Div {
     let action = div()

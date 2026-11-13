@@ -5,7 +5,7 @@ impl ManagePageView {
         let map_name = asset.display_name.to_string();
         let folder_path = asset.file_path.to_string();
         cx.spawn(async move |_handle, cx| {
-            let result = crate::tasks::runtime::run_blocking(
+            let result = crate::tasks::runtime::blocking::run(
                 crate::tasks::runtime::BlockingTaskOptions::hidden("备份地图"),
                 move || data::backup_map(&folder_path, &map_name),
             )
@@ -34,14 +34,14 @@ impl ManagePageView {
         window.defer(cx, move |_window, cx| {
             let default_file_name = format!("{}.mcworld", asset.display_name);
             let Some(target) =
-                pick_save_path_with_filter("Minecraft World", &["mcworld"], &default_file_name)
+                pick_save_path("Minecraft World", &["mcworld"], &default_file_name)
             else {
                 return;
             };
 
             let folder_path = asset.file_path.to_string();
             cx.spawn(async move |cx| {
-                let result = crate::tasks::runtime::run_blocking(
+                let result = crate::tasks::runtime::blocking::run(
                     crate::tasks::runtime::BlockingTaskOptions::hidden("导出地图"),
                     move || data::export_map(&folder_path, &target),
                 )
@@ -84,8 +84,8 @@ pub(super) fn append_map_asset_actions(
                 cx.listener(move |_this, _, _, cx| {
                     let asset = resolve_asset_by_key(cx.global::<ManagePageState>(), &key);
                     if let Some(asset) = asset {
-                        crate::ui::window::map_viewer::open_map_viewer_window(
-                            crate::ui::window::map_viewer::MapViewerWindowInit {
+                        crate::ui::window::map_viewer::open(
+                            crate::ui::window::map_viewer::Init {
                                 version: version.clone(),
                                 world_path: asset.file_path.clone(),
                                 asset,

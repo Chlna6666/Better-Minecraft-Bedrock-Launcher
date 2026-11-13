@@ -326,7 +326,7 @@ impl ManagePageView {
         editor.saving = true;
         let folder_path = editor.asset.file_path.to_string();
         cx.spawn(async move |handle, cx| {
-            let result = crate::tasks::runtime::run_blocking(
+            let result = crate::tasks::runtime::blocking::run(
                 crate::tasks::runtime::BlockingTaskOptions::hidden("保存 level.dat"),
                 move || {
                     let world_path = std::path::PathBuf::from(&folder_path);
@@ -341,7 +341,7 @@ impl ManagePageView {
                                 include_level_dat: true,
                             },
                         );
-                    let result = data::write_level_dat_document(&folder_path, &document);
+                    let result = data::write_level_dat(&folder_path, &document);
                     match (history_capture, result) {
                         (Ok(capture), Ok(())) => {
                             crate::ui::window::map_viewer::map_history::complete_after(
@@ -459,7 +459,7 @@ impl ManagePageView {
         launch_map_version(&editor.version, &editor.asset, cx);
     }
 
-    pub fn open_level_dat_editor_code_window(&mut self, cx: &mut Context<Self>) {
+    pub fn open_code_window(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = self.level_dat_editor.as_ref() else {
             return;
         };
@@ -475,8 +475,8 @@ impl ManagePageView {
         };
 
         let initial_text = editor.json_editor.read(cx).value();
-        crate::ui::window::level_dat::open_level_dat_code_window(
-            crate::ui::window::level_dat::LevelDatCodeWindowInit {
+        crate::ui::window::level_dat::open_code_window(
+            crate::ui::window::level_dat::CodeWindowInit {
                 version: editor.version.clone(),
                 asset: editor.asset.clone(),
                 document_version: editor.document.version(),
@@ -516,7 +516,7 @@ impl ManagePageView {
             let initial_value = level_dat_editor::value_text(&document, field);
             let input = cx.new(|cx| {
                 let mut input_state = InputState::new(window, cx);
-                input_state.set_placeholder(SharedString::from(placeholder), window, cx);
+                input_state.set_placeholder(SharedString::from(placeholder), cx);
                 if !initial_value.is_empty() {
                     input_state.set_value(initial_value.clone(), window, cx);
                 }
@@ -563,9 +563,9 @@ impl ManagePageView {
         };
         let folder_path = asset.file_path.to_string();
         cx.spawn_in(window, async move |handle, cx| {
-            let result = crate::tasks::runtime::run_blocking(
+            let result = crate::tasks::runtime::blocking::run(
                 crate::tasks::runtime::BlockingTaskOptions::hidden("读取 level.dat"),
-                move || data::read_level_dat_document(&folder_path),
+                move || data::read_level_dat(&folder_path),
             )
             .await;
 

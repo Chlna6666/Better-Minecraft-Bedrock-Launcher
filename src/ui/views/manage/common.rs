@@ -1,5 +1,5 @@
 use crate::ui::components::icon::themed_icon;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::*;
 
 pub fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div {

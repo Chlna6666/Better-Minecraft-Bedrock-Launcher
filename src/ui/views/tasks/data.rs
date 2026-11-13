@@ -21,7 +21,7 @@ impl TasksPageView {
     }
 
     pub(crate) fn toggle_pause_task(&mut self, task_id: Arc<str>, cx: &mut Context<Self>) {
-        let snapshot = task_manager::get_snapshot_arc(task_id.as_ref());
+        let snapshot = task_manager::snapshot_arc(task_id.as_ref());
         let success = match snapshot.as_ref().map(|snapshot| snapshot.status.as_ref()) {
             Some("paused") => task_manager::resume_task(task_id.as_ref()),
             Some("running") => task_manager::pause_task(task_id.as_ref()),
@@ -38,7 +38,7 @@ impl TasksPageView {
     }
 
     pub(crate) fn prompt_cancel_task(&mut self, task_id: Arc<str>, cx: &mut Context<Self>) {
-        let subject = task_manager::get_snapshot_arc(task_id.as_ref())
+        let subject = task_manager::snapshot_arc(task_id.as_ref())
             .map(|snapshot| super::task_subject(&snapshot))
             .unwrap_or_else(|| {
                 cx.global::<I18n>()
@@ -113,7 +113,7 @@ impl TasksPageView {
                     }
                 }
                 task_manager::TaskEventDelivery::ResyncRequired => {
-                    this.replace_task_snapshots_from_manager();
+                    this.refresh_task_snapshots();
                     render_model_changed = true;
                 }
             }
@@ -186,19 +186,19 @@ impl TasksPageView {
         match action {
             TaskConfirmAction::CancelTask => {
                 self.mark_user_cancelled(task_id.clone());
-                if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref()) {
+                if let Some(snapshot) = task_manager::snapshot_arc(task_id.as_ref()) {
                     let model = super::build_task_card_model(snapshot.as_ref());
                     self.schedule_exit_motion(task_id.clone(), model, cx);
                 }
                 task_manager::cancel_task(task_id.as_ref());
-                if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref()) {
+                if let Some(snapshot) = task_manager::snapshot_arc(task_id.as_ref()) {
                     self.apply_task_snapshot(snapshot);
                 }
                 self.apply_render_model(self.local_render_model(), cx);
                 self.close_confirm(cx);
             }
             TaskConfirmAction::RemoveTask => {
-                if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref()) {
+                if let Some(snapshot) = task_manager::snapshot_arc(task_id.as_ref()) {
                     let model = super::build_task_card_model(snapshot.as_ref());
                     self.schedule_exit_motion(task_id.clone(), model, cx);
                 }
@@ -208,7 +208,7 @@ impl TasksPageView {
                 self.close_confirm(cx);
             }
             TaskConfirmAction::DeleteDownloadFile => {
-                let path = task_manager::get_snapshot_arc(task_id.as_ref())
+                let path = task_manager::snapshot_arc(task_id.as_ref())
                     .and_then(|snapshot| snapshot.message.clone());
                 self.close_confirm(cx);
 
@@ -225,7 +225,7 @@ impl TasksPageView {
                                     i18n.t_key(crate::i18n_key!("Tasks.download_deleted"))
                                 })
                                 .unwrap_or_else(|_| SharedString::from("Local download deleted"));
-                            toast::push_async(cx, toast::ToastKind::Success, message);
+                            toast::async_app::push(cx, toast::ToastKind::Success, message);
                         }
                         Err(error) => {
                             let message = cx
@@ -235,7 +235,7 @@ impl TasksPageView {
                                 .unwrap_or_else(|_| {
                                     SharedString::from("Failed to delete download")
                                 });
-                            toast::push_async(cx, toast::ToastKind::Error, message);
+                            toast::async_app::push(cx, toast::ToastKind::Error, message);
                             return Err(anyhow::Error::msg(error));
                         }
                     }

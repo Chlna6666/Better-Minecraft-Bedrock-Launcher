@@ -1,6 +1,6 @@
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::tools::state::{OnlineOperation, ToolsPageState, ToolsTab};
 use gpui::*;
 use std::time::Duration;
@@ -214,8 +214,8 @@ impl Render for ToolsPageView {
         let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme.factor(now),
             theme.accent,
         );

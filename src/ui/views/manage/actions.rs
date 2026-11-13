@@ -111,7 +111,7 @@ impl ManagePageView {
                             state.version_config = config.clone();
                             state.version_config_error = None;
                         });
-                        ensure_local_versions_loaded(true, cx);
+                        ensure_loaded(VersionRefresh::Force, cx);
                         let message = t!("ManagePage.settings_saved");
                         toast::success(cx, message);
                         this.version_settings_modal = None;
@@ -131,11 +131,12 @@ impl ManagePageView {
         .detach();
     }
     pub(super) fn refresh_versions(&mut self, cx: &mut Context<Self>) {
+        snapshots::invalidate();
         if let Err(error) = crate::tasks::manage_service::invalidate_gdk_users() {
             tracing::warn!(%error, "failed to invalidate GDK user cache for refresh");
         }
         self.invalidate_version_dependent_data(cx);
-        ensure_local_versions_loaded(true, cx);
+        ensure_loaded(VersionRefresh::Force, cx);
         let message = t!("ManagePage.refreshing_versions");
         toast::push(cx, message);
     }
@@ -165,7 +166,7 @@ impl ManagePageView {
 
     pub fn select_version_icon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(icon_source_path) =
-            pick_file_path_with_filter_for_window(window, "PNG Image", &["png"])
+            pick_file_path(Some(window), "PNG Image", &["png"])
         else {
             return;
         };
@@ -275,7 +276,7 @@ impl ManagePageView {
         };
 
         cx.spawn(async move |_handle, cx| {
-            if let Err(error) = crate::utils::open_path::open_path(path.to_string()).await {
+            if let Err(error) = crate::utils::open_path::open(path.to_string()).await {
                 let _ = cx.update(|cx| {
                     toast::error(cx, SharedString::from(error));
                 });
@@ -319,7 +320,7 @@ impl ManagePageView {
             path: version.path.clone(),
             launch_args: None,
         };
-        let _ = start_launcher(descriptor, cx);
+        let _ = launcher::start(descriptor, cx);
     }
 
     pub(super) fn create_selected_version_shortcut(&mut self, cx: &mut Context<Self>) {
@@ -345,7 +346,7 @@ impl ManagePageView {
     }
     pub(super) fn open_path_background(&mut self, path: SharedString, cx: &mut Context<Self>) {
         cx.spawn(async move |_handle, cx| {
-            if let Err(error) = crate::utils::open_path::open_path(path.to_string()).await {
+            if let Err(error) = crate::utils::open_path::open(path.to_string()).await {
                 let _ = cx.update(|cx| {
                     toast::error(cx, SharedString::from(error));
                 });

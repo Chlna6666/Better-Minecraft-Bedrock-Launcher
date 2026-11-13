@@ -1,7 +1,7 @@
 use super::VersionSettingsModalState;
-use crate::ui::hooks::use_local_versions::{LaunchVersionIcon, launch_version_icon_path};
+use crate::ui::hooks::local_versions::{LaunchVersionIcon, icon};
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::manage::ManagePageView;
 use crate::ui::views::manage::common::{card_title, panel_shell, secondary_button};
 use gpui::*;
@@ -95,13 +95,13 @@ fn preview_icon_path(
     saved_icon_path: Option<&str>,
     version_name: &str,
 ) -> LaunchVersionIcon {
-    launch_version_icon_path(selected_icon_path.or(saved_icon_path), version_name)
+    icon(selected_icon_path.or(saved_icon_path), version_name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{preview_icon_path, selected_icon_label};
-    use crate::ui::hooks::use_local_versions::LaunchVersionIcon;
+    use crate::ui::hooks::local_versions::LaunchVersionIcon;
     use gpui::SharedString;
     use std::path::PathBuf;
 

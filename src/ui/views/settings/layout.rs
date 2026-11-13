@@ -1,4 +1,4 @@
-use crate::ui::components::adaptive::{AdaptiveSizeClass, WindowMetrics};
+use crate::ui::components::adaptive::{SizeClass, WindowMetrics};
 use crate::ui::components::page_shell::{PAGE_INSET_BOTTOM, PAGE_INSET_TOP, PAGE_INSET_X};
 use gpui::{Pixels, px};
 
@@ -22,9 +22,9 @@ impl SettingsLayout {
         let height_px = window_height / px(1.0);
 
         let (page_padding, content_gap) = match metrics.width_class {
-            AdaptiveSizeClass::Compact => (px(9.0), px(8.0)),
-            AdaptiveSizeClass::Regular => (px(10.0), px(9.0)),
-            AdaptiveSizeClass::Spacious => (px(12.0), px(10.0)),
+            SizeClass::Compact => (px(9.0), px(8.0)),
+            SizeClass::Regular => (px(10.0), px(9.0)),
+            SizeClass::Spacious => (px(12.0), px(10.0)),
         };
 
         let content_max_width = if width_px >= 1500.0 {

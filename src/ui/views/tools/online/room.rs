@@ -3,7 +3,7 @@ use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::Input;
 use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::theme::tokens::motion;
 use crate::ui::views::tools::state::{OnlineBlockingIssue, ToolsPageState};
 use gpui::AnimationExt as _;
@@ -241,7 +241,7 @@ fn render_blocking_issue(
                             )
                             .when(!state.discovery_retrying, |this| {
                                 this.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                                    actions::open_minecraft_termination_dialog(cx);
+                                    actions::open_termination_dialog(cx);
                                 })
                             }),
                         )

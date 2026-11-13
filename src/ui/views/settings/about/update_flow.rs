@@ -70,13 +70,13 @@ pub(super) fn spawn_manual_update_check(no_update_msg: SharedString, cx: &mut Ap
         tracing::info!("manual update check UI result applied");
 
         if let Some(error) = error {
-            toast::push_async(
+            toast::async_app::push(
                 cx,
                 ToastKind::Error,
                 SharedString::from(format!("检查更新失败: {error}")),
             );
         } else if !has_update {
-            toast::push_async(cx, ToastKind::Info, no_update_msg);
+            toast::async_app::push(cx, ToastKind::Info, no_update_msg);
         }
     })
     .detach();

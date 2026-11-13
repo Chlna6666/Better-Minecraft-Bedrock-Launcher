@@ -5,6 +5,9 @@ use crate::ui::animation::{
 };
 
 pub struct ManagePageView {
+    _snapshot_watch_task: Task<()>,
+    pub(super) snapshot_refresh_pending: bool,
+    pub(super) snapshot_observation: Option<snapshots::Observation>,
     pub(super) _subscriptions: Vec<Subscription>,
     pub(super) active: bool,
     pub(super) tab_body_view: Entity<ManageTabBodyView>,
@@ -41,6 +44,7 @@ pub struct ManagePageView {
 
 impl ManagePageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let snapshot_watch_task = Self::observe_snapshots(cx);
         cx.update_global(|state: &mut ManagePageState, _cx| {
             state.reset_transient_requests();
         });
@@ -96,6 +100,9 @@ impl ManagePageView {
         ];
 
         Self {
+            _snapshot_watch_task: snapshot_watch_task,
+            snapshot_refresh_pending: false,
+            snapshot_observation: None,
             _subscriptions: subscriptions,
             active: false,
             tab_body_view,
@@ -184,8 +191,8 @@ impl Render for ManagePageView {
         let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme.factor(now),
             theme.accent,
         );
@@ -260,7 +267,7 @@ impl ManagePageView {
             self.version_scroll_handle.set_offset(point(px(0.), px(0.)));
         }
         let filtered_version_indices = self.version_list_cache.filtered_indices();
-        let virtual_list_plan = compute_virtual_list_plan(
+        let virtual_list_plan = slice_virtual_list(
             filtered_version_indices.len(),
             MANAGE_VERSION_ROW_PITCH_PX,
             self.version_scroll_handle.offset().y,
@@ -405,7 +412,7 @@ impl ManagePageView {
                         let version_badge = if version.is_gdk() { "GDK" } else { "UWP" };
                         let is_preview = version.is_preview();
                         let channel_label =
-                            crate::ui::hooks::use_local_versions::version_channel_label(
+                            crate::ui::hooks::local_versions::channel_label(
                                 cx.global::<I18n>(),
                                 version.name.as_ref(),
                             );
@@ -414,7 +421,7 @@ impl ManagePageView {
                         } else {
                             colors.accent
                         };
-                        let icon = launch_version_icon_path(
+                        let icon = icon(
                             version
                                 .icon_path
                                 .as_ref()

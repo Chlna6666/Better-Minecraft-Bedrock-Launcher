@@ -1,6 +1,6 @@
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::update::UpdateState;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::layout::SettingsLayout;
 use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
 use gpui::StatefulInteractiveElement as _;

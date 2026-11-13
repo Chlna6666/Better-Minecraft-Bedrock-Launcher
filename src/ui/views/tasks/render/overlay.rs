@@ -4,7 +4,7 @@ use crate::ui::components::modal;
 use crate::ui::state::i18n::I18n;
 use std::rc::Rc;
 
-pub fn render_tasks_overlay(
+pub fn render_overlay(
     colors: &ThemeColors,
     view: &Entity<TasksPageView>,
     cx: &App,
@@ -18,7 +18,7 @@ pub fn render_tasks_overlay(
         let confirm_task_id = dialog.task_id.clone();
         let confirm_action = dialog.action.clone();
 
-        modal::modal_layer_dismissible(
+        modal::dismissible_layer(
             div()
                 .w(px(500.))
                 .max_w(px(500.))
@@ -100,6 +100,7 @@ pub fn render_tasks_overlay(
                     this.close_confirm(cx);
                 });
             }),
+            modal::DismissOptions::default(),
         )
         .into_any_element()
     })

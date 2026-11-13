@@ -121,7 +121,7 @@ impl Default for ToolsPageState {
             bootstrap_peers_input: None,
             bootstrap_peers: SharedString::from(""),
             player_name_input: None,
-            player_name: SharedString::from(crate::config::config::default_online_player_name()),
+            player_name: SharedString::from(crate::config::settings::default_online_player_name()),
             game_ports_input: None,
             game_ports: SharedString::from("7551"),
             room_advanced_open: false,
@@ -157,7 +157,7 @@ impl Default for ToolsPageState {
 }
 
 impl ToolsPageState {
-    pub(crate) fn apply_config(&mut self, config: &crate::config::config::OnlineConfig) {
+    pub(crate) fn apply_config(&mut self, config: &crate::config::settings::OnlineConfig) {
         self.bootstrap_peers = SharedString::from(config.bootstrap_peers.clone());
         self.player_name = SharedString::from(config.player_name.clone());
         self.game_ports = SharedString::from(config.game_ports.clone());
@@ -312,7 +312,7 @@ impl ToolsPageState {
         true
     }
 
-    pub(crate) fn open_minecraft_termination_dialog(&mut self) -> bool {
+    pub(crate) fn open_termination_dialog(&mut self) -> bool {
         if self.online_blocking_issue != Some(OnlineBlockingIssue::DiscoveryPortOccupied)
             || self.minecraft_termination_dialog.open
         {
@@ -325,7 +325,7 @@ impl ToolsPageState {
         true
     }
 
-    pub(crate) fn dismiss_minecraft_termination_dialog(&mut self) -> bool {
+    pub(crate) fn dismiss_termination_dialog(&mut self) -> bool {
         if !self.minecraft_termination_dialog.open || self.minecraft_termination_dialog.pending {
             return false;
         }
@@ -334,7 +334,7 @@ impl ToolsPageState {
         true
     }
 
-    pub(crate) fn begin_minecraft_termination(&mut self) -> bool {
+    pub(crate) fn begin_termination(&mut self) -> bool {
         if !self.minecraft_termination_dialog.open || self.minecraft_termination_dialog.pending {
             return false;
         }
@@ -344,7 +344,7 @@ impl ToolsPageState {
         true
     }
 
-    pub(crate) fn finish_minecraft_termination(
+    pub(crate) fn finish_termination(
         &mut self,
         result: Result<(), SharedString>,
     ) -> bool {
@@ -386,14 +386,14 @@ impl ToolsPageState {
         true
     }
 
-    pub(crate) fn needs_nat_check(&self) -> bool {
+    pub(crate) fn nat_check_required(&self) -> bool {
         self.easytier_running
             && !self.nat_checking
             && (self.nat_udp_type.is_none() || self.nat_tcp_type.is_none())
     }
 
     pub(crate) fn begin_nat_check(&mut self) -> Option<u64> {
-        if !self.needs_nat_check() {
+        if !self.nat_check_required() {
             return None;
         }
 
@@ -561,11 +561,11 @@ mod tests {
             easytier_running: true,
             ..ToolsPageState::default()
         };
-        assert!(state.needs_nat_check());
+        assert!(state.nat_check_required());
 
         state.nat_udp_type = Some(0);
         state.nat_tcp_type = Some(0);
-        assert!(!state.needs_nat_check());
+        assert!(!state.nat_check_required());
     }
 
     #[test]
@@ -652,7 +652,7 @@ mod tests {
         let generation = state
             .begin_discovery_retry()
             .expect("port conflict should allow retry");
-        assert!(state.open_minecraft_termination_dialog());
+        assert!(state.open_termination_dialog());
 
         state.clear_online_session();
 

@@ -5,9 +5,9 @@ use std::collections::HashSet;
 
 pub(super) const RESULT_LOGO_BYTES_PER_ITEM: usize = 384 * 1024;
 
-pub(crate) struct CurseForgeResultsListView {
+pub(crate) struct ResultsListView {
     pub(crate) _subscriptions: Vec<Subscription>,
-    pub(crate) cached_page_card_props: Vec<CurseForgeResultCardProps>,
+    pub(crate) cached_page_card_props: Vec<ResultCardProps>,
     pub(crate) result_logo_cache: Entity<BoundedImageCache>,
     pub(crate) result_image_prefetch_task: Option<Task<anyhow::Result<()>>>,
     pub(crate) result_image_notify_task: Option<Task<anyhow::Result<()>>>,
@@ -27,7 +27,7 @@ pub(crate) struct CurseForgeResultsListView {
     pub(crate) last_image_prefetch_signature: (u64, usize, usize, usize, bool, bool, bool, usize),
 }
 
-impl CurseForgeResultsListView {
+impl ResultsListView {
     fn release_cached_result_cards(&mut self) {
         self.cached_page_card_props.clear();
         self.result_image_prefetch_task.take();
@@ -167,7 +167,7 @@ impl CurseForgeResultsListView {
                     );
 
                     let _ = cx.update_global(|state: &mut DownloadPageState, _cx| {
-                        clamp_curseforge_results_scroll_in_state(state)
+                        clamp_results_scroll(state)
                     });
 
                     let scroll_driven_only = current_tab == DownloadTab::ResourcePack
@@ -269,22 +269,22 @@ impl CurseForgeResultsListView {
     }
 }
 
-impl Render for CurseForgeResultsListView {
+impl Render for ResultsListView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
         let theme = cx.global::<crate::ui::state::theme::ThemeState>();
-        let colors = crate::ui::theme::colors::lerp_theme_colors(
-            &crate::ui::theme::colors::LightColors::colors(),
-            &crate::ui::theme::colors::DarkColors::colors(),
+        let colors = crate::ui::theme::lerp_theme_colors(
+            &crate::ui::theme::LightColors::theme(),
+            &crate::ui::theme::DarkColors::theme(),
             theme.factor(now),
             theme.accent,
         );
-        render_curseforge_results_list(self, &colors, window, cx)
+        render_results_list(self, &colors, window, cx)
     }
 }
 
 #[derive(Clone, PartialEq)]
-pub(crate) struct CurseForgeResultCardProps {
+pub(crate) struct ResultCardProps {
     pub(crate) mod_id: i32,
     pub(crate) title: SharedString,
     pub(crate) summary: SharedString,
@@ -315,7 +315,7 @@ pub(crate) fn render_result_logo_placeholder(colors: ThemeColors) -> AnyElement 
         .into_any_element()
 }
 
-fn curseforge_results_skeleton_block(
+fn skeleton_block(
     id: SharedString,
     colors: &ThemeColors,
     width: Pixels,
@@ -365,14 +365,14 @@ fn curseforge_results_skeleton_block(
         .into_any_element()
 }
 
-fn curseforge_results_skeleton_bar(
+fn skeleton_bar(
     colors: &ThemeColors,
     row: usize,
     name: &str,
     width: Pixels,
     height: Pixels,
 ) -> AnyElement {
-    curseforge_results_skeleton_block(
+    skeleton_block(
         SharedString::from(format!("curseforge-results-loading-{row}-{name}")),
         colors,
         width,
@@ -384,7 +384,7 @@ fn curseforge_results_skeleton_bar(
     )
 }
 
-fn curseforge_results_skeleton_card(colors: &ThemeColors, row: usize) -> Div {
+fn skeleton_card(colors: &ThemeColors, row: usize) -> Div {
     div()
         .w_full()
         .h(px(78.))
@@ -395,7 +395,7 @@ fn curseforge_results_skeleton_card(colors: &ThemeColors, row: usize) -> Div {
         .flex()
         .items_center()
         .gap(px(10.))
-        .child(curseforge_results_skeleton_block(
+        .child(skeleton_block(
             SharedString::from(format!("curseforge-results-loading-{row}-icon")),
             colors,
             px(42.),
@@ -412,20 +412,8 @@ fn curseforge_results_skeleton_card(colors: &ThemeColors, row: usize) -> Div {
                 .flex()
                 .flex_col()
                 .gap(px(4.))
-                .child(curseforge_results_skeleton_bar(
-                    colors,
-                    row,
-                    "title",
-                    px(220.),
-                    px(13.),
-                ))
-                .child(curseforge_results_skeleton_bar(
-                    colors,
-                    row,
-                    "summary",
-                    px(360.),
-                    px(11.),
-                ))
+                .child(skeleton_bar(colors, row, "title", px(220.), px(13.)))
+                .child(skeleton_bar(colors, row, "summary", px(360.), px(11.)))
                 .child(
                     div()
                         .w_full()
@@ -434,21 +422,9 @@ fn curseforge_results_skeleton_card(colors: &ThemeColors, row: usize) -> Div {
                         .gap(px(10.))
                         .min_w(px(0.))
                         .overflow_hidden()
-                        .child(curseforge_results_skeleton_bar(
-                            colors,
-                            row,
-                            "meta-author",
-                            px(120.),
-                            px(10.),
-                        ))
-                        .child(curseforge_results_skeleton_bar(
-                            colors,
-                            row,
-                            "meta-tag",
-                            px(80.),
-                            px(10.),
-                        ))
-                        .child(curseforge_results_skeleton_bar(
+                        .child(skeleton_bar(colors, row, "meta-author", px(120.), px(10.)))
+                        .child(skeleton_bar(colors, row, "meta-tag", px(80.), px(10.)))
+                        .child(skeleton_bar(
                             colors,
                             row,
                             "meta-downloads",
@@ -457,7 +433,7 @@ fn curseforge_results_skeleton_card(colors: &ThemeColors, row: usize) -> Div {
                         )),
                 ),
         )
-        .child(curseforge_results_skeleton_block(
+        .child(skeleton_block(
             SharedString::from(format!("curseforge-results-loading-{row}-action")),
             colors,
             px(92.),
@@ -469,17 +445,17 @@ fn curseforge_results_skeleton_card(colors: &ThemeColors, row: usize) -> Div {
         ))
 }
 
-fn curseforge_results_skeleton_row(colors: &ThemeColors, row: usize) -> Div {
+fn skeleton_row(colors: &ThemeColors, row: usize) -> Div {
     div()
         .w_full()
-        .h(px(super::CURSEFORGE_RESULT_CARD_PITCH_PX))
-        .min_h(px(super::CURSEFORGE_RESULT_CARD_PITCH_PX))
+        .h(px(super::RESULT_CARD_PITCH_PX))
+        .min_h(px(super::RESULT_CARD_PITCH_PX))
         .flex()
         .items_start()
-        .child(curseforge_results_skeleton_card(colors, row))
+        .child(skeleton_card(colors, row))
 }
 
-pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div {
+pub(crate) fn render_loading_placeholder(colors: &ThemeColors) -> Div {
     let skeleton_bar = |width: Pixels, height: Pixels| {
         div()
             .w(width)
@@ -667,7 +643,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
         )
 }
 
-pub(crate) fn render_curseforge_results_list_placeholder(colors: &ThemeColors) -> Div {
+pub(crate) fn render_results_placeholder(colors: &ThemeColors) -> Div {
     let skeleton_bar = |width: Pixels, height: Pixels| {
         div()
             .w(width)
@@ -760,12 +736,12 @@ pub(crate) fn render_curseforge_results_list_placeholder(colors: &ThemeColors) -
         .child(skeleton_card())
 }
 
-pub(crate) fn render_curseforge_results_list_placeholder_aligned(
+pub(crate) fn render_aligned_placeholder(
     colors: &ThemeColors,
     state: &DownloadPageState,
 ) -> Div {
     let viewport_height_px = state.curseforge_results_scroll.bounds().size.height / px(1.0);
-    let pitch_px = super::CURSEFORGE_RESULT_CARD_PITCH_PX.max(1.0);
+    let pitch_px = super::RESULT_CARD_PITCH_PX.max(1.0);
     let skeleton_count = ((viewport_height_px / pitch_px).ceil() as usize)
         .saturating_add(1)
         .clamp(3, 8);
@@ -779,8 +755,5 @@ pub(crate) fn render_curseforge_results_list_placeholder_aligned(
         .py(px(12.))
         .flex()
         .flex_col()
-        .children(
-            (0..skeleton_count)
-                .map(|row| curseforge_results_skeleton_row(colors, row).into_any_element()),
-        )
+        .children((0..skeleton_count).map(|row| skeleton_row(colors, row).into_any_element()))
 }

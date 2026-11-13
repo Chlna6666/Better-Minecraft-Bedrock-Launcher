@@ -3,13 +3,13 @@ use crate::ui::components::input::Input;
 use crate::ui::components::modal;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::AnimationExt as _;
 use gpui::*;
 use std::rc::Rc;
 
-use super::controls::persist_tools_online_settings;
+use super::controls::persist_settings;
 use super::widgets::{action_button, icon_button};
 
 type DismissAction = Rc<dyn Fn(&mut App)>;
@@ -51,7 +51,15 @@ pub(super) fn render_settings_overlay(
         )
         .expect("animation declares presentation properties");
 
-    Some(modal::modal_layer_dismissible(card, colors.backdrop, dismiss).into_any_element())
+    Some(
+        modal::dismissible_layer(
+            card,
+            colors.backdrop,
+            dismiss,
+            modal::DismissOptions::default(),
+        )
+        .into_any_element(),
+    )
 }
 
 fn render_settings_card(
@@ -168,7 +176,7 @@ fn render_settings_footer(colors: &ThemeColors, _i18n: &I18n) -> Div {
                 false,
             )
             .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                persist_tools_online_settings(cx);
+                persist_settings(cx);
                 cx.update_global(|state: &mut ToolsPageState, _cx| {
                     state.easytier_settings_open = false;
                 });
@@ -274,7 +282,7 @@ fn render_toggle_row(
             enabled,
             move |cx| {
                 cx.update_global(|state: &mut ToolsPageState, _cx| toggle(state));
-                persist_tools_online_settings(cx);
+                persist_settings(cx);
             },
         ))
 }

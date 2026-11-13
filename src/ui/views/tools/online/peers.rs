@@ -1,6 +1,6 @@
 use crate::ui::components::icon::themed_icon;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::tools::state::{
     OnlinePeerEntry, OnlinePeerRole, OnlinePlayerEntry, ToolsPageState,
 };

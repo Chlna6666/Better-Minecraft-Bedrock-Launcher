@@ -1,4 +1,5 @@
-use crate::core::minecraft::nbt::{LevelDatDocument, NbtTag};
+use crate::core::minecraft::level::LevelDatDocument;
+use bedrock_nbt::NbtTag;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum LevelDatFieldGroup {

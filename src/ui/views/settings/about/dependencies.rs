@@ -1,6 +1,6 @@
 use crate::ui::components::modal;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::SettingsPageState;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -65,8 +65,7 @@ pub(super) fn render_dependencies_modal(
     let (card_width, card_height) = dependency_modal_size(window_width, window_height);
     let scroll_handle = settings.about_dependencies_scroll_handle.clone();
 
-    let groups = parse_dependency_groups_with_metadata(CARGO_MANIFEST, DEPENDENCY_METADATA)
-        .unwrap_or_default();
+    let groups = parse_dependency_groups(CARGO_MANIFEST, DEPENDENCY_METADATA).unwrap_or_default();
     let dependency_count: usize = groups.iter().map(|group| group.items.len()).sum();
     let dependency_count = SharedString::from(dependency_count.to_string());
     let font_family = SharedString::from(crate::utils::font_settings::DEFAULT_APP_FONT_FAMILY);
@@ -220,7 +219,7 @@ pub(super) fn render_dependencies_modal(
             ),
         );
 
-    modal::modal_layer_dismissible(
+    modal::dismissible_layer(
         div()
             .w_full()
             .h_full()
@@ -231,6 +230,7 @@ pub(super) fn render_dependencies_modal(
             .child(card),
         overlay_background,
         close,
+        modal::DismissOptions::default(),
     )
 }
 
@@ -534,11 +534,7 @@ fn source_kind_label(_i18n: &I18n, source_kind: &str) -> SharedString {
     }
 }
 
-fn parse_dependency_groups(manifest: &str) -> Result<Vec<DependencyGroup>, toml::de::Error> {
-    parse_dependency_groups_with_metadata(manifest, &[])
-}
-
-fn parse_dependency_groups_with_metadata(
+fn parse_dependency_groups(
     manifest: &str,
     metadata: &[DependencyMetadata],
 ) -> Result<Vec<DependencyGroup>, toml::de::Error> {
@@ -756,7 +752,6 @@ fn dependency_value(value: &toml::Value) -> String {
 mod tests {
     use super::{
         DependencyMetadata, dependency_modal_size_px, parse_dependency_groups,
-        parse_dependency_groups_with_metadata,
     };
 
     #[test]
@@ -781,7 +776,7 @@ chrono = "0.4"
 winreg = "0.56"
 "#;
 
-        let groups = parse_dependency_groups(manifest).expect("manifest should parse");
+        let groups = parse_dependency_groups(manifest, &[]).expect("manifest should parse");
 
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].name, "dependencies");
@@ -822,7 +817,7 @@ gpui = { path = "crates/gpui" }
             },
         ];
 
-        let groups = parse_dependency_groups_with_metadata(manifest, &metadata)
+        let groups = parse_dependency_groups(manifest, &metadata)
             .expect("manifest should parse");
 
         let gpui = &groups[0].items[0];

@@ -1,6 +1,6 @@
 use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::{ProtonGdkRunnerEntry, SettingsPageState};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -14,7 +14,7 @@ struct ProtonGdkRuntimeSnapshot {
 }
 
 fn load_runtime_snapshot() -> ProtonGdkRuntimeSnapshot {
-    let config = crate::config::config::read_config().unwrap_or_default();
+    let config = crate::config::settings::read().unwrap_or_default();
     let mut runners = crate::core::linux_runtime::installed_proton_gdk_runners();
     let configured_path = std::path::PathBuf::from(&config.launcher.proton_gdk_runner);
     if configured_path.is_file()
@@ -62,14 +62,22 @@ fn load_runtime_snapshot() -> ProtonGdkRuntimeSnapshot {
     }
 }
 
-fn start_runner_snapshot(force: bool, cx: &mut App) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SnapshotRequest {
+    Ensure,
+    Refresh,
+}
+
+fn start_runner_snapshot(request: SnapshotRequest, cx: &mut App) {
     let request_id = cx.update_global(|state: &mut SettingsPageState, _cx| {
-        if !force && (state.proton_gdk_runners_loading || state.proton_gdk_runners_loaded) {
+        if request == SnapshotRequest::Ensure
+            && (state.proton_gdk_runners_loading || state.proton_gdk_runners_loaded)
+        {
             return None;
         }
         state.proton_gdk_runners_request_id = state.proton_gdk_runners_request_id.wrapping_add(1);
         state.proton_gdk_runners_loading = true;
-        if force {
+        if request == SnapshotRequest::Refresh {
             state.proton_gdk_runners_loaded = false;
         }
         Some(state.proton_gdk_runners_request_id)
@@ -79,7 +87,7 @@ fn start_runner_snapshot(force: bool, cx: &mut App) {
     };
 
     cx.spawn(async move |cx| {
-        let result = crate::tasks::runtime::run_io_blocking(load_runtime_snapshot).await;
+        let result = crate::tasks::runtime::blocking::run_io(load_runtime_snapshot).await;
         cx.update_global(|state: &mut SettingsPageState, _cx| {
             if state.proton_gdk_runners_request_id != request_id {
                 return;
@@ -107,11 +115,11 @@ fn start_runner_snapshot(force: bool, cx: &mut App) {
 }
 
 pub(super) fn ensure_runner_snapshot(cx: &mut App) {
-    start_runner_snapshot(false, cx);
+    start_runner_snapshot(SnapshotRequest::Ensure, cx);
 }
 
 fn refresh_runner_snapshot(cx: &mut App) {
-    start_runner_snapshot(true, cx);
+    start_runner_snapshot(SnapshotRequest::Refresh, cx);
 }
 
 pub(super) fn render(
@@ -373,7 +381,7 @@ fn source_option(
             if active {
                 return;
             }
-            match crate::config::config::update_config(|config| {
+            match crate::config::settings::update(|config| {
                 config.launcher.proton_gdk_source = source.config_value().to_string();
             }) {
                 Ok(()) => {
@@ -494,7 +502,7 @@ fn environment_overview(colors: &ThemeColors, i18n: &I18n, is_ready: bool) -> Di
 }
 
 fn start_latest_install(cx: &mut App) {
-    let source = crate::config::config::read_config()
+    let source = crate::config::settings::read()
         .map(|config| {
             crate::core::linux_runtime::ProtonGdkSource::from_config(
                 &config.launcher.proton_gdk_source,
@@ -525,12 +533,12 @@ fn start_latest_install(cx: &mut App) {
 }
 
 fn register_local_runner(window: &Window, cx: &mut App) {
-    let Some(folder) = crate::utils::file_picker::pick_directory_path_for_window(window) else {
+    let Some(folder) = crate::utils::file_picker::pick_directory_path(window) else {
         return;
     };
     let root = std::path::PathBuf::from(folder);
     cx.spawn(async move |cx| {
-        let executable = crate::tasks::runtime::run_io_blocking(move || {
+        let executable = crate::tasks::runtime::blocking::run_io(move || {
             [root.join("proton"), root.join("bin").join("proton")]
                 .into_iter()
                 .find(|candidate| candidate.is_file())
@@ -553,7 +561,7 @@ fn register_local_runner(window: &Window, cx: &mut App) {
                 }
             };
             let executable = executable.to_string_lossy().into_owned();
-            match crate::config::config::update_config(|config| {
+            match crate::config::settings::update(|config| {
                 config.launcher.proton_gdk_runner = executable.clone();
             }) {
                 Ok(()) => {
@@ -744,7 +752,7 @@ fn installed_runner_card(
                 return;
             }
             let path = executable_for_action.to_string_lossy().into_owned();
-            match crate::config::config::update_config(|config| {
+            match crate::config::settings::update(|config| {
                 config.launcher.proton_gdk_runner = path.clone();
             }) {
                 Ok(()) => {
@@ -817,11 +825,11 @@ fn empty_runner_card(colors: &ThemeColors, i18n: &I18n) -> Div {
 
 fn remove_runner(executable: &std::path::Path, selected: bool, cx: &mut App) {
     let executable = executable.to_path_buf();
-    let configured_runner = crate::config::config::read_config()
+    let configured_runner = crate::config::settings::read()
         .ok()
         .map(|config| std::path::PathBuf::from(config.launcher.proton_gdk_runner));
     let removal_task = gpui_tokio::Tokio::spawn_result(cx, async move {
-        crate::tasks::runtime::run_io_blocking(move || {
+        crate::tasks::runtime::blocking::run_io(move || {
             crate::core::linux_runtime::remove_managed_proton_gdk_runner(&executable)
         })
         .await
@@ -836,11 +844,11 @@ fn remove_runner(executable: &std::path::Path, selected: bool, cx: &mut App) {
                         .as_deref()
                         .is_some_and(|configured| configured.starts_with(&removed_root));
                 if should_clear_config
-                    && let Err(error) = crate::config::config::update_config(|config| {
+                    && let Err(error) = crate::config::settings::update(|config| {
                         config.launcher.proton_gdk_runner.clear();
                     })
                 {
-                    toast::push_async(
+                    toast::async_app::push(
                         cx,
                         toast::ToastKind::Error,
                         t!("Settings.proton_gdk.clear_default_failed", error = error),
@@ -848,7 +856,7 @@ fn remove_runner(executable: &std::path::Path, selected: bool, cx: &mut App) {
                     return anyhow::Ok(());
                 }
                 cx.update(|cx| refresh_runner_snapshot(cx))?;
-                toast::push_async(
+                toast::async_app::push(
                     cx,
                     toast::ToastKind::Success,
                     t!("Settings.proton_gdk.removed"),
@@ -856,11 +864,11 @@ fn remove_runner(executable: &std::path::Path, selected: bool, cx: &mut App) {
             }
             Ok(None) => {
                 if selected
-                    && let Err(error) = crate::config::config::update_config(|config| {
+                    && let Err(error) = crate::config::settings::update(|config| {
                         config.launcher.proton_gdk_runner.clear();
                     })
                 {
-                    toast::push_async(
+                    toast::async_app::push(
                         cx,
                         toast::ToastKind::Error,
                         t!("Settings.proton_gdk.clear_default_failed", error = error),
@@ -868,14 +876,14 @@ fn remove_runner(executable: &std::path::Path, selected: bool, cx: &mut App) {
                     return anyhow::Ok(());
                 }
                 cx.update(|cx| refresh_runner_snapshot(cx))?;
-                toast::push_async(
+                toast::async_app::push(
                     cx,
                     toast::ToastKind::Success,
                     t!("Settings.proton_gdk.unregistered"),
                 );
             }
             Err(error) => {
-                toast::push_async(
+                toast::async_app::push(
                     cx,
                     toast::ToastKind::Error,
                     t!("Settings.proton_gdk.remove_failed", error = error),

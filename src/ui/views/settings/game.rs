@@ -1,6 +1,6 @@
 use crate::ui::state::game_diagnostics::GameDiagnosticsState;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::{LauncherDisplayMode, SettingsPageState};
 use gpui::*;
 
@@ -56,7 +56,7 @@ pub(super) fn render_game_tab(
                     settings.launcher_display_mode = mode;
                     snapshot_from_state(settings)
                 });
-                spawn_persist_settings(snapshot, cx);
+                spawn_persist_settings(snapshot, None, cx);
             },
         ))
         .child(setting_toggle_row(
@@ -98,7 +98,7 @@ pub(super) fn render_game_tab(
                 .child(t!("GameCrash.settings.history"))
                 .on_click(|_, _, cx| {
                     cx.spawn(async move |cx| {
-                        let history = crate::tasks::runtime::run_io_blocking(|| {
+                        let history = crate::tasks::runtime::blocking::run_io(|| {
                             crate::core::minecraft::diagnostics::recent_reports(20, false)
                         })
                         .await

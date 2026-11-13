@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::ui::components::html_renderer::HtmlDocument;
+use crate::ui::components::html_renderer::{HtmlDocument, HtmlRenderOptions};
 use crate::ui::components::input::InputState;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -187,7 +187,7 @@ pub struct DownloadPageState {
     pub levilamina_support_loaded: bool,
     pub levilamina_support_loading: bool,
     pub levilamina_support_error: Option<SharedString>,
-    pub levilamina_support: crate::core::levilamina::LeviLaminaSupportDatabase,
+    pub levilamina_support: crate::core::levilamina::support::Database,
     pub game_rows_scroll: ScrollHandle,
     pub curseforge_sidebar_scroll: ScrollHandle,
     pub curseforge_results_scroll: ScrollHandle,
@@ -324,7 +324,7 @@ impl Default for DownloadPageState {
             levilamina_support_loaded: false,
             levilamina_support_loading: false,
             levilamina_support_error: None,
-            levilamina_support: crate::core::levilamina::LeviLaminaSupportDatabase::default(),
+            levilamina_support: crate::core::levilamina::support::Database::default(),
             game_rows_scroll: ScrollHandle::new(),
             curseforge_sidebar_scroll: ScrollHandle::new(),
             curseforge_results_scroll: ScrollHandle::new(),
@@ -486,14 +486,16 @@ impl DownloadPageState {
         *self = Self::default();
     }
 
-    pub fn set_curseforge_mod_page_description(&mut self, description: SharedString) {
+    pub fn set_mod_page_description(&mut self, description: SharedString) {
         let description_len = description.len();
-        let document =
-            crate::ui::components::html_renderer::parse_html_document(description.as_ref());
-        self.set_parsed_curseforge_mod_page_description(description_len, document);
+        let document = crate::ui::components::html_renderer::parse_document(
+            description.as_ref(),
+            &HtmlRenderOptions::default(),
+        );
+        self.set_curseforge_mod_page_document(description_len, document);
     }
 
-    pub fn set_parsed_curseforge_mod_page_description(
+    pub fn set_curseforge_mod_page_document(
         &mut self,
         description_len: usize,
         document: HtmlDocument,
@@ -572,7 +574,7 @@ impl DownloadPageState {
         self.curseforge_mod_page_error = None;
         self.curseforge_mod_page_mod_id = None;
         self.curseforge_mod_page_mod = None;
-        self.set_curseforge_mod_page_description(SharedString::from(""));
+        self.set_mod_page_description(SharedString::from(""));
         self.curseforge_install_open = false;
         self.curseforge_install_stage = CurseForgeInstallStage::Idle;
         self.curseforge_install_files_request_id =

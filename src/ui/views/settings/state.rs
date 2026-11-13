@@ -203,7 +203,7 @@ pub struct SettingsPageState {
     pub plugin_cached_locale: SharedString,
     pub plugin_readme_cache: BTreeMap<
         PluginReadmeCacheKey,
-        Option<Arc<crate::ui::components::markdown_renderer::MarkdownDocument>>,
+        Option<Arc<crate::ui::components::markdown::Document>>,
     >,
     pub plugin_config_cache: BTreeMap<PluginResourceCacheKey, Option<String>>,
     pub(super) plugin_config_schema_cache:
@@ -222,7 +222,7 @@ pub struct AboutSponsorEntry {
 impl Default for SettingsPageState {
     fn default() -> Self {
         let mut state = Self::unconfigured();
-        state.apply_config_values(&crate::config::config::get_default_config());
+        state.apply_config_values(&crate::config::settings::default_config());
         state.loaded = false;
         state
     }
@@ -364,18 +364,18 @@ impl SettingsPageState {
         }
     }
 
-    pub fn from_config(config: &crate::config::config::Config) -> Self {
+    pub fn from_config(config: &crate::config::settings::Config) -> Self {
         let mut state = Self::unconfigured();
         state.apply_config(config);
         state
     }
 
-    pub fn apply_config(&mut self, config: &crate::config::config::Config) {
+    pub fn apply_config(&mut self, config: &crate::config::settings::Config) {
         self.apply_config_values(config);
         self.loaded = true;
     }
 
-    fn apply_config_values(&mut self, config: &crate::config::config::Config) {
+    fn apply_config_values(&mut self, config: &crate::config::settings::Config) {
         self.debug = config.launcher.debug;
         self.gpui_trace = config.launcher.gpui_trace;
         self.frame_rate_mode = SharedString::from(crate::frame_rate::normalized_mode(
@@ -387,7 +387,7 @@ impl SettingsPageState {
         self.error_report_sentry_auto = config.launcher.error_report_sentry_auto;
         self.update_channel_nightly = matches!(
             config.launcher.update_channel,
-            crate::config::config::UpdateChannel::Nightly
+            crate::config::settings::UpdateChannel::Nightly
         );
         self.auto_check_updates = config.launcher.auto_check_updates;
         let log_management = config.launcher.log_management.normalized();
@@ -397,26 +397,26 @@ impl SettingsPageState {
         self.log_max_total_size_mb = log_management.max_total_size_mb;
         self.log_compression_level = log_management.compression_level;
         self.renderer_backend = SharedString::from(
-            crate::config::config::normalize_renderer_backend(&config.launcher.renderer_backend),
+            crate::config::settings::normalize_renderer_backend(&config.launcher.renderer_backend),
         );
         self.gpu_adapter_name = SharedString::from(
-            crate::config::config::normalize_gpu_adapter_name(&config.launcher.gpu_adapter_name),
+            crate::config::settings::normalize_gpu_adapter_name(&config.launcher.gpu_adapter_name),
         );
         self.download_multi_thread = config.launcher.download.multi_thread;
         self.download_auto_thread_count = config.launcher.download.auto_thread_count;
         self.download_max_threads = config.launcher.download.max_threads.clamp(1, 256);
         self.download_proxy_type =
             SharedString::from(match config.launcher.download.proxy.proxy_type {
-                crate::config::config::ProxyType::None => "none",
-                crate::config::config::ProxyType::System => "system",
-                crate::config::config::ProxyType::Http => "http",
-                crate::config::config::ProxyType::Socks5 => "socks5",
+                crate::config::settings::ProxyType::None => "none",
+                crate::config::settings::ProxyType::System => "system",
+                crate::config::settings::ProxyType::Http => "http",
+                crate::config::settings::ProxyType::Socks5 => "socks5",
             });
         self.download_github_source =
             SharedString::from(match config.launcher.download.github.source {
-                crate::config::config::GithubSource::Auto => "auto",
-                crate::config::config::GithubSource::Direct => "direct",
-                crate::config::config::GithubSource::Custom => "custom",
+                crate::config::settings::GithubSource::Auto => "auto",
+                crate::config::settings::GithubSource::Direct => "direct",
+                crate::config::settings::GithubSource::Custom => "custom",
             });
         self.download_github_custom_mirror =
             SharedString::from(config.launcher.download.github.custom_mirror.clone());
@@ -458,12 +458,12 @@ impl SettingsPageState {
         self.local_image_path = SharedString::from(config.custom_style.local_image_path.clone());
         self.network_image_url = SharedString::from(config.custom_style.network_image_url.clone());
         let font_source =
-            crate::config::config::normalize_font_source(&config.custom_style.font_source);
-        let font_source = if font_source == crate::config::config::FONT_SOURCE_SYSTEM
+            crate::config::settings::normalize_font_source(&config.custom_style.font_source);
+        let font_source = if font_source == crate::config::settings::FONT_SOURCE_SYSTEM
             && !crate::utils::font_settings::is_system_font_family(
                 &config.custom_style.system_font_family,
             ) {
-            crate::config::config::FONT_SOURCE_DEFAULT.to_string()
+            crate::config::settings::FONT_SOURCE_DEFAULT.to_string()
         } else {
             font_source
         };
@@ -473,7 +473,7 @@ impl SettingsPageState {
         self.system_font_family =
             SharedString::from(config.custom_style.system_font_family.clone());
         let background_blur =
-            crate::config::config::clamp_background_blur(config.custom_style.background_blur);
+            crate::config::settings::clamp_background_blur(config.custom_style.background_blur);
         self.background_blur_preview = background_blur;
         self.background_blur = background_blur;
         self.glass_effect_enabled = config.custom_style.glass_effect_enabled;
@@ -523,7 +523,7 @@ impl SettingsPageState {
     }
 
     pub fn commit_background_blur_preview(&mut self) -> bool {
-        let blur = crate::config::config::clamp_background_blur(self.background_blur_preview);
+        let blur = crate::config::settings::clamp_background_blur(self.background_blur_preview);
         self.background_blur_preview = blur;
         if (self.background_blur - blur).abs() <= f32::EPSILON {
             return false;
@@ -533,7 +533,7 @@ impl SettingsPageState {
     }
 
     pub fn has_releasable_route_state(&self) -> bool {
-        let blur = crate::config::config::clamp_background_blur(self.background_blur_preview);
+        let blur = crate::config::settings::clamp_background_blur(self.background_blur_preview);
         (self.background_blur - blur).abs() > f32::EPSILON
             || self.frame_rate_limit_input.is_some()
             || self.download_curseforge_api_base_input.is_some()
@@ -673,7 +673,7 @@ mod tests {
 
     #[test]
     fn default_state_uses_config_defaults_without_marking_loaded() {
-        let config = crate::config::config::get_default_config();
+        let config = crate::config::settings::default_config();
         let state = SettingsPageState::default();
 
         assert!(!state.loaded);

@@ -1,15 +1,14 @@
 use gpui::{App, SharedString, Window};
 
 use crate::core::minecraft::local_package::{
-    LOCAL_GAME_PACKAGE_EXTENSIONS, start_local_game_package_import,
+    LOCAL_GAME_PACKAGE_EXTENSIONS, start_import,
 };
 use crate::ui::components::toast;
-use crate::utils::file_picker::pick_file_path_with_filter_for_window;
+use crate::utils::file_picker::pick_file_path;
 
 pub(super) fn pick_and_import_local_version(window: &Window, cx: &mut App) {
     let file_filter = t!("DownloadPage.game_package_filter");
-    let Some(path) = pick_file_path_with_filter_for_window(
-        window,
+    let Some(path) = pick_file_path(Some(window),
         file_filter.as_ref(),
         LOCAL_GAME_PACKAGE_EXTENSIONS,
     ) else {
@@ -30,7 +29,7 @@ pub(super) fn pick_and_import_local_version(window: &Window, cx: &mut App) {
     }
 
     cx.spawn(async move |cx| {
-        let result = start_local_game_package_import(path).await;
+        let result = start_import(path).await;
         cx.update(|cx| match result {
             Ok(_) => toast::push(cx, t!("Import.game_import_started")),
             Err(error) => toast::error(cx, SharedString::from(error)),

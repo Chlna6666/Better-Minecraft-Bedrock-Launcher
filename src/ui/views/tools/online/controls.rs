@@ -1,13 +1,13 @@
 use crate::ui::components::icon::themed_icon;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::*;
 
-use super::online_state_text;
+use super::state_text;
 use super::widgets::icon_button;
 
-pub(crate) fn persist_tools_online_settings(cx: &mut App) {
+pub(crate) fn persist_settings(cx: &mut App) {
     let (bootstrap_peers, player_name, game_ports, disable_p2p) =
         cx.read_global(|state: &ToolsPageState, _cx| {
             (
@@ -19,8 +19,8 @@ pub(crate) fn persist_tools_online_settings(cx: &mut App) {
         });
 
     cx.spawn(async move |_cx| {
-        let result = crate::tasks::runtime::run_io_blocking(move || {
-            crate::config::config::update_config(|config| {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
+            crate::config::settings::update(|config| {
                 config.online.bootstrap_peers = bootstrap_peers;
                 config.online.player_name = player_name;
                 config.online.game_ports = game_ports;
@@ -122,7 +122,7 @@ fn render_session_identity(
                     div()
                         .text_size(px(12.))
                         .text_color(accent)
-                        .child(online_state_text(i18n, state)),
+                        .child(state_text(i18n, state)),
                 ),
         )
 }

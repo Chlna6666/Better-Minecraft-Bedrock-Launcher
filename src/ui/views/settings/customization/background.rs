@@ -2,7 +2,7 @@ use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::input::{Input, InputState};
 use crate::ui::components::slider::Slider;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::SettingsPageState;
 use crate::utils::file_picker::pick_background_image_path;
 use gpui::prelude::FluentBuilder as _;
@@ -10,15 +10,15 @@ use gpui::*;
 use tracing::warn;
 
 use crate::ui::views::settings::common::{
-    settings_action_button, settings_badge, settings_card, settings_card_header,
-    settings_control_box, settings_option_row_shell, settings_value_box, snapshot_from_state,
+    action_button, badge, card, card_header,
+    control_box, option_row_shell, value_box, snapshot_from_state,
     spawn_persist_background_blur, spawn_persist_settings,
 };
 
 const BACKGROUND_BLUR_STEP: f32 = 0.1;
 
 fn snap_background_blur(value: f32) -> f32 {
-    crate::config::config::clamp_background_blur(
+    crate::config::settings::clamp_background_blur(
         (value / BACKGROUND_BLUR_STEP).round() * BACKGROUND_BLUR_STEP,
     )
 }
@@ -46,16 +46,16 @@ pub(super) fn render_background_card(
     let is_local = state.background_option.as_ref() == "local";
     let is_network = state.background_option.as_ref() == "network";
 
-    settings_card(colors, "settings-custom-background")
+    card(colors, "settings-custom-background")
         .child(
-            settings_card_header(
+            card_header(
                 colors,
                 t!("CustomizationSettings.custom_background"),
                 t!("CustomizationSettings.custom_background_desc"),
             )
-            .child(settings_badge(colors, current_source_label)),
+            .child(badge(colors, current_source_label)),
         )
-        .child(background_source_row(
+        .child(source_row(
             colors,
             t!("CustomizationSettings.custom_background"),
             t!("CustomizationSettings.custom_background_desc"),
@@ -64,7 +64,7 @@ pub(super) fn render_background_card(
             selected_index,
             !is_local && !is_network,
         ))
-        .child(background_blur_row(
+        .child(blur_row(
             colors,
             t!("CustomizationSettings.background_blur"),
             t!("CustomizationSettings.background_blur_desc"),
@@ -100,7 +100,7 @@ pub(super) fn render_background_card(
         })
 }
 
-fn background_source_row(
+fn source_row(
     colors: &ThemeColors,
     label: SharedString,
     desc: SharedString,
@@ -109,7 +109,7 @@ fn background_source_row(
     selected_index: usize,
     active: bool,
 ) -> Div {
-    settings_option_row_shell(colors, label, desc, active).child(
+    option_row_shell(colors, label, desc, active).child(
         div()
             .w(px(420.))
             .flex()
@@ -139,22 +139,22 @@ fn background_source_row(
                         }
                         snapshot_from_state(state)
                     });
-                    spawn_persist_settings(snapshot, cx);
+                    spawn_persist_settings(snapshot, None, cx);
                 },
             )),
     )
 }
 
-fn background_blur_row(
+fn blur_row(
     colors: &ThemeColors,
     label: SharedString,
     desc: SharedString,
     value: f32,
 ) -> Div {
-    let value = crate::config::config::clamp_background_blur(value);
+    let value = crate::config::settings::clamp_background_blur(value);
     let value_label = SharedString::from(format!("{value:.1}px"));
 
-    settings_option_row_shell(colors, label, desc, false).child(
+    option_row_shell(colors, label, desc, false).child(
         div()
             .w(px(420.))
             .flex()
@@ -190,7 +190,7 @@ fn background_blur_row(
                     "settings-background-blur-slider",
                     colors,
                     0.0,
-                    crate::config::config::MAX_BACKGROUND_BLUR,
+                    crate::config::settings::MAX_BACKGROUND_BLUR,
                     value,
                     move |next_value, cx| {
                         let blur = snap_background_blur(next_value);
@@ -242,16 +242,16 @@ fn local_picker_row(
         current_path
     };
 
-    settings_option_row_shell(colors, label, desc, active).child(
+    option_row_shell(colors, label, desc, active).child(
             div()
                 .w(px(420.))
                 .flex()
                 .items_center()
                 .justify_end()
                 .gap(px(8.))
-                .child(settings_value_box(colors, display, active, px(300.)))
+                .child(value_box(colors, display, active, px(300.)))
                 .child(
-                    settings_action_button(colors, button_label, true)
+                    action_button(colors, button_label, true)
                         .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                             window.defer(cx, |_window, cx| {
                                 cx.spawn(async move |cx| {
@@ -268,7 +268,7 @@ fn local_picker_row(
                                     }
 
                                     let selected =
-                                        crate::tasks::runtime::run_io_blocking(
+                                        crate::tasks::runtime::blocking::run_io(
                                             pick_background_image_path,
                                         )
                                             .await;
@@ -304,13 +304,13 @@ fn local_picker_row(
                                     };
 
                                     let persist_result =
-                                        crate::tasks::runtime::run_io_blocking(move || {
-                                        crate::config::config::update_config(|cfg| {
+                                        crate::tasks::runtime::blocking::run_io(move || {
+                                        crate::config::settings::update(|cfg| {
                                             cfg.custom_style.local_image_path = path;
                                             cfg.custom_style.background_option =
                                                 "local".to_string();
                                             cfg.custom_style.background_blur =
-                                                crate::config::config::clamp_background_blur(blur);
+                                                crate::config::settings::clamp_background_blur(blur);
                                         })?;
                                         Ok::<(), std::io::Error>(())
                                     })
@@ -370,15 +370,15 @@ fn network_input_row(
             .into_any_element()
     };
 
-    settings_option_row_shell(colors, label, desc, active).child(
+    option_row_shell(colors, label, desc, active).child(
         div()
             .w(px(420.))
             .flex()
             .items_center()
             .justify_end()
             .gap(px(8.))
-            .child(settings_control_box(colors, active, px(320.), control))
-            .child(settings_action_button(
+            .child(control_box(colors, active, px(320.), control))
+            .child(action_button(
                 colors,
                 refresh_label,
                 !refresh_in_progress,

@@ -1,6 +1,6 @@
 use super::*;
 
-fn curseforge_mod_entry_to_query_data(
+fn mod_entry_to_query_data(
     mod_entry: crate::ui::views::download::state::CurseForgeModEntry,
 ) -> crate::core::curseforge::queries::CurseForgeModSummaryData {
     crate::core::curseforge::queries::CurseForgeModSummaryData {
@@ -20,7 +20,7 @@ fn curseforge_mod_entry_to_query_data(
     }
 }
 
-fn curseforge_mod_entry_from_query_data(
+fn mod_entry_from_query_data(
     mod_entry: crate::core::curseforge::queries::CurseForgeModSummaryData,
 ) -> crate::ui::views::download::state::CurseForgeModEntry {
     crate::ui::views::download::state::CurseForgeModEntry {
@@ -40,7 +40,7 @@ fn curseforge_mod_entry_from_query_data(
     }
 }
 
-fn curseforge_file_entries_from_query_data(
+fn file_entries_from_query(
     files: Vec<crate::core::curseforge::queries::CurseForgeFileData>,
 ) -> Vec<crate::ui::views::download::state::CurseForgeFileEntry> {
     files
@@ -63,26 +63,26 @@ fn curseforge_file_entries_from_query_data(
         .collect()
 }
 
-pub(super) fn render_curseforge_install_modal(
+pub(super) fn render_install_modal(
     colors: &ThemeColors,
     i18n: &I18n,
     state: &DownloadPageState,
     selected_folder: Option<SharedString>,
-    local_versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
+    local_versions: &crate::ui::hooks::local_versions::LocalVersionsSnapshot,
 ) -> AnyElement {
-    super::render_curseforge_install_modal(colors, i18n, state, selected_folder, local_versions)
+    super::render_install_modal(colors, i18n, state, selected_folder, local_versions)
 }
 
-pub(super) fn render_curseforge_mod_page_modal(
+pub(super) fn render_mod_page_modal(
     colors: &ThemeColors,
     i18n: &I18n,
     state: &DownloadPageState,
     detail_image_cache: &Entity<BoundedImageCache>,
     selected_folder: Option<SharedString>,
-    local_versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
+    local_versions: &crate::ui::hooks::local_versions::LocalVersionsSnapshot,
     owner_view: EntityId,
 ) -> AnyElement {
-    super::render_curseforge_mod_page_modal(
+    super::render_mod_page_modal(
         colors,
         i18n,
         state,
@@ -93,7 +93,7 @@ pub(super) fn render_curseforge_mod_page_modal(
     )
 }
 
-fn clone_curseforge_mod_entry_by_id(
+fn mod_entry_by_id(
     mod_id: i32,
     cx: &App,
 ) -> Option<crate::ui::views::download::state::CurseForgeModEntry> {
@@ -106,7 +106,7 @@ fn clone_curseforge_mod_entry_by_id(
     })
 }
 
-pub(super) fn close_curseforge_install_modal(cx: &mut App) {
+pub(super) fn close_install_modal(cx: &mut App) {
     cx.update_global(|state: &mut DownloadPageState, _cx| {
         state.curseforge_install_open = false;
         state.curseforge_install_stage =
@@ -117,7 +117,7 @@ pub(super) fn close_curseforge_install_modal(cx: &mut App) {
     });
 }
 
-pub(super) fn close_curseforge_mod_page(cx: &mut App) {
+pub(super) fn close_mod_page(cx: &mut App) {
     cx.update_global(|state: &mut DownloadPageState, _cx| {
         state.curseforge_mod_page_open = false;
         state.curseforge_mod_page_loading = false;
@@ -125,7 +125,7 @@ pub(super) fn close_curseforge_mod_page(cx: &mut App) {
         state.curseforge_mod_page_error = None;
         state.curseforge_mod_page_mod_id = None;
         state.curseforge_mod_page_mod = None;
-        state.set_curseforge_mod_page_description(SharedString::from(""));
+        state.set_mod_page_description(SharedString::from(""));
         state
             .curseforge_mod_page_scroll
             .set_offset(point(px(0.), px(0.)));
@@ -141,15 +141,15 @@ pub(crate) fn handle_close_overlay(cx: &mut App) {
     });
 
     if install_open {
-        close_curseforge_install_modal(cx);
+        close_install_modal(cx);
     } else if mod_page_open {
-        close_curseforge_mod_page(cx);
+        close_mod_page(cx);
     }
 }
 
 pub(super) fn default_install_target(
     selected_folder: Option<SharedString>,
-    local_versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
+    local_versions: &crate::ui::hooks::local_versions::LocalVersionsSnapshot,
 ) -> Option<SharedString> {
     selected_folder.or_else(|| {
         local_versions
@@ -162,7 +162,7 @@ pub(super) fn default_install_target(
 pub(super) fn default_install_target_for_file(
     file: &crate::ui::views::download::state::CurseForgeFileEntry,
     selected_folder: Option<SharedString>,
-    local_versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
+    local_versions: &crate::ui::hooks::local_versions::LocalVersionsSnapshot,
 ) -> Option<SharedString> {
     if let Some(selected_folder) = selected_folder
         && local_version_supports_file(selected_folder.as_ref(), file, local_versions)
@@ -181,7 +181,7 @@ pub(super) fn default_install_target_for_file(
 fn local_version_supports_file(
     folder: &str,
     file: &crate::ui::views::download::state::CurseForgeFileEntry,
-    local_versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
+    local_versions: &crate::ui::hooks::local_versions::LocalVersionsSnapshot,
 ) -> bool {
     local_versions.versions.iter().any(|version| {
         version.folder.as_ref() == folder && launch_version_supports_file(version, file)
@@ -245,15 +245,15 @@ fn numeric_version_parts(text: &str) -> Vec<u64> {
     parts
 }
 
-pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
-    let found = clone_curseforge_mod_entry_by_id(mod_id, cx);
+pub(super) fn open_mod_page(mod_id: i32, cx: &mut App) {
+    let found = mod_entry_by_id(mod_id, cx);
 
     let request_id = cx.update_global(|state: &mut DownloadPageState, _cx| {
         state.curseforge_mod_page_open = true;
         state.curseforge_mod_page_error = None;
         state.curseforge_mod_page_mod_id = Some(mod_id);
         state.curseforge_mod_page_mod = found.clone();
-        state.set_curseforge_mod_page_description(SharedString::from(""));
+        state.set_mod_page_description(SharedString::from(""));
         state.curseforge_mod_page_loading = true;
         state.curseforge_mod_page_request_id = state.curseforge_mod_page_request_id.wrapping_add(1);
         state
@@ -269,7 +269,7 @@ pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
         state.curseforge_mod_page_request_id
     });
 
-    let cached_mod_entry = found.map(curseforge_mod_entry_to_query_data);
+    let cached_mod_entry = found.map(mod_entry_to_query_data);
     let load_task = gpui_tokio::Tokio::spawn_result(cx, async move {
         crate::core::curseforge::queries::load_mod_page(mod_id, cached_mod_entry)
             .await
@@ -283,14 +283,15 @@ pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
                     mod_entry,
                     description_html,
                 } = page_data;
-                let mod_entry = curseforge_mod_entry_from_query_data(mod_entry);
+                let mod_entry = mod_entry_from_query_data(mod_entry);
                 let description = SharedString::from(description_html);
                 let description_len = description.len();
                 let parse_task = cx.background_spawn({
                     let description = description.clone();
                     async move {
-                        crate::ui::components::html_renderer::parse_html_document(
+                        crate::ui::components::html_renderer::parse_document(
                             description.as_ref(),
+                            &crate::ui::components::html_renderer::HtmlRenderOptions::default(),
                         )
                     }
                 });
@@ -304,7 +305,7 @@ pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
                     state.curseforge_mod_page_loading = false;
                     state.curseforge_mod_page_error = None;
                     state.curseforge_mod_page_mod = Some(mod_entry);
-                    state.set_parsed_curseforge_mod_page_description(description_len, document);
+                    state.set_curseforge_mod_page_document(description_len, document);
                 }) {
                     tracing::debug!("skip curseforge mod page update: {error}");
                 }
@@ -327,23 +328,19 @@ pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
     })
     .detach();
 
-    spawn_load_curseforge_install_files(mod_id, cx);
+    load_install_files(mod_id, cx);
 }
 
-pub(super) fn open_curseforge_install_modal_for_mod_id(
-    mod_id: i32,
-    default_target: Option<SharedString>,
-    cx: &mut App,
-) {
-    let Some(mod_entry) = clone_curseforge_mod_entry_by_id(mod_id, cx) else {
+pub(super) fn open_install_modal(mod_id: i32, default_target: Option<SharedString>, cx: &mut App) {
+    let Some(mod_entry) = mod_entry_by_id(mod_id, cx) else {
         tracing::debug!("skip curseforge install modal open for missing mod_id={mod_id}");
         return;
     };
 
-    open_curseforge_install_modal(mod_entry, default_target, cx);
+    show_install_modal(mod_entry, default_target, cx);
 }
 
-pub(super) fn open_curseforge_install_modal(
+pub(super) fn show_install_modal(
     mod_entry: crate::ui::views::download::state::CurseForgeModEntry,
     default_target: Option<SharedString>,
     cx: &mut App,
@@ -361,10 +358,10 @@ pub(super) fn open_curseforge_install_modal(
         state.curseforge_install_target_folder = default_target;
     });
 
-    spawn_load_curseforge_install_files(mod_entry.id, cx);
+    load_install_files(mod_entry.id, cx);
 }
 
-pub(super) fn open_curseforge_install_modal_for_file(
+pub(super) fn open_install_modal_for_file(
     mod_entry: crate::ui::views::download::state::CurseForgeModEntry,
     file_id: i32,
     default_target: Option<SharedString>,
@@ -383,7 +380,7 @@ pub(super) fn open_curseforge_install_modal_for_file(
     });
 }
 
-fn spawn_load_curseforge_install_files(mod_id: i32, cx: &mut App) {
+fn load_install_files(mod_id: i32, cx: &mut App) {
     let (game_version, request_id) = cx.update_global(|state: &mut DownloadPageState, _cx| {
         state.curseforge_install_files_request_id =
             state.curseforge_install_files_request_id.wrapping_add(1);
@@ -402,7 +399,7 @@ fn spawn_load_curseforge_install_files(mod_id: i32, cx: &mut App) {
         let result = load_task.await;
         match result {
             Ok(files) => {
-                let files = curseforge_file_entries_from_query_data(files);
+                let files = file_entries_from_query(files);
                 if let Err(error) = cx.update_global(|state: &mut DownloadPageState, _cx| {
                     let current_mod_id = state
                         .curseforge_install_mod

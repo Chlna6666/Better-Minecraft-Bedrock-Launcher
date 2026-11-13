@@ -4,7 +4,7 @@ use crate::ui::components::modal;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
-use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
 use gpui::*;
 use std::rc::Rc;
@@ -250,8 +250,8 @@ impl Render for SettingsPageView {
 
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme.factor(window.animation_time()),
             theme.accent,
         );
@@ -277,8 +277,8 @@ impl Render for SettingsContentView {
         let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme.factor(now),
             theme.accent,
         );
@@ -375,7 +375,7 @@ pub fn render_settings_overlay(
     accent_override: Option<Hsla>,
     i18n: &I18n,
     state: &SettingsPageState,
-    agreement_document: Arc<crate::ui::components::markdown_renderer::MarkdownDocument>,
+    agreement_document: Arc<crate::ui::components::markdown::Document>,
 ) -> Option<AnyElement> {
     if state.font_restart_confirm_open {
         return Some(render_font_restart_modal(colors, i18n));
@@ -409,7 +409,7 @@ pub fn render_settings_overlay(
     {
         let title = t!("UserAgreement.title");
         return Some(
-            crate::ui::overlays::user_agreement::render_user_agreement_modal(
+            crate::ui::overlays::user_agreement::render(
                 agreement_document,
                 window_width,
                 window_height,
@@ -442,7 +442,7 @@ fn render_font_restart_modal(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
     });
 
     let cancel_dismiss = dismiss.clone();
-    modal::modal_layer_dismissible(
+    modal::dismissible_layer(
         div()
             .w(px(460.))
             .max_w(px(460.))
@@ -573,6 +573,7 @@ fn render_font_restart_modal(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
             ),
         colors.backdrop,
         dismiss,
+        modal::DismissOptions::default(),
     )
     .into_any_element()
 }

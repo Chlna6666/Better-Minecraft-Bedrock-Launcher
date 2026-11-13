@@ -2,7 +2,7 @@ use crate::ui::animation::{spring_motion, spring_smooth};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::modal;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::{
     LauncherConnectivityItem, LauncherConnectivityStatus, SettingsPageState,
 };
@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use tracing::warn;
 
-use super::super::common::settings_card;
+use super::super::common::card;
 
 #[derive(Clone, Copy)]
 struct ConnectivityService {
@@ -76,14 +76,14 @@ const CONNECTIVITY_GROUPS: &[ConnectivityGroup] = &[
     },
 ];
 
-pub(super) fn launcher_connectivity_row(
+pub(super) fn row(
     colors: &ThemeColors,
     _i18n: &I18n,
     busy: bool,
 ) -> impl IntoElement {
     let can_open = !busy;
 
-    let mut row = settings_card(colors, "settings-launcher-connectivity")
+    let mut row = card(colors, "settings-launcher-connectivity")
         .overflow_hidden()
         .rounded(px(crate::ui::theme::tokens::radius::MD))
         .p(px(16.))
@@ -167,7 +167,7 @@ pub(super) fn render_connectivity_modal(
     }
 
     let release = Rc::new(release_launcher_connectivity_state);
-    let dismiss = Rc::new(close_launcher_connectivity_window);
+    let dismiss = Rc::new(close_window);
     let close_button = release.clone();
 
     let refresh = Rc::new(|cx: &mut App| {
@@ -299,7 +299,7 @@ pub(super) fn render_connectivity_modal(
                 .flex_wrap()
                 .items_start()
                 .gap(px(8.))
-                .child(connectivity_stat_chip(
+                .child(stat_chip(
                     colors,
                     t!("Connectivity.stats.total"),
                     total_count,
@@ -308,25 +308,25 @@ pub(super) fn render_connectivity_modal(
                         ..colors.text_secondary
                     },
                 ))
-                .child(connectivity_stat_chip(
+                .child(stat_chip(
                     colors,
                     t!("Connectivity.stats.running"),
                     loading_count,
                     colors.accent,
                 ))
-                .child(connectivity_stat_chip(
+                .child(stat_chip(
                     colors,
                     t!("Connectivity.stats.success"),
                     success_count,
                     colors.stat_green_text,
                 ))
-                .child(connectivity_stat_chip(
+                .child(stat_chip(
                     colors,
                     t!("Connectivity.stats.error"),
                     error_count,
                     colors.danger,
                 ))
-                .child(connectivity_stat_chip(
+                .child(stat_chip(
                     colors,
                     t!("Connectivity.stats.pending"),
                     pending_count,
@@ -379,7 +379,7 @@ pub(super) fn render_connectivity_modal(
         .expect("translation and opacity are declared presentation properties");
 
     Some(
-        modal::modal_layer_dismissible_with_cleanup(
+        modal::dismissible_layer(
             div()
                 .w_full()
                 .h_full()
@@ -389,14 +389,14 @@ pub(super) fn render_connectivity_modal(
                 .justify_center()
                 .child(animated_card),
             hsla(0., 0., 0., 0.32),
-            release,
             dismiss,
+            modal::DismissOptions::default().on_cleanup(release),
         )
         .into_any_element(),
     )
 }
 
-fn connectivity_initial_items() -> Vec<LauncherConnectivityItem> {
+fn initial_items() -> Vec<LauncherConnectivityItem> {
     let mut items = Vec::new();
     for (group_index, group) in CONNECTIVITY_GROUPS.iter().enumerate() {
         for (item_index, service) in group.services.iter().enumerate() {
@@ -422,7 +422,7 @@ fn spawn_run_connectivity_tests(cx: &mut App) {
         settings.launcher_connectivity_req_id =
             settings.launcher_connectivity_req_id.saturating_add(1);
         settings.launcher_connectivity_running = true;
-        settings.launcher_connectivity_items = connectivity_initial_items();
+        settings.launcher_connectivity_items = initial_items();
         Some(settings.launcher_connectivity_req_id)
     }) {
         Some(req_id) => req_id,
@@ -461,7 +461,7 @@ fn spawn_run_connectivity_tests(cx: &mut App) {
         let mut probe_results = FuturesUnordered::new();
         for (group_index, item_index, url) in test_probes {
             probe_results.push(cx.background_spawn(async move {
-                let result = crate::utils::network::test_network_connectivity_blocking(url);
+                let result = crate::utils::network::measure_response_latency(url);
                 (group_index, item_index, Some(result))
             }));
         }
@@ -523,7 +523,7 @@ fn release_launcher_connectivity_state(cx: &mut App) {
     });
 }
 
-fn close_launcher_connectivity_window(cx: &mut App) {
+fn close_window(cx: &mut App) {
     cx.update_global(|settings: &mut SettingsPageState, _cx| {
         settings.launcher_connectivity_open = false;
     });
@@ -579,7 +579,7 @@ fn render_connectivity_list(
                                 ("launcher-connectivity-row", group_index * 100 + item_index);
                             match item.map(|it| it.status) {
                                 Some(LauncherConnectivityStatus::Loading) => {
-                                    connectivity_item_row(colors, i18n, service, item)
+                                    item_row(colors, i18n, service, item)
                                         .with_visual_animation(
                                             row_id,
                                             spring_motion(spring_smooth()).with_property(
@@ -593,7 +593,7 @@ fn render_connectivity_list(
                                         )
                                         .expect("translation and opacity are declared presentation properties")
                                 }
-                                _ => connectivity_item_row(colors, i18n, service, item)
+                                _ => item_row(colors, i18n, service, item)
                                     .with_visual_animation(
                                         row_id,
                                         spring_motion(spring_smooth()).with_property(
@@ -615,7 +615,7 @@ fn render_connectivity_list(
     list
 }
 
-fn connectivity_item_row(
+fn item_row(
     colors: &ThemeColors,
     _i18n: &I18n,
     service: &ConnectivityService,
@@ -724,7 +724,7 @@ fn connectivity_item_row(
         .child(badge)
 }
 
-fn connectivity_stat_chip(
+fn stat_chip(
     colors: &ThemeColors,
     label: SharedString,
     value: usize,

@@ -87,8 +87,7 @@ impl ManagePageView {
 
     pub(super) fn import_version_package(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.defer(cx, move |window, cx| {
-            let Some(path) = pick_file_path_with_filter_for_window(
-                window,
+            let Some(path) = pick_file_path(Some(window),
                 "Packages",
                 LOCAL_GAME_PACKAGE_EXTENSIONS,
             ) else {
@@ -139,7 +138,7 @@ impl ManagePageView {
         let view_handle = cx.entity().downgrade();
         window.defer(cx, move |window, cx| {
             if import_context.tab == ManageTab::Cape {
-                let paths = pick_file_paths_with_filter_for_window(
+                let paths = pick_file_paths(
                     window,
                     picker.filter_name,
                     picker.extensions,
@@ -149,7 +148,7 @@ impl ManagePageView {
                     let _ = view_handle.update(cx, |this, cx| this.start_cape_import(paths, cx));
                 }
             } else if import_context.tab == ManageTab::Mod {
-                let paths = pick_file_paths_with_filter_for_window(
+                let paths = pick_file_paths(
                     window,
                     picker.filter_name,
                     picker.extensions,
@@ -561,7 +560,7 @@ pub(super) fn start_version_imports(paths: Vec<String>, cx: &mut App) {
     let _i18n = cx.global::<I18n>().clone();
     cx.spawn(async move |cx| {
         for path in paths {
-            let task_id = start_local_game_package_import(path).await;
+            let task_id = start_import(path).await;
 
             cx.update(|cx| match task_id {
                 Ok(task_id) => {

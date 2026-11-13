@@ -64,8 +64,8 @@ impl Render for ManageTabBodyView {
                 let now = window.animation_time();
                 let theme = parent_cx.global::<ThemeState>();
                 let colors = lerp_theme_colors(
-                    &LightColors::colors(),
-                    &DarkColors::colors(),
+                    &LightColors::theme(),
+                    &DarkColors::theme(),
                     theme.factor(now),
                     theme.accent,
                 );

@@ -1,7 +1,7 @@
 use crate::plugins::ui_dsl::render_validated_view_tree;
 use crate::ui::components::page_shell::{page_frame, page_panel};
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{DarkColors, LightColors, lerp_theme_colors};
+use crate::ui::theme::{DarkColors, LightColors, lerp_theme_colors};
 use gpui::{Context, IntoElement, ParentElement, Render, Styled, Subscription, Window, div, px};
 
 pub struct PluginPageView {
@@ -33,8 +33,8 @@ impl Render for PluginPageView {
         let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
+            &LightColors::theme(),
+            &DarkColors::theme(),
             theme.factor(now),
             theme.accent,
         );

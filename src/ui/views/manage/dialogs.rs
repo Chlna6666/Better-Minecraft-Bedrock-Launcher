@@ -145,7 +145,7 @@ impl ManagePageView {
                     Ok(task_id) => {
                         self.confirm_dialog = None;
                         let _i18n = cx.global::<I18n>().clone();
-                        watch_manage_asset_mutation_task(
+                        watch_asset_mutation(
                             task_id,
                             t!("ManagePage.asset_deleted"),
                             cx,
@@ -189,7 +189,7 @@ impl ManagePageView {
                 entry,
             } => {
                 let view_handle = cx.entity().downgrade();
-                match data::start_delete_external_server_task(
+                match data::start_delete_server(
                     &version,
                     &config,
                     selected_gdk_user.as_ref().map(SharedString::as_ref),
@@ -347,7 +347,7 @@ impl ManagePageView {
                 ) {
                     Ok(task_id) => {
                         self.value_prompt = None;
-                        watch_manage_asset_mutation_task(
+                        watch_asset_mutation(
                             task_id,
                             t!("ManagePage.inject_delay_updated"),
                             cx,
@@ -411,7 +411,7 @@ impl ManagePageView {
                 ) {
                     Ok(task_id) => {
                         self.mod_type_dialog = None;
-                        watch_manage_asset_mutation_task(
+                        watch_asset_mutation(
                             task_id,
                             t!("ManagePage.mod_type_updated"),
                             cx,
@@ -452,7 +452,7 @@ pub(super) fn render_confirm_dialog(
     i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
-    let modal_dismiss_handle = modal::ModalDismissHandle::new();
+    let modal_dismiss_handle = modal::DismissHandle::new();
     let dismiss_handle = view_handle.clone();
     let dismiss = Rc::new(move |cx: &mut App| {
         let _ = dismiss_handle.update(cx, |this, cx| {
@@ -492,7 +492,7 @@ pub(super) fn render_value_prompt(
     i18n: &I18n,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
-    let modal_dismiss_handle = modal::ModalDismissHandle::new();
+    let modal_dismiss_handle = modal::DismissHandle::new();
     let dismiss_handle = view_handle.clone();
     let dismiss = Rc::new(move |cx: &mut App| {
         let _ = dismiss_handle.update(cx, |this, cx| {
@@ -620,7 +620,7 @@ pub(super) fn render_mod_type_dialog(
         },
     );
 
-    let modal_dismiss_handle = modal::ModalDismissHandle::new();
+    let modal_dismiss_handle = modal::DismissHandle::new();
     let dismiss_handle = view_handle.clone();
     let dismiss = Rc::new(move |cx: &mut App| {
         let _ = dismiss_handle.update(cx, |this, cx| {
@@ -638,7 +638,7 @@ pub(super) fn render_mod_type_dialog(
     let cancel_dismiss = modal_dismiss_handle.clone();
     let save_view_handle = view_handle.clone();
 
-    let content = dialog::dialog_container(colors, px(540.))
+    let content = dialog::container(colors, px(540.))
         .child(
             div()
                 .flex_1()
@@ -727,7 +727,7 @@ pub(super) fn render_mod_type_dialog(
                     )
                 }),
         )
-        .child(dialog::dialog_actions(
+        .child(dialog::actions(
             colors,
             ghost_button(colors, "manage-mod-type-cancel", t!("common.cancel")).on_mouse_down(
                 MouseButton::Left,
@@ -752,11 +752,11 @@ pub(super) fn render_mod_type_dialog(
             }),
         ));
 
-    modal::modal_layer_dismissible_with_handle(
-        modal_dismiss_handle,
+    modal::dismissible_layer(
         content,
         colors.backdrop,
         dismiss,
+        modal::DismissOptions::default().with_handle(modal_dismiss_handle),
     )
     .into_any_element()
 }

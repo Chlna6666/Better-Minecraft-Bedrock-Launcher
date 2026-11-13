@@ -1,4 +1,4 @@
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
 use gpui::{AnimationExt as _, *};
 use std::f32::consts::TAU;

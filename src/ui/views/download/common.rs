@@ -1,4 +1,4 @@
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
@@ -135,7 +135,7 @@ pub(crate) fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div
     crate::ui::components::page_shell::page_frame(content)
 }
 
-pub(crate) fn format_bytes(bytes: u64) -> String {
+pub(crate) fn format(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;

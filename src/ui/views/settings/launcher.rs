@@ -2,14 +2,14 @@ use crate::i18n::Locale;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::components::{dropdown::Dropdown, dropdown::DropdownOption};
 use crate::ui::state::i18n::{I18n, LanguageController, LanguagePreference, LanguageRequest};
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::settings::state::SettingsPageState;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use tracing::warn;
 
 use super::common::{
-    settings_action_button, settings_card, settings_card_header, settings_sub_row,
+    action_button, card, card_header, sub_row,
     snapshot_from_state, spawn_persist_settings,
 };
 use super::rows::{setting_dropdown_row, setting_toggle_row, tab_title};
@@ -31,10 +31,10 @@ pub(super) fn render_launcher_tab(
         .flex_col()
         .gap(px(10.))
         .child(tab_title(colors, section.clone()))
-        .child(launcher_language_row(colors, i18n, state))
-        .child(launcher_render_engine_row(colors, i18n, state))
-        .child(launcher_gpu_adapter_row(colors, i18n, state))
-        .child(launcher_frame_rate_row(colors, state))
+        .child(language_row(colors, i18n, state))
+        .child(render_engine_row(colors, i18n, state))
+        .child(gpu_adapter_row(colors, i18n, state))
+        .child(frame_rate_row(colors, state))
         .child(setting_toggle_row(
             colors,
             section.clone(),
@@ -80,14 +80,14 @@ pub(super) fn render_launcher_tab(
             "settings-launcher-error-report-sentry-auto",
             |settings| settings.error_report_sentry_auto = !settings.error_report_sentry_auto,
         ))
-        .child(launcher_sentry_test_row(colors, i18n, state))
+        .child(sentry_test_row(colors, i18n, state))
         .child(logs::render(colors, i18n, state))
-        .child(connectivity::launcher_connectivity_row(
+        .child(connectivity::row(
             colors,
             i18n,
             state.launcher_connectivity_running,
         ))
-        .child(launcher_auto_update_group(colors, i18n, state))
+        .child(auto_update_group(colors, i18n, state))
         .child(download::render_download_settings(colors, i18n, state))
 }
 
@@ -101,7 +101,7 @@ pub(super) fn render_connectivity_modal(
     connectivity::render_connectivity_modal(colors, i18n, state, window_width, window_height)
 }
 
-fn launcher_frame_rate_row(colors: &ThemeColors, state: &SettingsPageState) -> impl IntoElement {
+fn frame_rate_row(colors: &ThemeColors, state: &SettingsPageState) -> impl IntoElement {
     let values = vec![
         SharedString::from("auto"),
         SharedString::from("vsync"),
@@ -140,12 +140,12 @@ fn launcher_frame_rate_row(colors: &ThemeColors, state: &SettingsPageState) -> i
                 settings.frame_rate_mode = new_mode;
                 super::common::snapshot_from_state(settings)
             });
-            super::common::spawn_persist_settings(snapshot, cx);
+            super::common::spawn_persist_settings(snapshot, None, cx);
         },
     );
-    super::common::settings_card(colors, "settings-launcher-fps")
+    super::common::card(colors, "settings-launcher-fps")
         .child(
-            super::common::settings_card_header(
+            super::common::card_header(
                 colors,
                 t!("LauncherSettings.fps.title"),
                 t!("LauncherSettings.fps.description"),
@@ -153,7 +153,7 @@ fn launcher_frame_rate_row(colors: &ThemeColors, state: &SettingsPageState) -> i
             .child(dropdown),
         )
         .when(state.frame_rate_mode.as_ref() == "custom", |this| {
-            this.child(super::common::settings_sub_numeric_row(
+            this.child(super::common::sub_numeric_row(
                 colors,
                 t!("LauncherSettings.fps.limit"),
                 state.frame_rate_limit_input.as_ref(),
@@ -170,27 +170,27 @@ fn launcher_frame_rate_row(colors: &ThemeColors, state: &SettingsPageState) -> i
         )
 }
 
-fn launcher_sentry_test_row(
+fn sentry_test_row(
     colors: &ThemeColors,
     _i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
     let enabled = state.error_report_sentry_enabled;
 
-    settings_card(colors, "settings-launcher-error-report-sentry-test")
+    card(colors, "settings-launcher-error-report-sentry-test")
         .px(px(16.))
         .py(px(16.))
         .flex()
         .items_center()
         .justify_between()
         .gap(px(22.))
-        .child(super::common::settings_card_text(
+        .child(super::common::card_text(
             colors,
             t!("LauncherSettings.error_report_sentry_test"),
             t!("LauncherSettings.error_report_sentry_test_desc"),
         ))
         .child(
-            settings_action_button(
+            action_button(
                 colors,
                 t!("LauncherSettings.error_report_sentry_test_send"),
                 enabled,
@@ -213,9 +213,9 @@ fn spawn_sentry_test_log(cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = cx
             .background_spawn(async move {
-                let config = crate::config::config::read_config()?;
+                let config = crate::config::settings::read()?;
                 let Some(dsn) =
-                    crate::config::config::resolved_error_report_sentry_dsn(&config.launcher)
+                    crate::config::settings::resolved_error_report_sentry_dsn(&config.launcher)
                 else {
                     anyhow::bail!("sentry dsn is not configured");
                 };
@@ -225,8 +225,8 @@ fn spawn_sentry_test_log(cx: &mut App) {
             .await;
 
         match result {
-            Ok(()) => toast::resolve_async(cx, toast_id, ToastKind::Success, success_message),
-            Err(error) => toast::resolve_async(
+            Ok(()) => toast::async_app::resolve(cx, toast_id, ToastKind::Success, success_message),
+            Err(error) => toast::async_app::resolve(
                 cx,
                 toast_id,
                 ToastKind::Error,
@@ -241,7 +241,7 @@ fn spawn_sentry_test_log(cx: &mut App) {
 
 fn resolve_locale_for_code(code: &str) -> Locale {
     if code.trim().eq_ignore_ascii_case("auto") {
-        let system_language = crate::utils::system_info::get_system_language();
+        let system_language = crate::utils::system_info::system_language();
         Locale::from_code(&system_language).unwrap_or(Locale::EnUs)
     } else {
         Locale::from_code(code).unwrap_or(Locale::EnUs)
@@ -272,9 +272,9 @@ fn submit_language(request: LanguageRequest, cx: &mut App) {
         let mut current = (request_id, request);
         loop {
             let (id, request) = current;
-            let save_result = crate::tasks::runtime::run_io_blocking({
+            let save_result = crate::tasks::runtime::blocking::run_io({
                 let code = request.preference.code().to_string();
-                move || crate::config::config::persist_language(&code)
+                move || crate::config::settings::persist_language(&code)
             })
             .await;
             let error_text = match save_result {
@@ -324,7 +324,7 @@ fn submit_language(request: LanguageRequest, cx: &mut App) {
                         t!("LauncherSettings.language_save_failed", error = error)
                     })
                     .unwrap_or_else(|_| SharedString::from("Language save failed"));
-                toast::resolve_async(cx, toast_id, ToastKind::Error, message);
+                toast::async_app::resolve(cx, toast_id, ToastKind::Error, message);
                 break;
             }
 
@@ -338,7 +338,7 @@ fn submit_language(request: LanguageRequest, cx: &mut App) {
                     i18n.t_key(crate::i18n_key!("LauncherSettings.language_saved"))
                 })
                 .unwrap_or_else(|_| SharedString::from("Language saved"));
-            toast::resolve_async(cx, toast_id, ToastKind::Success, message);
+            toast::async_app::resolve(cx, toast_id, ToastKind::Success, message);
             break;
         }
 
@@ -347,7 +347,7 @@ fn submit_language(request: LanguageRequest, cx: &mut App) {
     .detach();
 }
 
-fn launcher_language_row(
+fn language_row(
     colors: &ThemeColors,
     i18n: &I18n,
     state: &SettingsPageState,
@@ -431,7 +431,7 @@ fn launcher_language_row(
 }
 
 fn render_engine_label(_i18n: &I18n, renderer_backend: &SharedString) -> SharedString {
-    match crate::config::config::normalize_renderer_backend(renderer_backend.as_ref()).as_str() {
+    match crate::config::settings::normalize_renderer_backend(renderer_backend.as_ref()).as_str() {
         "vulkan" => t!("LauncherSettings.render_engine.vulkan"),
         "dx12" => t!("LauncherSettings.render_engine.dx12"),
         "dx11" => t!("LauncherSettings.render_engine.dx11"),
@@ -440,7 +440,7 @@ fn render_engine_label(_i18n: &I18n, renderer_backend: &SharedString) -> SharedS
     }
 }
 
-fn launcher_render_engine_row(
+fn render_engine_row(
     colors: &ThemeColors,
     i18n: &I18n,
     state: &SettingsPageState,
@@ -466,7 +466,7 @@ fn launcher_render_engine_row(
     ];
 
     let current =
-        crate::config::config::normalize_renderer_backend(state.renderer_backend.as_ref());
+        crate::config::settings::normalize_renderer_backend(state.renderer_backend.as_ref());
     let options = values
         .iter()
         .map(|value| DropdownOption::from(render_engine_label(i18n, value)))
@@ -501,12 +501,12 @@ fn launcher_render_engine_row(
             let snapshot = cx.update_global(|settings: &mut SettingsPageState, _cx| {
                 settings.renderer_backend = SharedString::from(renderer_backend);
                 settings.gpu_adapter_name =
-                    SharedString::from(crate::config::config::default_gpu_adapter_name());
+                    SharedString::from(crate::config::settings::default_gpu_adapter_name());
                 settings.gpu_adapter_options.clear();
                 snapshot_from_state(settings)
             });
             super::tabs::refresh_gpu_adapters_for_backend(selected_renderer_backend, cx);
-            spawn_persist_settings(snapshot, cx);
+            spawn_persist_settings(snapshot, None, cx);
         },
     )
 }
@@ -514,7 +514,7 @@ fn launcher_render_engine_row(
 fn gpu_adapter_options(state: &SettingsPageState) -> Vec<SharedString> {
     let mut values = Vec::with_capacity(state.gpu_adapter_options.len() + 2);
     values.push(SharedString::from(
-        crate::config::config::default_gpu_adapter_name(),
+        crate::config::settings::default_gpu_adapter_name(),
     ));
     for adapter_name in &state.gpu_adapter_options {
         if adapter_name.as_ref().trim().is_empty()
@@ -548,7 +548,7 @@ fn gpu_adapter_label(_i18n: &I18n, adapter_name: &SharedString) -> SharedString 
     }
 }
 
-fn launcher_gpu_adapter_row(
+fn gpu_adapter_row(
     colors: &ThemeColors,
     i18n: &I18n,
     state: &SettingsPageState,
@@ -556,7 +556,7 @@ fn launcher_gpu_adapter_row(
     let section = t!("Settings.tabs.launcher");
     let values = gpu_adapter_options(state);
     let current =
-        crate::config::config::normalize_gpu_adapter_name(state.gpu_adapter_name.as_ref());
+        crate::config::settings::normalize_gpu_adapter_name(state.gpu_adapter_name.as_ref());
 
     let options = values
         .iter()
@@ -592,12 +592,12 @@ fn launcher_gpu_adapter_row(
                 settings.gpu_adapter_name = SharedString::from(gpu_adapter_name);
                 snapshot_from_state(settings)
             });
-            spawn_persist_settings(snapshot, cx);
+            spawn_persist_settings(snapshot, None, cx);
         },
     )
 }
 
-fn launcher_update_channel_dropdown(
+fn update_channel_dropdown(
     colors: &ThemeColors,
     _i18n: &I18n,
     state: &SettingsPageState,
@@ -627,19 +627,19 @@ fn launcher_update_channel_dropdown(
                 settings.update_channel_nightly = nightly;
                 snapshot_from_state(settings)
             });
-            spawn_persist_settings(snapshot, cx);
+            spawn_persist_settings(snapshot, None, cx);
         },
     )
 }
 
-fn launcher_auto_update_group(
+fn auto_update_group(
     colors: &ThemeColors,
     i18n: &I18n,
     state: &SettingsPageState,
 ) -> impl IntoElement {
-    settings_card(colors, "settings-launcher-auto-update")
+    card(colors, "settings-launcher-auto-update")
         .child(
-            settings_card_header(
+            card_header(
                 colors,
                 t!("LauncherSettings.auto_check_updates"),
                 t!("LauncherSettings.auto_check_updates_desc"),
@@ -653,15 +653,15 @@ fn launcher_auto_update_group(
                         settings.auto_check_updates = !settings.auto_check_updates;
                         snapshot_from_state(settings)
                     });
-                    spawn_persist_settings(snapshot, cx);
+                    spawn_persist_settings(snapshot, None, cx);
                 },
             )),
         )
         .when(state.auto_check_updates, |this| {
-            this.child(settings_sub_row(
+            this.child(sub_row(
                 colors,
                 t!("LauncherSettings.update_channel"),
-                launcher_update_channel_dropdown(colors, i18n, state),
+                update_channel_dropdown(colors, i18n, state),
             ))
         })
 }

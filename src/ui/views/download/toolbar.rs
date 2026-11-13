@@ -4,7 +4,7 @@ use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::Input;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::download::state::{
     DownloadChannelFilter, DownloadLoaderFilter, DownloadPageState, DownloadTab,
 };
@@ -195,7 +195,7 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) ->
 
                     if let Some(ref search_input) = s.search_input {
                         let _ = search_input.update(cx, |st, cx| {
-                            st.set_placeholder(placeholder.clone(), window, cx);
+                            st.set_placeholder(placeholder.clone(), cx);
                         });
                     }
 
@@ -447,7 +447,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
         .on_click(|_ev, window, cx: &mut App| {
             let refreshed_tab = cx.read_global(|s: &DownloadPageState, _cx| s.tab);
             if refreshed_tab == DownloadTab::Mod {
-                crate::core::levilamina::clear_support_cache();
+                crate::core::levilamina::support::clear_cache();
                 let native_source = cx.read_global(|state: &DownloadPageState, _cx| {
                     state.levilauncher_selected_loader == "native"
                 });
@@ -466,7 +466,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                     s.versions.clear();
                 }
                 DownloadTab::ResourcePack => {
-                    crate::ui::views::download::curseforge::schedule_invalidate_results_in_state(
+                    crate::ui::views::download::curseforge::schedule_invalidation(
                         s, cx,
                     );
                     s.curseforge_loaded = false;
@@ -605,7 +605,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                         })
                     };
                     cx.update_global(|s: &mut DownloadPageState, cx| {
-                        crate::ui::views::download::curseforge::apply_results_query_change_in_state(
+                        crate::ui::views::download::curseforge::apply_query_change(
                             s,
                             cx,
                             |s| {
@@ -620,7 +620,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                             },
                         );
                     });
-                    crate::ui::views::download::curseforge::ensure_results_loaded(false, cx);
+                    crate::ui::views::download::curseforge::ensure_results_loaded(cx);
                 },
             )
             .with_height(px(CONTROL_HEIGHT))
@@ -664,7 +664,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                         _ => 1,
                     };
                     cx.update_global(|s: &mut DownloadPageState, cx| {
-                        crate::ui::views::download::curseforge::apply_results_query_change_in_state(
+                        crate::ui::views::download::curseforge::apply_query_change(
                             s,
                             cx,
                             |s| {
@@ -679,7 +679,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                             },
                         );
                     });
-                    crate::ui::views::download::curseforge::ensure_results_loaded(false, cx);
+                    crate::ui::views::download::curseforge::ensure_results_loaded(cx);
                 },
             )
             .with_height(px(CONTROL_HEIGHT))

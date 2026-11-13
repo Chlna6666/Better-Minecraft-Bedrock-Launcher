@@ -1,5 +1,5 @@
 use crate::ui::components::icon::themed_icon;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 

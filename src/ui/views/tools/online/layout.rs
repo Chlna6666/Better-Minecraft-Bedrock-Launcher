@@ -1,7 +1,7 @@
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -181,7 +181,7 @@ pub(in crate::ui::views::tools) fn primary_game_port(state: &ToolsPageState) -> 
 pub(in crate::ui::views::tools) fn normalized_player_name(state: &ToolsPageState) -> String {
     let value = state.player_name.as_ref().trim();
     if value.is_empty() {
-        crate::config::config::default_online_player_name()
+        crate::config::settings::default_online_player_name()
     } else {
         value.chars().take(32).collect()
     }
@@ -225,10 +225,7 @@ pub(in crate::ui::views::tools) fn append_online_log(message: impl AsRef<str>, c
     });
 }
 
-pub(in crate::ui::views::tools) fn online_state_text(
-    i18n: &I18n,
-    state: &ToolsPageState,
-) -> SharedString {
+pub(in crate::ui::views::tools) fn state_text(i18n: &I18n, state: &ToolsPageState) -> SharedString {
     if state.online_operation.is_busy() {
         state.online_operation.localized_label(i18n)
     } else if state.online_error.is_some() {

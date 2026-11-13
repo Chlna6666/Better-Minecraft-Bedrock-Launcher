@@ -1,6 +1,6 @@
 use super::{VersionSettingsModalState, VersionSettingsToggle, levilamina, render_toggle_card};
 use crate::ui::state::i18n::I18n;
-use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::ThemeColors;
 use crate::ui::views::manage::ManagePageView;
 use gpui::*;
 

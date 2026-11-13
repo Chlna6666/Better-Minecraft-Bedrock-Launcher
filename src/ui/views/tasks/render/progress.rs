@@ -8,7 +8,7 @@ enum TaskProgressMode {
     Idle(f32),
 }
 
-fn progress_mode(status: &str, percent_opt: Option<f64>) -> TaskProgressMode {
+fn mode(status: &str, percent_opt: Option<f64>) -> TaskProgressMode {
     if status == "running" {
         return percent_opt
             .map(|percent| TaskProgressMode::Determinate((percent as f32 / 100.0).clamp(0.0, 1.0)))
@@ -78,7 +78,7 @@ fn downloaded_range_fill(segment: &DownloadedRangeSegment, fill: Hsla) -> AnyEle
         .into_any_element()
 }
 
-pub(crate) fn progress_panel(
+pub(crate) fn panel(
     _task_id: &str,
     kind: TaskVisualKind,
     colors: &ThemeColors,
@@ -87,7 +87,7 @@ pub(crate) fn progress_panel(
     downloaded_segments: Option<&[DownloadedRangeSegment]>,
     thread_segments: &[ThreadSegment],
 ) -> Div {
-    let progress_mode = progress_mode(status, percent_opt);
+    let mode = mode(status, percent_opt);
     let fill = task_status_accent(status, kind, colors);
     let track = Hsla {
         a: if status == "completed" { 0.18 } else { 0.10 },
@@ -102,7 +102,7 @@ pub(crate) fn progress_panel(
         .relative()
         .overflow_hidden();
 
-    match (progress_mode, downloaded_segments.is_some()) {
+    match (mode, downloaded_segments.is_some()) {
         (_, true) => {}
         (TaskProgressMode::Determinate(progress), false) => {
             let fill_bar = div()
@@ -170,7 +170,7 @@ pub(crate) fn progress_panel(
 
 #[cfg(test)]
 mod tests {
-    use super::{TaskProgressMode, ThreadSegmentGeometry, progress_mode, thread_segment_geometry};
+    use super::{TaskProgressMode, ThreadSegmentGeometry, mode, thread_segment_geometry};
     use crate::ui::views::tasks::ThreadSegment;
 
     fn segment(
@@ -190,11 +190,11 @@ mod tests {
     #[test]
     fn determinate_running_progress_uses_clamped_ratio() {
         assert_eq!(
-            progress_mode("running", Some(125.0)),
+            mode("running", Some(125.0)),
             TaskProgressMode::Determinate(1.0)
         );
         assert_eq!(
-            progress_mode("running", Some(25.0)),
+            mode("running", Some(25.0)),
             TaskProgressMode::Determinate(0.25)
         );
     }
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn missing_running_ratio_selects_indeterminate_mode() {
         assert_eq!(
-            progress_mode("running", None),
+            mode("running", None),
             TaskProgressMode::Indeterminate
         );
     }
@@ -210,10 +210,10 @@ mod tests {
     #[test]
     fn terminal_states_do_not_use_shimmer_modes() {
         assert_eq!(
-            progress_mode("completed", Some(100.0)),
+            mode("completed", Some(100.0)),
             TaskProgressMode::Idle(1.0)
         );
-        assert_eq!(progress_mode("error", None), TaskProgressMode::Idle(0.0));
+        assert_eq!(mode("error", None), TaskProgressMode::Idle(0.0));
     }
 
     #[test]

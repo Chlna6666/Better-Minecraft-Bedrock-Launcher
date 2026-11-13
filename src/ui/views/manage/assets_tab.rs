@@ -202,7 +202,7 @@ impl ManagePageView {
 
     pub(super) fn open_asset_folder(&mut self, path: SharedString, cx: &mut Context<Self>) {
         cx.spawn(async move |_handle, cx| {
-            if let Err(error) = crate::utils::open_path::open_path(path.to_string()).await {
+            if let Err(error) = crate::utils::open_path::open(path.to_string()).await {
                 let _ = cx.update(|cx| {
                     toast::error(cx, SharedString::from(error));
                 });
@@ -474,7 +474,7 @@ mod tests {
                 .h(px(self.height))
                 .child(self.manager.update(cx, |_, cx| {
                     render_asset_list(
-                        &LightColors::colors(),
+                        &LightColors::theme(),
                         &self.version,
                         &self.state,
                         &self.indices,
