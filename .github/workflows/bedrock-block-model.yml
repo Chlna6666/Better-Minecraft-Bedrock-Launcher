@@ -36,5 +36,7 @@ jobs:
         run: cargo test -p bedrock-block-model --lib
       - name: Test BSC model library packer
         run: python3 scripts/test_pack_bsc_model_library.py
-      - name: Test real embedded geometry pool library
-        run: cargo test -p bedrock-block-model --test capture_library
+      - name: Test embedded Geometry Pool integration
+        run: |
+          cargo test -p bedrock-block-model --lib capture_embedded_zip_reads_indexed_binary_pool
+          cargo test -p bedrock-block-model --lib real_embedded_capture_resolves_at_least_one_complete_renderable_recipe

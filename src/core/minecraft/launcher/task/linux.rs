@@ -3,7 +3,7 @@ use crate::core::linux_runtime::{
     RunnerKind, resolve_runner, runner_runtime_root, validate_proton_game_runtime,
 };
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskOptions, append_task_log, finish_task, register_abort_handle,
+    ProgressUpdate, TaskOptions, append_task_log, create_task, finish_task, register_abort_handle,
     set_total, update_progress,
 };
 use std::collections::VecDeque;

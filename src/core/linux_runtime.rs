@@ -1,7 +1,8 @@
 use crate::downloads::manager::{DownloadOptions, DownloadRequest, DownloaderManager};
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskOptions, append_task_log, finish_task, set_task_message, update_progress,
+    ProgressUpdate, TaskOptions, append_task_log, create_task, finish_task, set_task_message,
+    update_progress,
 };
 use crate::utils::file_ops;
 use std::env;

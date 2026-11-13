@@ -45,7 +45,7 @@ if ($manifest -notmatch '(?m)^gpui-sidecar\s*=\s*\["dep:gpui"\]') {
 if ($manifest -notmatch '(?m)^gpui\s*=\s*\{[^\r\n]*optional\s*=\s*true') {
     $failures.Add("gpui-3d must mark the gpui dependency optional")
 }
-if ($librarySource -notmatch '(?s)#\[cfg\(feature\s*=\s*"gpui-sidecar"\)\]\s*mod scene_view;') {
+if ($librarySource -notmatch '(?s)#\[cfg\(feature\s*=\s*"gpui-sidecar"\)\]\s*(?:pub\s+)?mod scene_view;') {
     $failures.Add("gpui-3d must gate the scene_view adapter behind gpui-sidecar")
 }
 if ($librarySource -notmatch '(?s)#\[cfg\(feature\s*=\s*"gpui-sidecar"\)\]\s*pub use scene_view::') {

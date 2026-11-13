@@ -59,7 +59,7 @@ use crate::platform::{
     linux::{
         DEFAULT_CURSOR_ICON_NAME, LinuxClient, is_within_click_distance, log_cursor_icon_warning,
         open_uri_internal,
-        platform::{DOUBLE_CLICK_INTERVAL, SCROLL_LINES},
+        DOUBLE_CLICK_INTERVAL, SCROLL_LINES,
         reveal_path_internal,
         xdg_desktop_portal::{Event as XdpEvent, XdpEventSource},
         xkb_compose_state,
