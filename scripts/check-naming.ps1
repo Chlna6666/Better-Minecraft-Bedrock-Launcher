@@ -74,7 +74,7 @@ foreach ($file in $rustFiles) {
         $pathAttributeCount++
         if (-not (Test-PathAttributeAllowed -File $file -Source $source -Attribute $attribute)) {
             $lineNumber = $source.Substring(0, $attribute.Index).Split("`n").Count
-            $pathViolations.Add("$($file.FullName):${lineNumber}: #[path] is restricted to tests and benchmarks")
+            $pathViolations.Add("$($file.FullName):${lineNumber}: #[path] is restricted to tests, benchmarks, and build-support code")
         }
     }
 }
