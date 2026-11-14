@@ -312,12 +312,14 @@ pub fn upscale_and_clean_texture_image(image: DynamicImage) -> DynamicImage {
 pub fn alpha_mask_texture_image(image: DynamicImage) -> DynamicImage {
     let (width, height) = (image.width(), image.height());
     let rgba = image.to_rgba8();
-    let mut mask = image::RgbImage::new(width, height);
+    let mut mask = image::RgbaImage::new(width, height);
     for (x, y, pixel) in rgba.enumerate_pixels() {
         let alpha = if pixel[3] > 10 { 255 } else { 0 };
-        mask.put_pixel(x, y, image::Rgb([alpha, alpha, alpha]));
+        // Both luminance and the actual alpha channel carry the cutout mask.
+        // OBJ importers may use either interpretation for map_d.
+        mask.put_pixel(x, y, image::Rgba([alpha, alpha, alpha, alpha]));
     }
-    let mask_image = DynamicImage::ImageRgb8(mask);
+    let mask_image = DynamicImage::ImageRgba8(mask);
     if width <= 64 && height <= 64 && width > 0 && height > 0 {
         let scale = (128 / width.max(1)).max(1);
         if scale > 1 {
@@ -992,8 +994,9 @@ pub fn material_library_string<'a>(
                     .alpha_texture_path
                     .as_deref()
                     .unwrap_or(texture_path);
-                let _ = writeln!(output, "map_d -imfchan a {alpha_texture_path}");
-                let _ = writeln!(output, "map_tr -imfchan a {alpha_texture_path}");
+                // map_d without parser-specific options is recognized by Blender and
+                // standard OBJ readers; the mask stores matching RGB and A values.
+                let _ = writeln!(output, "map_d {alpha_texture_path}");
             }
         }
         output.push('\n');
@@ -4373,6 +4376,19 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn alpha_mask_export_writes_real_alpha_channel_and_matching_luminance() {
+        let source = image::RgbaImage::from_raw(
+            2,
+            1,
+            vec![255, 255, 255, 0, 255, 255, 255, 255],
+        )
+        .expect("valid fixture");
+        let mask = alpha_mask_texture_image(DynamicImage::ImageRgba8(source)).to_rgba8();
+        assert_eq!(mask.get_pixel(0, 0).0, [0, 0, 0, 0]);
+        assert_eq!(mask.get_pixel(mask.width() - 1, 0).0, [255, 255, 255, 255]);
+    }
+
+    #[test]
     fn material_library_should_emit_alpha_map_for_cutout_detail_textures() {
         let material = ObjMaterial::from_preview_color(
             "minecraft_redstone_wire__mat_up",
@@ -4387,7 +4403,7 @@ mod tests {
 
         assert!(
             material_library
-                .contains("map_d -imfchan a textures/blocks/redstone_dust_cross_alpha.png")
+                .contains("map_d textures/blocks/redstone_dust_cross_alpha.png")
         );
         assert_eq!(
             material.alpha_texture_path.as_deref(),
@@ -4524,20 +4540,20 @@ mod tests {
 
         let material_library = material_library_string(materials);
 
-        assert!(material_library.contains("map_d -imfchan a textures/blocks/iron_bars_alpha.png"));
-        assert!(material_library.contains("map_d -imfchan a textures/blocks/glass_alpha.png"));
+        assert!(material_library.contains("map_d textures/blocks/iron_bars_alpha.png"));
+        assert!(material_library.contains("map_d textures/blocks/glass_alpha.png"));
         assert!(
-            material_library.contains("map_d -imfchan a textures/blocks/glass_black_alpha.png")
+            material_library.contains("map_d textures/blocks/glass_black_alpha.png")
         );
         assert!(
-            material_library.contains("map_d -imfchan a textures/blocks/glass_pane_top_alpha.png")
+            material_library.contains("map_d textures/blocks/glass_pane_top_alpha.png")
         );
         assert!(
-            material_library.contains("map_d -imfchan a textures/blocks/flower_rose_alpha.png")
+            material_library.contains("map_d textures/blocks/flower_rose_alpha.png")
         );
-        assert!(material_library.contains("map_d -imfchan a textures/blocks/web_alpha.png"));
+        assert!(material_library.contains("map_d textures/blocks/web_alpha.png"));
         assert!(
-            material_library.contains("map_d -imfchan a textures/blocks/copper_grate_alpha.png")
+            material_library.contains("map_d textures/blocks/copper_grate_alpha.png")
         );
         assert!(material_library.contains("d 1.000000"));
         assert!(material_library.contains("illum 4"));
