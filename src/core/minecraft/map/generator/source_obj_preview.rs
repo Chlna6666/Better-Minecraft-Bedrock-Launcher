@@ -447,6 +447,50 @@ mod tests {
     }
 
     #[test]
+    fn obj_cutout_cape_material_is_double_sided_and_depth_writing() {
+        use bedrock_voxel::{ObjMaterial, SourceTexture};
+        let model = ObjModel {
+            triangles: vec![ObjTriangle {
+                vertices: [
+                    ObjVertex {
+                        position: [0.0, 0.0, 0.0],
+                        uv: Some([0.0, 0.0]),
+                    },
+                    ObjVertex {
+                        position: [1.0, 0.0, 0.0],
+                        uv: Some([1.0, 0.0]),
+                    },
+                    ObjVertex {
+                        position: [0.0, 1.0, 0.0],
+                        uv: Some([0.0, 1.0]),
+                    },
+                ],
+                material: Some(0),
+            }],
+            materials: vec![ObjMaterial {
+                diffuse: None,
+                opacity: 1.0,
+                diffuse_texture: Some("predecoded.png".into()),
+            }],
+        };
+        let texture = std::sync::Arc::new(SourceTexture {
+            width: 2,
+            height: 2,
+            pixels: std::sync::Arc::from(vec![
+                0, 0, 0, 0, 255, 255, 255, 255,
+                255, 255, 255, 255, 255, 255, 255, 128,
+            ]),
+            has_alpha: true,
+        });
+        let preview = super::build_preview(&model, &[Some(texture)]).unwrap();
+        let scene = preview.scene_view.scene();
+        let material = &scene.node(scene.roots()[0]).unwrap().materials[0];
+        assert_eq!(material.alpha_mode, gpui_3d::AlphaMode::Mask);
+        assert!(material.double_sided);
+        assert_eq!(material.shading_model, gpui_3d::ShadingModel::Unlit);
+    }
+
+    #[test]
     fn imported_preview_reuses_meshes_but_never_uses_pbr_lighting() {
         let mut source = gpui_3d::Scene::new();
         let mesh = std::sync::Arc::new(gpui_3d::Mesh::cube());
