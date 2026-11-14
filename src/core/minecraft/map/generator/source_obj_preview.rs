@@ -8,7 +8,7 @@ use std::{collections::HashMap, sync::Arc};
 use bedrock_voxel::load_obj_textures;
 use bedrock_voxel::{ObjModel, SourceTexture};
 use gpui_3d::{
-    AlphaMode, Camera, ImportedScene, Mat4, Material, Mesh, MeshPart, Node, ProjectionRegion,
+    AlphaMode, Camera, ImportedScene, Mat4, Material, MaterialId, Mesh, MeshPart, Node, ProjectionRegion,
     Scene, SceneView, ShadingModel, TextureAsset, Vec2, Vec3, Vertex,
 };
 
@@ -231,6 +231,7 @@ fn unlit_import_preview_scene(source: &Scene) -> Result<Scene, String> {
         output: &mut Scene,
         source_id: gpui_3d::NodeId,
         parent: Option<gpui_3d::NodeId>,
+        materials_cache: &mut HashMap<MaterialId, Arc<Material>>,
     ) -> Result<(), String> {
         let node = source
             .node(source_id)
@@ -239,18 +240,22 @@ fn unlit_import_preview_scene(source: &Scene) -> Result<Scene, String> {
             .materials
             .iter()
             .map(|original| {
-                // Give preview materials their own identity. Reusing a PBR
-                // MaterialId with different GPU-visible contents is unsafe
-                // for the renderer's retained cache.
-                let mut flat = Material::new();
-                flat.base_color = original.base_color;
-                flat.alpha_mode = original.alpha_mode;
-                flat.alpha_cutoff = original.alpha_cutoff;
-                flat.albedo_texture = original.albedo_texture;
-                flat.double_sided = original.double_sided;
-                flat.front_face = original.front_face;
-                flat.shading_model = ShadingModel::Unlit;
-                Arc::new(flat)
+                materials_cache
+                    .entry(original.id())
+                    .or_insert_with(|| {
+                        // Preserve sharing, but never reuse a PBR MaterialId
+                        // for a different GPU-visible unlit material.
+                        let mut flat = Material::new();
+                        flat.base_color = original.base_color;
+                        flat.alpha_mode = original.alpha_mode;
+                        flat.alpha_cutoff = original.alpha_cutoff;
+                        flat.albedo_texture = original.albedo_texture;
+                        flat.double_sided = original.double_sided;
+                        flat.front_face = original.front_face;
+                        flat.shading_model = ShadingModel::Unlit;
+                        Arc::new(flat)
+                    })
+                    .clone()
             })
             .collect::<Vec<_>>();
         let mut copied = Node::new()
@@ -264,14 +269,15 @@ fn unlit_import_preview_scene(source: &Scene) -> Result<Scene, String> {
         // do not participate in a neutral source-geometry preview.
         let id = output.insert(parent, copied).map_err(|error| error.to_string())?;
         for &child in source.children(source_id).unwrap_or_default() {
-            append_node(source, output, child, Some(id))?;
+            append_node(source, output, child, Some(id), materials_cache)?;
         }
         Ok(())
     }
 
     let mut output = Scene::new();
+    let mut materials_cache = HashMap::new();
     for &root in source.roots() {
-        append_node(source, &mut output, root, None)?;
+        append_node(source, &mut output, root, None, &mut materials_cache)?;
     }
     Ok(output)
 }
