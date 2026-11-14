@@ -77,6 +77,7 @@ impl View {
                         bounds: signature.bounds,
                         block_models: None,
                         cancel: Some(preview_cancel_for_load),
+                        for_export: false,
                     },
                     {
                         let mut event_sender = event_sender.clone();
