@@ -1893,7 +1893,7 @@ fn render_content(
             a: 0.30,
             ..colors.surface
         })
-        .child(render_pager(window, cx, colors));
+        .child(render_pager(cx, colors));
 
     shell(div())
         .flex()
@@ -2471,7 +2471,7 @@ fn adjacent_page(page_index: usize, total_pages: usize, forward: bool) -> Option
     }
 }
 
-fn render_pager(window: &mut Window, cx: &mut App, colors: &ThemeColors) -> Div {
+fn render_pager(cx: &mut App, colors: &ThemeColors) -> Div {
     let state = cx.global::<DownloadPageState>();
     let _i18n = cx.global::<I18n>().clone();
 

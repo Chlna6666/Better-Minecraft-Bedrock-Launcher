@@ -846,7 +846,6 @@ pub(super) fn render_game_panel(
                     ..colors.surface
                 })
                 .child(render_pager(
-                    window,
                     cx,
                     colors,
                     page_rows.len(),
@@ -858,7 +857,6 @@ pub(super) fn render_game_panel(
 }
 
 fn render_pager(
-    window: &mut Window,
     cx: &mut App,
     colors: &ThemeColors,
     showing: usize,

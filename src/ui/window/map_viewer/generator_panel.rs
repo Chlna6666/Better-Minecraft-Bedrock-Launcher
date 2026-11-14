@@ -33,7 +33,7 @@ pub(super) struct GeneratorPanelState {
     /// Real OBJ triangle scene retained only while this source is current.
     pub(super) original_preview:
         Option<Arc<ObjSourcePreview>>,
-    preview_options: Option<ObjVoxelOptions>,
+    pub(super) preview_options: Option<ObjVoxelOptions>,
     preview_refresh_task: Option<Task<anyhow::Result<()>>>,
     preview_generation: u64,
     preview_refresh_pending: bool,
@@ -140,7 +140,7 @@ impl View {
         {
             return;
         }
-        self.clear_obj_live_preview(cx);
+        self.clear_obj_live_preview();
         self.start_obj_live_preview_now(cx);
     }
 
@@ -159,7 +159,7 @@ impl View {
             return;
         }
         self.cancel_obj_preview_refresh();
-        self.clear_obj_live_preview(cx);
+        self.clear_obj_live_preview();
         self.generator.preview_refresh_pending = true;
         let generation = self.generator.preview_generation;
         self.generator.preview_refresh_task = Some(cx.spawn(async move |handle, cx| {
@@ -185,7 +185,7 @@ impl View {
         self.generator.preview_refresh_pending = false;
     }
 
-    fn clear_obj_live_preview(&mut self, cx: &mut Context<Self>) {
+    fn clear_obj_live_preview(&mut self) {
         // A parameter change rebuilds voxels, not the input OBJ. Keep its
         // immutable source scene resident to avoid preview flicker/GPU reupload.
         // set_generator_obj_source explicitly clears it when the path changes.
