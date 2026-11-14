@@ -21,6 +21,9 @@ use crate::tasks::task_manager::ProgressUpdate;
 use crate::tasks::{runtime, task_manager};
 
 const PREVIEW_LIMIT_BYTES: usize = 128 * 1024 * 1024;
+// .mcstructure serializes two dense i32 block-index layers (8 bytes/cell).
+// Check their extent before allocating the dense structure and its NBT copy.
+const MAX_PREVIEW_STRUCTURE_CELLS: u64 = 16_000_000;
 const PREVIEW_TTL: Duration = Duration::from_secs(15 * 60);
 
 /// Source-specific settings for an in-memory block preview.
@@ -141,6 +144,39 @@ pub fn release(task_id: &str) {
         store.original_obj.remove(task_id);
         store.discarded.insert(task_id.to_owned(), Instant::now());
     }
+}
+
+fn check_preview_structure_extent(
+    plan: &bedrock_world::editor::BlockPlacementPlan,
+) -> Result<(), String> {
+    let mut min = [i64::MAX; 3];
+    let mut max = [i64::MIN; 3];
+    for block in plan.blocks() {
+        let pos = [
+            i64::from(block.offset.x),
+            i64::from(block.offset.y),
+            i64::from(block.offset.z),
+        ];
+        for axis in 0..3 {
+            min[axis] = min[axis].min(pos[axis]);
+            max[axis] = max[axis].max(pos[axis]);
+        }
+    }
+    let mut volume = 1_u64;
+    for axis in 0..3 {
+        let extent = u64::try_from(max[axis] - min[axis] + 1)
+            .map_err(|_| "方块预览尺寸无效".to_owned())?;
+        volume = volume
+            .checked_mul(extent)
+            .ok_or_else(|| "方块预览范围溢出".to_owned())?;
+    }
+    if volume > MAX_PREVIEW_STRUCTURE_CELLS {
+        return Err(format!(
+            "模型空心转换成功，但其方块分布范围需要 {} 万格结构数据，超过预览的 128 MiB 内存限制；请降低尺寸或缩小模型包围盒",
+            volume.div_ceil(10_000),
+        ));
+    }
+    Ok(())
 }
 
 /// Starts a visible preview task that never writes a world or output file.
@@ -299,6 +335,7 @@ async fn generate_preview(
                     },
                 )
                 .map_err(|error| error.to_string())?;
+                check_preview_structure_extent(&plan)?;
                 let structure = McStructureFile::from_placement_plan(&plan)
                     .map_err(|error| error.to_string())?;
                 Ok::<_, String>((structure, original))
@@ -334,6 +371,33 @@ async fn generate_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_structure_extent_limits_dense_serialization_not_surface_voxelization() {
+        use bedrock_world::editor::{BlockOffset, BlockPlacementPlan, PlacementBlock};
+        use bedrock_world::block::BlockState;
+        use std::collections::BTreeMap;
+        let block = |x, y, z| PlacementBlock {
+            offset: BlockOffset { x, y, z },
+            state: BlockState {
+                name: "minecraft:stone".to_owned(),
+                states: BTreeMap::new(),
+                version: None,
+            },
+        };
+        // 324 × 256 × 100 still fits the 128 MiB two-layer format.
+        let accepted = BlockPlacementPlan::new(vec![
+            block(0, 0, 0), block(323, 255, 99),
+        ]).expect("placement");
+        super::check_preview_structure_extent(&accepted).expect("bounded structure");
+        // The sparse voxelizer can represent this, but materializing a
+        // 384³ .mcstructure would allocate hundreds of MiB for empty space.
+        let enormous = BlockPlacementPlan::new(vec![
+            block(0, 0, 0), block(383, 383, 383),
+        ]).expect("placement");
+        let error = super::check_preview_structure_extent(&enormous).unwrap_err();
+        assert!(error.contains("128 MiB"), "{error}");
+    }
 
     #[test]
     fn superseded_task_cannot_publish_a_late_preview() {
