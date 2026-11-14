@@ -25,6 +25,8 @@ pub(super) struct GeneratorPanelState {
     pub(super) preview_processed: bool,
     pub(super) preview_size: Option<[i32; 3]>,
     pub(super) preview_result_active: bool,
+    /// Settings that produced the displayed result, distinct from pending work.
+    pub(super) preview_displayed_options: Option<ObjVoxelOptions>,
     pub(super) preview_anchor: Option<ChunkPos>,
     /// Only explicit map interaction or positioning commands authorize confirmation.
     pub(super) target_selected_by_user: bool,
@@ -47,6 +49,7 @@ impl Default for GeneratorPanelState {
             preview_processed: false,
             preview_size: None,
             preview_result_active: false,
+            preview_displayed_options: None,
             preview_anchor: None,
             target_selected_by_user: false,
             original_preview: None,
@@ -96,6 +99,10 @@ impl View {
             cx.notify();
             return;
         }
+        // Replacing a model invalidates old geometry; resizing the same
+        // model does not. Avoid accidentally displaying the previous OBJ.
+        self.clear_live_structure_preview(cx);
+        self.generator.preview_displayed_options = None;
         self.generator.source = Some(path);
         self.generator.target_selected_by_user = false;
         // Both picker and external drop return to the conversion inspector.
@@ -186,11 +193,13 @@ impl View {
             task_manager::cancel_task(&id);
             structure_preview::release(&id);
         }
-        if self.generator.source.is_some() {
-            self.clear_live_structure_preview(cx);
+        // Keep the last successful structure visible during re-conversion,
+        // but revoke placement confirmation until the new size is ready.
+        self.generator.target_selected_by_user = false;
+        if !self.generator.preview_result_active {
+            self.generator.preview_size = None;
         }
         self.generator.preview_processed = false;
-        self.generator.preview_size = None;
         self.generator.preview_options = None;
     }
 

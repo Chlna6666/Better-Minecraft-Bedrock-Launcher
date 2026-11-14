@@ -89,6 +89,15 @@ impl View {
             self.generator.preview_processed = true;
         }
         if snapshot.status.as_ref() != "completed" {
+            if obj {
+                self.generator.target_selected_by_user = false;
+                self.status = SharedString::from(if self.generator.preview_result_active {
+                    "当前尺寸转换失败；仍显示上一次成功的方块预览，不能用于放置。请查看任务面板。"
+                } else {
+                    "方块预览转换失败，请查看任务面板中的错误详情。"
+                });
+                cx.notify();
+            }
             return;
         }
         let task_id = snapshot.id.to_string();
@@ -147,6 +156,7 @@ impl View {
                                 this.generator.original_preview = original_obj;
                             }
                             this.generator.preview_size = Some([size.x, size.y, size.z]);
+                            this.generator.preview_displayed_options = this.generator.preview_options;
                             this.generator.preview_result_active = true;
                             this.generator.preview_anchor = Some(target);
                             this.image_generator.preview_result_active = false;

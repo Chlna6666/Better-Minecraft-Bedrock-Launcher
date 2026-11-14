@@ -42,7 +42,11 @@ impl View {
                     )
                 }),
             )
-            .when(self.generator.preview_result_active && !busy, |bar| {
+            .when(
+                self.generator.preview_result_active
+                    && self.generator.preview_displayed_options == Some(self.generator.options)
+                    && !busy,
+                |bar| {
                 bar.child(
                     crate::ui::components::button::primary_button(
                         colors,
@@ -162,7 +166,15 @@ impl View {
                         panel.child(crate::ui::components::inspector::result_summary(
                             colors,
                             "方块化结果",
-                            format!("{} × {} × {} 方块", size[0], size[1], size[2]),
+                            format!(
+                                "{} × {} × {} 方块{}",
+                                size[0], size[1], size[2],
+                                if self.generator.preview_displayed_options == Some(self.generator.options) {
+                                    ""
+                                } else {
+                                    " · 上次结果（当前尺寸未就绪，不可放置）"
+                                }
+                            ),
                         ))
                     })
                     .child(

@@ -54,7 +54,10 @@ impl View {
         }
         match self.ui_state.active_right_panel {
             MapViewerRightPanel::Generator if self.generator.preview_result_active => {
-                Some(self.generator.target_selected_by_user)
+                Some(
+                    self.generator.preview_displayed_options == Some(self.generator.options)
+                        && self.generator.target_selected_by_user,
+                )
             }
             MapViewerRightPanel::ImageGenerator if self.image_generator.preview_result_active => {
                 Some(self.image_generator.target_selected_by_user)
@@ -69,7 +72,8 @@ impl View {
         }
         match self.ui_state.active_right_panel {
             MapViewerRightPanel::Generator if self.generator.preview_result_active => {
-                self.generator.target_selected_by_user = true;
+                self.generator.target_selected_by_user =
+                    self.generator.preview_displayed_options == Some(self.generator.options);
             }
             MapViewerRightPanel::ImageGenerator if self.image_generator.preview_result_active => {
                 self.image_generator.target_selected_by_user = true;

@@ -64,7 +64,10 @@ impl View {
     ) -> Div {
         let preview = self.professional.paste_preview.as_ref();
         let valid_source = match self.ui_state.active_right_panel {
-            MapViewerRightPanel::Generator => self.generator.preview_result_active,
+            MapViewerRightPanel::Generator => {
+                self.generator.preview_result_active
+                    && self.generator.preview_displayed_options == Some(self.generator.options)
+            },
             MapViewerRightPanel::ImageGenerator => self.image_generator.preview_result_active,
             _ => false,
         };
