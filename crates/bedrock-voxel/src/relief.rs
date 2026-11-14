@@ -123,7 +123,7 @@ pub fn plan_relief_image(
             Ok(column)
         })
         .collect::<Result<Vec<_>>>()?;
-    let mut blocks = columns.into_iter().flatten().collect::<Vec<_>>();
+    let blocks = columns.into_iter().flatten().collect::<Vec<_>>();
     if cancel.is_cancelled() {
         return Err(validation("relief image conversion cancelled"));
     }

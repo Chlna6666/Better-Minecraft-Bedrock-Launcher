@@ -1168,7 +1168,7 @@ pub trait PresentationDevice {
         &mut self,
         passes: &[RenderPassCommands<'_>],
         tags: &[Option<GpuTimestampTag>],
-        queue: OffscreenQueuePreference,
+        _queue: OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
         if passes.len() != tags.len() {
             return Err(Error::InvalidInput(

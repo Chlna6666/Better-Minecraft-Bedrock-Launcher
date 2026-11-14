@@ -87,15 +87,6 @@ impl State {
 }
 
 impl VulkanDevice {
-    /// Dispatch a complete native compute resource set. Buffer-only
-    /// Generated Mesh / culling continues to use dispatch_buffer_batch.
-    pub(super) fn dispatch_resource_set(
-        &mut self,
-        dispatch: &gfx_core::ComputeBindGroupDispatch,
-    ) -> Result<()> {
-        self.dispatch_resource_set_profiled(dispatch, None)
-    }
-
     pub(super) fn dispatch_resource_set_profiled(
         &mut self,
         dispatch: &gfx_core::ComputeBindGroupDispatch,

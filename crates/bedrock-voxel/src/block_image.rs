@@ -405,7 +405,7 @@ fn nearest_kernel<S: fearless_simd::Simd>(
     target: [f32; 3],
     palette: &LabPalette,
 ) -> usize {
-    use fearless_simd::{dispatch, prelude::*};
+    use fearless_simd::prelude::*;
 
     let lanes = S::f32s::LEN;
     let target_l = S::f32s::splat(simd, target[0]);
