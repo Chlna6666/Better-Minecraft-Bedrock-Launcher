@@ -258,21 +258,8 @@ impl View {
             let _permit = query_budget.acquire().await;
             let background_id = worker_id.clone();
             let result = crate::tasks::runtime::run_cpu(move || {
-                let capture_package_paths = package_paths.clone();
-                let mut resolved_package_paths =
-                    bedrock_block_model::resource_pack::paths_for_world(&world_path);
-                for path in package_paths {
-                    bedrock_block_model::resource_pack::append_unique_path(
-                        &mut resolved_package_paths,
-                        path,
-                    );
-                }
-                for path in crate::core::minecraft::paths::discover_local_package_roots() {
-                    bedrock_block_model::resource_pack::append_unique_path(
-                        &mut resolved_package_paths,
-                        path,
-                    );
-                }
+                // Keep the package identity identical to the 3D editor.
+                let capture_package_paths = package_paths;
                 if cancel.is_cancelled() {
                     return Err("模型导出已取消".to_owned());
                 }
@@ -281,10 +268,14 @@ impl View {
                     Some(chunk_count as u64),
                     Some("构建方块网格"),
                 );
-                let mut block_models = BlockModelRepository::load_packs(
-                    resolved_package_paths.iter().map(PathBuf::as_path),
+                // The version directory is not a resource pack. Resolve its
+                // vanilla overlays first, just as the 3D renderer does.
+                let resolver = bedrock_block_model::ObjTextureResolver::try_with_package_roots(
+                    &capture_package_paths,
+                    "textures",
                 )
-                .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
+                .map_err(|error| format!("加载所选版本的方块资源失败：{error}"))?;
+                let mut block_models = resolver.models().clone();
                 super::world3d::attach_capture_catalog(
                     &mut block_models,
                     &capture_package_paths,
@@ -341,7 +332,7 @@ impl View {
                             mesh: &mesh,
                             material_library_name: &target.material_library_name,
                             texture_directory_name: "textures",
-                            game_package_paths: &resolved_package_paths,
+                            game_package_paths: &capture_package_paths,
                         },
                         |_completed, _total| {},
                     )?;
