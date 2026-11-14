@@ -250,7 +250,12 @@ fn unlit_import_preview_scene(source: &Scene) -> Result<Scene, String> {
                         flat.alpha_mode = original.alpha_mode;
                         flat.alpha_cutoff = original.alpha_cutoff;
                         flat.albedo_texture = original.albedo_texture;
-                        flat.double_sided = original.double_sided;
+                        // This is an inspection view, not a physically lit game render.
+                        // Imported capes, hair cards and cloth often use single-plane
+                        // triangles even when their material omits glTF doubleSided.
+                        // Hi-Z culling is already disabled for the preview, but
+                        // raster back-face culling is independent of Hi-Z.
+                        flat.double_sided = true;
                         flat.front_face = original.front_face;
                         flat.shading_model = ShadingModel::Unlit;
                         Arc::new(flat)
@@ -425,6 +430,7 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(node.mesh.as_ref().unwrap(), &mesh));
         let material = &node.materials[0];
         assert_eq!(material.shading_model, gpui_3d::ShadingModel::Unlit);
+        assert!(material.double_sided, "thin imported cape/cloth surfaces must render from both sides");
         assert_eq!(material.base_color, original.base_color);
         assert_eq!(material.alpha_mode, original.alpha_mode);
         assert_eq!(material.emissive, [0.0; 4]);
