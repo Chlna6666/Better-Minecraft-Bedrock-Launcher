@@ -135,6 +135,7 @@ impl View {
                         selection: exact_selection,
                         block_models: None,
                         cancel: Some(preview_cancel_for_load),
+                        for_export: false,
                     },
                     {
                         let event_sender = event_sender.clone();
@@ -281,22 +282,33 @@ impl View {
                     Some(chunk_count as u64),
                     Some("构建方块网格"),
                 );
-                let block_models = BlockModelRepository::load_packs(
+                let mut block_models = BlockModelRepository::load_packs(
                     resolved_package_paths.iter().map(PathBuf::as_path),
                 )
-                .map(Arc::new)
                 .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
+                super::world3d::attach_capture_catalog(
+                    &mut block_models,
+                    &resolved_package_paths,
+                );
+                let block_models = Arc::new(block_models);
                 let mesh = load_preview_3d_mesh_exact(
                     ExactPreview3dLoadOptions {
                         world_path: &world_path,
                         selection: exact_selection,
                         block_models: Some(block_models),
                         cancel: Some(cancel.clone()),
+                        for_export: true,
                     },
                     |_mesh, _status| {},
                 )?;
                 if cancel.is_cancelled() {
                     return Err("模型导出已取消".to_owned());
+                }
+                if mesh.omitted_face_count != 0 || mesh.truncated_chunk_count != 0 {
+                    return Err(format!(
+                        "模型构网不完整：丢失 {} 个面、{} 个区块。已取消输出，避免生成损坏模型。",
+                        mesh.omitted_face_count, mesh.truncated_chunk_count
+                    ));
                 }
                 task_manager::reset_progress(&background_id, Some(1), Some("输出模型与材质"));
                 let requested_ext = output
@@ -408,6 +420,7 @@ pub(super) struct ExactPreview3dLoadOptions<'a> {
     pub selection: ExactChunkSelection,
     pub block_models: Option<Arc<BlockModelRepository>>,
     pub cancel: Option<CancelFlag>,
+    pub for_export: bool,
 }
 
 pub(super) fn load_preview_3d_mesh_exact(
@@ -419,6 +432,7 @@ pub(super) fn load_preview_3d_mesh_exact(
         selection,
         block_models,
         cancel,
+        for_export,
     } = options;
     let plan = Plan::new(selection);
     let chunks = Arc::new(plan.positions().to_vec());
@@ -476,12 +490,18 @@ pub(super) fn load_preview_3d_mesh_exact(
                 bounds,
                 block_models: block_models.clone(),
                 cancel: cancel.clone(),
+                for_export,
             },
             emit_partial,
         )?;
 
         completed_chunks = completed_chunks.saturating_add(bounds.chunk_count());
         parts.push(part);
+        // An exporter needs the completed geometry, not a new 3D scene on every
+        // rectangle. Large selections otherwise remesh all previous rectangles.
+        if for_export {
+            continue;
+        }
 
         // The lower-level loader intentionally does not publish its final mesh twice,
         // so commit the completed rectangle explicitly. A one-chunk rectangle therefore
