@@ -18,8 +18,7 @@ const OPAQUE_ALPHA_CUTOFF: f32 = 250.0 / 255.0;
 
 fn uses_translucent_palette(alpha: f32, material_opacity: f32, opaque_samples: usize) -> bool {
     alpha < OPAQUE_ALPHA_CUTOFF
-        && (material_opacity < OPAQUE_ALPHA_CUTOFF
-            || opaque_samples < TEXTURE_SAMPLE_OFFSETS.len() / 2)
+        && (material_opacity < OPAQUE_ALPHA_CUTOFF || opaque_samples == 0)
 }
 
 fn straight_texture_color(
@@ -31,9 +30,15 @@ fn straight_texture_color(
     // transparent pixels may contain black padding unrelated to the texture color.
     let visible_weight = (alpha_sum / 255.0).max(f32::EPSILON);
     [
-        (premultiplied_rgb_sum[0] / visible_weight).clamp(0.0, 255.0).round() as u8,
-        (premultiplied_rgb_sum[1] / visible_weight).clamp(0.0, 255.0).round() as u8,
-        (premultiplied_rgb_sum[2] / visible_weight).clamp(0.0, 255.0).round() as u8,
+        (premultiplied_rgb_sum[0] / visible_weight)
+            .clamp(0.0, 255.0)
+            .round() as u8,
+        (premultiplied_rgb_sum[1] / visible_weight)
+            .clamp(0.0, 255.0)
+            .round() as u8,
+        (premultiplied_rgb_sum[2] / visible_weight)
+            .clamp(0.0, 255.0)
+            .round() as u8,
         (alpha_sum / sample_count as f32).clamp(0.0, 255.0).round() as u8,
     ]
 }
@@ -137,8 +142,11 @@ pub(super) fn rasterize_triangle(
                             alpha_sum += f32::from(color[3]);
                             opaque_samples += usize::from(color[3] >= 250);
                         }
-                        let pixel =
-                            straight_texture_color(color_sum, alpha_sum, TEXTURE_SAMPLE_OFFSETS.len());
+                        let pixel = straight_texture_color(
+                            color_sum,
+                            alpha_sum,
+                            TEXTURE_SAMPLE_OFFSETS.len(),
+                        );
                         let alpha = f32::from(pixel[3]) / 255.0 * opacity;
                         if alpha * 255.0 < f32::from(options.alpha_threshold) {
                             continue;
@@ -264,6 +272,7 @@ mod raster_alpha_tests {
     #[test]
     fn alpha_mask_coverage_is_not_translucent_glass() {
         assert!(!uses_translucent_palette(191.0 / 255.0, 1.0, 3));
+        assert!(!uses_translucent_palette(64.0 / 255.0, 1.0, 1));
         assert!(!uses_translucent_palette(254.0 / 255.0, 1.0, 0));
         assert!(uses_translucent_palette(0.5, 1.0, 0));
         assert!(uses_translucent_palette(0.5, 0.5, 4));
