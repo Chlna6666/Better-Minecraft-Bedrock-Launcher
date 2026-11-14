@@ -2435,7 +2435,7 @@ impl View {
                                 tracing::debug!("obj export text progress receiver dropped");
                             }
                         },
-                    );
+                    )?;
                     task_manager::update_progress(
                         &task_id_for_task,
                         ProgressUpdate::advance(1)
