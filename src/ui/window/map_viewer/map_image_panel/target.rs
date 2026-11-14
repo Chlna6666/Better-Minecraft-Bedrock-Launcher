@@ -137,7 +137,7 @@ fn frame_grid_contains(
 
 #[cfg(test)]
 mod drag_tests {
-    use super::*;
+    use super::frame_grid_contains;
 
     #[test]
     fn drag_hit_area_covers_exactly_the_frame_blocks() {
