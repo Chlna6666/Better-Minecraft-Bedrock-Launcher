@@ -409,6 +409,7 @@ fn load_incremental(
             &mut callback_cache
                 .lock()
                 .expect("preview 3D region reuse cache poisoned"),
+            false,
         ) {
             Ok(converted) => converted,
             Err(error) => {
@@ -441,17 +442,19 @@ fn load_incremental(
         &mut cache
             .lock()
             .expect("preview 3D region reuse cache poisoned"),
+        false,
     )
 }
 
 pub(super) fn build_preview_mesh(source: Preview3dMeshSource<'_>) -> Result<Preview3dMesh, String> {
     super::preview_3d_source::build_preview_mesh(source)
-        .and_then(|mesh| convert_source_mesh(&mesh, &mut RegionMeshReuseCache::default()))
+        .and_then(|mesh| convert_source_mesh(&mesh, &mut RegionMeshReuseCache::default(), true))
 }
 
 fn convert_source_mesh(
     source_mesh: &super::preview_3d_source::Preview3dMesh,
     cache: &mut RegionMeshReuseCache,
+    preserve_all_faces: bool,
 ) -> Result<Preview3dMesh, String> {
     let started_at = Instant::now();
     let mut groups =
@@ -499,7 +502,12 @@ fn convert_source_mesh(
     let mut lod1_faces = 0usize;
     let mut lod2_faces = 0usize;
     let mut current_keys = FxHashSet::default();
-    let build_lods = source_mesh.processed_chunk_count >= source_mesh.chunk_count;
+    // Imported structures/models are finite authored assets, not distant terrain.
+    // Region LOD filtering removes small faces and even all cutout geometry;
+    // switching LOD by zoom then creates holes visible at certain angles.
+    // Keep every authored face at every zoom level for imports.
+    let build_lods = !preserve_all_faces
+        && source_mesh.processed_chunk_count >= source_mesh.chunk_count;
     for ((region_key, pass), faces) in groups {
         let cache_key = (region_key, pass);
         current_keys.insert(cache_key);
@@ -1447,6 +1455,23 @@ mod preview_region_geometry_tests {
             results[0].1.corners, original.corners,
             "irregular native water geometry must not expand to its AABB"
         );
+    }
+
+    #[test]
+    fn imported_model_preserves_all_faces_without_lod_substitution() {
+        let key = Preview3dRegionKey { x: 0, y: 1, z: 0 };
+        let tiny = face([
+            [0.0, 64.0, 0.0],
+            [0.25, 64.0, 0.0],
+            [0.25, 64.0, 0.25],
+            [0.0, 64.0, 0.25],
+        ]);
+        let chunk = build_region_chunk(key, Preview3dRegionPass::Transparent, &[tiny], false);
+        assert!(chunk.lod1_mesh.is_none());
+        assert!(chunk.lod2_mesh.is_none());
+        let (scenes, _) = scene_data(&[chunk], true).unwrap();
+        assert!(Arc::ptr_eq(&scenes[0], &scenes[1]));
+        assert!(Arc::ptr_eq(&scenes[0], &scenes[2]));
     }
 
     #[test]
