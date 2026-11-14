@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::{ObjTriangle, ObjVoxelOptions, closest, cross, dot, subtract};
 use crate::block_image::{LabPalette, linear_srgb, oklab, srgb_linear};
-use crate::obj_texture::{SourceTexture, sample};
+use crate::obj_texture::{SourceTexture, TextureAlphaKind, sample};
 
 /// Deterministic in-cell offsets for texture multisampling.
 const TEXTURE_SAMPLE_OFFSETS: [[f32; 3]; 4] = [
@@ -12,13 +12,18 @@ const TEXTURE_SAMPLE_OFFSETS: [[f32; 3]; 4] = [
     [0.3, 0.3, -0.3],
 ];
 
-// Alpha-mask coverage is not glass-like transmission. Character hair and
-// clothing textures can have opaque pixels next to fully transparent pixels.
+// Preserve real transmission; cutout coverage must never select glass
+// simply because a bilinear sample lands between a solid and empty texel.
 const OPAQUE_ALPHA_CUTOFF: f32 = 250.0 / 255.0;
+const CUTOUT_ALPHA_CUTOFF: u8 = 128;
 
-fn uses_translucent_palette(alpha: f32, material_opacity: f32, opaque_samples: usize) -> bool {
-    alpha < OPAQUE_ALPHA_CUTOFF
-        && (material_opacity < OPAQUE_ALPHA_CUTOFF || opaque_samples == 0)
+fn uses_translucent_palette(
+    alpha: f32,
+    material_opacity: f32,
+    alpha_kind: TextureAlphaKind,
+) -> bool {
+    material_opacity < OPAQUE_ALPHA_CUTOFF
+        || (alpha_kind == TextureAlphaKind::Translucent && alpha < OPAQUE_ALPHA_CUTOFF)
 }
 
 fn straight_texture_color(
@@ -64,6 +69,7 @@ pub(super) fn rasterize_triangle(
     diffuse: [u8; 3],
     opacity: f32,
     texture: Option<&SourceTexture>,
+    alpha_kind: TextureAlphaKind,
     options: ObjVoxelOptions,
 ) {
     if texture.is_none() && opacity * 255.0 < f32::from(options.alpha_threshold) {
@@ -83,7 +89,7 @@ pub(super) fn rasterize_triangle(
     };
     let plain_block = if texture.is_none() && opacity * 255.0 >= f32::from(options.alpha_threshold)
     {
-        let palette = if uses_translucent_palette(opacity, opacity, 0) {
+        let palette = if uses_translucent_palette(opacity, opacity, TextureAlphaKind::Opaque) {
             all_palette
         } else {
             opaque_palette
@@ -125,8 +131,7 @@ pub(super) fn rasterize_triangle(
                         // introduce dark fringe colors or falsely select glass.
                         let mut color_sum = [0.0f32; 3];
                         let mut alpha_sum = 0.0f32;
-                        let mut opaque_samples = 0usize;
-                        for offset in TEXTURE_SAMPLE_OFFSETS {
+                         for offset in TEXTURE_SAMPLE_OFFSETS {
                             let point = [
                                 x as f32 + 0.5 + offset[0],
                                 y as f32 + 0.5 + offset[1],
@@ -140,7 +145,6 @@ pub(super) fn rasterize_triangle(
                                 color_sum[channel] += f32::from(color[channel]) * sample_alpha;
                             }
                             alpha_sum += f32::from(color[3]);
-                            opaque_samples += usize::from(color[3] >= 250);
                         }
                         let pixel = straight_texture_color(
                             color_sum,
@@ -148,7 +152,12 @@ pub(super) fn rasterize_triangle(
                             TEXTURE_SAMPLE_OFFSETS.len(),
                         );
                         let alpha = f32::from(pixel[3]) / 255.0 * opacity;
-                        if alpha * 255.0 < f32::from(options.alpha_threshold) {
+                        let threshold = if alpha_kind == TextureAlphaKind::Cutout {
+                            options.alpha_threshold.max(CUTOUT_ALPHA_CUTOFF)
+                        } else {
+                            options.alpha_threshold
+                        };
+                        if alpha * 255.0 < f32::from(threshold) {
                             continue;
                         }
                         // Alpha only selects translucency. Keep the straight
@@ -162,7 +171,7 @@ pub(super) fn rasterize_triangle(
                         let rgb = [0, 1, 2].map(|channel| {
                             linear_srgb(srgb_linear(pixel[channel]) * srgb_linear(diffuse[channel]))
                         });
-                        let palette = if uses_translucent_palette(alpha, opacity, opaque_samples) {
+                        let palette = if uses_translucent_palette(alpha, opacity, alpha_kind) {
                             all_palette
                         } else {
                             opaque_palette
@@ -240,7 +249,8 @@ fn triangle_intersects_cell(vertices: [[f32; 3]; 3], cell: [f32; 3]) -> bool {
 
 #[cfg(test)]
 mod raster_alpha_tests {
-    use super::{straight_texture_color, uses_translucent_palette};
+    use super::{CUTOUT_ALPHA_CUTOFF, straight_texture_color, uses_translucent_palette};
+    use crate::obj_texture::TextureAlphaKind;
 
     #[test]
     fn transparent_padding_does_not_darken_opaque_texture_colors() {
@@ -252,10 +262,10 @@ mod raster_alpha_tests {
 
     #[test]
     fn alpha_mask_coverage_is_not_translucent_glass() {
-        assert!(!uses_translucent_palette(191.0 / 255.0, 1.0, 3));
-        assert!(!uses_translucent_palette(64.0 / 255.0, 1.0, 1));
-        assert!(!uses_translucent_palette(254.0 / 255.0, 1.0, 0));
-        assert!(uses_translucent_palette(0.5, 1.0, 0));
-        assert!(uses_translucent_palette(0.5, 0.5, 4));
+        assert_eq!(CUTOUT_ALPHA_CUTOFF, 128);
+        assert!(!uses_translucent_palette(0.5, 1.0, TextureAlphaKind::Cutout));
+        assert!(!uses_translucent_palette(0.5, 1.0, TextureAlphaKind::Opaque));
+        assert!(uses_translucent_palette(0.5, 1.0, TextureAlphaKind::Translucent));
+        assert!(uses_translucent_palette(1.0, 0.5, TextureAlphaKind::Cutout));
     }
 }
