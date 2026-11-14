@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc};
 
 #[cfg(test)]
 use bedrock_voxel::load_obj_textures;
-use bedrock_voxel::{ObjModel, SourceTexture};
+use bedrock_voxel::{ObjModel, SourceTexture, TextureAlphaKind, classify_texture_alpha};
 use gpui_3d::{
     AlphaMode, Camera, ImportedScene, Mat4, Material, MaterialId, Mesh, MeshPart, Node, ProjectionRegion,
     Scene, SceneView, ShadingModel, TextureAsset, TextureAssetId, Vec2, Vec3, Vertex,
@@ -96,6 +96,7 @@ pub(super) fn build_preview(
     let mut textures = Vec::<Arc<TextureAsset>>::new();
     let mut textured_materials = 0_usize;
     let mut texture_by_source = HashMap::<usize, Arc<TextureAsset>>::new();
+    let mut alpha_by_source = HashMap::<usize, TextureAlphaKind>::new();
     let mut materials = Vec::<Arc<Material>>::with_capacity(groups.len());
     for (slot, triangles) in groups.into_iter().enumerate() {
         let source_material = model.materials.get(slot);
@@ -127,10 +128,13 @@ pub(super) fn build_preview(
                 material.albedo_texture = Some(texture.id());
                 textured_materials += 1;
                 if decoded.has_alpha {
-                    material.alpha_mode = if texture_has_cutout_alpha(texture.pixels()) {
-                        AlphaMode::Mask
-                    } else {
-                        AlphaMode::Blend
+                    let kind = *alpha_by_source.entry(key).or_insert_with(|| {
+                        classify_texture_alpha(texture.pixels())
+                    });
+                    material.alpha_mode = match kind {
+                        TextureAlphaKind::Opaque => AlphaMode::Opaque,
+                        TextureAlphaKind::Cutout => AlphaMode::Mask,
+                        TextureAlphaKind::Translucent => AlphaMode::Blend,
                     };
                 }
             }
@@ -225,25 +229,6 @@ pub(super) fn build_preview(
     }))
 }
 
-/// Detect alpha-tested textures without interpreting genuinely translucent
-/// pixels as opaque. An almost binary texture belongs in the depth-writing
-/// Mask pass: sorting these hair/cape triangles as Blend causes view-angle
-/// dependent overdraw and partially missing surfaces.
-fn texture_has_cutout_alpha(pixels: &[u8]) -> bool {
-    let mut transparent = 0usize;
-    let mut opaque = 0usize;
-    let mut partial = 0usize;
-    for pixel in pixels.chunks_exact(4) {
-        match pixel[3] {
-            0..=8 => transparent += 1,
-            247..=255 => opaque += 1,
-            _ => partial += 1,
-        }
-    }
-    transparent > 0 && opaque > 0 && partial.saturating_mul(100) <=
-        (transparent + opaque + partial).saturating_mul(3)
-}
-
 // The import retains its PBR materials for other consumers (voxel conversion,
 // animation/export). The inspection window needs authored color instead of a
 // simulated studio light, so construct a lightweight view-only scene with
@@ -258,7 +243,7 @@ fn unlit_import_preview_scene(
         source_id: gpui_3d::NodeId,
         parent: Option<gpui_3d::NodeId>,
         materials_cache: &mut HashMap<MaterialId, Arc<Material>>,
-        mask_textures: &HashMap<TextureAssetId, bool>,
+        mask_textures: &HashMap<TextureAssetId, TextureAlphaKind>,
     ) -> Result<(), String> {
         let node = source
             .node(source_id)
@@ -278,7 +263,7 @@ fn unlit_import_preview_scene(
                             AlphaMode::Blend
                                 if original.base_color[3] >= 0.999
                                     && original.albedo_texture.is_some_and(|id| {
-                                        mask_textures.get(&id).copied().unwrap_or(false)
+                                        mask_textures.get(&id).copied() == Some(TextureAlphaKind::Cutout)
                                     }) =>
                             {
                                 AlphaMode::Mask
@@ -326,7 +311,7 @@ fn unlit_import_preview_scene(
     let mut materials_cache = HashMap::new();
     let mask_textures = textures
         .iter()
-        .map(|texture| (texture.id(), texture_has_cutout_alpha(texture.pixels())))
+        .map(|texture| (texture.id(), classify_texture_alpha(texture.pixels())))
         .collect::<HashMap<_, _>>();
     for &root in source.roots() {
         append_node(
@@ -411,7 +396,7 @@ pub(super) fn source_preview_from_imported(
 
 #[cfg(test)]
 mod tests {
-    use super::build_obj_source_preview;
+    use super::{TextureAlphaKind, build_obj_source_preview, classify_texture_alpha};
     use bedrock_voxel::{ObjModel, ObjTriangle, ObjVertex};
 
     #[test]
@@ -518,13 +503,17 @@ mod tests {
 
     #[test]
     fn genuine_transparency_remains_blended() {
-        assert!(!super::texture_has_cutout_alpha(&[
-            0, 0, 0, 0, 255, 255, 255, 128,
-            255, 255, 255, 128, 255, 255, 255, 255,
-        ]));
-        assert!(super::texture_has_cutout_alpha(&[
-            0, 0, 0, 0, 255, 255, 255, 255,
-        ]));
+        assert_eq!(
+            classify_texture_alpha(&[
+                0, 0, 0, 0, 255, 255, 255, 128,
+                255, 255, 255, 128, 255, 255, 255, 255,
+            ]),
+            TextureAlphaKind::Translucent
+        );
+        assert_eq!(
+            classify_texture_alpha(&[0, 0, 0, 0, 255, 255, 255, 255]),
+            TextureAlphaKind::Cutout
+        );
     }
 
     #[test]
