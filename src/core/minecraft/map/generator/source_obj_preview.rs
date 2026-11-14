@@ -221,6 +221,61 @@ pub(super) fn build_preview(
     }))
 }
 
+// The import retains its PBR materials for other consumers (voxel conversion,
+// animation/export). The inspection window needs authored color instead of a
+// simulated studio light, so construct a lightweight view-only scene with
+// shared mesh/texture assets and explicitly unlit materials.
+fn unlit_import_preview_scene(source: &Scene) -> Result<Scene, String> {
+    fn append_node(
+        source: &Scene,
+        output: &mut Scene,
+        source_id: gpui_3d::NodeId,
+        parent: Option<gpui_3d::NodeId>,
+    ) -> Result<(), String> {
+        let node = source
+            .node(source_id)
+            .ok_or_else(|| "导入场景节点已失效".to_owned())?;
+        let materials = node
+            .materials
+            .iter()
+            .map(|original| {
+                // Give preview materials their own identity. Reusing a PBR
+                // MaterialId with different GPU-visible contents is unsafe
+                // for the renderer's retained cache.
+                let mut flat = Material::new();
+                flat.base_color = original.base_color;
+                flat.alpha_mode = original.alpha_mode;
+                flat.alpha_cutoff = original.alpha_cutoff;
+                flat.albedo_texture = original.albedo_texture;
+                flat.double_sided = original.double_sided;
+                flat.front_face = original.front_face;
+                flat.shading_model = ShadingModel::Unlit;
+                Arc::new(flat)
+            })
+            .collect::<Vec<_>>();
+        let mut copied = Node::new()
+            .with_transform(node.transform)
+            .with_visible(node.visible)
+            .with_materials(materials);
+        if let Some(mesh) = &node.mesh {
+            copied = copied.with_mesh(mesh.clone());
+        }
+        // Lights, physical environment and PBR-only material maps deliberately
+        // do not participate in a neutral source-geometry preview.
+        let id = output.insert(parent, copied).map_err(|error| error.to_string())?;
+        for &child in source.children(source_id).unwrap_or_default() {
+            append_node(source, output, child, Some(id))?;
+        }
+        Ok(())
+    }
+
+    let mut output = Scene::new();
+    for &root in source.roots() {
+        append_node(source, &mut output, root, None)?;
+    }
+    Ok(output)
+}
+
 /// Reuses a glTF/GLB GPUI-3D scene directly. Unlike rebuilding a preview mesh
 /// from voxel triangles, this retains the source's node hierarchy, materials
 /// and texture handles, with no redundant model decoding.
@@ -258,15 +313,19 @@ pub(super) fn source_preview_from_imported(
             1.0,
         ],
     ]);
-    let view = scene
-        .view(Camera::perspective(
+    let preview_scene = Arc::new(unlit_import_preview_scene(scene.scene())?);
+    let view = SceneView::new(
+        preview_scene,
+        Camera::perspective(
             Vec3::new(2.5, 1.5, 2.6),
             Vec3::ZERO,
             Vec3::Y,
             50.0_f32.to_radians(),
             0.05,
             64.0,
-        ))
+        ),
+    )
+        .with_textures(scene.textures().iter().cloned())
         .map_err(|error| error.to_string())?
         .with_projection_region(ProjectionRegion::VisibleContent)
         .with_projection_inset(4.0, 0.06)
@@ -334,6 +393,37 @@ mod tests {
         assert_eq!(preview.displayed_triangles, 1);
         assert_eq!(preview.imported_scene.triangle_count, 1);
         std::fs::remove_file(&path).expect("clean fixture");
+    }
+
+    #[test]
+    fn imported_preview_reuses_meshes_but_never_uses_pbr_lighting() {
+        let mut source = gpui_3d::Scene::new();
+        let mesh = std::sync::Arc::new(gpui_3d::Mesh::cube());
+        let mut original = gpui_3d::Material::new();
+        original.base_color = [0.2, 0.4, 0.8, 0.75];
+        original.emissive = [1.0, 0.3, 0.1, 1.0];
+        original.alpha_mode = gpui_3d::AlphaMode::Blend;
+        let original = std::sync::Arc::new(original);
+        source
+            .insert(
+                None,
+                gpui_3d::Node::new()
+                    .with_mesh(mesh.clone())
+                    .with_materials([original.clone()]),
+            )
+            .unwrap();
+
+        let preview = super::unlit_import_preview_scene(&source).unwrap();
+        let node = preview.node(preview.roots()[0]).unwrap();
+        assert!(std::sync::Arc::ptr_eq(node.mesh.as_ref().unwrap(), &mesh));
+        let material = &node.materials[0];
+        assert_eq!(material.shading_model, gpui_3d::ShadingModel::Unlit);
+        assert_eq!(material.base_color, original.base_color);
+        assert_eq!(material.alpha_mode, original.alpha_mode);
+        assert_eq!(material.emissive, [0.0; 4]);
+        assert_ne!(material.id(), original.id());
+        assert_eq!(source.node(source.roots()[0]).unwrap().materials[0].shading_model,
+            gpui_3d::ShadingModel::MetallicRoughness);
     }
 
     #[test]
