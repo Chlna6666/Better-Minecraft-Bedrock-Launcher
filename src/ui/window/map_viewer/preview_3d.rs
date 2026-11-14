@@ -688,15 +688,6 @@ fn build_map_scene(chunks: &[Preview3dChunkMesh], lod: usize) -> Result<Arc<Scen
     Ok(Arc::new(scene))
 }
 
-fn srgb_to_linear(channel: f32) -> f32 {
-    let channel = channel.clamp(0.0, 1.0);
-    if channel <= 0.04045 {
-        channel / 12.92
-    } else {
-        ((channel + 0.055) / 1.055).powf(2.4)
-    }
-}
-
 fn region_material(pass: Preview3dRegionPass) -> Arc<Material> {
     static OPAQUE: OnceLock<Arc<Material>> = OnceLock::new();
     static CUTOUT: OnceLock<Arc<Material>> = OnceLock::new();
@@ -1164,16 +1155,13 @@ fn build_region_mesh(
                 ),
                 normal: Vec3::new(normal[0], normal[1], normal[2]),
                 uv,
-                // The legacy mesh carries encoded palette sRGB. The scene
-                // shader's Unlit path expects linear vertex RGB and encodes
-                // once to the Nova UNORM output, just like sampled textures.
-                // Passing encoded values here would apply gamma twice.
-                color: [
-                    srgb_to_linear(face.color[0]),
-                    srgb_to_linear(face.color[1]),
-                    srgb_to_linear(face.color[2]),
-                    face.color[3].clamp(0.0, 1.0),
-                ],
+                // This preview uses with_voxel_shader(), which writes
+                // vertex RGB directly into Nova's UNORM target. Unlike
+                // scene_view.wgsl's generic Unlit path, voxel.wgsl does not
+                // encode linear RGB back to sRGB. Keep palette colors encoded
+                // here; decoding them would darken every midtone in the
+                // converted model.
+                color: face.color.map(|channel| channel.clamp(0.0, 1.0)),
             }
         });
         quads.push(quad);
@@ -1479,12 +1467,29 @@ mod preview_region_geometry_tests {
     }
 
     #[test]
-    fn preview_palette_rgb_is_linear_before_unlit_shader_encoding() {
-        let encoded = 128.0 / 255.0;
-        let linear = srgb_to_linear(encoded);
-        assert!((linear - 0.21586).abs() < 0.001);
-        assert_eq!(srgb_to_linear(0.0), 0.0);
-        assert_eq!(srgb_to_linear(1.0), 1.0);
+    fn voxel_preview_preserves_palette_srgb_in_unorm_target() {
+        let key = Preview3dRegionKey { x: 0, y: 1, z: 0 };
+        let mut sample = face([
+            [0.0, 64.0, 0.0],
+            [1.0, 64.0, 0.0],
+            [1.0, 64.0, 1.0],
+            [0.0, 64.0, 1.0],
+        ]);
+        sample.color = [128.0 / 255.0, 190.0 / 255.0, 225.0 / 255.0, 1.0];
+        for pass in [
+            Preview3dRegionPass::Opaque,
+            Preview3dRegionPass::Cutout,
+            Preview3dRegionPass::Transparent,
+        ] {
+            let (mesh, _, _) = build_region_mesh(
+                key,
+                pass,
+                0,
+                &[sample.clone()],
+                key.origin(),
+            );
+            assert_eq!(mesh.vertices()[0].color, sample.color);
+        }
         assert_eq!(region_material(Preview3dRegionPass::Cutout).alpha_mode, AlphaMode::Mask);
         assert_eq!(region_material(Preview3dRegionPass::Opaque).alpha_mode, AlphaMode::Opaque);
         assert_eq!(region_material(Preview3dRegionPass::Transparent).alpha_mode, AlphaMode::Blend);
