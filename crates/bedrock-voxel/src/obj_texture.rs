@@ -29,6 +29,42 @@ pub struct SourceTexture {
     pub has_alpha: bool,
 }
 
+/// Alpha semantics for color textures, independent of material-level opacity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextureAlphaKind {
+    /// All texels are opaque, allowing small 8-bit rounding deviations.
+    Opaque,
+    /// Transparent cutout artwork; surviving pixels must write depth.
+    Cutout,
+    /// Truly translucent artwork; surviving pixels require blending.
+    Translucent,
+}
+
+/// Classifies a decoded RGBA8 texture once per source asset.
+///
+/// Anti-aliased cutout edges contain a minority of intermediate alpha values.
+/// Treating them as physical translucency makes hair and capes dependent on
+/// triangle draw ordering and causes low-alpha texels to become glass voxels.
+#[must_use]
+pub fn classify_texture_alpha(pixels: &[u8]) -> TextureAlphaKind {
+    let mut clear = 0usize;
+    let mut partial = 0usize;
+    for pixel in pixels.chunks_exact(4) {
+        match pixel[3] {
+            0..=16 => clear += 1,
+            239..=255 => {}
+            _ => partial += 1,
+        }
+    }
+    if clear == 0 && partial == 0 {
+        TextureAlphaKind::Opaque
+    } else if clear > 0 && partial.saturating_mul(4) <= pixels.len() / 4 {
+        TextureAlphaKind::Cutout
+    } else {
+        TextureAlphaKind::Translucent
+    }
+}
+
 /// Loads each distinct local OBJ texture only once, with bounded memory.
 ///
 /// # Errors
@@ -168,6 +204,28 @@ mod tests {
             has_alpha: texture.pixels().any(|p| p.0[3] != 255),
             pixels: Arc::from(texture.into_raw()),
         }
+    }
+
+    #[test]
+    fn alpha_classifier_handles_cutouts_and_real_transmission() {
+        assert_eq!(
+            classify_texture_alpha(&[255, 255, 255, 255, 0, 0, 0, 249]),
+            TextureAlphaKind::Opaque
+        );
+        assert_eq!(
+            classify_texture_alpha(&[
+                0, 0, 0, 0, 255, 255, 255, 255,
+                255, 255, 255, 255, 255, 255, 255, 128,
+            ]),
+            TextureAlphaKind::Cutout
+        );
+        assert_eq!(
+            classify_texture_alpha(&[
+                0, 0, 0, 0, 255, 255, 255, 128,
+                255, 255, 255, 128, 255, 255, 255, 255,
+            ]),
+            TextureAlphaKind::Translucent
+        );
     }
 
     #[test]
