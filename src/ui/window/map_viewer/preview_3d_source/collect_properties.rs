@@ -81,6 +81,9 @@ pub(super) struct BlockColorEntry {
 /// lookups and tint computations.
 pub(super) struct BlockColorCache<'a> {
     palette: &'a RenderPalette,
+    /// Structure/model inspection uses the palette's authored colors without
+    /// simulated directional face lighting. World previews retain their shading.
+    shade_faces: bool,
     entries: FxHashMap<(usize, Option<BiomeColorKey>), BlockColorEntry>,
 }
 
@@ -88,6 +91,15 @@ impl<'a> BlockColorCache<'a> {
     pub(super) fn new(palette: &'a RenderPalette) -> Self {
         Self {
             palette,
+            shade_faces: true,
+            entries: FxHashMap::default(),
+        }
+    }
+
+    pub(super) fn new_neutral(palette: &'a RenderPalette) -> Self {
+        Self {
+            palette,
+            shade_faces: false,
             entries: FxHashMap::default(),
         }
     }
@@ -102,7 +114,7 @@ impl<'a> BlockColorCache<'a> {
             biome.map(BiomeColorKey::from_sample),
         );
         self.entries.entry(key).or_insert_with(|| BlockColorEntry {
-            face: block_face_colors(self.palette, state, biome),
+            face: block_face_colors(self.palette, state, biome, self.shade_faces),
             flat: block_color(self.palette, state, biome),
             transparent: transparent_color(self.palette, state, biome),
             water: water_color(self.palette, state, biome),
