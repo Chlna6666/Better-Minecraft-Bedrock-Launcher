@@ -2316,6 +2316,7 @@ impl View {
                 let cancel_for_task = cancel_for_background;
                 let result = (|| {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
+                    let capture_package_paths = package_paths.clone();
                     let mut resolved_package_paths =
                         bedrock_block_model::resource_pack::paths_for_world(&world_path);
                     for package_path in package_paths {
@@ -2338,7 +2339,7 @@ impl View {
                     .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
                     super::world3d::attach_capture_catalog(
                         &mut block_models,
-                        &resolved_package_paths,
+                        &capture_package_paths,
                     );
                     let block_models = Arc::new(block_models);
 
