@@ -388,6 +388,100 @@ fn material_opacity_allows_glass_only_for_translucent_surfaces() {
 }
 
 #[test]
+fn alpha_cutout_never_generates_glass_from_antialiased_edges() {
+    let mut model = cube();
+    for triangle in &mut model.triangles {
+        triangle.material = Some(0);
+        for vertex in &mut triangle.vertices {
+            vertex.uv = Some([0.5, 0.5]);
+        }
+    }
+    let texture = Arc::new(SourceTexture {
+        width: 2,
+        height: 1,
+        pixels: Arc::from(vec![0, 0, 0, 0, 255, 255, 255, 255]),
+        has_alpha: true,
+    });
+    let white = FlatBlockCandidate {
+        state: BlockState {
+            name: "minecraft:white_concrete".to_owned(),
+            states: BTreeMap::new(),
+            version: None,
+        },
+        top_color: [255, 255, 255, 255],
+        side_color: [255, 255, 255, 255],
+    };
+    let glass = FlatBlockCandidate {
+        state: BlockState {
+            name: "minecraft:glass".to_owned(),
+            states: BTreeMap::new(),
+            version: None,
+        },
+        top_color: [255, 255, 255, 100],
+        side_color: [255, 255, 255, 100],
+    };
+    let plan = voxelize_textured(
+        VoxelizeTexturesRequest {
+            model: &model,
+            textures: &[Some(texture)],
+            candidates: &[glass, white],
+            options: ObjVoxelOptions {
+                longest_side_blocks: 8,
+                ..ObjVoxelOptions::default()
+            },
+            cancel: &CancelFlag::new(),
+        },
+        |_, _| {},
+    ).unwrap();
+    assert!(!plan.blocks().is_empty());
+    assert!(plan.blocks().iter().all(|block| block.state.name == "minecraft:white_concrete"));
+}
+
+#[test]
+fn uniform_obj_albedo_produces_uniform_blocks_without_ordered_dithering() {
+    let mut model = cube();
+    for triangle in &mut model.triangles {
+        triangle.material = Some(0);
+        for vertex in &mut triangle.vertices {
+            vertex.uv = Some([0.5, 0.5]);
+        }
+    }
+    let texture = Arc::new(SourceTexture {
+        width: 1,
+        height: 1,
+        pixels: Arc::from(vec![200, 200, 200, 255]),
+        has_alpha: false,
+    });
+    let candidates = [192u8, 207u8].map(|value| FlatBlockCandidate {
+        state: BlockState {
+            name: format!("minecraft:gray_{value}"),
+            states: BTreeMap::new(),
+            version: None,
+        },
+        top_color: [value, value, value, 255],
+        side_color: [value, value, value, 255],
+    });
+    let plan = voxelize_textured(
+        VoxelizeTexturesRequest {
+            model: &model,
+            textures: &[Some(texture)],
+            candidates: &candidates,
+            options: ObjVoxelOptions {
+                longest_side_blocks: 8,
+                ..ObjVoxelOptions::default()
+            },
+            cancel: &CancelFlag::new(),
+        },
+        |_, _| {},
+    ).unwrap();
+    assert!(plan.blocks().len() > 16);
+    assert!(plan.blocks().iter().all(|block| block.state.name == "minecraft:gray_192"
+        || block.state.name == "minecraft:gray_207"));
+    let first = &plan.blocks()[0].state.name;
+    assert!(plan.blocks().iter().all(|block| &block.state.name == first));
+}
+
+#[test]
 fn predecoded_texture_survives_source_removal_and_is_reused_for_voxelization() {
     let file = std::env::temp_dir().join(format!(
         "bmcbl-shared-voxel-texture-{}.png",
