@@ -829,6 +829,8 @@ pub(super) struct Preview3dLoadOptions<'a> {
     pub bounds: SlimeChunkBounds,
     pub block_models: Option<Arc<BlockModelRepository>>,
     pub cancel: Option<CancelFlag>,
+    /// File export must not discard faces for real-time preview budgets.
+    pub for_export: bool,
 }
 
 pub(super) fn load_mesh(
@@ -840,6 +842,7 @@ pub(super) fn load_mesh(
         bounds,
         block_models,
         cancel,
+        for_export,
     } = options;
     bounds.validate().map_err(|error| error.to_string())?;
     check_cancelled(cancel.as_ref())?;
@@ -849,6 +852,7 @@ pub(super) fn load_mesh(
     let (positions, truncated_chunk_count) = selection_chunk_positions(bounds);
     let chunk_total = positions.len();
     let mut builder = Preview3dMeshBuilder::new(bounds, truncated_chunk_count);
+    builder.export_geometry = for_export;
     let options = render_chunk_load_options(chunk_total, bounds, cancel.clone());
     let mut completed_chunks = 0usize;
     while completed_chunks < chunk_total {
@@ -869,7 +873,7 @@ pub(super) fn load_mesh(
             builder.push_processed_chunk(processed_chunk);
         }
         completed_chunks = next_completed;
-        if should_emit_incremental_mesh(completed_chunks, chunk_total) {
+        if !for_export && should_emit_incremental_mesh(completed_chunks, chunk_total) {
             let status = Preview3dBuildStatus::new(
                 "拼接模型",
                 format!("{completed_chunks}/{chunk_total} chunks"),
@@ -1161,6 +1165,7 @@ pub(super) struct Preview3dMeshBuilder {
     mask_unprocessed_neighbors: bool,
     ambient_occlusion: bool,
     neutral_colors: bool,
+    export_geometry: bool,
     combined_meshes: Vec<Preview3dChunkMesh>,
     mesh_generation: u64,
     min_y: i16,
@@ -1202,6 +1207,7 @@ impl Preview3dMeshBuilder {
             mask_unprocessed_neighbors: true,
             ambient_occlusion: true,
             neutral_colors: false,
+            export_geometry: false,
             combined_meshes: Vec::new(),
             mesh_generation: 0,
             min_y: i16::MAX,
@@ -1329,11 +1335,13 @@ impl Preview3dMeshBuilder {
         let (mut glass_faces, glass_omitted) = glass_result;
         let (mut water_faces, water_omitted) = water_result;
         let (mut lava_faces, lava_omitted) = lava_result;
-        let (mut opaque_faces, opaque_omitted) = self.collect_opaque_faces(opaque_face_budget(
+        let preview_opaque_budget = opaque_face_budget(
             glass_faces.len(),
             water_faces.len(),
             lava_faces.len(),
-        ));
+        );
+        let (mut opaque_faces, opaque_omitted) =
+            self.collect_opaque_faces(self.face_limit(preview_opaque_budget));
         // Source-model voxels are a neutral material inspection, not terrain
         // lighting. Keep the palette's authored RGB on every visible face.
         if self.neutral_colors {
@@ -1380,6 +1388,14 @@ impl Preview3dMeshBuilder {
         ))
     }
 
+    fn face_limit(&self, preview_limit: usize) -> usize {
+        if self.export_geometry {
+            usize::MAX
+        } else {
+            preview_limit
+        }
+    }
+
     fn collect_opaque_faces(&self, max_faces: usize) -> (Vec<Preview3dFace>, usize) {
         let mut budget = Preview3dFaceBudget::new(max_faces);
         let mut faces = Vec::with_capacity(max_faces.min(64 * 1024));
@@ -1388,21 +1404,21 @@ impl Preview3dMeshBuilder {
     }
 
     fn collect_glass_faces(&self) -> (Vec<Preview3dFace>, usize) {
-        let mut budget = Preview3dFaceBudget::new(GLASS_FACE_BUDGET);
+        let mut budget = Preview3dFaceBudget::new(self.face_limit(GLASS_FACE_BUDGET));
         let mut faces = Vec::with_capacity(GLASS_FACE_BUDGET.min(16 * 1024));
         self.push_glass_faces(&mut faces, &mut budget);
         (faces, budget.omitted_faces)
     }
 
     fn collect_water_faces(&self) -> (Vec<Preview3dFace>, usize) {
-        let mut budget = Preview3dFaceBudget::new(WATER_FACE_BUDGET / 2);
+        let mut budget = Preview3dFaceBudget::new(self.face_limit(WATER_FACE_BUDGET / 2));
         let mut faces = Vec::with_capacity(WATER_FACE_BUDGET.min(16 * 1024));
         self.push_water_faces(&mut faces, &mut budget);
         (faces, budget.omitted_faces)
     }
 
     fn collect_lava_faces(&self) -> (Vec<Preview3dFace>, usize) {
-        let mut budget = Preview3dFaceBudget::new(WATER_FACE_BUDGET / 2);
+        let mut budget = Preview3dFaceBudget::new(self.face_limit(WATER_FACE_BUDGET / 2));
         let mut faces = Vec::with_capacity((WATER_FACE_BUDGET / 2).min(8 * 1024));
         self.push_lava_faces(&mut faces, &mut budget);
         (faces, budget.omitted_faces)
