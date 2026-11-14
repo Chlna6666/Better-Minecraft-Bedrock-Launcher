@@ -2,8 +2,6 @@ use super::model::*;
 use super::prelude::*;
 use super::preview_3d::{Preview3dMesh, namespace, scene_data};
 use crate::tasks::task_manager::ProgressUpdate;
-use crate::ui::state::launcher::LauncherState;
-use crate::ui::state::local_versions::LocalVersionsState;
 use ::bedrock_world::{ExactChunkSelection, exact_selection_stats};
 use bedrock_block_model::BlockModelRepository;
 use bedrock_render::exact_selection::Plan;
@@ -234,7 +232,7 @@ impl View {
             return;
         }
         let world_path = self.world_path.clone();
-        let package_paths = resource_pack_paths(&world_path, cx);
+        let package_paths = super::interactions::preview_3d_resource_package_paths(&world_path, cx);
         let query_budget = self.map_query_budget.clone();
         let chunk_count = exact_selection.len();
         self.context_menu = None;
@@ -260,6 +258,7 @@ impl View {
             let _permit = query_budget.acquire().await;
             let background_id = worker_id.clone();
             let result = crate::tasks::runtime::run_cpu(move || {
+                let capture_package_paths = package_paths.clone();
                 let mut resolved_package_paths =
                     bedrock_block_model::resource_pack::paths_for_world(&world_path);
                 for path in package_paths {
@@ -288,7 +287,7 @@ impl View {
                 .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
                 super::world3d::attach_capture_catalog(
                     &mut block_models,
-                    &resolved_package_paths,
+                    &capture_package_paths,
                 );
                 let block_models = Arc::new(block_models);
                 let mesh = load_preview_3d_mesh_exact(
@@ -594,33 +593,6 @@ fn merge_exact_preview_meshes(
         truncated_chunk_count: parts.iter().map(|mesh| mesh.truncated_chunk_count).sum(),
         vertex_budget: parts.iter().map(|mesh| mesh.vertex_budget).sum(),
     })
-}
-
-fn resource_pack_paths(world_path: &Path, cx: &App) -> Vec<PathBuf> {
-    let mut package_paths = Vec::new();
-    let launcher_path = cx.read_global(|state: &LauncherState, _cx| {
-        let package_path = state.package_path.to_string();
-        (!package_path.trim().is_empty()).then(|| PathBuf::from(package_path))
-    });
-    if let Some(package_path) = launcher_path {
-        bedrock_block_model::resource_pack::append_unique_path(&mut package_paths, package_path);
-    }
-
-    cx.read_global(|state: &LocalVersionsState, _cx| {
-        for version in state.versions.iter() {
-            bedrock_block_model::resource_pack::append_unique_path(
-                &mut package_paths,
-                PathBuf::from(version.path.as_ref()),
-            );
-        }
-    });
-
-    for package_path in
-        crate::core::minecraft::paths::infer_package_roots(world_path)
-    {
-        bedrock_block_model::resource_pack::append_unique_path(&mut package_paths, package_path);
-    }
-    package_paths
 }
 
 #[cfg(test)]
