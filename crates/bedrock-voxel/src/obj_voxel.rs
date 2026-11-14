@@ -14,7 +14,7 @@ use crate::{
     FlatBlockCandidate, Result,
     block_image::{LabPalette, is_glass_candidate, oklab},
     obj::{ObjModel, ObjTriangle},
-    obj_texture::{SourceTexture, load_obj_textures},
+    obj_texture::{SourceTexture, TextureAlphaKind, classify_texture_alpha, load_obj_textures},
     validation,
 };
 
@@ -208,6 +208,17 @@ pub fn voxelize_textured(
         .iter()
         .map(|candidate| !is_glass_candidate(candidate))
         .collect::<Vec<_>>();
+    // Classify once per material, not for every triangle or voxel sample.
+    // A cutout atlas has binary coverage and must not generate translucent
+    // glass blocks from antialiased edge pixels.
+    let texture_alpha_kinds = textures
+        .iter()
+        .map(|texture| {
+            texture.as_ref().map_or(TextureAlphaKind::Opaque, |texture| {
+                classify_texture_alpha(&texture.pixels)
+            })
+        })
+        .collect::<Vec<_>>();
     // Batch triangles across all cores. Each worker owns a private cell map;
     // reducing keeps the closest surface per cell, with the lower candidate
     // index breaking distance ties exactly like the serial scan.
@@ -248,6 +259,11 @@ pub fn voxelize_textured(
                     rgb,
                     opacity,
                     texture,
+                    triangle
+                        .material
+                        .and_then(|id| texture_alpha_kinds.get(id))
+                        .copied()
+                        .unwrap_or(TextureAlphaKind::Opaque),
                     options,
                 );
                 if surface.len() > 2_000_000 {
