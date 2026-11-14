@@ -19,7 +19,22 @@ pub(super) struct Preview3dObjOptions<'a> {
 pub(super) fn export_preview_3d_obj(
     options: Preview3dObjOptions<'_>,
     progress: impl FnMut(usize, usize),
-) -> Preview3dObjExport {
+) -> Result<Preview3dObjExport, String> {
+    for (chunk_index, chunk) in options.mesh.chunk_meshes.iter().enumerate() {
+        let index_count = chunk.mesh.indices().len();
+        let faces = index_count / 6;
+        if index_count % 6 != 0 || faces != chunk.face_metadata.len() {
+            return Err(format!(
+                "OBJ export aborted: chunk mesh {chunk_index} has {faces} indexed faces, {} metadata records and {index_count} indices",
+                chunk.face_metadata.len(),
+            ));
+        }
+        if let Some(face_index) = (0..faces).find(|&face| chunk.face_material(face).is_none()) {
+            return Err(format!(
+                "OBJ export aborted: chunk mesh {chunk_index} face {face_index} has no valid material",
+            ));
+        }
+    }
     let header = ObjDocumentHeader {
         comment: "BMCBL preview_3d OBJ export",
         material_library_name: options.material_library_name,
@@ -29,12 +44,12 @@ pub(super) fn export_preview_3d_obj(
         options.game_package_paths,
         options.texture_directory_name,
     );
-    export_face_sources(
+    Ok(export_face_sources(
         &header,
         options.mesh.chunk_meshes.iter(),
         &resolver,
         progress,
-    )
+    ))
 }
 
 impl ObjMeshFaceSource for Preview3dChunkMesh {
