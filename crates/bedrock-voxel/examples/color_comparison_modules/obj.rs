@@ -5,7 +5,9 @@ use std::{
 };
 
 use super::{
-    image::{linear_srgb, oklab_delta_e, print_block_distribution, save_png, srgb_linear},
+    image::{
+        linear_srgb, oklab_delta_e, oklab_f64, print_block_distribution, save_png, srgb_linear,
+    },
     obj_source::{Projection, blank_projection, obj_xy_source_projection},
 };
 use ::image::{Rgba, RgbaImage, imageops};
@@ -41,6 +43,32 @@ pub(super) fn compare_obj(
     print_obj_materials(&model);
     let front_plan = voxelize_obj(&model, &candidates, voxel_options(longest_side))
         .map_err(|error| error.to_string())?;
+    // Diagnostic: per-height block distribution exposes parts that collapse onto
+    // translucent candidates (legs/edges sampled from semi-transparent texels).
+    {
+        let mut by_y: BTreeMap<i32, HashMap<String, usize>> = BTreeMap::new();
+        for block in front_plan.blocks() {
+            *by_y
+                .entry(block.offset.y)
+                .or_default()
+                .entry(block.state.name.clone())
+                .or_default() += 1;
+        }
+        for (y, counts) in &by_y {
+            let mut entries = counts.iter().collect::<Vec<_>>();
+            entries.sort_by_key(|(_, count)| std::cmp::Reverse(**count));
+            let glass = counts
+                .iter()
+                .filter(|(name, _)| name.contains("glass"))
+                .map(|(_, count)| *count)
+                .sum::<usize>();
+            println!(
+                "layer y={y} blocks={} glass={glass} top={:?}",
+                counts.values().sum::<usize>(),
+                entries.iter().take(4).collect::<Vec<_>>()
+            );
+        }
+    }
     let reverse_plan = if compare_order {
         let mut reversed_model = model.clone();
         reversed_model.triangles.reverse();
@@ -271,6 +299,16 @@ fn xy_voxel_projection(
     Ok((projection, counts))
 }
 
+/// Matches the voxelizer's chroma-weighted OKLab ranking.
+fn weighted_oklab_distance(first: [u8; 3], second: [u8; 3]) -> f64 {
+    let first = oklab_f64(first.map(f64::from));
+    let second = oklab_f64(second.map(f64::from));
+    let lightness = first[0] - second[0];
+    let green_red = first[1] - second[1];
+    let blue_yellow = first[2] - second[2];
+    lightness * lightness + 2.0 * (green_red * green_red + blue_yellow * blue_yellow)
+}
+
 fn nearest_palette_projection(
     source: &Projection,
     candidates: &[bedrock_voxel::FlatBlockCandidate],
@@ -296,11 +334,10 @@ fn nearest_palette_projection(
                 // Both reference and voxel projection view cubes along Z, so the
                 // visible cube surface uses side colors regardless of mesh normal.
                 let color = candidate.side_color;
-                let color = composite_over_white_linear(color);
                 (
                     palette_index,
                     color,
-                    oklab_delta_e(target, [color[0], color[1], color[2]]),
+                    weighted_oklab_distance(target, [color[0], color[1], color[2]]),
                 )
             })
             .min_by(|first, second| {

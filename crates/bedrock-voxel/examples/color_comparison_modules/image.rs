@@ -288,7 +288,7 @@ fn oklab_delta_e_f64(first: [f64; 3], second: [f64; 3]) -> f64 {
         .sqrt()
 }
 
-fn oklab_f64(color: [f64; 3]) -> [f64; 3] {
+pub(super) fn oklab_f64(color: [f64; 3]) -> [f64; 3] {
     let linear = color.map(|channel| {
         let channel = channel / 255.0;
         if channel <= 0.04045 {

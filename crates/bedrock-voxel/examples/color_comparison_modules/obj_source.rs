@@ -195,13 +195,11 @@ fn obj_material(
         .materials
         .get(material_id)
         .ok_or_else(|| "OBJ triangle references a missing material".to_owned())?;
-    let diffuse = material
-        .diffuse
-        .unwrap_or(if material.diffuse_texture.is_some() {
-            [1.0; 3]
-        } else {
-            [0.75; 3]
-        });
+    let diffuse = if material.diffuse_texture.is_some() {
+        [1.0; 3]
+    } else {
+        material.diffuse.unwrap_or([0.75; 3])
+    };
     let diffuse = diffuse.map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8);
     Ok((
         diffuse,
@@ -273,9 +271,7 @@ fn source_material_color(
         return None;
     }
     let rgb = [0, 1, 2].map(|channel| {
-        linear_srgb(
-            srgb_linear(texture[channel]) * srgb_linear(diffuse[channel]) * alpha + (1.0 - alpha),
-        )
+        linear_srgb(srgb_linear(texture[channel]) * srgb_linear(diffuse[channel]))
     });
     Some(([rgb[0], rgb[1], rgb[2], 255], alpha))
 }
