@@ -390,6 +390,7 @@ fn material_opacity_allows_glass_only_for_translucent_surfaces() {
 #[test]
 fn alpha_cutout_never_generates_glass_from_antialiased_edges() {
     let mut model = cube();
+    model.materials[0].diffuse_texture = Some("unused-predecoded.png".into());
     for triangle in &mut model.triangles {
         triangle.material = Some(0);
         for vertex in &mut triangle.vertices {
@@ -440,6 +441,7 @@ fn alpha_cutout_never_generates_glass_from_antialiased_edges() {
 #[test]
 fn uniform_obj_albedo_produces_uniform_blocks_without_ordered_dithering() {
     let mut model = cube();
+    model.materials[0].diffuse_texture = Some("unused-predecoded.png".into());
     for triangle in &mut model.triangles {
         triangle.material = Some(0);
         for vertex in &mut triangle.vertices {
