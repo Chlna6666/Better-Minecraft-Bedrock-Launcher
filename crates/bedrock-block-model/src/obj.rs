@@ -4360,7 +4360,8 @@ fn push_unique_string(values: &mut Vec<String>, value: String) {
 mod tests {
     use super::{
         NamedObjMaterial, ObjDocumentHeader, ObjExportMaterial, ObjFace, ObjMaterial, ObjMeshFace,
-        ObjMeshFaceSource, ObjTextureCopy, ObjTextureResolver, alpha_texture_path,
+        ObjMeshFaceSource, ObjTextureCopy, ObjTextureResolver, alpha_mask_texture_image,
+        alpha_texture_path,
         cake_candle_block, default_face_uvs_from_corners, document_string, export_face_groups,
         export_face_sources, export_material_library, face_material_name,
         face_normal_from_triangle, face_texture_slot_suffix, faces_string, material_library_string,
@@ -4383,7 +4384,7 @@ mod tests {
             vec![255, 255, 255, 0, 255, 255, 255, 255],
         )
         .expect("valid fixture");
-        let mask = alpha_mask_texture_image(DynamicImage::ImageRgba8(source)).to_rgba8();
+        let mask = alpha_mask_texture_image(image::DynamicImage::ImageRgba8(source)).to_rgba8();
         assert_eq!(mask.get_pixel(0, 0).0, [0, 0, 0, 0]);
         assert_eq!(mask.get_pixel(mask.width() - 1, 0).0, [255, 255, 255, 255]);
     }
