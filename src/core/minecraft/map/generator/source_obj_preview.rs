@@ -9,7 +9,7 @@ use bedrock_voxel::load_obj_textures;
 use bedrock_voxel::{ObjModel, SourceTexture};
 use gpui_3d::{
     AlphaMode, Camera, ImportedScene, Mat4, Material, MaterialId, Mesh, MeshPart, Node, ProjectionRegion,
-    Scene, SceneView, ShadingModel, TextureAsset, Vec2, Vec3, Vertex,
+    Scene, SceneView, ShadingModel, TextureAsset, TextureAssetId, Vec2, Vec3, Vertex,
 };
 
 /// Limit CPU/GPU retention while preserving a deterministic overview of huge models.
@@ -127,7 +127,11 @@ pub(super) fn build_preview(
                 material.albedo_texture = Some(texture.id());
                 textured_materials += 1;
                 if decoded.has_alpha {
-                    material.alpha_mode = AlphaMode::Blend;
+                    material.alpha_mode = if texture_has_cutout_alpha(texture.pixels()) {
+                        AlphaMode::Mask
+                    } else {
+                        AlphaMode::Blend
+                    };
                 }
             }
         }
@@ -221,17 +225,40 @@ pub(super) fn build_preview(
     }))
 }
 
+/// Detect alpha-tested textures without interpreting genuinely translucent
+/// pixels as opaque. An almost binary texture belongs in the depth-writing
+/// Mask pass: sorting these hair/cape triangles as Blend causes view-angle
+/// dependent overdraw and partially missing surfaces.
+fn texture_has_cutout_alpha(pixels: &[u8]) -> bool {
+    let mut transparent = 0usize;
+    let mut opaque = 0usize;
+    let mut partial = 0usize;
+    for pixel in pixels.chunks_exact(4) {
+        match pixel[3] {
+            0..=8 => transparent += 1,
+            247..=255 => opaque += 1,
+            _ => partial += 1,
+        }
+    }
+    transparent > 0 && opaque > 0 && partial.saturating_mul(100) <=
+        (transparent + opaque + partial).saturating_mul(3)
+}
+
 // The import retains its PBR materials for other consumers (voxel conversion,
 // animation/export). The inspection window needs authored color instead of a
 // simulated studio light, so construct a lightweight view-only scene with
 // shared mesh/texture assets and explicitly unlit materials.
-fn unlit_import_preview_scene(source: &Scene) -> Result<Scene, String> {
+fn unlit_import_preview_scene(
+    source: &Scene,
+    textures: &[Arc<TextureAsset>],
+) -> Result<Scene, String> {
     fn append_node(
         source: &Scene,
         output: &mut Scene,
         source_id: gpui_3d::NodeId,
         parent: Option<gpui_3d::NodeId>,
         materials_cache: &mut HashMap<MaterialId, Arc<Material>>,
+        mask_textures: &HashMap<TextureAssetId, bool>,
     ) -> Result<(), String> {
         let node = source
             .node(source_id)
@@ -247,8 +274,24 @@ fn unlit_import_preview_scene(source: &Scene) -> Result<Scene, String> {
                         // for a different GPU-visible unlit material.
                         let mut flat = Material::new();
                         flat.base_color = original.base_color;
-                        flat.alpha_mode = original.alpha_mode;
-                        flat.alpha_cutoff = original.alpha_cutoff;
+                        flat.alpha_mode = match original.alpha_mode {
+                            AlphaMode::Blend
+                                if original.base_color[3] >= 0.999
+                                    && original.albedo_texture.is_some_and(|id| {
+                                        mask_textures.get(&id).copied().unwrap_or(false)
+                                    }) =>
+                            {
+                                AlphaMode::Mask
+                            }
+                            other => other,
+                        };
+                        flat.alpha_cutoff = if flat.alpha_mode == AlphaMode::Mask
+                            && original.alpha_mode == AlphaMode::Blend
+                        {
+                            0.5
+                        } else {
+                            original.alpha_cutoff
+                        };
                         flat.albedo_texture = original.albedo_texture;
                         // This is an inspection view, not a physically lit game render.
                         // Imported capes, hair cards and cloth often use single-plane
@@ -274,15 +317,26 @@ fn unlit_import_preview_scene(source: &Scene) -> Result<Scene, String> {
         // do not participate in a neutral source-geometry preview.
         let id = output.insert(parent, copied).map_err(|error| error.to_string())?;
         for &child in source.children(source_id).unwrap_or_default() {
-            append_node(source, output, child, Some(id), materials_cache)?;
+            append_node(source, output, child, Some(id), materials_cache, mask_textures)?;
         }
         Ok(())
     }
 
     let mut output = Scene::new();
     let mut materials_cache = HashMap::new();
+    let mask_textures = textures
+        .iter()
+        .map(|texture| (texture.id(), texture_has_cutout_alpha(texture.pixels())))
+        .collect::<HashMap<_, _>>();
     for &root in source.roots() {
-        append_node(source, &mut output, root, None, &mut materials_cache)?;
+        append_node(
+            source,
+            &mut output,
+            root,
+            None,
+            &mut materials_cache,
+            &mask_textures,
+        )?;
     }
     Ok(output)
 }
@@ -325,7 +379,7 @@ pub(super) fn source_preview_from_imported(
             1.0,
         ],
     ]);
-    let preview_scene = Arc::new(unlit_import_preview_scene(scene.scene())?);
+    let preview_scene = Arc::new(unlit_import_preview_scene(scene.scene(), scene.textures())?);
     let view = SceneView::new(
         preview_scene,
         Camera::perspective(
@@ -425,7 +479,7 @@ mod tests {
             )
             .unwrap();
 
-        let preview = super::unlit_import_preview_scene(&source).unwrap();
+        let preview = super::unlit_import_preview_scene(&source, &[]).unwrap();
         let node = preview.node(preview.roots()[0]).unwrap();
         assert!(std::sync::Arc::ptr_eq(node.mesh.as_ref().unwrap(), &mesh));
         let material = &node.materials[0];
@@ -439,6 +493,38 @@ mod tests {
             source.node(source.roots()[0]).unwrap().materials[0].shading_model,
             gpui_3d::ShadingModel::MetallicRoughness
         );
+    }
+
+    #[test]
+    fn alpha_cutout_preserves_depth_for_cape_and_hair_planes() {
+        let mut source = gpui_3d::Scene::new();
+        let texture = std::sync::Arc::new(
+            gpui_3d::TextureAsset::rgba8(
+                2, 2,
+                vec![255, 255, 255, 0, 255, 255, 255, 255,
+                    255, 255, 255, 255, 255, 255, 255, 0],
+            ).unwrap(),
+        );
+        let mut original = gpui_3d::Material::new();
+        original.alpha_mode = gpui_3d::AlphaMode::Blend;
+        original.albedo_texture = Some(texture.id());
+        source.insert(None, gpui_3d::Node::new().with_materials([std::sync::Arc::new(original)])).unwrap();
+        let preview = super::unlit_import_preview_scene(&source, &[texture]).unwrap();
+        let material = &preview.node(preview.roots()[0]).unwrap().materials[0];
+        assert_eq!(material.alpha_mode, gpui_3d::AlphaMode::Mask);
+        assert_eq!(material.alpha_cutoff, 0.5);
+        assert!(material.double_sided);
+    }
+
+    #[test]
+    fn genuine_transparency_remains_blended() {
+        assert!(!super::texture_has_cutout_alpha(&[
+            0, 0, 0, 0, 255, 255, 255, 128,
+            255, 255, 255, 128, 255, 255, 255, 255,
+        ]));
+        assert!(super::texture_has_cutout_alpha(&[
+            0, 0, 0, 0, 255, 255, 255, 255,
+        ]));
     }
 
     #[test]
