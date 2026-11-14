@@ -2316,27 +2316,14 @@ impl View {
                 let cancel_for_task = cancel_for_background;
                 let result = (|| {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
-                    let capture_package_paths = package_paths.clone();
-                    let mut resolved_package_paths =
-                        bedrock_block_model::resource_pack::paths_for_world(&world_path);
-                    for package_path in package_paths {
-                        bedrock_block_model::resource_pack::append_unique_path(
-                            &mut resolved_package_paths,
-                            package_path,
-                        );
-                    }
-                    for package_path in
-                        crate::core::minecraft::paths::discover_local_package_roots()
-                    {
-                        bedrock_block_model::resource_pack::append_unique_path(
-                            &mut resolved_package_paths,
-                            package_path,
-                        );
-                    }
-                    let mut block_models = bedrock_block_model::BlockModelRepository::load_packs(
-                        resolved_package_paths.iter().map(PathBuf::as_path),
+                    // Use the same selected game version as World3d.
+                    let capture_package_paths = package_paths;
+                    let resolver = bedrock_block_model::ObjTextureResolver::try_with_package_roots(
+                        &capture_package_paths,
+                        "textures",
                     )
-                    .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
+                    .map_err(|error| format!("加载所选版本的方块资源失败：{error}"))?;
+                    let mut block_models = resolver.models().clone();
                     super::world3d::attach_capture_catalog(
                         &mut block_models,
                         &capture_package_paths,
@@ -2420,7 +2407,7 @@ impl View {
                             mesh: &mesh,
                             material_library_name: &export_target.material_library_name,
                             texture_directory_name,
-                            game_package_paths: &resolved_package_paths,
+                            game_package_paths: &capture_package_paths,
                         },
                         |completed, total| {
                             let scaled = usize::from(total == 0 || completed >= total);
