@@ -224,6 +224,18 @@ fn triangle_edge_coverage(barycentrics: vec3<f32>, edge_mask: u32) -> f32 {
     return visible_edge_coverage;
 }
 
+// GPUI's Nova window uses BGRA8_UNORM (not an sRGB render target).
+// Albedo assets are correctly sampled as sRGB textures, which means GPU
+// sampling yields *linear* RGB. Convert only the direct, unlit GUI output back
+// to display-encoded sRGB; HDR/attribute capture must remain linear.
+// This is a transfer function, not an exposure, tone map or lighting pass.
+fn encode_unlit_display_rgb(value: vec3<f32>) -> vec3<f32> {
+    let rgb = clamp(value, vec3<f32>(0.0), vec3<f32>(1.0));
+    let low = rgb * 12.92;
+    let high = 1.055 * pow(rgb, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
+    return select(low, high, rgb > vec3<f32>(0.0031308));
+}
+
 fn scene_fragment(input: VertexOutput,hdr:bool) -> vec4<f32> {
     let draw_params = draws[input.draw_index];
     if(hdr && draw_params.alpha_mode==ALPHA_MODE_BLEND && (draw_params.texture_flags&192u)!=0u){discard;}
@@ -257,7 +269,11 @@ fn scene_fragment(input: VertexOutput,hdr:bool) -> vec4<f32> {
     if (draw_params.shading_model == SHADING_MODEL_UNLIT) {
         var unlit_color = apply_fog(base_color.rgb
             + draw_params.emissive.rgb * draw_params.emissive.a, input.world_position);
-        if(hdr){unlit_color=base_color.rgb+draw_params.emissive.rgb*draw_params.emissive.a;}
+        if(hdr){
+            unlit_color=base_color.rgb+draw_params.emissive.rgb*draw_params.emissive.a;
+        }else{
+            unlit_color=encode_unlit_display_rgb(unlit_color);
+        }
         if (alpha_mode == ALPHA_MODE_BLEND) {
             let output_alpha = alpha * edge_coverage;
             return vec4<f32>(unlit_color * output_alpha, output_alpha);
