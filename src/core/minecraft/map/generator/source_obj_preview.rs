@@ -276,9 +276,10 @@ fn unlit_import_preview_scene(source: &Scene) -> Result<Scene, String> {
     Ok(output)
 }
 
-/// Reuses a glTF/GLB GPUI-3D scene directly. Unlike rebuilding a preview mesh
-/// from voxel triangles, this retains the source's node hierarchy, materials
-/// and texture handles, with no redundant model decoding.
+/// Creates a neutral glTF/GLB source-model inspection view.
+/// The preview keeps the imported hierarchy, mesh buffers and shared textures,
+/// but replaces PBR shading with unlit materials. Conversion/export consumers
+/// retain the original imported scene and its physical material properties.
 pub(super) fn source_preview_from_imported(
     scene: Arc<ImportedScene>,
     model: &ObjModel,
@@ -325,9 +326,9 @@ pub(super) fn source_preview_from_imported(
             64.0,
         ),
     )
-        .with_textures(scene.textures().iter().cloned())
-        .map_err(|error| error.to_string())?
-        .with_projection_region(ProjectionRegion::VisibleContent)
+    .with_textures(scene.textures().iter().cloned())
+    .map_err(|error| error.to_string())?
+    .with_projection_region(ProjectionRegion::VisibleContent)
         .with_projection_inset(4.0, 0.06)
         .map_err(|error| error.to_string())?
         // glTF/GLB source previews share the same occlusion-free inspection path.
@@ -422,8 +423,10 @@ mod tests {
         assert_eq!(material.alpha_mode, original.alpha_mode);
         assert_eq!(material.emissive, [0.0; 4]);
         assert_ne!(material.id(), original.id());
-        assert_eq!(source.node(source.roots()[0]).unwrap().materials[0].shading_model,
-            gpui_3d::ShadingModel::MetallicRoughness);
+        assert_eq!(
+            source.node(source.roots()[0]).unwrap().materials[0].shading_model,
+            gpui_3d::ShadingModel::MetallicRoughness
+        );
     }
 
     #[test]
