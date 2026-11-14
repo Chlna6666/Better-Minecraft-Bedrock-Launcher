@@ -1425,10 +1425,12 @@ impl SceneResources {
                 || mask_uploaded
             {
                 let dispatch_started = trace_timings().then(Instant::now);
-                self.culling
+                let culling = self
+                    .culling
                     .as_mut()
-                    .ok_or_else(|| anyhow!("GPU culling resources missing"))?
-                    .dispatch_optimized(
+                    .ok_or_else(|| anyhow!("GPU culling resources missing"))?;
+                culling.occlusion_disabled = scene_view.culling_disabled;
+                culling.dispatch_optimized(
                         device,
                         renderer
                             .cull_shader

@@ -414,6 +414,10 @@ fn sparse_resident_bounds_patches(
 
 pub(super) struct CullResources {
     pub(super) hiz: super::hiz::HiZ,
+    /// Skips the Hi-Z occlusion pass while preserving frustum culling and the
+    /// resident physical-slot mapping. Rotating previews use this because a
+    /// stale previous-frame depth can hide thin geometry.
+    pub(super) occlusion_disabled: bool,
     backend: BackendKind,
     bounds: BufferId,
     pub(super) batches: BufferId,
@@ -548,6 +552,7 @@ impl CullResources {
             buffer_memory_location(backend),
         )?;
         let mut resources = Self {
+            occlusion_disabled: false,
             hiz: match super::hiz::HiZ::create(device, backend) {
                 Ok(hiz) => hiz,
                 Err(error) => {
@@ -1143,7 +1148,8 @@ impl CullResources {
                 [range.max.x, range.max.y, range.max.z],
             )
         });
-        let occlusion_enabled = !shadow_casters && self.hiz.has_occluders();
+        let occlusion_enabled =
+            !shadow_casters && !self.occlusion_disabled && self.hiz.has_occluders();
         let count = u32::try_from(self.count).context("GPU culling batch count exceeds u32")?;
         let tail_start = u32::try_from(self.singleton_start)
             .context("GPU culling singleton tail exceeds u32")?;

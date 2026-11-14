@@ -74,6 +74,9 @@ pub struct SceneView {
     pub(super) anisotropy_enabled: bool,
     pub(super) sampling: crate::TextureSampling,
     pub(super) voxel_shader: bool,
+    /// Skips the Hi-Z occlusion pass. Frustum culling and the resident
+    /// physical-slot mapping stay enabled.
+    pub(super) culling_disabled: bool,
     pub(super) continuous_presentation: bool,
     pub(super) fog: Option<DistanceFog>,
     pub(super) voxel_shading: VoxelShading,
@@ -182,6 +185,7 @@ impl SceneView {
             anisotropy_enabled: false,
             sampling: crate::TextureSampling::Linear,
             voxel_shader: false,
+            culling_disabled: false,
             continuous_presentation: false,
             fog: None,
             voxel_shading: VoxelShading::default(),
@@ -219,6 +223,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            culling_disabled: self.culling_disabled,
             continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
@@ -253,6 +258,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            culling_disabled: self.culling_disabled,
             continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
@@ -351,6 +357,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            culling_disabled: self.culling_disabled,
             continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
@@ -382,6 +389,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            culling_disabled: self.culling_disabled,
             continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
@@ -431,6 +439,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            culling_disabled: self.culling_disabled,
             continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
@@ -469,6 +478,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            culling_disabled: self.culling_disabled,
             continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
@@ -502,6 +512,7 @@ impl SceneView {
             anisotropy_enabled: enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            culling_disabled: self.culling_disabled,
             continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
@@ -535,6 +546,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling,
             voxel_shader: self.voxel_shader,
+            culling_disabled: self.culling_disabled,
             continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
@@ -553,9 +565,23 @@ impl SceneView {
     pub fn with_voxel_shader(&self) -> Self {
         Self {
             voxel_shader: true,
+            culling_disabled: self.culling_disabled,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
             screen_effects: self.screen_effects,
+            ..self.clone()
+        }
+    }
+
+    /// Disables Hi-Z occlusion culling for this view while preserving frustum
+    /// culling and the GPU physical-slot mapping.
+    ///
+    /// Use this for small, interactively rotating previews where a stale
+    /// previous-frame depth can hide thin geometry.
+    #[must_use]
+    pub fn with_culling_disabled(&self) -> Self {
+        Self {
+            culling_disabled: true,
             ..self.clone()
         }
     }
@@ -604,6 +630,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            culling_disabled: self.culling_disabled,
             continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
@@ -635,6 +662,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            culling_disabled: self.culling_disabled,
             continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
@@ -690,6 +718,7 @@ impl SceneView {
             anisotropy_enabled: self.anisotropy_enabled,
             sampling: self.sampling,
             voxel_shader: self.voxel_shader,
+            culling_disabled: self.culling_disabled,
             continuous_presentation: self.continuous_presentation,
             fog: self.fog,
             voxel_shading: self.voxel_shading,
@@ -1292,6 +1321,21 @@ mod tests {
         *position.lock().unwrap() = 2.0;
         assert_eq!(view.sample_camera(Instant::now()).camera.eye.x, 2.0);
         assert!(Arc::ptr_eq(&scene, view.scene()));
+    }
+
+    #[test]
+    fn occlusion_disabled_survives_view_updates() {
+        let scene = Arc::new(Scene::new());
+        let camera = Camera::perspective(Vec3::ZERO, -Vec3::Z, Vec3::Y, 1.0, 0.1, 100.0);
+        let view = SceneView::new(scene.clone(), camera).with_culling_disabled();
+        assert!(view.culling_disabled);
+        assert!(view.with_camera(camera).culling_disabled);
+        assert!(view.with_scene(scene.clone()).culling_disabled);
+        assert!(
+            view.with_scene_transform(Mat4::IDENTITY)
+                .unwrap()
+                .culling_disabled
+        );
     }
 
     #[test]
