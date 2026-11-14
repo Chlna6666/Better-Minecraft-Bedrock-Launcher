@@ -567,7 +567,7 @@ fn convert_source_mesh(
         "map_viewer preview_3d_spatial_regions_built"
     );
 
-    let (scenes, scene_view) = scene_data(&chunks)?;
+    let (scenes, scene_view) = scene_data(&chunks, true)?;
 
     Ok(Preview3dMesh {
         chunk_meshes: chunks,
@@ -600,6 +600,7 @@ fn convert_source_mesh(
 
 pub(super) fn scene_data(
     chunks: &[Preview3dChunkMesh],
+    culling_disabled: bool,
 ) -> Result<([Arc<Scene>; 3], Arc<SceneView>), String> {
     let full = build_map_scene(chunks, 0)?;
     // The progressive loader publishes before LOD geometry is available.
@@ -627,15 +628,23 @@ pub(super) fn scene_data(
             0.1,
             256.0,
         ),
-    )
-    // Preview meshes consist only of authored colored quads. Expand them
-    // directly on the GPU rather than uploading a shared index table.
-    .with_voxel_shader()
-    .with_projection_region(ProjectionRegion::VisibleContent)
-    .with_projection_inset(6.0, 0.08)
-    .map_err(|error| error.to_string())?
-    .with_blend_edge_feather(1.0)
-    .map_err(|error| error.to_string())?;
+    );
+    // Imported models are small and rotate interactively. Keep the voxel
+    // shader and GPU frustum culling, but skip Hi-Z occlusion: its
+    // previous-frame depth can conservatively hide thin parts after a
+    // rotation, while the resident physical-slot mapping stays intact.
+    let scene_view = if culling_disabled {
+        scene_view.with_culling_disabled()
+    } else {
+        scene_view
+    };
+    let scene_view = scene_view
+        .with_voxel_shader()
+        .with_projection_region(ProjectionRegion::VisibleContent)
+        .with_projection_inset(6.0, 0.08)
+        .map_err(|error| error.to_string())?
+        .with_blend_edge_feather(1.0)
+        .map_err(|error| error.to_string())?;
     Ok((scenes, Arc::new(scene_view)))
 }
 
@@ -1442,7 +1451,7 @@ mod preview_region_geometry_tests {
 
     #[test]
     fn progressive_preview_reuses_scene_until_lod_meshes_exist() {
-        let (scenes, _) = scene_data(&[]).expect("empty scene setup");
+        let (scenes, _) = scene_data(&[], false).expect("empty scene setup");
         assert!(Arc::ptr_eq(&scenes[0], &scenes[1]));
         assert!(Arc::ptr_eq(&scenes[1], &scenes[2]));
     }

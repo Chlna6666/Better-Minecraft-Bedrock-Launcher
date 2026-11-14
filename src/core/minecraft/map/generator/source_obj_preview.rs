@@ -105,13 +105,11 @@ pub(super) fn build_preview(
         let mut rgb = [0.79, 0.81, 0.86];
         let mut opacity = 1.0;
         if let Some(source) = source_material {
-            rgb = source
-                .diffuse
-                .unwrap_or(if source.diffuse_texture.is_some() {
-                    [1.0; 3]
-                } else {
-                    [0.79, 0.81, 0.86]
-                });
+            rgb = if source.diffuse_texture.is_some() {
+                [1.0; 3]
+            } else {
+                source.diffuse.unwrap_or([0.79, 0.81, 0.86])
+            };
             opacity = source.opacity;
             if let Some(decoded) = decoded_textures.get(slot).and_then(Option::as_ref) {
                 let key = Arc::as_ptr(decoded) as usize;
@@ -136,7 +134,8 @@ pub(super) fn build_preview(
         if opacity < 1.0 {
             material.alpha_mode = AlphaMode::Blend;
         }
-        // Material Kd multiplies sampled map_Kd in linear space on the GPU.
+        // Textured surfaces sample map_Kd alone; applying the MTL Kd tint as
+        // well would darken PMX-derived models that carry a non-white default.
         // Vertex color remains neutral to avoid double multiplication.
         material.base_color = [rgb[0], rgb[1], rgb[2], opacity];
         materials.push(Arc::new(material));
@@ -208,7 +207,10 @@ pub(super) fn build_preview(
         .map_err(|error| error.to_string())?
         .with_projection_region(ProjectionRegion::VisibleContent)
         .with_projection_inset(4.0, 0.06)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        // Source OBJ previews rotate with the model. Semi-transparent capes and
+        // hair must survive every angle, so skip the Hi-Z occlusion pass.
+        .with_culling_disabled();
     Ok(Arc::new(ObjSourcePreview {
         scene_view: Arc::new(view),
         imported_scene,
@@ -268,7 +270,9 @@ pub(super) fn source_preview_from_imported(
         .map_err(|error| error.to_string())?
         .with_projection_region(ProjectionRegion::VisibleContent)
         .with_projection_inset(4.0, 0.06)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?
+        // glTF/GLB source previews share the same occlusion-free inspection path.
+        .with_culling_disabled();
     let textured_materials = scene.textures().len();
     Ok(Arc::new(ObjSourcePreview {
         scene_view: Arc::new(view),

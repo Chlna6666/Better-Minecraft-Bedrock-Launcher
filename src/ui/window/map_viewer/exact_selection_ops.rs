@@ -535,7 +535,7 @@ fn merge_exact_preview_meshes(
         .enumerate()
         .flat_map(|(part_index, mesh)| namespace(mesh, part_index as u64 + 1))
         .collect::<Vec<_>>();
-    let (scenes, scene_view) = scene_data(&chunk_meshes)?;
+    let (scenes, scene_view) = scene_data(&chunk_meshes, false)?;
 
     Ok(Preview3dMesh {
         chunk_meshes,
