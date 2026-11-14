@@ -19,5 +19,6 @@ mod rendering;
 pub(super) mod types;
 mod visibility;
 
+pub(crate) use chunk_service::attach_capture_catalog;
 pub(super) use link::World3dMapLink;
 pub(super) use types::World3dSelection;
