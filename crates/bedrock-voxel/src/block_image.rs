@@ -337,6 +337,9 @@ pub(crate) struct LabPalette {
     a: Vec<f32>,
     b: Vec<f32>,
     indices: Vec<u32>,
+    /// Directional top/side variance, precomputed for weighted matching.
+    /// None keeps the original fast path for ordinary image palettes.
+    penalty: Option<Vec<f32>>,
 }
 
 impl LabPalette {
@@ -347,6 +350,7 @@ impl LabPalette {
             a: Vec::with_capacity(labs.len()),
             b: Vec::with_capacity(labs.len()),
             indices: (0..labs.len() as u32).collect(),
+            penalty: None,
         };
         for (lab, allowed) in labs.iter().zip(allowed) {
             let (l, a, b) = if *allowed {
@@ -361,6 +365,62 @@ impl LabPalette {
         palette
     }
 
+    /// Precompute one orientation of the exact weighted top/side OKLab error.
+    ///
+    /// w*d(target, top)^2 + (1-w)*d(target, side)^2
+    /// = d(target, lerp(side, top, w))^2 + w*(1-w)*d(top, side)^2.
+    /// The per-candidate penalty is essential: simply interpolating the
+    /// colors would incorrectly favor blocks with very different face colors.
+    pub(crate) fn new_weighted(
+        top: &[[f32; 3]],
+        side: &[[f32; 3]],
+        allowed: &[bool],
+        top_weight: f32,
+    ) -> Self {
+        debug_assert_eq!(top.len(), side.len());
+        debug_assert_eq!(top.len(), allowed.len());
+        debug_assert!((0.0..=1.0).contains(&top_weight));
+        if top_weight <= 0.0 {
+            return Self::new(side, allowed);
+        }
+        if top_weight >= 1.0 {
+            return Self::new(top, allowed);
+        }
+        let side_weight = 1.0 - top_weight;
+        let variance_weight = top_weight * side_weight;
+        let mut palette = Self {
+            l: Vec::with_capacity(top.len()),
+            a: Vec::with_capacity(top.len()),
+            b: Vec::with_capacity(top.len()),
+            indices: (0..top.len() as u32).collect(),
+            penalty: Some(Vec::with_capacity(top.len())),
+        };
+        for ((top, side), allowed) in top.iter().zip(side).zip(allowed) {
+            if *allowed {
+                let mixed = [0, 1, 2]
+                    .map(|axis| top_weight * top[axis] + side_weight * side[axis]);
+                palette.l.push(mixed[0]);
+                palette.a.push(mixed[1]);
+                palette.b.push(mixed[2]);
+                palette
+                    .penalty
+                    .as_mut()
+                    .expect("weighted palette has penalty storage")
+                    .push(variance_weight * distance_squared(*top, *side));
+            } else {
+                palette.l.push(f32::INFINITY);
+                palette.a.push(0.0);
+                palette.b.push(0.0);
+                palette
+                    .penalty
+                    .as_mut()
+                    .expect("weighted palette has penalty storage")
+                    .push(0.0);
+            }
+        }
+        palette
+    }
+
     pub(crate) fn nearest(&self, target: [f32; 3]) -> usize {
         #[cfg(feature = "simd")]
         {
@@ -371,9 +431,12 @@ impl LabPalette {
         {
             let mut best = f32::INFINITY;
             let mut best_index = 0;
+            let penalties = self.penalty.as_deref();
             for index in 0..self.l.len() {
-                let distance =
-                    distance_squared(target, [self.l[index], self.a[index], self.b[index]]);
+                let distance = distance_squared(
+                    target,
+                    [self.l[index], self.a[index], self.b[index]],
+                ) + penalties.map_or(0.0, |values| values[index]);
                 if distance < best {
                     best = distance;
                     best_index = self.indices[index] as usize;
@@ -414,6 +477,7 @@ fn nearest_kernel<S: fearless_simd::Simd>(
     let chroma_weight = S::f32s::splat(simd, CHROMA_WEIGHT);
     let mut best = S::f32s::splat(simd, f32::INFINITY);
     let mut best_index = S::u32s::splat(simd, u32::MAX);
+    let penalties = palette.penalty.as_deref();
     let mut base = 0;
     while base + lanes <= palette.l.len() {
         let lightness = S::f32s::from_slice(simd, &palette.l[base..base + lanes]);
@@ -423,7 +487,10 @@ fn nearest_kernel<S: fearless_simd::Simd>(
         let dl = lightness - target_l;
         let da = green_red - target_a;
         let db = blue_yellow - target_b;
-        let distance = dl * dl + (da * da + db * db) * chroma_weight;
+        let mut distance = dl * dl + (da * da + db * db) * chroma_weight;
+        if let Some(penalties) = penalties {
+            distance += S::f32s::from_slice(simd, &penalties[base..base + lanes]);
+        }
         let better = distance.simd_lt(best);
         best = better.select(distance, best);
         best_index = better.select(indices, best_index);
@@ -443,7 +510,7 @@ fn nearest_kernel<S: fearless_simd::Simd>(
         let distance = distance_squared(
             target,
             [palette.l[index], palette.a[index], palette.b[index]],
-        );
+        ) + penalties.map_or(0.0, |values| values[index]);
         if distance < min_distance {
             min_distance = distance;
             min_index = palette.indices[index] as usize;
@@ -505,6 +572,44 @@ mod tests {
             },
             top_color: [rgb[0], rgb[1], rgb[2], 255],
             side_color: [rgb[0], rgb[1], rgb[2], 255],
+        }
+    }
+
+    #[test]
+    fn weighted_palette_matches_reference_top_side_error() {
+        let top = [
+            oklab([245, 242, 240]),
+            oklab([255, 90, 70]),
+            oklab([30, 35, 45]),
+            oklab([110, 160, 215]),
+        ];
+        let side = [
+            oklab([105, 90, 110]),
+            oklab([60, 120, 240]),
+            oklab([30, 35, 45]),
+            oklab([200, 170, 90]),
+        ];
+        let allowed = [true, false, true, true];
+        for step in 0..=32 {
+            let weight = step as f32 / 32.0;
+            let palette = LabPalette::new_weighted(&top, &side, &allowed, weight);
+            for rgb in [[240, 232, 230], [50, 60, 90], [180, 145, 120]] {
+                let target = oklab(rgb);
+                let mut expected = 0;
+                let mut minimum = f32::INFINITY;
+                for index in 0..top.len() {
+                    if !allowed[index] {
+                        continue;
+                    }
+                    let error = weight * distance_squared(target, top[index])
+                        + (1.0 - weight) * distance_squared(target, side[index]);
+                    if error < minimum {
+                        minimum = error;
+                        expected = index;
+                    }
+                }
+                assert_eq!(palette.nearest(target), expected, "weight={weight}, rgb={rgb:?}");
+            }
         }
     }
 

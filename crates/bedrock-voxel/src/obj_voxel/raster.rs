@@ -4,6 +4,56 @@ use super::{ObjTriangle, ObjVoxelOptions, closest, cross, dot, subtract};
 use crate::block_image::{LabPalette, linear_srgb, oklab, srgb_linear};
 use crate::obj_texture::{SourceTexture, TextureAlphaKind, sample};
 
+/// Quantize only the triangle's orientation, not per-voxel RGB. This
+/// amortizes construction across all triangles and bounds palette memory,
+/// while retaining the exact weighted error for each cached orientation.
+const NORMAL_PALETTE_STEPS: usize = 32;
+
+pub(super) struct NormalPalettes {
+    all: Vec<LabPalette>,
+    opaque: Vec<LabPalette>,
+}
+
+impl NormalPalettes {
+    pub(super) fn new(
+        top: &[[f32; 3]],
+        side: &[[f32; 3]],
+        allowed_all: &[bool],
+        allowed_opaque: &[bool],
+    ) -> Self {
+        let build = |allowed: &[bool]| {
+            (0..=NORMAL_PALETTE_STEPS)
+                .map(|bucket| {
+                    let top_weight = bucket as f32 / NORMAL_PALETTE_STEPS as f32;
+                    LabPalette::new_weighted(top, side, allowed, top_weight)
+                })
+                .collect::<Vec<_>>()
+        };
+        Self {
+            all: build(allowed_all),
+            opaque: build(allowed_opaque),
+        }
+    }
+
+    fn nearest(&self, rgb: [u8; 3], bucket: usize, translucent: bool) -> usize {
+        let palette = if translucent {
+            &self.all[bucket]
+        } else {
+            &self.opaque[bucket]
+        };
+        palette.nearest(oklab(rgb))
+    }
+}
+
+fn normal_palette_bucket(normal: [f32; 3]) -> usize {
+    let length_sq = dot(normal, normal);
+    if length_sq <= f32::EPSILON {
+        return 0;
+    }
+    let top_weight = (normal[1].abs() / length_sq.sqrt()).clamp(0.0, 1.0);
+    (top_weight * NORMAL_PALETTE_STEPS as f32).round() as usize
+}
+
 /// Deterministic in-cell offsets for texture multisampling.
 const TEXTURE_SAMPLE_OFFSETS: [[f32; 3]; 4] = [
     [-0.3, -0.3, -0.3],
@@ -62,10 +112,7 @@ pub(super) fn rasterize_triangle(
     scale: f32,
     dimensions: [usize; 3],
     surface: &mut HashMap<usize, SurfaceSample>,
-    top_all: &LabPalette,
-    top_opaque: &LabPalette,
-    side_all: &LabPalette,
-    side_opaque: &LabPalette,
+    normal_palettes: &NormalPalettes,
     diffuse: [u8; 3],
     opacity: f32,
     texture: Option<&SourceTexture>,
@@ -82,19 +129,16 @@ pub(super) fn rasterize_triangle(
         subtract(vertices[1], vertices[0]),
         subtract(vertices[2], vertices[0]),
     );
-    let (all_palette, opaque_palette) = if normal[1].abs() >= normal[0].abs().max(normal[2].abs()) {
-        (top_all, top_opaque)
-    } else {
-        (side_all, side_opaque)
-    };
+    // Smoothly account for angled source surfaces instead of switching the
+    // entire candidate palette at a single normal-axis threshold.
+    let normal_bucket = normal_palette_bucket(normal);
     let plain_block = if texture.is_none() && opacity * 255.0 >= f32::from(options.alpha_threshold)
     {
-        let palette = if uses_translucent_palette(opacity, opacity, TextureAlphaKind::Opaque) {
-            all_palette
-        } else {
-            opaque_palette
-        };
-        Some(palette.nearest(oklab(diffuse)))
+        Some(normal_palettes.nearest(
+            diffuse,
+            normal_bucket,
+            uses_translucent_palette(opacity, opacity, TextureAlphaKind::Opaque),
+        ))
     } else {
         None
     };
@@ -171,12 +215,11 @@ pub(super) fn rasterize_triangle(
                         let rgb = [0, 1, 2].map(|channel| {
                             linear_srgb(srgb_linear(pixel[channel]) * srgb_linear(diffuse[channel]))
                         });
-                        let palette = if uses_translucent_palette(alpha, opacity, alpha_kind) {
-                            all_palette
-                        } else {
-                            opaque_palette
-                        };
-                        palette.nearest(oklab(rgb))
+                        normal_palettes.nearest(
+                            rgb,
+                            normal_bucket,
+                            uses_translucent_palette(alpha, opacity, alpha_kind),
+                        )
                     } else {
                         let Some(block) = plain_block else {
                             continue;
@@ -249,8 +292,36 @@ fn triangle_intersects_cell(vertices: [[f32; 3]; 3], cell: [f32; 3]) -> bool {
 
 #[cfg(test)]
 mod raster_alpha_tests {
-    use super::{CUTOUT_ALPHA_CUTOFF, straight_texture_color, uses_translucent_palette};
+    use super::{
+        CUTOUT_ALPHA_CUTOFF, NormalPalettes, normal_palette_bucket,
+        straight_texture_color, uses_translucent_palette,
+    };
+    use crate::block_image::oklab;
     use crate::obj_texture::TextureAlphaKind;
+
+    #[test]
+    fn angled_surfaces_interpolate_palette_selection_and_preserve_culling() {
+        // The candidates exchange their top and side colors. The selected
+        // block should change gradually with slope, rather than at the
+        // old 'Y is largest normal component' boundary.
+        let white = oklab([255, 255, 255]);
+        let dark = oklab([15, 15, 15]);
+        let top = [white, dark];
+        let side = [dark, white];
+        let palettes = NormalPalettes::new(&top, &side, &[true, true], &[true, false]);
+        let side_bucket = normal_palette_bucket([1.0, 0.0, 0.0]);
+        let top_bucket = normal_palette_bucket([0.0, 1.0, 0.0]);
+        let shallow_bucket = normal_palette_bucket([1.0, 0.35, 0.0]);
+        let steep_bucket = normal_palette_bucket([0.35, 1.0, 0.0]);
+        assert_eq!(side_bucket, 0);
+        assert_eq!(top_bucket, 32);
+        assert_eq!(palettes.nearest([255, 255, 255], side_bucket, true), 1);
+        assert_eq!(palettes.nearest([255, 255, 255], top_bucket, true), 0);
+        assert_eq!(palettes.nearest([255, 255, 255], shallow_bucket, true), 1);
+        assert_eq!(palettes.nearest([255, 255, 255], steep_bucket, true), 0);
+        assert_eq!(palettes.nearest([255, 255, 255], side_bucket, false), 0);
+        assert_eq!(normal_palette_bucket([0.0, -1.0, 0.0]), top_bucket);
+    }
 
     #[test]
     fn transparent_padding_does_not_darken_opaque_texture_colors() {

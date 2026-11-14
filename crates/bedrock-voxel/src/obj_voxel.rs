@@ -12,7 +12,7 @@ use bedrock_world::surface::CancelFlag;
 
 use crate::{
     FlatBlockCandidate, Result,
-    block_image::{LabPalette, is_glass_candidate, oklab},
+    block_image::{is_glass_candidate, oklab},
     obj::{ObjModel, ObjTriangle},
     obj_texture::{SourceTexture, TextureAlphaKind, classify_texture_alpha, load_obj_textures},
     validation,
@@ -20,7 +20,7 @@ use crate::{
 
 mod closest;
 mod raster;
-use raster::{SurfaceSample, rasterize_triangle};
+use raster::{NormalPalettes, SurfaceSample, rasterize_triangle};
 
 /// How an OBJ surface is turned into occupied block cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,10 +197,14 @@ pub fn voxelize_textured(
         .iter()
         .map(|candidate| !is_glass_candidate(candidate))
         .collect::<Vec<_>>();
-    let top_all = LabPalette::new(&candidate_labs, &allowed_all);
-    let top_opaque = LabPalette::new(&candidate_labs, &allowed_opaque);
-    let side_all = LabPalette::new(&candidate_side_labs, &allowed_all);
-    let side_opaque = LabPalette::new(&candidate_side_labs, &allowed_opaque);
+    // Cache a small set of exact weighted top/side palettes once per
+    // conversion. Each voxel still performs one SIMD nearest-color lookup.
+    let normal_palettes = NormalPalettes::new(
+        &candidate_labs,
+        &candidate_side_labs,
+        &allowed_all,
+        &allowed_opaque,
+    );
     if opaque_candidate_indices.is_empty() {
         return Err(validation("no opaque block colors were supplied"));
     }
@@ -252,10 +256,7 @@ pub fn voxelize_textured(
                     scale,
                     dimensions,
                     &mut surface,
-                    &top_all,
-                    &top_opaque,
-                    &side_all,
-                    &side_opaque,
+                    &normal_palettes,
                     rgb,
                     opacity,
                     texture,
