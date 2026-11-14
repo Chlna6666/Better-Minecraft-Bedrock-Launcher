@@ -1,7 +1,7 @@
 //! Versioned Bedrock block appearance colors for image and OBJ voxelization.
 //!
-//! The source palette is derived from the Minecraft Bedrock 26.40 vanilla resource pack. The
-//! build script checks every identifier against the pinned Mojang 1.26.40.5 block manifest,
+//! The source palette is derived from the Minecraft Bedrock 26.60 vanilla resource pack. The
+//! build script checks every identifier against the pinned Mojang 1.26.60.5 block manifest,
 //! rejects unsupported block families, and compiles the colors into a compact embedded binary.
 
 use std::{collections::BTreeMap, sync::LazyLock};
@@ -16,7 +16,7 @@ static CANDIDATES: LazyLock<Vec<FlatBlockCandidate>> = LazyLock::new(|| {
     decode_candidates(PALETTE_DATA).expect("build script emits a validated Bedrock voxel palette")
 });
 
-/// Returns the voxelizer-owned, texture-backed Bedrock 26.40 block palette.
+/// Returns the voxelizer-owned, texture-backed Bedrock 26.60 block palette.
 ///
 /// The source JSON is validated against a pinned Mojang block identifier manifest and compiled
 /// into an embedded binary by this crate's build script. The binary is decoded once and shared by
@@ -98,24 +98,24 @@ mod tests {
 
     use super::{PALETTE_DATA, decode_candidates, default_block_candidates};
 
-    const BLOCK_ID_MANIFEST: &str = include_str!("../data/bedrock-block-ids-1.26.40.5.txt");
+    const BLOCK_ID_MANIFEST: &str = include_str!("../data/bedrock-block-ids-1.26.60.5.txt");
 
     #[test]
     fn palette_contains_unique_texture_backed_bedrock_ids() {
         assert!(
             BLOCK_ID_MANIFEST
-                .starts_with("# Bedrock 1.26.40.5 namespaced vanilla block identifiers.")
+                .starts_with("# Bedrock 1.26.60.5 namespaced vanilla block identifiers.")
         );
-        assert!(BLOCK_ID_MANIFEST.contains("7844835b6baad4c0010f46901a4accf87413a022"));
+        assert!(BLOCK_ID_MANIFEST.contains("15701fa9c13923f12662984c32c124327e40e3d3"));
 
         let official_ids = BLOCK_ID_MANIFEST
             .lines()
             .filter(|line| !line.starts_with('#') && !line.is_empty())
             .collect::<HashSet<_>>();
-        assert_eq!(official_ids.len(), 1_415);
+        assert_eq!(official_ids.len(), 1_466);
 
         let candidates = default_block_candidates();
-        assert_eq!(candidates.len(), 153);
+        assert_eq!(candidates.len(), 278);
         let names = candidates
             .iter()
             .map(|candidate| candidate.state.name.as_str())
@@ -172,7 +172,7 @@ mod tests {
                 .iter()
                 .filter(|name| name.ends_with("_planks"))
                 .count(),
-            12
+            13
         );
         for id in [
             "minecraft:bamboo_mosaic",
@@ -181,6 +181,7 @@ mod tests {
             "minecraft:crimson_planks",
             "minecraft:mangrove_planks",
             "minecraft:pale_oak_planks",
+            "minecraft:poplar_planks",
             "minecraft:warped_planks",
         ] {
             assert!(names.binary_search(&id).is_ok(), "missing {id}");

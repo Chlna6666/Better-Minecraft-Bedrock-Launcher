@@ -1,9 +1,9 @@
 use std::{collections::HashSet, env, error::Error, fs, path::PathBuf};
 
-const PALETTE_PATH: &str = "data/bedrock-block-palette-26.40.json";
-const ID_MANIFEST_PATH: &str = "data/bedrock-block-ids-1.26.40.5.txt";
-const BEDROCK_VERSION: &str = "26.40";
-const MANIFEST_COMMIT: &str = "7844835b6baad4c0010f46901a4accf87413a022";
+const PALETTE_PATH: &str = "data/bedrock-block-palette-26.60.json";
+const ID_MANIFEST_PATH: &str = "data/bedrock-block-ids-1.26.60.5.txt";
+const BEDROCK_VERSION: &str = "26.60";
+const MANIFEST_COMMIT: &str = "15701fa9c13923f12662984c32c124327e40e3d3";
 
 const SOLID_COLOR_BLOCKS: &[&str] = &[
     "minecraft:amethyst_block",
@@ -13,7 +13,7 @@ const SOLID_COLOR_BLOCKS: &[&str] = &[
     "minecraft:blackstone",
     "minecraft:blue_ice",
     "minecraft:bone_block",
-    "minecraft:bricks",
+    "minecraft:brick_block",
     "minecraft:calcite",
     "minecraft:clay",
     "minecraft:coal_block",
@@ -30,7 +30,7 @@ const SOLID_COLOR_BLOCKS: &[&str] = &[
     "minecraft:dripstone_block",
     "minecraft:emerald_block",
     "minecraft:end_stone",
-    "minecraft:end_stone_bricks",
+    "minecraft:end_bricks",
     "minecraft:glowstone",
     "minecraft:gold_block",
     "minecraft:granite",
@@ -39,7 +39,7 @@ const SOLID_COLOR_BLOCKS: &[&str] = &[
     "minecraft:lapis_block",
     "minecraft:moss_block",
     "minecraft:mud",
-    "minecraft:nether_bricks",
+    "minecraft:nether_brick",
     "minecraft:netherite_block",
     "minecraft:netherrack",
     "minecraft:obsidian",
@@ -63,7 +63,7 @@ const SOLID_COLOR_BLOCKS: &[&str] = &[
     "minecraft:raw_copper_block",
     "minecraft:raw_gold_block",
     "minecraft:raw_iron_block",
-    "minecraft:red_nether_bricks",
+    "minecraft:red_nether_brick",
     "minecraft:red_sandstone",
     "minecraft:redstone_block",
     "minecraft:sandstone",
@@ -86,6 +86,126 @@ const SOLID_COLOR_BLOCKS: &[&str] = &[
     "minecraft:waxed_oxidized_cut_copper",
     "minecraft:waxed_weathered_copper",
     "minecraft:waxed_weathered_cut_copper",
+    "minecraft:acacia_log",
+    "minecraft:acacia_wood",
+    "minecraft:allow",
+    "minecraft:ancient_debris",
+    "minecraft:bamboo_block",
+    "minecraft:bedrock",
+    "minecraft:birch_log",
+    "minecraft:birch_wood",
+    "minecraft:blast_furnace",
+    "minecraft:bookshelf",
+    "minecraft:budding_amethyst",
+    "minecraft:cartography_table",
+    "minecraft:chain_command_block",
+    "minecraft:cherry_log",
+    "minecraft:cherry_wood",
+    "minecraft:chiseled_bookshelf",
+    "minecraft:chiseled_deepslate",
+    "minecraft:chiseled_nether_bricks",
+    "minecraft:chiseled_polished_blackstone",
+    "minecraft:coal_ore",
+    "minecraft:command_block",
+    "minecraft:copper_block",
+    "minecraft:copper_ore",
+    "minecraft:cracked_deepslate_bricks",
+    "minecraft:cracked_deepslate_tiles",
+    "minecraft:cracked_nether_bricks",
+    "minecraft:cracked_polished_blackstone_bricks",
+    "minecraft:crafting_table",
+    "minecraft:crimson_hyphae",
+    "minecraft:crimson_stem",
+    "minecraft:cut_copper",
+    "minecraft:dark_oak_log",
+    "minecraft:deepslate_coal_ore",
+    "minecraft:deepslate_copper_ore",
+    "minecraft:deepslate_diamond_ore",
+    "minecraft:deepslate_emerald_ore",
+    "minecraft:deepslate_gold_ore",
+    "minecraft:deepslate_iron_ore",
+    "minecraft:deepslate_lapis_ore",
+    "minecraft:deepslate_redstone_ore",
+    "minecraft:deny",
+    "minecraft:diamond_ore",
+    "minecraft:dirt_with_roots",
+    "minecraft:dispenser",
+    "minecraft:dried_kelp_block",
+    "minecraft:dropper",
+    "minecraft:emerald_ore",
+    "minecraft:exposed_copper",
+    "minecraft:exposed_cut_copper",
+    "minecraft:fletching_table",
+    "minecraft:furnace",
+    "minecraft:gilded_blackstone",
+    "minecraft:gold_ore",
+    "minecraft:hardened_clay",
+    "minecraft:hay_block",
+    "minecraft:iron_ore",
+    "minecraft:jukebox",
+    "minecraft:jungle_log",
+    "minecraft:jungle_wood",
+    "minecraft:lapis_ore",
+    "minecraft:lit_blast_furnace",
+    "minecraft:lit_furnace",
+    "minecraft:lit_redstone_ore",
+    "minecraft:lit_smoker",
+    "minecraft:loom",
+    "minecraft:magma",
+    "minecraft:mangrove_log",
+    "minecraft:mangrove_wood",
+    "minecraft:melon_block",
+    "minecraft:mossy_cobblestone",
+    "minecraft:muddy_mangrove_roots",
+    "minecraft:nether_gold_ore",
+    "minecraft:nether_wart_block",
+    "minecraft:noteblock",
+    "minecraft:oak_log",
+    "minecraft:oak_wood",
+    "minecraft:oxidized_copper",
+    "minecraft:oxidized_cut_copper",
+    "minecraft:pale_oak_log",
+    "minecraft:pale_oak_wood",
+    "minecraft:podzol",
+    "minecraft:polished_basalt",
+    "minecraft:quartz_ore",
+    "minecraft:redstone_lamp",
+    "minecraft:reinforced_deepslate",
+    "minecraft:repeating_command_block",
+    "minecraft:sculk",
+    "minecraft:smithing_table",
+    "minecraft:smoker",
+    "minecraft:smooth_stone",
+    "minecraft:spruce_log",
+    "minecraft:spruce_wood",
+    "minecraft:stripped_acacia_log",
+    "minecraft:stripped_acacia_wood",
+    "minecraft:stripped_bamboo_block",
+    "minecraft:stripped_birch_log",
+    "minecraft:stripped_birch_wood",
+    "minecraft:stripped_cherry_log",
+    "minecraft:stripped_crimson_hyphae",
+    "minecraft:stripped_crimson_stem",
+    "minecraft:stripped_dark_oak_log",
+    "minecraft:stripped_dark_oak_wood",
+    "minecraft:stripped_jungle_log",
+    "minecraft:stripped_jungle_wood",
+    "minecraft:stripped_mangrove_log",
+    "minecraft:stripped_mangrove_wood",
+    "minecraft:stripped_oak_log",
+    "minecraft:stripped_oak_wood",
+    "minecraft:stripped_pale_oak_log",
+    "minecraft:stripped_pale_oak_wood",
+    "minecraft:stripped_spruce_log",
+    "minecraft:stripped_spruce_wood",
+    "minecraft:stripped_warped_hyphae",
+    "minecraft:stripped_warped_stem",
+    "minecraft:tnt",
+    "minecraft:warped_hyphae",
+    "minecraft:warped_nylium",
+    "minecraft:warped_stem",
+    "minecraft:weathered_copper",
+    "minecraft:weathered_cut_copper",
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -108,11 +228,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn official_ids(manifest: &str) -> Result<HashSet<String>, std::io::Error> {
     let commit_header = format!("# Source commit: {MANIFEST_COMMIT}");
-    if !manifest.starts_with("# Bedrock 1.26.40.5 namespaced vanilla block identifiers.")
+    if !manifest.starts_with("# Bedrock 1.26.60.5 namespaced vanilla block identifiers.")
         || !manifest.lines().any(|line| line == commit_header.as_str())
     {
         return Err(invalid_data(
-            "Bedrock block identifier manifest is not pinned to 1.26.40.5",
+            "Bedrock block identifier manifest is not pinned to 1.26.60.5",
         ));
     }
 
@@ -121,7 +241,7 @@ fn official_ids(manifest: &str) -> Result<HashSet<String>, std::io::Error> {
         .filter(|line| !line.starts_with('#') && !line.is_empty())
         .map(str::to_owned)
         .collect::<HashSet<_>>();
-    if ids.len() != 1_415 {
+    if ids.len() != 1_466 {
         return Err(invalid_data(
             "Bedrock block identifier manifest has an unexpected entry count",
         ));
