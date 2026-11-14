@@ -6,6 +6,67 @@ use super::*;
 use crate::VoxelizeTexturesRequest;
 use crate::{ObjMaterial, ObjVertex};
 
+/// Two tiny triangle patches at opposite corners of a large bounding box.
+fn sparse_corner_model() -> ObjModel {
+    let triangles = [
+        [
+            [0.0, 0.0, 0.0],
+            [0.01, 0.0, 0.0],
+            [0.0, 0.01, 0.0],
+        ],
+        [
+            [3.0, 3.0, 3.0],
+            [2.99, 3.0, 3.0],
+            [3.0, 2.99, 3.0],
+        ],
+    ]
+    .map(|vertices| ObjTriangle {
+        vertices: vertices.map(|position| ObjVertex { position, uv: None }),
+        material: None,
+    });
+    ObjModel {
+        triangles: triangles.into(),
+        materials: Vec::new(),
+    }
+}
+
+#[test]
+fn hollow_preview_accepts_sparse_models_above_eight_million_cells() {
+    let model = sparse_corner_model();
+    // 324^3 = 34,012,224 nominal cells. Only the few intersecting
+    // triangle cells should occupy memory in Surface mode.
+    for longest_side_blocks in [324, 384] {
+        let plan = voxelize_obj(
+            &model,
+            &[candidate()],
+            ObjVoxelOptions {
+                longest_side_blocks,
+                fill: ObjFill::Surface,
+                ..ObjVoxelOptions::default()
+            },
+        )
+        .expect("large sparse surface must be accepted");
+        assert!(!plan.blocks().is_empty());
+        assert!(plan.blocks().len() < 100);
+    }
+}
+
+#[test]
+fn solid_preview_still_rejects_oversized_dense_flood_fill() {
+    let error = voxelize_obj(
+        &sparse_corner_model(),
+        &[candidate()],
+        ObjVoxelOptions {
+            longest_side_blocks: 324,
+            fill: ObjFill::Solid,
+            ..ObjVoxelOptions::default()
+        },
+    )
+    .err()
+    .expect("solid mode must keep its allocation guard");
+    assert!(error.contains("洪水填充上限"), "{error}");
+}
+
 #[test]
 fn overlapping_surfaces_choose_closest_material_independently_of_triangle_order() {
     let mut red = candidate();

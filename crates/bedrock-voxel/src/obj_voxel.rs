@@ -18,6 +18,9 @@ use crate::{
     validation,
 };
 
+const MAX_PLACEMENT_BLOCKS: usize = 2_000_000;
+const MAX_SOLID_FLOOD_CELLS: usize = 9_000_000;
+
 mod closest;
 mod raster;
 use raster::{NormalPalettes, SurfaceSample, rasterize_triangle};
@@ -78,7 +81,8 @@ impl Default for ObjVoxelOptions {
 ///
 /// # Errors
 /// Returns a validation error for invalid size, empty model or candidates,
-/// invalid material or texture data, excess output volume, or an empty placement.
+/// invalid material or texture data, excessive actual block count, an
+/// oversized dense flood fill in solid mode, or an empty placement.
 pub fn voxelize_obj(
     model: &ObjModel,
     candidates: &[FlatBlockCandidate],
@@ -172,12 +176,19 @@ pub fn voxelize_textured(
         return Err(validation("OBJ scale exceeds numeric range"));
     }
     let dimensions = [0, 1, 2].map(|axis| (extent[axis] * scale).ceil().max(1.0) as usize);
-    let volume = dimensions
-        .iter()
-        .try_fold(1_usize, |volume, &length| volume.checked_mul(length))
-        .ok_or_else(|| validation("OBJ voxel volume overflows"))?;
-    if volume > 8_000_000 {
-        return Err(validation("OBJ voxel volume exceeds eight million cells"));
+    // Surface mode rasterizes only triangle-intersecting cells into a sparse
+    // map. Empty bounding-box space never allocates any voxel records.
+    // Solid fill does allocate a dense padded flood-fill map: preflight that
+    // allocation separately so oversized solid requests fail immediately.
+    if options.fill == ObjFill::Solid {
+        let flood_volume = dimensions.iter().try_fold(1_usize, |volume, &length| {
+            volume.checked_mul(length + 2)
+        }).ok_or_else(|| validation("solid OBJ flood-fill volume overflows"))?;
+        if flood_volume > MAX_SOLID_FLOOD_CELLS {
+            return Err(validation(
+                "实心 OBJ 体积超过洪水填充上限（900 万格）；请降低目标尺寸或选择“空心·仅表面”",
+            ));
+        }
     }
     let candidate_labs = candidates
         .iter()
@@ -267,7 +278,7 @@ pub fn voxelize_textured(
                         .unwrap_or(TextureAlphaKind::Opaque),
                     options,
                 );
-                if surface.len() > 2_000_000 {
+                if surface.len() > MAX_PLACEMENT_BLOCKS {
                     return Err(validation("OBJ placement exceeds two million blocks"));
                 }
             }
@@ -291,6 +302,11 @@ pub fn voxelize_textured(
             }
             Ok(merged)
         })?;
+    // Each parallel worker is bounded, but their merged output can exceed
+    // that bound. Enforce the same cap before allocating the sorted plan.
+    if surface.len() > MAX_PLACEMENT_BLOCKS {
+        return Err(validation("OBJ placement exceeds two million blocks"));
+    }
     progress(model.triangles.len(), model.triangles.len());
     if surface.is_empty() {
         return Err(validation("OBJ produced no occupied cells"));
@@ -393,9 +409,9 @@ fn fill_enclosed(
 ) -> Result<()> {
     let padded = dimensions.map(|length| length + 2);
     let volume = padded.iter().product::<usize>();
-    if volume > 9_000_000 {
+    if volume > MAX_SOLID_FLOOD_CELLS {
         return Err(validation(
-            "solid OBJ flood-fill volume exceeds nine million cells",
+            "实心 OBJ 体积超过洪水填充上限（900 万格）；请降低目标尺寸或选择“空心·仅表面”",
         ));
     }
     let mut marks = vec![0_u8; volume];
@@ -459,7 +475,7 @@ fn fill_enclosed(
             }
         }
     }
-    if surface.len() > 2_000_000 {
+    if surface.len() > MAX_PLACEMENT_BLOCKS {
         return Err(validation("solid OBJ placement exceeds two million blocks"));
     }
     Ok(())
