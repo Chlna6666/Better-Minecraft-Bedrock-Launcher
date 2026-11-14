@@ -2238,6 +2238,12 @@ impl View {
             cx.notify();
             return;
         };
+        let Ok(exact_selection) = ::bedrock_world::ExactChunkSelection::new(selection.chunks())
+        else {
+            self.status = SharedString::from("选区中没有可导出的区块");
+            cx.notify();
+            return;
+        };
         let default_file_name = format!(
             "chunk-selection-{}-{}-{}-{}.obj",
             selection.bounds().min_chunk_x,
@@ -2251,7 +2257,7 @@ impl View {
             return;
         };
         let path = PathBuf::from(path);
-        let chunk_count = selection.bounds().chunk_count().max(1);
+        let chunk_count = exact_selection.len();
         let task_total = task_progress_units(chunk_count.saturating_add(2));
         let task_id = task_manager::create_task(
             task_manager::TaskOptions::new("导出 OBJ", "map_export")
@@ -2285,7 +2291,6 @@ impl View {
         self.status = SharedString::from("正在导出选区 OBJ...");
         let generation = self.metadata_generation;
         let world_path = self.world_path.clone();
-        let bounds = selection.bounds();
         let package_paths = preview_3d_resource_package_paths(&world_path, cx);
         cx.notify();
 
@@ -2327,19 +2332,24 @@ impl View {
                             package_path,
                         );
                     }
-                    let block_models = bedrock_block_model::BlockModelRepository::load_packs(
+                    let mut block_models = bedrock_block_model::BlockModelRepository::load_packs(
                         resolved_package_paths.iter().map(PathBuf::as_path),
                     )
-                    .map(Arc::new)
                     .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
+                    super::world3d::attach_capture_catalog(
+                        &mut block_models,
+                        &resolved_package_paths,
+                    );
+                    let block_models = Arc::new(block_models);
 
                     let completed_chunks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                    let mesh = super::preview_3d::load_mesh(
-                        Preview3dLoadOptions {
+                    let mesh = super::exact_selection_ops::load_preview_3d_mesh_exact(
+                        super::exact_selection_ops::ExactPreview3dLoadOptions {
                             world_path: &world_path,
-                            bounds,
+                            selection: exact_selection,
                             block_models: Some(block_models),
                             cancel: Some(cancel_for_task.clone()),
+                            for_export: true,
                         },
                         {
                             let progress_sender = progress_sender.clone();
@@ -2374,6 +2384,12 @@ impl View {
                     )
                     .map_err(|error| error.to_string())?;
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
+                    if mesh.omitted_face_count != 0 || mesh.truncated_chunk_count != 0 {
+                        return Err(format!(
+                            "模型构网不完整：丢失 {} 个面、{} 个区块。已取消导出。",
+                            mesh.omitted_face_count, mesh.truncated_chunk_count
+                        ));
+                    }
                     let previous =
                         completed_chunks.swap(chunk_count, std::sync::atomic::Ordering::Relaxed);
                     task_manager::update_progress(
