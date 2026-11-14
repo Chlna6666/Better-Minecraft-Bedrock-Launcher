@@ -12,7 +12,6 @@ const TEXTURE_SAMPLE_OFFSETS: [[f32; 3]; 4] = [
     [0.3, 0.3, -0.3],
 ];
 
-/// The closest eligible surface's palette index and distance from the cell center.
 // Alpha-mask coverage is not glass-like transmission. Character hair and
 // clothing textures can have opaque pixels next to fully transparent pixels.
 const OPAQUE_ALPHA_CUTOFF: f32 = 250.0 / 255.0;
@@ -39,6 +38,7 @@ fn straight_texture_color(
     ]
 }
 
+/// The closest eligible surface's palette index and distance from the cell center.
 pub(super) struct SurfaceSample {
     /// Index into the caller's approved block palette.
     pub(super) candidate: usize,
@@ -106,7 +106,7 @@ pub(super) fn rasterize_triangle(
             for x in bounds[0].0..=bounds[0].1 {
                 if triangle_intersects_cell(vertices, [x as f32, y as f32, z as f32]) {
                     let index = (z * dimensions[1] + y) * dimensions[0] + x;
-                    let (weights, distance) =
+                    let (_, distance) =
                         closest::sample(vertices, [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5]);
                     if surface
                         .get(&index)
@@ -115,11 +115,9 @@ pub(super) fn rasterize_triangle(
                         continue;
                     }
                     let block = if let Some(texture) = texture {
-                        // Average four deterministic in-cell samples. A single
-                        // closest-point sample often lands on a specular or
-                        // shadow texel; pale character textures then match pure
-                        // white blocks and wash out against the preview
-                        // background. This mirrors Colorify7's multisampling.
+                        // Resolve four in-cell texture samples. Weight RGB by coverage
+                        // so the transparent padding in hair/clothing masks cannot
+                        // introduce dark fringe colors or falsely select glass.
                         let mut color_sum = [0.0f32; 3];
                         let mut alpha_sum = 0.0f32;
                         let mut opaque_samples = 0usize;
@@ -256,7 +254,7 @@ mod raster_alpha_tests {
     use super::{straight_texture_color, uses_translucent_palette};
 
     #[test]
-    fn transparent_padding_does_not_darkening_opaque_texture_colors() {
+    fn transparent_padding_does_not_darken_opaque_texture_colors() {
         // Three opaque white texels and one transparent black texel are
         // still white; the fourth texel only reduces coverage.
         let pixel = straight_texture_color([765.0; 3], 765.0, 4);
