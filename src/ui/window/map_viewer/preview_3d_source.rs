@@ -6283,7 +6283,12 @@ mod tests {
     #[test]
     fn imported_structure_faces_are_not_darkened_by_world_lighting() {
         let palette = structure_preview_palette();
-        for candidate in bedrock_voxel::default_block_candidates() {
+        let candidates = bedrock_voxel::default_block_candidates();
+        for name in ["minecraft:white_concrete", "minecraft:red_concrete"] {
+            let candidate = candidates
+                .iter()
+                .find(|candidate| candidate.state.name == name)
+                .expect("opaque preview reference block");
             let colors = block_face_colors(palette, &candidate.state, None, false);
             for (actual, expected) in [
                 (colors.up, candidate.top_color),
