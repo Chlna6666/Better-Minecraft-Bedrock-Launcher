@@ -344,7 +344,7 @@ impl View {
                             game_package_paths: &resolved_package_paths,
                         },
                         |_completed, _total| {},
-                    );
+                    )?;
                     if cancel.is_cancelled() {
                         return Err("模型导出已取消".into());
                     }
