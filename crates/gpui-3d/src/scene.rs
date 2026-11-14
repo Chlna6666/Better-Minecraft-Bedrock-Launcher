@@ -738,7 +738,12 @@ impl Scene {
         self.len() == 0
     }
 
-    pub(crate) fn roots(&self) -> &[NodeId] {
+    /// Root nodes in authored scene order.
+    ///
+    /// Public read-only traversal lets applications construct presentation-only
+    /// views without decoding imported meshes or mutating the source scene.
+    #[must_use]
+    pub fn roots(&self) -> &[NodeId] {
         &self.roots
     }
 
