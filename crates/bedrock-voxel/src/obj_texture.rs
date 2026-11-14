@@ -2,6 +2,8 @@
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
+use rayon::prelude::*;
+
 #[cfg(test)]
 use image::RgbaImage;
 use image::{ImageReader, Limits};
@@ -33,57 +35,78 @@ pub struct SourceTexture {
 /// Returns an error when files cannot be read, decoded images are too large,
 /// or the combined decoded texture budget is exceeded.
 pub fn load_obj_textures(model: &ObjModel) -> Result<Vec<Option<Arc<SourceTexture>>>> {
+    // Unique texture paths in first-appearance order.
+    let mut unique = Vec::<PathBuf>::new();
+    for material in &model.materials {
+        if let Some(path) = &material.diffuse_texture
+            && !unique.contains(path)
+        {
+            unique.push(path.clone());
+        }
+    }
+    // PNG/JPEG decoding dominates conversion startup; decode distinct files
+    // across cores, then apply the memory budget in deterministic order.
+    let decoded: Vec<(PathBuf, Result<SourceTexture>)> = unique
+        .par_iter()
+        .map(|path| (path.clone(), decode_texture(path)))
+        .collect::<Vec<_>>();
+    let mut decoded_map = HashMap::<PathBuf, Arc<SourceTexture>>::new();
     let mut total_bytes = 0_u64;
-    let mut decoded = HashMap::<PathBuf, Arc<SourceTexture>>::new();
+    for (path, result) in decoded {
+        let texture = result.map_err(validation)?;
+        total_bytes = total_bytes
+            .checked_add(
+                u64::from(texture.width)
+                    .checked_mul(u64::from(texture.height))
+                    .and_then(|pixels| pixels.checked_mul(4))
+                    .ok_or_else(|| validation("OBJ texture dimensions overflow"))?,
+            )
+            .ok_or_else(|| validation("OBJ texture budget overflows"))?;
+        if total_bytes > MAX_DECODED_BYTES {
+            return Err(validation("OBJ textures exceed 256 MiB decoded budget"));
+        }
+        decoded_map.insert(path, Arc::new(texture));
+    }
     model
         .materials
         .iter()
         .map(|material| {
-            let Some(path) = &material.diffuse_texture else {
-                return Ok(None);
-            };
-            if let Some(texture) = decoded.get(path) {
-                return Ok(Some(texture.clone()));
-            }
-            let file_size = path
-                .metadata()
-                .map_err(|error| validation(error.to_string()))?
-                .len();
-            if file_size > MAX_FILE_BYTES {
-                return Err(validation("OBJ texture exceeds 64 MiB input limit"));
-            }
-            let mut reader =
-                ImageReader::open(path).map_err(|error| validation(error.to_string()))?;
-            let mut limits = Limits::default();
-            limits.max_image_width = Some(8192);
-            limits.max_image_height = Some(8192);
-            limits.max_alloc = Some(MAX_DECODED_BYTES);
-            reader.limits(limits);
-            let image = reader
-                .decode()
-                .map_err(|error| validation(error.to_string()))?;
-            let rgba_bytes = u64::from(image.width())
-                .checked_mul(u64::from(image.height()))
-                .and_then(|pixels| pixels.checked_mul(4))
-                .ok_or_else(|| validation("OBJ texture dimensions overflow"))?;
-            total_bytes = total_bytes
-                .checked_add(rgba_bytes)
-                .ok_or_else(|| validation("OBJ texture budget overflows"))?;
-            if total_bytes > MAX_DECODED_BYTES {
-                return Err(validation("OBJ textures exceed 256 MiB decoded budget"));
-            }
-            let rgba = image.to_rgba8();
-            let has_alpha = rgba.pixels().any(|p| p.0[3] != 255);
-            let texture = Arc::new(SourceTexture {
-                width: rgba.width(),
-                height: rgba.height(),
-                pixels: Arc::from(rgba.into_raw()),
-                has_alpha,
-            });
-            decoded.insert(path.clone(), texture.clone());
-            Ok(Some(texture))
+            Ok(material.diffuse_texture.as_ref().map(|path| {
+                decoded_map
+                    .get(path)
+                    .cloned()
+                    .expect("unique texture paths were all decoded")
+            }))
         })
         .collect()
+}
+
+/// Decodes one texture file with the bounded reader limits and alpha scan.
+fn decode_texture(path: &PathBuf) -> Result<SourceTexture> {
+    let file_size = path
+        .metadata()
+        .map_err(|error| validation(error.to_string()))?
+        .len();
+    if file_size > MAX_FILE_BYTES {
+        return Err(validation("OBJ texture exceeds 64 MiB input limit"));
+    }
+    let mut reader = ImageReader::open(path).map_err(|error| validation(error.to_string()))?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(MAX_DECODED_BYTES);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|error| validation(error.to_string()))?;
+    let rgba = image.to_rgba8();
+    let has_alpha = rgba.pixels().any(|pixel| pixel.0[3] != 255);
+    Ok(SourceTexture {
+        width: rgba.width(),
+        height: rgba.height(),
+        pixels: Arc::from(rgba.into_raw()),
+        has_alpha,
+    })
 }
 
 /// Bilinear sample with repeating U/V and OBJ's bottom-up V coordinates.

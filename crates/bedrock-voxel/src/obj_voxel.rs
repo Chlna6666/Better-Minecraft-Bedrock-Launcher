@@ -1,16 +1,18 @@
 //! Pure OBJ geometry conversion into local Bedrock block placements.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, VecDeque, hash_map::Entry},
     sync::Arc,
 };
+
+use rayon::prelude::*;
 
 use bedrock_world::editor::{BlockOffset, BlockPlacementPlan, PlacementBlock};
 use bedrock_world::surface::CancelFlag;
 
 use crate::{
     FlatBlockCandidate, Result,
-    block_image::{is_glass_candidate, linear_srgb, oklab, srgb_linear},
+    block_image::{LabPalette, is_glass_candidate, oklab},
     obj::{ObjModel, ObjTriangle},
     obj_texture::{SourceTexture, load_obj_textures},
     validation,
@@ -49,7 +51,7 @@ impl Default for ObjVoxelOptions {
             longest_side_blocks: 32,
             fill: ObjFill::Surface,
             alpha_threshold: 1,
-            background: [255; 3],
+            background: [0; 3],
         }
     }
 }
@@ -60,8 +62,9 @@ impl Default for ObjVoxelOptions {
 /// to local zero. This function reads validated source texture files but does
 /// not read or write a world; collision and world-height checks are performed
 /// when the plan is placed.
-/// Material diffuse RGB and bilinear diffuse-texture samples are matched in
-/// OKLab to the explicitly approved block candidates. Horizontal source faces use
+/// Textured surfaces use the bilinear map_Kd sample without the MTL diffuse tint; untextured
+/// surfaces use their material diffuse RGB. Both are matched in OKLab to the explicitly approved
+/// block candidates. Horizontal source faces use
 /// candidate top colors; vertical faces use candidate side colors. Textures are
 /// sampled at the closest triangle point to the cell center. When surfaces share a cell,
 /// the closest sample determines its color; equal distances use palette order,
@@ -178,18 +181,26 @@ pub fn voxelize_textured(
     }
     let candidate_labs = candidates
         .iter()
-        .map(|candidate| candidate_lab(candidate.top_color, options.background))
+        .map(|candidate| candidate_lab(candidate.top_color))
         .collect::<Vec<_>>();
     let candidate_side_labs = candidates
         .iter()
-        .map(|candidate| candidate_lab(candidate.side_color, options.background))
+        .map(|candidate| candidate_lab(candidate.side_color))
         .collect::<Vec<_>>();
-    let all_candidate_indices = (0..candidates.len()).collect::<Vec<_>>();
     let opaque_candidate_indices = candidates
         .iter()
         .enumerate()
         .filter_map(|(index, candidate)| (!is_glass_candidate(candidate)).then_some(index))
         .collect::<Vec<_>>();
+    let allowed_all = vec![true; candidates.len()];
+    let allowed_opaque = candidates
+        .iter()
+        .map(|candidate| !is_glass_candidate(candidate))
+        .collect::<Vec<_>>();
+    let top_all = LabPalette::new(&candidate_labs, &allowed_all);
+    let top_opaque = LabPalette::new(&candidate_labs, &allowed_opaque);
+    let side_all = LabPalette::new(&candidate_side_labs, &allowed_all);
+    let side_opaque = LabPalette::new(&candidate_side_labs, &allowed_opaque);
     if opaque_candidate_indices.is_empty() {
         return Err(validation("no opaque block colors were supplied"));
     }
@@ -197,48 +208,73 @@ pub fn voxelize_textured(
         .iter()
         .map(|candidate| !is_glass_candidate(candidate))
         .collect::<Vec<_>>();
-    let mut surface = HashMap::<usize, SurfaceSample>::new();
-    for (triangle_index, triangle) in model.triangles.iter().enumerate() {
-        if cancel.is_cancelled() {
-            return Err(validation("OBJ conversion cancelled"));
-        }
-        let rgb = material_rgb(model, triangle)?;
-        let texture = triangle
-            .material
-            .and_then(|id| textures.get(id))
-            .and_then(Option::as_deref);
-        if texture.is_some() && triangle.vertices.iter().any(|vertex| vertex.uv.is_none()) {
-            return Err(validation("textured OBJ face is missing UV coordinates"));
-        }
-        let opacity = material_opacity(model, triangle)?;
-        let edge_a = subtract(triangle.vertices[1].position, triangle.vertices[0].position);
-        let edge_b = subtract(triangle.vertices[2].position, triangle.vertices[0].position);
-        let normal = cross(edge_a, edge_b);
-        if dot(normal, normal) <= dot(edge_a, edge_a) * dot(edge_b, edge_b) * 1e-12 {
-            return Err(validation("OBJ contains a degenerate triangle"));
-        }
-        rasterize_triangle(
-            triangle,
-            minimum,
-            scale,
-            dimensions,
-            &mut surface,
-            &candidate_labs,
-            &candidate_side_labs,
-            &all_candidate_indices,
-            &opaque_candidate_indices,
-            rgb,
-            opacity,
-            texture,
-            options,
-        );
-        if surface.len() > 2_000_000 {
-            return Err(validation("OBJ placement exceeds two million blocks"));
-        }
-        if (triangle_index + 1) % 256 == 0 || triangle_index + 1 == model.triangles.len() {
-            progress(triangle_index + 1, model.triangles.len());
-        }
-    }
+    // Batch triangles across all cores. Each worker owns a private cell map;
+    // reducing keeps the closest surface per cell, with the lower candidate
+    // index breaking distance ties exactly like the serial scan.
+    let mut surface = model
+        .triangles
+        .par_chunks(256)
+        .map(|triangles| -> Result<HashMap<usize, SurfaceSample>> {
+            let mut surface = HashMap::<usize, SurfaceSample>::new();
+            for triangle in triangles {
+                if cancel.is_cancelled() {
+                    return Err(validation("OBJ conversion cancelled"));
+                }
+                let rgb = material_rgb(model, triangle)?;
+                let texture = triangle
+                    .material
+                    .and_then(|id| textures.get(id))
+                    .and_then(Option::as_deref);
+                if texture.is_some() && triangle.vertices.iter().any(|vertex| vertex.uv.is_none()) {
+                    return Err(validation("textured OBJ face is missing UV coordinates"));
+                }
+                let opacity = material_opacity(model, triangle)?;
+                let edge_a = subtract(triangle.vertices[1].position, triangle.vertices[0].position);
+                let edge_b = subtract(triangle.vertices[2].position, triangle.vertices[0].position);
+                let normal = cross(edge_a, edge_b);
+                if dot(normal, normal) <= dot(edge_a, edge_a) * dot(edge_b, edge_b) * 1e-12 {
+                    return Err(validation("OBJ contains a degenerate triangle"));
+                }
+                rasterize_triangle(
+                    triangle,
+                    minimum,
+                    scale,
+                    dimensions,
+                    &mut surface,
+                    &top_all,
+                    &top_opaque,
+                    &side_all,
+                    &side_opaque,
+                    rgb,
+                    opacity,
+                    texture,
+                    options,
+                );
+                if surface.len() > 2_000_000 {
+                    return Err(validation("OBJ placement exceeds two million blocks"));
+                }
+            }
+            Ok(surface)
+        })
+        .try_reduce(HashMap::new, |mut merged, local| {
+            for (index, sample) in local {
+                match merged.entry(index) {
+                    Entry::Occupied(mut entry) => {
+                        let current = entry.get();
+                        let order = sample.distance.total_cmp(&current.distance);
+                        if order.is_lt() || (order.is_eq() && sample.candidate < current.candidate)
+                        {
+                            entry.insert(sample);
+                        }
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(sample);
+                    }
+                }
+            }
+            Ok(merged)
+        })?;
+    progress(model.triangles.len(), model.triangles.len());
     if surface.is_empty() {
         return Err(validation("OBJ produced no occupied cells"));
     }
@@ -280,13 +316,15 @@ fn material_rgb(model: &ObjModel, triangle: &ObjTriangle) -> Result<[u8; 3]> {
         .materials
         .get(material_id)
         .ok_or_else(|| validation("OBJ triangle references a missing material"))?;
-    let diffuse = material
-        .diffuse
-        .unwrap_or(if material.diffuse_texture.is_some() {
-            [1.0; 3]
-        } else {
-            [0.75; 3]
-        });
+    // MTL Kd is a diffuse tint for untextured materials. PMX/MMD exporters
+    // commonly emit a non-white default Kd even when map_Kd already carries the
+    // full albedo, and multiplying it there darkens the whole model. Textured
+    // surfaces therefore use map_Kd alone, matching Colorify7's OBJ path.
+    let diffuse = if material.diffuse_texture.is_some() {
+        [1.0; 3]
+    } else {
+        material.diffuse.unwrap_or([0.75; 3])
+    };
     if !diffuse.iter().all(|value| value.is_finite()) {
         return Err(validation("OBJ material has nonfinite diffuse color"));
     }
@@ -307,13 +345,10 @@ fn material_opacity(model: &ObjModel, triangle: &ObjTriangle) -> Result<f32> {
     Ok(material.opacity)
 }
 
-fn candidate_lab(color: [u8; 4], background: [u8; 3]) -> [f32; 3] {
-    let alpha = f32::from(color[3]) / 255.0;
-    oklab([0, 1, 2].map(|channel| {
-        let foreground = srgb_linear(color[channel]);
-        let background = srgb_linear(background[channel]);
-        linear_srgb(foreground * alpha + background * (1.0 - alpha))
-    }))
+fn candidate_lab(color: [u8; 4]) -> [f32; 3] {
+    // Alpha only decides whether a glass candidate is eligible. Matching uses
+    // the straight RGB so translucent source texels and glass share one space.
+    oklab([color[0], color[1], color[2]])
 }
 
 fn subtract(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {

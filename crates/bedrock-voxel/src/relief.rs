@@ -4,6 +4,7 @@ use bedrock_world::{
     editor::{BlockOffset, BlockPlacementPlan, PlacementBlock},
     surface::CancelFlag,
 };
+use rayon::prelude::*;
 
 use crate::{
     FlatBlockCandidate, FlatImageInput, FlatImageOptions, Result, block_image,
@@ -69,58 +70,60 @@ pub fn plan_relief_image(
         plan_flat_image_tracked(input, candidates, image_options, cancel, |done, total| {
             progress(u64::from(done), u64::from(total))
         })?;
-    let mut blocks = Vec::with_capacity(flat_plan.blocks().len());
     let image_columns = flat_plan.blocks().len() as u64;
     let total = pixel_count.saturating_add(image_columns);
 
-    for (index, source_block) in flat_plan.blocks().iter().enumerate() {
-        if index.is_multiple_of(input.width.max(1) as usize) && cancel.is_cancelled() {
-            return Err(validation("relief image conversion cancelled"));
-        }
-        let pixel_index = (source_block.offset.z as usize)
-            .checked_mul(input.width as usize)
-            .and_then(|row| row.checked_add(source_block.offset.x as usize))
-            .ok_or_else(|| validation("relief pixel position overflows"))?;
-        let start = pixel_index
-            .checked_mul(4)
-            .ok_or_else(|| validation("relief pixel byte offset overflows"))?;
-        let end = start
-            .checked_add(4)
-            .ok_or_else(|| validation("relief pixel byte offset overflows"))?;
-        let pixel = input
-            .rgba
-            .get(start..end)
-            .ok_or_else(|| validation("relief plan contains an invalid pixel position"))?;
-        let top_y = if pixel[3] < image_options.alpha_threshold {
-            0
-        } else {
-            luminance_height(pixel, image_options.background, relief_options.max_height)
-        };
-
-        if relief_options.fill == ReliefImageFill::Solid {
-            for y in 0..top_y {
-                blocks.push(PlacementBlock {
-                    offset: BlockOffset {
-                        x: source_block.offset.x,
-                        y,
-                        z: source_block.offset.z,
-                    },
-                    state: source_block.state.clone(),
-                });
+    // Column heights and fill runs are per-pixel independent; spread them
+    // across cores and flatten in the serial row order afterwards.
+    let columns: Vec<Vec<PlacementBlock>> = flat_plan
+        .blocks()
+        .par_iter()
+        .enumerate()
+        .map(|(index, source_block)| -> Result<Vec<PlacementBlock>> {
+            if index.is_multiple_of(input.width.max(1) as usize) && cancel.is_cancelled() {
+                return Err(validation("relief image conversion cancelled"));
             }
-        }
-        blocks.push(PlacementBlock {
-            offset: BlockOffset {
-                x: source_block.offset.x,
-                y: top_y,
-                z: source_block.offset.z,
-            },
-            state: source_block.state.clone(),
-        });
-        if (index + 1).is_multiple_of(1024) {
-            progress(pixel_count.saturating_add(index as u64 + 1), total);
-        }
-    }
+            let pixel_index = (source_block.offset.z as usize)
+                .checked_mul(input.width as usize)
+                .and_then(|row| row.checked_add(source_block.offset.x as usize))
+                .ok_or_else(|| validation("relief pixel position overflows"))?;
+            let start = pixel_index
+                .checked_mul(4)
+                .ok_or_else(|| validation("relief pixel byte offset overflows"))?;
+            let pixel = input
+                .rgba
+                .get(start..start + 4)
+                .ok_or_else(|| validation("relief plan contains an invalid pixel position"))?;
+            let top_y = if pixel[3] < image_options.alpha_threshold {
+                0
+            } else {
+                luminance_height(pixel, image_options.background, relief_options.max_height)
+            };
+            let mut column = Vec::with_capacity(top_y.max(0) as usize + 1);
+            if relief_options.fill == ReliefImageFill::Solid {
+                for y in 0..top_y {
+                    column.push(PlacementBlock {
+                        offset: BlockOffset {
+                            x: source_block.offset.x,
+                            y,
+                            z: source_block.offset.z,
+                        },
+                        state: source_block.state.clone(),
+                    });
+                }
+            }
+            column.push(PlacementBlock {
+                offset: BlockOffset {
+                    x: source_block.offset.x,
+                    y: top_y,
+                    z: source_block.offset.z,
+                },
+                state: source_block.state.clone(),
+            });
+            Ok(column)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut blocks = columns.into_iter().flatten().collect::<Vec<_>>();
     if cancel.is_cancelled() {
         return Err(validation("relief image conversion cancelled"));
     }

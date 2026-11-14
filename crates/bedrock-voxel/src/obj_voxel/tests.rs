@@ -344,18 +344,18 @@ fn material_opacity_allows_glass_only_for_translucent_surfaces() {
         top_color: [255, 255, 255, 128],
         side_color: [255, 255, 255, 128],
     };
-    let white = FlatBlockCandidate {
+    let black = FlatBlockCandidate {
         state: BlockState {
-            name: "minecraft:white_wool".to_owned(),
+            name: "minecraft:black_wool".to_owned(),
             states: BTreeMap::new(),
             version: None,
         },
-        top_color: [255, 255, 255, 255],
-        side_color: [255, 255, 255, 255],
+        top_color: [0, 0, 0, 255],
+        side_color: [0, 0, 0, 255],
     };
     let translucent = voxelize_obj(
         &model,
-        &[glass.clone(), white.clone()],
+        &[glass.clone(), black.clone()],
         ObjVoxelOptions {
             longest_side_blocks: 5,
             ..ObjVoxelOptions::default()
@@ -372,7 +372,7 @@ fn material_opacity_allows_glass_only_for_translucent_surfaces() {
     model.materials[0].opacity = 1.0;
     let opaque = voxelize_obj(
         &model,
-        &[glass, white],
+        &[glass, black],
         ObjVoxelOptions {
             longest_side_blocks: 5,
             ..ObjVoxelOptions::default()

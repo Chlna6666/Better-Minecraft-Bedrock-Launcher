@@ -857,7 +857,9 @@ name = "bedrock-voxel"
 version = "0.1.0"
 dependencies = [
  "bedrock-world",
+ "fearless_simd",
  "image",
+ "rayon",
  "serde_json",
  "tobj",
 ]

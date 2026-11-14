@@ -1,5 +1,7 @@
 //! North-up flat image conversion into an immutable block placement plan.
 
+use rayon::prelude::*;
+
 use crate::{Result, validation};
 use bedrock_world::{
     BlockState,
@@ -130,12 +132,66 @@ pub fn plan_flat_image_tracked(
         .map(|candidate| composite_over_background(&candidate.top_color, options.background))
         .collect::<Vec<_>>();
     let candidate_lab = candidate_rgb.iter().copied().map(oklab).collect::<Vec<_>>();
-    let all_candidate_indices = (0..candidates.len()).collect::<Vec<_>>();
-    let opaque_candidate_indices = candidates
+    let allowed_all = vec![true; candidates.len()];
+    let allowed_opaque = candidates
         .iter()
-        .enumerate()
-        .filter_map(|(index, candidate)| (!is_glass_candidate(candidate)).then_some(index))
+        .map(|candidate| !is_glass_candidate(candidate))
         .collect::<Vec<_>>();
+    let palette_all = LabPalette::new(&candidate_lab, &allowed_all);
+    let palette_opaque = LabPalette::new(&candidate_lab, &allowed_opaque);
+    if options.dithering == Dithering::None {
+        // Every pixel is independent without error diffusion. Split by rows so
+        // the per-pixel OKLab search uses all cores; the flattened order still
+        // matches the serial scan.
+        let rows = rgba
+            .par_chunks_exact(width as usize * 4)
+            .enumerate()
+            .map(|(row, row_bytes)| -> Result<Vec<PlacementBlock>> {
+                if cancel.is_cancelled() {
+                    return Err(validation("flat image conversion cancelled"));
+                }
+                let mut blocks = Vec::new();
+                for column in 0..width as usize {
+                    let pixel = &row_bytes[column * 4..column * 4 + 4];
+                    let alpha = pixel[3];
+                    if alpha < options.alpha_threshold {
+                        if let Some(state) = options.transparent_fill {
+                            blocks.push(PlacementBlock {
+                                offset: BlockOffset {
+                                    x: column as i32,
+                                    y: 0,
+                                    z: row as i32,
+                                },
+                                state: state.clone(),
+                            });
+                        }
+                        continue;
+                    }
+                    let color = composite_over_background(pixel, options.background);
+                    let target = oklab(color);
+                    let palette = if pixel[3] > 0 && pixel[3] < u8::MAX {
+                        &palette_all
+                    } else {
+                        &palette_opaque
+                    };
+                    let best = palette.nearest(target);
+                    blocks.push(PlacementBlock {
+                        offset: BlockOffset {
+                            x: column as i32,
+                            y: 0,
+                            z: row as i32,
+                        },
+                        state: candidates[best].state.clone(),
+                    });
+                }
+                Ok(blocks)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let blocks = rows.into_iter().flatten().collect::<Vec<_>>();
+        progress(pixel_count, pixel_count);
+        return BlockPlacementPlan::new(blocks).map_err(|error| error.to_string());
+    }
+
     let mut current_error = vec![[0.0; 3]; width as usize + 2];
     let mut next_error = vec![[0.0; 3]; width as usize + 2];
     let mut blocks = Vec::new();
@@ -174,20 +230,12 @@ pub fn plan_flat_image_tracked(
                 }),
             };
             let target = oklab(target_rgb.map(|channel| channel.round() as u8));
-            let match_indices = if pixel[3] > 0 && pixel[3] < u8::MAX {
-                &all_candidate_indices
+            let palette = if pixel[3] > 0 && pixel[3] < u8::MAX {
+                &palette_all
             } else {
-                &opaque_candidate_indices
+                &palette_opaque
             };
-            let best = match_indices
-                .iter()
-                .copied()
-                .min_by(|a_index, b_index| {
-                    distance_squared(target, candidate_lab[*a_index])
-                        .total_cmp(&distance_squared(target, candidate_lab[*b_index]))
-                        .then(a_index.cmp(b_index))
-                })
-                .ok_or_else(|| validation("no block color matched"))?;
+            let best = palette.nearest(target);
             if options.dithering == Dithering::FloydSteinberg {
                 diffuse_color_error(
                     subtract_color(target_rgb, candidate_rgb[best].map(f32::from)),
@@ -261,8 +309,147 @@ pub(crate) fn oklab(color: [u8; 3]) -> [f32; 3] {
     ]
 }
 
+/// Weight applied to the OKLab a/b axes when matching a source color to a block.
+const CHROMA_WEIGHT: f32 = 2.0;
+
+/// OKLab squared distance with chroma priority.
+///
+/// Equal-weight OKLab distance lets a bright, low-chroma candidate win over a
+/// darker but hue-accurate one, which turns saturated source colors into pale
+/// pink or brown blocks. Weighting the a/b axes keeps hue and saturation ahead
+/// of small lightness differences while still ranking lightness inside the
+/// same hue family.
 pub(crate) fn distance_squared(a: [f32; 3], b: [f32; 3]) -> f32 {
-    (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)
+    let lightness = a[0] - b[0];
+    let green_red = a[1] - b[1];
+    let blue_yellow = a[2] - b[2];
+    lightness * lightness + CHROMA_WEIGHT * (green_red * green_red + blue_yellow * blue_yellow)
+}
+
+/// Structure-of-arrays candidate table for the nearest-color search.
+///
+/// Disallowed candidates carry an infinite lightness, so the vector kernel
+/// needs no per-lane permission mask. Keeping index 0..N in lane order makes
+/// a strict `<` comparison resolve distance ties toward the lower candidate
+/// index, matching the scalar `min_by` used before.
+pub(crate) struct LabPalette {
+    l: Vec<f32>,
+    a: Vec<f32>,
+    b: Vec<f32>,
+    indices: Vec<u32>,
+}
+
+impl LabPalette {
+    pub(crate) fn new(labs: &[[f32; 3]], allowed: &[bool]) -> Self {
+        debug_assert_eq!(labs.len(), allowed.len());
+        let mut palette = Self {
+            l: Vec::with_capacity(labs.len()),
+            a: Vec::with_capacity(labs.len()),
+            b: Vec::with_capacity(labs.len()),
+            indices: (0..labs.len() as u32).collect(),
+        };
+        for (lab, allowed) in labs.iter().zip(allowed) {
+            let (l, a, b) = if *allowed {
+                (lab[0], lab[1], lab[2])
+            } else {
+                (f32::INFINITY, 0.0, 0.0)
+            };
+            palette.l.push(l);
+            palette.a.push(a);
+            palette.b.push(b);
+        }
+        palette
+    }
+
+    pub(crate) fn nearest(&self, target: [f32; 3]) -> usize {
+        #[cfg(feature = "simd")]
+        {
+            let level = *SIMD_LEVEL;
+            return fearless_simd::dispatch!(level, simd => nearest_kernel(simd, target, self));
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            let mut best = f32::INFINITY;
+            let mut best_index = 0;
+            for index in 0..self.l.len() {
+                let distance =
+                    distance_squared(target, [self.l[index], self.a[index], self.b[index]]);
+                if distance < best {
+                    best = distance;
+                    best_index = self.indices[index] as usize;
+                }
+            }
+            best_index
+        }
+    }
+}
+
+#[cfg(feature = "simd")]
+static SIMD_LEVEL: std::sync::LazyLock<fearless_simd::Level> = std::sync::LazyLock::new(|| {
+    let level = fearless_simd::Level::new();
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = level.as_avx2() {
+        return fearless_simd::Level::Avx2(avx2);
+    }
+    level
+});
+
+#[cfg(feature = "simd")]
+#[expect(
+    clippy::inline_always,
+    reason = "fearless_simd manual inlining keeps vector operations inside dispatch's ISA boundary"
+)]
+#[inline(always)]
+fn nearest_kernel<S: fearless_simd::Simd>(
+    simd: S,
+    target: [f32; 3],
+    palette: &LabPalette,
+) -> usize {
+    use fearless_simd::{dispatch, prelude::*};
+
+    let lanes = S::f32s::LEN;
+    let target_l = S::f32s::splat(simd, target[0]);
+    let target_a = S::f32s::splat(simd, target[1]);
+    let target_b = S::f32s::splat(simd, target[2]);
+    let chroma_weight = S::f32s::splat(simd, CHROMA_WEIGHT);
+    let mut best = S::f32s::splat(simd, f32::INFINITY);
+    let mut best_index = S::u32s::splat(simd, u32::MAX);
+    let mut base = 0;
+    while base + lanes <= palette.l.len() {
+        let lightness = S::f32s::from_slice(simd, &palette.l[base..base + lanes]);
+        let green_red = S::f32s::from_slice(simd, &palette.a[base..base + lanes]);
+        let blue_yellow = S::f32s::from_slice(simd, &palette.b[base..base + lanes]);
+        let indices = S::u32s::from_slice(simd, &palette.indices[base..base + lanes]);
+        let dl = lightness - target_l;
+        let da = green_red - target_a;
+        let db = blue_yellow - target_b;
+        let distance = dl * dl + (da * da + db * db) * chroma_weight;
+        let better = distance.simd_lt(best);
+        best = better.select(distance, best);
+        best_index = better.select(indices, best_index);
+        base += lanes;
+    }
+    let distances = best.as_array().as_ref();
+    let indices = best_index.as_array().as_ref();
+    let mut min_distance = f32::INFINITY;
+    let mut min_index = 0;
+    for lane in 0..lanes {
+        if distances[lane] < min_distance {
+            min_distance = distances[lane];
+            min_index = indices[lane] as usize;
+        }
+    }
+    for index in base..palette.l.len() {
+        let distance = distance_squared(
+            target,
+            [palette.l[index], palette.a[index], palette.b[index]],
+        );
+        if distance < min_distance {
+            min_distance = distance;
+            min_index = palette.indices[index] as usize;
+        }
+    }
+    min_index
 }
 
 fn subtract_color(color: [f32; 3], other: [f32; 3]) -> [f32; 3] {
