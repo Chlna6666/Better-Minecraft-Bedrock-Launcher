@@ -1194,9 +1194,16 @@ pub fn mesh_faces_from_source(source: &(impl ObjMeshFaceSource + ?Sized)) -> Vec
         let Some(triangle_positions) = source.face_triangle_positions(face_index) else {
             continue;
         };
-        let Some(uv) = source.face_uv(face_index) else {
-            continue;
-        };
+        // A missing UV affects texturing, not the existence of the geometry.
+        // The previous early-continue removed valid model faces from OBJ exports.
+        let uv = source.face_uv(face_index).unwrap_or_else(|| {
+            default_face_uvs_from_corners(&[
+                triangle_positions[0],
+                triangle_positions[1],
+                triangle_positions[2],
+                triangle_positions[5],
+            ])
+        });
         faces.push(ObjMeshFace {
             material: Cow::Borrowed(material),
             color,
@@ -5510,6 +5517,16 @@ mod tests {
     }
 
     #[test]
+    fn obj_export_keeps_valid_faces_without_explicit_uvs() {
+        let faces = mesh_faces_from_source(&TestNoUvFaceSource);
+        assert_eq!(faces.len(), 1, "missing UVs must never delete geometry");
+        assert_eq!(
+            faces[0].uv,
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+        );
+    }
+
+    #[test]
     fn obj_mesh_faces_from_source_should_skip_incomplete_faces() {
         let source = TestSparseFaceSource;
 
@@ -5878,6 +5895,37 @@ mod tests {
 
         fn face_uv(&self, face_index: usize) -> Option<[[f32; 2]; 4]> {
             (face_index == 0).then_some([[0.0, 0.0]; 4])
+        }
+    }
+
+    struct TestNoUvFaceSource;
+
+    impl ObjMeshFaceSource for TestNoUvFaceSource {
+        fn face_count(&self) -> usize {
+            1
+        }
+
+        fn face_material(&self, face_index: usize) -> Option<&str> {
+            (face_index == 0).then_some("minecraft_test_up")
+        }
+
+        fn face_color(&self, face_index: usize) -> Option<[f32; 4]> {
+            (face_index == 0).then_some([1.0, 1.0, 1.0, 1.0])
+        }
+
+        fn face_triangle_positions(&self, face_index: usize) -> Option<[[f32; 3]; 6]> {
+            (face_index == 0).then_some([
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ])
+        }
+
+        fn face_uv(&self, _: usize) -> Option<[[f32; 2]; 4]> {
+            None
         }
     }
 
