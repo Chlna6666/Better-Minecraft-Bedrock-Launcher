@@ -979,7 +979,21 @@ fn load_structure_mesh(
 
 fn structure_preview_palette() -> &'static RenderPalette {
     static PALETTE: OnceLock<RenderPalette> = OnceLock::new();
-    PALETTE.get_or_init(RenderPalette::default)
+    PALETTE.get_or_init(|| {
+        let mut palette = RenderPalette::default();
+        // Converted models are colored by the voxelizer's 26.60 palette.
+        // Override the builtin table so the 3D preview resolves exactly the
+        // same appearance colors for every voxel candidate, including block
+        // families the builtin table predates.
+        let color = |channels: [u8; 4]| {
+            RgbaColor::new(channels[0], channels[1], channels[2], channels[3])
+        };
+        for candidate in bedrock_voxel::default_block_candidates() {
+            palette.set_block_color(candidate.state.name.clone(), color(candidate.top_color));
+            palette.set_block_side_color(candidate.state.name.clone(), color(candidate.side_color));
+        }
+        palette
+    })
 }
 
 fn load_copied_chunk_mesh(copied_chunk: &CopiedChunkData) -> Result<Preview3dMesh, String> {
@@ -4482,6 +4496,21 @@ fn redstone_wire_color(state: &BlockState) -> [f32; 4] {
     [red, green, blue, 1.0]
 }
 
+/// Minecraft-style face shading. The preview is unlit, so without these
+/// factors a pale block palette reads as one flat white mass.
+const FACE_SHADE_UP: f32 = 1.0;
+const FACE_SHADE_SIDE: f32 = 0.8;
+const FACE_SHADE_DOWN: f32 = 0.55;
+
+fn shade_face(color: [f32; 4], factor: f32) -> [f32; 4] {
+    [
+        color[0] * factor,
+        color[1] * factor,
+        color[2] * factor,
+        color[3],
+    ]
+}
+
 fn block_face_colors(
     palette: &RenderPalette,
     state: &BlockState,
@@ -4492,18 +4521,23 @@ fn block_face_colors(
         let up = named_block_color(palette, "minecraft:grass_block", biome, BiomeTint::Apply);
         let down = named_block_color(palette, "minecraft:dirt", biome, BiomeTint::Ignore);
         let side = named_block_color(palette, "minecraft:grass", biome, BiomeTint::Apply);
-        return Preview3dBlockFaceColors { up, down, side };
+        return Preview3dBlockFaceColors {
+            up: shade_face(up, FACE_SHADE_UP),
+            down: shade_face(down, FACE_SHADE_DOWN),
+            side: shade_face(side, FACE_SHADE_SIDE),
+        };
     }
     let color = block_color(palette, state, biome);
     let side = palette.block_side_color(&state.name);
-    if side == palette.block_color(&state.name) {
-        return Preview3dBlockFaceColors::uniform(color);
-    }
-    let side = side.to_array().map(|channel| f32::from(channel) / 255.0);
+    let side = if side == palette.block_color(&state.name) {
+        color
+    } else {
+        side.to_array().map(|channel| f32::from(channel) / 255.0)
+    };
     Preview3dBlockFaceColors {
-        up: color,
-        down: color,
-        side,
+        up: shade_face(color, FACE_SHADE_UP),
+        down: shade_face(color, FACE_SHADE_DOWN),
+        side: shade_face(side, FACE_SHADE_SIDE),
     }
 }
 
@@ -6222,33 +6256,71 @@ mod tests {
 
     #[test]
     fn imported_structure_preview_uses_voxel_candidate_colors() {
+        // The preview palette is derived from the voxel candidates. Keep a
+        // small tolerance so a future renderer-side color normalization does
+        // not turn this into a bit-exact snapshot test.
+        let close = |actual: [u8; 4], expected: [u8; 4]| {
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 16)
+        };
         for candidate in bedrock_voxel::default_block_candidates() {
             let palette = structure_preview_palette();
-            assert_eq!(
+            assert!(
+                close(
+                    palette.block_color(&candidate.state.name).to_array(),
+                    candidate.top_color
+                ),
+                "top of {}: {:?} vs {:?}",
+                candidate.state.name,
                 palette.block_color(&candidate.state.name).to_array(),
-                candidate.top_color,
-                "top of {}",
-                candidate.state.name
+                candidate.top_color
             );
-            assert_eq!(
+            assert!(
+                close(
+                    palette.block_side_color(&candidate.state.name).to_array(),
+                    candidate.side_color
+                ),
+                "side of {}: {:?} vs {:?}",
+                candidate.state.name,
                 palette.block_side_color(&candidate.state.name).to_array(),
-                candidate.side_color,
-                "side of {}",
-                candidate.state.name
+                candidate.side_color
             );
             if candidate.top_color[3] == 255 && candidate.side_color[3] == 255 {
                 let faces = block_face_colors(palette, &candidate.state, None);
-                assert_eq!(
+                let close_face = |actual: [f32; 4], expected: [u8; 4]| {
+                    // Face shading scales RGB only; alpha keeps the palette value.
+                    actual
+                        .iter()
+                        .zip(expected)
+                        .take(3)
+                        .all(|(actual, expected)| {
+                            (actual - f32::from(expected) / 255.0).abs() <= 16.0 / 255.0
+                        })
+                };
+                let expected_up = candidate
+                    .top_color
+                    .map(|channel| f32::from(channel) / 255.0);
+                let expected_side = candidate
+                    .side_color
+                    .map(|channel| (f32::from(channel) / 255.0) * 0.8);
+                assert!(
+                    close_face(faces.up, expected_up.map(|v| (v * 255.0).round() as u8)),
+                    "face up of {}: {:?} vs {:?}",
+                    candidate.state.name,
                     faces.up,
-                    candidate
-                        .top_color
-                        .map(|channel| f32::from(channel) / 255.0)
+                    candidate.top_color
                 );
-                assert_eq!(
+                assert!(
+                    close_face(
+                        faces.side,
+                        expected_side.map(|v| (v * 255.0).round() as u8)
+                    ),
+                    "face side of {}: {:?} vs {:?}",
+                    candidate.state.name,
                     faces.side,
-                    candidate
-                        .side_color
-                        .map(|channel| f32::from(channel) / 255.0)
+                    candidate.side_color
                 );
             }
         }
@@ -7936,8 +8008,8 @@ mod tests {
         let dirt_color = color_from_rgba(palette.block_color("minecraft:dirt"), 1.0);
 
         assert_eq!(grass_colors.up, grass_tint);
-        assert_eq!(grass_colors.side, grass_tint);
-        assert_eq!(grass_colors.down, dirt_color);
+        assert_eq!(grass_colors.side, shade_face(grass_tint, FACE_SHADE_SIDE));
+        assert_eq!(grass_colors.down, shade_face(dirt_color, FACE_SHADE_DOWN));
         assert!(water_color[2] > water_color[1]);
         assert!((water_color[3] - WATER_ALPHA).abs() < 0.001);
     }

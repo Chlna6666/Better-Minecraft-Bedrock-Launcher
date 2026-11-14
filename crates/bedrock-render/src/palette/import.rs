@@ -392,6 +392,21 @@ impl RenderPalette {
             .unwrap_or(self.unknown_block_color)
     }
 
+    /// Sets or replaces the appearance color for one block name.
+    ///
+    /// Callers that own a dedicated palette snapshot (for example a converted
+    /// model preview) can align a few entries with an external source without
+    /// rebuilding the builtin table. The name may be namespaced or plain; a
+    /// namespaced entry takes precedence over the builtin fallback.
+    pub fn set_block_color(&mut self, name: impl Into<String>, color: RgbaColor) {
+        self.block_colors.insert(name.into(), color);
+    }
+
+    /// Sets or replaces the side-face appearance color for one block name.
+    pub fn set_block_side_color(&mut self, name: impl Into<String>, color: RgbaColor) {
+        self.block_side_colors.insert(name.into(), color);
+    }
+
     /// Enumerates configured resource-pack appearance colors by block name.
     ///
     /// These are renderer appearance colors, not Bedrock in-game map colors. Iteration order is
