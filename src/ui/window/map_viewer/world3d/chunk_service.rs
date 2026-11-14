@@ -3131,42 +3131,7 @@ impl Worker {
         }
         let resolver = Arc::new(resolver);
         let mut models = resolver.models().clone();
-        if let Some(root) = discover_capture_library(&config.package_roots) {
-            match models.load_capture_catalog(&root) {
-                Ok(count) => {
-                    if trace_timings() {
-                        eprintln!(
-                            "world3d: loaded {count} captured model states from {}",
-                            root.display()
-                        );
-                    }
-                }
-                Err(error) => eprintln!(
-                    "world3d: capture library ignored ({}): {error}",
-                    root.display()
-                ),
-            }
-        }
-        // An installation capture takes precedence. The optional embedded
-        // archive is version-specific: never apply its exact-state recipes to
-        // an unrelated Minecraft build.
-        if models.capture_catalog.is_none() {
-            if let Ok(catalog) = bedrock_block_model::RuntimeCaptureCatalog::open_embedded() {
-                if capture_version_matches_installation(
-                    catalog.game_version(),
-                    &config.package_roots,
-                ) {
-                    let count = catalog.state_count();
-                    if trace_timings() {
-                        eprintln!(
-                            "world3d: using {count} embedded BSC model states for {}",
-                            catalog.game_version()
-                        );
-                    }
-                    models.capture_catalog = Some(Arc::new(catalog));
-                }
-            }
-        }
+        attach_capture_catalog(&mut models, &config.package_roots);
         let models = Arc::new(models);
         let mut info = ChunkServiceInfo::default();
         info.block_model_count = models.blocks.len();
@@ -6096,6 +6061,50 @@ fn probe_visibility(
             )
         })
         .collect()
+}
+
+/// Selects the exact same BSC catalog for the world editor and file exporters.
+/// A capture from a mismatched or ambiguous game version is never attached.
+pub(crate) fn attach_capture_catalog(
+    models: &mut bedrock_block_model::BlockModelRepository,
+    package_roots: &[PathBuf],
+) {
+    if let Some(root) = discover_capture_library(package_roots) {
+        match models.load_capture_catalog(&root) {
+            Ok(count) => {
+                if trace_timings() {
+                    eprintln!(
+                        "world3d: loaded {count} captured model states from {}",
+                        root.display()
+                    );
+                }
+            }
+            Err(error) => eprintln!(
+                "world3d: capture library ignored ({}): {error}",
+                root.display()
+            ),
+        }
+    }
+    // An installation capture takes precedence. The optional embedded
+    // archive is version-specific: never apply its exact-state recipes to
+    // an unrelated Minecraft build.
+    if models.capture_catalog.is_none() {
+        if let Ok(catalog) = bedrock_block_model::RuntimeCaptureCatalog::open_embedded() {
+            if capture_version_matches_installation(
+                catalog.game_version(),
+                package_roots,
+            ) {
+                let count = catalog.state_count();
+                if trace_timings() {
+                    eprintln!(
+                        "world3d: using {count} embedded BSC model states for {}",
+                        catalog.game_version()
+                    );
+                }
+                models.capture_catalog = Some(Arc::new(catalog));
+            }
+        }
+    }
 }
 
 /// Match the full BSC game version to a selected installation's version
