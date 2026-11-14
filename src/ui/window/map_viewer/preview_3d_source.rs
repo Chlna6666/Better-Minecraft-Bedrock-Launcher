@@ -956,7 +956,7 @@ fn load_structure_mesh(
         )?;
     }
 
-    let mut builder = Preview3dMeshBuilder::new(bounds, 0);
+    let mut builder = Preview3dMeshBuilder::new(bounds, 0).with_neutral_colors();
     for chunk_position in chunk_positions(bounds) {
         let chunk_key = ChunkKey::from_pos(chunk_position);
         let mut blocks = chunk_builders
@@ -1160,6 +1160,7 @@ pub(super) struct Preview3dMeshBuilder {
     bounds: SlimeChunkBounds,
     mask_unprocessed_neighbors: bool,
     ambient_occlusion: bool,
+    neutral_colors: bool,
     combined_meshes: Vec<Preview3dChunkMesh>,
     mesh_generation: u64,
     min_y: i16,
@@ -1200,6 +1201,7 @@ impl Preview3dMeshBuilder {
             bounds,
             mask_unprocessed_neighbors: true,
             ambient_occlusion: true,
+            neutral_colors: false,
             combined_meshes: Vec::new(),
             mesh_generation: 0,
             min_y: i16::MAX,
@@ -1226,6 +1228,12 @@ impl Preview3dMeshBuilder {
             boundary_chunks: FxHashMap::default(),
             processed_chunk_keys: FxHashSet::default(),
         }
+    }
+
+    fn with_neutral_colors(mut self) -> Self {
+        self.neutral_colors = true;
+        self.ambient_occlusion = false;
+        self
     }
 
     fn push_processed_chunk(&mut self, processed_chunk: Preview3dProcessedChunk) {
@@ -1318,14 +1326,28 @@ impl Preview3dMeshBuilder {
             || self.collect_glass_faces(),
             || rayon::join(|| self.collect_water_faces(), || self.collect_lava_faces()),
         );
-        let (glass_faces, glass_omitted) = glass_result;
-        let (water_faces, water_omitted) = water_result;
-        let (lava_faces, lava_omitted) = lava_result;
-        let (opaque_faces, opaque_omitted) = self.collect_opaque_faces(opaque_face_budget(
+        let (mut glass_faces, glass_omitted) = glass_result;
+        let (mut water_faces, water_omitted) = water_result;
+        let (mut lava_faces, lava_omitted) = lava_result;
+        let (mut opaque_faces, opaque_omitted) = self.collect_opaque_faces(opaque_face_budget(
             glass_faces.len(),
             water_faces.len(),
             lava_faces.len(),
         ));
+        // Source-model voxels are a neutral material inspection, not terrain
+        // lighting. Keep the palette's authored RGB on every visible face.
+        if self.neutral_colors {
+            for faces in [
+                &mut opaque_faces,
+                &mut glass_faces,
+                &mut water_faces,
+                &mut lava_faces,
+            ] {
+                for face in faces {
+                    face.shade = 1.0;
+                }
+            }
+        }
         let omitted_face_count = opaque_omitted
             .saturating_add(glass_omitted)
             .saturating_add(water_omitted)
@@ -3587,7 +3609,7 @@ fn push_structure_state(
         None,
         None,
         &BlockProperties::new(state, block_class, None),
-        &mut BlockColorCache::new(render_palette),
+        &mut BlockColorCache::new_neutral(render_palette),
         &mut builder.block_budget,
         &mut builder.blocks.connection_kinds,
         &mut builder.blocks.occupied,
@@ -4515,16 +4537,20 @@ fn block_face_colors(
     palette: &RenderPalette,
     state: &BlockState,
     biome: Option<Preview3dBiomeSample>,
+    shade_faces: bool,
 ) -> Preview3dBlockFaceColors {
+    let up_factor = if shade_faces { FACE_SHADE_UP } else { 1.0 };
+    let side_factor = if shade_faces { FACE_SHADE_SIDE } else { 1.0 };
+    let down_factor = if shade_faces { FACE_SHADE_DOWN } else { 1.0 };
     let normalized = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
     if is_full_grass_block(normalized) {
         let up = named_block_color(palette, "minecraft:grass_block", biome, BiomeTint::Apply);
         let down = named_block_color(palette, "minecraft:dirt", biome, BiomeTint::Ignore);
         let side = named_block_color(palette, "minecraft:grass", biome, BiomeTint::Apply);
         return Preview3dBlockFaceColors {
-            up: shade_face(up, FACE_SHADE_UP),
-            down: shade_face(down, FACE_SHADE_DOWN),
-            side: shade_face(side, FACE_SHADE_SIDE),
+            up: shade_face(up, up_factor),
+            down: shade_face(down, down_factor),
+            side: shade_face(side, side_factor),
         };
     }
     let color = block_color(palette, state, biome);
@@ -4535,9 +4561,9 @@ fn block_face_colors(
         side.to_array().map(|channel| f32::from(channel) / 255.0)
     };
     Preview3dBlockFaceColors {
-        up: shade_face(color, FACE_SHADE_UP),
-        down: shade_face(color, FACE_SHADE_DOWN),
-        side: shade_face(side, FACE_SHADE_SIDE),
+        up: shade_face(color, up_factor),
+        down: shade_face(color, down_factor),
+        side: shade_face(side, side_factor),
     }
 }
 
@@ -6255,6 +6281,28 @@ mod tests {
     }
 
     #[test]
+    fn imported_structure_faces_are_not_darkened_by_world_lighting() {
+        let palette = structure_preview_palette();
+        for candidate in bedrock_voxel::default_block_candidates() {
+            let colors = block_face_colors(palette, &candidate.state, None, false);
+            for (actual, expected) in [
+                (colors.up, candidate.top_color),
+                (colors.down, candidate.top_color),
+                (colors.side, candidate.side_color),
+            ] {
+                let expected = expected.map(|value| f32::from(value) / 255.0);
+                for channel in 0..3 {
+                    assert!(
+                        (actual[channel] - expected[channel]).abs() <= 0.07,
+                        "{} channel={channel} actual={} expected={}",
+                        candidate.state.name, actual[channel], expected[channel]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn imported_structure_preview_uses_voxel_candidate_colors() {
         // The preview palette is derived from the voxel candidates. Keep a
         // small tolerance so a future renderer-side color normalization does
@@ -6288,7 +6336,7 @@ mod tests {
                 candidate.side_color
             );
             if candidate.top_color[3] == 255 && candidate.side_color[3] == 255 {
-                let faces = block_face_colors(palette, &candidate.state, None);
+                let faces = block_face_colors(palette, &candidate.state, None, true);
                 let close_face = |actual: [f32; 4], expected: [u8; 4]| {
                     // Face shading scales RGB only; alpha keeps the palette value.
                     actual
@@ -7997,7 +8045,7 @@ mod tests {
         let grass_state = test_block_state("minecraft:grass_block");
         let water_state = test_block_state("minecraft:water");
 
-        let grass_colors = block_face_colors(&palette, &grass_state, None);
+        let grass_colors = block_face_colors(&palette, &grass_state, None, true);
         let water_color = water_color(&palette, &water_state, None);
         let grass_tint = color_from_rgba(
             palette
