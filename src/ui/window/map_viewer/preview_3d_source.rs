@@ -5823,6 +5823,39 @@ fn block_face_from_direction(direction: Preview3dCardinalDirection) -> BlockFace
 mod tests {
     use super::*;
     use ::bedrock_world::editor::{BlockOffset, BlockPlacementPlan, PlacementBlock};
+
+    #[test]
+    fn file_export_does_not_truncate_faces_at_preview_gpu_budget() {
+        let bounds = SlimeChunkBounds {
+            dimension: bedrock_render::Dimension::Overworld,
+            min_chunk_x: 0,
+            max_chunk_x: 0,
+            min_chunk_z: 0,
+            max_chunk_z: 0,
+        };
+        let mut builder = Preview3dMeshBuilder::new(bounds, 0);
+        assert_eq!(builder.face_limit(1), 1);
+        builder.export_geometry = true;
+        assert_eq!(builder.face_limit(1), usize::MAX);
+        let mut budget = Preview3dFaceBudget::new(builder.face_limit(1));
+        let mut faces = Vec::new();
+        for _ in 0..128 {
+            budget.push_or_omit(
+                &mut faces,
+                Preview3dFace {
+                    corners: [[0.0; 3]; 4],
+                    color: [1.0; 4],
+                    shade: 1.0,
+                    normal: [0, 1, 0],
+                    material: Arc::<str>::from("minecraft_stone_up"),
+                    uv: None,
+                },
+            );
+        }
+        assert_eq!(faces.len(), 128);
+        assert_eq!(budget.omitted_faces, 0);
+    }
+
     use bedrock_block_model::model_family::canonical_block_name;
 
     #[test]
