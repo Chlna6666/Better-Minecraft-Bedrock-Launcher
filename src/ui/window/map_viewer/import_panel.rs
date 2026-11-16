@@ -9,7 +9,7 @@ impl View {
     pub(super) fn render_import_panel_header(
         &self,
         colors: &ThemeColors,
-        title: &'static str,
+        title: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) -> Div {
         div()
@@ -26,14 +26,13 @@ impl View {
                     .text_size(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(colors.text_primary)
-                    .child(title),
+                    .child(title.into()),
             )
             .child(dock_close_button(colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, _window, cx| this.close_right_panel(cx)),
             ))
     }
-
     /// Show one owned task snapshot and cancel that same task from its feedback row.
     pub(super) fn render_import_task_status(
         &self,
@@ -42,19 +41,13 @@ impl View {
         cx: &mut Context<Self>,
     ) -> Div {
         let task_id = task.id.to_string();
-        let stage = match task.stage.as_ref() {
-            "map_paste" => "粘贴结构",
-            "map_refresh" => "刷新地图",
-            "map_write" => "写入地图",
-            "map_delete" => "删除区块",
-            stage => stage,
-        };
+        let stage = crate::ui::views::tasks::task_stage_text(&task.stage);
         let status = match task.status.as_ref() {
-            "completed" => "已完成",
-            "cancelled" => "已取消",
-            "error" => "失败",
-            _ if task.cancel_requested => "正在取消",
-            _ => "进行中",
+            "completed" => t!("Tasks.status.completed"),
+            "cancelled" => t!("Tasks.status.cancelled"),
+            "error" => t!("Tasks.status.error"),
+            _ if task.cancel_requested => t!("Tasks.status.cancelling"),
+            _ => t!("Tasks.status.running"),
         };
         div()
             .flex()
@@ -79,10 +72,10 @@ impl View {
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child(format!("预计剩余 {}", task.eta)),
+                            .child(t!("Tasks.eta_remaining", eta = task.eta.to_string())),
                     )
                     .when(!task.cancel_requested, |panel| {
-                        panel.child(choice::chip(colors, "取消任务", false).on_mouse_down(
+                        panel.child(choice::chip(colors, t!("Tasks.cancel_task"), false).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |_this, _event, _window, cx| {
                                 task_manager::cancel_task(&task_id);
@@ -101,3 +94,4 @@ impl View {
             })
     }
 }
+

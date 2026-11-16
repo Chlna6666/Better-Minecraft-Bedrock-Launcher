@@ -492,31 +492,53 @@ struct MapHistoryAppliedChange {
 
 #[derive(Clone, Debug)]
 pub(super) struct MapHistoryApplyProgress {
-    pub(super) phase: SharedString,
+    pub(super) phase: TransferPhase,
     pub(super) completed: usize,
     pub(super) total: usize,
 }
 
 impl MapHistoryEntry {
-    pub(super) fn short_status(&self) -> &'static str {
+    pub(super) fn short_status(&self) -> SharedString {
         match self.status {
-            MapHistoryEntryStatus::Success => "成功",
-            MapHistoryEntryStatus::Failed => "失败",
-            MapHistoryEntryStatus::Undone => "已撤回",
+            MapHistoryEntryStatus::Success => {
+                t!("MapViewer.history.map_history.entry_status_success")
+            }
+            MapHistoryEntryStatus::Failed => {
+                t!("MapViewer.history.map_history.entry_status_failed")
+            }
+            MapHistoryEntryStatus::Undone => {
+                t!("MapViewer.history.map_history.entry_status_undone")
+            }
         }
     }
 
-    pub(super) fn kind_label(&self) -> &'static str {
+    pub(super) fn kind_label(&self) -> SharedString {
         match self.kind {
-            MapHistoryEntryKind::ChunkDelete => "删除区块",
-            MapHistoryEntryKind::ChunkReset => "重置区块",
-            MapHistoryEntryKind::ChunkPaste => "粘贴区块",
-            MapHistoryEntryKind::RecordSave => "保存记录",
-            MapHistoryEntryKind::RecordDelete => "删除记录",
-            MapHistoryEntryKind::PlayerEdit => "玩家编辑",
-            MapHistoryEntryKind::LevelDatSave => "level.dat",
-            MapHistoryEntryKind::RestorePoint => "回档保护点",
-            MapHistoryEntryKind::BlockEdit => "3D 方块编辑",
+            MapHistoryEntryKind::ChunkDelete => {
+                t!("MapViewer.history.map_history.entry_kind_chunk_delete")
+            }
+            MapHistoryEntryKind::ChunkReset => {
+                t!("MapViewer.history.map_history.entry_kind_chunk_reset")
+            }
+            MapHistoryEntryKind::ChunkPaste => {
+                t!("MapViewer.history.map_history.entry_kind_chunk_paste")
+            }
+            MapHistoryEntryKind::RecordSave => {
+                t!("MapViewer.history.map_history.entry_kind_record_save")
+            }
+            MapHistoryEntryKind::RecordDelete => {
+                t!("MapViewer.history.map_history.entry_kind_record_delete")
+            }
+            MapHistoryEntryKind::PlayerEdit => {
+                t!("MapViewer.history.map_history.entry_kind_player_edit")
+            }
+            MapHistoryEntryKind::LevelDatSave => "level.dat".into(),
+            MapHistoryEntryKind::RestorePoint => {
+                t!("MapViewer.history.map_history.entry_kind_restore_point")
+            }
+            MapHistoryEntryKind::BlockEdit => {
+                t!("MapViewer.history.map_history.entry_kind_block_edit")
+            }
         }
     }
 }
@@ -533,9 +555,9 @@ pub(super) fn capture_before_in_world(
 ) -> Result<MapHistoryCapture, String> {
     let mut raw_keys = spec.raw_keys.clone();
     let chunk_total = spec.chunks.len().max(1);
-    let phase = SharedString::from("创建写入前快照");
+    let phase = TransferPhase::CAPTURE_SNAPSHOT;
     progress(MapHistoryApplyProgress {
-        phase: phase.clone(),
+        phase,
         completed: 0,
         total: chunk_total,
     });
@@ -543,7 +565,7 @@ pub(super) fn capture_before_in_world(
         let keys = collect_chunk_raw_keys(world, *chunk)?;
         raw_keys.extend(keys);
         progress(MapHistoryApplyProgress {
-            phase: phase.clone(),
+            phase,
             completed: index.saturating_add(1),
             total: chunk_total,
         });
@@ -555,7 +577,13 @@ pub(super) fn capture_before_in_world(
         let value = world
             .storage()
             .get(key)
-            .map_err(|error| format!("读取历史原始记录失败: {error}"))?
+            .map_err(|error| {
+                t!(
+                    "MapViewer.history.map_history.read_raw_records_failed",
+                    error = error
+                )
+                .to_string()
+            })?
             .map(|bytes| bytes.to_vec());
         before_raw_records.insert(key.clone(), value);
     }
@@ -594,25 +622,30 @@ pub(super) fn complete_after_in_world(
     message: impl Into<String>,
     mut progress: impl FnMut(MapHistoryApplyProgress),
 ) -> Result<MapHistoryEntry, String> {
-    fs::create_dir_all(&capture.history_dir)
-        .map_err(|error| format!("创建历史目录失败: {error}"))?;
+    fs::create_dir_all(&capture.history_dir).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.create_history_dir_failed",
+            error = error
+        )
+        .to_string()
+    })?;
     let mut raw_keys = capture.raw_keys.clone();
     let chunk_total = capture.chunks.len().max(1);
-    let phase = SharedString::from("保存写入历史");
+    let phase = TransferPhase::SAVE_HISTORY;
     progress(MapHistoryApplyProgress {
-        phase: phase.clone(),
+        phase,
         completed: 0,
         total: chunk_total,
     });
     for (index, chunk) in capture.chunks.iter().enumerate() {
         raw_keys.extend(collect_chunk_raw_keys(world, *chunk)?);
         progress(MapHistoryApplyProgress {
-            phase: phase.clone(),
+            phase,
             completed: index.saturating_add(1),
             total: chunk_total,
         });
     }
-    let write_phase = SharedString::from("写入历史文件");
+    let write_phase = TransferPhase::WRITE_HISTORY_FILE;
     progress(MapHistoryApplyProgress {
         phase: write_phase.clone(),
         completed: 0,
@@ -623,7 +656,13 @@ pub(super) fn complete_after_in_world(
             world
                 .storage()
                 .get(key)
-                .map_err(|error| format!("读取历史写入后记录失败: {error}"))
+                .map_err(|error| {
+                    t!(
+                        "MapViewer.history.map_history.read_records_after_write_failed",
+                        error = error
+                    )
+                    .to_string()
+                })
                 .map(|value| value.map(|bytes| bytes.to_vec()))
         })?;
 
@@ -674,8 +713,13 @@ pub(crate) fn complete_failed(
     capture: MapHistoryCapture,
     error: impl Into<String>,
 ) -> Result<MapHistoryEntry, String> {
-    fs::create_dir_all(&capture.history_dir)
-        .map_err(|error| format!("创建历史目录失败: {error}"))?;
+    fs::create_dir_all(&capture.history_dir).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.create_history_dir_failed",
+            error = error
+        )
+        .to_string()
+    })?;
     let error = error.into();
     let mut entry = MapHistoryEntry {
         id: capture.id,
@@ -712,17 +756,40 @@ pub(super) fn list_history(world_path: &Path) -> Result<Vec<MapHistoryEntry>, St
         return Ok(Vec::new());
     }
     let mut entries = Vec::new();
-    for entry in fs::read_dir(&history_dir).map_err(|error| format!("读取历史目录失败: {error}"))?
-    {
-        let entry = entry.map_err(|error| format!("读取历史项失败: {error}"))?;
+    for entry in fs::read_dir(&history_dir).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.read_history_dir_failed",
+            error = error
+        )
+        .to_string()
+    })? {
+        let entry = entry.map_err(|error| {
+            t!(
+                "MapViewer.history.map_history.read_history_entry_failed",
+                error = error
+            )
+            .to_string()
+        })?;
         let path = entry.path().join(HISTORY_ENTRY_FILE);
         if !path.exists() {
             continue;
         }
-        let raw = fs::read_to_string(&path)
-            .map_err(|error| format!("读取历史索引失败 {}: {error}", path.display()))?;
-        let parsed = serde_json::from_str::<MapHistoryEntry>(&raw)
-            .map_err(|error| format!("解析历史索引失败 {}: {error}", path.display()))?;
+        let raw = fs::read_to_string(&path).map_err(|error| {
+            t!(
+                "MapViewer.history.map_history.read_history_index_failed",
+                path = path.display().to_string(),
+                error = error
+            )
+            .to_string()
+        })?;
+        let parsed = serde_json::from_str::<MapHistoryEntry>(&raw).map_err(|error| {
+            t!(
+                "MapViewer.history.map_history.parse_history_index_failed",
+                path = path.display().to_string(),
+                error = error
+            )
+            .to_string()
+        })?;
         entries.push(parsed);
     }
     entries.sort_by(|left, right| right.timestamp_secs.cmp(&left.timestamp_secs));
@@ -830,10 +897,22 @@ pub(super) fn load_history_visualization(
 ) -> Result<MapHistoryVisualization, String> {
     let history_dir = history_dir(world_path);
     let entry_path = history_dir.join(id).join(HISTORY_ENTRY_FILE);
-    let entry_raw = fs::read_to_string(&entry_path)
-        .map_err(|error| format!("读取历史索引失败 {}: {error}", entry_path.display()))?;
-    let entry = serde_json::from_str::<MapHistoryEntry>(&entry_raw)
-        .map_err(|error| format!("解析历史索引失败 {}: {error}", entry_path.display()))?;
+    let entry_raw = fs::read_to_string(&entry_path).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.read_history_index_failed",
+            path = entry_path.display().to_string(),
+            error = error
+        )
+        .to_string()
+    })?;
+    let entry = serde_json::from_str::<MapHistoryEntry>(&entry_raw).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.parse_history_index_failed",
+            path = entry_path.display().to_string(),
+            error = error
+        )
+        .to_string()
+    })?;
     let change = read_history_change(&history_dir, id)?;
     let fallback_chunks = entry.chunks;
     let mut visualization = MapHistoryVisualization {
@@ -1307,21 +1386,20 @@ pub(super) fn apply_undo(
         .into_iter()
         .find(|entry| entry.status == MapHistoryEntryStatus::Success)
     else {
-        return Err("没有可撤回的地图修改".to_string());
+        return Err(t!("MapViewer.history.map_history.undo_unavailable").to_string());
     };
-    let applied_change = apply_history_entry(
-        world_path,
-        &entry,
-        HistoryDirection::Undo,
-        cancel,
-        progress,
-    )?;
+    let applied_change =
+        apply_history_entry(world_path, &entry, HistoryDirection::Undo, cancel, progress)?;
     mark_entry_status(world_path, &entry.id, MapHistoryEntryStatus::Undone, None)?;
     Ok(MapHistoryApplyOutcome {
         affected_chunks: applied_change.affected_chunks,
         refresh_all_tiles: applied_change.refresh_all_tiles,
         level_dat_changed: applied_change.level_dat_changed,
-        message: format!("已撤回 {}", entry.label),
+        message: t!(
+            "MapViewer.history.map_history.undone_message",
+            label = entry.label
+        )
+        .to_string(),
     })
 }
 
@@ -1334,21 +1412,20 @@ pub(super) fn apply_redo(
         .into_iter()
         .find(|entry| entry.status == MapHistoryEntryStatus::Undone)
     else {
-        return Err("没有可重做的地图修改".to_string());
+        return Err(t!("MapViewer.history.map_history.redo_unavailable").to_string());
     };
-    let applied_change = apply_history_entry(
-        world_path,
-        &entry,
-        HistoryDirection::Redo,
-        cancel,
-        progress,
-    )?;
+    let applied_change =
+        apply_history_entry(world_path, &entry, HistoryDirection::Redo, cancel, progress)?;
     mark_entry_status(world_path, &entry.id, MapHistoryEntryStatus::Success, None)?;
     Ok(MapHistoryApplyOutcome {
         affected_chunks: applied_change.affected_chunks,
         refresh_all_tiles: applied_change.refresh_all_tiles,
         level_dat_changed: applied_change.level_dat_changed,
-        message: format!("已重做 {}", entry.label),
+        message: t!(
+            "MapViewer.history.map_history.redone_message",
+            label = entry.label
+        )
+        .to_string(),
     })
 }
 
@@ -1360,23 +1437,22 @@ pub(super) fn restore_history_entry(
 ) -> Result<MapHistoryApplyOutcome, String> {
     let entries = list_history(world_path)?;
     let Some(entry) = entries.into_iter().find(|entry| entry.id == entry_id) else {
-        return Err("找不到要回档的历史项".to_string());
+        return Err(t!("MapViewer.history.map_history.restore_entry_not_found").to_string());
     };
     if entry.status == MapHistoryEntryStatus::Failed {
-        return Err("失败的历史项不能回档".to_string());
+        return Err(t!("MapViewer.history.map_history.restore_failed_entry").to_string());
     }
-    let applied_change = apply_history_entry(
-        world_path,
-        &entry,
-        HistoryDirection::Undo,
-        cancel,
-        progress,
-    )?;
+    let applied_change =
+        apply_history_entry(world_path, &entry, HistoryDirection::Undo, cancel, progress)?;
     Ok(MapHistoryApplyOutcome {
         affected_chunks: applied_change.affected_chunks,
         refresh_all_tiles: applied_change.refresh_all_tiles,
         level_dat_changed: applied_change.level_dat_changed,
-        message: format!("已回档到 {}", entry.label),
+        message: t!(
+            "MapViewer.history.map_history.restored_message",
+            label = entry.label
+        )
+        .to_string(),
     })
 }
 
@@ -1393,7 +1469,10 @@ pub(super) fn create_restore_protection_point(
         raw_keys: BTreeSet::new(),
         include_level_dat: true,
     })?;
-    complete_snapshot(capture, "回档前保护点")
+    complete_snapshot(
+        capture,
+        t!("MapViewer.history.map_history.restore_protection_point_message").to_string(),
+    )
 }
 
 pub(super) fn history_dir(world_path: &Path) -> PathBuf {
@@ -1410,10 +1489,20 @@ pub(super) fn prune_history(
     }
     let now = now_secs();
     let mut entries = Vec::new();
-    for dir_entry in
-        fs::read_dir(history_dir).map_err(|error| format!("读取历史目录失败: {error}"))?
-    {
-        let dir_entry = dir_entry.map_err(|error| format!("读取历史目录项失败: {error}"))?;
+    for dir_entry in fs::read_dir(history_dir).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.read_history_dir_failed",
+            error = error
+        )
+        .to_string()
+    })? {
+        let dir_entry = dir_entry.map_err(|error| {
+            t!(
+                "MapViewer.history.map_history.read_history_dir_entry_failed",
+                error = error
+            )
+            .to_string()
+        })?;
         let path = dir_entry.path();
         if !path.is_dir() || !path.join(HISTORY_ENTRY_FILE).exists() {
             continue;
@@ -1462,14 +1551,16 @@ fn apply_history_entry(
     mut progress: impl FnMut(MapHistoryApplyProgress),
 ) -> Result<MapHistoryAppliedChange, String> {
     if cancel.is_cancelled() {
-        return Err("历史操作已取消".to_owned());
+        return Err(t!("MapViewer.history.map_history.operation_cancelled").to_string());
     }
     let change = read_history_change(&history_dir(world_path), &entry.id)?;
     if cancel.is_cancelled() {
-        return Err("历史操作已取消".to_owned());
+        return Err(t!("MapViewer.history.map_history.operation_cancelled").to_string());
     }
     if change.level_dat.is_some() && !change.raw_records.is_empty() {
-        return Err("历史项同时修改 LevelDB 和 level.dat，无法作为一次原子撤销应用".to_owned());
+        return Err(
+            t!("MapViewer.history.map_history.mixed_level_dat_and_leveldb_unsupported").to_string(),
+        );
     }
     let estimated_bytes = change
         .raw_records
@@ -1489,12 +1580,16 @@ fn apply_history_entry(
                 .and_then(|total| total.checked_add(target.as_ref().map_or(0, Vec::len)))
                 .and_then(|total| total.checked_add(32))
         })
-        .ok_or_else(|| "历史原子批次容量计算溢出".to_owned())?;
+        .ok_or_else(|| {
+            t!("MapViewer.history.map_history.atomic_batch_size_overflow").to_string()
+        })?;
     if estimated_bytes > HISTORY_ATOMIC_BATCH_MAX_BYTES {
-        return Err(format!(
-            "历史原子批次约需 {estimated_bytes} 字节，超过 {} 字节上限",
-            HISTORY_ATOMIC_BATCH_MAX_BYTES
-        ));
+        return Err(t!(
+            "MapViewer.history.map_history.atomic_batch_too_large",
+            estimatedBytes = estimated_bytes,
+            limit = HISTORY_ATOMIC_BATCH_MAX_BYTES
+        )
+        .to_string());
     }
     let applied_change = history_applied_change(entry.chunks.iter().copied(), &change);
     let raw_total = change.raw_records.len();
@@ -1502,27 +1597,32 @@ fn apply_history_entry(
         .saturating_add(usize::from(change.level_dat.is_some()))
         .saturating_add(usize::from(raw_total != 0))
         .max(1);
-    let phase = SharedString::from(match direction {
-        HistoryDirection::Undo => "应用历史回档",
-        HistoryDirection::Redo => "应用历史重做",
-    });
+    let phase = match direction {
+        HistoryDirection::Undo => TransferPhase::APPLY_HISTORY_UNDO,
+        HistoryDirection::Redo => TransferPhase::APPLY_HISTORY_REDO,
+    };
     progress(MapHistoryApplyProgress {
-        phase: phase.clone(),
+        phase,
         completed: 0,
         total,
     });
     let mut options = bedrock_world::OpenOptions::default();
     options.read_only = false;
-    let world =
-        World::open(world_path, options).map_err(|error| format!("打开世界失败: {error}"))?;
+    let world = World::open(world_path, options).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.open_world_failed",
+            error = error
+        )
+        .to_string()
+    })?;
     if raw_total != 0 {
         let mut transaction = world.transaction();
         for (index, delta) in change.raw_records.iter().enumerate() {
             if cancel.is_cancelled() {
-                return Err("历史操作已取消".to_owned());
+                return Err(t!("MapViewer.history.map_history.operation_cancelled").to_string());
             }
             if delta.key.is_empty() {
-                return Err("应用历史记录失败: 历史项包含空 LevelDB key".to_owned());
+                return Err(t!("MapViewer.history.map_history.apply_empty_leveldb_key").to_string());
             }
             let (source, target) = match direction {
                 HistoryDirection::Undo => (&delta.after, &delta.before),
@@ -1539,27 +1639,31 @@ fn apply_history_entry(
             }
             if (index + 1) % 1024 == 0 || index + 1 == raw_total {
                 progress(MapHistoryApplyProgress {
-                    phase: SharedString::from("暂存历史记录"),
+                    phase: TransferPhase::STAGE_HISTORY_RECORD,
                     completed: index + 1,
                     total,
                 });
             }
         }
         if cancel.is_cancelled() {
-            return Err("历史操作已取消".to_owned());
+            return Err(t!("MapViewer.history.map_history.operation_cancelled").to_string());
         }
-        transaction
-            .commit()
-            .map_err(|error| format!("应用历史原子批次失败: {error}"))?;
+        transaction.commit().map_err(|error| {
+            t!(
+                "MapViewer.history.map_history.apply_atomic_batch_failed",
+                error = error
+            )
+            .to_string()
+        })?;
         progress(MapHistoryApplyProgress {
-            phase: phase.clone(),
+            phase,
             completed: raw_total + 1,
             total,
         });
     }
     if let Some(delta) = change.level_dat {
         if cancel.is_cancelled() {
-            return Err("历史操作已取消".to_owned());
+            return Err(t!("MapViewer.history.map_history.operation_cancelled").to_string());
         }
         let value = match direction {
             HistoryDirection::Undo => delta.before,
@@ -1642,8 +1746,13 @@ fn complete_snapshot(
     capture: MapHistoryCapture,
     message: impl Into<String>,
 ) -> Result<MapHistoryEntry, String> {
-    fs::create_dir_all(&capture.history_dir)
-        .map_err(|error| format!("创建历史目录失败: {error}"))?;
+    fs::create_dir_all(&capture.history_dir).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.create_history_dir_failed",
+            error = error
+        )
+        .to_string()
+    })?;
     let raw_delta_bytes = capture
         .before_raw_records
         .iter()
@@ -1701,7 +1810,13 @@ fn collect_chunk_raw_keys(world: &World, chunk: ChunkPos) -> Result<BTreeSet<Vec
     let mut keys = BTreeSet::new();
     let records = world
         .chunk(chunk)
-        .map_err(|error| format!("读取 chunk 历史记录失败: {error}"))?
+        .map_err(|error| {
+            t!(
+                "MapViewer.history.map_history.read_chunk_records_failed",
+                error = error
+            )
+            .to_string()
+        })?
         .records;
     keys.extend(
         records
@@ -1711,10 +1826,13 @@ fn collect_chunk_raw_keys(world: &World, chunk: ChunkPos) -> Result<BTreeSet<Vec
 
     let digest_key = ActorDigestKey::new(chunk).storage_key();
     keys.insert(digest_key.to_vec());
-    for actor in world
-        .actors(chunk)
-        .map_err(|error| format!("读取实体历史记录失败: {error}"))?
-    {
+    for actor in world.actors(chunk).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.read_actor_records_failed",
+            error = error
+        )
+        .to_string()
+    })? {
         if let Some(uid) = actor.uid {
             keys.insert(uid.storage_key().to_vec());
         }
@@ -1725,7 +1843,13 @@ fn collect_chunk_raw_keys(world: &World, chunk: ChunkPos) -> Result<BTreeSet<Vec
 fn open_world_readonly(world_path: &Path) -> Result<World, String> {
     let mut options = bedrock_world::OpenOptions::default();
     options.read_only = true;
-    World::open(world_path, options).map_err(|error| format!("打开世界失败: {error}"))
+    World::open(world_path, options).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.open_world_failed",
+            error = error
+        )
+        .to_string()
+    })
 }
 
 fn write_history_entry(
@@ -1734,13 +1858,29 @@ fn write_history_entry(
     change: &MapHistoryChange,
 ) -> Result<(), String> {
     let entry_dir = history_dir.join(&entry.id);
-    fs::create_dir_all(&entry_dir).map_err(|error| format!("创建历史项目录失败: {error}"))?;
+    fs::create_dir_all(&entry_dir).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.create_history_entry_dir_failed",
+            error = error
+        )
+        .to_string()
+    })?;
     let mut stats = HistoryStorageStats::default();
     let stored_change = store_history_change(history_dir, change, &mut stats)?;
-    let change_json = serde_json::to_vec(&stored_change)
-        .map_err(|error| format!("序列化历史变更失败: {error}"))?;
-    let compressed = zstd::encode_all(change_json.as_slice(), 3)
-        .map_err(|error| format!("压缩历史变更失败: {error}"))?;
+    let change_json = serde_json::to_vec(&stored_change).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.serialize_history_change_failed",
+            error = error
+        )
+        .to_string()
+    })?;
+    let compressed = zstd::encode_all(change_json.as_slice(), 3).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.compress_history_change_failed",
+            error = error
+        )
+        .to_string()
+    })?;
     write_atomic(entry_dir.join(HISTORY_DELTA_FILE), &compressed)?;
     entry.stored_bytes = compressed
         .len()
@@ -1750,21 +1890,41 @@ fn write_history_entry(
     entry.stored_object_count = stats.stored_object_count;
     entry.reused_object_count = stats.reused_object_count;
     entry.storage_format = HISTORY_STORAGE_OBJECT_STORE_V1.to_string();
-    let entry_json =
-        serde_json::to_vec_pretty(entry).map_err(|error| format!("序列化历史索引失败: {error}"))?;
+    let entry_json = serde_json::to_vec_pretty(entry).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.serialize_history_index_failed",
+            error = error
+        )
+        .to_string()
+    })?;
     write_atomic(entry_dir.join(HISTORY_ENTRY_FILE), &entry_json)
 }
 
 fn read_history_change(history_dir: &Path, id: &str) -> Result<MapHistoryChange, String> {
-    let compressed = fs::read(history_dir.join(id).join(HISTORY_DELTA_FILE))
-        .map_err(|error| format!("读取历史变更失败: {error}"))?;
-    let raw = zstd::decode_all(compressed.as_slice())
-        .map_err(|error| format!("解压历史变更失败: {error}"))?;
+    let compressed = fs::read(history_dir.join(id).join(HISTORY_DELTA_FILE)).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.read_history_change_failed",
+            error = error
+        )
+        .to_string()
+    })?;
+    let raw = zstd::decode_all(compressed.as_slice()).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.decompress_history_change_failed",
+            error = error
+        )
+        .to_string()
+    })?;
     if let Ok(stored_change) = serde_json::from_slice::<MapHistoryStoredChange>(&raw) {
         return load_history_change(history_dir, stored_change);
     }
-    serde_json::from_slice::<MapHistoryChange>(&raw)
-        .map_err(|error| format!("解析历史变更失败: {error}"))
+    serde_json::from_slice::<MapHistoryChange>(&raw).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.parse_history_change_failed",
+            error = error
+        )
+        .to_string()
+    })
 }
 
 fn store_history_change(
@@ -1875,8 +2035,13 @@ fn write_history_object(
         });
     }
 
-    let compressed =
-        zstd::encode_all(value, 3).map_err(|error| format!("压缩历史对象失败: {error}"))?;
+    let compressed = zstd::encode_all(value, 3).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.compress_history_object_failed",
+            error = error
+        )
+        .to_string()
+    })?;
     write_atomic(&path, &compressed)?;
     stats.stored_bytes = stats
         .stored_bytes
@@ -1890,23 +2055,40 @@ fn write_history_object(
 
 fn read_history_object(history_dir: &Path, reference: &HistoryBlobRef) -> Result<Vec<u8>, String> {
     let path = history_object_path(history_dir, &reference.sha256);
-    let compressed =
-        fs::read(&path).map_err(|error| format!("读取历史对象失败 {}: {error}", path.display()))?;
-    let value = zstd::decode_all(compressed.as_slice())
-        .map_err(|error| format!("解压历史对象失败 {}: {error}", path.display()))?;
+    let compressed = fs::read(&path).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.read_history_object_failed",
+            path = path.display().to_string(),
+            error = error
+        )
+        .to_string()
+    })?;
+    let value = zstd::decode_all(compressed.as_slice()).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.decompress_history_object_failed",
+            path = path.display().to_string(),
+            error = error
+        )
+        .to_string()
+    })?;
     let actual_size: u64 = value.len().try_into().unwrap_or(u64::MAX);
     if actual_size != reference.size {
-        return Err(format!(
-            "历史对象大小校验失败 {}: expected {}, got {}",
-            reference.sha256, reference.size, actual_size
-        ));
+        return Err(t!(
+            "MapViewer.history.map_history.history_object_size_mismatch",
+            sha256 = reference.sha256,
+            expected = reference.size,
+            actual = actual_size
+        )
+        .to_string());
     }
     let actual_hash = history_sha256_hex(&value);
     if actual_hash != reference.sha256 {
-        return Err(format!(
-            "历史对象 SHA-256 校验失败: expected {}, got {}",
-            reference.sha256, actual_hash
-        ));
+        return Err(t!(
+            "MapViewer.history.map_history.history_object_hash_mismatch",
+            expected = reference.sha256,
+            actual = actual_hash
+        )
+        .to_string());
     }
     Ok(value)
 }
@@ -1931,10 +2113,20 @@ fn prune_unreferenced_history_objects(history_dir: &Path) -> Result<(), String> 
     }
 
     let mut referenced = BTreeSet::new();
-    for dir_entry in
-        fs::read_dir(history_dir).map_err(|error| format!("读取历史目录失败: {error}"))?
-    {
-        let dir_entry = dir_entry.map_err(|error| format!("读取历史目录项失败: {error}"))?;
+    for dir_entry in fs::read_dir(history_dir).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.read_history_dir_failed",
+            error = error
+        )
+        .to_string()
+    })? {
+        let dir_entry = dir_entry.map_err(|error| {
+            t!(
+                "MapViewer.history.map_history.read_history_dir_entry_failed",
+                error = error
+            )
+            .to_string()
+        })?;
         let entry_dir = dir_entry.path();
         if !entry_dir.is_dir() || !entry_dir.join(HISTORY_ENTRY_FILE).exists() {
             continue;
@@ -1979,20 +2171,38 @@ fn remove_unreferenced_history_objects(
     object_dir: &Path,
     referenced: &BTreeSet<String>,
 ) -> Result<(), String> {
-    for shard_entry in
-        fs::read_dir(object_dir).map_err(|error| format!("读取历史对象目录失败: {error}"))?
-    {
-        let shard_entry =
-            shard_entry.map_err(|error| format!("读取历史对象目录项失败: {error}"))?;
+    for shard_entry in fs::read_dir(object_dir).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.read_history_object_dir_failed",
+            error = error
+        )
+        .to_string()
+    })? {
+        let shard_entry = shard_entry.map_err(|error| {
+            t!(
+                "MapViewer.history.map_history.read_history_object_dir_entry_failed",
+                error = error
+            )
+            .to_string()
+        })?;
         let shard_path = shard_entry.path();
         if !shard_path.is_dir() {
             continue;
         }
-        for object_entry in
-            fs::read_dir(&shard_path).map_err(|error| format!("读取历史对象分片失败: {error}"))?
-        {
-            let object_entry =
-                object_entry.map_err(|error| format!("读取历史对象项失败: {error}"))?;
+        for object_entry in fs::read_dir(&shard_path).map_err(|error| {
+            t!(
+                "MapViewer.history.map_history.read_history_object_shard_failed",
+                error = error
+            )
+            .to_string()
+        })? {
+            let object_entry = object_entry.map_err(|error| {
+                t!(
+                    "MapViewer.history.map_history.read_history_object_entry_failed",
+                    error = error
+                )
+                .to_string()
+            })?;
             let path = object_entry.path();
             if !path.is_file() {
                 continue;
@@ -2001,18 +2211,35 @@ fn remove_unreferenced_history_objects(
                 continue;
             };
             if !referenced.contains(stem) {
-                fs::remove_file(&path)
-                    .map_err(|error| format!("删除历史对象失败 {}: {error}", path.display()))?;
+                fs::remove_file(&path).map_err(|error| {
+                    t!(
+                        "MapViewer.history.map_history.delete_history_object_failed",
+                        path = path.display().to_string(),
+                        error = error
+                    )
+                    .to_string()
+                })?;
             }
         }
         if shard_path
             .read_dir()
-            .map_err(|error| format!("读取历史对象分片失败: {error}"))?
+            .map_err(|error| {
+                t!(
+                    "MapViewer.history.map_history.read_history_object_shard_failed",
+                    error = error
+                )
+                .to_string()
+            })?
             .next()
             .is_none()
         {
             fs::remove_dir(&shard_path).map_err(|error| {
-                format!("删除历史对象分片失败 {}: {error}", shard_path.display())
+                t!(
+                    "MapViewer.history.map_history.delete_history_object_shard_failed",
+                    path = shard_path.display().to_string(),
+                    error = error
+                )
+                .to_string()
             })?;
         }
     }
@@ -2027,13 +2254,29 @@ fn mark_entry_status(
 ) -> Result<(), String> {
     let history_dir = history_dir(world_path);
     let path = history_dir.join(id).join(HISTORY_ENTRY_FILE);
-    let raw = fs::read_to_string(&path).map_err(|error| format!("读取历史索引失败: {error}"))?;
-    let mut entry = serde_json::from_str::<MapHistoryEntry>(&raw)
-        .map_err(|error| format!("解析历史索引失败: {error}"))?;
+    let raw = fs::read_to_string(&path).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.read_history_index_failed_no_path",
+            error = error
+        )
+        .to_string()
+    })?;
+    let mut entry = serde_json::from_str::<MapHistoryEntry>(&raw).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.parse_history_index_failed_no_path",
+            error = error
+        )
+        .to_string()
+    })?;
     entry.status = status;
     entry.error = error;
-    let encoded = serde_json::to_vec_pretty(&entry)
-        .map_err(|error| format!("序列化历史索引失败: {error}"))?;
+    let encoded = serde_json::to_vec_pretty(&entry).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.serialize_history_index_failed",
+            error = error
+        )
+        .to_string()
+    })?;
     write_atomic(path, &encoded)
 }
 
@@ -2042,7 +2285,12 @@ fn read_optional_file(path: impl AsRef<Path>) -> Result<Option<Vec<u8>>, String>
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("读取文件失败 {}: {error}", path.display())),
+        Err(error) => Err(t!(
+            "MapViewer.history.map_history.read_file_failed",
+            path = path.display().to_string(),
+            error = error
+        )
+        .to_string()),
     }
 }
 
@@ -2053,7 +2301,12 @@ fn write_optional_file(path: impl AsRef<Path>, value: Option<Vec<u8>>) -> Result
         None => match fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("删除文件失败 {}: {error}", path.display())),
+            Err(error) => Err(t!(
+                "MapViewer.history.map_history.delete_file_failed",
+                path = path.display().to_string(),
+                error = error
+            )
+            .to_string()),
         },
     }
 }
@@ -2061,27 +2314,69 @@ fn write_optional_file(path: impl AsRef<Path>, value: Option<Vec<u8>>) -> Result
 fn write_atomic(path: impl AsRef<Path>, bytes: &[u8]) -> Result<(), String> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("创建目录失败 {}: {error}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            t!(
+                "MapViewer.history.map_history.create_dir_failed",
+                path = parent.display().to_string(),
+                error = error
+            )
+            .to_string()
+        })?;
     }
     let temp = path.with_extension("tmp");
-    fs::write(&temp, bytes)
-        .map_err(|error| format!("写入临时文件失败 {}: {error}", temp.display()))?;
+    fs::write(&temp, bytes).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.write_temp_file_failed",
+            path = temp.display().to_string(),
+            error = error
+        )
+        .to_string()
+    })?;
     match fs::remove_file(path) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("替换文件失败 {}: {error}", path.display())),
+        Err(error) => {
+            return Err(t!(
+                "MapViewer.history.map_history.replace_file_failed",
+                path = path.display().to_string(),
+                error = error
+            )
+            .to_string());
+        }
     }
-    fs::rename(&temp, path).map_err(|error| format!("提交文件失败 {}: {error}", path.display()))
+    fs::rename(&temp, path).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.commit_file_failed",
+            path = path.display().to_string(),
+            error = error
+        )
+        .to_string()
+    })
 }
 
 fn dir_size(path: &Path) -> Result<u64, String> {
     let mut total = 0u64;
-    for entry in fs::read_dir(path).map_err(|error| format!("读取目录失败: {error}"))? {
-        let entry = entry.map_err(|error| format!("读取目录项失败: {error}"))?;
-        let metadata = entry
-            .metadata()
-            .map_err(|error| format!("读取文件信息失败: {error}"))?;
+    for entry in fs::read_dir(path).map_err(|error| {
+        t!(
+            "MapViewer.history.map_history.read_dir_failed",
+            error = error
+        )
+        .to_string()
+    })? {
+        let entry = entry.map_err(|error| {
+            t!(
+                "MapViewer.history.map_history.read_dir_entry_failed",
+                error = error
+            )
+            .to_string()
+        })?;
+        let metadata = entry.metadata().map_err(|error| {
+            t!(
+                "MapViewer.history.map_history.read_file_metadata_failed",
+                error = error
+            )
+            .to_string()
+        })?;
         if metadata.is_dir() {
             total = total.saturating_add(dir_size(&entry.path())?);
         } else {
@@ -2095,7 +2390,12 @@ fn remove_dir_all_if_exists(path: &Path) -> Result<(), String> {
     match fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("删除历史目录失败 {}: {error}", path.display())),
+        Err(error) => Err(t!(
+            "MapViewer.history.map_history.delete_history_dir_failed",
+            path = path.display().to_string(),
+            error = error
+        )
+        .to_string()),
     }
 }
 

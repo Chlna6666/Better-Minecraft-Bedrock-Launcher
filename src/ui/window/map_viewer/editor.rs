@@ -8,6 +8,7 @@ use super::prelude::*;
 use super::tile_state::*;
 use crate::tasks::task_manager::ProgressUpdate;
 use rayon::prelude::*;
+use crate::tasks::TaskStage;
 
 mod records;
 
@@ -39,7 +40,7 @@ impl View {
     pub(super) fn format_editor_document(&mut self, cx: &mut Context<Self>) {
         let text = self.editor_state.read(cx).value();
         let Ok(value) = serde_json::from_str::<serde_json::Value>(text.as_ref()) else {
-            self.status = SharedString::from("JSON 格式化失败：当前文本不是有效 JSON");
+            self.status = SharedString::from(t!("MapViewer.edit.json_format_failed"));
             cx.notify();
             return;
         };
@@ -49,13 +50,13 @@ impl View {
         });
         self.editor_document.text = formatted;
         self.editor_document.dirty = true;
-        self.status = SharedString::from("JSON 已格式化");
+        self.status = SharedString::from(t!("MapViewer.edit.json_formatted"));
         cx.notify();
     }
 
     pub(super) fn load_edit_detail(&mut self, target: EditTarget, cx: &mut Context<Self>) {
         if self.editor_document.saving {
-            self.status = "编辑记录正在写入，请等待完成后再切换记录".into();
+            self.status = t!("MapViewer.edit.record_writing_wait").into();
             cx.notify();
             return;
         }
@@ -74,7 +75,10 @@ impl View {
         let world_path = self.world_path.clone();
         let target_for_task = target.clone();
         let query_budget = self.map_query_budget.clone();
-        self.status = SharedString::from(format!("正在读取 {}...", target.operation_label()));
+        self.status = t!(
+                "MapViewer.edit.reading_operation",
+                operation = target.operation_label()
+            );
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -103,7 +107,7 @@ impl View {
                 match result {
                     Ok(detail) => {
                         this.set_professional_detail(Some(detail), cx);
-                        this.status = SharedString::from("编辑记录已加载");
+                        this.status = SharedString::from(t!("MapViewer.edit.record_loaded"));
                     }
                     Err(error) => {
                         this.status = SharedString::from(error);
@@ -123,12 +127,12 @@ impl View {
             .as_ref()
             .and_then(ProfessionalDetail::edit_target)
         else {
-            self.status = SharedString::from("没有可保存的编辑记录");
+            self.status = SharedString::from(t!("MapViewer.edit.no_record_to_save"));
             cx.notify();
             return;
         };
         if !supports_editor_save(&target) {
-            self.status = "当前记录缺失或仅支持读取".into();
+            self.status = t!("MapViewer.edit.record_missing_readonly").into();
             cx.notify();
             return;
         }
@@ -142,7 +146,7 @@ impl View {
             .as_ref()
             .and_then(ProfessionalDetail::edit_target)
         else {
-            self.status = SharedString::from("没有可删除的编辑记录");
+            self.status = SharedString::from(t!("MapViewer.edit.no_record_to_delete"));
             cx.notify();
             return;
         };
@@ -165,10 +169,10 @@ impl View {
                 target: target.clone(),
                 action: action.clone(),
             });
-            self.status = SharedString::from(format!(
-                "再次点击以确认 {}",
-                edit_action_status(&action, &target)
-            ));
+            self.status = t!(
+                "MapViewer.edit.confirm_again",
+                action = edit_action_status(&action, &target)
+            );
             cx.notify();
             return;
         }
@@ -183,7 +187,7 @@ impl View {
         cx: &mut Context<Self>,
     ) {
         if self.map_write_busy() {
-            self.status = "地图已有写入或历史操作，编辑未提交".into();
+            self.status = t!("MapViewer.edit.map_busy").into();
             cx.notify();
             return;
         }
@@ -200,7 +204,10 @@ impl View {
             (EditTarget::Player(_), EditAction::Delete)
         );
         self.status =
-            SharedString::from(format!("正在{}...", edit_action_status(&action, &target)));
+            t!(
+                "MapViewer.edit.writing_operation",
+                operation = edit_action_status(&action, &target)
+            );
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -225,7 +232,10 @@ impl View {
                     .map_err(|error| error.to_string());
                     match (history_capture, result) {
                         (Ok(capture), Ok(invalidation)) => {
-                            complete_after(capture, "世界记录已写入并刷新地图状态")?;
+                            complete_after(
+                                capture,
+                                t!("MapViewer.edit.world_record_written").to_string(),
+                            )?;
                             Ok(invalidation)
                         }
                         (Ok(capture), Err(error)) => {
@@ -242,7 +252,12 @@ impl View {
                             Ok(invalidation)
                         }
                         (Err(history_error), Err(write_error)) => {
-                            Err(format!("{write_error}；历史捕获失败: {history_error}"))
+                            Err(t!(
+                                "MapViewer.edit.history_capture_failed",
+                                error = write_error,
+                                historyError = history_error
+                            )
+                            .to_string())
                         }
                     }
                 })
@@ -268,7 +283,7 @@ impl View {
                             this.players.context_target = None;
                             this.refresh_players(cx);
                         }
-                        this.status = SharedString::from("世界记录已写入并刷新地图状态");
+                        this.status = SharedString::from(t!("MapViewer.edit.world_record_written"));
                         if matches!(
                             target,
                             EditTarget::GlobalRecord { .. }
@@ -418,7 +433,7 @@ impl View {
             return;
         };
         self.context_menu = None;
-        self.status = SharedString::from("正在查询方块信息...");
+        self.status = SharedString::from(t!("MapViewer.edit.querying_block"));
         cx.notify();
 
         let generation = self.metadata_generation;
@@ -455,7 +470,7 @@ impl View {
                 match result {
                     Ok(detail) => {
                         this.set_professional_detail(Some(detail), cx);
-                        this.status = SharedString::from("方块查询完成");
+                        this.status = SharedString::from(t!("MapViewer.edit.block_query_done"));
                     }
                     Err(error) => this.status = SharedString::from(error),
                 }
@@ -472,7 +487,7 @@ impl View {
         };
         let chunk = context_menu_chunk(menu, self.dimension);
         self.context_menu = None;
-        self.status = SharedString::from("正在读取 chunk 详情...");
+        self.status = SharedString::from(t!("MapViewer.edit.reading_chunk_detail"));
         cx.notify();
 
         let generation = self.metadata_generation;
@@ -502,7 +517,7 @@ impl View {
                 match result {
                     Ok(detail) => {
                         this.set_professional_detail(Some(detail), cx);
-                        this.status = SharedString::from("chunk 详情已打开");
+                        this.status = SharedString::from(t!("MapViewer.edit.chunk_detail_opened"));
                     }
                     Err(error) => this.status = SharedString::from(error),
                 }
@@ -515,12 +530,12 @@ impl View {
 
     pub(super) fn selection_stats(&mut self, cx: &mut Context<Self>) {
         let Some(bounds) = self.professional_query_bounds() else {
-            self.status = SharedString::from("当前没有可查询的视口或选区");
+            self.status = SharedString::from(t!("MapViewer.edit.no_query_scope"));
             cx.notify();
             return;
         };
         self.context_menu = None;
-        self.status = SharedString::from("正在统计专业查询选区...");
+        self.status = SharedString::from(t!("MapViewer.edit.stats_running"));
         cx.notify();
 
         let generation = self.metadata_generation;
@@ -555,7 +570,7 @@ impl View {
                     Ok((stats, detail)) => {
                         this.professional.selection_stats = Some(stats);
                         this.set_professional_detail(Some(detail), cx);
-                        this.status = SharedString::from("选区统计完成");
+                        this.status = SharedString::from(t!("MapViewer.edit.stats_done"));
                     }
                     Err(error) => this.status = SharedString::from(error),
                 }
@@ -568,7 +583,7 @@ impl View {
 
     pub(super) fn delete_selection_chunks(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.professional.selection else {
-            self.status = SharedString::from("删除 chunk 需要先设置选区");
+            self.status = SharedString::from(t!("MapViewer.edit.delete_needs_selection"));
             toast::error(cx, self.status.clone());
             cx.notify();
             return;
@@ -579,8 +594,10 @@ impl View {
         let affected_chunk_list = affected_chunks.iter().copied().collect::<Vec<_>>();
         let progress_total = affected_chunk_list.len().max(1);
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new("删除选区区块", "map_delete")
-                .detail(format!("{progress_total} 个 chunk"))
+            task_manager::TaskOptions::new(t!("MapViewer.edit.task_delete_selection"), TaskStage::MAP_DELETE)
+                .detail(
+                    t!("MapViewer.edit.detail_chunk_count", count = progress_total).to_string(),
+                )
                 .total(task_progress_units(progress_total)),
         )
         .expect("task id must be unique");
@@ -591,16 +608,16 @@ impl View {
             move || cancel.cancel()
         });
         self.set_chunk_transfer_progress(ChunkTransferProgress {
-            phase: SharedString::from("删除区块"),
+            phase: TransferPhase::DELETE_CHUNKS,
             completed: 0,
             total: progress_total,
         });
         self.begin_task_toast(
             &task_id,
-            SharedString::from(format!("正在删除 {progress_total} 个选区 chunk...")),
+            t!("MapViewer.edit.deleting_selection", count = progress_total),
             cx,
         );
-        self.status = SharedString::from("正在删除选区 chunk records...");
+        self.status = SharedString::from(t!("MapViewer.edit.deleting_records"));
         cx.notify();
 
         let generation = self.metadata_generation;
@@ -638,7 +655,11 @@ impl View {
                     let guard = WriteGuard::confirmed(world_path.clone(), operation);
                     let history_capture = capture_before(MapHistoryCaptureSpec {
                         kind: MapHistoryEntryKind::ChunkDelete,
-                        label: format!("删除选区 {} 个 chunk（清空为空气）", progress_total),
+                        label: t!(
+                            "MapViewer.edit.history_delete_label",
+                            count = progress_total
+                        )
+                        .to_string(),
                         world_path: world_path.clone(),
                         chunks: affected_chunks_for_task.clone(),
                         raw_keys: BTreeSet::new(),
@@ -662,7 +683,7 @@ impl View {
                                     .map_err(|error| error.to_string())?,
                             );
                             let progress = ChunkTransferProgress {
-                                phase: SharedString::from("删除区块"),
+                                phase: TransferPhase::DELETE_CHUNKS,
                                 completed: index + 1,
                                 total,
                             };
@@ -670,7 +691,7 @@ impl View {
                                 &task_id_for_task,
                                 &mut progress_sync,
                                 &progress,
-                                "map_delete",
+                                TaskStage::MAP_DELETE,
                             );
                             if progress_sender
                                 .unbounded_send(DeleteSelectionEvent::Progress(progress))
@@ -683,7 +704,11 @@ impl View {
                     })();
                     match (history_capture, result) {
                         (Ok(capture), Ok(cleared)) => {
-                            complete_after(capture, format!("已清空 {cleared} 个选区 chunk 为空气"))?;
+                            complete_after(
+                                capture,
+                                t!("MapViewer.edit.cleared_selection_chunks", count = cleared)
+                                    .to_string(),
+                            )?;
                             Ok(cleared)
                         }
                         (Ok(capture), Err(error)) => {
@@ -694,15 +719,20 @@ impl View {
                             tracing::warn!(%error, "map history capture failed after selection delete");
                             Ok(cleared)
                         }
-                        (Err(history_error), Err(write_error)) => Err(format!(
-                            "{write_error}；历史捕获失败: {history_error}"
-                        )),
+                        (Err(history_error), Err(write_error)) => Err(t!(
+                            "MapViewer.edit.history_capture_failed",
+                            error = write_error,
+                            historyError = history_error
+                        )
+                        .to_string()),
                     }
                 })();
                 let status =
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
-                    (Ok(cleared), "completed") => Some(format!("已清空 {cleared} 个 chunk")),
+                    (Ok(cleared), "completed") => Some(
+                        t!("MapViewer.edit.cleared_chunks", count = cleared).to_string(),
+                    ),
                     (Err(error), _) => Some(error.clone()),
                     _ => None,
                 };
@@ -745,7 +775,7 @@ impl View {
                                             cx,
                                         );
                                         let message =
-                                            format!("已清空 {cleared} 个选区 chunk 为空气");
+                                            t!("MapViewer.edit.cleared_selection_chunks", count = cleared).to_string();
                                         this.status = SharedString::from(message.clone());
                                         this.resolve_task_toast(
                                             &task_id_for_ui,
@@ -757,7 +787,7 @@ impl View {
                                     Err(error) => {
                                         this.finish_chunk_transfer_progress();
                                         if is_map_operation_cancelled_error(&error) {
-                                            let message = SharedString::from("删除选区已取消");
+                                            let message = SharedString::from(t!("MapViewer.edit.delete_selection_cancelled"));
                                             this.status = message.clone();
                                             this.resolve_task_toast(
                                                 &task_id_for_ui,
@@ -815,7 +845,7 @@ impl View {
         }
         let paste_progress_total = action
             .progress_seed()
-            .filter(|(phase, _)| phase.starts_with("粘贴"))
+            .filter(|(phase, _)| matches!(*phase, TransferPhase::PASTE_CHUNKS | TransferPhase::PASTE_STRUCTURE))
             .map(|(_, total)| total.max(1));
         if let Some(total) = paste_progress_total {
             if let Some(preview) = self.professional.paste_preview.as_mut() {
@@ -837,20 +867,20 @@ impl View {
         let task_stage = match &action {
             QuickWriteAction::PasteCopiedChunk { .. }
             | QuickWriteAction::PasteCopiedChunks { .. }
-            | QuickWriteAction::PasteImportedStructure { .. } => "map_paste",
+            | QuickWriteAction::PasteImportedStructure { .. } => TaskStage::MAP_PASTE,
             QuickWriteAction::DeleteCurrentChunk(_)
             | QuickWriteAction::DeleteCurrentChunkBlockEntities(_)
-            | QuickWriteAction::DeleteCurrentChunkActors(_) => "map_delete",
-            QuickWriteAction::ResetCurrentChunk(_) => "map_write",
+            | QuickWriteAction::DeleteCurrentChunkActors(_) => TaskStage::MAP_DELETE,
+            QuickWriteAction::ResetCurrentChunk(_) => TaskStage::MAP_WRITE,
         };
         let progress = action
             .progress_seed()
             .map(|(phase, total)| ChunkTransferProgress {
-                phase: SharedString::from(phase),
+                phase,
                 completed: 0,
                 total,
             });
-        let mut task_options = task_manager::TaskOptions::new(action.label(), task_stage);
+        let mut task_options = task_manager::TaskOptions::new(action.label(), task_stage.clone());
         if let Some(progress) = progress.as_ref() {
             task_options = task_options.total(task_progress_units(progress.total.max(1)));
         }
@@ -874,10 +904,16 @@ impl View {
         }
         self.begin_task_toast(
             &task_id,
-            SharedString::from(format!("正在{}...", action.label())),
+            t!(
+                "MapViewer.edit.writing_operation",
+                operation = action.label()
+            ),
             cx,
         );
-        self.status = SharedString::from(format!("正在{}...", action.label()));
+        self.status = t!(
+            "MapViewer.edit.writing_operation",
+            operation = action.label()
+        );
         probe_blocking_pool("map_paste_start");
         cx.notify();
 
@@ -923,7 +959,7 @@ impl View {
                             &task_id_for_task,
                             &mut progress_sync,
                             &progress,
-                            task_stage,
+                            task_stage.clone(),
                         );
                         if progress_sender
                             .unbounded_send(QuickWriteEvent::Progress {
@@ -992,7 +1028,12 @@ impl View {
                             Ok((message, invalidation))
                         }
                         (Err(history_error), Err(write_error)) => {
-                            Err(format!("{write_error}；历史捕获失败: {history_error}"))
+                            Err(t!(
+                                "MapViewer.edit.history_capture_failed",
+                                error = write_error,
+                                historyError = history_error
+                            )
+                            .to_string())
                         }
                     }
                 })();
@@ -1007,7 +1048,7 @@ impl View {
                 if quick_write_defers_task_completion(status, paste_progress_total) {
                     task_manager::update_progress(
                         &task_id_for_task,
-                        ProgressUpdate::advance(0).stage("map_refresh"),
+                        ProgressUpdate::advance(0).stage(TaskStage::MAP_REFRESH),
                     );
                     probe_blocking_pool("map_paste_write_complete");
                 } else {
@@ -1120,7 +1161,7 @@ impl View {
                                 }
                                 this.sync_world3d_import_preview(cx);
                                 if is_map_operation_cancelled_error(&error) {
-                                    let message = SharedString::from("地图写入已取消");
+                                    let message = SharedString::from(t!("MapViewer.edit.map_write_cancelled"));
                                     this.status = message.clone();
                                     this.resolve_task_toast(
                                         &task_id_for_ui,
@@ -1163,7 +1204,7 @@ fn quick_write_defers_task_completion(status: &str, paste_progress_total: Option
 }
 
 fn paste_preview_write_progress(progress: &ChunkTransferProgress) -> Option<(usize, usize)> {
-    if progress.phase.as_ref() != "粘贴区块" {
+    if progress.phase != TransferPhase::PASTE_CHUNKS {
         return None;
     }
     let total = progress.total.max(1);
@@ -1177,9 +1218,9 @@ fn user_facing_quick_write_progress(
     let Some(paste_total) = paste_total else {
         return Some(progress);
     };
-    match progress.phase.as_ref() {
-        "粘贴区块" | "粘贴结构" => {
-            progress.phase = SharedString::from("粘贴区块");
+    match progress.phase {
+        TransferPhase::PASTE_CHUNKS | TransferPhase::PASTE_STRUCTURE => {
+            progress.phase = TransferPhase::PASTE_CHUNKS;
             progress.total = paste_total.max(1);
             progress.completed = progress.completed.min(progress.total);
             Some(progress)
@@ -1195,7 +1236,7 @@ mod paste_preview_progress_tests {
     #[::core::prelude::v1::test]
     fn atomic_paste_prepare_progress_keeps_chunks_pending_until_commit() {
         let progress = ChunkTransferProgress {
-            phase: SharedString::from("准备粘贴区块"),
+            phase: TransferPhase::PREPARE_PASTE_CHUNKS,
             completed: 392,
             total: 672,
         };
@@ -1207,7 +1248,7 @@ mod paste_preview_progress_tests {
     #[::core::prelude::v1::test]
     fn unrelated_phase_does_not_advance_chunk_visualization() {
         let progress = ChunkTransferProgress {
-            phase: SharedString::from("提交区块写入"),
+            phase: TransferPhase::COMMIT_CHUNK_WRITE,
             completed: 1,
             total: 1,
         };
@@ -1218,7 +1259,7 @@ mod paste_preview_progress_tests {
     #[::core::prelude::v1::test]
     fn record_level_paste_progress_is_hidden_from_ui() {
         let progress = ChunkTransferProgress {
-            phase: SharedString::from("准备变换区块"),
+            phase: TransferPhase::PREPARE_TRANSFORM_CHUNKS,
             completed: 49_152,
             total: 98_304,
         };
@@ -1230,7 +1271,7 @@ mod paste_preview_progress_tests {
     fn committed_structure_progress_drives_chunk_visualization() {
         let progress = user_facing_quick_write_progress(
             ChunkTransferProgress {
-                phase: SharedString::from("粘贴结构"),
+                phase: TransferPhase::PASTE_STRUCTURE,
                 completed: 16,
                 total: 32,
             },
@@ -1238,7 +1279,7 @@ mod paste_preview_progress_tests {
         )
         .expect("committed structure progress");
 
-        assert_eq!(progress.phase.as_ref(), "粘贴区块");
+        assert_eq!(progress.phase, TransferPhase::PASTE_CHUNKS);
         assert_eq!(paste_preview_write_progress(&progress), Some((16, 32)));
     }
 
@@ -1252,10 +1293,12 @@ mod paste_preview_progress_tests {
 }
 
 pub(super) fn block_tip_detail(tip: bedrock_world::query::BlockTip) -> ProfessionalDetail {
-    let title = SharedString::from(format!(
-        "方块 {}, {}, {}",
-        tip.block.x, tip.block.y, tip.block.z
-    ));
+    let title = t!(
+        "MapViewer.edit.block_pos",
+        x = tip.block.x,
+        y = tip.block.y,
+        z = tip.block.z
+    );
     let value = serde_json::json!({
         "block": {
             "x": tip.block.x,
@@ -1316,7 +1359,7 @@ pub(super) fn chunk_detail_panel(detail: ChunkDetail) -> ProfessionalDetail {
 
 pub(super) fn selection_stats_panel(stats: SelectionStats) -> ProfessionalDetail {
     ProfessionalDetail::Selection {
-        title: SharedString::from("选区统计"),
+        title: SharedString::from(t!("MapViewer.edit.title_selection_stats")),
         json: pretty_json(serde_json::json!(stats)),
     }
 }
@@ -1324,9 +1367,12 @@ pub(super) fn selection_stats_panel(stats: SelectionStats) -> ProfessionalDetail
 pub(super) fn player_editor_detail(detail: PlayerDetail) -> ProfessionalDetail {
     ProfessionalDetail::Editor {
         target: EditTarget::Player(detail.id.clone()),
-        title: SharedString::from(format!("玩家 {}", player_id_label(&detail.id))),
+        title: t!(
+                "MapViewer.edit.title_player",
+                id = player_id_label(&detail.id)
+            ),
         sections: vec![EditSection {
-            title: SharedString::from("玩家数据"),
+            title: SharedString::from(t!("MapViewer.edit.title_player_data")),
             rows: player_detail_rows(&detail),
         }],
         json: detail.json,
@@ -1474,7 +1520,7 @@ fn edit_history_spec(
         }
         EditTarget::Player(id) => {
             let Some(key) = id.storage_key() else {
-                return Err("玩家记录没有 LevelDB key".to_string());
+                return Err(t!("MapViewer.edit.player_no_leveldb_key").to_string());
             };
             raw_keys.insert(key.as_ref().to_vec());
         }
@@ -1518,9 +1564,9 @@ pub(super) fn hsa_editor_detail(
         target: EditTarget::HsaChunk { chunk: pos, source },
         title: SharedString::from(format!("HSA chunk {}, {}", pos.x, pos.z)),
         sections: vec![EditSection {
-            title: SharedString::from("硬编码生成区域"),
+            title: SharedString::from(t!("MapViewer.edit.title_hsa")),
             rows: if rows.is_empty() {
-                vec![readonly_row("记录", "无")]
+                vec![readonly_row(t!("MapViewer.detail.record"), t!("MapViewer.detail.none"))]
             } else {
                 rows
             },
@@ -1539,9 +1585,13 @@ pub(super) fn block_entities_detail(
     let (records, source) = editor.world().block_entities_snapshot(pos)?;
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::BlockEntities { chunk: pos, source },
-        title: SharedString::from(format!("方块实体 chunk {}, {}", pos.x, pos.z)),
+        title: t!(
+                "MapViewer.detail.title_block_entity_chunk",
+                x = pos.x,
+                z = pos.z
+            ),
         sections: vec![EditSection {
-            title: SharedString::from("方块实体"),
+            title: SharedString::from(t!("MapViewer.detail.title_block_entity")),
             rows: block_entity_rows(&records),
         }],
         json: pretty_json(serde_json::json!({
@@ -1564,9 +1614,14 @@ pub(super) fn block_entity_detail_at(
         .collect::<Vec<_>>();
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::BlockEntityAt { chunk, block },
-        title: SharedString::from(format!("方块实体 {}, {}, {}", block.x, block.y, block.z)),
+        title: t!(
+                "MapViewer.detail.title_block_entity_pos",
+                x = block.x,
+                y = block.y,
+                z = block.z
+            ),
         sections: vec![EditSection {
-            title: SharedString::from("当前位置"),
+            title: SharedString::from(t!("MapViewer.detail.title_current_pos")),
             rows: block_entity_rows(&matching),
         }],
         json: pretty_json(serde_json::json!({
@@ -1586,7 +1641,7 @@ pub(super) fn actors_editor_detail(
         target: EditTarget::Actors(pos),
         title: SharedString::from(format!("Actors chunk {}, {}", pos.x, pos.z)),
         sections: vec![EditSection {
-            title: SharedString::from("实体 / Actors"),
+            title: SharedString::from(t!("MapViewer.detail.title_actors")),
             rows: actor_rows(&actors),
         }],
         json: pretty_json(serde_json::json!({
@@ -1619,16 +1674,16 @@ pub(super) fn actor_editor_detail(
     let position = actor.entity.position;
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::Actor { chunk, unique_id },
-        title: SharedString::from(format!("实体 {identifier}")),
+        title: t!("MapViewer.detail.title_entity", id = identifier),
         sections: vec![EditSection {
-            title: SharedString::from("实体信息"),
+            title: SharedString::from(t!("MapViewer.detail.title_entity_info")),
             rows: vec![
                 readonly_row("identifier", identifier),
                 readonly_row("UniqueID", unique_id.to_string()),
                 readonly_row(
                     "position",
                     position.map_or_else(
-                        || "缺失".to_string(),
+                        || t!("MapViewer.detail.missing").to_string(),
                         |value| format!("{:.3}, {:.3}, {:.3}", value[0], value[1], value[2]),
                     ),
                 ),
@@ -1651,12 +1706,16 @@ pub(super) fn heightmap_editor_detail(
     let heightmap = biome.map(|data| HeightMap2d::new(data.height_map)).transpose()?;
     let rows = heightmap
         .as_ref()
-        .map_or_else(|| vec![readonly_row("高度图", "无")], heightmap_rows);
+        .map_or_else(|| vec![readonly_row(t!("MapViewer.detail.heightmap"), t!("MapViewer.detail.none"))], heightmap_rows);
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::HeightMap { chunk: pos, version },
-        title: SharedString::from(format!("高度图 chunk {}, {}", pos.x, pos.z)),
+        title: t!(
+                "MapViewer.detail.title_heightmap_chunk",
+                x = pos.x,
+                z = pos.z
+            ),
         sections: vec![EditSection {
-            title: SharedString::from("Data2D/Data3D 高度图"),
+            title: SharedString::from(t!("MapViewer.detail.title_heightmap")),
             rows,
         }],
         json: pretty_json(serde_json::json!({
@@ -1676,10 +1735,14 @@ pub(super) fn biome_storage_editor_detail(
             chunk: pos,
             version: biome.as_ref().map(|data| data.version),
         },
-        title: SharedString::from(format!("生物群系 chunk {}, {}", pos.x, pos.z)),
+        title: t!(
+                "MapViewer.detail.title_biome_chunk",
+                x = pos.x,
+                z = pos.z
+            ),
         sections: vec![EditSection {
-            title: "生物群系数据".into(),
-            rows: vec![readonly_row("记录", if biome.is_some() { "存在" } else { "缺失" })],
+            title: t!("MapViewer.detail.title_biome_data").into(),
+            rows: vec![readonly_row(t!("MapViewer.detail.record"), if biome.is_some() { t!("MapViewer.detail.exists") } else { t!("MapViewer.detail.missing") })],
         }],
         json: pretty_json(serde_json::json!({ "chunk": chunk_json(pos), "biome": biome.as_ref().map(records::biome_json) })),
     })
@@ -1691,7 +1754,7 @@ pub(super) fn map_item_editor_detail(
 ) -> bedrock_render::Result<ProfessionalDetail> {
     let record = editor.item(id)?;
     let rows = record.as_ref().map_or_else(
-        || vec![readonly_row("记录", "不存在")],
+        || vec![readonly_row(t!("MapViewer.detail.record"), t!("MapViewer.detail.not_exists"))],
         |record| {
             vec![
                 readonly_row("id", record.id.as_str().to_string()),
@@ -1699,7 +1762,7 @@ pub(super) fn map_item_editor_detail(
                 readonly_row(
                     "pixels",
                     record.pixels.as_ref().map_or_else(
-                        || "无".to_string(),
+                        || t!("MapViewer.detail.none").to_string(),
                         |pixels| {
                             format!("{}x{} {}", pixels.width, pixels.height, pixels.rgba.len())
                         },
@@ -1712,7 +1775,7 @@ pub(super) fn map_item_editor_detail(
         target: EditTarget::SavedData(id.clone()),
         title: SharedString::from(format!("Map {}", id.as_str())),
         sections: vec![EditSection {
-            title: SharedString::from("地图记录"),
+            title: SharedString::from(t!("MapViewer.detail.title_map_record")),
             rows,
         }],
         json: pretty_json(serde_json::json!(record.as_ref().map(map_item_json))),
@@ -1789,9 +1852,9 @@ pub(super) fn action_buttons(
         let pending_save = pending
             .is_some_and(|pending| pending.target == target && pending.action == EditAction::Save);
         let label = if pending_save {
-            "确认保存"
+            t!("MapViewer.edit.confirm_save")
         } else {
-            "保存"
+            t!("common.save")
         };
         buttons.push(toolbar_button(colors, label).on_mouse_down(
             MouseButton::Left,
@@ -1803,9 +1866,9 @@ pub(super) fn action_buttons(
             pending.target == target && pending.action == EditAction::Delete
         });
         let label = if pending_delete {
-            "确认删除"
+            t!("MapViewer.edit.confirm_delete")
         } else {
-            "删除"
+            t!("common.delete")
         };
         buttons.push(toolbar_button(colors, label).on_mouse_down(
             MouseButton::Left,
@@ -1878,7 +1941,7 @@ pub(super) fn hsa_rows(index: usize, area: &HardcodedSpawnArea) -> Vec<EditRow> 
 
 pub(super) fn block_entity_rows(records: &[BlockEntityRecord]) -> Vec<EditRow> {
     if records.is_empty() {
-        return vec![readonly_row("记录", "无")];
+        return vec![readonly_row(t!("MapViewer.detail.record"), t!("MapViewer.detail.none"))];
     }
     records
         .iter()
@@ -1904,7 +1967,7 @@ pub(super) fn block_entity_rows(records: &[BlockEntityRecord]) -> Vec<EditRow> {
 
 pub(super) fn actor_rows(records: &[ActorRecord]) -> Vec<EditRow> {
     if records.is_empty() {
-        return vec![readonly_row("记录", "无")];
+        return vec![readonly_row(t!("MapViewer.detail.record"), t!("MapViewer.detail.none"))];
     }
     records
         .iter()
@@ -2057,12 +2120,12 @@ pub(super) fn run_quick_write_action(
     let result = match action {
         QuickWriteAction::DeleteCurrentChunk(_) | QuickWriteAction::ResetCurrentChunk(_) => {
             let phase = if matches!(action, QuickWriteAction::ResetCurrentChunk(_)) {
-                "重置区块"
+                TransferPhase::RESET_CHUNK
             } else {
-                "删除区块"
+                TransferPhase::DELETE_CHUNKS
             };
             progress(ChunkTransferProgress {
-                phase: SharedString::from(phase),
+                phase,
                 completed: 0,
                 total: 1,
             });
@@ -2078,19 +2141,19 @@ pub(super) fn run_quick_write_action(
                     let deleted = delete_chunks(world, bounds, guard)?;
                     check_bedrock_operation_cancelled(cancel)?;
                     (
-                        format!("已重置当前 chunk，删除 {deleted} 条记录并允许游戏重新加载"),
+                        t!("MapViewer.edit.reset_chunk_message", count = deleted).to_string(),
                         EditInvalidation::chunk(chunk).with_metadata(),
                     )
                 } else {
                     let cleared = clear_chunks(world, bounds, guard)?;
                     check_bedrock_operation_cancelled(cancel)?;
                     (
-                        format!("已清空当前 chunk 为空气（{} 个 chunk）", cleared),
+                        t!("MapViewer.edit.cleared_current_chunk", count = cleared).to_string(),
                         EditInvalidation::chunk(chunk).with_metadata(),
                     )
                 };
             progress(ChunkTransferProgress {
-                phase: SharedString::from(phase),
+                phase,
                 completed: 1,
                 total: 1,
             });
@@ -2100,7 +2163,12 @@ pub(super) fn run_quick_write_action(
             check_bedrock_operation_cancelled(cancel)?;
             delete_chunk_record(world, chunk, ChunkRecordTag::BlockEntity, guard)?;
             Ok((
-                format!("已删除 chunk {},{} 方块实体记录", chunk.x, chunk.z),
+                t!(
+                    "MapViewer.edit.deleted_block_entities",
+                    x = chunk.x,
+                    z = chunk.z
+                )
+                .to_string(),
                 EditInvalidation::chunk(chunk).with_metadata(),
             ))
         }
@@ -2115,10 +2183,13 @@ pub(super) fn run_quick_write_action(
             check_bedrock_operation_cancelled(cancel)?;
             delete_chunk_record(world, chunk, ChunkRecordTag::Entity, guard)?;
             Ok((
-                format!(
-                    "已删除 chunk {},{} 的 {deleted} 个现代实体",
-                    chunk.x, chunk.z
-                ),
+                t!(
+                    "MapViewer.edit.deleted_actors",
+                    x = chunk.x,
+                    z = chunk.z,
+                    count = deleted
+                )
+                .to_string(),
                 EditInvalidation::chunk(chunk).with_metadata(),
             ))
         }
@@ -2128,7 +2199,7 @@ pub(super) fn run_quick_write_action(
             transform,
         } => {
             let copied_chunk = copied_chunk.ok_or_else(|| {
-                bedrock_world::BedrockWorldError::Validation("没有可粘贴的区块副本".to_string())
+                bedrock_world::BedrockWorldError::Validation(t!("MapViewer.edit.no_paste_copy").to_string())
             })?;
             paste_copied_chunk(
                 world,
@@ -2148,7 +2219,7 @@ pub(super) fn run_quick_write_action(
             transform,
         } => {
             let copied_chunk = copied_chunk.ok_or_else(|| {
-                bedrock_world::BedrockWorldError::Validation("没有可粘贴的区块副本".to_string())
+                bedrock_world::BedrockWorldError::Validation(t!("MapViewer.edit.no_paste_copy").to_string())
             })?;
             paste_copied_chunk(
                 world,
@@ -2168,7 +2239,7 @@ pub(super) fn run_quick_write_action(
             transform,
         } => {
             let imported_structure = imported_structure.ok_or_else(|| {
-                bedrock_world::BedrockWorldError::Validation("没有可粘贴的结构文件".to_string())
+                bedrock_world::BedrockWorldError::Validation(t!("MapViewer.edit.no_paste_structure").to_string())
             })?;
             mcstructure::paste_imported_structure(
                 world,
@@ -2215,7 +2286,7 @@ fn quick_write_history_spec(
             transform,
             ..
         } => {
-            let copied_chunk = copied_chunk.ok_or_else(|| "没有可粘贴的区块副本".to_string())?;
+            let copied_chunk = copied_chunk.ok_or_else(|| t!("MapViewer.edit.no_paste_copy").to_string())?;
             chunks.extend(pasted_chunk_targets(
                 copied_chunk,
                 *source_anchor,
@@ -2230,7 +2301,7 @@ fn quick_write_history_spec(
             ..
         } => {
             let imported_structure =
-                imported_structure.ok_or_else(|| "没有可粘贴的结构文件".to_string())?;
+                imported_structure.ok_or_else(|| t!("MapViewer.edit.no_paste_structure").to_string())?;
             chunks.extend(mcstructure::imported_structure_targets(
                 imported_structure,
                 *target_anchor,
@@ -2258,7 +2329,7 @@ pub(super) fn copy_chunks(
 ) -> bedrock_world::Result<CopiedChunkData> {
     if chunks.is_empty() {
         return Err(bedrock_world::BedrockWorldError::Validation(
-            "没有可复制的 chunk".to_string(),
+            t!("MapViewer.edit.no_copy_chunk").to_string(),
         ));
     }
 
@@ -2294,7 +2365,7 @@ pub(super) fn copy_chunks(
             hardcoded_spawn_areas,
         });
         progress(ChunkTransferProgress {
-            phase: SharedString::from("复制区块"),
+            phase: TransferPhase::COPY_CHUNKS,
             completed: index + 1,
             total,
         });
@@ -2398,7 +2469,7 @@ pub(super) fn paste_copied_chunk(
             })?;
             transaction_to_commit.commit()?;
             progress(ChunkTransferProgress {
-                phase: SharedString::from("粘贴区块"),
+                phase: TransferPhase::PASTE_CHUNKS,
                 completed,
                 total,
             });
@@ -2409,10 +2480,15 @@ pub(super) fn paste_copied_chunk(
     }
 
     Ok((
-        format!(
-            "已粘贴 {} 个 chunk（{},{} -> {},{}）",
-            total, source_anchor.x, source_anchor.z, target_anchor.x, target_anchor.z
-        ),
+        t!(
+            "MapViewer.edit.pasted_chunks",
+            count = total,
+            fromX = source_anchor.x,
+            fromZ = source_anchor.z,
+            toX = target_anchor.x,
+            toZ = target_anchor.z
+        )
+        .to_string(),
         EditInvalidation::chunks(affected_chunks).with_metadata(),
     ))
 }
@@ -2557,10 +2633,14 @@ fn paste_transformed_copied_chunks(
                 guard,
                 |write_progress| {
                     progress(ChunkTransferProgress {
-                        phase: SharedString::from(match write_progress.phase {
-                            bedrock_world::editor::McStructureWritePhase::Prepare => "准备变换区块",
-                            bedrock_world::editor::McStructureWritePhase::WriteChunks => "写入变换区块",
-                        }),
+                        phase: match write_progress.phase {
+                            bedrock_world::editor::McStructureWritePhase::Prepare => {
+                                TransferPhase::PREPARE_TRANSFORM_CHUNKS
+                            }
+                            bedrock_world::editor::McStructureWritePhase::WriteChunks => {
+                                TransferPhase::WRITE_TRANSFORMED_CHUNKS
+                            }
+                        },
                         completed: write_progress.completed,
                         total: write_progress.total,
                     });
@@ -2587,7 +2667,7 @@ fn paste_transformed_copied_chunks(
             affected_chunks.extend(result.affected_chunks);
             affected_chunks.insert(target_chunk);
             progress(ChunkTransferProgress {
-                phase: SharedString::from("粘贴区块"),
+                phase: TransferPhase::PASTE_CHUNKS,
                 completed: batch_start + batch_offset + 1,
                 total,
             });
@@ -2596,15 +2676,16 @@ fn paste_transformed_copied_chunks(
     check_bedrock_operation_cancelled(cancel)?;
 
     Ok((
-        format!(
-            "已粘贴 {} 个 chunk（{},{} -> {},{}，{}）",
-            copied_chunk.chunks.len(),
-            source_anchor.x,
-            source_anchor.z,
-            target_anchor.x,
-            target_anchor.z,
-            transform.label()
-        ),
+        t!(
+            "MapViewer.edit.pasted_chunks_transform",
+            count = copied_chunk.chunks.len(),
+            fromX = source_anchor.x,
+            fromZ = source_anchor.z,
+            toX = target_anchor.x,
+            toZ = target_anchor.z,
+            transform = transform.label()
+        )
+        .to_string(),
         EditInvalidation::chunks(affected_chunks).with_metadata(),
     ))
 }
@@ -2751,7 +2832,9 @@ fn mcstructure_palette_index(
         return Ok(*index);
     }
     let index = i32::try_from(structure.palette.len()).map_err(|_| {
-        bedrock_world::BedrockWorldError::Validation("结构 palette 超过 i32 上限".to_string())
+        bedrock_world::BedrockWorldError::Validation(
+            t!("MapViewer.edit.palette_overflow").to_string(),
+        )
     })?;
     structure.palette.push(entry);
     palette_indices.insert(palette_key, index);
@@ -3121,8 +3204,8 @@ pub(super) fn edit_action_label(action: &EditAction) -> &'static str {
 
 pub(super) fn edit_action_status(action: &EditAction, target: &EditTarget) -> String {
     let verb = match action {
-        EditAction::Save => "保存",
-        EditAction::Delete => "删除",
+        EditAction::Save => t!("common.save"),
+        EditAction::Delete => t!("common.delete"),
     };
     format!("{verb} {}", target.operation_label())
 }
@@ -3190,9 +3273,9 @@ pub(super) fn context_more_edit_entries(
 ) -> Vec<ContextMenuEntry> {
     let mut entries = vec![ContextMenuEntry::item(
         ContextMenuItem::new(if expanded {
-            "收起更多编辑操作"
+            t!("MapViewer.edit.collapse_more")
         } else {
-            "更多编辑操作"
+            t!("MapViewer.edit.more")
         })
         .keep_open()
         .on_click(on_toggle),

@@ -88,9 +88,11 @@ impl View {
         if self.image_generator_busy() {
             return;
         }
-        if let Some(path) =
-            pick_file_path(None,"图片", &["png", "jpg", "jpeg", "tga", "webp"])
-        {
+        if let Some(path) = pick_file_path(
+            None,
+            t!("MapViewer.generator.image_generator.image_filter_name").as_ref(),
+            &["png", "jpg", "jpeg", "tga", "webp"],
+        ) {
             self.set_image_generator_source(PathBuf::from(path), cx);
         }
     }
@@ -288,7 +290,7 @@ impl View {
             return;
         }
         let Some(source) = self.image_generator.source.clone() else {
-            self.status = SharedString::from("请先选择图片");
+            self.status = t!("MapViewer.generator.image_generator.select_image_first");
             cx.notify();
             return;
         };
@@ -321,7 +323,7 @@ impl View {
                 }
                 self.image_generator.output = Some(output);
                 self.image_generator.task_id = Some(task_id);
-                self.status = SharedString::from("图片方块结构导出任务已开始");
+                self.status = t!("MapViewer.generator.image_generator.export_task_started");
             }
             Err(error) => {
                 self.status = SharedString::from(error.clone());

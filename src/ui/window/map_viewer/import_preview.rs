@@ -22,7 +22,9 @@ pub(super) fn mcstructure_preview_images(
     let origin_z = anchor_chunk.z.saturating_mul(16);
     for block in structure
         .blocks()
-        .map_err(|error| format!("结构预览索引无效：{error}"))?
+        .map_err(|error| {
+            t!("MapViewer.import.preview.invalid_structure_index", error = error).to_string()
+        })?
     {
         let primary = structure_palette_preview_state(structure, block.primary);
         let secondary = structure_palette_preview_state(structure, block.secondary);
@@ -36,10 +38,20 @@ pub(super) fn mcstructure_preview_images(
             z: world_z.div_euclid(16),
             dimension: anchor_chunk.dimension,
         };
-        let local_x = usize::try_from(world_x.rem_euclid(16))
-            .map_err(|_| format!("结构预览 X 坐标越界：{world_x}"))?;
-        let local_z = usize::try_from(world_z.rem_euclid(16))
-            .map_err(|_| format!("结构预览 Z 坐标越界：{world_z}"))?;
+        let local_x = usize::try_from(world_x.rem_euclid(16)).map_err(|_| {
+            t!(
+                "MapViewer.import.preview.coordinate_out_of_range_x",
+                value = world_x
+            )
+            .to_string()
+        })?;
+        let local_z = usize::try_from(world_z.rem_euclid(16)).map_err(|_| {
+            t!(
+                "MapViewer.import.preview.coordinate_out_of_range_z",
+                value = world_z
+            )
+            .to_string()
+        })?;
         update_preview_column(&mut columns, chunk, local_x, local_z, block.y, state);
     }
     preview_images_from_columns(columns)
@@ -228,7 +240,9 @@ fn preview_pixels_from_chunk_columns(columns: &[Option<ImportPreviewColumn>]) ->
 fn image_from_pixels(pixels: Vec<u8>) -> Result<Arc<RenderImage>, String> {
     RenderImage::from_raw_pixels(16, 16, ImagePixelFormat::Rgba8, pixels)
         .map(Arc::new)
-        .map_err(|error| format!("导入预览图片无效：{error}"))
+        .map_err(|error| {
+            t!("MapViewer.import.preview.invalid_preview_image", error = error).to_string()
+        })
 }
 
 fn scan_options() -> bedrock_world::scan::ScanOptions {

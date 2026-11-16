@@ -1,3 +1,4 @@
+use crate::tasks::TaskStage;
 use super::model::*;
 use super::panels::{compact_activity_label, dimension_label, panel_title};
 use super::prelude::*;
@@ -372,72 +373,38 @@ impl View {
 }
 
 fn is_map_window_task_snapshot(snapshot: &TaskSnapshot) -> bool {
-    is_map_window_task_stage(snapshot.stage.as_ref())
+    is_map_window_task_stage(&snapshot.stage)
 }
 
-fn is_map_window_task_stage(stage: &str) -> bool {
-    matches!(
-        stage,
-        "map_paste"
-            | "map_write"
-            | "map_delete"
-            | "map_copy"
-            | "map_refresh"
-            | "打开地图"
-            | "地图索引"
-            | "探测瓦片"
-            | "局部刷新"
-            | "地图导出"
-            | "地图导入"
-            | "复制区块"
-            | "粘贴区块"
-            | "删除区块"
-            | "写入地图"
-            | "历史操作"
-            | "解析 OBJ"
-            | "读取源文件"
-            | "匹配方块"
-            | "保存预览结果"
-            | "缩放并分片地图"
-            | "逐张生成地图"
-            | "逐张合并预览"
-            | "生成地图记录"
-            | "写入地图包"
-            | "读取地图包"
-            | "检查目标与地图 ID"
-            | "检查展示框放置区域"
-            | "创建撤销快照"
-            | "原子提交地图与物品"
-            | "保存撤销历史"
-            | "体素化三角形"
-            | "解码图片"
-            | "裁剪、缩放与方块匹配"
-            | "裁剪与分片地图"
-            | "写入 .mcstructure"
-    )
+fn is_map_window_task_stage(stage: &TaskStage) -> bool {
+    stage.code().starts_with("map_")
 }
 
 #[cfg(test)]
 mod task_filter_tests {
+    use crate::tasks::TaskStage;
     use super::is_map_window_task_stage;
 
     #[test]
     fn keeps_all_generator_preview_stages_visible() {
         for stage in [
-            "解码图片",
-            "缩放并分片地图",
-            "逐张生成地图",
-            "逐张合并预览",
-            "读取源文件",
-            "匹配方块",
-            "体素化三角形",
-            "保存预览结果",
-            "检查展示框放置区域",
-            "map_paste",
-            "map_refresh",
-            "map_delete",
+            TaskStage::MAP_DECODE_IMAGE,
+            TaskStage::MAP_SCALE_AND_SLICE,
+            TaskStage::MAP_GENERATE_MAPS,
+            TaskStage::MAP_MERGE_PREVIEW,
+            TaskStage::MAP_READ_SOURCE,
+            TaskStage::MAP_MATCH_BLOCKS,
+            TaskStage::MAP_VOXELIZE,
+            TaskStage::MAP_SAVE_PREVIEW,
+            TaskStage::MAP_CHECK_FRAME_AREA,
+            TaskStage::MAP_PASTE,
+            TaskStage::MAP_REFRESH,
+            TaskStage::MAP_DELETE,
         ] {
-            assert!(is_map_window_task_stage(stage), "missing stage: {stage}");
+            assert!(
+                is_map_window_task_stage(&stage),
+                "missing stage: {stage}"
+            );
         }
     }
 }
@@ -483,7 +450,7 @@ fn local_progress_inline(
                 } else {
                     colors.stat_green_text
                 })
-                .child(progress.phase.clone()),
+                .child(progress.phase.label()),
         )
         .child(inline_progress_bar(
             colors,
@@ -533,7 +500,7 @@ fn task_progress_inline(colors: &ThemeColors, i18n: &I18n, snapshot: &TaskSnapsh
                 .text_ellipsis()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.text_primary)
-                .child(task_stage_label(i18n, snapshot.stage.as_ref())),
+                .child(task_stage_label(i18n, &snapshot.stage)),
         )
         .child(inline_progress_bar(colors, ratio, color))
         .child(
@@ -567,7 +534,7 @@ fn local_progress_card(
                 } else {
                     colors.stat_green_text
                 })
-                .child(progress.phase.clone()),
+                .child(progress.phase.label()),
         )
         .child(progress_bar(colors, progress.ratio(), progress_color))
         .child(
@@ -624,11 +591,11 @@ fn task_progress_card(colors: &ThemeColors, i18n: &I18n, snapshot: &TaskSnapshot
                         .overflow_hidden()
                         .text_ellipsis()
                         .child(snapshot.detail.as_ref().map_or_else(
-                            || task_stage_label(i18n, snapshot.stage.as_ref()).to_string(),
+                            || task_stage_label(i18n, &snapshot.stage).to_string(),
                             |detail| {
                                 format!(
                                     "{} · {}",
-                                    task_stage_label(i18n, snapshot.stage.as_ref()),
+                                    task_stage_label(i18n, &snapshot.stage),
                                     detail
                                 )
                             },
@@ -748,8 +715,13 @@ fn task_status_label(_i18n: &I18n, status: &str) -> SharedString {
     }
 }
 
-fn task_stage_label(i18n: &I18n, stage: &str) -> SharedString {
-    let key = match stage {
+fn task_stage_label(i18n: &I18n, stage: &TaskStage) -> SharedString {
+    if let Some(key) = stage.label_key() {
+        return i18n
+            .lookup(key)
+            .unwrap_or_else(|| SharedString::from(stage.code().to_owned()));
+    }
+    let key = match stage.code() {
         "ready" | "queued" | "starting" => "InstallProgressBar.stage_ready",
         "downloading" | "reading_body" | "url_resolved" => "InstallProgressBar.stage_downloading",
         "resolving_url" | "resolving_runner" | "resolving_proton_gdk" => {
@@ -760,10 +732,10 @@ fn task_stage_label(i18n: &I18n, stage: &str) -> SharedString {
         }
         "verifying" => "InstallProgressBar.stage_verifying",
         "parsing" => "common.processing",
-        _ => return SharedString::from(stage.to_owned()),
+        _ => return SharedString::from(stage.code().to_owned()),
     };
     i18n.lookup(key)
-        .unwrap_or_else(|| SharedString::from(stage.to_owned()))
+        .unwrap_or_else(|| SharedString::from(stage.code().to_owned()))
 }
 
 fn task_status_color(colors: &ThemeColors, status: &str) -> Hsla {
@@ -789,7 +761,7 @@ mod tests {
     #[::core::prelude::v1::test]
     fn local_progress_numbers_include_count_and_percent() {
         let progress = ChunkTransferProgress {
-            phase: SharedString::from("导出图片"),
+            phase: TransferPhase::EXPORT_IMAGE,
             completed: 91,
             total: 182,
         };
@@ -800,7 +772,7 @@ mod tests {
     #[::core::prelude::v1::test]
     fn local_progress_numbers_clamp_completed_count() {
         let progress = ChunkTransferProgress {
-            phase: SharedString::from("导出图片"),
+            phase: TransferPhase::EXPORT_IMAGE,
             completed: 200,
             total: 182,
         };

@@ -342,21 +342,21 @@ fn chunk_transfer_task_progress_sync_resets_on_phase_change() {
     let mut progress_sync = ChunkTransferTaskProgressSync::default();
 
     let first = progress_sync.next_delta(&ChunkTransferProgress {
-        phase: SharedString::from("读取区块"),
+        phase: TransferPhase::READ_CHUNKS,
         completed: 2,
         total: 4,
     });
     assert_eq!(first, (true, 2, Some(4)));
 
     let same_phase = progress_sync.next_delta(&ChunkTransferProgress {
-        phase: SharedString::from("读取区块"),
+        phase: TransferPhase::READ_CHUNKS,
         completed: 3,
         total: 4,
     });
     assert_eq!(same_phase, (false, 1, Some(4)));
 
     let next_phase = progress_sync.next_delta(&ChunkTransferProgress {
-        phase: SharedString::from("写入文件"),
+        phase: TransferPhase::WRITE_FILE,
         completed: 1,
         total: 2,
     });
@@ -632,11 +632,11 @@ fn zoom_input_clamps_to_expanded_minimum_scale() {
 #[::core::prelude::v1::test]
 fn empty_coordinate_input_uses_current_viewport_coordinate() {
     assert_eq!(
-        optional_integer("", "X", -128).expect("fallback coordinate"),
+        optional_integer("", SharedString::from("X"), -128).expect("fallback coordinate"),
         -128
     );
     assert_eq!(
-        optional_integer(" 42 ", "Z", 0).expect("entered coordinate"),
+        optional_integer(" 42 ", SharedString::from("Z"), 0).expect("entered coordinate"),
         42
     );
 }
@@ -1463,7 +1463,7 @@ fn existing_selection_right_click_waits_for_release_and_respects_hit_target() {
 fn chunk_transfer_progress_ratio_is_clamped() {
     assert_eq!(
         ChunkTransferProgress {
-            phase: SharedString::from("复制区块"),
+            phase: TransferPhase::COPY_CHUNKS,
             completed: 2,
             total: 4,
         }
@@ -1472,7 +1472,7 @@ fn chunk_transfer_progress_ratio_is_clamped() {
     );
     assert_eq!(
         ChunkTransferProgress {
-            phase: SharedString::from("复制区块"),
+            phase: TransferPhase::COPY_CHUNKS,
             completed: 6,
             total: 4,
         }
@@ -1481,7 +1481,7 @@ fn chunk_transfer_progress_ratio_is_clamped() {
     );
     assert_eq!(
         ChunkTransferProgress {
-            phase: SharedString::from("复制区块"),
+            phase: TransferPhase::COPY_CHUNKS,
             completed: 0,
             total: 0,
         }
@@ -4916,7 +4916,7 @@ fn paste_672_chunks_reports_only_committed_batch_progress() {
     assert_eq!(invalidation.affected_chunks().len(), 672);
     assert_eq!(progress.len(), 42);
     assert!(progress.iter().enumerate().all(|(index, update)| {
-        update.phase.as_ref() == "粘贴区块"
+        update.phase == TransferPhase::PASTE_CHUNKS
             && update.completed == (index + 1) * 16
             && update.total == 672
     }));

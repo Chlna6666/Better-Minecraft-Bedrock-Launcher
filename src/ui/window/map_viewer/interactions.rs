@@ -20,6 +20,7 @@ use crate::tasks::task_manager::ProgressUpdate;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
 use std::io::Cursor;
+use crate::tasks::TaskStage;
 
 const SELECTION_RESIZE_HIT_TOLERANCE_PX: f32 = 12.0;
 
@@ -192,10 +193,10 @@ impl View {
                 self.render_gpu_backend = RenderGpuBackend::Auto;
             }
         }
-        self.status = SharedString::from(format!(
-            "渲染后端固定为 {} · 缓存签名隔离并从下个批次生效",
-            backend_label(self.render_backend, self.render_gpu_backend)
-        ));
+        self.status = t!(
+            "MapViewer.msg.backend_fixed",
+            backend = backend_label(self.render_backend, self.render_gpu_backend)
+        );
         self.invalidate_tiles(cx);
         self.refresh_render_session(cx);
         self.ensure_visible_tiles(cx);
@@ -566,10 +567,7 @@ impl View {
         self.refresh_chunk_tree_for_tile(tile);
         self.ui_state.active_bottom_tab = MapViewerBottomTab::ChunkTree;
         self.ui_state.bottom_panel_open = true;
-        self.status = SharedString::from(format!(
-            "已选择瓦片 {}, {} · 区块树按需加载",
-            tile.0, tile.1
-        ));
+        self.status = t!("MapViewer.msg.tile_selected", x = tile.0, z = tile.1);
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
         cx.notify();
@@ -948,10 +946,13 @@ impl View {
         self.clear_paste_preview_state(cx);
         self.invalidate_preview_3d_mesh();
         let bounds = drag.selection().bounds();
-        self.status = SharedString::from(format!(
-            "已选择 chunk {}..{}, {}..{}",
-            bounds.min_chunk_x, bounds.max_chunk_x, bounds.min_chunk_z, bounds.max_chunk_z
-        ));
+        self.status = t!(
+            "MapViewer.msg.chunk_selected",
+            x1 = bounds.min_chunk_x,
+            x2 = bounds.max_chunk_x,
+            z1 = bounds.min_chunk_z,
+            z2 = bounds.max_chunk_z
+        );
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
     }
@@ -1047,7 +1048,7 @@ impl View {
         match right_selection_release_action(drag.button, drag.intent, drag.moved) {
             RightSelectionReleaseAction::CancelSelection => {
                 self.clear_professional_selection(cx);
-                self.status = SharedString::from("已取消区块选区");
+                self.status = t!("MapViewer.msg.selection_cancelled");
                 tracing::debug!(
                     target: "bmcbl::ui::window::map_viewer::view",
                     "map_viewer right_selection_cancelled"
@@ -1224,26 +1225,30 @@ impl View {
                     .map(|scale| {
                         let factor = scale / self.viewport.scale.max(f32::EPSILON);
                         self.zoom_by_center(factor, cx);
-                        format!("缩放已设为 {:.0}%", self.viewport.scale * 100.0)
+                        t!(
+                            "MapViewer.msg.zoom_set",
+                            percent = format!("{:.0}", self.viewport.scale * 100.0)
+                        )
+                        .to_string()
                     })
                     .map_err(|message| (field, message))
             }
-            InputField::DimensionId => integer(trimmed, "维度ID")
+            InputField::DimensionId => integer(trimmed, t!("MapViewer.msg.field_dimension_id"))
                 .map(|dimension_id| {
                     self.custom_dimension_id = dimension_id;
                     let dimension = Dimension::from_id(dimension_id);
                     if self.dimension != dimension {
                         self.set_dimension(dimension, cx);
                     }
-                    format!("维度已设为 {}", dimension_label(dimension))
+                    t!("MapViewer.msg.dimension_set", dimension = dimension_label(dimension)).to_string()
                 })
                 .map_err(|message| (field, message)),
             InputField::SelectionMinY | InputField::SelectionMaxY => {
-                integer(trimmed, "选区高度")
+                integer(trimmed, t!("MapViewer.msg.field_selection_height"))
                     .map_err(|message| (field, message))
                     .and_then(|value| {
                         let Some(volume) = self.professional.volume_selection else {
-                            return Err((field, SharedString::from("请先建立地图选区")));
+                            return Err((field, t!("MapViewer.msg.selection_required")));
                         };
                         let (world_min, world_max) = ChunkPos {
                             x: 0,
@@ -1261,9 +1266,11 @@ impl View {
                         if !valid {
                             return Err((
                                 field,
-                                SharedString::from(format!(
-                                    "高度须在 {world_min}..{world_max} 内，且下界不大于上界"
-                                )),
+                                t!(
+                                    "MapViewer.msg.height_range_invalid",
+                                    min = world_min,
+                                    max = world_max
+                                ),
                             ));
                         }
                         self.set_selection_bound(
@@ -1275,18 +1282,21 @@ impl View {
                             value,
                             cx,
                         );
-                        Ok(format!(
-                            "选区高度已设为 Y {}..{}",
-                            self.professional
+                        Ok(t!(
+                            "MapViewer.msg.selection_height_set",
+                            min = self
+                                .professional
                                 .volume_selection
                                 .map_or(value, |volume| volume.min[1]),
-                            self.professional
+                            max = self
+                                .professional
                                 .volume_selection
                                 .map_or(value, |volume| volume.max[1])
-                        ))
+                        )
+                        .to_string())
                     })
             }
-            InputField::PasteOriginY => integer(trimmed, "粘贴高度")
+            InputField::PasteOriginY => integer(trimmed, t!("MapViewer.msg.field_paste_height"))
                 .map_err(|message| (field, message))
                 .and_then(|value| {
                     let result = if self.import_active() {
@@ -1296,7 +1306,7 @@ impl View {
                     };
                     result
                         .map_err(|message| (field, SharedString::from(message)))?;
-                    Ok(format!("粘贴目标高度已设为 Y {value}"))
+                    Ok(t!("MapViewer.msg.paste_height_set", height = value).to_string())
                 }),
         };
 
@@ -1341,12 +1351,12 @@ impl View {
         } else {
             self.input_fields.center_z.read(cx).value()
         };
-        let block_x = optional_integer(x_value.as_ref().trim(), "X", current_x)
+        let block_x = optional_integer(x_value.as_ref().trim(), SharedString::from("X"), current_x)
             .map_err(|message| (InputField::CenterX, message))?;
-        let block_z = optional_integer(z_value.as_ref().trim(), "Z", current_z)
+        let block_z = optional_integer(z_value.as_ref().trim(), SharedString::from("Z"), current_z)
             .map_err(|message| (InputField::CenterZ, message))?;
         self.center_viewport_on_block(block_x, block_z, cx);
-        Ok(format!("已跳转到 X {block_x} · Z {block_z}"))
+        Ok(t!("MapViewer.msg.jumped_to", x = block_x, z = block_z).to_string())
     }
 
     pub(super) fn center_viewport_on_block(
@@ -1582,12 +1592,12 @@ impl View {
                 .as_ref()
                 .is_some_and(|preview| preview.is_writing())
         {
-            self.status = "地图正在写入，暂不能移动或变换粘贴预览".into();
+            self.status = t!("MapViewer.msg.paste_locked_writing");
             cx.notify();
             return false;
         }
         let Some(copied_chunk) = self.professional.copied_chunk.as_ref() else {
-            self.status = SharedString::from("没有已复制的 chunk");
+            self.status = t!("MapViewer.msg.no_copied_chunk");
             toast::error(cx, self.status.clone());
             cx.notify();
             return false;
@@ -1654,12 +1664,10 @@ impl View {
             None,
             cx,
         ) {
-            toast::error(cx, SharedString::from("没有可粘贴的区块副本"));
+            toast::error(cx, t!("MapViewer.msg.no_paste_source"));
             return;
         }
-        self.status = SharedString::from(
-            "粘贴预览：点击预览区域或“移动”拖动定位，↺/↻ 旋转，Enter/确认写入，Esc/取消关闭",
-        );
+        self.status = t!("MapViewer.msg.paste_hint");
         cx.notify();
     }
 
@@ -1683,10 +1691,10 @@ impl View {
         ) {
             return;
         }
-        self.status = SharedString::from(format!(
-            "粘贴预览：{} · 可拖动定位，Enter 写入，Esc 取消",
-            transform.label()
-        ));
+        self.status = t!(
+            "MapViewer.msg.paste_hint_with_transform",
+            transform = transform.label()
+        );
         cx.notify();
     }
 
@@ -1727,10 +1735,10 @@ impl View {
         ) {
             return;
         }
-        self.status = SharedString::from(format!(
-            "粘贴预览：{} · 可拖动定位，Enter 写入，Esc 取消",
-            transform.label()
-        ));
+        self.status = t!(
+            "MapViewer.msg.paste_hint_with_transform",
+            transform = transform.label()
+        );
         cx.notify();
     }
 
@@ -1738,8 +1746,7 @@ impl View {
         // Automatically suggested targets remain read-only until the user explicitly
         // picks a position. This guard also protects keyboard/overlay confirmation.
         if self.converter_target_selected() == Some(false) {
-            self.status =
-                SharedString::from("请先在地图中拖动预览，或点击“放到当前视野中心”明确选择位置");
+            self.status = t!("MapViewer.msg.paste_choose_position");
             toast::error(cx, self.status.clone());
             cx.notify();
             return;
@@ -1758,7 +1765,7 @@ impl View {
             return;
         };
         let Some(copied_chunk) = self.professional.copied_chunk.as_ref() else {
-            self.status = SharedString::from("没有已复制的 chunk");
+            self.status = t!("MapViewer.msg.no_copied_chunk");
             toast::error(cx, self.status.clone());
             cx.notify();
             return;
@@ -1788,7 +1795,7 @@ impl View {
             .as_ref()
             .is_some_and(|preview| preview.is_writing())
         {
-            self.status = "粘贴写入已经开始；请在任务中取消，等待结束后再关闭预览".into();
+            self.status = t!("MapViewer.msg.paste_started");
             cx.notify();
             return false;
         }
@@ -1799,7 +1806,7 @@ impl View {
             if self.import_active() {
                 self.ui_state.import_workspace_mode = super::state::ImportWorkspaceMode::Preview;
             }
-            self.status = SharedString::from("已取消粘贴预览");
+            self.status = t!("MapViewer.msg.paste_preview_cancelled");
             let colors = self.theme_colors(cx);
             self.sync_canvas_snapshot(colors, cx);
             cx.notify();
@@ -1919,7 +1926,7 @@ impl View {
         self.begin_exclusive_pointer_interaction();
         self.set_paste_preview_drag(Some(PastePreviewDrag::Move), cx);
         self.move_paste_preview(local_position, cx);
-        self.status = SharedString::from("粘贴预览移动中：拖动预览区域定位，松开后停止移动");
+        self.status = t!("MapViewer.msg.paste_moving");
         cx.notify();
         true
     }
@@ -1935,7 +1942,7 @@ impl View {
         }
         self.begin_exclusive_pointer_interaction();
         self.set_paste_preview_drag(Some(PastePreviewDrag::Move), cx);
-        self.status = SharedString::from("粘贴预览移动中：拖动预览区域定位，松开后停止移动");
+        self.status = t!("MapViewer.msg.paste_moving");
         cx.notify();
         true
     }
@@ -2226,7 +2233,7 @@ impl View {
                 "/tp {} ~ {}",
                 menu.block_x, menu.block_z
             )));
-            self.status = SharedString::from("已复制传送命令");
+            self.status = t!("MapViewer.msg.tp_copied");
         }
         self.context_menu = None;
         cx.notify();
@@ -2234,13 +2241,13 @@ impl View {
 
     pub(super) fn export_selection_as_obj(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.professional.selection else {
-            self.status = SharedString::from("没有可导出的选区");
+            self.status = t!("MapViewer.msg.no_export_selection");
             cx.notify();
             return;
         };
         let Ok(exact_selection) = ::bedrock_world::ExactChunkSelection::new(selection.chunks())
         else {
-            self.status = SharedString::from("选区中没有可导出的区块");
+            self.status = t!("MapViewer.msg.no_export_chunks_in_selection");
             cx.notify();
             return;
         };
@@ -2252,7 +2259,7 @@ impl View {
             selection.bounds().max_chunk_z
         );
         let Some(path) = pick_save_path("Wavefront OBJ", &["obj"], &default_file_name) else {
-            self.status = SharedString::from("已取消导出 OBJ");
+            self.status = t!("MapViewer.msg.obj_cancel");
             cx.notify();
             return;
         };
@@ -2260,14 +2267,18 @@ impl View {
         let chunk_count = exact_selection.len();
         let task_total = task_progress_units(chunk_count.saturating_add(2));
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new("导出 OBJ", "map_export")
-                .detail(format!(
-                    "{} 个 chunk · {}",
-                    chunk_count,
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("selection.obj")
-                ))
+            task_manager::TaskOptions::new(t!("MapViewer.task.export_obj"), TaskStage::MAP_EXPORT)
+                .detail(
+                    t!(
+                        "MapViewer.msg.task_detail_chunks_file",
+                        count = chunk_count,
+                        file = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("selection.obj")
+                    )
+                    .to_string(),
+                )
                 .total(task_total),
         )
         .expect("task id must be unique");
@@ -2279,16 +2290,16 @@ impl View {
         });
         self.context_menu = None;
         self.set_chunk_transfer_progress(ChunkTransferProgress {
-            phase: SharedString::from("导出 OBJ"),
+            phase: TransferPhase::EXPORT_OBJ,
             completed: 0,
             total: chunk_count.saturating_add(2),
         });
         self.begin_task_toast(
             &task_id,
-            SharedString::from(format!("正在导出 {chunk_count} 个区块 OBJ...")),
+            t!("MapViewer.msg.exporting_obj_chunks", count = chunk_count),
             cx,
         );
-        self.status = SharedString::from("正在导出选区 OBJ...");
+        self.status = t!("MapViewer.msg.exporting_obj");
         let generation = self.metadata_generation;
         let world_path = self.world_path.clone();
         let package_paths = preview_3d_resource_package_paths(&world_path, cx);
@@ -2322,7 +2333,13 @@ impl View {
                         &capture_package_paths,
                         "textures",
                     )
-                    .map_err(|error| format!("加载所选版本的方块资源失败：{error}"))?;
+                    .map_err(|error| {
+                        t!(
+                            "MapViewer.msg.resource_load_failed",
+                            error = error.to_string()
+                        )
+                        .to_string()
+                    })?;
                     let mut block_models = resolver.models().clone();
                     super::world3d::attach_capture_catalog(
                         &mut block_models,
@@ -2353,12 +2370,12 @@ impl View {
                                         completed.saturating_sub(previous),
                                     ))
                                     .total(task_total)
-                                    .stage("map_export"),
+                                    .stage(TaskStage::MAP_EXPORT),
                                 );
                                 if progress_sender
                                     .unbounded_send(ObjExportEvent::Progress(
                                         ChunkTransferProgress {
-                                            phase: SharedString::from("构建 OBJ 模型"),
+                                            phase: TransferPhase::BUILD_OBJ_MODEL,
                                             completed,
                                             total: chunk_count.saturating_add(2),
                                         },
@@ -2373,10 +2390,12 @@ impl View {
                     .map_err(|error| error.to_string())?;
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     if mesh.omitted_face_count != 0 || mesh.truncated_chunk_count != 0 {
-                        return Err(format!(
-                            "模型构网不完整：丢失 {} 个面、{} 个区块。已取消导出。",
-                            mesh.omitted_face_count, mesh.truncated_chunk_count
-                        ));
+                        return Err(t!(
+                            "MapViewer.msg.mesh_incomplete",
+                            faces = mesh.omitted_face_count,
+                            chunks = mesh.truncated_chunk_count
+                        )
+                        .to_string());
                     }
                     let previous =
                         completed_chunks.swap(chunk_count, std::sync::atomic::Ordering::Relaxed);
@@ -2386,11 +2405,11 @@ impl View {
                             chunk_count.saturating_sub(previous),
                         ))
                         .total(task_total)
-                        .stage("map_export"),
+                        .stage(TaskStage::MAP_EXPORT),
                     );
                     if progress_sender
                         .unbounded_send(ObjExportEvent::Progress(ChunkTransferProgress {
-                            phase: SharedString::from("生成 OBJ 文本"),
+                            phase: TransferPhase::GENERATE_OBJ_TEXT,
                             completed: chunk_count,
                             total: chunk_count.saturating_add(2),
                         }))
@@ -2413,7 +2432,7 @@ impl View {
                             let scaled = usize::from(total == 0 || completed >= total);
                             if progress_sender
                                 .unbounded_send(ObjExportEvent::Progress(ChunkTransferProgress {
-                                    phase: SharedString::from("生成 OBJ 文本"),
+                                    phase: TransferPhase::GENERATE_OBJ_TEXT,
                                     completed: chunk_count.saturating_add(scaled.min(1)),
                                     total: chunk_count.saturating_add(2),
                                 }))
@@ -2427,12 +2446,12 @@ impl View {
                         &task_id_for_task,
                         ProgressUpdate::advance(1)
                             .total(task_total)
-                            .stage("map_export"),
+                            .stage(TaskStage::MAP_EXPORT),
                     );
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     if progress_sender
                         .unbounded_send(ObjExportEvent::Progress(ChunkTransferProgress {
-                            phase: SharedString::from("写入 OBJ 文件"),
+                            phase: TransferPhase::WRITE_OBJ_FILE,
                             completed: chunk_count.saturating_add(1),
                             total: chunk_count.saturating_add(2),
                         }))
@@ -2451,7 +2470,7 @@ impl View {
                         &task_id_for_task,
                         ProgressUpdate::advance(1)
                             .total(task_total)
-                            .stage("map_export"),
+                            .stage(TaskStage::MAP_EXPORT),
                     );
                     Ok::<_, String>(ObjExportComplete {
                         export_dir: export_target.export_root,
@@ -2462,9 +2481,13 @@ impl View {
                 let status =
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
-                    (Ok(complete), "completed") => {
-                        Some(format!("OBJ 导出完成 · {}", complete.export_dir.display()))
-                    }
+                    (Ok(complete), "completed") => Some(
+                        t!(
+                            "MapViewer.msg.obj_done_path",
+                            path = complete.export_dir.display().to_string()
+                        )
+                        .to_string(),
+                    ),
                     (Err(error), "cancelled") => Some(error.clone()),
                     (Err(error), _) => Some(error.clone()),
                     _ => None,
@@ -2498,17 +2521,17 @@ impl View {
                                 let message = if complete.material_count > 0
                                     && complete.textured_material_count == 0
                                 {
-                                    SharedString::from(format!(
-                                        "已导出选区 OBJ: {}（未找到 vanilla 材质，textures 为空）",
-                                        complete.export_dir.display()
-                                    ))
+                                    t!(
+                                        "MapViewer.msg.obj_done_no_materials",
+                                        path = complete.export_dir.display().to_string()
+                                    )
                                 } else {
-                                    SharedString::from(format!(
-                                        "已导出选区 OBJ: {}（材质 {}/{}）",
-                                        complete.export_dir.display(),
-                                        complete.textured_material_count,
-                                        complete.material_count
-                                    ))
+                                    t!(
+                                        "MapViewer.msg.obj_done_materials",
+                                        path = complete.export_dir.display().to_string(),
+                                        found = complete.textured_material_count,
+                                        total = complete.material_count
+                                    )
                                 };
                                 this.status = message.clone();
                                 this.resolve_task_toast(
@@ -2521,7 +2544,7 @@ impl View {
                             Err(error) => {
                                 this.finish_chunk_transfer_progress();
                                 if is_map_operation_cancelled_error(&error) {
-                                    let message = SharedString::from("OBJ 导出已取消");
+                                    let message = t!("MapViewer.msg.obj_cancelled");
                                     this.status = message.clone();
                                     this.resolve_task_toast(
                                         &task_id_for_ui,
@@ -2554,13 +2577,13 @@ impl View {
 
     pub(super) fn export_selection_region_package(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.professional.selection else {
-            self.status = SharedString::from("没有可导出的选区");
+            self.status = t!("MapViewer.msg.no_export_selection");
             cx.notify();
             return;
         };
         let chunks = selection.chunks();
         if chunks.is_empty() {
-            self.status = SharedString::from("没有可导出的 chunk");
+            self.status = t!("MapViewer.msg.no_export_chunks");
             cx.notify();
             return;
         }
@@ -2570,7 +2593,7 @@ impl View {
             &[region_package::REGION_PACKAGE_EXTENSION, "bmcbl-region"],
             &default_file_name,
         ) else {
-            self.status = SharedString::from("已取消导出区域包");
+            self.status = t!("MapViewer.msg.region_cancel");
             cx.notify();
             return;
         };
@@ -2578,14 +2601,18 @@ impl View {
         let source_anchor = chunks[0];
         let chunk_count = chunks.len();
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new("导出区域包", "map_export")
-                .detail(format!(
-                    "{} 个 chunk · {}",
-                    chunk_count,
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("selection.bmcblregion")
-                ))
+            task_manager::TaskOptions::new(t!("MapViewer.task.export_region"), TaskStage::MAP_EXPORT)
+                .detail(
+                    t!(
+                        "MapViewer.msg.task_detail_chunks_file",
+                        count = chunk_count,
+                        file = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("selection.bmcblregion")
+                    )
+                    .to_string(),
+                )
                 .total(task_progress_units(chunk_count.max(1))),
         )
         .expect("task id must be unique");
@@ -2597,16 +2624,16 @@ impl View {
         });
         self.context_menu = None;
         self.set_chunk_transfer_progress(ChunkTransferProgress {
-            phase: SharedString::from("导出区域包"),
+            phase: TransferPhase::EXPORT_REGION_PACK,
             completed: 0,
             total: chunk_count,
         });
         self.begin_task_toast(
             &task_id,
-            SharedString::from(format!("正在导出 {chunk_count} 个 chunk 区域包...")),
+            t!("MapViewer.msg.exporting_region_chunks", count = chunk_count),
             cx,
         );
-        self.status = SharedString::from("正在导出跨地图区域包...");
+        self.status = t!("MapViewer.msg.exporting_region");
         let generation = self.metadata_generation;
         let world_path = self.world_path.clone();
         let query_budget = self.map_query_budget.clone();
@@ -2640,7 +2667,7 @@ impl View {
                                 &task_id_for_task,
                                 &mut progress_sync,
                                 &progress,
-                                "map_export",
+                                TaskStage::MAP_EXPORT,
                             );
                             if progress_sender
                                 .unbounded_send(RegionPackageExportEvent::Progress(progress))
@@ -2657,7 +2684,13 @@ impl View {
                 let status =
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
-                    (Ok(path), "completed") => Some(format!("区域包导出完成 · {}", path.display())),
+                    (Ok(path), "completed") => Some(
+                        t!(
+                            "MapViewer.msg.region_done_path",
+                            path = path.display().to_string()
+                        )
+                        .to_string(),
+                    ),
                     (Err(error), _) => Some(error.clone()),
                     _ => None,
                 };
@@ -2687,10 +2720,10 @@ impl View {
                         RegionPackageExportEvent::Complete(result) => match result {
                             Ok(path) => {
                                 this.complete_chunk_transfer_progress();
-                                let message = SharedString::from(format!(
-                                    "已导出跨地图区域包: {}",
-                                    path.display()
-                                ));
+                                let message = t!(
+                                    "MapViewer.msg.region_done",
+                                    path = path.display().to_string()
+                                );
                                 this.status = message.clone();
                                 this.resolve_task_toast(
                                     &task_id_for_ui,
@@ -2702,7 +2735,7 @@ impl View {
                             Err(error) => {
                                 this.finish_chunk_transfer_progress();
                                 if is_map_operation_cancelled_error(&error) {
-                                    let message = SharedString::from("区域包导出已取消");
+                                    let message = t!("MapViewer.msg.region_cancelled");
                                     this.status = message.clone();
                                     this.resolve_task_toast(
                                         &task_id_for_ui,
@@ -2739,7 +2772,7 @@ impl View {
         cx: &mut Context<Self>,
     ) {
         if paths.is_empty() {
-            self.status = SharedString::from("未检测到可导入文件");
+            self.status = t!("MapViewer.msg.no_import_file");
             toast::error(cx, self.status.clone());
             cx.notify();
             return;
@@ -2757,8 +2790,7 @@ impl View {
             {
                 self.import_mcstructure_at(path, target, false, cx);
             } else {
-                self.status =
-                    SharedString::from("拖拽文件不支持，请使用 .bmcblregion 或 .mcstructure");
+                self.status = t!("MapViewer.msg.drag_unsupported");
                 toast::error(cx, self.status.clone());
                 cx.notify();
             }
@@ -2778,7 +2810,7 @@ impl View {
                 mcstructure::MCSTRUCTURE_EXTENSION,
             ],
         ) else {
-            self.status = SharedString::from("已取消导入区域/结构文件");
+            self.status = t!("MapViewer.msg.import_cancel");
             cx.notify();
             return;
         };
@@ -2788,7 +2820,7 @@ impl View {
         } else if mcstructure::is_mcstructure_path(&path) {
             self.import_mcstructure_at(path, target, false, cx);
         } else {
-            self.status = SharedString::from("不支持的导入文件类型");
+            self.status = t!("MapViewer.msg.unsupported_import");
             toast::error(cx, self.status.clone());
             cx.notify();
         }
@@ -2801,7 +2833,7 @@ impl View {
         cx: &mut Context<Self>,
     ) {
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new("导入区域包", "map_import")
+            task_manager::TaskOptions::new(t!("MapViewer.task.import_region"), TaskStage::MAP_IMPORT)
                 .detail(
                     path.file_name()
                         .and_then(|name| name.to_str())
@@ -2819,15 +2851,16 @@ impl View {
         });
         self.context_menu = None;
         self.set_chunk_transfer_progress(ChunkTransferProgress {
-            phase: SharedString::from("导入区域包"),
+            phase: TransferPhase::IMPORT_REGION_PACK,
             completed: 0,
             total: 1,
         });
-        self.begin_task_toast(&task_id, SharedString::from("正在导入跨地图区域包..."), cx);
-        self.status = SharedString::from(format!(
-            "正在导入区域包到 chunk {},{}...",
-            target.x, target.z
-        ));
+        self.begin_task_toast(&task_id, t!("MapViewer.msg.importing_region"), cx);
+        self.status = t!(
+            "MapViewer.msg.importing_region_at",
+            x = target.x,
+            z = target.z
+        );
         let generation = self.metadata_generation;
         cx.notify();
 
@@ -2852,15 +2885,18 @@ impl View {
             if status == "completed" {
                 task_manager::update_progress(
                     &task_id,
-                    ProgressUpdate::advance(1).total(1).stage("map_import"),
+                    ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_IMPORT),
                 );
             }
             let message = match (&result, status) {
-                (Ok((path, copied_chunk, _, _)), "completed") => Some(format!(
-                    "区域包导入完成 · {} 个 chunk · {}",
-                    copied_chunk.chunk_count(),
-                    path.display()
-                )),
+                (Ok((path, copied_chunk, _, _)), "completed") => Some(
+                    t!(
+                        "MapViewer.msg.region_import_done_path",
+                        chunks = copied_chunk.chunk_count(),
+                        path = path.display().to_string()
+                    )
+                    .to_string(),
+                ),
                 (Err(error), _) => Some(error.clone()),
                 _ => None,
             };
@@ -2893,13 +2929,13 @@ impl View {
                             cx,
                         ) {
                             this.center_view_on_preview(cx);
-                            let message = SharedString::from(format!(
-                                "已导入 {} 个 chunk 区域包，预览 {} 个 · 目标 {},{} · 确认后写入",
-                                chunk_count,
-                                this.professional.copied_chunk_preview_images.len(),
-                                target.x,
-                                target.z
-                            ));
+                            let message = t!(
+                                "MapViewer.msg.region_import_preview",
+                                chunks = chunk_count,
+                                preview = this.professional.copied_chunk_preview_images.len(),
+                                x = target.x,
+                                z = target.z
+                            );
                             this.status = message.clone();
                             this.resolve_task_toast(
                                 &task_id_for_ui,
@@ -2914,7 +2950,7 @@ impl View {
                             if let Some(error) = preview_error {
                                 toast::error(
                                     cx,
-                                    SharedString::from(format!("部分导入预览生成失败：{error}")),
+                                    t!("MapViewer.msg.preview_failed", error = error.to_string()),
                                 );
                             }
                         }
@@ -2922,7 +2958,7 @@ impl View {
                     Err(error) => {
                         this.finish_chunk_transfer_progress();
                         if is_map_operation_cancelled_error(&error) {
-                            let message = SharedString::from("区域包导入已取消");
+                            let message = t!("MapViewer.msg.region_import_cancelled");
                             this.status = message.clone();
                             this.resolve_task_toast(
                                 &task_id_for_ui,
@@ -2956,7 +2992,7 @@ impl View {
         cx: &mut Context<Self>,
     ) {
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new("导入结构", "map_import")
+            task_manager::TaskOptions::new(t!("MapViewer.task.import_structure"), TaskStage::MAP_IMPORT)
                 .detail(
                     path.file_name()
                         .and_then(|name| name.to_str())
@@ -2974,15 +3010,17 @@ impl View {
         });
         self.context_menu = None;
         self.set_chunk_transfer_progress(ChunkTransferProgress {
-            phase: SharedString::from("导入结构"),
+            phase: TransferPhase::IMPORT_STRUCTURE,
             completed: 0,
             total: 1,
         });
-        self.begin_task_toast(&task_id, SharedString::from("正在导入 .mcstructure..."), cx);
-        self.status = SharedString::from(format!(
-            "正在导入结构到 chunk {},{}，Y {}...",
-            target.x, target.z, self.y_layer
-        ));
+        self.begin_task_toast(&task_id, t!("MapViewer.msg.importing_mcstructure"), cx);
+        self.status = t!(
+            "MapViewer.msg.importing_structure_at",
+            x = target.x,
+            z = target.z,
+            y = self.y_layer
+        );
         let generation = self.metadata_generation;
         let origin_y = self.y_layer;
         cx.notify();
@@ -3003,15 +3041,18 @@ impl View {
             if status == "completed" {
                 task_manager::update_progress(
                     &task_id,
-                    ProgressUpdate::advance(1).total(1).stage("map_import"),
+                    ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_IMPORT),
                 );
             }
             let message = match (&result, status) {
-                (Ok((path, import)), "completed") => Some(format!(
-                    "结构导入完成 · {} 个 chunk · {}",
-                    import.copied_chunk.chunk_count(),
-                    path.display()
-                )),
+                (Ok((path, import)), "completed") => Some(
+                    t!(
+                        "MapViewer.msg.structure_import_done_path",
+                        chunks = import.copied_chunk.chunk_count(),
+                        path = path.display().to_string()
+                    )
+                    .to_string(),
+                ),
                 (Err(error), _) => Some(error.clone()),
                 _ => None,
             };
@@ -3048,10 +3089,13 @@ impl View {
                                 this.show_right_preview_3d_panel(cx);
                                 this.refresh_import_preview_3d(cx);
                             }
-                            let message = SharedString::from(format!(
-                                "已导入结构 {}x{}x{}，生成 {} 个 chunk 预览，确认后写入",
-                                import.size.x, import.size.y, import.size.z, chunk_count
-                            ));
+                            let message = t!(
+                                "MapViewer.msg.structure_import_preview",
+                                x = import.size.x,
+                                y = import.size.y,
+                                z = import.size.z,
+                                chunks = chunk_count
+                            );
                             this.status = message.clone();
                             this.resolve_task_toast(
                                 &task_id_for_ui,
@@ -3068,7 +3112,7 @@ impl View {
                     Err(error) => {
                         this.finish_chunk_transfer_progress();
                         if is_map_operation_cancelled_error(&error) {
-                            let message = SharedString::from("结构导入已取消");
+                            let message = t!("MapViewer.msg.structure_import_cancelled");
                             this.status = message.clone();
                             this.resolve_task_toast(
                                 &task_id_for_ui,
@@ -3096,7 +3140,7 @@ impl View {
 
     pub(super) fn export_selection_mcstructure(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.professional.selection else {
-            self.status = SharedString::from("没有可导出的选区");
+            self.status = t!("MapViewer.msg.no_export_selection");
             cx.notify();
             return;
         };
@@ -3108,7 +3152,7 @@ impl View {
             &[mcstructure::MCSTRUCTURE_EXTENSION],
             &default_file_name,
         ) else {
-            self.status = SharedString::from("已取消导出 .mcstructure");
+            self.status = t!("MapViewer.msg.mcstructure_cancel");
             cx.notify();
             return;
         };
@@ -3116,14 +3160,18 @@ impl View {
         let bounds = selection.bounds();
         let chunk_count = selection.chunks().len();
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new("导出结构", "map_export")
-                .detail(format!(
-                    "{} 个 chunk · {}",
-                    chunk_count,
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("selection.mcstructure")
-                ))
+            task_manager::TaskOptions::new(t!("MapViewer.task.export_structure"), TaskStage::MAP_EXPORT)
+                .detail(
+                    t!(
+                        "MapViewer.msg.task_detail_chunks_file",
+                        count = chunk_count,
+                        file = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("selection.mcstructure")
+                    )
+                    .to_string(),
+                )
                 .total(task_progress_units(chunk_count.max(1))),
         )
         .expect("task id must be unique");
@@ -3135,18 +3183,20 @@ impl View {
         });
         self.context_menu = None;
         self.set_chunk_transfer_progress(ChunkTransferProgress {
-            phase: SharedString::from("导出结构"),
+            phase: TransferPhase::EXPORT_STRUCTURE,
             completed: 0,
             total: chunk_count.max(1),
         });
         self.begin_task_toast(
             &task_id,
-            SharedString::from(format!(
-                "正在导出 {chunk_count} 个 chunk 为 .mcstructure，中心 Y {export_center_y}..."
-            )),
+            t!(
+                "MapViewer.msg.exporting_mcstructure",
+                count = chunk_count,
+                y = export_center_y
+            ),
             cx,
         );
-        self.status = SharedString::from("正在导出 Bedrock 结构文件...");
+        self.status = t!("MapViewer.msg.exporting_structure_file");
         let generation = self.metadata_generation;
         let world_path = self.world_path.clone();
         cx.notify();
@@ -3177,7 +3227,7 @@ impl View {
                             &task_id_for_task,
                             &mut progress_sync,
                             &progress,
-                            "map_export",
+                            TaskStage::MAP_EXPORT,
                         );
                         if progress_sender
                             .unbounded_send(McStructureExportEvent::Progress(progress))
@@ -3191,7 +3241,13 @@ impl View {
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
                     (Ok(path), "completed") => {
-                        Some(format!(".mcstructure 导出完成 · {}", path.display()))
+                        Some(
+                            t!(
+                                "MapViewer.msg.mcstructure_done_path",
+                                path = path.display().to_string()
+                            )
+                            .to_string(),
+                        )
                     }
                     (Err(error), _) => Some(error.clone()),
                     _ => None,
@@ -3222,10 +3278,10 @@ impl View {
                         McStructureExportEvent::Complete(result) => match result {
                             Ok(path) => {
                                 this.complete_chunk_transfer_progress();
-                                let message = SharedString::from(format!(
-                                    "已导出 .mcstructure: {}",
-                                    path.display()
-                                ));
+                                let message = t!(
+                                    "MapViewer.msg.mcstructure_done",
+                                    path = path.display().to_string()
+                                );
                                 this.status = message.clone();
                                 this.resolve_task_toast(
                                     &task_id_for_ui,
@@ -3237,7 +3293,7 @@ impl View {
                             Err(error) => {
                                 this.finish_chunk_transfer_progress();
                                 if is_map_operation_cancelled_error(&error) {
-                                    let message = SharedString::from("结构导出已取消");
+                                    let message = t!("MapViewer.msg.structure_export_cancelled");
                                     this.status = message.clone();
                                     this.resolve_task_toast(
                                         &task_id_for_ui,
@@ -3284,7 +3340,7 @@ impl View {
             |export| export.file_name.clone(),
         );
         let Some(path) = pick_save_path("PNG Image", &["png"], &default_file_name) else {
-            self.status = SharedString::from("已取消导出区块图片");
+            self.status = t!("MapViewer.msg.image_cancel");
             cx.notify();
             return;
         };
@@ -3294,15 +3350,18 @@ impl View {
             .as_ref()
             .map_or_else(|| chunks.len().max(1), |export| export.chunk_count);
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new("导出区块图片", "map_export")
-                .detail(format!(
-                    "{} 个 chunk · {}",
-                    chunk_count,
-                    Path::new(&path)
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("chunk-image.png")
-                ))
+            task_manager::TaskOptions::new(t!("MapViewer.task.export_images"), TaskStage::MAP_EXPORT)
+                .detail(
+                    t!(
+                        "MapViewer.msg.task_detail_chunks_file",
+                        count = chunk_count,
+                        file = Path::new(&path)
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("chunk-image.png")
+                    )
+                    .to_string(),
+                )
                 .total(task_progress_units(chunk_count.max(1))),
         )
         .expect("task id must be unique");
@@ -3313,16 +3372,16 @@ impl View {
             move || cancel.cancel()
         });
         self.set_chunk_transfer_progress(ChunkTransferProgress {
-            phase: SharedString::from("导出图片"),
+            phase: TransferPhase::EXPORT_IMAGE,
             completed: 0,
             total: chunk_count,
         });
         self.begin_task_toast(
             &task_id,
-            SharedString::from(format!("正在导出 {chunk_count} 个区块图片...")),
+            t!("MapViewer.msg.exporting_images_chunks", count = chunk_count),
             cx,
         );
-        self.status = SharedString::from("正在导出区块图片...");
+        self.status = t!("MapViewer.msg.exporting_images");
         let world_path = self.world_path.clone();
         let render_backend = self.render_backend;
         let render_gpu_backend = self.render_gpu_backend;
@@ -3372,7 +3431,7 @@ impl View {
                                     &task_id_for_task,
                                     &mut progress_sync,
                                     &progress,
-                                    "map_export",
+                                    TaskStage::MAP_EXPORT,
                                 );
                                 if progress_sender
                                     .unbounded_send(ExportImageEvent::Progress(progress))
@@ -3388,14 +3447,20 @@ impl View {
                         .and_then(|bytes| {
                             check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                             std::fs::write(&path, bytes)
-                                .map_err(|error| format!("写入区块图片失败：{}", error))
+                                .map_err(|error| {
+                                t!(
+                                    "MapViewer.msg.write_image_failed",
+                                    error = error.to_string()
+                                )
+                                .to_string()
+                            })
                         })
                         .map(|()| {
                             task_manager::update_progress(
                                 &task_id_for_task,
                                 ProgressUpdate::advance(task_progress_units(chunk_count))
                                     .total(task_progress_units(chunk_count.max(1)))
-                                    .stage("map_export"),
+                                    .stage(TaskStage::MAP_EXPORT),
                             );
                             path
                         })
@@ -3403,7 +3468,13 @@ impl View {
                 let status =
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
-                    (Ok(path), "completed") => Some(format!("区块图片导出完成 · {path}")),
+                    (Ok(path), "completed") => Some(
+                        t!(
+                            "MapViewer.msg.image_done_path",
+                            path = path.clone()
+                        )
+                        .to_string(),
+                    ),
                     (Err(error), _) => Some(error.clone()),
                     _ => None,
                 };
@@ -3430,7 +3501,7 @@ impl View {
                         ExportImageEvent::Complete(result) => match result {
                             Ok(path) => {
                                 this.complete_chunk_transfer_progress();
-                                let message = SharedString::from(format!("已导出区块图片: {path}"));
+                                let message = t!("MapViewer.msg.image_done", path = path.clone());
                                 this.status = message.clone();
                                 this.resolve_task_toast(
                                     &task_id_for_ui,
@@ -3442,7 +3513,7 @@ impl View {
                             Err(error) => {
                                 this.finish_chunk_transfer_progress();
                                 if is_map_operation_cancelled_error(&error) {
-                                    let message = SharedString::from("区块图片导出已取消");
+                                    let message = t!("MapViewer.msg.image_export_cancelled");
                                     this.status = message.clone();
                                     this.resolve_task_toast(
                                         &task_id_for_ui,
@@ -3505,7 +3576,7 @@ impl View {
 
     pub(super) fn copy_chunks(&mut self, chunks: Vec<ChunkPos>, cx: &mut Context<Self>) {
         if chunks.is_empty() {
-            self.status = SharedString::from("没有可复制的 chunk");
+            self.status = t!("MapViewer.msg.no_copy_chunks");
             cx.notify();
             return;
         }
@@ -3516,8 +3587,8 @@ impl View {
         let source_anchor = chunks[0];
         let chunk_count = chunks.len();
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new("复制区块", "map_copy")
-                .detail(format!("{chunk_count} 个 chunk"))
+            task_manager::TaskOptions::new(t!("MapViewer.task.copy_chunks"), TaskStage::MAP_COPY)
+                .detail(t!("MapViewer.msg.copy_detail", count = chunk_count).to_string())
                 .total(task_progress_units(chunk_count.max(1))),
         )
         .expect("task id must be unique");
@@ -3529,22 +3600,23 @@ impl View {
         });
         self.context_menu = None;
         self.set_chunk_transfer_progress(ChunkTransferProgress {
-            phase: SharedString::from("复制区块"),
+            phase: TransferPhase::COPY_CHUNKS,
             completed: 0,
             total: chunk_count,
         });
         self.begin_task_toast(
             &task_id,
-            SharedString::from(format!("正在复制 {chunk_count} 个 chunk...")),
+            t!("MapViewer.msg.copying_chunks", count = chunk_count),
             cx,
         );
         self.status = if chunk_count == 1 {
-            SharedString::from(format!(
-                "正在复制 chunk {},{}...",
-                source_anchor.x, source_anchor.z
-            ))
+            t!(
+                "MapViewer.msg.copying_chunk_at",
+                x = source_anchor.x,
+                z = source_anchor.z
+            )
         } else {
-            SharedString::from(format!("正在复制 {chunk_count} 个 chunk..."))
+            t!("MapViewer.msg.copying_chunks", count = chunk_count)
         };
         let world_path = self.world_path.clone();
         let mode = self.current_render_mode();
@@ -3588,7 +3660,7 @@ impl View {
                                 &task_id_for_task,
                                 &mut progress_sync,
                                 &progress,
-                                "map_copy",
+                                TaskStage::MAP_COPY,
                             );
                             let _ =
                                 progress_sender.unbounded_send(CopyChunkEvent::Progress(progress));
@@ -3599,7 +3671,7 @@ impl View {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     let _ = progress_sender.unbounded_send(CopyChunkEvent::Progress(
                         ChunkTransferProgress {
-                            phase: SharedString::from("生成粘贴预览"),
+                            phase: TransferPhase::BUILD_PASTE_PREVIEW,
                             completed: 0,
                             total: copied_chunk.chunk_count(),
                         },
@@ -3632,7 +3704,7 @@ impl View {
                         &task_id_for_task,
                         ProgressUpdate::advance(task_progress_units(copied_chunk.chunk_count()))
                             .total(task_progress_units(copied_chunk.chunk_count().max(1)))
-                            .stage("map_copy"),
+                            .stage(TaskStage::MAP_COPY),
                     );
                     Ok(CopyChunkComplete {
                         copied_chunk,
@@ -3643,10 +3715,13 @@ impl View {
                 let status =
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
-                    (Ok(complete), "completed") => Some(format!(
-                        "复制完成 · {} 个 chunk",
-                        complete.copied_chunk.chunk_count()
-                    )),
+                    (Ok(complete), "completed") => Some(
+                        t!(
+                            "MapViewer.msg.copy_done",
+                            count = complete.copied_chunk.chunk_count()
+                        )
+                        .to_string(),
+                    ),
                     (Err(error), _) => Some(error.clone()),
                     _ => None,
                 };
@@ -3699,26 +3774,32 @@ impl View {
                                     chunk_count
                                 )));
                                 let mut status = if chunk_count == 1 {
-                                    SharedString::from(format!(
-                                        "已复制 chunk {},{}，可在其他 chunk 上粘贴",
-                                        source.x, source.z
-                                    ))
+                                    t!(
+                                        "MapViewer.msg.copied_chunk",
+                                        x = source.x,
+                                        z = source.z
+                                    )
                                 } else {
-                                    SharedString::from(format!(
-                                        "已复制 {chunk_count} 个 chunk，锚点 {},{}",
-                                        source.x, source.z
-                                    ))
+                                    t!(
+                                        "MapViewer.msg.copied_chunks",
+                                        count = chunk_count,
+                                        x = source.x,
+                                        z = source.z
+                                    )
                                 };
                                 if let Some(error) = preview_error {
                                     let status_text = status.as_ref().to_string();
-                                    status = SharedString::from(format!(
-                                        "{status_text}；预览图使用当前画布缓存（{error}）"
-                                    ));
+                                    status = t!(
+                                        "MapViewer.msg.copy_preview_canvas",
+                                        status = status_text,
+                                        error = error.to_string()
+                                    );
                                     toast::error(
                                         cx,
-                                        SharedString::from(format!(
-                                            "粘贴预览图生成失败，已使用画布缓存：{error}"
-                                        )),
+                                        t!(
+                                            "MapViewer.msg.paste_preview_image_failed",
+                                            error = error.to_string()
+                                        ),
                                     );
                                 }
                                 this.status = status.clone();
@@ -3732,7 +3813,7 @@ impl View {
                             Err(error) => {
                                 this.finish_chunk_transfer_progress();
                                 if is_map_operation_cancelled_error(&error) {
-                                    let message = SharedString::from("复制区块已取消");
+                                    let message = t!("MapViewer.msg.copy_cancelled");
                                     this.status = message.clone();
                                     this.resolve_task_toast(
                                         &task_id_for_ui,
@@ -3769,7 +3850,7 @@ impl View {
         cx: &mut Context<Self>,
     ) {
         let Some(copied_chunk) = self.professional.copied_chunk.as_ref() else {
-            self.status = SharedString::from("没有已复制的 chunk");
+            self.status = t!("MapViewer.msg.no_copied_chunk");
             toast::error(cx, self.status.clone());
             cx.notify();
             return;
@@ -3786,10 +3867,11 @@ impl View {
         ) {
             return;
         }
-        self.status = SharedString::from(format!(
-            "粘贴预览：{chunk_count} 个 chunk · {} · 确认后写入",
-            transform.label()
-        ));
+        self.status = t!(
+            "MapViewer.msg.paste_ready",
+            count = chunk_count,
+            transform = transform.label()
+        );
         cx.notify();
     }
 
@@ -3802,7 +3884,7 @@ impl View {
                 player_id: None,
             });
             self.markers_generation = self.markers_generation.saturating_add(1);
-            self.status = SharedString::from("已添加地图标记");
+            self.status = t!("MapViewer.msg.marker_added");
         }
         self.context_menu = None;
         cx.notify();
@@ -3813,7 +3895,7 @@ impl View {
             self.markers_generation = self.markers_generation.saturating_add(1);
         }
         self.context_menu = None;
-        self.status = SharedString::from("已清除当前维度标记");
+        self.status = t!("MapViewer.msg.markers_cleared");
         cx.notify();
     }
 
@@ -3920,7 +4002,7 @@ impl View {
         self.invalidate_preview_3d_mesh();
         self.refresh_professional_render_caches(cx);
         self.context_menu = None;
-        self.status = SharedString::from(format!("选区起点已设为 chunk {}, {}", chunk.x, chunk.z));
+        self.status = t!("MapViewer.msg.selection_start_set", x = chunk.x, z = chunk.z);
         cx.notify();
     }
 
@@ -3941,7 +4023,7 @@ impl View {
         self.invalidate_preview_3d_mesh();
         self.refresh_professional_render_caches(cx);
         self.context_menu = None;
-        self.status = SharedString::from(format!("选区终点已设为 chunk {}, {}", chunk.x, chunk.z));
+        self.status = t!("MapViewer.msg.selection_end_set", x = chunk.x, z = chunk.z);
         cx.notify();
     }
 
@@ -3958,7 +4040,7 @@ impl View {
         self.clear_paste_preview_state(cx);
         self.clear_preview_3d_resources(true);
         self.refresh_professional_render_caches(cx);
-        self.status = SharedString::from("已清除专业查询选区");
+        self.status = t!("MapViewer.msg.selection_cleared");
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
         cx.notify();
@@ -3966,7 +4048,7 @@ impl View {
 
     pub(super) fn open_context_hsa_editor(&mut self, cx: &mut Context<Self>) {
         let Some(chunk) = self.context_chunk_pos() else {
-            self.status = SharedString::from("无法确定当前 chunk");
+            self.status = t!("MapViewer.msg.chunk_unknown");
             cx.notify();
             return;
         };
@@ -3975,7 +4057,7 @@ impl View {
 
     pub(super) fn open_context_block_entities_editor(&mut self, cx: &mut Context<Self>) {
         let Some(chunk) = self.context_chunk_pos() else {
-            self.status = SharedString::from("无法确定当前 chunk");
+            self.status = t!("MapViewer.msg.chunk_unknown");
             cx.notify();
             return;
         };
@@ -4006,7 +4088,7 @@ impl View {
 
     pub(super) fn open_context_actors_editor(&mut self, cx: &mut Context<Self>) {
         let Some(chunk) = self.context_chunk_pos() else {
-            self.status = SharedString::from("无法确定当前 chunk");
+            self.status = t!("MapViewer.msg.chunk_unknown");
             cx.notify();
             return;
         };
@@ -4015,7 +4097,7 @@ impl View {
 
     pub(super) fn open_context_heightmap_editor(&mut self, cx: &mut Context<Self>) {
         let Some(chunk) = self.context_chunk_pos() else {
-            self.status = SharedString::from("无法确定当前 chunk");
+            self.status = t!("MapViewer.msg.chunk_unknown");
             cx.notify();
             return;
         };
@@ -4024,7 +4106,7 @@ impl View {
 
     pub(super) fn open_context_biome_storage_editor(&mut self, cx: &mut Context<Self>) {
         let Some(chunk) = self.context_chunk_pos() else {
-            self.status = SharedString::from("无法确定当前 chunk");
+            self.status = t!("MapViewer.msg.chunk_unknown");
             cx.notify();
             return;
         };
@@ -4424,7 +4506,7 @@ fn render_copy_previews(
         return Err(MAP_OPERATION_CANCELLED_MESSAGE.to_string());
     }
     let chunks_per_tile = i32::try_from(layout.chunks_per_tile)
-        .map_err(|_| "复制预览瓦片布局无效".to_string())?
+        .map_err(|_| t!("MapViewer.image.preview_tile_layout_invalid").to_string())?
         .max(1);
     let mut chunks_by_tile: BTreeMap<(i32, i32), Vec<ChunkPos>> = BTreeMap::new();
     for chunk in &copied_chunk.chunks {
@@ -4684,7 +4766,7 @@ fn build_chunk_image_export(
     mut progress: impl FnMut(ChunkTransferProgress),
 ) -> Result<ChunkImageExport, String> {
     if chunks.is_empty() {
-        return Err("没有可导出的区块图片".to_string());
+        return Err(t!("MapViewer.image.no_export_image").to_string());
     }
     if cancel.is_some_and(CancelFlag::is_cancelled) {
         return Err(MAP_OPERATION_CANCELLED_MESSAGE.to_string());
@@ -4692,7 +4774,7 @@ fn build_chunk_image_export(
     let source_anchor = chunks[0];
     let chunk_count = chunks.len();
     progress(ChunkTransferProgress {
-        phase: SharedString::from("读取区块"),
+        phase: TransferPhase::READ_CHUNKS,
         completed: 0,
         total: chunk_count,
     });
@@ -4709,7 +4791,7 @@ fn build_chunk_image_export(
         return Err(MAP_OPERATION_CANCELLED_MESSAGE.to_string());
     }
     progress(ChunkTransferProgress {
-        phase: SharedString::from("生成图片"),
+        phase: TransferPhase::GENERATE_IMAGE,
         completed: 0,
         total: chunk_count,
     });
@@ -4732,12 +4814,12 @@ fn build_chunk_image_export(
         return Err(MAP_OPERATION_CANCELLED_MESSAGE.to_string());
     }
     progress(ChunkTransferProgress {
-        phase: SharedString::from("编码图片"),
+        phase: TransferPhase::ENCODE_IMAGE,
         completed: chunk_count,
         total: chunk_count,
     });
     chunk_image_export_from_copied_images("chunk-image", &preview_images)
-        .ok_or_else(|| "区块图片生成失败".to_string())
+        .ok_or_else(|| t!("MapViewer.image.image_generation_failed").to_string())
 }
 
 pub(super) struct ChunkImageExport {
@@ -4837,50 +4919,50 @@ pub(super) fn encode_chunk_image_export_png(export: &ChunkImageExport) -> Result
         .iter()
         .map(|chunk| chunk.chunk.x)
         .min()
-        .ok_or_else(|| "没有可导出的区块图片".to_string())?;
+        .ok_or_else(|| t!("MapViewer.image.no_export_image").to_string())?;
     let min_z = export
         .chunks
         .iter()
         .map(|chunk| chunk.chunk.z)
         .min()
-        .ok_or_else(|| "没有可导出的区块图片".to_string())?;
+        .ok_or_else(|| t!("MapViewer.image.no_export_image").to_string())?;
     let max_x = export
         .chunks
         .iter()
         .map(|chunk| chunk.chunk.x)
         .max()
-        .ok_or_else(|| "没有可导出的区块图片".to_string())?;
+        .ok_or_else(|| t!("MapViewer.image.no_export_image").to_string())?;
     let max_z = export
         .chunks
         .iter()
         .map(|chunk| chunk.chunk.z)
         .max()
-        .ok_or_else(|| "没有可导出的区块图片".to_string())?;
+        .ok_or_else(|| t!("MapViewer.image.no_export_image").to_string())?;
     let chunk_width = export
         .chunks
         .iter()
         .map(|chunk| chunk.width)
         .max()
-        .ok_or_else(|| "区块图片宽度无效".to_string())?;
+        .ok_or_else(|| t!("MapViewer.image.image_width_invalid").to_string())?;
     let chunk_height = export
         .chunks
         .iter()
         .map(|chunk| chunk.height)
         .max()
-        .ok_or_else(|| "区块图片高度无效".to_string())?;
+        .ok_or_else(|| t!("MapViewer.image.image_height_invalid").to_string())?;
     if chunk_width == 0 || chunk_height == 0 {
-        return Err("区块图片尺寸无效".to_string());
+        return Err(t!("MapViewer.image.image_size_invalid").to_string());
     }
     let grid_width = u32::try_from(max_x.saturating_sub(min_x).saturating_add(1))
-        .map_err(|_| "区块图片范围过大".to_string())?;
+        .map_err(|_| t!("MapViewer.image.image_range_too_large").to_string())?;
     let grid_height = u32::try_from(max_z.saturating_sub(min_z).saturating_add(1))
-        .map_err(|_| "区块图片范围过大".to_string())?;
+        .map_err(|_| t!("MapViewer.image.image_range_too_large").to_string())?;
     let width = grid_width
         .checked_mul(chunk_width)
-        .ok_or_else(|| "区块图片宽度过大".to_string())?;
+        .ok_or_else(|| t!("MapViewer.image.image_width_too_large").to_string())?;
     let height = grid_height
         .checked_mul(chunk_height)
-        .ok_or_else(|| "区块图片高度过大".to_string())?;
+        .ok_or_else(|| t!("MapViewer.image.image_height_too_large").to_string())?;
     let mut output = gpui::image::RgbaImage::new(width, height);
     for chunk in &export.chunks {
         blit_export_chunk(&mut output, chunk, min_x, min_z, chunk_width, chunk_height)?;
@@ -4888,7 +4970,13 @@ pub(super) fn encode_chunk_image_export_png(export: &ChunkImageExport) -> Result
     let mut encoded = Cursor::new(Vec::new());
     output
         .write_to(&mut encoded, gpui::image::ImageFormat::Png)
-        .map_err(|error| format!("编码区块图片失败：{}", error))?;
+        .map_err(|error| {
+            t!(
+                "MapViewer.image.encode_failed",
+                error = error.to_string()
+            )
+            .to_string()
+        })?;
     Ok(encoded.into_inner())
 }
 
@@ -4908,19 +4996,19 @@ fn blit_export_chunk(
                 .and_then(|height| width.checked_mul(height))
         })
         .and_then(|pixel_count| pixel_count.checked_mul(4))
-        .ok_or_else(|| "区块图片像素尺寸过大".to_string())?;
+        .ok_or_else(|| t!("MapViewer.image.image_pixel_size_too_large").to_string())?;
     if chunk.pixels.len() < expected_len {
-        return Err("区块图片像素数据不完整".to_string());
+        return Err(t!("MapViewer.image.image_pixel_data_incomplete").to_string());
     }
     let origin_x = u32::try_from(chunk.chunk.x.saturating_sub(min_x))
-        .map_err(|_| "区块图片 X 偏移无效".to_string())?
+        .map_err(|_| t!("MapViewer.image.image_x_offset_invalid").to_string())?
         .checked_mul(chunk_width)
-        .ok_or_else(|| "区块图片 X 偏移过大".to_string())?;
+        .ok_or_else(|| t!("MapViewer.image.image_x_offset_too_large").to_string())?;
     let origin_y = u32::try_from(chunk.chunk.z.saturating_sub(min_z))
-        .map_err(|_| "区块图片 Z 偏移无效".to_string())?
+        .map_err(|_| t!("MapViewer.image.image_z_offset_invalid").to_string())?
         .checked_mul(chunk_height)
-        .ok_or_else(|| "区块图片 Z 偏移过大".to_string())?;
-    let source_width = usize::try_from(chunk.width).map_err(|_| "区块图片宽度无效".to_string())?;
+        .ok_or_else(|| t!("MapViewer.image.image_z_offset_too_large").to_string())?;
+    let source_width = usize::try_from(chunk.width).map_err(|_| t!("MapViewer.image.image_width_invalid").to_string())?;
     for y in 0..chunk.height {
         for x in 0..chunk.width {
             let source_index = usize::try_from(y)
@@ -4928,7 +5016,7 @@ fn blit_export_chunk(
                 .and_then(|row| row.checked_mul(source_width))
                 .and_then(|row| row.checked_add(usize::try_from(x).ok()?))
                 .and_then(|index| index.checked_mul(4))
-                .ok_or_else(|| "区块图片像素索引过大".to_string())?;
+                .ok_or_else(|| t!("MapViewer.image.image_pixel_index_too_large").to_string())?;
             let pixel = gpui::image::Rgba([
                 chunk.pixels[source_index],
                 chunk.pixels[source_index + 1],

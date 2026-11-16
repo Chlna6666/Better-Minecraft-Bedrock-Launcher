@@ -31,7 +31,7 @@ impl World3dEditorView {
                 lighting,
             ));
         }
-        self.status = "正在后台更新渲染模式…".into();
+        self.status = t!("MapViewer.world3d.rendering.status_updating_mode");
         cx.notify();
     }
 
@@ -41,7 +41,10 @@ impl World3dEditorView {
         cx: &mut Context<Self>,
     ) -> Div {
         let mut panel = div().flex().flex_col().gap(px(6.));
-        panel = panel.child(section_title(colors, "渲染模式"));
+        panel = panel.child(section_title(
+            colors,
+            t!("MapViewer.world3d.rendering.section_lighting_mode").as_ref(),
+        ));
         let mut modes = div().flex().flex_wrap().gap(px(4.));
         for mode in [
             LightingMode::NightVision,
@@ -49,32 +52,51 @@ impl World3dEditorView {
             LightingMode::VibrantPreview,
         ] {
             modes = modes.child(
-                toolbar_button(colors, mode.label(), self.render_settings.lighting == mode)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| this.set_lighting_mode(mode, cx)),
-                    ),
+                toolbar_button(
+                    colors,
+                    mode.label().as_ref(),
+                    self.render_settings.lighting == mode,
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| this.set_lighting_mode(mode, cx)),
+                ),
             );
         }
         panel = panel.child(modes);
         let mut displays = div().flex().flex_wrap().gap(px(4.));
         for (mode, label) in [
-            (VoxelDisplay::Textured, "贴图"),
-            (VoxelDisplay::VertexColor, "顶点色"),
-            (VoxelDisplay::Wireframe, "方块线框"),
+            (
+                VoxelDisplay::Textured,
+                t!("MapViewer.world3d.rendering.display_textured"),
+            ),
+            (
+                VoxelDisplay::VertexColor,
+                t!("MapViewer.world3d.rendering.display_vertex_color"),
+            ),
+            (
+                VoxelDisplay::Wireframe,
+                t!("MapViewer.world3d.rendering.display_wireframe"),
+            ),
         ] {
             displays = displays.child(
-                toolbar_button(colors, label, self.render_settings.display == mode).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        this.render_settings.display = mode;
-                        cx.notify();
-                    }),
-                ),
+                toolbar_button(colors, label.as_ref(), self.render_settings.display == mode)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.render_settings.display = mode;
+                            cx.notify();
+                        }),
+                    ),
             );
         }
         panel = panel.child(displays).child(
-            toolbar_button(colors, "雾", self.render_settings.fog).on_mouse_down(
+            toolbar_button(
+                colors,
+                t!("MapViewer.world3d.rendering.toggle_fog").as_ref(),
+                self.render_settings.fog,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.render_settings.fog = !this.render_settings.fog;
@@ -85,28 +107,42 @@ impl World3dEditorView {
         if self.render_settings.lighting == LightingMode::VibrantPreview {
             let mut effects = div().flex().flex_wrap().gap(px(4.));
             for (index, label, active) in [
-                (0, "云层", self.render_settings.clouds),
-                (1, "反射", self.render_settings.reflections),
+                (
+                    0,
+                    t!("MapViewer.world3d.rendering.effect_clouds"),
+                    self.render_settings.clouds,
+                ),
+                (
+                    1,
+                    t!("MapViewer.world3d.rendering.effect_reflections"),
+                    self.render_settings.reflections,
+                ),
             ] {
-                effects = effects.child(toolbar_button(colors, label, active).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        if index == 0 {
-                            this.render_settings.clouds = !this.render_settings.clouds;
-                        } else {
-                            this.render_settings.reflections = !this.render_settings.reflections;
-                        }
-                        cx.notify();
-                    }),
-                ));
+                effects = effects.child(
+                    toolbar_button(colors, label.as_ref(), active).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            if index == 0 {
+                                this.render_settings.clouds = !this.render_settings.clouds;
+                            } else {
+                                this.render_settings.reflections = !this.render_settings.reflections;
+                            }
+                            cx.notify();
+                        }),
+                    ),
+                );
             }
             panel = panel.child(effects);
             let mut quality = div().flex().flex_wrap().gap(px(4.));
-            for (scale, label) in [(0.5, "性能"), (0.75, "均衡"), (1., "清晰")] {
+            for (scale, label) in [
+                (0.5, t!("MapViewer.world3d.rendering.quality_performance")),
+                (0.75, t!("MapViewer.world3d.rendering.quality_balanced")),
+                (1., t!("MapViewer.world3d.rendering.quality_sharp")),
+            ] {
                 quality = quality.child(
                     toolbar_button(
                         colors,
-                        label,
+                        label.as_ref(),
                         self.render_settings.resolution_scale == scale,
                     )
                     .on_mouse_down(
@@ -120,7 +156,12 @@ impl World3dEditorView {
             }
             panel = panel.child(quality);
             panel = panel.child(
-                toolbar_button(colors, "太阳阴影", self.render_settings.shadows).on_mouse_down(
+                toolbar_button(
+                    colors,
+                    t!("MapViewer.world3d.rendering.toggle_sun_shadows").as_ref(),
+                    self.render_settings.shadows,
+                )
+                .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
                         this.render_settings.shadows = !this.render_settings.shadows;
@@ -132,14 +173,14 @@ impl World3dEditorView {
                 div()
                     .text_size(px(10.))
                     .text_color(colors.text_muted)
-                    .child("实验画质模式：反射、透光与原版效果仍有差异。"),
+                    .child(t!("MapViewer.world3d.rendering.experimental_quality_note")),
             );
         }
         if self.render_settings.lighting.is_lit() {
             let view = cx.entity().downgrade();
             panel = panel.child(info_row(
                 colors,
-                "日夜时间",
+                t!("MapViewer.world3d.rendering.label_day_night_time").as_ref(),
                 format!(
                     "{:02}:00",
                     ((self.render_settings.time * 24. + 6.) % 24.) as u32
@@ -163,7 +204,12 @@ impl World3dEditorView {
                 .width(px(270.)),
             );
             panel = panel.child(
-                toolbar_button(colors, "昼夜循环", self.render_settings.cycle).on_mouse_down(
+                toolbar_button(
+                    colors,
+                    t!("MapViewer.world3d.rendering.toggle_day_night_cycle").as_ref(),
+                    self.render_settings.cycle,
+                )
+                .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
                         this.render_settings.cycle = !this.render_settings.cycle;

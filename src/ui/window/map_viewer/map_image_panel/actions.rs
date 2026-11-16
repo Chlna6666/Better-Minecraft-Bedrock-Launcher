@@ -39,22 +39,30 @@ impl View {
             && (!frame_preview || self.map_image.placement_preview.is_some());
         let (primary, target, target_ready) = match selected {
             MapImageInstallDestination::Player => (
-                "写入玩家背包",
-                format!(
-                    "玩家：{}",
-                    super::super::players::player_id_label(&self.map_image.selected_player)
-                ),
+                t!("MapViewer.imagegen.actions.write_player_inventory"),
+                t!(
+                    "MapViewer.imagegen.actions.target_player",
+                    player =
+                        super::super::players::player_id_label(&self.map_image.selected_player)
+                )
+                .to_string(),
                 self.map_image.selected_player.storage_key().is_some(),
             ),
             MapImageInstallDestination::SelectedBlock => (
-                "写入所选容器",
+                t!("MapViewer.imagegen.actions.write_selected_container"),
                 self.map_image.selected_block.map_or_else(
-                    || "尚未选择容器或展示框".to_owned(),
+                    || t!("MapViewer.imagegen.actions.no_container_selected").to_string(),
                     |(chunk, block)| {
                         if chunk.dimension == self.dimension {
-                            format!("已选目标：{}, {}, {}", block.x, block.y, block.z)
+                            t!(
+                                "MapViewer.imagegen.actions.selected_target",
+                                x = block.x,
+                                y = block.y,
+                                z = block.z,
+                            )
+                            .to_string()
                         } else {
-                            "原目标属于其他维度，请在当前维度重新选择".to_owned()
+                            t!("MapViewer.imagegen.actions.target_other_dimension").to_string()
                         }
                     },
                 ),
@@ -64,44 +72,53 @@ impl View {
             ),
             MapImageInstallDestination::NewUpFrame => {
                 let target = if let Some((x, z)) = self.map_frame_confirmed_center() {
-                    format!(
-                        "已选择中心：X {x} · Y {} · Z {z}；{}×{} 张地图",
-                        self.y_layer, self.map_image.options.columns, self.map_image.options.rows
+                    t!(
+                        "MapViewer.imagegen.actions.frame_target_summary",
+                        x = x,
+                        y = self.y_layer,
+                        z = z,
+                        columns = self.map_image.options.columns,
+                        rows = self.map_image.options.rows,
                     )
+                    .to_string()
                 } else {
-                    "尚未选择放置位置；不会自动使用地图视口中心".to_owned()
+                    t!("MapViewer.imagegen.actions.no_frame_center").to_string()
                 };
-                ("直接放置到当前世界", target, true)
+                (
+                    t!("MapViewer.imagegen.actions.write_world_frame"),
+                    target,
+                    true,
+                )
             }
         };
         let status = if busy {
-            "写入／导出中，暂时锁定目标与参数"
+            t!("MapViewer.imagegen.actions.status_busy")
         } else if needs_position {
             if self.map_image.picking_frame_center {
-                "选点模式：请左键点击中央世界地图；不会写入存档"
+                t!("MapViewer.imagegen.actions.status_picking_center")
             } else {
-                "第二步：在地图上选择展示框中心；没有选点时不允许预检和写入"
+                t!("MapViewer.imagegen.actions.status_needs_position")
             }
         } else if pending.is_some() {
-            "已暂存 NBT 文件：请检查目标后确认导入。外部文件尚无地图像素预览"
+            t!("MapViewer.imagegen.actions.status_pending_nbt")
         } else if self.map_image.source.is_none() {
-            "第一步：点击中央「选择图片」导入素材，生成真实地图像素"
+            t!("MapViewer.imagegen.actions.status_choose_source")
         } else if converting {
-            "正在转换图片，完成后可选择写入目标"
+            t!("MapViewer.imagegen.actions.status_converting")
         } else if !ready {
-            "地图像素未准备好，请先完成转换或刷新预览"
+            t!("MapViewer.imagegen.actions.status_pixels_not_ready")
         } else if !target_ready {
-            "目标尚不可写入：请选择可写入的玩家，或在当前维度指定容器"
+            t!("MapViewer.imagegen.actions.status_target_not_writable")
         } else if needs_target_review {
-            "先进入目标预览，再在世界地图上主动选取放置中心"
+            t!("MapViewer.imagegen.actions.status_needs_target_review")
         } else if frame_preview && check_running {
-            "正在后台检查展示框网格；不会修改存档"
+            t!("MapViewer.imagegen.actions.status_check_running")
         } else if frame_preview && !check_passed {
-            "先点击「检查放置区域」；有冲突时会显示准确的方块坐标与解决方法"
+            t!("MapViewer.imagegen.actions.status_check_required")
         } else if frame_preview {
-            "已通过只读检查，可直接放置；正式写入前还会再次校验"
+            t!("MapViewer.imagegen.actions.status_check_passed")
         } else {
-            "地图像素已就绪。检查目标后再确认写入，不会在预览时修改存档"
+            t!("MapViewer.imagegen.actions.status_ready")
         };
         div()
             .flex()
@@ -123,13 +140,16 @@ impl View {
                                 div()
                                     .text_size(px(12.0))
                                     .text_color(colors.danger)
-                                    .child(format!("无法在此放置：{reason}")),
+                                    .child(t!(
+                                        "MapViewer.imagegen.actions.cannot_place",
+                                        reason = reason
+                                    )),
                             )
                             .child(
                                 secondary_button(
                                     colors,
                                     "map-frame-raise-and-recheck",
-                                    "展示框 Y +1 并重新检查",
+                                    t!("MapViewer.imagegen.actions.raise_and_recheck"),
                                 )
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -165,7 +185,10 @@ impl View {
                     div()
                         .text_size(px(11.0))
                         .text_color(colors.text_primary)
-                        .child(format!("待确认文件：{}", path.display())),
+                        .child(t!(
+                            "MapViewer.imagegen.actions.pending_file",
+                            path = path.display()
+                        )),
                 )
             })
             .child(
@@ -180,19 +203,19 @@ impl View {
                             "map-import-primary-action",
                             if needs_position {
                                 if self.map_image.picking_frame_center {
-                                    "取消选点模式"
+                                    t!("MapViewer.imagegen.actions.cancel_pick_mode")
                                 } else {
-                                    "在地图上选择放置中心"
+                                    t!("MapViewer.imagegen.actions.pick_center")
                                 }
                             } else if pending.is_some() {
-                                "确认 NBT 导入并写入"
+                                t!("MapViewer.imagegen.actions.confirm_nbt_import")
                             } else if needs_target_review {
-                                "下一步 · 目标预览"
+                                t!("MapViewer.imagegen.actions.next_target_preview")
                             } else if frame_preview && !check_passed {
                                 if check_running {
-                                    "检查中…"
+                                    t!("MapViewer.imagegen.actions.checking")
                                 } else {
-                                    "检查放置区域"
+                                    t!("MapViewer.imagegen.actions.check_placement")
                                 }
                             } else {
                                 primary
@@ -240,9 +263,9 @@ impl View {
                                     colors,
                                     "map-import-repick-center",
                                     if self.map_image.picking_frame_center {
-                                        "取消选点"
+                                        t!("MapViewer.imagegen.actions.cancel_pick")
                                     } else {
-                                        "在地图上重新选点"
+                                        t!("MapViewer.imagegen.actions.repick_center")
                                     },
                                 )
                                 .on_mouse_down(
@@ -263,7 +286,7 @@ impl View {
                                         secondary_button(
                                             colors,
                                             "map-import-focus-center",
-                                            "定位放置位置",
+                                            t!("MapViewer.imagegen.actions.focus_placement"),
                                         )
                                         .on_mouse_down(
                                             MouseButton::Left,
@@ -279,11 +302,15 @@ impl View {
                     )
                     .when(ready && pending.is_none() && !busy, |bar| {
                         bar.child(
-                            secondary_button(colors, "map-import-export-bundle", "导出地图包…")
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| this.export_map_bundle(cx)),
-                                ),
+                            secondary_button(
+                                colors,
+                                "map-import-export-bundle",
+                                t!("MapViewer.imagegen.actions.export_bundle"),
+                            )
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| this.export_map_bundle(cx)),
+                            ),
                         )
                     })
                     .when(!busy, |bar| {
@@ -292,9 +319,9 @@ impl View {
                                 colors,
                                 "map-import-select-nbt",
                                 if pending.is_some() {
-                                    "更换 NBT…"
+                                    t!("MapViewer.imagegen.actions.replace_nbt")
                                 } else {
-                                    "导入地图包／容器 NBT…"
+                                    t!("MapViewer.imagegen.actions.import_bundle")
                                 },
                             )
                             .on_mouse_down(
@@ -307,13 +334,15 @@ impl View {
                     })
                     .when(pending.is_some() && !busy, |bar| {
                         bar.child(
-                            ghost_button(colors, "map-import-cancel-staged-nbt", "取消待导入")
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.cancel_pending_map_bundle(cx)
-                                    }),
-                                ),
+                            ghost_button(
+                                colors,
+                                "map-import-cancel-staged-nbt",
+                                t!("MapViewer.imagegen.actions.cancel_staged_nbt"),
+                            )
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| this.cancel_pending_map_bundle(cx)),
+                            ),
                         )
                     })
                     .when(
@@ -323,14 +352,18 @@ impl View {
                             && !busy,
                         |bar| {
                             bar.child(
-                                ghost_button(colors, "map-import-regenerate-preview", "重新生成")
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, _, cx| {
-                                            this.release_map_image_preview();
-                                            this.start_map_preview(cx);
-                                        }),
-                                    ),
+                                ghost_button(
+                                    colors,
+                                    "map-import-regenerate-preview",
+                                    t!("MapViewer.imagegen.actions.regenerate"),
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.release_map_image_preview();
+                                        this.start_map_preview(cx);
+                                    }),
+                                ),
                             )
                         },
                     ),

@@ -61,7 +61,7 @@ impl View {
                     self.task_snapshots
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }
-                self.status = SharedString::from("正在后台检查展示框与支撑位置，不修改世界");
+                self.status = t!("MapViewer.imagegen.bundle.checking_status");
             }
             Err(error) => {
                 self.status = SharedString::from(error.clone());
@@ -86,11 +86,13 @@ impl View {
         if self.map_image_operation_busy() {
             return;
         }
-        if let Some(path) = pick_file_path(None,"地图包或 Bedrock 容器 NBT", &["nbt"])
-        {
+        if let Some(path) = pick_file_path(
+            None,
+            t!("MapViewer.imagegen.bundle.filter_name").as_ref(),
+            &["nbt"],
+        ) {
             self.map_image.pending_bundle = Some(PathBuf::from(path));
-            self.status =
-                SharedString::from("已暂存外部地图包，检查写入目标后在中央操作栏确认导入");
+            self.status = t!("MapViewer.imagegen.bundle.staged_status");
             self.set_import_workspace_mode(super::super::state::ImportWorkspaceMode::Placement, cx);
             cx.notify();
         }
@@ -125,7 +127,7 @@ impl View {
                 || self.map_image.picking_frame_center
                 || self.map_image.frame_drag_position.is_some())
         {
-            toast::error(cx, "请先在世界地图上选择展示框网格的实际放置中心".into());
+            toast::error(cx, t!("MapViewer.imagegen.bundle.frame_center_required"));
             return;
         }
         let world_path = self.world_path.clone();
@@ -134,7 +136,7 @@ impl View {
             MapImageInstallDestination::Player => {
                 let player = self.map_image.selected_player.clone();
                 let Some(key) = player.storage_key() else {
-                    toast::error(cx, "该玩家存于 level.dat，不能与地图记录原子写入".into());
+                    toast::error(cx, t!("MapViewer.imagegen.bundle.level_dat_player_error"));
                     return;
                 };
                 let key = key.as_ref().to_vec();
@@ -147,14 +149,14 @@ impl View {
             }
             MapImageInstallDestination::SelectedBlock => {
                 let Some((chunk, position)) = self.map_image.selected_block else {
-                    toast::error(
-                        cx,
-                        "请在地图上右键，选择地图写入目标（箱子、潜影盒或空展示框）".into(),
-                    );
+                    toast::error(cx, t!("MapViewer.imagegen.bundle.select_target_error"));
                     return;
                 };
                 if chunk.dimension != self.dimension {
-                    toast::error(cx, "所选容器属于其他维度，请在当前维度重新选择目标".into());
+                    toast::error(
+                        cx,
+                        t!("MapViewer.imagegen.bundle.target_other_dimension_error"),
+                    );
                     return;
                 }
                 (
@@ -192,9 +194,9 @@ impl View {
         let install_committed = self.map_image.install_committed.clone();
         install_committed.store(false, std::sync::atomic::Ordering::Release);
         let history: MapInstallHistory = Box::new(move |ids, affected_chunks| {
-            *history_chunks
-                .lock()
-                .map_err(|_| "地图写入影响范围状态不可用".to_owned())? = affected_chunks.clone();
+            *history_chunks.lock().map_err(|_| {
+                t!("MapViewer.imagegen.bundle.refresh_scope_unavailable").to_string()
+            })? = affected_chunks.clone();
             let mut raw_keys = ids
                 .into_iter()
                 .map(|id| format!("map_{id}").into_bytes())
@@ -204,7 +206,7 @@ impl View {
             }
             let capture = capture_before(MapHistoryCaptureSpec {
                 kind,
-                label: "导入地图包".to_owned(),
+                label: t!("MapViewer.imagegen.bundle.history_import_label").to_string(),
                 world_path: history_path,
                 chunks: affected_chunks,
                 raw_keys,
@@ -212,7 +214,11 @@ impl View {
             })?;
             Ok(Box::new(move || {
                 install_committed.store(true, std::sync::atomic::Ordering::Release);
-                complete_after(capture, "地图包已写入").map(|_| ())
+                complete_after(
+                    capture,
+                    t!("MapViewer.imagegen.bundle.bundle_written").to_string(),
+                )
+                .map(|_| ())
             }))
         });
         let result = if let Some(input) = input {
@@ -227,8 +233,8 @@ impl View {
             let title = source
                 .file_stem()
                 .and_then(|stem| stem.to_str())
-                .unwrap_or("地图")
-                .to_owned();
+                .map(str::to_owned)
+                .unwrap_or_else(|| t!("MapViewer.imagegen.bundle.default_title").to_string());
             install::start_bundle(preview_id, world_path, title, target, history)
         };
         match result {
@@ -241,7 +247,7 @@ impl View {
                 }
                 self.map_image.install_task_id = Some(task_id);
                 self.map_image.install_refresh = Some(refresh);
-                self.status = SharedString::from("正在预检并写入地图包");
+                self.status = t!("MapViewer.imagegen.bundle.writing_status");
             }
             Err(error) => {
                 self.status = SharedString::from(error.clone());
@@ -264,11 +270,14 @@ impl View {
         let title = source
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .unwrap_or("地图")
-            .to_owned();
+            .map(str::to_owned)
+            .unwrap_or_else(|| t!("MapViewer.imagegen.bundle.default_title").to_string());
         let default_name = format!("{title}.bmcbl-map.nbt");
-        let Some(path) = pick_save_path("BMCBL 地图包", &["nbt"], &default_name)
-        else {
+        let Some(path) = pick_save_path(
+            t!("MapViewer.imagegen.bundle.save_filter_name").as_ref(),
+            &["nbt"],
+            &default_name,
+        ) else {
             return;
         };
         match bundle::start_export(preview_id, PathBuf::from(path), title) {
@@ -278,7 +287,7 @@ impl View {
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }
                 self.map_image.export_task_id = Some(task_id);
-                self.status = SharedString::from("正在导出可移植地图包");
+                self.status = t!("MapViewer.imagegen.bundle.exporting_status");
             }
             Err(error) => {
                 self.status = SharedString::from(error.clone());

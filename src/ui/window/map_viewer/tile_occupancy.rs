@@ -19,7 +19,13 @@ pub(super) fn load_index(
         layout,
     );
     let result = bedrock_render::cache::occupancy::load_or_build_index(request, &cancel)
-        .map_err(|error| format!("加载地图占用索引失败: {error}"))?;
+        .map_err(|error| {
+            t!(
+                "MapViewer.core.tile_occupancy.load_index_failed",
+                error = error
+            )
+            .to_string()
+        })?;
     Ok(LoadedIndex {
         index: Arc::new(result.index),
         source: result.source,

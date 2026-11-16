@@ -91,18 +91,18 @@ impl View {
         if snapshot.status.as_ref() != "completed" {
             if obj {
                 self.generator.target_selected_by_user = false;
-                self.status = SharedString::from(if self.generator.preview_result_active {
-                    "当前尺寸转换失败；仍显示上一次成功的方块预览，不能用于放置。请查看任务面板。"
+                self.status = if self.generator.preview_result_active {
+                    t!("MapViewer.generator.preview.conversion_failed_keeping_previous")
                 } else {
-                    "方块预览转换失败，请查看任务面板中的错误详情。"
-                });
+                    t!("MapViewer.generator.preview.conversion_failed")
+                };
                 cx.notify();
             }
             return;
         }
         let task_id = snapshot.id.to_string();
         let Some(bytes) = structure_preview::get(&task_id) else {
-            self.status = SharedString::from("结构预览结果已过期，请调整设置重新生成");
+            self.status = t!("MapViewer.generator.preview.preview_expired");
             return;
         };
         let original_obj = if obj {
@@ -178,14 +178,19 @@ impl View {
                                 this.center_view_on_preview(cx);
                             }
                             this.refresh_import_preview_3d(cx);
-                            this.status = SharedString::from(format!(
-                                "实时预览 {}×{}×{} 方块；地图中的瓦片可移动、旋转并确认放置",
-                                size.x, size.y, size.z
-                            ));
+                            this.status = t!(
+                                "MapViewer.generator.preview.live_preview_ready",
+                                x = size.x,
+                                y = size.y,
+                                z = size.z,
+                            );
                         }
                     }
                     Err(error) => {
-                        this.status = SharedString::from(format!("结构预览加载失败：{error}"))
+                        this.status = t!(
+                            "MapViewer.generator.preview.preview_load_failed",
+                            error = error,
+                        )
                     }
                 }
                 cx.notify();

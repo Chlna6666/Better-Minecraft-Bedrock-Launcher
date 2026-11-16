@@ -19,8 +19,16 @@ impl View {
         let max_count = (1024 / other.max(1)).min(64);
         let busy = self.map_image_operation_busy();
         let (slider_id, label, field) = match axis {
-            GridAxis::Columns => ("map-grid-columns", "列 · 从西向东", &self.num_map_columns),
-            GridAxis::Rows => ("map-grid-rows", "行 · 从北向南", &self.num_map_rows),
+            GridAxis::Columns => (
+                "map-grid-columns",
+                t!("MapViewer.render.controls.columns"),
+                &self.num_map_columns,
+            ),
+            GridAxis::Rows => (
+                "map-grid-rows",
+                t!("MapViewer.render.controls.rows"),
+                &self.num_map_rows,
+            ),
         };
         let changed_view = cx.entity().downgrade();
         let committed_view = changed_view.clone();
@@ -77,7 +85,12 @@ impl View {
             .gap(px(6.0))
             .child(inspector::section_title(colors, label))
             .child(numeric_dimension_editor(
-                field, colors, "张", decrease, increase, slider,
+                field,
+                colors,
+                t!("MapViewer.render.controls.map_unit"),
+                decrease,
+                increase,
+                slider,
             ))
             .child(
                 div()
@@ -93,12 +106,12 @@ impl View {
                                 if !self.map_image.grid_estimated
                                     && self.map_image.preview_done == 0
                                 {
-                                    "自动匹配中".to_owned()
+                                    t!("MapViewer.render.controls.auto_fit_in_progress").to_string()
                                 } else {
-                                    format!("自动匹配 · {count} 张")
+                                    t!("MapViewer.render.controls.auto_fit_count", count = count).to_string()
                                 }
                             } else {
-                                format!("允许范围 1–{max_count}")
+                                t!("MapViewer.render.controls.allowed_range", max = max_count).to_string()
                             }),
                     )
                     .child(div().flex_1())

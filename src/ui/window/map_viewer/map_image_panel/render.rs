@@ -24,7 +24,11 @@ impl View {
             .min_h(px(0.0))
             .flex()
             .flex_col()
-            .child(self.render_import_panel_header(colors, "地图画", cx))
+            .child(self.render_import_panel_header(
+                colors,
+                t!("MapViewer.imagegen.render.title"),
+                cx,
+            ))
             .child(
                 div()
                     .flex_1()
@@ -34,7 +38,10 @@ impl View {
                     .flex()
                     .flex_col()
                     .gap(px(12.0))
-                    .child(inspector::section_title(colors, "01  素材"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.imagegen.render.section_source"),
+                    ))
                     .child(crate::ui::components::inspector::source_card(
                         colors,
                         if self.map_image.pending_bundle.is_some() {
@@ -45,12 +52,14 @@ impl View {
                         self.map_image.source.as_deref()
                             .or(self.map_image.pending_bundle.as_deref()),
                         if self.map_image.pending_bundle.is_some() {
-                            "已暂存 NBT · 可重新选择图片"
+                            t!("MapViewer.imagegen.render.source_hint_staged_nbt")
                         } else {
-                            "PNG / JPG / TGA / WebP · 可拖入"
+                            t!("MapViewer.imagegen.render.source_hint_formats")
                         },
                         crate::ui::components::button::secondary_button(
-                            colors, "map-image-source", "选择图片…",
+                            colors,
+                            "map-image-source",
+                            t!("MapViewer.imagegen.render.choose_image"),
                         )
                         .when(!operation_busy, |button| {
                             button.on_mouse_down(
@@ -62,34 +71,48 @@ impl View {
                     ))
                     .when(operation_busy, |panel| panel.child(
                         div().text_size(px(11.0)).text_color(colors.text_secondary)
-                            .child("导出或写入中 · 目标与设置暂时锁定"),
+                            .child(t!("MapViewer.imagegen.render.operation_busy_hint")),
                     ))
                     .child(crate::ui::components::inspector::result_summary(
-                        colors, "地图网格",
+                        colors,
+                        t!("MapViewer.imagegen.render.map_grid_summary_label"),
                         if grid_resolved {
-                            format!(
-                                "{} × {} · 共 {} 张 · {} × {} px",
-                                self.map_image.options.columns, self.map_image.options.rows,
-                                map_count,
-                                self.map_image.options.columns * 128,
-                                self.map_image.options.rows * 128,
+                            t!(
+                                "MapViewer.imagegen.render.map_grid_summary",
+                                columns = self.map_image.options.columns,
+                                rows = self.map_image.options.rows,
+                                count = map_count,
+                                width = self.map_image.options.columns * 128,
+                                height = self.map_image.options.rows * 128,
                             )
                         } else {
-                            "正在计算最佳分片数".to_owned()
+                            t!("MapViewer.imagegen.render.calculating_tiles")
                         },
                     ))
-                    .child(inspector::section_title(colors, "02  放置目标"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.imagegen.render.section_target"),
+                    ))
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child("选择接收地图的位置；确认后才写入世界。"),
+                            .child(t!("MapViewer.imagegen.render.target_hint")),
                     )
                     .child(div().flex().flex_wrap().gap(px(6.0)).children(
                         [
-                            (MapImageInstallDestination::NewUpFrame, "世界展示框"),
-                            (MapImageInstallDestination::Player, "玩家背包"),
-                            (MapImageInstallDestination::SelectedBlock, "容器／展示框"),
+                            (
+                                MapImageInstallDestination::NewUpFrame,
+                                t!("MapViewer.imagegen.render.destination_frame"),
+                            ),
+                            (
+                                MapImageInstallDestination::Player,
+                                t!("MapViewer.imagegen.render.destination_player"),
+                            ),
+                            (
+                                MapImageInstallDestination::SelectedBlock,
+                                t!("MapViewer.imagegen.render.destination_container"),
+                            ),
                         ].into_iter().map(|(destination, label)| {
                             choice::chip(colors, label, self.map_image.install_destination == destination)
                                 .when(!operation_busy, |button| button.on_mouse_down(
@@ -113,15 +136,26 @@ impl View {
                                         .text_size(px(12.0))
                                         .text_color(colors.text_primary)
                                         .child(self.map_image.selected_block.map_or_else(
-                                            || "未选择容器或展示框".to_owned(),
+                                            || {
+                                                t!(
+                                                    "MapViewer.imagegen.render.no_container_selected"
+                                                )
+                                                .to_string()
+                                            },
                                             |(chunk, block)| {
                                                 if chunk.dimension != self.dimension {
-                                                    "所选目标在其他维度，请重新选择".to_owned()
-                                                } else {
-                                                    format!(
-                                                        "已选：X {} · Y {} · Z {}",
-                                                        block.x, block.y, block.z,
+                                                    t!(
+                                                        "MapViewer.imagegen.render.selected_target_other_dimension"
                                                     )
+                                                    .to_string()
+                                                } else {
+                                                    t!(
+                                                        "MapViewer.imagegen.render.selected_target_coords",
+                                                        x = block.x,
+                                                        y = block.y,
+                                                        z = block.z,
+                                                    )
+                                                    .to_string()
                                                 }
                                             },
                                         )),
@@ -130,7 +164,7 @@ impl View {
                                     div()
                                         .text_size(px(11.0))
                                         .text_color(colors.text_secondary)
-                                        .child("在世界地图上右键方块，选择「设为地图写入目标」。写入任务会检查容器类型和容量。"),
+                                        .child(t!("MapViewer.imagegen.render.container_pick_hint")),
                                 )
                                 .when(self.map_image.selected_block.is_some(), |panel| {
                                     panel.child(
@@ -140,7 +174,9 @@ impl View {
                                             .gap(px(6.0))
                                             .child(
                                                 crate::ui::components::button::secondary_button(
-                                                    colors, "map-container-focus", "定位目标",
+                                                    colors,
+                                                    "map-container-focus",
+                                                    t!("MapViewer.imagegen.render.focus_target"),
                                                 )
                                                 .on_mouse_down(
                                                     MouseButton::Left,
@@ -152,7 +188,9 @@ impl View {
                                             .when(!self.map_image_operation_busy(), |row| {
                                                 row.child(
                                                     crate::ui::components::button::ghost_button(
-                                                        colors, "map-container-clear", "清除选择",
+                                                        colors,
+                                                        "map-container-clear",
+                                                        t!("MapViewer.imagegen.render.clear_selection"),
                                                     )
                                                     .on_mouse_down(
                                                         MouseButton::Left,
@@ -168,7 +206,10 @@ impl View {
                         },
                     )
                     .when(self.map_image.install_destination == MapImageInstallDestination::NewUpFrame, |panel| panel
-                    .child(inspector::section_title(colors, "朝上展示框放置"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.imagegen.render.section_frame_placement"),
+                    ))
                     .child(
                         div()
                             .flex()
@@ -183,14 +224,27 @@ impl View {
                                         colors.text_secondary
                                     })
                                     .child(self.map_frame_confirmed_center().map_or_else(
-                                        || "尚未选点 · 在中央地图选择放置中心".to_owned(),
-                                        |(x, z)| format!("已选择中心：X {x} · Z {z}"),
+                                        || {
+                                            t!(
+                                                "MapViewer.imagegen.render.no_frame_center"
+                                            )
+                                            .to_string()
+                                        },
+                                        |(x, z)| {
+                                            t!(
+                                                "MapViewer.imagegen.render.frame_center_selected",
+                                                x = x,
+                                                z = z,
+                                            )
+                                            .to_string()
+                                        },
                                     )),
                             )
                             .child(
                                 crate::ui::components::button::secondary_button(
-                                    colors, "map-frame-use-viewport-center",
-                                    "以当前视图中心定位",
+                                    colors,
+                                    "map-frame-use-viewport-center",
+                                    t!("MapViewer.imagegen.render.use_viewport_center"),
                                 )
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -203,18 +257,30 @@ impl View {
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(colors.text_secondary)
-                                    .child("拖动地图画调整位置；浮动工具条支持移动、旋转和镜像。"),
+                                    .child(t!("MapViewer.imagegen.render.frame_drag_hint")),
                             ),
                     )
                     .child(inspector::field_group(colors).child(self.render_import_height(colors, cx)))
                     .child(div().flex().flex_wrap().gap(px(6.0)).children(
                         [
-                            ("minecraft:stone", "石头"),
-                            ("minecraft:glass", "玻璃"),
-                            ("minecraft:white_stained_glass", "白色染色玻璃"),
-                            ("minecraft:coal_block", "煤炭块"),
-                            ("minecraft:iron_block", "铁块"),
-                            ("minecraft:diamond_block", "钻石块"),
+                            ("minecraft:stone", t!("MapViewer.imagegen.render.support_stone")),
+                            ("minecraft:glass", t!("MapViewer.imagegen.render.support_glass")),
+                            (
+                                "minecraft:white_stained_glass",
+                                t!("MapViewer.imagegen.render.support_white_stained_glass"),
+                            ),
+                            (
+                                "minecraft:coal_block",
+                                t!("MapViewer.imagegen.render.support_coal_block"),
+                            ),
+                            (
+                                "minecraft:iron_block",
+                                t!("MapViewer.imagegen.render.support_iron_block"),
+                            ),
+                            (
+                                "minecraft:diamond_block",
+                                t!("MapViewer.imagegen.render.support_diamond_block"),
+                            ),
                         ]
                         .into_iter()
                         .map(|(name, label)| {
@@ -231,7 +297,7 @@ impl View {
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child("支撑块位于展示框下方一格；放置前自动检查空间。"),
+                            .child(t!("MapViewer.imagegen.render.support_hint")),
                     ))
                     .child(
                         div()
@@ -241,31 +307,35 @@ impl View {
                             .text_size(px(12.0))
                             .text_color(colors.text_secondary)
                             .child(if self.map_image.source.is_none() {
-                                "选择图片后会根据原图宽高自动估算分片数量。".to_owned()
+                                t!("MapViewer.imagegen.render.source_missing_hint").to_string()
                             } else if grid_resolved {
-                                format!(
-                                    "{map_count} 张地图 · {}×{} 像素，每张固定 128×128。",
-                                    self.map_image.options.columns * 128,
-                                    self.map_image.options.rows * 128,
+                                t!(
+                                    "MapViewer.imagegen.render.grid_pixel_summary",
+                                    count = map_count,
+                                    width = self.map_image.options.columns * 128,
+                                    height = self.map_image.options.rows * 128,
                                 )
+                                .to_string()
                             } else {
-                                "正在按源图宽高估算分片；单边最多 64 张，总计最多 1024 张。完成预览后显示准确尺寸。"
-                                    .to_owned()
+                                t!("MapViewer.imagegen.render.grid_estimate_hint").to_string()
                             }),
                     )
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child("多图按网格编号；写入玩家背包时分组为潜影盒，写入现有箱子时在箱内分组。"),
+                            .child(t!("MapViewer.imagegen.render.grid_numbering_hint")),
                     )
-                    .child(inspector::section_title(colors, "03  地图网格"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.imagegen.render.section_map_grid"),
+                    ))
                     .child(
                         crate::ui::components::inspector::field_group(colors)
                             .child(
                                 choice::chip(
                                     colors,
-                                    "智能行列 · 按图片比例减少留白",
+                                    t!("MapViewer.imagegen.render.auto_fit_chip"),
                                     self.map_image.options.auto_fit,
                                 )
                                 .when(self.map_image.source.is_some() && !operation_busy, |button| {
@@ -281,17 +351,29 @@ impl View {
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(colors.text_secondary)
-                                    .child("自动去除透明外边距，按比例匹配分片；手动修改行列将切换固定网格。"),
+                                    .child(t!("MapViewer.imagegen.render.auto_fit_hint")),
                             )
                             .child(self.render_grid_axis(GridAxis::Columns, colors, cx))
                             .child(self.render_grid_axis(GridAxis::Rows, colors, cx)),
                     )
-                    .child(inspector::section_title(colors, "04  图片适配与采样"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.imagegen.render.section_fit_sampling"),
+                    ))
                     .child(div().flex().flex_wrap().gap(px(6.0)).children(
                         [
-                            (MapImageFit::Contain, "完整图片 · 等比留边"),
-                            (MapImageFit::CenterCrop, "居中裁切 · 丢失边缘"),
-                            (MapImageFit::Stretch, "完整拉伸 · 可能变形"),
+                            (
+                                MapImageFit::Contain,
+                                t!("MapViewer.imagegen.render.fit_contain"),
+                            ),
+                            (
+                                MapImageFit::CenterCrop,
+                                t!("MapViewer.imagegen.render.fit_center_crop"),
+                            ),
+                            (
+                                MapImageFit::Stretch,
+                                t!("MapViewer.imagegen.render.fit_stretch"),
+                            ),
                         ]
                         .into_iter()
                         .map(|(fit, label)| {
@@ -311,7 +393,7 @@ impl View {
                             .child(
                                 choice::chip(
                                     colors,
-                                    "自动去除 PNG 透明外边距",
+                                    t!("MapViewer.imagegen.render.trim_transparent_chip"),
                                     self.map_image.options.trim_transparent_edges,
                                 )
                                 .on_mouse_down(
@@ -331,17 +413,23 @@ impl View {
                                     .text_size(px(11.0))
                                     .text_color(colors.text_secondary)
                                     .child(if self.map_image.options.auto_fit {
-                                        "自动行列会按可见内容比例选择分片；固定行列仍可能产生必要留白。"
+                                        t!("MapViewer.imagegen.render.trim_auto_hint")
                                     } else {
-                                        "当前为固定行列。为了减少留白，请使用「按原图尺寸自动匹配分片」。"
+                                        t!("MapViewer.imagegen.render.trim_manual_hint")
                                     }),
                             )
                     })
-                    .child(inspector::section_title(colors, "缩放采样"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.imagegen.render.section_resample"),
+                    ))
                     .child(div().flex().gap(px(6.0)).children(
                         [
-                            (MapResample::Nearest, "最近邻"),
-                            (MapResample::Lanczos3, "Lanczos3"),
+                            (
+                                MapResample::Nearest,
+                                t!("MapViewer.imagegen.render.resample_nearest"),
+                            ),
+                            (MapResample::Lanczos3, SharedString::from("Lanczos3")),
                         ]
                         .into_iter()
                         .map(|(resample, label)| {
@@ -360,9 +448,16 @@ impl View {
                                 )
                         }),
                     ))
-                    .child(inspector::section_title(colors, "透明度"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.imagegen.render.section_alpha"),
+                    ))
                     .child(div().flex().gap(px(6.0)).children(
-                        [(1_u8, "保留边缘"), (128, "忽略半透明"), (255, "仅不透明")]
+                        [
+                            (1_u8, t!("MapViewer.imagegen.render.alpha_keep_edges")),
+                            (128, t!("MapViewer.imagegen.render.alpha_ignore_semi")),
+                            (255, t!("MapViewer.imagegen.render.alpha_opaque_only")),
+                        ]
                             .into_iter()
                             .map(|(alpha, label)| {
                                 choice::chip(
@@ -385,3 +480,4 @@ impl View {
             .into_any_element()
     }
 }
+

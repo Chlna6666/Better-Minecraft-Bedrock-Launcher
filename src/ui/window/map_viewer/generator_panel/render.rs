@@ -27,9 +27,9 @@ impl View {
                     colors,
                     "obj-workspace-import",
                     if self.generator.source.is_some() {
-                        "更换模型"
+                        t!("MapViewer.generator.render.change_model")
                     } else {
-                        "导入模型"
+                        t!("MapViewer.generator.render.import_model")
                     },
                 )
                 .px(px(12.0))
@@ -51,7 +51,7 @@ impl View {
                     crate::ui::components::button::primary_button(
                         colors,
                         "obj-workspace-place",
-                        "放置到世界",
+                        t!("MapViewer.generator.render.place_in_world"),
                     )
                     .px(px(12.0))
                     .py(px(7.0))
@@ -71,9 +71,9 @@ impl View {
                     colors,
                     "obj-workspace-export",
                     if busy {
-                        "转换中…"
+                        t!("MapViewer.generator.render.converting")
                     } else {
-                        "导出结构…"
+                        t!("MapViewer.generator.render.export_structure")
                     },
                 )
                 .px(px(12.0))
@@ -94,7 +94,7 @@ impl View {
                 crate::ui::components::button::secondary_button(
                     colors,
                     "model-workspace-export",
-                    "导出模型…",
+                    t!("MapViewer.generator.render.export_model"),
                 )
                 .px(px(12.0))
                 .py(px(7.0))
@@ -125,7 +125,11 @@ impl View {
             .min_h(px(0.0))
             .flex()
             .flex_col()
-            .child(self.render_import_panel_header(colors, "模型转方块", cx))
+            .child(self.render_import_panel_header(
+                colors,
+                t!("MapViewer.generator.render.panel_title"),
+                cx,
+            ))
             .child(
                 div()
                     .flex_1()
@@ -135,16 +139,19 @@ impl View {
                     .flex()
                     .flex_col()
                     .gap(px(12.0))
-                    .child(inspector::section_title(colors, "01  素材"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.generator.render.section_source"),
+                    ))
                     .child(crate::ui::components::inspector::source_card(
                         colors,
                         "OBJ / MTL · glTF / GLB",
                         self.generator.source.as_deref(),
-                        "支持拖入 OBJ、glTF、GLB；MTL 随 OBJ 加载",
+                        t!("MapViewer.generator.render.source_hint"),
                         crate::ui::components::button::secondary_button(
                             colors,
                             "obj-inspector-source",
-                            "选择模型…",
+                            t!("MapViewer.generator.render.choose_model"),
                         )
                         .when(!busy, |button| {
                             button.on_mouse_down(
@@ -159,21 +166,30 @@ impl View {
                             div()
                                 .text_size(px(11.0))
                                 .text_color(colors.text_secondary)
-                                .child("后台转换中 · 可以在任务面板取消"),
+                                .child(t!(
+                                    "MapViewer.generator.render.background_conversion_hint"
+                                )),
                         )
                     })
                     .when_some(self.generator.preview_size, |panel, size| {
                         panel.child(crate::ui::components::inspector::result_summary(
                             colors,
-                            "方块化结果",
-                            format!(
-                                "{} × {} × {} 方块{}",
-                                size[0], size[1], size[2],
-                                if self.generator.preview_displayed_options == Some(self.generator.options) {
-                                    ""
+                            t!("MapViewer.generator.render.result_label"),
+                            t!(
+                                "MapViewer.generator.render.result_size",
+                                width = size[0],
+                                height = size[1],
+                                depth = size[2],
+                                note = if self.generator.preview_displayed_options
+                                    == Some(self.generator.options)
+                                {
+                                    String::new()
                                 } else {
-                                    " · 上次结果（当前尺寸未就绪，不可放置）"
-                                }
+                                    t!(
+                                        "MapViewer.generator.render.result_size_stale_note"
+                                    )
+                                    .to_string()
+                                },
                             ),
                         ))
                     })

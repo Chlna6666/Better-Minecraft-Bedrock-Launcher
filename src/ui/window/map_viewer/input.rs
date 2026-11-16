@@ -63,18 +63,18 @@ pub(super) fn initialize_values(
     }
 }
 
-pub(super) fn integer(value: &str, label: &'static str) -> Result<i32, SharedString> {
+pub(super) fn integer(value: &str, label: SharedString) -> Result<i32, SharedString> {
     if value.is_empty() {
-        return Err(SharedString::from(format!("{label} 不能为空")));
+        return Err(t!("MapViewer.msg.field_required", field = label));
     }
     value
         .parse::<i32>()
-        .map_err(|_| SharedString::from(format!("{label} 必须是整数")))
+        .map_err(|_| t!("MapViewer.msg.field_integer_required", field = label))
 }
 
 pub(super) fn optional_integer(
     value: &str,
-    label: &'static str,
+    label: SharedString,
     fallback: i32,
 ) -> Result<i32, SharedString> {
     let value = value.trim();
@@ -88,13 +88,13 @@ pub(super) fn optional_integer(
 pub(super) fn zoom_scale(value: &str) -> Result<f32, SharedString> {
     let value = value.trim_end_matches('%').trim();
     if value.is_empty() {
-        return Err(SharedString::from("缩放不能为空"));
+        return Err(t!("MapViewer.msg.zoom_empty"));
     }
     let percent = value
         .parse::<f32>()
-        .map_err(|_| SharedString::from("缩放必须是数字或百分比"))?;
+        .map_err(|_| t!("MapViewer.msg.zoom_number_required"))?;
     if !percent.is_finite() || percent <= 0.0 {
-        return Err(SharedString::from("缩放必须大于 0"));
+        return Err(t!("MapViewer.msg.zoom_positive"));
     }
     Ok((percent / 100.0).clamp(MIN_VIEWPORT_SCALE, MAX_VIEWPORT_SCALE))
 }

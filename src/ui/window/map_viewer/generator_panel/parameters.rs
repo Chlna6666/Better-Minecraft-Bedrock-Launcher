@@ -8,22 +8,25 @@ impl View {
     ) -> Div {
         let busy = self.generator_busy();
         div().flex().flex_col().gap(px(14.0))
-                    .child(inspector::section_title(colors, "目标尺寸"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.generator.parameters.section_target_size"),
+                    ))
                     .child(
                         div()
                             .text_size(px(12.0))
                             .line_height(px(18.0))
                             .text_color(colors.text_secondary)
-                            .child(
-                                "最长边 1–384 格，其余两轴等比缩放；现代主世界支持 -64 到 319 高度，体积上限 800 万格。",
-                            ),
+                            .child(t!("MapViewer.generator.parameters.target_size_hint")),
                     )
                     .when(self.generator.preview_refresh_pending, |panel| {
                         panel.child(
                             div()
                                 .text_size(px(11.0))
                                 .text_color(colors.text_secondary)
-                                .child("尺寸已更新，正在准备新的方块预览…"),
+                                .child(t!(
+                                    "MapViewer.generator.parameters.size_updated_preparing"
+                                )),
                         )
                     })
                     .child({
@@ -65,7 +68,7 @@ impl View {
                         crate::ui::components::numeric_field::numeric_dimension_editor(
                             &self.num_obj_size,
                             colors,
-                            "方块",
+                            t!("MapViewer.generator.parameters.unit_blocks"),
                             crate::ui::components::numeric_field::numeric_step_button(
                                 colors, "−", !busy && size > 1,
                             ).when(!busy && size > 1, |button| {
@@ -99,7 +102,7 @@ impl View {
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(colors.text_secondary)
-                                    .child("常用尺寸"),
+                                    .child(t!("MapViewer.generator.parameters.common_sizes")),
                             )
                             .child(div().flex_1())
                             .children(
@@ -120,7 +123,10 @@ impl View {
                                 }),
                             ),
                     )
-                    .child(inspector::section_title(colors, "填充方式"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.generator.parameters.section_fill_mode"),
+                    ))
                     .child(
                         div()
                             .flex()
@@ -128,7 +134,7 @@ impl View {
                             .child(
                                 choice::chip(
                                     colors,
-                                    "空心 · 仅表面",
+                                    t!("MapViewer.generator.parameters.fill_surface"),
                                     self.generator.options.fill == ObjFill::Surface,
                                 )
                                 .when(!busy, |button| {
@@ -145,7 +151,7 @@ impl View {
                             .child(
                                 choice::chip(
                                     colors,
-                                    "实心 · 填内部",
+                                    t!("MapViewer.generator.parameters.fill_solid"),
                                     self.generator.options.fill == ObjFill::Solid,
                                 )
                                 .when(!busy, |button| {
@@ -165,15 +171,29 @@ impl View {
                             .text_size(px(12.0))
                             .line_height(px(18.0))
                             .text_color(colors.text_secondary)
-                            .child("实心模式填充封闭外壳；开放模型不会凭空补面。默认空心。"),
+                            .child(t!("MapViewer.generator.parameters.fill_mode_hint")),
                     )
-                    .child(inspector::section_title(colors, "纹理透明度"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.generator.parameters.section_texture_alpha"),
+                    ))
                     .child(
                         div().flex().flex_wrap().gap(px(6.0)).children(
                             [
-                                (1_u8, "保留透明边缘"),
-                                (128, "半透明以下忽略"),
-                                (255, "仅不透明"),
+                                (
+                                    1_u8,
+                                    t!("MapViewer.generator.parameters.alpha_keep_edges"),
+                                ),
+                                (
+                                    128,
+                                    t!(
+                                        "MapViewer.generator.parameters.alpha_ignore_below_half"
+                                    ),
+                                ),
+                                (
+                                    255,
+                                    t!("MapViewer.generator.parameters.alpha_opaque_only"),
+                                ),
                             ]
                             .into_iter()
                             .map(|(alpha, label)| {
@@ -195,13 +215,16 @@ impl View {
                             }),
                         ),
                     )
-                    .child(inspector::section_title(colors, "半透明纹理底色"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.generator.parameters.section_alpha_background"),
+                    ))
                     .child(
                         div().flex().flex_wrap().gap(px(6.0)).children(
                             [
-                                ([255_u8; 3], "白色"),
-                                ([128_u8; 3], "灰色"),
-                                ([0_u8; 3], "黑色"),
+                                ([255_u8; 3], t!("MapViewer.generator.parameters.color_white")),
+                                ([128_u8; 3], t!("MapViewer.generator.parameters.color_gray")),
+                                ([0_u8; 3], t!("MapViewer.generator.parameters.color_black")),
                             ]
                             .into_iter()
                             .map(|(background, label)| {

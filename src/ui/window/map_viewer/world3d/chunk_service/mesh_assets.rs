@@ -1,6 +1,7 @@
 //! Shares mesh assets without keeping unloaded chunks' assets alive.
 
 use super::{MaterialSlotKey, mipmapped_texture, texture_storage_bytes};
+use bedrock_block_model::banner_art::{BannerArt, CLOTH_PANELS, DYE_COLORS, PATTERN_CELL};
 use gpui_3d::{AlphaMode, Material, ShadingModel, TextureAsset, TextureAssetId};
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
@@ -17,7 +18,16 @@ pub(super) struct MeshAssets {
     materials: HashMap<MaterialSlotKey, Weak<Material>>,
     /// Derived grass-block sides keyed by `(dirt, overlay, biome tint)`.
     grass_side_tints: HashMap<(TextureAssetId, TextureAssetId, [u8; 3]), TintEntry>,
+    /// Dyed and pattern-composited banner sheets keyed by `(base, masks, art)`.
+    banner_sheets: HashMap<(TextureAssetId, Vec<TextureAssetId>, BannerArt), BannerSheetEntry>,
     grayscale_masks: HashMap<TextureAssetId, bool>,
+}
+
+struct BannerSheetEntry {
+    // A composited sheet reads its sources every time it is rebuilt, so keep them alive while
+    // the derived texture is in use.
+    _sources: Vec<Arc<TextureAsset>>,
+    texture: Weak<TextureAsset>,
 }
 
 struct TintEntry {
@@ -25,6 +35,10 @@ struct TintEntry {
     // cache's weak reference expires and every chunk reloads and re-decodes the same source.
     _sources: [Arc<TextureAsset>; 2],
     texture: Weak<TextureAsset>,
+}
+
+fn multiply_channel(base: u8, tint: u8) -> u8 {
+    u8::try_from(u16::from(base) * u16::from(tint) / 255).unwrap_or(u8::MAX)
 }
 
 fn tint_key(tint: [f32; 4]) -> [u8; 3] {
@@ -89,15 +103,22 @@ impl MeshAssets {
         self.materials.retain(|_, asset| asset.strong_count() > 0);
         self.grass_side_tints
             .retain(|_, entry| entry.texture.strong_count() > 0);
+        self.banner_sheets
+            .retain(|_, entry| entry.texture.strong_count() > 0);
     }
 
     pub(super) fn tinted_texture_usage(&self) -> (usize, usize) {
-        self.grass_side_tints
+        let grass = self
+            .grass_side_tints
             .values()
-            .filter_map(|entry| entry.texture.upgrade())
-            .fold((0, 0), |(count, bytes), texture| {
-                (count + 1, bytes + texture_storage_bytes(&texture))
-            })
+            .filter_map(|entry| entry.texture.upgrade());
+        let banners = self
+            .banner_sheets
+            .values()
+            .filter_map(|entry| entry.texture.upgrade());
+        grass.chain(banners).fold((0, 0), |(count, bytes), texture| {
+            (count + 1, bytes + texture_storage_bytes(&texture))
+        })
     }
 
     pub(super) fn material(
@@ -231,6 +252,114 @@ impl MeshAssets {
         Some(asset)
     }
 
+    /// Composites a banner's dye colour and pattern layers over `banner_base`.
+    ///
+    /// Vanilla keeps one white cloth sheet plus a 512 x 512 mask sheet. The sheet holds the
+    /// 20 x 40 px cloth twice — front at `(1, 1)` and a **mirrored** copy for the back at
+    /// `(22, 1)` — so both faces show the same art. Rendering: the cloth takes the `Base` dye,
+    /// then each `Patterns` entry is stamped in list order, later layers on top, tinting the
+    /// mask by that layer's dye and alpha-blending it (the masks carry soft 191/175 edges, which
+    /// is why this is a blend and not a hard replace). The pole and rod pixels sit outside the
+    /// panels and keep their wood art.
+    pub(super) fn composited_banner_sheet(
+        &mut self,
+        base: &Arc<TextureAsset>,
+        masks: &[Arc<TextureAsset>],
+        art: &BannerArt,
+    ) -> Option<Arc<TextureAsset>> {
+        const SHEET: u32 = 64;
+        if base.dimensions() != (SHEET, SHEET) {
+            return None;
+        }
+        // Cache on the resolved sources so a reloaded pack cannot reuse a stale sheet.
+        let key = (
+            base.id(),
+            masks.iter().map(|mask| mask.id()).collect::<Vec<_>>(),
+            art.clone(),
+        );
+        if let Some(cached) = self
+            .banner_sheets
+            .get(&key)
+            .and_then(|entry| entry.texture.upgrade())
+        {
+            return Some(cached);
+        }
+        let mut pixels = base.pixels().to_vec();
+        let [front, back] = CLOTH_PANELS;
+        let width = front[2] - front[0];
+        let height = front[3] - front[1];
+
+        let dye = DYE_COLORS[usize::from(art.base.min(15))];
+        for [x0, y0, x1, y1] in [front, back] {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let offset = ((y * SHEET + x) * 4) as usize;
+                    for channel in 0..3 {
+                        pixels[offset + channel] =
+                            multiply_channel(pixels[offset + channel], dye[channel]);
+                    }
+                }
+            }
+        }
+
+        for (layer, mask_asset) in art.layers.iter().zip(masks) {
+            let mask_dimensions = mask_asset.dimensions();
+            let mask_pixels = mask_asset.pixels();
+            // Each pattern mask is its own 64 x 64 sheet laid out like `banner_base`, so the
+            // cloth panels are sampled at the same pixels.
+            if mask_dimensions.0 < SHEET || mask_dimensions.1 < SHEET {
+                continue;
+            }
+            let tint = DYE_COLORS[usize::from(layer.color.min(15))];
+            for y in 0..height {
+                for x in 0..width {
+                    let source = (((front[1] + y) * mask_dimensions.0 + (front[0] + x)) * 4)
+                        as usize;
+                    let Some(mask) = mask_pixels.get(source..source + 4) else {
+                        continue;
+                    };
+                    let alpha = u16::from(mask[3]);
+                    if alpha == 0 {
+                        continue;
+                    }
+                    let inverse = 255 - alpha;
+                    let mut tinted = [0_u16; 3];
+                    for (channel, value) in tinted.iter_mut().enumerate() {
+                        *value = u16::from(mask[channel]) * u16::from(tint[channel]) / 255;
+                    }
+                    // Front panel keeps the mask's orientation; the back panel is mirrored.
+                    let destinations = [
+                        (front[0] + x, front[1] + y),
+                        (back[0] + width - 1 - x, back[1] + y),
+                    ];
+                    for (destination_x, destination_y) in destinations {
+                        let destination =
+                            ((destination_y * SHEET + destination_x) * 4) as usize;
+                        for channel in 0..3 {
+                            let blended = u16::from(pixels[destination + channel]) * inverse
+                                + tinted[channel] * alpha;
+                            pixels[destination + channel] =
+                                u8::try_from((blended + 127) / 255).unwrap_or(u8::MAX);
+                        }
+                    }
+                }
+            }
+        }
+
+        let image = image::RgbaImage::from_raw(SHEET, SHEET, pixels)?;
+        let asset = self.intern_texture(mipmapped_texture(image)?);
+        let mut sources = vec![base.clone()];
+        sources.extend(masks.iter().cloned());
+        self.banner_sheets.insert(
+            key,
+            BannerSheetEntry {
+                _sources: sources,
+                texture: Arc::downgrade(&asset),
+            },
+        );
+        Some(asset)
+    }
+
     /// Whether a decoded texture is a neutral mask that expects a biome tint.
     ///
     /// Vanilla grass, leaves and plant textures are grayscale masks; resource packs may ship
@@ -273,6 +402,7 @@ impl MeshAssets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bedrock_block_model::banner_art::BannerLayer;
 
     #[test]
     fn duplicate_resource_pack_paths_share_exact_gpu_texture_identity() {
@@ -431,6 +561,67 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(&first.pixels()[..4], &[74, 116, 55, 255]);
         assert_eq!(&first.pixels()[4..8], &dirt.pixels()[4..8]);
+    }
+
+    #[test]
+    fn composited_banner_sheet_dyes_the_cloth_and_stamps_pattern_layers() {
+        let mut assets = MeshAssets::default();
+        // White 64 x 64 cloth, the shape of `banner_base`.
+        let base = Arc::new(
+            TextureAsset::rgba8(64, 64, Arc::<[u8]>::from(vec![255_u8; 64 * 64 * 4])).unwrap(),
+        );
+        // A pattern mask laid out like `banner_base`: one opaque cloth pixel and one half
+        // transparent one, both inside the front panel.
+        let mut mask = vec![0_u8; 64 * 64 * 4];
+        let at = |x: usize, y: usize| (y * 64 + x) * 4;
+        mask[at(2, 2)..at(2, 2) + 4].copy_from_slice(&[255, 255, 255, 255]);
+        mask[at(3, 3)..at(3, 3) + 4].copy_from_slice(&[255, 255, 255, 128]);
+        let mask = Arc::new(TextureAsset::rgba8(64, 64, Arc::<[u8]>::from(mask)).unwrap());
+
+        let art = BannerArt {
+            base: 14,
+            layers: vec![BannerLayer {
+                pattern: 4,
+                color: 5,
+            }],
+        };
+        let first = assets
+            .composited_banner_sheet(&base, std::slice::from_ref(&mask), &art)
+            .expect("banner sheet");
+        let second = assets
+            .composited_banner_sheet(&base, std::slice::from_ref(&mask), &art)
+            .expect("banner sheet");
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let pixel = |x: usize, y: usize| {
+            let offset = (y * 64 + x) * 4;
+            [
+                first.pixels()[offset],
+                first.pixels()[offset + 1],
+                first.pixels()[offset + 2],
+            ]
+        };
+        // Mask pixel (2, 2) is cloth pixel (1, 1) and takes the layer colour (lime, index 5).
+        assert_eq!(pixel(2, 2), DYE_COLORS[5]);
+        // The back panel mirrors it: cloth x = 1 maps to back x = 22 + 20 - 1 - 1 = 40.
+        assert_eq!(pixel(40, 2), DYE_COLORS[5]);
+        // The mask's soft edges are why the layer is an alpha blend, not a replace: a 50% mask
+        // pixel over the base dye lands halfway between the two colours.
+        let blended = pixel(3, 3);
+        let expected: Vec<u8> = DYE_COLORS[14]
+            .iter()
+            .zip(DYE_COLORS[5])
+            .map(|(base, layer)| {
+                u8::try_from((u32::from(*base) * 127 + u32::from(layer) * 128 + 127) / 255)
+                    .unwrap_or(u8::MAX)
+            })
+            .collect();
+        assert_eq!(blended, expected.as_slice());
+        // Cloth outside the mask keeps the base dye (red, index 14).
+        assert_eq!(pixel(10, 10), DYE_COLORS[14]);
+        // Outside the cloth panels the rod and pole art stay untouched.
+        assert_eq!(pixel(50, 10), [255, 255, 255]);
+        assert_eq!(pixel(10, 0), [255, 255, 255]);
     }
 
     #[test]

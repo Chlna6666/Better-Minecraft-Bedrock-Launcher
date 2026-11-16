@@ -1,9 +1,9 @@
-use super::render_support::{
-    localize_gpu_reason, gpu_backend_status_zh, resolved_backend_label_zh,
-};
 use super::model::*;
 use super::overlays::SlimeFarmSearchScopeSource;
 use super::prelude::*;
+use super::render_support::{
+    gpu_backend_status_zh, localize_gpu_reason, resolved_backend_label_zh,
+};
 use super::selection::SelectionBound;
 use crate::ui::components::icon::themed_icon;
 
@@ -685,10 +685,14 @@ impl View {
             || t!("MapViewer.no_selection").to_string(),
             |selection| {
                 let bounds = selection.bounds();
-                format!(
-                    "chunk {},{} 至 {},{}",
-                    bounds.min_chunk_x, bounds.min_chunk_z, bounds.max_chunk_x, bounds.max_chunk_z
+                t!(
+                    "MapViewer.selection_chunk_range",
+                    minX = bounds.min_chunk_x,
+                    minZ = bounds.min_chunk_z,
+                    maxX = bounds.max_chunk_x,
+                    maxZ = bounds.max_chunk_z
                 )
+                .to_string()
             },
         );
         let mut panel = panel_section_body(colors)
@@ -732,18 +736,21 @@ impl View {
             panel = panel
                 .child(status_badge(
                     colors,
-                    format!(
-                        "高度 Y {} 至 {} · {} 层",
-                        volume.min[1],
-                        volume.max[1],
-                        volume.size()[1]
+                    t!(
+                        "MapViewer.selection_height_range",
+                        min = volume.min[1],
+                        max = volume.max[1],
+                        layers = volume.size()[1]
                     ),
                 ))
                 .child(status_badge(
                     colors,
-                    format!(
-                        "方块 X {}..{} · Z {}..{}",
-                        volume.min[0], volume.max[0], volume.min[2], volume.max[2]
+                    t!(
+                        "MapViewer.selection_block_range",
+                        minX = volume.min[0],
+                        maxX = volume.max[0],
+                        minZ = volume.min[2],
+                        maxZ = volume.max[2]
                     ),
                 ))
                 .child(
@@ -754,13 +761,13 @@ impl View {
                         .child(self.render_input(
                             colors,
                             InputField::SelectionMinY,
-                            "下界 Y",
+                            t!("MapViewer.selection_lower_y"),
                             px(108.0),
                         ))
                         .child(self.render_input(
                             colors,
                             InputField::SelectionMaxY,
-                            "上界 Y",
+                            t!("MapViewer.selection_upper_y"),
                             px(108.0),
                         )),
                 )
@@ -801,10 +808,14 @@ impl View {
                                 .flex()
                                 .flex_col()
                                 .gap(px(5.0))
-                                .child(format!("世界顶部 Y {world_max}"))
-                                .child(format!("选中 Y {}..{}", volume.min[1], volume.max[1]))
-                                .child(format!("当前剖面 Y {}", self.y_layer))
-                                .child(format!("世界底部 Y {world_min}")),
+                                .child(t!("MapViewer.world_top_y", y = world_max))
+                                .child(t!(
+                                    "MapViewer.selection_y_range",
+                                    min = volume.min[1],
+                                    max = volume.max[1]
+                                ))
+                                .child(t!("MapViewer.current_layer_y", y = self.y_layer))
+                                .child(t!("MapViewer.world_bottom_y", y = world_min)),
                         ),
                 )
                 .child(
@@ -812,104 +823,144 @@ impl View {
                         .flex()
                         .flex_wrap()
                         .gap(px(4.0))
-                        .child(toolbar_button(colors, "下界 −16").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.adjust_selection_bound(SelectionBound::Lower, -16, cx)
-                            }),
-                        ))
-                        .child(toolbar_button(colors, "下界 −1").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.adjust_selection_bound(SelectionBound::Lower, -1, cx)
-                            }),
-                        ))
-                        .child(toolbar_button(colors, "下界 +1").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.adjust_selection_bound(SelectionBound::Lower, 1, cx)
-                            }),
-                        ))
-                        .child(toolbar_button(colors, "下界 +16").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.adjust_selection_bound(SelectionBound::Lower, 16, cx)
-                            }),
-                        )),
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.bound_lower_minus_16"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.adjust_selection_bound(SelectionBound::Lower, -16, cx)
+                                    }),
+                                ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.bound_lower_minus_1"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.adjust_selection_bound(SelectionBound::Lower, -1, cx)
+                                    }),
+                                ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.bound_lower_plus_1"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.adjust_selection_bound(SelectionBound::Lower, 1, cx)
+                                    }),
+                                ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.bound_lower_plus_16"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.adjust_selection_bound(SelectionBound::Lower, 16, cx)
+                                    }),
+                                ),
+                        ),
                 )
                 .child(
                     div()
                         .flex()
                         .flex_wrap()
                         .gap(px(4.0))
-                        .child(toolbar_button(colors, "上界 −16").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.adjust_selection_bound(SelectionBound::Upper, -16, cx)
-                            }),
-                        ))
-                        .child(toolbar_button(colors, "上界 −1").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.adjust_selection_bound(SelectionBound::Upper, -1, cx)
-                            }),
-                        ))
-                        .child(toolbar_button(colors, "上界 +1").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.adjust_selection_bound(SelectionBound::Upper, 1, cx)
-                            }),
-                        ))
-                        .child(toolbar_button(colors, "上界 +16").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.adjust_selection_bound(SelectionBound::Upper, 16, cx)
-                            }),
-                        )),
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.bound_upper_minus_16"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.adjust_selection_bound(SelectionBound::Upper, -16, cx)
+                                    }),
+                                ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.bound_upper_minus_1"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.adjust_selection_bound(SelectionBound::Upper, -1, cx)
+                                    }),
+                                ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.bound_upper_plus_1"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.adjust_selection_bound(SelectionBound::Upper, 1, cx)
+                                    }),
+                                ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.bound_upper_plus_16"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.adjust_selection_bound(SelectionBound::Upper, 16, cx)
+                                    }),
+                                ),
+                        ),
                 )
                 .child(
                     div()
                         .flex()
                         .flex_wrap()
                         .gap(px(4.0))
-                        .child(toolbar_button(colors, "当前层→下界").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.set_selection_bound_from_layer(SelectionBound::Lower, cx)
-                            }),
-                        ))
-                        .child(toolbar_button(colors, "当前层→上界").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.set_selection_bound_from_layer(SelectionBound::Upper, cx)
-                            }),
-                        ))
-                        .child(toolbar_button(colors, "查看下界").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.show_selection_bound(SelectionBound::Lower, cx)
-                            }),
-                        ))
-                        .child(toolbar_button(colors, "查看上界").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.show_selection_bound(SelectionBound::Upper, cx)
-                            }),
-                        )),
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.lower_to_current")).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.set_selection_bound_from_layer(SelectionBound::Lower, cx)
+                                }),
+                            ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.upper_to_current")).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.set_selection_bound_from_layer(SelectionBound::Upper, cx)
+                                }),
+                            ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.view_lower")).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.show_selection_bound(SelectionBound::Lower, cx)
+                                }),
+                            ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.view_upper")).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.show_selection_bound(SelectionBound::Upper, cx)
+                                }),
+                            ),
+                        ),
                 )
                 .child(
                     div()
                         .flex()
                         .flex_wrap()
                         .gap(px(4.0))
-                        .child(toolbar_button(colors, "复制高度选区").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.copy_2d_height_selection(cx)),
-                        ))
-                        .child(toolbar_button(colors, "清空高度选区").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.clear_2d_height_selection(cx)),
-                        )),
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.copy_height_selection"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| this.copy_2d_height_selection(cx)),
+                                ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.clear_height_selection"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.clear_2d_height_selection(cx)
+                                    }),
+                                ),
+                        ),
                 )
                 .child(
                     div()
@@ -931,34 +982,39 @@ impl View {
                                         .h_full(),
                                 ),
                         )
-                        .child(toolbar_button(colors, "填充高度选区").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.fill_2d_height_selection(cx)),
-                        )),
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.fill_height_selection"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| this.fill_2d_height_selection(cx)),
+                                ),
+                        ),
                 );
         }
-        if !self.import_active() && let (Some(import), Some(preview)) = (
-            self.professional.imported_structure.as_ref(),
-            self.professional.paste_preview.as_ref(),
-        ) {
+        if !self.import_active()
+            && let (Some(import), Some(preview)) = (
+                self.professional.imported_structure.as_ref(),
+                self.professional.paste_preview.as_ref(),
+            )
+        {
             panel = panel
                 .child(status_badge(
                     colors,
-                    format!(
-                        "粘贴预览 · 区块 {},{} · 底部 Y {} · 顶部 Y {}",
-                        preview.target_anchor.x,
-                        preview.target_anchor.z,
-                        import.origin_y,
-                        import
+                    t!(
+                        "MapViewer.paste_preview_summary",
+                        x = preview.target_anchor.x,
+                        z = preview.target_anchor.z,
+                        bottom = import.origin_y,
+                        top = import
                             .origin_y
                             .saturating_add(import.structure.size.y)
-                            .saturating_sub(1),
+                            .saturating_sub(1)
                     ),
                 ))
                 .child(self.render_input(
                     colors,
                     InputField::PasteOriginY,
-                    "粘贴底部 Y",
+                    t!("MapViewer.paste_bottom_y"),
                     px(132.0),
                 ))
                 .child(
@@ -966,32 +1022,44 @@ impl View {
                         .flex()
                         .flex_wrap()
                         .gap(px(4.0))
-                        .child(toolbar_button(colors, "粘贴 −16").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.adjust_2d_paste_height(-16, cx)),
-                        ))
-                        .child(toolbar_button(colors, "粘贴 −1").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.adjust_2d_paste_height(-1, cx)),
-                        ))
-                        .child(toolbar_button(colors, "粘贴 +1").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.adjust_2d_paste_height(1, cx)),
-                        ))
-                        .child(toolbar_button(colors, "粘贴 +16").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.adjust_2d_paste_height(16, cx)),
-                        ))
-                        .child(toolbar_button(colors, "底部设为当前层").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                let target_y = this.y_layer;
-                                if let Err(message) = this.set_2d_paste_height(target_y, cx) {
-                                    this.status = SharedString::from(message);
-                                    cx.notify();
-                                }
-                            }),
-                        )),
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.paste_minus_16")).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| this.adjust_2d_paste_height(-16, cx)),
+                            ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.paste_minus_1")).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| this.adjust_2d_paste_height(-1, cx)),
+                            ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.paste_plus_1")).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| this.adjust_2d_paste_height(1, cx)),
+                            ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.paste_plus_16")).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| this.adjust_2d_paste_height(16, cx)),
+                            ),
+                        )
+                        .child(
+                            toolbar_button(colors, t!("MapViewer.paste_bottom_current"))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        let target_y = this.y_layer;
+                                        if let Err(message) = this.set_2d_paste_height(target_y, cx)
+                                        {
+                                            this.status = SharedString::from(message);
+                                            cx.notify();
+                                        }
+                                    }),
+                                ),
+                        ),
                 );
         }
         panel
@@ -1258,10 +1326,12 @@ impl View {
 
 pub(super) fn dimension_label(dimension: Dimension) -> String {
     match dimension {
-        Dimension::Overworld => "主世界".to_string(),
-        Dimension::Nether => "下界".to_string(),
-        Dimension::End => "末地".to_string(),
-        Dimension::Unknown(id) => format!("维度 {id}"),
+        Dimension::Overworld => t!("MapViewer.dimension_overworld").to_string(),
+        Dimension::Nether => t!("MapViewer.dimension_nether").to_string(),
+        Dimension::End => t!("MapViewer.dimension_end").to_string(),
+        Dimension::Unknown(id) => {
+            t!("MapViewer.dimension_unknown", id = id.to_string()).to_string()
+        }
     }
 }
 

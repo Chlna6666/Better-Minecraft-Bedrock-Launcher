@@ -46,13 +46,22 @@ impl View {
             || (self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
                 && self.map_image_operation_busy())
         {
-            return Err("正在写入或导出，暂不能调整高度".to_owned());
+            return Err(
+                t!("MapViewer.core.generator_height.write_in_progress").to_string(),
+            );
         }
         let (min, max) = self
             .import_height_range()
-            .ok_or("结构高度超过当前维度范围")?;
+            .ok_or_else(|| {
+                t!("MapViewer.core.generator_height.structure_height_out_of_range").to_string()
+            })?;
         if !(min..=max).contains(&value) {
-            return Err(format!("放置高度须在 {min}..{max} 内"));
+            return Err(t!(
+                "MapViewer.core.generator_height.placement_height_out_of_bounds",
+                min = min,
+                max = max
+            )
+            .to_string());
         }
         if self.y_layer == value && self.import_height() == value {
             return Ok(());
@@ -106,9 +115,9 @@ impl View {
                             .text_size(px(12.0))
                             .text_color(colors.text_primary)
                             .child(if frame {
-                                "展示框高度 · Y"
+                                t!("MapViewer.core.generator_height.frame_height_y")
                             } else {
-                                "放置底部 · Y"
+                                t!("MapViewer.core.generator_height.placement_bottom_y")
                             }),
                     )
                     .child(if enabled {
@@ -165,9 +174,12 @@ impl View {
                     .text_color(colors.text_secondary)
                     .child(format!("{min}"))
                     .child(if frame {
-                        format!("支撑层 Y {}", self.y_layer.saturating_sub(1))
+                        t!(
+                            "MapViewer.core.generator_height.support_layer_y",
+                            y = self.y_layer.saturating_sub(1)
+                        )
                     } else {
-                        "可输入精确数值".to_owned()
+                        t!("MapViewer.core.generator_height.enter_exact_value")
                     })
                     .child(format!("{max}")),
             )

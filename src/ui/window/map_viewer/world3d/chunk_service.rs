@@ -12,6 +12,7 @@ use super::types::{
     World3dChunkMesh, World3dChunkPayload, World3dChunkProbe,
 };
 use crate::ui::window::map_viewer::preview_3d_source;
+use bedrock_block_model::banner_art::BannerArt;
 use bedrock_block_model::obj::material_texture_name;
 use bedrock_block_model::resource_pack::vanilla_roots_for_packages;
 use bedrock_block_model::{
@@ -1659,6 +1660,18 @@ mod view_tests {
         };
         assert!(cube != detail);
         assert_eq!(HashSet::from([cube, detail]).len(), 2);
+    }
+
+    #[test]
+    fn dry_plant_masks_are_tinted_by_their_biome_colour() {
+        // `leaf_litter` ships as a pure grayscale mask (chroma 0 on every pixel), so the vertex
+        // colour has to carry the dry-foliage biome tint; without it the layer rendered grey.
+        assert!(super::material_uses_tint("minecraft_leaf_litter"));
+        assert!(super::material_uses_tint("minecraft_leaf_litter__mat_default"));
+        // `deadbush` and the dry grasses are already coloured art, so they must stay untinted.
+        assert!(!super::material_uses_tint("minecraft_deadbush"));
+        assert!(!super::material_uses_tint("minecraft_short_dry_grass"));
+        assert!(!super::material_uses_tint("minecraft_tall_dry_grass"));
     }
 
     #[test]
@@ -5201,6 +5214,8 @@ impl Worker {
                             "alpha_mode": format!("{alpha_mode:?}"),
                             "alpha_content": format!("{:?}", properties.alpha_content),
                             "surface": format!("{:?}", shared.surface),
+                            "tint": uses_tint,
+                            "face_color": face.color,
                             "roughness": shared.roughness,
                             "alpha_zero_partial_opaque": alpha,
                         })
@@ -5420,7 +5435,9 @@ impl Worker {
                 None => return None,
             }
         }
-        let result = if let Some(id) = material.strip_prefix(MAP_MATERIAL_PREFIX) {
+        let result = if let Some(art) = BannerArt::from_material_name(material) {
+            self.resolve_banner_texture(&art)
+        } else if let Some(id) = material.strip_prefix(MAP_MATERIAL_PREFIX) {
             self.resolve_map_texture(id)
         } else {
             let resolved =
@@ -5451,6 +5468,80 @@ impl Worker {
                 .map(|(texture, content)| (Arc::downgrade(texture), *content)),
         );
         result
+    }
+
+    /// Composites one banner's dye and pattern layers over the white cloth sheet.
+    ///
+    /// 26.60 ships one 64 x 64 mask per pattern (`banner_border`, `banner_flow`, ...), so each
+    /// layer reads its own texture. The legacy 512 x 512 sheet is the fallback for packs that
+    /// only carry that.
+    fn resolve_banner_texture(
+        &mut self,
+        art: &BannerArt,
+    ) -> Option<(Arc<TextureAsset>, TextureAlphaContent)> {
+        // A pattern whose art is a finished cloth (the ominous banner) replaces the white sheet
+        // outright: its own pixels already carry the dye and the pole.
+        if let Some(layer) = art
+            .layers
+            .iter()
+            .find(|layer| BannerArt::pattern_is_full_sheet(layer.pattern))
+            && let Some(resolved) = BannerArt::pattern_texture_key(layer.pattern)
+                .and_then(|key| self.resolver.entity_texture(key))
+                .and_then(|resolved| self.resolve_texture_path(resolved))
+        {
+            return Some(resolved);
+        }
+        let base = self
+            .resolver
+            .entity_texture("entity/banner/banner_base")
+            .and_then(|resolved| self.resolve_texture_path(resolved))?;
+        let legacy = self
+            .resolver
+            .entity_texture("entity/banner/banner")
+            .and_then(|resolved| self.resolve_texture_path(resolved));
+        let mut masks = Vec::with_capacity(art.layers.len());
+        for layer in &art.layers {
+            let key = BannerArt::pattern_texture_key(layer.pattern);
+            let mask = key
+                .and_then(|key| self.resolver.entity_texture(key))
+                .and_then(|resolved| self.resolve_texture_path(resolved))
+                .map(|(texture, _)| texture);
+            // Fall back to the pattern's cell of the legacy sheet.
+            let mask = mask.or_else(|| {
+                let cell = BannerArt::pattern_cell(layer.pattern)?;
+                let (sheet, _) = legacy.as_ref()?;
+                self.crop_pattern_cell(sheet, cell)
+            });
+            masks.push(mask?);
+        }
+        let texture = self
+            .mesh_assets
+            .composited_banner_sheet(&base.0, &masks, art)?;
+        Some((texture, TextureAlphaContent::Binary))
+    }
+
+    /// Cuts one 64 x 64 pattern cell out of the legacy 512 x 512 `banner.tga` sheet.
+    fn crop_pattern_cell(
+        &mut self,
+        sheet: &Arc<TextureAsset>,
+        cell: u8,
+    ) -> Option<Arc<TextureAsset>> {
+        const CELL: u32 = 64;
+        let [x, y] = BannerArt::cell_origin(cell);
+        let (width, _) = sheet.dimensions();
+        if x + CELL > width {
+            return None;
+        }
+        let pixels = sheet.pixels();
+        let stride = width as usize * 4;
+        let mut cell_pixels = Vec::with_capacity((CELL * CELL * 4) as usize);
+        for row in 0..CELL {
+            let start = (y + row) as usize * stride + x as usize * 4;
+            let end = start + CELL as usize * 4;
+            cell_pixels.extend_from_slice(pixels.get(start..end)?);
+        }
+        let image = image::RgbaImage::from_raw(CELL, CELL, cell_pixels)?;
+        Some(self.mesh_assets.intern_texture(mipmapped_texture(image)?))
     }
 
     /// Resolves a `terrain_texture.json` key, for companion textures such as grass side masks.
@@ -5745,6 +5836,11 @@ fn bounds_for_positions(
 }
 
 fn material_uses_tint(material: &str) -> bool {
+    // The dry grasses carry their own tan art (chroma 80+), so the `grass` needle must not claim
+    // them; tinting already-coloured pixels would double-tint.
+    if material.contains("dry_grass") {
+        return false;
+    }
     [
         "grass",
         "leaves",
@@ -5754,7 +5850,13 @@ fn material_uses_tint(material: &str) -> bool {
         "seagrass",
         "lily",
         "foliage",
+        // `leaf_litter` is a pure grayscale mask (chroma 0) tinted by the dry-foliage biome
+        // colour; without this the whole layer rendered grey.
+        "leaf_litter",
         "redstone_wire",
+        // Grayscale stem masks are tinted by growth stage, not by biome.
+        "pumpkin_stem",
+        "melon_stem",
     ]
     .iter()
     .any(|needle| material.contains(needle))

@@ -41,8 +41,9 @@ pub(super) fn render_viewport_composite_stream(
         render_cancel,
     } = request;
     tile_render_core::validate_ui_render_layout(layout)?;
-    let render_range =
-        tile_render_range(viewport, layout).ok_or_else(|| "视口合成范围无效".to_string())?;
+    let render_range = tile_render_range(viewport, layout).ok_or_else(|| {
+        t!("MapViewer.render.tile_render_composite.viewport_composite_range_invalid").to_string()
+    })?;
     let (image_width, image_height, output_scale) = viewport_composite_image_size(viewport)?;
     let compositor = Arc::new(Mutex::new(ProgressiveViewportCompositor::new(
         viewport,
@@ -58,10 +59,12 @@ pub(super) fn render_viewport_composite_stream(
     let mut planned_tiles = Vec::with_capacity(plans.len());
     for plan in plans {
         if plan.planned.job.coord.dimension != dimension {
-            return Err(format!(
-                "瓦片 {}, {} 维度与请求不匹配",
-                plan.coord.0, plan.coord.1
-            ));
+            return Err(t!(
+                "MapViewer.render.tile_render_composite.tile_dimension_mismatch",
+                x = plan.coord.0,
+                z = plan.coord.1,
+            )
+            .to_string());
         }
         if plan
             .planned
@@ -91,7 +94,13 @@ pub(super) fn render_viewport_composite_stream(
                 stats,
             },
         )
-        .map_err(|error| format!("视口合成完成事件发送失败: {error}"))?;
+        .map_err(|error| {
+            t!(
+                "MapViewer.render.tile_render_composite.composite_complete_event_send_failed",
+                error = error,
+            )
+            .to_string()
+        })?;
         return Ok(());
     }
 
@@ -129,7 +138,7 @@ pub(super) fn render_viewport_composite_stream(
                         let preview = {
                             let mut compositor = compositor.lock().map_err(|_| {
                                 bedrock_render::BedrockRenderError::Validation(
-                                    "视口合成状态锁已损坏".to_string(),
+                                    t!("MapViewer.render.tile_render_composite.composite_state_lock_poisoned").to_string(),
                                 )
                             })?;
                             compositor
@@ -163,7 +172,7 @@ pub(super) fn render_viewport_composite_stream(
                         let (frame, rendered_tiles) = {
                             let mut compositor = compositor.lock().map_err(|_| {
                                 bedrock_render::BedrockRenderError::Validation(
-                                    "视口合成状态锁已损坏".to_string(),
+                                    t!("MapViewer.render.tile_render_composite.composite_state_lock_poisoned").to_string(),
                                 )
                             })?;
                             let rendered_tiles = compositor.rendered_tiles();
@@ -198,8 +207,16 @@ pub(super) fn render_viewport_composite_stream(
             }
         })
     }))
-    .map_err(|_| "视口合成任务崩溃".to_string())?
-    .map_err(|error| format!("视口合成失败: {error}"));
+    .map_err(|_| {
+        t!("MapViewer.render.tile_render_composite.composite_task_panicked").to_string()
+    })?
+    .map_err(|error| {
+        t!(
+            "MapViewer.render.tile_render_composite.viewport_composite_failed",
+            error = error,
+        )
+        .to_string()
+    });
     render_result?;
     Ok(())
 }
@@ -257,15 +274,21 @@ impl ProgressiveViewportCompositor {
         tile: &DecodedTileImage,
     ) -> Result<Option<tile_render_core::ViewportCompositeTile>, String> {
         if tile.pixel_format != TilePixelFormat::Rgba8 {
-            return Err(format!("视口合成不支持像素格式: {:?}", tile.pixel_format));
+            return Err(t!(
+                "MapViewer.render.tile_render_composite.pixel_format_unsupported",
+                pixel_format = format!("{:?}", tile.pixel_format),
+            )
+            .to_string());
         }
         let expected_len = decoded_tile_byte_len(tile.width, tile.height)?;
         let source_pixels = tile.pixels.as_ref();
         if source_pixels.len() != expected_len {
-            return Err(format!(
-                "视口合成瓦片像素长度不匹配: expected {expected_len}, got {}",
-                source_pixels.len()
-            ));
+            return Err(t!(
+                "MapViewer.render.tile_render_composite.tile_pixel_length_mismatch",
+                expected = expected_len,
+                actual = source_pixels.len(),
+            )
+            .to_string());
         }
         let Some(rect) = tile_paint_rect(
             self.viewport,
@@ -297,11 +320,11 @@ impl ProgressiveViewportCompositor {
         let output_stride = usize::try_from(self.width)
             .ok()
             .and_then(|width| width.checked_mul(4))
-            .ok_or_else(|| "视口合成输出 stride 溢出".to_string())?;
+            .ok_or_else(|| t!("MapViewer.render.tile_render_composite.output_stride_overflow").to_string())?;
         let source_stride = usize::try_from(tile.width)
             .ok()
             .and_then(|width| width.checked_mul(4))
-            .ok_or_else(|| "视口合成源 stride 溢出".to_string())?;
+            .ok_or_else(|| t!("MapViewer.render.tile_render_composite.source_stride_overflow").to_string())?;
         let source_width = tile.width.max(1);
         let source_height = tile.height.max(1);
 
@@ -314,11 +337,11 @@ impl ProgressiveViewportCompositor {
             let output_row = usize::try_from(output_y)
                 .ok()
                 .and_then(|row| row.checked_mul(output_stride))
-                .ok_or_else(|| "视口合成输出行偏移溢出".to_string())?;
+                .ok_or_else(|| t!("MapViewer.render.tile_render_composite.output_row_offset_overflow").to_string())?;
             let source_row = usize::try_from(source_y)
                 .ok()
                 .and_then(|row| row.checked_mul(source_stride))
-                .ok_or_else(|| "视口合成源行偏移溢出".to_string())?;
+                .ok_or_else(|| t!("MapViewer.render.tile_render_composite.source_row_offset_overflow").to_string())?;
             for output_x in left..right {
                 let screen_x = (output_x as f32 + 0.5) / self.output_scale;
                 let source_x = (((screen_x - rect.left) / rect.width()) * source_width as f32)
@@ -330,24 +353,24 @@ impl ProgressiveViewportCompositor {
                         usize::try_from(output_x)
                             .ok()
                             .and_then(|column| column.checked_mul(4))
-                            .ok_or_else(|| "视口合成输出列偏移溢出".to_string())?,
+                            .ok_or_else(|| t!("MapViewer.render.tile_render_composite.output_column_offset_overflow").to_string())?,
                     )
-                    .ok_or_else(|| "视口合成输出像素偏移溢出".to_string())?;
+                    .ok_or_else(|| t!("MapViewer.render.tile_render_composite.output_pixel_offset_overflow").to_string())?;
                 let source_index = source_row
                     .checked_add(
                         usize::try_from(source_x)
                             .ok()
                             .and_then(|column| column.checked_mul(4))
-                            .ok_or_else(|| "视口合成源列偏移溢出".to_string())?,
+                            .ok_or_else(|| t!("MapViewer.render.tile_render_composite.source_column_offset_overflow").to_string())?,
                     )
-                    .ok_or_else(|| "视口合成源像素偏移溢出".to_string())?;
+                    .ok_or_else(|| t!("MapViewer.render.tile_render_composite.source_pixel_offset_overflow").to_string())?;
                 self.pixels
                     .get_mut(output_index..output_index + 4)
-                    .ok_or_else(|| "视口合成输出像素越界".to_string())?
+                    .ok_or_else(|| t!("MapViewer.render.tile_render_composite.output_pixel_out_of_bounds").to_string())?
                     .copy_from_slice(
                         source_pixels
                             .get(source_index..source_index + 4)
-                            .ok_or_else(|| "视口合成源像素越界".to_string())?,
+                            .ok_or_else(|| t!("MapViewer.render.tile_render_composite.source_pixel_out_of_bounds").to_string())?,
                     );
             }
         }
@@ -381,7 +404,7 @@ impl ProgressiveViewportCompositor {
         let dirty = self
             .dirty
             .take()
-            .ok_or_else(|| "视口合成没有待发布区域".to_string())?;
+            .ok_or_else(|| t!("MapViewer.render.tile_render_composite.no_dirty_region").to_string())?;
         let width = dirty.right.saturating_sub(dirty.left);
         let height = dirty.bottom.saturating_sub(dirty.top);
         let byte_len = decoded_tile_byte_len(width, height)?;
@@ -389,45 +412,51 @@ impl ProgressiveViewportCompositor {
         let source_stride = usize::try_from(self.width)
             .ok()
             .and_then(|value| value.checked_mul(4))
-            .ok_or_else(|| "视口合成源 stride 溢出".to_string())?;
+            .ok_or_else(|| t!("MapViewer.render.tile_render_composite.source_stride_overflow").to_string())?;
         let target_stride = usize::try_from(width)
             .ok()
             .and_then(|value| value.checked_mul(4))
-            .ok_or_else(|| "视口合成预览 stride 溢出".to_string())?;
+            .ok_or_else(|| t!("MapViewer.render.tile_render_composite.preview_stride_overflow").to_string())?;
         let left_bytes = usize::try_from(dirty.left)
             .ok()
             .and_then(|value| value.checked_mul(4))
-            .ok_or_else(|| "视口合成预览 X 偏移溢出".to_string())?;
-        let top = usize::try_from(dirty.top).map_err(|_| "视口合成预览 Y 偏移无效".to_string())?;
-        let rows = usize::try_from(height).map_err(|_| "视口合成预览高度无效".to_string())?;
+            .ok_or_else(|| t!("MapViewer.render.tile_render_composite.preview_x_offset_overflow").to_string())?;
+        let top = usize::try_from(dirty.top).map_err(|_| t!("MapViewer.render.tile_render_composite.preview_y_offset_invalid").to_string())?;
+        let rows = usize::try_from(height).map_err(|_| t!("MapViewer.render.tile_render_composite.preview_height_invalid").to_string())?;
         for row in 0..rows {
             let source_start = top
                 .checked_add(row)
                 .and_then(|value| value.checked_mul(source_stride))
                 .and_then(|value| value.checked_add(left_bytes))
-                .ok_or_else(|| "视口合成预览源偏移溢出".to_string())?;
+                .ok_or_else(|| t!("MapViewer.render.tile_render_composite.preview_source_offset_overflow").to_string())?;
             let source_end = source_start
                 .checked_add(target_stride)
-                .ok_or_else(|| "视口合成预览源末尾溢出".to_string())?;
+                .ok_or_else(|| t!("MapViewer.render.tile_render_composite.preview_source_end_overflow").to_string())?;
             let target_start = row
                 .checked_mul(target_stride)
-                .ok_or_else(|| "视口合成预览目标偏移溢出".to_string())?;
+                .ok_or_else(|| t!("MapViewer.render.tile_render_composite.preview_target_offset_overflow").to_string())?;
             let target_end = target_start
                 .checked_add(target_stride)
-                .ok_or_else(|| "视口合成预览目标末尾溢出".to_string())?;
+                .ok_or_else(|| t!("MapViewer.render.tile_render_composite.preview_target_end_overflow").to_string())?;
             pixels
                 .get_mut(target_start..target_end)
-                .ok_or_else(|| "视口合成预览目标越界".to_string())?
+                .ok_or_else(|| t!("MapViewer.render.tile_render_composite.preview_target_out_of_bounds").to_string())?
                 .copy_from_slice(
                     self.pixels
                         .get(source_start..source_end)
-                        .ok_or_else(|| "视口合成预览源越界".to_string())?,
+                        .ok_or_else(|| t!("MapViewer.render.tile_render_composite.preview_source_out_of_bounds").to_string())?,
                 );
         }
 
         let estimated_bytes = pixels.len();
         let image = RenderImage::from_raw_pixels(width, height, ImagePixelFormat::Rgba8, pixels)
-            .map_err(|error| format!("视口合成预览图创建失败: {error}"))?;
+            .map_err(|error| {
+                t!(
+                    "MapViewer.render.tile_render_composite.preview_image_create_failed",
+                    error = error,
+                )
+                .to_string()
+            })?;
         self.dirty_tiles = 0;
         self.preview_frames = self.preview_frames.saturating_add(1);
         let inverse_scale = 1.0 / self.output_scale.max(0.001);
@@ -450,7 +479,13 @@ impl ProgressiveViewportCompositor {
         let estimated_bytes = pixels.len();
         let image =
             RenderImage::from_raw_pixels(self.width, self.height, ImagePixelFormat::Rgba8, pixels)
-                .map_err(|error| format!("视口合成图创建失败: {error}"))?;
+                .map_err(|error| {
+                    t!(
+                        "MapViewer.render.tile_render_composite.composite_image_create_failed",
+                        error = error,
+                    )
+                    .to_string()
+                })?;
         Ok(Some(tile_render_core::ViewportCompositeFrame {
             image: Arc::new(image),
             source_viewport: self.viewport,
@@ -468,7 +503,7 @@ impl ProgressiveViewportCompositor {
 
 fn viewport_composite_image_size(viewport: MapViewport) -> Result<(u32, u32, f32), String> {
     if !viewport.width.is_finite() || !viewport.height.is_finite() {
-        return Err("视口合成尺寸无效".to_string());
+        return Err(t!("MapViewer.render.tile_render_composite.composite_size_invalid").to_string());
     }
     let viewport_width = viewport.width.ceil().max(1.0);
     let viewport_height = viewport.height.ceil().max(1.0);

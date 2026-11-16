@@ -99,10 +99,11 @@ impl View {
         let target = self.viewport_center_chunk_pos();
         if self.set_paste_preview(target, transform, display_degrees, None, cx) {
             self.mark_converter_target_selected();
-            self.status = SharedString::from(format!(
-                "已将预览移动到当前视野中心的区块 X {}、Z {}；尚未写入世界",
-                target.x, target.z
-            ));
+            self.status = t!(
+                "MapViewer.import.workspace.preview_moved_to_view_center",
+                x = target.x,
+                z = target.z,
+            );
             cx.notify();
         }
     }
@@ -229,10 +230,16 @@ impl View {
         let preview = self.ui_state.import_workspace_mode == ImportWorkspaceMode::Preview;
         let is_map_image = self.ui_state.active_right_panel == MapViewerRightPanel::MapImage;
         let (workspace_kind, workspace_title) = match self.ui_state.active_right_panel {
-            MapViewerRightPanel::Generator => ("3D MODEL", "模型转方块"),
-            MapViewerRightPanel::ImageGenerator => ("IMAGE / BLOCK", "像素画"),
-            MapViewerRightPanel::MapImage => ("IMAGE / MAP", "地图画"),
-            _ => ("IMPORT", "导入编辑"),
+            MapViewerRightPanel::Generator => {
+                ("3D MODEL", t!("MapViewer.import.workspace.model_to_blocks"))
+            }
+            MapViewerRightPanel::ImageGenerator => {
+                ("IMAGE / BLOCK", t!("MapViewer.import.workspace.pixel_art"))
+            }
+            MapViewerRightPanel::MapImage => {
+                ("IMAGE / MAP", t!("MapViewer.import.workspace.map_art"))
+            }
+            _ => ("IMPORT", t!("MapViewer.import.workspace.import_editor")),
         };
         let source_available = match self.ui_state.active_right_panel {
             MapViewerRightPanel::Generator => self.generator.source.is_some(),
@@ -282,18 +289,18 @@ impl View {
                         ImportWorkspaceMode::Preview,
                         "01",
                         if is_map_image {
-                            "分片预览"
+                            t!("MapViewer.import.workspace.stage_tile_preview")
                         } else {
-                            "转换预览"
+                            t!("MapViewer.import.workspace.stage_conversion_preview")
                         },
                     ),
                     (
                         ImportWorkspaceMode::Placement,
                         "02",
                         if is_map_image {
-                            "定位与写入"
+                            t!("MapViewer.import.workspace.stage_position_and_write")
                         } else {
-                            "世界放置"
+                            t!("MapViewer.import.workspace.stage_world_placement")
                         },
                     ),
                 ]
@@ -336,9 +343,9 @@ impl View {
                         choice::chip(
                             colors,
                             if self.placement_inspector_visible() {
-                                "收起缩略图"
+                                t!("MapViewer.import.workspace.hide_thumbnail")
                             } else {
-                                "显示缩略图"
+                                t!("MapViewer.import.workspace.show_thumbnail")
                             },
                             false,
                         )
@@ -356,10 +363,15 @@ impl View {
                     && source_available
                     && self.ui_state.active_right_panel != MapViewerRightPanel::MapImage,
                 |bar| {
-                    bar.child(choice::chip(colors, "重置视角", false).on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| this.reset_preview_3d_camera(cx)),
-                    ))
+                    bar.child(
+                        choice::chip(colors, t!("MapViewer.import.workspace.reset_view"), false)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.reset_preview_3d_camera(cx)
+                                }),
+                            ),
+                    )
                 },
             )
     }
@@ -399,7 +411,10 @@ impl View {
                     .min_h(px(0.0))
                     .flex()
                     .flex_col()
-                    .child(import_preview_label(colors, "源模型 · OBJ / glTF / GLB"))
+                    .child(import_preview_label(
+                        colors,
+                        t!("MapViewer.import.workspace.source_model_label"),
+                    ))
                     .when_some(
                         self.generator.original_preview.as_ref(),
                         |panel, original| {
@@ -423,17 +438,17 @@ impl View {
                                     div()
                                         .text_size(px(11.0))
                                         .text_color(colors.text_secondary)
-                                        .child(format!(
-                                            "源模型 {} 三角形 · 预览 {} · {}",
-                                            original.total_triangles,
-                                            original.displayed_triangles,
-                                            if original.textured_materials > 0 {
-                                                format!(
-                                                    "已加载 {} 个贴图材质",
-                                                    original.textured_materials
+                                        .child(t!(
+                                            "MapViewer.import.workspace.source_model_stats",
+                                            triangles = original.total_triangles,
+                                            preview = original.displayed_triangles,
+                                            materials = if original.textured_materials > 0 {
+                                                t!(
+                                                    "MapViewer.import.workspace.textured_materials",
+                                                    count = original.textured_materials
                                                 )
                                             } else {
-                                                "MTL 漫反射材质色（无贴图）".to_owned()
+                                                t!("MapViewer.import.workspace.mtl_diffuse_materials")
                                             },
                                         )),
                                 )
@@ -533,9 +548,11 @@ impl View {
                         panel.child(import_preview_label(
                             colors,
                             if self.generator.preview_result_active {
-                                "原始 OBJ 网格预览不可用；方块化结果仍可检查，尝试更换素材。"
+                                t!(
+                                    "MapViewer.import.workspace.source_preview_unavailable"
+                                )
                             } else {
-                                "正在准备原始 OBJ 三角形预览，不会以方块模型冒充源模型。"
+                                t!("MapViewer.import.workspace.source_preview_preparing")
                             },
                         ))
                     }),
@@ -618,9 +635,12 @@ impl View {
                 }
             }
         } else {
-            self.status = SharedString::from(format!(
-                "请输入 {min}–{max} 范围内的整数，已恢复为 {previous}",
-            ));
+            self.status = t!(
+                "MapViewer.import.workspace.numeric_axis_invalid",
+                min = min,
+                max = max,
+                previous = previous,
+            );
         }
         // Normalize leading zeros and restore invalid edits without forcing a new task.
         match axis {
@@ -650,7 +670,7 @@ impl View {
     ) {
         let panel = self.ui_state.active_right_panel;
         if paths.len() != 1 {
-            self.status = SharedString::from("请一次拖入一个素材；多文件或混合格式不会被静默忽略");
+            self.status = t!("MapViewer.import.workspace.drop_single_source_only");
             cx.notify();
             return;
         }
@@ -687,28 +707,28 @@ impl View {
     ) -> Div {
         let (title, description, action, drop_hint) = match self.ui_state.active_right_panel {
             MapViewerRightPanel::Generator => (
-                "从 OBJ 模型开始",
-                "选择 OBJ 模型。支持关联 MTL 与同目录纹理，转换结果会显示在这里。",
-                "选择 OBJ 模型…",
-                "也可直接将 .obj 文件拖入地图窗口",
+                t!("MapViewer.import.workspace.empty_obj_title"),
+                t!("MapViewer.import.workspace.empty_obj_description"),
+                t!("MapViewer.import.workspace.empty_obj_action"),
+                t!("MapViewer.import.workspace.empty_obj_drop_hint"),
             ),
             MapViewerRightPanel::ImageGenerator => (
-                "从图片创建方块模型",
-                "导入 PNG、JPEG、TGA 或 WebP，先预览比例和色彩，再调整目标尺寸。",
-                "选择图片…",
-                "也可直接拖入 PNG / JPEG / TGA / WebP 图片",
+                t!("MapViewer.import.workspace.empty_image_block_title"),
+                t!("MapViewer.import.workspace.empty_image_block_description"),
+                t!("MapViewer.import.workspace.choose_image_action"),
+                t!("MapViewer.import.workspace.empty_image_drop_hint"),
             ),
             MapViewerRightPanel::MapImage => (
-                "从图片创建地图物品",
-                "导入图片后可预览每张 128×128 地图、编辑拼图网格，再选择写入目标。",
-                "选择图片…",
-                "也可直接拖入 PNG / JPEG / TGA / WebP 图片",
+                t!("MapViewer.import.workspace.empty_map_title"),
+                t!("MapViewer.import.workspace.empty_map_description"),
+                t!("MapViewer.import.workspace.choose_image_action"),
+                t!("MapViewer.import.workspace.empty_image_drop_hint"),
             ),
             _ => (
-                "选择源素材",
-                "选择素材以开始转换。",
-                "选择素材…",
-                "拖入受支持的文件",
+                t!("MapViewer.import.workspace.empty_generic_title"),
+                t!("MapViewer.import.workspace.empty_generic_description"),
+                t!("MapViewer.import.workspace.empty_generic_action"),
+                t!("MapViewer.import.workspace.empty_generic_drop_hint"),
             ),
         };
         div()
@@ -807,9 +827,9 @@ impl View {
             .child(import_preview_label(
                 colors,
                 if owner_ready {
-                    "方块结果 · 左键旋转模型，右键环绕，滚轮缩放"
+                    t!("MapViewer.import.workspace.block_result_controls_hint")
                 } else {
-                    "选择素材后自动转换；调整右侧参数更新预览"
+                    t!("MapViewer.import.workspace.block_result_empty_hint")
                 },
             ))
             .when(owner_ready, |panel| {
@@ -826,7 +846,7 @@ impl View {
                                     secondary_button(
                                         colors,
                                         "map-import-rebuild-3d-preview",
-                                        "重新加载 3D 预览",
+                                        t!("MapViewer.import.workspace.reload_3d_preview"),
                                     )
                                     .on_mouse_down(
                                         MouseButton::Left,

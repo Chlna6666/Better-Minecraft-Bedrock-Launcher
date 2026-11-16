@@ -47,12 +47,12 @@ pub(super) fn export_selection(
 ) -> Result<PathBuf, String> {
     let chunk_count = bounds.chunk_count();
     if chunk_count == 0 {
-        return Err("没有可导出的 chunk".to_string());
+        return Err(t!("MapViewer.core.mcstructure.no_exportable_chunks").to_string());
     }
     check_mcstructure_export_cancelled(cancel)?;
     let total = chunk_count.max(1);
     progress(ChunkTransferProgress {
-        phase: SharedString::from("读取结构"),
+        phase: TransferPhase::READ_STRUCTURE,
         completed: 0,
         total,
     });
@@ -74,8 +74,15 @@ pub(super) fn export_selection(
         .saturating_mul(16);
     let (min_y, max_y) = export_y_range(bounds.dimension, center_y);
     let height = max_y.saturating_sub(min_y).saturating_add(1);
-    let size = bedrock_world::structure::McStructureSize::new(width, height, depth)
-        .map_err(|error| format!("选区结构尺寸超过当前安全上限：{error}"))?;
+    let size = bedrock_world::structure::McStructureSize::new(width, height, depth).map_err(
+        |error| {
+            t!(
+                "MapViewer.core.mcstructure.selection_structure_too_large",
+                error = error
+            )
+            .to_string()
+        },
+    )?;
     let structure = bedrock_world::structure::McStructureFile::from_world_region(
         &world,
         bounds.dimension,
@@ -87,7 +94,7 @@ pub(super) fn export_selection(
     .map_err(|error| error.to_string())?;
     check_mcstructure_export_cancelled(cancel)?;
     progress(ChunkTransferProgress {
-        phase: SharedString::from("写入结构"),
+        phase: TransferPhase::WRITE_STRUCTURE,
         completed: total.saturating_sub(1),
         total,
     });
@@ -95,7 +102,7 @@ pub(super) fn export_selection(
         .map_err(|error| error.to_string())?;
     check_mcstructure_export_cancelled(cancel)?;
     progress(ChunkTransferProgress {
-        phase: SharedString::from("写入结构"),
+        phase: TransferPhase::WRITE_STRUCTURE,
         completed: total,
         total,
     });
@@ -123,8 +130,14 @@ pub(super) fn read_import(
     anchor_chunk: ChunkPos,
     origin_y: i32,
 ) -> Result<McStructureImport, String> {
-    let structure = bedrock_world::structure::read_mcstructure_file(path)
-        .map_err(|error| format!("读取 .mcstructure 失败（{}）：{}", path.display(), error))?;
+    let structure = bedrock_world::structure::read_mcstructure_file(path).map_err(|error| {
+        t!(
+            "MapViewer.core.mcstructure.read_failed",
+            path = path.display(),
+            error = error
+        )
+        .to_string()
+    })?;
     prepare_import(Arc::new(structure), anchor_chunk, origin_y)
 }
 
@@ -162,11 +175,15 @@ fn structure_to_copied_chunk(
         mirror_x: false,
         mirror_z: false,
     };
-    let targets = structure
-        .target_chunks(placement)
-        .map_err(|error| format!("结构目标 chunk 计算失败：{error}"))?;
+    let targets = structure.target_chunks(placement).map_err(|error| {
+        t!(
+            "MapViewer.core.mcstructure.target_chunks_failed",
+            error = error
+        )
+        .to_string()
+    })?;
     if targets.is_empty() {
-        return Err("结构文件没有可导入的方块".to_string());
+        return Err(t!("MapViewer.core.mcstructure.no_importable_blocks").to_string());
     }
     let mut chunks = Vec::with_capacity(targets.len());
     for chunk in targets {
@@ -224,10 +241,14 @@ pub(super) fn paste_imported_structure(
         guard,
         |write_progress| {
             progress(ChunkTransferProgress {
-                phase: SharedString::from(match write_progress.phase {
-                    bedrock_world::editor::McStructureWritePhase::Prepare => "准备结构",
-                    bedrock_world::editor::McStructureWritePhase::WriteChunks => "粘贴结构",
-                }),
+                phase: match write_progress.phase {
+                    bedrock_world::editor::McStructureWritePhase::Prepare => {
+                        TransferPhase::PREPARE_STRUCTURE
+                    }
+                    bedrock_world::editor::McStructureWritePhase::WriteChunks => {
+                        TransferPhase::PASTE_STRUCTURE
+                    }
+                },
                 completed: write_progress.completed,
                 total: write_progress.total,
             });
@@ -236,15 +257,16 @@ pub(super) fn paste_imported_structure(
     check_mcstructure_paste_cancelled(cancel)?;
 
     Ok((
-        format!(
-            "已粘贴结构 {}x{}x{} 到 chunk {},{}（{} 个 chunk）",
-            import.structure.size.x,
-            import.structure.size.y,
-            import.structure.size.z,
-            target_anchor.x,
-            target_anchor.z,
-            result.affected_chunks.len()
-        ),
+        t!(
+            "MapViewer.core.mcstructure.structure_pasted",
+            size_x = import.structure.size.x,
+            size_y = import.structure.size.y,
+            size_z = import.structure.size.z,
+            chunk_x = target_anchor.x,
+            chunk_z = target_anchor.z,
+            count = result.affected_chunks.len()
+        )
+        .to_string(),
         EditInvalidation::chunks(result.affected_chunks).with_metadata(),
     ))
 }

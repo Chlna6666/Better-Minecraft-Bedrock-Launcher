@@ -78,8 +78,8 @@ impl World3dMapLink {
 
 impl View {
     pub(crate) fn report_clipboard_busy(&mut self, cx: &mut Context<Self>) {
-        let message = "已有复制任务，请等待完成后再复制";
-        self.status = message.into();
+        let message = t!("MapViewer.world3d.link.clipboard_busy");
+        self.status = message.clone();
         if let Some(editor) = self.world3d.editor.clone() {
             cx.defer(move |cx| {
                 let _ = editor.update(cx, |editor, cx| {
@@ -96,18 +96,18 @@ impl View {
         cx: &mut Context<Self>,
     ) {
         if self.map_write_busy() {
-            self.status = SharedString::from("地图正在写入，暂不能复制 3D 选区");
+            self.status = t!("MapViewer.world3d.link.copy_writing_3d_selection");
             cx.notify();
             return;
         }
         let size = selection.size();
         let Ok(size) = bedrock_world::structure::McStructureSize::new(size[0], size[1], size[2]) else {
-            self.status = SharedString::from("3D 选区尺寸无效");
+            self.status = t!("MapViewer.world3d.link.copy_selection_invalid_size");
             cx.notify();
             return;
         };
         if selection.volume() > 1_048_576 {
-            self.status = SharedString::from("3D 选区超过 1048576 个方块，请缩小选区");
+            self.status = t!("MapViewer.world3d.link.copy_selection_too_large");
             cx.notify();
             return;
         }
@@ -122,7 +122,7 @@ impl View {
         };
         let path = self.world_path.clone();
         let editor = self.world3d.editor.clone();
-        self.status = SharedString::from("正在复制 3D 选区...");
+        self.status = t!("MapViewer.world3d.link.copying_3d_selection");
         cx.notify();
         cx.spawn(async move |handle, cx| {
             let result = cx
@@ -162,14 +162,21 @@ impl View {
                         this.clear_paste_preview_state(cx);
                         this.invalidate_preview_3d_mesh();
                         (
-                            format!(
-                                "已复制 3D 选区 {}×{}×{}；可在 3D 调整高度后粘贴",
-                                size.x, size.y, size.z
-                            ),
+                            t!(
+                                "MapViewer.world3d.link.copy_selection_done",
+                                size_x = size.x,
+                                size_y = size.y,
+                                size_z = size.z
+                            )
+                            .to_string(),
                             true,
                         )
                     }
-                    Err(error) => (format!("复制 3D 选区失败：{error}"), false),
+                    Err(error) => (
+                        t!("MapViewer.world3d.link.copy_selection_failed", error = error)
+                            .to_string(),
+                        false,
+                    ),
                 };
                 this.status = SharedString::from(message.clone());
                 if let Some(editor) = editor {
@@ -254,7 +261,7 @@ impl View {
             return;
         };
         if self.map_write_busy() {
-            self.status = SharedString::from("地图正在写入，暂不能复制区块");
+            self.status = t!("MapViewer.world3d.link.copy_chunks_writing");
             cx.notify();
             return;
         }
@@ -337,7 +344,7 @@ impl View {
     ) {
         if let World3dImportAction::StartAt(target) = action {
             if self.map_write_busy() || self.professional.copied_chunk.is_none() {
-                self.status = SharedString::from("没有可粘贴的区块副本，或地图正在写入");
+                self.status = t!("MapViewer.world3d.link.paste_no_copy");
                 cx.notify();
                 return;
             }
@@ -346,7 +353,7 @@ impl View {
             }
             if self.set_paste_preview(target, PasteTransform::default(), 0.0, None, cx) {
                 self.mark_converter_target_selected();
-                self.status = SharedString::from("3D 粘贴预览已创建；点击地形定位后确认写入");
+                self.status = t!("MapViewer.world3d.link.paste_preview_created");
                 cx.notify();
             }
             return;
@@ -384,10 +391,11 @@ impl View {
                 self.step_y(next_y.saturating_sub(self.y_layer), cx);
                 if self.set_paste_preview(target, transform, degrees, None, cx) {
                     self.mark_converter_target_selected();
-                    self.status = SharedString::from(format!(
-                        "3D 粘贴预览已定位到区块 {}, {}；确认前不会写入世界",
-                        target.x, target.z
-                    ));
+                    self.status = t!(
+                        "MapViewer.world3d.link.paste_preview_located",
+                        chunk_x = target.x,
+                        chunk_z = target.z
+                    );
                     cx.notify();
                 }
             }
@@ -452,22 +460,27 @@ impl View {
             .professional
             .paste_preview
             .as_ref()
-            .ok_or_else(|| "请先建立粘贴预览".to_string())?;
+            .ok_or_else(|| t!("MapViewer.world3d.link.paste_preview_missing").to_string())?;
         if preview.is_writing() || self.map_write_busy() {
-            return Err("地图正在写入，暂不能调整粘贴高度".to_string());
+            return Err(t!("MapViewer.world3d.link.paste_height_writing").to_string());
         }
         let import = self
             .professional
             .imported_structure
             .as_ref()
-            .ok_or_else(|| "当前区块副本没有可调整的结构高度".to_string())?;
+            .ok_or_else(|| t!("MapViewer.world3d.link.paste_height_unavailable").to_string())?;
         let target = preview.target_anchor;
         let (min_y, max_y) = target.y_range(ChunkVersion::New);
         let max_origin = max_y
             .saturating_sub(import.structure.size.y)
             .saturating_add(1);
         if !(min_y..=max_origin).contains(&value) {
-            return Err(format!("粘贴高度须在 {min_y}..{max_origin} 内"));
+            return Err(t!(
+                "MapViewer.world3d.link.paste_height_out_of_range",
+                min_y = min_y,
+                max_origin = max_origin
+            )
+            .to_string());
         }
         self.apply_import_action(World3dImportAction::MoveTo(target, value), cx);
         Ok(())
@@ -502,10 +515,10 @@ impl View {
                     && !dimension_matches
                     && self.world3d.overlay_mode.shows_frustum()
                 {
-                    self.status = SharedString::from(format!(
-                        "3D 摄像机位于{}，已隐藏 2D 视锥叠加",
-                        super::types::dimension_label(snapshot.dimension)
-                    ));
+                    self.status = t!(
+                        "MapViewer.world3d.link.camera_hidden_frustum",
+                        dimension = super::types::dimension_label(snapshot.dimension)
+                    );
                     notify_main = true;
                 }
                 if self.world3d.follow_3d && dimension_matches {
@@ -550,7 +563,7 @@ impl View {
         self.world3d.overlay_mode = mode;
         self.world3d.overlay_hidden_by_user = mode == CameraOverlayMode::Hidden;
         self.push_camera_overlay(cx);
-        self.status = SharedString::from(format!("2D 摄像机叠加：{}", mode.label()));
+        self.status = t!("MapViewer.world3d.link.camera_overlay_set", mode = mode.label());
         cx.notify();
     }
 
@@ -574,7 +587,7 @@ impl View {
             self.canvas_view.update(cx, |canvas, cx| {
                 canvas.set_world3d_camera(None, CameraOverlayMode::Hidden, self.dimension, cx);
             });
-            self.status = SharedString::from("3D 世界编辑器已关闭，2D 摄像机叠加已移除");
+            self.status = t!("MapViewer.world3d.link.editor_closed");
             cx.notify();
         }
     }
@@ -627,10 +640,12 @@ impl View {
                 editor.navigate_for_map(target, cx);
             });
             self.focus_editor_window(cx);
-            self.status = SharedString::from(format!(
-                "已传送 3D 编辑器到 X {block_x} · Z {block_z}（{}）",
-                height_mode.label()
-            ));
+            self.status = t!(
+                "MapViewer.world3d.link.teleported_editor",
+                block_x = block_x,
+                block_z = block_z,
+                height_mode = height_mode.label()
+            );
             cx.notify();
             return;
         }
@@ -642,10 +657,12 @@ impl View {
             });
             self.attach_editor_handle(key, entry.editor, entry.window, cx);
             self.focus_editor_window(cx);
-            self.status = SharedString::from(format!(
-                "已传送 3D 编辑器到 X {block_x} · Z {block_z}（{}）",
-                height_mode.label()
-            ));
+            self.status = t!(
+                "MapViewer.world3d.link.teleported_editor",
+                block_x = block_x,
+                block_z = block_z,
+                height_mode = height_mode.label()
+            );
             cx.notify();
             return;
         }
@@ -657,7 +674,7 @@ impl View {
             return;
         }
         self.world3d.opening = true;
-        self.status = SharedString::from("正在读取世界出生点并打开 3D 世界编辑器...");
+        self.status = t!("MapViewer.world3d.link.opening_editor");
         cx.notify();
         let world_path = self.world_path.clone();
         let package_roots =
@@ -698,10 +715,11 @@ impl View {
                     this.ensure_world3d_import_preview(cx);
                     this.focus_editor_window(cx);
                 }
-                this.status = SharedString::from(format!(
-                    "已打开 3D 世界编辑器 · 目标 X {} · Z {}",
-                    target.block_x, target.block_z
-                ));
+                this.status = t!(
+                    "MapViewer.world3d.link.editor_opened",
+                    block_x = target.block_x,
+                    block_z = target.block_z
+                );
                 cx.notify();
             })?;
             Ok::<(), anyhow::Error>(())
@@ -854,7 +872,7 @@ impl View {
                 !super::super::selection::chunks_are_rectangular(selection, Some(chunks))
             })
         {
-            self.status = SharedString::from("高度复制仅支持矩形选区；请重新框选连续区域");
+            self.status = t!("MapViewer.world3d.link.height_copy_rect_only");
             cx.notify();
             return;
         }
@@ -874,15 +892,15 @@ impl View {
                 !super::super::selection::chunks_are_rectangular(selection, Some(chunks))
             })
         {
-            self.status = SharedString::from("高度清除仅支持矩形选区；请重新框选连续区域");
+            self.status = t!("MapViewer.world3d.link.height_clear_rect_only");
             cx.notify();
             return;
         }
         if volume.volume() > super::types::WORLD3D_MAX_EDIT_BLOCKS as u64 {
-            self.status = SharedString::from(format!(
-                "高度清除超过 {} 个方块上限",
-                super::types::WORLD3D_MAX_EDIT_BLOCKS
-            ));
+            self.status = t!(
+                "MapViewer.world3d.link.height_clear_too_large",
+                limit = super::types::WORLD3D_MAX_EDIT_BLOCKS
+            );
             cx.notify();
             return;
         }
@@ -911,15 +929,15 @@ impl View {
                 !super::super::selection::chunks_are_rectangular(selection, Some(chunks))
             })
         {
-            self.status = SharedString::from("高度填充仅支持矩形选区；请重新框选连续区域");
+            self.status = t!("MapViewer.world3d.link.height_fill_rect_only");
             cx.notify();
             return;
         }
         if volume.volume() > super::types::WORLD3D_MAX_EDIT_BLOCKS as u64 {
-            self.status = SharedString::from(format!(
-                "高度填充超过 {} 个方块上限",
-                super::types::WORLD3D_MAX_EDIT_BLOCKS
-            ));
+            self.status = t!(
+                "MapViewer.world3d.link.height_fill_too_large",
+                limit = super::types::WORLD3D_MAX_EDIT_BLOCKS
+            );
             cx.notify();
             return;
         }
@@ -934,7 +952,7 @@ impl View {
                     || matches!(ch, ':' | '_' | '/' | '.' | '-'))
             })
         {
-            self.status = SharedString::from("请输入有效方块 ID，例如 minecraft:stone");
+            self.status = t!("MapViewer.world3d.link.invalid_block_id");
             cx.notify();
             return;
         }
@@ -1041,11 +1059,11 @@ impl View {
     pub(crate) fn toggle_world3d_follow(&mut self, cx: &mut Context<Self>) {
         self.world3d.follow_3d = !self.world3d.follow_3d;
         self.world3d.last_follow_center = None;
-        self.status = SharedString::from(if self.world3d.follow_3d {
-            "2D 跟随 3D 摄像机已开启"
+        self.status = if self.world3d.follow_3d {
+            t!("MapViewer.world3d.link.follow_camera_enabled")
         } else {
-            "2D 跟随 3D 摄像机已关闭"
-        });
+            t!("MapViewer.world3d.link.follow_camera_disabled")
+        };
         if self.world3d.follow_3d {
             if let Some(camera) = self
                 .world3d
@@ -1162,8 +1180,9 @@ fn apply_edit(
 ) -> Result<(EditInvalidation, String, Vec<BwChunkPos>), String> {
     let mut options = OpenOptions::default();
     options.read_only = false;
-    let world = BwWorld::open(world_path, options)
-        .map_err(|error| format!("打开世界写入通道失败：{error}"))?;
+    let world = BwWorld::open(world_path, options).map_err(|error| {
+        t!("MapViewer.world3d.link.write_channel_failed", error = error).to_string()
+    })?;
     let operation = format!(
         "3D block edit dim={} min={:?} max={:?}",
         request.dimension.id(),
@@ -1210,16 +1229,26 @@ fn apply_edit(
         }
     }
     if edits.is_empty() {
-        return Err("3D 编辑没有任何目标方块".to_string());
+        return Err(t!("MapViewer.world3d.link.no_target_blocks").to_string());
     }
     let history_label = match &request.kind {
-        World3dBlockEditKind::Fill { block_name } => {
-            format!("3D 填充 {} · {} 个方块", block_name, edits.len())
-        }
-        World3dBlockEditKind::Ellipsoid { block_name } => {
-            format!("3D 椭球填充 {} · {} 个方块", block_name, edits.len())
-        }
-        World3dBlockEditKind::Clear => format!("3D 清除选区 · {} 个方块", edits.len()),
+        World3dBlockEditKind::Fill { block_name } => t!(
+            "MapViewer.world3d.link.history_label_fill",
+            block = block_name,
+            count = edits.len()
+        )
+        .to_string(),
+        World3dBlockEditKind::Ellipsoid { block_name } => t!(
+            "MapViewer.world3d.link.history_label_ellipsoid",
+            block = block_name,
+            count = edits.len()
+        )
+        .to_string(),
+        World3dBlockEditKind::Clear => t!(
+            "MapViewer.world3d.link.history_label_clear",
+            count = edits.len()
+        )
+        .to_string(),
     };
     let history_capture = capture_before_in_world(
         MapHistoryCaptureSpec {
@@ -1242,11 +1271,16 @@ fn apply_edit(
             compact_empty_subchunks: true,
         },
     );
-    let message = format!("{history_label} 已写入并记录到 2D 文档历史");
+    let message = t!(
+        "MapViewer.world3d.link.edit_written_to_history",
+        label = history_label
+    )
+    .to_string();
     match (history_capture, result) {
         (Ok(capture), Ok(result)) => {
-            complete_after_in_world(capture, &world, message.clone(), |_| {})
-                .map_err(|error| format!("历史写入失败：{error}"))?;
+            complete_after_in_world(capture, &world, message.clone(), |_| {}).map_err(|error| {
+                t!("MapViewer.world3d.link.history_write_failed", error = error).to_string()
+            })?;
             let chunks = result.affected_chunks.iter().copied().collect::<Vec<_>>();
             Ok((
                 EditInvalidation::chunks(chunks.iter().copied()).with_metadata(),
@@ -1256,20 +1290,28 @@ fn apply_edit(
         }
         (Ok(capture), Err(error)) => {
             let _ = complete_failed(capture, error.to_string());
-            Err(format!("3D 写入失败：{error}"))
+            Err(t!("MapViewer.world3d.link.write_failed", error = error).to_string())
         }
         (Err(history_error), Ok(result)) => {
             tracing::warn!(%history_error, "3D edit history capture failed");
             let chunks = result.affected_chunks.iter().copied().collect::<Vec<_>>();
             Ok((
                 EditInvalidation::chunks(chunks.iter().copied()).with_metadata(),
-                format!("{message}（历史捕获失败：{history_error}）"),
+                t!(
+                    "MapViewer.world3d.link.message_with_history_capture_failure",
+                    message = message,
+                    history_error = history_error
+                )
+                .to_string(),
                 chunks,
             ))
         }
-        (Err(history_error), Err(error)) => Err(format!(
-            "3D 写入失败：{error}；历史捕获失败：{history_error}"
-        )),
+        (Err(history_error), Err(error)) => Err(t!(
+            "MapViewer.world3d.link.write_and_history_capture_failed",
+            error = error,
+            history_error = history_error
+        )
+        .to_string()),
     }
 }
 

@@ -79,19 +79,20 @@ impl View {
             .map(|preview| preview.targets.len())
             .unwrap_or_default();
         let anchor_text = preview.map_or_else(
-            || "预览尚未准备，完成转换后再选择放置位置".to_owned(),
+            || t!("MapViewer.import.actions.placement_not_ready").to_string(),
             |preview| {
-                format!(
-                    "锚点 X {} · Z {} · {} 个区块 · {}",
-                    preview.target_anchor.x,
-                    preview.target_anchor.z,
-                    footprint,
-                    if self.converter_target_selected() == Some(true) {
-                        "已选点"
+                t!(
+                    "MapViewer.import.actions.anchor_summary",
+                    x = preview.target_anchor.x,
+                    z = preview.target_anchor.z,
+                    chunks = footprint,
+                    state = if self.converter_target_selected() == Some(true) {
+                        t!("MapViewer.import.actions.target_selected")
                     } else {
-                        "拖动预览选择位置"
+                        t!("MapViewer.import.actions.drag_preview_to_position")
                     },
                 )
+                .to_string()
             },
         );
 
@@ -112,7 +113,11 @@ impl View {
                     .items_center()
                     .gap(px(7.0))
                     .child(
-                        secondary_button(colors, "map-structure-target-center", "放到当前视野中心")
+                        secondary_button(
+                            colors,
+                            "map-structure-target-center",
+                            t!("MapViewer.import.actions.move_to_view_center"),
+                        )
                             .when(can_position, |button| {
                                 button.on_mouse_down(
                                     MouseButton::Left,
@@ -124,7 +129,11 @@ impl View {
                             .opacity(if can_position { 1.0 } else { 0.45 }),
                     )
                     .child(
-                        secondary_button(colors, "map-structure-focus-preview", "居中查看预览")
+                        secondary_button(
+                            colors,
+                            "map-structure-focus-preview",
+                            t!("MapViewer.import.actions.focus_preview"),
+                        )
                             .when(preview.is_some(), |button| {
                                 button.on_mouse_down(
                                     MouseButton::Left,
@@ -139,7 +148,7 @@ impl View {
                         primary_button(
                             colors,
                             "map-structure-confirm-placement",
-                            "确认写入当前世界",
+                            t!("MapViewer.import.actions.confirm_write_world"),
                         )
                         .when(can_commit, |button| {
                             button.on_mouse_down(

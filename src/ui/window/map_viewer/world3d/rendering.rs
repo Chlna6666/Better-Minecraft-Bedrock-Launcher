@@ -1,4 +1,5 @@
 //! Product rendering presets translated into generic 3D shader parameters.
+use gpui::SharedString;
 use gpui_3d::{Vec3, VoxelDisplay, VoxelIllumination, VoxelShading};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -10,11 +11,11 @@ pub(in crate::ui::window::map_viewer) enum LightingMode {
 }
 
 impl LightingMode {
-    pub(super) fn label(self) -> &'static str {
+    pub(super) fn label(self) -> SharedString {
         match self {
-            Self::NightVision => "夜视（默认）",
-            Self::Vanilla => "普通原版",
-            Self::VibrantPreview => "灵动视效预览（实验）",
+            Self::NightVision => t!("MapViewer.world3d.rendering.lighting_night_vision"),
+            Self::Vanilla => t!("MapViewer.world3d.rendering.lighting_vanilla"),
+            Self::VibrantPreview => t!("MapViewer.world3d.rendering.lighting_vibrant_preview"),
         }
     }
     pub(super) fn is_lit(self) -> bool {

@@ -26,16 +26,16 @@ impl View {
         self.preview_3d.source = Preview3dSource::Selection;
         let Some(signature) = self.current_preview_3d_signature() else {
             self.clear_preview_3d_resources(false);
-            self.status = SharedString::from("请先选择 chunk 范围");
+            self.status = t!("MapViewer.import.preview_panel.select_chunk_range_first");
             cx.notify();
             return;
         };
         if self.preview_3d.signature == Some(signature) && self.preview_3d.render_in_flight {
             self.preview_3d.status = Preview3dStatus::Loading(Preview3dBuildStatus::new(
-                "加载中",
-                "已有预览任务正在运行",
+                t!("MapViewer.import.preview_panel.loading"),
+                t!("MapViewer.import.preview_panel.preview_task_running"),
             ));
-            self.status = SharedString::from("正在加载 3D 预览...");
+            self.status = t!("MapViewer.import.preview_panel.loading_preview_3d");
             cx.notify();
             return;
         }
@@ -50,7 +50,7 @@ impl View {
         let preview_cancel_for_owner = preview_cancel.clone();
         let is_same_signature = self.preview_3d.signature == Some(signature);
         self.preview_3d.status = Preview3dStatus::Loading(Preview3dBuildStatus::new(
-            "准备",
+            t!("MapViewer.import.preview_panel.preparing"),
             self.selection_status(),
         ));
         self.preview_3d.signature = Some(signature);
@@ -62,7 +62,7 @@ impl View {
         }
         self.preview_3d.render_in_flight = true;
         self.preview_3d.cancel = Some(preview_cancel.clone());
-        self.status = SharedString::from("正在加载 3D 预览...");
+        self.status = t!("MapViewer.import.preview_panel.loading_preview_3d");
         cx.notify();
 
         let query_budget = self.map_query_budget.clone();
@@ -113,10 +113,11 @@ impl View {
                         Preview3dLoadEvent::Chunk { mesh, status } => {
                             this.preview_3d.mesh = Some(mesh);
                             this.preview_3d.status = Preview3dStatus::Loading(status.clone());
-                            this.status = SharedString::from(format!(
-                                "正在拼接 3D 预览: {} {}",
-                                status.phase, status.detail
-                            ));
+                            this.status = t!(
+                                "MapViewer.import.preview_panel.assembling_preview_3d",
+                                phase = status.phase,
+                                detail = status.detail,
+                            );
                         }
                         Preview3dLoadEvent::Complete(result) => {
                             this.finish_preview_3d_load(result);
@@ -139,7 +140,7 @@ impl View {
         let imported_structure = self.professional.imported_structure.clone();
         let copied_chunk = self.professional.copied_chunk.clone();
         if imported_structure.is_none() && copied_chunk.is_none() {
-            self.status = SharedString::from("没有可加载的导入预览");
+            self.status = t!("MapViewer.import.preview_panel.no_import_preview");
             cx.notify();
             return;
         }
@@ -148,10 +149,10 @@ impl View {
         self.preview_3d.source = Preview3dSource::ImportPreview;
         if import_already_loading {
             self.preview_3d.status = Preview3dStatus::Loading(Preview3dBuildStatus::new(
-                "加载中",
-                "已有导入预览任务正在运行",
+                t!("MapViewer.import.preview_panel.loading"),
+                t!("MapViewer.import.preview_panel.import_preview_task_running"),
             ));
-            self.status = SharedString::from("正在加载导入 3D 预览...");
+            self.status = t!("MapViewer.import.preview_panel.loading_import_preview_3d");
             cx.notify();
             return;
         }
@@ -161,8 +162,10 @@ impl View {
         if let Some(cancel) = self.preview_3d.cancel.take() {
             cancel.cancel();
         }
-        self.preview_3d.status =
-            Preview3dStatus::Loading(Preview3dBuildStatus::new("准备", "导入模型"));
+        self.preview_3d.status = Preview3dStatus::Loading(Preview3dBuildStatus::new(
+            t!("MapViewer.import.preview_panel.preparing"),
+            t!("MapViewer.import.preview_panel.import_model"),
+        ));
         self.preview_3d.mesh = None;
         self.world3d.import_mesh_origin_y = imported_structure.as_ref().map(|data| data.origin_y);
         self.sync_world3d_import_preview(cx);
@@ -170,7 +173,7 @@ impl View {
         #[cfg(target_os = "windows")]
         self.preview_3d.clear_surface();
         self.preview_3d.render_in_flight = true;
-        self.status = SharedString::from("正在加载导入 3D 预览...");
+        self.status = t!("MapViewer.import.preview_panel.loading_import_preview_3d");
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -189,7 +192,7 @@ impl View {
                         ))
                         .map(Arc::new)
                     } else {
-                        Err("没有可加载的导入预览".to_string())
+                        Err(t!("MapViewer.import.preview_panel.no_import_preview").to_string())
                     }
                 })
                 .await;
@@ -232,27 +235,47 @@ impl View {
                 self.preview_3d.mesh = Some(mesh);
                 self.preview_3d.render_in_flight = false;
                 if face_count == 0 && glass_faces == 0 && water_faces == 0 && lava_faces == 0 {
-                    self.preview_3d.status = Preview3dStatus::NoSurface(SharedString::from(
-                        format!(
-                            "选区没有可显示体素面，面 {face_count}+{glass_faces}+{water_faces}+{lava_faces}"
-                        ),
+                    self.preview_3d.status = Preview3dStatus::NoSurface(t!(
+                        "MapViewer.import.preview_panel.selection_no_visible_faces",
+                        face_count = face_count,
+                        glass_faces = glass_faces,
+                        water_faces = water_faces,
+                        lava_faces = lava_faces,
                     ));
-                    self.status = SharedString::from("3D 预览没有可显示体素面");
+                    self.status = t!("MapViewer.import.preview_panel.preview_no_visible_faces");
                 } else {
                     self.preview_3d.status = Preview3dStatus::Ready;
                     let clipped = if omitted_faces > 0 {
-                        format!("，动态裁剪 {omitted_faces} 面")
+                        t!(
+                            "MapViewer.import.preview_panel.clipped_faces_suffix",
+                            count = omitted_faces
+                        )
+                        .to_string()
                     } else {
                         String::new()
                     };
                     let truncated = if truncated_chunks > 0 {
-                        format!("，动态限制 {truncated_chunks} chunks")
+                        t!(
+                            "MapViewer.import.preview_panel.truncated_chunks_suffix",
+                            count = truncated_chunks
+                        )
+                        .to_string()
                     } else {
                         String::new()
                     };
-                    self.status = SharedString::from(format!(
-                        "3D 预览已生成，方块 {block_count}，玻璃 {glass_blocks}，水 {water_blocks}，岩浆 {lava_blocks}，面 {face_count}+{glass_faces}+{water_faces}+{lava_faces}{clipped}{truncated}，后端 GPUI GPU"
-                    ));
+                    self.status = t!(
+                        "MapViewer.import.preview_panel.preview_ready_summary",
+                        blocks = block_count,
+                        glass_blocks = glass_blocks,
+                        water_blocks = water_blocks,
+                        lava_blocks = lava_blocks,
+                        faces = face_count,
+                        glass_faces = glass_faces,
+                        water_faces = water_faces,
+                        lava_faces = lava_faces,
+                        clipped = clipped,
+                        truncated = truncated,
+                    );
                 }
             }
             Err(error) => {
@@ -261,7 +284,10 @@ impl View {
                 #[cfg(target_os = "windows")]
                 self.preview_3d.clear_surface();
                 self.preview_3d.render_in_flight = false;
-                self.status = SharedString::from(format!("3D 预览失败: {error}"));
+                self.status = t!(
+                    "MapViewer.import.preview_panel.preview_failed",
+                    error = error,
+                );
             }
         }
     }
@@ -390,29 +416,29 @@ impl View {
     pub(super) fn selection_status(&self) -> SharedString {
         if self.preview_3d.source == Preview3dSource::ImportPreview {
             if let Some(import) = self.professional.imported_structure.as_ref() {
-                return SharedString::from(format!(
-                    "导入结构: {}x{}x{} · 锚点 {},{} · Y {}",
-                    import.structure.size.x,
-                    import.structure.size.y,
-                    import.structure.size.z,
-                    import.source_anchor.x,
-                    import.source_anchor.z,
-                    import.origin_y
-                ));
+                return t!(
+                    "MapViewer.import.preview_panel.imported_structure_status",
+                    x = import.structure.size.x,
+                    y = import.structure.size.y,
+                    z = import.structure.size.z,
+                    anchor_x = import.source_anchor.x,
+                    anchor_z = import.source_anchor.z,
+                    origin_y = import.origin_y,
+                );
             }
             if self.professional.imported_region_package {
                 if let Some(copied_chunk) = self.professional.copied_chunk.as_ref() {
-                    return SharedString::from(format!(
-                        "导入区域包: {} chunks · 锚点 {},{}",
-                        copied_chunk.chunk_count(),
-                        copied_chunk.source.x,
-                        copied_chunk.source.z
-                    ));
+                    return t!(
+                        "MapViewer.import.preview_panel.imported_region_package_status",
+                        chunks = copied_chunk.chunk_count(),
+                        anchor_x = copied_chunk.source.x,
+                        anchor_z = copied_chunk.source.z,
+                    );
                 }
             }
         }
         let Some(signature) = self.current_preview_3d_signature() else {
-            return SharedString::from("未选择 chunk，右键地图设置选区起点和终点");
+            return t!("MapViewer.import.preview_panel.no_chunk_selection_hint");
         };
         let width = super::preview_3d_source::bounds_width(signature.bounds);
         let depth = super::preview_3d_source::bounds_depth(signature.bounds);
@@ -426,10 +452,10 @@ impl View {
 
     pub(super) fn preview_3d_status_label(&self) -> SharedString {
         match &self.preview_3d.status {
-            Preview3dStatus::Idle => SharedString::from("待加载"),
+            Preview3dStatus::Idle => t!("MapViewer.import.preview_panel.status_idle"),
             Preview3dStatus::Loading(progress) => {
                 if progress.phase.is_empty() && progress.detail.is_empty() {
-                    SharedString::from("加载中")
+                    t!("MapViewer.import.preview_panel.loading")
                 } else if progress.phase.is_empty() {
                     progress.detail.clone()
                 } else if progress.detail.is_empty() {
@@ -438,72 +464,81 @@ impl View {
                     SharedString::from(format!("{} {}", progress.phase, progress.detail))
                 }
             }
-            Preview3dStatus::Ready => SharedString::from("已就绪"),
-            Preview3dStatus::NoSurface(message) => SharedString::from(format!("无表面: {message}")),
-            Preview3dStatus::Error(error) => SharedString::from(format!("错误: {error}")),
+            Preview3dStatus::Ready => t!("MapViewer.import.preview_panel.status_ready"),
+            Preview3dStatus::NoSurface(message) => t!(
+                "MapViewer.import.preview_panel.status_no_surface",
+                message = message,
+            ),
+            Preview3dStatus::Error(error) => {
+                t!("MapViewer.import.preview_panel.status_error", error = error)
+            }
         }
     }
 
     pub(super) fn preview_3d_stats_label(&self) -> SharedString {
         let Some(mesh) = self.preview_3d.mesh.as_ref() else {
-            return SharedString::from("体素网格未生成");
+            return t!("MapViewer.import.preview_panel.stats_mesh_missing");
         };
         let clipped = if mesh.omitted_face_count > 0 {
-            format!(
-                " · 已裁剪面 {} · 顶点预算 {}",
-                mesh.omitted_face_count, mesh.vertex_budget
+            t!(
+                "MapViewer.import.preview_panel.stats_clipped_suffix",
+                faces = mesh.omitted_face_count,
+                budget = mesh.vertex_budget,
             )
+            .to_string()
         } else {
             String::new()
         };
         let truncated = if mesh.truncated_chunk_count > 0 {
-            format!(" · 已截断区块 {}", mesh.truncated_chunk_count)
+            t!(
+                "MapViewer.import.preview_panel.stats_truncated_suffix",
+                count = mesh.truncated_chunk_count,
+            )
+            .to_string()
         } else {
             String::new()
         };
-        SharedString::from(format!(
-            "区块 已绘制 {}/{} · 已处理 {} · 子区块 {} · 方块 {} 玻璃 {} 水 {} 岩浆 {} · 面 {} 玻璃 {} 水 {} 岩浆 {} · 分片 {} · 顶点 {} · 总预算 {} 顶点 · 剔除内部面 {}{}{} · Y {}..{} · 缺失 {} · GPUI GPU · 视角 {:.2},{:.2},{:.2} · 镜头偏航 {:.1} 俯仰 {:.1} · 模型偏航 {:.1} 俯仰 {:.1} · 缩放 {:.2}",
-            mesh.rendered_chunk_count(),
-            mesh.chunk_count,
-            mesh.processed_chunk_count,
-            mesh.subchunk_count,
-            mesh.solid_block_count,
-            mesh.glass_block_count,
-            mesh.water_block_count,
-            mesh.lava_block_count,
-            mesh.face_count,
-            mesh.glass_face_count,
-            mesh.water_face_count,
-            mesh.lava_face_count,
-            mesh.chunk_meshes.len(),
-            mesh.vertex_count(),
-            mesh.vertex_budget,
-            mesh.culled_face_count,
-            clipped,
-            truncated,
-            mesh.min_y,
-            mesh.max_y,
-            mesh.missing_chunks,
-            self.preview_3d.camera.position[0],
-            self.preview_3d.camera.position[1],
-            self.preview_3d.camera.position[2],
-            self.preview_3d.camera.yaw.to_degrees(),
-            self.preview_3d.camera.pitch.to_degrees(),
-            self.preview_3d.model_rotation.yaw.to_degrees(),
-            self.preview_3d.model_rotation.pitch.to_degrees(),
-            self.preview_3d.camera.zoom,
-        ))
+        t!(
+            "MapViewer.import.preview_panel.stats_summary",
+            rendered = mesh.rendered_chunk_count(),
+            chunks = mesh.chunk_count,
+            processed = mesh.processed_chunk_count,
+            subchunks = mesh.subchunk_count,
+            blocks = mesh.solid_block_count,
+            glass = mesh.glass_block_count,
+            water = mesh.water_block_count,
+            lava = mesh.lava_block_count,
+            faces = mesh.face_count,
+            glass_faces = mesh.glass_face_count,
+            water_faces = mesh.water_face_count,
+            lava_faces = mesh.lava_face_count,
+            meshes = mesh.chunk_meshes.len(),
+            vertices = mesh.vertex_count(),
+            budget = mesh.vertex_budget,
+            culled = mesh.culled_face_count,
+            clipped = clipped,
+            truncated = truncated,
+            min_y = mesh.min_y,
+            max_y = mesh.max_y,
+            missing = mesh.missing_chunks,
+            cam_x = format!("{:.2}", self.preview_3d.camera.position[0]),
+            cam_y = format!("{:.2}", self.preview_3d.camera.position[1]),
+            cam_z = format!("{:.2}", self.preview_3d.camera.position[2]),
+            cam_yaw = format!("{:.1}", self.preview_3d.camera.yaw.to_degrees()),
+            cam_pitch = format!("{:.1}", self.preview_3d.camera.pitch.to_degrees()),
+            model_yaw = format!("{:.1}", self.preview_3d.model_rotation.yaw.to_degrees()),
+            model_pitch = format!("{:.1}", self.preview_3d.model_rotation.pitch.to_degrees()),
+            zoom = format!("{:.2}", self.preview_3d.camera.zoom),
+        )
     }
 
     pub(super) fn preview_3d_empty_label(&self) -> SharedString {
         match &self.preview_3d.status {
-            Preview3dStatus::Idle => {
-                SharedString::from("点击“加载/刷新”生成 3D 预览；未加载时不占用 3D 构建资源")
-            }
+            Preview3dStatus::Idle => t!("MapViewer.import.preview_panel.empty_idle_hint"),
             Preview3dStatus::Loading(progress) => {
                 SharedString::from(format!("{}: {}", progress.phase, progress.detail))
             }
-            Preview3dStatus::Ready => SharedString::from("预览帧为空"),
+            Preview3dStatus::Ready => t!("MapViewer.import.preview_panel.empty_frame"),
             Preview3dStatus::NoSurface(message) => message.clone(),
             Preview3dStatus::Error(error) => error.clone(),
         }

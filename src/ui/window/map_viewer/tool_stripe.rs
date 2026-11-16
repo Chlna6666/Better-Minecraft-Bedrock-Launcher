@@ -118,7 +118,7 @@ impl Render for MapToolStripeView {
                 "stripe-3d-editor",
                 &colors,
                 lucide_gpui::icon!(boxes),
-                "3D 编辑",
+                t!("MapViewer.core.tool_stripe.world3d_editor"),
                 snapshot.world3d_editor_open,
                 cx.listener(|_this, _event, _window, cx| {
                     cx.emit(MapViewerAction::ShowWorld3dEditor);
@@ -128,7 +128,7 @@ impl Render for MapToolStripeView {
                 "stripe-3d",
                 &colors,
                 lucide_gpui::icon!(box),
-                "3D 预览",
+                t!("MapViewer.core.tool_stripe.preview_3d"),
                 snapshot.right_panel_open
                     && snapshot.active_right_panel == MapViewerRightPanel::Preview3d,
                 cx.listener(|_this, _event, _window, cx| {
@@ -141,7 +141,7 @@ impl Render for MapToolStripeView {
                 "stripe-generator",
                 &colors,
                 lucide_gpui::icon!(blocks),
-                "模型转方块",
+                t!("MapViewer.core.tool_stripe.model_to_blocks"),
                 snapshot.right_panel_open
                     && snapshot.active_right_panel == MapViewerRightPanel::Generator,
                 cx.listener(|_this, _event, _window, cx| {
@@ -154,7 +154,7 @@ impl Render for MapToolStripeView {
                 "stripe-image-generator",
                 &colors,
                 lucide_gpui::icon!(image),
-                "像素画",
+                t!("MapViewer.core.tool_stripe.pixel_art"),
                 snapshot.right_panel_open
                     && snapshot.active_right_panel == MapViewerRightPanel::ImageGenerator,
                 cx.listener(|_this, _event, _window, cx| {
@@ -167,7 +167,7 @@ impl Render for MapToolStripeView {
                 "stripe-map-image",
                 &colors,
                 lucide_gpui::icon!(map),
-                "地图画",
+                t!("MapViewer.core.tool_stripe.map_art"),
                 snapshot.right_panel_open
                     && snapshot.active_right_panel == MapViewerRightPanel::MapImage,
                 cx.listener(|_this, _event, _window, cx| {

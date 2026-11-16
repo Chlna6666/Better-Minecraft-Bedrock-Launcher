@@ -309,10 +309,12 @@ fn build_meshes(
         });
     }
     if parts.is_empty() {
-        return Err(format!(
-            "自定义皮肤 geometry.json 没有可预览的网格: {}x{}",
-            size.0, size.1
-        ));
+        return Err(t!(
+            "SkinPreview.error.geometry_empty",
+            width = size.0,
+            height = size.1
+        )
+        .to_string());
     }
 
     let mut scene = Scene::new();
@@ -352,7 +354,12 @@ fn build_skin_player_meshes(
 ) -> Result<SkinPreviewMeshes, String> {
     let (width, height) = (texture.width(), texture.height());
     if width < SKIN_MIN_SIZE || height < 32 {
-        return Err(format!("皮肤贴图尺寸过小: {width}x{height}"));
+        return Err(t!(
+            "SkinPreview.error.texture_too_small",
+            width = width,
+            height = height
+        )
+        .to_string());
     }
 
     let has_extended_skin = height >= 64;
@@ -499,7 +506,7 @@ fn insert_cape_preview(
     mode: CapePreviewMode,
 ) -> Result<(), String> {
     if cape_texture.width() < 64 || cape_texture.height() < 32 {
-        return Err("披风纹理尺寸过小".into());
+        return Err(t!("SkinPreview.error.cape_too_small").to_string());
     }
     if mode == CapePreviewMode::Cape {
         // Bedrock's geometry.cape rotates the cape bone by 180 degrees, so the face a viewer
@@ -542,7 +549,7 @@ fn insert_cape_preview(
     let material = match elytra_texture {
         Some(texture) => {
             if texture.width() < 64 || texture.height() < 32 {
-                return Err("鞘翅纹理尺寸过小".into());
+                return Err(t!("SkinPreview.error.elytra_too_small").to_string());
             }
             textured_skin_material(texture, AlphaMode::Mask)
         }
@@ -583,7 +590,7 @@ fn insert_cape_preview(
                 Node::new().with_transform(Transform {
                     translation: Vec3::new(side * ELYTRA_PIVOT_X, CAPE_PIVOT_Y, ELYTRA_PIVOT_Z),
                     rotation: Quat::from_axis_angle(Vec3::X, ELYTRA_WING_REST_TILT)
-                        .ok_or("无效的鞘翅展开角度")?,
+                        .ok_or_else(|| t!("SkinPreview.error.invalid_elytra_angle").to_string())?,
                     ..Transform::IDENTITY
                 }),
             )
@@ -593,7 +600,7 @@ fn insert_cape_preview(
                 Some(pivot),
                 Node::new().with_transform(Transform {
                     rotation: Quat::from_axis_angle(Vec3::Y, side * ELYTRA_WING_YAW_JITTER)
-                        .ok_or("无效的鞘翅展开角度")?,
+                        .ok_or_else(|| t!("SkinPreview.error.invalid_elytra_angle").to_string())?,
                     ..Transform::IDENTITY
                 }),
             )
@@ -602,7 +609,8 @@ fn insert_cape_preview(
             .insert(
                 Some(yaw),
                 Node::new().with_transform(Transform {
-                    rotation: Quat::from_axis_angle(Vec3::Z, flare).ok_or("无效的鞘翅展开角度")?,
+                    rotation: Quat::from_axis_angle(Vec3::Z, flare)
+                        .ok_or_else(|| t!("SkinPreview.error.invalid_elytra_angle").to_string())?,
                     ..Transform::IDENTITY
                 }),
             )
@@ -623,7 +631,8 @@ fn cape_motion_track(node: gpui_3d::NodeId) -> Result<TransformTrack, String> {
     for step in 0..=4u64 {
         let time = Duration::from_nanos((WALK_PERIOD.as_nanos() * u128::from(step) / 4) as u64);
         let angle = if step % 2 == 0 { 0.08 } else { 0.2 };
-        let rotation = Quat::from_axis_angle(Vec3::X, angle).ok_or("无效的披风动画角度")?;
+        let rotation = Quat::from_axis_angle(Vec3::X, angle)
+            .ok_or_else(|| t!("SkinPreview.error.invalid_cape_animation").to_string())?;
         keys.push(Keyframe::new(time, rotation));
     }
     Ok(TransformTrack::new(node)
@@ -753,7 +762,7 @@ fn skin_walk_track(node: gpui_3d::NodeId, swing_sign: f32) -> Result<TransformTr
         let phase = std::f32::consts::TAU * f32::from(step) / f32::from(frame_count);
         let angle = phase.sin() * 0.55 * swing_sign;
         let rotation = Quat::from_axis_angle(Vec3::X, angle)
-            .ok_or_else(|| "皮肤预览动画旋转无效".to_string())?;
+            .ok_or_else(|| t!("SkinPreview.error.invalid_animation_rotation").to_string())?;
         keys.push(Keyframe::new(time, rotation));
     }
     let rotation = RotationTrack::new(keys).map_err(|error| error.to_string())?;
@@ -873,13 +882,13 @@ fn build_skin_mesh(vertices: Vec<SkinVertex>, indices: Vec<u32>) -> Result<Mesh,
         let b_index = usize::try_from(triangle[1]).map_err(|error| error.to_string())?;
         let c_index = usize::try_from(triangle[2]).map_err(|error| error.to_string())?;
         let Some(a) = vertices.get(a_index) else {
-            return Err("皮肤预览索引超出网格范围".to_string());
+            return Err(t!("SkinPreview.error.index_out_of_range").to_string());
         };
         let Some(b) = vertices.get(b_index) else {
-            return Err("皮肤预览索引超出网格范围".to_string());
+            return Err(t!("SkinPreview.error.index_out_of_range").to_string());
         };
         let Some(c) = vertices.get(c_index) else {
-            return Err("皮肤预览索引超出网格范围".to_string());
+            return Err(t!("SkinPreview.error.index_out_of_range").to_string());
         };
         let edge1 = vec3(b.position) - vec3(a.position);
         let edge2 = vec3(c.position) - vec3(a.position);

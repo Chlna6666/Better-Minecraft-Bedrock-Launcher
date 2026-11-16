@@ -8,7 +8,10 @@ impl View {
     ) -> Div {
         let busy = self.image_generator_busy();
         div().flex().flex_col().gap(px(14.0))
-                    .child(inspector::section_title(colors, "图片比例"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.generator.image_generator.parameters.section_image_ratio"),
+                    ))
                     .child(
                         div()
                             .w_full()
@@ -16,13 +19,25 @@ impl View {
                             .whitespace_normal()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child("居中裁剪会自动匹配当前 X×Z 尺寸比例；拖动宽、高滑条即可实时查看裁切与方块预览。"),
+                            .child(t!(
+                                "MapViewer.generator.image_generator.parameters.image_ratio_hint"
+                            )),
                     )
                     .child(
                         div().flex().flex_wrap().gap(px(6.0)).children(
                             [
-                                (ImageFit::CenterCrop, "居中裁剪 · 不拉伸"),
-                                (ImageFit::Stretch, "保留全图 · 可拉伸"),
+                                (
+                                    ImageFit::CenterCrop,
+                                    t!(
+                                        "MapViewer.generator.image_generator.parameters.fit_center_crop"
+                                    ),
+                                ),
+                                (
+                                    ImageFit::Stretch,
+                                    t!(
+                                        "MapViewer.generator.image_generator.parameters.fit_stretch"
+                                    ),
+                                ),
                             ]
                             .into_iter()
                             .map(|(fit, label)| {
@@ -44,12 +59,25 @@ impl View {
                             }),
                         ),
                     )
-                    .child(inspector::section_title(colors, "缩放采样"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.generator.image_generator.parameters.section_resample"),
+                    ))
                     .child(
                         div().flex().gap(px(6.0)).children(
                             [
-                                (MapResample::Nearest, "最近邻 · 像素画"),
-                                (MapResample::Lanczos3, "Lanczos3 · 照片"),
+                                (
+                                    MapResample::Nearest,
+                                    t!(
+                                        "MapViewer.generator.image_generator.parameters.resample_nearest"
+                                    ),
+                                ),
+                                (
+                                    MapResample::Lanczos3,
+                                    t!(
+                                        "MapViewer.generator.image_generator.parameters.resample_lanczos3"
+                                    ),
+                                ),
                             ]
                             .into_iter()
                             .map(|(resample, label)| {
@@ -71,13 +99,31 @@ impl View {
                             }),
                         ),
                     )
-                    .child(inspector::section_title(colors, "透明度"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.generator.image_generator.parameters.section_alpha"),
+                    ))
                     .child(
                         div().flex().flex_wrap().gap(px(6.0)).children(
                             [
-                                (1_u8, "保留透明边缘"),
-                                (128, "忽略半透明"),
-                                (255, "仅不透明"),
+                                (
+                                    1_u8,
+                                    t!(
+                                        "MapViewer.generator.image_generator.parameters.alpha_keep_edges"
+                                    ),
+                                ),
+                                (
+                                    128,
+                                    t!(
+                                        "MapViewer.generator.image_generator.parameters.alpha_ignore_translucent"
+                                    ),
+                                ),
+                                (
+                                    255,
+                                    t!(
+                                        "MapViewer.generator.image_generator.parameters.alpha_opaque_only"
+                                    ),
+                                ),
                             ]
                             .into_iter()
                             .map(|(alpha, label)| {
@@ -99,13 +145,27 @@ impl View {
                             }),
                         ),
                     )
-                    .child(inspector::section_title(colors, "半透明底色"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!(
+                            "MapViewer.generator.image_generator.parameters.section_alpha_background"
+                        ),
+                    ))
                     .child(
                         div().flex().gap(px(6.0)).children(
                             [
-                                ([255_u8; 3], "白色"),
-                                ([128_u8; 3], "灰色"),
-                                ([0_u8; 3], "黑色"),
+                                (
+                                    [255_u8; 3],
+                                    t!("MapViewer.generator.image_generator.parameters.color_white"),
+                                ),
+                                (
+                                    [128_u8; 3],
+                                    t!("MapViewer.generator.image_generator.parameters.color_gray"),
+                                ),
+                                (
+                                    [0_u8; 3],
+                                    t!("MapViewer.generator.image_generator.parameters.color_black"),
+                                ),
                             ]
                             .into_iter()
                             .map(|(background, label)| {
@@ -127,7 +187,12 @@ impl View {
                             }),
                         ),
                     )
-                    .child(inspector::section_title(colors, "透明区域方块"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!(
+                            "MapViewer.generator.image_generator.parameters.section_transparent_fill"
+                        ),
+                    ))
                     .child(
                         div()
                             .flex()
@@ -136,7 +201,9 @@ impl View {
                             .child(
                                 choice::chip(
                                     colors,
-                                    "留空",
+                                    t!(
+                                        "MapViewer.generator.image_generator.parameters.transparent_leave_empty"
+                                    ),
                                     self.image_generator.options.transparent_fill.is_none(),
                                 )
                                 .when(!busy, |button| {
@@ -153,7 +220,9 @@ impl View {
                             .child(
                                 choice::chip(
                                     colors,
-                                    "填充方块",
+                                    t!(
+                                        "MapViewer.generator.image_generator.parameters.transparent_fill_block"
+                                    ),
                                     self.image_generator.options.transparent_fill.is_some(),
                                 )
                                 .when(!busy, |button| {
@@ -179,9 +248,11 @@ impl View {
                             panel.child(
                                 choice::chip(
                                     colors,
-                                    format!(
-                                        "{} · 更换",
-                                        selected.strip_prefix("minecraft:").unwrap_or(selected)
+                                    t!(
+                                        "MapViewer.generator.image_generator.parameters.selected_block_change",
+                                        name = selected
+                                            .strip_prefix("minecraft:")
+                                            .unwrap_or(selected),
                                     ),
                                     false,
                                 )

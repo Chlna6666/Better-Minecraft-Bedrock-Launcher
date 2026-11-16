@@ -4,6 +4,7 @@ use bedrock_render::{ChunkPos, Dimension};
 use bedrock_world::block::BlockState;
 use bedrock_world::chunk::{SubChunk, SubChunkFormat};
 use bedrock_world::surface::ChunkLoadStats;
+use gpui::SharedString;
 use gpui_3d::{Material, Mesh, TextureAsset};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -56,11 +57,13 @@ pub enum TeleportHeightMode {
 
 impl TeleportHeightMode {
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            Self::SurfaceSafe => "地表",
-            Self::CurrentMapLayer => "当前 Y 层",
-            Self::Exact => "精确 Y",
+            Self::SurfaceSafe => t!("MapViewer.world3d.types.teleport_height_surface_safe"),
+            Self::CurrentMapLayer => {
+                t!("MapViewer.world3d.types.teleport_height_current_map_layer")
+            }
+            Self::Exact => t!("MapViewer.world3d.types.teleport_height_exact"),
         }
     }
 }
@@ -96,12 +99,14 @@ pub enum CameraOverlayMode {
 
 impl CameraOverlayMode {
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            Self::Hidden => "隐藏",
-            Self::Position => "位置+箭头",
-            Self::PositionFrustum => "位置+视角",
-            Self::PositionFrustumDistance => "包含视距",
+            Self::Hidden => t!("MapViewer.world3d.types.camera_overlay_hidden"),
+            Self::Position => t!("MapViewer.world3d.types.camera_overlay_position"),
+            Self::PositionFrustum => t!("MapViewer.world3d.types.camera_overlay_position_frustum"),
+            Self::PositionFrustumDistance => {
+                t!("MapViewer.world3d.types.camera_overlay_position_frustum_distance")
+            }
         }
     }
 
@@ -639,26 +644,26 @@ pub enum World3dTool {
 
 impl World3dTool {
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            Self::Navigate => "导航",
-            Self::Select => "3D 选择",
-            Self::Import => "导入定位",
-            Self::Place => "放置",
-            Self::Fill => "填充",
-            Self::Clear => "清除",
+            Self::Navigate => t!("MapViewer.world3d.types.tool_navigate"),
+            Self::Select => t!("MapViewer.world3d.types.tool_select"),
+            Self::Import => t!("MapViewer.world3d.types.tool_import"),
+            Self::Place => t!("MapViewer.world3d.types.tool_place"),
+            Self::Fill => t!("MapViewer.world3d.types.tool_fill"),
+            Self::Clear => t!("MapViewer.world3d.types.tool_clear"),
         }
     }
 }
 
 /// Formats a Bedrock dimension for UI labels.
 #[must_use]
-pub fn dimension_label(dimension: Dimension) -> &'static str {
+pub fn dimension_label(dimension: Dimension) -> SharedString {
     match dimension {
-        Dimension::Overworld => "主世界",
-        Dimension::Nether => "下界",
-        Dimension::End => "末地",
-        Dimension::Unknown(_) => "未知维度",
+        Dimension::Overworld => t!("MapViewer.world3d.types.dimension_overworld"),
+        Dimension::Nether => t!("MapViewer.world3d.types.dimension_nether"),
+        Dimension::End => t!("MapViewer.world3d.types.dimension_end"),
+        Dimension::Unknown(_) => t!("MapViewer.world3d.types.dimension_unknown"),
     }
 }
 #[cfg(test)]

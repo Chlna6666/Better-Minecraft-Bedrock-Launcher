@@ -64,7 +64,7 @@ impl View {
     fn player_item_config_json(&self, selection: PlayerItemSelection) -> Result<String, String> {
         let entry = self
             .workspace_entry_for_selection(selection)
-            .ok_or_else(|| "该槽位没有物品".to_string())?;
+            .ok_or_else(|| t!("MapViewer.player.player_item_menu.no_item").to_string())?;
         let item = serde_json::to_value(&entry.item.nbt).map_err(|error| error.to_string())?;
         serde_json::to_string_pretty(&serde_json::json!({
             "format": "bmcbl.player-item.v1",
@@ -85,7 +85,7 @@ impl View {
         match self.player_item_config_json(selection) {
             Ok(text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
-                self.status = SharedString::from("物品配置已复制 · 可直接右键其他槽位粘贴");
+                self.status = t!("MapViewer.player.player_item_menu.copied_config");
                 cx.notify();
                 true
             }
@@ -99,16 +99,16 @@ impl View {
 
     fn copy_player_item_nbt(&mut self, selection: PlayerItemSelection, cx: &mut Context<Self>) {
         let Some(entry) = self.workspace_entry_for_selection(selection) else {
-            self.status = SharedString::from("该槽位没有物品");
+            self.status = t!("MapViewer.player.player_item_menu.no_item");
             cx.notify();
             return;
         };
         match serde_json::to_string_pretty(&entry.item.nbt) {
             Ok(text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
-                self.status = SharedString::from("原始物品 NBT JSON 已复制");
+                self.status = t!("MapViewer.player.player_item_menu.copied_raw_nbt");
             }
-            Err(error) => self.status = SharedString::from(format!("序列化物品 NBT 失败: {error}")),
+            Err(error) => self.status = t!("MapViewer.player.player_item_menu.serialize_nbt_failed", error = error),
         }
         cx.notify();
     }
@@ -118,19 +118,24 @@ impl View {
             .workspace_entry_for_selection(selection)
             .and_then(|entry| entry.item.name)
         else {
-            self.status = SharedString::from("该槽位没有可复制的物品 ID");
+            self.status = t!("MapViewer.player.player_item_menu.nothing_to_copy_id");
             cx.notify();
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(id));
-        self.status = SharedString::from("物品 ID 已复制");
+        self.status = t!("MapViewer.player.player_item_menu.copied_item_id");
         cx.notify();
     }
 
     fn cut_player_item(&mut self, selection: PlayerItemSelection, cx: &mut Context<Self>) {
         if self.copy_player_item_config(selection, cx) {
             self.player_workspace.selected_item = Some(selection);
-            self.write_player_workspace_slot(selection, None, "玩家物品：剪切", cx);
+            self.write_player_workspace_slot(
+                selection,
+                None,
+                t!("MapViewer.player.player_item_menu.action_cut"),
+                cx,
+            );
         }
     }
 
@@ -144,17 +149,17 @@ impl View {
     }
 
     fn import_player_item_file(&mut self, selection: PlayerItemSelection, cx: &mut Context<Self>) {
-        let Some(path) = pick_file_path(None, "BMCBL 物品配置", &["json"]) else {
+        let Some(path) = pick_file_path(None, t!("MapViewer.player.player_item_menu.dialog_item_config").as_str(), &["json"]) else {
             return;
         };
-        self.status = SharedString::from("正在读取物品配置...");
+        self.status = t!("MapViewer.player.player_item_menu.loading_config");
         self.player_workspace.item_editor_error = None;
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
             let result = crate::tasks::runtime::blocking::run_io(move || {
                 let text = fs::read_to_string(&path)
-                    .map_err(|error| format!("读取物品配置失败: {error}"))?;
+                    .map_err(|error| t!("MapViewer.player.player_item_menu.read_config_failed", error = error).to_string())?;
                 parse_workspace_item_import(&text, selection.slot)
             })
             .await;
@@ -168,7 +173,7 @@ impl View {
                     this.write_player_workspace_slot(
                         selection,
                         Some(tag),
-                        "玩家物品：配置文件导入",
+                        t!("MapViewer.player.player_item_menu.action_config_import"),
                         cx,
                     );
                 }
@@ -199,18 +204,19 @@ impl View {
             .unwrap_or_else(|| "item".to_string());
         let safe = safe_export_stem(&id);
         let Some(path) = pick_save_path(
-            "BMCBL 物品配置",
+            t!("MapViewer.player.player_item_menu.dialog_item_config").as_str(),
             &["json"],
             &format!("{safe}_slot_{}.json", selection.slot),
         ) else {
             return;
         };
-        self.status = SharedString::from("正在导出物品配置...");
+        self.status = t!("MapViewer.player.player_item_menu.exporting_config");
         cx.notify();
         let success_path = path.clone();
         cx.spawn(async move |handle, cx| {
             let result = crate::tasks::runtime::blocking::run_io(move || {
-                fs::write(&path, text).map_err(|error| format!("导出物品配置失败: {error}"))
+                fs::write(&path, text)
+                    .map_err(|error| t!("MapViewer.player.player_item_menu.export_config_failed", error = error).to_string())
             })
             .await;
 
@@ -219,7 +225,7 @@ impl View {
             };
             view.update(cx, move |this, cx| {
                 this.status = match result {
-                    Ok(Ok(())) => SharedString::from(format!("物品配置已导出：{success_path}")),
+                    Ok(Ok(())) => t!("MapViewer.player.player_item_menu.exported_config", path = success_path),
                     Ok(Err(error)) | Err(error) => SharedString::from(error),
                 };
                 cx.notify();
@@ -235,7 +241,7 @@ impl View {
         cx: &mut Context<Self>,
     ) {
         let Some(entry) = self.workspace_entry_for_selection(selection) else {
-            self.status = SharedString::from("该槽位没有可复制的物品");
+            self.status = t!("MapViewer.player.player_item_menu.no_item_to_copy");
             cx.notify();
             return;
         };
@@ -252,7 +258,7 @@ impl View {
             .map(|offset| (selection.slot + offset).rem_euclid(capacity))
             .find(|slot| !occupied.contains(slot))
         else {
-            self.status = SharedString::from(format!("{}没有空槽位", selection.kind.label()));
+            self.status = t!("MapViewer.player.player_item_menu.no_free_slot", container = selection.kind.label());
             cx.notify();
             return;
         };
@@ -268,7 +274,12 @@ impl View {
             return;
         }
         self.player_workspace.selected_item = Some(target);
-        self.write_player_workspace_slot(target, Some(tag), "玩家物品：复制到空槽", cx);
+        self.write_player_workspace_slot(
+            target,
+            Some(tag),
+            t!("MapViewer.player.player_item_menu.action_copy_to_free_slot"),
+            cx,
+        );
     }
 
     fn toggle_context_multi_select(
@@ -286,16 +297,21 @@ impl View {
         } else if self.workspace_entry_for_selection(selection).is_some() {
             self.player_workspace.multi_selected_items.push(selection);
         }
-        self.status = SharedString::from(format!(
-            "物品多选：{} 项",
-            self.player_workspace.multi_selected_items.len()
-        ));
+        self.status = t!(
+            "MapViewer.player.player_item_menu.multi_select_status",
+            count = self.player_workspace.multi_selected_items.len()
+        );
         cx.notify();
     }
 
     fn clear_context_item(&mut self, selection: PlayerItemSelection, cx: &mut Context<Self>) {
         self.player_workspace.selected_item = Some(selection);
-        self.write_player_workspace_slot(selection, None, "玩家物品：清空槽位", cx);
+        self.write_player_workspace_slot(
+            selection,
+            None,
+            t!("MapViewer.player.player_item_menu.action_clear_slot"),
+            cx,
+        );
     }
 
     fn export_player_inventory_config(&mut self, cx: &mut Context<Self>) {
@@ -323,25 +339,26 @@ impl View {
         })) {
             Ok(text) => text,
             Err(error) => {
-                self.status = SharedString::from(format!("生成背包配置失败: {error}"));
+                self.status = t!("MapViewer.player.player_item_menu.generate_inventory_failed", error = error);
                 cx.notify();
                 return;
             }
         };
         let safe = safe_export_stem(&player_id);
         let Some(path) = pick_save_path(
-            "BMCBL 玩家背包配置",
+            t!("MapViewer.player.player_item_menu.dialog_inventory_config").as_str(),
             &["json"],
             &format!("{safe}_inventory.json"),
         ) else {
             return;
         };
-        self.status = SharedString::from("正在导出玩家背包配置...");
+        self.status = t!("MapViewer.player.player_item_menu.exporting_inventory");
         cx.notify();
         let success_path = path.clone();
         cx.spawn(async move |handle, cx| {
             let result = crate::tasks::runtime::blocking::run_io(move || {
-                fs::write(&path, text).map_err(|error| format!("导出背包配置失败: {error}"))
+                fs::write(&path, text)
+                    .map_err(|error| t!("MapViewer.player.player_item_menu.export_inventory_failed", error = error).to_string())
             })
             .await;
 
@@ -350,7 +367,7 @@ impl View {
             };
             view.update(cx, move |this, cx| {
                 this.status = match result {
-                    Ok(Ok(())) => SharedString::from(format!("玩家背包配置已导出：{success_path}")),
+                    Ok(Ok(())) => t!("MapViewer.player.player_item_menu.inventory_exported", path = success_path),
                     Ok(Err(error)) | Err(error) => SharedString::from(error),
                 };
                 cx.notify();

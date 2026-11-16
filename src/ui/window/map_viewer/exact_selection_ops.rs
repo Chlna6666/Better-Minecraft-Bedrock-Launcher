@@ -5,19 +5,20 @@ use crate::tasks::task_manager::ProgressUpdate;
 use ::bedrock_world::{ExactChunkSelection, exact_selection_stats};
 use bedrock_block_model::BlockModelRepository;
 use bedrock_render::exact_selection::Plan;
+use crate::tasks::TaskStage;
 
 impl View {
     /// Runs professional statistics against the exact selected chunk set instead
     /// of expanding the selection to its bounding rectangle.
     pub(super) fn exact_selection_stats(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.professional.selection else {
-            self.status = SharedString::from("请先选择区块");
+            self.status = t!("MapViewer.core.exact_selection_ops.select_chunks_first");
             cx.notify();
             return;
         };
         let chunks = selection.chunks();
         let Ok(exact_selection) = ExactChunkSelection::new(chunks.clone()) else {
-            self.status = SharedString::from("当前选区没有有效区块");
+            self.status = t!("MapViewer.core.exact_selection_ops.no_valid_chunks_in_selection");
             cx.notify();
             return;
         };
@@ -27,10 +28,10 @@ impl View {
         let world_path = self.world_path.clone();
         let query_budget = self.map_query_budget.clone();
         self.professional.selection_stats = None;
-        self.status = SharedString::from(format!(
-            "正在统计精确选区 · {} chunks...",
-            exact_selection.len()
-        ));
+        self.status = t!(
+            "MapViewer.core.exact_selection_ops.statistics_running",
+            count = exact_selection.len()
+        );
         cx.notify();
 
         let requested_chunks = exact_selection.to_vec();
@@ -59,12 +60,16 @@ impl View {
                     Ok(stats) => {
                         let exact_chunk_count = stats.chunk_count;
                         this.professional.selection_stats = Some(stats);
-                        this.status = SharedString::from(format!(
-                            "精确选区统计完成 · {exact_chunk_count} chunks"
-                        ));
+                        this.status = t!(
+                            "MapViewer.core.exact_selection_ops.statistics_complete",
+                            count = exact_chunk_count
+                        );
                     }
                     Err(error) => {
-                        this.status = SharedString::from(format!("精确选区统计失败: {error}"));
+                        this.status = t!(
+                            "MapViewer.core.exact_selection_ops.statistics_failed",
+                            error = error
+                        );
                     }
                 }
                 cx.notify();
@@ -82,13 +87,13 @@ impl View {
         self.preview_3d.source = Preview3dSource::Selection;
         let Some(selection) = self.professional.selection else {
             self.clear_preview_3d_resources(false);
-            self.status = SharedString::from("请先选择 chunk 范围");
+            self.status = t!("MapViewer.core.exact_selection_ops.select_chunk_range_first");
             cx.notify();
             return;
         };
         let Ok(exact_selection) = ExactChunkSelection::new(selection.chunks()) else {
             self.clear_preview_3d_resources(false);
-            self.status = SharedString::from("当前选区没有可加载的 chunk");
+            self.status = t!("MapViewer.core.exact_selection_ops.no_loadable_chunks_in_selection");
             cx.notify();
             return;
         };
@@ -117,7 +122,10 @@ impl View {
         }
         self.preview_3d.render_in_flight = true;
         self.preview_3d.cancel = Some(preview_cancel);
-        self.status = SharedString::from(format!("3D 预览流式加载 · {chunk_count} chunks"));
+        self.status = t!(
+            "MapViewer.core.exact_selection_ops.preview_loading",
+            count = chunk_count
+        );
         cx.notify();
 
         let world_path = self.world_path.clone();
@@ -172,8 +180,10 @@ impl View {
                             this.preview_3d.signature = Some(signature);
                             this.preview_3d.mesh = Some(mesh);
                             this.preview_3d.status = Preview3dStatus::Loading(status.clone());
-                            this.status =
-                                SharedString::from(format!("3D 预览流式拼接 · {}", status.detail));
+                            this.status = t!(
+                                "MapViewer.core.exact_selection_ops.preview_merging",
+                                detail = status.detail
+                            );
                         }
                         Preview3dLoadEvent::Complete(result) => {
                             this.preview_3d.signature = Some(signature);
@@ -197,12 +207,12 @@ impl View {
     /// and disconnected gaps are not loaded into the mesh.
     pub(super) fn export_exact_selection_model(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.professional.selection else {
-            self.status = SharedString::from("没有可导出的选区");
+            self.status = t!("MapViewer.core.exact_selection_ops.no_exportable_selection");
             cx.notify();
             return;
         };
         let Ok(exact_selection) = ExactChunkSelection::new(selection.chunks()) else {
-            self.status = SharedString::from("没有可导出的 chunk");
+            self.status = t!("MapViewer.core.exact_selection_ops.no_exportable_chunks");
             cx.notify();
             return;
         };
@@ -216,7 +226,7 @@ impl View {
             &["obj", "gltf", "glb"],
             &default_file_name,
         ) else {
-            self.status = SharedString::from("已取消导出模型");
+            self.status = t!("MapViewer.core.exact_selection_ops.model_export_cancelled");
             cx.notify();
             return;
         };
@@ -227,7 +237,7 @@ impl View {
             .unwrap_or_default()
             .to_ascii_lowercase();
         if !matches!(extension.as_str(), "obj" | "gltf" | "glb") {
-            self.status = SharedString::from("请选择 .obj、.gltf 或 .glb 文件名");
+            self.status = t!("MapViewer.core.exact_selection_ops.choose_model_file_name");
             cx.notify();
             return;
         }
@@ -238,8 +248,10 @@ impl View {
         self.context_menu = None;
 
         // All persistent exports must be owned by TaskManager, not a UI future.
-        let mut task_options =
-            task_manager::TaskOptions::new("精确选区导出 3D 模型", "读取区块与资源包");
+        let mut task_options = task_manager::TaskOptions::new(
+            t!("MapViewer.core.exact_selection_ops.export_model_task").to_string(),
+            TaskStage::MAP_READ_CHUNKS_AND_PACKS,
+        );
         if let Some(detail) = output
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -261,12 +273,15 @@ impl View {
                 // Keep the package identity identical to the 3D editor.
                 let capture_package_paths = package_paths;
                 if cancel.is_cancelled() {
-                    return Err("模型导出已取消".to_owned());
+                    return Err(
+                        t!("MapViewer.core.exact_selection_ops.model_export_cancelled")
+                            .to_string(),
+                    );
                 }
                 task_manager::reset_progress(
                     &background_id,
                     Some(chunk_count as u64),
-                    Some("构建方块网格"),
+                    Some(TaskStage::MAP_BUILD_BLOCK_MESH),
                 );
                 // The version directory is not a resource pack. Resolve its
                 // vanilla overlays first, just as the 3D renderer does.
@@ -274,7 +289,13 @@ impl View {
                     &capture_package_paths,
                     "textures",
                 )
-                .map_err(|error| format!("加载所选版本的方块资源失败：{error}"))?;
+                .map_err(|error| {
+                    t!(
+                        "MapViewer.core.exact_selection_ops.block_resources_failed",
+                        error = error
+                    )
+                    .to_string()
+                })?;
                 let mut block_models = resolver.models().clone();
                 super::world3d::attach_capture_catalog(
                     &mut block_models,
@@ -292,15 +313,20 @@ impl View {
                     |_mesh, _status| {},
                 )?;
                 if cancel.is_cancelled() {
-                    return Err("模型导出已取消".to_owned());
+                    return Err(
+                        t!("MapViewer.core.exact_selection_ops.model_export_cancelled")
+                            .to_string(),
+                    );
                 }
                 if mesh.omitted_face_count != 0 || mesh.truncated_chunk_count != 0 {
-                    return Err(format!(
-                        "模型构网不完整：丢失 {} 个面、{} 个区块。已取消输出，避免生成损坏模型。",
-                        mesh.omitted_face_count, mesh.truncated_chunk_count
-                    ));
+                    return Err(t!(
+                        "MapViewer.core.exact_selection_ops.mesh_incomplete",
+                        faces = mesh.omitted_face_count,
+                        chunks = mesh.truncated_chunk_count
+                    )
+                    .to_string());
                 }
-                task_manager::reset_progress(&background_id, Some(1), Some("输出模型与材质"));
+                task_manager::reset_progress(&background_id, Some(1), Some(TaskStage::MAP_OUTPUT_MODEL_ASSETS));
                 let requested_ext = output
                     .extension()
                     .and_then(|s| s.to_str())
@@ -337,7 +363,10 @@ impl View {
                         |_completed, _total| {},
                     )?;
                     if cancel.is_cancelled() {
-                        return Err("模型导出已取消".into());
+                        return Err(
+                            t!("MapViewer.core.exact_selection_ops.model_export_cancelled")
+                                .to_string(),
+                        );
                     }
                     bedrock_block_model::obj::write_export_files(
                         &export,
@@ -350,7 +379,7 @@ impl View {
                         task_manager::reset_progress(
                             &background_id,
                             Some(1),
-                            Some("编码 glTF/GLB"),
+                            Some(TaskStage::MAP_ENCODE_GLTF),
                         );
                         crate::core::minecraft::map::generator::convert_local_model_file(
                             &target.obj_path,
@@ -366,12 +395,14 @@ impl View {
                 result?;
                 task_manager::update_progress(
                     &background_id,
-                    ProgressUpdate::advance(1).total(1).stage("已完成"),
+                    ProgressUpdate::advance(1).total(1).stage(TaskStage::COMPLETED),
                 );
-                Ok::<_, String>(format!(
-                    "精确选区模型已导出 · {chunk_count} chunks · {}",
-                    output.display(),
-                ))
+                Ok::<_, String>(t!(
+                    "MapViewer.core.exact_selection_ops.model_exported",
+                    count = chunk_count,
+                    path = output.display()
+                )
+                .to_string())
             })
             .await;
             match result {
@@ -379,7 +410,7 @@ impl View {
                     task_manager::finish_task(&worker_id, "completed", Some(message))
                 }
                 Ok(Err(err)) => {
-                    let status = if err.contains("已取消") {
+                    let status = if is_map_operation_cancelled_error(&err) {
                         "cancelled"
                     } else {
                         "error"
@@ -391,9 +422,10 @@ impl View {
         });
         match submitted {
             Ok(_join_handle) => {
-                self.status = SharedString::from(format!(
-                    "已提交精确选区模型导出任务 · {chunk_count} chunks"
-                ));
+                self.status = t!(
+                    "MapViewer.core.exact_selection_ops.export_task_submitted",
+                    count = chunk_count
+                );
             }
             Err(error) => {
                 task_manager::finish_task(&task_id, "error", Some(error.clone()));
@@ -435,7 +467,7 @@ pub(super) fn load_preview_3d_mesh_exact(
 
     for (index, bounds) in rectangles.into_iter().enumerate() {
         if cancel.as_ref().is_some_and(CancelFlag::is_cancelled) {
-            return Err("3D 预览已取消".to_string());
+            return Err(t!("MapViewer.core.exact_selection_ops.preview_cancelled").to_string());
         }
 
         let completed_before = completed_chunks;
@@ -458,11 +490,13 @@ pub(super) fn load_preview_3d_mesh_exact(
                 .saturating_add(partial.processed_chunk_count)
                 .min(total_chunks);
             let status = Preview3dBuildStatus::new(
-                "精确选区",
-                format!(
-                    "{visible_chunks}/{total_chunks} chunks · 子区域 {}/{}",
-                    index + 1,
-                    total_rectangles
+                t!("MapViewer.core.exact_selection_ops.preview_phase"),
+                t!(
+                    "MapViewer.core.exact_selection_ops.preview_progress_subregions",
+                    visible = visible_chunks,
+                    total = total_chunks,
+                    index = index + 1,
+                    regions = total_rectangles
                 ),
             );
             match update_for_part.lock() {
@@ -498,13 +532,13 @@ pub(super) fn load_preview_3d_mesh_exact(
         // becomes visible here immediately even though it had no intermediate callback.
         let merged = merge_exact_preview_meshes(&parts, chunks.as_slice())?;
         let status = Preview3dBuildStatus::new(
-            "精确选区",
-            format!(
-                "{}/{} chunks · 子区域 {}/{}",
-                completed_chunks.min(total_chunks),
-                total_chunks,
-                index + 1,
-                total_rectangles
+            t!("MapViewer.core.exact_selection_ops.preview_phase"),
+            t!(
+                "MapViewer.core.exact_selection_ops.preview_progress_subregions",
+                visible = completed_chunks.min(total_chunks),
+                total = total_chunks,
+                index = index + 1,
+                regions = total_rectangles
             ),
         );
         match update.lock() {

@@ -34,7 +34,13 @@ impl Drop for View {
             task_manager::finish_task(
                 &completion.task_id,
                 "completed",
-                Some(format!("{}；地图窗口已关闭", completion.message)),
+                Some(
+                    t!(
+                        "MapViewer.core.view.map_window_closed",
+                        message = completion.message
+                    )
+                    .to_string(),
+                ),
             );
         }
         self.cancel_metadata_scan();

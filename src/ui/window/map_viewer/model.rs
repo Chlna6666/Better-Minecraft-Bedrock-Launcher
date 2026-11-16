@@ -14,6 +14,7 @@ use super::viewport::*;
 use crate::tasks::task_manager::ProgressUpdate;
 use crate::ui::components::numeric_field::NumericField;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::tasks::TaskStage;
 
 pub(super) const CHUNKS_PER_REGION: u32 = 32;
 pub(super) const CHUNKS_PER_TILE: u32 = 8;
@@ -589,7 +590,12 @@ impl EditTarget {
             Self::GlobalRecord { kind, .. } => {
                 format!("edit global record {}", global_kind_label(kind))
             }
-            Self::TickQueues { chunk, .. } => format!("编辑计划刻/随机刻 {},{}", chunk.x, chunk.z),
+            Self::TickQueues { chunk, .. } => t!(
+                "MapViewer.core.model.edit_tick_queues",
+                chunk_x = chunk.x,
+                chunk_z = chunk.z
+            )
+            .to_string(),
             Self::Player(id) => format!("edit player {}", player_id_label(id)),
             Self::HsaChunk { chunk: pos, .. } => format!("edit HSA chunk {},{}", pos.x, pos.z),
             Self::BlockEntities { chunk: pos, .. } => {
@@ -649,12 +655,14 @@ impl PasteRotation {
         Self::CounterClockwise90,
     ];
 
-    pub(super) const fn label(self) -> &'static str {
+    pub(super) fn label(self) -> SharedString {
         match self {
-            Self::NoRotation => "不旋转",
-            Self::Clockwise90 => "顺时针 90 度",
-            Self::Rotate180 => "旋转 180 度",
-            Self::CounterClockwise90 => "逆时针 90 度",
+            Self::NoRotation => t!("MapViewer.core.model.paste_rotation_none"),
+            Self::Clockwise90 => t!("MapViewer.core.model.paste_rotation_clockwise_90"),
+            Self::Rotate180 => t!("MapViewer.core.model.paste_rotation_180"),
+            Self::CounterClockwise90 => {
+                t!("MapViewer.core.model.paste_rotation_counter_clockwise_90")
+            }
         }
     }
 
@@ -755,16 +763,16 @@ impl PasteTransform {
     pub(super) fn label(self) -> String {
         let mut parts = Vec::new();
         if !self.rotation.is_default() {
-            parts.push(self.rotation.label());
+            parts.push(self.rotation.label().to_string());
         }
         if self.mirror_x {
-            parts.push("镜像 X");
+            parts.push(t!("MapViewer.core.model.paste_mirror_x").to_string());
         }
         if self.mirror_z {
-            parts.push("镜像 Z");
+            parts.push(t!("MapViewer.core.model.paste_mirror_z").to_string());
         }
         if parts.is_empty() {
-            "不变换".to_string()
+            t!("MapViewer.core.model.paste_transform_identity").to_string()
         } else {
             parts.join(" · ")
         }
@@ -837,37 +845,54 @@ pub(super) enum QuickWriteAction {
 impl QuickWriteAction {
     pub(super) fn label(&self) -> String {
         match self {
-            Self::DeleteCurrentChunk(chunk) => {
-                format!("删除当前 chunk {},{}", chunk.x, chunk.z)
-            }
-            Self::ResetCurrentChunk(chunk) => {
-                format!("重置当前 chunk {},{}", chunk.x, chunk.z)
-            }
-            Self::DeleteCurrentChunkBlockEntities(chunk) => {
-                format!("删除 chunk {},{} 方块实体", chunk.x, chunk.z)
-            }
-            Self::DeleteCurrentChunkActors(chunk) => {
-                format!("删除 chunk {},{} 实体", chunk.x, chunk.z)
-            }
+            Self::DeleteCurrentChunk(chunk) => t!(
+                "MapViewer.core.model.delete_current_chunk",
+                chunk_x = chunk.x,
+                chunk_z = chunk.z
+            )
+            .to_string(),
+            Self::ResetCurrentChunk(chunk) => t!(
+                "MapViewer.core.model.reset_current_chunk",
+                chunk_x = chunk.x,
+                chunk_z = chunk.z
+            )
+            .to_string(),
+            Self::DeleteCurrentChunkBlockEntities(chunk) => t!(
+                "MapViewer.core.model.delete_current_chunk_block_entities",
+                chunk_x = chunk.x,
+                chunk_z = chunk.z
+            )
+            .to_string(),
+            Self::DeleteCurrentChunkActors(chunk) => t!(
+                "MapViewer.core.model.delete_current_chunk_actors",
+                chunk_x = chunk.x,
+                chunk_z = chunk.z
+            )
+            .to_string(),
             Self::PasteCopiedChunk {
                 source,
                 target,
                 transform,
             } => {
                 if transform.is_default() {
-                    format!(
-                        "粘贴 chunk {},{} 到 {},{}",
-                        source.x, source.z, target.x, target.z
+                    t!(
+                        "MapViewer.core.model.paste_copied_chunk",
+                        source_x = source.x,
+                        source_z = source.z,
+                        target_x = target.x,
+                        target_z = target.z
                     )
+                    .to_string()
                 } else {
-                    format!(
-                        "粘贴 chunk {},{} 到 {},{}（{}）",
-                        source.x,
-                        source.z,
-                        target.x,
-                        target.z,
-                        transform.label()
+                    t!(
+                        "MapViewer.core.model.paste_copied_chunk_transformed",
+                        source_x = source.x,
+                        source_z = source.z,
+                        target_x = target.x,
+                        target_z = target.z,
+                        transform = transform.label()
                     )
+                    .to_string()
                 }
             }
             Self::PasteCopiedChunks {
@@ -877,19 +902,26 @@ impl QuickWriteAction {
                 transform,
             } => {
                 if transform.is_default() {
-                    format!(
-                        "粘贴 {chunk_count} 个 chunk（{},{} 到 {},{}）",
-                        source_anchor.x, source_anchor.z, target_anchor.x, target_anchor.z
+                    t!(
+                        "MapViewer.core.model.paste_copied_chunks",
+                        chunk_count = chunk_count,
+                        source_x = source_anchor.x,
+                        source_z = source_anchor.z,
+                        target_x = target_anchor.x,
+                        target_z = target_anchor.z
                     )
+                    .to_string()
                 } else {
-                    format!(
-                        "粘贴 {chunk_count} 个 chunk（{},{} 到 {},{}，{}）",
-                        source_anchor.x,
-                        source_anchor.z,
-                        target_anchor.x,
-                        target_anchor.z,
-                        transform.label()
+                    t!(
+                        "MapViewer.core.model.paste_copied_chunks_transformed",
+                        chunk_count = chunk_count,
+                        source_x = source_anchor.x,
+                        source_z = source_anchor.z,
+                        target_x = target_anchor.x,
+                        target_z = target_anchor.z,
+                        transform = transform.label()
                     )
+                    .to_string()
                 }
             }
             Self::PasteImportedStructure {
@@ -899,19 +931,26 @@ impl QuickWriteAction {
                 transform,
             } => {
                 if transform.is_default() {
-                    format!(
-                        "粘贴结构 {chunk_count} 个 chunk（{},{} 到 {},{}）",
-                        source_anchor.x, source_anchor.z, target_anchor.x, target_anchor.z
+                    t!(
+                        "MapViewer.core.model.paste_imported_structure",
+                        chunk_count = chunk_count,
+                        source_x = source_anchor.x,
+                        source_z = source_anchor.z,
+                        target_x = target_anchor.x,
+                        target_z = target_anchor.z
                     )
+                    .to_string()
                 } else {
-                    format!(
-                        "粘贴结构 {chunk_count} 个 chunk（{},{} 到 {},{}，{}）",
-                        source_anchor.x,
-                        source_anchor.z,
-                        target_anchor.x,
-                        target_anchor.z,
-                        transform.label()
+                    t!(
+                        "MapViewer.core.model.paste_imported_structure_transformed",
+                        chunk_count = chunk_count,
+                        source_x = source_anchor.x,
+                        source_z = source_anchor.z,
+                        target_x = target_anchor.x,
+                        target_z = target_anchor.z,
+                        transform = transform.label()
                     )
+                    .to_string()
                 }
             }
         }
@@ -935,15 +974,21 @@ impl QuickWriteAction {
         }
     }
 
-    pub(super) const fn progress_seed(&self) -> Option<(&'static str, usize)> {
+    pub(super) const fn progress_seed(&self) -> Option<(TransferPhase, usize)> {
         match self {
-            Self::DeleteCurrentChunk(_) => Some(("删除区块", 1)),
-            Self::ResetCurrentChunk(_) => Some(("重置区块", 1)),
-            Self::DeleteCurrentChunkBlockEntities(_) => Some(("删除方块实体", 1)),
-            Self::DeleteCurrentChunkActors(_) => Some(("删除实体", 1)),
-            Self::PasteCopiedChunks { chunk_count, .. } => Some(("粘贴区块", *chunk_count)),
-            Self::PasteImportedStructure { chunk_count, .. } => Some(("粘贴结构", *chunk_count)),
-            Self::PasteCopiedChunk { .. } => Some(("粘贴区块", 1)),
+            Self::DeleteCurrentChunk(_) => Some((TransferPhase::DELETE_CHUNKS, 1)),
+            Self::ResetCurrentChunk(_) => Some((TransferPhase::RESET_CHUNK, 1)),
+            Self::DeleteCurrentChunkBlockEntities(_) => {
+                Some((TransferPhase::DELETE_BLOCK_ENTITIES, 1))
+            }
+            Self::DeleteCurrentChunkActors(_) => Some((TransferPhase::DELETE_ACTORS, 1)),
+            Self::PasteCopiedChunks { chunk_count, .. } => {
+                Some((TransferPhase::PASTE_CHUNKS, *chunk_count))
+            }
+            Self::PasteImportedStructure { chunk_count, .. } => {
+                Some((TransferPhase::PASTE_STRUCTURE, *chunk_count))
+            }
+            Self::PasteCopiedChunk { .. } => Some((TransferPhase::PASTE_CHUNKS, 1)),
         }
     }
 
@@ -968,14 +1013,14 @@ impl QuickWriteAction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ChunkTransferProgress {
-    pub(super) phase: SharedString,
+    pub(super) phase: TransferPhase,
     pub(super) completed: usize,
     pub(super) total: usize,
 }
 
 impl ChunkTransferProgress {
     pub(super) fn label(&self) -> SharedString {
-        SharedString::from(format!("{} {}/{}", self.phase, self.completed, self.total))
+        SharedString::from(format!("{} {}/{}", self.phase.label(), self.completed, self.total))
     }
 
     pub(super) fn ratio(&self) -> f32 {
@@ -988,7 +1033,7 @@ impl ChunkTransferProgress {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ChunkTransferTaskProgressSync {
-    phase: Option<SharedString>,
+    phase: Option<TransferPhase>,
     completed: usize,
 }
 
@@ -997,7 +1042,7 @@ impl ChunkTransferTaskProgressSync {
         &mut self,
         progress: &ChunkTransferProgress,
     ) -> (bool, u64, Option<u64>) {
-        let phase_changed = self.phase.as_ref() != Some(&progress.phase);
+        let phase_changed = self.phase != Some(progress.phase);
         let total = progress.total.max(1);
         let completed = progress.completed.min(total);
         let delta = if phase_changed {
@@ -1005,7 +1050,7 @@ impl ChunkTransferTaskProgressSync {
         } else {
             completed.saturating_sub(self.completed)
         };
-        self.phase = Some(progress.phase.clone());
+        self.phase = Some(progress.phase);
         self.completed = completed;
         (
             phase_changed,
@@ -1021,11 +1066,11 @@ pub(super) fn sync_map_operation_task_progress(
     task_id: &str,
     progress_sync: &mut ChunkTransferTaskProgressSync,
     progress: &ChunkTransferProgress,
-    stage: &str,
+    stage: TaskStage,
 ) {
     let (reset, delta, total) = progress_sync.next_delta(progress);
     if reset {
-        task_manager::reset_progress(task_id, total, Some(stage));
+        task_manager::reset_progress(task_id, total, Some(stage.clone()));
     }
     let mut update = ProgressUpdate::advance(delta).stage(stage);
     if let Some(total) = total {
@@ -1048,9 +1093,34 @@ pub(super) fn check_map_operation_cancelled(
     Ok(())
 }
 
+/// Locale-independent cancellation check for messages that cross worker
+/// boundaries. Cancellation wording of every shipped locale counts as cancel.
+pub(super) fn is_cancelled_message(message: &str) -> bool {
+    message.contains("取消")
+        || message.contains("キャンセル")
+        || message.contains("취소")
+        || message.to_ascii_lowercase().contains("cancel")
+}
+
+/// Locale-independent detection of "tile has no renderable chunks" errors.
+pub(super) fn is_no_renderable_chunks_message(message: &str) -> bool {
+    message.contains("没有可渲染区块")
+        || message.contains("沒有可渲染區塊")
+        || message.contains("no renderable chunks")
+        || message.contains("レンダリング可能なチャンクがありません")
+        || message.contains("렌더링 가능한 청크가 없습니다")
+}
+
 pub(super) fn is_map_operation_cancelled_error(error: &str) -> bool {
+    // Cancellation travels as an error string because map operations run on
+    // blocking workers. Match the cancel wording of every shipped locale so a
+    // localized cancel message still maps to the `cancelled` task status.
     let error_lower = error.to_ascii_lowercase();
-    error.contains("已取消") || error.contains("取消") || error_lower.contains("cancel")
+    error.contains("已取消")
+        || error.contains("取消")
+        || error_lower.contains("cancel")
+        || error.contains("キャンセル")
+        || error.contains("취소")
 }
 
 pub(super) fn map_operation_status_for_result<T>(
@@ -1338,9 +1408,17 @@ pub(super) enum PlayerQuickEdit {
 impl PlayerQuickEdit {
     pub(super) fn label(&self) -> String {
         match self {
-            Self::MoveToMapCenter => "移动到地图中心".to_string(),
-            Self::SetDimension(dimension) => format!("设置维度为 {}", dimension_label(*dimension)),
-            Self::ClearInventory => "清空背包物品".to_string(),
+            Self::MoveToMapCenter => {
+                t!("MapViewer.core.model.move_player_to_map_center").to_string()
+            }
+            Self::SetDimension(dimension) => t!(
+                "MapViewer.core.model.set_player_dimension",
+                dimension = dimension_label(*dimension)
+            )
+            .to_string(),
+            Self::ClearInventory => {
+                t!("MapViewer.core.model.clear_player_inventory").to_string()
+            }
         }
     }
 

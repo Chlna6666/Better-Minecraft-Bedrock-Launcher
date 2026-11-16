@@ -188,9 +188,14 @@ fn prepared_skin_preview_binds_the_skin_texture_to_every_part() {
     let image = patterned_skin();
     let texture = skin_texture_asset(&image).expect("skin texture asset should build");
     let preview = build_skin_player_meshes(
-        texture.clone(), false, SkinLayerMode::Extruded, None, None, CapePreviewMode::Cape,
+        texture.clone(),
+        false,
+        SkinLayerMode::Extruded,
+        None,
+        None,
+        CapePreviewMode::Cape,
     )
-        .expect("extruded skin preview should build");
+    .expect("extruded skin preview should build");
     let prepared = PreparedScene::new(preview.scene_view.scene(), preview.scene_view.camera(), 1.0)
         .expect("preview scene should prepare");
 
@@ -222,13 +227,23 @@ fn layered_and_flat_modes_use_the_authored_layer_alpha() {
     let image = patterned_skin();
     let texture = skin_texture_asset(&image).expect("skin texture asset should build");
     let flat = build_skin_player_meshes(
-        texture.clone(), false, SkinLayerMode::Flat, None, None, CapePreviewMode::Cape,
+        texture.clone(),
+        false,
+        SkinLayerMode::Flat,
+        None,
+        None,
+        CapePreviewMode::Cape,
     )
-        .expect("flat skin preview should build");
+    .expect("flat skin preview should build");
     let extruded = build_skin_player_meshes(
-        texture, false, SkinLayerMode::Extruded, None, None, CapePreviewMode::Cape,
+        texture,
+        false,
+        SkinLayerMode::Extruded,
+        None,
+        None,
+        CapePreviewMode::Cape,
     )
-        .expect("extruded skin preview should build");
+    .expect("extruded skin preview should build");
 
     let flat_draws = PreparedScene::new(flat.scene_view.scene(), flat.scene_view.camera(), 1.0)
         .expect("flat scene should prepare")
@@ -256,9 +271,14 @@ fn prepared_skin_preview_geometry_stays_small() {
     let image = patterned_skin();
     let texture = skin_texture_asset(&image).expect("skin texture asset should build");
     let preview = build_skin_player_meshes(
-        texture, false, SkinLayerMode::Extruded, None, None, CapePreviewMode::Cape,
+        texture,
+        false,
+        SkinLayerMode::Extruded,
+        None,
+        None,
+        CapePreviewMode::Cape,
     )
-        .expect("extruded skin preview should build");
+    .expect("extruded skin preview should build");
     let prepared = PreparedScene::new(preview.scene_view.scene(), preview.scene_view.camera(), 1.0)
         .expect("preview scene should prepare");
 
@@ -342,7 +362,12 @@ fn skin_view_changes_reuse_scene_and_renderer_identity() -> Result<(), String> {
         &material,
     )?;
     let meshes = finish_skin_preview(
-        scene, texture, None, None, Vec::new(), VANILLA_PREVIEW_FRONT_YAW,
+        scene,
+        texture,
+        None,
+        None,
+        Vec::new(),
+        VANILLA_PREVIEW_FRONT_YAW,
     )?;
     let base = skin_preview_scene_view(&meshes, 0.0, 0.0, 1.0, Duration::ZERO)?;
     let rotated = skin_preview_scene_view(&meshes, 0.4, -0.2, 1.0, Duration::ZERO)?;
@@ -399,7 +424,12 @@ fn skin_view_changes_reuse_scene_and_renderer_identity() -> Result<(), String> {
 fn orbit_pitch_keeps_rotation_invariant_preview_scale() -> Result<(), String> {
     let texture = skin_texture_asset(&patterned_skin())?;
     let preview = build_skin_player_meshes(
-        texture, false, SkinLayerMode::Extruded, None, None, CapePreviewMode::Cape,
+        texture,
+        false,
+        SkinLayerMode::Extruded,
+        None,
+        None,
+        CapePreviewMode::Cape,
     )?;
     let base = skin_preview_scene_view(&preview, 0.0, 0.0, 1.0, Duration::ZERO)?;
     let upper = skin_preview_scene_view(&preview, 0.0, 0.45, 1.0, Duration::ZERO)?;
@@ -534,7 +564,12 @@ fn custom_geometry_without_limb_roles_stays_static() -> Result<(), String> {
 fn camera_moves_keep_the_retained_scene_snapshot() -> Result<(), String> {
     let texture = skin_texture_asset(&patterned_skin())?;
     let preview = build_skin_player_meshes(
-        texture, false, SkinLayerMode::Extruded, None, None, CapePreviewMode::Cape,
+        texture,
+        false,
+        SkinLayerMode::Extruded,
+        None,
+        None,
+        CapePreviewMode::Cape,
     )?;
     let first = skin_preview_scene_view(&preview, 0.0, 0.0, 1.0, Duration::ZERO)?;
     let second = skin_preview_scene_view(&preview, 0.3, 0.1, 1.0, Duration::ZERO)?;

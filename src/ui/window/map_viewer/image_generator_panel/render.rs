@@ -16,7 +16,7 @@ impl View {
                     crate::ui::components::button::primary_button(
                         colors,
                         "image-workspace-place",
-                        "选择放置位置",
+                        t!("MapViewer.generator.image_generator.render.choose_placement"),
                     )
                     .on_mouse_down(
                         MouseButton::Left,
@@ -34,9 +34,9 @@ impl View {
                     colors,
                     "image-workspace-export",
                     if busy {
-                        "处理中…"
+                        t!("MapViewer.generator.image_generator.render.processing")
                     } else {
-                        "导出 .mcstructure…"
+                        t!("MapViewer.generator.image_generator.render.export_mcstructure")
                     },
                 )
                 .opacity(if self.image_generator.source.is_some() && !busy {
@@ -66,7 +66,11 @@ impl View {
             .min_h(px(0.0))
             .flex()
             .flex_col()
-            .child(self.render_import_panel_header(colors, "像素画", cx))
+            .child(self.render_import_panel_header(
+                colors,
+                t!("MapViewer.generator.image_generator.render.panel_title"),
+                cx,
+            ))
             .child(
                 div()
                     .flex_1()
@@ -76,16 +80,19 @@ impl View {
                     .flex()
                     .flex_col()
                     .gap(px(12.0))
-                    .child(inspector::section_title(colors, "01  素材"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.generator.image_generator.render.section_source"),
+                    ))
                     .child(crate::ui::components::inspector::source_card(
                         colors,
                         "IMAGE",
                         self.image_generator.source.as_deref(),
-                        "PNG / JPG / TGA / WebP · 可拖入",
+                        t!("MapViewer.generator.image_generator.render.source_hint"),
                         crate::ui::components::button::secondary_button(
                             colors,
                             "image-block-source",
-                            "更换图片…",
+                            t!("MapViewer.generator.image_generator.render.change_image"),
                         )
                         .when(!busy, |button| {
                             button.on_mouse_down(
@@ -100,17 +107,27 @@ impl View {
                             div()
                                 .text_size(px(11.0))
                                 .text_color(colors.text_secondary)
-                                .child("参数已更新 · 后台正在重新生成预览"),
+                                .child(t!(
+                                    "MapViewer.generator.image_generator.render.parameters_updated_regenerating"
+                                )),
                         )
                     })
                     .when_some(self.image_generator.preview_size, |panel, size| {
                         panel.child(crate::ui::components::inspector::result_summary(
                             colors,
-                            "方块化结果",
-                            format!("{} × {} × {} 方块", size[0], size[1], size[2]),
+                            t!("MapViewer.generator.image_generator.render.result_label"),
+                            t!(
+                                "MapViewer.generator.image_generator.render.result_size",
+                                width = size[0],
+                                height = size[1],
+                                depth = size[2],
+                            ),
                         ))
                     })
-                    .child(inspector::section_title(colors, "02  输出尺寸"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!("MapViewer.generator.image_generator.render.section_output_size"),
+                    ))
                     .child(crate::ui::components::inspector::field_group(colors)
                         .child(self.render_import_height(colors, cx)))
                     .child(
@@ -120,13 +137,19 @@ impl View {
                     )
                     .child(crate::ui::components::inspector::result_summary(
                         colors,
-                        "当前画布",
-                        format!(
-                            "{} × {} 方块 · 无 128 倍数限制",
-                            self.image_generator.options.width, self.image_generator.options.height,
+                        t!("MapViewer.generator.image_generator.render.canvas_label"),
+                        t!(
+                            "MapViewer.generator.image_generator.render.canvas_size",
+                            width = self.image_generator.options.width,
+                            height = self.image_generator.options.height,
                         ),
                     ))
-                    .child(inspector::section_title(colors, "03  画面与材质"))
+                    .child(inspector::section_title(
+                        colors,
+                        t!(
+                            "MapViewer.generator.image_generator.render.section_appearance_and_material"
+                        ),
+                    ))
                     .child(
                         crate::ui::components::inspector::field_group(colors)
                             .child(self.render_image_dithering(colors, cx))

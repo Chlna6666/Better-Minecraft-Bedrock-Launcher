@@ -18,12 +18,12 @@ pub(super) enum PlayerRecordHealth {
 }
 
 impl PlayerRecordHealth {
-    pub(super) const fn label(self) -> &'static str {
+    pub(super) fn label(self) -> SharedString {
         match self {
-            Self::Complete => "完整",
-            Self::Partial => "部分",
-            Self::Stub => "残留",
-            Self::Invalid => "无效",
+            Self::Complete => t!("MapViewer.player.players.health_complete"),
+            Self::Partial => t!("MapViewer.player.players.health_partial"),
+            Self::Stub => t!("MapViewer.player.players.health_stub"),
+            Self::Invalid => t!("MapViewer.player.players.health_invalid"),
         }
     }
 
@@ -134,12 +134,12 @@ impl PlayerInventoryKind {
         }
     }
 
-    pub(super) const fn label(self) -> &'static str {
+    pub(super) fn label(self) -> SharedString {
         match self {
-            Self::Inventory => "背包",
-            Self::Armor => "护甲",
-            Self::Offhand => "副手",
-            Self::EnderChest => "末影箱",
+            Self::Inventory => t!("MapViewer.player.players.inventory"),
+            Self::Armor => t!("MapViewer.player.players.armor"),
+            Self::Offhand => t!("MapViewer.player.players.offhand"),
+            Self::EnderChest => t!("MapViewer.player.players.ender_chest"),
         }
     }
 
@@ -241,17 +241,19 @@ pub(super) enum PlayerItemMutation {
 impl PlayerItemMutation {
     fn history_label(&self) -> String {
         match self {
-            Self::AddItem { .. } => "玩家物品：添加物品".to_string(),
-            Self::DeleteItem { .. } => "玩家物品：删除物品".to_string(),
-            Self::DuplicateItem { .. } => "玩家物品：复制物品".to_string(),
-            Self::AdjustCount { .. } | Self::SetCount { .. } => "玩家物品：修改数量".to_string(),
-            Self::AdjustDamage { .. } | Self::SetDamage { .. } => {
-                "玩家物品：修改 Damage".to_string()
+            Self::AddItem { .. } => t!("MapViewer.player.players.history_add_item").to_string(),
+            Self::DeleteItem { .. } => t!("MapViewer.player.players.history_delete_item").to_string(),
+            Self::DuplicateItem { .. } => t!("MapViewer.player.players.history_duplicate_item").to_string(),
+            Self::AdjustCount { .. } | Self::SetCount { .. } => {
+                t!("MapViewer.player.players.history_adjust_count").to_string()
             }
-            Self::SetCustomName { .. } => "玩家物品：修改自定义名称".to_string(),
-            Self::SetLore { .. } => "玩家物品：修改 Lore".to_string(),
+            Self::AdjustDamage { .. } | Self::SetDamage { .. } => {
+                t!("MapViewer.player.players.history_adjust_damage").to_string()
+            }
+            Self::SetCustomName { .. } => t!("MapViewer.player.players.history_set_custom_name").to_string(),
+            Self::SetLore { .. } => t!("MapViewer.player.players.history_set_lore").to_string(),
             Self::AddEnchant { .. } | Self::AdjustEnchant { .. } | Self::RemoveEnchant { .. } => {
-                "玩家物品：修改附魔".to_string()
+                t!("MapViewer.player.players.history_modify_enchant").to_string()
             }
         }
     }
@@ -281,7 +283,7 @@ impl View {
         let generation = self.players.generation;
         let world_path = self.world_path.clone();
         let query_budget = self.map_query_budget.clone();
-        self.status = SharedString::from("正在读取、校验并排序玩家记录...");
+        self.status = t!("MapViewer.player.players.loading_records");
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -300,13 +302,13 @@ impl View {
                             .player(&id)
                             .map_err(|error| error.to_string())
                             .and_then(|data| {
-                                let data = data.ok_or_else(|| "玩家记录不存在".to_string())?;
+                                let data = data.ok_or_else(|| t!("MapViewer.player.players.record_missing").to_string())?;
                                 player_probe(&id, &data)
                             });
 
                         match probe {
                             Ok(probe) => {
-                                let label = SharedString::from(player_friendly_label(&id, true));
+                                let label = player_friendly_label(&id, true);
                                 let bucket = probe.quality.sort_bucket(&id);
                                 let score = probe.quality.score;
                                 if probe.quality.marker_candidate(&id) {
@@ -349,9 +351,7 @@ impl View {
                                     raw_label.clone(),
                                     PlayerSummary {
                                         id,
-                                        label: SharedString::from(format!(
-                                            "无效记录 · {raw_label}"
-                                        )),
+                                        label: t!("MapViewer.player.players.invalid_record", id = &raw_label),
                                         quality,
                                     },
                                 ));
@@ -417,11 +417,11 @@ impl View {
                             .markers
                             .get(&this.dimension)
                             .map_or(0, |markers| markers.len());
-                        this.status = SharedString::from(format!(
-                            "玩家列表已加载 · {} 条记录 · 当前维度 {} 个地图标记",
-                            this.players.players.len(),
-                            visible_marker_count
-                        ));
+                        this.status = t!(
+                            "MapViewer.player.players.loaded_summary",
+                            count = this.players.players.len(),
+                            markers = visible_marker_count
+                        );
                         let colors = this.theme_colors(cx);
                         this.sync_canvas_snapshot(colors, cx);
                         if this.player_workspace.open_first_after_refresh
@@ -469,7 +469,7 @@ impl View {
         let world_path = self.world_path.clone();
         let query_budget = self.map_query_budget.clone();
         let requested_id = id.clone();
-        self.status = SharedString::from(format!("正在读取玩家 {}...", player_id_label(&id)));
+        self.status = t!("MapViewer.player.players.loading_player", id = player_id_label(&id));
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -481,7 +481,7 @@ impl View {
                     let data = world
                         .player(&id)
                         .map_err(|error| error.to_string())?
-                        .ok_or_else(|| "玩家记录不存在".to_string())?;
+                        .ok_or_else(|| t!("MapViewer.player.players.record_missing").to_string())?;
                     player_detail_from_data(data).map_err(|error| error.to_string())
                 })
                 .await;
@@ -498,7 +498,7 @@ impl View {
                 match result {
                     Ok(detail) => {
                         this.players.detail = Some(detail);
-                        this.status = SharedString::from("玩家记录已加载");
+                        this.status = t!("MapViewer.player.players.player_loaded");
                     }
                     Err(error) => {
                         this.players.detail = None;
@@ -518,23 +518,20 @@ impl View {
 
     pub(super) fn open_selected_player_in_editor(&mut self, cx: &mut Context<Self>) {
         let Some(detail) = self.players.detail.clone() else {
-            self.status = SharedString::from("请先选择玩家记录");
+            self.status = t!("MapViewer.player.players.select_player_first");
             cx.notify();
             return;
         };
         self.set_professional_detail(Some(player_editor_detail(detail)), cx);
         self.open_right_nbt_panel(cx);
-        self.status = SharedString::from(
-            "已打开高级 NBT JSON 编辑器 · 保存会校验并直接写回玩家 NBT，历史面板可撤销",
-        );
+        self.status = t!("MapViewer.player.players.editor_opened");
         cx.notify();
     }
 
     pub(super) fn add_item_from_clipboard(&mut self, cx: &mut Context<Self>) {
         let text = clipboard_text(cx);
         let Some(name) = parse_item_id(&text) else {
-            self.status =
-                SharedString::from("剪贴板中没有有效物品 ID；示例：minecraft:diamond_sword");
+            self.status = t!("MapViewer.player.players.clipboard_no_item_id");
             cx.notify();
             return;
         };
@@ -555,7 +552,7 @@ impl View {
     ) {
         let value = clipboard_text(cx).trim().to_string();
         if value.is_empty() {
-            self.status = SharedString::from("剪贴板名称为空");
+            self.status = t!("MapViewer.player.players.clipboard_name_empty");
             cx.notify();
             return;
         }
@@ -583,7 +580,7 @@ impl View {
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();
         if lines.is_empty() {
-            self.status = SharedString::from("剪贴板 Lore 为空；每行会写为一条 Lore");
+            self.status = t!("MapViewer.player.players.clipboard_lore_empty");
             cx.notify();
             return;
         }
@@ -605,8 +602,7 @@ impl View {
     ) {
         let text = clipboard_text(cx);
         let Some((id, level)) = parse_enchant_spec(&text) else {
-            self.status =
-                SharedString::from("剪贴板附魔格式无效；使用 `id:等级`，例如 `9:32767`（锋利）");
+            self.status = t!("MapViewer.player.players.clipboard_enchant_invalid");
             cx.notify();
             return;
         };
@@ -661,7 +657,7 @@ impl View {
                     let mut data = world
                         .player(&id)
                         .map_err(|error| error.to_string())?
-                        .ok_or_else(|| "玩家记录不存在".to_string())?;
+                        .ok_or_else(|| t!("MapViewer.player.players.record_missing").to_string())?;
                     apply_player_item_mutation(&mut data.nbt, &mutation)?;
                     data.refresh_saved_items();
                     world
@@ -683,7 +679,8 @@ impl View {
                             Ok(detail)
                         }
                         (Err(history_error), Err(write_error)) => {
-                            Err(format!("{write_error}；历史捕获失败: {history_error}"))
+                            Err(t!("MapViewer.player.players.history_capture_failed", error = write_error, history = history_error)
+                                .to_string())
                         }
                     }
                 })
@@ -755,7 +752,7 @@ impl View {
                     let mut data = world
                         .player(&id)
                         .map_err(|error| error.to_string())?
-                        .ok_or_else(|| "玩家记录不存在".to_string())?;
+                        .ok_or_else(|| t!("MapViewer.player.players.record_missing").to_string())?;
                     apply_player_quick_edit(&mut data.nbt, &edit, center_block, dimension)?;
                     data.refresh_saved_items();
                     world
@@ -764,7 +761,7 @@ impl View {
                     let detail = player_detail_from_data(data).map_err(|error| error.to_string());
                     match (history_capture, detail) {
                         (Ok(capture), Ok(detail)) => {
-                            complete_after(capture, "玩家记录已写入")?;
+                            complete_after(capture, t!("MapViewer.player_record_written").to_string())?;
                             Ok(detail)
                         }
                         (Ok(capture), Err(error)) => {
@@ -776,7 +773,8 @@ impl View {
                             Ok(detail)
                         }
                         (Err(history_error), Err(write_error)) => {
-                            Err(format!("{write_error}；历史捕获失败: {history_error}"))
+                            Err(t!("MapViewer.player.players.history_capture_failed", error = write_error, history = history_error)
+                                .to_string())
                         }
                     }
                 })
@@ -822,7 +820,7 @@ impl View {
             .iter()
             .find(|player| player.id == detail.id)
             .map(|player| player.label.clone())
-            .unwrap_or_else(|| SharedString::from(player_friendly_label(&detail.id, true)));
+            .unwrap_or_else(|| player_friendly_label(&detail.id, true));
 
         for markers in self.markers.values_mut() {
             Arc::make_mut(markers).retain(|marker| marker.label != label);
@@ -1000,17 +998,18 @@ fn is_server_like_player_id(id: &PlayerId) -> bool {
     }
 }
 
-pub(super) fn player_friendly_label(id: &PlayerId, valid: bool) -> String {
-    let raw = player_id_label(id);
+pub(super) fn player_friendly_label(id: &PlayerId, valid: bool) -> SharedString {
     if !valid {
-        return format!("无效记录 · {raw}");
+        return t!("MapViewer.player.players.invalid_record", id = player_id_label(id));
     }
     match id {
-        PlayerId::Local => "本地玩家 · ~local_player".to_string(),
-        PlayerId::Xuid(xuid) => format!("服务器玩家 · {xuid}"),
-        PlayerId::LegacyLevelDat => "旧版玩家 · level.dat".to_string(),
-        PlayerId::Unknown(_) if is_server_like_player_id(id) => format!("服务器记录 · {raw}"),
-        PlayerId::Unknown(_) => format!("其他玩家 · {raw}"),
+        PlayerId::Local => t!("MapViewer.player.players.local_player"),
+        PlayerId::Xuid(xuid) => t!("MapViewer.player.players.server_player", id = xuid),
+        PlayerId::LegacyLevelDat => t!("MapViewer.player.players.legacy_player"),
+        PlayerId::Unknown(_) if is_server_like_player_id(id) => {
+            t!("MapViewer.player.players.server_record", id = player_id_label(id))
+        }
+        PlayerId::Unknown(_) => t!("MapViewer.player.players.other_player", id = player_id_label(id)),
     }
 }
 
@@ -1034,7 +1033,7 @@ pub(super) fn player_id_label(id: &PlayerId) -> String {
 fn player_probe(id: &PlayerId, data: &PlayerData) -> Result<PlayerProbe, String> {
     let root = match &data.nbt {
         NbtTag::Compound(root) => root,
-        _ => return Err("玩家 NBT 根节点不是 Compound".to_string()),
+        _ => return Err(t!("MapViewer.player.players.nbt_root_not_compound").to_string()),
     };
     let position = nbt_vec3_f64(root.get("Pos"));
     let position = position.filter(|value| value.iter().all(|value| value.is_finite()));
@@ -1099,13 +1098,13 @@ pub(super) fn player_detail_from_data(data: PlayerData) -> Result<PlayerDetail, 
     let root = match &data.nbt {
         NbtTag::Compound(root) => root,
         _ => {
-            return Err("玩家 NBT 根节点不是 Compound".to_string());
+            return Err(t!("MapViewer.player.players.nbt_root_not_compound").to_string());
         }
     };
     let items = collect_inventory_items(&data.nbt);
     let json = pretty_json(
         serde_json::to_value(&data.nbt)
-            .map_err(|error| format!("玩家 NBT 转 JSON 失败: {error}"))?,
+            .map_err(|error| t!("MapViewer.player.players.nbt_to_json_failed", error = error).to_string())?,
     );
     Ok(PlayerDetail {
         id: data.id,
@@ -1362,7 +1361,7 @@ pub(super) fn apply_player_item_mutation(
             let list = inventory_list_mut(root, *kind)?;
             let slot = if *kind == PlayerInventoryKind::Inventory {
                 next_free_slot(list, PLAYER_MAIN_INVENTORY_SIZE)
-                    .ok_or_else(|| "主背包没有空槽位".to_string())?
+                    .ok_or_else(|| t!("MapViewer.player.players.main_inventory_full").to_string())?
             } else {
                 next_free_slot(list, i32::from(i8::MAX))
                     .unwrap_or(i32::try_from(list.len()).unwrap_or(i32::from(i8::MAX)))
@@ -1374,7 +1373,7 @@ pub(super) fn apply_player_item_mutation(
             let list = inventory_list_mut(root, *kind)?;
             let item = list
                 .get(*list_index)
-                .ok_or_else(|| "物品索引已失效，请刷新玩家数据".to_string())?;
+                .ok_or_else(|| t!("MapViewer.player.players.item_index_stale").to_string())?;
             let slot = nbt_compound(item)
                 .and_then(|compound| compound.get("Slot").and_then(NbtTag::as_i32))
                 .unwrap_or(*list_index as i32);
@@ -1385,10 +1384,10 @@ pub(super) fn apply_player_item_mutation(
             let mut cloned = list
                 .get(*list_index)
                 .cloned()
-                .ok_or_else(|| "物品索引已失效，请刷新玩家数据".to_string())?;
+                .ok_or_else(|| t!("MapViewer.player.players.item_index_stale").to_string())?;
             let slot = if *kind == PlayerInventoryKind::Inventory {
                 next_free_slot(list, PLAYER_MAIN_INVENTORY_SIZE)
-                    .ok_or_else(|| "主背包没有空槽位".to_string())?
+                    .ok_or_else(|| t!("MapViewer.player.players.main_inventory_full").to_string())?
             } else {
                 next_free_slot(list, i32::from(i8::MAX))
                     .unwrap_or(i32::try_from(list.len()).unwrap_or(i32::from(i8::MAX)))
@@ -1493,7 +1492,7 @@ pub(super) fn apply_player_item_mutation(
             let enchantments = nested_list_mut(user_tag, "ench");
             let enchantment = enchantments
                 .get_mut(*enchant_index)
-                .ok_or_else(|| "附魔索引已失效，请刷新玩家数据".to_string())?;
+                .ok_or_else(|| t!("MapViewer.player.players.enchant_index_stale").to_string())?;
             let enchantment = item_compound_mut(enchantment)?;
             let current = enchantment.get("lvl").and_then(NbtTag::as_i32).unwrap_or(1);
             let value = current
@@ -1511,7 +1510,7 @@ pub(super) fn apply_player_item_mutation(
             let user_tag = nested_compound_mut(compound, "tag");
             let enchantments = nested_list_mut(user_tag, "ench");
             if *enchant_index >= enchantments.len() {
-                return Err("附魔索引已失效，请刷新玩家数据".to_string());
+                return Err(t!("MapViewer.player.players.enchant_index_stale").to_string());
             }
             enchantments.remove(*enchant_index);
         }
@@ -1522,7 +1521,7 @@ pub(super) fn apply_player_item_mutation(
 fn player_root_mut(tag: &mut NbtTag) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
     match tag {
         NbtTag::Compound(root) => Ok(root),
-        _ => Err("玩家 NBT 根节点不是 Compound".to_string()),
+        _ => Err(t!("MapViewer.player.players.nbt_root_not_compound").to_string()),
     }
 }
 
@@ -1536,8 +1535,8 @@ fn inventory_list_mut(
     }
     match root.get_mut(&key) {
         Some(NbtTag::List(items)) => Ok(items),
-        Some(_) => Err(format!("玩家 `{}` 不是 NBT List", kind.nbt_key())),
-        None => Err(format!("无法创建玩家 `{}`", kind.nbt_key())),
+        Some(_) => Err(t!("MapViewer.player.players.nbt_not_list", kind = kind.nbt_key()).to_string()),
+        None => Err(t!("MapViewer.player.players.nbt_create_failed", kind = kind.nbt_key()).to_string()),
     }
 }
 
@@ -1548,13 +1547,13 @@ fn inventory_item_mut(
 ) -> Result<&mut NbtTag, String> {
     inventory_list_mut(root, kind)?
         .get_mut(list_index)
-        .ok_or_else(|| "物品索引已失效，请刷新玩家数据".to_string())
+        .ok_or_else(|| t!("MapViewer.player.players.item_index_stale").to_string())
 }
 
 fn item_compound_mut(tag: &mut NbtTag) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
     match tag {
         NbtTag::Compound(compound) => Ok(compound),
-        _ => Err("物品 NBT 不是 Compound".to_string()),
+        _ => Err(t!("MapViewer.player.players.item_nbt_not_compound").to_string()),
     }
 }
 
@@ -1618,7 +1617,7 @@ fn replace_empty_slot_or_push(items: &mut Vec<NbtTag>, slot: i32, item: NbtTag) 
 }
 
 fn new_item(name: &str, slot: i32) -> Result<NbtTag, String> {
-    let slot = i8::try_from(slot).map_err(|_| "物品槽位超出 NBT Byte 范围".to_string())?;
+    let slot = i8::try_from(slot).map_err(|_| t!("MapViewer.player.players.slot_out_of_byte_range").to_string())?;
     let mut compound = indexmap::IndexMap::new();
     compound.insert("Name".to_string(), NbtTag::String(normalize_item_id(name)));
     compound.insert("Count".to_string(), NbtTag::Byte(1));
@@ -1641,7 +1640,7 @@ fn empty_item_for_slot(slot: i32) -> NbtTag {
 }
 
 fn set_item_slot(item: &mut NbtTag, slot: i32) -> Result<(), String> {
-    let slot = i8::try_from(slot).map_err(|_| "物品槽位超出 NBT Byte 范围".to_string())?;
+    let slot = i8::try_from(slot).map_err(|_| t!("MapViewer.player.players.slot_out_of_byte_range").to_string())?;
     item_compound_mut(item)?.insert("Slot".to_string(), NbtTag::Byte(slot));
     Ok(())
 }
@@ -1930,7 +1929,7 @@ pub(super) fn player_detail_grid(colors: &ThemeColors, detail: &PlayerDetail) ->
         ))
 }
 
-pub(super) fn player_inventory_summary(detail: &PlayerDetail) -> String {
+pub(super) fn player_inventory_summary(detail: &PlayerDetail) -> SharedString {
     let entries = player_inventory_entries(&detail.nbt);
     let mut main = 0usize;
     let mut armor = 0usize;
@@ -1944,5 +1943,11 @@ pub(super) fn player_inventory_summary(detail: &PlayerDetail) -> String {
             PlayerInventoryKind::EnderChest => ender += 1,
         }
     }
-    format!("背包 {main} · 护甲 {armor} · 副手 {offhand} · 末影箱 {ender}")
+    t!(
+        "MapViewer.player.players.inventory_summary",
+        main = main,
+        armor = armor,
+        offhand = offhand,
+        ender = ender
+    )
 }

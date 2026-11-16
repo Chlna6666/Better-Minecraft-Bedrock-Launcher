@@ -16,12 +16,12 @@ pub(super) enum PlayerWorkspaceCenter {
 }
 
 impl PlayerWorkspaceCenter {
-    pub(super) const fn label(self) -> &'static str {
+    pub(super) fn label(self) -> SharedString {
         match self {
-            Self::Map => "地图",
-            Self::Inventory => "背包",
-            Self::EnderChest => "末影箱",
-            Self::Equipment => "装备",
+            Self::Map => t!("MapViewer.player.player_workspace.map"),
+            Self::Inventory => t!("MapViewer.player.player_workspace.inventory"),
+            Self::EnderChest => t!("MapViewer.player.player_workspace.ender_chest"),
+            Self::Equipment => t!("MapViewer.player.player_workspace.equipment"),
         }
     }
 
@@ -661,11 +661,11 @@ impl View {
                                     .gap(px(5.0))
                                     .text_size(px(9.0))
                                     .text_color(colors.text_muted)
-                                    .child(format!(
-                                        "物品 {} · 末影箱 {} · 评分 {}",
-                                        player.quality.item_count,
-                                        player.quality.ender_item_count,
-                                        player.quality.score
+                                    .child(t!(
+                                        "MapViewer.player.player_workspace.resource_stats",
+                                        items = player.quality.item_count,
+                                        ender = player.quality.ender_item_count,
+                                        score = player.quality.score
                                     )),
                             ),
                     )
@@ -1171,9 +1171,10 @@ impl View {
                 .item
                 .name
                 .clone()
-                .unwrap_or_else(|| "未知物品".to_string());
+                .unwrap_or_else(|| t!("MapViewer.player.player_workspace.unknown_item").to_string());
             let label = if drag_sources.len() > 1 {
-                format!("{} + {} 项", base, drag_sources.len() - 1)
+                t!("MapViewer.player.player_workspace.drag_multi_items", item = base, count = drag_sources.len() - 1)
+                    .to_string()
             } else {
                 base
             };
@@ -1469,10 +1470,10 @@ impl View {
                 } else {
                     this.player_workspace.multi_selected_items.push(selection);
                 }
-                this.status = SharedString::from(format!(
-                    "物品多选：{} 项 · 长按继续选择，拖动已选物品批量移动",
-                    this.player_workspace.multi_selected_items.len()
-                ));
+                this.status = t!(
+                    "MapViewer.player.player_workspace.multi_select_status",
+                    count = this.player_workspace.multi_selected_items.len()
+                );
                 cx.notify();
             })?;
             Ok::<(), anyhow::Error>(())
@@ -1708,7 +1709,7 @@ impl View {
                             MouseButton::Left,
                             cx.listener(move |this, _event, _window, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(copy_name.clone()));
-                                this.status = SharedString::from("玩家名称已复制");
+                                this.status = t!("MapViewer.player.player_workspace.copied_player_name");
                                 cx.notify();
                             }),
                         ),
@@ -1720,7 +1721,7 @@ impl View {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     copy_record.clone(),
                                 ));
-                                this.status = SharedString::from("玩家记录 ID 已复制");
+                                this.status = t!("MapViewer.player.player_workspace.copied_record_id");
                                 cx.notify();
                             }),
                         ),
@@ -1731,7 +1732,7 @@ impl View {
                                 MouseButton::Left,
                                 cx.listener(move |this, _event, _window, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(uid.clone()));
-                                    this.status = SharedString::from("玩家 UID 已复制");
+                                    this.status = t!("MapViewer.player.player_workspace.copied_uid");
                                     cx.notify();
                                 }),
                             ),
@@ -2178,9 +2179,8 @@ impl View {
             .trim()
             .to_string();
         if id.is_empty() {
-            self.player_workspace.item_editor_error = Some(SharedString::from(
-                "物品 ID 不能为空；清空槽位请使用“清空槽位”。",
-            ));
+            self.player_workspace.item_editor_error =
+                Some(t!("MapViewer.player.player_workspace.item_id_required"));
             cx.notify();
             return;
         }
@@ -2195,7 +2195,7 @@ impl View {
             Ok(value) if (1..=i16::from(i8::MAX)).contains(&value) => value as i8,
             _ => {
                 self.player_workspace.item_editor_error =
-                    Some(SharedString::from("数量必须在 1..=127（NBT Byte）范围内"));
+                    Some(t!("MapViewer.player.player_workspace.count_range"));
                 cx.notify();
                 return;
             }
@@ -2211,7 +2211,7 @@ impl View {
             Ok(value) => value,
             Err(_) => {
                 self.player_workspace.item_editor_error =
-                    Some(SharedString::from("Damage 必须是 -32768..=32767 的整数"));
+                    Some(t!("MapViewer.player.player_workspace.damage_integer"));
                 cx.notify();
                 return;
             }
@@ -2240,7 +2240,7 @@ impl View {
             cx.notify();
             return;
         }
-        self.write_player_workspace_slot(selection, Some(tag), "玩家物品：可视化编辑", cx);
+        self.write_player_workspace_slot(selection, Some(tag), t!("MapViewer.player.player_workspace.action_visual_edit"), cx);
     }
 
     pub(super) fn save_selected_player_item_raw(&mut self, cx: &mut Context<Self>) {
@@ -2257,13 +2257,13 @@ impl View {
             Ok(NbtTag::Compound(compound)) => NbtTag::Compound(compound),
             Ok(_) => {
                 self.player_workspace.item_editor_error =
-                    Some(SharedString::from("物品 NBT 根节点必须是 Compound"));
+                    Some(t!("MapViewer.player.player_workspace.item_nbt_root_compound"));
                 cx.notify();
                 return;
             }
             Err(error) => {
                 self.player_workspace.item_editor_error =
-                    Some(SharedString::from(format!("NBT JSON 解析失败: {error}")));
+                    Some(t!("MapViewer.player.player_workspace.nbt_json_parse_failed", error = error));
                 cx.notify();
                 return;
             }
@@ -2273,7 +2273,7 @@ impl View {
             cx.notify();
             return;
         }
-        self.write_player_workspace_slot(selection, Some(tag), "玩家物品：原始 NBT 编辑", cx);
+        self.write_player_workspace_slot(selection, Some(tag), t!("MapViewer.player.player_workspace.action_raw_nbt_edit"), cx);
     }
 
     pub(super) fn format_selected_player_item_raw(&mut self, cx: &mut Context<Self>) {
@@ -2294,7 +2294,7 @@ impl View {
             }
             Err(error) => {
                 self.player_workspace.item_editor_error =
-                    Some(SharedString::from(format!("NBT JSON 格式化失败: {error}")));
+                    Some(t!("MapViewer.player.player_workspace.nbt_json_format_failed", error = error));
             }
         }
         cx.notify();
@@ -2302,7 +2302,7 @@ impl View {
 
     pub(super) fn import_player_item_from_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.player_workspace.selected_item else {
-            self.status = SharedString::from("请先选择一个背包/末影箱/装备槽位");
+            self.status = t!("MapViewer.player.player_workspace.select_slot_first");
             cx.notify();
             return;
         };
@@ -2323,7 +2323,7 @@ impl View {
             cx.notify();
             return;
         }
-        self.write_player_workspace_slot(selection, Some(tag), "玩家物品：剪贴板导入", cx);
+        self.write_player_workspace_slot(selection, Some(tag), t!("MapViewer.player.player_workspace.action_clipboard_import"), cx);
     }
 
     pub(super) fn replace_selected_item(
@@ -2332,7 +2332,7 @@ impl View {
         cx: &mut Context<Self>,
     ) {
         let Some(selection) = self.player_workspace.selected_item else {
-            self.status = SharedString::from("请先选择槽位，或直接拖动物品到目标槽位");
+            self.status = t!("MapViewer.player.player_workspace.select_slot_or_drag");
             cx.notify();
             return;
         };
@@ -2348,14 +2348,14 @@ impl View {
         let mut tag = simple_workspace_item(id, selection.slot);
         let _ = set_workspace_item_slot(&mut tag, selection.slot);
         self.player_workspace.selected_item = Some(selection);
-        self.write_player_workspace_slot(selection, Some(tag), "玩家物品：从资源图标库添加", cx);
+        self.write_player_workspace_slot(selection, Some(tag), t!("MapViewer.player.player_workspace.action_add_from_catalog"), cx);
     }
 
     pub(super) fn clear_selected_player_item_slot(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.player_workspace.selected_item else {
             return;
         };
-        self.write_player_workspace_slot(selection, None, "玩家物品：清空槽位", cx);
+        self.write_player_workspace_slot(selection, None, t!("MapViewer.player.player_workspace.action_clear_slot"), cx);
     }
 
     pub(super) fn add_enchantment_to_selected_item(&mut self, cx: &mut Context<Self>) {
@@ -2364,7 +2364,7 @@ impl View {
         };
         let Some(entry) = self.selected_workspace_entry() else {
             self.player_workspace.item_editor_error =
-                Some(SharedString::from("空槽位需要先添加物品，再设置附魔"));
+                Some(t!("MapViewer.player.player_workspace.empty_slot_add_item"));
             cx.notify();
             return;
         };
@@ -2379,7 +2379,7 @@ impl View {
             Ok(value) => value,
             Err(_) => {
                 self.player_workspace.item_editor_error =
-                    Some(SharedString::from("附魔 ID 必须是 NBT Short 整数"));
+                    Some(t!("MapViewer.player.player_workspace.enchant_id_short"));
                 cx.notify();
                 return;
             }
@@ -2395,7 +2395,7 @@ impl View {
             Ok(value) => value,
             Err(_) => {
                 self.player_workspace.item_editor_error =
-                    Some(SharedString::from("附魔等级必须是 NBT Short 整数"));
+                    Some(t!("MapViewer.player.player_workspace.enchant_level_short"));
                 cx.notify();
                 return;
             }
@@ -2406,7 +2406,7 @@ impl View {
             cx.notify();
             return;
         }
-        self.write_player_workspace_slot(selection, Some(tag), "玩家物品：修改附魔", cx);
+        self.write_player_workspace_slot(selection, Some(tag), t!("MapViewer.player.player_workspace.action_modify_enchant"), cx);
     }
 
     fn sync_inventory_summary(&mut self, detail: &PlayerDetail) {
@@ -2460,7 +2460,7 @@ impl View {
             return;
         };
         if self.players.saving {
-            self.status = SharedString::from("上一项玩家写入尚未完成");
+            self.status = t!("MapViewer.player_write_pending");
             cx.notify();
             return;
         }
@@ -2469,7 +2469,7 @@ impl View {
         let generation = self.players.generation;
         let world_path = self.world_path.clone();
         let count = sources.len();
-        self.status = SharedString::from(format!("正在批量移动 {count} 个物品..."));
+        self.status = t!("MapViewer.player.player_workspace.batch_move_status", count = count);
         cx.notify();
         cx.spawn(async move |handle, cx| {
             let result = cx
@@ -2480,12 +2480,12 @@ impl View {
                     let history = capture_player_history(
                         &world_path,
                         &id,
-                        format!("玩家物品：批量拖拽 {count} 项"),
+                        t!("MapViewer.player.player_workspace.batch_move_history", count = count).to_string(),
                     );
                     let mut data = world
                         .player(&id)
                         .map_err(|e| e.to_string())?
-                        .ok_or_else(|| "玩家记录不存在".to_string())?;
+                        .ok_or_else(|| t!("MapViewer.player.player_workspace.record_missing").to_string())?;
                     let mut items = Vec::new();
                     for source in sources.iter().copied() {
                         if let Some(item) = player_slot_item(&data.nbt, source) {
@@ -2493,7 +2493,7 @@ impl View {
                         }
                     }
                     if items.is_empty() {
-                        return Err("已选择物品已经不存在，请刷新玩家数据".to_string());
+                        return Err(t!("MapViewer.player.player_workspace.selected_items_gone").to_string());
                     }
                     for (source, _) in &items {
                         replace_player_slot(&mut data.nbt, *source, None)?;
@@ -2510,7 +2510,13 @@ impl View {
                         let slot = (0..capacity)
                             .map(|o| (candidate + o) % capacity)
                             .find(|s| !occupied.contains(s))
-                            .ok_or_else(|| format!("{}没有足够空槽位", target.kind.label()))?;
+                            .ok_or_else(|| {
+                                t!(
+                                    "MapViewer.player.player_workspace.not_enough_slots",
+                                    container = target.kind.label()
+                                )
+                                .to_string()
+                            })?;
                         occupied.insert(slot);
                         candidate = (slot + 1) % capacity;
                         let dst = PlayerItemSelection {
@@ -2526,7 +2532,7 @@ impl View {
                     world.save_player(&data).map_err(|e| e.to_string())?;
                     let detail = player_detail_from_data(data)?;
                     if let Ok(capture) = history {
-                        complete_after(capture, format!("玩家物品：批量拖拽 {count} 项"))?;
+                        complete_after(capture, t!("MapViewer.player.player_workspace.batch_move_history", count = count).to_string())?;
                     }
                     Ok::<_, String>((detail, last))
                 })
@@ -2549,8 +2555,7 @@ impl View {
                         this.player_workspace.item_editor_error = None;
                         this.sync_selected_item_fields(cx);
                         this.sync_player_item_raw_editor(cx);
-                        this.status =
-                            SharedString::from("批量物品移动完成 · 未覆盖其他槽位 · 可从历史撤销");
+                        this.status = t!("MapViewer.player.player_workspace.batch_move_done");
                     }
                     Err(error) => {
                         this.player_workspace.item_editor_error =
@@ -2578,7 +2583,7 @@ impl View {
             return;
         };
         if self.players.saving {
-            self.status = SharedString::from("上一项玩家写入尚未完成");
+            self.status = t!("MapViewer.player_write_pending");
             cx.notify();
             return;
         }
@@ -2586,13 +2591,13 @@ impl View {
         self.players.generation = self.players.generation.saturating_add(1);
         let generation = self.players.generation;
         let world_path = self.world_path.clone();
-        self.status = SharedString::from(format!(
-            "正在移动物品：{} {} → {} {}...",
-            source.kind.label(),
-            source.slot,
-            target.kind.label(),
-            target.slot
-        ));
+        self.status = t!(
+            "MapViewer.player.player_workspace.move_status",
+            source_kind = source.kind.label(),
+            source_slot = source.slot,
+            target_kind = target.kind.label(),
+            target_slot = target.slot
+        );
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -2602,14 +2607,17 @@ impl View {
                     options.read_only = false;
                     let world =
                         World::open(&world_path, options).map_err(|error| error.to_string())?;
-                    let history_capture =
-                        capture_player_history(&world_path, &id, "玩家物品：拖拽移动/交换");
+                    let history_capture = capture_player_history(
+                        &world_path,
+                        &id,
+                        t!("MapViewer.player.player_workspace.drag_history").to_string(),
+                    );
                     let mut data = world
                         .player(&id)
                         .map_err(|error| error.to_string())?
-                        .ok_or_else(|| "玩家记录不存在".to_string())?;
+                        .ok_or_else(|| t!("MapViewer.player.player_workspace.record_missing").to_string())?;
                     let source_item = player_slot_item(&data.nbt, source)
-                        .ok_or_else(|| "拖拽源物品已经不存在，请刷新玩家数据".to_string())?;
+                        .ok_or_else(|| t!("MapViewer.player.player_workspace.drag_source_gone").to_string())?;
                     let target_item = player_slot_item(&data.nbt, target);
                     replace_player_slot(&mut data.nbt, source, target_item)?;
                     replace_player_slot(&mut data.nbt, target, Some(source_item))?;
@@ -2619,7 +2627,7 @@ impl View {
                         .map_err(|error| error.to_string())?;
                     let detail = player_detail_from_data(data)?;
                     if let Ok(capture) = history_capture {
-                        complete_after(capture, "玩家物品：拖拽移动/交换")?;
+                        complete_after(capture, t!("MapViewer.player.player_workspace.drag_history").to_string())?;
                     }
                     Ok::<_, String>(detail)
                 })
@@ -2641,9 +2649,7 @@ impl View {
                         this.player_workspace.item_editor_error = None;
                         this.sync_selected_item_fields(cx);
                         this.sync_player_item_raw_editor(cx);
-                        this.status = SharedString::from(
-                            "物品拖拽已写入 · 目标有物品时自动交换 · 可从历史撤销",
-                        );
+                        this.status = t!("MapViewer.player.player_workspace.drag_done");
                     }
                     Err(error) => {
                         this.player_workspace.item_editor_error =
@@ -2662,14 +2668,14 @@ impl View {
         &mut self,
         selection: PlayerItemSelection,
         replacement: Option<NbtTag>,
-        label: &'static str,
+        label: SharedString,
         cx: &mut Context<Self>,
     ) {
         let Some(id) = self.players.selected.clone() else {
             return;
         };
         if self.players.saving {
-            self.status = SharedString::from("上一项玩家写入尚未完成");
+            self.status = t!("MapViewer.player_write_pending");
             cx.notify();
             return;
         }
@@ -2678,7 +2684,7 @@ impl View {
         let generation = self.players.generation;
         let world_path = self.world_path.clone();
         let label_string = label.to_string();
-        self.status = SharedString::from(format!("正在{label}..."));
+        self.status = t!("MapViewer.performing_edit", action = &label);
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -2693,7 +2699,7 @@ impl View {
                     let mut data = world
                         .player(&id)
                         .map_err(|error| error.to_string())?
-                        .ok_or_else(|| "玩家记录不存在".to_string())?;
+                        .ok_or_else(|| t!("MapViewer.player.player_workspace.record_missing").to_string())?;
                     replace_player_slot(&mut data.nbt, selection, replacement)?;
                     data.refresh_saved_items();
                     world
@@ -2722,9 +2728,7 @@ impl View {
                         this.player_workspace.item_editor_error = None;
                         this.sync_selected_item_fields(cx);
                         this.sync_player_item_raw_editor(cx);
-                        this.status = SharedString::from(
-                            "玩家物品已写入 · 未识别 NBT 字段已保留 · 可从历史撤销",
-                        );
+                        this.status = t!("MapViewer.player.player_workspace.item_written");
                     }
                     Err(error) => {
                         this.player_workspace.item_editor_error =
@@ -2906,7 +2910,7 @@ fn nbt_compound_mut_ref(
 ) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
     match tag {
         NbtTag::Compound(compound) => Ok(compound),
-        _ => Err("物品 NBT 根节点必须是 Compound".to_string()),
+        _ => Err(t!("MapViewer.player.player_workspace.item_nbt_root_compound").to_string()),
     }
 }
 
@@ -3058,7 +3062,7 @@ fn simple_workspace_item(id: &str, slot: i32) -> NbtTag {
 }
 
 pub(super) fn set_workspace_item_slot(item: &mut NbtTag, slot: i32) -> Result<(), String> {
-    let slot = i8::try_from(slot).map_err(|_| "物品槽位超出 NBT Byte 范围".to_string())?;
+    let slot = i8::try_from(slot).map_err(|_| t!("MapViewer.player.player_workspace.slot_out_of_byte_range").to_string())?;
     nbt_compound_mut_ref(item)?.insert("Slot".to_string(), NbtTag::Byte(slot));
     Ok(())
 }
@@ -3101,7 +3105,11 @@ fn replace_player_slot(
     }
     let list = match root.get_mut(&key) {
         Some(NbtTag::List(list)) => list,
-        _ => return Err(format!("玩家 `{}` 不是 NBT List", selection.kind.nbt_key())),
+        _ => {
+            return Err(
+                t!("MapViewer.player.player_workspace.not_nbt_list", kind = selection.kind.nbt_key()).to_string(),
+            );
+        }
     };
     let index = selection
         .list_index
@@ -3192,11 +3200,11 @@ fn unknown_item_field_count(item: &NbtTag) -> usize {
 pub(super) fn parse_workspace_item_import(text: &str, slot: i32) -> Result<NbtTag, String> {
     let text = text.trim();
     if text.is_empty() {
-        return Err("剪贴板为空".to_string());
+        return Err(t!("MapViewer.player.player_workspace.clipboard_empty").to_string());
     }
     if let Ok(mut tag) = serde_json::from_str::<NbtTag>(text) {
         if !matches!(tag, NbtTag::Compound(_)) {
-            return Err("NBT 导入根节点必须是 Compound".to_string());
+            return Err(t!("MapViewer.player.player_workspace.nbt_import_root_compound").to_string());
         }
         set_workspace_item_slot(&mut tag, slot)?;
         return Ok(tag);
@@ -3204,9 +3212,9 @@ pub(super) fn parse_workspace_item_import(text: &str, slot: i32) -> Result<NbtTa
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
         if let Some(item) = value.get("item") {
             let mut tag = serde_json::from_value::<NbtTag>(item.clone())
-                .map_err(|error| format!("BMCBL 物品配置中的 item 无法解析: {error}"))?;
+                .map_err(|error| t!("MapViewer.player.player_workspace.config_item_parse_failed", error = error).to_string())?;
             if !matches!(tag, NbtTag::Compound(_)) {
-                return Err("BMCBL 物品配置中的 item 必须是 Compound".to_string());
+                return Err(t!("MapViewer.player.player_workspace.config_item_compound").to_string());
             }
             set_workspace_item_slot(&mut tag, slot)?;
             return Ok(tag);
@@ -3215,10 +3223,8 @@ pub(super) fn parse_workspace_item_import(text: &str, slot: i32) -> Result<NbtTa
             return simplified_json_item(object, slot);
         }
     }
-    let id = find_item_id_in_text(text).ok_or_else(|| {
-        "无法识别剪贴板内容。支持完整 NbtTag JSON、简化物品 JSON、/give 或 namespace:item_id"
-            .to_string()
-    })?;
+    let id = find_item_id_in_text(text)
+        .ok_or_else(|| t!("MapViewer.player.player_workspace.clipboard_unrecognized").to_string())?;
     Ok(simple_workspace_item(&id, slot))
 }
 
@@ -3230,7 +3236,7 @@ fn simplified_json_item(
         .get("id")
         .or_else(|| object.get("name"))
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "简化物品 JSON 缺少 `id` / `name`".to_string())?;
+        .ok_or_else(|| t!("MapViewer.player.player_workspace.simplified_json_missing_id").to_string())?;
     let mut item = simple_workspace_item(id, slot);
     let compound = nbt_compound_mut_ref(&mut item)?;
     if let Some(count) = object.get("count").and_then(serde_json::Value::as_i64) {

@@ -49,7 +49,7 @@ pub(super) fn push_poly_mesh(
     while index < polys.len() {
         builder.polygon_count = builder.polygon_count.saturating_add(1);
         if builder.polygon_count > MAX_POLYGONS {
-            return Err("自定义皮肤 geometry.json 面片过多".to_string());
+            return Err(t!("SkinPreview.error.geometry_too_many_faces").to_string());
         }
 
         let Some(polygon_vertices) =
@@ -76,7 +76,7 @@ pub(super) fn push_poly_mesh(
         {
             builder.polygon_count = builder.polygon_count.saturating_add(1);
             if builder.polygon_count > MAX_POLYGONS {
-                return Err("自定义皮肤 geometry.json 面片过多".to_string());
+                return Err(t!("SkinPreview.error.geometry_too_many_faces").to_string());
             }
             push_quad(image, texture_space, normalized_uvs, quad, builder)?;
             index += 2;

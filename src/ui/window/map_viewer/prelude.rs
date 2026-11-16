@@ -47,6 +47,7 @@ pub(super) use super::state::{
     clamp_right_panel_width,
 };
 pub(super) use super::tool_stripe::{MapToolStripeSnapshot, MapToolStripeView};
+pub(super) use super::transfer_phase::TransferPhase;
 pub(super) use super::top_bar::{MapTopBarSnapshot, MapTopBarView};
 pub(super) use crate::core::minecraft::entity_avatar::load;
 pub(super) use crate::core::minecraft::map::info_cache::{

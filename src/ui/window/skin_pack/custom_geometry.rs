@@ -100,7 +100,7 @@ impl CustomGeometryBuilder {
         });
         self.parts
             .last_mut()
-            .ok_or_else(|| "自定义皮肤 geometry.json 分组失败".to_string())
+            .ok_or_else(|| t!("SkinPreview.error.geometry_group_failed").to_string())
     }
 
     fn into_mesh(self) -> Option<CustomGeometryMesh> {
@@ -125,10 +125,21 @@ pub(super) fn build_mesh(
     geometry_path: &Path,
     identifier: &str,
 ) -> Result<Option<CustomGeometryMesh>, String> {
-    let raw = fs::read_to_string(geometry_path)
-        .map_err(|error| format!("读取 geometry.json 失败: {error}"))?;
-    let root = serde_json::from_str::<Value>(raw.trim_start_matches('\u{feff}'))
-        .map_err(|error| format!("解析 geometry.json 失败: {error}"))?;
+    let raw = fs::read_to_string(geometry_path).map_err(|error| {
+        t!(
+            "SkinPreview.error.geometry_read_failed",
+            error = error.to_string()
+        )
+        .to_string()
+    })?;
+    let root =
+        serde_json::from_str::<Value>(raw.trim_start_matches('\u{feff}')).map_err(|error| {
+            t!(
+                "SkinPreview.error.geometry_parse_failed",
+                error = error.to_string()
+            )
+            .to_string()
+        })?;
     build_from_value(image, &root, identifier)
 }
 
@@ -363,7 +374,7 @@ fn ensure_capacity(
     if vertices.len().saturating_add(add_vertices) > MAX_VERTICES
         || indices.len().saturating_add(add_indices) > MAX_INDICES
     {
-        return Err("自定义皮肤 geometry.json 网格过大".to_string());
+        return Err(t!("SkinPreview.error.geometry_too_large").to_string());
     }
     Ok(())
 }

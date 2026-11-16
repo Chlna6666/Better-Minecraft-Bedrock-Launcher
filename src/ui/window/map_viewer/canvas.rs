@@ -463,16 +463,16 @@ impl Render for MapCanvasView {
                         })
                         .text_size(px(10.0))
                         .text_color(colors.text_secondary)
-                        .child(SharedString::from(format!(
-                            "3D 摄像机 · X {:.1} Y {:.1} Z {:.1} · yaw {:.0}° pitch {:.0}° · FOV {:.0}° · {}",
-                            camera.position[0],
-                            camera.position[1],
-                            camera.position[2],
-                            camera.yaw.to_degrees(),
-                            camera.pitch.to_degrees(),
-                            camera.horizontal_fov_radians().to_degrees(),
-                            mode.label()
-                        ))),
+                        .child(t!(
+                            "MapViewer.core.canvas.camera_status",
+                            x = format!("{:.1}", camera.position[0]),
+                            y = format!("{:.1}", camera.position[1]),
+                            z = format!("{:.1}", camera.position[2]),
+                            yaw = format!("{:.0}", camera.yaw.to_degrees()),
+                            pitch = format!("{:.0}", camera.pitch.to_degrees()),
+                            fov = format!("{:.0}", camera.horizontal_fov_radians().to_degrees()),
+                            mode = mode.label()
+                        )),
                 )
             }
             _ => None,
@@ -2151,9 +2151,13 @@ pub(super) fn build_tile_paint_snapshot(
             debug_overlays.push(TileDebugOverlay {
                 coord,
                 label: match entry.state {
-                    super::tile_state::TileLoadState::Empty => SharedString::from("空"),
-                    super::tile_state::TileLoadState::Invalid => SharedString::from("无效"),
-                    _ => SharedString::from("失败"),
+                    super::tile_state::TileLoadState::Empty => {
+                        t!("MapViewer.core.canvas.tile_state_empty")
+                    }
+                    super::tile_state::TileLoadState::Invalid => {
+                        t!("MapViewer.core.canvas.tile_state_invalid")
+                    }
+                    _ => t!("MapViewer.core.canvas.tile_state_failed"),
                 },
             });
         }
@@ -2344,9 +2348,13 @@ fn patch_overlay(
             Some(TileDebugOverlay {
                 coord,
                 label: match entry.state {
-                    super::tile_state::TileLoadState::Empty => SharedString::from("空"),
-                    super::tile_state::TileLoadState::Invalid => SharedString::from("无效"),
-                    _ => SharedString::from("失败"),
+                    super::tile_state::TileLoadState::Empty => {
+                        t!("MapViewer.core.canvas.tile_state_empty")
+                    }
+                    super::tile_state::TileLoadState::Invalid => {
+                        t!("MapViewer.core.canvas.tile_state_invalid")
+                    }
+                    _ => t!("MapViewer.core.canvas.tile_state_failed"),
                 },
             })
         });

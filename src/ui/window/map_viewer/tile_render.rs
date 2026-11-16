@@ -41,13 +41,21 @@ pub(super) fn render_viewport_composite(
             }
             Err(futures::channel::mpsc::TryRecvError::Closed) => break,
             Err(error) => {
-                return Err(format!("视口合成事件缓冲读取失败: {error}"));
+                return Err(
+                    t!(
+                        "MapViewer.render.tile_render.composite_event_buffer_read_failed",
+                        error = error,
+                    )
+                    .to_string(),
+                );
             }
         }
     }
 
     render_result?;
-    let complete_event = complete_event.ok_or_else(|| "视口合成缺少完成事件".to_string())?;
+    let complete_event = complete_event.ok_or_else(|| {
+        t!("MapViewer.render.tile_render.composite_missing_complete_event").to_string()
+    })?;
     if discarded_preview_frames > 0 {
         tracing::debug!(
             discarded_preview_frames,
@@ -55,7 +63,13 @@ pub(super) fn render_viewport_composite(
         );
     }
     tile_render_core::send_composite_event_or_cancel(&event_sender, &render_cancel, complete_event)
-        .map_err(|error| format!("视口合成完成事件发送失败: {error}"))?;
+        .map_err(|error| {
+            t!(
+                "MapViewer.render.tile_render.composite_complete_event_send_failed",
+                error = error,
+            )
+            .to_string()
+        })?;
     Ok(())
 }
 

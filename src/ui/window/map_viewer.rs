@@ -61,6 +61,7 @@ mod tile_render_core;
 mod tile_state;
 mod tool_stripe;
 mod top_bar;
+mod transfer_phase;
 mod view;
 mod viewport;
 pub(crate) mod world3d;

@@ -180,7 +180,7 @@ impl World3dEditorView {
             target,
             last_offset: 0,
         });
-        self.status = "拖动轴箭头调整；松开保留预览，Esc 撤回本次拖拽".into();
+        self.status = t!("MapViewer.world3d.gizmo.drag_hint");
         true
     }
 
@@ -243,7 +243,7 @@ impl World3dEditorView {
             return false;
         };
         self.apply_axis_offset(drag, 0, cx);
-        self.status = "已撤回本次轴拖拽".into();
+        self.status = t!("MapViewer.world3d.gizmo.drag_cancelled");
         cx.notify();
         true
     }

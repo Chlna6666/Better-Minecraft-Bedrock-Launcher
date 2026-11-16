@@ -54,12 +54,19 @@ pub(super) fn global_detail(
             kind: kind.clone(),
             source,
         },
-        title: format!("全局记录 {}", global_kind_label(&kind)).into(),
+        title: t!(
+            "MapViewer.core.records.global_record_title",
+            kind = global_kind_label(&kind)
+        ),
         sections: vec![EditSection {
-            title: "全局数据".into(),
+            title: t!("MapViewer.core.records.global_data"),
             rows: vec![readonly_row(
-                "记录",
-                if record.is_some() { "存在" } else { "缺失" },
+                t!("MapViewer.core.records.record_label"),
+                if record.is_some() {
+                    t!("MapViewer.core.records.present")
+                } else {
+                    t!("MapViewer.core.records.missing")
+                },
             )],
         }],
         json: pretty_json(serde_json::json!(roots)),
@@ -77,24 +84,28 @@ pub(super) fn ticks_detail(
             pending: ticks.pending_source().cloned(),
             random: ticks.random_source().cloned(),
         },
-        title: format!("计划刻/随机刻 {},{}", chunk.x, chunk.z).into(),
+        title: t!(
+            "MapViewer.core.records.tick_queues_title",
+            chunk_x = chunk.x,
+            chunk_z = chunk.z
+        ),
         sections: vec![EditSection {
-            title: "区块游戏刻队列".into(),
+            title: t!("MapViewer.core.records.chunk_tick_queue"),
             rows: vec![
                 readonly_row(
-                    "计划刻记录",
+                    t!("MapViewer.core.records.pending_tick_record"),
                     if ticks.has_pending() {
-                        "存在"
+                        t!("MapViewer.core.records.present")
                     } else {
-                        "缺失"
+                        t!("MapViewer.core.records.missing")
                     },
                 ),
                 readonly_row(
-                    "随机刻记录",
+                    t!("MapViewer.core.records.random_tick_record"),
                     if ticks.has_random() {
-                        "存在"
+                        t!("MapViewer.core.records.present")
                     } else {
-                        "缺失"
+                        t!("MapViewer.core.records.missing")
                     },
                 ),
             ],
@@ -159,10 +170,15 @@ pub(super) fn write_ticks(
 fn parse_document<T: serde::de::DeserializeOwned>(
     text: Option<String>,
 ) -> bedrock_world::Result<T> {
-    let text =
-        text.ok_or_else(|| bedrock_world::BedrockWorldError::Validation("缺少编辑内容".into()))?;
+    let text = text.ok_or_else(|| {
+        bedrock_world::BedrockWorldError::Validation(
+            t!("MapViewer.core.records.missing_edit_content").to_string(),
+        )
+    })?;
     serde_json::from_str(&text).map_err(|error| {
-        bedrock_world::BedrockWorldError::Validation(format!("编辑内容无效：{error}"))
+        bedrock_world::BedrockWorldError::Validation(
+            t!("MapViewer.core.records.invalid_edit_content", error = error).to_string(),
+        )
     })
 }
 
@@ -210,11 +226,13 @@ pub(super) fn write_heightmap(
 ) -> bedrock_world::Result<EditInvalidation> {
     let heights: Vec<i16> = chunk_field(text, chunk, "heightmap")?;
     let current = editor.world().biome_data(chunk)?.ok_or_else(|| {
-        bedrock_world::BedrockWorldError::Validation("区块没有可修改的高度图".into())
+        bedrock_world::BedrockWorldError::Validation(
+            t!("MapViewer.core.records.chunk_has_no_editable_heightmap").to_string(),
+        )
     })?;
     if current.version != version {
         return Err(bedrock_world::BedrockWorldError::ConcurrentWrite(
-            "高度图格式已变化，请重新加载".into(),
+            t!("MapViewer.core.records.heightmap_format_changed").to_string(),
         ));
     }
     editor.put_heightmap(chunk, version, HeightMap2d::new(heights)?)
@@ -229,7 +247,7 @@ pub(super) fn write_biomes(
     let current = editor.world().biome_data(chunk)?;
     if !current.is_some_and(|data| data.version == ChunkVersion::New) {
         return Err(bedrock_world::BedrockWorldError::Validation(
-            "旧群系格式需要对应格式的编辑接口，普通保存不会转换为 Data3D".into(),
+            t!("MapViewer.core.records.legacy_biome_format_needs_editor").to_string(),
         ));
     }
     let storages = data
@@ -253,19 +271,28 @@ fn chunk_field<T: serde::de::DeserializeOwned>(
     let document: serde_json::Value = parse_document(text)?;
     let serde_json::Value::Object(mut fields) = document else {
         return Err(bedrock_world::BedrockWorldError::Validation(
-            "编辑内容必须是对象".into(),
+            t!("MapViewer.core.records.edit_content_must_be_object").to_string(),
         ));
     };
     if fields.remove("chunk") != Some(chunk_json(chunk)) || fields.len() != 1 {
         return Err(bedrock_world::BedrockWorldError::Validation(
-            "编辑内容的区块坐标或字段不匹配".into(),
+            t!("MapViewer.core.records.chunk_coordinates_or_fields_mismatch").to_string(),
         ));
     }
     let value = fields.remove(field).ok_or_else(|| {
-        bedrock_world::BedrockWorldError::Validation(format!("缺少 {field} 字段"))
+        bedrock_world::BedrockWorldError::Validation(
+            t!("MapViewer.core.records.missing_field", field = field).to_string(),
+        )
     })?;
     serde_json::from_value(value).map_err(|error| {
-        bedrock_world::BedrockWorldError::Validation(format!("{field} 内容无效：{error}"))
+        bedrock_world::BedrockWorldError::Validation(
+            t!(
+                "MapViewer.core.records.invalid_field_content",
+                field = field,
+                error = error
+            )
+            .to_string(),
+        )
     })
 }
 

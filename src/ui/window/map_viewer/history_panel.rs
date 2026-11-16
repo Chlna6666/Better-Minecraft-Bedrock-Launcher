@@ -5,6 +5,7 @@ use super::model::{
 use super::panels::toolbar_button;
 use super::prelude::*;
 use super::tile_state::TilePriority;
+use crate::tasks::TaskStage;
 
 impl View {
     pub(super) fn refresh_history(&mut self, cx: &mut Context<Self>) {
@@ -133,8 +134,8 @@ impl View {
 
     pub(super) fn undo_map_edit(&mut self, cx: &mut Context<Self>) {
         self.apply_history_operation(
-            "撤回修改",
-            "撤回历史",
+            t!("MapViewer.history.history_panel.undo_operation_label"),
+            TransferPhase::UNDO_HISTORY,
             |world_path, cancel, progress| apply_undo(&world_path, &cancel, progress),
             cx,
         );
@@ -142,8 +143,8 @@ impl View {
 
     pub(super) fn redo_map_edit(&mut self, cx: &mut Context<Self>) {
         self.apply_history_operation(
-            "重做修改",
-            "重做历史",
+            t!("MapViewer.history.history_panel.redo_operation_label"),
+            TransferPhase::REDO_HISTORY,
             |world_path, cancel, progress| apply_redo(&world_path, &cancel, progress),
             cx,
         );
@@ -151,7 +152,7 @@ impl View {
 
     pub(super) fn restore_selected_history_entry(&mut self, cx: &mut Context<Self>) {
         let Some(entry_id) = self.history.selected_entry_id.clone() else {
-            toast::error(cx, SharedString::from("请先选择一个历史项"));
+            toast::error(cx, t!("MapViewer.history.history_panel.select_entry_first"));
             return;
         };
         let selected_chunks = self
@@ -162,17 +163,19 @@ impl View {
             .map(|entry| entry.chunks.iter().copied().collect::<BTreeSet<_>>())
             .unwrap_or_default();
         self.apply_history_operation(
-            "回档历史",
-            "回档历史",
+            t!("MapViewer.history.history_panel.restore_operation_label"),
+            TransferPhase::RESTORE_HISTORY,
             move |world_path, cancel: CancelFlag, progress| {
                 if cancel.is_cancelled() {
-                    return Err("历史操作已取消".to_owned());
+                    return Err(
+                        t!("MapViewer.history.history_panel.operation_cancelled").to_string()
+                    );
                 }
                 if !selected_chunks.is_empty() {
                     create_restore_protection_point(
                         &world_path,
                         selected_chunks.clone(),
-                        "回档前保护点",
+                        t!("MapViewer.history.history_panel.restore_protection_point_label"),
                     )?;
                 }
                 restore_history_entry(&world_path, &entry_id, &cancel, progress)
@@ -184,7 +187,10 @@ impl View {
     pub(super) fn create_map_backup(&mut self, cx: &mut Context<Self>) {
         let world_path = self.world_path.clone();
         let map_name = self.asset.display_name.to_string();
-        self.begin_edit_toast(SharedString::from("正在创建地图整图备份..."), cx);
+        self.begin_edit_toast(
+            t!("MapViewer.history.history_panel.creating_full_map_backup"),
+            cx,
+        );
         cx.spawn(async move |handle, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -200,7 +206,11 @@ impl View {
             view.update(cx, move |this, cx| {
                 match result {
                     Ok(path) => {
-                        let message = format!("地图备份已创建: {path}");
+                        let message = t!(
+                            "MapViewer.history.history_panel.map_backup_created",
+                            path = path
+                        )
+                        .to_string();
                         this.status = SharedString::from(message.clone());
                         this.resolve_edit_toast(
                             toast::ToastKind::Success,
@@ -233,7 +243,10 @@ impl View {
 
     pub(super) fn clear_history(&mut self, cx: &mut Context<Self>) {
         if self.map_write_busy() {
-            toast::error(cx, SharedString::from("地图正在写入，暂不能清理历史"));
+            toast::error(
+                cx,
+                t!("MapViewer.history.history_panel.clear_history_map_busy"),
+            );
             return;
         }
         let world_path = self.world_path.clone();
@@ -246,7 +259,11 @@ impl View {
                     match std::fs::remove_dir_all(&history_dir) {
                         Ok(()) => Ok(()),
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                        Err(error) => Err(format!("清理历史失败: {error}")),
+                        Err(error) => Err(t!(
+                            "MapViewer.history.history_panel.clear_history_failed",
+                            error = error
+                        )
+                        .to_string()),
                     }
                 })
                 .await;
@@ -264,7 +281,7 @@ impl View {
                         this.professional.overlay_generation =
                             this.professional.overlay_generation.saturating_add(1);
                         this.last_synced_canvas_snapshot_key = None;
-                        toast::success(cx, SharedString::from("历史已清理"));
+                        toast::success(cx, t!("MapViewer.history.history_panel.history_cleared"));
                     }
                     Err(error) => {
                         toast::error(cx, SharedString::from(error));
@@ -321,9 +338,9 @@ impl View {
                                         .line_height(px(18.0))
                                         .text_color(colors.text_muted)
                                         .child(if self.history.loading {
-                                            "正在加载历史..."
+                                            t!("MapViewer.history.history_panel.loading_history")
                                         } else {
-                                            "还没有地图编辑历史。"
+                                            t!("MapViewer.history.history_panel.history_empty")
                                         }),
                                 )
                             })
@@ -387,7 +404,7 @@ impl View {
             .gap(px(8.0))
             .child(history_toolbar_action(
                 colors,
-                "刷新",
+                t!("MapViewer.history.history_panel.refresh"),
                 !self.history.loading,
                 cx,
                 |this, cx| {
@@ -396,7 +413,7 @@ impl View {
             ))
             .child(history_toolbar_action(
                 colors,
-                "撤回",
+                t!("MapViewer.history.history_panel.undo"),
                 !self.history.applying && has_undo,
                 cx,
                 |this, cx| {
@@ -405,7 +422,7 @@ impl View {
             ))
             .child(history_toolbar_action(
                 colors,
-                "重做",
+                t!("MapViewer.history.history_panel.redo"),
                 !self.history.applying && has_redo,
                 cx,
                 |this, cx| {
@@ -414,7 +431,7 @@ impl View {
             ))
             .child(history_toolbar_action(
                 colors,
-                "回档到此",
+                t!("MapViewer.history.history_panel.restore_to_here"),
                 !self.history.applying && can_restore,
                 cx,
                 |this, cx| {
@@ -423,7 +440,7 @@ impl View {
             ))
             .child(history_toolbar_action(
                 colors,
-                "备份",
+                t!("MapViewer.history.history_panel.backup"),
                 !self.history.applying,
                 cx,
                 |this, cx| {
@@ -433,9 +450,9 @@ impl View {
             .child(history_toolbar_action(
                 colors,
                 if self.history.visualization_enabled {
-                    "隐藏差异"
+                    t!("MapViewer.history.history_panel.hide_diff")
                 } else {
-                    "地图差异"
+                    t!("MapViewer.history.history_panel.show_diff")
                 },
                 selected.is_some(),
                 cx,
@@ -445,7 +462,7 @@ impl View {
             ))
             .child(history_toolbar_action(
                 colors,
-                "清理",
+                t!("MapViewer.history.history_panel.clear"),
                 !self.history.loading && !self.history.applying && can_clear,
                 cx,
                 |this, cx| {
@@ -538,13 +555,13 @@ impl View {
                         div()
                             .text_size(px(10.0))
                             .text_color(colors.text_muted)
-                            .child(format!(
-                                "{} · chunk {} · raw {} · {} bytes · 存储 {} bytes",
-                                format_history_time(entry.timestamp_secs),
-                                entry.chunks.len(),
-                                entry.raw_delta_count,
-                                entry.raw_delta_bytes,
-                                entry.stored_bytes
+                            .child(t!(
+                                "MapViewer.history.history_panel.entry_meta_line",
+                                time = format_history_time(entry.timestamp_secs),
+                                chunks = entry.chunks.len(),
+                                raw = entry.raw_delta_count,
+                                rawBytes = entry.raw_delta_bytes,
+                                storedBytes = entry.stored_bytes
                             )),
                     ),
             )
@@ -552,8 +569,8 @@ impl View {
 
     fn apply_history_operation(
         &mut self,
-        label: &'static str,
-        phase: &'static str,
+        label: SharedString,
+        phase: TransferPhase,
         operation: impl FnOnce(
             PathBuf,
             CancelFlag,
@@ -564,19 +581,19 @@ impl View {
         cx: &mut Context<Self>,
     ) {
         if self.history.applying {
-            toast::error(cx, SharedString::from("已有历史操作正在执行"));
+            toast::error(
+                cx,
+                t!("MapViewer.history.history_panel.operation_already_running"),
+            );
             return;
         }
         if self.map_write_busy() {
-            toast::error(
-                cx,
-                SharedString::from("地图正在写入，请等待完成后再撤销、重做或回档"),
-            );
+            toast::error(cx, t!("MapViewer.history.history_panel.map_busy_wait"));
             return;
         }
         self.history.applying = true;
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new(label, "历史操作")
+            task_manager::TaskOptions::new(label.clone(), TaskStage::HISTORY_OPERATION)
                 .detail(self.asset.display_name.to_string())
                 .total(task_progress_units(1)),
         )
@@ -588,11 +605,17 @@ impl View {
             move || cancel.cancel()
         });
         self.set_chunk_transfer_progress(ChunkTransferProgress {
-            phase: SharedString::from(phase),
+            phase,
             completed: 0,
             total: 1,
         });
-        self.begin_edit_toast(SharedString::from(format!("正在{label}...")), cx);
+        self.begin_edit_toast(
+            t!(
+                "MapViewer.history.history_panel.operation_in_progress",
+                label = label
+            ),
+            cx,
+        );
         let world_path = self.world_path.clone();
         let metadata_generation = self.metadata_generation;
         cx.notify();
@@ -619,7 +642,7 @@ impl View {
                         &task_id_for_progress,
                         &mut progress_sync,
                         &snapshot,
-                        "历史操作",
+                        TaskStage::HISTORY_OPERATION,
                     );
                     if progress_sender
                         .unbounded_send(HistoryApplyEvent::Progress(snapshot))
@@ -800,7 +823,7 @@ fn history_visualization_legend(
         .items_center()
         .gap(px(8.0))
         .child(history_filter_chip(
-            "新增",
+            t!("MapViewer.history.history_panel.filter_added"),
             MapHistoryVisualFilterKind::Added,
             visualization,
             history.visualization_filter,
@@ -809,7 +832,7 @@ fn history_visualization_legend(
             cx,
         ))
         .child(history_filter_chip(
-            "删除",
+            t!("MapViewer.history.history_panel.filter_removed"),
             MapHistoryVisualFilterKind::Removed,
             visualization,
             history.visualization_filter,
@@ -818,7 +841,7 @@ fn history_visualization_legend(
             cx,
         ))
         .child(history_filter_chip(
-            "修改",
+            t!("MapViewer.history.history_panel.filter_modified"),
             MapHistoryVisualFilterKind::Modified,
             visualization,
             history.visualization_filter,
@@ -827,16 +850,19 @@ fn history_visualization_legend(
             cx,
         ))
         .child(history_summary_badge(
-            format!("混合 {} chunk", visualization.mixed_chunks),
+            t!(
+                "MapViewer.history.history_panel.mixed_chunks",
+                count = visualization.mixed_chunks
+            ),
             rgb(0xf59e0b),
             colors,
         ))
         .child(history_summary_badge(
-            format!(
-                "精确 {} · 部分 {} · 记录级 {}",
-                visualization.precise_chunks,
-                visualization.partial_chunks,
-                visualization.record_only_chunks
+            t!(
+                "MapViewer.history.history_panel.precision_summary",
+                precise = visualization.precise_chunks,
+                partial = visualization.partial_chunks,
+                recordOnly = visualization.record_only_chunks
             ),
             rgb(0x10b981),
             colors,
@@ -845,17 +871,21 @@ fn history_visualization_legend(
             this.child(
                 div()
                     .text_color(colors.text_muted)
-                    .child("正在解析块级差异..."),
+                    .child(t!("MapViewer.history.history_panel.parsing_block_diff")),
             )
         })
         .when(!history.visualization_enabled, |this| {
-            this.child(div().text_color(colors.text_muted).child("地图差异已隐藏"))
+            this.child(
+                div()
+                    .text_color(colors.text_muted)
+                    .child(t!("MapViewer.history.history_panel.visualization_hidden")),
+            )
         })
         .when(!history.visualization_filter.any_enabled(), |this| {
             this.child(
                 div()
                     .text_color(colors.text_muted)
-                    .child("所有差异类型均已过滤"),
+                    .child(t!("MapViewer.history.history_panel.all_filters_disabled")),
             )
         })
         .when_some(history.visualization_error.clone(), |this, error| {
@@ -864,7 +894,7 @@ fn history_visualization_legend(
 }
 
 fn history_filter_chip(
-    label: &'static str,
+    label: SharedString,
     kind: MapHistoryVisualFilterKind,
     visualization: &MapHistoryVisualization,
     filter: MapHistoryVisualFilter,
@@ -936,7 +966,7 @@ fn history_filter_chip(
         )
 }
 
-fn history_summary_badge(label: String, color: Rgba, colors: &ThemeColors) -> Div {
+fn history_summary_badge(label: SharedString, color: Rgba, colors: &ThemeColors) -> Div {
     div()
         .flex()
         .items_center()
@@ -969,100 +999,188 @@ fn history_detail_text(
     history: &MapHistoryState,
 ) -> SharedString {
     if let Some(error) = error {
-        return SharedString::from(format!("历史加载错误\n\n{error}"));
+        return SharedString::from(format!(
+            "{}\n\n{error}",
+            t!("MapViewer.history.history_panel.load_error")
+        ));
     }
     let Some(entry) = entry else {
-        return SharedString::from("选择左侧历史项查看详情。");
+        return t!("MapViewer.history.history_panel.select_entry_hint");
     };
     let visualization = history.visualization.as_ref();
     let mut lines = Vec::new();
-    lines.push(format!("变更集 ID: {}", entry.id));
-    lines.push(format!("类型: {}", entry.kind_label()));
-    lines.push(format!("状态: {}", entry.short_status()));
-    lines.push(format!(
-        "时间: {}",
-        format_history_time(entry.timestamp_secs)
-    ));
-    lines.push(format!("标题: {}", entry.label));
-    lines.push(format!("说明: {}", entry.message));
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.detail_changeset_id",
+            id = entry.id
+        )
+        .to_string(),
+    );
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.detail_kind",
+            value = entry.kind_label()
+        )
+        .to_string(),
+    );
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.detail_status",
+            value = entry.short_status()
+        )
+        .to_string(),
+    );
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.detail_time",
+            value = format_history_time(entry.timestamp_secs)
+        )
+        .to_string(),
+    );
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.detail_title",
+            value = entry.label
+        )
+        .to_string(),
+    );
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.detail_message",
+            value = entry.message
+        )
+        .to_string(),
+    );
     lines.push(String::new());
 
-    lines.push("空间范围".to_string());
+    lines.push(t!("MapViewer.history.history_panel.section_spatial_bounds").to_string());
     lines.extend(history_dimension_bounds_text(&visualization.chunks));
-    lines.push(format!(
-        "影响 chunk: {}（混合 {}）",
-        visualization.chunks.len(),
-        visualization.mixed_chunks
-    ));
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.affected_chunks",
+            chunks = visualization.chunks.len(),
+            mixed = visualization.mixed_chunks
+        )
+        .to_string(),
+    );
     lines.push(String::new());
 
-    lines.push("块级差异".to_string());
-    lines.push(format!(
-        "新增 {} · 删除 {} · 修改 {} · 总计 {} block",
-        format_history_count(visualization.added_blocks),
-        format_history_count(visualization.removed_blocks),
-        format_history_count(visualization.modified_blocks),
-        format_history_count(visualization.total_blocks()),
-    ));
-    lines.push(format!(
-        "精确 chunk {} · 部分解析 {} · 仅记录级 {}",
-        visualization.precise_chunks,
-        visualization.partial_chunks,
-        visualization.record_only_chunks
-    ));
-    lines.push(format!("变化子区块: {}", visualization.changed_subchunks));
+    lines.push(t!("MapViewer.history.history_panel.section_block_diff").to_string());
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.block_diff_summary",
+            added = format_history_count(visualization.added_blocks),
+            removed = format_history_count(visualization.removed_blocks),
+            modified = format_history_count(visualization.modified_blocks),
+            total = format_history_count(visualization.total_blocks())
+        )
+        .to_string(),
+    );
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.detail_precision",
+            precise = visualization.precise_chunks,
+            partial = visualization.partial_chunks,
+            recordOnly = visualization.record_only_chunks
+        )
+        .to_string(),
+    );
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.changed_subchunks",
+            count = visualization.changed_subchunks
+        )
+        .to_string(),
+    );
     lines.push(String::new());
 
-    lines.push("数据库记录".to_string());
-    lines.push(format!(
-        "新增 {} · 删除 {} · 修改 {} · 总计 {} record",
-        visualization.added_records,
-        visualization.removed_records,
-        visualization.modified_records,
-        visualization.total_records(),
-    ));
-    lines.push(format!(
-        "地形 {} · 方块实体 {} · 实体 {} · 元数据 {} · 未映射 {}",
-        visualization.terrain_records,
-        visualization.block_entity_records,
-        visualization.entity_records,
-        visualization.metadata_records,
-        visualization.unmapped_records,
-    ));
+    lines.push(t!("MapViewer.history.history_panel.section_db_records").to_string());
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.record_diff_summary",
+            added = visualization.added_records,
+            removed = visualization.removed_records,
+            modified = visualization.modified_records,
+            total = visualization.total_records()
+        )
+        .to_string(),
+    );
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.record_categories",
+            terrain = visualization.terrain_records,
+            blockEntity = visualization.block_entity_records,
+            entity = visualization.entity_records,
+            metadata = visualization.metadata_records,
+            unmapped = visualization.unmapped_records
+        )
+        .to_string(),
+    );
     lines.push(format!(
         "level.dat: {}",
         if visualization.level_dat_changed {
-            "有变化"
+            t!("MapViewer.history.history_panel.level_dat_changed")
         } else {
-            "无变化"
+            t!("MapViewer.history.history_panel.level_dat_unchanged")
         }
     ));
     lines.push(String::new());
 
-    lines.push("存储".to_string());
-    lines.push(format!("世界: {}", entry.world_path));
-    lines.push(format!(
-        "原始变化字节: {}",
-        format_history_count(entry.raw_delta_bytes)
-    ));
-    lines.push(format!("存储格式: {}", history_storage_label(entry)));
-    lines.push(format!(
-        "实际新增存储: {} bytes{}",
-        format_history_count(entry.stored_bytes),
-        history_compression_ratio(entry)
-    ));
+    lines.push(t!("MapViewer.history.history_panel.section_storage").to_string());
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.detail_world",
+            path = entry.world_path
+        )
+        .to_string(),
+    );
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.detail_raw_delta_bytes",
+            bytes = format_history_count(entry.raw_delta_bytes)
+        )
+        .to_string(),
+    );
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.detail_storage_format",
+            value = history_storage_label(entry)
+        )
+        .to_string(),
+    );
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.detail_stored_bytes",
+            bytes = format_history_count(entry.stored_bytes),
+            ratio = history_compression_ratio(entry)
+        )
+        .to_string(),
+    );
     if entry.stored_object_count > 0 || entry.reused_object_count > 0 {
-        lines.push(format!(
-            "对象库: 新增 {} · 复用 {}",
-            entry.stored_object_count, entry.reused_object_count
-        ));
+        lines.push(
+            t!(
+                "MapViewer.history.history_panel.object_store_counts",
+                stored = entry.stored_object_count,
+                reused = entry.reused_object_count
+            )
+            .to_string(),
+        );
     }
-    lines.push(format!(
-        "当前地图筛选: {}",
-        history_filter_text(history.visualization_filter)
-    ));
+    lines.push(
+        t!(
+            "MapViewer.history.history_panel.detail_filter",
+            value = history_filter_text(history.visualization_filter)
+        )
+        .to_string(),
+    );
     if let Some(error) = &entry.error {
-        lines.push(format!("错误: {error}"));
+        lines.push(
+            t!(
+                "MapViewer.history.history_panel.detail_error",
+                error = error
+            )
+            .to_string(),
+        );
     }
     SharedString::from(lines.join("\n"))
 }
@@ -1084,42 +1202,50 @@ fn history_dimension_bounds_text(chunks: &[MapHistoryChunkVisual]) -> Vec<String
         entry.4 = entry.4.saturating_add(1);
     }
     if bounds.is_empty() {
-        return vec!["无可映射的 chunk 范围".to_string()];
+        return vec![t!("MapViewer.history.history_panel.no_mappable_chunks").to_string()];
     }
     bounds
         .into_iter()
         .map(|(dimension, (min_x, min_z, max_x, max_z, count))| {
-            format!(
-                "{}: chunk ({min_x},{min_z}) → ({max_x},{max_z}) · block X {}..{} · Z {}..{} · {count} chunk",
-                history_dimension_label(dimension),
-                min_x.saturating_mul(16),
-                max_x.saturating_add(1).saturating_mul(16).saturating_sub(1),
-                min_z.saturating_mul(16),
-                max_z.saturating_add(1).saturating_mul(16).saturating_sub(1),
+            t!(
+                "MapViewer.history.history_panel.dimension_bounds",
+                dimension = history_dimension_label(dimension),
+                minX = min_x,
+                minZ = min_z,
+                maxX = max_x,
+                maxZ = max_z,
+                blockXMin = min_x.saturating_mul(16),
+                blockXMax = max_x.saturating_add(1).saturating_mul(16).saturating_sub(1),
+                blockZMin = min_z.saturating_mul(16),
+                blockZMax = max_z.saturating_add(1).saturating_mul(16).saturating_sub(1),
+                count = count
             )
+            .to_string()
         })
         .collect()
 }
 
-fn history_dimension_label(dimension: Dimension) -> String {
+fn history_dimension_label(dimension: Dimension) -> SharedString {
     match dimension {
-        Dimension::Overworld => "主世界".to_string(),
-        Dimension::Nether => "下界".to_string(),
-        Dimension::End => "末地".to_string(),
-        Dimension::Unknown(id) => format!("维度 {id}"),
+        Dimension::Overworld => t!("MapViewer.history.history_panel.dimension_overworld"),
+        Dimension::Nether => t!("MapViewer.history.history_panel.dimension_nether"),
+        Dimension::End => t!("MapViewer.history.history_panel.dimension_end"),
+        Dimension::Unknown(id) => {
+            t!("MapViewer.history.history_panel.dimension_unknown", id = id)
+        }
     }
 }
 
-fn history_filter_text(filter: MapHistoryVisualFilter) -> &'static str {
+fn history_filter_text(filter: MapHistoryVisualFilter) -> SharedString {
     match (filter.show_added, filter.show_removed, filter.show_modified) {
-        (true, true, true) => "新增、删除、修改",
-        (true, true, false) => "新增、删除",
-        (true, false, true) => "新增、修改",
-        (false, true, true) => "删除、修改",
-        (true, false, false) => "仅新增",
-        (false, true, false) => "仅删除",
-        (false, false, true) => "仅修改",
-        (false, false, false) => "全部隐藏",
+        (true, true, true) => t!("MapViewer.history.history_panel.filter_all"),
+        (true, true, false) => t!("MapViewer.history.history_panel.filter_added_removed"),
+        (true, false, true) => t!("MapViewer.history.history_panel.filter_added_modified"),
+        (false, true, true) => t!("MapViewer.history.history_panel.filter_removed_modified"),
+        (true, false, false) => t!("MapViewer.history.history_panel.filter_only_added"),
+        (false, true, false) => t!("MapViewer.history.history_panel.filter_only_removed"),
+        (false, false, true) => t!("MapViewer.history.history_panel.filter_only_modified"),
+        (false, false, false) => t!("MapViewer.history.history_panel.filter_none"),
     }
 }
 
@@ -1128,7 +1254,11 @@ fn history_compression_ratio(entry: &MapHistoryEntry) -> String {
         return String::new();
     }
     let ratio = entry.stored_bytes as f64 / entry.raw_delta_bytes as f64 * 100.0;
-    format!("（{ratio:.1}%）")
+    t!(
+        "MapViewer.history.history_panel.compression_ratio_suffix",
+        ratio = format!("{ratio:.1}")
+    )
+    .to_string()
 }
 
 fn format_history_count(value: u64) -> String {
@@ -1143,11 +1273,11 @@ fn format_history_count(value: u64) -> String {
     output
 }
 
-fn history_storage_label(entry: &MapHistoryEntry) -> &'static str {
+fn history_storage_label(entry: &MapHistoryEntry) -> SharedString {
     match entry.storage_format.as_str() {
-        "objectStoreV1" => "对象库 delta",
-        "inlineZstd" => "内联压缩 delta",
-        _ => "未知",
+        "objectStoreV1" => t!("MapViewer.history.history_panel.storage_object_store_delta"),
+        "inlineZstd" => t!("MapViewer.history.history_panel.storage_inline_zstd_delta"),
+        _ => t!("MapViewer.history.history_panel.storage_unknown"),
     }
 }
 

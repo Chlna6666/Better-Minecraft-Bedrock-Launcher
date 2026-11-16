@@ -12,11 +12,22 @@ impl View {
             .flex()
             .flex_col()
             .gap(px(7.0))
-            .child(inspector::section_title(colors, "颜色匹配"))
+            .child(inspector::section_title(
+                colors,
+                t!("MapViewer.generator.image_generator.controls.section_color_match"),
+            ))
             .child(div().flex().flex_wrap().gap(px(6.0)).children(
                 [
-                    (Dithering::None, "最近色（无抖动）"),
-                    (Dithering::FloydSteinberg, "Floyd–Steinberg"),
+                    (
+                        Dithering::None,
+                        t!(
+                            "MapViewer.generator.image_generator.controls.dithering_nearest"
+                        ),
+                    ),
+                    (
+                        Dithering::FloydSteinberg,
+                        SharedString::from("Floyd–Steinberg"),
+                    ),
                 ]
                 .into_iter()
                 .map(|(dithering, label)| {
@@ -36,7 +47,9 @@ impl View {
                     .text_size(px(11.0))
                     .line_height(px(16.0))
                     .text_color(colors.text_secondary)
-                    .child("方块材质的颜色有限。最近色保留清晰边界；误差扩散适合插画与柔和渐变，远看更接近原图，近看会有颗粒。"),
+                    .child(t!(
+                        "MapViewer.generator.image_generator.controls.dithering_hint"
+                    )),
             )
     }
 
@@ -58,7 +71,10 @@ impl View {
             .flex()
             .flex_col()
             .gap(px(7.0))
-            .child(inspector::section_title(colors, "高度模式"))
+            .child(inspector::section_title(
+                colors,
+                t!("MapViewer.generator.image_generator.controls.section_height_mode"),
+            ))
             .child(self.render_image_height_modes(colors, cx, busy, depth, relief))
             .when_some(relief, |panel, (max_height, fill)| {
                 panel.child(self.render_relief_image_settings(
@@ -82,13 +98,16 @@ impl View {
     ) -> Div {
         div().flex().flex_wrap().gap(px(6.0)).children(
             [
-                (ImageBlockHeight::Flat, "Flat 平面"),
+                (
+                    ImageBlockHeight::Flat,
+                    t!("MapViewer.generator.image_generator.controls.depth_flat"),
+                ),
                 (
                     ImageBlockHeight::LuminanceRelief {
                         max_height: relief.map_or(16, |(height, _)| height),
                         fill: relief.map_or(ReliefImageFill::Solid, |(_, fill)| fill),
                     },
-                    "2.5D 亮度阶梯",
+                    t!("MapViewer.generator.image_generator.controls.depth_luminance"),
                 ),
             ]
             .into_iter()
@@ -140,7 +159,9 @@ impl View {
                     .text_size(px(11.0))
                     .line_height(px(16.0))
                     .text_color(colors.text_secondary)
-                    .child("按图像亮度生成高度。真实地图样本支持“南侧更高时像素更亮”的方向关系；地图色表和阴影强度尚未逐色拟合。"),
+                    .child(t!(
+                        "MapViewer.generator.image_generator.controls.relief_hint"
+                    )),
             )
     }
 
@@ -164,7 +185,10 @@ impl View {
                 div()
                     .text_size(px(11.0))
                     .text_color(colors.text_secondary)
-                    .child(format!("阶梯高度 · {max_height} 层")),
+                    .child(t!(
+                        "MapViewer.generator.image_generator.controls.relief_height",
+                        levels = max_height,
+                    )),
             )
             .when(!busy, |row| {
                 row.child(
@@ -206,8 +230,14 @@ impl View {
     ) -> Div {
         div().flex().flex_wrap().gap(px(6.0)).children(
             [
-                (ReliefImageFill::SurfaceOnly, "仅表面"),
-                (ReliefImageFill::Solid, "实心阶梯"),
+                (
+                    ReliefImageFill::SurfaceOnly,
+                    t!("MapViewer.generator.image_generator.controls.fill_surface_only"),
+                ),
+                (
+                    ReliefImageFill::Solid,
+                    t!("MapViewer.generator.image_generator.controls.fill_solid_terrace"),
+                ),
             ]
             .into_iter()
             .map(|(next_fill, label)| {
@@ -241,8 +271,16 @@ impl View {
         };
         let busy = self.image_generator_busy();
         let (slider_id, title, field) = match axis {
-            ImageAxis::Width => ("image-block-width", "宽度 · X", &self.num_image_width),
-            ImageAxis::Height => ("image-block-height", "高度 · Z", &self.num_image_height),
+            ImageAxis::Width => (
+                "image-block-width",
+                t!("MapViewer.generator.image_generator.controls.width_title"),
+                &self.num_image_width,
+            ),
+            ImageAxis::Height => (
+                "image-block-height",
+                t!("MapViewer.generator.image_generator.controls.height_title"),
+                &self.num_image_height,
+            ),
         };
         let changed_view = cx.entity().downgrade();
         let committed_view = changed_view.clone();
@@ -281,7 +319,7 @@ impl View {
                 crate::ui::components::numeric_field::numeric_dimension_editor(
                     field,
                     colors,
-                    "方块",
+                    t!("MapViewer.generator.image_generator.controls.unit_blocks"),
                     crate::ui::components::numeric_field::numeric_step_button(
                         colors,
                         "−",
@@ -321,7 +359,7 @@ impl View {
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child("常用尺寸"),
+                            .child(t!("MapViewer.generator.image_generator.controls.common_sizes")),
                     )
                     .child(div().flex_1())
                     .children([64_u32, 128, 256, 512].into_iter().map(|size| {

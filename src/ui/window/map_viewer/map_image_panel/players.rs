@@ -24,7 +24,7 @@ impl View {
             .to_lowercase();
         let mut players = vec![(
             PlayerId::Local,
-            SharedString::from("本地玩家 · ~local_player"),
+            t!("MapViewer.imagegen.players.local_player_label"),
         )];
         players.extend(
             self.players
@@ -91,7 +91,8 @@ impl View {
                                         .text_size(px(10.0))
                                         .text_color(row_colors.text_secondary)
                                         .child(if id.storage_key().is_none() {
-                                            "level.dat · 不支持直接写入地图记录".to_owned()
+                                            t!("MapViewer.imagegen.players.level_dat_not_writable")
+                                                .to_string()
                                         } else {
                                             player_id_label(id)
                                         }),
@@ -102,7 +103,7 @@ impl View {
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(row_colors.accent)
-                                    .child("✓ 已选"),
+                                    .child(t!("MapViewer.imagegen.players.selected_badge")),
                             )
                         })
                         .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
@@ -121,13 +122,19 @@ impl View {
             .flex_col()
             .gap(px(6.0))
             .min_w(px(0.0))
-            .child(inspector::section_title(colors, "目标玩家"))
+            .child(inspector::section_title(
+                colors,
+                t!("MapViewer.imagegen.players.section_target_player"),
+            ))
             .child(
                 div()
                     .text_size(px(11.0))
                     .text_color(colors.text_secondary)
                     .truncate()
-                    .child(format!("已选：{selected_label}")),
+                    .child(t!(
+                        "MapViewer.imagegen.players.selected_player",
+                        player = &selected_label,
+                    )),
             )
             .when(
                 self.map_image.selected_player.storage_key().is_none(),
@@ -136,7 +143,7 @@ impl View {
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child("当前玩家不可原子写入。请搜索并选择下方可写入的玩家。"),
+                            .child(t!("MapViewer.imagegen.players.current_player_not_atomic")),
                     )
                 },
             )
@@ -157,23 +164,31 @@ impl View {
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
                             .child(if query.is_empty() {
-                                format!("共 {total} 条记录（含本地 level.dat）")
+                                t!("MapViewer.imagegen.players.all_records", total = total,)
                             } else {
-                                format!("匹配 {count} / {total} 条记录")
+                                t!(
+                                    "MapViewer.imagegen.players.matching_records",
+                                    count = count,
+                                    total = total,
+                                )
                             }),
                     )
                     .when_some(selected_index, |row, index| {
                         row.child(
-                            ghost_button(colors, "map-player-scroll-to-selection", "定位已选")
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.map_image
-                                            .player_scroll
-                                            .scroll_to_item_strict(index, ScrollStrategy::Center);
-                                        cx.notify();
-                                    }),
-                                ),
+                            ghost_button(
+                                colors,
+                                "map-player-scroll-to-selection",
+                                t!("MapViewer.imagegen.players.scroll_to_selected"),
+                            )
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.map_image
+                                        .player_scroll
+                                        .scroll_to_item_strict(index, ScrollStrategy::Center);
+                                    cx.notify();
+                                }),
+                            ),
                         )
                     }),
             )
@@ -199,7 +214,7 @@ impl View {
                     div()
                         .text_size(px(12.0))
                         .text_color(colors.text_secondary)
-                        .child("没有匹配的玩家；可清空搜索"),
+                        .child(t!("MapViewer.imagegen.players.no_matching_players")),
                 )
             })
     }

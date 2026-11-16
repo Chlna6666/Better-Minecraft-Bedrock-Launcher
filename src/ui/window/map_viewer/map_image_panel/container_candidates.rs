@@ -84,24 +84,33 @@ impl View {
             .flex_col()
             .gap(px(7.0))
             .min_w(px(0.0))
-            .child(inspector::section_title(colors, "附近方块实体候选"))
+            .child(inspector::section_title(
+                colors,
+                t!("MapViewer.imagegen.container_candidates.section_candidates"),
+            ))
             .child(
                 div()
                     .text_size(px(11.0))
                     .text_color(colors.text_secondary)
-                    .child("复用当前已加载的世界叠加数据，只包含 X/Z；不保证是箱子、也未确认 Y 高度或可用容量。"),
+                    .child(t!(
+                        "MapViewer.imagegen.container_candidates.candidates_hint"
+                    )),
             )
             .when(!overlay_enabled, |panel| {
                 panel.child(
-                    secondary_button(colors, "map-enable-block-entity-overlay", "加载当前视野的方块实体")
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                if !this.overlay_options.block_entities {
-                                    this.toggle_block_entity_overlay(cx);
-                                }
-                            }),
-                        ),
+                    secondary_button(
+                        colors,
+                        "map-enable-block-entity-overlay",
+                        t!("MapViewer.imagegen.container_candidates.load_block_entities"),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            if !this.overlay_options.block_entities {
+                                this.toggle_block_entity_overlay(cx);
+                            }
+                        }),
+                    ),
                 )
             })
             .when(overlay_enabled, |panel| {
@@ -117,16 +126,29 @@ impl View {
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
                             .child(if overlay_ready {
-                                format!("匹配 {matches} 条位置记录 · 按距视口中心排序，最多显示 {MAX_VISIBLE_CANDIDATES} 条")
+                                t!(
+                                    "MapViewer.imagegen.container_candidates.candidates_count",
+                                    matches = matches,
+                                    limit = MAX_VISIBLE_CANDIDATES,
+                                )
+                                .to_string()
                             } else if self.professional.overlay_loading {
-                                "正在读取当前维度的可见范围索引…".to_owned()
+                                t!("MapViewer.imagegen.container_candidates.loading_index")
+                                    .to_string()
                             } else {
-                                "当前没有已验证的索引结果；可以重试加载。".to_owned()
+                                t!("MapViewer.imagegen.container_candidates.no_index_result")
+                                    .to_string()
                             }),
                     )
-                    .when(!overlay_ready && !self.professional.overlay_loading, |panel| {
-                        panel.child(
-                            secondary_button(colors, "map-retry-container-candidates", "重新读取候选")
+                    .when(
+                        !overlay_ready && !self.professional.overlay_loading,
+                        |panel| {
+                            panel.child(
+                                secondary_button(
+                                    colors,
+                                    "map-retry-container-candidates",
+                                    t!("MapViewer.imagegen.container_candidates.retry_candidates"),
+                                )
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _, _, cx| {
@@ -134,13 +156,18 @@ impl View {
                                         cx.notify();
                                     }),
                                 ),
-                        )
-                    })
+                            )
+                        },
+                    )
                     .children(positions.into_iter().map(|(x, z)| {
                         ghost_button(
                             colors,
                             SharedString::from(format!("map-container-candidate-{x}-{z}")),
-                            format!("X {x} · Z {z}  →  定位"),
+                            t!(
+                                "MapViewer.imagegen.container_candidates.candidate_coords",
+                                x = x,
+                                z = z,
+                            ),
                         )
                         .on_mouse_down(
                             MouseButton::Left,
@@ -155,7 +182,7 @@ impl View {
                             div()
                                 .text_size(px(11.0))
                                 .text_color(colors.text_secondary)
-                                .child("当前缓存范围未找到匹配项；可以缩放/移动地图，或清空搜索。"),
+                                .child(t!("MapViewer.imagegen.container_candidates.no_matches")),
                         )
                     })
             })
@@ -163,7 +190,7 @@ impl View {
                 div()
                     .text_size(px(11.0))
                     .text_color(colors.text_secondary)
-                    .child("定位后调整 Y 层，在地图上右键实际容器并选「设为地图写入目标」。写入前仍会验证目标和容量。"),
+                    .child(t!("MapViewer.imagegen.container_candidates.locate_hint")),
             )
     }
 }

@@ -14,8 +14,8 @@ mod bundle;
 mod comparison;
 mod container_candidates;
 mod controls;
-mod players;
 mod placement;
+mod players;
 mod render;
 mod target;
 
@@ -55,6 +55,8 @@ pub(super) struct MapImagePanelState {
     preview_done: u32,
     grid_estimated: bool,
     preview_note: Option<String>,
+    /// Final localized summary was already applied for this preview generation.
+    preview_finalized: bool,
 }
 
 impl MapImagePanelState {
@@ -66,12 +68,15 @@ impl MapImagePanelState {
     pub(super) fn new(window: &mut Window, cx: &mut Context<View>) -> Self {
         let player_search = cx.new(|cx| {
             let mut input = InputState::new(window, cx);
-            input.set_placeholder("搜索玩家名称 / UUID / 存储 ID", cx);
+            input.set_placeholder(t!("MapViewer.imagegen.panel.search_player_placeholder"), cx);
             input
         });
         let container_search = cx.new(|cx| {
             let mut input = InputState::new(window, cx);
-            input.set_placeholder("搜索当前已加载方块实体 X / Z", cx);
+            input.set_placeholder(
+                t!("MapViewer.imagegen.panel.search_container_placeholder"),
+                cx,
+            );
             input
         });
         Self {
@@ -108,6 +113,7 @@ impl MapImagePanelState {
             preview_done: 0,
             grid_estimated: false,
             preview_note: None,
+            preview_finalized: false,
         }
     }
 }
@@ -199,18 +205,20 @@ impl View {
 
     pub(super) fn workflow_status_label(&self) -> String {
         if self.map_image.pending_bundle.is_some() {
-            "外部 NBT 待确认 · 内容未预览".to_owned()
+            t!("MapViewer.imagegen.panel.status_pending_bundle").to_string()
         } else if self.map_image.source.is_none() {
-            "待选择源图片".to_owned()
+            t!("MapViewer.imagegen.panel.status_waiting_source").to_string()
         } else if self.map_image_busy() {
-            "正在生成地图像素".to_owned()
+            t!("MapViewer.imagegen.panel.status_generating_pixels").to_string()
         } else if self.map_image.preview.is_some() && self.map_image.placement_preview.is_some() {
-            format!(
-                "{} × {} 张地图 · 预览就绪",
-                self.map_image.options.columns, self.map_image.options.rows,
+            t!(
+                "MapViewer.imagegen.panel.status_preview_ready",
+                columns = self.map_image.options.columns,
+                rows = self.map_image.options.rows,
             )
+            .to_string()
         } else {
-            "地图预览未完成，请重新生成".to_owned()
+            t!("MapViewer.imagegen.panel.status_preview_incomplete").to_string()
         }
     }
 
@@ -242,8 +250,7 @@ impl View {
         self.map_image.picking_frame_center = true;
         self.context_menu = None;
         self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Placement, cx);
-        self.status =
-            SharedString::from("在中央世界地图上左键单击要放置的中心方块（也可右键选择）");
+        self.status = t!("MapViewer.imagegen.panel.pick_center_hint");
         cx.notify();
     }
 
@@ -266,10 +273,11 @@ impl View {
         self.map_image.frame_anchor = Some(position);
         self.map_image.frame_anchor_dimension = Some(self.dimension);
         self.map_image.picking_frame_center = false;
-        self.status = SharedString::from(format!(
-            "已设置展示框放置中心 X {} · Z {}，尚未修改世界",
-            position.0, position.1,
-        ));
+        self.status = t!(
+            "MapViewer.imagegen.panel.frame_center_set",
+            x = position.0,
+            z = position.1,
+        );
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
         cx.notify();
@@ -322,11 +330,12 @@ impl View {
                 }
                 let (center_x, center_z) = self.map_frame_confirmed_center()?;
                 Some(super::model::MapFrameGridPreview {
-                    controls: (!self.map_image_operation_busy() && !self.map_image_busy())
-                        .then(|| super::model::MapFrameControls {
+                    controls: (!self.map_image_operation_busy() && !self.map_image_busy()).then(
+                        || super::model::MapFrameControls {
                             transform: self.map_frame_transform(),
                             tools_expanded: self.map_image.tools_expanded,
-                        }),
+                        },
+                    ),
                     min_block_x: center_x
                         .saturating_sub((self.map_image.options.columns / 2) as i32),
                     min_block_z: center_z.saturating_sub((self.map_image.options.rows / 2) as i32),
@@ -352,20 +361,46 @@ impl View {
             // History finalization can fail after the world commit has succeeded.
             // Only preflight/commit failures leave the placement active for retry.
             let committed = snapshot.status.as_ref() == "completed"
-                || self.map_image.install_committed.load(std::sync::atomic::Ordering::Acquire);
+                || self
+                    .map_image
+                    .install_committed
+                    .load(std::sync::atomic::Ordering::Acquire);
             if !committed {
                 if snapshot.status.as_ref() == "error" {
-                    let reason = snapshot.message.as_deref().unwrap_or("未知写入错误");
-                    let reason = reason.strip_prefix("validation failed: ").unwrap_or(reason);
-                    self.status = SharedString::from(format!("地图写入未执行：{reason}"));
-                    toast::error(cx, SharedString::from(format!("地图未写入：{reason}")));
+                    let reason = snapshot
+                        .message
+                        .as_deref()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| {
+                            t!("MapViewer.imagegen.panel.unknown_write_error").to_string()
+                        });
+                    let reason = reason
+                        .strip_prefix("validation failed: ")
+                        .unwrap_or(&reason);
+                    self.status = t!(
+                        "MapViewer.imagegen.panel.write_not_executed",
+                        reason = reason
+                    );
+                    toast::error(
+                        cx,
+                        t!(
+                            "MapViewer.imagegen.panel.write_failed_toast",
+                            reason = reason
+                        ),
+                    );
                 }
                 return;
             }
             if snapshot.status.as_ref() == "error" {
-                let reason = snapshot.message.as_deref().unwrap_or("撤销历史保存失败");
-                self.status = SharedString::from(reason.to_owned());
-                toast::error(cx, SharedString::from(reason.to_owned()));
+                let reason = snapshot
+                    .message
+                    .as_deref()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| {
+                        t!("MapViewer.imagegen.panel.undo_history_save_failed").to_string()
+                    });
+                self.status = SharedString::from(reason.clone());
+                toast::error(cx, SharedString::from(reason));
             }
             if self.map_image.install_destination == MapImageInstallDestination::NewUpFrame {
                 self.clear_map_frame_placement(cx);
@@ -374,8 +409,7 @@ impl View {
                 MapImageInstallRefresh::Player(player) => self.load_player_detail(player, cx),
                 MapImageInstallRefresh::Chunks(chunks) => match chunks.lock() {
                     Ok(chunks) if !chunks.is_empty() => {
-                        let invalidation =
-                            EditInvalidation::chunks(chunks.clone()).with_metadata();
+                        let invalidation = EditInvalidation::chunks(chunks.clone()).with_metadata();
                         self.apply_map_edit_invalidation(
                             &invalidation,
                             TilePriority::EditRefresh,
@@ -406,6 +440,7 @@ impl View {
         self.map_image.preview_done = 0;
         self.map_image.grid_estimated = false;
         self.map_image.preview_note = None;
+        self.map_image.preview_finalized = false;
     }
 
     pub(super) fn accept_image_snapshot(&mut self, snapshot: &TaskSnapshot) {
@@ -418,18 +453,21 @@ impl View {
                 self.map_image.options.rows = frame.rows;
                 if frame.done == 0 {
                     self.map_image.grid_estimated = true;
-                    self.map_image.preview_note = Some(format!(
-                        "已读取图片 {}×{}；预计分片 {}×{}（{} 张），裁切 x={} y={} {}×{}。正在生成地图像素。",
-                        frame.source_width,
-                        frame.source_height,
-                        frame.columns,
-                        frame.rows,
-                        frame.columns * frame.rows,
-                        frame.crop.x,
-                        frame.crop.y,
-                        frame.crop.width,
-                        frame.crop.height,
-                    ));
+                    self.map_image.preview_note = Some(
+                        t!(
+                            "MapViewer.imagegen.panel.preview_estimate",
+                            source_width = frame.source_width,
+                            source_height = frame.source_height,
+                            columns = frame.columns,
+                            rows = frame.rows,
+                            tile_count = frame.columns * frame.rows,
+                            crop_x = frame.crop.x,
+                            crop_y = frame.crop.y,
+                            crop_width = frame.crop.width,
+                            crop_height = frame.crop.height,
+                        )
+                        .to_string(),
+                    );
                 } else if frame.done > self.map_image.preview_done {
                     if let Ok(image) = RenderImage::from_raw_pixels(
                         frame.width,
@@ -443,27 +481,25 @@ impl View {
                         let total = snapshot.total.unwrap_or_else(|| {
                             u64::from(self.map_image.options.columns * self.map_image.options.rows)
                         });
-                        self.map_image.preview_note = Some(format!(
-                            "正在合并第 {} / {} 张地图；深色线只表示分片边界。",
-                            frame.done, total,
-                        ));
+                        self.map_image.preview_note = Some(
+                            t!(
+                                "MapViewer.imagegen.panel.preview_merging",
+                                done = frame.done,
+                                total = total,
+                            )
+                            .to_string(),
+                        );
                     }
                 }
             }
             return;
         }
-        if self.map_image.preview_done
-            == self.map_image.options.columns * self.map_image.options.rows
-            && self
-                .map_image
-                .preview_note
-                .as_ref()
-                .is_some_and(|note| note.starts_with("源图"))
-        {
+        if self.map_image.preview_finalized {
             return;
         }
         let Some(result) = image_to_map::get_preview(snapshot.id.as_ref()) else {
-            self.map_image.preview_note = Some("预览结果已释放或过期，请重新转换".to_owned());
+            self.map_image.preview_note =
+                Some(t!("MapViewer.imagegen.panel.preview_expired").to_string());
             return;
         };
         // Create the actual world overlay once on task completion, not during canvas paint.
@@ -492,29 +528,40 @@ impl View {
                 self.map_image.preview = Some(Arc::new(image));
                 self.map_image.preview_done = result.tiles.len() as u32;
                 self.map_image.grid_estimated = false;
-                self.map_image.preview_note = Some(format!(
-                    "源图 {}×{}；{} x={} y={} {}×{}；输出 {}×{} 张地图，实际像素 {}×{}。深色线仅表示分片边界。",
-                    result.source_width,
-                    result.source_height,
-                    if self.map_image.options.fit == MapImageFit::Contain
-                        && self.map_image.options.trim_transparent_edges
-                    {
-                        "自动移除透明空白后的内容区域"
-                    } else {
-                        "原图裁剪区域"
-                    },
-                    result.crop.x,
-                    result.crop.y,
-                    result.crop.width,
-                    result.crop.height,
-                    result.columns,
-                    result.rows,
-                    result.columns * 128,
-                    result.rows * 128,
-                ));
+                let crop_scope = if self.map_image.options.fit == MapImageFit::Contain
+                    && self.map_image.options.trim_transparent_edges
+                {
+                    t!("MapViewer.imagegen.panel.crop_scope_trimmed")
+                } else {
+                    t!("MapViewer.imagegen.panel.crop_scope_original")
+                };
+                self.map_image.preview_note = Some(
+                    t!(
+                        "MapViewer.imagegen.panel.preview_summary",
+                        source_width = result.source_width,
+                        source_height = result.source_height,
+                        crop_scope = crop_scope,
+                        crop_x = result.crop.x,
+                        crop_y = result.crop.y,
+                        crop_width = result.crop.width,
+                        crop_height = result.crop.height,
+                        columns = result.columns,
+                        rows = result.rows,
+                        output_width = result.columns * 128,
+                        output_height = result.rows * 128,
+                    )
+                    .to_string(),
+                );
+                self.map_image.preview_finalized = true;
             }
             Err(error) => {
-                self.map_image.preview_note = Some(format!("预览图像创建失败：{error}"));
+                self.map_image.preview_note = Some(
+                    t!(
+                        "MapViewer.imagegen.panel.preview_image_failed",
+                        error = error
+                    )
+                    .to_string(),
+                );
             }
         }
     }
@@ -572,9 +619,11 @@ impl View {
         if self.map_image_operation_busy() {
             return;
         }
-        if let Some(path) =
-            pick_file_path(None,"图片", &["png", "jpg", "jpeg", "tga", "webp"])
-        {
+        if let Some(path) = pick_file_path(
+            None,
+            t!("MapViewer.imagegen.panel.choose_source_filter").as_ref(),
+            &["png", "jpg", "jpeg", "tga", "webp"],
+        ) {
             self.set_map_image_source(PathBuf::from(path), cx);
         }
     }
@@ -671,7 +720,7 @@ impl View {
             return;
         }
         let Some(source) = self.map_image.source.clone() else {
-            self.status = SharedString::from("请先选择图片");
+            self.status = t!("MapViewer.imagegen.panel.source_required");
             cx.notify();
             return;
         };
@@ -704,7 +753,7 @@ impl View {
                     self.task_snapshots
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
                 }
-                self.status = SharedString::from("正在生成 Bedrock 地图像素预览");
+                self.status = t!("MapViewer.imagegen.panel.preview_started");
             }
             Err(error) => {
                 self.status = SharedString::from(error.clone());

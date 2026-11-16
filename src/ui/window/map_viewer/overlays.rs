@@ -171,7 +171,7 @@ impl View {
         self.professional.pending_overlay_refresh = false;
         self.professional.last_overlay_request_bounds = Some(bounds);
         self.professional.last_overlay_request_options = Some(options);
-        self.status = SharedString::from("正在加载地图叠加层...");
+        self.status = t!("MapViewer.core.overlays.loading_overlays");
         cx.notify();
 
         let metadata_generation = self.metadata_generation;
@@ -243,10 +243,11 @@ impl View {
                             let overlay = Arc::new(overlay);
                             this.professional.overlay_paint = Some(overlay);
                             overlay_replaced = true;
-                            this.status = SharedString::from(format!(
-                                "已显示实体/叠加缓存 {}/{} · 正在校验并补齐当前区域",
-                                map_info.cached_tile_count, map_info.requested_tile_count
-                            ));
+                            this.status = t!(
+                                "MapViewer.core.overlays.cached_preview_loading",
+                                cached = map_info.cached_tile_count,
+                                requested = map_info.requested_tile_count
+                            );
                         }
                     }
                     if overlay_replaced {
@@ -320,19 +321,19 @@ impl View {
                         this.professional.overlay_paint = Some(overlay);
                         overlay_replaced = true;
                         this.professional.overlays = None;
-                        this.status = SharedString::from(format!(
-                            "实体/叠加区域已完整 · 实体 {} · 无坐标跳过 {} · 缓存 {}/{} · 重建 {}",
-                            map_info.entities.len(),
-                            map_info.skipped_entity_count,
-                            map_info.cached_tile_count,
-                            map_info.requested_tile_count,
-                            map_info.rebuilt_tile_count
-                        ));
+                        this.status = t!(
+                            "MapViewer.core.overlays.region_complete",
+                            entities = map_info.entities.len(),
+                            skipped = map_info.skipped_entity_count,
+                            cached = map_info.cached_tile_count,
+                            requested = map_info.requested_tile_count,
+                            rebuilt = map_info.rebuilt_tile_count
+                        );
                     }
                     Err(error) => {
                         this.professional.overlay_complete = false;
                         if error.contains("cancelled") || error.contains("cancel") {
-                            this.status = SharedString::from("地图叠加层查询已取消");
+                            this.status = t!("MapViewer.core.overlays.query_cancelled");
                         } else {
                             this.status = SharedString::from(error);
                         }
@@ -376,7 +377,7 @@ impl View {
         let metadata_generation = self.metadata_generation;
         let world_path = self.world_path.clone();
         let query_budget = self.map_query_budget.clone();
-        self.status = SharedString::from("正在建立村庄索引...");
+        self.status = t!("MapViewer.core.overlays.building_village_index");
         cx.notify();
         cx.spawn(async move |handle, cx| {
             let _query_permit = query_budget.acquire().await;
@@ -502,7 +503,7 @@ impl View {
         self.professional.map_info_invalidation_generation = generation;
         self.professional.pending_overlay_refresh = true;
         self.professional.village_index = None;
-        self.status = SharedString::from("正在作废已修改区块的地图信息缓存...");
+        self.status = t!("MapViewer.core.overlays.invalidating_map_info_cache");
         let world_path = self.world_path.clone();
         let query_budget = self.map_query_budget.clone();
         cx.spawn(async move |handle, cx| {
@@ -522,14 +523,16 @@ impl View {
                 }
                 match result {
                     Ok(removed) => {
-                        this.status = SharedString::from(format!(
-                            "已作废 {removed} 个地图信息瓦片，正在更新叠加层..."
-                        ));
+                        this.status = t!(
+                            "MapViewer.core.overlays.map_info_tiles_invalidated",
+                            count = removed
+                        );
                     }
                     Err(error) => {
-                        this.status = SharedString::from(format!(
-                            "地图信息缓存作废失败，将执行记录校验: {error}"
-                        ));
+                        this.status = t!(
+                            "MapViewer.core.overlays.map_info_invalidation_failed",
+                            error = error
+                        );
                     }
                 }
                 this.refresh_professional_overlays(cx);

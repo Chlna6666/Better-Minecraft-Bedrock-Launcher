@@ -86,7 +86,7 @@ impl View {
                 self.center_viewport_on_block(block.x, block.z, cx);
                 cx.notify();
             } else {
-                self.status = SharedString::from("当前选中的容器属于其他维度，请重新选择目标");
+                self.status = t!("MapViewer.render.target.selected_container_other_dimension");
                 cx.notify();
             }
         }
@@ -115,10 +115,12 @@ impl View {
         }
         self.map_image.selected_block = Some((chunk, block));
         self.context_menu = None;
-        self.status = SharedString::from(format!(
-            "地图写入目标：{}, {}, {}；确认写入时检查容器与空槽位",
-            block.x, block.y, block.z,
-        ));
+        self.status = t!(
+            "MapViewer.render.target.map_write_target",
+            x = block.x,
+            y = block.y,
+            z = block.z,
+        );
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
         cx.notify();

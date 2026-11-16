@@ -23,7 +23,7 @@ impl View {
                     .flex_col()
                     .child(import_preview_label(
                         colors,
-                        "源图片 · 原始比例（右侧显示转换结果）",
+                        t!("MapViewer.core.comparison.source_image_original_ratio"),
                     ))
                     .when_some(self.image_generator.source.as_ref(), |pane, source| {
                         pane.child(

@@ -569,7 +569,7 @@ impl View {
             viewport_composite_request_id: None,
             viewport_zoom_transition: false,
             last_ready_status_update: None,
-            status: SharedString::from("正在扫描地图瓦片..."),
+            status: t!("MapViewer.world3d.lifecycle.scanning_map_tiles"),
             diagnostics: RenderDiagnostics::default(),
             render_stats: RenderPipelineStats::default(),
             refresh_rendered_tiles: 0,
@@ -1376,7 +1376,7 @@ impl View {
         self.session_loading = true;
         self.drop_pending_image_evictions(cx);
         self.metadata_index_ready = false;
-        self.status = SharedString::from("正在打开地图渲染会话...");
+        self.status = t!("MapViewer.world3d.lifecycle.opening_render_session");
         tracing::debug!(
             generation = self.session_generation,
             backend = ?self.render_backend,
@@ -1412,9 +1412,9 @@ impl View {
                     Ok(session) => {
                         this.render_session = Some(Arc::new(session));
                         this.status = if this.metadata_loading {
-                            SharedString::from("地图渲染会话就绪 · 正在校验本地瓦片缓存")
+                            t!("MapViewer.world3d.lifecycle.session_ready_verifying_cache")
                         } else {
-                            SharedString::from("地图渲染会话就绪 · 正在加载当前视口")
+                            t!("MapViewer.world3d.lifecycle.session_ready_loading_viewport")
                         };
                         this.clear_visible_error();
                         tracing::debug!(generation, "map_viewer session_open_ok");
@@ -1452,7 +1452,7 @@ impl View {
         self.retire_render_session(cx);
         self.session_loading = true;
         self.drop_pending_image_evictions(cx);
-        self.status = SharedString::from("正在刷新地图渲染会话...");
+        self.status = t!("MapViewer.world3d.lifecycle.refreshing_render_session");
         tracing::debug!(
             generation = self.session_generation,
             tiles = affected_tiles.len(),
@@ -1487,20 +1487,22 @@ impl View {
                         this.clear_visible_error();
                         if affected_tiles.is_empty() {
                             this.invalidate_tiles(cx);
-                            this.status =
-                                SharedString::from("渲染会话已刷新 · 正在重建可见瓦片");
+                            this.status = t!(
+                                "MapViewer.world3d.lifecycle.session_refreshed_rebuild_tiles"
+                            );
                         } else {
                             this.refresh_edited_tiles(&affected_tiles, cx);
                             let chunk_count = affected_chunks.len();
                             this.status = if reuse_known_tile_index && chunk_count > 0 {
-                                SharedString::from(format!(
-                                    "渲染会话已刷新 · 正在局部刷新 {chunk_count} 个 chunk"
-                                ))
+                                t!(
+                                    "MapViewer.world3d.lifecycle.session_refreshed_patching_chunks",
+                                    chunk_count = chunk_count
+                                )
                             } else {
-                                SharedString::from(format!(
-                                    "渲染会话已刷新 · 正在重渲染 {} 个受影响瓦片",
-                                    affected_tiles.len()
-                                ))
+                                t!(
+                                    "MapViewer.world3d.lifecycle.session_refreshed_rerendering_tiles",
+                                    tile_count = affected_tiles.len()
+                                )
                             };
                     }
                         tracing::debug!(
@@ -1600,11 +1602,11 @@ impl View {
             self.viewport.center_tile(self.active_layout),
         );
         self.pending_viewport_refresh = false;
-        self.status = SharedString::from(format!(
-            "局部刷新 {} 个瓦片 / {} 个 chunk",
-            requests.len(),
-            total_chunks
-        ));
+        self.status = t!(
+            "MapViewer.world3d.lifecycle.partial_refresh_started",
+            tile_count = requests.len(),
+            chunk_count = total_chunks
+        );
         cx.notify();
         let requested_tiles_for_finish = requested_tiles.clone();
 
@@ -1666,7 +1668,7 @@ impl View {
                 let colors = this.theme_colors(cx);
                 let (results, failed_tiles, cancelled) = result;
                 if cancelled {
-                    this.status = SharedString::from("地图局部刷新已取消");
+                    this.status = t!("MapViewer.world3d.lifecycle.partial_refresh_cancelled");
                     this.schedule_next_tile_batch(cx);
                     cx.notify();
                     return;
@@ -1703,10 +1705,11 @@ impl View {
                     this.refresh_canvas_tiles_if_changed(&changed_tiles, colors, cx);
                 }
                 this.finish_paste_preview_tile_refresh(cx);
-                this.status = SharedString::from(format!(
-                    "局部刷新完成 · {} 个 chunk · fallback {} 个 tile",
-                    refreshed_chunks, fallback_count
-                ));
+                this.status = t!(
+                    "MapViewer.world3d.lifecycle.partial_refresh_done",
+                    chunk_count = refreshed_chunks,
+                    fallback_count = fallback_count
+                );
                 this.schedule_next_tile_batch(cx);
                 cx.notify();
             })?;
@@ -1755,7 +1758,7 @@ impl View {
         self.chunk_bounds = None;
         self.diagnostics = RenderDiagnostics::default();
         self.render_stats = RenderPipelineStats::default();
-        self.status = SharedString::from("正在构建全局区块占用索引...");
+        self.status = t!("MapViewer.world3d.lifecycle.building_occupancy_index");
         tracing::debug!(
             generation = self.metadata_generation,
             dimension = ?self.dimension,
@@ -1824,13 +1827,19 @@ impl View {
                         }
                         this.tile_occupancy_index = Some(result.index);
                         this.metadata_index_ready = true;
-                        this.status = SharedString::from(format!(
-                            "全局占用索引就绪 · {tile_count} 个瓦片 · {chunk_count} 个 chunk · {}",
-                            match result.source {
-                                bedrock_render::cache::occupancy::LoadSource::DiskCache => "磁盘缓存命中",
-                                bedrock_render::cache::occupancy::LoadSource::KeySpaceScan => "LevelDB 单次扫描",
+                        this.status = t!(
+                            "MapViewer.world3d.lifecycle.occupancy_index_ready",
+                            tile_count = tile_count,
+                            chunk_count = chunk_count,
+                            source = match result.source {
+                                bedrock_render::cache::occupancy::LoadSource::DiskCache => {
+                                    t!("MapViewer.world3d.lifecycle.load_source_disk_cache")
+                                }
+                                bedrock_render::cache::occupancy::LoadSource::KeySpaceScan => {
+                                    t!("MapViewer.world3d.lifecycle.load_source_keyspace_scan")
+                                }
                             }
-                        ));
+                        );
                         this.clear_visible_error();
                         tracing::debug!(
                             generation,
@@ -1896,9 +1905,9 @@ impl View {
             return;
         }
         if self.metadata_loading {
-            self.status = SharedString::from("地图索引后台扫描中 · 正在优先渲染当前视口");
+            self.status = t!("MapViewer.world3d.lifecycle.index_scanning_background");
         } else if !self.metadata_index_ready {
-            self.status = SharedString::from("地图索引暂无区块 · 正在尝试渲染当前视口");
+            self.status = t!("MapViewer.world3d.lifecycle.index_empty_trying_viewport");
         }
         if VIEWPORT_COMPOSITE_ENABLED || self.uses_viewport_composite() {
             self.last_visible_tile_signature = None;
@@ -1910,9 +1919,9 @@ impl View {
         let tiles = self.tile_work();
         if tiles.visible.is_empty() {
             self.status = if self.metadata_loading {
-                SharedString::from("正在等待视口尺寸或地图索引")
+                t!("MapViewer.world3d.lifecycle.waiting_viewport_size_or_index")
             } else {
-                SharedString::from("视口内没有可渲染瓦片")
+                t!("MapViewer.world3d.lifecycle.no_renderable_tiles_in_viewport")
             };
             return;
         }
@@ -2349,7 +2358,7 @@ impl View {
             }
         }
         if render_plans.is_empty() {
-            self.status = SharedString::from("大视口合成暂无待渲染瓦片");
+            self.status = t!("MapViewer.world3d.lifecycle.composite_no_tiles");
             return;
         }
         let Some(render_batch_permit) = self.acquire_render_batch() else {
@@ -2385,13 +2394,13 @@ impl View {
         self.viewport_composite_request_id = Some(request_id);
 
         let work_estimate = selected_tile_work_estimate(&requested_tiles, &self.tile_chunk_index);
-        self.status = SharedString::from(format!(
-            "大视口合成 {} 个瓦片 · chunk {} · 区域 {} · CPU {}%",
-            requested_tiles.len(),
-            work_estimate.chunk_count,
-            work_estimate.region_count,
-            self.cpu_budget.percent()
-        ));
+        self.status = t!(
+            "MapViewer.world3d.lifecycle.composite_started",
+            tile_count = requested_tiles.len(),
+            chunk_count = work_estimate.chunk_count,
+            region_count = work_estimate.region_count,
+            cpu_percent = self.cpu_budget.percent()
+        );
         tracing::debug!(
             request_id,
             visible = visible_tiles.len(),
@@ -2518,15 +2527,15 @@ impl View {
                             this.diagnostics.add(diagnostics);
                             this.render_stats = stats;
                             this.status = if failed_tiles == 0 {
-                                SharedString::from(format!(
-                                    "地图合成完成 · 显示 {} 个瓦片 · GPU 图像 1",
-                                    rendered_tiles
-                                ))
+                                t!(
+                                    "MapViewer.world3d.lifecycle.composite_complete",
+                                    tile_count = rendered_tiles
+                                )
                             } else {
-                                SharedString::from(format!(
-                                    "地图数据读取失败 {} 个瓦片，已保留上一张完整地图",
-                                    failed_tiles
-                                ))
+                                t!(
+                                    "MapViewer.world3d.lifecycle.composite_read_failed",
+                                    failed_tiles = failed_tiles
+                                )
                             };
                             tracing::debug!(
                                 request_id,
@@ -2555,7 +2564,9 @@ impl View {
                 };
                 let error = result
                     .err()
-                    .unwrap_or_else(|| "视口合成事件流提前结束".to_string());
+                    .unwrap_or_else(|| {
+                        t!("MapViewer.world3d.lifecycle.composite_stream_ended").to_string()
+                    });
                 view.update(cx, move |this, cx| {
                     if this.viewport_composite_request_id != Some(request_id)
                         || !this.render_request_is_current(
@@ -2570,7 +2581,7 @@ impl View {
                     this.viewport_composite_signature = None;
                     this.viewport_composite_request_id = None;
                     if composite_error_is_cancelled(&error) {
-                        this.status = SharedString::from("视口变化，正在重新合成地图");
+                        this.status = t!("MapViewer.world3d.lifecycle.viewport_changed_recompositing");
                         tracing::debug!(request_id, "map_viewer viewport_composite_cancelled");
                     } else {
                         this.status = SharedString::from(error.clone());
@@ -2600,7 +2611,7 @@ impl View {
         if !can_transform_screen_image(self.viewport, frame.source_viewport) {
             Self::drop_render_image(Some(frame.image), cx);
             self.pending_viewport_refresh = true;
-            self.status = SharedString::from("视口变化，正在重新合成地图");
+            self.status = t!("MapViewer.world3d.lifecycle.viewport_changed_recompositing");
             self.schedule_viewport_work_refresh(cx);
             return false;
         }
@@ -2728,7 +2739,7 @@ impl View {
             }
             self.clear_canvas_tile_snapshot(cx);
             self.pending_viewport_refresh = true;
-            self.status = SharedString::from("GPU 图片资源不足，已释放瓦片图片并重新排队");
+            self.status = t!("MapViewer.world3d.lifecycle.gpu_images_exhausted");
             self.schedule_viewport_work_refresh(cx);
             cx.notify();
             return;
@@ -2827,7 +2838,7 @@ impl View {
             {
                 Self::drop_render_image(
                     self.tile_manager
-                        .mark_invalid(coord, SharedString::from("索引确认该瓦片没有可渲染区块")),
+                        .mark_invalid(coord, t!("MapViewer.world3d.lifecycle.tile_index_confirms_no_chunks")),
                     cx,
                 );
                 continue;
@@ -2840,7 +2851,7 @@ impl View {
                 chunk_positions,
             ) {
                 Ok(plan) => render_plans.push(plan),
-                Err(error) if error.contains("没有可渲染区块") => {
+                Err(error) if is_no_renderable_chunks_message(&error) => {
                     Self::drop_render_image(
                         self.tile_manager
                             .mark_invalid(coord, SharedString::from(error)),
@@ -2903,23 +2914,24 @@ impl View {
                 })
                 .count();
             self.status = if visible_tiles.is_empty() {
-                SharedString::from("视口内没有可渲染瓦片")
+                t!("MapViewer.world3d.lifecycle.no_renderable_tiles_in_viewport")
             } else if visible_loaded == visible_tiles.len() {
-                SharedString::from(format!(
-                    "可见瓦片已就绪 · 已加载 {} · 失败 {} · CPU {}%",
-                    self.tile_manager.loaded_count(),
-                    self.tile_manager.failed_count(),
-                    self.cpu_budget.percent()
-                ))
+                t!(
+                    "MapViewer.world3d.lifecycle.visible_tiles_ready",
+                    loaded = self.tile_manager.loaded_count(),
+                    failed = self.tile_manager.failed_count(),
+                    cpu_percent = self.cpu_budget.percent()
+                )
             } else {
-                SharedString::from(format!(
-                    "暂无待渲染瓦片 · 可见 {visible_loaded}/{} · 排队 {} · 探测 {} · 加载中 {} · 失败 {}",
-                    visible_tiles.len(),
-                    self.tile_manager.queued_count(),
-                    self.tile_manager.empty_count(),
-                    self.tile_manager.loading_count(),
-                    self.tile_manager.failed_count()
-                ))
+                t!(
+                    "MapViewer.world3d.lifecycle.idle_visible_tiles",
+                    visible_loaded = visible_loaded,
+                    visible_total = visible_tiles.len(),
+                    queued = self.tile_manager.queued_count(),
+                    empty = self.tile_manager.empty_count(),
+                    loading = self.tile_manager.loading_count(),
+                    failed = self.tile_manager.failed_count()
+                )
             };
             tracing::debug!(
                 visible = visible_tiles.len(),
@@ -2956,17 +2968,18 @@ impl View {
             center_tile,
         );
         let render_label = match cache_policy {
-            RenderCachePolicy::Use => "缓存/渲染",
-            RenderCachePolicy::Refresh => "刷新渲染",
-            RenderCachePolicy::Bypass => "CPU 补齐",
+            RenderCachePolicy::Use => t!("MapViewer.world3d.lifecycle.cache_policy_use"),
+            RenderCachePolicy::Refresh => t!("MapViewer.world3d.lifecycle.cache_policy_refresh"),
+            RenderCachePolicy::Bypass => t!("MapViewer.world3d.lifecycle.cache_policy_bypass"),
         };
-        self.status = SharedString::from(format!(
-            "{render_label} {} 个瓦片 · 队列 {} · 队列距离² {} · CPU 解码预算 {}%",
-            requested_tile_count,
-            self.tile_manager.queued_count(),
-            self.last_queue_distance_squared,
-            self.cpu_budget.percent()
-        ));
+        self.status = t!(
+            "MapViewer.world3d.lifecycle.render_batch_started",
+            render_label = render_label,
+            tile_count = requested_tile_count,
+            queued = self.tile_manager.queued_count(),
+            distance_squared = self.last_queue_distance_squared,
+            cpu_percent = self.cpu_budget.percent()
+        );
         cx.notify();
 
         let cpu_budget = self.cpu_budget;
@@ -3160,8 +3173,7 @@ impl View {
                         }
                         TileRenderEvent::Failed { coord, message } => {
                             notify_parent = false;
-                            let is_cancelled = message.contains("取消")
-                                || message.to_ascii_lowercase().contains("cancel");
+                            let is_cancelled = is_cancelled_message(&message);
                             tracing::warn!(
                                 request_id,
                                 tile = ?coord,
@@ -3170,9 +3182,7 @@ impl View {
                             );
                             if is_cancelled {
                                 this.tile_manager.requeue_cancelled_loading(&[coord]);
-                            } else if message.contains("no renderable chunks")
-                                || message.contains("没有可渲染区块")
-                            {
+                            } else if is_no_renderable_chunks_message(&message) {
                                 if this
                                     .tile_chunk_index
                                     .get(&coord)
@@ -3251,7 +3261,7 @@ impl View {
                                 ) {
                                     Self::drop_render_image(
                                         this.tile_manager
-                                            .mark_failed(coord, SharedString::from("渲染未返回瓦片")),
+                                            .mark_failed(coord, t!("MapViewer.world3d.lifecycle.render_returned_no_tile")),
                                         cx,
                                     );
                                     completion_changed_tiles.push(coord);
@@ -3421,8 +3431,7 @@ impl View {
                     this.finish_render_request(request_id, &requested_tiles);
                     let pending_viewport_refresh = this.pending_viewport_refresh;
                     this.pending_viewport_refresh = false;
-                    let is_cancelled =
-                        error.contains("取消") || error.to_ascii_lowercase().contains("cancel");
+                    let is_cancelled = is_cancelled_message(&error);
                     let message = SharedString::from(error);
                     let mut changed_tiles = Vec::new();
                     if is_cancelled {
@@ -3556,7 +3565,12 @@ impl View {
             return;
         };
         let message = match refresh_error {
-            Some(error) => format!("{}；瓦片刷新失败: {error}", completion.message),
+            Some(error) => t!(
+                "MapViewer.world3d.lifecycle.paste_refresh_failed_suffix",
+                message = completion.message,
+                error = error
+            )
+            .to_string(),
             None => completion.message,
         };
         task_manager::finish_task(&completion.task_id, "completed", Some(message));

@@ -94,7 +94,7 @@ impl View {
             return;
         }
         if !crate::core::minecraft::map::generator::is_supported_model(&path) {
-            self.status = SharedString::from("支持导入 OBJ、glTF、GLB；MTL 与 OBJ 自动关联");
+            self.status = t!("MapViewer.generator.panel.unsupported_model_format");
             toast::error(cx, self.status.clone());
             cx.notify();
             return;
@@ -230,7 +230,7 @@ impl View {
             return;
         }
         let Some(source) = self.generator.source.clone() else {
-            self.status = SharedString::from("请先选择 OBJ、glTF 或 GLB 模型");
+            self.status = t!("MapViewer.generator.panel.select_model_first");
             cx.notify();
             return;
         };
@@ -259,7 +259,7 @@ impl View {
                 }
                 self.generator.output = Some(output);
                 self.generator.task_id = Some(task_id);
-                self.status = SharedString::from("模型转方块任务已开始");
+                self.status = t!("MapViewer.generator.panel.conversion_task_started");
             }
             Err(error) => {
                 self.status = SharedString::from(error.clone());
@@ -303,7 +303,7 @@ impl View {
                 }
                 self.generator.output = Some(output);
                 self.generator.task_id = Some(id);
-                self.status = SharedString::from("模型格式导出已提交后台任务");
+                self.status = t!("MapViewer.generator.panel.model_export_task_started");
             }
             Err(error) => {
                 self.status = SharedString::from(error.clone());

@@ -1,4 +1,5 @@
 //! 3D writes participate in the map document's existing write ownership.
+use crate::tasks::TaskStage;
 use super::*;
 
 fn publish_outcome(
@@ -27,14 +28,14 @@ impl View {
             .clone()
             .filter(|_| request.request_id != 0);
         if self.map_write_busy() {
-            self.status = "文档已有写入或历史操作，编辑未提交".into();
+            self.status = t!("MapViewer.world3d.edit.status_document_busy");
             cx.notify();
             publish_outcome(
                 editor,
                 World3dEditOutcome {
                     request_id: request.request_id,
                     ok: false,
-                    message: "2D 文档已有写入任务，3D 编辑未提交".into(),
+                    message: t!("MapViewer.world3d.edit.outcome_document_busy").to_string(),
                     affected_chunks: Vec::new(),
                 },
                 cx,
@@ -42,15 +43,24 @@ impl View {
             return;
         }
         let label = match &request.kind {
-            World3dBlockEditKind::Fill { block_name } => format!("3D 填充 {block_name}"),
-            World3dBlockEditKind::Ellipsoid { block_name } => {
-                format!("3D 椭球填充 {block_name}")
+            World3dBlockEditKind::Fill { block_name } => {
+                t!("MapViewer.world3d.edit.label_fill", block = block_name).to_string()
             }
-            World3dBlockEditKind::Clear => "3D 清除选区".into(),
+            World3dBlockEditKind::Ellipsoid { block_name } => {
+                t!("MapViewer.world3d.edit.label_ellipsoid_fill", block = block_name).to_string()
+            }
+            World3dBlockEditKind::Clear => {
+                t!("MapViewer.world3d.edit.label_clear_selection").to_string()
+            }
         };
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new(label.clone(), "map_write")
-                .detail(format!("via 2D 文档事务 · 维度 {}", request.dimension.id())),
+            task_manager::TaskOptions::new(label.clone(), TaskStage::MAP_WRITE).detail(
+                t!(
+                    "MapViewer.world3d.edit.task_detail",
+                    dimension = request.dimension.id()
+                )
+                .to_string(),
+            ),
         )
         .expect("task id must be unique");
         self.professional.active_write_task_id = Some(task_id.clone());
@@ -58,7 +68,7 @@ impl View {
             self.task_snapshots
                 .insert(snapshot.id.clone(), Arc::new(snapshot));
         }
-        self.status = format!("正在{label}...").into();
+        self.status = t!("MapViewer.world3d.edit.applying", label = label);
         self.spawn_world3d_write(request, task_id, editor, cx);
         cx.notify();
     }

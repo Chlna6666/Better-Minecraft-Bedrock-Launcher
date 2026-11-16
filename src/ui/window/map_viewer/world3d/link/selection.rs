@@ -38,7 +38,7 @@ impl View {
         cx: &mut Context<Self>,
     ) -> bool {
         if dimension != self.dimension && self.map_write_busy() {
-            self.status = "地图正在写入，暂不能跨维度定位；请等待完成".into();
+            self.status = t!("MapViewer.world3d.selection.write_busy_cross_dimension");
             cx.notify();
             return false;
         }
@@ -48,11 +48,12 @@ impl View {
             self.set_selection_from_editor(dimension, Some(selection), cx);
         }
         self.center_viewport_on_block(position[0], position[2], cx);
-        self.status = format!(
-            "已从 3D 定位 X {} · Y {} · Z {}",
-            position[0], self.y_layer, position[2]
-        )
-        .into();
+        self.status = t!(
+            "MapViewer.world3d.selection.located_from_3d",
+            block_x = position[0],
+            block_y = self.y_layer,
+            block_z = position[2]
+        );
         let window = self.owner_window;
         cx.defer(move |cx| {
             let _ = window.update(cx, |_, window, _| window.activate_window());

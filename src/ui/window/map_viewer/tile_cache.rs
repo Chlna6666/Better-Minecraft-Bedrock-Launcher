@@ -21,7 +21,15 @@ pub(super) fn tile_image(
         TilePixelFormat::Bgra8 => gpui::ImagePixelFormat::Bgra8,
     };
     let image = RenderImage::from_raw_pixel_bytes(width, height, image_pixel_format, pixels)
-        .map_err(|error| format!("瓦片图像尺寸无效: {width}x{height}: {error}"))?;
+        .map_err(|error| {
+            t!(
+                "MapViewer.core.tile_cache.invalid_tile_image_size",
+                width = width,
+                height = height,
+                error = error
+            )
+            .to_string()
+        })?;
     Ok((
         Arc::new(image),
         pixel_format,
@@ -48,16 +56,19 @@ pub(super) fn render_image_pixels(
     width: u32,
     height: u32,
 ) -> Result<(&[u8], TilePixelFormat), String> {
-    let pixel_format = pixel_format.ok_or_else(|| "瓦片图像缺少像素格式".to_string())?;
+    let pixel_format = pixel_format
+        .ok_or_else(|| t!("MapViewer.core.tile_cache.missing_pixel_format").to_string())?;
     let expected_len = decoded_tile_byte_len(width, height)?;
     let pixels = image
         .as_bytes(0)
-        .ok_or_else(|| "瓦片图像字节当前不可用".to_string())?;
+        .ok_or_else(|| t!("MapViewer.core.tile_cache.pixel_bytes_unavailable").to_string())?;
     if pixels.len() != expected_len {
-        return Err(format!(
-            "瓦片图像字节长度不匹配: expected {expected_len}, got {}",
-            pixels.len()
-        ));
+        return Err(t!(
+            "MapViewer.core.tile_cache.pixel_byte_length_mismatch",
+            expected = expected_len,
+            actual = pixels.len()
+        )
+        .to_string());
     }
     Ok((pixels, pixel_format))
 }

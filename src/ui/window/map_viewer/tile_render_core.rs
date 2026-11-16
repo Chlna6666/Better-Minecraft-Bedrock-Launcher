@@ -28,7 +28,13 @@ pub(super) fn open_map_render_session(
     );
     let config = render_session_config(&world_path, render_gpu_backend);
     MapRenderSession::open_leveldb_read_only(world_path, config, RenderPalette::builtin_shared())
-        .map_err(|error| format!("打开地图渲染会话失败: {error}"))
+        .map_err(|error| {
+            t!(
+                "MapViewer.render.tile_render_core.open_render_session_failed",
+                error = error,
+            )
+            .to_string()
+        })
 }
 
 pub(super) fn render_session_config(
@@ -92,7 +98,13 @@ impl RenderTilePlan {
             mode,
             layout,
         )
-        .map_err(|error| format!("瓦片布局无效: {error}"))?;
+        .map_err(|error| {
+            t!(
+                "MapViewer.render.tile_render_core.tile_layout_invalid",
+                error = error,
+            )
+            .to_string()
+        })?;
         let region = tile_chunk_region(dimension, coord.0, coord.1, layout)?;
         Ok(Self {
             coord,
@@ -112,12 +124,22 @@ impl RenderTilePlan {
         chunk_positions: TileChunkPositions,
     ) -> Result<TileChunkPositions, String> {
         if chunk_positions.is_empty() {
-            return Err(format!("瓦片 {}, {} 没有可渲染区块", coord.0, coord.1));
+            return Err(t!(
+                "MapViewer.render.tile_render_core.no_renderable_chunks",
+                x = coord.0,
+                z = coord.1
+            )
+            .to_string());
         }
         let chunk_positions =
             render_tile_chunk_positions(dimension, coord, layout, chunk_positions)?;
         if chunk_positions.is_empty() {
-            return Err(format!("瓦片 {}, {} 没有可渲染区块", coord.0, coord.1));
+            return Err(t!(
+                "MapViewer.render.tile_render_core.no_renderable_chunks",
+                x = coord.0,
+                z = coord.1
+            )
+            .to_string());
         }
         Ok(chunk_positions)
     }
@@ -265,17 +287,21 @@ pub(super) fn render_tile_batch_stream(
     let mut planned_tiles = Vec::with_capacity(plans.len());
     for plan in plans {
         if plan.planned.job.coord.dimension != dimension {
-            return Err(format!(
-                "瓦片 {}, {} 维度与请求不匹配",
-                plan.coord.0, plan.coord.1
-            ));
+            return Err(t!(
+                "MapViewer.render.tile_render_core.tile_dimension_mismatch",
+                x = plan.coord.0,
+                z = plan.coord.1,
+            )
+            .to_string());
         }
         match plan.planned.chunk_positions.as_deref() {
             Some([]) => {
-                return Err(format!(
-                    "瓦片 {}, {} 没有可渲染区块",
-                    plan.coord.0, plan.coord.1
-                ));
+                return Err(t!(
+                    "MapViewer.render.tile_render_core.no_renderable_chunks",
+                    x = plan.coord.0,
+                    z = plan.coord.1
+                )
+                .to_string());
             }
             Some(chunk_positions) => {
                 tracing::trace!(
@@ -359,7 +385,7 @@ pub(super) fn render_tile_batch_stream(
                         let ready_tiles = {
                             let mut ready_batcher = ready_batcher
                                 .lock()
-                                .map_err(|_| io_error("渲染瓦片批处理状态锁已损坏"))?;
+                                .map_err(|_| io_error(t!("MapViewer.render.tile_render_core.tile_batch_state_lock_poisoned")))?;
                             ready_batcher.push(ReadyTile {
                                 coord,
                                 tile: ViewerTile {
@@ -410,7 +436,7 @@ pub(super) fn render_tile_batch_stream(
                     } => {
                         let ready_tiles = ready_batcher
                             .lock()
-                            .map_err(|_| io_error("渲染瓦片批处理状态锁已损坏"))?
+                            .map_err(|_| io_error(t!("MapViewer.render.tile_render_core.tile_batch_state_lock_poisoned")))?
                             .flush();
                         send_ready_tiles_or_cancel(&event_sender, &stream_cancel, ready_tiles)?;
                         stats.planned_tiles = requested_tile_count;
@@ -429,8 +455,20 @@ pub(super) fn render_tile_batch_stream(
             }
         })
     }))
-    .map_err(|payload| format!("渲染瓦片任务崩溃: {}", panic_payload_message(payload)))?
-    .map_err(|error| format!("渲染瓦片失败: {error}"));
+    .map_err(|payload| {
+        t!(
+            "MapViewer.render.tile_render_core.render_tiles_task_panicked",
+            payload = panic_payload_message(payload),
+        )
+        .to_string()
+    })?
+    .map_err(|error| {
+        t!(
+            "MapViewer.render.tile_render_core.render_tiles_failed",
+            error = error,
+        )
+        .to_string()
+    });
     render_result?;
     Ok(())
 }
@@ -463,7 +501,7 @@ pub(super) fn composite_error_is_cancelled(error: &str) -> bool {
 
 fn viewport_composite_image_size(viewport: MapViewport) -> Result<(u32, u32, f32), String> {
     if !viewport.width.is_finite() || !viewport.height.is_finite() {
-        return Err("视口合成尺寸无效".to_string());
+        return Err(t!("MapViewer.render.tile_render_core.composite_size_invalid").to_string());
     }
     let viewport_width = viewport.width.ceil().max(1.0);
     let viewport_height = viewport.height.ceil().max(1.0);
@@ -651,7 +689,7 @@ pub(super) fn cancel_metadata_flag(cancel: &mut Option<RenderTaskControl>) -> bo
 pub(super) fn validate_ui_render_layout(layout: RenderLayout) -> Result<(), String> {
     let actual_size = layout
         .tile_size()
-        .ok_or_else(|| "UI 地图瓦片布局尺寸无效".to_string())?;
+        .ok_or_else(|| t!("MapViewer.render.tile_render_core.ui_map_tile_size_invalid").to_string())?;
     let valid_blocks_per_pixel = matches!(layout.blocks_per_pixel, 1 | 2);
     let valid_pixels_per_block = matches!(layout.pixels_per_block, 1 | 2 | 4);
     let expected_size = CHUNKS_PER_TILE
@@ -664,10 +702,14 @@ pub(super) fn validate_ui_render_layout(layout: RenderLayout) -> Result<(), Stri
         || !valid_pixels_per_block
         || actual_size != expected_size
     {
-        return Err(format!(
-            "UI 地图只支持 8x8/64|128|256|512px LOD tile，当前 chunks_per_tile={} blocks_per_pixel={} pixels_per_block={} tile_size={actual_size}",
-            layout.chunks_per_tile, layout.blocks_per_pixel, layout.pixels_per_block
-        ));
+        return Err(t!(
+            "MapViewer.render.tile_render_core.ui_map_layout_unsupported",
+            chunks_per_tile = layout.chunks_per_tile,
+            blocks_per_pixel = layout.blocks_per_pixel,
+            pixels_per_block = layout.pixels_per_block,
+            tile_size = actual_size,
+        )
+        .to_string());
     }
     Ok(())
 }
@@ -852,20 +894,20 @@ pub(super) fn tile_chunk_region(
     layout: RenderLayout,
 ) -> Result<ChunkRegion, String> {
     let chunks_per_tile = i32::try_from(layout.chunks_per_tile)
-        .map_err(|_| "瓦片布局 chunks_per_tile 超出范围".to_string())?
+        .map_err(|_| t!("MapViewer.render.tile_render_core.chunks_per_tile_out_of_range").to_string())?
         .max(1);
     let min_chunk_x = tile_x
         .checked_mul(chunks_per_tile)
-        .ok_or_else(|| "瓦片 X 范围溢出".to_string())?;
+        .ok_or_else(|| t!("MapViewer.render.tile_render_core.tile_x_range_overflow").to_string())?;
     let min_chunk_z = tile_z
         .checked_mul(chunks_per_tile)
-        .ok_or_else(|| "瓦片 Z 范围溢出".to_string())?;
+        .ok_or_else(|| t!("MapViewer.render.tile_render_core.tile_z_range_overflow").to_string())?;
     let max_chunk_x = min_chunk_x
         .checked_add(chunks_per_tile.saturating_sub(1))
-        .ok_or_else(|| "瓦片 X 范围溢出".to_string())?;
+        .ok_or_else(|| t!("MapViewer.render.tile_render_core.tile_x_range_overflow").to_string())?;
     let max_chunk_z = min_chunk_z
         .checked_add(chunks_per_tile.saturating_sub(1))
-        .ok_or_else(|| "瓦片 Z 范围溢出".to_string())?;
+        .ok_or_else(|| t!("MapViewer.render.tile_render_core.tile_z_range_overflow").to_string())?;
     Ok(ChunkRegion::new(
         dimension,
         min_chunk_x,

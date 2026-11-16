@@ -72,13 +72,15 @@ impl RegionPackageDisk {
 
     fn into_copied_chunk(self) -> Result<CopiedChunkData, String> {
         if self.version != REGION_PACKAGE_VERSION {
-            return Err(format!(
-                "区域包版本不支持：{}（当前支持 {}）",
-                self.version, REGION_PACKAGE_VERSION
-            ));
+            return Err(t!(
+                "MapViewer.core.region_package.unsupported_version",
+                version = self.version,
+                supported = REGION_PACKAGE_VERSION
+            )
+            .to_string());
         }
         if self.chunks.is_empty() {
-            return Err("区域包没有可导入的 chunk".to_string());
+            return Err(t!("MapViewer.core.region_package.no_importable_chunks").to_string());
         }
 
         let source = self.source.into_chunk_pos();
@@ -119,8 +121,9 @@ impl RegionChunkDisk {
         let chunk = self.chunk.into_chunk_pos();
         let mut records = Vec::with_capacity(self.records.len());
         for record in self.records {
-            let mut key = ChunkKey::decode(&record.key)
-                .map_err(|error| format!("区域包包含无效 chunk key：{error}"))?;
+            let mut key = ChunkKey::decode(&record.key).map_err(|error| {
+                t!("MapViewer.core.region_package.invalid_chunk_key", error = error).to_string()
+            })?;
             key.pos = chunk;
             records.push(ChunkRecord {
                 key,
@@ -261,27 +264,29 @@ pub(super) fn export(
     drop(editor);
 
     progress(ChunkTransferProgress {
-        phase: SharedString::from("序列化区域包"),
+        phase: TransferPhase::SERIALIZE_REGION_PACK,
         completed: 0,
         total: 1,
     });
     let package = RegionPackageDisk::from_copied_chunk(&copied_chunk);
-    let json =
-        serde_json::to_vec(&package).map_err(|error| format!("区域包序列化失败：{error}"))?;
+    let json = serde_json::to_vec(&package).map_err(|error| {
+        t!("MapViewer.core.region_package.serialize_failed", error = error).to_string()
+    })?;
     progress(ChunkTransferProgress {
-        phase: SharedString::from("序列化区域包"),
+        phase: TransferPhase::SERIALIZE_REGION_PACK,
         completed: 1,
         total: 1,
     });
     progress(ChunkTransferProgress {
-        phase: SharedString::from("压缩区域包"),
+        phase: TransferPhase::COMPRESS_REGION_PACK,
         completed: 0,
         total: 1,
     });
-    let compressed = zstd::stream::encode_all(std::io::Cursor::new(json), 3)
-        .map_err(|error| format!("区域包压缩失败：{error}"))?;
+    let compressed = zstd::stream::encode_all(std::io::Cursor::new(json), 3).map_err(|error| {
+        t!("MapViewer.core.region_package.compress_failed", error = error).to_string()
+    })?;
     progress(ChunkTransferProgress {
-        phase: SharedString::from("压缩区域包"),
+        phase: TransferPhase::COMPRESS_REGION_PACK,
         completed: 1,
         total: 1,
     });
@@ -294,20 +299,31 @@ pub(super) fn export(
 pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let temp_path = path.with_extension(format!("{REGION_PACKAGE_EXTENSION}.tmp"));
     std::fs::write(&temp_path, bytes).map_err(|error| {
-        format!(
-            "写入区域包临时文件失败（{}）：{}",
-            temp_path.display(),
-            error
+        t!(
+            "MapViewer.core.region_package.write_temp_file_failed",
+            path = temp_path.display(),
+            error = error
         )
+        .to_string()
     })?;
 
     match std::fs::rename(&temp_path, path) {
         Ok(()) => Ok(()),
         Err(_error) if path.exists() => {
-            std::fs::remove_file(path)
-                .map_err(|remove_error| format!("替换已有区域包失败：{remove_error}"))?;
-            std::fs::rename(&temp_path, path)
-                .map_err(|rename_error| format!("保存区域包失败：{rename_error}"))?;
+            std::fs::remove_file(path).map_err(|remove_error| {
+                t!(
+                    "MapViewer.core.region_package.replace_existing_failed",
+                    error = remove_error
+                )
+                .to_string()
+            })?;
+            std::fs::rename(&temp_path, path).map_err(|rename_error| {
+                t!(
+                    "MapViewer.core.region_package.save_failed",
+                    error = rename_error
+                )
+                .to_string()
+            })?;
             Ok(())
         }
         Err(error) => {
@@ -318,22 +334,30 @@ pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
                     "failed to remove temporary region package after rename failure"
                 );
             }
-            Err(format!("保存区域包失败：{error}"))
+            Err(t!("MapViewer.core.region_package.save_failed", error = error).to_string())
         }
     }
 }
 
 pub(super) fn read(path: &Path) -> Result<CopiedChunkData, String> {
-    let bytes = std::fs::read(path)
-        .map_err(|error| format!("读取区域包失败（{}）：{}", path.display(), error))?;
+    let bytes = std::fs::read(path).map_err(|error| {
+        t!(
+            "MapViewer.core.region_package.read_failed",
+            path = path.display(),
+            error = error
+        )
+        .to_string()
+    })?;
     if !bytes.starts_with(REGION_PACKAGE_MAGIC) {
-        return Err("不是有效的 BMCBL 区域包".to_string());
+        return Err(t!("MapViewer.core.region_package.invalid_package").to_string());
     }
     let compressed = &bytes[REGION_PACKAGE_MAGIC.len()..];
-    let json = zstd::stream::decode_all(std::io::Cursor::new(compressed))
-        .map_err(|error| format!("区域包解压失败：{error}"))?;
-    let package: RegionPackageDisk =
-        serde_json::from_slice(&json).map_err(|error| format!("区域包解析失败：{error}"))?;
+    let json = zstd::stream::decode_all(std::io::Cursor::new(compressed)).map_err(|error| {
+        t!("MapViewer.core.region_package.decompress_failed", error = error).to_string()
+    })?;
+    let package: RegionPackageDisk = serde_json::from_slice(&json).map_err(|error| {
+        t!("MapViewer.core.region_package.parse_failed", error = error).to_string()
+    })?;
     package.into_copied_chunk()
 }
 
@@ -421,10 +445,10 @@ mod tests {
         assert_eq!(imported.anchor_chunk(), source_anchor);
         assert!(!preview_images.is_empty());
         assert!(progress.iter().any(|update| {
-            update.phase.as_ref() == "复制区块" && update.completed == 72 && update.total == 72
+            update.phase == TransferPhase::COPY_CHUNKS && update.completed == 72 && update.total == 72
         }));
         assert!(progress.last().is_some_and(|update| {
-            update.phase.as_ref() == "压缩区域包" && update.completed == 1 && update.total == 1
+            update.phase == TransferPhase::COMPRESS_REGION_PACK && update.completed == 1 && update.total == 1
         }));
     }
 }
