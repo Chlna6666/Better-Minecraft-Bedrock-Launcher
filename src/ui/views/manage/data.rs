@@ -7,8 +7,7 @@ use std::sync::Arc;
 use zip::write::SimpleFileOptions;
 
 use crate::core::minecraft::assets::{
-    CheckImportRequest, DeleteAssetPayload, check_import_conflict, inspect_import_file,
-    delete,
+    CheckImportRequest, DeleteAssetPayload, check_import_conflict, delete, inspect_import_file,
 };
 use crate::core::minecraft::import::{ImportCheckResult, PackagePreview};
 pub use crate::core::minecraft::level::LevelDatDocument;
@@ -17,8 +16,7 @@ use crate::core::minecraft::resource_packs::{Header, McPackInfo};
 use crate::core::minecraft::skin_packs::McSkinPackInfo;
 use crate::core::minecraft::worlds::WorldSummary;
 use crate::core::version::settings::{
-    VANILLA_SKIN_PACK_REDIRECTION_SOURCE, VersionConfig, read_version_config,
-    save_version_config,
+    VANILLA_SKIN_PACK_REDIRECTION_SOURCE, VersionConfig, read_version_config, save_version_config,
 };
 use crate::tasks::manage_service::{self, ManagedModInfo, PackKind};
 use crate::ui::views::manage::state::{
@@ -28,7 +26,7 @@ use crate::ui::views::manage::state::{
     ManagedVersionEntry,
 };
 use futures_util::stream::{self, StreamExt as _};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const SERVER_MOTD_QUERY_TIMEOUT: Duration = Duration::from_millis(1500);
 const SERVER_MOTD_RETRY_COUNT: usize = 2;
@@ -161,7 +159,7 @@ pub fn start_delete_assets_task(
             delete(payloads)
         }
         ManageTab::Statistics | ManageTab::Screenshot | ManageTab::Server => {
-            Err("当前标签不支持资源删除".to_string())
+            Err(t!("AssetManager.delete_unsupported").to_string())
         }
     }
 }
@@ -181,10 +179,7 @@ pub(super) async fn scan_screenshots(
     };
     let entries = manage_service::load_screenshots(options).await?;
 
-    Ok(entries
-        .into_iter()
-        .map(screenshot_from_core)
-        .collect())
+    Ok(entries.into_iter().map(screenshot_from_core).collect())
 }
 
 pub fn start_delete_screenshot_task(entry: &ManageScreenshotEntry) -> Result<String, String> {
@@ -296,24 +291,24 @@ async fn query_server_motd(server: &ManageServerMotdTarget) -> ManageServerMotdS
     let mut last_error = String::new();
 
     for attempt in 0..=SERVER_MOTD_RETRY_COUNT {
-        let started_at = Instant::now();
-        match mc_motd::query_bedrock(
-            server.address.as_ref(),
-            server.port,
-            SERVER_MOTD_QUERY_TIMEOUT,
-        )
-        .await
-        {
-            Ok(motd) => {
+        // Bedrock queries auto-select the transport: the RakNet unconnected
+        // ping and the NetherNet join endpoint race and the faster answer
+        // wins, so servers of every game version are covered without pinning
+        // one protocol. The transport that answered is cached in the shared
+        // client, so repeat queries skip the losing probe.
+        let options = mc_motd::QueryOptions::default()
+            .bedrock_port(server.port)
+            .timeout(SERVER_MOTD_QUERY_TIMEOUT);
+        match mc_motd::bedrock::query_with(server.address.as_ref(), options).await {
+            Ok(status) => {
+                let version = status.version.name.clone().unwrap_or_default();
                 return ManageServerMotdStatus::Online(ManageServerMotd {
-                    line_1: SharedString::from(motd.motd_line_1),
-                    line_2: (!motd.motd_line_2.trim().is_empty())
-                        .then(|| SharedString::from(motd.motd_line_2)),
-                    version: (!motd.version.trim().is_empty())
-                        .then(|| SharedString::from(motd.version)),
-                    players_online: motd.players_online,
-                    players_max: motd.players_max,
-                    latency_ms: Some(started_at.elapsed().as_millis()),
+                    line_1: SharedString::from(status.motd),
+                    line_2: second_motd_line(&status.details),
+                    version: (!version.trim().is_empty()).then(|| SharedString::from(version)),
+                    players_online: status.players.online,
+                    players_max: status.players.max,
+                    latency_ms: Some(status.elapsed.as_millis()),
                 });
             }
             Err(error) => {
@@ -327,9 +322,19 @@ async fn query_server_motd(server: &ManageServerMotdTarget) -> ManageServerMotdS
     }
 
     if last_error.is_empty() {
-        last_error = "服务器未响应".to_string();
+        last_error = t!("AssetManager.server_not_responding").to_string();
     }
     ManageServerMotdStatus::Offline(SharedString::from(last_error))
+}
+
+/// Second MOTD line, which only the RakNet pong carries; NetherNet reports a
+/// single server name instead.
+fn second_motd_line(details: &mc_motd::Details) -> Option<SharedString> {
+    let mc_motd::Details::Bedrock(mc_motd::BedrockDetails::RakNet(details)) = details else {
+        return None;
+    };
+    let line_2 = details.motd_line_2.trim();
+    (!line_2.is_empty()).then(|| SharedString::from(line_2))
 }
 
 pub async fn set_vanilla_skin_pack_redirect(
@@ -357,24 +362,29 @@ fn validate_vanilla_skin_pack_source(version: &ManagedVersionEntry) -> Result<()
     if source_path.is_dir() {
         Ok(())
     } else {
-        Err(format!(
-            "当前游戏缺少默认皮肤目录: {}",
-            source_path.display()
-        ))
+        Err(t!(
+            "AssetManager.skin_default_dir_missing",
+            path = source_path.display().to_string()
+        )
+        .to_string())
     }
 }
 
 fn validate_skin_pack_redirect_target(asset: &ManageAssetEntry) -> Result<(), String> {
     if asset.kind != ManageAssetKind::SkinPack {
-        return Err("请选择一个皮肤包".to_string());
+        return Err(t!("AssetManager.skin_pack_select_required").to_string());
     }
 
     let target_path = PathBuf::from(asset.open_path.as_ref());
     if !target_path.is_dir() {
-        return Err(format!("皮肤包目录不存在: {}", target_path.display()));
+        return Err(t!(
+            "AssetManager.skin_pack_dir_missing",
+            path = target_path.display().to_string()
+        )
+        .to_string());
     }
     if !target_path.join("skins.json").is_file() && !target_path.join("manifest.json").is_file() {
-        return Err("所选目录不是有效皮肤包".to_string());
+        return Err(t!("AssetManager.skin_pack_invalid").to_string());
     }
 
     Ok(())
@@ -414,13 +424,13 @@ pub async fn check_asset_import_conflict(
 pub fn read_level_dat(folder_path: &str) -> Result<LevelDatDocument, String> {
     let level_dat_path = PathBuf::from(folder_path).join("level.dat");
     crate::core::minecraft::level::read(&level_dat_path)
-        .map_err(|error| format!("读取 level.dat 失败: {error}"))
+        .map_err(|error| t!("LevelDat.read_failed", error = error.to_string()).to_string())
 }
 
 pub fn write_level_dat(folder_path: &str, document: &LevelDatDocument) -> Result<(), String> {
     let level_dat_path = PathBuf::from(folder_path).join("level.dat");
     crate::core::minecraft::level::write(&level_dat_path, document)
-        .map_err(|error| format!("写入 level.dat 失败: {error}"))
+        .map_err(|error| t!("LevelDat.write_failed", error = error.to_string()).to_string())
 }
 
 pub fn export_map(folder_path: &str, target_path: &str) -> Result<(), String> {
@@ -432,7 +442,9 @@ pub fn export_map(folder_path: &str, target_path: &str) -> Result<(), String> {
 pub fn backup_map(folder_path: &str, map_name: &str) -> Result<String, String> {
     let source = PathBuf::from(folder_path);
     let backup_dir = crate::utils::file_ops::bmcbl_subdir("backups");
-    std::fs::create_dir_all(&backup_dir).map_err(|error| format!("创建备份目录失败: {error}"))?;
+    std::fs::create_dir_all(&backup_dir).map_err(|error| {
+        t!("AssetManager.backup_dir_failed", error = error.to_string()).to_string()
+    })?;
 
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let safe_name: String = map_name
@@ -515,10 +527,7 @@ async fn load_skin_pack_assets(
     };
     let entries = manage_service::load_skin_packs(locale_code.to_string(), options).await?;
 
-    Ok(entries
-        .into_iter()
-        .map(asset_from_skin_pack)
-        .collect())
+    Ok(entries.into_iter().map(asset_from_skin_pack).collect())
 }
 
 async fn load_cape_assets(
@@ -575,7 +584,7 @@ fn asset_from_cape(pack: crate::core::minecraft::capes::CapePackInfo) -> ManageA
         key: SharedString::from(format!("cape:{}", pack.path.display())),
         folder_name: SharedString::from(folder_name),
         display_name: SharedString::from(pack.name),
-        detail: Some(SharedString::from(format!("{} 个披风", pack.capes.len()))),
+        detail: Some(t!("AssetManager.cape_count", count = pack.capes.len())),
         description: None,
         file_path: SharedString::from(pack.path.to_string_lossy().into_owned()),
         open_path: SharedString::from(
@@ -725,7 +734,7 @@ fn asset_from_pack(pack: McPackInfo, pack_subtype: ManagePackSubtype) -> ManageA
 
 fn asset_from_skin_pack(pack: McSkinPackInfo) -> ManageAssetEntry {
     let mut detail_parts = Vec::new();
-    detail_parts.push(format!("{} 个皮肤", pack.skin_count));
+    detail_parts.push(t!("AssetManager.skin_count", count = pack.skin_count).to_string());
     if pack.slim_skin_count > 0 {
         detail_parts.push(format!("Alex {}", pack.slim_skin_count));
     }
@@ -949,10 +958,19 @@ fn bytes_to_human(bytes: u64) -> String {
 }
 
 fn zip_directory(source_dir: &Path, target_file: &Path) -> anyhow::Result<()> {
-    anyhow::ensure!(source_dir.exists(), "源目录不存在");
+    anyhow::ensure!(
+        source_dir.exists(),
+        "{}",
+        t!("AssetManager.source_dir_missing")
+    );
 
-    let file = File::create(target_file)
-        .with_context(|| format!("创建目标文件失败: {}", target_file.display()))?;
+    let file = File::create(target_file).with_context(|| {
+        t!(
+            "AssetManager.create_target_failed",
+            path = target_file.display().to_string()
+        )
+        .to_string()
+    })?;
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)

@@ -6288,10 +6288,12 @@ checksum = "2f926ade0c4e170215ae43342bf13b9310a437609c81f29f86c5df6657582ef9"
 
 [[package]]
 name = "mc-motd"
-version = "0.1.0"
-source = "git+https://github.com/BE-Community-Dev/mc-motd.git?branch=main#4e2cd73962e53b5159a0ee25f949e1eeac29ffe5"
+version = "0.2.0"
+source = "git+https://github.com/BE-Community-Dev/mc-motd.git?branch=main#477285bd770a65c55d30fdc2e768cb7aa1031693"
 dependencies = [
- "hickory-resolver",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

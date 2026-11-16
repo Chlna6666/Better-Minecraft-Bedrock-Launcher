@@ -56,7 +56,10 @@ gpui-router = { version = "0.5.0", default-features = false, features = ["gpui"]
 gpui_hooks = { path = "crates/gpui-hooks" }
 lucide-gpui = { path = "crates/lucide-gpui" }
 image = { version = "0.25.9", default-features = false, features = ["png", "tga", "jpeg", "webp"] }
-mc-motd = { git = "https://github.com/BE-Community-Dev/mc-motd.git", branch = "main" }
+# BMCBL queries Bedrock servers of every game version, so both Bedrock
+# transports stay compiled in: the Java Edition probe and its SRV resolver
+# dependency are the only parts left out.
+mc-motd = { git = "https://github.com/BE-Community-Dev/mc-motd.git", branch = "main", default-features = false, features = ["bedrock", "nethernet"] }
 bedrock-world = { path = "crates/bedrock-world" }
 bedrock-nbt = { path = "crates/bedrock-nbt" }
 bedrock-block-model = { path = "crates/bedrock-block-model" }
