@@ -277,6 +277,23 @@ impl BlockComponents {
                 .or_else(|| object.get("carried_textures"))
                 .and_then(TextureSet::from_value);
         }
+        // `carried_textures` is a second texture set that some blocks put on one model part
+        // (the end portal frame's eye uses `endframe_eye`, for example). Keep it reachable as
+        // its own material slot instead of dropping it whenever `textures` is also present.
+        if !self.material_instances.contains_key("carried")
+            && let Some(carried) = object
+                .get("carried_textures")
+                .and_then(TextureSet::from_value)
+            && let Some(texture) = carried.texture(BlockFace::All)
+        {
+            self.material_instances.insert(
+                "carried".to_owned(),
+                MaterialInstance {
+                    texture: Some(texture.clone()),
+                    ..MaterialInstance::default()
+                },
+            );
+        }
         if self.material_instances.is_empty()
             && let Some(material_instances) = object.get("material_instances")
         {

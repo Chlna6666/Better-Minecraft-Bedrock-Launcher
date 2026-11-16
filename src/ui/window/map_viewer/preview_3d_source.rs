@@ -2,6 +2,7 @@ mod gpu_cubes;
 mod gpu_models;
 mod lighting;
 use super::model::{CopiedChunk, CopiedChunkData};
+use bedrock_block_model::banner_art::{BannerArt, BannerLayer};
 use bedrock_block_model::geometry;
 use bedrock_block_model::model_family;
 use bedrock_block_model::obj;
@@ -465,10 +466,12 @@ struct Preview3dStairState {
     top: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct Preview3dBlockEntityModelState {
     chest_pair_direction: Option<Preview3dCardinalDirection>,
     chest_pair_lead: bool,
+    /// Banner dye and pattern layers stored on the block entity.
+    banner: Option<Arc<BannerArt>>,
 }
 
 #[derive(Clone, Debug)]
@@ -2458,7 +2461,7 @@ pub(super) fn collect_chunk_blocks(
                                 *biome.get_or_insert_with(|| {
                                     block_biome_sample(chunk, local_x, local_z, y, biome_blend)
                                 }),
-                                block_entity_states.get(&key).copied(),
+                                block_entity_states.get(&key).cloned(),
                                 properties.resolve(state, block_class),
                                 &mut color_cache,
                                 &mut block_budget,
@@ -2505,7 +2508,7 @@ pub(super) fn collect_chunk_blocks(
                                 *biome.get_or_insert_with(|| {
                                     block_biome_sample(chunk, local_x, local_z, y, biome_blend)
                                 }),
-                                block_entity_states.get(&key).copied(),
+                                block_entity_states.get(&key).cloned(),
                                 properties.resolve(state, block_class),
                                 &mut color_cache,
                                 &mut block_budget,
@@ -2546,7 +2549,7 @@ pub(super) fn collect_chunk_blocks(
                                 *biome.get_or_insert_with(|| {
                                     block_biome_sample(chunk, local_x, local_z, y, biome_blend)
                                 }),
-                                block_entity_states.get(&key).copied(),
+                                block_entity_states.get(&key).cloned(),
                                 properties.resolve(state, block_class),
                                 &mut color_cache,
                                 &mut block_budget,
@@ -2637,13 +2640,23 @@ fn push_collected_block(
         return Err("3D 预览单区块方块记录超出预算".to_string());
     }
     include_block_bounds(key, min_x, max_x, min_y, max_y, min_z, max_z);
-    let material = properties.material.clone();
+    // A banner's dye and pattern layers live on the block entity, so its faces name a
+    // per-variant material that the texture stage composites from `banner_base` + `banner.tga`.
+    // The composited sheet already carries the dye, so the vertex colour stays white.
+    let banner_art = block_entity_state
+        .as_ref()
+        .and_then(|state| state.banner.clone())
+        .filter(|_| is_banner_block(&state.name));
+    let material = banner_art.as_ref().map_or_else(
+        || properties.material.clone(),
+        |art| Preview3dMaterialName::from(art.material_name()),
+    );
     let normalized_name = properties.normalized_name.clone();
     let stair_state = properties.stair_state;
     if let Some(kind) = properties.connection_kind {
         connection_kinds.insert(key, kind);
     }
-    let shape = properties.shape(state, block_entity_state);
+    let shape = properties.shape(state, block_entity_state.as_ref());
     let neighbor_model = properties.neighbor_model;
     // Colors depend only on the immutable palette entry and the biome sample;
     // one resolution per (entry, biome) replaces the per-block palette probes.
@@ -2658,7 +2671,11 @@ fn push_collected_block(
                         neighbor_model,
                         stair_state,
                         shape,
-                        color: entry_colors.flat,
+                        color: if banner_art.is_some() {
+                            [1.0, 1.0, 1.0, 1.0]
+                        } else {
+                            entry_colors.flat
+                        },
                         material,
                     });
                     return Ok(());
@@ -3997,32 +4014,77 @@ fn block_entity_model_states(
         let NbtTag::Compound(nbt) = &entity.nbt else {
             continue;
         };
-        let Some(pair_x) = nbt.get("pairx").and_then(NbtTag::as_i32) else {
-            continue;
-        };
-        let Some(pair_z) = nbt.get("pairz").and_then(NbtTag::as_i32) else {
-            continue;
-        };
-        let dx = pair_x.saturating_sub(x);
-        let dz = pair_z.saturating_sub(z);
-        let pair_direction = match (dx, dz) {
-            (1, 0) => Some(Preview3dCardinalDirection::East),
-            (-1, 0) => Some(Preview3dCardinalDirection::West),
-            (0, 1) => Some(Preview3dCardinalDirection::South),
-            (0, -1) => Some(Preview3dCardinalDirection::North),
-            _ => None,
-        };
-        if let Some(chest_pair_direction) = pair_direction {
-            states.insert(
-                BlockKey { x, y, z },
-                Preview3dBlockEntityModelState {
-                    chest_pair_direction: Some(chest_pair_direction),
-                    chest_pair_lead: nbt_bool(nbt.get("pairlead")).unwrap_or(false),
-                },
-            );
+        let mut state = Preview3dBlockEntityModelState::default();
+        if let (Some(pair_x), Some(pair_z)) = (
+            nbt.get("pairx").and_then(NbtTag::as_i32),
+            nbt.get("pairz").and_then(NbtTag::as_i32),
+        ) {
+            let pair_direction = match (pair_x.saturating_sub(x), pair_z.saturating_sub(z)) {
+                (1, 0) => Some(Preview3dCardinalDirection::East),
+                (-1, 0) => Some(Preview3dCardinalDirection::West),
+                (0, 1) => Some(Preview3dCardinalDirection::South),
+                (0, -1) => Some(Preview3dCardinalDirection::North),
+                _ => None,
+            };
+            state.chest_pair_direction = pair_direction;
+            state.chest_pair_lead = nbt_bool(nbt.get("pairlead")).unwrap_or(false);
+        }
+        // The banner's dye and pattern layers live on the block entity, not in the block state.
+        if entity.id.as_deref() == Some("Banner") {
+            state.banner = banner_art_from_nbt(nbt).map(Arc::new);
+            if state.banner.is_some() {
+                // A standing banner is two blocks; both halves share the art even when only one
+                // of them carries the block entity. `is_banner_block` keeps the extra entries
+                // from dyeing whatever else happens to sit above or below.
+                states.insert(BlockKey { x, y: y + 1, z }, state.clone());
+                states.insert(BlockKey { x, y: y - 1, z }, state.clone());
+            }
+        }
+        if state.chest_pair_direction.is_some() || state.banner.is_some() {
+            states.insert(BlockKey { x, y, z }, state);
         }
     }
     states
+}
+
+fn is_banner_block(name: &str) -> bool {
+    let name = name.strip_prefix("minecraft:").unwrap_or(name);
+    matches!(name, "banner" | "standing_banner" | "wall_banner") || name.ends_with("_banner")
+}
+
+/// Reads `Base` and the ordered `Patterns` list of a banner block entity.
+///
+/// Newer worlds spell the dye as a name and older ones as an index, so both forms are accepted;
+/// unknown pattern ids are skipped instead of blanking the banner.
+fn banner_art_from_nbt(nbt: &indexmap::IndexMap<String, NbtTag>) -> Option<BannerArt> {
+    let base = banner_dye_index(nbt.get("Base")).unwrap_or(0);
+    let mut layers = Vec::new();
+    if let Some(NbtTag::List(patterns)) = nbt.get("Patterns") {
+        for entry in patterns {
+            let NbtTag::Compound(layer) = entry else {
+                continue;
+            };
+            let Some(NbtTag::String(id)) = layer.get("Pattern") else {
+                continue;
+            };
+            let Some(pattern) = BannerArt::pattern_index(id) else {
+                continue;
+            };
+            let color = banner_dye_index(layer.get("Color")).unwrap_or(0);
+            layers.push(BannerLayer { pattern, color });
+        }
+    }
+    Some(BannerArt { base, layers })
+}
+
+fn banner_dye_index(value: Option<&NbtTag>) -> Option<u8> {
+    match value? {
+        NbtTag::Byte(value) => u8::try_from(*value).ok().filter(|index| *index < 16),
+        NbtTag::Short(value) => u8::try_from(*value).ok().filter(|index| *index < 16),
+        NbtTag::Int(value) => u8::try_from(*value).ok().filter(|index| *index < 16),
+        NbtTag::String(value) => BannerArt::dye_index(value),
+        _ => None,
+    }
 }
 
 
@@ -4032,7 +4094,7 @@ fn nbt_bool(value: Option<&NbtTag>) -> Option<bool> {
 
 fn detail_shape(
     state: &BlockState,
-    block_entity_state: Option<Preview3dBlockEntityModelState>,
+    block_entity_state: Option<&Preview3dBlockEntityModelState>,
 ) -> Option<Preview3dDetailShape> {
     let mut query = block_state_query(state);
     if let Some(block_entity_state) = block_entity_state
@@ -4045,9 +4107,6 @@ fn detail_shape(
     let mut shape = model_family::resolve_shape(&query)
         .map(detail_shape_from_model)
         .filter(|shape| model_family::has_detail_shape(&query.name) || !shape_is_full_cube(shape))?;
-    if uses_full_inventory_texture_uv(state) {
-        apply_full_texture_uv(&mut shape);
-    }
     Some(shape)
 }
 
@@ -4138,30 +4197,6 @@ fn shape_from_named_geometry(
 fn is_bed_state(name: &str) -> bool {
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
     name == "bed" || name.ends_with("_bed")
-}
-
-fn uses_full_inventory_texture_uv(state: &BlockState) -> bool {
-    let normalized = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
-    normalized == "chest" || normalized.ends_with("_chest")
-}
-
-fn apply_full_texture_uv(shape: &mut Preview3dDetailShape) {
-    let uv = full_texture_uv();
-    for cuboid in &mut shape.cuboids {
-        for face in [
-            BlockFace::Up,
-            BlockFace::Down,
-            BlockFace::North,
-            BlockFace::South,
-            BlockFace::East,
-            BlockFace::West,
-        ] {
-            cuboid.face_uvs.insert(face, uv);
-        }
-    }
-    for plane in &mut shape.planes {
-        plane.uv = Some(uv);
-    }
 }
 
 fn normalize_shulker_geometry_shape(shape: &mut Preview3dDetailShape) {
@@ -4485,6 +4520,8 @@ struct Preview3dBiomeSample {
     grass_tint: Option<RgbaColor>,
     /// Biome foliage tint averaged over the block and its eight neighbors.
     foliage_tint: Option<RgbaColor>,
+    /// Biome dry-foliage tint (leaf litter, dry grass) averaged the same way.
+    dry_foliage_tint: Option<RgbaColor>,
 }
 
 impl Preview3dBiomeSample {
@@ -4494,6 +4531,7 @@ impl Preview3dBiomeSample {
             legacy_color: None,
             grass_tint: None,
             foliage_tint: None,
+            dry_foliage_tint: None,
         }
     }
 }
@@ -4506,6 +4544,9 @@ fn block_color(
     if state.name.strip_prefix("minecraft:").unwrap_or(&state.name) == "redstone_wire" {
         return redstone_wire_color(state);
     }
+    if let Some(color) = stem_growth_color(state) {
+        return color;
+    }
     if let Some(tint) = texture_tint(palette, state, biome) {
         return color_from_rgba(tint, 1.0);
     }
@@ -4516,6 +4557,27 @@ fn block_color(
         f32::from(color[2]) / 255.0,
         1.0,
     ]
+}
+
+/// Bedrock colours pumpkin/melon stems from `age` over a fixed green-to-brown ramp.
+///
+/// The stem texture is a grayscale mask: `red = age * 32`, `green = 255 - age * 8`,
+/// `blue = age * 4`, so a sprout is pure green and a fully grown stem is brownish.
+fn stem_growth_color(state: &BlockState) -> Option<[f32; 4]> {
+    let name = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
+    if !matches!(name, "pumpkin_stem" | "melon_stem") {
+        return None;
+    }
+    let age = state_i32(state, "age")
+        .or_else(|| state_i32(state, "growth"))
+        .unwrap_or(0)
+        .clamp(0, 7) as f32;
+    Some([
+        (age * 32.0) / 255.0,
+        (255.0 - age * 8.0) / 255.0,
+        (age * 4.0) / 255.0,
+        1.0,
+    ])
 }
 
 fn redstone_wire_color(state: &BlockState) -> [f32; 4] {
@@ -4601,6 +4663,9 @@ fn named_block_color(
             let blended = match palette.surface_tint_kind(name) {
                 Some(SurfaceTintKind::Grass) => biome.and_then(|biome| biome.grass_tint),
                 Some(SurfaceTintKind::Foliage) => biome.and_then(|biome| biome.foliage_tint),
+                Some(SurfaceTintKind::DryFoliage) => {
+                    biome.and_then(|biome| biome.dry_foliage_tint)
+                }
                 _ => None,
             };
             match blended.or_else(|| {
@@ -4688,7 +4753,9 @@ fn texture_tint(
     let blended = match kind {
         SurfaceTintKind::Grass => biome.and_then(|biome| biome.grass_tint),
         SurfaceTintKind::Foliage => biome.and_then(|biome| biome.foliage_tint),
-        SurfaceTintKind::FixedFoliage | SurfaceTintKind::DryFoliage => None,
+        // Leaf litter and the dry grasses use the dry-foliage channel, not the green one.
+        SurfaceTintKind::DryFoliage => biome.and_then(|biome| biome.dry_foliage_tint),
+        SurfaceTintKind::FixedFoliage => None,
     };
     if let Some(tint) = blended {
         return Some(tint);
@@ -4698,6 +4765,8 @@ fn texture_tint(
     {
         return Some(legacy);
     }
+    // No biome data (or none of it applies): `surface_block_tint` answers with the palette's
+    // built-in default for this channel, so the block is never left untinted.
     palette.surface_block_tint(palette_name.as_ref(), biome_id)
 }
 
@@ -4877,7 +4946,15 @@ fn terrain_biome_sample(biome: TerrainColumnBiome) -> Preview3dBiomeSample {
 /// biome borders instead of stepping at biome-cell edges.
 #[derive(Default)]
 pub(super) struct Preview3dBiomeBlendField {
-    columns: FxHashMap<(i32, i32), (RgbaColor, RgbaColor)>,
+    columns: FxHashMap<(i32, i32), BiomeTints>,
+}
+
+/// The three biome tint channels Bedrock averages over a block and its eight neighbors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BiomeTints {
+    pub(super) grass: RgbaColor,
+    pub(super) foliage: RgbaColor,
+    pub(super) dry_foliage: RgbaColor,
 }
 
 impl Preview3dBiomeBlendField {
@@ -4900,7 +4977,7 @@ impl Preview3dBiomeBlendField {
             }
         }
         let mut tint_cache =
-            FxHashMap::<(Option<u32>, Option<[u8; 4]>), (RgbaColor, RgbaColor)>::default();
+            FxHashMap::<(Option<u32>, Option<[u8; 4]>), BiomeTints>::default();
         let mut tint_of = |sample: &Preview3dBiomeSample| {
             let key = (
                 sample.biome_id,
@@ -4909,15 +4986,25 @@ impl Preview3dBiomeBlendField {
             if let Some(tint) = tint_cache.get(&key) {
                 return *tint;
             }
+            // Legacy saves only carry one biome colour; use it for every channel. Otherwise the
+            // palette resolves each channel and falls back to its built-in default when the
+            // biome has no entry, so a block outside any biome still gets a sensible colour.
             let tint = if let Some(legacy) = sample.legacy_color
                 && !color_is_washed_out(legacy)
             {
-                (legacy, legacy)
+                BiomeTints {
+                    grass: legacy,
+                    foliage: legacy,
+                    dry_foliage: legacy,
+                }
             } else {
-                (
-                    palette.biome_grass_color(sample.biome_id),
-                    palette.biome_foliage_color(sample.biome_id),
-                )
+                BiomeTints {
+                    grass: palette.biome_grass_color(sample.biome_id),
+                    foliage: palette.biome_foliage_color(sample.biome_id),
+                    dry_foliage: palette
+                        .surface_block_tint("minecraft:leaf_litter", sample.biome_id)
+                        .unwrap_or_else(|| palette.biome_foliage_color(sample.biome_id)),
+                }
             };
             tint_cache.insert(key, tint);
             tint
@@ -4928,15 +5015,21 @@ impl Preview3dBiomeBlendField {
             .collect::<FxHashMap<_, _>>();
         let mut columns = FxHashMap::with_capacity_and_hasher(tints.len(), Default::default());
         for (&(x, z), &own) in &tints {
-            let mut sums = [[0_u32; 3]; 2];
+            let mut sums = [[0_u32; 3]; 3];
             for dz in -1..=1 {
                 for dx in -1..=1 {
                     let tint = tints.get(&(x + dx, z + dz)).copied().unwrap_or(own);
-                    let grass = tint.0.to_array();
-                    let foliage = tint.1.to_array();
-                    for channel in 0..3 {
-                        sums[0][channel] += u32::from(grass[channel]);
-                        sums[1][channel] += u32::from(foliage[channel]);
+                    for (channel, values) in [
+                        tint.grass.to_array(),
+                        tint.foliage.to_array(),
+                        tint.dry_foliage.to_array(),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        for index in 0..3 {
+                            sums[channel][index] += u32::from(values[index]);
+                        }
                     }
                 }
             }
@@ -4948,12 +5041,19 @@ impl Preview3dBiomeBlendField {
                     255,
                 )
             };
-            columns.insert((x, z), (average(sums[0]), average(sums[1])));
+            columns.insert(
+                (x, z),
+                BiomeTints {
+                    grass: average(sums[0]),
+                    foliage: average(sums[1]),
+                    dry_foliage: average(sums[2]),
+                },
+            );
         }
         Self { columns }
     }
 
-    pub(super) fn tints(&self, x: i32, z: i32) -> Option<(RgbaColor, RgbaColor)> {
+    pub(super) fn tints(&self, x: i32, z: i32) -> Option<BiomeTints> {
         self.columns.get(&(x, z)).copied()
     }
 }
@@ -5044,12 +5144,13 @@ fn block_biome_sample(
     };
     let x = chunk.pos.x.saturating_mul(16) + i32::from(local_x);
     let z = chunk.pos.z.saturating_mul(16) + i32::from(local_z);
-    let Some((grass_tint, foliage_tint)) = blend.tints(x, z) else {
+    let Some(tints) = blend.tints(x, z) else {
         return sample;
     };
     let mut sample = sample.unwrap_or(Preview3dBiomeSample::empty());
-    sample.grass_tint = Some(grass_tint);
-    sample.foliage_tint = Some(foliage_tint);
+    sample.grass_tint = Some(tints.grass);
+    sample.foliage_tint = Some(tints.foliage);
+    sample.dry_foliage_tint = Some(tints.dry_foliage);
     Some(sample)
 }
 
@@ -5823,6 +5924,51 @@ fn block_face_from_direction(direction: Preview3dCardinalDirection) -> BlockFace
 mod tests {
     use super::*;
     use ::bedrock_world::editor::{BlockOffset, BlockPlacementPlan, PlacementBlock};
+
+    #[test]
+    fn banner_art_reads_the_block_entity_dye_and_pattern_layers() {
+        let mut nbt = indexmap::IndexMap::new();
+        nbt.insert("id".to_owned(), NbtTag::String("Banner".to_owned()));
+        nbt.insert("Base".to_owned(), NbtTag::Int(14));
+        let mut layers = Vec::new();
+        for (pattern, color) in [
+            ("bs", NbtTag::Int(4)),
+            ("cs", NbtTag::String("black".to_owned())),
+            ("unknown_pattern", NbtTag::Int(1)),
+        ] {
+            let mut layer = indexmap::IndexMap::new();
+            layer.insert("Pattern".to_owned(), NbtTag::String(pattern.to_owned()));
+            layer.insert("Color".to_owned(), color);
+            layers.push(NbtTag::Compound(layer));
+        }
+        nbt.insert("Patterns".to_owned(), NbtTag::List(layers));
+
+        let art = banner_art_from_nbt(&nbt).expect("banner art");
+        assert_eq!(art.base, 14);
+        // `bs` is the bottom stripe and `cs` the centre stripe; unknown ids are dropped.
+        assert_eq!(art.layers.len(), 2);
+        assert_eq!(art.layers[0].pattern, BannerArt::pattern_index("bs").expect("bs"));
+        assert_eq!(art.layers[0].color, 4);
+        assert_eq!(art.layers[1].pattern, BannerArt::pattern_index("cs").expect("cs"));
+        assert_eq!(art.layers[1].color, 15);
+        // The material name the face pipeline carries round-trips the same art.
+        assert_eq!(
+            BannerArt::from_material_name(&art.material_name()),
+            Some(art)
+        );
+        assert!(is_banner_block("minecraft:standing_banner"));
+        assert!(!is_banner_block("minecraft:stone"));
+    }
+
+    #[test]
+    fn banner_art_without_patterns_still_carries_the_dye() {
+        let mut nbt = indexmap::IndexMap::new();
+        nbt.insert("Base".to_owned(), NbtTag::String("orange".to_owned()));
+        let art = banner_art_from_nbt(&nbt).expect("banner art");
+        assert_eq!(art.base, 1);
+        assert!(art.layers.is_empty());
+        assert_eq!(art.material_name(), "bannerart-01");
+    }
 
     #[test]
     fn file_export_does_not_truncate_faces_at_preview_gpu_budget() {
@@ -7973,7 +8119,7 @@ mod tests {
     }
 
     #[test]
-    fn map_viewer_preview_3d_chest_faces_use_full_inventory_textures() {
+    fn map_viewer_preview_3d_chest_faces_unwrap_the_entity_sheet() {
         let shape = detail_shape(&test_block_state("minecraft:chest"), None)
             .unwrap_or_else(|| panic!("chest should have detail shape"));
         let body = shape
@@ -7986,7 +8132,15 @@ mod tests {
             .copied()
             .unwrap_or_else(|| panic!("chest side should have explicit uv"));
 
-        assert_eq!(side_uv, full_texture_uv());
+        // `chest.png` is a 64x64 entity unwrap. Sampling the whole tile on every face showed
+        // the sheet's transparent gutters, so a side face has to stay inside one sub-rect.
+        assert_ne!(side_uv, full_texture_uv());
+        let u: Vec<f32> = side_uv.iter().map(|corner| corner[0]).collect();
+        let v: Vec<f32> = side_uv.iter().map(|corner| corner[1]).collect();
+        let u_span = u.iter().copied().fold(0.0_f32, f32::max) - u.iter().copied().fold(1.0, f32::min);
+        let v_span = v.iter().copied().fold(0.0_f32, f32::max) - v.iter().copied().fold(1.0, f32::min);
+        assert!(u_span > 0.0 && u_span < 0.5, "chest side u span {u_span}");
+        assert!(v_span > 0.0 && v_span < 0.5, "chest side v span {v_span}");
     }
 
     #[test]
@@ -8018,13 +8172,15 @@ mod tests {
         };
         let trapdoor_shape = detail_shape(&trapdoor, None)
             .unwrap_or_else(|| panic!("trapdoor should have detail shape"));
+        // `facing_direction = 4` is west, and the trapdoor's direction names the side it hangs
+        // on, so the open panel is the full-height slab on that same west boundary.
         assert!(
             trapdoor_shape
                 .cuboids
                 .iter()
                 .any(|cuboid| cuboid.max[1] - cuboid.min[1] > 0.9
-                    && cuboid.min[0] > 0.8
-                    && cuboid.max[0] <= 1.0)
+                    && cuboid.min[0] < 0.05
+                    && cuboid.max[0] <= 0.2)
         );
 
         let torch = test_block_state_with_tag(
@@ -8083,6 +8239,35 @@ mod tests {
         assert!(mesh.glass_face_count > 6);
         assert_eq!(gpu_mesh.ranges.opaque.count, 0);
         assert!(gpu_mesh.ranges.glass.count > 6);
+    }
+
+    #[test]
+    fn dry_foliage_blocks_tint_without_biome_data() {
+        // A block outside any biome (or in a chunk without biome storage) must still get the
+        // palette's built-in dry-foliage default instead of rendering as a raw grey mask.
+        let palette = RenderPalette::default();
+        let state = test_block_state("minecraft:leaf_litter");
+        let tint = texture_tint(&palette, &state, None)
+            .expect("leaf_litter should tint even with no biome sample");
+        let expected = palette
+            .surface_block_tint("minecraft:leaf_litter", None)
+            .expect("palette dry foliage default");
+        assert_eq!(tint.to_array(), expected.to_array());
+        // The dry channel is warm, not the green grass/foliage default.
+        let color = tint.to_array();
+        assert!(
+            color[0] > color[1] && color[1] > color[2],
+            "dry foliage tint {color:?} should be a warm brown"
+        );
+
+        // An explicit biome still wins.
+        let biome = Preview3dBiomeSample {
+            biome_id: Some(2),
+            dry_foliage_tint: Some(RgbaColor::new(123, 83, 52, 255)),
+            ..Preview3dBiomeSample::empty()
+        };
+        let biome_tint = texture_tint(&palette, &state, Some(biome)).expect("biome tint");
+        assert_eq!(biome_tint.to_array(), [123, 83, 52, 255]);
     }
 
     #[test]
@@ -8204,6 +8389,29 @@ mod tests {
     }
 
     #[test]
+    fn dry_foliage_blocks_keep_a_default_colour_without_any_biome_storage() {
+        // A chunk with no biome storage at all produces no blend column, so the block falls back
+        // to the palette's built-in default dry-foliage colour instead of a raw grey mask.
+        let chunk = test_render_chunk_with_subchunks(BTreeMap::new());
+        let field = Preview3dBiomeBlendField::from_chunks(&[chunk]);
+        assert!(
+            field.tints(0, 0).is_none(),
+            "no biome storage means no blended tint"
+        );
+
+        let palette = RenderPalette::default();
+        let state = test_block_state("minecraft:leaf_litter");
+        let tint = texture_tint(&palette, &state, None).expect("default dry foliage tint");
+        let expected = palette
+            .surface_block_tint("minecraft:leaf_litter", None)
+            .expect("palette default");
+        assert_eq!(tint.to_array(), expected.to_array());
+        // Warm brown, not the green grass/foliage default.
+        let [red, green, blue, _] = expected.to_array();
+        assert!(red > green && green > blue, "default {expected:?} should be warm");
+    }
+
+    #[test]
     fn map_viewer_preview_3d_biome_blend_averages_the_eight_neighbors() {
         let field = Preview3dBiomeBlendField::from_chunks(&[
             test_biome_chunk(0, 1),
@@ -8221,27 +8429,34 @@ mod tests {
         };
 
         // Column 15 sits on the border: 6 samples come from chunk 0, 3 from chunk 1.
-        let (grass, foliage) = field.tints(15, 8).expect("border column");
+        let border = field.tints(15, 8).expect("border column");
         assert_eq!(
-            grass,
+            border.grass,
             average(
                 palette.biome_grass_color(Some(1)),
                 palette.biome_grass_color(Some(21))
             )
         );
         assert_eq!(
-            foliage,
+            border.foliage,
             average(
                 palette.biome_foliage_color(Some(1)),
                 palette.biome_foliage_color(Some(21))
             )
         );
+        // The dry-foliage channel blends across the border too.
+        let dry = |id| {
+            palette
+                .surface_block_tint("minecraft:leaf_litter", Some(id))
+                .expect("dry foliage tint")
+        };
+        assert_eq!(border.dry_foliage, average(dry(1), dry(21)));
         assert_eq!(
-            field.tints(4, 8).expect("interior column").0,
+            field.tints(4, 8).expect("interior column").grass,
             palette.biome_grass_color(Some(1))
         );
         assert_eq!(
-            field.tints(20, 8).expect("interior column").0,
+            field.tints(20, 8).expect("interior column").grass,
             palette.biome_grass_color(Some(21))
         );
     }

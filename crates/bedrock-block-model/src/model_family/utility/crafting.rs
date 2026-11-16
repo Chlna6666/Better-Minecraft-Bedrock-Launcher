@@ -87,40 +87,144 @@ pub(crate) fn cauldron_shape() -> ModelShape {
 use crate::model_family::shape::ModelPlane;
 
 pub(crate) fn flower_pot_shape(name: &str) -> ModelShape {
+    // Measured from the client: a 6 x 6 px body to y = 0.249 and a 4 px rim band to y = 0.375,
+    // both 0.3125..0.6875 across. The previous 0.3125 / 0.4375 heights were too tall.
     let mut shape = ModelShape::from_cuboids([
-        ModelCuboid::new([0.3125, 0.0, 0.3125], [0.6875, 0.3125, 0.6875]),
-        ModelCuboid::new([0.25, 0.3125, 0.25], [0.75, 0.4375, 0.75]),
+        ModelCuboid::new([0.3125, 0.0, 0.3125], [0.6875, 0.249, 0.6875]),
+        ModelCuboid::new([0.3125, 0.249, 0.3125], [0.6875, 0.375, 0.6875]),
     ]);
-    if name.starts_with("potted_") {
-        shape.planes.extend([
-            ModelPlane::new(
-                [
-                    [0.0625, 0.0, -0.0625],
-                    [1.0625, 0.0, 0.9375],
-                    [1.0625, 0.75, 0.9375],
-                    [0.0625, 0.75, -0.0625],
-                ],
-                [-1, 0, 1],
-            ),
-            ModelPlane::new(
-                [
-                    [1.0625, 0.0, -0.0625],
-                    [0.0625, 0.0, 0.9375],
-                    [0.0625, 0.75, 0.9375],
-                    [1.0625, 0.75, -0.0625],
-                ],
-                [1, 0, 1],
-            ),
-        ]);
+    if let Some(plant) = name.strip_prefix("potted_") {
+        // Each potted plant keeps its own silhouette: a cactus is a 6 px column, a bamboo shoot a
+        // thin post, a mushroom a stem plus cap. Drawing every one of them as the same oversized
+        // cross plane (the previous model) made the whole family look alike.
+        shape.cuboids.extend(potted_plant_cuboids(plant));
+        if potted_plant_uses_cross(plant) {
+            shape.planes.extend(cross_plant_planes());
+        }
     }
     shape
 }
 
+/// The solid part of a potted plant, sized from its own block model.
+fn potted_plant_cuboids(plant: &str) -> Vec<ModelCuboid> {
+    match plant {
+        // A potted cactus is a 6 px column rising out of the pot.
+        "cactus" => vec![ModelCuboid::new(
+            [px(5.0), px(6.0), px(5.0)],
+            [px(11.0), px(13.0), px(11.0)],
+        )],
+        // Bamboo keeps its thin 2 px shoot.
+        "bamboo" => vec![ModelCuboid::new(
+            [px(7.0), px(6.0), px(7.0)],
+            [px(9.0), px(13.0), px(9.0)],
+        )],
+        // Mushrooms are a narrow stem under a wider cap.
+        "red_mushroom" | "brown_mushroom" => vec![
+            ModelCuboid::new([px(7.0), px(6.0), px(7.0)], [px(9.0), px(10.0), px(9.0)]),
+            ModelCuboid::new([px(5.0), px(10.0), px(5.0)], [px(11.0), px(12.0), px(11.0)]),
+        ],
+        // A dead bush is bare twigs; the cross plane carries it.
+        "deadbush" => Vec::new(),
+        // Everything else is a cross-shaped plant.
+        _ => Vec::new(),
+    }
+}
+
+/// Whether the potted plant draws as a cross (flowers, saplings, ferns, dead bush, ...).
+fn potted_plant_uses_cross(plant: &str) -> bool {
+    !matches!(plant, "cactus" | "bamboo" | "red_mushroom" | "brown_mushroom")
+}
+
+/// The cross plane a potted plant uses, sitting inside the pot rim.
+fn cross_plant_planes() -> [ModelPlane; 2] {
+    [
+        ModelPlane::new(
+            [
+                [0.0625, 0.0, -0.0625],
+                [1.0625, 0.0, 0.9375],
+                [1.0625, 0.75, 0.9375],
+                [0.0625, 0.75, -0.0625],
+            ],
+            [-1, 0, 1],
+        ),
+        ModelPlane::new(
+            [
+                [1.0625, 0.0, -0.0625],
+                [0.0625, 0.0, 0.9375],
+                [0.0625, 0.75, 0.9375],
+                [1.0625, 0.75, -0.0625],
+            ],
+            [1, 0, 1],
+        ),
+    ]
+}
+
+/// Bedrock decorated pot: a block-actor model built from three stacked boxes.
+///
+/// The pot is **not** a cross model — the client renders it as an entity with five separate
+/// model keys (`decorated_pot_base` plus one per side), each sampling its own sherd art. Its
+/// `decorated_pot_base` texture is 32 x 32 and lays the parts out unfolded:
+///
+/// ```text
+/// u 8..24,  v 0..8    neck top   16 x 8  -> an 8 px square lid
+/// u 0..32,  v 8..12   shoulder   32 x 4  -> four 8 px faces
+/// u 0..28,  v 13..27  body       28 x 14 -> four 7 px faces, 14 px tall
+/// ```
+///
+/// So the pot is a slim 7 px column that flares to 8 px at the shoulder and closes with an 8 px
+/// lid — the previous single 12 px box plus a rim ring ignored that profile.
 pub(crate) fn decorated_pot_shape() -> ModelShape {
-    ModelShape::from_cuboids([
-        ModelCuboid::new([0.125, 0.0, 0.125], [0.875, 1.0, 0.875]),
-        ModelCuboid::new([0.1875, 1.0, 0.1875], [0.8125, 1.0625, 0.8125]),
-    ])
+    // Body: 7 px wide, 14 px tall, standing on the block floor.
+    let body = pot_face_uv(ModelCuboid::new(
+        [px(4.5), 0.0, px(4.5)],
+        [px(11.5), px(14.0), px(11.5)],
+    ), [0.0, 13.0, 7.0, 27.0], [0.0, 13.0, 7.0, 27.0]);
+    // Shoulder: 8 px wide, 4 px tall, one px proud of the body.
+    let shoulder = pot_face_uv(ModelCuboid::new(
+        [px(4.0), px(14.0), px(4.0)],
+        [px(12.0), px(18.0), px(12.0)],
+    ), [0.0, 8.0, 8.0, 12.0], [0.0, 8.0, 8.0, 12.0]);
+    // The lid is the shoulder box's own top face: the unfolded sheet draws the 16 x 8 neck art
+    // above the shoulder band, so the cap samples that rect instead of adding a second box.
+    let shoulder = shoulder
+        .with_face_uv(BlockFace::Up, [
+            [8.0 / 32.0, 8.0 / 32.0],
+            [24.0 / 32.0, 8.0 / 32.0],
+            [24.0 / 32.0, 0.0],
+            [8.0 / 32.0, 0.0],
+        ])
+        .with_face_uv(BlockFace::Down, [
+            [8.0 / 32.0, 8.0 / 32.0],
+            [24.0 / 32.0, 8.0 / 32.0],
+            [24.0 / 32.0, 0.0],
+            [8.0 / 32.0, 0.0],
+        ]);
+    ModelShape::from_cuboids([body, shoulder])
+}
+
+/// Maps one box's four sides onto a strip of `sides` (four equal columns) and its caps onto
+/// `caps`.
+fn pot_face_uv(
+    cuboid: ModelCuboid,
+    sides: [f32; 4],
+    _caps: [f32; 4],
+) -> ModelCuboid {
+    let [u0, v0, u1, v1] = sides;
+    let width = (u1 - u0) / 4.0;
+    let rect = |index: usize| {
+        let left = u0 + width * index as f32;
+        [
+            [left / 32.0, v1 / 32.0],
+            [(left + width) / 32.0, v1 / 32.0],
+            [(left + width) / 32.0, v0 / 32.0],
+            [left / 32.0, v0 / 32.0],
+        ]
+    };
+    cuboid
+        .with_face_uv(BlockFace::North, rect(0))
+        .with_face_uv(BlockFace::East, rect(1))
+        .with_face_uv(BlockFace::South, rect(2))
+        .with_face_uv(BlockFace::West, rect(3))
 }
 
 pub(crate) fn brewing_stand_shape() -> ModelShape {

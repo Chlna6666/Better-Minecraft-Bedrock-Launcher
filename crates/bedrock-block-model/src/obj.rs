@@ -657,6 +657,17 @@ impl ObjTextureResolver {
             return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
         }
 
+        // A few slots name a terrain material owned by a sibling block entry: the repeater and
+        // comparator torches use the shared `repeater_torch` / `comparator_torch` art, which is
+        // not part of their own `textures` map.
+        if let Some(texture_key) = material_slot.as_deref().and_then(|slot| {
+            shared_slot_texture(&lookup_block, slot)
+                .or_else(|| shared_spike_segment_texture(&lookup_block, slot))
+        }) && let Some((pack, source_path)) = self.texture_path(&texture_key)
+        {
+            return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+        }
+
         if let Some(material_slot) = material_slot.as_deref()
             && let Some(texture_key) = self.resolved_texture_key(&lookup_block, material_slot)
             && let Some((pack, source_path)) = self.texture_path(&texture_key)
@@ -863,7 +874,28 @@ impl ObjTextureResolver {
                 return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
             }
         }
-        if block == "standing_banner" || block == "wall_banner" || block.ends_with("_banner") {
+        if block.ends_with("copper_golem_statue") {
+            // The statue is an entity model unwrapped from the 64x64 golem skin; `blocks.json`
+            // only maps the item icon, so the skin has to win over the copper block tile.
+            let wear = if block.contains("oxidized") {
+                "_oxidized"
+            } else if block.contains("weathered") {
+                "_weathered"
+            } else if block.contains("exposed") {
+                "_exposed"
+            } else {
+                ""
+            };
+            for texture_key in [
+                format!("textures/entity/copper_golem/copper_golem{wear}"),
+                "textures/entity/copper_golem/copper_golem".to_owned(),
+            ] {
+                if let Some((pack, source_path)) = self.texture_path(&texture_key) {
+                    return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+                }
+            }
+        }
+        if matches!(block, "banner" | "standing_banner" | "wall_banner") || block.ends_with("_banner") {
             // `blocks.json` lists banners as `planks`; the cloth art is the entity banner
             // texture. Resolve it before the placeholder wins.
             for texture_key in ["entity/banner/banner_base", "entity/banner/banner"] {
@@ -873,6 +905,16 @@ impl ObjTextureResolver {
             }
         }
         None
+    }
+
+    /// Resolves a loose entity texture key such as `entity/banner/banner_base`.
+    ///
+    /// Block-entity art lives outside `terrain_texture.json`, so callers that composite their own
+    /// sheet (banner dye and patterns) need the same path lookup the slot resolver uses.
+    #[must_use]
+    pub fn entity_texture(&self, texture_key: &str) -> Option<ObjResolvedTexture> {
+        let (pack, source_path) = self.texture_path(texture_key)?;
+        Some(pack.resolved_texture(&self.texture_directory_name, source_path))
     }
 
     fn resolved_texture_key_for(&self, block: &str, face: BlockFace) -> Option<String> {
@@ -1962,6 +2004,52 @@ fn texture_value_keys(normal: [i32; 3]) -> &'static [&'static str] {
 }
 
 #[must_use]
+/// Terrain material for a model slot whose art lives in a sibling block entry.
+fn shared_slot_texture(block: &str, slot: &str) -> Option<String> {
+    if slot == "torch" && block.ends_with("repeater") {
+        return Some("repeater_torch".to_owned());
+    }
+    if slot == "torch" && block.ends_with("comparator") {
+        return Some("comparator_torch".to_owned());
+    }
+    if slot == "north_open" && block == "barrel" {
+        // `barrel_top` is a two-variant terrain material; the open barrel uses its second frame.
+        return Some("barrel_top_open".to_owned());
+    }
+    if slot == "log" && block.ends_with("campfire") {
+        // `campfire_log` is the plain 16 x 16 bark tile; the block's own slots only expose the
+        // lit strip (`side`) and the fire sheet, so the unlit bark has to be named directly.
+        let prefix = if block.starts_with("soul") {
+            "soul_campfire"
+        } else {
+            "campfire"
+        };
+        return Some(format!("{prefix}_log"));
+    }
+    None
+}
+
+/// Terrain material for one spike segment: the pack keys each segment's art as
+/// `pointed_dripstone_<thickness>` / `sulfur_spike_<thickness>`.
+fn shared_spike_segment_texture(block: &str, slot: &str) -> Option<String> {
+    if !(block.ends_with("spike") || block == "pointed_dripstone") {
+        return None;
+    }
+    // `<segment>_up` / `<segment>_down` name the frame of the segment's two-frame terrain array;
+    // `terrain_texture.json` lists them as `[down, up]`, so the direction must be explicit.
+    if let Some((segment, direction)) = slot.rsplit_once('_') {
+        if matches!(direction, "up" | "down")
+            && matches!(segment, "tip" | "frustum" | "middle" | "base" | "merge")
+        {
+            return Some(format!("{block}_{direction}_{segment}"));
+        }
+    }
+    match slot {
+        "tip" | "frustum" | "middle" | "base" | "merge" => Some(format!("{block}_{slot}")),
+        _ => None,
+    }
+}
+
 pub fn fallback_texture_keys(material_texture: &str, block: &str, normal: [i32; 3]) -> Vec<String> {
     let mut keys = Vec::with_capacity(24);
     if is_water_block(block) {
@@ -2478,7 +2566,7 @@ fn terrain_texture_path(value: &Value) -> Option<String> {
 }
 
 fn push_block_specific_texture_aliases(keys: &mut Vec<String>, block: &str, normal: [i32; 3]) {
-    if block == "standing_banner" || block == "wall_banner" || block.ends_with("_banner") {
+    if matches!(block, "banner" | "standing_banner" | "wall_banner") || block.ends_with("_banner") {
         // `blocks.json` maps banners to `planks` as a placeholder; the cloth art is the
         // entity banner texture. Without this every banner rendered as oak planks.
         for key in ["entity/banner/banner_base", "entity/banner/banner"] {
@@ -4368,9 +4456,8 @@ mod tests {
     use super::{
         NamedObjMaterial, ObjDocumentHeader, ObjExportMaterial, ObjFace, ObjMaterial, ObjMeshFace,
         ObjMeshFaceSource, ObjTextureCopy, ObjTextureResolver, alpha_mask_texture_image,
-        alpha_texture_path,
-        cake_candle_block, default_face_uvs_from_corners, document_string, export_face_groups,
-        export_face_sources, export_material_library, face_material_name,
+        alpha_texture_path, cake_candle_block, default_face_uvs_from_corners, document_string,
+        export_face_groups, export_face_sources, export_material_library, face_material_name,
         face_normal_from_triangle, face_texture_slot_suffix, faces_string, material_library_string,
         material_name, material_slot_component, mesh_face_materials, mesh_faces_from_source,
         mesh_faces_string, path_starts_with_directory, slot_material_name, texture_copies,
@@ -4385,12 +4472,8 @@ mod tests {
 
     #[test]
     fn alpha_mask_export_writes_real_alpha_channel_and_matching_luminance() {
-        let source = image::RgbaImage::from_raw(
-            2,
-            1,
-            vec![255, 255, 255, 0, 255, 255, 255, 255],
-        )
-        .expect("valid fixture");
+        let source = image::RgbaImage::from_raw(2, 1, vec![255, 255, 255, 0, 255, 255, 255, 255])
+            .expect("valid fixture");
         let mask = alpha_mask_texture_image(image::DynamicImage::ImageRgba8(source)).to_rgba8();
         assert_eq!(mask.get_pixel(0, 0).0, [0, 0, 0, 0]);
         assert_eq!(mask.get_pixel(mask.width() - 1, 0).0, [255, 255, 255, 255]);
@@ -4409,10 +4492,7 @@ mod tests {
             material: material.clone(),
         }]);
 
-        assert!(
-            material_library
-                .contains("map_d textures/blocks/redstone_dust_cross_alpha.png")
-        );
+        assert!(material_library.contains("map_d textures/blocks/redstone_dust_cross_alpha.png"));
         assert_eq!(
             material.alpha_texture_path.as_deref(),
             Some("textures/blocks/redstone_dust_cross_alpha.png")
@@ -4550,19 +4630,11 @@ mod tests {
 
         assert!(material_library.contains("map_d textures/blocks/iron_bars_alpha.png"));
         assert!(material_library.contains("map_d textures/blocks/glass_alpha.png"));
-        assert!(
-            material_library.contains("map_d textures/blocks/glass_black_alpha.png")
-        );
-        assert!(
-            material_library.contains("map_d textures/blocks/glass_pane_top_alpha.png")
-        );
-        assert!(
-            material_library.contains("map_d textures/blocks/flower_rose_alpha.png")
-        );
+        assert!(material_library.contains("map_d textures/blocks/glass_black_alpha.png"));
+        assert!(material_library.contains("map_d textures/blocks/glass_pane_top_alpha.png"));
+        assert!(material_library.contains("map_d textures/blocks/flower_rose_alpha.png"));
         assert!(material_library.contains("map_d textures/blocks/web_alpha.png"));
-        assert!(
-            material_library.contains("map_d textures/blocks/copper_grate_alpha.png")
-        );
+        assert!(material_library.contains("map_d textures/blocks/copper_grate_alpha.png"));
         assert!(material_library.contains("d 1.000000"));
         assert!(material_library.contains("illum 4"));
     }

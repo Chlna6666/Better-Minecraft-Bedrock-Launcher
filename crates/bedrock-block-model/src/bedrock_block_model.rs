@@ -4,6 +4,7 @@
 //! terrain texture, material instance, permutation, and geometry JSON data, then returns a
 //! `ResolvedBlockModel` suitable for a renderer or OBJ exporter to consume.
 
+pub mod banner_art;
 mod error;
 pub mod geometry;
 mod geometry_shape;

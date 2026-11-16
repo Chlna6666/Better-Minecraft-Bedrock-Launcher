@@ -1,10 +1,11 @@
 use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{
-    CardinalDirection, cardinal_direction, state_i64, state_string,
+    BlockFacing, CardinalDirection, cardinal_direction, state_i64, state_string,
 };
 use crate::model_family::shape::{
     ModelCuboid, ModelShape, box_unwrap_face_uvs, detail_cuboid_with_local_uv, rect_uv,
+    rotate_cuboid_cardinal,
 };
 use crate::state::BlockStateQuery;
 
@@ -43,17 +44,25 @@ pub(crate) fn container_shape(name: &str, state: &BlockStateQuery) -> Option<Mod
 
 fn barrel_shape(state: &BlockStateQuery) -> ModelShape {
     let is_open = crate::model_family::direction::state_bool(state, "open_bit").unwrap_or(false);
-    let top_slot = if is_open { "barrel_top_open" } else { "up" };
-    ModelShape::from_cuboids([detail_cuboid_with_local_uv(ModelCuboid::new(
-        [0.0, 0.0, 0.0],
-        [1.0, 1.0, 1.0],
-    ))
-    .with_face_material_slot(BlockFace::Up, top_slot)
-    .with_face_material_slot(BlockFace::Down, "down")
-    .with_face_material_slot(BlockFace::North, "side")
-    .with_face_material_slot(BlockFace::South, "side")
-    .with_face_material_slot(BlockFace::East, "side")
-    .with_face_material_slot(BlockFace::West, "side")])
+    // `blocks.json` draws the barrel with its lid on the north face; `facing_direction` names
+    // the side the lid points at, so the whole slot map turns with it (0=down, 1=up, 2..5).
+    let facing = crate::model_family::direction::block_facing(state).unwrap_or(BlockFacing::North);
+    let lid_slot = if is_open { "north_open" } else { "north" };
+    let mut cuboid = ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+    for (model_face, slot) in [
+        (BlockFace::Up, "side"),
+        (BlockFace::Down, "side"),
+        (BlockFace::North, lid_slot),
+        (BlockFace::South, "south"),
+        (BlockFace::East, "side"),
+        (BlockFace::West, "side"),
+    ] {
+        cuboid = cuboid.with_face_material_slot(
+            crate::model_family::direction::turn_model_face(model_face, facing),
+            slot,
+        );
+    }
+    ModelShape::from_cuboids([detail_cuboid_with_local_uv(cuboid)])
 }
 
 pub(crate) fn shulker_box_shape() -> ModelShape {
@@ -165,44 +174,7 @@ fn chest_latch(direction: CardinalDirection) -> ModelCuboid {
         ModelCuboid::new([px(7.0), px(8.0), 0.0], [px(9.0), px(12.0), px(1.0)]),
         [0.0, 0.0],
     );
-    let turns = match direction {
-        CardinalDirection::North => 0,
-        CardinalDirection::East => 1,
-        CardinalDirection::South => 2,
-        CardinalDirection::West => 3,
-    };
-    (0..turns).fold(authored, |cuboid, _| rotate_cuboid_clockwise(cuboid))
-}
-
-/// Turns a cuboid one quarter turn clockwise about the block's Y axis.
-///
-/// The UV quads stay with their faces: for a quarter turn the renderer's corner order maps to
-/// the new face's corner order index for index, so the art turns with the box.
-fn rotate_cuboid_clockwise(cuboid: ModelCuboid) -> ModelCuboid {
-    let mut rotated = ModelCuboid::new(
-        [1.0 - cuboid.max[2], cuboid.min[1], cuboid.min[0]],
-        [1.0 - cuboid.min[2], cuboid.max[1], cuboid.max[0]],
-    );
-    rotated.material_slot = cuboid.material_slot;
-    for (face, slot) in cuboid.face_material_slots {
-        rotated
-            .face_material_slots
-            .insert(rotate_face_clockwise(face), slot);
-    }
-    for (face, uv) in cuboid.face_uvs {
-        rotated.face_uvs.insert(rotate_face_clockwise(face), uv);
-    }
-    rotated
-}
-
-fn rotate_face_clockwise(face: BlockFace) -> BlockFace {
-    match face {
-        BlockFace::North => BlockFace::East,
-        BlockFace::East => BlockFace::South,
-        BlockFace::South => BlockFace::West,
-        BlockFace::West => BlockFace::North,
-        other => other,
-    }
+    rotate_cuboid_cardinal(&authored, direction)
 }
 
 /// Applies the chest sheet's box unwrap, normalised to the 64x64 entity skin.

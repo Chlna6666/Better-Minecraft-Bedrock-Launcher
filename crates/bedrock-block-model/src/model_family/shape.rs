@@ -181,6 +181,15 @@ pub fn upright_full_texture_uv() -> [[f32; 2]; 4] {
     [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]
 }
 
+/// The same full-tile quad flipped vertically, for plants that grow downwards.
+///
+/// Hanging moss, roots and vines hang from the block above, so their art has to point down
+/// instead of standing on the block floor.
+#[must_use]
+pub fn hanging_full_texture_uv() -> [[f32; 2]; 4] {
+    [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+}
+
 /// The four corners of one authored box face, in this renderer's face order.
 ///
 /// Corner 0 is the bottom-left of the face as seen from outside, which is why unwrapped V grows
@@ -269,6 +278,247 @@ pub fn box_unwrap_uv(
         BlockFace::West => [u0 + (z1 - point[2]), v0 + depth + (y1 - point[1])],
         // Aggregate selectors never name one geometric face; the cube origin keeps this total.
         _ => [u0, v0],
+    }
+}
+
+/// Turns a cuboid authored facing north onto one of the four cardinals.
+///
+/// Bedrock rotates a north-authored block model with `rotation: [0, 0, 0]` for north,
+/// `[0, 90, 0]` for west, `[0, 180, 0]` for south and `[0, -90, 0]` for east, so the model's
+/// north face travels onto the named face. Each step is a quarter turn clockwise seen from
+/// above: north becomes east, then south, then west. Face slots and UV quads travel with the
+/// geometry, so a mirrored x/z swap is not an acceptable substitute.
+#[must_use]
+pub(super) fn rotate_cuboid_cardinal(
+    cuboid: &ModelCuboid,
+    direction: super::direction::CardinalDirection,
+) -> ModelCuboid {
+    use super::direction::CardinalDirection;
+    let turns = match direction {
+        CardinalDirection::North => 0,
+        CardinalDirection::East => 1,
+        CardinalDirection::South => 2,
+        CardinalDirection::West => 3,
+    };
+    (0..turns).fold(cuboid.clone(), |cuboid, _| quarter_turn_clockwise(&cuboid))
+}
+
+/// Turns a plane authored facing north onto one of the four cardinals.
+///
+/// The corners keep their order and UVs, so the texture turns with the geometry; only the
+/// normal is re-derived from the same quarter turns.
+#[must_use]
+pub(super) fn rotate_plane_cardinal(
+    plane: &ModelPlane,
+    direction: super::direction::CardinalDirection,
+) -> ModelPlane {
+    use super::direction::CardinalDirection;
+    let quarter_turns = match direction {
+        CardinalDirection::North => 0,
+        CardinalDirection::East => 1,
+        CardinalDirection::South => 2,
+        CardinalDirection::West => 3,
+    };
+    let mut corners = plane.corners;
+    let mut normal = plane.normal;
+    for _ in 0..quarter_turns {
+        for corner in &mut corners {
+            let (x, z) = (corner[0], corner[2]);
+            corner[0] = 1.0 - z;
+            corner[2] = x;
+        }
+        let (nx, nz) = (normal[0], normal[2]);
+        normal = [-nz, normal[1], nx];
+    }
+    let mut rotated = ModelPlane::new(corners, normal);
+    rotated.material_slot = plane.material_slot.clone();
+    rotated.uv = plane.uv;
+    rotated
+}
+
+/// Turns a whole north-authored shape onto one of the four cardinals.
+#[must_use]
+pub(super) fn rotate_shape_cardinal(
+    shape: ModelShape,
+    direction: super::direction::CardinalDirection,
+) -> ModelShape {
+    let mut rotated = ModelShape::from_cuboids(
+        shape
+            .cuboids
+            .iter()
+            .map(|cuboid| rotate_cuboid_cardinal(cuboid, direction))
+            .collect::<Vec<_>>(),
+    );
+    rotated.planes = shape
+        .planes
+        .iter()
+        .map(|plane| rotate_plane_cardinal(plane, direction))
+        .collect();
+    rotated
+}
+
+/// Turns a whole shape about the block's vertical centre by an arbitrary angle in degrees
+/// (positive = clockwise seen from above).
+///
+/// Standing signs and banners have sixteen 22.5 degree orientations, so their cuboids become
+/// quads: an axis-aligned box cannot express the turn, and the per-face slots and UVs still
+/// travel with each face.
+#[must_use]
+pub(super) fn rotate_shape_y_degrees(shape: ModelShape, degrees: f32) -> ModelShape {
+    if degrees.abs() < 0.001 {
+        // Keep the solid cuboid representation for the south-facing default.
+        return shape;
+    }
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let rotate = |point: [f32; 3]| {
+        [
+            0.5 + (point[0] - 0.5) * cos - (point[2] - 0.5) * sin,
+            point[1],
+            0.5 + (point[0] - 0.5) * sin + (point[2] - 0.5) * cos,
+        ]
+    };
+    let mut rotated = ModelShape::default();
+    for cuboid in &shape.cuboids {
+        for (face, normal) in [
+            (BlockFace::Up, [0, 1, 0]),
+            (BlockFace::Down, [0, -1, 0]),
+            (BlockFace::North, [0, 0, -1]),
+            (BlockFace::South, [0, 0, 1]),
+            (BlockFace::East, [1, 0, 0]),
+            (BlockFace::West, [-1, 0, 0]),
+        ] {
+            let corners = box_face_corners(cuboid.min, cuboid.max, face).map(rotate);
+            let mut plane = ModelPlane::new(corners, normal).front_only();
+            if let Some(uv) = cuboid.face_uvs.get(&face).copied() {
+                plane = plane.with_uv(uv);
+            }
+            if let Some(slot) = cuboid
+                .face_material_slots
+                .get(&face)
+                .or_else(|| cuboid.material_slot.as_ref())
+            {
+                plane = plane.with_material_slot(slot);
+            }
+            rotated.planes.push(plane);
+        }
+    }
+    for plane in &shape.planes {
+        let mut turned = plane.clone();
+        turned.corners = plane.corners.map(rotate);
+        rotated.planes.push(turned);
+    }
+    rotated
+}
+
+/// Turns a shape about the block's X axis in quarter steps (positive = `y` towards `z`).
+///
+/// Levers, buttons and other wall-mounted parts use this to move a floor-authored base onto a
+/// wall or ceiling; face slots and UVs travel with the geometry.
+#[must_use]
+pub(super) fn rotate_shape_x(shape: ModelShape, quarter_turns: i32) -> ModelShape {
+    let turns = quarter_turns.rem_euclid(4);
+    let mut rotated = ModelShape::from_cuboids(
+        shape
+            .cuboids
+            .iter()
+            .map(|cuboid| (0..turns).fold(cuboid.clone(), |cuboid, _| quarter_turn_x(&cuboid)))
+            .collect::<Vec<_>>(),
+    );
+    rotated.planes = shape
+        .planes
+        .iter()
+        .map(|plane| {
+            let mut plane = plane.clone();
+            for _ in 0..turns {
+                plane = quarter_turn_plane_x(&plane);
+            }
+            plane
+        })
+        .collect();
+    rotated
+}
+
+/// Rotates a face's UV quad inside the face by whole quarter turns (clockwise).
+///
+/// Blocks whose art carries direction (the anvil top, the observer face) only express their
+/// facing through the texture once their boxes are symmetric, so the geometry turn alone is not
+/// enough.
+#[must_use]
+pub(super) fn rotate_uv_quarter(uv: [[f32; 2]; 4], quarter_turns: i32) -> [[f32; 2]; 4] {
+    let turns = quarter_turns.rem_euclid(4) as usize;
+    let mut rotated = uv;
+    for _ in 0..turns {
+        rotated = [rotated[1], rotated[2], rotated[3], rotated[0]];
+    }
+    rotated
+}
+
+fn quarter_turn_x(cuboid: &ModelCuboid) -> ModelCuboid {
+    let mut rotated = ModelCuboid::new(
+        [cuboid.min[0], 1.0 - cuboid.max[2], cuboid.min[1]],
+        [cuboid.max[0], 1.0 - cuboid.min[2], cuboid.max[1]],
+    );
+    rotated.material_slot = cuboid.material_slot.clone();
+    for (face, slot) in &cuboid.face_material_slots {
+        rotated
+            .face_material_slots
+            .insert(x_quarter_face(*face), slot.clone());
+    }
+    for (face, uv) in &cuboid.face_uvs {
+        rotated.face_uvs.insert(x_quarter_face(*face), *uv);
+    }
+    rotated
+}
+
+fn quarter_turn_plane_x(plane: &ModelPlane) -> ModelPlane {
+    let corners = plane
+        .corners
+        .map(|corner| [corner[0], 1.0 - corner[2], corner[1]]);
+    let mut rotated = ModelPlane::new(corners, x_quarter_normal(plane.normal));
+    rotated.material_slot = plane.material_slot.clone();
+    rotated.uv = plane.uv;
+    rotated.sidedness = plane.sidedness;
+    rotated
+}
+
+const fn x_quarter_face(face: BlockFace) -> BlockFace {
+    match face {
+        BlockFace::Up => BlockFace::South,
+        BlockFace::South => BlockFace::Down,
+        BlockFace::Down => BlockFace::North,
+        BlockFace::North => BlockFace::Up,
+        other => other,
+    }
+}
+
+const fn x_quarter_normal(normal: [i32; 3]) -> [i32; 3] {
+    [normal[0], -normal[2], normal[1]]
+}
+
+fn quarter_turn_clockwise(cuboid: &ModelCuboid) -> ModelCuboid {
+    let mut rotated = ModelCuboid::new(
+        [1.0 - cuboid.max[2], cuboid.min[1], cuboid.min[0]],
+        [1.0 - cuboid.min[2], cuboid.max[1], cuboid.max[0]],
+    );
+    rotated.material_slot = cuboid.material_slot.clone();
+    for (face, slot) in &cuboid.face_material_slots {
+        rotated
+            .face_material_slots
+            .insert(clockwise_face(*face), slot.clone());
+    }
+    for (face, uv) in &cuboid.face_uvs {
+        rotated.face_uvs.insert(clockwise_face(*face), *uv);
+    }
+    rotated
+}
+
+fn clockwise_face(face: BlockFace) -> BlockFace {
+    match face {
+        BlockFace::North => BlockFace::East,
+        BlockFace::East => BlockFace::South,
+        BlockFace::South => BlockFace::West,
+        BlockFace::West => BlockFace::North,
+        other => other,
     }
 }
 

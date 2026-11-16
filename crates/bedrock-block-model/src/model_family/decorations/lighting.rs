@@ -3,7 +3,7 @@ use crate::model_family::ModelFamily;
 use crate::model_family::direction::{
     CardinalDirection, block_face, cardinal_direction, state_bool, state_i64,
 };
-use crate::model_family::shape::{ModelCuboid, ModelShape};
+use crate::model_family::shape::{ModelCuboid, ModelPlane, ModelShape, rotate_plane_cardinal};
 use crate::state::BlockStateQuery;
 
 pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
@@ -24,89 +24,166 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
     None
 }
 
-/// Vanilla `template_torch`: a 2x10 px post plus two full-texture cross sheets, not a thin box.
-///
-/// Mapping the whole 16x16 torch texture onto a 2 px box face squeezes it into a sliver, which
-/// is why torches rendered as a thin line. The cross sheets carry the actual flame artwork.
+/// Vanilla torch geometry sampled from the Bedrock 1.26.60.5 client through
+/// BedrockSceneCapture: one 2 x 2 x 9.9 px post that samples only the torch column of its
+/// texture (u 7.1..8.9 px) instead of stretching the whole 16x16 tile onto a sliver. A wall
+/// torch is the same post tilted 22.5 degrees so its base sits on the mount face and its tip
+/// leans into the cell.
+const TORCH_COLUMN_U: [f32; 2] = [0.44390106, 0.55609894];
+const TORCH_SIDE_V: [f32; 2] = [0.37820053, 0.99679947];
+const TORCH_UP_V: [f32; 2] = [0.37820053, 0.5];
+const TORCH_DOWN_V: [f32; 2] = [0.81570053, 0.93429947];
+
+/// Captured `torch_facing_direction = "north"` planes: normal, corners, UVs, in block space.
+const WALL_TORCH_PLANES: [([i32; 3], [[f32; 3]; 4], [[f32; 2]; 4]); 6] = [
+    (
+        [-1, 0, 0],
+        [
+            [0.4375, 0.81875, 0.1844],
+            [0.4375, 0.2, -0.0631],
+            [0.4375, 0.2, 0.0619],
+            [0.4375, 0.81875, 0.3094],
+        ],
+        [
+            [0.44390106, 0.37820053],
+            [0.44390106, 0.99679947],
+            [0.55609894, 0.99679947],
+            [0.55609894, 0.37820053],
+        ],
+    ),
+    (
+        [0, 0, -1],
+        [
+            [0.4375, 0.2, -0.0631],
+            [0.4375, 0.81875, 0.1844],
+            [0.5625, 0.81875, 0.1844],
+            [0.5625, 0.2, -0.0631],
+        ],
+        [
+            [0.55609894, 0.99679947],
+            [0.55609894, 0.37820053],
+            [0.44390106, 0.37820053],
+            [0.44390106, 0.99679947],
+        ],
+    ),
+    (
+        [0, -1, 0],
+        [
+            [0.4375, 0.2, -0.0631],
+            [0.5625, 0.2, -0.0631],
+            [0.5625, 0.2, 0.0619],
+            [0.4375, 0.2, 0.0619],
+        ],
+        [
+            [0.44390106, 0.81570053],
+            [0.55609894, 0.81570053],
+            [0.55609894, 0.93429947],
+            [0.44390106, 0.93429947],
+        ],
+    ),
+    (
+        [0, 0, 1],
+        [
+            [0.4375, 0.81875, 0.3094],
+            [0.4375, 0.2, 0.0619],
+            [0.5625, 0.2, 0.0619],
+            [0.5625, 0.81875, 0.3094],
+        ],
+        [
+            [0.44390106, 0.37820053],
+            [0.44390106, 0.99679947],
+            [0.55609894, 0.99679947],
+            [0.55609894, 0.37820053],
+        ],
+    ),
+    (
+        [0, 1, 0],
+        [
+            [0.4375, 0.81875, 0.185],
+            [0.4375, 0.81875, 0.31],
+            [0.5625, 0.81875, 0.31],
+            [0.5625, 0.81875, 0.185],
+        ],
+        [
+            [0.44390106, 0.37820053],
+            [0.44390106, 0.5],
+            [0.55609894, 0.5],
+            [0.55609894, 0.37820053],
+        ],
+    ),
+    (
+        [1, 0, 0],
+        [
+            [0.5625, 0.2, -0.0631],
+            [0.5625, 0.81875, 0.1844],
+            [0.5625, 0.81875, 0.3094],
+            [0.5625, 0.2, 0.0619],
+        ],
+        [
+            [0.55609894, 0.99679947],
+            [0.55609894, 0.37820053],
+            [0.44390106, 0.37820053],
+            [0.44390106, 0.99679947],
+        ],
+    ),
+];
+
 pub(crate) fn torch_shape(state: &BlockStateQuery) -> ModelShape {
-    let face = block_face(state);
-    if face.is_some_and(|face| face == "wall") {
-        // Wall torches sit against one face; keep the cross sheets but push them to the wall
-        // and lift the base, which matches the vanilla silhouette without an arbitrary tilt.
-        let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
-        let (min_x, max_x, min_z, max_z) = match direction {
-            CardinalDirection::North => (7.0, 9.0, 0.0, 9.0),
-            CardinalDirection::South => (7.0, 9.0, 7.0, 16.0),
-            CardinalDirection::West => (0.0, 9.0, 7.0, 9.0),
-            CardinalDirection::East => (7.0, 16.0, 7.0, 9.0),
-        };
-        return ModelShape::from_cuboids([
-            torch_post_cuboid(min_x, 3.0, max_x, 13.0, min_z, max_z),
-            torch_sheet_cuboid(true, 3.0, 16.0, 7.0, 9.0),
-            torch_sheet_cuboid(false, 3.0, 16.0, 7.0, 9.0),
-        ]);
+    match torch_mount(state) {
+        TorchMount::Wall(direction) => ModelShape::default().with_planes(
+            WALL_TORCH_PLANES
+                .iter()
+                .map(|(normal, corners, uv)| {
+                    rotate_plane_cardinal(
+                        &ModelPlane::new(*corners, *normal).with_uv(*uv),
+                        direction,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ),
+        TorchMount::Ceiling => {
+            // No vanilla torch hangs from a ceiling; keep the post mirrored for pack states.
+            ModelShape::from_cuboids([torch_post_cuboid(0.38125, 1.0)])
+        }
+        TorchMount::Floor => ModelShape::from_cuboids([torch_post_cuboid(0.0, 0.61875)]),
     }
-    if face.is_some_and(|face| face == "ceiling") {
-        // Ceiling torches hang upside down from the block above.
-        return ModelShape::from_cuboids([
-            torch_post_cuboid(7.0, 6.0, 9.0, 10.0, 7.0, 9.0),
-            torch_sheet_cuboid(true, 6.0, 16.0, 7.0, 9.0),
-            torch_sheet_cuboid(false, 6.0, 16.0, 7.0, 9.0),
-        ]);
-    }
-    ModelShape::from_cuboids([
-        torch_post_cuboid(7.0, 0.0, 9.0, 10.0, 7.0, 9.0),
-        torch_sheet_cuboid(true, 0.0, 16.0, 7.0, 9.0),
-        torch_sheet_cuboid(false, 0.0, 16.0, 7.0, 9.0),
-    ])
 }
 
-fn torch_post_cuboid(
-    min_x: f32,
-    y0: f32,
-    max_x: f32,
-    y1: f32,
-    min_z: f32,
-    max_z: f32,
-) -> ModelCuboid {
-    // Only the top and bottom sample the torch texture; the 2x2 px sides are transparent.
-    ModelCuboid::new(
-        [min_x / 16.0, y0 / 16.0, min_z / 16.0],
-        [max_x / 16.0, y1 / 16.0, max_z / 16.0],
-    )
-    .with_face_uv(BlockFace::Up, java_face_uv(true, [7.0, 6.0, 9.0, 8.0]))
-    .with_face_uv(BlockFace::Down, java_face_uv(true, [7.0, 13.0, 9.0, 15.0]))
+enum TorchMount {
+    Floor,
+    Ceiling,
+    Wall(CardinalDirection),
 }
 
-fn torch_sheet_cuboid(
-    along_z: bool,
-    y0: f32,
-    y1: f32,
-    thin_min: f32,
-    thin_max: f32,
-) -> ModelCuboid {
-    let (min, max) = if along_z {
-        (
-            [thin_min / 16.0, y0 / 16.0, 0.0],
-            [thin_max / 16.0, y1 / 16.0, 1.0],
-        )
-    } else {
-        (
-            [0.0, y0 / 16.0, thin_min / 16.0],
-            [1.0, y1 / 16.0, thin_max / 16.0],
-        )
+/// Resolves where a torch is mounted from its state.
+///
+/// Bedrock spells the mount in `torch_facing_direction`: `top` stands on the block below, and
+/// the four cardinal names mount the torch against the wall on that side. The value names the
+/// side *towards* the supporting block, not the direction the flame points.
+fn torch_mount(state: &BlockStateQuery) -> TorchMount {
+    let Some(face) = block_face(state) else {
+        return TorchMount::Floor;
     };
-    let cuboid = ModelCuboid::new(min, max);
-    let full = java_face_uv(false, [0.0, 0.0, 16.0, 16.0]);
-    if along_z {
-        cuboid
-            .with_face_uv(BlockFace::West, full)
-            .with_face_uv(BlockFace::East, full)
-    } else {
-        cuboid
-            .with_face_uv(BlockFace::North, full)
-            .with_face_uv(BlockFace::South, full)
+    match face.trim() {
+        "top" | "up" => TorchMount::Floor,
+        "bottom" | "down" | "ceiling" => TorchMount::Ceiling,
+        _ => cardinal_direction(state).map_or(TorchMount::Floor, TorchMount::Wall),
     }
+}
+
+fn torch_post_cuboid(y0: f32, y1: f32) -> ModelCuboid {
+    let side = uv_rect(TORCH_COLUMN_U, TORCH_SIDE_V);
+    ModelCuboid::new([0.4375, y0, 0.4375], [0.5625, y1, 0.5625])
+        .with_face_uv(BlockFace::Up, uv_rect(TORCH_COLUMN_U, TORCH_UP_V))
+        .with_face_uv(BlockFace::Down, uv_rect(TORCH_COLUMN_U, TORCH_DOWN_V))
+        .with_face_uv(BlockFace::North, side)
+        .with_face_uv(BlockFace::South, side)
+        .with_face_uv(BlockFace::East, side)
+        .with_face_uv(BlockFace::West, side)
+}
+
+fn uv_rect(u: [f32; 2], v: [f32; 2]) -> [[f32; 2]; 4] {
+    [[u[0], v[1]], [u[1], v[1]], [u[1], v[0]], [u[0], v[0]]]
 }
 
 pub(crate) fn lantern_shape(state: &BlockStateQuery) -> ModelShape {

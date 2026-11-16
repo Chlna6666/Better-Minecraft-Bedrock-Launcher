@@ -1,7 +1,10 @@
 use crate::material::BlockFace;
+use crate::banner_art::CLOTH_PANELS;
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{CardinalDirection, cardinal_direction};
-use crate::model_family::shape::{ModelCuboid, ModelShape, rect_uv};
+use crate::model_family::shape::{
+    ModelCuboid, ModelShape, rect_uv, rotate_shape_cardinal, rotate_shape_y_degrees,
+};
 use crate::state::BlockStateQuery;
 
 pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
@@ -70,16 +73,30 @@ pub(crate) fn sign_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
         return ModelShape::from_cuboids(cuboids);
     }
 
-    ModelShape::from_cuboids([
-        sign_board_uv(ModelCuboid::new(
-            [px(0.25), px(8.25), px(7.25)],
-            [px(15.75), 1.0, px(8.75)],
-        )),
-        sign_post_uv(ModelCuboid::new(
-            [px(7.25), 0.0, px(7.25)],
-            [px(8.75), px(8.25), px(8.75)],
-        )),
-    ])
+    // Standing signs have sixteen 22.5 degree orientations. Value 0 faces south and the value
+    // grows clockwise seen from above, so the authored south-facing board just turns.
+    let degrees = ground_sign_degrees(state);
+    rotate_shape_y_degrees(
+        ModelShape::from_cuboids([
+            sign_board_uv(ModelCuboid::new(
+                [px(0.25), px(8.25), px(7.25)],
+                [px(15.75), 1.0, px(8.75)],
+            )),
+            sign_post_uv(ModelCuboid::new(
+                [px(7.25), 0.0, px(7.25)],
+                [px(8.75), px(8.25), px(8.75)],
+            )),
+        ]),
+        degrees,
+    )
+}
+
+/// `ground_sign_direction` (0..15) as degrees clockwise from the south-facing authored model.
+fn ground_sign_degrees(state: &BlockStateQuery) -> f32 {
+    let value = crate::model_family::direction::state_i64(state, "ground_sign_direction")
+        .unwrap_or(0)
+        .rem_euclid(16);
+    value as f32 * 22.5
 }
 
 fn sign_board_uv(cuboid: ModelCuboid) -> ModelCuboid {
@@ -187,43 +204,206 @@ const fn px(value: f32) -> f32 {
     value / 16.0
 }
 
+/// Standing banners are two blocks, like doors: `standing_banner` carries the pole and the lower
+/// half of the cloth, and the `banner` block above carries the upper half. A lone `banner` (the
+/// lower block removed) still draws its own half. Wall banners are a single block and squeeze the
+/// whole cloth into it.
 pub(crate) fn banner_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
-    if name.contains("wall_banner") || name == "wall_banner" {
+    let upper = name == "banner";
+    if name.ends_with("wall_banner") {
         let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
-        return ModelShape::from_cuboids([wall_attached_banner(direction)]);
+        return ModelShape::from_cuboids([
+            banner_cloth(wall_banner_cloth(direction), true, true),
+            banner_rod(wall_banner_rod(direction)),
+        ]);
     }
-    // Vanilla standing banner: a 2 px pole with the cloth hanging inside the cell. The cloth
-    // previously reached y=1.25 and sat off-centre in z, i.e. outside the block.
-    ModelShape::from_cuboids([
-        ModelCuboid::new([0.4375, 0.0, 0.4375], [0.5625, 1.0, 0.5625]),
-        ModelCuboid::new([0.0625, 0.0, 0.4375], [0.9375, 1.0, 0.5]),
-    ])
+    // Vanilla standing banner: a 2 px pole with a 20 x 40 px cloth hanging in front of it; the
+    // cloth is split across the two blocks at its middle (`ground_sign_direction` 0 = south,
+    // 22.5 degrees per step clockwise from above).
+    let mut cuboids = vec![
+        banner_cloth(banner_cloth_cuboid(), !upper, false),
+        banner_pole_cuboid(),
+    ];
+    if !upper {
+        // The bottom edge of the cloth carries the wooden rod from the sheet.
+        cuboids.push(banner_rod(banner_rod_cuboid()));
+    }
+    rotate_shape_y_degrees(ModelShape::from_cuboids(cuboids), ground_sign_degrees(state))
 }
 
 pub(crate) fn bell_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
-    let along_x = matches!(
-        direction,
-        CardinalDirection::North | CardinalDirection::South
-    );
-    if along_x {
-        ModelShape::from_cuboids([
-            ModelCuboid::new([0.3125, 0.25, 0.3125], [0.6875, 0.6875, 0.6875]),
-            ModelCuboid::new([0.25, 0.6875, 0.4375], [0.75, 0.8125, 0.5625]),
-        ])
+    let attachment = crate::model_family::direction::state_string(state, "attachment")
+        .unwrap_or("standing")
+        .trim();
+    // `bell_side` is one unfolded piece: a 6 x 7 px body column at `(1, 0)..(7, 7)` over an
+    // 8 x 2 px skirt at `(0, 7)..(8, 9)`, while `bell_top` / `bell_bottom` are 8 x 8 squares in
+    // the tile corner. Sampling the whole 16 x 16 tile would shrink the bell to a quarter of
+    // each face and open transparent gutters around it.
+    let body_side = bell_uv(1.0, 0.0, 7.0, 7.0);
+    let skirt_side = bell_uv(0.0, 7.0, 8.0, 9.0);
+    let cap = bell_uv(0.0, 0.0, 8.0, 8.0);
+    let body = ModelCuboid::new([px(5.0), px(6.0), px(5.0)], [px(11.0), px(13.0), px(11.0)])
+        .with_face_uv(BlockFace::North, body_side)
+        .with_face_uv(BlockFace::South, body_side)
+        .with_face_uv(BlockFace::East, body_side)
+        .with_face_uv(BlockFace::West, body_side)
+        .with_face_uv(BlockFace::Up, bell_uv(1.0, 1.0, 7.0, 7.0))
+        .with_face_uv(BlockFace::Down, cap)
+        // `blocks.json` only maps north/south to `bell_side`: east/west are the wooden bar and
+        // the stone posts, so the metal sides have to name their slot explicitly.
+        .with_face_material_slot(BlockFace::East, "north")
+        .with_face_material_slot(BlockFace::West, "north")
+        .with_face_material_slot(BlockFace::Up, "up")
+        .with_face_material_slot(BlockFace::Down, "down");
+    let skirt = ModelCuboid::new([px(4.0), px(4.0), px(4.0)], [px(12.0), px(6.0), px(12.0)])
+        .with_face_uv(BlockFace::North, skirt_side)
+        .with_face_uv(BlockFace::South, skirt_side)
+        .with_face_uv(BlockFace::East, skirt_side)
+        .with_face_uv(BlockFace::West, skirt_side)
+        .with_face_uv(BlockFace::Up, cap)
+        .with_face_uv(BlockFace::Down, cap)
+        .with_face_material_slot(BlockFace::North, "north")
+        .with_face_material_slot(BlockFace::South, "north")
+        .with_face_material_slot(BlockFace::East, "north")
+        .with_face_material_slot(BlockFace::West, "north")
+        .with_face_material_slot(BlockFace::Up, "up")
+        .with_face_material_slot(BlockFace::Down, "down");
+
+    // Frames follow the Java bell models: bar `[2,13,7]..[14,15,9]` on dark oak planks, posts
+    // `[0/14,0,6]..[2/16,16,10]` on the stone slot, a stub for ceilings and one bracket for
+    // walls (floor posts double as the between-walls frame).
+    let bar = |min: [f32; 3], max: [f32; 3]| ModelCuboid::new(min, max).with_material_slot("east");
+    let post = |min: [f32; 3], max: [f32; 3]| ModelCuboid::new(min, max).with_material_slot("west");
+    let mut cuboids = vec![body, skirt];
+    match attachment {
+        "hanging" => cuboids.push(bar([px(7.0), px(13.0), px(7.0)], [px(9.0), 1.0, px(9.0)])),
+        "side" => cuboids.push(bar([px(3.0), px(13.0), px(7.0)], [1.0, px(15.0), px(9.0)])),
+        "multiple" => cuboids.push(bar([0.0, px(13.0), px(7.0)], [1.0, px(15.0), px(9.0)])),
+        _ => {
+            cuboids.push(bar(
+                [px(2.0), px(13.0), px(7.0)],
+                [px(14.0), px(15.0), px(9.0)],
+            ));
+            cuboids.push(post([0.0, 0.0, px(6.0)], [px(2.0), 1.0, px(10.0)]));
+            cuboids.push(post([px(14.0), 0.0, px(6.0)], [1.0, 1.0, px(10.0)]));
+        }
+    }
+    rotate_shape_cardinal(ModelShape::from_cuboids(cuboids), direction)
+}
+
+/// One rect of a bell sheet: the art sits in the top-left corner of a 16 x 16 tile.
+fn bell_uv(u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
+    // Authored rows measure V from the texture top; face corner 0 is the bottom-left one.
+    [
+        [u0 / 16.0, v1 / 16.0],
+        [u1 / 16.0, v1 / 16.0],
+        [u1 / 16.0, v0 / 16.0],
+        [u0 / 16.0, v0 / 16.0],
+    ]
+}
+
+/// The banner cloth box: 20 px wide, 1 px thick, standing in front of the pole at z 6..7.
+fn banner_cloth_cuboid() -> ModelCuboid {
+    ModelCuboid::new([-0.125, 0.0, 0.5625], [1.125, 1.0, 0.625])
+}
+
+/// `banner_base` holds the 20 x 40 px cloth twice: the front panel at `(1, 1)..(21, 41)` and a
+/// mirrored back panel at `(22, 1)..(42, 41)`. `lower` selects the bottom half of that cloth,
+/// `full` squeezes the whole panel onto a single-block wall banner.
+fn banner_cloth(cuboid: ModelCuboid, lower: bool, full: bool) -> ModelCuboid {
+    let [_, front_y0, _, front_y1] = CLOTH_PANELS[0];
+    let (v0, v1) = if full {
+        (front_y0 as f32, front_y1 as f32)
+    } else if lower {
+        (front_y0 as f32 + 20.0, front_y1 as f32)
     } else {
-        ModelShape::from_cuboids([
-            ModelCuboid::new([0.3125, 0.25, 0.3125], [0.6875, 0.6875, 0.6875]),
-            ModelCuboid::new([0.4375, 0.6875, 0.25], [0.5625, 0.8125, 0.75]),
-        ])
+        (front_y0 as f32, front_y0 as f32 + 20.0)
+    };
+    let [front_x0, _, front_x1, _] = CLOTH_PANELS[0];
+    let [back_x0, _, back_x1, _] = CLOTH_PANELS[1];
+    let front = banner_sheet(front_x0 as f32, v0, front_x1 as f32, v1);
+    // The back panel is the same art mirrored, so its U order is reversed.
+    let back = banner_sheet(back_x1 as f32, v0, back_x0 as f32, v1);
+    cuboid
+        .with_material_slot("front")
+        .with_face_uv(BlockFace::North, front)
+        .with_face_uv(BlockFace::East, front)
+        .with_face_uv(BlockFace::West, front)
+        .with_face_uv(BlockFace::Up, front)
+        .with_face_uv(BlockFace::Down, front)
+        .with_face_uv(BlockFace::South, back)
+}
+
+/// The 2 px pole that runs up both banner blocks, sampling the sheet's pole strip.
+fn banner_pole_cuboid() -> ModelCuboid {
+    // The pole strip is the 2 px column at x 44..45, painted for the whole sheet height.
+    let pole = banner_sheet(44.0, 2.0, 46.0, 44.0);
+    let mut cuboid =
+        ModelCuboid::new([0.4375, 0.0, 0.4375], [0.5625, 1.0, 0.5625]).with_material_slot("front");
+    for face in [
+        BlockFace::North,
+        BlockFace::South,
+        BlockFace::East,
+        BlockFace::West,
+        BlockFace::Up,
+        BlockFace::Down,
+    ] {
+        cuboid = cuboid.with_face_uv(face, pole);
+    }
+    cuboid
+}
+
+/// The 20 px rod under the cloth, drawn from the sheet's bottom bar.
+fn banner_rod_cuboid() -> ModelCuboid {
+    ModelCuboid::new([-0.125, 0.0, 0.5625], [1.125, 0.0625, 0.625])
+}
+
+fn banner_rod(cuboid: ModelCuboid) -> ModelCuboid {
+    // The rod is the 40 x 2 px band under the cloth panels, `(2, 42)..(42, 44)`.
+    let rod = banner_sheet(2.0, 42.0, 42.0, 44.0);
+    let mut rod_cuboid = cuboid.with_material_slot("front");
+    for face in [
+        BlockFace::North,
+        BlockFace::South,
+        BlockFace::East,
+        BlockFace::West,
+        BlockFace::Up,
+        BlockFace::Down,
+    ] {
+        rod_cuboid = rod_cuboid.with_face_uv(face, rod);
+    }
+    rod_cuboid
+}
+
+/// One rect of the 64 x 64 `banner_base` sheet, emitted bottom-left first (the authored rect
+/// measures V from the texture top).
+fn banner_sheet(u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
+    [
+        [u0 / 64.0, v1 / 64.0],
+        [u1 / 64.0, v1 / 64.0],
+        [u1 / 64.0, v0 / 64.0],
+        [u0 / 64.0, v0 / 64.0],
+    ]
+}
+
+/// Wall banners keep the cloth in one block, flat against the mount face.
+fn wall_banner_cloth(direction: CardinalDirection) -> ModelCuboid {
+    // `facing_direction` names the side the art faces, so the cloth hangs on the opposite edge,
+    // flat against the wall it is mounted on.
+    match direction.opposite() {
+        CardinalDirection::North => ModelCuboid::new([-0.125, 0.0, 0.0], [1.125, 0.9375, 0.0625]),
+        CardinalDirection::South => ModelCuboid::new([-0.125, 0.0, 0.9375], [1.125, 0.9375, 1.0]),
+        CardinalDirection::East => ModelCuboid::new([0.9375, 0.0, -0.125], [1.0, 0.9375, 1.125]),
+        CardinalDirection::West => ModelCuboid::new([0.0, 0.0, -0.125], [0.0625, 0.9375, 1.125]),
     }
 }
 
-fn wall_attached_banner(direction: CardinalDirection) -> ModelCuboid {
-    match direction {
-        CardinalDirection::North => ModelCuboid::new([0.0625, 0.0, 0.0], [0.9375, 1.0, 0.125]),
-        CardinalDirection::South => ModelCuboid::new([0.0625, 0.0, 0.875], [0.9375, 1.0, 1.0]),
-        CardinalDirection::East => ModelCuboid::new([0.875, 0.0, 0.0625], [1.0, 1.0, 0.9375]),
-        CardinalDirection::West => ModelCuboid::new([0.0, 0.0, 0.0625], [0.125, 1.0, 0.9375]),
+fn wall_banner_rod(direction: CardinalDirection) -> ModelCuboid {
+    match direction.opposite() {
+        CardinalDirection::North => ModelCuboid::new([-0.125, 0.9375, 0.0], [1.125, 1.0, 0.0625]),
+        CardinalDirection::South => ModelCuboid::new([-0.125, 0.9375, 0.9375], [1.125, 1.0, 1.0]),
+        CardinalDirection::East => ModelCuboid::new([0.9375, 0.9375, -0.125], [1.0, 1.0, 1.125]),
+        CardinalDirection::West => ModelCuboid::new([0.0, 0.9375, -0.125], [0.0625, 1.0, 1.125]),
     }
 }

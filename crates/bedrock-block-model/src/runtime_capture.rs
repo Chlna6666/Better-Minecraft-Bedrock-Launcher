@@ -415,6 +415,36 @@ impl RuntimeCaptureCatalog {
         self.states.len()
     }
 
+    /// Every captured state of one block, for family audits.
+    ///
+    /// A block with several thickness or facing values is captured as one state per value, so a
+    /// caller comparing geometry against the game needs to enumerate them instead of guessing
+    /// the exact state spellings.
+    #[must_use]
+    pub fn states_for(&self, name: &str) -> Vec<BlockStateQuery> {
+        let name = name.strip_prefix("minecraft:").unwrap_or(name);
+        let mut states = self
+            .states
+            .keys()
+            .filter(|key| normalized_key(&key.name) == name)
+            .map(|key| {
+                let mut query = BlockStateQuery::new(key.name.clone());
+                for (state_name, value) in &key.states {
+                    query = query.with_state(
+                        state_name.clone(),
+                        match value {
+                            StateValueKey::Number(number) => BlockStateValue::Int(*number),
+                            StateValueKey::Text(text) => BlockStateValue::String(text.clone()),
+                        },
+                    );
+                }
+                query
+            })
+            .collect::<Vec<_>>();
+        states.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+        states
+    }
+
     /// Exact state match. Never silently use a different orientation or
     /// a different set of wall/fence/stair connection states.
     pub fn shape(&self, state: &BlockStateQuery) -> Option<ModelShape> {
@@ -468,6 +498,24 @@ impl RuntimeCaptureCatalog {
         }
         result
     }
+    /// Debug helper: read one raw geometry entry by pool id, even for states the catalog
+    /// skipped. Used to inspect families whose capture entry was marked `dynamic`/`partial`.
+    ///
+    /// Returns the entry's vertices, which is what a captured mesh stores; the caller turns them
+    /// into triangles.
+    #[must_use]
+    pub fn debug_geometry_vertices(&self, id: u32) -> Option<Vec<[f32; 3]>> {
+        let bytes = self.pool.read(0, id)?;
+        let geometry = pool::Geometry::parse(&bytes)?;
+        Some(
+            geometry
+                .vertices
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+        )
+    }
+
     fn shared_geometry(&self, id: &u32) -> Option<Arc<pool::Geometry>> {
         let mut cache = self.geometries.lock().ok()?;
         if let Some(value) = cache.get(id) {

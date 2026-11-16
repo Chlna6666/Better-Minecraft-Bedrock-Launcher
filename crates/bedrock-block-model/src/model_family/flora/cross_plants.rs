@@ -1,6 +1,8 @@
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::state_string;
-use crate::model_family::shape::{ModelCuboid, ModelPlane, ModelShape, upright_full_texture_uv};
+use crate::model_family::shape::{
+    ModelCuboid, ModelPlane, ModelShape, hanging_full_texture_uv, upright_full_texture_uv,
+};
 use crate::state::BlockStateQuery;
 
 pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
@@ -17,6 +19,13 @@ pub(crate) fn cross_plant_shape(name: &str, state: &BlockStateQuery) -> Option<M
     }
     if is_row_plant_family(name) {
         return Some(row_plant_shape(row_plant_material_slot(name, state)));
+    }
+    if hangs_from_above(name) {
+        return Some(cross_plane_shape_with_uv(
+            0.0,
+            1.0,
+            hanging_full_texture_uv(),
+        ));
     }
     Some(cross_plane_shape(0.0, 1.0))
 }
@@ -173,7 +182,25 @@ fn row_plant_shape(material_slot: Option<&str>) -> ModelShape {
     )
 }
 
+/// Plants whose art hangs from the block above instead of standing on its floor.
+fn hangs_from_above(name: &str) -> bool {
+    matches!(
+        name,
+        "pale_hanging_moss"
+            | "hanging_roots"
+            | "cave_vines"
+            | "cave_vines_body_with_berries"
+            | "cave_vines_head_with_berries"
+            | "weeping_vines"
+            | "weeping_vines_plant"
+    )
+}
+
 pub(super) fn cross_plane_shape(thickness: f32, height: f32) -> ModelShape {
+    cross_plane_shape_with_uv(thickness, height, upright_full_texture_uv())
+}
+
+fn cross_plane_shape_with_uv(thickness: f32, height: f32, uv: [[f32; 2]; 4]) -> ModelShape {
     let inset = thickness.min(0.2);
     // Two full-size planes rotated 45 degrees about the block centre. Their horizontal extent is
     // 0.5 +/- 0.5*sin(45), matching the vanilla/holoprint cross model instead of sticking out of
@@ -190,7 +217,7 @@ pub(super) fn cross_plane_shape(thickness: f32, height: f32) -> ModelShape {
             ],
             [-1, 0, 1],
         )
-        .with_uv(upright_full_texture_uv()),
+        .with_uv(uv),
         ModelPlane::new(
             [
                 [hi, 0.0, lo],
@@ -200,7 +227,7 @@ pub(super) fn cross_plane_shape(thickness: f32, height: f32) -> ModelShape {
             ],
             [1, 0, 1],
         )
-        .with_uv(upright_full_texture_uv()),
+        .with_uv(uv),
     ]);
     if inset > 0.0 {
         shape.cuboids.push(ModelCuboid::new(

@@ -96,18 +96,26 @@ pub(crate) fn scaffolding_shape(state: &BlockStateQuery) -> ModelShape {
     ModelShape::from_cuboids(cuboids)
 }
 
+/// Bedrock shelf: one 5 px slab standing against the back of its cell.
+///
+/// Measured from the client: a single box spanning the whole cell and 5 px deep
+/// (`z 0..0.3125`), with the item pockets carved at `y 0.25..0.75`. Building it from three
+/// separate rails (the previous model) made the shelf read as a fence rather than a board, and
+/// the per-rail UVs never lined up with the pack's single shelf texture.
 pub(crate) fn shelf_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::South);
-    let cuboids = [
-        ModelCuboid::new([0.0, 0.0, px(13.0)], [1.0, 1.0, 1.0]),
-        ModelCuboid::new([0.0, 0.0, px(11.0)], [1.0, px(4.0), px(13.0)]),
-        ModelCuboid::new([0.0, px(12.0), px(11.0)], [1.0, 1.0, px(13.0)]),
-    ]
-    .into_iter()
-    .map(|cuboid| detail_cuboid_with_local_uv(rotate_cuboid_from_south(cuboid, direction)))
-    .collect::<Vec<_>>();
-
-    ModelShape::from_cuboids(cuboids)
+    let cuboid = ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 1.0, 0.3125]);
+    // The pack paints the whole board on one tile, so every face samples it directly.
+    let uv = full_texture_uv();
+    let mut cuboid = cuboid
+        .with_face_uv(BlockFace::Up, uv)
+        .with_face_uv(BlockFace::Down, uv)
+        .with_face_uv(BlockFace::North, uv)
+        .with_face_uv(BlockFace::South, uv)
+        .with_face_uv(BlockFace::East, uv)
+        .with_face_uv(BlockFace::West, uv);
+    cuboid = rotate_cuboid_from_south(cuboid, direction);
+    ModelShape::from_cuboids([cuboid])
 }
 
 pub(crate) fn heavy_core_shape() -> ModelShape {
@@ -284,20 +292,38 @@ pub(crate) fn egg_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     ModelShape::from_cuboids(cuboids)
 }
 
+/// Bedrock beacon: a translucent shell, a base slab and the glowing core inside it.
+///
+/// `blocks.json` gives exactly three slots — `up → beacon_core`, `down → beacon_base`,
+/// `side → beacon_shell` — so the shell's six faces take `side`, the base takes `down`, and only
+/// the core's top face may show `up`. Painting the core's *sides* with `up` (the previous model)
+/// put the bright core art on every face, which is why the block read as a solid white cube.
 pub(crate) fn beacon_shape() -> ModelShape {
+    let shell = ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
+        .with_face_material_slot(BlockFace::Up, "side")
+        .with_face_material_slot(BlockFace::Down, "side")
+        .with_face_material_slot(BlockFace::North, "side")
+        .with_face_material_slot(BlockFace::South, "side")
+        .with_face_material_slot(BlockFace::East, "side")
+        .with_face_material_slot(BlockFace::West, "side");
+    let base = ModelCuboid::new([px(2.0), 0.0, px(2.0)], [px(14.0), px(3.0), px(14.0)])
+        .with_face_material_slot(BlockFace::Up, "down")
+        .with_face_material_slot(BlockFace::Down, "down")
+        .with_face_material_slot(BlockFace::North, "down")
+        .with_face_material_slot(BlockFace::South, "down")
+        .with_face_material_slot(BlockFace::East, "down")
+        .with_face_material_slot(BlockFace::West, "down");
+    let core = ModelCuboid::new([px(3.0), px(3.0), px(3.0)], [px(13.0), px(14.0), px(13.0)])
+        .with_face_material_slot(BlockFace::Up, "up")
+        .with_face_material_slot(BlockFace::Down, "up")
+        .with_face_material_slot(BlockFace::North, "up")
+        .with_face_material_slot(BlockFace::South, "up")
+        .with_face_material_slot(BlockFace::East, "up")
+        .with_face_material_slot(BlockFace::West, "up");
     ModelShape::from_cuboids([
-        detail_cuboid_with_local_uv(
-            ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
-                .with_face_material_slot(BlockFace::Side, "side"),
-        ),
-        detail_cuboid_with_local_uv(
-            ModelCuboid::new([px(2.0), 0.0, px(2.0)], [px(14.0), px(3.0), px(14.0)])
-                .with_material_slot("down"),
-        ),
-        detail_cuboid_with_local_uv(
-            ModelCuboid::new([px(3.0), px(3.0), px(3.0)], [px(13.0), px(14.0), px(13.0)])
-                .with_material_slot("up"),
-        ),
+        detail_cuboid_with_local_uv(shell),
+        detail_cuboid_with_local_uv(base),
+        detail_cuboid_with_local_uv(core),
     ])
 }
 

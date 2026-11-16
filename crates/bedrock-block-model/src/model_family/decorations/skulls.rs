@@ -90,15 +90,18 @@ const PIGLIN_HEAD: &[HeadCube] = &[
         max: [2.0, 28.0, -4.0],
         uv: [31.0, 1.0],
     },
+    // Ears are their own 10 x 5 px patches on the skin (x 33..43 and 44..54, y 0..5), not the
+    // head's left column. Sampling `[2, 0]` took head pixels and stretched them over the ear,
+    // which is what made the ears and the top of the head look wrong.
     HeadCube {
         min: [-3.0, 24.0, -5.0],
         max: [-2.0, 26.0, -4.0],
-        uv: [2.0, 0.0],
+        uv: [33.0, 0.0],
     },
     HeadCube {
         min: [2.0, 24.0, -5.0],
         max: [3.0, 26.0, -4.0],
-        uv: [2.0, 4.0],
+        uv: [44.0, 0.0],
     },
 ];
 

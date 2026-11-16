@@ -1,9 +1,7 @@
 use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{CardinalDirection, connected};
-use crate::model_family::shape::{
-    ModelCuboid, ModelShape, apply_jmc_box_uv, detail_cuboid_with_local_uv, uv16,
-};
+use crate::model_family::shape::{ModelCuboid, ModelPlane, ModelShape, uv16};
 use crate::state::BlockStateQuery;
 
 pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
@@ -17,14 +15,29 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
     }
 }
 
+/// Vanilla draws panes as a multipart model, not as one box per connection.
+///
+/// `glass_pane` always applies a 2 px post, adds one 2 px `side` slab per **connected** direction
+/// and one 2 px `noside` card per **disconnected** direction. That last part is what makes a lone
+/// pane a single thin card through the cell: without it the four missing directions left the
+/// block looking like a hollow frame. `iron_bars` uses the same four-way structure with its own
+/// cap pieces.
+///
+/// The `noside` piece is a **single quad** (JE draws only the outward face), so it is emitted as a
+/// plane. A zero-thickness box would be dropped by the face emitter and the card would vanish.
 pub(crate) fn shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     let kind = PaneKind::from_block_name(name);
-    pane_shape_from_connections(
-        CardinalDirection::ALL
-            .into_iter()
-            .filter(|direction| connected(state, *direction)),
-        kind,
-    )
+    let mut cuboids = Vec::with_capacity(5);
+    let mut planes = Vec::with_capacity(4);
+    cuboids.push(pane_post_cuboid(kind));
+    for direction in CardinalDirection::ALL {
+        if connected(state, direction) {
+            cuboids.push(pane_arm_cuboid(direction, kind));
+        } else {
+            planes.push(pane_open_plane(direction, kind));
+        }
+    }
+    ModelShape::from_cuboids(cuboids).with_planes(planes)
 }
 
 #[derive(Clone, Copy)]
@@ -42,120 +55,116 @@ impl PaneKind {
         }
     }
 
-    const fn top_edge_slot(self) -> &'static str {
-        match self {
-            Self::Glass => "east",
-            Self::Bars => "up",
-        }
+    /// Slot of the pane's 2 px rim art.
+    ///
+    /// `blocks.json` maps `glass_pane` east to `glass_pane_top` and `iron_bars` east to
+    /// `iron_bars_edge`; both families therefore read their rim from `east`.
+    const fn edge_slot(self) -> &'static str {
+        "east"
     }
 
-    const fn bottom_edge_slot(self) -> &'static str {
-        match self {
-            Self::Glass => "east",
-            Self::Bars => "down",
-        }
+    /// Slot of the pane's flat faces.
+    const fn face_slot(self) -> &'static str {
+        "side"
     }
 }
 
-fn pane_shape_from_connections(
-    connected: impl IntoIterator<Item = CardinalDirection>,
-    kind: PaneKind,
-) -> ModelShape {
-    let connected = connected.into_iter().collect::<Vec<_>>();
-    let mut cuboids = Vec::with_capacity(connected.len().max(2).saturating_add(1));
-    cuboids.push(pane_post_cuboid_with_uv(kind));
-    if connected.is_empty() {
-        cuboids.push(pane_center_card_cuboid_with_uv(true, kind));
-        cuboids.push(pane_center_card_cuboid_with_uv(false, kind));
-        return ModelShape::from_cuboids(cuboids);
-    }
-    for direction in connected {
-        cuboids.push(pane_arm_cuboid_with_uv(direction, kind));
-    }
-    ModelShape::from_cuboids(cuboids)
+/// The 2 px post that every pane has at its centre.
+fn pane_post_cuboid(kind: PaneKind) -> ModelCuboid {
+    ModelCuboid::new([0.4375, 0.0, 0.4375], [0.5625, 1.0, 0.5625])
+        .with_face_uv(BlockFace::Up, uv16(7.0, 7.0, 9.0, 9.0))
+        .with_face_uv(BlockFace::Down, uv16(7.0, 7.0, 9.0, 9.0))
+        .with_face_material_slot(BlockFace::Up, kind.edge_slot())
+        .with_face_material_slot(BlockFace::Down, kind.edge_slot())
+        .with_face_material_slot(BlockFace::North, kind.face_slot())
+        .with_face_material_slot(BlockFace::South, kind.face_slot())
+        .with_face_material_slot(BlockFace::West, kind.face_slot())
+        .with_face_material_slot(BlockFace::East, kind.face_slot())
 }
 
-fn pane_post_cuboid_with_uv(kind: PaneKind) -> ModelCuboid {
-    detail_slots(
-        apply_jmc_box_uv(
-            ModelCuboid::new([0.4375, 0.0, 0.4375], [0.5625, 1.0, 0.5625]),
-            uv16(7.0, 7.0, 9.0, 9.0),
-            uv16(7.0, 0.0, 9.0, 16.0),
+/// The `noside` card: one quad on the post's outward face.
+fn pane_open_plane(direction: CardinalDirection, kind: PaneKind) -> ModelPlane {
+    // `template_glass_pane_noside` is `from [7,0,7] to [9,16,9]` with only one face drawn.
+    let (corners, normal) = match direction {
+        CardinalDirection::North => (
+            [
+                [0.4375, 0.0, 0.4375],
+                [0.5625, 0.0, 0.4375],
+                [0.5625, 1.0, 0.4375],
+                [0.4375, 1.0, 0.4375],
+            ],
+            [0, 0, -1],
         ),
-        kind,
-    )
-}
-
-fn pane_center_card_cuboid_with_uv(along_x: bool, kind: PaneKind) -> ModelCuboid {
-    let cuboid = if along_x {
-        ModelCuboid::new([0.0, 0.0, 0.46875], [1.0, 1.0, 0.53125])
-    } else {
-        ModelCuboid::new([0.46875, 0.0, 0.0], [0.53125, 1.0, 1.0])
+        CardinalDirection::South => (
+            [
+                [0.5625, 0.0, 0.5625],
+                [0.4375, 0.0, 0.5625],
+                [0.4375, 1.0, 0.5625],
+                [0.5625, 1.0, 0.5625],
+            ],
+            [0, 0, 1],
+        ),
+        CardinalDirection::East => (
+            [
+                [0.5625, 0.0, 0.4375],
+                [0.5625, 0.0, 0.5625],
+                [0.5625, 1.0, 0.5625],
+                [0.5625, 1.0, 0.4375],
+            ],
+            [1, 0, 0],
+        ),
+        CardinalDirection::West => (
+            [
+                [0.4375, 0.0, 0.5625],
+                [0.4375, 0.0, 0.4375],
+                [0.4375, 1.0, 0.4375],
+                [0.4375, 1.0, 0.5625],
+            ],
+            [-1, 0, 0],
+        ),
     };
-    detail_slots(detail_cuboid_with_local_uv(cuboid), kind)
-        .with_face_uv(BlockFace::North, uv16(0.0, 0.0, 16.0, 16.0))
-        .with_face_uv(BlockFace::South, uv16(0.0, 0.0, 16.0, 16.0))
-        .with_face_uv(BlockFace::East, uv16(0.0, 0.0, 16.0, 16.0))
-        .with_face_uv(BlockFace::West, uv16(0.0, 0.0, 16.0, 16.0))
+    ModelPlane::new(corners, normal)
+        .with_material_slot(kind.face_slot())
+        .with_uv(uv16(7.0, 0.0, 9.0, 16.0))
 }
 
-fn pane_arm_cuboid_with_uv(direction: CardinalDirection, kind: PaneKind) -> ModelCuboid {
-    let cuboid = pane_arm_cuboid(direction);
-    let edge_top_uv = uv16(7.0, 8.0, 9.0, 16.0);
-    let edge_bottom_uv = uv16(7.0, 0.0, 9.0, 8.0);
-    let side_uv = uv16(0.0, 0.0, 8.0, 16.0);
-    let end_uv = uv16(7.0, 0.0, 9.0, 16.0);
-    let mut cuboid = detail_slots(detail_cuboid_with_local_uv(cuboid), kind)
-        .with_face_uv(BlockFace::Up, edge_top_uv)
-        .with_face_uv(BlockFace::Down, edge_bottom_uv);
-    match direction {
-        CardinalDirection::North => {
-            cuboid = cuboid
-                .with_face_uv(BlockFace::East, side_uv)
-                .with_face_uv(BlockFace::West, side_uv)
-                .with_face_uv(BlockFace::North, end_uv)
-                .with_face_material_slot(BlockFace::North, "east");
-        }
-        CardinalDirection::South => {
-            cuboid = cuboid
-                .with_face_uv(BlockFace::East, side_uv)
-                .with_face_uv(BlockFace::West, side_uv)
-                .with_face_uv(BlockFace::South, end_uv)
-                .with_face_material_slot(BlockFace::South, "east");
-        }
-        CardinalDirection::East => {
-            cuboid = cuboid
-                .with_face_uv(BlockFace::North, side_uv)
-                .with_face_uv(BlockFace::South, side_uv)
-                .with_face_uv(BlockFace::East, end_uv)
-                .with_face_material_slot(BlockFace::East, "east");
-        }
-        CardinalDirection::West => {
-            cuboid = cuboid
-                .with_face_uv(BlockFace::North, side_uv)
-                .with_face_uv(BlockFace::South, side_uv)
-                .with_face_uv(BlockFace::West, end_uv)
-                .with_face_material_slot(BlockFace::West, "east");
-        }
-    }
-    cuboid
-}
-
-fn pane_arm_cuboid(direction: CardinalDirection) -> ModelCuboid {
-    match direction {
+/// One 2 px arm from the post to a connected side.
+fn pane_arm_cuboid(direction: CardinalDirection, kind: PaneKind) -> ModelCuboid {
+    let cuboid = match direction {
         CardinalDirection::North => ModelCuboid::new([0.4375, 0.0, 0.0], [0.5625, 1.0, 0.4375]),
         CardinalDirection::South => ModelCuboid::new([0.4375, 0.0, 0.5625], [0.5625, 1.0, 1.0]),
         CardinalDirection::East => ModelCuboid::new([0.5625, 0.0, 0.4375], [1.0, 1.0, 0.5625]),
         CardinalDirection::West => ModelCuboid::new([0.0, 0.0, 0.4375], [0.4375, 1.0, 0.5625]),
+    };
+    let side_uv = uv16(0.0, 0.0, 16.0, 16.0);
+    let rim_uv = uv16(7.0, 0.0, 9.0, 16.0);
+    let mut cuboid = cuboid
+        .with_face_uv(BlockFace::Up, uv16(7.0, 0.0, 9.0, 7.0))
+        .with_face_uv(BlockFace::Down, uv16(7.0, 0.0, 9.0, 7.0))
+        .with_face_material_slot(BlockFace::Up, kind.edge_slot())
+        .with_face_material_slot(BlockFace::Down, kind.edge_slot());
+    let (long_faces, rim_face) = match direction {
+        CardinalDirection::North => ([BlockFace::East, BlockFace::West], BlockFace::North),
+        CardinalDirection::South => ([BlockFace::East, BlockFace::West], BlockFace::South),
+        CardinalDirection::East => ([BlockFace::North, BlockFace::South], BlockFace::East),
+        CardinalDirection::West => ([BlockFace::North, BlockFace::South], BlockFace::West),
+    };
+    for face in long_faces {
+        cuboid = cuboid.with_face_uv(face, side_uv);
     }
-}
-
-fn detail_slots(cuboid: ModelCuboid, kind: PaneKind) -> ModelCuboid {
+    cuboid = cuboid.with_face_uv(rim_face, rim_uv);
+    for face in [
+        BlockFace::North,
+        BlockFace::South,
+        BlockFace::East,
+        BlockFace::West,
+    ] {
+        let slot = if face == rim_face {
+            kind.edge_slot()
+        } else {
+            kind.face_slot()
+        };
+        cuboid = cuboid.with_face_material_slot(face, slot);
+    }
     cuboid
-        .with_face_material_slot(BlockFace::Up, kind.top_edge_slot())
-        .with_face_material_slot(BlockFace::Down, kind.bottom_edge_slot())
-        .with_face_material_slot(BlockFace::North, "side")
-        .with_face_material_slot(BlockFace::South, "side")
-        .with_face_material_slot(BlockFace::West, "side")
-        .with_face_material_slot(BlockFace::East, "side")
 }

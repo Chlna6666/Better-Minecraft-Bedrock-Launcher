@@ -173,7 +173,7 @@ impl BlockProperties {
     pub(super) fn shape(
         &self,
         state: &BlockState,
-        entity: Option<Preview3dBlockEntityModelState>,
+        entity: Option<&Preview3dBlockEntityModelState>,
     ) -> Option<Arc<Preview3dDetailShape>> {
         if self.resolved_shape || entity.is_none() {
             self.shape.clone()

@@ -88,7 +88,6 @@ pub(crate) fn fence_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
 pub(crate) fn fence_gate_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
     let open = state_bool(state, "open_bit").unwrap_or(false);
-    let axis = fence_gate_axis(direction, open);
     let y_offset = if state_bool(state, "in_wall_bit").unwrap_or(false) {
         -3.0
     } else {
@@ -96,16 +95,10 @@ pub(crate) fn fence_gate_shape(name: &str, state: &BlockStateQuery) -> ModelShap
     };
 
     if name == "bamboo_fence_gate" {
-        bamboo_fence_gate_shape(open, axis, y_offset)
+        bamboo_fence_gate_shape(open, direction, y_offset)
     } else {
-        normal_fence_gate_shape(open, axis, y_offset)
+        normal_fence_gate_shape(open, direction, y_offset)
     }
-}
-
-#[derive(Clone, Copy)]
-enum GateAxis {
-    X,
-    Z,
 }
 
 #[derive(Clone, Copy)]
@@ -128,18 +121,18 @@ fn fence_post_cuboid(is_bamboo: bool) -> ModelCuboid {
     detail_slots(apply_jmc_box_uv(cuboid, top_uv, side_uv))
 }
 
-fn normal_fence_gate_shape(open: bool, axis: GateAxis, y_offset: f32) -> ModelShape {
+fn normal_fence_gate_shape(open: bool, direction: CardinalDirection, y_offset: f32) -> ModelShape {
     let mut cuboids = Vec::with_capacity(if open { 8 } else { 5 });
     push_normal_gate_piece(
         &mut cuboids,
-        axis,
+        direction,
         y_offset,
         [0.0, 5.0, 7.0],
         [2.0, 11.0, 2.0],
     );
     push_normal_gate_piece(
         &mut cuboids,
-        axis,
+        direction,
         y_offset,
         [14.0, 5.0, 7.0],
         [2.0, 11.0, 2.0],
@@ -154,7 +147,7 @@ fn normal_fence_gate_shape(open: bool, axis: GateAxis, y_offset: f32) -> ModelSh
             ([14.0, 12.0, 9.0], [2.0, 3.0, 6.0]),
             ([14.0, 9.0, 13.0], [2.0, 3.0, 2.0]),
         ] {
-            push_normal_gate_piece(&mut cuboids, axis, y_offset, pos, size);
+            push_normal_gate_piece(&mut cuboids, direction, y_offset, pos, size);
         }
     } else {
         for (pos, size) in [
@@ -162,29 +155,33 @@ fn normal_fence_gate_shape(open: bool, axis: GateAxis, y_offset: f32) -> ModelSh
             ([2.0, 12.0, 7.0], [12.0, 3.0, 2.0]),
             ([6.0, 9.0, 7.0], [4.0, 3.0, 2.0]),
         ] {
-            push_normal_gate_piece(&mut cuboids, axis, y_offset, pos, size);
+            push_normal_gate_piece(&mut cuboids, direction, y_offset, pos, size);
         }
     }
     ModelShape::from_cuboids(cuboids)
 }
 
-fn bamboo_fence_gate_shape(open: bool, axis: GateAxis, y_offset: f32) -> ModelShape {
+fn bamboo_fence_gate_shape(open: bool, direction: CardinalDirection, y_offset: f32) -> ModelShape {
     let mut cuboids = Vec::with_capacity(8);
-    push_bamboo_gate_posts(&mut cuboids, axis, y_offset);
+    push_bamboo_gate_posts(&mut cuboids, direction, y_offset);
 
     if open {
-        push_open_bamboo_gate_pieces(&mut cuboids, axis, y_offset);
+        push_open_bamboo_gate_pieces(&mut cuboids, direction, y_offset);
     } else {
-        push_closed_bamboo_gate_pieces(&mut cuboids, axis, y_offset);
+        push_closed_bamboo_gate_pieces(&mut cuboids, direction, y_offset);
     }
     ModelShape::from_cuboids(cuboids)
 }
 
-fn push_bamboo_gate_posts(cuboids: &mut Vec<ModelCuboid>, axis: GateAxis, y_offset: f32) {
+fn push_bamboo_gate_posts(
+    cuboids: &mut Vec<ModelCuboid>,
+    direction: CardinalDirection,
+    y_offset: f32,
+) {
     for pos in [[0.0, 5.0, 7.0], [14.0, 5.0, 7.0]] {
         push_bamboo_gate_piece(
             cuboids,
-            axis,
+            direction,
             y_offset,
             pos,
             [2.0, 11.0, 2.0],
@@ -193,7 +190,11 @@ fn push_bamboo_gate_posts(cuboids: &mut Vec<ModelCuboid>, axis: GateAxis, y_offs
     }
 }
 
-fn push_open_bamboo_gate_pieces(cuboids: &mut Vec<ModelCuboid>, axis: GateAxis, y_offset: f32) {
+fn push_open_bamboo_gate_pieces(
+    cuboids: &mut Vec<ModelCuboid>,
+    direction: CardinalDirection,
+    y_offset: f32,
+) {
     let rail_uv = BambooGateUv::Sides {
         side: [3.0, 9.0],
         up: [3.0, 1.0],
@@ -215,11 +216,15 @@ fn push_open_bamboo_gate_pieces(cuboids: &mut Vec<ModelCuboid>, axis: GateAxis, 
             BambooGateUv::All([8.0, 3.0]),
         ),
     ] {
-        push_bamboo_gate_piece(cuboids, axis, y_offset, pos, size, uv);
+        push_bamboo_gate_piece(cuboids, direction, y_offset, pos, size, uv);
     }
 }
 
-fn push_closed_bamboo_gate_pieces(cuboids: &mut Vec<ModelCuboid>, axis: GateAxis, y_offset: f32) {
+fn push_closed_bamboo_gate_pieces(
+    cuboids: &mut Vec<ModelCuboid>,
+    direction: CardinalDirection,
+    y_offset: f32,
+) {
     for (pos, size, uv) in [
         (
             [2.0, 6.0, 7.0],
@@ -252,47 +257,42 @@ fn push_closed_bamboo_gate_pieces(cuboids: &mut Vec<ModelCuboid>, axis: GateAxis
             BambooGateUv::All([3.0, 9.0]),
         ),
     ] {
-        push_bamboo_gate_piece(cuboids, axis, y_offset, pos, size, uv);
-    }
-}
-
-fn fence_gate_axis(direction: CardinalDirection, open: bool) -> GateAxis {
-    let closed_along_x = matches!(
-        direction,
-        CardinalDirection::North | CardinalDirection::South
-    );
-    if closed_along_x == open {
-        GateAxis::Z
-    } else {
-        GateAxis::X
+        push_bamboo_gate_piece(cuboids, direction, y_offset, pos, size, uv);
     }
 }
 
 fn push_normal_gate_piece(
     cuboids: &mut Vec<ModelCuboid>,
-    axis: GateAxis,
+    direction: CardinalDirection,
     y_offset: f32,
     pos: [f32; 3],
     size: [f32; 3],
 ) {
-    let (cuboid, _) = gate_piece_cuboid(axis, y_offset, pos, size);
+    let (cuboid, _) = gate_piece_cuboid(direction, y_offset, pos, size);
     cuboids.push(detail_slots(detail_cuboid_with_local_uv(cuboid)));
 }
 
 fn push_bamboo_gate_piece(
     cuboids: &mut Vec<ModelCuboid>,
-    axis: GateAxis,
+    direction: CardinalDirection,
     y_offset: f32,
     pos: [f32; 3],
     size: [f32; 3],
     uv: BambooGateUv,
 ) {
-    let (cuboid, oriented_size) = gate_piece_cuboid(axis, y_offset, pos, size);
+    let (cuboid, oriented_size) = gate_piece_cuboid(direction, y_offset, pos, size);
     cuboids.push(bamboo_gate_cuboid_with_uv(cuboid, oriented_size, uv));
 }
 
+/// Turns one gate piece authored for `cardinal_direction = north` onto its actual facing.
+///
+/// Bedrock rotates a north-authored block model with `rotation: [0, 90, 0]` for west,
+/// `[0, 180, 0]` for south and `[0, -90, 0]` for east, so `[0, 90, 0]` moves the north face
+/// onto the west face. An open gate cannot be expressed as a plain x/z axis swap: both
+/// leaves extend towards +z only, so swapping the axes mirrors them instead of turning the
+/// gate.
 fn gate_piece_cuboid(
-    axis: GateAxis,
+    direction: CardinalDirection,
     y_offset: f32,
     pos: [f32; 3],
     size: [f32; 3],
@@ -303,11 +303,21 @@ fn gate_piece_cuboid(
         pos[1] + y_offset + size[1],
         pos[2] + size[2],
     ];
-    let (min, max, oriented_size) = match axis {
-        GateAxis::X => (min, max, size),
-        GateAxis::Z => (
-            [min[2], min[1], min[0]],
-            [max[2], max[1], max[0]],
+    let (min, max, oriented_size) = match direction {
+        CardinalDirection::North => (min, max, size),
+        CardinalDirection::West => (
+            [min[2], min[1], 16.0 - max[0]],
+            [max[2], max[1], 16.0 - min[0]],
+            [size[2], size[1], size[0]],
+        ),
+        CardinalDirection::South => (
+            [16.0 - max[0], min[1], 16.0 - max[2]],
+            [16.0 - min[0], max[1], 16.0 - min[2]],
+            size,
+        ),
+        CardinalDirection::East => (
+            [16.0 - max[2], min[1], min[0]],
+            [16.0 - min[2], max[1], max[0]],
             [size[2], size[1], size[0]],
         ),
     };

@@ -154,7 +154,7 @@ fn model_shape(state: &BlockStateQuery) -> Option<ModelShape> {
         ModelFamily::Fire => Some(flora::natural::fire_shape()),
         ModelFamily::Liquid => Some(flora::natural::liquid_shape(state)),
         ModelFamily::BubbleColumn => Some(flora::natural::bubble_column_shape()),
-        ModelFamily::Tripwire => Some(flora::natural::tripwire_shape()),
+        ModelFamily::Tripwire => Some(flora::natural::tripwire_shape(state)),
         ModelFamily::ChorusPlant => Some(flora::natural::chorus_plant_shape()),
         ModelFamily::PointedDripstone => Some(flora::natural::pointed_dripstone_shape(state)),
         ModelFamily::MangrovePropagule => Some(flora::natural::mangrove_propagule_shape(state)),
@@ -194,7 +194,7 @@ fn model_shape(state: &BlockStateQuery) -> Option<ModelShape> {
         ModelFamily::Hopper => Some(utility::stations::hopper_shape(state)),
         ModelFamily::Bed => Some(decorations::bed::shape(state)),
         ModelFamily::Banner => Some(decorations::furniture::banner_shape(name, state)),
-        ModelFamily::Campfire => Some(decorations::campfires::shape(state)),
+        ModelFamily::Campfire => Some(decorations::campfires::shape(name, state)),
         ModelFamily::Grindstone => Some(utility::stations::grindstone_shape(state)),
         ModelFamily::Lectern => Some(utility::stations::lectern_shape(state)),
         ModelFamily::BrewingStand => Some(utility::crafting::brewing_stand_shape()),
@@ -313,16 +313,42 @@ pub fn full_block_shape(_name: &str, state: &BlockStateQuery) -> ModelShape {
             .with_face_material_slot(crate::material::BlockFace::Down, "side");
     }
 
-    if let Some(direction) = direction::cardinal_direction(state) {
-        let front_face = match direction {
-            direction::CardinalDirection::North => crate::material::BlockFace::North,
-            direction::CardinalDirection::South => crate::material::BlockFace::South,
-            direction::CardinalDirection::East => crate::material::BlockFace::East,
-            direction::CardinalDirection::West => crate::material::BlockFace::West,
-        };
-        cuboid = cuboid.with_face_material_slot(front_face, "front");
+    // Only blocks whose `blocks.json` entry has a `front` slot turn their faces. A pillar's
+    // `pillar_axis` already assigned `top`/`side`, and re-running the face map would clobber it.
+    // A block with a `front` slot shows that art on the face its state points at. The other
+    // faces keep their **role** — a furnace's `east`/`west` sides stay `east`/`west` no matter
+    // which way it faces. Rotating the whole slot map (the previous approach) moved `side` art
+    // onto the front and swapped the side pairs, which is why multi-face blocks looked spliced.
+    //
+    // A pillar's `pillar_axis` already assigned `top`/`side`; re-running the face map would
+    // clobber it, so axis-aligned blocks skip this step.
+    if !matches!(axis, "x" | "z") {
+        let front = direction::front_face_for(_name, state);
+        for face in [
+            crate::material::BlockFace::Up,
+            crate::material::BlockFace::Down,
+            crate::material::BlockFace::North,
+            crate::material::BlockFace::South,
+            crate::material::BlockFace::East,
+            crate::material::BlockFace::West,
+        ] {
+            if Some(face) == front {
+                continue;
+            }
+            let slot = match face {
+                crate::material::BlockFace::Up => "up",
+                crate::material::BlockFace::Down => "down",
+                crate::material::BlockFace::North => "north",
+                crate::material::BlockFace::South => "south",
+                crate::material::BlockFace::East => "east",
+                _ => "west",
+            };
+            cuboid = cuboid.with_face_material_slot(face, slot);
+        }
+        if let Some(front) = front {
+            cuboid = cuboid.with_face_material_slot(front, "front");
+        }
     }
-
     ModelShape::from_cuboids([shape::detail_cuboid_with_local_uv(cuboid)])
 }
 
@@ -1501,9 +1527,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing scaffolding"));
         assert!(scaffolding.cuboids.len() >= 9);
 
+        // The shelf is one 5 px board, measured from the client (z 0..0.3125, 20 vertices);
+        // three separate rails was the old, wrong shape.
         let shelf = model_shape(&BlockStateQuery::new("minecraft:pale_oak_shelf"))
             .unwrap_or_else(|| panic!("missing shelf"));
-        assert_eq!(shelf.cuboids.len(), 3);
+        assert_eq!(shelf.cuboids.len(), 1);
+        assert!((shelf.cuboids[0].max[2] - 0.3125).abs() < 0.001);
 
         let heavy_core = model_shape(&BlockStateQuery::new("minecraft:heavy_core"))
             .unwrap_or_else(|| panic!("missing heavy core"));
@@ -1616,12 +1645,43 @@ mod tests {
 
         let fire = model_shape(&BlockStateQuery::new("minecraft:fire"))
             .unwrap_or_else(|| panic!("missing fire"));
-        assert_eq!(fire.planes.len(), 2);
+        // Vanilla `template_fire_floor` is four 22.5-degree sheets standing on the block's
+        // centre lines, not a 45-degree cross.
+        assert_eq!(fire.planes.len(), 4);
         assert!(fire.planes.iter().all(|plane| {
-            plane.normal[0] != 0
-                && plane.normal[2] != 0
+            // Every sheet faces along a single horizontal axis.
+            (plane.normal[0] == 0) != (plane.normal[2] == 0)
                 && plane.material_slot.as_deref() == Some("side")
         }));
+        // Captured BE vertices reach y = 1.4 (22.4 px) and spread to 0.1..0.9 at the top, so the
+        // flames spill above their block and the pair opens upward.
+        assert!(
+            fire.planes
+                .iter()
+                .any(|plane| plane.corners.iter().any(|corner| corner[1] > 1.3)),
+            "fire stands above its block"
+        );
+        let offsets: Vec<(f32, f32)> = fire
+            .planes
+            .iter()
+            .map(|plane| {
+                let axis = if plane.normal[2] != 0 { 2 } else { 0 };
+                (plane.corners[0][axis], plane.corners[2][axis])
+            })
+            .collect();
+        assert!(
+            offsets.iter().any(|(bottom, _)| *bottom > 0.6)
+                && offsets.iter().any(|(bottom, _)| *bottom < 0.4),
+            "the sheets stand either side of the centre line: {offsets:?}"
+        );
+        // The top edges lean outward, so each sheet's tip is further from the centre than its
+        // base.
+        assert!(
+            offsets
+                .iter()
+                .all(|(bottom, top)| (top - 0.5).abs() > (bottom - 0.5).abs()),
+            "the sheets open upward: {offsets:?}"
+        );
 
         let end_portal = model_shape(&BlockStateQuery::new("minecraft:end_portal"))
             .unwrap_or_else(|| panic!("missing end portal"));
@@ -1681,6 +1741,191 @@ mod tests {
         assert_eq!(closed.cuboids.len(), 1);
         assert_ne!(closed.cuboids[0], open_left.cuboids[0]);
         assert_ne!(open_left.cuboids[0], open_right.cuboids[0]);
+    }
+
+    #[test]
+    fn standing_signs_and_banners_turn_by_ground_direction() {
+        fn bounds(name: &str, direction: i64) -> ([f32; 3], [f32; 3], usize) {
+            let state = BlockStateQuery::new(name).with_state("ground_sign_direction", direction);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing {name}"));
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            for plane in &shape.planes {
+                for corner in plane.corners {
+                    for axis in 0..3 {
+                        min[axis] = min[axis].min(corner[axis]);
+                        max[axis] = max[axis].max(corner[axis]);
+                    }
+                }
+            }
+            for cuboid in &shape.cuboids {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(cuboid.min[axis]);
+                    max[axis] = max[axis].max(cuboid.max[axis]);
+                }
+            }
+            (min, max, shape.planes.len())
+        }
+
+        // 0 faces south (the authored board), 4 faces west: 90 degrees later the board is thin
+        // in x and wide in z.
+        for name in ["minecraft:standing_sign", "minecraft:standing_banner"] {
+            let (_, south_max, _) = bounds(name, 0);
+            assert!(south_max[0] > 0.9, "{name} south board spans x");
+            let (west_min, west_max, planes) = bounds(name, 4);
+            assert!(planes > 0, "{name} must rotate into quads");
+            assert!(
+                (west_max[0] - west_min[0]) < 0.2,
+                "{name} west board is thin in x"
+            );
+            assert!(
+                (west_max[2] - west_min[2]) > 0.8,
+                "{name} west board spans z"
+            );
+        }
+    }
+
+    #[test]
+    fn top_trapdoors_mirror_the_whole_panel_not_just_the_thin_edge() {
+        use crate::material::BlockFace;
+
+        fn open(name: &str, half: &str) -> crate::ModelShape {
+            let state = BlockStateQuery::new(name)
+                .with_state("open", 1)
+                .with_state("facing_direction", 4)
+                .with_state("minecraft:vertical_half", half);
+            model_shape(&state).unwrap_or_else(|| panic!("missing {name}"))
+        }
+
+        let bottom = open("minecraft:oak_trapdoor", "bottom");
+        let top = open("minecraft:oak_trapdoor", "top");
+        let bottom_cuboid = &bottom.cuboids[0];
+        let top_cuboid = &top.cuboids[0];
+        // Same footprint: the top panel is the floor one mirrored through the block's middle.
+        assert!((bottom_cuboid.min[0] - top_cuboid.min[0]).abs() < 1e-4);
+        assert!((bottom_cuboid.max[0] - top_cuboid.max[0]).abs() < 1e-4);
+        assert!((bottom_cuboid.min[1] - (1.0 - top_cuboid.max[1])).abs() < 1e-4);
+        assert!((bottom_cuboid.max[1] - (1.0 - top_cuboid.min[1])).abs() < 1e-4);
+        // The wide faces have to carry the art, not just the 3 px edge: `up` and `down` swap.
+        assert_eq!(
+            bottom_cuboid.face_material_slots.get(&BlockFace::Up),
+            top_cuboid.face_material_slots.get(&BlockFace::Down)
+        );
+        assert_eq!(
+            bottom_cuboid.face_material_slots.get(&BlockFace::Down),
+            top_cuboid.face_material_slots.get(&BlockFace::Up)
+        );
+        // The big side faces still exist on both halves and keep the `side` slot.
+        assert_eq!(
+            top_cuboid.face_material_slots.get(&BlockFace::North),
+            Some(&"side".to_owned())
+        );
+        assert_eq!(
+            top_cuboid.face_material_slots.get(&BlockFace::South),
+            Some(&"side".to_owned())
+        );
+    }
+
+    #[test]
+    fn banner_halves_split_the_cloth_across_two_blocks() {
+        use crate::material::BlockFace;
+
+        // A standing banner is two blocks: `standing_banner` shows the pole plus the lower half
+        // of the 20 x 40 px cloth, the `banner` above shows the upper half. Rendering the whole
+        // banner in both blocks stacked two banners on top of each other.
+        fn cloth(name: &str) -> ((f32, f32), (f32, f32), f32, f32) {
+            let shape = model_shape(&BlockStateQuery::new(name))
+                .unwrap_or_else(|| panic!("missing {name}"));
+            let cuboid = shape
+                .cuboids
+                .iter()
+                .find(|cuboid| cuboid.max[0] - cuboid.min[0] > 1.0)
+                .unwrap_or_else(|| panic!("{name} paints no cloth"));
+            let front = cuboid
+                .face_uvs
+                .get(&BlockFace::North)
+                .copied()
+                .unwrap_or_else(|| panic!("{name} cloth has no front uv"));
+            let v_min = front.iter().map(|corner| corner[1]).fold(f32::INFINITY, f32::min);
+            let v_max = front.iter().map(|corner| corner[1]).fold(0.0_f32, f32::max);
+            (
+                (cuboid.min[0], cuboid.max[0]),
+                (cuboid.min[1], cuboid.max[1]),
+                v_min,
+                v_max,
+            )
+        }
+
+        let (lower_x, lower_y, lower_v0, lower_v1) = cloth("minecraft:standing_banner");
+        let (upper_x, upper_y, upper_v0, upper_v1) = cloth("minecraft:banner");
+        // Both halves have to line up: same width, same one-block height in their own cell.
+        assert!((lower_x.0 - upper_x.0).abs() < 1e-4 && (lower_x.1 - upper_x.1).abs() < 1e-4);
+        assert!((lower_y.0 - upper_y.0).abs() < 1e-4 && (lower_y.1 - upper_y.1).abs() < 1e-4);
+        // The cloth panel starts at row 1; rows 1..21 are the upper half and 21..41 the lower.
+        assert!((upper_v0 - 1.0 / 64.0).abs() < 1e-4 && (upper_v1 - 21.0 / 64.0).abs() < 1e-4);
+        assert!((lower_v0 - 21.0 / 64.0).abs() < 1e-4 && (lower_v1 - 41.0 / 64.0).abs() < 1e-4);
+
+        // Only the bottom block carries the rod; the top block is cloth and pole.
+        let bottom = model_shape(&BlockStateQuery::new("minecraft:standing_banner"))
+            .expect("standing banner");
+        let top = model_shape(&BlockStateQuery::new("minecraft:banner")).expect("banner");
+        assert_eq!(bottom.cuboids.len(), 3, "pole, cloth and bottom rod");
+        assert_eq!(top.cuboids.len(), 2, "pole and cloth only");
+    }
+
+    #[test]
+    fn bell_samples_the_corner_of_its_sheets() {
+        // `bell_side` is an 8 x 9 piece and the top/bottom sheets are 8 x 8 squares, all in the
+        // tile's top-left corner. Whole-tile UVs showed a quarter-size bell inside transparent
+        // gutters.
+        let shape = model_shape(&BlockStateQuery::new("minecraft:bell")).expect("bell");
+        let mut sampled = 0;
+        for cuboid in &shape.cuboids {
+            for (face, uv) in &cuboid.face_uvs {
+                for corner in uv {
+                    assert!(
+                        corner[0] <= 0.5 + 1e-4 && corner[1] <= 9.0 / 16.0 + 1e-4,
+                        "{face:?} leaves the bell art window: {corner:?}"
+                    );
+                    sampled += 1;
+                }
+            }
+        }
+        assert!(sampled >= 24, "the bell body and skirt should carry UVs");
+    }
+
+    #[test]
+    fn bell_and_grindstone_follow_their_attachment() {
+        use std::collections::BTreeSet;
+
+        fn signature(name: &str, key: &str, value: &str) -> String {
+            let state = BlockStateQuery::new(name).with_state(key, value);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing {name}"));
+            format!(
+                "{:?}{:?}",
+                shape
+                    .cuboids
+                    .iter()
+                    .map(|c| (c.min, c.max))
+                    .collect::<Vec<_>>(),
+                shape.planes.len()
+            )
+        }
+
+        let mut bell = BTreeSet::new();
+        for attachment in ["standing", "hanging", "side", "multiple"] {
+            assert!(
+                bell.insert(signature("minecraft:bell", "attachment", attachment)),
+                "bell attachment {attachment} renders like another"
+            );
+        }
+        let mut grindstone = BTreeSet::new();
+        for attachment in ["standing", "hanging", "side"] {
+            assert!(
+                grindstone.insert(signature("minecraft:grindstone", "attachment", attachment)),
+                "grindstone attachment {attachment} renders like another"
+            );
+        }
     }
 
     #[test]
@@ -1905,20 +2150,27 @@ mod tests {
         let connected_shape =
             model_shape(&connected).unwrap_or_else(|| panic!("missing connected pane shape"));
 
+        // Vanilla's multipart model is post + one slab per connected side + one `noside` quad per
+        // open side. A connected pane therefore has one cuboid (the post), one arm, and three
+        // single-face cards.
         assert_eq!(connected_shape.cuboids.len(), 2);
+        assert_eq!(connected_shape.planes.len(), 3);
         assert_eq!(
             connected_shape.cuboids[0]
                 .face_material_slots
                 .get(&BlockFace::Up)
                 .map(String::as_str),
-            Some("up")
+            Some("east")
         );
-        assert!(
-            connected_shape
-                .cuboids
-                .iter()
-                .all(|cuboid| cuboid.max[0] - cuboid.min[0] <= 0.25)
-        );
+        // Exactly one slab spans the full cell; the rest stay inside the 2 px post column.
+        let spanning = connected_shape
+            .cuboids
+            .iter()
+            .filter(|cuboid| {
+                cuboid.max[0] - cuboid.min[0] > 0.25 || cuboid.max[2] - cuboid.min[2] > 0.25
+            })
+            .count();
+        assert_eq!(spanning, 1, "only the connected arm leaves the post");
 
         let string_connected = BlockStateQuery::new("minecraft:glass_pane")
             .with_state("east_connection_type", "short");
@@ -1942,16 +2194,15 @@ mod tests {
         let isolated_shape =
             model_shape(&isolated).unwrap_or_else(|| panic!("missing isolated pane shape"));
 
-        assert_eq!(isolated_shape.cuboids.len(), 3);
+        // An isolated pane is the post plus four `noside` quads, none of which spans the cell: it
+        // must not fill the block with a pair of full-size cards.
+        assert_eq!(isolated_shape.cuboids.len(), 1, "only the post is a box");
+        assert_eq!(isolated_shape.planes.len(), 4, "one open card per direction");
         assert!(
-            isolated_shape
-                .cuboids
-                .iter()
-                .filter(|cuboid| {
-                    cuboid.max[0] - cuboid.min[0] >= 1.0 || cuboid.max[2] - cuboid.min[2] >= 1.0
-                })
-                .count()
-                == 2
+            isolated_shape.cuboids.iter().all(|cuboid| {
+                cuboid.max[0] - cuboid.min[0] <= 0.25 && cuboid.max[2] - cuboid.min[2] <= 0.25
+            }),
+            "an isolated pane stays a 2 px card"
         );
     }
 
@@ -1983,11 +2234,13 @@ mod tests {
         let open_shape = model_shape(&open).unwrap_or_else(|| panic!("missing trapdoor shape"));
 
         assert_eq!(open_shape.cuboids.len(), 1);
+        // `direction` is the side the trapdoor sits on, so a north trapdoor hangs on the
+        // north boundary of its block.
         assert!(
             open_shape
                 .cuboids
                 .iter()
-                .any(|cuboid| cuboid.min[2] >= 0.8125 && cuboid.max[2] <= 1.0)
+                .any(|cuboid| cuboid.min[2].abs() < 0.001 && cuboid.max[2] <= 0.1875)
         );
         assert_eq!(
             open_shape.cuboids[0]
@@ -2025,7 +2278,7 @@ mod tests {
             west_hinge_shape
                 .cuboids
                 .iter()
-                .any(|cuboid| cuboid.min[0] >= 0.8125 && cuboid.max[0] <= 1.0)
+                .any(|cuboid| cuboid.min[0].abs() < 0.001 && cuboid.max[0] <= 0.1875)
         );
 
         let top = BlockStateQuery::new("minecraft:oak_trapdoor").with_state("half", "top");
@@ -2086,6 +2339,519 @@ mod tests {
     }
 
     #[test]
+    fn open_trapdoor_leaf_hangs_on_its_direction_side() {
+        fn panel(direction: i64) -> ([f32; 3], [f32; 3]) {
+            let state = BlockStateQuery::new("minecraft:birch_trapdoor")
+                .with_state("direction", direction)
+                .with_state("open_bit", true)
+                .with_state("upside_down_bit", true);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing trapdoor shape"));
+            assert_eq!(shape.cuboids.len(), 1, "direction={direction}");
+            (shape.cuboids[0].min, shape.cuboids[0].max)
+        }
+
+        // Bedrock `direction` names the side the trapdoor sits on (0=west, 1=east, 2=north,
+        // 3=south), so the open leaf hangs on that same block boundary.
+        let (west_min, west_max) = panel(0);
+        assert!(west_min[0].abs() < 0.001 && (west_max[0] - 0.1875).abs() < 0.001);
+        let (east_min, east_max) = panel(1);
+        assert!((east_min[0] - 0.8125).abs() < 0.001 && (east_max[0] - 1.0).abs() < 0.001);
+        let (north_min, north_max) = panel(2);
+        assert!(north_min[2].abs() < 0.001 && (north_max[2] - 0.1875).abs() < 0.001);
+        let (south_min, south_max) = panel(3);
+        assert!((south_min[2] - 0.8125).abs() < 0.001 && (south_max[2] - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn open_fence_gate_leaves_turn_with_bedrock_cardinal_rotation() {
+        fn shape_bounds(direction: &str) -> ([f32; 3], [f32; 3]) {
+            let state = BlockStateQuery::new("minecraft:birch_fence_gate")
+                .with_state("minecraft:cardinal_direction", direction)
+                .with_state("open_bit", true);
+            let shape = model_shape(&state)
+                .unwrap_or_else(|| panic!("missing fence gate shape {direction}"));
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            for cuboid in &shape.cuboids {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(cuboid.min[axis]);
+                    max[axis] = max[axis].max(cuboid.max[axis]);
+                }
+            }
+            (min, max)
+        }
+
+        // A north-authored open gate keeps its posts in the z=7..9 band and swings both leaves
+        // towards +z. Bedrock turns that model with [0, 90, 0] for west, [0, 180, 0] for south
+        // and [0, -90, 0] for east, so each facing moves the leaves onto its own side.
+        let north = shape_bounds("north");
+        assert!(
+            (north.0[2] - 7.0 / 16.0).abs() < 0.001 && (north.1[2] - 15.0 / 16.0).abs() < 0.001
+        );
+        let south = shape_bounds("south");
+        assert!((south.0[2] - 1.0 / 16.0).abs() < 0.001 && (south.1[2] - 9.0 / 16.0).abs() < 0.001);
+        let west = shape_bounds("west");
+        assert!((west.0[0] - 7.0 / 16.0).abs() < 0.001 && (west.1[0] - 15.0 / 16.0).abs() < 0.001);
+        let east = shape_bounds("east");
+        assert!((east.0[0] - 1.0 / 16.0).abs() < 0.001 && (east.1[0] - 9.0 / 16.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn wall_torches_mount_on_the_named_side() {
+        fn bounds(facing: &str) -> ([f32; 3], [f32; 3]) {
+            let state = BlockStateQuery::new("minecraft:torch")
+                .with_state("torch_facing_direction", facing);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing torch shape"));
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            for cuboid in &shape.cuboids {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(cuboid.min[axis]);
+                    max[axis] = max[axis].max(cuboid.max[axis]);
+                }
+            }
+            for plane in &shape.planes {
+                for corner in plane.corners {
+                    for axis in 0..3 {
+                        min[axis] = min[axis].min(corner[axis]);
+                        max[axis] = max[axis].max(corner[axis]);
+                    }
+                }
+            }
+            (min, max)
+        }
+
+        // Values are the post the Bedrock client draws for each mount.
+        let north = bounds("north");
+        assert!((north.0[2] + 0.0631).abs() < 0.001 && (north.1[2] - 0.31).abs() < 0.001);
+        assert!((north.0[1] - 0.2).abs() < 0.001 && (north.1[1] - 0.81875).abs() < 0.001);
+        let east = bounds("east");
+        assert!((east.0[0] - 0.69).abs() < 0.001 && (east.1[0] - 1.0631).abs() < 0.001);
+        let south = bounds("south");
+        assert!((south.0[2] - 0.69).abs() < 0.001 && (south.1[2] - 1.0631).abs() < 0.001);
+        let west = bounds("west");
+        assert!((west.0[0] + 0.0631).abs() < 0.001 && (west.1[0] - 0.31).abs() < 0.001);
+
+        // A floor torch stands in the middle of its cell.
+        let top = bounds("top");
+        assert!((top.0[0] - 0.4375).abs() < 0.001 && (top.1[0] - 0.5625).abs() < 0.001);
+        assert!(top.0[1].abs() < 0.001 && (top.1[1] - 0.61875).abs() < 0.001);
+    }
+
+    #[test]
+    fn repeater_output_torch_follows_the_opposite_cardinal() {
+        fn front_torch_xz(direction: &str) -> ([f32; 2], [f32; 2]) {
+            let state = BlockStateQuery::new("minecraft:unpowered_repeater")
+                .with_state("minecraft:cardinal_direction", direction)
+                .with_state("repeater_delay", 0);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing repeater shape"));
+            // The output torch is the small torch nearest the block border; the delay torch
+            // stays at the centre.
+            let torch = shape
+                .cuboids
+                .iter()
+                .filter(|cuboid| (cuboid.max[1] - 0.375).abs() < 0.001)
+                .min_by(|a, b| {
+                    let distance = |c: &crate::model_family::ModelCuboid| {
+                        let centre_x = (c.min[0] + c.max[0]) / 2.0 - 0.5;
+                        let centre_z = (c.min[2] + c.max[2]) / 2.0 - 0.5;
+                        centre_x.abs() + centre_z.abs()
+                    };
+                    distance(b).total_cmp(&distance(a))
+                })
+                .unwrap_or_else(|| panic!("missing repeater torches"));
+            ([torch.min[0], torch.max[0]], [torch.min[2], torch.max[2]])
+        }
+
+        // `minecraft:cardinal_direction` points from the output towards the input, so the
+        // output torch sits on the opposite side of the cell.
+        let south = front_torch_xz("south");
+        assert!((south.1[0] - 0.1875).abs() < 0.001 && (south.1[1] - 0.3125).abs() < 0.001);
+        let north = front_torch_xz("north");
+        assert!((north.1[0] - 0.6875).abs() < 0.001 && (north.1[1] - 0.8125).abs() < 0.001);
+        let west = front_torch_xz("west");
+        assert!((west.0[0] - 0.6875).abs() < 0.001 && (west.0[1] - 0.8125).abs() < 0.001);
+        let east = front_torch_xz("east");
+        assert!((east.0[0] - 0.1875).abs() < 0.001 && (east.0[1] - 0.3125).abs() < 0.001);
+    }
+
+    #[test]
+    fn vertical_pistons_push_along_their_axis() {
+        let up = BlockStateQuery::new("minecraft:piston").with_state("facing_direction", 1);
+        let up_shape = model_shape(&up).unwrap_or_else(|| panic!("missing piston shape"));
+        assert_eq!(
+            up_shape.cuboids[0]
+                .face_material_slots
+                .get(&BlockFace::Up)
+                .map(String::as_str),
+            Some("top_normal")
+        );
+
+        let down = BlockStateQuery::new("minecraft:piston").with_state("facing_direction", 0);
+        let down_shape = model_shape(&down).unwrap_or_else(|| panic!("missing piston shape"));
+        assert_eq!(
+            down_shape.cuboids[0]
+                .face_material_slots
+                .get(&BlockFace::Down)
+                .map(String::as_str),
+            Some("top_normal")
+        );
+
+        // The head plate touches the base, so an upward piston keeps it on its floor.
+        let arm = BlockStateQuery::new("minecraft:piston_arm_collision")
+            .with_state("facing_direction", 1);
+        let arm_shape = model_shape(&arm).unwrap_or_else(|| panic!("missing piston arm shape"));
+        assert!(arm_shape.cuboids[0].min[1].abs() < 0.001);
+        assert!((arm_shape.cuboids[0].max[1] - 0.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn campfire_lit_log_faces_turn_with_the_block() {
+        fn lit_faces(direction: &str) -> Vec<BlockFace> {
+            let state = BlockStateQuery::new("minecraft:campfire")
+                .with_state("minecraft:cardinal_direction", direction);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing campfire shape"));
+            shape
+                .cuboids
+                .iter()
+                .flat_map(|cuboid| cuboid.face_material_slots.iter())
+                .filter(|(_, slot)| slot.as_str() == "lit_log")
+                .map(|(face, _)| *face)
+                .collect()
+        }
+
+        // The north-authored table lights one log end towards the east; the block turn decides
+        // which world face shows it.
+        assert!(lit_faces("north").contains(&BlockFace::East));
+        assert!(lit_faces("east").contains(&BlockFace::South));
+        assert!(lit_faces("south").contains(&BlockFace::West));
+        assert!(lit_faces("west").contains(&BlockFace::North));
+    }
+
+    #[test]
+    fn cardinal_blocks_turn_all_four_ways() {
+        use std::collections::BTreeSet;
+
+        fn signature(shape: &crate::model_family::ModelShape) -> String {
+            let mut parts = Vec::new();
+            for cuboid in &shape.cuboids {
+                let mut slots: Vec<String> = cuboid
+                    .face_material_slots
+                    .iter()
+                    .map(|(face, slot)| format!("{face:?}={slot}"))
+                    .collect();
+                slots.sort();
+                let mut uvs: Vec<String> = cuboid
+                    .face_uvs
+                    .iter()
+                    .map(|(face, uv)| format!("{face:?}{uv:?}"))
+                    .collect();
+                uvs.sort();
+                parts.push(format!("{:?}{:?}{slots:?}{uvs:?}", cuboid.min, cuboid.max));
+            }
+            for plane in &shape.planes {
+                parts.push(format!(
+                    "{:?}{:?}{:?}",
+                    plane.normal, plane.corners, plane.material_slot
+                ));
+            }
+            parts.join("|")
+        }
+
+        // The anvil's boxes are symmetric under 180 degrees, so its facing only shows through
+        // the in-face UV rotation.
+        for name in [
+            "minecraft:stonecutter_block",
+            "minecraft:lectern",
+            "minecraft:anvil",
+        ] {
+            let mut seen = BTreeSet::new();
+            for direction in ["north", "east", "south", "west"] {
+                let state = BlockStateQuery::new(name)
+                    .with_state("minecraft:cardinal_direction", direction);
+                let shape = model_shape(&state).unwrap_or_else(|| panic!("missing {name}"));
+                assert!(
+                    seen.insert(signature(&shape)),
+                    "{name} renders {direction} like another facing"
+                );
+            }
+        }
+
+        let mut observer = BTreeSet::new();
+        for facing in ["north", "east", "south", "west", "up", "down"] {
+            let state = BlockStateQuery::new("minecraft:observer")
+                .with_state("minecraft:facing_direction", facing);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing observer"));
+            // The front art must follow the state: the model's north face is `observer_front`.
+            let front = shape.cuboids[0]
+                .face_material_slots
+                .iter()
+                .find(|(_, slot)| slot.as_str() == "north")
+                .map(|(face, _)| *face)
+                .unwrap_or_else(|| panic!("observer lost its front face"));
+            let expected = match facing {
+                "north" => BlockFace::North,
+                "east" => BlockFace::East,
+                "south" => BlockFace::South,
+                "west" => BlockFace::West,
+                "up" => BlockFace::Up,
+                _ => BlockFace::Down,
+            };
+            assert_eq!(front, expected, "observer facing {facing}");
+            assert!(observer.insert(signature(&shape)));
+        }
+    }
+
+    #[test]
+    fn device_faces_take_their_art_by_role_not_by_rotation() {
+        use crate::material::BlockFace;
+
+        fn slots(name: &str, facing: &str) -> Vec<(BlockFace, String)> {
+            let state = BlockStateQuery::new(name).with_state("minecraft:facing_direction", facing);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing {name}"));
+            shape.cuboids[0]
+                .face_material_slots
+                .iter()
+                .map(|(face, slot)| (*face, slot.clone()))
+                .collect()
+        }
+        let slot_of = |name: &str, facing: &str, face: BlockFace| {
+            slots(name, facing)
+                .into_iter()
+                .find(|(candidate, _)| *candidate == face)
+                .map(|(_, slot)| slot)
+                .unwrap_or_else(|| panic!("{name}/{facing} lost {face:?}"))
+        };
+
+        // A horizontal dispenser shows `dispenser_front_horizontal` (the `south` slot) on the
+        // face it points at, and `dispenser_side` (the `north` slot) everywhere else.
+        assert_eq!(slot_of("minecraft:dispenser", "north", BlockFace::North), "south");
+        assert_eq!(slot_of("minecraft:dispenser", "north", BlockFace::South), "north");
+        assert_eq!(slot_of("minecraft:dispenser", "east", BlockFace::East), "south");
+        // Pointing up/down uses the vertical front art, which the pack stores in the `east` slot.
+        assert_eq!(slot_of("minecraft:dispenser", "up", BlockFace::Up), "east");
+        assert_eq!(slot_of("minecraft:dispenser", "down", BlockFace::Down), "east");
+        // The lids stay `dispenser_top`.
+        assert_eq!(slot_of("minecraft:dispenser", "north", BlockFace::Up), "up");
+        assert_eq!(slot_of("minecraft:dispenser", "north", BlockFace::Down), "up");
+        // Droppers behave the same way with their own art.
+        assert_eq!(slot_of("minecraft:dropper", "north", BlockFace::North), "south");
+        assert_eq!(slot_of("minecraft:dropper", "up", BlockFace::Up), "east");
+
+        // The observer's front is the `north` slot, its back the `south` slot.
+        assert_eq!(slot_of("minecraft:observer", "north", BlockFace::North), "north");
+        assert_eq!(slot_of("minecraft:observer", "north", BlockFace::South), "south");
+        assert_eq!(slot_of("minecraft:observer", "east", BlockFace::East), "north");
+        assert_eq!(slot_of("minecraft:observer", "east", BlockFace::West), "south");
+        assert_eq!(slot_of("minecraft:observer", "up", BlockFace::Up), "north");
+        assert_eq!(slot_of("minecraft:observer", "up", BlockFace::Down), "south");
+        // The observer keeps distinct top and bottom art.
+        assert_eq!(slot_of("minecraft:observer", "north", BlockFace::Up), "up");
+        assert_eq!(slot_of("minecraft:observer", "north", BlockFace::Down), "down");
+    }
+
+    #[test]
+    fn buttons_mount_on_walls_ceilings_and_floors() {
+        fn plate(facing: i64) -> ([f32; 3], [f32; 3]) {
+            let state = BlockStateQuery::new("minecraft:acacia_button")
+                .with_state("facing_direction", facing)
+                .with_state("button_pressed_bit", false);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing button shape"));
+            (shape.cuboids[0].min, shape.cuboids[0].max)
+        }
+
+        // Vanilla button: 6 x 4 px footprint, 2 px deep, so a floor button is 6 x 2 x 4.
+        // facing_direction orders 0=down, 1=up, 2..5 horizontal.
+        let floor = plate(1);
+        assert!((floor.0[0] - 0.3125).abs() < 0.001 && (floor.1[0] - 0.6875).abs() < 0.001);
+        assert!(floor.0[1].abs() < 0.001 && (floor.1[1] - 0.125).abs() < 0.001);
+        assert!((floor.0[2] - 0.375).abs() < 0.001 && (floor.1[2] - 0.625).abs() < 0.001);
+        let ceiling = plate(0);
+        assert!((ceiling.0[1] - 0.875).abs() < 0.001 && (ceiling.1[1] - 1.0).abs() < 0.001);
+        // A wall button stands 4 px tall and 2 px deep.
+        let north = plate(2);
+        assert!(north.0[2].abs() < 0.001 && (north.1[2] - 0.125).abs() < 0.001);
+        assert!((north.0[1] - 0.375).abs() < 0.001 && (north.1[1] - 0.625).abs() < 0.001);
+    }
+
+    #[test]
+    fn spikes_taper_by_thickness_and_hanging() {
+        fn spike(name: &str, thickness: &str, hanging: bool) -> crate::model_family::ModelShape {
+            let state = BlockStateQuery::new(name)
+                .with_state("dripstone_thickness", thickness)
+                .with_state("hanging", hanging);
+            model_shape(&state).unwrap_or_else(|| panic!("missing {name}"))
+        }
+
+        // Verified against the real client: the capture stores 16 vertices per segment, all on
+        // the y = 0 / y = 1 layers, spanning ~0.9 on both axes — two rotated sheets, not a box.
+        for (name, thickness) in [
+            ("minecraft:sulfur_spike", "tip"),
+            ("minecraft:sulfur_spike", "base"),
+            ("minecraft:pointed_dripstone", "base"),
+            ("minecraft:pointed_dripstone", "frustum"),
+        ] {
+            let shape = spike(name, thickness, false);
+            assert!(shape.cuboids.is_empty(), "{name}/{thickness} must not be a box");
+            assert_eq!(shape.planes.len(), 2, "{name}/{thickness} is a cross");
+            for plane in &shape.planes {
+                assert!(plane.corners.iter().any(|corner| corner[1] == 0.0));
+                assert!(plane.corners.iter().any(|corner| corner[1] == 1.0));
+                for corner in plane.corners {
+                    assert!(
+                        (0.17..=0.83).contains(&corner[0]) && (0.17..=0.83).contains(&corner[2]),
+                        "{name}/{thickness} corner {corner:?} leaves the 45-degree span"
+                    );
+                }
+            }
+        }
+
+        // The segment picks its art; `tip_merge` maps to `merge`, and the `[down, up]` frame has
+        // to be explicit or a standing spike samples the hanging art.
+        let slot = |thickness: &str, hanging: bool| {
+            spike("minecraft:sulfur_spike", thickness, hanging).planes[0]
+                .material_slot
+                .clone()
+        };
+        assert_eq!(slot("tip", false), Some("tip_up".to_owned()));
+        assert_eq!(slot("base", false), Some("base_up".to_owned()));
+        assert_eq!(slot("tip_merge", false), Some("merge_up".to_owned()));
+        assert_eq!(slot("merge", false), Some("merge_up".to_owned()));
+        assert_eq!(slot("tip", true), Some("tip_down".to_owned()));
+
+        // A hanging spike keeps the same planes but flips the art so the point faces down.
+        let standing = spike("minecraft:sulfur_spike", "tip", false);
+        let hanging = spike("minecraft:sulfur_spike", "tip", true);
+        let standing_uv = standing.planes[0].uv.expect("standing uv");
+        let hanging_uv = hanging.planes[0].uv.expect("hanging uv");
+        assert_ne!(standing_uv, hanging_uv);
+        // The `_up_tip` art is narrow at the top and only paints rows 4..15, so a standing tip
+        // samples that band instead of the whole tile; a hanging tip uses the top 12 rows.
+        let v_range = |uv: [[f32; 2]; 4]| {
+            let lo = uv.iter().map(|c| c[1]).fold(f32::INFINITY, f32::min);
+            let hi = uv.iter().map(|c| c[1]).fold(f32::NEG_INFINITY, f32::max);
+            (lo, hi)
+        };
+        let (stand_lo, stand_hi) = v_range(standing_uv);
+        let (hang_lo, hang_hi) = v_range(hanging_uv);
+        assert!(
+            (stand_hi - stand_lo - 0.75).abs() < 1e-3,
+            "a standing tip samples 12 of 16 rows: {stand_lo}..{stand_hi}"
+        );
+        assert!(
+            (hang_hi - hang_lo - 0.75).abs() < 1e-3,
+            "a hanging tip samples 12 of 16 rows: {hang_lo}..{hang_hi}"
+        );
+        // The standing band sits low in the tile, the hanging band high.
+        assert!(stand_lo > hang_lo);
+    }
+
+    #[test]
+    fn campfire_uvs_stay_inside_one_flipbook_frame() {
+        let lit = BlockStateQuery::new("minecraft:campfire")
+            .with_state("minecraft:cardinal_direction", "south");
+        let shape = model_shape(&lit).unwrap_or_else(|| panic!("missing campfire"));
+
+        // `campfire_log_lit` is a 16 x 64 flipbook, so every face has to stay inside one
+        // 16 x 16 frame; a per-log tile offset would leave that range.
+        for cuboid in &shape.cuboids {
+            for (face, uv) in &cuboid.face_uvs {
+                for corner in uv {
+                    assert!(
+                        (0.0..=1.0).contains(&corner[0]) && (0.0..=1.0).contains(&corner[1]),
+                        "{face:?} leaves the texture frame: {corner:?}"
+                    );
+                }
+            }
+        }
+        assert!(
+            shape.cuboids.iter().any(|cuboid| cuboid
+                .face_material_slots
+                .values()
+                .any(|slot| slot == "lit_log")),
+            "a lit campfire draws at least one lit log face"
+        );
+
+        // The flame sheets sample the whole first frame of the 16 x 128 fire flipbook.
+        for plane in &shape.planes {
+            let uv = plane.uv.expect("flame uv");
+            let v_min = uv
+                .iter()
+                .map(|corner| corner[1])
+                .fold(f32::INFINITY, f32::min);
+            let v_max = uv.iter().map(|corner| corner[1]).fold(0.0_f32, f32::max);
+            assert!(
+                (v_max - v_min - 1.0).abs() < 0.001,
+                "the flame sheet samples one full frame"
+            );
+        }
+        assert_eq!(shape.planes.len(), 2, "two crossed flame sheets");
+
+        let unlit = BlockStateQuery::new("minecraft:campfire")
+            .with_state("minecraft:cardinal_direction", "south")
+            .with_state("extinguished", true);
+        let unlit_shape = model_shape(&unlit).unwrap_or_else(|| panic!("missing campfire"));
+        assert!(
+            unlit_shape.planes.is_empty(),
+            "an unlit campfire has no fire"
+        );
+        assert!(
+            unlit_shape.cuboids.iter().all(|cuboid| cuboid
+                .face_material_slots
+                .values()
+                .all(|slot| slot == "log")),
+            "an unlit campfire has no lit log faces"
+        );
+    }
+
+    #[test]
+    fn campfire_log_faces_avoid_the_transparent_filler() {
+        // `campfire_log` paints three windows only: the bark strip (rows 0..4), the cut end at
+        // (0, 4)..(4, 8) and the charred bed (rows 8..16). The rest of rows 4..8 is transparent
+        // black filler; sampling it drew a black band along the bottom of every log.
+        for extinguished in [false, true] {
+            let state = BlockStateQuery::new("minecraft:campfire")
+                .with_state("minecraft:cardinal_direction", "south")
+                .with_state("extinguished", extinguished);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing campfire"));
+            for cuboid in &shape.cuboids {
+                for (face, slot) in &cuboid.face_material_slots {
+                    if slot != "log" {
+                        continue;
+                    }
+                    let uv = cuboid
+                        .face_uvs
+                        .get(face)
+                        .copied()
+                        .unwrap_or_else(|| panic!("missing uv for {face:?}"));
+                    for corner in uv {
+                        let filler = corner[0] > 0.25 + 1e-3
+                            && corner[1] > 0.25 + 1e-3
+                            && corner[1] < 0.5 - 1e-3;
+                        assert!(!filler, "{face:?} samples the filler at {corner:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hanging_plants_flip_their_art() {
+        fn plane_uv(name: &str, hanging: bool) -> [[f32; 2]; 4] {
+            let state = BlockStateQuery::new(name).with_state("hanging", hanging);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing {name}"));
+            shape
+                .planes
+                .first()
+                .and_then(|plane| plane.uv)
+                .expect("plant uv")
+        }
+        let standing = plane_uv("minecraft:mangrove_propagule", false);
+        let hanging = plane_uv("minecraft:mangrove_propagule", true);
+        assert!(standing[0][1] > 0.5, "standing art starts at the bottom");
+        assert!(hanging[0][1] < 0.5, "hanging art starts at the top");
+    }
+
     fn item_frame_plate_hugs_the_support_side() {
         fn frame_bounds(facing: i64) -> ([f32; 3], [f32; 3]) {
             let state =
@@ -2117,7 +2883,13 @@ mod tests {
         let gate_shape =
             model_shape(&open_gate).unwrap_or_else(|| panic!("missing fence gate shape"));
         assert_eq!(gate_shape.cuboids.len(), 8);
-        assert!(gate_shape.cuboids.iter().any(|cuboid| cuboid.max[2] == 1.0));
+        // A north-facing open gate swings its leaves towards +z, ending at z = 15/16.
+        assert!(
+            gate_shape
+                .cuboids
+                .iter()
+                .any(|cuboid| (cuboid.max[2] - 0.9375).abs() < 0.001)
+        );
 
         let wall_gate = BlockStateQuery::new("minecraft:bamboo_fence_gate")
             .with_state("minecraft:cardinal_direction", "north")
@@ -2185,19 +2957,24 @@ mod tests {
             .with_state("minecraft:block_face", "wall")
             .with_state("minecraft:cardinal_direction", "south");
         let torch_shape = model_shape(&wall_torch).unwrap_or_else(|| panic!("missing torch shape"));
-        // Vanilla torches are a 2x10 px post plus two full-texture cross sheets; a wall torch
-        // must sit against its support (south here) rather than at the block centre.
-        assert_eq!(torch_shape.cuboids.len(), 3);
+        // The vanilla wall torch is one tilted 2 x 2 x 9.9 px post, so the shape is six sheets
+        // and leans onto its support (south here).
+        assert_eq!(torch_shape.planes.len(), 6);
+        let max_z = torch_shape
+            .planes
+            .iter()
+            .flat_map(|plane| plane.corners)
+            .map(|corner| corner[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min_z = torch_shape
+            .planes
+            .iter()
+            .flat_map(|plane| plane.corners)
+            .map(|corner| corner[2])
+            .fold(f32::INFINITY, f32::min);
         assert!(
-            torch_shape
-                .cuboids
-                .iter()
-                .any(|cuboid| cuboid.min[2] >= 0.4 && cuboid.max[2] >= 0.99),
-            "the torch post must reach the south support face"
-        );
-        assert!(
-            torch_shape.cuboids.iter().any(|cuboid| cuboid.max[1] > 0.9),
-            "torch cross sheets span the block height"
+            (max_z - 1.0631).abs() < 0.001 && (min_z - 0.69).abs() < 0.001,
+            "the torch post must lean onto the south support face"
         );
 
         let lantern = BlockStateQuery::new("minecraft:lantern").with_state("hanging", true);

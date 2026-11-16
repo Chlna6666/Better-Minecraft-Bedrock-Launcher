@@ -1,8 +1,7 @@
 use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{
-    CardinalDirection, cardinal_direction, from_string, state_bool, state_i64,
-    state_string,
+    CardinalDirection, cardinal_direction, from_string, state_bool, state_i64, state_string,
 };
 use crate::model_family::shape::{ModelCuboid, ModelShape, detail_cuboid_with_local_uv};
 use crate::state::BlockStateQuery;
@@ -18,10 +17,14 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
 pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
     if trapdoor_is_open(state) {
         let direction = trapdoor_direction(state).unwrap_or(CardinalDirection::North);
-        let cuboid =
-            trapdoor_cuboid_with_uv(wall_attached_cuboid(direction.opposite(), 0.1875, 0.0, 1.0));
+        // `direction` names the side the trapdoor swings from, so the open panel hangs on that
+        // same boundary of the block; vanilla rotates the north-authored model towards it.
+        let cuboid = trapdoor_cuboid_with_uv(wall_attached_cuboid(direction, 0.1875, 0.0, 1.0));
+        // A top trapdoor hangs from the ceiling, so its panel is the floor one mirrored through
+        // the block's middle. Mirroring moves the `up` art onto the face that now points down;
+        // flipping only the thin edge's UV left the large faces showing the wrong side.
         let cuboid = if trapdoor_is_top(state) {
-            flip_open_top_side_uvs(cuboid)
+            mirror_vertically(cuboid)
         } else {
             cuboid
         };
@@ -36,26 +39,43 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
     ))])
 }
 
-fn flip_open_top_side_uvs(mut cuboid: ModelCuboid) -> ModelCuboid {
+/// Mirrors a box through the block's horizontal middle, carrying its face art with it.
+///
+/// Up and down swap places (both the geometry and the texture slots), and every vertical face
+/// has its V axis flipped so the art stays upright on the mirrored panel.
+fn mirror_vertically(mut cuboid: ModelCuboid) -> ModelCuboid {
+    let (min_y, max_y) = (cuboid.min[1], cuboid.max[1]);
+    cuboid.min[1] = 1.0 - max_y;
+    cuboid.max[1] = 1.0 - min_y;
+    if let (Some(up), Some(down)) = (
+        cuboid.face_material_slots.get(&BlockFace::Up).cloned(),
+        cuboid.face_material_slots.get(&BlockFace::Down).cloned(),
+    ) {
+        cuboid
+            .face_material_slots
+            .insert(BlockFace::Up, down);
+        cuboid
+            .face_material_slots
+            .insert(BlockFace::Down, up);
+    }
+    for (from, to) in [(BlockFace::Up, BlockFace::Down), (BlockFace::Down, BlockFace::Up)] {
+        if let Some(uv) = cuboid.face_uvs.get(&from).copied() {
+            cuboid.face_uvs.insert(to, uv);
+        }
+    }
     for face in [
-        BlockFace::Up,
-        BlockFace::Down,
         BlockFace::North,
         BlockFace::South,
         BlockFace::East,
         BlockFace::West,
     ] {
-        if cuboid
-            .face_material_slots
-            .get(&face)
-            .is_none_or(|slot| slot != "side")
-        {
-            continue;
-        }
         let Some(uv) = cuboid.face_uvs.get(&face).copied() else {
             continue;
         };
-        cuboid.face_uvs.insert(face, [uv[2], uv[3], uv[0], uv[1]]);
+        // Face corners run bottom-left first, so flipping V means swapping the pairs.
+        cuboid
+            .face_uvs
+            .insert(face, [uv[3], uv[2], uv[1], uv[0]]);
     }
     cuboid
 }

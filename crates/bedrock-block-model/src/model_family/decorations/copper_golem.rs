@@ -1,6 +1,6 @@
 use crate::material::BlockFace;
 use crate::model_family::direction::{CardinalDirection, cardinal_direction, state_i64};
-use crate::model_family::shape::{ModelCuboid, ModelShape, rect_uv};
+use crate::model_family::shape::{ModelCuboid, ModelShape, rect_uv, rotate_cuboid_cardinal};
 use crate::state::BlockStateQuery;
 
 #[derive(Clone, Copy)]
@@ -26,7 +26,7 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
     ModelShape::from_cuboids(
         cubes
             .iter()
-            .map(|cube| rotate_cuboid_from_north(entity_cuboid(*cube), direction))
+            .map(|cube| rotate_cuboid_cardinal(&entity_cuboid(*cube), direction))
             .collect::<Vec<_>>(),
     )
 }
@@ -102,45 +102,6 @@ fn uv64(u: f32, v: f32, width: f32, height: f32) -> [[f32; 2]; 4] {
 
 fn entity_xz_to_block(value: f32) -> f32 {
     px(value + 8.0)
-}
-
-fn rotate_cuboid_from_north(cuboid: ModelCuboid, direction: CardinalDirection) -> ModelCuboid {
-    let turns = match direction {
-        CardinalDirection::North => 0,
-        CardinalDirection::East => 1,
-        CardinalDirection::South => 2,
-        CardinalDirection::West => 3,
-    };
-    (0..turns).fold(cuboid, |cuboid, _| rotate_cuboid_clockwise(cuboid))
-}
-
-fn rotate_cuboid_clockwise(cuboid: ModelCuboid) -> ModelCuboid {
-    let mut rotated = ModelCuboid::new(
-        [1.0 - cuboid.max[2], cuboid.min[1], cuboid.min[0]],
-        [1.0 - cuboid.min[2], cuboid.max[1], cuboid.max[0]],
-    );
-    rotated.material_slot = cuboid.material_slot;
-    for (face, slot) in cuboid.face_material_slots {
-        rotated
-            .face_material_slots
-            .insert(rotate_block_face_clockwise(face), slot);
-    }
-    for (face, uv) in cuboid.face_uvs {
-        rotated
-            .face_uvs
-            .insert(rotate_block_face_clockwise(face), uv);
-    }
-    rotated
-}
-
-fn rotate_block_face_clockwise(face: BlockFace) -> BlockFace {
-    match face {
-        BlockFace::North => BlockFace::East,
-        BlockFace::East => BlockFace::South,
-        BlockFace::South => BlockFace::West,
-        BlockFace::West => BlockFace::North,
-        other => other,
-    }
 }
 
 const fn entity_cube(origin: [f32; 3], size: [f32; 3], uv: [f32; 2]) -> EntityCube {
