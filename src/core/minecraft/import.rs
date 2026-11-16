@@ -113,6 +113,7 @@ pub enum ImportTargetType {
     ResourcePack,  // resource_packs
     BehaviorPack,  // behavior_packs
     SkinPack,      // skin_packs
+    CapePack,      // capes
     Compound,      // 包含多个包的复合文件 (.mcaddon)
     Unknown,
 }
@@ -125,6 +126,7 @@ impl ImportTargetType {
             ImportTargetType::ResourcePack => "resource_packs",
             ImportTargetType::BehaviorPack => "behavior_packs",
             ImportTargetType::SkinPack => "skin_packs",
+            ImportTargetType::CapePack => "capes",
             _ => "unknown_imported",
         }
     }
@@ -136,6 +138,7 @@ impl ImportTargetType {
             ImportTargetType::ResourcePack => "Import.resourcePacks",
             ImportTargetType::BehaviorPack => "Import.behaviorPacks",
             ImportTargetType::SkinPack => "Import.skinPacks",
+            ImportTargetType::CapePack => "Import.capePacks",
             ImportTargetType::Compound => "Import.addon",
             _ => "Import.unknown",
         }
@@ -355,6 +358,41 @@ fn world_pack_references_from_dir(dir: &Path) -> Vec<WorldPackReference> {
     references
 }
 
+/// Builds the import preview for a cape pack using the same reader the manager uses.
+fn cape_pack_preview(
+    path: &Path,
+    preferred_lang: Option<&str>,
+    size: u64,
+) -> Result<PackagePreview> {
+    let lang = preferred_lang.unwrap_or("en_US");
+    let pack = crate::core::minecraft::capes::read_pack(path, lang).map_err(anyhow::Error::msg)?;
+    let icon = pack.icon_path.as_ref().and_then(|icon_path| {
+        fs::read(icon_path).ok().map(|bytes| PreviewIconData {
+            format: PreviewImageFormat::Png,
+            bytes: Arc::new(bytes),
+        })
+    });
+    let description = pack
+        .capes
+        .iter()
+        .map(|cape| cape.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    Ok(PackagePreview {
+        name: pack.name,
+        description,
+        icon,
+        kind: ImportTargetType::CapePack.label_key().to_string(),
+        version: None,
+        size,
+        manifest: None,
+        sub_packs: None,
+        world_pack_references: None,
+        valid: true,
+        invalid_reason: None,
+    })
+}
+
 // --- [核心功能] 检查包信息 (带 i18n 支持) ---
 pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<PackagePreview> {
     let file = File::open(path)?;
@@ -363,6 +401,10 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
 
     // 1. 基础分析 (确定类型和默认名称)
     let (target_type, default_name, _uuid, scan) = analyze_archive(&mut archive, path)?;
+
+    if target_type == ImportTargetType::CapePack {
+        return cape_pack_preview(path, preferred_lang, file_size);
+    }
 
     let mut name = default_name;
     let mut description = "".to_string();
@@ -792,6 +834,29 @@ pub fn check_import_file(file_path: &Path, options: &GamePathOptions) -> Result<
         });
     }
 
+    if target_type == ImportTargetType::CapePack {
+        let parent_dir = resolve_target_parent(options, "capes", true)
+            .ok_or_else(|| anyhow::anyhow!("无法解析披风包目标路径"))?;
+        let target_name = file_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("无效的披风包文件名"))?
+            .to_string();
+        let has_conflict = parent_dir.join(&target_name).exists();
+        return Ok(ImportCheckResult {
+            has_conflict,
+            conflict_type: has_conflict.then(|| "uuid_match".into()),
+            target_name,
+            message: if has_conflict {
+                "Existing cape pack".into()
+            } else {
+                "New import".into()
+            },
+            existing_pack_info: None,
+        });
+    }
+
     if !matches!(target_type, ImportTargetType::World) && pack_uuid.is_none() {
         return Err(anyhow::anyhow!("manifest.header.uuid 缺失，无法导入"));
     }
@@ -1015,6 +1080,7 @@ pub fn files_batch_cancellable(
             Some(ext) if ext.eq_ignore_ascii_case("mcpack") => "资源包",
             Some(ext) if ext.eq_ignore_ascii_case("mcaddon") => "附加包",
             Some(ext) if ext.eq_ignore_ascii_case("mctemplate") => "世界模板",
+            Some(ext) if ext.eq_ignore_ascii_case("mccapes") => "披风包",
             _ => "压缩包/其他资源",
         };
         info!(
@@ -1074,6 +1140,12 @@ fn process_single_archive(
     // [修改] 递归处理：如果发现多个 manifest.json，说明是复合包，需要解压处理
     // analyze_archive 只能检测根目录或第一层，如果有多层嵌套，需要更强的检测
     let (target_type, internal_name, pack_uuid, _scan) = analyze_archive(&mut archive, file_path)?;
+
+    if target_type == ImportTargetType::CapePack {
+        crate::core::minecraft::capes::import_pack(options, file_path, overwrite)
+            .map_err(anyhow::Error::msg)?;
+        return Ok(());
+    }
 
     if target_type == ImportTargetType::Compound {
         info!("Detected compound archive: {:?}", file_path);
@@ -1322,6 +1394,34 @@ pub fn analyze_archive(
         .unwrap_or("")
         .to_ascii_lowercase();
 
+    // Cape packs are BLoader extensions: `.mccapes` is authoritative, and a plain ZIP
+    // is recognized when it holds a single `cape_pack` module. They install under
+    // `capes/`, not as Bedrock resource/behavior packs. Mixed compound archives keep
+    // their normal handling.
+    let cape_pack = scan
+        .packs
+        .iter()
+        .find(|pack| pack.pack_type == ImportTargetType::CapePack);
+    let single_cape_pack = cape_pack.is_some() && scan.packs.len() == 1 && !scan.is_compound;
+    if ext == "mccapes" || single_cape_pack {
+        let name = cape_pack
+            .and_then(|pack| pack.manifest.header.as_ref())
+            .and_then(|header| header.name.clone())
+            .unwrap_or(default_name.clone());
+        let uuid = cape_pack
+            .and_then(|pack| pack.manifest.header.as_ref())
+            .and_then(|header| header.uuid.clone());
+        debug!(
+            "Analyze archive: {:?}, result=CapePack, packs={}, compound={}, nested={}, elapsed={} ms",
+            original_path,
+            scan.packs.len(),
+            scan.is_compound,
+            scan.has_nested_archive,
+            start.elapsed().as_millis()
+        );
+        return Ok((ImportTargetType::CapePack, name, uuid, scan));
+    }
+
     // mctemplate 强制按世界模板处理（优先其清单）
     if ext == "mctemplate" {
         if let Some(p) = scan
@@ -1492,6 +1592,9 @@ fn detect_type_from_manifest(manifest: &PartialManifest) -> ImportTargetType {
                 }
                 "skin_pack" | "skinpack" => {
                     return ImportTargetType::SkinPack;
+                }
+                "cape_pack" | "capepack" => {
+                    return ImportTargetType::CapePack;
                 }
                 _ => {}
             }
@@ -3501,4 +3604,50 @@ pub fn archive_optimized(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
+    use std::io::Cursor;
+    use zip::{ZipWriter, write::SimpleFileOptions};
+
+    fn write_cape_pack_archive(path: &Path, extension_type: &str) -> Result<()> {
+        let cape = RgbaImage::from_pixel(64, 32, Rgba([0, 200, 0, 255]));
+        let mut png = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(cape).write_to(&mut png, ImageFormat::Png)?;
+        let mut zip = ZipWriter::new(File::create(path)?);
+        let options = SimpleFileOptions::default();
+        zip.start_file("manifest.json", options)?;
+        zip.write_all(
+            format!(
+                r#"{{"format_version":1,"header":{{"name":"Sulfur","uuid":"331ea693-4c4a-51a8-9f34-4740c19d8d5b","version":[1,0,2]}},"modules":[{{"type":"{extension_type}","uuid":"dff5d29a-022b-56f6-b3d9-409b90fac32a","version":[1,0,2]}}]}}"#
+            )
+            .as_bytes(),
+        )?;
+        zip.start_file("cape.json", options)?;
+        zip.write_all(
+            br#"{"localization_name":"sulfur","capes":[{"localization_name":"face","texture":"cape.png"}]}"#,
+        )?;
+        zip.start_file("cape.png", options)?;
+        zip.write_all(png.get_ref())?;
+        zip.finish()?;
+        Ok(())
+    }
+
+    #[test]
+    fn mccapes_and_cape_pack_zips_inspect_as_cape_packs() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        for (name, extension_type) in [("sulfur.mccapes", "cape_pack"), ("sulfur.zip", "cape_pack")]
+        {
+            let path = dir.path().join(name);
+            write_cape_pack_archive(&path, extension_type)?;
+            let preview = inspect_archive(&path, Some("en_US"))?;
+            assert_eq!(preview.kind, ImportTargetType::CapePack.label_key());
+            assert_eq!(preview.name, "Sulfur");
+            assert!(preview.valid);
+        }
+        Ok(())
+    }
 }

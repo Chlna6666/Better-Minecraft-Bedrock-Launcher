@@ -7,6 +7,7 @@ pub(crate) const IMPORT_EXTENSIONS: &[&str] = &[
     "mcworld",
     "mcaddon",
     "mctemplate",
+    "mccapes",
     "zip",
     "appx",
     "msixvc",

@@ -1,3 +1,4 @@
+use crate::tasks::TaskStage;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -77,9 +78,9 @@ pub struct InstallPlan {
 pub(crate) fn start(plan: InstallPlan) -> Result<String, String> {
     let detail = Some(format!("Windows App SDK {}", plan.version_label));
     start_dependency_install_task(
-        "安装 Windows App SDK Runtime",
+        t!("TaskTitle.install_windows_app_sdk"),
         detail,
-        "installing_windows_app_sdk",
+        TaskStage::INSTALLING_WINDOWS_APP_SDK,
         move |sender| async move { install_runtime(plan, Some(sender)).await },
     )
 }

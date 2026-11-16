@@ -14,11 +14,17 @@ use winreg::enums::*;
 // --- 常量定义，方便修改 ---
 const PROG_ID: &str = "BMCBL.Asset";
 const APP_NAME: &str = "Minecraft Bedrock Asset";
-const EXTENSIONS: &[&str] = &[".mcpack", ".mcworld", ".mcaddon", ".mctemplate"];
+const EXTENSIONS: &[&str] = &[
+    ".mcpack",
+    ".mcworld",
+    ".mcaddon",
+    ".mctemplate",
+    ".mccapes",
+];
 // 注册表中的自定义标识键，用于检测是否需要更新关联
 const REG_APP_PATH_KEY: &str = "AppPath";
 const REG_VERSION_KEY: &str = "AssocVersion";
-const ASSOC_VERSION: u32 = 2; // 关联版本号，格式变更时可递增强制刷新
+const ASSOC_VERSION: u32 = 3; // 关联版本号，格式变更时可递增强制刷新
 
 /// 注册文件关联 (仅在 Windows 下有效)
 /// 包含检查机制，仅在路径变更、版本变更或未注册时执行写入

@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
+use crate::tasks::TaskStage;
 
 #[derive(Deserialize, Debug)]
 pub struct UpdateArgs {
@@ -290,7 +291,7 @@ pub async fn update(args: UpdateArgs) -> Result<serde_json::Value, String> {
     let timeout_secs = args.timeout_secs.unwrap_or(60u64);
     let auto_quit = args.auto_quit.unwrap_or(true);
 
-    let mut options = TaskOptions::new("下载更新", "ready");
+    let mut options = TaskOptions::new(t!("TaskTitle.download_update").to_string(), TaskStage::READY);
     if let Some(task_id) = args.task_id {
         options = options.id(task_id);
     }
@@ -344,7 +345,7 @@ pub async fn update(args: UpdateArgs) -> Result<serde_json::Value, String> {
             let bytes_len = fs::metadata(&target)
                 .map_err(|e| fail_update_task(&task_id, format!("获取文件大小失败：{}", e)))?
                 .len();
-            reset_progress(&task_id, None, Some("preparing_update"));
+            reset_progress(&task_id, None, Some(TaskStage::PREPARING_UPDATE));
             set_task_message(&task_id, Some("更新包已下载，正在准备更新程序".to_string()));
             bytes_len
         }

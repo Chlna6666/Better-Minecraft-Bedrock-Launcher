@@ -3,6 +3,7 @@
     unsafe_code,
     reason = "Microsoft Store dependency checks call native installer APIs"
 )]
+use gpui::SharedString;
 use std::cmp::Ordering;
 use std::env;
 use std::future::Future;
@@ -11,6 +12,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
+use crate::tasks::TaskStage;
 
 use anyhow::{Context, Result, anyhow};
 use regex::Regex;
@@ -131,16 +133,16 @@ fn dependency_task_text(message: &LocalizedText) -> String {
 }
 
 fn start_dependency_install_task<F, Fut>(
-    title: &'static str,
+    title: SharedString,
     detail: Option<String>,
-    stage: &'static str,
+    stage: TaskStage,
     work: F,
 ) -> Result<String, String>
 where
     F: FnOnce(UnboundedSender<DependencyEvent>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<()>> + Send + 'static,
 {
-    let mut task_options = crate::tasks::task_manager::TaskOptions::new(title, "queued").total(100);
+    let mut task_options = crate::tasks::task_manager::TaskOptions::new(title.clone(), TaskStage::QUEUED).total(100);
     if let Some(detail) = detail {
         task_options = task_options.detail(detail);
     }
@@ -151,7 +153,7 @@ where
     // the adapter folds all feedback into the single TaskManager source of truth.
     let (worker_sender, mut worker_receiver) = unbounded_channel::<DependencyEvent>();
     let progress_task_id = task_id.clone();
-    let progress_stage = stage;
+    let progress_stage = stage.clone();
     if let Err(error) = crate::tasks::runtime::spawn_io(async move {
         let mut last_percent = 0_u64;
         let mut last_target: Option<String> = None;
@@ -167,7 +169,7 @@ where
                         crate::tasks::task_manager::reset_progress(
                             &progress_task_id,
                             Some(100),
-                            Some(progress_stage),
+                            Some(progress_stage.clone()),
                         );
                         last_percent = 0;
                     }
@@ -175,7 +177,7 @@ where
                         &progress_task_id,
                         ProgressUpdate::advance(percent.saturating_sub(last_percent))
                             .total(100)
-                            .stage(progress_stage),
+                            .stage(progress_stage.clone()),
                     );
                     last_percent = percent;
 
@@ -217,7 +219,7 @@ where
 
     let worker_task_id = task_id.clone();
     if let Err(error) = crate::tasks::runtime::spawn_archive_task(task_id.clone(), async move {
-        crate::tasks::task_manager::reset_progress(&worker_task_id, Some(100), Some(stage));
+        crate::tasks::task_manager::reset_progress(&worker_task_id, Some(100), Some(stage.clone()));
         let result = work(worker_sender).await;
         if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
             return;
@@ -247,9 +249,9 @@ pub fn start_missing_uwp_dependencies(
 ) -> Result<String, String> {
     let count = dependencies.len();
     start_dependency_install_task(
-        "安装 UWP 运行依赖",
+        t!("TaskTitle.install_uwp_dependencies"),
         Some(format!("{count} 个缺失依赖")),
-        "installing_uwp_dependencies",
+        TaskStage::INSTALLING_UWP_DEPENDENCIES,
         move |sender| async move { install_missing_uwp_dependencies(dependencies, Some(sender)).await },
     )
 }
@@ -261,9 +263,9 @@ pub fn start_game_input_runtime(plan: GameInputInstallPlan) -> Result<String, St
         .and_then(|value| value.to_str())
         .map(str::to_string);
     start_dependency_install_task(
-        "安装 GameInput Runtime",
+        t!("TaskTitle.install_game_input"),
         detail,
-        "installing_game_input",
+        TaskStage::INSTALLING_GAME_INPUT,
         move |sender| async move { install_game_input_runtime(plan, Some(sender)).await },
     )
 }

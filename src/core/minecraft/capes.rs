@@ -1,10 +1,11 @@
 //! Local cape packs stored under the game's `capes` directory.
 //!
 //! Packs follow the v1 layout documented in `docs/CAPE_PACK_FORMAT.md`: an official-style
-//! `manifest.json` plus a `cape.json` manifest with `texts/*.lang` localization, optional
-//! per-cape icons and elytra textures. Archives (`.zip`/`.mccapes`) and single PNG textures are
-//! imported by unpacking them into folder packs; the game-side loader keeps reading archives.
-//! The earlier dev-only `pack.json` layout is retired without a compatibility shim.
+//! `manifest.json` plus a `cape.json` manifest with `texts/*.lang` localization, an optional
+//! pack-level `pack_icon.png`, optional per-cape icons and elytra textures. Archives
+//! (`.zip`/`.mccapes`) and single PNG textures are imported by unpacking them into folder
+//! packs; the game-side loader keeps reading archives. The earlier dev-only `pack.json`
+//! layout is retired without a compatibility shim.
 
 use serde::Deserialize;
 use serde_json::json;
@@ -28,6 +29,8 @@ const MAX_PACK_MEMBERS: usize = 256;
 const MAX_CAPES_PER_PACK: usize = 64;
 const MAX_NAME_CHARS: usize = 90;
 const MAX_LOCALIZATION_CHARS: usize = 64;
+/// Optional pack-level icon at the pack root, shared with the game-side loader.
+const PACK_ICON_NAME: &str = "pack_icon.png";
 
 /// Preview canvas and mannequin placeholder colors, matched to the launcher surface palette.
 const PREVIEW_CANVAS_COLOR: image::Rgba<u8> = image::Rgba([40, 43, 48, 255]);
@@ -279,6 +282,11 @@ fn is_cape_texture_size(width: u32, height: u32) -> bool {
 
 fn is_icon_size(width: u32, height: u32) -> bool {
     width > 0 && width <= 2048 && height > 0 && height <= 2048
+}
+
+/// Pack icons are square; per-cape icons keep the looser thumbnail rules.
+fn is_pack_icon_size(width: u32, height: u32) -> bool {
+    width == height && is_icon_size(width, height)
 }
 
 fn decode_png(bytes: &[u8]) -> Result<image::DynamicImage, String> {
@@ -577,9 +585,26 @@ fn read_pack_at(
         .cloned()
         .unwrap_or_else(|| manifest.header.name.clone());
 
+    // Optional pack-level icon at the pack root. It never replaces a per-cape `icon`;
+    // an invalid icon rejects the whole pack like the game-side loader does.
+    let pack_icon_path =
+        match read_member(path, archive, &member(PACK_ICON_NAME), MAX_TEXTURE_BYTES)? {
+            Some(bytes) => {
+                let image =
+                    decode_png(&bytes).map_err(|error| format!("披风包图标无效：{error}"))?;
+                let (width, height) = (image.width(), image.height());
+                if !is_pack_icon_size(width, height) {
+                    return Err(format!(
+                        "披风包图标无效：{width}x{height}（需要不超过 2048 的正方形 PNG）"
+                    ));
+                }
+                Some(cache_png(path, PACK_ICON_NAME, &bytes, false)?)
+            }
+            None => None,
+        };
+
     let mut seen_capes = HashSet::new();
     let mut capes = Vec::with_capacity(cape_manifest.capes.len());
-    let mut pack_icon_path = None;
     for entry in &cape_manifest.capes {
         if !is_localization_name(&entry.localization_name)
             || !seen_capes.insert(&entry.localization_name)
@@ -614,9 +639,6 @@ fn read_pack_at(
             }
             None => Some(cache_preview(path, texture_name, &texture_bytes)?),
         };
-        if pack_icon_path.is_none() {
-            pack_icon_path = preview_path.clone();
-        }
         let elytra_texture_path = match &entry.elytra {
             Some(elytra_name) => {
                 let elytra_bytes =
@@ -657,7 +679,8 @@ fn read_pack_at(
     Ok(CapePackInfo {
         name: pack_name,
         path: path.to_path_buf(),
-        icon_path: pack_icon_path,
+        icon_path: pack_icon_path
+            .or_else(|| capes.iter().find_map(|cape| cape.preview_path.clone())),
         capes,
     })
 }
@@ -781,7 +804,11 @@ fn extract_zip_pack(source: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn import_archive(options: &GamePathOptions, source: &Path) -> Result<PathBuf, String> {
+fn import_archive(
+    options: &GamePathOptions,
+    source: &Path,
+    overwrite: bool,
+) -> Result<PathBuf, String> {
     read_pack(source, "en_US")?;
     let target_dir = resolve_target_parent(options, "capes", true).ok_or("无法确定披风包目录")?;
     fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
@@ -792,7 +819,22 @@ fn import_archive(options: &GamePathOptions, source: &Path) -> Result<PathBuf, S
         .ok_or("无效的披风包文件名")?;
     let target = target_dir.join(stem);
     if target.exists() {
-        return Err(format!("披风包已存在：{}", target.display()));
+        if !overwrite {
+            return Err(format!("披风包已存在：{}", target.display()));
+        }
+        // Extract and validate beside the existing pack before replacing it, so a
+        // malformed archive cannot destroy the working installation.
+        let staging = target_dir.join(format!(".import-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
+        let result = extract_zip_pack(source, &staging)
+            .and_then(|()| read_pack(&staging, "en_US").map(|_| ()));
+        if let Err(error) = result {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(format!("披风包导入失败：{error}"));
+        }
+        remove_target(&target)?;
+        fs::rename(&staging, &target).map_err(|error| error.to_string())?;
+        return Ok(target);
     }
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
     if let Err(error) = extract_zip_pack(source, &target) {
@@ -804,6 +846,15 @@ fn import_archive(options: &GamePathOptions, source: &Path) -> Result<PathBuf, S
         return Err(format!("披风包导入后校验失败：{error}"));
     }
     Ok(target)
+}
+
+/// Removes an existing pack path that may be either an unpacked folder or a file archive.
+fn remove_target(path: &Path) -> Result<(), String> {
+    if path.is_dir() {
+        fs::remove_dir_all(path).map_err(|error| error.to_string())
+    } else {
+        fs::remove_file(path).map_err(|error| error.to_string())
+    }
 }
 
 fn sanitize_pack_name(name: &str) -> String {
@@ -922,14 +973,18 @@ fn import_png(options: &GamePathOptions, source: &Path) -> Result<PathBuf, Strin
     Ok(target)
 }
 
-pub fn import_pack(options: &GamePathOptions, source: &Path) -> Result<PathBuf, String> {
+pub fn import_pack(
+    options: &GamePathOptions,
+    source: &Path,
+    overwrite: bool,
+) -> Result<PathBuf, String> {
     match source
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
         .as_deref()
     {
-        Some("zip") | Some("mccapes") => import_archive(options, source),
+        Some("zip") | Some("mccapes") => import_archive(options, source, overwrite),
         Some("png") => import_png(options, source),
         _ => Err("仅支持 .mccapes/.zip 披风包或 PNG 披风纹理".into()),
     }
@@ -953,6 +1008,15 @@ mod tests {
                 image.put_pixel(x, y, Rgba([200, 0, 0, 255]));
             }
         }
+        let mut png = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut png, ImageFormat::Png)
+            .ok();
+        png.into_inner()
+    }
+
+    fn square_png(size: u32, color: Rgba<u8>) -> Vec<u8> {
+        let image = RgbaImage::from_pixel(size, size, color);
         let mut png = Cursor::new(Vec::new());
         DynamicImage::ImageRgba8(image)
             .write_to(&mut png, ImageFormat::Png)
@@ -1035,8 +1099,46 @@ mod tests {
         let fallback = read_pack(&pack, "de-DE")?;
         assert_eq!(fallback.name, "Test Capes");
         assert_eq!(fallback.capes[0].name, "Green Cape");
-        assert!(localized.icon_path.is_some());
+        // Without pack_icon.png the pack icon falls back to the first generated preview.
+        let icon = image::open(localized.icon_path.as_ref().ok_or("missing icon")?)?;
+        assert_eq!(icon.get_pixel(32, 33), Rgba([0, 200, 0, 255]));
         assert!(localized.capes[0].elytra_texture_path.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn pack_icon_is_used_without_replacing_cape_icons() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let pack = dir.path().join("Sample");
+        write_pack_folder(&pack);
+        fs::write(
+            pack.join("pack_icon.png"),
+            square_png(64, Rgba([0, 0, 255, 255])),
+        )?;
+
+        let info = read_pack(&pack, "en_US")?;
+        let icon = image::open(info.icon_path.as_ref().ok_or("missing pack icon")?)?;
+        assert_eq!(icon.get_pixel(0, 0), Rgba([0, 0, 255, 255]));
+        // The per-cape thumbnail still comes from the cape texture.
+        let preview = image::open(
+            info.capes[0]
+                .preview_path
+                .as_ref()
+                .ok_or("missing cape preview")?,
+        )?;
+        assert_eq!(preview.get_pixel(32, 33), Rgba([0, 200, 0, 255]));
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_pack_icon_rejects_the_pack() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let pack = dir.path().join("Sample");
+        write_pack_folder(&pack);
+        fs::write(pack.join("pack_icon.png"), cape_png())?;
+
+        let error = read_pack(&pack, "en_US").expect_err("non-square pack icon must reject");
+        assert!(error.contains("披风包图标无效"), "{error}");
         Ok(())
     }
 

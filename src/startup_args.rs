@@ -373,6 +373,10 @@ mod tests {
             action(&["pack.mcaddon"]),
             StartupAction::Import(PathBuf::from("pack.mcaddon"))
         );
+        assert_eq!(
+            action(&["--import", "BMCBL-Sulfur-Slime.mccapes"]),
+            StartupAction::Import(PathBuf::from("BMCBL-Sulfur-Slime.mccapes"))
+        );
     }
 
     #[test]
