@@ -57,9 +57,9 @@ BMCBL launch --game-args "-server 127.0.0.1" --json
 
 ### 1.2 import
 
-导入资源包、世界、附加包或安装包，并打开导入窗口。
+导入资源包、世界、附加包、披风包或安装包，并打开导入窗口。
 
-支持：`.mcpack`、`.mcworld`、`.mcaddon`、`.mctemplate`、`.zip`、
+支持：`.mcpack`、`.mcworld`、`.mcaddon`、`.mctemplate`、`.mccapes`、`.zip`、
 `.appx`、`.msixvc`。其他扩展名会返回用法错误。
 
 ```powershell

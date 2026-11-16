@@ -25,7 +25,7 @@ BMCBL.exe
 | `--silent` | 不打开主窗口，直接启动游戏。 |
 | `--gui` | 打开主窗口并自动启动游戏。与 `--silent` 互斥；已有实例运行时提示后退出；首次运行会等待协议/新手引导完成后再继续。 |
 | `--game-args <ARGS>` | 覆盖传给游戏的启动参数；只能与 `--launch` 一起使用。按命令行字符串传递，平台按空白/引号拆分；编辑器模式下优先于自动生成的 Deeplink。 |
-| `--import <FILE>` | 导入受支持的文件并打开启动器。 |
+| `--import <FILE>` | 导入受支持的文件（资源包、世界、附加包、披风包或安装包）并打开启动器。 |
 | `--updater <SRC> <DST> [TIMEOUT]` | 内部使用：更新器子进程。`TIMEOUT` 默认 60 秒。 |
 | `--terminal-host <COMMAND> <RESPONSE>` | 内部使用：Windows Terminal 控制台宿主。 |
 | 无参数 | 打开启动器主窗口。 |

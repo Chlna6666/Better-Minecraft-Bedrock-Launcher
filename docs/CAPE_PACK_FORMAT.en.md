@@ -8,6 +8,7 @@ The pack root must contain `manifest.json` and `cape.json`; each pack contains 1
 MyCapes/
   manifest.json
   cape.json
+  pack_icon.png
   textures/blue.png
   textures/blue_elytra.png
   icons/blue.png
@@ -26,6 +27,8 @@ MyCapes/
 {"serialize_name":"My Capes","localization_name":"my_capes","capes":[{"localization_name":"blue","texture":"textures/blue.png","elytra":"textures/blue_elytra.png","icon":"icons/blue.png"}]}
 ```
 
+The pack root may contain an optional `pack_icon.png` pack-level icon next to `manifest.json` and `cape.json`; it needs no manifest field. It must be a fully decodable square PNG with both dimensions at most 2048 and a file size at most 8 MiB; an invalid icon rejects the whole pack. The pack icon never replaces `capes[].icon`: a cape entry still prefers its own `icon`, otherwise the launcher generates a thumbnail from the cape texture. A missing `pack_icon.png` does not affect cape display; the manager then falls back to the first cape's thumbnail for the pack icon.
+
 Localization files use `texts/<language>.lang`, with one `key=display name` per line. Supply `texts/en_US.lang` for the default names. Missing translations fall back to the manifest name or localization key. Resolution order: the requested language file, then `texts/en_US.lang`, then the first available `.lang` in the pack.
 
 ```text
@@ -33,6 +36,6 @@ capepack.my_capes=My Capes
 cape.my_capes.blue=Blue Cape
 ```
 
-Texture layout: cape textures use the standard 10×16×1 box unwrap with the outer face (seen from behind) at (1,1)-(11,17) and the inner face at (12,1)-(22,17); the cape texture carries the embedded elytra wing region: a single-wing silhouette at (34,0)-(46,22) inside the vanilla `texOffs(22,0)` 10×20×2 unwrap (the renderer mirrors the second wing; do NOT paint a Java-style second face at (48,2)-(58,22)). The optional `elytra` field accepts a standalone wing texture with the same layout and should only be used when explicitly requested; without it the launcher samples the embedded region at (34,0)-(46,22). Icons are arbitrary-size PNGs (64×64 recommended). The retired dev layouts — legacy `pack.json` manifests and bare `cape.json` + `cape.png` single capes — are no longer read and are skipped as invalid packs.
+Texture layout: cape textures use the standard 10×16×1 box unwrap with the outer face (seen from behind) at (1,1)-(11,17) and the inner face at (12,1)-(22,17); the cape texture carries the embedded elytra wing region: a single-wing silhouette at (34,0)-(46,22) inside the vanilla `texOffs(22,0)` 10×20×2 unwrap (the renderer mirrors the second wing; do NOT paint a Java-style second face at (48,2)-(58,22)). The optional `elytra` field accepts a standalone wing texture with the same layout and should only be used when explicitly requested; without it the launcher samples the embedded region at (34,0)-(46,22). `capes[].icon` accepts an arbitrary-size PNG (64×64 recommended); pack-level icons follow the `pack_icon.png` rules above. The retired dev layouts — legacy `pack.json` manifests and bare `cape.json` + `cape.png` single capes — are no longer read and are skipped as invalid packs.
 
 Capes are enabled by default in version settings. Disabling them hides the manager tab. UWP versions below 1.21 use an older loader path and display an unsupported notice.

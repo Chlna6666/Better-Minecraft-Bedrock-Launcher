@@ -60,10 +60,10 @@ alive until the main window closes.
 
 ### 1.2 import
 
-Imports a resource pack, world, add-on or package and opens the import window.
+Imports a resource pack, world, add-on, cape pack or package and opens the import window.
 
-Supported: `.mcpack`, `.mcworld`, `.mcaddon`, `.mctemplate`, `.zip`, `.appx`,
-`.msixvc`. Other extensions fail with a usage error.
+Supported: `.mcpack`, `.mcworld`, `.mcaddon`, `.mctemplate`, `.mccapes`, `.zip`,
+`.appx`, `.msixvc`. Other extensions fail with a usage error.
 
 ```powershell
 BMCBL import pack.mcpack

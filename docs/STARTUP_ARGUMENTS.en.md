@@ -27,7 +27,7 @@ BMCBL.exe
 | `--silent` | Do not open the main window; start the game directly. |
 | `--gui` | Open the main window and start the game automatically. Mutually exclusive with `--silent`; exits with a message when another instance is running, and waits for the agreement/onboarding gates on first run. |
 | `--game-args <ARGS>` | Override the game launch arguments; requires `--launch`. Passed as a command-line string and split on whitespace/quotes by the platform; in editor mode it takes precedence over the generated deeplink. |
-| `--import <FILE>` | Import a supported file and open the launcher. |
+| `--import <FILE>` | Import a supported file (resource pack, world, add-on, cape pack or package) and open the launcher. |
 | `--updater <SRC> <DST> [TIMEOUT]` | Internal: updater child process. `TIMEOUT` defaults to 60 seconds. |
 | `--terminal-host <COMMAND> <RESPONSE>` | Internal: Windows Terminal console host. |
 | No arguments | Open the launcher main window. |

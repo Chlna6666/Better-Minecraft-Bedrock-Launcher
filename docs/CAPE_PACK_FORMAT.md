@@ -8,6 +8,7 @@
 MyCapes/
   manifest.json
   cape.json
+  pack_icon.png
   textures/blue.png
   textures/blue_elytra.png
   icons/blue.png
@@ -27,6 +28,8 @@ MyCapes/
 {"serialize_name":"My Capes","localization_name":"my_capes","capes":[{"localization_name":"blue","texture":"textures/blue.png","elytra":"textures/blue_elytra.png","icon":"icons/blue.png"}]}
 ```
 
+包根目录可选放置 `pack_icon.png` 作为包级图标，与 `manifest.json`、`cape.json` 同级，不需要新增清单字段。它必须是可完整解码的正方形 PNG，宽高均不超过 2048，文件不超过 8 MiB；格式不合法会拒绝整个披风包。包级图标不会替代 `capes[].icon`：披风条目仍优先使用自己的 `icon`，否则由启动器从披风纹理生成缩略图。缺少 `pack_icon.png` 不影响任何披风的展示；此时管理页的包图标回退到第一件披风的缩略图。
+
 本地化文件为 `texts/<语言>.lang`，每行 `键=显示名`。至少建议提供 `texts/en_US.lang`；缺少翻译时使用清单名称或本地化键。解析顺序为请求语言的文件、`texts/en_US.lang`、包内首个可用 `.lang`。
 
 ```text
@@ -34,6 +37,6 @@ capepack.my_capes=My Capes
 cape.my_capes.blue=Blue Cape
 ```
 
-纹理布局：披风纹理为标准 10×16×1 盒展开，外侧面（背面视角可见）位于 (1,1)-(11,17)，内侧面位于 (12,1)-(22,17)；鞘翅与披风共用一张纹理：内嵌翼区为原版 `texOffs(22,0)` 10×20×2 盒展开中的单翼剪影 (34,0)-(46,22)（渲染端镜像出另一翼；**不要**按 Java 布局再画 (48,2)-(58,22)）。可选 `elytra` 字段提供独立鞘翅纹理（布局同上），仅在作者明确需要时使用；无 `elytra` 字段时启动器按 (34,0)-(46,22) 采样披风纹理内嵌翼区。图标为任意尺寸 PNG（建议 64×64）。早期开发期的 `pack.json` 布局与"裸 `cape.json` + `cape.png`"单披风布局不再被读取，遇到时按无效包跳过。
+纹理布局：披风纹理为标准 10×16×1 盒展开，外侧面（背面视角可见）位于 (1,1)-(11,17)，内侧面位于 (12,1)-(22,17)；鞘翅与披风共用一张纹理：内嵌翼区为原版 `texOffs(22,0)` 10×20×2 盒展开中的单翼剪影 (34,0)-(46,22)（渲染端镜像出另一翼；**不要**按 Java 布局再画 (48,2)-(58,22)）。可选 `elytra` 字段提供独立鞘翅纹理（布局同上），仅在作者明确需要时使用；无 `elytra` 字段时启动器按 (34,0)-(46,22) 采样披风纹理内嵌翼区。`capes[].icon` 为任意尺寸 PNG（建议 64×64）；包级图标见上方 `pack_icon.png` 规则。早期开发期的 `pack.json` 布局与"裸 `cape.json` + `cape.png`"单披风布局不再被读取，遇到时按无效包跳过。
 
 披风功能在版本设置中默认开启；关闭后管理页隐藏披风标签。1.21 以下 UWP 使用旧加载路径，管理页会提示不支持。
