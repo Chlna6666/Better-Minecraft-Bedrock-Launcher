@@ -124,7 +124,9 @@ pub(crate) fn spawn_update_check_thread(
             let sender = sender.lock().ok().and_then(|mut sender| sender.take());
             if let Some(sender) = sender {
                 let outcome =
-                    UpdateCheckOutcome::with_error(format!("启动更新检查线程失败: {error}"));
+                    UpdateCheckOutcome::with_error(
+                    t!("UpdateModal.start_thread_failed", error = error.to_string()).to_string(),
+                );
                 if sender.send(outcome).is_err() {
                     tracing::warn!(
                         reason,
@@ -149,12 +151,16 @@ pub(crate) fn outcome_from_value(value: serde_json::Value) -> UpdateCheckOutcome
     }
 
     let Some(selected_release) = value.get("selected_release").cloned() else {
-        return UpdateCheckOutcome::with_error("检查更新响应缺少 selected_release");
+        return UpdateCheckOutcome::with_error(
+            t!("UpdateModal.missing_selected_release").to_string(),
+        );
     };
 
     match serde_json::from_value::<ReleaseSummary>(selected_release) {
         Ok(release) => UpdateCheckOutcome::with_release(release),
-        Err(error) => UpdateCheckOutcome::with_error(format!("解析更新版本信息失败: {error}")),
+        Err(error) => UpdateCheckOutcome::with_error(
+            t!("UpdateModal.parse_release_failed", error = error.to_string()).to_string(),
+        ),
     }
 }
 

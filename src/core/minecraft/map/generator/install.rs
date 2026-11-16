@@ -1,4 +1,5 @@
 //! Installs a completed map image preview into one LevelDB-backed world target.
+use crate::tasks::TaskStage;
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -154,7 +155,7 @@ pub fn start_frame_grid_preflight(
     support: BlockState,
 ) -> Result<String, String> {
     let task_id = task_manager::create_task(
-        task_manager::TaskOptions::new("检查展示框放置区域", "检查展示框放置区域").total(1),
+        task_manager::TaskOptions::new(t!("TaskTitle.check_frame_area").to_string(), TaskStage::MAP_CHECK_FRAME_AREA).total(1),
     )?;
     task_manager::register_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
@@ -205,12 +206,13 @@ fn start_install_task(
     history: MapInstallHistory,
 ) -> Result<String, String> {
     let (phase, total) = match &source {
-        InstallSource::Preview(preview, _) => ("生成地图记录", preview.tiles.len() as u64),
-        InstallSource::File(_) => ("读取地图包", 1),
+        InstallSource::Preview(preview, _) => {
+            (TaskStage::MAP_GENERATE_RECORDS, preview.tiles.len() as u64)
+        }
+        InstallSource::File(_) => (TaskStage::MAP_READ_BUNDLE, 1),
     };
     let task_id = task_manager::create_task(
-        task_manager::TaskOptions::new("写入地图包", phase)
-            .detail(title)
+        task_manager::TaskOptions::new(t!("TaskTitle.write_map_bundle").to_string(), phase).detail(title)
             .total(total),
     )?;
     task_manager::register_cooperative_cancel(task_id.clone());
@@ -261,7 +263,7 @@ async fn install(
                             &worker_id,
                             ProgressUpdate::advance(1)
                                 .total(total)
-                                .stage("生成地图记录"),
+                                .stage(TaskStage::MAP_GENERATE_RECORDS),
                         );
                     })
                 })
@@ -272,7 +274,7 @@ async fn install(
             let imported = runtime::blocking::run_io(move || read_map_import(&input)).await??;
             task_manager::update_progress(
                 task_id,
-                ProgressUpdate::advance(1).total(1).stage("读取地图包"),
+                ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_READ_BUNDLE),
             );
             imported
         }
@@ -280,7 +282,7 @@ async fn install(
     if cancel.is_cancelled() {
         return Err("地图包写入已取消".to_owned());
     }
-    task_manager::reset_progress(task_id, Some(1), Some("检查目标与地图 ID"));
+    task_manager::reset_progress(task_id, Some(1), Some(TaskStage::MAP_CHECK_TARGET));
     let worker_cancel = cancel.clone();
     let task_id = task_id.to_owned();
     let result = runtime::blocking::run_io(move || {
@@ -328,33 +330,33 @@ async fn install(
             &task_id,
             ProgressUpdate::advance(1)
                 .total(1)
-                .stage("检查目标与地图 ID"),
+                .stage(TaskStage::MAP_CHECK_TARGET),
         );
         if worker_cancel.is_cancelled() {
             return Err("地图包写入已取消".to_owned());
         }
-        task_manager::reset_progress(&task_id, Some(1), Some("创建撤销快照"));
+        task_manager::reset_progress(&task_id, Some(1), Some(TaskStage::MAP_CREATE_UNDO_SNAPSHOT));
         let complete_history = history(map_ids.clone(), affected_chunks)?;
         task_manager::update_progress(
             &task_id,
-            ProgressUpdate::advance(1).total(1).stage("创建撤销快照"),
+            ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_CREATE_UNDO_SNAPSHOT),
         );
         if worker_cancel.is_cancelled() {
             return Err("地图包写入已取消".to_owned());
         }
-        task_manager::reset_progress(&task_id, Some(1), Some("原子提交地图与物品"));
+        task_manager::reset_progress(&task_id, Some(1), Some(TaskStage::MAP_COMMIT));
         plan.commit(&world)?;
         task_manager::update_progress(
             &task_id,
             ProgressUpdate::advance(1)
                 .total(1)
-                .stage("原子提交地图与物品"),
+                .stage(TaskStage::MAP_COMMIT),
         );
-        task_manager::reset_progress(&task_id, Some(1), Some("保存撤销历史"));
+        task_manager::reset_progress(&task_id, Some(1), Some(TaskStage::MAP_SAVE_UNDO_HISTORY));
         complete_history().map_err(|error| format!("地图已写入，但撤销历史保存失败：{error}"))?;
         task_manager::update_progress(
             &task_id,
-            ProgressUpdate::advance(1).total(1).stage("保存撤销历史"),
+            ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_SAVE_UNDO_HISTORY),
         );
         Ok::<_, String>(format!(
             "已写入 {} 张地图，ID：{:?}",

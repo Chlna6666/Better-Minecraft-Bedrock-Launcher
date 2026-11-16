@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 use tracing::{debug, error};
+use crate::tasks::TaskStage;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct DeleteAssetPayload {
@@ -237,7 +238,7 @@ pub fn delete(payloads: Vec<DeleteAssetPayload>) -> Result<String, String> {
     }
     let detail = format!("{} 个资源", payloads.len());
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new("删除游戏资源", "deleting_assets")
+        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.delete_game_assets").to_string(), TaskStage::DELETING_ASSETS)
             .detail(detail),
     )?;
     crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
@@ -305,7 +306,7 @@ pub fn start_import_assets_task(
         request.file_paths.len()
     );
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(title, "queued").detail(detail),
+        crate::tasks::task_manager::TaskOptions::new(title, TaskStage::QUEUED).detail(detail),
     )?;
     crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
@@ -314,7 +315,7 @@ pub fn start_import_assets_task(
         crate::tasks::task_manager::reset_progress(
             &worker_task_id,
             None,
-            Some("installing_assets"),
+            Some(TaskStage::INSTALLING_ASSETS),
         );
         let result = import_assets_for_task(request, Some(worker_task_id.clone())).await;
 
@@ -536,7 +537,7 @@ pub(crate) fn start_import_inspection_task(
 
     let total = file_paths.len();
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new("解析导入文件", "queued")
+        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.parse_import_files").to_string(), TaskStage::QUEUED)
             .detail(format!("{total} 个文件")),
     )?;
     let worker_task_id = task_id.clone();
@@ -572,7 +573,7 @@ pub(crate) fn start_import_inspection_task(
         task_manager::reset_progress(
             &worker_task_id,
             (total_bytes > 0).then_some(total_bytes),
-            Some("inspecting_imports"),
+            Some(TaskStage::INSPECTING_IMPORTS),
         );
         task_manager::append_task_log(&worker_task_id, format!("开始并发解析 {total} 个导入文件"));
 
@@ -649,7 +650,7 @@ pub(crate) fn start_import_inspection_task(
                 &worker_task_id,
                 ProgressUpdate::advance(size)
                     .total(total_bytes)
-                    .stage("inspecting_imports"),
+                    .stage(TaskStage::INSPECTING_IMPORTS),
             );
             task_manager::set_task_message(
                 &worker_task_id,

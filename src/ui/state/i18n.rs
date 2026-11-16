@@ -117,10 +117,18 @@ impl Default for I18n {
 
 impl Global for I18n {}
 
+#[cfg(not(test))]
 pub(crate) fn global_i18n() -> &'static I18n {
     GLOBAL_I18N
         .get()
         .expect("I18n must be registered before using t!")
+}
+
+/// Unit tests exercise localized helpers without booting the application, so
+/// they fall back to the default locale instead of requiring registration.
+#[cfg(test)]
+pub(crate) fn global_i18n() -> &'static I18n {
+    GLOBAL_I18N.get_or_init(I18n::new)
 }
 
 /// Version pair for an Entity-owned text cache.

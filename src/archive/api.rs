@@ -11,6 +11,7 @@ use crate::utils::file_ops;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info};
+use crate::tasks::TaskStage;
 
 fn task_target_name(name: &str, fallback: &str) -> String {
     Path::new(name)
@@ -52,7 +53,7 @@ pub async fn import_appx(source_path: String, file_name: Option<String>) -> Resu
         .map(|name| task_target_name(name, "导入安装包"))
         .unwrap_or_else(|| task_target_name(&source_path, "导入安装包"));
     let task_id = create_task(
-        TaskOptions::new("导入安装包", "queued")
+        TaskOptions::new(t!("TaskTitle.import_package").to_string(), TaskStage::QUEUED).generic_title()
             .detail(task_label)
             .kind(TaskType::Stage)
             .in_current_scope(),
@@ -71,7 +72,7 @@ pub async fn import_appx(source_path: String, file_name: Option<String>) -> Resu
 }
 
 async fn run_import_appx_task(task_id: String, source_path: String, file_name: Option<String>) {
-    update_progress(&task_id, ProgressUpdate::advance(0).stage("starting"));
+    update_progress(&task_id, ProgressUpdate::advance(0).stage(TaskStage::STARTING));
 
     let source = Path::new(&source_path);
     if !source.exists() || !source.is_file() {
@@ -134,7 +135,7 @@ async fn run_import_appx_task(task_id: String, source_path: String, file_name: O
         Ok(CoreResult::Success(())) => {
             update_progress(
                 &task_id,
-                ProgressUpdate::advance(0).stage("preparing_files"),
+                ProgressUpdate::advance(0).stage(TaskStage::PREPARING_FILES),
             );
             let signature_path = extract_to.join("AppxSignature.p7x");
             remove_file_if_exists(&signature_path, "删除 AppxSignature.p7x 失败");
@@ -182,7 +183,7 @@ pub async fn extract_zip_appx(
 
     let task_target = task_target_name(&file_name, "游戏版本");
     let task_id = create_task(
-        TaskOptions::new("安装游戏", "queued")
+        TaskOptions::new(t!("TaskTitle.install_game").to_string(), TaskStage::QUEUED).generic_title()
             .detail(task_target)
             .kind(TaskType::Stage)
             .in_current_scope(),
@@ -212,7 +213,7 @@ async fn run_extract_zip_appx_task(
     destination: String,
     options: AppxExtractOptions,
 ) {
-    update_progress(&task_id, ProgressUpdate::advance(0).stage("starting"));
+    update_progress(&task_id, ProgressUpdate::advance(0).stage(TaskStage::STARTING));
 
     let versions_root = file_ops::bmcbl_subdir("versions");
     if let Err(error) = fs::create_dir_all(&versions_root) {
@@ -298,7 +299,7 @@ async fn run_extract_zip_appx_task(
 }
 
 async fn finish_appx_install(task_id: &str, extract_to: &Path, remove_signature: bool) -> bool {
-    update_progress(task_id, ProgressUpdate::advance(0).stage("preparing_files"));
+    update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::PREPARING_FILES));
 
     if remove_signature {
         let signature_path = extract_to.join("AppxSignature.p7x");
@@ -315,7 +316,7 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, remove_signature:
 
     if let Ok(config) = read() {
         if config.game.modify_appx_manifest {
-            update_progress(task_id, ProgressUpdate::advance(0).stage("patching"));
+            update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::PATCHING));
             match patch_manifest(extract_to) {
                 Ok(true) => debug!("Manifest 修改成功: {}", extract_to.display()),
                 Ok(false) => debug!("未找到 Manifest，跳过修改: {}", extract_to.display()),
@@ -347,7 +348,7 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, remove_signature:
         return true;
     }
 
-    update_progress(task_id, ProgressUpdate::advance(0).stage("patching"));
+    update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::PATCHING));
     let extract_clone = extract_to.to_path_buf();
     match crate::tasks::runtime::blocking::run_archive(move || patch_path(&extract_clone)).await {
         Ok(Ok(PatchResult::Patched(backup_path))) => {

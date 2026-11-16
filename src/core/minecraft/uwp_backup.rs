@@ -1,4 +1,5 @@
 #![cfg(target_os = "windows")]
+use crate::tasks::TaskStage;
 
 use serde::Serialize;
 use std::fs::{self, File};
@@ -87,14 +88,14 @@ pub fn start_user_data_backup_task(
     destination_directory: PathBuf,
 ) -> Result<String, String> {
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new("导出 Minecraft UWP 备份", "queued")
+        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.export_uwp_backup").to_string(), TaskStage::QUEUED)
             .detail(destination_directory.display().to_string()),
     )?;
     crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
     let workflow = match crate::tasks::runtime::spawn_io(async move {
-        crate::tasks::task_manager::reset_progress(&worker_task_id, None, Some("backing_up_uwp"));
+        crate::tasks::task_manager::reset_progress(&worker_task_id, None, Some(TaskStage::BACKING_UP_UWP));
         crate::tasks::task_manager::set_task_message(
             &worker_task_id,
             Some("正在扫描并压缩 Minecraft UWP 用户数据".to_string()),
@@ -195,7 +196,7 @@ fn export_user_data_backup_with_task(
         crate::tasks::task_manager::reset_progress(
             task_id,
             Some(source_before.0.saturating_add(1)),
-            Some("backing_up_uwp"),
+            Some(TaskStage::BACKING_UP_UWP),
         );
         crate::tasks::task_manager::set_task_message(
             task_id,
@@ -265,7 +266,7 @@ fn export_user_data_backup_with_task(
                     task_id,
                     ProgressUpdate::advance(1)
                         .total(source_before.0.saturating_add(1))
-                        .stage("backing_up_uwp"),
+                        .stage(TaskStage::BACKING_UP_UWP),
                 );
                 crate::tasks::task_manager::set_task_message(
                     task_id,
@@ -306,7 +307,7 @@ fn export_user_data_backup_with_task(
                 task_id,
                 ProgressUpdate::advance(1)
                     .total(source_before.0.saturating_add(1))
-                    .stage("verifying_uwp_backup"),
+                    .stage(TaskStage::VERIFYING_UWP_BACKUP),
             );
             crate::tasks::task_manager::set_task_message(
                 task_id,

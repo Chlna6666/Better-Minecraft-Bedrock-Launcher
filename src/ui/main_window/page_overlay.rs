@@ -268,12 +268,7 @@ impl Render for PageOverlayView {
         let theme = cx.global::<ThemeState>();
         let factor = theme.factor(now);
         let accent = theme.accent;
-        let colors = lerp_theme_colors(
-            &LightColors::theme(),
-            &DarkColors::theme(),
-            factor,
-            accent,
-        );
+        let colors = lerp_theme_colors(&LightColors::theme(), &DarkColors::theme(), factor, accent);
         if theme.is_animating(now) {
             crate::ui::animation::request_layout_frame(window);
         }

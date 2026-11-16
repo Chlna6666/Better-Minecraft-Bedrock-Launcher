@@ -12,7 +12,8 @@ use crate::ui::theme::ThemeColors;
 
 pub use view::ImportWindowView;
 
-pub const IMPORT_ASSET_EXTENSIONS: &[&str] = &["mcpack", "mcworld", "mcaddon", "mctemplate", "zip"];
+pub const IMPORT_ASSET_EXTENSIONS: &[&str] =
+    &["mcpack", "mcworld", "mcaddon", "mctemplate", "mccapes", "zip"];
 const UNAMBIGUOUS_GAME_PACKAGE_EXTENSIONS: &[&str] = &["appx", "msixvc"];
 
 #[derive(Clone, Debug, Default)]

@@ -5,6 +5,7 @@ use crate::ui::hooks::use_linux_runtime::{
     authorize_and_install, can_authorize_install, dismiss, open_proton_gdk_settings, recheck,
 };
 use crate::ui::state::i18n::I18n;
+use crate::ui::views::tasks::task_stage_text;
 use crate::ui::state::linux_runtime::{LinuxRuntimeState, LinuxRuntimeStatus};
 use crate::ui::theme::ThemeColors;
 use gpui::AnimationExt as _;
@@ -69,7 +70,7 @@ pub fn render(
         let stage = state
             .install_snapshot
             .as_ref()
-            .map(|snapshot| SharedString::from(snapshot.stage.to_string()))
+            .map(|snapshot| task_stage_text(&snapshot.stage))
             .unwrap_or_else(|| t!("LinuxRuntime.preparing_install"));
         let current_output = state
             .install_logs

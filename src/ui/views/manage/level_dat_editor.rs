@@ -1,4 +1,5 @@
 use super::ManagePageView;
+use crate::i18n::I18nKey;
 use crate::ui::components::code_editor::{CodeEditor, CodeEditorState};
 use crate::ui::components::input::{Input, InputState};
 use crate::ui::components::minecraft_text::MinecraftFormattedText;
@@ -525,9 +526,17 @@ fn render_json_body(
                         .child({
                             let view_handle = view_handle.clone();
                             if page_mode {
-                                compact_secondary_button(colors, "level-dat-format-json", "格式化")
+                                compact_secondary_button(
+                                    colors,
+                                    "level-dat-format-json",
+                                    t!("LevelDat.format"),
+                                )
                             } else {
-                                secondary_button(colors, "level-dat-format-json", "格式化")
+                                secondary_button(
+                                    colors,
+                                    "level-dat-format-json",
+                                    t!("LevelDat.format"),
+                                )
                             }
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -597,11 +606,11 @@ fn render_footer(
                     .text_color(colors.text_secondary)
                     .child(state.validation.detail.clone().unwrap_or_else(|| {
                         if !state.validation.valid {
-                            SharedString::from("JSON 校验失败。")
+                            t!("LevelDat.validation_failed")
                         } else if dirty {
-                            SharedString::from("有未保存的修改。")
+                            t!("LevelDat.unsaved_hint")
                         } else {
-                            SharedString::from("当前内容已与 level.dat 同步。")
+                            t!("LevelDat.synced_hint")
                         }
                     })),
             )
@@ -613,7 +622,7 @@ fn render_footer(
                     .when(dirty, |this| {
                         this.child(toned_status_badge(
                             colors,
-                            "未保存",
+                            t!("LevelDat.unsaved"),
                             colors.stat_orange_text,
                         ))
                     })
@@ -641,9 +650,9 @@ fn render_footer(
                 .text_color(colors.text_secondary)
                 .child(state.validation.detail.clone().unwrap_or_else(|| {
                     if dirty {
-                        SharedString::from("有未保存的修改。")
+                        t!("LevelDat.unsaved_hint")
                     } else {
-                        SharedString::from("当前内容已与 level.dat 同步。")
+                        t!("LevelDat.synced_hint")
                     }
                 })),
         )
@@ -657,7 +666,11 @@ fn render_footer(
                     secondary_button(
                         colors,
                         "level-dat-close",
-                        if page_mode { "返回列表" } else { "关闭" },
+                        if page_mode {
+                            t!("LevelDat.back_to_list")
+                        } else {
+                            t!("common.close")
+                        },
                     )
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         let _ = view_handle.update(cx, |this, cx| {
@@ -674,9 +687,9 @@ fn render_footer(
                         colors,
                         "level-dat-save",
                         if state.saving {
-                            "保存中..."
+                            t!("LevelDat.saving")
                         } else {
-                            "保存 level.dat"
+                            t!("LevelDat.save")
                         },
                     )
                     .opacity(if state.saving || !state.validation.valid {
@@ -819,13 +832,16 @@ fn render_visual_section(
                                 .text_size(px(13.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(colors.text_primary)
-                                .child(group.title()),
+                                .child(crate::ui::state::i18n::global_i18n().t_key(group.title())),
                         )
                         .child(
                             div()
                                 .text_size(px(11.))
                                 .text_color(colors.text_muted)
-                                .child(group.description()),
+                                .child(
+                                    crate::ui::state::i18n::global_i18n()
+                                        .t_key(group.description()),
+                                ),
                         ),
                 )
                 .child(
@@ -884,7 +900,7 @@ fn render_choice_card(
                 .gap(px(6.))
                 .children(field.options.iter().map(|option| {
                     let selected = current_value.is_some_and(|value| value == option.value);
-                    let option_label = option.label;
+                    let option_label = crate::ui::state::i18n::global_i18n().t_key(option.label);
                     let option_value = option.value;
                     div()
                         .px(px(10.))
@@ -1012,7 +1028,10 @@ fn render_bool_card(
                                 .flex()
                                 .items_center()
                                 .gap(px(6.))
-                                .child(card_title(colors, field.label))
+                                .child(card_title(
+                                    colors,
+                                    crate::ui::state::i18n::global_i18n().t_key(field.label),
+                                ))
                                 .when(missing, |this| {
                                     this.child(
                                         div()
@@ -1025,7 +1044,7 @@ fn render_bool_card(
                                                 a: 0.08,
                                                 ..colors.border
                                             })
-                                            .child("未包含"),
+                                            .child(t!("LevelDat.not_included")),
                                     )
                                 }),
                         )
@@ -1033,7 +1052,9 @@ fn render_bool_card(
                             div()
                                 .text_size(px(11.))
                                 .text_color(colors.text_muted)
-                                .child(field.description),
+                                .child(
+                                    crate::ui::state::i18n::global_i18n().t_key(field.description),
+                                ),
                         )
                         .child(
                             div()
@@ -1091,11 +1112,12 @@ fn field_group_shell(colors: &ThemeColors, page_mode: bool) -> Div {
 
 fn render_field_title(
     colors: &ThemeColors,
-    label: &'static str,
+    label: I18nKey,
     key: &'static str,
-    description: &'static str,
+    description: I18nKey,
     missing: bool,
 ) -> Div {
+    let i18n = crate::ui::state::i18n::global_i18n();
     div()
         .flex()
         .flex_col()
@@ -1117,7 +1139,7 @@ fn render_field_title(
                                 .text_size(px(12.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(colors.text_primary)
-                                .child(label),
+                                .child(i18n.t_key(label)),
                         )
                         .when(missing, |this| {
                             this.child(
@@ -1131,7 +1153,7 @@ fn render_field_title(
                                         a: 0.08,
                                         ..colors.border
                                     })
-                                    .child("未包含"),
+                                    .child(t!("LevelDat.not_included")),
                             )
                         }),
                 )
@@ -1147,15 +1169,15 @@ fn render_field_title(
                 .text_size(px(11.))
                 .line_height(relative(1.2))
                 .text_color(colors.text_muted)
-                .child(description),
+                .child(i18n.t_key(description)),
         )
 }
 
 fn render_validation_badge(colors: &ThemeColors, validation: &LevelDatJsonValidation) -> Div {
     if validation.valid {
-        toned_status_badge(colors, "JSON 正确", colors.stat_green_text)
+        toned_status_badge(colors, t!("LevelDat.json_valid"), colors.stat_green_text)
     } else {
-        toned_status_badge(colors, "JSON 错误", colors.danger)
+        toned_status_badge(colors, t!("LevelDat.json_invalid"), colors.danger)
     }
 }
 
@@ -1180,13 +1202,13 @@ pub fn form_input_key(spec: ValueFieldSpec) -> String {
     format!("{}:{}", scope_prefix(spec.scope), spec.key)
 }
 
-pub fn input_placeholder(spec: ValueFieldSpec) -> &'static str {
+pub fn input_placeholder(spec: ValueFieldSpec) -> SharedString {
     match spec.kind {
-        ValueFieldKind::String => "未包含时留空不写入；换行写为 \\n",
-        ValueFieldKind::Int => "整数；留空表示不写入该字段",
-        ValueFieldKind::Long => "长整数；留空表示不写入该字段",
-        ValueFieldKind::Float => "小数；留空表示不写入该字段",
-        ValueFieldKind::Version => "如 1.21.0；留空表示不写入",
+        ValueFieldKind::String => t!("LevelDat.hint.string"),
+        ValueFieldKind::Int => t!("LevelDat.hint.int"),
+        ValueFieldKind::Long => t!("LevelDat.hint.long"),
+        ValueFieldKind::Float => t!("LevelDat.hint.float"),
+        ValueFieldKind::Version => t!("LevelDat.hint.version"),
     }
 }
 
@@ -1231,13 +1253,13 @@ fn unescape_input_string(value: &str) -> String {
 pub fn document_to_json_text(document: &LevelDatDocument) -> Result<SharedString, String> {
     serde_json::to_string_pretty(&document.root)
         .map(SharedString::from)
-        .map_err(|error| format!("序列化 level.dat JSON 失败: {error}"))
+        .map_err(|error| t!("LevelDat.serialize_failed", error = error.to_string()).to_string())
 }
 
 pub fn format_document_json(tag: &NbtTag) -> Result<SharedString, String> {
     serde_json::to_string_pretty(tag)
         .map(SharedString::from)
-        .map_err(|error| format!("格式化 JSON 失败: {error}"))
+        .map_err(|error| t!("LevelDat.format_failed", error = error.to_string()).to_string())
 }
 
 pub fn parse_document_json(text: &str) -> Result<NbtTag, LevelDatJsonValidation> {
@@ -1246,12 +1268,13 @@ pub fn parse_document_json(text: &str) -> Result<NbtTag, LevelDatJsonValidation>
         Err(error) => {
             return Err(LevelDatJsonValidation {
                 valid: false,
-                summary: SharedString::from("JSON 语法错误"),
-                detail: Some(SharedString::from(format!(
-                    "第 {} 行，第 {} 列: {error}",
-                    error.line(),
-                    error.column()
-                ))),
+                summary: t!("LevelDat.json_syntax_error"),
+                detail: Some(t!(
+                    "LevelDat.line_col",
+                    line = error.line(),
+                    column = error.column(),
+                    error = error.to_string()
+                )),
             });
         }
     };
@@ -1259,10 +1282,8 @@ pub fn parse_document_json(text: &str) -> Result<NbtTag, LevelDatJsonValidation>
     if !matches!(tag, NbtTag::Compound(_)) {
         return Err(LevelDatJsonValidation {
             valid: false,
-            summary: SharedString::from("根节点必须是 Compound"),
-            detail: Some(SharedString::from(
-                "level.dat 保存要求根节点使用 {\"Compound\": {...}} 结构。",
-            )),
+            summary: t!("LevelDat.root_must_be_compound"),
+            detail: Some(t!("LevelDat.root_compound_detail")),
         });
     }
 
@@ -1273,10 +1294,8 @@ pub fn validate_document_json(text: &str) -> LevelDatJsonValidation {
     match parse_document_json(text) {
         Ok(_) => LevelDatJsonValidation {
             valid: true,
-            summary: SharedString::from("JSON 校验通过"),
-            detail: Some(SharedString::from(
-                "语法正确，且根节点可直接写回 level.dat。",
-            )),
+            summary: t!("LevelDat.json_validation_passed"),
+            detail: Some(t!("LevelDat.json_validation_detail")),
         },
         Err(validation) => validation,
     }
@@ -1327,6 +1346,7 @@ pub fn apply_value_text(
     input: &str,
 ) -> Result<(), String> {
     let trimmed = input.trim();
+    let field_name = crate::ui::state::i18n::global_i18n().t_key(spec.label);
     if trimmed.is_empty() {
         if spec.kind == ValueFieldKind::String && has_tag(document, spec.scope, spec.key) {
             set_string_value(document, spec.scope, spec.key, unescape_input_string(input));
@@ -1342,33 +1362,52 @@ pub fn apply_value_text(
             Ok(())
         }
         ValueFieldKind::Int => {
-            let parsed = trimmed
-                .parse::<i32>()
-                .map_err(|error| format!("{} 输入无效: {error}", spec.label))?;
+            let parsed = trimmed.parse::<i32>().map_err(|error| {
+                t!(
+                    "LevelDat.invalid_input",
+                    field = field_name.to_string(),
+                    error = error.to_string()
+                )
+                .to_string()
+            })?;
             set_i32_value(document, spec.scope, spec.key, parsed);
             Ok(())
         }
         ValueFieldKind::Long => {
-            let parsed = trimmed
-                .parse::<i64>()
-                .map_err(|error| format!("{} 输入无效: {error}", spec.label))?;
+            let parsed = trimmed.parse::<i64>().map_err(|error| {
+                t!(
+                    "LevelDat.invalid_input",
+                    field = field_name.to_string(),
+                    error = error.to_string()
+                )
+                .to_string()
+            })?;
             set_i64_value(document, spec.scope, spec.key, parsed);
             Ok(())
         }
         ValueFieldKind::Float => {
-            let parsed = trimmed
-                .parse::<f32>()
-                .map_err(|error| format!("{} 输入无效: {error}", spec.label))?;
+            let parsed = trimmed.parse::<f32>().map_err(|error| {
+                t!(
+                    "LevelDat.invalid_input",
+                    field = field_name.to_string(),
+                    error = error.to_string()
+                )
+                .to_string()
+            })?;
             set_f32_value(document, spec.scope, spec.key, parsed);
             Ok(())
         }
         ValueFieldKind::Version => {
             let mut parts = Vec::new();
             for part in trimmed.split('.') {
-                parts.push(
-                    part.parse::<i32>()
-                        .map_err(|error| format!("{} 版本段无效: {error}", spec.label))?,
-                );
+                parts.push(part.parse::<i32>().map_err(|error| {
+                    t!(
+                        "LevelDat.invalid_version_segment",
+                        field = field_name.to_string(),
+                        error = error.to_string()
+                    )
+                    .to_string()
+                })?);
             }
             while parts.len() < 5 {
                 parts.push(0);

@@ -1,6 +1,7 @@
 mod protocol;
 use reqwest::{Client, header};
 use tracing::debug;
+use crate::tasks::TaskStage;
 
 use crate::downloads::wu_client::protocol::{WuDownloadFile, WuProtocol};
 use crate::result::{CoreError, CoreResult};
@@ -112,7 +113,7 @@ impl WuClient {
         let request_xml = self.protocol.build_download_request(update_id, revision);
 
         // 把阶段标为 resolving_url
-        update_progress(task_id, ProgressUpdate::advance(0).stage("resolving_url"));
+        update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::RESOLVING_URL));
 
         for attempt in 1..=3 {
             debug!("task={} 第 {} 次请求下载 URL", task_id, attempt);
@@ -155,7 +156,7 @@ impl WuClient {
                             // 上报阶段：reading_body
                             update_progress(
                                 task_id,
-                                ProgressUpdate::advance(0).stage("reading_body"),
+                                ProgressUpdate::advance(0).stage(TaskStage::READING_BODY),
                             );
 
                             // 在读取 body 阶段也支持取消
@@ -172,7 +173,7 @@ impl WuClient {
                             debug!("task={} 响应 XML: {}", task_id, xml);
 
                             // 上报阶段：parsing
-                            update_progress(task_id, ProgressUpdate::advance(0).stage("parsing"));
+                            update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::PARSING));
 
                             // 解析 XML（协议层函数的错误应能转为 CoreError）
                             let files = match self.protocol.parse_download_response(&xml) {
@@ -195,7 +196,7 @@ impl WuClient {
                                 // 成功：把阶段设为 url_resolved（不在这里 finish task）
                                 update_progress(
                                     task_id,
-                                    ProgressUpdate::advance(0).stage("url_resolved"),
+                                    ProgressUpdate::advance(0).stage(TaskStage::URL_RESOLVED),
                                 );
                                 return Ok(CoreResult::Success(files));
                             } else {

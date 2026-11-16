@@ -27,10 +27,10 @@ impl RoomIntent {
         }
     }
 
-    fn action_label(self) -> &'static str {
+    fn action_label(self) -> SharedString {
         match self {
-            Self::Create => "创建房间",
-            Self::Join => "加入房间",
+            Self::Create => t!("Online.mode_host"),
+            Self::Join => t!("Online.mode_join"),
         }
     }
 
@@ -66,7 +66,10 @@ fn start_room(intent: RoomIntent, cx: &mut App) {
         return;
     };
     let action = intent.action_label();
-    append_online_log(format!("{action}：正在建立 EasyTier 网络"), cx);
+    append_online_log(
+        t!("Online.log.establishing", action = action.to_string()),
+        cx,
+    );
 
     cx.spawn(async move |cx| establish_room(request, action, cx).await)
         .detach();
@@ -121,7 +124,7 @@ fn prepare_room_request(intent: RoomIntent, cx: &mut App) -> Option<RoomRequest>
     }))
 }
 
-async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut AsyncApp) {
+async fn establish_room(request: RoomRequest, action: SharedString, cx: &mut AsyncApp) {
     let RoomRequest {
         generation,
         intent,
@@ -151,7 +154,7 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
             apply_room_error(
                 generation,
                 action,
-                "无法生成 PaperConnect 联机中心标识".to_string(),
+                t!("Online.error.center_id_required").to_string(),
                 cx,
             );
             return;
@@ -221,7 +224,7 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
                 apply_room_error(
                     generation,
                     action,
-                    format!("PaperConnect 玩家心跳失败：{error}"),
+                    t!("Online.error.player_heartbeat", error = error.to_string()).to_string(),
                     cx,
                 );
                 return;
@@ -270,7 +273,7 @@ where
         .map_err(|error| error.to_string())
 }
 
-fn apply_room_error(generation: u64, action: &'static str, error: String, cx: &mut AsyncApp) {
+fn apply_room_error(generation: u64, action: SharedString, error: String, cx: &mut AsyncApp) {
     let abandoned_connectors = crate::core::online::easytier::take_abandoned_connectors();
     let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
         if !state.finish_room_operation(generation) {
@@ -285,7 +288,14 @@ fn apply_room_error(generation: u64, action: &'static str, error: String, cx: &m
     match applied {
         Ok(true) => {
             if let Err(update_error) = cx.update(|cx| {
-                append_online_log(format!("{action}失败：{error}"), cx);
+                append_online_log(
+                    t!(
+                        "Online.log.operation_failed",
+                        action = action.to_string(),
+                        error = error.clone()
+                    ),
+                    cx,
+                );
                 toast::error(cx, t!("Online.room_failed"));
                 append_abandoned_connector_logs(&abandoned_connectors, cx);
             }) {
@@ -317,9 +327,7 @@ fn apply_room_success(
         if !state.finish_room_operation(generation) {
             return false;
         }
-        state.online_error = discovery_port_occupied.then(|| {
-            SharedString::from("本机 UDP 7551 已被占用，游戏代理未启动；关闭占用程序后请重新检查")
-        });
+        state.online_error = discovery_port_occupied.then(|| t!("Online.udp_busy_detail"));
         state.set_online_blocking_issue(
             discovery_port_occupied.then_some(OnlineBlockingIssue::DiscoveryPortOccupied),
         );
@@ -352,23 +360,17 @@ fn apply_room_success(
                 if matches!(intent, RoomIntent::Create) {
                     cx.write_to_clipboard(ClipboardItem::new_string(room_code.clone()));
                     toast::push(cx, t!("Online.room_created"));
-                    append_online_log(format!("联机成功：{room_code}"), cx);
+                    append_online_log(t!("Online.log.success", room = room_code.clone()), cx);
                 } else if discovery_port_occupied {
-                    toast::error(
-                        cx,
-                        t!("Online.joined_port_busy"),
-                    );
-                    append_online_log(
-                        "房间连接已保留，但本机 7551 游戏代理启动失败；关闭占用程序后可直接重新检查",
-                        cx,
-                    );
+                    toast::error(cx, t!("Online.joined_port_busy"));
+                    append_online_log(t!("Online.log.proxy_failed_after_join"), cx);
                     warn!(
                         room_code,
                         "PaperConnect 成员联机未完成：EasyTier 已连接，但 UDP 7551 模拟代理未启动"
                     );
                 } else {
                     toast::push(cx, t!("Online.joined_room"));
-                    append_online_log(format!("联机成功：{room_code}"), cx);
+                    append_online_log(t!("Online.log.success", room = room_code.clone()), cx);
                     info!(
                         room_code,
                         "PaperConnect 成员步骤 6/6：前端联机成功状态已应用"
@@ -391,7 +393,7 @@ pub(super) fn retry_discovery_proxy(cx: &mut App) {
         return;
     };
 
-    append_online_log("正在重新检测 UDP 7551 并启动本机游戏代理", cx);
+    append_online_log(t!("Online.log.rechecking_udp"), cx);
     info!("PaperConnect 成员开始重新检测 UDP 7551");
     cx.spawn(async move |cx| {
         let result = run_online(
@@ -413,14 +415,13 @@ pub(super) fn retry_discovery_proxy(cx: &mut App) {
                     state.set_online_blocking_issue(Some(
                         OnlineBlockingIssue::DiscoveryPortOccupied,
                     ));
-                    state.online_error = Some(SharedString::from(
-                        "本机 UDP 7551 仍被占用，游戏代理尚未启动",
-                    ));
+                    state.online_error = Some(t!("Online.udp_still_busy_detail"));
                 }
                 Err(error) => {
-                    state.online_error = Some(SharedString::from(format!(
-                        "重新启动 7551 游戏代理失败：{error}"
-                    )));
+                    state.online_error = Some(t!(
+                        "Online.error.proxy_restart_detail",
+                        error = error.to_string()
+                    ));
                 }
             }
             true
@@ -430,17 +431,23 @@ pub(super) fn retry_discovery_proxy(cx: &mut App) {
             Ok(true) => {
                 if let Err(update_error) = cx.update(|cx| match result {
                     Ok(crate::core::online::PaperConnectClientState::Ready) => {
-                        append_online_log("UDP 7551 已释放，本机游戏代理启动成功", cx);
+                        append_online_log(t!("Online.log.udp_released"), cx);
                         toast::push(cx, t!("Online.proxy_ready"));
                         info!("PaperConnect 成员重新检测成功：本机 UDP 7551 模拟代理已启动");
                     }
                     Ok(crate::core::online::PaperConnectClientState::DiscoveryPortOccupied) => {
-                        append_online_log("UDP 7551 仍被占用，请关闭占用程序后再次检查", cx);
+                        append_online_log(t!("Online.log.udp_still_busy"), cx);
                         toast::error(cx, t!("Online.discovery_port_busy"));
                         warn!("PaperConnect 成员重新检测失败：UDP 7551 仍被占用");
                     }
                     Err(error) => {
-                        append_online_log(format!("重新启动 7551 游戏代理失败：{error}"), cx);
+                        append_online_log(
+                            t!(
+                                "Online.error.proxy_restart_detail",
+                                error = error.to_string()
+                            ),
+                            cx,
+                        );
                         toast::error(cx, t!("Online.proxy_restart_failed"));
                         warn!("PaperConnect 成员重新启动 7551 游戏代理失败：{error}");
                     }
@@ -470,13 +477,12 @@ pub(super) fn dismiss_termination_dialog(cx: &mut App) {
 }
 
 pub(super) fn confirm_termination(cx: &mut App) {
-    let started =
-        cx.update_global(|state: &mut ToolsPageState, _cx| state.begin_termination());
+    let started = cx.update_global(|state: &mut ToolsPageState, _cx| state.begin_termination());
     if !started {
         return;
     }
 
-    append_online_log("正在结束占用 UDP 7551 的应用", cx);
+    append_online_log(t!("Online.log.terminating_owners"), cx);
     cx.spawn(async move |cx| {
         let result = run_online(
             cx,
@@ -486,7 +492,7 @@ pub(super) fn confirm_termination(cx: &mut App) {
         let state_result = result
             .as_ref()
             .map(|_| ())
-            .map_err(|error| SharedString::from(format!("结束 UDP 7551 占用应用失败：{error}")));
+            .map_err(|error| t!("Online.error.terminate_owners", error = error.to_string()));
         let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
             state.finish_termination(state_result)
         });
@@ -496,14 +502,11 @@ pub(super) fn confirm_termination(cx: &mut App) {
                 Ok(summary) => {
                     if let Err(update_error) = cx.update(|cx| {
                         if summary.matched == 0 {
-                            append_online_log("未查询到 UDP 7551 占用进程，继续重新检查端口", cx);
+                            append_online_log(t!("Online.log.no_port_owner"), cx);
                             toast::error(cx, t!("Online.no_port_owner"));
                         } else {
                             append_online_log(
-                                format!(
-                                    "已结束 {} 个 UDP 7551 占用进程，正在重新检查端口",
-                                    summary.terminated
-                                ),
+                                t!("Online.log.terminated_owners", count = summary.terminated),
                                 cx,
                             );
                             toast::push(cx, t!("Online.port_owner_stopped"));
@@ -517,7 +520,10 @@ pub(super) fn confirm_termination(cx: &mut App) {
                 }
                 Err(error) => {
                     if let Err(update_error) = cx.update(|cx| {
-                        append_online_log(format!("结束 UDP 7551 占用应用失败：{error}"), cx);
+                        append_online_log(
+                            t!("Online.error.terminate_owners", error = error.to_string()),
+                            cx,
+                        );
                         toast::error(cx, t!("Online.termination_failed"));
                     }) {
                         warn!(
@@ -541,7 +547,7 @@ pub(super) fn stop_session(cx: &mut App) {
     let Some(generation) = generation else {
         return;
     };
-    append_online_log("正在断开 EasyTier", cx);
+    append_online_log(t!("Online.log.disconnecting_easytier"), cx);
 
     cx.spawn(async move |cx| {
         let result = run_online(cx, crate::core::online::easytier::stop()).await;
@@ -564,11 +570,14 @@ pub(super) fn stop_session(cx: &mut App) {
                     let _i18n = cx.global::<I18n>().clone();
                     match result {
                         Ok(()) => {
-                            append_online_log("已断开联机", cx);
+                            append_online_log(t!("Online.log.disconnected"), cx);
                             toast::push(cx, t!("Online.disconnected"));
                         }
                         Err(error) => {
-                            append_online_log(format!("断开失败：{error}"), cx);
+                            append_online_log(
+                            t!("Online.log.disconnect_failed", error = error.to_string()),
+                            cx,
+                        );
                             toast::error(cx, t!("Online.disconnect_failed"));
                         }
                     }
@@ -677,9 +686,10 @@ fn append_abandoned_connector_logs(
 ) {
     for connector in connectors {
         append_online_log(
-            format!(
-                "节点 {} 连续连接失败 {} 次，本次联机已停止使用",
-                connector.url, connector.failed_attempts
+            t!(
+                "Online.log.node_abandoned",
+                node = connector.url.clone(),
+                count = connector.failed_attempts
             ),
             cx,
         );

@@ -257,9 +257,9 @@ impl ManagePageView {
             return;
         };
         self.value_prompt = Some(ValuePromptDialogState {
-            title: SharedString::from(field.label),
+            title: crate::ui::state::i18n::global_i18n().t_key(field.label),
             description: SharedString::from(field.key),
-            confirm_label: SharedString::from("应用"),
+            confirm_label: t!("common.apply"),
             input,
             target: ValuePromptTarget::LevelDat(field),
             pending: false,
@@ -334,7 +334,7 @@ impl ManagePageView {
                         crate::ui::window::map_viewer::map_history::capture_before(
                             crate::ui::window::map_viewer::map_history::MapHistoryCaptureSpec {
                                 kind: crate::ui::window::map_viewer::map_history::MapHistoryEntryKind::LevelDatSave,
-                                label: "保存 level.dat".to_string(),
+                                label: t!("LevelDat.history_capture").to_string(),
                                 world_path: world_path.clone(),
                                 chunks: std::collections::BTreeSet::new(),
                                 raw_keys: std::collections::BTreeSet::new(),
@@ -346,7 +346,7 @@ impl ManagePageView {
                         (Ok(capture), Ok(())) => {
                             crate::ui::window::map_viewer::map_history::complete_after(
                                 capture,
-                                "level.dat 已保存",
+                                t!("LevelDat.history_saved").to_string(),
                             )?;
                             Ok(())
                         }
@@ -366,7 +366,12 @@ impl ManagePageView {
                             Ok(())
                         }
                         (Err(history_error), Err(write_error)) => {
-                            Err(format!("{write_error}；历史捕获失败: {history_error}"))
+                            Err(t!(
+                                "LevelDat.history_capture_failed_detail",
+                                error = write_error,
+                                historyError = history_error
+                            )
+                            .to_string())
                         }
                     }
                 },

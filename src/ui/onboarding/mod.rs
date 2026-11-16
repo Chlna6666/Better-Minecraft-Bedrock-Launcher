@@ -34,7 +34,8 @@ pub(crate) fn select_curseforge_source(source: &'static str, cx: &mut App) {
                 config.launcher.download.curseforge_api_source = source.to_string();
             })?;
             Ok::<bool, std::io::Error>(changed)
-        }).await;
+        })
+        .await;
         match result {
             Ok(Ok(true)) => {
                 cx.update(crate::ui::views::download::curseforge::on_api_source_changed)?;
@@ -48,10 +49,9 @@ pub(crate) fn select_curseforge_source(source: &'static str, cx: &mut App) {
             }
         }
         Ok::<(), anyhow::Error>(())
-    }).detach();
+    })
+    .detach();
 }
-
-
 
 pub fn reopen(cx: &mut App) {
     cx.update_default_global(|state: &mut OnboardingTourState, _cx| state.reopen());
@@ -113,10 +113,8 @@ fn complete(cx: &mut App, route: Option<crate::ui::navigation::AppRoute>) {
     cx.update_global(|state: &mut OnboardingTourState, _cx| state.finish());
 
     cx.spawn(async move |cx| {
-        let persisted = crate::tasks::runtime::blocking::run_io(
-            crate::config::onboarding::complete,
-        )
-        .await;
+        let persisted =
+            crate::tasks::runtime::blocking::run_io(crate::config::onboarding::complete).await;
 
         cx.update(|cx| match persisted {
             Ok(Ok(())) => finish_persisted_onboarding(route, cx),
@@ -343,28 +341,28 @@ pub(crate) fn scene_is(cx: &App, scene: OnboardingScene) -> bool {
 }
 
 pub(crate) fn scene_label(scene: OnboardingScene) -> SharedString {
-    SharedString::from(match scene {
-        OnboardingScene::Welcome => "欢迎",
-        OnboardingScene::DownloadNavigation => "下载页",
-        OnboardingScene::GameDownload => "游戏下载",
-        OnboardingScene::ResourcePackDownload => "CF 资源",
-        OnboardingScene::ModDownload => "模组",
-        OnboardingScene::ImportPackage => "导入",
-        OnboardingScene::TasksOverview => "任务",
-        OnboardingScene::ManageOverview => "版本管理",
-        OnboardingScene::ManageContent => "实例内容",
-        OnboardingScene::SettingsOverview => "设置",
-        OnboardingScene::ToolsOverview => "工具",
+    match scene {
+        OnboardingScene::Welcome => t!("Onboarding.scene.welcome"),
+        OnboardingScene::DownloadNavigation => t!("Onboarding.scene.download_navigation"),
+        OnboardingScene::GameDownload => t!("Onboarding.scene.game_download"),
+        OnboardingScene::ResourcePackDownload => t!("Onboarding.scene.resource_pack"),
+        OnboardingScene::ModDownload => t!("Onboarding.scene.mods"),
+        OnboardingScene::ImportPackage => t!("Onboarding.scene.import"),
+        OnboardingScene::TasksOverview => t!("Onboarding.scene.tasks"),
+        OnboardingScene::ManageOverview => t!("Onboarding.scene.manage"),
+        OnboardingScene::ManageContent => t!("Onboarding.scene.manage_content"),
+        OnboardingScene::SettingsOverview => t!("Onboarding.scene.settings"),
+        OnboardingScene::ToolsOverview => t!("Onboarding.scene.tools"),
         OnboardingScene::PlatformSetup => {
             #[cfg(target_os = "linux")]
             {
-                "Proton-GDK"
+                SharedString::from("Proton-GDK")
             }
             #[cfg(not(target_os = "linux"))]
             {
-                "完成"
+                t!("Onboarding.scene.finish")
             }
         }
-        OnboardingScene::Finish => "完成",
-    })
+        OnboardingScene::Finish => t!("Onboarding.scene.finish"),
+    }
 }

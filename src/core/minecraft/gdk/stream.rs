@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration as StdDuration, Instant as StdInstant};
 use tracing::{error, info, warn};
 use uuid::Uuid;
+use crate::tasks::TaskStage;
 
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
@@ -609,9 +610,9 @@ impl MsiXVDStream {
                 || last_progress_emit.elapsed() >= StdDuration::from_millis(200)
             {
                 let stage = if job.should_decrypt {
-                    "decrypting"
+                    TaskStage::DECRYPTING
                 } else {
-                    "extracting"
+                    TaskStage::EXTRACTING
                 };
                 update_progress(
                     task_id,
@@ -629,9 +630,9 @@ impl MsiXVDStream {
 
         if pending_progress > 0 {
             let stage = if job.should_decrypt {
-                "decrypting"
+                TaskStage::DECRYPTING
             } else {
-                "extracting"
+                TaskStage::EXTRACTING
             };
             update_progress(
                 task_id,

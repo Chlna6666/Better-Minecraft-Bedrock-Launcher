@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::fs::OpenOptions as TokioOpenOptions;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tracing::debug;
+use crate::tasks::TaskStage;
 
 const DISK_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 const DOWNLOAD_REQUEST_TIMEOUT_SECS: u64 = 6 * 60 * 60;
@@ -138,7 +139,7 @@ pub async fn download_file(
                     _ => resp.content_length(),
                 };
                 set_total(&task_id, total);
-                let mut resume_update = ProgressUpdate::advance(resume_from).stage("downloading");
+                let mut resume_update = ProgressUpdate::advance(resume_from).stage(TaskStage::DOWNLOADING);
                 if let Some(total) = total {
                     resume_update = resume_update.total(total);
                 }
@@ -197,7 +198,7 @@ pub async fn download_file(
 
                     if last_update.elapsed().as_millis() > 100 {
                         let mut update = ProgressUpdate::advance(pending_progress)
-                            .stage("downloading")
+                            .stage(TaskStage::DOWNLOADING)
                             .visualization(build_visualization(
                                 downloaded_bytes,
                                 total,
@@ -218,7 +219,7 @@ pub async fn download_file(
 
                 if pending_progress > 0 {
                     let mut update = ProgressUpdate::advance(pending_progress)
-                        .stage("downloading")
+                        .stage(TaskStage::DOWNLOADING)
                         .visualization(build_visualization(
                             downloaded_bytes,
                             total,
@@ -262,7 +263,7 @@ pub async fn download_file(
                     .map(str::trim)
                     .filter(|value| is_digest(value))
                 {
-                    let mut verify_update = ProgressUpdate::advance(0).stage("verifying");
+                    let mut verify_update = ProgressUpdate::advance(0).stage(TaskStage::VERIFYING);
                     if let Some(total) = total {
                         verify_update = verify_update.total(total);
                     }

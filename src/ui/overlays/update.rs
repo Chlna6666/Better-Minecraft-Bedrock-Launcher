@@ -1,3 +1,4 @@
+use crate::tasks::TaskStage;
 use crate::tasks::task_manager::{self, TaskSnapshot};
 use crate::ui::animation::repeating_linear_motion;
 use crate::ui::components::adaptive::{ModalSpec, WindowMetrics, modal_size};
@@ -354,7 +355,7 @@ pub fn render_modal(
         let pct_label = format!("{:.0}%", percent);
         let is_extracting = snap
             .as_ref()
-            .is_some_and(|snapshot| snapshot.stage.as_ref() == "extracting");
+            .is_some_and(|snapshot| snapshot.stage == TaskStage::EXTRACTING);
         let eta = snap
             .as_ref()
             .map(|s| s.eta.as_ref())

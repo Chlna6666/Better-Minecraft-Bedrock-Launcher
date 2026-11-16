@@ -184,7 +184,9 @@ impl ManagePageView {
             toast::error(cx, t!("Manage.select_import_version"));
             return;
         };
-        let Some(picker) = asset_picker_spec(import_context.tab) else {
+        let tab = routed_asset_tab(import_context.tab, paths, &import_context.version)
+            .unwrap_or(import_context.tab);
+        let Some(picker) = asset_picker_spec(tab) else {
             let _i18n = cx.global::<I18n>().clone();
             toast::error(cx, t!("Manage.drop_import_not_supported"));
             return;
@@ -197,7 +199,7 @@ impl ManagePageView {
             .collect::<Vec<_>>();
         if supported.is_empty() {
             let _i18n = cx.global::<I18n>().clone();
-            let message = if import_context.tab == ManageTab::Mod {
+            let message = if tab == ManageTab::Mod {
                 t!("Manage.drop_mod_file")
             } else {
                 t!(
@@ -209,9 +211,15 @@ impl ManagePageView {
             return;
         }
 
-        if import_context.tab == ManageTab::Cape {
+        // A drop routed to another asset tab switches there so the imported entries
+        // appear in the list the user is looking at.
+        if tab != import_context.tab {
+            self.set_tab(tab, cx);
+        }
+
+        if tab == ManageTab::Cape {
             self.start_cape_import(supported, cx);
-        } else if import_context.tab == ManageTab::Mod {
+        } else if tab == ManageTab::Mod {
             self.begin_mod_import_confirmation(import_context.version, supported, window, cx);
         } else {
             crate::ui::window::import::open_import_overlay_batch(
@@ -266,6 +274,17 @@ impl ManagePageView {
         paths: &[PathBuf],
         cx: &mut Context<Self>,
     ) {
+        let target = match target {
+            ManageDropTarget::Assets(active) => {
+                let state = cx.global::<ManagePageState>();
+                let routed = self
+                    .selected_version(state)
+                    .and_then(|version| routed_asset_tab(active, paths, version))
+                    .unwrap_or(active);
+                ManageDropTarget::Assets(routed)
+            }
+            target => target,
+        };
         let extensions = supported_extensions_for_target(target);
         let accepted = extensions
             .map(|extensions| {
@@ -341,11 +360,13 @@ impl ManagePageView {
                 ManageDropTarget::Assets(ManageTab::Mod) => i18n
                     .lookup("Manage.drop_preview_mod_hint")
                     .unwrap_or_else(|| SharedString::from("Configure every Mod before import")),
+                ManageDropTarget::Assets(ManageTab::Cape) => i18n
+                    .lookup("Manage.drop_preview_cape_hint")
+                    .unwrap_or_else(|| {
+                        SharedString::from("Cape packs are imported into the selected version")
+                    }),
                 ManageDropTarget::Assets(
-                    ManageTab::ResourcePack
-                    | ManageTab::SkinPack
-                    | ManageTab::Cape
-                    | ManageTab::Map,
+                    ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map,
                 ) => i18n
                     .lookup("Manage.drop_preview_asset_hint")
                     .unwrap_or_else(|| {
@@ -488,6 +509,39 @@ fn supported_extensions_for_target(target: ManageDropTarget) -> Option<&'static 
     }
 }
 
+/// Picks the asset tab that owns a dropped file when the active tab cannot accept it,
+/// so dropping a cape pack on the Mod tab still imports instead of being rejected.
+/// Ambiguous extensions keep the active tab; PNG stays a Cape-tab-only drop.
+fn routed_asset_tab(
+    active: ManageTab,
+    paths: &[PathBuf],
+    version: &ManagedVersionEntry,
+) -> Option<ManageTab> {
+    let accepts = |extensions: &[&str]| {
+        paths
+            .iter()
+            .any(|path| has_supported_extension(path, extensions))
+    };
+    if asset_picker_spec(active).is_some_and(|picker| accepts(picker.extensions)) {
+        return Some(active);
+    }
+    const ROUTES: &[(ManageTab, &[&str])] = &[
+        (ManageTab::Cape, &["mccapes"]),
+        (ManageTab::Mod, MOD_EXTENSIONS),
+        (ManageTab::ResourcePack, &["mcpack", "mcaddon", "zip"]),
+        (ManageTab::Map, &["mcworld", "mctemplate"]),
+    ];
+    for (tab, extensions) in ROUTES {
+        if *tab == ManageTab::Cape && !version_settings::supports_capes(version) {
+            continue;
+        }
+        if accepts(extensions) {
+            return Some(*tab);
+        }
+    }
+    None
+}
+
 fn supported_paths(paths: &[PathBuf], extensions: &[&str]) -> Vec<String> {
     paths
         .iter()
@@ -595,5 +649,65 @@ pub(super) fn start_mod_import(
         Err(error) => {
             toast::error(cx, SharedString::from(error));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ManageTab, ManagedVersionEntry, routed_asset_tab};
+    use gpui::SharedString;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn version(version: &str, kind: &str) -> ManagedVersionEntry {
+        ManagedVersionEntry {
+            folder: SharedString::from("folder"),
+            name: SharedString::from("name"),
+            version: SharedString::from(version),
+            manifest_version: SharedString::from(version),
+            path: SharedString::from("path"),
+            kind: SharedString::from(kind),
+            icon_path: None,
+            mod_loaders: Arc::from(Vec::new()),
+            game_info: Default::default(),
+        }
+    }
+
+    #[test]
+    fn drops_route_to_the_owning_asset_tab() {
+        let gdk = version("1.26.40.5", "gdk");
+        assert_eq!(
+            routed_asset_tab(ManageTab::Mod, &[PathBuf::from("Cape.mccapes")], &gdk),
+            Some(ManageTab::Cape)
+        );
+        assert_eq!(
+            routed_asset_tab(ManageTab::Statistics, &[PathBuf::from("mod.dll")], &gdk),
+            Some(ManageTab::Mod)
+        );
+        assert_eq!(
+            routed_asset_tab(ManageTab::Mod, &[PathBuf::from("world.mcworld")], &gdk),
+            Some(ManageTab::Map)
+        );
+        assert_eq!(
+            routed_asset_tab(
+                ManageTab::ResourcePack,
+                &[PathBuf::from("pack.mcpack")],
+                &gdk
+            ),
+            Some(ManageTab::ResourcePack)
+        );
+        assert_eq!(
+            routed_asset_tab(ManageTab::Mod, &[PathBuf::from("cape.png")], &gdk),
+            None
+        );
+    }
+
+    #[test]
+    fn cape_drops_do_not_route_to_unsupported_versions() {
+        let uwp = version("1.20.80.5", "uwp");
+        assert_eq!(
+            routed_asset_tab(ManageTab::Mod, &[PathBuf::from("Cape.mccapes")], &uwp),
+            None
+        );
     }
 }

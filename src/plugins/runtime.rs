@@ -28,6 +28,7 @@ use tinywasm::{
     Engine, FuncContext, Function, HostFunction, Imports, Module, ModuleInstance, Store,
 };
 use tracing::{debug, error, info, warn};
+use crate::tasks::TaskStage;
 
 use crate::plugins::services::{PluginRpcCallStack, PluginServiceRegistry};
 use crate::tasks::task_manager::ProgressUpdate;
@@ -3347,7 +3348,7 @@ fn handle_app_request(
         {
             state.require_capability(PluginCapability::TaskProgress)?;
             let mut task_options =
-                crate::tasks::task_manager::TaskOptions::new(request.title, &request.stage);
+                crate::tasks::task_manager::TaskOptions::new(request.title, TaskStage::custom(request.stage.clone()));
             if let Some(total) = request.total {
                 task_options = task_options.total(total);
             }
@@ -3375,7 +3376,7 @@ fn handle_app_request(
                 progress = progress.total(total);
             }
             if let Some(stage) = request.stage.as_deref() {
-                progress = progress.stage(stage);
+                progress = progress.stage(TaskStage::custom(stage));
             }
             crate::tasks::task_manager::update_progress(&request.task_id, progress);
             if request.message.is_some() {
@@ -5549,7 +5550,7 @@ pub fn start_uninstall_plugin_task(cx: &mut App, plugin_id: String) -> Result<St
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
 
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new("卸载 BMCBL 插件", "queued")
+        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.uninstall_plugin").to_string(), TaskStage::QUEUED)
             .detail(plugin_id.clone()),
     )
     .map_err(anyhow::Error::msg)?;
@@ -5559,7 +5560,7 @@ pub fn start_uninstall_plugin_task(cx: &mut App, plugin_id: String) -> Result<St
         crate::tasks::task_manager::reset_progress(
             &worker_task_id,
             None,
-            Some("uninstalling_plugin"),
+            Some(TaskStage::UNINSTALLING_PLUGIN),
         );
         if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
             return;
@@ -5657,7 +5658,7 @@ pub fn start_import_plugin_task(cx: &mut App, source_path: PathBuf) -> Result<St
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
     let detail = file_name.to_string_lossy().into_owned();
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new("导入 BMCBL 插件", "queued").detail(detail),
+        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.import_plugin").to_string(), TaskStage::QUEUED).detail(detail),
     )
     .map_err(anyhow::Error::msg)?;
     let worker_task_id = task_id.clone();
@@ -5665,7 +5666,7 @@ pub fn start_import_plugin_task(cx: &mut App, source_path: PathBuf) -> Result<St
         crate::tasks::task_manager::reset_progress(
             &worker_task_id,
             None,
-            Some("installing_plugin"),
+            Some(TaskStage::INSTALLING_PLUGIN),
         );
         let io_task_id = worker_task_id.clone();
         let imported = crate::tasks::runtime::blocking::run_io(move || {

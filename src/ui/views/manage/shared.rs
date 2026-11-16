@@ -123,8 +123,7 @@ pub(super) fn watch_import_task(task_id: String, cx: &mut App) {
                     Ok(snapshot) => snapshot,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(skipped, "manage import task watcher lagged; resyncing");
-                        let Some(snapshot) = task_manager::snapshot_arc(task_id.as_ref())
-                        else {
+                        let Some(snapshot) = task_manager::snapshot_arc(task_id.as_ref()) else {
                             continue;
                         };
                         snapshot
@@ -260,7 +259,7 @@ pub(super) fn watch_version_mutation_task(
                             .message
                             .as_ref()
                             .map(|message| SharedString::from(message.to_string()))
-                            .unwrap_or_else(|| SharedString::from("版本操作失败"));
+                            .unwrap_or_else(|| t!("Manage.version_action_failed"));
                         toast::error(cx, message);
                     }
                     _ => {}
@@ -272,11 +271,7 @@ pub(super) fn watch_version_mutation_task(
     .detach();
 }
 
-pub(super) fn watch_asset_mutation(
-    task_id: String,
-    success_message: SharedString,
-    cx: &mut App,
-) {
+pub(super) fn watch_asset_mutation(task_id: String, success_message: SharedString, cx: &mut App) {
     let task_id: Arc<str> = Arc::from(task_id);
     let mut updates = task_manager::subscribe_task_updates();
 
@@ -325,7 +320,7 @@ pub(super) fn watch_asset_mutation(
                             .message
                             .as_ref()
                             .map(|message| SharedString::from(message.to_string()))
-                            .unwrap_or_else(|| SharedString::from("资源操作失败"));
+                            .unwrap_or_else(|| t!("Manage.asset_action_failed"));
                         toast::error(cx, message);
                     }
                     _ => {}
@@ -400,7 +395,7 @@ pub(super) fn watch_screenshot_mutation_task(
                             .message
                             .as_ref()
                             .map(|message| SharedString::from(message.to_string()))
-                            .unwrap_or_else(|| SharedString::from("截图操作失败"));
+                            .unwrap_or_else(|| t!("Manage.screenshot_action_failed"));
                         toast::error(cx, message);
                     }
                     _ => {}
@@ -479,7 +474,7 @@ pub(super) fn watch_server_mutation_task(
                             .message
                             .as_ref()
                             .map(|message| SharedString::from(message.to_string()))
-                            .unwrap_or_else(|| SharedString::from("服务器操作失败"));
+                            .unwrap_or_else(|| t!("Manage.server_action_failed"));
                         toast::error(cx, message);
                     }
                     _ => {}

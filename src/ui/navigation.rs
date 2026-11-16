@@ -75,18 +75,6 @@ impl AppRoute {
     }
 
     #[must_use]
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Home => "启动",
-            Self::Download => "下载",
-            Self::Manage => "管理",
-            Self::Tools => "工具",
-            Self::Tasks => "任务",
-            Self::Settings => "设置",
-        }
-    }
-
-    #[must_use]
     pub fn index(self) -> usize {
         match self {
             Self::Home => 0,

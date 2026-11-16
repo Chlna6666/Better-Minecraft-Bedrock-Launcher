@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::debug;
+use crate::tasks::TaskStage;
 
 use crate::downloads::integrity::verify_download_integrity;
 use crate::downloads::manager::{DownloadOptions, DownloadRequest, DownloaderManager};
@@ -158,7 +159,7 @@ pub async fn download_appx(
     let force = force_download.unwrap_or(false);
     if !force && local_file_ok(&dest, &md5).await {
         let task_id = create_task(
-            TaskOptions::new("下载游戏包", "ready")
+            TaskOptions::new(t!("TaskTitle.download_game_package").to_string(), TaskStage::READY).generic_title()
                 .detail(task_target_name(&safe_name))
                 .pausable(true)
                 .kind(TaskType::Transfer)
@@ -174,7 +175,7 @@ pub async fn download_appx(
     }
 
     let task_id = create_task(
-        TaskOptions::new("下载游戏包", "ready")
+        TaskOptions::new(t!("TaskTitle.download_game_package").to_string(), TaskStage::READY).generic_title()
             .detail(task_target_name(&safe_name))
             .pausable(true)
             .kind(TaskType::Transfer)
@@ -230,7 +231,7 @@ pub async fn download_appx(
                 return;
             }
 
-            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage("starting"));
+            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage(TaskStage::STARTING));
             let mut options = download_options.unwrap_or_default();
             if options.md5_expected.is_none() {
                 options.md5_expected = md5;
@@ -332,7 +333,7 @@ async fn download_resource_to_dir(
     let force = force_download.unwrap_or(false);
     if !force && local_file_ok(&dest, &md5).await {
         let task_id = create_task(
-            TaskOptions::new("下载资源文件", "ready")
+            TaskOptions::new(t!("TaskTitle.download_resource_file").to_string(), TaskStage::READY).generic_title()
                 .detail(task_target_name(&safe_name))
                 .pausable(true)
                 .kind(TaskType::Transfer)
@@ -348,7 +349,7 @@ async fn download_resource_to_dir(
     }
 
     let task_id = create_task(
-        TaskOptions::new("下载资源文件", "ready")
+        TaskOptions::new(t!("TaskTitle.download_resource_file").to_string(), TaskStage::READY).generic_title()
             .detail(task_target_name(&safe_name))
             .pausable(true)
             .kind(TaskType::Transfer)
@@ -370,7 +371,7 @@ async fn download_resource_to_dir(
                 return;
             }
 
-            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage("starting"));
+            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage(TaskStage::STARTING));
 
             let mut options = download_options.unwrap_or_default();
             if options.md5_expected.is_none() {
@@ -467,7 +468,7 @@ pub async fn download_resource_to_cache(
     let dest = cache_dir.join(&safe_name);
 
     let task_id = create_task(
-        TaskOptions::new("下载缓存文件", "ready")
+        TaskOptions::new(t!("TaskTitle.download_cache_file").to_string(), TaskStage::READY).generic_title()
             .detail(task_target_name(&safe_name))
             .pausable(true)
             .kind(TaskType::Transfer)
@@ -489,7 +490,7 @@ pub async fn download_resource_to_cache(
                 return;
             }
 
-            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage("starting"));
+            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage(TaskStage::STARTING));
 
             let mut options = download_options.unwrap_or_default();
             if options.md5_expected.is_none() {

@@ -1,3 +1,5 @@
+use gpui::SharedString;
+use crate::tasks::TaskStage;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -297,11 +299,11 @@ fn apply_server_mutation(
 fn start_server_mutation_task(
     options: GamePathOptions,
     mutation: ServerMutation,
-    title: &'static str,
+    title: SharedString,
     detail: String,
 ) -> Result<String, String> {
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(title, "updating_servers").detail(detail),
+        crate::tasks::task_manager::TaskOptions::new(title, TaskStage::UPDATING_SERVERS).detail(detail),
     )?;
     crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
 
@@ -373,7 +375,7 @@ pub fn start_add(
             address,
             port,
         },
-        "添加服务器",
+        t!("TaskTitle.add_server"),
         detail,
     )
 }
@@ -395,7 +397,7 @@ pub fn start_update(
             address,
             port,
         },
-        "更新服务器",
+        t!("TaskTitle.update_server"),
         detail,
     )
 }
@@ -408,7 +410,7 @@ pub fn start_delete(
     start_server_mutation_task(
         options,
         ServerMutation::Delete { key },
-        "删除服务器",
+        t!("TaskTitle.delete_server"),
         detail,
     )
 }

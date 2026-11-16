@@ -253,7 +253,7 @@ mod tests {
             id: Arc::from("task-1"),
             title: Arc::from("title"),
             detail: None,
-            stage: Arc::from("stage"),
+            stage: crate::tasks::TaskStage::custom("stage"),
             total: None,
             done: 0,
             speed_bytes_per_sec: 0.0,
@@ -270,6 +270,7 @@ mod tests {
             visibility: crate::tasks::task_manager::TaskVisibility::Visible,
             parent_id: None,
             task_type: crate::tasks::task_manager::TaskType::Operation,
+            generic_title: false,
         })
     }
 }

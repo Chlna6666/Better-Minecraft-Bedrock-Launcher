@@ -6,6 +6,7 @@ use crate::core::minecraft::paths::{BuildType, Edition};
 use crate::tasks::task_manager::{
     TaskOptions, create_task, finish_task, is_cancelled, register_abort_handle, reset_progress,
 };
+use crate::tasks::TaskStage;
 
 #[derive(Clone, Debug)]
 pub struct CurseForgeInstallTarget {
@@ -34,8 +35,8 @@ pub struct CurseForgeInstallResult {
 pub fn start_install(request: CurseForgeInstallRequest) -> Result<String, String> {
     let task_id = create_task(
         TaskOptions::new(
-            format!("安装 CurseForge · {}", request.project_name),
-            "ready",
+            t!("TaskTitle.install_curseforge", name = request.project_name).to_string(),
+            TaskStage::READY,
         )
         .detail(format!(
             "{} → {}",
@@ -87,7 +88,7 @@ async fn run_install(
     .await?;
 
     ensure_not_cancelled(task_id)?;
-    reset_progress(task_id, None, Some("inspecting"));
+    reset_progress(task_id, None, Some(TaskStage::INSPECTING));
     let downloaded_path = downloaded.to_string_lossy().to_string();
     let preview = inspect_import_file(downloaded_path.clone(), None).await?;
     if !preview.valid {
@@ -97,7 +98,7 @@ async fn run_install(
     }
 
     ensure_not_cancelled(task_id)?;
-    reset_progress(task_id, None, Some("checking_conflict"));
+    reset_progress(task_id, None, Some(TaskStage::CHECKING_CONFLICT));
     let target = request.target;
     let conflict = check_import_conflict(CheckImportRequest {
         build_type: target.build_type.clone(),
@@ -124,7 +125,7 @@ async fn run_install(
     }
 
     ensure_not_cancelled(task_id)?;
-    reset_progress(task_id, None, Some("installing"));
+    reset_progress(task_id, None, Some(TaskStage::INSTALLING));
     let result = import_assets_for_task(
         ImportAssetsRequest {
             build_type: target.build_type,

@@ -4,7 +4,9 @@ use crate::ui::components::html_renderer::render_document;
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{Input, Paste};
 use crate::ui::components::modal;
-use crate::ui::hooks::local_versions::{LocalVersionsSnapshot, dropdown_label, snapshot, use_versions};
+use crate::ui::hooks::local_versions::{
+    LocalVersionsSnapshot, dropdown_label, snapshot, use_versions,
+};
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::ThemeColors;
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
@@ -28,8 +30,7 @@ mod results_state;
 mod share_actions;
 
 pub(crate) use results::{
-    ResultCardProps, ResultsListView, render_aligned_placeholder,
-    render_result_logo_placeholder,
+    ResultCardProps, ResultsListView, render_aligned_placeholder, render_result_logo_placeholder,
 };
 
 /// Drop source-specific metadata and in-flight result generations after an API
@@ -3484,7 +3485,7 @@ fn render_install_modal(
                         "cancelled" => {
                             crate::ui::components::toast::push(
                                 cx,
-                                SharedString::from("CurseForge 安装已取消"),
+                                t!("CurseForge.install_cancelled"),
                             );
                         }
                         "error" => {

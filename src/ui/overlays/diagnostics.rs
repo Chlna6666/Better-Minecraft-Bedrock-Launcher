@@ -334,9 +334,10 @@ pub fn render_diagnostics_overlay(
                                                     );
                                                     toast::error(
                                                         cx,
-                                                        SharedString::from(format!(
-                                                            "诊断包导出失败：{safe}"
-                                                        )),
+                                                        t!(
+                                                            "Diagnostics.export_failed_detail",
+                                                            error = safe
+                                                        ),
                                                     );
                                                 }
                                             }

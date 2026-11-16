@@ -40,19 +40,19 @@ pub(crate) fn section_title(
 /// browse action, and drag/drop affordance remain visually grouped.
 pub(crate) fn source_card(
     colors: &ThemeColors,
-    kind: &'static str,
+    kind: impl Into<SharedString>,
     source: Option<&Path>,
-    hint: &'static str,
+    hint: impl Into<SharedString>,
     browse: impl IntoElement,
 ) -> Div {
     let file_name = source
         .and_then(|path| path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "尚未选择文件".to_owned());
+        .unwrap_or_else(|| t!("Inspector.no_file_selected").to_string());
     let folder = source
         .and_then(|path| path.parent())
         .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "可通过文件选择器或拖入文件导入".to_owned());
+        .unwrap_or_else(|| t!("Inspector.select_or_drop").to_string());
     div()
         .min_w(px(0.0))
         .p(px(12.0))
@@ -77,7 +77,7 @@ pub(crate) fn source_card(
                         .text_size(px(10.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.accent)
-                        .child(kind),
+                        .child(kind.into()),
                 )
                 .child(
                     div()
@@ -85,7 +85,11 @@ pub(crate) fn source_card(
                         .min_w(px(0.0))
                         .text_size(px(11.0))
                         .text_color(colors.text_secondary)
-                        .child(if source.is_some() { "已导入素材" } else { "等待导入" }),
+                        .child(if source.is_some() {
+                            t!("Inspector.asset_imported")
+                        } else {
+                            t!("Inspector.waiting_import")
+                        }),
                 ),
         )
         .child(
@@ -116,7 +120,7 @@ pub(crate) fn source_card(
                     div()
                         .text_size(px(11.0))
                         .text_color(colors.text_secondary)
-                        .child(hint),
+                        .child(hint.into()),
                 ),
         )
 }
@@ -124,7 +128,7 @@ pub(crate) fn source_card(
 /// Compact editor result identity, kept separate from primary actions.
 pub(crate) fn result_summary(
     colors: &ThemeColors,
-    label: &'static str,
+    label: impl Into<SharedString>,
     value: impl Into<SharedString>,
 ) -> Div {
     div()
@@ -135,7 +139,12 @@ pub(crate) fn result_summary(
         .flex()
         .flex_col()
         .gap(px(4.0))
-        .child(div().text_size(px(10.0)).text_color(colors.text_secondary).child(label))
+        .child(
+            div()
+                .text_size(px(10.0))
+                .text_color(colors.text_secondary)
+                .child(label.into()),
+        )
         .child(
             div()
                 .text_size(px(12.0))
@@ -150,7 +159,7 @@ pub(crate) fn result_summary(
 pub(crate) fn stage_tab(
     colors: &ThemeColors,
     ordinal: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     active: bool,
 ) -> Div {
     div()
@@ -175,7 +184,7 @@ pub(crate) fn stage_tab(
             div()
                 .text_size(px(12.0))
                 .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
-                .child(label),
+                .child(label.into()),
         )
 }
 

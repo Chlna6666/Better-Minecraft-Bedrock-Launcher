@@ -8,9 +8,7 @@ use crate::ui::components::toast;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::ThemeColors;
-use crate::ui::views::settings::common::{
-    action_button, card, control_box, value_box,
-};
+use crate::ui::views::settings::common::{action_button, card, control_box, value_box};
 use crate::ui::views::settings::state::{
     PluginReadmeCacheKey, PluginResourceCacheKey, PluginSettingsSubTab, SettingsPageState,
     SettingsTab,
@@ -501,7 +499,7 @@ pub(super) fn render_plugins_tab(
 
 fn compact_status_pill(
     colors: &ThemeColors,
-    text: &'static str,
+    text: impl Into<SharedString>,
     is_success: bool,
     is_warning: bool,
     is_disabled: bool,
@@ -548,10 +546,14 @@ fn compact_status_pill(
         .text_size(px(10.))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(text_color)
-        .child(text)
+        .child(text.into())
 }
 
-fn small_icon_button(colors: &ThemeColors, label: &'static str, icon_path: &'static str) -> Div {
+fn small_icon_button(
+    colors: &ThemeColors,
+    label: impl Into<SharedString>,
+    icon_path: &'static str,
+) -> Div {
     div()
         .h(px(26.))
         .px(px(8.))
@@ -581,7 +583,7 @@ fn small_icon_button(colors: &ThemeColors, label: &'static str, icon_path: &'sta
                 .text_size(px(11.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(colors.text_primary)
-                .child(label),
+                .child(label.into()),
         )
 }
 
@@ -663,13 +665,13 @@ fn plugin_list(
         let is_selected = selected_id == Some(status.id.as_str());
         let plugin_id = status.id.clone();
         let (status_text, is_success, is_warning, is_disabled) = if !status.enabled {
-            ("已禁用", false, false, true)
+            (t!("PluginSettings.status.disabled"), false, false, true)
         } else if status.loaded {
-            ("已加载", true, false, false)
+            (t!("PluginSettings.status.loaded"), true, false, false)
         } else if status.healthy {
-            ("已启用", true, false, false)
+            (t!("PluginSettings.status.enabled"), true, false, false)
         } else {
-            ("失败", false, true, false)
+            (t!("PluginSettings.status.failed"), false, true, false)
         };
 
         items_container = items_container.child(
@@ -913,9 +915,9 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                         action_button(
                             colors,
                             if enabled {
-                                SharedString::from("禁用")
+                                t!("PluginSettings.action.disable")
                             } else {
-                                SharedString::from("启用")
+                                t!("PluginSettings.action.enable")
                             },
                             true,
                         )
@@ -923,9 +925,9 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                             MouseButton::Left,
                             move |_event, _window, cx| {
                                 let success_message = if enabled {
-                                    SharedString::from("插件已禁用")
+                                    t!("PluginSettings.toast.disabled")
                                 } else {
-                                    SharedString::from("插件已启用")
+                                    t!("PluginSettings.toast.enabled")
                                 };
                                 crate::plugins::runtime::set_plugin_enabled(
                                     cx,
@@ -938,7 +940,7 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                                         Err(error) => {
                                             toast::error(
                                                 cx,
-                                                SharedString::from(format!("操作失败: {error}")),
+                                                t!("PluginSettings.toast.action_failed", error = error.to_string()),
                                             );
                                         }
                                     },
@@ -986,7 +988,7 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                         .items_center()
                         .gap(px(6.))
                         .child(
-                            small_icon_button(colors, "重载", lucide_gpui::icon!(refresh_cw))
+                            small_icon_button(colors, t!("PluginSettings.action.reload"), lucide_gpui::icon!(refresh_cw))
                                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                                     match crate::plugins::runtime::reload_plugin(
                                         cx,
@@ -995,20 +997,20 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                                         Ok(()) => {
                                             toast::success(
                                                 cx,
-                                                SharedString::from("插件重载已安排"),
+                                                t!("PluginSettings.toast.reload_scheduled"),
                                             );
                                         }
                                         Err(error) => {
                                             toast::error(
                                                 cx,
-                                                SharedString::from(format!("重载失败: {error}")),
+                                                t!("PluginSettings.toast.reload_failed", error = error.to_string()),
                                             );
                                         }
                                     }
                                 }),
                         )
                         .child(
-                            small_icon_button(colors, "诊断", lucide_gpui::icon!(activity))
+                            small_icon_button(colors, t!("PluginSettings.action.diagnostics"), lucide_gpui::icon!(activity))
                                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                                     match crate::plugins::runtime::export_plugin_diagnostics(
                                         cx,
@@ -1020,22 +1022,23 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                                             ));
                                             toast::success(
                                                 cx,
-                                                SharedString::from("诊断日志已复制到剪贴板"),
+                                                t!("PluginSettings.toast.diagnostics_copied"),
                                             );
                                         }
                                         Err(error) => {
                                             toast::error(
                                                 cx,
-                                                SharedString::from(format!(
-                                                    "导出诊断失败: {error}"
-                                                )),
+                                                t!(
+                                                    "PluginSettings.toast.export_diagnostics_failed",
+                                                    error = error.to_string()
+                                                ),
                                             );
                                         }
                                     }
                                 }),
                         )
                         .child(
-                            small_icon_button(colors, "卸载", lucide_gpui::icon!(trash_2))
+                            small_icon_button(colors, t!("PluginSettings.action.uninstall"), lucide_gpui::icon!(trash_2))
                                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                                     match crate::plugins::runtime::start_uninstall_plugin_task(
                                         cx,
@@ -1044,15 +1047,15 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                                         Ok(task_id) => observe_plugin_task(
                                             cx,
                                             task_id,
-                                            SharedString::from("插件已卸载"),
-                                            SharedString::from("卸载失败"),
+                                            t!("PluginSettings.toast.uninstalled"),
+                                            t!("PluginSettings.toast.uninstall_failed"),
                                             PluginTaskSelection::Clear,
                                             None,
                                         ),
                                         Err(error) => {
                                             toast::error(
                                                 cx,
-                                                SharedString::from(format!("卸载失败: {error}")),
+                                                t!("PluginSettings.toast.uninstall_failed_detail", error = error.to_string()),
                                             );
                                         }
                                     }
@@ -1072,7 +1075,7 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                     })
                     .text_size(px(12.))
                     .text_color(colors.danger)
-                    .child(format!("错误: {error}")),
+                    .child(t!("PluginSettings.error_detail", error = error.to_string())),
             )
         })
 }
@@ -1163,11 +1166,7 @@ fn plugin_readme_panel(
     div()
         .w_full()
         .p(px(2.))
-        .child(render_document(
-            document.as_ref(),
-            colors,
-            model.is_dark,
-        ))
+        .child(render_document(document.as_ref(), colors, model.is_dark))
         .into_any_element()
 }
 
@@ -1790,8 +1789,7 @@ fn observe_plugin_task(
 }
 
 fn import_plugin_package_from_picker(cx: &mut App) {
-    let Some(path) =
-        crate::utils::file_picker::pick_file_path(None,"BMCBL Plugin", &["bmcblx"])
+    let Some(path) = crate::utils::file_picker::pick_file_path(None, "BMCBL Plugin", &["bmcblx"])
     else {
         return;
     };

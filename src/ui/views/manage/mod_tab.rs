@@ -32,10 +32,7 @@ impl ManagePageView {
         cx: &mut Context<Self>,
     ) {
         if asset.folder_name.to_string().starts_with("levilamina:") {
-            toast::error(
-                cx,
-                SharedString::from("LeviLamina Mod 的加载类型由 LeviLamina 管理，不能改成 BLoader 类型"),
-            );
+            toast::error(cx, t!("AssetManager.levilamina_mod_type_locked"));
             return;
         }
         let (version, selected_mod_type) = {
@@ -53,8 +50,12 @@ impl ManagePageView {
             (version, selected_mod_type)
         };
         let delay_value = asset.inject_delay_ms.unwrap_or(0).to_string();
-        let Some(delay_input) = create_text_input(window, cx, "输入毫秒延迟", &delay_value)
-        else {
+        let Some(delay_input) = create_text_input(
+            window,
+            cx,
+            t!("AssetManager.inject_delay_placeholder").as_ref(),
+            &delay_value,
+        ) else {
             return;
         };
         self.mod_type_dialog = Some(ModTypeDialogState {
@@ -80,15 +81,15 @@ impl ManagePageView {
         let Some(input) = create_text_input(
             window,
             cx,
-            "输入毫秒值",
+            t!("AssetManager.inject_delay_value_placeholder").as_ref(),
             &asset.inject_delay_ms.unwrap_or(0).to_string(),
         ) else {
             return;
         };
         self.value_prompt = Some(ValuePromptDialogState {
-            title: SharedString::from("注入延迟"),
+            title: t!("AssetManager.inject_delay_title"),
             description: SharedString::from(asset.display_name.clone()),
-            confirm_label: SharedString::from("保存"),
+            confirm_label: t!("common.save"),
             input,
             target: ValuePromptTarget::ModInjectDelay { version, asset },
             pending: false,

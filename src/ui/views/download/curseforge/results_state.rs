@@ -246,8 +246,10 @@ fn load(page_index_override: Option<usize>, cx: &mut App) {
         Err(error) => {
             let _ = cx.update_global(|state: &mut DownloadPageState, _cx| {
                 state.curseforge_results_loading = false;
-                state.curseforge_results_error =
-                    Some(SharedString::from(format!("无法调度搜索任务: {error}")));
+                state.curseforge_results_error = Some(t!(
+                    "CurseForge.schedule_search_failed",
+                    error = error.to_string()
+                ));
             });
             return;
         }

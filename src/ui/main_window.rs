@@ -1,3 +1,4 @@
+use crate::tasks::TaskStage;
 use crate::core::minecraft::remote_versions;
 use crate::plugins::events::InjectionSlot;
 use crate::ui::components::color_picker::normalize_hex_color;
@@ -390,7 +391,7 @@ impl MainWindowView {
             return;
         };
         if task.status.as_ref() != "completed"
-            || !matches!(task.stage.as_ref(), "launching" | "running_game")
+            || ![TaskStage::LAUNCHING, TaskStage::RUNNING_GAME].contains(&task.stage)
             || self.last_handled_game_launch.as_deref() == Some(task_id)
         {
             return;
@@ -475,12 +476,7 @@ impl MainWindowView {
         &mut self,
         now: Instant,
         cx: &App,
-    ) -> (
-        f32,
-        Option<Hsla>,
-        crate::ui::theme::ThemeColors,
-        bool,
-    ) {
+    ) -> (f32, Option<Hsla>, crate::ui::theme::ThemeColors, bool) {
         let (theme_k, theme_accent, theme_animating) = {
             let theme = cx.global::<ThemeState>();
             (theme.factor(now), theme.accent, theme.is_animating(now))
@@ -704,11 +700,8 @@ impl MainWindowView {
 
         if model.builtin_route == AppRoute::Tasks
             && let Some(tasks_page_view) = &self.tasks_page_view
-            && let Some(tasks_overlay) = crate::ui::views::tasks::render_overlay(
-                &model.theme_colors,
-                tasks_page_view,
-                cx,
-            )
+            && let Some(tasks_overlay) =
+                crate::ui::views::tasks::render_overlay(&model.theme_colors, tasks_page_view, cx)
         {
             auth_blocked = true;
             root = root.child(tasks_overlay);
@@ -718,20 +711,19 @@ impl MainWindowView {
             auth_blocked = true;
             let agreement_title = t!("UserAgreement.title");
             let agreement_accept_label = t!("UserAgreement.accept_button");
-            root = root.child(
-                crate::ui::overlays::user_agreement::render(
-                    model.agreement_render_state.document.clone(),
-                    model.window_width,
-                    model.window_height,
-                    model.theme_k,
-                    model.theme_accent,
-                    agreement_title,
-                    agreement_accept_label,
-                    model.agreement_render_state.scroll_handle.clone(),
-                    model.agreement_render_state.accept_unlocked,
-                    crate::ui::overlays::user_agreement::UserAgreementModalOptions::required_acceptance(),
+            root = root.child(crate::ui::overlays::user_agreement::render(
+                model.agreement_render_state.document.clone(),
+                model.window_width,
+                model.window_height,
+                model.theme_k,
+                model.theme_accent,
+                agreement_title,
+                agreement_accept_label,
+                model.agreement_render_state.scroll_handle.clone(),
+                model.agreement_render_state.accept_unlocked,
+                crate::ui::overlays::user_agreement::UserAgreementModalOptions::required_acceptance(
                 ),
-            );
+            ));
         }
 
         if !model.agreement_render_state.visible && model.diagnostics_visible {
@@ -836,13 +828,11 @@ impl MainWindowView {
                 .visible
             {
                 auth_blocked = true;
-                root = root.child(
-                    crate::ui::overlays::linux_runtime::render(
-                        cx.global::<crate::ui::state::linux_runtime::LinuxRuntimeState>(),
-                        &model.theme_colors,
-                        cx.global::<I18n>(),
-                    ),
-                );
+                root = root.child(crate::ui::overlays::linux_runtime::render(
+                    cx.global::<crate::ui::state::linux_runtime::LinuxRuntimeState>(),
+                    &model.theme_colors,
+                    cx.global::<I18n>(),
+                ));
             }
 
             if model.launcher_snapshot.show_modal {
@@ -859,13 +849,11 @@ impl MainWindowView {
                 auth_blocked = true;
                 let launch_prereq_state =
                     cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
-                root = root.child(
-                    crate::ui::overlays::launch_prereq::render(
-                        launch_prereq_state,
-                        window,
-                        cx,
-                    ),
-                );
+                root = root.child(crate::ui::overlays::launch_prereq::render(
+                    launch_prereq_state,
+                    window,
+                    cx,
+                ));
             }
         }
 
@@ -877,12 +865,11 @@ impl MainWindowView {
         }
 
         if !model.agreement_render_state.visible
-            && let Some(dialog) =
-                crate::ui::views::tools::online::render_termination_dialog(
-                    &model.theme_colors,
-                    cx.global::<crate::ui::views::tools::state::ToolsPageState>(),
-                    cx.global::<I18n>(),
-                )
+            && let Some(dialog) = crate::ui::views::tools::online::render_termination_dialog(
+                &model.theme_colors,
+                cx.global::<crate::ui::views::tools::state::ToolsPageState>(),
+                cx.global::<I18n>(),
+            )
         {
             auth_blocked = true;
             root = root.child(dialog);
@@ -931,13 +918,12 @@ impl MainWindowView {
 
         if !model.agreement_render_state.visible
             && !model.diagnostics_visible
-            && let Some(game_diagnostics) =
-                crate::ui::overlays::game_diagnostics::render(
-                    &model.theme_colors,
-                    model.window_width,
-                    model.window_height,
-                    cx.global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>(),
-                )
+            && let Some(game_diagnostics) = crate::ui::overlays::game_diagnostics::render(
+                &model.theme_colors,
+                model.window_width,
+                model.window_height,
+                cx.global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>(),
+            )
         {
             auth_blocked = true;
             root = root.child(game_diagnostics);
@@ -988,7 +974,8 @@ impl MainWindowView {
                 crate::plugins::ui_dsl::fallback_panel(error.to_string()).into_any_element()
             } else {
                 crate::plugins::runtime::request_page_render(cx, &modal.plugin_id, &modal.page_id);
-                crate::plugins::ui_dsl::loading_panel("正在加载对话框...").into_any_element()
+                crate::plugins::ui_dsl::loading_panel(t!("MainWindow.loading_dialog"))
+                    .into_any_element()
             }
         };
         let title = modal.title.clone();
@@ -1076,11 +1063,7 @@ impl MainWindowView {
         )
     }
 
-    fn sync_animation_suppressed(
-        &mut self,
-        suppressed: bool,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    fn sync_animation_suppressed(&mut self, suppressed: bool, cx: &mut Context<Self>) -> bool {
         if self.background_animation_suppressed == suppressed {
             return false;
         }
@@ -1099,17 +1082,10 @@ impl MainWindowView {
         update_render_state: &UpdateRenderState,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.sync_animation_suppressed(
-            update_render_state.suppress_background_animation_frames,
-            cx,
-        )
+        self.sync_animation_suppressed(update_render_state.suppress_background_animation_frames, cx)
     }
 
-    fn sync_current_animation_policy(
-        &mut self,
-        now: Instant,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    fn sync_current_animation_policy(&mut self, now: Instant, cx: &mut Context<Self>) -> bool {
         let debug_enabled = cx.global::<DebugState>().enabled;
         let update_render_state = self.read_update_render_state(now, debug_enabled, cx);
         self.sync_animation_policy(&update_render_state, cx)

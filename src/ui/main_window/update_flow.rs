@@ -61,7 +61,8 @@ impl MainWindowView {
                         tracing::warn!("update markdown parse task failed: {error:?}");
                         update_state.modal_pending_open = false;
                         update_state.show_modal = false;
-                        update_state.last_error = Some(format!("解析更新日志失败: {error:?}"));
+                        update_state.last_error =
+                            Some(t!("UpdateModal.parse_log_failed", error = format!("{error:?}")).to_string());
                     }
                 }
             });
@@ -95,9 +96,13 @@ impl MainWindowView {
         cx.spawn(async move |handle, cx| {
             tracing::info!("startup update check awaiting worker result");
             let outcome = result_receiver.await.unwrap_or_else(|error| {
-                crate::ui::update_check::UpdateCheckOutcome::with_error(format!(
-                    "更新检查线程提前结束: {error:?}"
-                ))
+                crate::ui::update_check::UpdateCheckOutcome::with_error(
+                    t!(
+                        "UpdateModal.check_thread_ended",
+                        error = format!("{error:?}")
+                    )
+                    .to_string(),
+                )
             });
             STARTUP_UPDATE_CHECK_GATE.finish();
 
@@ -302,7 +307,9 @@ impl MainWindowView {
                                     .message
                                     .clone()
                                     .map(|message| message.to_string())
-                                    .unwrap_or_else(|| "下载失败".to_string()),
+                                    .unwrap_or_else(|| {
+                                        t!("UpdateModal.download_failed").to_string()
+                                    }),
                             );
                         } else if snapshot.status.as_ref() == "cancelled" {
                             update_state.cancel_download();
@@ -374,7 +381,7 @@ mod tests {
             id: Arc::from("update-download"),
             title: Arc::from("update"),
             detail: None,
-            stage: Arc::from("download"),
+            stage: crate::tasks::TaskStage::custom("download"),
             total: Some(100),
             done,
             speed_bytes_per_sec: 100.0,
@@ -391,6 +398,7 @@ mod tests {
             visibility: TaskVisibility::Visible,
             parent_id: None,
             task_type: TaskType::Operation,
+            generic_title: false,
         })
     }
 

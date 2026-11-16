@@ -92,7 +92,7 @@ fn spawn_install_snapshot_pump(
                         cx.update_global(|state: &mut LinuxRuntimeState, _cx| {
                             state.set_install_error(
                                 request_id,
-                                "安装进度通道已关闭，请重新检测。",
+                                t!("LinuxRuntime.channel_closed"),
                             )
                         })?;
                         break;
@@ -158,7 +158,7 @@ fn spawn_install_snapshot_pump(
             } else {
                 let message = terminal_message
                     .map(|message| message.to_string())
-                    .unwrap_or_else(|| "兼容环境安装失败，请查看安装输出。".to_string());
+                    .unwrap_or_else(|| t!("LinuxRuntime.install_failed").to_string());
                 cx.update_global(|state: &mut LinuxRuntimeState, _cx| {
                     state.set_install_error(request_id, message)
                 })?;
@@ -193,10 +193,7 @@ async fn verify_installed_runtime(request_id: u64, cx: &mut AsyncApp) -> Result<
         Ok(check) => {
             cx.update_global(|state: &mut LinuxRuntimeState, _cx| {
                 state.check = Some(check);
-                state.set_install_error(
-                    request_id,
-                    "安装已结束，但仍未检测到 Proton 或 Wine。请查看任务日志后重新检测。",
-                )
+                state.set_install_error(request_id, t!("LinuxRuntime.install_ended_missing"))
             })?;
         }
         Err(error) => {

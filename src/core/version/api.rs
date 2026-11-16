@@ -1,8 +1,10 @@
+use gpui::SharedString;
 use anyhow::{Context as _, Result};
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
 use tracing::debug;
+use crate::tasks::TaskStage;
 
 use crate::core::version::launch_versions::{self, LaunchVersionEntry};
 use crate::core::version::installed::scan;
@@ -77,23 +79,23 @@ fn ensure_version_task_active(task_id: &str) -> Result<(), String> {
 }
 
 fn start_version_mutation_task<F>(
-    title: &'static str,
+    title: SharedString,
     detail: String,
-    stage: &'static str,
+    stage: TaskStage,
     operation: F,
 ) -> Result<String, String>
 where
     F: FnOnce(&str) -> Result<VersionMutationOutcome, String> + Send + 'static,
 {
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(title, stage).detail(detail),
+        crate::tasks::task_manager::TaskOptions::new(title.clone(), stage.clone()).detail(detail),
     )?;
     crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
 
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
     let workflow = crate::tasks::runtime::spawn_io(async move {
-        crate::tasks::task_manager::reset_progress(&worker_task_id, None, Some(stage));
+        crate::tasks::task_manager::reset_progress(&worker_task_id, None, Some(stage.clone()));
         if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
             crate::tasks::task_manager::finish_task(
                 &worker_task_id,
@@ -179,9 +181,9 @@ pub fn start_delete_version_task(folder_name: String) -> Result<String, String> 
     let detail = folder_name.clone();
 
     start_version_mutation_task(
-        "删除游戏版本",
+        t!("TaskTitle.delete_version"),
         detail,
-        "deleting_version",
+        TaskStage::DELETING_VERSION,
         move |task_id| {
             let versions_root = file_ops::bmcbl_subdir("versions");
             let version_dir = versions_root.join(&folder_name);
@@ -233,9 +235,9 @@ pub fn start_rename_version_task(old_name: String, new_name: String) -> Result<S
     let detail = format!("{old_name} → {new_name}");
 
     start_version_mutation_task(
-        "重命名游戏版本",
+        t!("TaskTitle.rename_version"),
         detail,
-        "renaming_version",
+        TaskStage::RENAMING_VERSION,
         move |task_id| {
             let versions_root = file_ops::bmcbl_subdir("versions");
             let old_dir = versions_root.join(&old_name);

@@ -14,6 +14,7 @@ use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep, timeout};
 use tracing::{debug, error, warn};
+use crate::tasks::TaskStage;
 
 use crate::downloads::md5::{is_digest, verify};
 use crate::downloads::progress_ranges::DownloadedRangeSet;
@@ -1172,9 +1173,9 @@ async fn download_partitioned(
                         )
                         .await;
                         if let Some(visualization) = visualization {
-                            update_progress(&task_id, ProgressUpdate::advance(pending_progress).total(total).stage("downloading").visualization(visualization));
+                            update_progress(&task_id, ProgressUpdate::advance(pending_progress).total(total).stage(TaskStage::DOWNLOADING).visualization(visualization));
                         } else {
-                            update_progress(&task_id, ProgressUpdate::advance(pending_progress).total(total).stage("downloading"));
+                            update_progress(&task_id, ProgressUpdate::advance(pending_progress).total(total).stage(TaskStage::DOWNLOADING));
                         }
                         pending_progress = 0;
                         last_update_time = Instant::now();
@@ -1217,7 +1218,7 @@ async fn download_partitioned(
                 }
 
                 if pending_progress > 0 {
-                    update_progress(&task_id, ProgressUpdate::advance(pending_progress).total(total).stage("downloading"));
+                    update_progress(&task_id, ProgressUpdate::advance(pending_progress).total(total).stage(TaskStage::DOWNLOADING));
                     pending_progress = 0;
                     last_update_time = Instant::now();
                 }
@@ -1393,7 +1394,7 @@ async fn download_partitioned(
     {
         update_progress(
             task_id,
-            ProgressUpdate::advance(0).total(total).stage("verifying"),
+            ProgressUpdate::advance(0).total(total).stage(TaskStage::VERIFYING),
         );
         match verify(dest_path.as_path(), expected).await {
             Ok(true) => {}
@@ -1530,7 +1531,7 @@ pub async fn download(
                 task_id,
                 ProgressUpdate::advance(0)
                     .total(total)
-                    .stage("single_thread_fallback"),
+                    .stage(TaskStage::SINGLE_THREAD_FALLBACK),
             );
             remove_download_file_if_exists(dest.as_ref()).await?;
             download_file(
@@ -1858,7 +1859,7 @@ mod tests {
 
         let task_id = unique_task_id("multi-range-test");
         create_task(
-            TaskOptions::new("background task", "downloading")
+            TaskOptions::new("background task", TaskStage::DOWNLOADING)
                 .id(task_id.clone())
                 .pausable(true),
         )
@@ -1907,7 +1908,7 @@ mod tests {
 
         let task_id = unique_task_id("multi-slow-stealing-test");
         create_task(
-            TaskOptions::new("background task", "downloading")
+            TaskOptions::new("background task", TaskStage::DOWNLOADING)
                 .id(task_id.clone())
                 .pausable(true),
         )
@@ -1950,7 +1951,7 @@ mod tests {
 
         let task_id = unique_task_id("multi-stall-recovery-test");
         create_task(
-            TaskOptions::new("background task", "downloading")
+            TaskOptions::new("background task", TaskStage::DOWNLOADING)
                 .id(task_id.clone())
                 .pausable(true),
         )
@@ -1993,7 +1994,7 @@ mod tests {
 
         let task_id = unique_task_id("multi-range-fallback-test");
         create_task(
-            TaskOptions::new("background task", "downloading")
+            TaskOptions::new("background task", TaskStage::DOWNLOADING)
                 .id(task_id.clone())
                 .pausable(true),
         )

@@ -58,11 +58,7 @@ impl MainWindowView {
         self.ensure_route_page_data_loaded(*route, cx);
     }
 
-    pub(super) fn handle_route_change(
-        &mut self,
-        route: RouteTarget,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn handle_route_change(&mut self, route: RouteTarget, cx: &mut Context<Self>) {
         let previous_route = self.last_route_for_side_effects.take();
 
         if previous_route.as_ref() != Some(&route) {

@@ -531,7 +531,10 @@ impl LaunchTask {
 
 pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
     let task_id = create_task(
-        TaskOptions::new(format!("启动 {}", request.display_name), "resolving_runner")
+        TaskOptions::new(
+            t!("TaskTitle.launch_version", name = request.display_name).to_string(),
+            TaskStage::RESOLVING_RUNNER,
+        )
             .detail(request.version.to_string())
             .total(LAUNCH_TOTAL_STEPS),
     )
@@ -643,7 +646,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         task_id,
         ProgressUpdate::advance(1)
             .total(LAUNCH_TOTAL_STEPS)
-            .stage("preparing_prefix"),
+            .stage(TaskStage::PREPARING_PREFIX),
     );
 
     let package_path = PathBuf::from(request.package_folder.as_ref());
@@ -708,7 +711,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         task_id,
         ProgressUpdate::advance(1)
             .total(LAUNCH_TOTAL_STEPS)
-            .stage("launching"),
+            .stage(TaskStage::LAUNCHING),
     );
 
     if !request.auto_start {
@@ -967,13 +970,13 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         task_id,
         ProgressUpdate::advance(1)
             .total(LAUNCH_TOTAL_STEPS)
-            .stage("launching"),
+            .stage(TaskStage::LAUNCHING),
     );
     update_progress(
         task_id,
         ProgressUpdate::advance(0)
             .total(LAUNCH_TOTAL_STEPS)
-            .stage("running_game"),
+            .stage(TaskStage::RUNNING_GAME),
     );
     Ok(Some(process_id))
 }

@@ -6,6 +6,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use crate::tasks::TaskStage;
 
 use crate::core::minecraft::paths::{
     GamePathOptions, GameTargetDir, game_target_dirs, resolve_game_target_parent,
@@ -185,7 +186,7 @@ fn delete_screenshot_transactionally(
 pub fn start_delete_screenshot_task(info: McScreenshotInfo) -> Result<String, String> {
     let detail = info.file_name.clone();
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new("删除截图", "deleting_screenshot")
+        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.delete_screenshot").to_string(), TaskStage::DELETING_SCREENSHOT)
             .detail(detail),
     )?;
     crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
@@ -413,7 +414,7 @@ mod tests {
                 .as_nanos()
         );
         crate::tasks::task_manager::create_task(
-            crate::tasks::task_manager::TaskOptions::new("截图删除测试", "running")
+            crate::tasks::task_manager::TaskOptions::new("截图删除测试", TaskStage::RUNNING)
                 .id(task_id.clone()),
         )
         .expect("task id must be unique");

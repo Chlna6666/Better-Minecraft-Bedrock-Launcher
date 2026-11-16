@@ -17,6 +17,7 @@ use reqwest::header::HeaderMap;
 use std::path::Path;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
+use crate::tasks::TaskStage;
 
 #[derive(Debug, Clone)]
 pub struct DownloadOptions {
@@ -382,7 +383,7 @@ impl DownloaderManager {
         let task_control = task_control(task_id)
             .ok_or_else(|| CoreError::Other(format!("Task control missing for {task_id}")))?;
 
-        update_progress(task_id, ProgressUpdate::advance(0).stage("downloading"));
+        update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::DOWNLOADING));
 
         let final_dest = resolve_final_dest(&self.client, &url, &dest, options.headers.as_ref())
             .await
@@ -396,7 +397,7 @@ impl DownloaderManager {
                 "DownloaderManager start download loop retry={} threads={}",
                 retry, threads
             );
-            reset_progress(task_id, None, Some("downloading"));
+            reset_progress(task_id, None, Some(TaskStage::DOWNLOADING));
             remove_file_if_exists(&temp_dest).await;
             let res = if threads > 1 {
                 download(
@@ -425,7 +426,7 @@ impl DownloaderManager {
 
             match res {
                 Ok(CoreResult::Success(_)) => {
-                    update_progress(task_id, ProgressUpdate::advance(0).stage("verifying"));
+                    update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::VERIFYING));
                     if let Err(error) = verify_temp_download(&temp_dest).await {
                         remove_file_if_exists(&temp_dest).await;
                         if is_trivial_candidate_failure(&temp_dest, &error) {
@@ -451,7 +452,7 @@ impl DownloaderManager {
                     }
 
                     if temp_dest != final_dest {
-                        update_progress(task_id, ProgressUpdate::advance(0).stage("renaming"));
+                        update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::RENAMING));
                         match rename_overwrite(&temp_dest, &final_dest).await {
                             Ok(()) => return Ok(CoreResult::Success(final_dest.clone())),
                             Err(e) => {
@@ -595,7 +596,7 @@ impl DownloaderManager {
 
     /// manager 创建新的 task 并 spawn 后台执行，立即返回 task_id
     pub fn start_download(&self, url: String, dest: PathBuf, options: DownloadOptions) -> String {
-        let mut task_options = TaskOptions::new("下载任务", "ready").pausable(true);
+        let mut task_options = TaskOptions::new(t!("TaskTitle.download_task").to_string(), TaskStage::READY).generic_title().pausable(true);
         if let Some(detail) = download_task_detail(dest.as_path()) {
             task_options = task_options.detail(detail);
         }
@@ -607,7 +608,7 @@ impl DownloaderManager {
         let task_id_clone = task_id.clone();
 
         let abort_handle = match spawn_download_task(task_id.clone(), async move {
-            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage("starting"));
+            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage(TaskStage::STARTING));
 
             let manager = DownloaderManager::with_client(client);
 

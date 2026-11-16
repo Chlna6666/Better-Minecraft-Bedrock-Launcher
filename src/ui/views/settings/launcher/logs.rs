@@ -10,9 +10,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use tracing::warn;
 
-use super::super::common::{
-    action_button, card_header, flat_card, sub_row,
-};
+use super::super::common::{action_button, card_header, flat_card, sub_row};
 use super::super::rows::setting_flat_dropdown_row;
 
 pub(super) fn render(
@@ -36,10 +34,12 @@ pub(super) fn render(
                 }),
             )
             .child(
-                action_button(colors, t!("LauncherSettings.logs.open"), true)
-                    .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                action_button(colors, t!("LauncherSettings.logs.open"), true).on_mouse_down(
+                    MouseButton::Left,
+                    |_event, _window, cx| {
                         open_log_directory(cx);
-                    }),
+                    },
+                ),
             )
             .child(
                 action_button(
@@ -365,20 +365,26 @@ fn persist_log_config(cx: &mut App) {
                     cx,
                     toast_id,
                     ToastKind::Success,
-                    SharedString::from("日志策略已保存"),
+                    t!("LauncherSettings.logs.saved"),
                 );
             }
             Ok(Err(error)) => toast::async_app::resolve(
                 cx,
                 toast_id,
                 ToastKind::Error,
-                SharedString::from(format!("保存日志策略失败：{error}")),
+                t!(
+                    "LauncherSettings.logs.save_failed",
+                    error = error.to_string()
+                ),
             ),
             Err(error) => toast::async_app::resolve(
                 cx,
                 toast_id,
                 ToastKind::Error,
-                SharedString::from(format!("保存日志策略任务失败：{error}")),
+                t!(
+                    "LauncherSettings.logs.save_task_failed",
+                    error = error.to_string()
+                ),
             ),
         }
     })
@@ -470,24 +476,30 @@ fn clean_inactive_logs(cx: &mut App) {
                 } else {
                     ToastKind::Error
                 },
-                SharedString::from(format!(
-                    "已清理 {} 个日志文件，释放 {}，{} 个文件未能删除",
-                    report.removed_files,
-                    format(report.freed_bytes),
-                    report.failed_files
-                )),
+                t!(
+                    "LauncherSettings.logs.cleaned",
+                    files = report.removed_files,
+                    freed = format(report.freed_bytes),
+                    failed = report.failed_files
+                ),
             ),
             Ok(Err(error)) => toast::async_app::resolve(
                 cx,
                 toast_id,
                 ToastKind::Error,
-                SharedString::from(format!("清理日志失败：{error}")),
+                t!(
+                    "LauncherSettings.logs.clean_failed",
+                    error = error.to_string()
+                ),
             ),
             Err(error) => toast::async_app::resolve(
                 cx,
                 toast_id,
                 ToastKind::Error,
-                SharedString::from(format!("清理日志任务失败：{error}")),
+                t!(
+                    "LauncherSettings.logs.clean_task_failed",
+                    error = error.to_string()
+                ),
             ),
         }
     })

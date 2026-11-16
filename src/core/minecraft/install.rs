@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use crate::tasks::TaskStage;
 
 use tracing::{info, warn};
 
@@ -34,7 +35,7 @@ pub fn start(request: GameInstallRequest) -> Result<Arc<str>, String> {
         NEXT_GAME_INSTALL_ID.fetch_add(1, Ordering::Relaxed)
     ));
     task_manager::create_task(
-        TaskOptions::new("安装 Minecraft", "preparing_game_install")
+        TaskOptions::new(t!("TaskTitle.install_minecraft").to_string(), TaskStage::PREPARING_GAME_INSTALL)
             .id(operation_id.to_string())
             .detail(request.version_label.clone())
             .total(INSTALL_PROGRESS_TOTAL)
@@ -128,7 +129,7 @@ async fn run(
     let extract_weight = 2_500;
     let package_path = match local_path {
         Some(path) => {
-            set_game_install_progress(operation_id, download_weight, "downloading_game");
+            set_game_install_progress(operation_id, download_weight, TaskStage::DOWNLOADING_GAME);
             path
         }
         None => download_package(request, operation_id, active_child_task, download_weight).await?,
@@ -139,7 +140,7 @@ async fn run(
     set_active_child_task(active_child_task, Some(extract_task_id.clone()));
     set_game_install_stage(
         operation_id,
-        "installing_game",
+        TaskStage::INSTALLING_GAME,
         "正在解压并安装游戏".to_string(),
     );
 
@@ -148,7 +149,7 @@ async fn run(
         operation_id,
         download_weight,
         extract_weight,
-        "installing_game",
+        TaskStage::INSTALLING_GAME,
     )
     .await?;
     set_active_child_task(active_child_task, None);
@@ -157,7 +158,7 @@ async fn run(
     if let Some(loader_version) = &request.levilamina_version {
         set_game_install_stage(
             operation_id,
-            "installing_levilamina",
+            TaskStage::INSTALLING_LEVILAMINA,
             format!("正在安装 LeviLamina {loader_version}"),
         );
         let game_directory =
@@ -176,7 +177,7 @@ async fn run(
             operation_id,
             download_weight + extract_weight,
             INSTALL_PROGRESS_TOTAL - download_weight - extract_weight,
-            "installing_levilamina",
+            TaskStage::INSTALLING_LEVILAMINA,
         )
         .await?;
         set_active_child_task(active_child_task, None);
@@ -197,7 +198,7 @@ async fn download_package(
 ) -> Result<String, String> {
     set_game_install_stage(
         operation_id,
-        "downloading_game",
+        TaskStage::DOWNLOADING_GAME,
         "正在下载游戏包".to_string(),
     );
     let task_id = match &request.source {
@@ -241,7 +242,7 @@ async fn download_package(
         operation_id,
         0,
         download_weight,
-        "downloading_game",
+        TaskStage::DOWNLOADING_GAME,
     )
     .await?;
     set_active_child_task(active_child_task, None);
@@ -292,18 +293,18 @@ fn require_completed(snapshot: &TaskSnapshot, operation: &str) -> Result<(), Str
     ))
 }
 
-fn set_game_install_stage(operation_id: &str, stage: &'static str, message: String) {
+fn set_game_install_stage(operation_id: &str, stage: TaskStage, message: String) {
     // Cumulative workflow progress must survive every phase transition.
     task_manager::update_progress(
         operation_id,
         ProgressUpdate::advance(0)
             .total(INSTALL_PROGRESS_TOTAL)
-            .stage(stage),
+            .stage(stage.clone()),
     );
     task_manager::set_task_message(operation_id, Some(message));
 }
 
-fn set_game_install_progress(operation_id: &str, target: u64, stage: &'static str) {
+fn set_game_install_progress(operation_id: &str, target: u64, stage: TaskStage) {
     if let Some(current) = task_manager::snapshot_arc(operation_id) {
         let delta = target
             .min(INSTALL_PROGRESS_TOTAL)
@@ -312,7 +313,7 @@ fn set_game_install_progress(operation_id: &str, target: u64, stage: &'static st
             operation_id,
             ProgressUpdate::advance(delta)
                 .total(INSTALL_PROGRESS_TOTAL)
-                .stage(stage),
+                .stage(stage.clone()),
         );
     }
 }
@@ -331,7 +332,7 @@ async fn wait_for_child_progress(
     operation_id: &str,
     offset: u64,
     weight: u64,
-    stage: &'static str,
+    stage: TaskStage,
 ) -> Result<Arc<TaskSnapshot>, String> {
     let mut events = task_manager::subscribe_task_events();
     loop {
@@ -342,7 +343,11 @@ async fn wait_for_child_progress(
         } else {
             snapshot.percent.unwrap_or(0.0).clamp(0.0, 100.0) / 100.0
         };
-        set_game_install_progress(operation_id, offset + (ratio * weight as f64) as u64, stage);
+        set_game_install_progress(
+            operation_id,
+            offset + (ratio * weight as f64) as u64,
+            stage.clone(),
+        );
         if snapshot.is_terminal() {
             return Ok(snapshot);
         }

@@ -4,6 +4,9 @@
 // without each feature committing to a release path.
 #![allow(dead_code)]
 
+#[macro_use]
+mod i18n;
+
 mod app;
 mod archive;
 mod assets;
@@ -14,8 +17,6 @@ mod downloads;
 mod frame_rate;
 mod github;
 mod http;
-#[macro_use]
-mod i18n;
 mod launch;
 mod plugins;
 mod result;

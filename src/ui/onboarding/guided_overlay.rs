@@ -582,7 +582,12 @@ fn render_header(
         )
 }
 
-fn render_scene_body(state: &OnboardingTourState, colors: &ThemeColors, i18n: &I18n, cx: &App) -> AnyElement {
+fn render_scene_body(
+    state: &OnboardingTourState,
+    colors: &ThemeColors,
+    i18n: &I18n,
+    cx: &App,
+) -> AnyElement {
     match state.scene {
         OnboardingScene::Welcome => render_welcome(colors, i18n),
         OnboardingScene::DownloadNavigation => render_download_navigation(colors, i18n),
@@ -841,9 +846,18 @@ fn render_settings_overview(colors: &ThemeColors, _i18n: &I18n, cx: &App) -> Any
 
     let mut sources = div().flex().flex_wrap().gap(px(6.0));
     for (source, label) in [
-        ("mirror", t!("LauncherSettings.download.curseforge_api_source.mirror")),
-        ("official", t!("LauncherSettings.download.curseforge_api_source.official")),
-        ("custom", t!("LauncherSettings.download.curseforge_api_source.custom")),
+        (
+            "mirror",
+            t!("LauncherSettings.download.curseforge_api_source.mirror"),
+        ),
+        (
+            "official",
+            t!("LauncherSettings.download.curseforge_api_source.official"),
+        ),
+        (
+            "custom",
+            t!("LauncherSettings.download.curseforge_api_source.custom"),
+        ),
     ] {
         let selected = current == source;
         sources = sources.child(
@@ -853,7 +867,11 @@ fn render_settings_overview(colors: &ThemeColors, _i18n: &I18n, cx: &App) -> Any
                 .h(px(30.0))
                 .rounded(px(8.0))
                 .border_1()
-                .border_color(if selected { colors.accent } else { colors.border })
+                .border_color(if selected {
+                    colors.accent
+                } else {
+                    colors.border
+                })
                 .bg(colors.accent.opacity(if selected { 0.15 } else { 0.04 }))
                 .text_size(px(11.0))
                 .text_color(colors.text_primary)

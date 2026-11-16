@@ -2,6 +2,7 @@ use crate::ui::components::modal;
 use crate::ui::hooks::launcher;
 use crate::ui::hooks::launcher::LauncherSnapshot;
 use crate::ui::state::i18n::I18n;
+use crate::ui::views::tasks::task_stage_text;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use gpui::prelude::FluentBuilder as _;
@@ -60,8 +61,8 @@ pub fn render_launcher_overlay(
     let stage = snapshot
         .last_snapshot
         .as_ref()
-        .map(|value| value.stage.to_string())
-        .unwrap_or_else(|| t!("LaunchPage.preparing").to_string());
+        .map(|value| task_stage_text(&value.stage))
+        .unwrap_or_else(|| t!("LaunchPage.preparing"));
     let is_error = status == "error";
     let is_completed = status == "completed";
     let is_cancelled = status == "cancelled";
@@ -100,7 +101,7 @@ pub fn render_launcher_overlay(
                 .map(|line| line.as_ref().to_string())
                 .filter(|line| !line.is_empty())
         })
-        .unwrap_or_else(|| stage.clone());
+        .unwrap_or_else(|| stage.to_string());
     let status_color = line_color(&colors, &status_text);
     let visible_log_start = snapshot.logs.len().saturating_sub(100);
     let visible_logs = &snapshot.logs[visible_log_start..];

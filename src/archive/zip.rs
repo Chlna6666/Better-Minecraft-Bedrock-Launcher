@@ -8,6 +8,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration as StdDuration;
 use std::time::Instant as StdInstant;
+use crate::tasks::TaskStage;
 
 use zip::ZipArchive;
 
@@ -122,7 +123,7 @@ impl ParallelExtractContext<'_> {
                 self.task_id,
                 ProgressUpdate::advance(delta)
                     .total(self.total_bytes)
-                    .stage("extracting"),
+                    .stage(TaskStage::EXTRACTING),
             );
         }
     }
@@ -480,7 +481,7 @@ fn extract_parallel(
     context.add_progress(0, true);
     update_progress(
         task_id,
-        ProgressUpdate::advance(0).total(total).stage("extracting"),
+        ProgressUpdate::advance(0).total(total).stage(TaskStage::EXTRACTING),
     );
 
     info!(
@@ -814,7 +815,7 @@ pub async fn extract<R: Read + Seek + Send + 'static>(
                             &task_id_clone_for_block,
                             ProgressUpdate::advance(pending_progress)
                                 .total(total)
-                                .stage("extracting"),
+                                .stage(TaskStage::EXTRACTING),
                         );
                         pending_progress = 0;
                         last_progress_emit = StdInstant::now();
@@ -864,7 +865,7 @@ pub async fn extract<R: Read + Seek + Send + 'static>(
                         &task_id_clone_for_block,
                         ProgressUpdate::advance(pending_progress)
                             .total(total)
-                            .stage("extracting"),
+                            .stage(TaskStage::EXTRACTING),
                     );
                     pending_progress = 0;
                     last_progress_emit = StdInstant::now();
@@ -897,13 +898,13 @@ pub async fn extract<R: Read + Seek + Send + 'static>(
                 &task_id_clone_for_block,
                 ProgressUpdate::advance(pending_progress)
                     .total(total)
-                    .stage("extracting"),
+                    .stage(TaskStage::EXTRACTING),
             );
         }
 
         update_progress(
             &task_id_clone_for_block,
-            ProgressUpdate::advance(0).total(total).stage("extracting"),
+            ProgressUpdate::advance(0).total(total).stage(TaskStage::EXTRACTING),
         );
 
         info!(

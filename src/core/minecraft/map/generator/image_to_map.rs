@@ -1,4 +1,5 @@
 //! Bounded direct Bedrock map-pixel preview from an image.
+use crate::tasks::TaskStage;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -265,7 +266,7 @@ pub fn start_preview(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());
     let mut task_options =
-        task_manager::TaskOptions::new("图片转 Bedrock 地图像素预览", "解码图片");
+        task_manager::TaskOptions::new(t!("TaskTitle.image_to_map_preview").to_string(), TaskStage::MAP_DECODE_IMAGE);
     if let Some(detail) = detail {
         task_options = task_options.detail(detail);
     }
@@ -347,7 +348,7 @@ async fn convert(
         );
     }
     let count = options.columns * options.rows;
-    task_manager::reset_progress(task_id, Some(u64::from(count)), Some("缩放并分片地图"));
+    task_manager::reset_progress(task_id, Some(u64::from(count)), Some(TaskStage::MAP_SCALE_AND_SLICE));
     let worker_cancel = cancel.clone();
     let worker_id = task_id.to_owned();
     let result = runtime::run_cpu(move || {
@@ -368,7 +369,7 @@ async fn convert(
                     &worker_id,
                     ProgressUpdate::advance(1)
                         .total(u64::from(count))
-                        .stage("逐张生成地图"),
+                        .stage(TaskStage::MAP_GENERATE_MAPS),
                 );
             },
         )
@@ -376,7 +377,7 @@ async fn convert(
         if worker_cancel.is_cancelled() {
             return Err("地图图片转换已取消".to_owned());
         }
-        task_manager::reset_progress(&worker_id, Some(u64::from(count)), Some("逐张合并预览"));
+        task_manager::reset_progress(&worker_id, Some(u64::from(count)), Some(TaskStage::MAP_MERGE_PREVIEW));
         let mut last_frame = Instant::now();
         let frame_id = worker_id.clone();
         let (preview_width, preview_height, preview_rgba) =
@@ -388,7 +389,7 @@ async fn convert(
                     &worker_id,
                     ProgressUpdate::advance(1)
                         .total(u64::from(count))
-                        .stage("逐张合并预览"),
+                        .stage(TaskStage::MAP_MERGE_PREVIEW),
                 );
                 if done <= 16 || last_frame.elapsed() >= Duration::from_millis(80) {
                     if let Ok(mut store) = previews().lock() {

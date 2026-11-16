@@ -327,9 +327,10 @@ impl ImportWindowView {
 
         if self.target.lock_version {
             if let Some(target) = self.target.version_folder.as_ref()
-                && let Some(version) = snapshot.versions.iter().find(|version| {
-                    folder_matches(version.folder.as_ref(), target.as_ref())
-                })
+                && let Some(version) = snapshot
+                    .versions
+                    .iter()
+                    .find(|version| folder_matches(version.folder.as_ref(), target.as_ref()))
             {
                 self.selected_folder = Some(SharedString::from(version.folder.clone()));
             }
@@ -400,7 +401,8 @@ impl ImportWindowView {
                 let snapshot = match terminal {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
-                        let message = SharedString::from(format!("解析任务异常结束：{error}"));
+                        let message =
+                            t!("Import.parse_task_failed", error = error.to_string());
                         toast::error(cx, message.clone());
                         this.status = Some((StatusKind::Error, message));
                         cx.notify();
@@ -529,11 +531,7 @@ impl ImportWindowView {
             })
     }
 
-    fn import_now(
-        &mut self,
-        options: ImportOptions,
-        cx: &mut Context<Self>,
-    ) {
+    fn import_now(&mut self, options: ImportOptions, cx: &mut Context<Self>) {
         let ImportOptions {
             overwrite,
             allow_shared_fallback,
@@ -662,9 +660,9 @@ impl ImportWindowView {
             }
 
             let title = if file_count > 1 {
-                format!("导入 Minecraft 内容（{file_count} 个文件）")
+                t!("Import.content_task_title", count = file_count).to_string()
             } else {
-                "导入 Minecraft 内容".to_string()
+                t!("Import.content_task_title_plain").to_string()
             };
             let task_id = match start_import_assets_task(
                 ImportAssetsRequest {
@@ -1157,13 +1155,11 @@ impl Render for ImportWindowView {
         {
             let launch_prereq_state = cx.global::<LaunchPrereqState>();
             if self.presentation == ImportPresentation::Window && launch_prereq_state.visible {
-                root = root.child(
-                    crate::ui::overlays::launch_prereq::render(
-                        launch_prereq_state,
-                        window,
-                        cx,
-                    ),
-                );
+                root = root.child(crate::ui::overlays::launch_prereq::render(
+                    launch_prereq_state,
+                    window,
+                    cx,
+                ));
             }
         }
 
@@ -2813,9 +2809,10 @@ fn selected_version_index(
     versions: &crate::ui::hooks::local_versions::LocalVersionsSnapshot,
 ) -> Option<usize> {
     view.selected_folder.as_ref().and_then(|selected_folder| {
-        versions.versions.iter().position(|version| {
-            folder_matches(version.folder.as_ref(), selected_folder.as_ref())
-        })
+        versions
+            .versions
+            .iter()
+            .position(|version| folder_matches(version.folder.as_ref(), selected_folder.as_ref()))
     })
 }
 
@@ -2825,9 +2822,10 @@ fn selected_launch_version<'a>(
 ) -> Option<&'a crate::core::version::launch_versions::LaunchVersionEntry> {
     if view.target.lock_version {
         let selected_folder = view.selected_folder.as_ref()?;
-        return versions.versions.iter().find(|version| {
-            folder_matches(version.folder.as_ref(), selected_folder.as_ref())
-        });
+        return versions
+            .versions
+            .iter()
+            .find(|version| folder_matches(version.folder.as_ref(), selected_folder.as_ref()));
     }
 
     versions

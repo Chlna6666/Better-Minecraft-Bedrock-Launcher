@@ -1,3 +1,4 @@
+use crate::tasks::TaskStage;
 use crate::tasks::task_manager::{self, TaskSnapshot};
 use gpui::{Context, RenderFingerprint, SharedString, Subscription, Timer};
 use std::collections::HashMap;
@@ -100,7 +101,7 @@ pub(super) struct TaskCardViewModel {
     pub(super) id: Arc<str>,
     pub(super) title: Arc<str>,
     pub(super) detail: Option<Arc<str>>,
-    pub(super) stage: Arc<str>,
+    pub(super) stage: TaskStage,
     pub(super) status: Arc<str>,
     pub(super) worker_total: Option<u32>,
     pub(super) worker_active: Option<u32>,
@@ -128,7 +129,7 @@ pub(super) struct TaskCardViewModel {
 pub(super) struct TaskChildViewModel {
     pub(super) id: Arc<str>,
     pub(super) title: Arc<str>,
-    pub(super) stage: Arc<str>,
+    pub(super) stage: TaskStage,
     pub(super) status: Arc<str>,
     pub(super) message: Option<Arc<str>>,
     pub(super) percent: Option<f64>,
@@ -163,6 +164,19 @@ impl TasksPageRenderModel {
     }
 }
 
+/// Resolves a task stage to display text in the active locale.
+///
+/// Custom stage codes (plugins, external bridges) have no translation key and
+/// fall back to the raw code so callers never display localized text as data.
+pub(crate) fn task_stage_text(stage: &TaskStage) -> SharedString {
+    let Some(key) = stage.label_key() else {
+        return SharedString::from(stage.code().to_owned());
+    };
+    crate::ui::state::i18n::global_i18n()
+        .lookup(key)
+        .unwrap_or_else(|| SharedString::from(stage.code().to_owned()))
+}
+
 fn task_subject(snapshot: &TaskSnapshot) -> String {
     match snapshot.detail.as_deref() {
         Some(detail) if !detail.trim().is_empty() => {
@@ -172,19 +186,6 @@ fn task_subject(snapshot: &TaskSnapshot) -> String {
     }
 }
 
-fn is_generic_task_title(title: &str) -> bool {
-    matches!(
-        title,
-        "下载游戏包"
-            | "下载资源文件"
-            | "下载缓存文件"
-            | "导入安装包"
-            | "安装游戏"
-            | "下载任务"
-            | "安装任务"
-            | "后台任务"
-    )
-}
 
 fn non_empty_arc(text: Option<&Arc<str>>) -> Option<Arc<str>> {
     text.filter(|value| !value.trim().is_empty()).cloned()
@@ -218,7 +219,7 @@ fn format_task_speed(speed_bytes_per_sec: f64) -> Arc<str> {
 }
 
 fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
-    let display_title = if is_generic_task_title(snapshot.title.as_ref()) {
+    let display_title = if snapshot.generic_title {
         non_empty_arc(snapshot.detail.as_ref()).unwrap_or_else(|| snapshot.title.clone())
     } else {
         snapshot.title.clone()
@@ -964,7 +965,7 @@ mod tests {
             id: Arc::from(task_id),
             title: Arc::from("Task"),
             detail: None,
-            stage: Arc::from("下载中"),
+            stage: TaskStage::DOWNLOADING,
             status: Arc::from(status),
             worker_total: None,
             worker_active: None,

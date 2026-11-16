@@ -29,9 +29,9 @@ pub(super) fn spawn_manual_update_check(no_update_msg: SharedString, cx: &mut Ap
         tracing::info!("manual update check awaiting worker result");
 
         let outcome = result_receiver.await.unwrap_or_else(|error| {
-            crate::ui::update_check::UpdateCheckOutcome::with_error(format!(
-                "更新检查线程提前结束: {error:?}"
-            ))
+            crate::ui::update_check::UpdateCheckOutcome::with_error(
+                t!("UpdateModal.check_thread_ended", error = format!("{error:?}")).to_string(),
+            )
         });
         MANUAL_UPDATE_CHECK_GATE.finish();
 
@@ -73,7 +73,7 @@ pub(super) fn spawn_manual_update_check(no_update_msg: SharedString, cx: &mut Ap
             toast::async_app::push(
                 cx,
                 ToastKind::Error,
-                SharedString::from(format!("检查更新失败: {error}")),
+                t!("UpdateModal.check_failed", error = error.to_string()),
             );
         } else if !has_update {
             toast::async_app::push(cx, ToastKind::Info, no_update_msg);

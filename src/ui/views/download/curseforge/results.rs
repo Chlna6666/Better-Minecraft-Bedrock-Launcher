@@ -736,10 +736,7 @@ pub(crate) fn render_results_placeholder(colors: &ThemeColors) -> Div {
         .child(skeleton_card())
 }
 
-pub(crate) fn render_aligned_placeholder(
-    colors: &ThemeColors,
-    state: &DownloadPageState,
-) -> Div {
+pub(crate) fn render_aligned_placeholder(colors: &ThemeColors, state: &DownloadPageState) -> Div {
     let viewport_height_px = state.curseforge_results_scroll.bounds().size.height / px(1.0);
     let pitch_px = super::RESULT_CARD_PITCH_PX.max(1.0);
     let skeleton_count = ((viewport_height_px / pitch_px).ceil() as usize)

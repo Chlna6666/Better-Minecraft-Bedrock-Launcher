@@ -1,4 +1,5 @@
 //! Bounded image decoding and Flat or luminance-relief image structure export.
+use crate::tasks::TaskStage;
 
 use std::path::{Path, PathBuf};
 
@@ -125,7 +126,7 @@ pub fn start_block_export(request: ImageBlockExportRequest) -> Result<String, St
         ImageBlockHeight::Flat => "图片转 Flat 方块并导出结构",
         ImageBlockHeight::LuminanceRelief { .. } => "图片转亮度阶梯并导出结构",
     };
-    let mut options = task_manager::TaskOptions::new(title, "解码图片");
+    let mut options = task_manager::TaskOptions::new(title, TaskStage::MAP_DECODE_IMAGE);
     if let Some(detail) = detail {
         options = options.detail(detail);
     }
@@ -169,7 +170,7 @@ async fn export_image(
         return Err("图片转换已取消".to_owned());
     }
     let total = u64::from(request.options.width) * u64::from(request.options.height);
-    task_manager::reset_progress(task_id, Some(total), Some("裁剪、缩放与方块匹配"));
+    task_manager::reset_progress(task_id, Some(total), Some(TaskStage::MAP_CROP_SCALE_MATCH));
     let worker_cancel = cancel.clone();
     let worker_id = task_id.to_owned();
     let options = request.options;
@@ -185,8 +186,8 @@ async fn export_image(
         let mut reported = 0_u64;
         let mut reported_total = total;
         let stage = match options.depth {
-            ImageBlockHeight::Flat => "裁剪、缩放与方块匹配",
-            ImageBlockHeight::LuminanceRelief { .. } => "匹配方块并构建亮度阶梯",
+            ImageBlockHeight::Flat => TaskStage::MAP_CROP_SCALE_MATCH,
+            ImageBlockHeight::LuminanceRelief { .. } => TaskStage::MAP_MATCH_BLOCKS_LUMINANCE,
         };
         let plan = plan_blocks(
             &decoded,
@@ -194,7 +195,7 @@ async fn export_image(
             &worker_cancel,
             |done, progress_total| {
                 if progress_total != reported_total {
-                    task_manager::reset_progress(&worker_id, Some(progress_total), Some(stage));
+                    task_manager::reset_progress(&worker_id, Some(progress_total), Some(stage.clone()));
                     reported = 0;
                     reported_total = progress_total;
                 }
@@ -203,7 +204,7 @@ async fn export_image(
                         &worker_id,
                         ProgressUpdate::advance(done - reported)
                             .total(progress_total)
-                            .stage(stage),
+                            .stage(stage.clone()),
                     );
                     reported = done;
                 }
@@ -221,7 +222,7 @@ async fn export_image(
     if cancel.is_cancelled() {
         return Err("图片转换已取消".to_owned());
     }
-    task_manager::reset_progress(task_id, Some(1), Some("写入 .mcstructure"));
+    task_manager::reset_progress(task_id, Some(1), Some(TaskStage::MAP_WRITE_MCSTRUCTURE));
     let output = request.output;
     let worker_output = output.clone();
     runtime::blocking::run_io(move || structure.write_to_path(&worker_output))
@@ -231,7 +232,7 @@ async fn export_image(
         task_id,
         ProgressUpdate::advance(1)
             .total(1)
-            .stage("写入 .mcstructure"),
+            .stage(TaskStage::MAP_WRITE_MCSTRUCTURE),
     );
     Ok(format!(
         "已生成 {}×{} {} 图片、{} 个方块到 {}",

@@ -2,6 +2,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use crate::tasks::TaskStage;
 
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -103,14 +104,14 @@ fn start_install_with_parent(
 ) -> Result<LeviLaminaInstallHandle, String> {
     let (title, detail) = match &request {
         LeviLaminaInstallRequest::Loader { loader_version, .. } => {
-            ("安装 LeviLamina".to_string(), Some(loader_version.clone()))
+            (t!("TaskTitle.install_levilamina").to_string(), Some(loader_version.clone()))
         }
         LeviLaminaInstallRequest::Mod {
             package_id,
             version,
             ..
         } => (
-            "安装 LeviLamina Mod".to_string(),
+            t!("TaskTitle.install_levilamina_mod").to_string(),
             Some(format!("{package_id} · {version}")),
         ),
     };
@@ -125,7 +126,7 @@ fn start_install_with_parent(
 
 pub fn start_uninstall(game_directory: PathBuf) -> Result<LeviLaminaInstallHandle, String> {
     start_operation(
-        "删除 LeviLamina".to_string(),
+        t!("TaskTitle.delete_levilamina").to_string(),
         None,
         None,
         move |_updates| async move {
@@ -174,7 +175,7 @@ where
         "levilamina-install-{}",
         NEXT_INSTALL_ID.fetch_add(1, Ordering::Relaxed)
     ));
-    let mut options = TaskOptions::new(title, "resolving_levilamina")
+    let mut options = TaskOptions::new(title, TaskStage::RESOLVING_LEVILAMINA)
         .id(operation_id.to_string())
         .kind(TaskType::Workflow);
     options.detail = detail;
@@ -538,21 +539,21 @@ fn publish_stage(
         LeviLaminaInstallStage::Resolving => {
             task_manager::update_progress(
                 &task_id,
-                ProgressUpdate::advance(0).stage("resolving_levilamina"),
+                ProgressUpdate::advance(0).stage(TaskStage::RESOLVING_LEVILAMINA),
             );
             task_manager::set_task_message(&task_id, Some("正在解析依赖".to_string()));
         }
         LeviLaminaInstallStage::Downloading { package, .. } => {
             task_manager::update_progress(
                 &task_id,
-                ProgressUpdate::advance(0).stage("downloading_levilamina"),
+                ProgressUpdate::advance(0).stage(TaskStage::DOWNLOADING_LEVILAMINA),
             );
             task_manager::set_task_message(&task_id, Some(format!("正在下载 {package}")));
         }
         LeviLaminaInstallStage::Installing { package } => {
             task_manager::update_progress(
                 &task_id,
-                ProgressUpdate::advance(0).stage("installing_levilamina"),
+                ProgressUpdate::advance(0).stage(TaskStage::INSTALLING_LEVILAMINA),
             );
             task_manager::set_task_message(&task_id, Some(format!("正在安装 {package}")));
         }

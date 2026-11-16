@@ -1,4 +1,5 @@
 //! Portable map-record bundle export from a completed image preview.
+use crate::tasks::TaskStage;
 
 use std::path::PathBuf;
 
@@ -30,7 +31,7 @@ pub fn start_export(
 ) -> Result<String, String> {
     let preview = get_preview(preview_task_id)
         .ok_or_else(|| "地图预览已释放或过期，请重新转换".to_owned())?;
-    let mut options = task_manager::TaskOptions::new("导出可移植地图包", "生成地图记录")
+    let mut options = task_manager::TaskOptions::new(t!("TaskTitle.export_portable_bundle").to_string(), TaskStage::MAP_GENERATE_RECORDS)
         .total(preview.tiles.len() as u64);
     if let Some(detail) = output
         .file_name()
@@ -83,7 +84,7 @@ async fn export(
                 &worker_id,
                 ProgressUpdate::advance(1)
                     .total(total)
-                    .stage("生成地图记录"),
+                    .stage(TaskStage::MAP_GENERATE_RECORDS),
             );
         })?;
         bundle.to_nbt_bytes().map_err(|error| error.to_string())
@@ -92,14 +93,14 @@ async fn export(
     if cancel.is_cancelled() {
         return Err("地图包导出已取消".to_owned());
     }
-    task_manager::reset_progress(task_id, Some(1), Some("写入地图包"));
+    task_manager::reset_progress(task_id, Some(1), Some(TaskStage::MAP_WRITE_BUNDLE));
     let written = output.clone();
     runtime::blocking::run_io(move || std::fs::write(&written, bytes))
         .await?
         .map_err(|error| error.to_string())?;
     task_manager::update_progress(
         task_id,
-        ProgressUpdate::advance(1).total(1).stage("写入地图包"),
+        ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_WRITE_BUNDLE),
     );
     Ok(format!("已导出可移植地图包：{}", output.display()))
 }

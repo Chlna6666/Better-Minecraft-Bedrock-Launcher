@@ -388,7 +388,7 @@ pub(crate) fn start_proton_gdk_install_latest(source: ProtonGdkSource) -> String
         ProtonGdkSource::WeatherOs | ProtonGdkSource::LukasPah => "latest",
     };
     let task_id = create_task(
-        TaskOptions::new("安装 Proton-GDK", "resolving_proton_gdk")
+        TaskOptions::new(t!("TaskTitle.install_proton_gdk").to_string(), TaskStage::RESOLVING_PROTON_GDK)
             .detail(format!("{} · {release_label}", source.repository())),
     )
     .expect("task id must be unique");
@@ -521,7 +521,7 @@ async fn install_latest_proton_gdk(
         .map_err(|error| format!("创建 Proton-GDK 临时安装目录失败：{error}"))?;
     update_progress(
         task_id,
-        ProgressUpdate::advance(0).stage("extracting_proton_gdk"),
+        ProgressUpdate::advance(0).stage(TaskStage::EXTRACTING_PROTON_GDK),
     );
     set_task_message(task_id, Some("正在解压 Proton-GDK".to_string()));
     append_task_log(
@@ -652,7 +652,7 @@ async fn install_roundmcdev_bundle(
 
     update_progress(
         task_id,
-        ProgressUpdate::advance(0).stage("extracting_proton_gdk"),
+        ProgressUpdate::advance(0).stage(TaskStage::EXTRACTING_PROTON_GDK),
     );
     for (asset, archive_path) in archive_paths {
         let extraction_directory = if asset.extraction_directory == "." {
@@ -895,7 +895,7 @@ async fn download_proton_gdk_asset(
             task_id,
             ProgressUpdate::advance(expected_size)
                 .total(expected_size)
-                .stage("downloading_proton_gdk"),
+                .stage(TaskStage::DOWNLOADING_PROTON_GDK),
         );
         set_task_message(task_id, Some(format!("使用缓存 {}", asset_name)));
         append_task_log(task_id, format!("使用缓存：{}", archive_path.display()));
@@ -908,7 +908,7 @@ async fn download_proton_gdk_asset(
         ProgressUpdate::advance(0)
             .total(expected_size)
             // Expected sizes of 0 mean "unknown"; reset_progress below clears the bound.
-            .stage("downloading_proton_gdk"),
+            .stage(TaskStage::DOWNLOADING_PROTON_GDK),
     );
     set_task_message(task_id, Some(format!("正在下载 {asset_name}")));
     append_task_log(task_id, format!("下载：{asset_url}"));
@@ -1382,7 +1382,7 @@ fn infer_proton_gdk_source(directory_name: &str) -> Option<ProtonGdkSource> {
 pub(crate) fn start_linux_runtime_install(plan: LinuxInstallPlan) -> String {
     let command_preview = plan.command_preview();
     let task_id = create_task(
-        TaskOptions::new("安装 Linux 兼容环境", "awaiting_linux_authorization")
+        TaskOptions::new(t!("TaskTitle.install_linux_runtime").to_string(), TaskStage::AWAITING_LINUX_AUTHORIZATION)
             .detail(format!("{} · {}", plan.distribution_name, command_preview,)),
     )
     .expect("task id must be unique");
@@ -1447,7 +1447,7 @@ async fn run_install_command(plan: &LinuxInstallPlan, task_id: &str) -> Result<(
         .map_err(|error| format!("无法启动授权安装程序：{error}"))?;
     update_progress(
         task_id,
-        ProgressUpdate::advance(0).stage("installing_linux_packages"),
+        ProgressUpdate::advance(0).stage(TaskStage::INSTALLING_LINUX_PACKAGES),
     );
     set_task_message(task_id, Some("系统包管理器正在安装依赖".to_string()));
     let stdout_task = child

@@ -1,6 +1,8 @@
+use gpui::SharedString;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use crate::tasks::TaskStage;
 
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -81,7 +83,7 @@ pub async fn load_capes(
 
 pub async fn import_cape(options: GamePathOptions, path: PathBuf) -> Result<PathBuf, String> {
     blocking::run(BlockingTaskOptions::hidden("导入披风包"), move || {
-        import_pack(&options, &path)
+        import_pack(&options, &path, false)
     })
     .await
 }
@@ -397,23 +399,23 @@ fn write_manifest_transactionally(
 }
 
 fn start_mod_mutation_task<F>(
-    title: &'static str,
+    title: SharedString,
     detail: String,
-    stage: &'static str,
+    stage: TaskStage,
     operation: F,
 ) -> Result<String, String>
 where
     F: FnOnce(&str) -> Result<String, String> + Send + 'static,
 {
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(title, stage).detail(detail),
+        crate::tasks::task_manager::TaskOptions::new(title.clone(), stage.clone()).detail(detail),
     )?;
     crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
 
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
     let workflow = crate::tasks::runtime::spawn_io(async move {
-        crate::tasks::task_manager::reset_progress(&worker_task_id, None, Some(stage));
+        crate::tasks::task_manager::reset_progress(&worker_task_id, None, Some(stage.clone()));
         if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
             crate::tasks::task_manager::finish_task(
                 &worker_task_id,
@@ -494,9 +496,13 @@ pub fn start_set_mod_enabled(
 ) -> Result<String, String> {
     let detail = format!("{version_folder} · {mod_id}");
     start_mod_mutation_task(
-        if enabled { "启用 Mod" } else { "禁用 Mod" },
+        if enabled {
+            t!("TaskTitle.enable_mod")
+        } else {
+            t!("TaskTitle.disable_mod")
+        },
         detail,
-        "updating_mod_state",
+        TaskStage::UPDATING_MOD_STATE,
         move |task_id| {
             let (enabled_path, disabled_path) = manifest_paths(&version_folder, &mod_id)?;
 
@@ -555,9 +561,9 @@ pub fn start_update_mod_settings(
     }
     let detail = format!("{version_folder} · {mod_id}");
     start_mod_mutation_task(
-        "更新 Mod 配置",
+        t!("TaskTitle.update_mod_config"),
         detail,
-        "updating_mod_manifest",
+        TaskStage::UPDATING_MOD_MANIFEST,
         move |task_id| {
             let manifest_path = editable_manifest_path(&version_folder, &mod_id)?;
             let content = fs::read_to_string(&manifest_path)
@@ -581,9 +587,9 @@ pub fn start_set_mod_inject_delay(
 ) -> Result<String, String> {
     let detail = format!("{version_folder} · {mod_id}");
     start_mod_mutation_task(
-        "更新 Mod 注入延迟",
+        t!("TaskTitle.update_mod_inject_delay"),
         detail,
-        "updating_mod_manifest",
+        TaskStage::UPDATING_MOD_MANIFEST,
         move |task_id| {
             let manifest_path = editable_manifest_path(&version_folder, &mod_id)?;
             let content = fs::read_to_string(&manifest_path)
@@ -628,7 +634,11 @@ pub fn start_delete_mods_task(
     }
     let detail = format!("{version_folder} · {} 个 Mod", mod_ids.len());
 
-    start_mod_mutation_task("删除 Mod", detail, "deleting_mods", move |task_id| {
+    start_mod_mutation_task(
+        t!("TaskTitle.delete_mod"),
+        detail,
+        TaskStage::DELETING_MODS,
+        move |task_id| {
         let mut targets = Vec::with_capacity(mod_ids.len());
         for mod_id in &mod_ids {
             let path = mod_directory(&version_folder, mod_id)?;

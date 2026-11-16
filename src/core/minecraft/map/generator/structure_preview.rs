@@ -1,4 +1,5 @@
 //! Cancellable in-memory structure previews shared by image and OBJ generators.
+use crate::tasks::TaskStage;
 
 use std::{
     collections::HashMap,
@@ -200,7 +201,7 @@ pub fn start(request: StructurePreviewRequest) -> Result<String, String> {
         .source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());
-    let mut options = task_manager::TaskOptions::new(name, "读取源文件");
+    let mut options = task_manager::TaskOptions::new(name, TaskStage::MAP_READ_SOURCE);
     if let Some(detail) = detail {
         options = options.detail(detail);
     }
@@ -249,10 +250,10 @@ async fn generate_preview(
             }
             let total = u64::from(options.width) * u64::from(options.height);
             let stage = match options.depth {
-                ImageBlockHeight::Flat => "匹配方块",
-                ImageBlockHeight::LuminanceRelief { .. } => "匹配方块并构建亮度阶梯",
+                ImageBlockHeight::Flat => TaskStage::MAP_MATCH_BLOCKS,
+                ImageBlockHeight::LuminanceRelief { .. } => TaskStage::MAP_MATCH_BLOCKS_LUMINANCE,
             };
-            task_manager::reset_progress(task_id, Some(total), Some(stage));
+            task_manager::reset_progress(task_id, Some(total), Some(stage.clone()));
             let structure = runtime::run_cpu(move || {
                 let mut previous = 0_u64;
                 let mut previous_total = total;
@@ -265,7 +266,7 @@ async fn generate_preview(
                             task_manager::reset_progress(
                                 &worker_id,
                                 Some(progress_total),
-                                Some(stage),
+                                Some(stage.clone()),
                             );
                             previous = 0;
                             previous_total = progress_total;
@@ -275,7 +276,7 @@ async fn generate_preview(
                                 &worker_id,
                                 ProgressUpdate::advance(done - previous)
                                     .total(progress_total)
-                                    .stage(stage),
+                                    .stage(stage.clone()),
                             );
                             previous = done;
                         }
@@ -301,7 +302,7 @@ async fn generate_preview(
             task_manager::reset_progress(
                 task_id,
                 Some(model.triangles.len() as u64),
-                Some("体素化三角形"),
+                Some(TaskStage::MAP_VOXELIZE),
             );
             let result = runtime::run_cpu(move || {
                 // Reuse the already parsed source; do not read OBJ/MTL twice.
@@ -329,7 +330,7 @@ async fn generate_preview(
                             &worker_id,
                             ProgressUpdate::advance((done - previous) as u64)
                                 .total(total as u64)
-                                .stage("体素化三角形"),
+                                .stage(TaskStage::MAP_VOXELIZE),
                         );
                         previous = done;
                     },
@@ -347,7 +348,7 @@ async fn generate_preview(
     if cancel.is_cancelled() {
         return Err("结构预览已取消".to_owned());
     }
-    task_manager::reset_progress(task_id, Some(1), Some("保存预览结果"));
+    task_manager::reset_progress(task_id, Some(1), Some(TaskStage::MAP_SAVE_PREVIEW));
     let bytes =
         runtime::run_cpu(move || structure.to_bytes().map_err(|error| error.to_string())).await??;
     if cancel.is_cancelled() {
@@ -363,7 +364,7 @@ async fn generate_preview(
     }
     task_manager::update_progress(
         task_id,
-        ProgressUpdate::advance(1).total(1).stage("保存预览结果"),
+        ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_SAVE_PREVIEW),
     );
     Ok(format!("方块预览已生成（{} KiB）", size.div_ceil(1024)))
 }

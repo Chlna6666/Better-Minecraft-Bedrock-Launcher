@@ -1,3 +1,4 @@
+use crate::tasks::TaskStage;
 use super::*;
 use crate::ui::animation::{spring_motion, spring_smooth, spring_snappy};
 use crate::ui::components::icon::themed_icon;
@@ -54,22 +55,22 @@ fn meta_separator(colors: &ThemeColors) -> Div {
 }
 
 fn task_amount_text(_i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
-    if model.stage.starts_with("map_")
-        || matches!(
-            model.stage.as_ref(),
-            "生成地图记录"
-                | "读取地图包"
-                | "检查目标与地图 ID"
-                | "创建撤销快照"
-                | "原子提交地图与物品"
-                | "保存撤销历史"
-                | "匹配方块"
-                | "体素化三角形"
-                | "保存预览结果"
-                | "逐张生成地图"
-                | "逐张合并预览"
-                | "裁剪、缩放与方块匹配"
-        )
+    if model.stage.code().starts_with("map_")
+        || [
+            TaskStage::MAP_GENERATE_RECORDS,
+            TaskStage::MAP_READ_BUNDLE,
+            TaskStage::MAP_CHECK_TARGET,
+            TaskStage::MAP_CREATE_UNDO_SNAPSHOT,
+            TaskStage::MAP_COMMIT,
+            TaskStage::MAP_SAVE_UNDO_HISTORY,
+            TaskStage::MAP_MATCH_BLOCKS,
+            TaskStage::MAP_VOXELIZE,
+            TaskStage::MAP_SAVE_PREVIEW,
+            TaskStage::MAP_GENERATE_MAPS,
+            TaskStage::MAP_MERGE_PREVIEW,
+            TaskStage::MAP_CROP_SCALE_MATCH,
+        ]
+        .contains(&model.stage)
     {
         return model.total.map_or_else(
             || SharedString::from(model.done.to_string()),
@@ -116,7 +117,7 @@ fn status_label(_i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
             .map(|value| SharedString::from(value.clone()))
             .unwrap_or_else(|| {
                 if matches!(
-                    model.stage.as_ref(),
+                    model.stage.code(),
                     "extracting"
                         | "preparing_files"
                         | "patching"
@@ -155,7 +156,7 @@ pub(super) fn render(
 ) -> impl IntoElement {
     let i18n = cx.global::<I18n>();
     let task_id = model.id.clone();
-    let kind = task_visual_kind(model.stage.as_ref(), model.status.as_ref());
+    let kind = task_visual_kind(model.stage.code(), model.status.as_ref());
     let accent = task_status_accent(model.status.as_ref(), kind, colors);
     let icon_path = task_visual_icon(kind);
     let progress_percent = model.percent;
@@ -368,7 +369,7 @@ pub(super) fn render(
                     this.child(
                         div().w_full().mt(px(5.)).flex().flex_col().gap(px(9.))
                             .children(model.children.iter().map(|child| {
-                                let kind = task_visual_kind(child.stage.as_ref(), child.status.as_ref());
+                                let kind = task_visual_kind(child.stage.code(), child.status.as_ref());
                                 let color = task_status_accent(child.status.as_ref(), kind, colors);
                                 let label = match child.status.as_ref() {
                                     "completed" => t!("Tasks.status.completed"),

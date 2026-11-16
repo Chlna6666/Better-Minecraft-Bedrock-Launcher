@@ -113,11 +113,7 @@ impl MainWindowView {
         )
     }
 
-    pub(super) fn ensure_page_view(
-        &mut self,
-        target: &RouteTarget,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn ensure_page_view(&mut self, target: &RouteTarget, cx: &mut Context<Self>) {
         match target {
             RouteTarget::Builtin(route) => {
                 self.ensure_builtin_page(*route, cx);
@@ -226,8 +222,7 @@ impl MainWindowView {
                 let state = cx.global::<LauncherState>();
                 let previous = this.launcher_snapshot.clone();
                 let current = crate::ui::hooks::launcher::snapshot(cx);
-                let changed =
-                    crate::ui::hooks::launcher::snapshot_changed(&previous, &current);
+                let changed = crate::ui::hooks::launcher::snapshot_changed(&previous, &current);
                 if changed {
                     this.launcher_snapshot = Arc::new(current);
                 }
@@ -703,8 +698,7 @@ impl MainWindowView {
             )
         });
 
-        let launcher_snapshot =
-            Arc::new(crate::ui::hooks::launcher::snapshot(cx));
+        let launcher_snapshot = Arc::new(crate::ui::hooks::launcher::snapshot(cx));
         let diagnostics_state = cx.global::<crate::ui::state::diagnostics::DiagnosticsState>();
         let diagnostics_visible = diagnostics_state.has_visible_report();
         let diagnostics_signature = (

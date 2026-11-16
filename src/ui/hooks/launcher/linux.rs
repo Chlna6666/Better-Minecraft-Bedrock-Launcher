@@ -1,3 +1,4 @@
+use crate::tasks::TaskStage;
 use crate::core::linux_runtime::check_linux_runtime;
 use crate::core::minecraft::launcher::{LaunchRequest, start_launch_task};
 use crate::tasks::task_manager::{self, TaskSnapshot};
@@ -333,7 +334,7 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
                     }
                 })?;
                 if snapshot.status.as_ref() == "running"
-                    && snapshot.stage.as_ref() == "running_game"
+                    && snapshot.stage.code() == TaskStage::RUNNING_GAME
                 {
                     Timer::after(Duration::from_millis(900)).await;
                     let now = std::time::Instant::now();

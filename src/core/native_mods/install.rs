@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use crate::tasks::TaskStage;
 
 use serde_json::json;
 
@@ -32,7 +33,7 @@ pub struct NativeModImportRequest {
 
 pub fn start_install(request: NativeModInstallRequest) -> Result<String, String> {
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new("安装原生 Mod", "installing_native_mod")
+        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.install_native_mod").to_string(), TaskStage::INSTALLING_NATIVE_MOD)
             .detail(format!(
                 "{} · {}",
                 request.mod_entry.name, request.file_name
@@ -97,7 +98,7 @@ pub fn start_import(request: NativeModImportRequest) -> Result<String, String> {
 
     let count = request.items.len();
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new("导入 Minecraft Mod", "installing_mod")
+        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.import_mod").to_string(), TaskStage::INSTALLING_MOD)
             .detail(format!("{} · {} 个文件", request.version_folder, count))
             .total(count as u64),
     )?;
@@ -396,7 +397,7 @@ async fn import_local_mods(request: NativeModImportRequest, task_id: &str) -> Re
             task_id,
             ProgressUpdate::advance(1)
                 .total(total as u64)
-                .stage("installing_mod"),
+                .stage(TaskStage::INSTALLING_MOD),
         );
     }
     Ok(())

@@ -7,13 +7,14 @@ use crate::tasks::task_manager::{
 use crate::utils::file_ops;
 use std::path::PathBuf;
 use tracing::{error, info};
+use crate::tasks::TaskStage;
 
 pub fn start_unpack_gdk_task(
     input_path: impl Into<PathBuf>,
     folder_name: &str,
 ) -> Result<String, String> {
     let task_id = create_task(
-        TaskOptions::new("安装 GDK 游戏", "initializing")
+        TaskOptions::new(t!("TaskTitle.install_gdk_game").to_string(), TaskStage::INITIALIZING)
             .detail(folder_name.to_string())
             .kind(TaskType::Stage)
             .in_current_scope(),
@@ -50,7 +51,7 @@ pub fn start_unpack_gdk_task(
 }
 
 fn run_unpack_gdk_task(task_id: String, input_path: PathBuf, version_dir: PathBuf) {
-    update_progress(&task_id, ProgressUpdate::advance(0).stage("initializing"));
+    update_progress(&task_id, ProgressUpdate::advance(0).stage(TaskStage::INITIALIZING));
 
     if is_cancelled(&task_id) {
         finish_task(&task_id, "cancelled", Some("cancelled before start".into()));
@@ -67,7 +68,7 @@ fn run_unpack_gdk_task(task_id: String, input_path: PathBuf, version_dir: PathBu
         }
     };
 
-    update_progress(&task_id, ProgressUpdate::advance(0).stage("extracting"));
+    update_progress(&task_id, ProgressUpdate::advance(0).stage(TaskStage::EXTRACTING));
 
     match stream.extract_to(&version_dir, task_id.clone()) {
         Ok(()) => {

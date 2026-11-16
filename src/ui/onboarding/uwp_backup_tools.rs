@@ -190,8 +190,7 @@ fn start_export(window: &mut Window, cx: &mut App) {
         return;
     }
 
-    let Some(destination) = crate::utils::file_picker::pick_directory_path(window)
-    else {
+    let Some(destination) = crate::utils::file_picker::pick_directory_path(window) else {
         return;
     };
     let destination = PathBuf::from(destination);
@@ -449,11 +448,7 @@ pub fn render_uwp_backup_tools(
             .as_ref()
             .filter(|summary| summary.data_present && summary.file_count > 0)
             .map(|summary| {
-                t!(
-                    "UwpBackup.compact_data",
-                    size = format(summary.total_size)
-                )
-                .to_string()
+                t!("UwpBackup.compact_data", size = format(summary.total_size)).to_string()
             })
             .unwrap_or_else(|| {
                 if state.scanning {

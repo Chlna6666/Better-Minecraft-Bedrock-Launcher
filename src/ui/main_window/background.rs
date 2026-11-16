@@ -161,10 +161,7 @@ impl AppBackgroundView {
             return container;
         }
 
-        let overlay = div()
-            .absolute()
-            .inset_0()
-            .bg(blur_overlay_color(blur));
+        let overlay = div().absolute().inset_0().bg(blur_overlay_color(blur));
 
         if uses_gpu_blur(blur) {
             container.child(overlay.background_blur(backdrop_blur_style(blur)))
@@ -259,10 +256,7 @@ fn blur_overlay_color(blur: f32) -> gpui::Hsla {
     }
 }
 
-fn animation_policy(
-    animation_suppressed: bool,
-    window_minimized: bool,
-) -> ImageAnimationPolicy {
+fn animation_policy(animation_suppressed: bool, window_minimized: bool) -> ImageAnimationPolicy {
     if animation_suppressed || window_minimized {
         ImageAnimationPolicy::paused()
     } else {
@@ -318,9 +312,8 @@ mod tests {
     use super::{
         BACKGROUND_ANIMATION_INACTIVE_MAX_FPS, BACKGROUND_ANIMATION_PRESENTATION_CEILING_FPS,
         BACKGROUND_BLUR_OVERLAY_MAX_ALPHA, BACKGROUND_GPU_BACKDROP_BLUR_ENABLED,
-        BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX, animation_suppression_changed,
-        animation_policy, backdrop_blur_style, blur_overlay_color,
-        uses_gpu_blur,
+        BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX, animation_policy,
+        animation_suppression_changed, backdrop_blur_style, blur_overlay_color, uses_gpu_blur,
     };
 
     #[test]

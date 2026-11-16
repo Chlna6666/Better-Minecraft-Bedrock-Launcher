@@ -2,6 +2,7 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use crate::tasks::TaskStage;
 
 use once_cell::sync::OnceCell;
 use rayon::{ThreadPool, ThreadPoolBuilder};
@@ -233,7 +234,7 @@ where
     let join_handle = runtime.spawn_download(async move {
         update_progress(
             &task_id_for_worker,
-            ProgressUpdate::advance(0).stage("queued"),
+            ProgressUpdate::advance(0).stage(TaskStage::QUEUED),
         );
         let Ok(_slot) = task_slots.acquire_owned().await else {
             if !is_cancelled(&task_id_for_worker) {
@@ -302,7 +303,7 @@ where
     let join_handle = runtime.spawn_archive(async move {
         update_progress(
             &task_id_for_worker,
-            ProgressUpdate::advance(0).stage("queued"),
+            ProgressUpdate::advance(0).stage(TaskStage::QUEUED),
         );
         let Ok(_slot) = task_slots.acquire_owned().await else {
             if !is_cancelled(&task_id_for_worker) {
@@ -459,7 +460,7 @@ pub mod blocking {
             .await
             .map_err(|error| format!("后台任务队列已关闭: {error}"))?;
         let mut task_options =
-            TaskOptions::new(options.title, "running").visibility(TaskVisibility::Hidden);
+            TaskOptions::new(options.title, TaskStage::RUNNING).visibility(TaskVisibility::Hidden);
         if let Some(detail) = options.detail {
             task_options = task_options.detail(detail);
         }

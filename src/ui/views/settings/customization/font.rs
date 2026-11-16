@@ -121,7 +121,10 @@ fn local_font_row(
                                         toast::async_app::push(
                                             cx,
                                             ToastKind::Error,
-                                            SharedString::from(format!("读取字体失败: {error:#}")),
+                                            t!(
+                                                "CustomizationSettings.font_read_failed",
+                                                error = format!("{error:#}")
+                                            ),
                                         );
                                         return;
                                     }

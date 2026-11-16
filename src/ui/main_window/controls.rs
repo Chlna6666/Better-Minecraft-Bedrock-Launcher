@@ -362,10 +362,7 @@ impl MainWindowView {
                     if slot.is_none() {
                         *slot = Some(cx.new(|cx| {
                             let mut input = InputState::new(window, cx);
-                            input.set_placeholder(
-                                SharedString::from("Paste API key / token"),
-                                cx,
-                            );
+                            input.set_placeholder(SharedString::from("Paste API key / token"), cx);
                             input
                         }));
                     }

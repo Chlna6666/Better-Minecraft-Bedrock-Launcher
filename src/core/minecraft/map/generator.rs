@@ -1,4 +1,5 @@
 //! Application-owned OBJ conversion and `.mcstructure` export.
+use crate::tasks::TaskStage;
 
 use std::path::PathBuf;
 
@@ -59,7 +60,7 @@ pub fn start_obj_export(request: ObjExportRequest) -> Result<String, String> {
         .source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());
-    let mut options = task_manager::TaskOptions::new("OBJ 转方块并导出结构", "解析 OBJ");
+    let mut options = task_manager::TaskOptions::new(t!("TaskTitle.convert_obj").to_string(), TaskStage::MAP_PARSE_OBJ);
     if let Some(detail) = detail {
         options = options.detail(detail);
     }
@@ -106,7 +107,7 @@ async fn export_obj(
     }
     let triangle_count = model.triangles.len();
     let total = triangle_count as u64;
-    task_manager::reset_progress(task_id, Some(total), Some("体素化三角形"));
+    task_manager::reset_progress(task_id, Some(total), Some(TaskStage::MAP_VOXELIZE));
     let worker_id = task_id.to_owned();
     let worker_cancel = cancel.clone();
     let (structure, block_count) = runtime::run_cpu(move || {
@@ -128,7 +129,7 @@ async fn export_obj(
                     &worker_id,
                     ProgressUpdate::advance((completed - previous) as u64)
                         .total(total as u64)
-                        .stage("体素化三角形"),
+                        .stage(TaskStage::MAP_VOXELIZE),
                 );
                 previous = completed;
             },
@@ -143,7 +144,7 @@ async fn export_obj(
     if cancel.is_cancelled() {
         return Err("OBJ 转换已取消".to_owned());
     }
-    task_manager::reset_progress(task_id, Some(1), Some("写入 .mcstructure"));
+    task_manager::reset_progress(task_id, Some(1), Some(TaskStage::MAP_WRITE_MCSTRUCTURE));
     let output = request.output;
     let output_for_worker = output.clone();
     runtime::blocking::run_io(move || structure.write_to_path(&output_for_worker))
@@ -153,7 +154,7 @@ async fn export_obj(
         task_id,
         ProgressUpdate::advance(1)
             .total(1)
-            .stage("写入 .mcstructure"),
+            .stage(TaskStage::MAP_WRITE_MCSTRUCTURE),
     );
     Ok(format!(
         "已导出 {} 个三角形、{} 个方块到 {}",
@@ -190,7 +191,7 @@ pub fn start_model_file_export(request: ModelFileExportRequest) -> Result<String
         .output
         .file_name()
         .map(|s| s.to_string_lossy().into_owned());
-    let mut options = task_manager::TaskOptions::new("模型格式导出", "读取模型");
+    let mut options = task_manager::TaskOptions::new(t!("TaskTitle.export_model_format").to_string(), TaskStage::MAP_READ_MODEL);
     if let Some(name) = name {
         options = options.detail(name);
     }
@@ -211,7 +212,7 @@ pub fn start_model_file_export(request: ModelFileExportRequest) -> Result<String
             if cancel.is_cancelled() {
                 return Err::<String, String>("模型导出已取消".into());
             }
-            task_manager::reset_progress(&worker_id, Some(1), Some("序列化模型与纹理"));
+            task_manager::reset_progress(&worker_id, Some(1), Some(TaskStage::MAP_SERIALIZE_MODEL));
             let output = request.output;
             let cpu_cancel = cancel.clone();
             runtime::run_cpu(move || {

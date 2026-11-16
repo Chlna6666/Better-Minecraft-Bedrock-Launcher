@@ -31,6 +31,7 @@ use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 use windows::Management::Deployment::PackageManager;
 use windows::core::HSTRING;
+use crate::tasks::TaskStage;
 
 use crate::utils::file_ops;
 
@@ -109,10 +110,10 @@ impl LaunchTask {
 }
 
 pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
-    let title = format!("启动 {}", request.display_name);
+    let title = t!("TaskTitle.launch_version", name = request.display_name).to_string();
     let detail = request.version.to_string();
     let task_id = create_task(
-        TaskOptions::new(title, "starting")
+        TaskOptions::new(title, TaskStage::STARTING)
             .detail(detail)
             .total(LAUNCH_TOTAL_STEPS),
     )
@@ -299,7 +300,7 @@ fn append_log(task_id: &str, line: impl Into<String>) {
     let _ = set_task_message(task_id, Some(line));
 }
 
-fn advance_step(task_id: &str, stage: &str, message: impl Into<String>) {
+fn advance_step(task_id: &str, stage: TaskStage, message: impl Into<String>) {
     let message = message.into();
     append_log(task_id, message);
     update_progress(
@@ -611,7 +612,7 @@ async fn launch_game(
     );
     advance_step(
         task_id,
-        "parsing",
+        TaskStage::PARSING,
         format!("版本信息已解析: {identity_version} ({identity_name})"),
     );
     if legacy_uwp_runtime_injection_only {
@@ -675,7 +676,7 @@ async fn launch_game(
     );
     advance_step(
         task_id,
-        "preparing_files",
+        TaskStage::PREPARING_FILES,
         format!(
             "已准备模组加载信息，立即注入 {} 个，延迟注入 {} 个",
             startup_mods_relative_paths.len() + startup_mods_direct_paths.len(),
@@ -770,7 +771,7 @@ async fn launch_game(
             }
         }
     }
-    advance_step(task_id, "patching", "启动环境准备完成".to_string());
+    advance_step(task_id, TaskStage::PATCHING, "启动环境准备完成".to_string());
 
     check_cancelled(task_id)?;
     if !is_win32 {
@@ -818,11 +819,11 @@ async fn launch_game(
                 .await
                 .map_err(|error| format!("注册 APPX 失败 ({package_folder}): {error:?}"))?;
         }
-        advance_step(task_id, "initializing", "APPX 注册状态已就绪".to_string());
+        advance_step(task_id, TaskStage::INITIALIZING, "APPX 注册状态已就绪".to_string());
     } else {
         advance_step(
             task_id,
-            "initializing",
+            TaskStage::INITIALIZING,
             "Win32 版本无需重新注册".to_string(),
         );
     }
@@ -830,7 +831,7 @@ async fn launch_game(
     check_cancelled(task_id)?;
     if !request.auto_start {
         info!(task_id = %task_id, "本次仅执行准备流程，不实际启动游戏");
-        advance_step(task_id, "launching", "已完成准备，未执行启动".to_string());
+        advance_step(task_id, TaskStage::LAUNCHING, "已完成准备，未执行启动".to_string());
         return Ok(None);
     }
 
@@ -1019,7 +1020,7 @@ async fn launch_game(
         );
     }
 
-    advance_step(task_id, "launching", format!("游戏已成功拉起，PID {pid}"));
+    advance_step(task_id, TaskStage::LAUNCHING, format!("游戏已成功拉起，PID {pid}"));
     info!(task_id = %task_id, pid, "游戏启动流程已完成");
     Ok(Some(pid))
 }

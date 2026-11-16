@@ -1,4 +1,5 @@
 use crate::tasks::task_manager::{self, TaskSnapshot};
+use crate::ui::views::tasks::task_stage_text;
 use crate::ui::animation::repeating_linear_motion;
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
@@ -1323,7 +1324,7 @@ fn render_version_row(
 
             let btn_label = active_task
                 .as_ref()
-                .map(|snapshot| SharedString::from(snapshot.stage.clone()))
+                .map(|snapshot| task_stage_text(&snapshot.stage))
                 .unwrap_or_else(|| {
                     if active_task_running {
                         t!("common.processing")

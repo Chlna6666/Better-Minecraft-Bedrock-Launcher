@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use gpui::{App, AppContext as _, BorrowAppContext as _, SharedString};
 use tracing::warn;
 
+use crate::core::levilamina::support;
 use crate::core::levilamina::{
     LeviLaminaModEntry, inspect_installation, mod_release_supports_loader,
 };
-use crate::core::levilamina::support;
 use crate::ui::state::local_versions::LocalVersionsState;
 
 use super::state::{DownloadPageState, LeviLaminaModInstallTarget};
@@ -136,7 +136,11 @@ async fn discover_targets(
         });
     }
     if targets.is_empty() && !failures.is_empty() {
-        return Err(format!("部分游戏实例检查失败：{}", failures.join("；")));
+        return Err(t!(
+            "Download.instance_check_failed",
+            failures = failures.join(", ")
+        )
+        .to_string());
     }
     Ok(targets)
 }
