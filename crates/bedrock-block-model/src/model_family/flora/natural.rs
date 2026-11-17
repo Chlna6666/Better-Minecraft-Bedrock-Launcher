@@ -1,8 +1,10 @@
 use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
-use crate::model_family::direction::{state_bool, state_i64, state_string};
+use crate::model_family::direction::{
+    CardinalDirection, cardinal_direction, state_bool, state_i64, state_string,
+};
 use crate::model_family::shape::{
-    ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv, full_texture_uv,
+    ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv, full_texture_uv, uv16,
     upright_full_texture_uv,
 };
 use crate::state::BlockStateQuery;
@@ -14,7 +16,7 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
         "water" | "flowing_water" | "lava" | "flowing_lava" => Some(ModelFamily::Liquid),
         "bubble_column" => Some(ModelFamily::BubbleColumn),
         "trip_wire" => Some(ModelFamily::Tripwire),
-        "chorus_plant" => Some(ModelFamily::ChorusPlant),
+        "chorus_plant" | "chorus_flower" => Some(ModelFamily::ChorusPlant),
         "pointed_dripstone" | "sulfur_spike" => Some(ModelFamily::PointedDripstone),
         "mangrove_propagule" => Some(ModelFamily::MangrovePropagule),
         "big_dripleaf" | "small_dripleaf_block" => Some(ModelFamily::Dripleaf),
@@ -41,42 +43,51 @@ pub(crate) fn farmland_shape() -> ModelShape {
 /// `0.1..0.2` and `0.8..0.9`. So Bedrock does **not** rescale the tilted element back to one
 /// cell — the flames stand 0.4 above their block, and the pair opens upward in a shallow "V".
 pub(crate) fn fire_shape() -> ModelShape {
-    // Tilted 22.5 degrees about the block's middle; the sheet spans 0.3..0.7 at the bottom and
-    // widens to 0.1..0.9 at the top (measured from the captured mesh).
-    let (low_bottom, low_top) = (0.3_f32, 0.9);
-    let (high_bottom, high_top) = (0.7_f32, 0.1);
+    // Measured from the capture (ref 288): **eight** vertical planes, all spanning `y 0..1.4`
+    // (22.4 px, so the flame spills above its cell), grouped as four facing +X, four facing +Z.
+    // Each group is two "edge" sheets hugging the block boundary and two tilted sheets that cross
+    // in the middle — the bottom edge sits near the centre and the top edge swings out to the
+    // boundary, which is what gives the flame its tent silhouette.
+    //
+    // The previous shape emitted only four planes and used tops of `0.9`/`0.1` where the capture
+    // has `0.8`/`0.2`, so the flame was missing its four edge walls and the tilt was too wide.
     let top = 1.4_f32;
     let uv = super::super::shape::upright_full_texture_uv();
-    let mut planes = Vec::with_capacity(4);
-    for (bottom, tip, normal, on_x) in [
-        (low_bottom, low_top, [0, 0, 1], false),
-        (high_bottom, high_top, [0, 0, -1], false),
-        (low_bottom, low_top, [1, 0, 0], true),
-        (high_bottom, high_top, [-1, 0, 0], true),
-    ] {
-        let corners = if on_x {
-            [
-                [bottom, 0.0, 0.0],
-                [bottom, 0.0, 1.0],
-                [tip, top, 1.0],
-                [tip, top, 0.0],
-            ]
-        } else {
-            [
-                [0.0, 0.0, bottom],
-                [1.0, 0.0, bottom],
-                [1.0, top, tip],
-                [0.0, top, tip],
-            ]
-        };
-        planes.push(
+    // (normal, bottom, top) — `bottom`/`top` are the plane's position along its own tilt axis.
+    let planes = [
+        ([1_i32, 0, 0], 1.0_f32, 0.9_f32),
+        ([1, 0, 0], 0.7, 0.2),
+        ([-1, 0, 0], 0.3, 0.8),
+        ([-1, 0, 0], 0.0, 0.1),
+        ([0, 0, 1], 1.0, 0.9),
+        ([0, 0, 1], 0.7, 0.2),
+        ([0, 0, -1], 0.3, 0.8),
+        ([0, 0, -1], 0.0, 0.1),
+    ];
+    ModelShape::default().with_planes(planes
+        .map(|(normal, bottom, tip)| {
+            let corners = if normal[0] != 0 {
+                // Faces +-X: spans the full Z extent, tilts along X.
+                [
+                    [bottom, 0.0, 0.0],
+                    [bottom, 0.0, 1.0],
+                    [tip, top, 1.0],
+                    [tip, top, 0.0],
+                ]
+            } else {
+                // Faces +-Z: spans the full X extent, tilts along Z.
+                [
+                    [0.0, 0.0, bottom],
+                    [1.0, 0.0, bottom],
+                    [1.0, top, tip],
+                    [0.0, top, tip],
+                ]
+            };
             crate::model_family::shape::ModelPlane::new(corners, normal)
                 .front_only()
                 .with_material_slot("side")
-                .with_uv(uv),
-        );
-    }
-    ModelShape::default().with_planes(planes)
+                .with_uv(uv)
+        }))
 }
 
 pub(crate) fn liquid_shape(state: &BlockStateQuery) -> ModelShape {
@@ -154,21 +165,66 @@ pub(crate) fn tripwire_shape(state: &BlockStateQuery) -> ModelShape {
     ModelShape::default().with_planes(planes)
 }
 
-pub(crate) fn chorus_plant_shape() -> ModelShape {
-    ModelShape::from_cuboids([
-        detail_cuboid_with_local_uv(ModelCuboid::new(
-            [px(4.0), 0.0, px(4.0)],
-            [px(12.0), 1.0, px(12.0)],
-        )),
-        detail_cuboid_with_local_uv(ModelCuboid::new(
-            [px(3.0), px(4.0), px(4.0)],
-            [px(13.0), px(12.0), px(12.0)],
-        )),
-        detail_cuboid_with_local_uv(ModelCuboid::new(
-            [px(5.0), px(5.0), px(2.0)],
-            [px(11.0), px(11.0), px(14.0)],
-        )),
-    ])
+/// Chorus plant and chorus flower.
+///
+/// **Chorus plant** is a stateful connector: `blocks.json` exposes six
+/// `minecraft:connection_*` booleans, and the captured geometry changes with them. The centre
+/// cube plus one arm per connected side is the whole rule — the previous shape was a fixed
+/// three-box plus that ignored the states entirely, so every plant looked the same whether it
+/// was hanging in mid-air or joined to six neighbours.
+///
+/// **Chorus flower** is *not* a cross plant. The capture (ref 473) stores a solid 3-D cross:
+/// three overlapping boxes that each span the full 0..16 extent of one axis and 2..14 of the
+/// other two, which is the vanilla "centre cube with arms reaching the block edge" silhouette.
+/// It was previously unclassified, so it fell through to a plain full cube.
+pub(crate) fn chorus_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
+    // `canonical_block_name` returns the `minecraft:`-prefixed form.
+    if name.ends_with("chorus_flower") {
+        // Measured from capture ref 473: three full-span boxes clipped to 2..14 on the other
+        // axes. Their union is the flower silhouette.
+        return ModelShape::from_cuboids([
+            detail_cuboid_with_local_uv(ModelCuboid::new([0.0, px(2.0), px(2.0)], [1.0, px(14.0), px(14.0)])),
+            detail_cuboid_with_local_uv(ModelCuboid::new([px(2.0), 0.0, px(2.0)], [px(14.0), 1.0, px(14.0)])),
+            detail_cuboid_with_local_uv(ModelCuboid::new([px(2.0), px(2.0), 0.0], [px(14.0), px(14.0), 1.0])),
+        ]);
+    }
+
+    // Chorus plant: a centre cube with one arm per connected side.
+    let mut cuboids = vec![detail_cuboid_with_local_uv(ModelCuboid::new(
+        [px(2.0), px(2.0), px(2.0)],
+        [px(14.0), px(14.0), px(14.0)],
+    ))];
+    for (state_key, arm) in [
+        (
+            "minecraft:connection_west",
+            ModelCuboid::new([0.0, px(2.0), px(2.0)], [px(14.0), px(14.0), px(14.0)]),
+        ),
+        (
+            "minecraft:connection_east",
+            ModelCuboid::new([px(14.0), px(2.0), px(2.0)], [1.0, px(14.0), px(14.0)]),
+        ),
+        (
+            "minecraft:connection_down",
+            ModelCuboid::new([px(2.0), 0.0, px(2.0)], [px(14.0), px(14.0), px(14.0)]),
+        ),
+        (
+            "minecraft:connection_up",
+            ModelCuboid::new([px(2.0), px(14.0), px(2.0)], [px(14.0), 1.0, px(14.0)]),
+        ),
+        (
+            "minecraft:connection_north",
+            ModelCuboid::new([px(2.0), px(2.0), 0.0], [px(14.0), px(14.0), px(14.0)]),
+        ),
+        (
+            "minecraft:connection_south",
+            ModelCuboid::new([px(2.0), px(2.0), px(14.0)], [px(14.0), px(14.0), 1.0]),
+        ),
+    ] {
+        if state_bool(state, state_key).unwrap_or(false) {
+            cuboids.push(detail_cuboid_with_local_uv(arm));
+        }
+    }
+    ModelShape::from_cuboids(cuboids)
 }
 
 /// Vanilla spike segment: a tapered column anchored at the attached end.
@@ -249,28 +305,121 @@ pub(crate) fn pointed_dripstone_shape(state: &BlockStateQuery) -> ModelShape {
     ])
 }
 
+/// Bedrock mangrove propagule: two crossed cards, each stepped from a narrow stalk to a wide leaf.
+///
+/// Measured from the client (refs 767-772). The plant is **not** a set of boxes: it is two
+/// diagonal cards, and each card is two quads — a stalk section running `y 0..0.5625` between
+/// `x/z 0.2837..0.4163`, and a leaf section running `y 0.5625..0.9375` that flares out to
+/// `x/z 0.1511..0.5489`. The previous cross-plane model had a uniform width and the previous box
+/// model added a depth the capture does not have, which is why the sprout never matched.
+///
+/// Two state axes move the plant:
+///
+/// * `propagule_stage` 0..4 slides the whole plant across the cell without rotating it. The
+///   offsets are `(0, 0)`, `(0, +0.2666)`, `(+0.3667, +0.1333)`, `(-0.1, +0.1)` and
+///   `(+0.2, +0.4)` in `(x, z)`, so the captured footprints walk around the cell while the height
+///   stays identical.
+/// * `hanging` (ref 772) is a separate layout: a narrow stem runs the full cell, a body sits at
+///   `y 0.625..0.8125`, four collar plates fan out at `y 0.7647..0.8125` and a cap closes the top.
 pub(crate) fn mangrove_propagule_shape(state: &BlockStateQuery) -> ModelShape {
-    if !state_bool(state, "hanging").unwrap_or(false) {
-        // Standing propagules grow upwards, so their art must stay upright; the generic
-        // `diagonal_plane_between` default points it down for hanging shapes.
-        let uv = crate::model_family::shape::upright_full_texture_uv();
-        return ModelShape::default().with_planes([
-            diagonal_plane_between(0.0, 1.0, true, None).with_uv(uv),
-            diagonal_plane_between(0.0, 1.0, false, None).with_uv(uv),
-        ]);
+    let hanging = state_bool(state, "hanging").unwrap_or(false);
+    let stage = state_i64(state, "propagule_stage").unwrap_or(0).clamp(0, 4);
+    let (stage_x, stage_z) = [(0.0, 0.0), (0.0, 0.2666), (0.3667, 0.1333), (-0.1, 0.1), (0.2, 0.4)]
+        [stage as usize];
+    if hanging {
+        return ModelShape::from_cuboids(hanging_propagule_cuboids().map(|cuboid| {
+            plant_cuboid_with_upright_art(detail_cuboid_with_local_uv(cuboid))
+        }));
     }
+    // The two cards, authored in place, then slid by the stage offset.
+    //
+    // UVs follow the JE `mangrove_propagule` model, which is the only reference that names the
+    // sprite's painted regions. The 16x16 `mangrove_propagule` tile paints the **leaf** at
+    // `u 4..11, v 1..7` and the **hypocotyl** (stem) at `u 7..9, v 7..16`, so the leaf and stem
+    // sections of each card sample those two rects. Sampling the whole tile (the previous
+    // `upright_full_texture_uv`) landed mostly on transparent pixels and stretched the stem art
+    // across the leaf, which is what "红树木繁殖体 uv 错误" was.
+    let leaf_uv = uv16(4.0, 1.0, 11.0, 7.0);
+    let stem_uv = uv16(7.0, 7.0, 9.0, 16.0);
+    let cards = [
+        // Card A: lower-left to upper-right. Stem section then leaf section.
+        (
+            [
+                [0.2837, 0.0, 0.2504],
+                [0.4163, 0.0, 0.383],
+                [0.4163, 0.5625, 0.383],
+                [0.2837, 0.5625, 0.2504],
+            ],
+            [-1, 0, 1],
+            stem_uv,
+        ),
+        (
+            [
+                [0.1511, 0.5625, 0.1178],
+                [0.5489, 0.5625, 0.5155],
+                [0.5489, 0.9375, 0.5155],
+                [0.1511, 0.9375, 0.1178],
+            ],
+            [-1, 0, 1],
+            leaf_uv,
+        ),
+        // Card B: upper-left to lower-right.
+        (
+            [
+                [0.4163, 0.0, 0.2504],
+                [0.2837, 0.0, 0.383],
+                [0.2837, 0.5625, 0.383],
+                [0.4163, 0.5625, 0.2504],
+            ],
+            [1, 0, 1],
+            stem_uv,
+        ),
+        (
+            [
+                [0.5489, 0.5625, 0.1178],
+                [0.1511, 0.5625, 0.5155],
+                [0.1511, 0.9375, 0.5155],
+                [0.5489, 0.9375, 0.1178],
+            ],
+            [1, 0, 1],
+            leaf_uv,
+        ),
+    ];
+    ModelShape::default().with_planes(cards.map(|(mut corners, normal, uv)| {
+        for corner in &mut corners {
+            corner[0] += stage_x;
+            corner[2] += stage_z;
+        }
+        ModelPlane::new(corners, normal).with_uv(uv)
+    }))
+}
 
-    let mut shape = ModelShape::from_cuboids([detail_cuboid_with_local_uv(ModelCuboid::new(
-        [px(7.0), px(12.0), px(7.0)],
-        [px(9.0), px(16.0), px(9.0)],
-    ))]);
-    // A hanging propagule points its bud downwards, so its art is flipped.
-    let uv = crate::model_family::shape::hanging_full_texture_uv();
-    shape.planes.extend([
-        diagonal_plane_between(px(4.0), px(14.0), true, None).with_uv(uv),
-        diagonal_plane_between(px(4.0), px(14.0), false, None).with_uv(uv),
-    ]);
-    shape
+/// The hanging propagule (ref 772): stem, body, four collar plates and a top cap.
+fn hanging_propagule_cuboids() -> [ModelCuboid; 7] {
+    [
+        ModelCuboid::new([0.5725, 0.0, 0.3725], [0.6609, 0.625, 0.4609]),
+        ModelCuboid::new([0.5542, 0.625, 0.3542], [0.6792, 0.8125, 0.4792]),
+        ModelCuboid::new([0.5725, 0.875, 0.3725], [0.6609, 1.0, 0.4609]),
+        ModelCuboid::new([0.4387, 0.7647, 0.3542], [0.5542, 0.8125, 0.4792]),
+        ModelCuboid::new([0.6792, 0.7647, 0.3542], [0.7947, 0.8125, 0.4792]),
+        ModelCuboid::new([0.5542, 0.7647, 0.2387], [0.6792, 0.8125, 0.3542]),
+        ModelCuboid::new([0.5542, 0.7647, 0.4792], [0.6792, 0.8125, 0.5947]),
+    ]
+}
+
+/// Gives a box whole-tile art on its caps and upright art on its sides.
+///
+/// Plant textures are single tiles, so a side that sampled the tile top-down would show the
+/// sprout hanging from the top of the face instead of standing on it.
+fn plant_cuboid_with_upright_art(cuboid: ModelCuboid) -> ModelCuboid {
+    use crate::model_family::shape::{full_texture_face_uv, full_texture_uv};
+    cuboid
+        .with_face_uv(BlockFace::Up, full_texture_uv())
+        .with_face_uv(BlockFace::Down, full_texture_uv())
+        .with_face_uv(BlockFace::North, full_texture_face_uv(BlockFace::North))
+        .with_face_uv(BlockFace::South, full_texture_face_uv(BlockFace::South))
+        .with_face_uv(BlockFace::East, full_texture_face_uv(BlockFace::East))
+        .with_face_uv(BlockFace::West, full_texture_face_uv(BlockFace::West))
 }
 
 pub(crate) fn dripleaf_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
@@ -348,20 +497,104 @@ fn big_dripleaf_shape(state: &BlockStateQuery) -> ModelShape {
     shape
 }
 
+/// Small dripleaf: a crossed stem in the lower cell and a leaf fan in the upper cell.
+///
+/// Measured from the capture (refs 455-462). The state's `cardinal_direction` names the side the
+/// plant leans toward, and `upper_block_bit` selects which half of the plant this cell draws:
+///
+/// * Lower cell (455/457/459/461): the same two crossed cards, `0.375` wide and `y 0..1`, slid
+///   into the facing quarter of the cell. The cards do **not** rotate — the capture keeps both
+///   diagonal directions identical and only moves the footprint (`south` at `z 0.0625`, `north`
+///   at `z 0.5625`, `east` at `x 0.0625`, `west` at `x 0.5625`).
+/// * Upper cell (456/458/460/462): a leaf fan filling the facing half of the cell plus the stem
+///   continuing down. The fan hangs `0.3125` below the floor and overhangs `0.25` past the cell on
+///   the facing side, which is why the upper half leaves its own cell.
+///
+/// The previous shape drew a 2 px post in both halves and ignored `cardinal_direction`, so every
+/// orientation looked the same and the upper half never had a leaf.
 fn small_dripleaf_shape(state: &BlockStateQuery) -> ModelShape {
     let upper = state_bool(state, "upper_block_bit").unwrap_or(false);
-    let mut shape = ModelShape::from_cuboids([detail_cuboid_with_local_uv(ModelCuboid::new(
-        [px(7.0), 0.0, px(7.0)],
-        [px(9.0), 1.0, px(9.0)],
-    ))]);
+    let direction = cardinal_direction(state).unwrap_or(CardinalDirection::South);
     if upper {
-        shape.cuboids.push(detail_cuboid_with_local_uv(
-            ModelCuboid::new([px(1.0), px(12.0), px(1.0)], [px(15.0), px(14.0), px(15.0)])
-                .with_face_material_slot(BlockFace::Up, "up")
-                .with_face_material_slot(BlockFace::Down, "down")
-                .with_face_material_slot(BlockFace::Side, "side"),
-        ));
+        upper_dripleaf_leaf(direction)
+    } else {
+        lower_dripleaf_stem(direction)
     }
+}
+
+/// How far a small-dripleaf cell's geometry slides toward the side it faces.
+///
+/// The capture moves the footprint by a quarter cell without rotating it, so this is a plain
+/// offset in `(x, z)` rather than a turn.
+fn dripleaf_offset(direction: CardinalDirection) -> (f32, f32) {
+    match direction {
+        CardinalDirection::South => (0.0, 0.0),
+        CardinalDirection::North => (0.0, 0.5),
+        CardinalDirection::East => (-0.25, 0.25),
+        CardinalDirection::West => (0.25, 0.25),
+    }
+}
+
+/// The crossed stem cards of a lower small-dripleaf cell.
+fn lower_dripleaf_stem(direction: CardinalDirection) -> ModelShape {
+    let (offset_x, offset_z) = dripleaf_offset(direction);
+    let cards = [
+        (
+            [
+                [0.3125, 0.0, 0.0625],
+                [0.6875, 0.0, 0.4375],
+                [0.6875, 1.0, 0.4375],
+                [0.3125, 1.0, 0.0625],
+            ],
+            [-1, 0, 1],
+        ),
+        (
+            [
+                [0.6875, 0.0, 0.0625],
+                [0.3125, 0.0, 0.4375],
+                [0.3125, 1.0, 0.4375],
+                [0.6875, 1.0, 0.0625],
+            ],
+            [1, 0, 1],
+        ),
+    ];
+    ModelShape::default().with_planes(cards.map(|(mut corners, normal)| {
+        for corner in &mut corners {
+            corner[0] += offset_x;
+            corner[2] += offset_z;
+        }
+        ModelPlane::new(corners, normal).with_uv(upright_full_texture_uv())
+    }))
+}
+
+/// The leaf fan of an upper small-dripleaf cell.
+///
+/// The capture's fan is a raised outer slab (`x 0.5..1`, `y 0.375..0.875`, `z 0.25..0.75`), a
+/// drooping inner slab that hangs below the cell (`x 0.5..1`, `y -0.3125..0.1875`,
+/// `z -0.25..0.25`), a quarter-cell ramp (`x 0..0.5`, `y 0..0.5`, `z 0.25..0.75`) and the crossed
+/// stem cards running through the whole cell.
+fn upper_dripleaf_leaf(direction: CardinalDirection) -> ModelShape {
+    let (offset_x, offset_z) = dripleaf_offset(direction);
+    let raised = ModelCuboid::new(
+        [0.5 + offset_x, px(6.0), 0.25 + offset_z],
+        [1.0 + offset_x, px(14.0), 0.75 + offset_z],
+    );
+    let drooping = ModelCuboid::new(
+        [0.5 + offset_x, -0.3125, -0.25 + offset_z],
+        [1.0 + offset_x, px(3.0), 0.25 + offset_z],
+    );
+    let ramp = ModelCuboid::new(
+        [offset_x, 0.0, 0.25 + offset_z],
+        [0.5 + offset_x, 0.5, 0.75 + offset_z],
+    );
+    let mut shape = ModelShape::from_cuboids([
+        detail_cuboid_with_local_uv(raised),
+        detail_cuboid_with_local_uv(drooping),
+        detail_cuboid_with_local_uv(ramp),
+    ]);
+    shape
+        .planes
+        .extend(lower_dripleaf_stem(direction).planes);
     shape
 }
 
@@ -381,41 +614,6 @@ fn vertical_plane_x(x: f32, material_slot: &'static str) -> ModelPlane {
     )
     .with_material_slot(material_slot)
     .with_uv(upright_full_texture_uv())
-}
-
-fn diagonal_plane_between(
-    bottom: f32,
-    top: f32,
-    forward: bool,
-    material_slot: Option<&'static str>,
-) -> ModelPlane {
-    let plane = if forward {
-        ModelPlane::new(
-            [
-                [0.0, bottom, 0.0],
-                [1.0, bottom, 1.0],
-                [1.0, top, 1.0],
-                [0.0, top, 0.0],
-            ],
-            [-1, 0, 1],
-        )
-    } else {
-        ModelPlane::new(
-            [
-                [1.0, bottom, 0.0],
-                [0.0, bottom, 1.0],
-                [0.0, top, 1.0],
-                [1.0, top, 0.0],
-            ],
-            [1, 0, 1],
-        )
-    }
-    .with_uv(full_texture_uv());
-    if let Some(slot) = material_slot {
-        plane.with_material_slot(slot)
-    } else {
-        plane
-    }
 }
 
 fn drooping_plane_z(z: f32) -> ModelPlane {
@@ -454,7 +652,7 @@ fn tendril_plane_z(z: f32) -> ModelPlane {
         ],
         [0, 0, 1],
     )
-    .with_uv(full_texture_uv())
+    .with_uv(upright_full_texture_uv())
 }
 
 fn tendril_plane_x(x: f32) -> ModelPlane {
@@ -467,7 +665,7 @@ fn tendril_plane_x(x: f32) -> ModelPlane {
         ],
         [1, 0, 0],
     )
-    .with_uv(full_texture_uv())
+    .with_uv(upright_full_texture_uv())
 }
 
 const fn px(value: f32) -> f32 {

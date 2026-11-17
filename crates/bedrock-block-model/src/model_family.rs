@@ -155,7 +155,10 @@ fn model_shape(state: &BlockStateQuery) -> Option<ModelShape> {
         ModelFamily::Liquid => Some(flora::natural::liquid_shape(state)),
         ModelFamily::BubbleColumn => Some(flora::natural::bubble_column_shape()),
         ModelFamily::Tripwire => Some(flora::natural::tripwire_shape(state)),
-        ModelFamily::ChorusPlant => Some(flora::natural::chorus_plant_shape()),
+        ModelFamily::ChorusPlant => {
+            let name = canonical_block_name(state);
+            Some(flora::natural::chorus_shape(&name, state))
+        }
         ModelFamily::PointedDripstone => Some(flora::natural::pointed_dripstone_shape(state)),
         ModelFamily::MangrovePropagule => Some(flora::natural::mangrove_propagule_shape(state)),
         ModelFamily::MangroveRoots => Some(flora::special::mangrove_roots_shape()),
@@ -222,7 +225,6 @@ pub fn resolve_shape(state: &BlockStateQuery) -> Option<ModelShape> {
 }
 
 pub(super) fn fill_missing_full_texture_uv(shape: &mut ModelShape) {
-    let uv = shape::full_texture_uv();
     for cuboid in &mut shape.cuboids {
         for face in [
             crate::material::BlockFace::Up,
@@ -233,12 +235,19 @@ pub(super) fn fill_missing_full_texture_uv(shape: &mut ModelShape) {
             crate::material::BlockFace::West,
         ] {
             if !cuboid.face_uvs.contains_key(&face) {
-                *cuboid = cuboid.clone().with_face_uv(face, uv);
+                *cuboid =
+                    cuboid.clone().with_face_uv(face, shape::full_texture_face_uv(face));
             }
         }
     }
     for plane in &mut shape.planes {
         if plane.uv.is_none() {
+            // A plane's normal names the side it faces, so a vertical card needs the upright
+            // sample for the same reason a box side does.
+            let uv = match plane.normal {
+                [0, 1, 0] | [0, -1, 0] => shape::full_texture_uv(),
+                _ => shape::upright_full_texture_uv(),
+            };
             plane.uv = Some(uv);
         }
     }
@@ -1132,7 +1141,7 @@ fn is_double_slab_block_name(name: &str) -> bool {
 mod tests {
     use super::{
         ModelFamily, canonical_block_name, classify, detail_material_block_name,
-        is_full_opaque_block, model_shape, resolve_shape,
+        is_full_opaque_block, model_shape, resolve_shape, shape::ModelShape,
     };
 
     use crate::material::BlockFace;
@@ -1527,12 +1536,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing scaffolding"));
         assert!(scaffolding.cuboids.len() >= 9);
 
-        // The shelf is one 5 px board, measured from the client (z 0..0.3125, 20 vertices);
-        // three separate rails was the old, wrong shape.
+        // The shelf is a back panel (3 px) plus two lips (2 px), measured from the client
+        // (capture ref 118); the single 5 px slab was the old, solid shape.
         let shelf = model_shape(&BlockStateQuery::new("minecraft:pale_oak_shelf"))
             .unwrap_or_else(|| panic!("missing shelf"));
-        assert_eq!(shelf.cuboids.len(), 1);
-        assert!((shelf.cuboids[0].max[2] - 0.3125).abs() < 0.001);
+        assert_eq!(shelf.cuboids.len(), 3);
+        assert!((shelf.cuboids[0].max[2] - 0.1875).abs() < 0.001);
 
         let heavy_core = model_shape(&BlockStateQuery::new("minecraft:heavy_core"))
             .unwrap_or_else(|| panic!("missing heavy core"));
@@ -1629,7 +1638,15 @@ mod tests {
             &BlockStateQuery::new("minecraft:sea_pickle").with_state("cluster_count", 3),
         )
         .unwrap_or_else(|| panic!("missing sea pickle"));
-        assert_eq!(sea_pickle.cuboids.len(), 4);
+        // Four tubes, each with its glowing crown, matching capture ref 609.
+        assert_eq!(sea_pickle.cuboids.len(), 8);
+        let dead_pickle = model_shape(
+            &BlockStateQuery::new("minecraft:sea_pickle")
+                .with_state("cluster_count", 3)
+                .with_state("dead_bit", 1),
+        )
+        .unwrap_or_else(|| panic!("missing dead sea pickle"));
+        assert_eq!(dead_pickle.cuboids.len(), 4);
 
         let turtle_egg = model_shape(
             &BlockStateQuery::new("minecraft:turtle_egg")
@@ -1647,7 +1664,9 @@ mod tests {
             .unwrap_or_else(|| panic!("missing fire"));
         // Vanilla `template_fire_floor` is four 22.5-degree sheets standing on the block's
         // centre lines, not a 45-degree cross.
-        assert_eq!(fire.planes.len(), 4);
+        // The capture stores eight planes: two edge sheets plus two tilted sheets per horizontal
+        // pair of directions.
+        assert_eq!(fire.planes.len(), 8);
         assert!(fire.planes.iter().all(|plane| {
             // Every sheet faces along a single horizontal axis.
             (plane.normal[0] == 0) != (plane.normal[2] == 0)
@@ -1674,13 +1693,23 @@ mod tests {
                 && offsets.iter().any(|(bottom, _)| *bottom < 0.4),
             "the sheets stand either side of the centre line: {offsets:?}"
         );
-        // The top edges lean outward, so each sheet's tip is further from the centre than its
-        // base.
+        // Two kinds of sheet, both measured from the capture: the **tilted** ones cross in the
+        // middle and open upward (their tip is further from the centre than their base), and the
+        // **edge** ones hug a block boundary and lean slightly inward.
+        let tilted = |offset: (f32, f32)| offset.0 > 0.15 && offset.0 < 0.85;
         assert!(
             offsets
                 .iter()
+                .filter(|offset| tilted(**offset))
                 .all(|(bottom, top)| (top - 0.5).abs() > (bottom - 0.5).abs()),
-            "the sheets open upward: {offsets:?}"
+            "the tilted sheets open upward: {offsets:?}"
+        );
+        assert!(
+            offsets
+                .iter()
+                .filter(|offset| !tilted(**offset))
+                .all(|(bottom, _)| *bottom < 0.15 || *bottom > 0.85),
+            "the edge sheets hug a block boundary: {offsets:?}"
         );
 
         let end_portal = model_shape(&BlockStateQuery::new("minecraft:end_portal"))
@@ -1696,11 +1725,12 @@ mod tests {
         .unwrap_or_else(|| panic!("missing coral wall fan"));
         assert!(coral_wall_fan.cuboids.is_empty());
         assert_eq!(coral_wall_fan.planes.len(), 1);
+        // The wall fan is a horizontal plate hugging the east wall (capture ref 233).
         assert!(
             coral_wall_fan.planes[0]
                 .corners
                 .iter()
-                .all(|corner| (corner[0] - 0.99).abs() < 0.001)
+                .all(|corner| (corner[0] - 0.99).abs() < 0.001 || (corner[0] - 0.19).abs() < 0.001)
         );
 
         let sculk = model_shape(&BlockStateQuery::new("minecraft:sculk_sensor"))
@@ -1741,6 +1771,102 @@ mod tests {
         assert_eq!(closed.cuboids.len(), 1);
         assert_ne!(closed.cuboids[0], open_left.cuboids[0]);
         assert_ne!(open_left.cuboids[0], open_right.cuboids[0]);
+    }
+
+    #[test]
+    fn door_slab_matches_the_captured_placement() {
+        // The client capture (refs 22-36) places the door slab on a specific cell edge for each
+        // (direction, hinge, open) triple, and both halves always agree. This table is that
+        // capture, so a direction-mapping regression shows up here instead of only on screen.
+        fn placement(name: &str, direction: &str, hinge: bool, open: bool) -> String {
+            let state = BlockStateQuery::new(name)
+                .with_state("minecraft:cardinal_direction", direction)
+                .with_state("door_hinge_bit", hinge)
+                .with_state("open_bit", open);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing {name}"));
+            let cuboid = &shape.cuboids[0];
+            let span_x = cuboid.max[0] - cuboid.min[0];
+            let span_z = cuboid.max[2] - cuboid.min[2];
+            if span_x < span_z {
+                if cuboid.min[0] < 0.1 { "X low" } else { "X high" }.to_owned()
+            } else if cuboid.min[2] < 0.1 {
+                "Z low".to_owned()
+            } else {
+                "Z high".to_owned()
+            }
+        }
+
+        let cases = [
+            ("south", false, false, "X low"),
+            ("south", true, false, "X low"),
+            ("south", false, true, "Z low"),
+            ("south", true, true, "Z high"),
+            ("west", false, false, "Z low"),
+            ("west", true, false, "Z low"),
+            ("west", false, true, "X high"),
+            ("west", true, true, "X low"),
+            ("north", false, false, "X high"),
+            ("north", true, false, "X high"),
+            ("north", false, true, "Z high"),
+            ("north", true, true, "Z low"),
+            ("east", false, false, "Z high"),
+            ("east", true, false, "Z high"),
+            ("east", false, true, "X low"),
+            ("east", true, true, "X high"),
+        ];
+        for (direction, hinge, open, expected) in cases {
+            let actual = placement("minecraft:wooden_door", direction, hinge, open);
+            assert_eq!(
+                actual, expected,
+                "door {direction} hinge={hinge} open={open} should sit at {expected}"
+            );
+        }
+
+        // Both halves of one door agree, so the upper half never disagrees with the lower.
+        for (direction, hinge, open, _) in cases {
+            let lower = BlockStateQuery::new("minecraft:wooden_door")
+                .with_state("minecraft:cardinal_direction", direction)
+                .with_state("door_hinge_bit", hinge)
+                .with_state("open_bit", open)
+                .with_state("upper_block_bit", false);
+            let upper = lower.clone().with_state("upper_block_bit", true);
+            let lower_shape = model_shape(&lower).expect("lower half");
+            let upper_shape = model_shape(&upper).expect("upper half");
+            assert_eq!(
+                lower_shape.cuboids[0].min, upper_shape.cuboids[0].min,
+                "door halves must agree on {direction} hinge={hinge} open={open}"
+            );
+            // The halves differ only in which art tile they bind.
+            assert_ne!(
+                lower_shape.cuboids[0].material_slot, upper_shape.cuboids[0].material_slot,
+                "each half samples its own tile"
+            );
+        }
+    }
+
+    #[test]
+    fn bed_faces_use_unit_axis_normals() {
+        // The bed is the only family whose geometry is authored standing on end and then rotated
+        // into block space, so its normals are derived from the winding. Taking the sign of each
+        // cross-product component independently produced normals like `[1, 1, -1]`, which are not
+        // unit vectors: the renderer's face-shading lookup missed them.
+        for direction in 0..4 {
+            for head in [false, true] {
+                let state = BlockStateQuery::new("minecraft:bed")
+                    .with_state("direction", direction)
+                    .with_state("head_piece_bit", head);
+                let shape = model_shape(&state).unwrap_or_else(|| panic!("missing bed"));
+                assert!(!shape.planes.is_empty(), "bed should emit planes");
+                for plane in &shape.planes {
+                    let non_zero = plane.normal.iter().filter(|value| **value != 0).count();
+                    assert_eq!(
+                        non_zero, 1,
+                        "bed direction={direction} head={head} emitted {:?}, which is not a unit axis normal",
+                        plane.normal
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -2445,12 +2571,12 @@ mod tests {
                 .with_state("minecraft:cardinal_direction", direction)
                 .with_state("repeater_delay", 0);
             let shape = model_shape(&state).unwrap_or_else(|| panic!("missing repeater shape"));
-            // The output torch is the small torch nearest the block border; the delay torch
-            // stays at the centre.
+            // The output torch is the slab bar nearest the block border; the delay bar stays at
+            // the centre (capture silhouette: bars 2 px wide, tops at y 7.9 px).
             let torch = shape
                 .cuboids
                 .iter()
-                .filter(|cuboid| (cuboid.max[1] - 0.375).abs() < 0.001)
+                .filter(|cuboid| (cuboid.max[1] - 0.49375).abs() < 0.001)
                 .min_by(|a, b| {
                     let distance = |c: &crate::model_family::ModelCuboid| {
                         let centre_x = (c.min[0] + c.max[0]) / 2.0 - 0.5;
@@ -2464,15 +2590,16 @@ mod tests {
         }
 
         // `minecraft:cardinal_direction` points from the output towards the input, so the
-        // output torch sits on the opposite side of the cell.
+        // output torch sits on the opposite side of the cell. Bars span 4 px along the axis
+        // (capture silhouette), touching the cell border on the output side.
         let south = front_torch_xz("south");
-        assert!((south.1[0] - 0.1875).abs() < 0.001 && (south.1[1] - 0.3125).abs() < 0.001);
+        assert!((south.1[0] - 0.0625).abs() < 0.001 && (south.1[1] - 0.3125).abs() < 0.001);
         let north = front_torch_xz("north");
-        assert!((north.1[0] - 0.6875).abs() < 0.001 && (north.1[1] - 0.8125).abs() < 0.001);
+        assert!((north.1[0] - 0.6875).abs() < 0.001 && (north.1[1] - 0.9375).abs() < 0.001);
         let west = front_torch_xz("west");
-        assert!((west.0[0] - 0.6875).abs() < 0.001 && (west.0[1] - 0.8125).abs() < 0.001);
+        assert!((west.0[0] - 0.6875).abs() < 0.001 && (west.0[1] - 0.9375).abs() < 0.001);
         let east = front_torch_xz("east");
-        assert!((east.0[0] - 0.1875).abs() < 0.001 && (east.0[1] - 0.3125).abs() < 0.001);
+        assert!((east.0[0] - 0.0625).abs() < 0.001 && (east.0[1] - 0.3125).abs() < 0.001);
     }
 
     #[test]
@@ -2837,19 +2964,153 @@ mod tests {
 
     #[test]
     fn hanging_plants_flip_their_art() {
-        fn plane_uv(name: &str, hanging: bool) -> [[f32; 2]; 4] {
-            let state = BlockStateQuery::new(name).with_state("hanging", hanging);
+        // A mangrove propagule is two crossed cards, each stepped from a narrow stalk to a wide
+        // leaf (measured from the client). The hanging form is a different layout — a stem with a
+        // collar — not the standing plant mirrored, so each is checked against its own capture.
+        fn bounds(name: &str, hanging: bool, stage: i64) -> ([f32; 3], [f32; 3]) {
+            let state = BlockStateQuery::new(name)
+                .with_state("hanging", hanging)
+                .with_state("propagule_stage", stage);
             let shape = model_shape(&state).unwrap_or_else(|| panic!("missing {name}"));
-            shape
-                .planes
-                .first()
-                .and_then(|plane| plane.uv)
-                .expect("plant uv")
+            assert!(
+                !shape.cuboids.is_empty() || !shape.planes.is_empty(),
+                "{name} should have geometry"
+            );
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            for cuboid in &shape.cuboids {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(cuboid.min[axis]);
+                    max[axis] = max[axis].max(cuboid.max[axis]);
+                }
+            }
+            for plane in &shape.planes {
+                for corner in plane.corners {
+                    for axis in 0..3 {
+                        min[axis] = min[axis].min(corner[axis]);
+                        max[axis] = max[axis].max(corner[axis]);
+                    }
+                }
+            }
+            (min, max)
         }
-        let standing = plane_uv("minecraft:mangrove_propagule", false);
-        let hanging = plane_uv("minecraft:mangrove_propagule", true);
-        assert!(standing[0][1] > 0.5, "standing art starts at the bottom");
-        assert!(hanging[0][1] < 0.5, "hanging art starts at the top");
+        let (stand_min, stand_max) = bounds("minecraft:mangrove_propagule", false, 0);
+        // Standing stage 0 matches capture ref 767: `(0.1511,0,0.1178)..(0.5489,0.9375,0.5155)`.
+        assert!((stand_min[0] - 0.1511).abs() < 1e-3, "x starts at 0.1511");
+        assert!((stand_max[0] - 0.5489).abs() < 1e-3, "x ends at 0.5489");
+        assert!((stand_min[2] - 0.1178).abs() < 1e-3, "z starts at 0.1178");
+        assert!(stand_min[1].abs() < 1e-3, "a standing propagule starts at y 0");
+        assert!(
+            (stand_max[1] - 0.9375).abs() < 1e-3,
+            "the standing leaves stop at 0.9375"
+        );
+        // Stages slide the plant across the cell without changing its height (refs 767-771).
+        for stage in 1..=4 {
+            let (_, stage_max) = bounds("minecraft:mangrove_propagule", false, stage);
+            assert!(
+                (stage_max[1] - 0.9375).abs() < 1e-3,
+                "stage {stage} keeps the standing height"
+            );
+        }
+        // The hanging bud (ref 772) spans the full cell: a stem reaching the floor, the body and
+        // collar around `y 0.625..0.8125`, and a cap at the ceiling.
+        let (hang_min, hang_max) = bounds("minecraft:mangrove_propagule", true, 4);
+        assert!(hang_min[1].abs() < 1e-3, "the hanging stem reaches the floor");
+        assert!((hang_max[1] - 1.0).abs() < 1e-3, "and its cap reaches the ceiling");
+        assert!(
+            (hang_min[0] - 0.4387).abs() < 1e-3,
+            "the collar spreads to 0.4387 in x"
+        );
+        assert!((hang_max[2] - 0.5947).abs() < 1e-3);
+    }
+
+    #[test]
+    fn mangrove_propagule_cards_sample_the_painted_sprite_regions() {
+        // The 16x16 `mangrove_propagule` tile paints the leaf at `u 4..11, v 1..7` and the
+        // hypocotyl (stem) at `u 7..9, v 7..16`; everything else is transparent. The JE model
+        // uses exactly those two rects, and sampling the whole tile (the previous
+        // `upright_full_texture_uv`) landed mostly on empty pixels.
+        let shape = model_shape(
+            &BlockStateQuery::new("minecraft:mangrove_propagule")
+                .with_state("hanging", false)
+                .with_state("propagule_stage", 0),
+        )
+        .unwrap_or_else(|| panic!("missing propagule"));
+        assert_eq!(shape.planes.len(), 4, "two cards, two sections each");
+        let mut seen_leaf = false;
+        let mut seen_stem = false;
+        for plane in &shape.planes {
+            let uv = plane.uv.expect("propagule plane without uv");
+            let u0 = uv.iter().map(|c| c[0] * 16.0).fold(f32::INFINITY, f32::min);
+            let u1 = uv.iter().map(|c| c[0] * 16.0).fold(f32::NEG_INFINITY, f32::max);
+            let v0 = uv.iter().map(|c| c[1] * 16.0).fold(f32::INFINITY, f32::min);
+            let v1 = uv.iter().map(|c| c[1] * 16.0).fold(f32::NEG_INFINITY, f32::max);
+            if (u0 - 4.0).abs() < 1e-3 && (u1 - 11.0).abs() < 1e-3 {
+                assert!((v0 - 1.0).abs() < 1e-3 && (v1 - 7.0).abs() < 1e-3, "leaf rect {v0}..{v1}");
+                seen_leaf = true;
+            } else if (u0 - 7.0).abs() < 1e-3 && (u1 - 9.0).abs() < 1e-3 {
+                assert!((v0 - 7.0).abs() < 1e-3 && (v1 - 16.0).abs() < 1e-3, "stem rect {v0}..{v1}");
+                seen_stem = true;
+            } else {
+                panic!("propagule plane samples u {u0}..{u1}, outside the painted regions");
+            }
+        }
+        assert!(seen_leaf && seen_stem, "both the leaf and stem rects must be used");
+    }
+
+    #[test]
+    fn bed_side_faces_sample_the_thickness_band_not_the_length() {
+        // A bed's upright sides are the geometry's East/West faces (model `z` becomes world Y).
+        // The box unwrap gives them a V that follows the model's 32 px length, but the face is
+        // only 6 px tall, so sampling that squashed the art 32/6 times and stretched the 1-texel
+        // frame rail. The sides must instead take the 6 px thickness band `v 6..12`.
+        let shape = model_shape(
+            &BlockStateQuery::new("minecraft:bed")
+                .with_state("direction", 0)
+                .with_state("head_piece_bit", true),
+        )
+        .unwrap_or_else(|| panic!("missing bed"));
+        let mut checked = 0;
+        for plane in &shape.planes {
+            if !matches!(plane.normal, [1, 0, 0] | [-1, 0, 0]) {
+                continue;
+            }
+            // Only the mattress body is 6 px deep; the legs are separate 3 px cubes with their
+            // own band, so skip anything that is not 0.375 tall.
+            let low = plane.corners.iter().map(|c| c[1]).fold(f32::INFINITY, f32::min);
+            let high = plane.corners.iter().map(|c| c[1]).fold(f32::NEG_INFINITY, f32::max);
+            if (high - low - 0.375).abs() > 1e-3 {
+                continue;
+            }
+            let uv = plane.uv.expect("bed side plane without uv");
+            let v0 = uv.iter().map(|c| c[1] * 64.0).fold(f32::INFINITY, f32::min);
+            let v1 = uv.iter().map(|c| c[1] * 64.0).fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                (v1 - v0 - 6.0).abs() < 1e-3,
+                "mattress side spans v {v0}..{v1}, expected a 6 px thickness band"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "the bed must emit upright mattress side faces");
+    }
+
+    #[test]
+    fn bed_colour_travels_in_the_material_slot() {
+        // Bedrock names every bed block plain `bed` and keeps the dye in the block entity, so the
+        // colour has to reach the shape as a synthetic state and end up in the slot name.
+        let white = model_shape(&BlockStateQuery::new("minecraft:bed"));
+        let red = model_shape(
+            &BlockStateQuery::new("minecraft:bed").with_state("bed_colour", "red"),
+        );
+        let slot_of = |shape: Option<ModelShape>| {
+            shape
+                .and_then(|shape| shape.planes.first().and_then(|p| p.material_slot.clone()))
+        };
+        assert_eq!(slot_of(white).as_deref(), Some("bed"));
+        assert_eq!(slot_of(red).as_deref(), Some("bed_red"));
+        // A legacy name that already carries the colour still resolves.
+        let legacy = model_shape(&BlockStateQuery::new("minecraft:red_bed"));
+        assert_eq!(slot_of(legacy).as_deref(), Some("bed_red"));
     }
 
     fn item_frame_plate_hugs_the_support_side() {
@@ -3098,7 +3359,10 @@ mod tests {
         let potted = BlockStateQuery::new("minecraft:potted_poppy");
         let potted_shape =
             model_shape(&potted).unwrap_or_else(|| panic!("missing flower pot shape"));
-        assert_eq!(potted_shape.cuboids.len(), 2);
+        // The capture pot is one solid 6x6x6 box (the texture's transparent centre opens the
+        // rim through alpha cutout), then the plant adds its own silhouette (a cross-plane pair
+        // for a poppy).
+        assert_eq!(potted_shape.cuboids.len(), 1);
         assert_eq!(potted_shape.planes.len(), 2);
     }
 
@@ -3199,17 +3463,17 @@ mod tests {
         assert_eq!(arm_shape.cuboids.len(), 1);
         assert!(arm_shape.cuboids[0].max[2] - arm_shape.cuboids[0].min[2] <= 0.25);
 
-        // Java `block/lectern`: base + post cuboids plus a tilted board plane; the book is an
-        // extra cuboid when the lectern holds one.
+        // Capture ref 760 lectern: base + post cuboids plus the six planes of the 2 px tilted
+        // board slab; the book is an extra cuboid when the lectern holds one.
         let lectern_empty = BlockStateQuery::new("minecraft:lectern");
         let lectern_book =
             BlockStateQuery::new("minecraft:lectern").with_state("has_book_bit", true);
         let empty = model_shape(&lectern_empty).unwrap();
         assert_eq!(empty.cuboids.len(), 2);
-        assert_eq!(empty.planes.len(), 1);
+        assert_eq!(empty.planes.len(), 6);
         let with_book = model_shape(&lectern_book).unwrap();
         assert_eq!(with_book.cuboids.len(), 3);
-        assert_eq!(with_book.planes.len(), 1);
+        assert_eq!(with_book.planes.len(), 6);
     }
 
     #[test]

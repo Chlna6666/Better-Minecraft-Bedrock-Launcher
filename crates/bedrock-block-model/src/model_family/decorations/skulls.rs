@@ -93,15 +93,18 @@ const PIGLIN_HEAD: &[HeadCube] = &[
     // Ears are their own 10 x 5 px patches on the skin (x 33..43 and 44..54, y 0..5), not the
     // head's left column. Sampling `[2, 0]` took head pixels and stretched them over the ear,
     // which is what made the ears and the top of the head look wrong.
+    // The two ear patches are at (31, 1) and (51, 10) on the 64 x 64 piglin skin; `[2, 0]`
+    // sampled head pixels and `[44, 0]` landed on empty space, which is why the ears were
+    // missing and the head read as transparent there.
     HeadCube {
         min: [-3.0, 24.0, -5.0],
         max: [-2.0, 26.0, -4.0],
-        uv: [33.0, 0.0],
+        uv: [31.0, 1.0],
     },
     HeadCube {
         min: [2.0, 24.0, -5.0],
         max: [3.0, 26.0, -4.0],
-        uv: [44.0, 0.0],
+        uv: [51.0, 10.0],
     },
 ];
 

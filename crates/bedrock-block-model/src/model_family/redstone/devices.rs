@@ -75,7 +75,36 @@ fn device_cube(name: &str, facing: BlockFacing) -> ModelCuboid {
         };
         cuboid = cuboid.with_face_material_slot(face, slot);
     }
+    // The front art is drawn with an orientation (the dispenser nozzle, the observer's face), so
+    // it has to rotate **in the face plane** as the block turns. Leaving the UV fixed while the
+    // slot moved kept the art upright on every side, which is the "side is pinned" look.
+    if let Some(turns) = front_uv_turns(facing) {
+        cuboid = cuboid.with_face_uv(front, crate::model_family::shape::rotate_uv_quarter(
+            full_tile_uv(),
+            turns,
+        ));
+    }
     cuboid
+}
+
+/// Full 0..1 tile in the renderer's bottom-left-first order.
+fn full_tile_uv() -> [[f32; 2]; 4] {
+    [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]
+}
+
+/// Quarter turns that keep the front art upright for a given facing.
+///
+/// The front texture is authored pointing at the viewer when the block faces south, so a block
+/// facing north needs a half turn, and the east/west facings need a quarter turn either way.
+fn front_uv_turns(facing: BlockFacing) -> Option<i32> {
+    match facing {
+        BlockFacing::South => None,
+        BlockFacing::North => Some(2),
+        BlockFacing::East => Some(1),
+        BlockFacing::West => Some(3),
+        // A vertical front uses the dedicated vertical art, which needs no in-face rotation.
+        BlockFacing::Up | BlockFacing::Down => None,
+    }
 }
 
 fn opposite_face(face: BlockFace) -> BlockFace {

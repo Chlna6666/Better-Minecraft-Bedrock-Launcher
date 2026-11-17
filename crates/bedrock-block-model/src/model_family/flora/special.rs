@@ -5,6 +5,7 @@ use crate::model_family::direction::{
 };
 use crate::model_family::shape::{
     ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv, full_texture_uv, ground_plane,
+    upright_full_texture_uv,
 };
 use crate::state::BlockStateQuery;
 
@@ -107,7 +108,7 @@ pub(crate) fn mangrove_roots_shape() -> ModelShape {
             [1, 0, 0],
         )
         .with_material_slot("side")
-        .with_uv(full_texture_uv()),
+        .with_uv(upright_full_texture_uv()),
         ModelPlane::new(
             [
                 [0.0, 0.0, 0.5],
@@ -118,10 +119,23 @@ pub(crate) fn mangrove_roots_shape() -> ModelShape {
             [0, 0, 1],
         )
         .with_material_slot("side")
-        .with_uv(full_texture_uv()),
+        .with_uv(upright_full_texture_uv()),
     ])
 }
 
+/// Ground-cover plants that fill their cell with one to four flat cards.
+///
+/// The capture shows two different families here, so they are built differently:
+///
+/// * `leaf_litter` (refs 9-21) lays down **quarter-cell cards** that tile outward from the
+///   corner the state's `cardinal_direction` names. Growth 0 is a single quarter, growth 1-2
+///   adds the neighbouring quarters, and growth 3 fills the cell.
+/// * `pink_petals` and `wildflowers` (refs 483-514, 860-891) stand a few **flower sprites** on
+///   the floor plus a thin top card at `y 0.1875`. Growth only changes how many sprites are
+///   present.
+///
+/// Both read the growth axis, which the previous shape ignored beyond 4 quarter cards, so every
+/// growth value above 3 rendered the same full cell.
 pub(crate) fn ground_cover_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     if name == "pale_moss_carpet" {
         return pale_moss_carpet_shape(state);
@@ -129,18 +143,103 @@ pub(crate) fn ground_cover_shape(name: &str, state: &BlockStateQuery) -> ModelSh
     if matches!(name, "frog_spawn" | "waterlily" | "lily_pad") {
         return full_ground_cover_shape(px(0.125));
     }
+    if name == "leaf_litter" {
+        return leaf_litter_shape(state);
+    }
+    flower_litter_shape(state)
+}
 
-    let count = match state_i64(state, "growth").unwrap_or(0).clamp(0, 3) {
-        0 => 1,
-        1 => 2,
-        2 => 3,
-        _ => 4,
-    };
+/// Leaf litter: quarter-cell cards tiling outward from the state's facing corner.
+///
+/// Growth 0..3 select one to four quarters. The capture only carries refs for growth 0..3; the
+/// higher values are the same four quarters plus a second scattered layer the client builds per
+/// position, so the family stops at the full cell.
+fn leaf_litter_shape(state: &BlockStateQuery) -> ModelShape {
+    let growth = state_i64(state, "growth").unwrap_or(0).clamp(0, 3);
+    let count = growth as usize + 1;
+    let direction = cardinal_direction(state).unwrap_or(CardinalDirection::South);
+    // Quarter cards in south-facing order, then turned by the state.
+    let quarters = ground_cover_quadrants();
     let mut planes = Vec::with_capacity(count);
-    for corners in ground_cover_quadrants().iter().take(count) {
-        planes.push(ground_plane(*corners, None, full_texture_uv()));
+    for corners in quarters.iter().take(count) {
+        planes.push(ground_plane(
+            rotate_ground_corners(*corners, direction),
+            None,
+            full_texture_uv(),
+        ));
     }
     ModelShape::default().with_planes(planes)
+}
+
+/// Pink petals and wildflowers: flower sprites standing on the floor plus one thin top card.
+///
+/// The capture's sprites are pairs of crossed quads at `y 0..0.1875`, and the top card covers the
+/// occupied quarters. Growth 0..3 add quarters; above 3 the client scatters extra sprites per
+/// position, so the family keeps the full cell.
+fn flower_litter_shape(state: &BlockStateQuery) -> ModelShape {
+    let growth = state_i64(state, "growth").unwrap_or(0).clamp(0, 3);
+    let count = growth as usize + 1;
+    let direction = cardinal_direction(state).unwrap_or(CardinalDirection::South);
+    let quarters = ground_cover_quadrants();
+    let mut planes = Vec::with_capacity(count * 3);
+    for corners in quarters.iter().take(count) {
+        let corners = rotate_ground_corners(*corners, direction);
+        planes.push(ground_plane(corners, None, full_texture_uv()));
+        planes.push(flower_sprite(corners, [1, 0, 1]));
+        planes.push(flower_sprite(corners, [1, 0, -1]));
+    }
+    ModelShape::default().with_planes(planes)
+}
+
+/// One upright flower quad standing on a ground card, rotated 45 degrees in plan.
+fn flower_sprite(card: [[f32; 3]; 4], normal: [i32; 3]) -> ModelPlane {
+    let (min_x, max_x, min_z, max_z) = card_bounds(&card);
+    let (centre_x, centre_z) = ((min_x + max_x) * 0.5, (min_z + max_z) * 0.5);
+    let reach = (max_x - min_x).min(max_z - min_z) * 0.5;
+    let (dx, dz) = (reach, reach * if normal[2] > 0 { 1.0 } else { -1.0 });
+    ModelPlane::new(
+        [
+            [centre_x - dx, 0.0, centre_z - dz],
+            [centre_x + dx, 0.0, centre_z + dz],
+            [centre_x + dx, 0.1875, centre_z + dz],
+            [centre_x - dx, 0.1875, centre_z - dz],
+        ],
+        normal,
+    )
+    .with_uv(upright_full_texture_uv())
+}
+
+fn card_bounds(card: &[[f32; 3]; 4]) -> (f32, f32, f32, f32) {
+    let mut bounds = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+    for corner in card {
+        bounds.0 = bounds.0.min(corner[0]);
+        bounds.1 = bounds.1.max(corner[0]);
+        bounds.2 = bounds.2.min(corner[2]);
+        bounds.3 = bounds.3.max(corner[2]);
+    }
+    bounds
+}
+
+/// Turns a ground card authored facing south onto the state's cardinal.
+fn rotate_ground_corners(
+    corners: [[f32; 3]; 4],
+    direction: CardinalDirection,
+) -> [[f32; 3]; 4] {
+    let turns = match direction {
+        CardinalDirection::South => 0,
+        CardinalDirection::West => 1,
+        CardinalDirection::North => 2,
+        CardinalDirection::East => 3,
+    };
+    let mut corners = corners;
+    for _ in 0..turns {
+        for corner in &mut corners {
+            let (x, z) = (corner[0], corner[2]);
+            corner[0] = z;
+            corner[2] = 1.0 - x;
+        }
+    }
+    corners
 }
 
 pub(crate) fn multi_face_shape(state: &BlockStateQuery) -> ModelShape {

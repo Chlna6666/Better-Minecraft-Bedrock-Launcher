@@ -17,39 +17,37 @@ pub(crate) fn shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     let output = repeater_output_direction(state);
     let mut cuboids = vec![ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.125, 1.0])];
 
+    // Bedrock draws the redstone "torches" as flat slab bars 2..7.9 px tall (capture refs: north
+    // repeater 560/564/568/570, south comparators 274 compare / 278 subtract). The authored frame
+    // below is the capture frame after the rotation each family already applies, so the bars
+    // land where the client puts them per facing.
     if name.contains("comparator") {
         let is_subtract = state_bool(state, "output_subtract_bit")
             .or_else(|| state_string(state, "comparator_mode").map(|s| s == "subtract" || s == "1"))
             .unwrap_or(false);
 
-        let front_torch_y_max = if is_subtract { 0.3125 } else { 0.375 };
-        cuboids.push(torch_cuboid(ModelCuboid::new(
-            [0.4375, 0.125, 0.1875],
-            [0.5625, front_torch_y_max, 0.3125],
-        )));
-        cuboids.push(torch_cuboid(ModelCuboid::new(
-            [0.25, 0.125, 0.6875],
-            [0.375, 0.375, 0.8125],
-        )));
-        cuboids.push(torch_cuboid(ModelCuboid::new(
-            [0.625, 0.125, 0.6875],
-            [0.75, 0.375, 0.8125],
-        )));
+        // Two input bars flanking the centre at the back, and the output bar at the front. The
+        // compare-mode output bar is wider and shorter (x 6..10, y to 4.9); subtract mode keeps
+        // it narrow but taller (x 7..9, y to 5.9).
+        cuboids.push(torch_bar(px(4.0), px(7.9), px(10.0), px(14.0)));
+        cuboids.push(torch_bar(px(10.0), px(7.9), px(10.0), px(14.0)));
+        if is_subtract {
+            cuboids.push(torch_bar(px(7.0), px(5.9), px(1.0), px(5.0)));
+        } else {
+            cuboids.push(torch_bar_wide(px(6.0), px(4.0), px(4.9), px(1.0), px(5.0)));
+        }
     } else {
         let delay = state_i64(state, "repeater_delay")
             .or_else(|| state_i64(state, "delay"))
             .unwrap_or(0)
-            .clamp(0, 3) as f32;
+            .clamp(0, 3);
 
-        let base_z = 0.4375 + delay * 0.125;
-        cuboids.push(torch_cuboid(ModelCuboid::new(
-            [0.4375, 0.125, 0.1875],
-            [0.5625, 0.375, 0.3125],
-        )));
-        cuboids.push(torch_cuboid(ModelCuboid::new(
-            [0.4375, 0.125, base_z],
-            [0.5625, 0.375, base_z + 0.125],
-        )));
+        // The fixed input bar sits at the front; the second bar slides 2 px per delay step away
+        // from it (capture: north frame bar z 7..11 -> 5..9 -> 3..7 -> 1..5 as delay climbs,
+        // mirrored into this frame).
+        let shift = px(2.0 * delay as f32);
+        cuboids.push(torch_bar(px(7.0), px(7.9), px(1.0), px(5.0)));
+        cuboids.push(torch_bar(px(7.0), px(7.9), px(5.0) + shift, px(9.0) + shift));
     }
 
     // The torches above are authored with the output torch on the north side; the whole
@@ -62,10 +60,20 @@ pub(crate) fn shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     )
 }
 
-/// The torch posts sample the shared `repeater_torch` / `comparator_torch` art, which is not
-/// part of the block's own texture map.
-fn torch_cuboid(cuboid: ModelCuboid) -> ModelCuboid {
-    cuboid.with_material_slot("torch")
+/// One redstone torch bar: a 2 px wide slab spanning `z0..z1` at `x0..x0+2`, standing on the base
+/// slab. Samples the shared `repeater_torch` / `comparator_torch` art, which is not part of the
+/// block's own texture map.
+fn torch_bar(x0: f32, y_max: f32, z0: f32, z1: f32) -> ModelCuboid {
+    torch_bar_wide(x0, px(2.0), y_max, z0, z1)
+}
+
+/// The general bar form, for the comparator's wider compare-mode output bar.
+fn torch_bar_wide(x0: f32, width: f32, y_max: f32, z0: f32, z1: f32) -> ModelCuboid {
+    ModelCuboid::new([x0, 0.125, z0], [x0 + width, y_max, z1]).with_material_slot("torch")
+}
+
+const fn px(value: f32) -> f32 {
+    value / 16.0
 }
 
 /// Resolves the side the repeater drives power towards.

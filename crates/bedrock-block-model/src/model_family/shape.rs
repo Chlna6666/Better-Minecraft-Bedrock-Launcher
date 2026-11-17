@@ -172,6 +172,26 @@ pub fn full_texture_uv() -> [[f32; 2]; 4] {
     uv16(0.0, 0.0, 16.0, 16.0)
 }
 
+/// Full-tile UVs for one authored face, in that face's corner order.
+///
+/// The renderer emits every face from outside the block starting at its **bottom-left** corner,
+/// and the documented convention is that V grows downward from the block top. A whole-tile
+/// sample therefore has to start at `v = 1` on a vertical face; `full_texture_uv` starts at
+/// `v = 0` and is only correct for the two caps, whose corner order starts elsewhere.
+///
+/// Applying `full_texture_uv` to a north/south/east/west face is what made plants, item frames
+/// and shelves read as upside down: the art was sampled top-down while the quad was built
+/// bottom-up.
+#[must_use]
+pub fn full_texture_face_uv(face: BlockFace) -> [[f32; 2]; 4] {
+    match face {
+        BlockFace::North | BlockFace::South | BlockFace::East | BlockFace::West => {
+            upright_full_texture_uv()
+        }
+        _ => full_texture_uv(),
+    }
+}
+
 /// Full-texture UVs for an upright plane whose corners start at the bottom-left.
 ///
 /// Vertical decorations such as flowers, vines and rails use this so the source texture is not

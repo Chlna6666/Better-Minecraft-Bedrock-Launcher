@@ -69,7 +69,9 @@ pub(crate) fn vine_shape(name: &str, state: &BlockStateQuery) -> Option<ModelSha
             .or_else(|| state_i64(state, "direction"))
             .and_then(coral_direction_from_int)
     {
-        planes.push(vine_plane(direction));
+        // Wall fans are NOT an upright card: the capture (refs 233..236) is a 12.8x2.4 px plate
+        // lying at half height (y 8..10.4 px) against the named wall.
+        return Some(coral_wall_fan_shape(direction));
     }
 
     if planes.is_empty() {
@@ -110,6 +112,43 @@ fn coral_direction_from_int(value: i64) -> Option<CardinalDirection> {
         3 => Some(CardinalDirection::North),
         _ => None,
     }
+}
+
+/// The wall-mounted coral fan: a 12.8 x 2.4 px plate lying at half height against the named
+/// wall (capture refs 233..236, `coral_direction` 0..3). The slight 1.6 px tilt of the real
+/// sheet is dropped for the flat plate; its top face carries the fan art upright.
+fn coral_wall_fan_shape(direction: CardinalDirection) -> ModelShape {
+    let (min, max, normal) = match direction {
+        CardinalDirection::East => ([0.19_f32, 0.5, 0.05], [0.99, 0.65, 0.95], [1, 0, 0]),
+        CardinalDirection::West => ([0.01, 0.5, 0.05], [0.81, 0.65, 0.95], [-1, 0, 0]),
+        CardinalDirection::South => ([0.05, 0.5, 0.19], [0.95, 0.65, 0.99], [0, 0, 1]),
+        CardinalDirection::North => ([0.05, 0.5, 0.01], [0.95, 0.65, 0.81], [0, 0, -1]),
+    };
+    let [x0, y0, z0] = min;
+    let [x1, y1, z1] = max;
+    let (corners, normal) = match normal[0] {
+        1 | -1 => (
+            [
+                [x1, y1, z0],
+                [x1, y1, z1],
+                [x0, y1, z1],
+                [x0, y1, z0],
+            ],
+            [0, 1, 0],
+        ),
+        _ => (
+            [
+                [x0, y1, z1],
+                [x1, y1, z1],
+                [x1, y1, z0],
+                [x0, y1, z0],
+            ],
+            [0, 1, 0],
+        ),
+    };
+    ModelShape::default().with_planes([ModelPlane::new(corners, normal).with_uv(
+        upright_full_texture_uv(),
+    )])
 }
 
 fn vine_plane(direction: CardinalDirection) -> ModelPlane {

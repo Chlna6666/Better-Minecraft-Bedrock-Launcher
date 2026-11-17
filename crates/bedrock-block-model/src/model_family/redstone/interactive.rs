@@ -79,10 +79,15 @@ pub(crate) fn lever_shape(state: &BlockStateQuery) -> ModelShape {
     shape
 }
 
-/// Vanilla lever: a 6 x 3 x 8 px base plate and a 2 x 10 x 2 px handle tilted 45 degrees.
+/// Vanilla lever: a 6 x 3 x 8 px base plate and a 2 x 10 x 2 px handle leaning off the floor.
 ///
-/// Geometry and UVs follow the Java `lever` / `lever_on` models; the handle tilts towards north
-/// when the lever is on (`powered=true` uses the -45 degree model).
+/// Geometry follows the capture (floor lever closed = ref 725, open = 733): the handle is **not**
+/// a rigidly rotated box — Bedrock shears it, so the tip is pushed further sideways than a
+/// 45-degree turn would. The captured cross-section corners (y, z) in pixels are
+/// closed `{(2, 8), (0.72, 9.53), (9.66, 14.43), (8.37, 15.96)}` and open
+/// `{(2, 8), (0.72, 6.47), (9.66, 1.57), (8.37, 0.04)}`; the handle leans south when off and
+/// north when on, off a pivot at the plate's top centre. Every handle face samples the stick
+/// strip `lever[7..9, 6..16]` (the base plate samples cobblestone through the block's own map).
 fn canonical_lever(open: bool) -> ModelShape {
     let base = ModelCuboid::new([5.0, 0.0, 4.0].map(px), [11.0, 3.0, 12.0].map(px))
         .with_face_uv(BlockFace::Up, uv16(5.0, 4.0, 11.0, 12.0))
@@ -92,17 +97,72 @@ fn canonical_lever(open: bool) -> ModelShape {
         .with_face_uv(BlockFace::West, uv16(4.0, 0.0, 12.0, 3.0))
         .with_face_uv(BlockFace::East, uv16(4.0, 0.0, 12.0, 3.0));
 
-    let handle = ModelCuboid::new([7.0, 1.0, 7.0].map(px), [9.0, 11.0, 9.0].map(px))
-        .with_face_uv(BlockFace::Up, uv16(7.0, 6.0, 9.0, 8.0))
-        .with_face_uv(BlockFace::North, uv16(7.0, 6.0, 9.0, 16.0))
-        .with_face_uv(BlockFace::South, uv16(7.0, 6.0, 9.0, 16.0))
-        .with_face_uv(BlockFace::West, uv16(7.0, 6.0, 9.0, 16.0))
-        .with_face_uv(BlockFace::East, uv16(7.0, 6.0, 9.0, 16.0));
-
-    // Open levers use the -45 degree model; closed levers lean the other way.
-    let angle = if open { -45.0 } else { 45.0 };
-    let planes = tilted_handle_planes(&handle, angle, [1.0, 8.0]);
+    // Captured cross-section (y, z) in pixels, pivot (2, 8) first, then pivot->tip edges.
+    let section: [[f32; 2]; 4] = if open {
+        [
+            [2.0, 8.0],
+            [0.7152, 6.4688],
+            [9.6616, 1.5728],
+            [8.3744, 0.04],
+        ]
+    } else {
+        [
+            [2.0, 8.0],
+            [0.7152, 9.5312],
+            [9.6616, 14.4272],
+            [8.3744, 15.96],
+        ]
+    };
+    let section_uv = uv16(7.0, 6.0, 9.0, 16.0);
+    let (x0, x1) = (px(7.0), px(9.0));
+    let at = |index: usize, x: f32| {
+        [x, section[index][0] / 16.0, section[index][1] / 16.0]
+    };
+    let mut planes = Vec::with_capacity(6);
+    // The two side sheets (x = 7 px and x = 9 px).
+    for (x, normal) in [(x0, [-1_i32, 0, 0]), (x1, [1, 0, 0])] {
+        planes.push(
+            ModelPlane::new(
+                [at(0, x), at(1, x), at(2, x), at(3, x)],
+                normal,
+            )
+            .with_uv(section_uv),
+        );
+    }
+    // The four strips connecting the sheets along the handle's length.
+    for (a, b) in [(0usize, 1usize), (1, 2), (2, 3), (3, 0)] {
+        let normal = strip_normal(section[a], section[b]);
+        planes.push(
+            ModelPlane::new([at(a, x0), at(a, x1), at(b, x1), at(b, x0)], normal)
+                .with_uv(section_uv),
+        );
+    }
     ModelShape::from_cuboids([base]).with_planes(planes)
+}
+
+/// Outward normal of one handle strip, from the direction its section edge runs in (y, z).
+fn strip_normal(a: [f32; 2], b: [f32; 2]) -> [i32; 3] {
+    let edge = [b[0] - a[0], b[1] - a[1]];
+    // The renderer's face order satisfies `cross(c1-c0, c3-c0) == -normal`; for a strip
+    // [a@7px, a@9px, b@9px, b@7px] that resolves to (0, dz, -dy), pointing away from the
+    // handle's lean.
+    [
+        0,
+        if edge[1] > 0.0 {
+            1
+        } else if edge[1] < 0.0 {
+            -1
+        } else {
+            0
+        },
+        if edge[0] > 0.0 {
+            -1
+        } else if edge[0] < 0.0 {
+            1
+        } else {
+            0
+        },
+    ]
 }
 
 /// Turns the floor / north-south authored lever onto its mount.
@@ -121,46 +181,6 @@ fn lever_mount(direction: &str) -> (i32, CardinalDirection) {
         "west" => (1, CardinalDirection::West),
         _ => (0, CardinalDirection::North),
     }
-}
-
-/// The six quads of a box tilted about the X axis through `pivot` (pixels, y/z).
-fn tilted_handle_planes(
-    cuboid: &ModelCuboid,
-    angle_degrees: f32,
-    pivot: [f32; 2],
-) -> Vec<ModelPlane> {
-    let (sin, cos) = angle_degrees.to_radians().sin_cos();
-    let pivot = [pivot[0] / 16.0, pivot[1] / 16.0];
-    let rotate = |corner: [f32; 3]| {
-        let (dy, dz) = (corner[1] - pivot[0], corner[2] - pivot[1]);
-        [
-            corner[0],
-            pivot[0] + dy * cos - dz * sin,
-            pivot[1] + dy * sin + dz * cos,
-        ]
-    };
-    [
-        (BlockFace::Up, [0, 1, 0]),
-        (BlockFace::Down, [0, -1, 0]),
-        (BlockFace::North, [0, 0, -1]),
-        (BlockFace::South, [0, 0, 1]),
-        (BlockFace::East, [1, 0, 0]),
-        (BlockFace::West, [-1, 0, 0]),
-    ]
-    .into_iter()
-    .map(|(face, normal)| {
-        let corners =
-            crate::model_family::shape::box_face_corners(cuboid.min, cuboid.max, face).map(rotate);
-        let mut plane = ModelPlane::new(corners, normal).front_only();
-        if let Some(uv) = cuboid.face_uvs.get(&face).copied() {
-            plane = plane.with_uv(uv);
-        }
-        if let Some(slot) = cuboid.face_material_slots.get(&face) {
-            plane = plane.with_material_slot(slot);
-        }
-        plane
-    })
-    .collect()
 }
 
 fn px(value: f32) -> f32 {
@@ -209,20 +229,52 @@ pub(crate) fn tripwire_hook_shape(state: &BlockStateQuery) -> ModelShape {
     rotate_shape_cardinal(shape, direction)
 }
 
-fn wall_attached_cuboid(
-    direction: CardinalDirection,
-    thickness: f32,
-    min_y: f32,
-    max_y: f32,
-) -> ModelCuboid {
-    match direction {
-        CardinalDirection::North => ModelCuboid::new([0.0, min_y, 0.0], [1.0, max_y, thickness]),
-        CardinalDirection::South => {
-            ModelCuboid::new([0.0, min_y, 1.0 - thickness], [1.0, max_y, 1.0])
-        }
-        CardinalDirection::East => {
-            ModelCuboid::new([1.0 - thickness, min_y, 0.0], [1.0, max_y, 1.0])
-        }
-        CardinalDirection::West => ModelCuboid::new([0.0, min_y, 0.0], [thickness, max_y, 1.0]),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lever handle reproduces the captured sheared cross-section (refs 725 closed /
+    /// 733 open): a rigidly rotated box cannot match, so the corner set is asserted directly.
+    #[test]
+    fn lever_handle_matches_the_captured_cross_section() {
+        let closed = lever_shape(&BlockStateQuery::new("minecraft:lever"));
+        assert_eq!(closed.planes.len(), 6);
+        let ys: Vec<f32> = closed
+            .planes
+            .iter()
+            .flat_map(|plane| plane.corners.iter().map(|corner| corner[1]))
+            .collect();
+        let zs: Vec<f32> = closed
+            .planes
+            .iter()
+            .flat_map(|plane| plane.corners.iter().map(|corner| corner[2]))
+            .collect();
+        let (y_min, y_max) = (
+            ys.iter().cloned().fold(f32::INFINITY, f32::min),
+            ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+        );
+        let (z_min, z_max) = (
+            zs.iter().cloned().fold(f32::INFINITY, f32::min),
+            zs.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+        );
+        // Captured extents in pixels: y 0.72..9.66, z 8.0..15.96.
+        assert!((y_min - 0.7152 / 16.0).abs() < 0.001, "y_min {y_min}");
+        assert!((y_max - 9.6616 / 16.0).abs() < 0.001, "y_max {y_max}");
+        assert!((z_min - 8.0 / 16.0).abs() < 0.001, "z_min {z_min}");
+        assert!((z_max - 15.96 / 16.0).abs() < 0.001, "z_max {z_max}");
+
+        // The open lever leans north instead of south.
+        let open = lever_shape(
+            &BlockStateQuery::new("minecraft:lever").with_state("open_bit", true),
+        );
+        let open_z_max = open
+            .planes
+            .iter()
+            .flat_map(|plane| plane.corners.iter().map(|corner| corner[2]))
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            (open_z_max - 8.0 / 16.0).abs() < 0.001,
+            "open handle should stop at the pivot plane, got {open_z_max}"
+        );
     }
 }

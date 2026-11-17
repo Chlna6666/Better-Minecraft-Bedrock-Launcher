@@ -76,6 +76,7 @@ fn build_bed(
 ) -> Option<ModelShape> {
     let is_head = is_head(state);
     let direction = direction(state);
+    let slot = bed_material_slot(state);
     let (half_low, half_high) = if is_head {
         (HALF_LENGTH_PX, 2.0 * HALF_LENGTH_PX)
     } else {
@@ -87,12 +88,69 @@ fn build_bed(
         if max[1] <= half_low || min[1] >= half_high {
             continue;
         }
-        push_cube_planes(min, max, uv, half_low, half_high, direction, &mut planes);
+        push_cube_planes(
+            min,
+            max,
+            uv,
+            half_low,
+            half_high,
+            direction,
+            &slot,
+            &mut planes,
+        );
     }
     (!planes.is_empty()).then_some(ModelShape {
         cuboids: Vec::new(),
         planes,
     })
+}
+
+/// The material slot a bed's planes bind.
+///
+/// Bedrock names the block `bed` for **every** colour — the dye lives in the `Bed` block entity's
+/// `color` field, not in the block name — so deriving the sprite from the name (the old
+/// `bed_colour` suffix strip) always fell back to white and every bed rendered white. The colour
+/// therefore travels in the slot name, the same way banner dye does: `bed` keeps the default and
+/// `bed_<colour>` selects one of the 16 `textures/entity/bed/<colour>` sprites. A legacy block
+/// name that *does* carry the colour (`white_bed`, `red_bed`, …) still works.
+fn bed_material_slot(state: &BlockStateQuery) -> String {
+    let name = state
+        .name
+        .strip_prefix("minecraft:")
+        .unwrap_or(&state.name);
+    let from_name = name
+        .strip_suffix("_bed")
+        .filter(|colour| !colour.is_empty() && *colour != "bed");
+    // A colour parsed from the block-entity NBT is attached to the query by the caller.
+    let from_state = crate::model_family::direction::state_string(state, "bed_colour")
+        .or_else(|| crate::model_family::direction::state_string(state, "color"));
+    match from_state.or(from_name) {
+        Some(colour) if is_bed_colour(colour) => format!("bed_{colour}"),
+        _ => "bed".to_owned(),
+    }
+}
+
+/// The 16 vanilla bed colours, which are also the `textures/entity/bed/` sprite names.
+fn is_bed_colour(colour: &str) -> bool {
+    matches!(
+        colour,
+        "white"
+            | "orange"
+            | "magenta"
+            | "light_blue"
+            | "yellow"
+            | "lime"
+            | "pink"
+            | "gray"
+            | "light_gray"
+            | "cyan"
+            | "purple"
+            | "blue"
+            | "brown"
+            | "green"
+            | "red"
+            | "black"
+    )
 }
 
 fn is_head(state: &BlockStateQuery) -> bool {
@@ -124,6 +182,7 @@ fn push_cube_planes(
     half_low: f32,
     half_high: f32,
     direction: CardinalDirection,
+    slot: &str,
     planes: &mut Vec<ModelPlane>,
 ) {
     let [x0, y0, z0] = min;
@@ -184,18 +243,50 @@ fn push_cube_planes(
             corner[1] = corner[1].clamp(low, high);
             uvs[index] = model_uv(face, uv, min, max, *corner);
         }
+        // The bed's four **vertical** sides in world space are the model's East/West faces.
+        //
+        // `point_to_block` maps model `z` to world `Y`, so the model's `x`-normal faces (East and
+        // West) become the upright sides, while the model's `z`-normal faces (North and South)
+        // become the horizontal caps. The box unwrap gives East/West
+        // `v = depth + (y1 - model_y)` — a V that follows the model's **length** (32 px) — but
+        // that face is only `depth` (6 px) tall in world space, so the art is squashed by
+        // `32 / depth` and the 1-texel frame rail at `v 6..7` covers a sixth of the side instead
+        // of a sixteenth. That is what made the brown frame read as too big and in the wrong
+        // place. Remap V onto the unwrap's own side band, `v0 + depth .. v0 + 2*depth`, using the
+        // model `z` that actually became the world height.
+        if matches!(face, BlockFace::East | BlockFace::West) {
+            let depth = max[2] - min[2];
+            let band_start = uv[1] + depth;
+            for (index, corner) in clipped.iter().enumerate() {
+                // model z 0 is the top (world Y highest), model z = depth is the underside.
+                let height = (corner[2] - min[2]) / depth.max(1e-6);
+                uvs[index][1] = (band_start + height * depth) / BED_TEXTURE_SPAN;
+            }
+        }
         let block = clipped.map(|point| point_to_block(point, half_low));
         let block = rotate_corners(block, direction);
         let normal = plane_normal(block);
         planes.push(
             ModelPlane::new(block, normal)
-                .with_material_slot("bed")
+                .with_material_slot(slot)
                 .with_uv(uvs),
         );
     }
 }
 
 /// Box-unwrap UV of one model-space point, normalised to the sprite.
+///
+/// Verified against the shipped 64x64 `textures/entity/bed/white.png`. With the mattress cube
+/// `[0,0,0]..[16,32,6]` at `uv [0,0]` the unwrap puts:
+///
+/// * the **mattress top** (model -Z) on the white-sheet strip `u 6..22, v 6..38`,
+/// * the **underside** (model +Z) on the all-brown frame `u 28..44, v 6..38`,
+/// * the two **long sides** (model +-X) on `u 22..28` / `u 0..6`, whose outer columns are the
+///   frame rail.
+///
+/// `point_to_block` maps model `-Z` to world **up**, so the sheet lands on top and the frame
+/// underneath. The mapping is correct as authored; rewriting the V axis (an earlier attempt)
+/// only rotated the sides and collapsed them to a line.
 fn model_uv(
     face: BlockFace,
     uv: [f32; 2],
@@ -213,6 +304,17 @@ fn point_to_block(point: [f32; 3], half_low: f32) -> [f32; 3] {
     [x / PX, (BED_TOP_PX - z) / PX, (y - half_low) / PX]
 }
 
+/// The unit axis normal of a planar quad.
+///
+/// Two separate bugs lived here:
+///
+/// * Taking the sign of **each** cross-product component independently turned every zero
+///   component into `+1`, producing normals like `[1, 1, -1]`. Those are not unit vectors, so the
+///   renderer's face-shading lookup missed them and fell back to one flat shade.
+/// * The renderer emits faces whose corner order gives `cross(c1 - c0, c3 - c0) == -normal` (see
+///   `push_cuboid_faces`'s Up face), so the dominant component has to be **negated**. Without
+///   that every bed face pointed into the bed, which flipped its shading and let backface culling
+///   drop it.
 fn plane_normal(corners: [[f32; 3]; 4]) -> [i32; 3] {
     let a = [
         corners[1][0] - corners[0][0],
@@ -229,11 +331,18 @@ fn plane_normal(corners: [[f32; 3]; 4]) -> [i32; 3] {
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     ];
-    [
-        if cross[0] >= 0.0 { 1 } else { -1 },
-        if cross[1] >= 0.0 { 1 } else { -1 },
-        if cross[2] >= 0.0 { 1 } else { -1 },
-    ]
+    let axis = (0..3)
+        .max_by(|left, right| {
+            cross[*left]
+                .abs()
+                .partial_cmp(&cross[*right].abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(1);
+    let mut normal = [0i32; 3];
+    // The face emitter's corner order is opposite to its normal, so flip the sign here.
+    normal[axis] = if cross[axis] >= 0.0 { -1 } else { 1 };
+    normal
 }
 
 fn rotate_corners(corners: [[f32; 3]; 4], direction: CardinalDirection) -> [[f32; 3]; 4] {

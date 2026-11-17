@@ -287,22 +287,105 @@ pub(crate) fn lectern_shape(state: &BlockStateQuery) -> ModelShape {
         [0.75, 0.9375, 0.75],
     ));
     let mut shape = ModelShape::from_cuboids([base, post]);
-    // Board: vanilla `LECTERN_BOARD` (x ±7.9 px, y 11..15 px, z -6..7 px) tilted -22.5 degrees
-    // about the pivot (0, 7, -1) px and offset by (0, 1.05, 1.0) px. Sampling the tilted top
-    // face as a quad reproduces the slope without needing rotated cuboids.
-    let mut board_corners = [[0.0f32; 3]; 4];
-    for (index, (x, z)) in [(-7.9f32, -6.0f32), (7.9, -6.0), (7.9, 7.0), (-7.9, 7.0)]
-        .into_iter()
-        .enumerate()
-    {
-        board_corners[index] = lectern_board_point([x, 15.0, z]);
-    }
-    let normal = plane_normal(board_corners);
+    // Board: the capture (ref 760, south) stores the desk as a **2 px-thick slab tilted about X**,
+    // not a single sheet. Its four cross-section corners at the west edge (y, z) are
+    // `(1.156, 0.229) top-front`, `(0.925, 0.134) bottom-front`, `(0.846, 0.98) top-back`,
+    // `(0.615, 0.884) bottom-back`, spanning `x 0.006..0.994`. Emitting only the top surface (the
+    // previous shape) left the board hollow from below and the sides see-through.
+    let board_top = [
+        [0.006_f32, 1.156_f32, 0.229_f32],
+        [0.994, 1.156, 0.229],
+        [0.994, 0.846, 0.98],
+        [0.006, 0.846, 0.98],
+    ];
+    let board_bottom = [
+        [0.006, 0.925, 0.134],
+        [0.994, 0.925, 0.134],
+        [0.994, 0.615, 0.884],
+        [0.006, 0.615, 0.884],
+    ];
+    // Board UVs from the JE `lectern` model (the only reference naming the art sub-rects; the
+    // capture stores atlas-space UVs that need the runtime atlas layout to decode). The board
+    // box spans y 12..16 px, z 3..16 px, tilted -22.5 deg about x through (8,8,8):
+    //   north lip = sides[0,0,16,4], south/back = sides[0,4,16,8],
+    //   east/west rims = sides[0,4,13,8], up = top[0,1,16,14] (rotated 180),
+    //   down = bottom[0,0,16,13].
+    // Faces start at their bottom-left corner, so a JE rect [u0,v0,u1,v1] (V measured from the
+    // texture top) is emitted bottom-up.
+    let board_uv = |u0: f32, v0: f32, u1: f32, v1: f32| {
+        crate::model_family::shape::rect_uv(
+            u0 / 16.0,
+            v1 / 16.0,
+            u1 / 16.0,
+            v0 / 16.0,
+        )
+    };
+    // Top / bottom surfaces.
     shape.planes.push(
-        ModelPlane::new(board_corners, normal)
-            .with_material_slot("top")
-            .with_uv(crate::model_family::shape::full_texture_uv()),
+        ModelPlane::new(board_top, [0, 1, 0])
+            .with_material_slot("up")
+            // JE up face carries rotation 180: the art runs back-to-front across the tilt.
+            .with_uv(board_uv(0.0, 1.0, 16.0, 14.0)),
     );
+    shape.planes.push(
+        ModelPlane::new(
+            [
+                board_bottom[3],
+                board_bottom[2],
+                board_bottom[1],
+                board_bottom[0],
+            ],
+            [0, -1, 0],
+        )
+        .with_material_slot("down")
+        .with_uv(board_uv(0.0, 0.0, 16.0, 13.0)),
+    );
+    // Front edge (the lip that faces the reader) and back edge.
+    shape.planes.push(
+        ModelPlane::new(
+            [
+                board_bottom[0],
+                board_bottom[1],
+                board_top[1],
+                board_top[0],
+            ],
+            [0, 0, 1],
+        )
+        .with_material_slot("north")
+        .with_uv(board_uv(0.0, 0.0, 16.0, 4.0)),
+    );
+    shape.planes.push(
+        ModelPlane::new(
+            [
+                board_bottom[3],
+                board_bottom[2],
+                board_top[2],
+                board_top[3],
+            ],
+            [0, 0, -1],
+        )
+        .with_material_slot("south")
+        .with_uv(board_uv(0.0, 4.0, 16.0, 8.0)),
+    );
+    // West and east edges (the full tilted cross-section at each x rim: bottom-front,
+    // top-front, top-back, bottom-back). JE rims span the 13 px horizontal extent of the
+    // tilted board's side profile.
+    let rim_uv = board_uv(0.0, 4.0, 13.0, 8.0);
+    for (x, normal) in [(0.006_f32, [-1_i32, 0, 0]), (0.994_f32, [1, 0, 0])] {
+        shape.planes.push(
+            ModelPlane::new(
+                [
+                    [x, board_bottom[0][1], board_bottom[0][2]],
+                    [x, board_top[0][1], board_top[0][2]],
+                    [x, board_top[3][1], board_top[3][2]],
+                    [x, board_bottom[3][1], board_bottom[3][2]],
+                ],
+                normal,
+            )
+            .with_material_slot(if normal[0] > 0 { "east" } else { "west" })
+            .with_uv(rim_uv),
+        );
+    }
     if has_book {
         shape.cuboids.push(
             crate::model_family::shape::detail_cuboid_with_local_uv(ModelCuboid::new(
@@ -316,48 +399,6 @@ pub(crate) fn lectern_shape(state: &BlockStateQuery) -> ModelShape {
     rotate_shape_cardinal(shape, direction)
 }
 
-/// Tilts a lectern board point around the vanilla pivot, then applies the model offset.
-///
-/// Input and output are block coordinates; the source table is in authoring pixels centred on
-/// the block, so the caller passes pixel values offset from the centre.
-fn lectern_board_point(point: [f32; 3]) -> [f32; 3] {
-    let [x, y, z] = point;
-    // Pivot (0, 7, -1) px, offset (0, 1.05, 1.0) px, slope -22.5 degrees about X.
-    let (pivot_y, pivot_z) = (7.0f32, -1.0f32);
-    let (offset_y, offset_z) = (1.05f32, 1.0f32);
-    let (sin, cos) = (-22.5f32).to_radians().sin_cos();
-    let local_y = y - pivot_y;
-    let local_z = z - pivot_z;
-    [
-        0.5 + x / 16.0,
-        (cos * local_y - sin * local_z + pivot_y + offset_y) / 16.0,
-        (sin * local_y + cos * local_z + pivot_z + offset_z) / 16.0,
-    ]
-}
-
-/// Signed normal of a quad, used so the tilted board faces the same way as its slope.
-fn plane_normal(corners: [[f32; 3]; 4]) -> [i32; 3] {
-    let edge_a = [
-        corners[1][0] - corners[0][0],
-        corners[1][1] - corners[0][1],
-        corners[1][2] - corners[0][2],
-    ];
-    let edge_b = [
-        corners[3][0] - corners[0][0],
-        corners[3][1] - corners[0][1],
-        corners[3][2] - corners[0][2],
-    ];
-    let cross = [
-        edge_a[1] * edge_b[2] - edge_a[2] * edge_b[1],
-        edge_a[2] * edge_b[0] - edge_a[0] * edge_b[2],
-        edge_a[0] * edge_b[1] - edge_a[1] * edge_b[0],
-    ];
-    [
-        if cross[0] >= 0.0 { 1 } else { -1 },
-        if cross[1] >= 0.0 { 1 } else { -1 },
-        if cross[2] >= 0.0 { 1 } else { -1 },
-    ]
-}
 fn anvil_cuboid_with_uv(
     cuboid: ModelCuboid,
     top_uv: [[f32; 2]; 4],

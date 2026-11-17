@@ -87,12 +87,14 @@ pub(crate) fn cauldron_shape() -> ModelShape {
 use crate::model_family::shape::ModelPlane;
 
 pub(crate) fn flower_pot_shape(name: &str) -> ModelShape {
-    // Measured from the client: a 6 x 6 px body to y = 0.249 and a 4 px rim band to y = 0.375,
-    // both 0.3125..0.6875 across. The previous 0.3125 / 0.4375 heights were too tall.
-    let mut shape = ModelShape::from_cuboids([
-        ModelCuboid::new([0.3125, 0.0, 0.3125], [0.6875, 0.249, 0.6875]),
-        ModelCuboid::new([0.3125, 0.249, 0.3125], [0.6875, 0.375, 0.6875]),
-    ]);
+    // Capture (ref 237): the native pot is ONE solid 6x6x6 box sampling the whole 16x16
+    // `flower_pot` tile per face. The tile's centre rows 6..9 are fully transparent, and the
+    // renderer alpha-tests binary-alpha textures, so the hollow rim comes from the texture —
+    // the previous five-box JE ring fought that by sampling partial rects onto solid walls.
+    let mut shape = ModelShape::from_cuboids([detail_cuboid_with_local_uv(ModelCuboid::new(
+        [px(5.0), 0.0, px(5.0)],
+        [px(11.0), px(6.0), px(11.0)],
+    ))]);
     if let Some(plant) = name.strip_prefix("potted_") {
         // Each potted plant keeps its own silhouette: a cactus is a 6 px column, a bamboo shoot a
         // thin post, a mushroom a stem plus cap. Drawing every one of them as the same oversized
@@ -159,34 +161,32 @@ fn cross_plant_planes() -> [ModelPlane; 2] {
     ]
 }
 
-/// Bedrock decorated pot: a block-actor model built from three stacked boxes.
+/// Bedrock decorated pot: a block-actor with five model keys — `decorated_pot_base` (top,
+/// bottom and the narrow neck) plus one sherd-textured side per face. The silhouette is a squat
+/// pot: a **near-full-width 14 px body** rising ~10 px, tapering through a shorter 10 px upper
+/// body to an 8 px neck/rim. The old 7 px-wide, 13 px-tall column read as a flower vase.
 ///
-/// The pot is **not** a cross model — the client renders it as an entity with five separate
-/// model keys (`decorated_pot_base` plus one per side), each sampling its own sherd art. Its
-/// `decorated_pot_base` texture is 32 x 32 and lays the parts out unfolded:
-///
-/// ```text
-/// u 8..24,  v 0..8    neck top   16 x 8  -> an 8 px square lid
-/// u 0..32,  v 8..12   shoulder   32 x 4  -> four 8 px faces
-/// u 0..28,  v 13..27  body       28 x 14 -> four 7 px faces, 14 px tall
-/// ```
-///
-/// So the pot is a slim 7 px column that flares to 8 px at the shoulder and closes with an 8 px
-/// lid — the previous single 12 px box plus a rim ring ignored that profile.
+/// UVs: the body sides sample `decorated_pot_side` (16 x 16 sherd sheet, opaque x1..14), the
+/// neck sides and its cap sample the 32 x 32 `decorated_pot_base` unfold (shoulder band v8..12,
+/// top/bottom v0..8).
 pub(crate) fn decorated_pot_shape() -> ModelShape {
-    // Body: 7 px wide, 14 px tall, standing on the block floor.
-    let body = pot_face_uv(ModelCuboid::new(
-        [px(4.5), 0.0, px(4.5)],
-        [px(11.5), px(14.0), px(11.5)],
-    ), [0.0, 13.0, 7.0, 27.0], [0.0, 13.0, 7.0, 27.0]);
-    // Shoulder: 8 px wide, 4 px tall, one px proud of the body.
-    let shoulder = pot_face_uv(ModelCuboid::new(
-        [px(4.0), px(14.0), px(4.0)],
-        [px(12.0), px(18.0), px(12.0)],
-    ), [0.0, 8.0, 8.0, 12.0], [0.0, 8.0, 8.0, 12.0]);
-    // The lid is the shoulder box's own top face: the unfolded sheet draws the 16 x 8 neck art
-    // above the shoulder band, so the cap samples that rect instead of adding a second box.
-    let shoulder = shoulder
+    let side = crate::model_family::shape::uv16(1.0, 0.0, 15.0, 16.0);
+    // Lower body: 14 px wide (x1..15), 10 px tall — the broad belly of the pot.
+    let body = ModelCuboid::new([px(1.0), 0.0, px(1.0)], [px(15.0), px(10.0), px(15.0)])
+        .with_face_uv(BlockFace::North, side)
+        .with_face_uv(BlockFace::South, side)
+        .with_face_uv(BlockFace::East, side)
+        .with_face_uv(BlockFace::West, side)
+        .with_material_slot("pot_side");
+    // Upper body: 12 px wide, tapering from y10 to y13.
+    let upper = ModelCuboid::new([px(2.0), px(10.0), px(2.0)], [px(14.0), px(13.0), px(14.0)])
+        .with_material_slot("pot_base");
+    let upper = pot_face_uv(upper, [0.0, 13.0, 7.0, 27.0], [0.0, 13.0, 7.0, 27.0]);
+    // Neck/rim: 8 px wide, y13..16, one px proud of nothing (the mouth).
+    let neck = ModelCuboid::new([px(4.0), px(13.0), px(4.0)], [px(12.0), 1.0, px(12.0)])
+        .with_material_slot("pot_base");
+    let neck = pot_face_uv(neck, [0.0, 8.0, 8.0, 12.0], [0.0, 8.0, 8.0, 12.0]);
+    let neck = neck
         .with_face_uv(BlockFace::Up, [
             [8.0 / 32.0, 8.0 / 32.0],
             [24.0 / 32.0, 8.0 / 32.0],
@@ -199,7 +199,7 @@ pub(crate) fn decorated_pot_shape() -> ModelShape {
             [24.0 / 32.0, 0.0],
             [8.0 / 32.0, 0.0],
         ]);
-    ModelShape::from_cuboids([body, shoulder])
+    ModelShape::from_cuboids([body, upper, neck])
 }
 
 /// Maps one box's four sides onto a strip of `sides` (four equal columns) and its caps onto

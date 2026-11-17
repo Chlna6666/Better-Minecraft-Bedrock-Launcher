@@ -516,6 +516,80 @@ impl RuntimeCaptureCatalog {
         )
     }
 
+    /// Debug helper: the triangles of one pool entry, as positions.
+    ///
+    /// A family rebuilt from capture data needs the quad structure, not just the vertex cloud:
+    /// two triangles sharing three corners are one authored face, which is how a box face and a
+    /// single-sided card are told apart.
+    #[must_use]
+    pub fn debug_geometry_triangles(&self, id: u32) -> Option<Vec<[[f32; 3]; 3]>> {
+        let bytes = self.pool.read(0, id)?;
+        let geometry = pool::Geometry::parse(&bytes)?;
+        Some(
+            geometry
+                .triangles
+                .iter()
+                .map(|triangle| triangle.map(|index| geometry.vertices[index]))
+                .collect(),
+        )
+    }
+
+    /// Debug helper: one appearance entry's geometry id, source kind and UV completeness.
+    ///
+    /// A block-actor appearance (e.g. the decorated pot) points at the geometry the client
+    /// actually drew even when the block entry itself has no captured block geometry.
+    #[must_use]
+    pub fn debug_appearance_info(&self, id: u32) -> Option<(u32, u32, bool)> {
+        let appearance = self.shared_appearance(&id)?;
+        Some((
+            appearance.geometry_id,
+            appearance.source_kind,
+            appearance.uv_complete,
+        ))
+    }
+
+    /// Debug helper: one appearance entry's per-corner UVs and texture slots.
+    ///
+    /// Returns one row per triangle, each with three `(uv, slot)` corners, so a family porting
+    /// captured geometry can bind the same art rectangles the client used instead of guessing
+    /// whole-tile UVs.
+    #[must_use]
+    pub fn debug_appearance_uv(&self, id: u32) -> Option<Vec<[([f32; 2], u32); 3]>> {
+        let appearance = self.shared_appearance(&id)?;
+        Some(
+            appearance
+                .corners
+                .chunks(3)
+                .zip(appearance.slots.iter())
+                .map(|(corners, slot)| {
+                    let slot = slot.map(|slot| slot as u32).unwrap_or(u32::MAX);
+                    [
+                        (corners[0].uv, slot),
+                        (corners[1].uv, slot),
+                        (corners[2].uv, slot),
+                    ]
+                })
+                .collect(),
+        )
+    }
+
+    /// Debug helper: one pool material table as `(slot, texture alias)` pairs.
+    ///
+    /// A block whose faces take different art is defined by this table, not by the face direction,
+    /// so a family that must bind art by role needs the exact alias per slot.
+    #[must_use]
+    pub fn debug_material_table(&self, reference: u32) -> Option<Vec<(usize, String)>> {
+        let bytes = self.pool.read(2, reference)?;
+        let table: CaptureMaterialTable = serde_json::from_slice(&bytes).ok()?;
+        Some(
+            table
+                .texture_bindings
+                .into_iter()
+                .map(|binding| (binding.slot, binding.resource_alias))
+                .collect(),
+        )
+    }
+
     fn shared_geometry(&self, id: &u32) -> Option<Arc<pool::Geometry>> {
         let mut cache = self.geometries.lock().ok()?;
         if let Some(value) = cache.get(id) {

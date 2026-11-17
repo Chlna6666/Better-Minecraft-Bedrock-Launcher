@@ -4,7 +4,7 @@ use crate::model_family::direction::{
     CardinalDirection, cardinal_direction, state_i64, state_string,
 };
 use crate::model_family::shape::{
-    ModelCuboid, ModelShape, detail_cuboid_with_local_uv, full_texture_uv,
+    ModelCuboid, ModelShape, detail_cuboid_with_local_uv, full_texture_face_uv,
 };
 use crate::state::BlockStateQuery;
 
@@ -104,18 +104,44 @@ pub(crate) fn scaffolding_shape(state: &BlockStateQuery) -> ModelShape {
 /// the per-rail UVs never lined up with the pack's single shelf texture.
 pub(crate) fn shelf_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::South);
-    let cuboid = ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 1.0, 0.3125]);
-    // The pack paints the whole board on one tile, so every face samples it directly.
-    let uv = full_texture_uv();
-    let mut cuboid = cuboid
-        .with_face_uv(BlockFace::Up, uv)
-        .with_face_uv(BlockFace::Down, uv)
-        .with_face_uv(BlockFace::North, uv)
-        .with_face_uv(BlockFace::South, uv)
-        .with_face_uv(BlockFace::East, uv)
-        .with_face_uv(BlockFace::West, uv);
-    cuboid = rotate_cuboid_from_south(cuboid, direction);
-    ModelShape::from_cuboids([cuboid])
+    // Capture (ref 118 south): a back panel spanning the full cell width and height 3 px deep,
+    // plus two 2 px lips at y 0..4 and y 12..16 reaching z 3..5 — not one solid 5 px slab (the
+    // previous model filled the shelf interior).
+    let back = ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 1.0, px(3.0)]);
+    let top_lip = ModelCuboid::new([0.0, px(12.0), px(3.0)], [1.0, 1.0, px(5.0)]);
+    let bottom_lip = ModelCuboid::new([0.0, 0.0, px(3.0)], [1.0, px(4.0), px(5.0)]);
+    // The pack art is the 32x32 unfolded sheet (`oak_shelf.png`): the right half carries the
+    // shelf interior, the left half the three south-facing bands (lips + back), and the thin
+    // strips the rims. Rects below follow the captured appearance (appearance ref 2376).
+    let sheet = |u0: f32, v0: f32, u1: f32, v1: f32| {
+        crate::model_family::shape::rect_uv(u0 / 32.0, v0 / 32.0, u1 / 32.0, v1 / 32.0)
+    };
+    // South face pieces (the room-facing side): bottom lip band, back band, top lip band.
+    let back = back
+        .with_face_uv(BlockFace::South, sheet(0.0, 8.1, 15.8, 23.9))
+        .with_face_uv(BlockFace::Up, sheet(16.1, 18.2, 32.0, 23.9))
+        .with_face_uv(BlockFace::Down, sheet(16.1, 14.2, 32.0, 19.9))
+        .with_face_uv(BlockFace::East, sheet(29.1, 0.0, 32.0, 32.0))
+        .with_face_uv(BlockFace::West, sheet(16.1, 0.0, 18.9, 32.0))
+        .with_face_uv(BlockFace::North, sheet(16.1, 0.0, 32.0, 32.0));
+    let top_lip = top_lip
+        .with_face_uv(BlockFace::South, sheet(0.0, 24.2, 15.8, 32.0))
+        .with_face_uv(BlockFace::East, sheet(3.0, 24.2, 4.8, 32.0))
+        .with_face_uv(BlockFace::West, sheet(11.0, 24.2, 12.9, 32.0))
+        .with_face_uv(BlockFace::Down, sheet(0.0, 24.2, 15.8, 32.0));
+    let bottom_lip = bottom_lip
+        .with_face_uv(BlockFace::South, sheet(0.0, 0.0, 15.8, 7.8))
+        .with_face_uv(BlockFace::East, sheet(3.0, 0.0, 4.8, 7.8))
+        .with_face_uv(BlockFace::West, sheet(11.0, 0.0, 12.9, 7.8))
+        .with_face_uv(BlockFace::Up, sheet(0.0, 0.0, 15.8, 7.8));
+    let shape = ModelShape::from_cuboids([back, top_lip, bottom_lip]);
+    ModelShape::from_cuboids(
+        shape
+            .cuboids
+            .into_iter()
+            .map(|cuboid| rotate_cuboid_from_south(cuboid, direction))
+            .collect::<Vec<_>>(),
+    )
 }
 
 pub(crate) fn heavy_core_shape() -> ModelShape {
@@ -134,10 +160,20 @@ pub(crate) fn conduit_shape() -> ModelShape {
 
 pub(crate) fn dried_ghast_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::South);
-    let mut cuboids = vec![face_slot_cuboid(
-        [px(3.0), 0.0, px(3.0)],
-        [px(13.0), px(10.0), px(13.0)],
-    )];
+    // `dried_ghast_<face>` terrain keys are four-variant arrays indexed by rehydration_level + 1,
+    // so the stage travels in the per-face slot (`ghast_<stage>_<face>`) and `obj.rs` binds the
+    // matching frame; the geometry itself is identical across stages (capture refs 398..401).
+    let stage = state_i64(state, "rehydration_level").unwrap_or(0).clamp(0, 3);
+    let slot = |face: &str| format!("ghast_{stage}_{face}");
+    let mut cuboids = vec![
+        ModelCuboid::new([px(3.0), 0.0, px(3.0)], [px(13.0), px(10.0), px(13.0)])
+            .with_face_material_slot(BlockFace::Up, &slot("top"))
+            .with_face_material_slot(BlockFace::Down, &slot("down"))
+            .with_face_material_slot(BlockFace::North, &slot("north"))
+            .with_face_material_slot(BlockFace::South, &slot("south"))
+            .with_face_material_slot(BlockFace::East, &slot("east"))
+            .with_face_material_slot(BlockFace::West, &slot("west")),
+    ];
     cuboids.extend([
         ModelCuboid::new([0.0, 0.0, px(5.0)], [px(3.0), px(1.0), px(7.0)]),
         ModelCuboid::new([0.0, 0.0, px(9.0)], [px(3.0), px(1.0), px(11.0)]),
@@ -221,44 +257,69 @@ fn java_top_uv(rect: [f32; 4]) -> [[f32; 2]; 4] {
     [[u1, v1], [u2, v1], [u2, v2], [u1, v2]]
 }
 
+/// Sea pickles: one to four upright tubes, each capped by a narrower glowing crown.
+///
+/// Measured from the capture (refs 606-613). Every pickle is a square tube whose footprint and
+/// body height depend on its slot in the cluster, and the crown is always a 1.28 px column
+/// centred on the tube, running from `body_top - 0.8` to `body_top + 2.4` px. The four dead
+/// variants (610-613) keep the tubes and drop the crowns, so `dead_bit` only removes the glow.
 pub(crate) fn sea_pickle_shape(state: &BlockStateQuery) -> ModelShape {
     let count = state_i64(state, "cluster_count").unwrap_or(0).clamp(0, 3) + 1;
-    let pickles: &[(f32, f32, f32, f32)] = match count {
-        1 => &[(8.0, 8.0, 6.0, 6.0)],
-        2 => &[(10.5, 5.5, 6.0, 6.0), (5.5, 10.5, 4.0, 5.0)],
+    let dead = state_i64(state, "dead_bit").unwrap_or(0) != 0;
+    // (x0, x1, z0, z1, body_top) in authoring pixels.
+    let bodies: &[(f32, f32, f32, f32, f32)] = match count {
+        1 => &[(6.0, 10.0, 6.0, 10.0, 6.0)],
+        2 => &[
+            (3.6, 7.6, 3.6, 7.6, 6.0),
+            (8.4, 12.4, 8.4, 12.4, 3.92),
+        ],
         3 => &[
-            (6.5, 5.5, 6.0, 6.0),
-            (8.0, 11.25, 4.0, 5.0),
-            (11.25, 4.75, 7.0, 7.0),
+            (2.8, 6.8, 2.8, 6.8, 6.96),
+            (6.0, 10.0, 9.2, 13.2, 3.92),
+            (7.6, 11.6, 3.6, 7.6, 6.0),
         ],
         _ => &[
-            (11.5, 5.0, 6.0, 6.0),
-            (4.5, 12.0, 4.0, 5.0),
-            (12.0, 10.75, 7.0, 7.0),
-            (5.0, 4.5, 5.0, 5.0),
+            (2.0, 6.0, 8.72, 12.72, 6.96),
+            (2.64, 6.64, 2.96, 6.96, 6.0),
+            (9.04, 13.04, 2.32, 6.32, 4.88),
+            (9.36, 13.36, 10.16, 14.16, 3.92),
         ],
     };
 
-    ModelShape::from_cuboids(
-        pickles
-            .iter()
-            .map(|(x, z, width, height)| {
-                let half = width * 0.5;
-                detail_cuboid_with_local_uv(ModelCuboid::new(
-                    [px(x - half), 0.0, px(z - half)],
-                    [px(x + half), px(*height), px(z + half)],
-                ))
-            })
-            .collect::<Vec<_>>(),
-    )
+    let mut cuboids = Vec::with_capacity(bodies.len() * 2);
+    for (x0, x1, z0, z1, body_top) in bodies {
+        cuboids.push(detail_cuboid_with_local_uv(ModelCuboid::new(
+            [px(*x0), 0.0, px(*z0)],
+            [px(*x1), px(*body_top), px(*z1)],
+        )));
+        if dead {
+            continue;
+        }
+        let (centre_x, centre_z) = ((x0 + x1) * 0.5, (z0 + z1) * 0.5);
+        cuboids.push(detail_cuboid_with_local_uv(ModelCuboid::new(
+            [px(centre_x - 0.64), px(body_top - 0.8), px(centre_z - 0.64)],
+            [px(centre_x + 0.64), px(body_top + 2.4), px(centre_z + 0.64)],
+        )));
+    }
+    ModelShape::from_cuboids(cuboids)
 }
 
 pub(crate) fn egg_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     if name == "sniffer_egg" {
-        return ModelShape::from_cuboids([detail_cuboid_with_local_uv(ModelCuboid::new(
-            [px(1.0), 0.0, px(2.0)],
-            [px(15.0), 1.0, px(14.0)],
-        ))]);
+        // Capture (ref 773): one 14x16x12 px block. Every crack stage shares this geometry and
+        // swaps the sheet per face (`sniffer_egg_<stage>_<face>` arrays indexed by
+        // cracked_state), so the stage travels in the material slot.
+        let stage = egg_stage_suffix(state, "sniffer_egg");
+        let slot = |face: &str| format!("sniffer_{stage}_{face}");
+        return ModelShape::from_cuboids([detail_cuboid_with_local_uv(
+            ModelCuboid::new([px(1.0), 0.0, px(2.0)], [px(15.0), 1.0, px(14.0)])
+                .with_face_material_slot(BlockFace::Up, &slot("top"))
+                .with_face_material_slot(BlockFace::Down, &slot("down"))
+                .with_face_material_slot(BlockFace::North, &slot("north"))
+                .with_face_material_slot(BlockFace::South, &slot("south"))
+                .with_face_material_slot(BlockFace::East, &slot("east"))
+                .with_face_material_slot(BlockFace::West, &slot("west")),
+        )]);
     }
 
     let count = match state_string(state, "turtle_egg_count").unwrap_or("one_egg") {
@@ -267,29 +328,41 @@ pub(crate) fn egg_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
         "four_egg" => 4,
         _ => 1,
     };
-    let mut cuboids = vec![detail_cuboid_with_local_uv(ModelCuboid::new(
-        [px(6.0), 0.0, px(4.0)],
-        [px(11.0), px(7.0), px(9.0)],
-    ))];
+    let stage = egg_stage_suffix(state, "turtle_egg");
+    // Capture boxes (refs 899..902, px): one egg [5,0,4]..[10,7,9]; two adds [1,0,7]..[5,5,11];
+    // three adds [11,0,7]..[14,4,10]; four adds [7,0,10]..[10,3,13].
+    let mut cuboids = vec![egg_cuboid(px(5.0), px(10.0), px(7.0), px(4.0), px(9.0), &stage)];
     if count >= 2 {
-        cuboids.push(detail_cuboid_with_local_uv(ModelCuboid::new(
-            [px(11.0), 0.0, px(7.0)],
-            [px(15.0), px(5.0), px(11.0)],
-        )));
+        cuboids.push(egg_cuboid(px(1.0), px(5.0), px(5.0), px(7.0), px(11.0), &stage));
     }
     if count >= 3 {
-        cuboids.push(detail_cuboid_with_local_uv(ModelCuboid::new(
-            [px(2.0), 0.0, px(7.0)],
-            [px(5.0), px(4.0), px(10.0)],
-        )));
+        cuboids.push(egg_cuboid(px(11.0), px(14.0), px(4.0), px(7.0), px(10.0), &stage));
     }
     if count >= 4 {
-        cuboids.push(detail_cuboid_with_local_uv(ModelCuboid::new(
-            [px(6.0), 0.0, px(10.0)],
-            [px(9.0), px(3.0), px(13.0)],
-        )));
+        cuboids.push(egg_cuboid(px(7.0), px(10.0), px(3.0), px(10.0), px(13.0), &stage));
     }
     ModelShape::from_cuboids(cuboids)
+}
+
+/// One turtle egg box; every face samples the whole sheet (the tile is isotropic egg art, and
+/// `turtle_egg` is one terrain key whose three array frames are the crack stages).
+fn egg_cuboid(x0: f32, x1: f32, y_max: f32, z0: f32, z1: f32, stage: &str) -> ModelCuboid {
+    detail_cuboid_with_local_uv(
+        ModelCuboid::new([x0, 0.0, z0], [x1, y_max, z1])
+            .with_material_slot(&format!("turtle_{stage}")),
+    )
+}
+
+/// The crack-stage suffix for one egg state: `no_cracks` keeps the default slot, the two cracked
+/// stages append the stage so `obj.rs` can bind the matching terrain array frame.
+fn egg_stage_suffix(state: &BlockStateQuery, block: &str) -> String {
+    let stage = state_string(state, "cracked_state").unwrap_or("no_cracks");
+    let _ = block;
+    match stage {
+        "cracked" => "cracked".to_owned(),
+        "max_cracked" => "max_cracked".to_owned(),
+        _ => String::new(),
+    }
 }
 
 /// Bedrock beacon: a translucent shell, a base slab and the glowing core inside it.
@@ -386,7 +459,6 @@ pub(crate) fn item_frame_shape(state: &BlockStateQuery) -> ModelShape {
 /// part samples the whole texture instead of a cuboid-local crop. Cropping would cut the dark
 /// frame edge off and leave a flat copper plate.
 fn item_frame_cuboid_uv(cuboid: ModelCuboid) -> ModelCuboid {
-    let uv = full_texture_uv();
     let mut cuboid = cuboid;
     for face in [
         BlockFace::Up,
@@ -396,7 +468,7 @@ fn item_frame_cuboid_uv(cuboid: ModelCuboid) -> ModelCuboid {
         BlockFace::East,
         BlockFace::West,
     ] {
-        cuboid.face_uvs.insert(face, uv);
+        cuboid.face_uvs.insert(face, full_texture_face_uv(face));
     }
     cuboid
 }

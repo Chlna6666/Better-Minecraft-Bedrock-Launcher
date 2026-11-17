@@ -81,18 +81,19 @@ fn entity_cuboid(cube: EntityCube) -> ModelCuboid {
 fn entity_box_uv(cuboid: ModelCuboid, uv: [f32; 2], size: [f32; 3]) -> ModelCuboid {
     let [width, height, depth] = size;
     let [u, v] = uv;
+    // Standard Bedrock box unwrap: the side strip is
+    // `[depth][width][depth][width]` = east, north, west, south, with the two caps above it.
+    // Putting `west` at `width + depth` (the previous code) shifted the whole strip by one
+    // `depth`, so every side sampled its neighbour's art.
     cuboid
         .with_face_uv(BlockFace::Up, uv64(u + depth, v, width, depth))
-        .with_face_uv(BlockFace::Down, uv64(u + width + depth, v, width, depth))
-        .with_face_uv(
-            BlockFace::West,
-            uv64(u + width + depth, v + depth, depth, height),
-        )
-        .with_face_uv(BlockFace::North, uv64(u + depth, v + depth, width, height))
+        .with_face_uv(BlockFace::Down, uv64(u + depth + width, v, width, depth))
         .with_face_uv(BlockFace::East, uv64(u, v + depth, depth, height))
+        .with_face_uv(BlockFace::North, uv64(u + depth, v + depth, width, height))
+        .with_face_uv(BlockFace::West, uv64(u + depth + width, v + depth, depth, height))
         .with_face_uv(
             BlockFace::South,
-            uv64(u + width + depth * 2.0, v + depth, width, height),
+            uv64(u + depth * 2.0 + width, v + depth, width, height),
         )
 }
 

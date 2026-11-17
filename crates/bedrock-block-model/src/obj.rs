@@ -821,10 +821,15 @@ impl ObjTextureResolver {
         }
         if is_bed_texture_block(block) {
             let slot = slot?;
-            if slot == "bed" {
+            // `bed` keeps the default sprite; `bed_<colour>` carries the dye read from the
+            // `Bed` block entity, because Bedrock names every bed block plain `bed`.
+            if slot == "bed" || slot.starts_with("bed_") {
                 // The bed now comes from the official `geometry.bed` entity model, whose art is
                 // the 64x64 `textures/entity/bed/<colour>` sprite bound by bed.entity.json.
-                let colour = bed_colour(block);
+                let colour = slot
+                    .strip_prefix("bed_")
+                    .filter(|colour| !colour.is_empty())
+                    .unwrap_or_else(|| bed_colour(block));
                 for texture_key in [
                     format!("textures/entity/bed/{colour}"),
                     "textures/entity/bed/white".to_owned(),
@@ -975,15 +980,29 @@ impl ObjTextureResolver {
         // blocks.json/terrain_texture mappings in versioned overlays while the PNG/TGA payload
         // stays in the vanilla base pack. A high-priority override may also map the key to a
         // missing texture, so every mapping is tried in priority order before giving up.
+        // A `#<n>` suffix selects one variant of a terrain-texture array (frame n), which is how
+        // stage-driven slots (dried ghast, egg cracks) bind their own frame.
+        let (texture_key, variant_index) = match texture_key.rsplit_once('#') {
+            Some((key, index)) if index.bytes().all(|b| b.is_ascii_digit()) => {
+                (key, index.parse::<usize>().ok())
+            }
+            _ => (texture_key, None),
+        };
         let mut mappings = self
             .pack_lookup_order
             .iter()
-            .filter_map(|&index| self.packs[index].texture_key_path(texture_key))
+            .filter_map(|&index| {
+                let paths = self.packs[index].texture_key_paths(texture_key)?;
+                match variant_index {
+                    Some(frame) if frame > 0 => paths.get(frame).cloned(),
+                    _ => paths.first().cloned(),
+                }
+            })
             .collect::<Vec<_>>();
         if mappings.is_empty() {
-            mappings.push(texture_key);
+            mappings.push(texture_key.to_owned());
         }
-        for texture_path in mappings {
+        for texture_path in &mappings {
             let normalized = normalize_texture_key(texture_path);
             for relative in texture_candidate_relatives(&normalized) {
                 for path in [
@@ -2012,6 +2031,33 @@ fn shared_slot_texture(block: &str, slot: &str) -> Option<String> {
     if slot == "torch" && block.ends_with("comparator") {
         return Some("comparator_torch".to_owned());
     }
+    // Stage-variant slots: the terrain arrays are indexed by the block state the shape turned
+    // into the slot suffix, and the per-face sheets need the block's own face name appended.
+    if let Some(rest) = slot.strip_prefix("ghast_")
+        && block == "dried_ghast"
+    {
+        let (stage, face) = rest.split_once('_')?;
+        let stage: usize = stage.parse().ok()?;
+        // Terrain arrays are `[state_1, state_2, state_3, state_4]` — frame = rehydration_level.
+        return Some(format!("dried_ghast_{face}#{stage}"));
+    }
+    if block == "turtle_egg" && let Some(stage) = slot.strip_prefix("turtle_") {
+        return match stage {
+            "" | "no_cracks" => Some("turtle_egg#0".to_owned()),
+            "cracked" => Some("turtle_egg#1".to_owned()),
+            "max_cracked" => Some("turtle_egg#2".to_owned()),
+            _ => None,
+        };
+    }
+    if block == "sniffer_egg" && let Some(stage) = slot.strip_prefix("sniffer_") {
+        return sniffer_stage_key(stage);
+    }
+    if block == "decorated_pot" {
+        return match slot {
+            "pot_base" => Some("decorated_pot#1".to_owned()),
+            _ => None,
+        };
+    }
     if slot == "north_open" && block == "barrel" {
         // `barrel_top` is a two-variant terrain material; the open barrel uses its second frame.
         return Some("barrel_top_open".to_owned());
@@ -2048,6 +2094,20 @@ fn shared_spike_segment_texture(block: &str, slot: &str) -> Option<String> {
         "tip" | "frustum" | "middle" | "base" | "merge" => Some(format!("{block}_{slot}")),
         _ => None,
     }
+}
+
+/// The sniffer egg's per-face terrain key for one crack stage: the shape's slot is
+/// `sniffer_<stage>_<face>`, and `terrain_texture.json` registers one three-frame array per
+/// face — `[not_cracked, slightly_cracked, very_cracked]` selected by the `#frame` suffix.
+fn sniffer_stage_key(slot: &str) -> Option<String> {
+    let (stage, face) = slot.split_once('_')?;
+    let frame = match stage {
+        "" | "no_cracks" => 0,
+        "cracked" => 1,
+        "max_cracked" => 2,
+        _ => return None,
+    };
+    Some(format!("sniffer_egg_{face}#{frame}"))
 }
 
 pub fn fallback_texture_keys(material_texture: &str, block: &str, normal: [i32; 3]) -> Vec<String> {
