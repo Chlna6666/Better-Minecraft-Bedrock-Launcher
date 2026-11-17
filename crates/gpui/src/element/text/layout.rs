@@ -118,14 +118,14 @@ impl TextLayout {
                     return text_layout.size.unwrap();
                 }
 
-                let mut line_wrapper = {
-                    let _work = crate::window::element_work::begin_named(
-                        "text_wrapper_acquire",
-                        crate::window::element_work::ElementWorkPhase::Layout,
-                    );
-                    cx.text_system().line_wrapper(text_style.font(), font_size)
-                };
                 let text = if let Some(truncate_width) = truncate_width {
+                    let mut line_wrapper = {
+                        let _work = crate::window::element_work::begin_named(
+                            "text_wrapper_acquire",
+                            crate::window::element_work::ElementWorkPhase::Layout,
+                        );
+                        cx.text_system().line_wrapper(text_style.font(), font_size)
+                    };
                     let _work = crate::window::element_work::begin_named(
                         "text_truncate",
                         crate::window::element_work::ElementWorkPhase::Layout,

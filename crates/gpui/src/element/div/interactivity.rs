@@ -39,6 +39,9 @@ use super::state::{ElementClickedState, InteractiveElementState};
 use super::style_state::{ComputedStyleCache, GroupHitboxes};
 use super::tooltip::TooltipBuilder;
 
+mod storage;
+pub(super) use storage::InteractivityBox;
+
 /// The interactivity struct. Powers all of the general-purpose interactivity in the `Div` element.
 #[derive(Default)]
 pub struct Interactivity {

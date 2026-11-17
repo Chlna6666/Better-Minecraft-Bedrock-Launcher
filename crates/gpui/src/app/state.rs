@@ -157,6 +157,7 @@ impl App {
         crate::assets::configure_global_bitmap_pool(image_pipeline_config.bitmap_pool_bytes);
 
         let app = Rc::new_cyclic(|this| AppCell {
+            borrow_origin: Cell::new(None),
             app: RefCell::new(App {
                 this: this.clone(),
                 platform: platform.clone(),

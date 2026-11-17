@@ -11,8 +11,21 @@ use std::{
 /// `SmolStr` keeps short UI labels inline while retaining cheap clones for longer strings, which
 /// avoids the heap allocation/atomic Arc traffic that the previous `ArcCow<str>` representation
 /// paid for every non-static short string.
-#[derive(Eq, PartialEq, PartialOrd, Ord, Hash, Clone)]
+#[derive(Eq, PartialOrd, Ord, Clone)]
 pub struct SharedString(SmolStr);
+
+impl PartialEq for SharedString {
+    fn eq(&self, other: &Self) -> bool {
+        let (this, other_str) = (self.as_str(), other.as_str());
+        (this.as_ptr() == other_str.as_ptr() && this.len() == other_str.len()) || self.0 == other.0
+    }
+}
+
+impl std::hash::Hash for SharedString {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
 
 impl std::ops::Deref for SharedString {
     type Target = str;
@@ -211,6 +224,23 @@ impl<'de> Deserialize<'de> for SharedString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equality_and_hash_match_across_storage_kinds() {
+        const TEXT: &str = "shared text long enough to require heap storage";
+        let heap = SharedString::new(TEXT);
+        let cloned = heap.clone();
+        let static_text = SharedString::new_static(TEXT);
+        assert_eq!(heap, cloned);
+        assert_eq!(heap, static_text);
+        assert_ne!(static_text, SharedString::new_static(&TEXT[..12]));
+        let set = std::collections::HashSet::from([heap]);
+        assert!(set.contains(&static_text));
+        assert_eq!(
+            SharedString::new("short"),
+            SharedString::new_static("short")
+        );
+    }
 
     #[test]
     fn shared_string_preserves_static_and_owned_conversions() {

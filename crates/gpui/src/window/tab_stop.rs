@@ -1,6 +1,5 @@
 mod map;
 mod node;
-mod tree;
 
 #[cfg(test)]
 mod tests;

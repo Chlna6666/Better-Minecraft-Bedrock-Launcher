@@ -160,20 +160,20 @@ impl TabStopMapTest {
     }
 
     fn traverse_tab_map(
-        &self,
-        traverse: impl Fn(&TabStopMap, Option<&FocusId>) -> Option<FocusHandle>,
+        &mut self,
+        traverse: impl Fn(&mut TabStopMap, Option<&FocusId>) -> Option<FocusHandle>,
     ) -> Vec<FocusId> {
         let mut last_focus_id = None;
         let mut found = vec![];
         for _ in 0..self.expected.len() {
-            let handle = traverse(&self.tab_map, last_focus_id.as_ref()).unwrap();
+            let handle = traverse(&mut self.tab_map, last_focus_id.as_ref()).unwrap();
             last_focus_id = Some(handle.id);
             found.push(handle.id);
         }
         found
     }
 
-    fn assert(self) {
+    fn assert(mut self) {
         let mut expected = self.expected.iter().map(|(_, id)| *id).collect_vec();
 
         // Check next order
@@ -201,6 +201,32 @@ impl TabStopMapTest {
             expected.first().cloned(),
         );
     }
+}
+
+#[test]
+fn insert_after_navigation_reorders_and_replay_preserves_groups() {
+    let focus_map = Arc::new(FocusMap::default());
+    let first = FocusHandle::new(&focus_map).tab_stop(true).tab_index(0);
+    let second = FocusHandle::new(&focus_map).tab_stop(true).tab_index(1);
+    let mut map = TabStopMap::default();
+    map.insert(&second);
+    assert_eq!(map.next(None), Some(second.clone()));
+    map.insert(&first);
+    assert_eq!(map.next(None), Some(first.clone()));
+    assert_eq!(map.prev(Some(&first.id)), Some(second.clone()));
+
+    map.begin_group(-1);
+    map.insert(&second);
+    map.end_group();
+    assert_eq!(map.next(None), Some(second.clone()));
+    assert_eq!(map.next(Some(&second.id)), Some(first.clone()));
+    let mut replay = TabStopMap::default();
+    replay.replay(&map.insertion_history);
+    assert_eq!(replay.next(None), Some(second.clone()));
+    assert_eq!(replay.next(Some(&second.id)), Some(first));
+    replay.clear();
+    assert_eq!(replay.next(None), None);
+    assert_eq!(replay.prev(None), None);
 }
 
 #[test]

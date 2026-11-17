@@ -13,13 +13,19 @@ type StackSafe<T> = stacksafe::StackSafe<T>;
 type StackSafe<T> = T;
 
 use super::event::{InteractiveElement, StatefulInteractiveElement};
-use super::interactivity::Interactivity;
+use super::interactivity::{Interactivity, InteractivityBox};
 
 /// Construct a new [`Div`] element.
 #[track_caller]
 pub fn div() -> Div {
+    #[allow(unused_mut)]
+    let mut interactivity = InteractivityBox::new();
+    #[cfg(any(feature = "inspector", debug_assertions))]
+    {
+        interactivity.source_location = Some(core::panic::Location::caller());
+    }
     Div {
-        interactivity: Interactivity::new(),
+        interactivity,
         source_location: core::panic::Location::caller(),
         children: SmallVec::default(),
         prepaint_listener: None,
@@ -27,9 +33,13 @@ pub fn div() -> Div {
     }
 }
 
-/// A [`Div`] element, the all-in-one element for building complex UIs in GPUI
+/// A [`Div`] element, the all-in-one element for building complex UIs in GPUI.
+///
+/// Divs created during a draw use the frame arena and must not be stored across frame clears.
+/// Outside a draw their interaction state is heap-owned; child [`AnyElement`] values still follow
+/// their own arena lifetime.
 pub struct Div {
-    interactivity: Interactivity,
+    interactivity: InteractivityBox,
     source_location: &'static core::panic::Location<'static>,
     children: SmallVec<[StackSafe<AnyElement>; 2]>,
     prepaint_listener: Option<Box<dyn Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static>>,

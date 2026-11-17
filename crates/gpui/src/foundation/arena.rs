@@ -123,6 +123,10 @@ impl Arena {
         self.scope_depth = self.scope_depth.saturating_add(1);
     }
 
+    pub(crate) fn is_in_scope(&self) -> bool {
+        self.scope_depth != 0
+    }
+
     /// Marks the end of the innermost draw scope.
     pub(crate) fn end_scope(&mut self) {
         self.scope_depth = self

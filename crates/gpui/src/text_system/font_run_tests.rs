@@ -12,6 +12,7 @@ use std::{
 #[derive(Default)]
 struct RunRecordingTextSystem {
     shaped_runs: Mutex<Vec<Vec<FontRun>>>,
+    text_addresses: Mutex<Vec<usize>>,
 }
 
 impl RunRecordingTextSystem {
@@ -100,6 +101,10 @@ impl PlatformTextSystem for RunRecordingTextSystem {
     }
 
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
+        self.text_addresses
+            .lock()
+            .unwrap()
+            .push(text.as_ptr().addr());
         self.shaped_runs.lock().unwrap().push(runs.to_vec());
         LineLayout {
             font_size,
@@ -123,6 +128,22 @@ fn text_run(len: usize, family: &str, color: Hsla) -> TextRun {
         underline: None,
         strikethrough: None,
     }
+}
+
+#[test]
+fn shape_line_shares_text_and_borrowed_layout_hits_cache() {
+    let platform = Arc::new(RunRecordingTextSystem::default());
+    let text_system = WindowTextSystem::new(Arc::new(TextSystem::new(platform.clone())));
+    let text = SharedString::from("共享长文本应复用同一份字符串，而不是每次重新分配。");
+    let runs = [text_run(text.len(), "A", red())];
+    let shaped = text_system.shape_line(text.clone(), px(14.), &runs, None);
+    assert_eq!(
+        *platform.text_addresses.lock().unwrap(),
+        [text.as_ptr().addr()]
+    );
+    let cached = text_system.layout_line(text.as_ref(), px(14.), &runs, None);
+    assert!(Arc::ptr_eq(&cached, &shaped.layout));
+    assert_eq!(platform.text_addresses.lock().unwrap().len(), 1);
 }
 
 #[test]

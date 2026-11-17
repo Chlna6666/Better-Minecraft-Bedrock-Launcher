@@ -1113,13 +1113,17 @@ impl WindowTextSystem {
     /// Subsets of the line can be styled independently with the `runs` parameter.
     /// Generally, you should prefer to use [`Self::shape_line`] instead, which
     /// can be painted directly.
-    pub fn layout_line(
+    pub fn layout_line<Text>(
         &self,
-        text: &str,
+        text: Text,
         font_size: Pixels,
         runs: &[TextRun],
         force_width: Option<Pixels>,
-    ) -> Arc<LineLayout> {
+    ) -> Arc<LineLayout>
+    where
+        Text: AsRef<str>,
+        SharedString: From<Text>,
+    {
         let mut font_runs = self.take_font_runs_buffer();
         font_runs.clear();
 
@@ -1127,12 +1131,9 @@ impl WindowTextSystem {
             self.push_font_run(&mut font_runs, run, run.len);
         }
 
-        let layout = self.line_layout_cache.layout_line(
-            &SharedString::new(text),
-            font_size,
-            &font_runs,
-            force_width,
-        );
+        let layout = self
+            .line_layout_cache
+            .layout_line(text, font_size, &font_runs, force_width);
 
         self.recycle_font_runs_buffer(font_runs);
 
