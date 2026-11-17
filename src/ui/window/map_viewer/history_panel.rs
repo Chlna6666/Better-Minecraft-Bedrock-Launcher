@@ -653,9 +653,11 @@ impl View {
                 });
                 let result = operation(world_path_for_task, cancel.clone(), progress);
                 let status = match &result {
-                    Ok(_) => "completed",
-                    Err(error) if is_map_operation_cancelled_error(error) => "cancelled",
-                    Err(_) => "error",
+                    Ok(_) => TaskFinishStatus::Completed,
+                    Err(error) if is_map_operation_cancelled_error(error) => {
+                        TaskFinishStatus::Cancelled
+                    }
+                    Err(_) => TaskFinishStatus::Error,
                 };
                 task_manager::finish_task(&task_id, status, result.as_ref().err().cloned());
                 if completion_sender

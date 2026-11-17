@@ -8,13 +8,13 @@ use bedrock_voxel::{
 };
 use bedrock_world::{structure::McStructureFile, surface::CancelFlag};
 
-use crate::tasks::task_manager::ProgressUpdate;
+use crate::tasks::task_manager::{ProgressUpdate, TaskFinishStatus};
 use crate::tasks::{runtime, task_manager};
 
-pub mod image;
-pub mod install;
 pub mod bundle;
+pub mod image;
 pub mod image_to_map;
+pub mod install;
 mod model_export;
 mod model_import;
 pub mod source_obj_preview;
@@ -60,7 +60,10 @@ pub fn start_obj_export(request: ObjExportRequest) -> Result<String, String> {
         .source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());
-    let mut options = task_manager::TaskOptions::new(t!("TaskTitle.convert_obj").to_string(), TaskStage::MAP_PARSE_OBJ);
+    let mut options = task_manager::TaskOptions::new(
+        t!("TaskTitle.convert_obj").to_string(),
+        TaskStage::MAP_PARSE_OBJ,
+    );
     if let Some(detail) = detail {
         options = options.detail(detail);
     }
@@ -75,9 +78,11 @@ pub fn start_obj_export(request: ObjExportRequest) -> Result<String, String> {
     if let Err(error) = runtime::spawn_io(async move {
         let result = export_obj(request, &worker_id, &cancel).await;
         let status = match &result {
-            Ok(_) => "completed",
-            Err(error) if error.contains("已取消") || error.contains("cancelled") => "cancelled",
-            Err(_) => "error",
+            Ok(_) => TaskFinishStatus::Completed,
+            Err(error) if error.contains("已取消") || error.contains("cancelled") => {
+                TaskFinishStatus::Cancelled
+            }
+            Err(_) => TaskFinishStatus::Error,
         };
         task_manager::finish_task(
             &worker_id,
@@ -87,7 +92,7 @@ pub fn start_obj_export(request: ObjExportRequest) -> Result<String, String> {
             }),
         );
     }) {
-        task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        task_manager::finish_task(&task_id, TaskFinishStatus::Error, Some(error.clone()));
         return Err(error);
     }
     Ok(task_id)
@@ -100,7 +105,8 @@ async fn export_obj(
 ) -> Result<String, String> {
     let source = request.source;
     let prepared =
-        runtime::blocking::run_io(move || model_import::prepare_model_for_export(&source)).await??;
+        runtime::blocking::run_io(move || model_import::prepare_model_for_export(&source))
+            .await??;
     let model_import::PreparedMapModel { model, decoded, .. } = prepared;
     if cancel.is_cancelled() {
         return Err("OBJ 转换已取消".to_owned());
@@ -191,7 +197,10 @@ pub fn start_model_file_export(request: ModelFileExportRequest) -> Result<String
         .output
         .file_name()
         .map(|s| s.to_string_lossy().into_owned());
-    let mut options = task_manager::TaskOptions::new(t!("TaskTitle.export_model_format").to_string(), TaskStage::MAP_READ_MODEL);
+    let mut options = task_manager::TaskOptions::new(
+        t!("TaskTitle.export_model_format").to_string(),
+        TaskStage::MAP_READ_MODEL,
+    );
     if let Some(name) = name {
         options = options.detail(name);
     }
@@ -228,9 +237,9 @@ pub fn start_model_file_export(request: ModelFileExportRequest) -> Result<String
         }
         .await;
         let status = match &result {
-            Ok(_) => "completed",
-            Err(err) if err.contains("已取消") => "cancelled",
-            Err(_) => "error",
+            Ok(_) => TaskFinishStatus::Completed,
+            Err(err) if err.contains("已取消") => TaskFinishStatus::Cancelled,
+            Err(_) => TaskFinishStatus::Error,
         };
         task_manager::finish_task(
             &worker_id,
@@ -241,7 +250,7 @@ pub fn start_model_file_export(request: ModelFileExportRequest) -> Result<String
             }),
         );
     }) {
-        task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        task_manager::finish_task(&task_id, TaskFinishStatus::Error, Some(error.clone()));
         return Err(error);
     }
     Ok(task_id)

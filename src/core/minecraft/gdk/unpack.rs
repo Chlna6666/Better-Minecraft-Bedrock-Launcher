@@ -1,23 +1,27 @@
 use crate::core::minecraft::gdk::stream::MsiXVDStream;
+use crate::tasks::TaskStage;
 use crate::tasks::runtime::blocking;
 use crate::tasks::runtime::spawn_archive_task;
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskOptions, TaskType, create_task, finish_task, is_cancelled, update_progress,
+    ProgressUpdate, TaskFinishStatus, TaskOptions, TaskType, create_task, finish_task,
+    is_cancelled, update_progress,
 };
 use crate::utils::file_ops;
 use std::path::PathBuf;
 use tracing::{error, info};
-use crate::tasks::TaskStage;
 
 pub fn start_unpack_gdk_task(
     input_path: impl Into<PathBuf>,
     folder_name: &str,
 ) -> Result<String, String> {
     let task_id = create_task(
-        TaskOptions::new(t!("TaskTitle.install_gdk_game").to_string(), TaskStage::INITIALIZING)
-            .detail(folder_name.to_string())
-            .kind(TaskType::Stage)
-            .in_current_scope(),
+        TaskOptions::new(
+            t!("TaskTitle.install_gdk_game").to_string(),
+            TaskStage::INITIALIZING,
+        )
+        .detail(folder_name.to_string())
+        .kind(TaskType::Stage)
+        .in_current_scope(),
     )?;
 
     let input_path_buf = input_path.into();
@@ -40,7 +44,7 @@ pub fn start_unpack_gdk_task(
             {
                 finish_task(
                     &task_id_for_error,
-                    "error",
+                    TaskFinishStatus::Error,
                     Some(format!("GDK 解包工作线程异常结束: {error}")),
                 );
             }
@@ -51,10 +55,17 @@ pub fn start_unpack_gdk_task(
 }
 
 fn run_unpack_gdk_task(task_id: String, input_path: PathBuf, version_dir: PathBuf) {
-    update_progress(&task_id, ProgressUpdate::advance(0).stage(TaskStage::INITIALIZING));
+    update_progress(
+        &task_id,
+        ProgressUpdate::advance(0).stage(TaskStage::INITIALIZING),
+    );
 
     if is_cancelled(&task_id) {
-        finish_task(&task_id, "cancelled", Some("cancelled before start".into()));
+        finish_task(
+            &task_id,
+            TaskFinishStatus::Cancelled,
+            Some("cancelled before start".into()),
+        );
         return;
     }
 
@@ -63,12 +74,15 @@ fn run_unpack_gdk_task(task_id: String, input_path: PathBuf, version_dir: PathBu
         Err(error) => {
             let message = format!("GDK file parse error: {error}");
             error!("{message}");
-            finish_task(&task_id, "error", Some(message));
+            finish_task(&task_id, TaskFinishStatus::Error, Some(message));
             return;
         }
     };
 
-    update_progress(&task_id, ProgressUpdate::advance(0).stage(TaskStage::EXTRACTING));
+    update_progress(
+        &task_id,
+        ProgressUpdate::advance(0).stage(TaskStage::EXTRACTING),
+    );
 
     match stream.extract_to(&version_dir, task_id.clone()) {
         Ok(()) => {
@@ -80,7 +94,7 @@ fn run_unpack_gdk_task(task_id: String, input_path: PathBuf, version_dir: PathBu
             );
             finish_task(
                 &task_id,
-                "completed",
+                TaskFinishStatus::Completed,
                 Some(format!("已安装到 {}", version_dir.display())),
             );
             crate::core::version::catalog_events::notify_local_versions_changed();
@@ -93,12 +107,16 @@ fn run_unpack_gdk_task(task_id: String, input_path: PathBuf, version_dir: PathBu
                     "failed to remove cancelled GDK install directory"
                 );
             }
-            finish_task(&task_id, "cancelled", Some("user cancelled".into()));
+            finish_task(
+                &task_id,
+                TaskFinishStatus::Cancelled,
+                Some("user cancelled".into()),
+            );
         }
         Err(error) => {
             let message = format!("extract failed: {error}");
             error!("{message}");
-            finish_task(&task_id, "error", Some(message));
+            finish_task(&task_id, TaskFinishStatus::Error, Some(message));
         }
     }
 }

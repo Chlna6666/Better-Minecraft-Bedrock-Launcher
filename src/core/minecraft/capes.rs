@@ -832,8 +832,17 @@ fn import_archive(
             let _ = fs::remove_dir_all(&staging);
             return Err(format!("披风包导入失败：{error}"));
         }
-        remove_target(&target)?;
-        fs::rename(&staging, &target).map_err(|error| error.to_string())?;
+        // Transactional replace: move the old pack aside first. If the staged
+        // rename fails (e.g. the directory is locked by Explorer or antivirus on
+        // Windows), restore the backup instead of leaving the pack destroyed.
+        let backup = target_dir.join(format!(".backup-{}", uuid::Uuid::new_v4()));
+        fs::rename(&target, &backup).map_err(|error| error.to_string())?;
+        if let Err(error) = fs::rename(&staging, &target) {
+            let _ = fs::rename(&backup, &target);
+            let _ = fs::remove_dir_all(&staging);
+            return Err(format!("披风包替换失败，已恢复原包：{error}"));
+        }
+        let _ = remove_target(&backup);
         return Ok(target);
     }
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;

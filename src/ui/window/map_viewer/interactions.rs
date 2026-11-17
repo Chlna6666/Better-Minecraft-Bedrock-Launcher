@@ -1,13 +1,13 @@
 use super::editor::{copy_chunks, pasted_chunk_targets};
-use super::input::{integer, optional_integer, zoom_scale};
-use super::menus::context_menu_chunk;
-use super::render_support::backend_label;
 use super::import_preview;
+use super::input::{integer, optional_integer, zoom_scale};
 use super::mcstructure;
+use super::menus::context_menu_chunk;
 use super::model::*;
 use super::panels::*;
 use super::prelude::*;
 use super::region_package;
+use super::render_support::backend_label;
 use super::selection::SelectionBound;
 use super::tile_cache::render_image_pixels;
 use super::tile_render::{
@@ -16,11 +16,11 @@ use super::tile_render::{
 use super::tile_state::ReadyTile;
 use super::viewport::{coordinate_text, screen_position};
 use crate::core::version::launch_versions::LaunchVersionEntry;
+use crate::tasks::TaskStage;
 use crate::tasks::task_manager::ProgressUpdate;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
 use std::io::Cursor;
-use crate::tasks::TaskStage;
 
 const SELECTION_RESIZE_HIT_TOLERANCE_PX: f32 = 12.0;
 
@@ -1240,7 +1240,11 @@ impl View {
                     if self.dimension != dimension {
                         self.set_dimension(dimension, cx);
                     }
-                    t!("MapViewer.msg.dimension_set", dimension = dimension_label(dimension)).to_string()
+                    t!(
+                        "MapViewer.msg.dimension_set",
+                        dimension = dimension_label(dimension)
+                    )
+                    .to_string()
                 })
                 .map_err(|message| (field, message)),
             InputField::SelectionMinY | InputField::SelectionMaxY => {
@@ -1304,8 +1308,7 @@ impl View {
                     } else {
                         self.set_2d_paste_height(value, cx)
                     };
-                    result
-                        .map_err(|message| (field, SharedString::from(message)))?;
+                    result.map_err(|message| (field, SharedString::from(message)))?;
                     Ok(t!("MapViewer.msg.paste_height_set", height = value).to_string())
                 }),
         };
@@ -1313,12 +1316,8 @@ impl View {
         match result {
             Ok(message) => {
                 if matches!(field, InputField::CenterX | InputField::CenterZ) {
-                    self.input_fields
-                        .dirty_fields
-                        .remove(&InputField::CenterX);
-                    self.input_fields
-                        .dirty_fields
-                        .remove(&InputField::CenterZ);
+                    self.input_fields.dirty_fields.remove(&InputField::CenterX);
+                    self.input_fields.dirty_fields.remove(&InputField::CenterZ);
                 } else {
                     self.input_fields.dirty_fields.remove(&field);
                 }
@@ -1832,11 +1831,7 @@ impl View {
         moved
     }
 
-    fn move_paste_preview(
-        &mut self,
-        position: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    fn move_paste_preview(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) -> bool {
         if self.professional.paste_preview.is_none() {
             return false;
         }
@@ -2481,14 +2476,14 @@ impl View {
                 let status =
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
-                    (Ok(complete), "completed") => Some(
+                    (Ok(complete), TaskFinishStatus::Completed) => Some(
                         t!(
                             "MapViewer.msg.obj_done_path",
                             path = complete.export_dir.display().to_string()
                         )
                         .to_string(),
                     ),
-                    (Err(error), "cancelled") => Some(error.clone()),
+                    (Err(error), TaskFinishStatus::Cancelled) => Some(error.clone()),
                     (Err(error), _) => Some(error.clone()),
                     _ => None,
                 };
@@ -2601,19 +2596,22 @@ impl View {
         let source_anchor = chunks[0];
         let chunk_count = chunks.len();
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new(t!("MapViewer.task.export_region"), TaskStage::MAP_EXPORT)
-                .detail(
-                    t!(
-                        "MapViewer.msg.task_detail_chunks_file",
-                        count = chunk_count,
-                        file = path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("selection.bmcblregion")
-                    )
-                    .to_string(),
+            task_manager::TaskOptions::new(
+                t!("MapViewer.task.export_region"),
+                TaskStage::MAP_EXPORT,
+            )
+            .detail(
+                t!(
+                    "MapViewer.msg.task_detail_chunks_file",
+                    count = chunk_count,
+                    file = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("selection.bmcblregion")
                 )
-                .total(task_progress_units(chunk_count.max(1))),
+                .to_string(),
+            )
+            .total(task_progress_units(chunk_count.max(1))),
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
@@ -2684,7 +2682,7 @@ impl View {
                 let status =
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
-                    (Ok(path), "completed") => Some(
+                    (Ok(path), TaskFinishStatus::Completed) => Some(
                         t!(
                             "MapViewer.msg.region_done_path",
                             path = path.display().to_string()
@@ -2833,14 +2831,17 @@ impl View {
         cx: &mut Context<Self>,
     ) {
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new(t!("MapViewer.task.import_region"), TaskStage::MAP_IMPORT)
-                .detail(
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("region.bmcblregion")
-                        .to_string(),
-                )
-                .total(1),
+            task_manager::TaskOptions::new(
+                t!("MapViewer.task.import_region"),
+                TaskStage::MAP_IMPORT,
+            )
+            .detail(
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("region.bmcblregion")
+                    .to_string(),
+            )
+            .total(1),
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
@@ -2882,14 +2883,16 @@ impl View {
                 })
                 .await;
             let status = map_operation_status_for_result(&result, &cancel, &task_id);
-            if status == "completed" {
+            if status == TaskFinishStatus::Completed {
                 task_manager::update_progress(
                     &task_id,
-                    ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_IMPORT),
+                    ProgressUpdate::advance(1)
+                        .total(1)
+                        .stage(TaskStage::MAP_IMPORT),
                 );
             }
             let message = match (&result, status) {
-                (Ok((path, copied_chunk, _, _)), "completed") => Some(
+                (Ok((path, copied_chunk, _, _)), TaskFinishStatus::Completed) => Some(
                     t!(
                         "MapViewer.msg.region_import_done_path",
                         chunks = copied_chunk.chunk_count(),
@@ -2992,14 +2995,17 @@ impl View {
         cx: &mut Context<Self>,
     ) {
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new(t!("MapViewer.task.import_structure"), TaskStage::MAP_IMPORT)
-                .detail(
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("structure.mcstructure")
-                        .to_string(),
-                )
-                .total(1),
+            task_manager::TaskOptions::new(
+                t!("MapViewer.task.import_structure"),
+                TaskStage::MAP_IMPORT,
+            )
+            .detail(
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("structure.mcstructure")
+                    .to_string(),
+            )
+            .total(1),
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
@@ -3031,21 +3037,22 @@ impl View {
             let result = cx
                 .background_spawn(async move {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
-                    let import =
-                        mcstructure::read_import(&path, target, origin_y)?;
+                    let import = mcstructure::read_import(&path, target, origin_y)?;
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     Ok::<_, String>((path, import))
                 })
                 .await;
             let status = map_operation_status_for_result(&result, &cancel, &task_id);
-            if status == "completed" {
+            if status == TaskFinishStatus::Completed {
                 task_manager::update_progress(
                     &task_id,
-                    ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_IMPORT),
+                    ProgressUpdate::advance(1)
+                        .total(1)
+                        .stage(TaskStage::MAP_IMPORT),
                 );
             }
             let message = match (&result, status) {
-                (Ok((path, import)), "completed") => Some(
+                (Ok((path, import)), TaskFinishStatus::Completed) => Some(
                     t!(
                         "MapViewer.msg.structure_import_done_path",
                         chunks = import.copied_chunk.chunk_count(),
@@ -3145,8 +3152,7 @@ impl View {
             return;
         };
         let export_center_y = self.y_layer;
-        let default_file_name =
-            mcstructure::default_file_name(selection, export_center_y);
+        let default_file_name = mcstructure::default_file_name(selection, export_center_y);
         let Some(path) = pick_save_path(
             "Bedrock Structure",
             &[mcstructure::MCSTRUCTURE_EXTENSION],
@@ -3160,19 +3166,22 @@ impl View {
         let bounds = selection.bounds();
         let chunk_count = selection.chunks().len();
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new(t!("MapViewer.task.export_structure"), TaskStage::MAP_EXPORT)
-                .detail(
-                    t!(
-                        "MapViewer.msg.task_detail_chunks_file",
-                        count = chunk_count,
-                        file = path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("selection.mcstructure")
-                    )
-                    .to_string(),
+            task_manager::TaskOptions::new(
+                t!("MapViewer.task.export_structure"),
+                TaskStage::MAP_EXPORT,
+            )
+            .detail(
+                t!(
+                    "MapViewer.msg.task_detail_chunks_file",
+                    count = chunk_count,
+                    file = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("selection.mcstructure")
                 )
-                .total(task_progress_units(chunk_count.max(1))),
+                .to_string(),
+            )
+            .total(task_progress_units(chunk_count.max(1))),
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
@@ -3240,15 +3249,13 @@ impl View {
                 let status =
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
-                    (Ok(path), "completed") => {
-                        Some(
-                            t!(
-                                "MapViewer.msg.mcstructure_done_path",
-                                path = path.display().to_string()
-                            )
-                            .to_string(),
+                    (Ok(path), TaskFinishStatus::Completed) => Some(
+                        t!(
+                            "MapViewer.msg.mcstructure_done_path",
+                            path = path.display().to_string()
                         )
-                    }
+                        .to_string(),
+                    ),
                     (Err(error), _) => Some(error.clone()),
                     _ => None,
                 };
@@ -3350,19 +3357,22 @@ impl View {
             .as_ref()
             .map_or_else(|| chunks.len().max(1), |export| export.chunk_count);
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new(t!("MapViewer.task.export_images"), TaskStage::MAP_EXPORT)
-                .detail(
-                    t!(
-                        "MapViewer.msg.task_detail_chunks_file",
-                        count = chunk_count,
-                        file = Path::new(&path)
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("chunk-image.png")
-                    )
-                    .to_string(),
+            task_manager::TaskOptions::new(
+                t!("MapViewer.task.export_images"),
+                TaskStage::MAP_EXPORT,
+            )
+            .detail(
+                t!(
+                    "MapViewer.msg.task_detail_chunks_file",
+                    count = chunk_count,
+                    file = Path::new(&path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("chunk-image.png")
                 )
-                .total(task_progress_units(chunk_count.max(1))),
+                .to_string(),
+            )
+            .total(task_progress_units(chunk_count.max(1))),
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
@@ -3446,8 +3456,7 @@ impl View {
                     encode_chunk_image_export_png(&export)
                         .and_then(|bytes| {
                             check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
-                            std::fs::write(&path, bytes)
-                                .map_err(|error| {
+                            std::fs::write(&path, bytes).map_err(|error| {
                                 t!(
                                     "MapViewer.msg.write_image_failed",
                                     error = error.to_string()
@@ -3468,13 +3477,9 @@ impl View {
                 let status =
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
-                    (Ok(path), "completed") => Some(
-                        t!(
-                            "MapViewer.msg.image_done_path",
-                            path = path.clone()
-                        )
-                        .to_string(),
-                    ),
+                    (Ok(path), TaskFinishStatus::Completed) => {
+                        Some(t!("MapViewer.msg.image_done_path", path = path.clone()).to_string())
+                    }
                     (Err(error), _) => Some(error.clone()),
                     _ => None,
                 };
@@ -3715,7 +3720,7 @@ impl View {
                 let status =
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
-                    (Ok(complete), "completed") => Some(
+                    (Ok(complete), TaskFinishStatus::Completed) => Some(
                         t!(
                             "MapViewer.msg.copy_done",
                             count = complete.copied_chunk.chunk_count()
@@ -3774,11 +3779,7 @@ impl View {
                                     chunk_count
                                 )));
                                 let mut status = if chunk_count == 1 {
-                                    t!(
-                                        "MapViewer.msg.copied_chunk",
-                                        x = source.x,
-                                        z = source.z
-                                    )
+                                    t!("MapViewer.msg.copied_chunk", x = source.x, z = source.z)
                                 } else {
                                     t!(
                                         "MapViewer.msg.copied_chunks",
@@ -4002,7 +4003,11 @@ impl View {
         self.invalidate_preview_3d_mesh();
         self.refresh_professional_render_caches(cx);
         self.context_menu = None;
-        self.status = t!("MapViewer.msg.selection_start_set", x = chunk.x, z = chunk.z);
+        self.status = t!(
+            "MapViewer.msg.selection_start_set",
+            x = chunk.x,
+            z = chunk.z
+        );
         cx.notify();
     }
 
@@ -4052,7 +4057,13 @@ impl View {
             cx.notify();
             return;
         };
-        self.load_edit_detail(EditTarget::HsaChunk { chunk, source: None }, cx);
+        self.load_edit_detail(
+            EditTarget::HsaChunk {
+                chunk,
+                source: None,
+            },
+            cx,
+        );
     }
 
     pub(super) fn open_context_block_entities_editor(&mut self, cx: &mut Context<Self>) {
@@ -4061,7 +4072,13 @@ impl View {
             cx.notify();
             return;
         };
-        self.load_edit_detail(EditTarget::BlockEntities { chunk, source: None }, cx);
+        self.load_edit_detail(
+            EditTarget::BlockEntities {
+                chunk,
+                source: None,
+            },
+            cx,
+        );
     }
 
     pub(super) fn open_context_block_entity_editor(&mut self, cx: &mut Context<Self>) {
@@ -4101,7 +4118,13 @@ impl View {
             cx.notify();
             return;
         };
-        self.load_edit_detail(EditTarget::HeightMap { chunk, version: None }, cx);
+        self.load_edit_detail(
+            EditTarget::HeightMap {
+                chunk,
+                version: None,
+            },
+            cx,
+        );
     }
 
     pub(super) fn open_context_biome_storage_editor(&mut self, cx: &mut Context<Self>) {
@@ -4110,7 +4133,13 @@ impl View {
             cx.notify();
             return;
         };
-        self.load_edit_detail(EditTarget::BiomeStorage { chunk, version: None }, cx);
+        self.load_edit_detail(
+            EditTarget::BiomeStorage {
+                chunk,
+                version: None,
+            },
+            cx,
+        );
     }
 
     pub(super) fn context_chunk_pos(&self) -> Option<ChunkPos> {
@@ -4216,9 +4245,7 @@ pub(super) fn preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> 
         bedrock_block_model::resource_pack::append_unique_path(&mut package_paths, path);
     }
 
-    for package_path in
-        crate::core::minecraft::paths::infer_package_roots(world_path)
-    {
+    for package_path in crate::core::minecraft::paths::infer_package_roots(world_path) {
         bedrock_block_model::resource_pack::append_unique_path(&mut package_paths, package_path);
     }
 
@@ -4781,11 +4808,10 @@ fn build_chunk_image_export(
     let world = World::open(&world_path, bedrock_world::OpenOptions::default())
         .map_err(|error| error.to_string())?;
     let editor = WorldEditor::from_world(world);
-    let copied_chunk =
-        copy_chunks(&editor, source_anchor, chunks, cancel, |copy_progress| {
-            progress(copy_progress);
-        })
-        .map_err(|error| error.to_string())?;
+    let copied_chunk = copy_chunks(&editor, source_anchor, chunks, cancel, |copy_progress| {
+        progress(copy_progress);
+    })
+    .map_err(|error| error.to_string())?;
     drop(editor);
     if cancel.is_some_and(CancelFlag::is_cancelled) {
         return Err(MAP_OPERATION_CANCELLED_MESSAGE.to_string());
@@ -4971,11 +4997,7 @@ pub(super) fn encode_chunk_image_export_png(export: &ChunkImageExport) -> Result
     output
         .write_to(&mut encoded, gpui::image::ImageFormat::Png)
         .map_err(|error| {
-            t!(
-                "MapViewer.image.encode_failed",
-                error = error.to_string()
-            )
-            .to_string()
+            t!("MapViewer.image.encode_failed", error = error.to_string()).to_string()
         })?;
     Ok(encoded.into_inner())
 }
@@ -5008,7 +5030,8 @@ fn blit_export_chunk(
         .map_err(|_| t!("MapViewer.image.image_z_offset_invalid").to_string())?
         .checked_mul(chunk_height)
         .ok_or_else(|| t!("MapViewer.image.image_z_offset_too_large").to_string())?;
-    let source_width = usize::try_from(chunk.width).map_err(|_| t!("MapViewer.image.image_width_invalid").to_string())?;
+    let source_width = usize::try_from(chunk.width)
+        .map_err(|_| t!("MapViewer.image.image_width_invalid").to_string())?;
     for y in 0..chunk.height {
         for x in 0..chunk.width {
             let source_index = usize::try_from(y)

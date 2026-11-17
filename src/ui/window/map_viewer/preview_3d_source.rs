@@ -472,6 +472,11 @@ struct Preview3dBlockEntityModelState {
     chest_pair_lead: bool,
     /// Banner dye and pattern layers stored on the block entity.
     banner: Option<Arc<BannerArt>>,
+    /// Bed dye stored on the block entity.
+    ///
+    /// Bedrock names every bed block plain `bed` and keeps the colour in the `Bed` block entity's
+    /// `color` field, so the block name alone cannot tell a red bed from a white one.
+    bed_colour: Option<&'static str>,
 }
 
 #[derive(Clone, Debug)]
@@ -4040,11 +4045,68 @@ fn block_entity_model_states(
                 states.insert(BlockKey { x, y: y - 1, z }, state.clone());
             }
         }
-        if state.chest_pair_direction.is_some() || state.banner.is_some() {
+        // A bed's dye is a `color` byte on the `Bed` block entity; the block is always `bed`.
+        if entity.id.as_deref() == Some("Bed") {
+            state.bed_colour = bed_colour_from_nbt(nbt);
+            if state.bed_colour.is_some() {
+                // Beds are two blocks and the entity sits on one half, so both halves get the
+                // colour.
+                states.insert(BlockKey { x, y: y + 1, z }, state.clone());
+                states.insert(BlockKey { x, y: y - 1, z }, state.clone());
+            }
+        }
+        if state.chest_pair_direction.is_some()
+            || state.banner.is_some()
+            || state.bed_colour.is_some()
+        {
             states.insert(BlockKey { x, y, z }, state);
         }
     }
     states
+}
+
+/// Reads a bed block entity's `color` field as one of the 16 sprite names.
+///
+/// Bedrock stores it as a dye index byte, but older or edited worlds may hold the name instead,
+/// so both forms are accepted.
+fn bed_colour_from_nbt(nbt: &indexmap::IndexMap<String, NbtTag>) -> Option<&'static str> {
+    const COLOURS: [&str; 16] = [
+        "white",
+        "orange",
+        "magenta",
+        "light_blue",
+        "yellow",
+        "lime",
+        "pink",
+        "gray",
+        "light_gray",
+        "cyan",
+        "purple",
+        "blue",
+        "brown",
+        "green",
+        "red",
+        "black",
+    ];
+    match nbt.get("color")? {
+        NbtTag::Byte(value) => usize::try_from(*value)
+            .ok()
+            .filter(|index| *index < 16)
+            .map(|index| COLOURS[index]),
+        NbtTag::Short(value) => usize::try_from(*value)
+            .ok()
+            .filter(|index| *index < 16)
+            .map(|index| COLOURS[index]),
+        NbtTag::Int(value) => usize::try_from(*value)
+            .ok()
+            .filter(|index| *index < 16)
+            .map(|index| COLOURS[index]),
+        NbtTag::String(value) => {
+            let value = value.strip_prefix("minecraft:").unwrap_or(value);
+            COLOURS.iter().copied().find(|colour| *colour == value)
+        }
+        _ => None,
+    }
 }
 
 fn is_banner_block(name: &str) -> bool {
@@ -4097,12 +4159,16 @@ fn detail_shape(
     block_entity_state: Option<&Preview3dBlockEntityModelState>,
 ) -> Option<Preview3dDetailShape> {
     let mut query = block_state_query(state);
-    if let Some(block_entity_state) = block_entity_state
-        && let Some(pair_direction) = block_entity_state.chest_pair_direction
-    {
-        query = query
-            .with_state("pair_direction", pair_direction.as_str())
-            .with_state("pair_lead", block_entity_state.chest_pair_lead);
+    if let Some(block_entity_state) = block_entity_state {
+        if let Some(pair_direction) = block_entity_state.chest_pair_direction {
+            query = query
+                .with_state("pair_direction", pair_direction.as_str())
+                .with_state("pair_lead", block_entity_state.chest_pair_lead);
+        }
+        // A bed's colour is a block-entity field, so it reaches the shape as a synthetic state.
+        if let Some(colour) = block_entity_state.bed_colour {
+            query = query.with_state("bed_colour", colour);
+        }
     }
     let mut shape = model_family::resolve_shape(&query)
         .map(detail_shape_from_model)

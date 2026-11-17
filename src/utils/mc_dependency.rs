@@ -3,6 +3,7 @@
     unsafe_code,
     reason = "Microsoft Store dependency checks call native installer APIs"
 )]
+use crate::tasks::TaskStage;
 use gpui::SharedString;
 use std::cmp::Ordering;
 use std::env;
@@ -12,7 +13,6 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
-use crate::tasks::TaskStage;
 
 use anyhow::{Context, Result, anyhow};
 use regex::Regex;
@@ -45,6 +45,7 @@ use crate::http::proxy::clients::client;
 use crate::http::request::GLOBAL_CLIENT;
 use crate::i18n::LocalizedText;
 use crate::tasks::task_manager::ProgressUpdate;
+use crate::tasks::task_manager::TaskFinishStatus;
 #[cfg(windows)]
 use crate::utils::developer_mode;
 
@@ -142,7 +143,8 @@ where
     F: FnOnce(UnboundedSender<DependencyEvent>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<()>> + Send + 'static,
 {
-    let mut task_options = crate::tasks::task_manager::TaskOptions::new(title.clone(), TaskStage::QUEUED).total(100);
+    let mut task_options =
+        crate::tasks::task_manager::TaskOptions::new(title.clone(), TaskStage::QUEUED).total(100);
     if let Some(detail) = detail {
         task_options = task_options.detail(detail);
     }
@@ -213,7 +215,11 @@ where
             }
         }
     }) {
-        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        crate::tasks::task_manager::finish_task(
+            &task_id,
+            TaskFinishStatus::Error,
+            Some(error.clone()),
+        );
         return Err(error);
     }
 
@@ -227,17 +233,21 @@ where
         match result {
             Ok(()) => crate::tasks::task_manager::finish_task(
                 &worker_task_id,
-                "completed",
+                TaskFinishStatus::Completed,
                 Some("安装完成".to_string()),
             ),
             Err(error) => crate::tasks::task_manager::finish_task(
                 &worker_task_id,
-                "error",
+                TaskFinishStatus::Error,
                 Some(error.to_string()),
             ),
         }
     }) {
-        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        crate::tasks::task_manager::finish_task(
+            &task_id,
+            TaskFinishStatus::Error,
+            Some(error.clone()),
+        );
         return Err(error);
     }
 
@@ -950,12 +960,10 @@ async fn download_file(
 #[cfg(windows)]
 async fn install_appx_package_from_file(package_path: &Path) -> Result<()> {
     let package_path = package_path.to_path_buf();
-    crate::tasks::runtime::blocking::run_io(move || {
-        install_appx_package(&package_path)
-    })
-    .await
-    .map_err(anyhow::Error::msg)
-    .context("等待 APPX 安装线程失败")??;
+    crate::tasks::runtime::blocking::run_io(move || install_appx_package(&package_path))
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("等待 APPX 安装线程失败")??;
     Ok(())
 }
 

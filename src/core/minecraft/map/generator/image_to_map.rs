@@ -9,14 +9,13 @@ use std::{
 };
 
 use crate::core::minecraft::map::image::{
-    MapImageCrop, MapImageFit, MapImageOptions, MapImageTile, MapResample,
-    tile_map_image,
+    MapImageCrop, MapImageFit, MapImageOptions, MapImageTile, MapResample, tile_map_image,
 };
 use bedrock_world::surface::CancelFlag;
 use image::{Rgba, RgbaImage, imageops};
 
 use super::image::decode_image;
-use crate::tasks::task_manager::ProgressUpdate;
+use crate::tasks::task_manager::{ProgressUpdate, TaskFinishStatus};
 use crate::tasks::{runtime, task_manager};
 
 pub mod transform;
@@ -257,16 +256,15 @@ pub fn release_preview(task_id: &str) {
 /// # Errors
 /// Returns invalid grid settings or a runtime submission error. Decode and
 /// conversion failures are reported on the returned task.
-pub fn start_preview(
-    source: PathBuf,
-    options: MapPreviewOptions,
-) -> Result<String, String> {
+pub fn start_preview(source: PathBuf, options: MapPreviewOptions) -> Result<String, String> {
     validate_options(options)?;
     let detail = source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());
-    let mut task_options =
-        task_manager::TaskOptions::new(t!("TaskTitle.image_to_map_preview").to_string(), TaskStage::MAP_DECODE_IMAGE);
+    let mut task_options = task_manager::TaskOptions::new(
+        t!("TaskTitle.image_to_map_preview").to_string(),
+        TaskStage::MAP_DECODE_IMAGE,
+    );
     if let Some(detail) = detail {
         task_options = task_options.detail(detail);
     }
@@ -281,9 +279,9 @@ pub fn start_preview(
     if let Err(error) = runtime::spawn_io(async move {
         let result = convert(source, options, &worker_id, &cancel).await;
         let status = match &result {
-            Ok(_) => "completed",
-            Err(error) if error.contains("已取消") => "cancelled",
-            Err(_) => "error",
+            Ok(_) => TaskFinishStatus::Completed,
+            Err(error) if error.contains("已取消") => TaskFinishStatus::Cancelled,
+            Err(_) => TaskFinishStatus::Error,
         };
         task_manager::finish_task(
             &worker_id,
@@ -293,7 +291,7 @@ pub fn start_preview(
             }),
         );
     }) {
-        task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        task_manager::finish_task(&task_id, TaskFinishStatus::Error, Some(error.clone()));
         return Err(error);
     }
     Ok(task_id)
@@ -348,7 +346,11 @@ async fn convert(
         );
     }
     let count = options.columns * options.rows;
-    task_manager::reset_progress(task_id, Some(u64::from(count)), Some(TaskStage::MAP_SCALE_AND_SLICE));
+    task_manager::reset_progress(
+        task_id,
+        Some(u64::from(count)),
+        Some(TaskStage::MAP_SCALE_AND_SLICE),
+    );
     let worker_cancel = cancel.clone();
     let worker_id = task_id.to_owned();
     let result = runtime::run_cpu(move || {
@@ -377,7 +379,11 @@ async fn convert(
         if worker_cancel.is_cancelled() {
             return Err("地图图片转换已取消".to_owned());
         }
-        task_manager::reset_progress(&worker_id, Some(u64::from(count)), Some(TaskStage::MAP_MERGE_PREVIEW));
+        task_manager::reset_progress(
+            &worker_id,
+            Some(u64::from(count)),
+            Some(TaskStage::MAP_MERGE_PREVIEW),
+        );
         let mut last_frame = Instant::now();
         let frame_id = worker_id.clone();
         let (preview_width, preview_height, preview_rgba) =

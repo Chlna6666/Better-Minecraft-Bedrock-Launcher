@@ -12,7 +12,7 @@ use bedrock_world::{
 use indexmap::IndexMap;
 
 use super::image_to_map::{MapPreviewResult, get_preview};
-use crate::tasks::task_manager::ProgressUpdate;
+use crate::tasks::task_manager::{ProgressUpdate, TaskFinishStatus};
 use crate::tasks::{runtime, task_manager};
 
 /// Exports exact preview tiles and labeled filled-map references as a BMCBL map bundle.
@@ -31,8 +31,11 @@ pub fn start_export(
 ) -> Result<String, String> {
     let preview = get_preview(preview_task_id)
         .ok_or_else(|| "地图预览已释放或过期，请重新转换".to_owned())?;
-    let mut options = task_manager::TaskOptions::new(t!("TaskTitle.export_portable_bundle").to_string(), TaskStage::MAP_GENERATE_RECORDS)
-        .total(preview.tiles.len() as u64);
+    let mut options = task_manager::TaskOptions::new(
+        t!("TaskTitle.export_portable_bundle").to_string(),
+        TaskStage::MAP_GENERATE_RECORDS,
+    )
+    .total(preview.tiles.len() as u64);
     if let Some(detail) = output
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -50,9 +53,9 @@ pub fn start_export(
     if let Err(error) = runtime::spawn_io(async move {
         let result = export(preview, output, title, &worker_id, &cancel).await;
         let status = match &result {
-            Ok(_) => "completed",
-            Err(message) if message.contains("已取消") => "cancelled",
-            Err(_) => "error",
+            Ok(_) => TaskFinishStatus::Completed,
+            Err(message) if message.contains("已取消") => TaskFinishStatus::Cancelled,
+            Err(_) => TaskFinishStatus::Error,
         };
         task_manager::finish_task(
             &worker_id,
@@ -62,7 +65,7 @@ pub fn start_export(
             }),
         );
     }) {
-        task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        task_manager::finish_task(&task_id, TaskFinishStatus::Error, Some(error.clone()));
         return Err(error);
     }
     Ok(task_id)
@@ -100,7 +103,9 @@ async fn export(
         .map_err(|error| error.to_string())?;
     task_manager::update_progress(
         task_id,
-        ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_WRITE_BUNDLE),
+        ProgressUpdate::advance(1)
+            .total(1)
+            .stage(TaskStage::MAP_WRITE_BUNDLE),
     );
     Ok(format!("已导出可移植地图包：{}", output.display()))
 }

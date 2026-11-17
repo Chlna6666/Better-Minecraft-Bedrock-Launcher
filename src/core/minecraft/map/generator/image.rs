@@ -11,7 +11,7 @@ use bedrock_world::{editor::BlockPlacementPlan, structure::McStructureFile, surf
 use image::{ImageReader, Limits, RgbaImage, imageops};
 
 use crate::core::minecraft::map::image::MapResample;
-use crate::tasks::task_manager::ProgressUpdate;
+use crate::tasks::task_manager::{ProgressUpdate, TaskFinishStatus};
 use crate::tasks::{runtime, task_manager};
 
 pub use bedrock_voxel::Dithering;
@@ -141,9 +141,11 @@ pub fn start_block_export(request: ImageBlockExportRequest) -> Result<String, St
     if let Err(error) = runtime::spawn_io(async move {
         let result = export_image(request, &worker_id, &cancel).await;
         let status = match &result {
-            Ok(_) => "completed",
-            Err(error) if error.contains("已取消") || error.contains("cancelled") => "cancelled",
-            Err(_) => "error",
+            Ok(_) => TaskFinishStatus::Completed,
+            Err(error) if error.contains("已取消") || error.contains("cancelled") => {
+                TaskFinishStatus::Cancelled
+            }
+            Err(_) => TaskFinishStatus::Error,
         };
         task_manager::finish_task(
             &worker_id,
@@ -153,7 +155,7 @@ pub fn start_block_export(request: ImageBlockExportRequest) -> Result<String, St
             }),
         );
     }) {
-        task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        task_manager::finish_task(&task_id, TaskFinishStatus::Error, Some(error.clone()));
         return Err(error);
     }
     Ok(task_id)
@@ -195,7 +197,11 @@ async fn export_image(
             &worker_cancel,
             |done, progress_total| {
                 if progress_total != reported_total {
-                    task_manager::reset_progress(&worker_id, Some(progress_total), Some(stage.clone()));
+                    task_manager::reset_progress(
+                        &worker_id,
+                        Some(progress_total),
+                        Some(stage.clone()),
+                    );
                     reported = 0;
                     reported_total = progress_total;
                 }

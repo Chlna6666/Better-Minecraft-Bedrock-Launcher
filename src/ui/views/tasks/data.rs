@@ -1,5 +1,6 @@
 use super::{TaskConfirmAction, TaskConfirmDialog, TasksPageView};
-use crate::tasks::task_manager;
+use crate::tasks::command::{self, TaskCommand};
+use crate::tasks::task_manager::{self, TaskOwner};
 use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
 use gpui::*;
@@ -22,11 +23,17 @@ impl TasksPageView {
 
     pub(crate) fn toggle_pause_task(&mut self, task_id: Arc<str>, cx: &mut Context<Self>) {
         let snapshot = task_manager::snapshot_arc(task_id.as_ref());
-        let success = match snapshot.as_ref().map(|snapshot| snapshot.status.as_ref()) {
-            Some("paused") => task_manager::resume_task(task_id.as_ref()),
-            Some("running") => task_manager::pause_task(task_id.as_ref()),
-            _ => false,
+        let command = match snapshot.as_ref().map(|snapshot| snapshot.status.as_ref()) {
+            Some("paused") => Some(TaskCommand::Resume),
+            Some("running") => Some(TaskCommand::Pause),
+            // A pause already requested: treat as no-op success so the UI does
+            // not flash an error while the worker travels to its checkpoint.
+            Some("pausing") => return,
+            _ => None,
         };
+        let success = command.is_some_and(|command| {
+            command::apply(&TaskOwner::Core, task_id.as_ref(), command).is_ok()
+        });
 
         if !success {
             let message = cx
@@ -161,7 +168,9 @@ impl TasksPageView {
         // Keep a correlation ID in the shareable report without exposing
         // instance names or unrelated file paths.
         let safe_task_id = if task_id.len() <= 80
-            && task_id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+            && task_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
         {
             task_id.as_ref()
         } else {
@@ -190,7 +199,7 @@ impl TasksPageView {
                     let model = super::build_task_card_model(snapshot.as_ref());
                     self.schedule_exit_motion(task_id.clone(), model, cx);
                 }
-                task_manager::cancel_task(task_id.as_ref());
+                let _ = command::apply(&TaskOwner::Core, task_id.as_ref(), TaskCommand::Cancel);
                 if let Some(snapshot) = task_manager::snapshot_arc(task_id.as_ref()) {
                     self.apply_task_snapshot(snapshot);
                 }

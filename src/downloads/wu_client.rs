@@ -1,12 +1,13 @@
 mod protocol;
+use crate::tasks::TaskStage;
 use reqwest::{Client, header};
 use tracing::debug;
-use crate::tasks::TaskStage;
 
 use crate::downloads::wu_client::protocol::{WuDownloadFile, WuProtocol};
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
-    ProgressUpdate, finish_task, is_cancelled, update_progress, wait_for_task_active,
+    ProgressUpdate, TaskFinishStatus, finish_task, is_cancelled, update_progress,
+    wait_for_task_active,
 };
 use std::time::Duration;
 use tokio::time::sleep;
@@ -113,20 +114,31 @@ impl WuClient {
         let request_xml = self.protocol.build_download_request(update_id, revision);
 
         // 把阶段标为 resolving_url
-        update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::RESOLVING_URL));
+        update_progress(
+            task_id,
+            ProgressUpdate::advance(0).stage(TaskStage::RESOLVING_URL),
+        );
 
         for attempt in 1..=3 {
             debug!("task={} 第 {} 次请求下载 URL", task_id, attempt);
 
             if !wait_for_task_active(task_id).await {
-                finish_task(task_id, "cancelled", Some("user cancelled".into()));
+                finish_task(
+                    task_id,
+                    TaskFinishStatus::Cancelled,
+                    Some("user cancelled".into()),
+                );
                 return Ok(CoreResult::Cancelled);
             }
 
             // 先快速检查一次取消
             if is_cancelled(task_id) {
                 debug!("task={} 已取消（请求前）", task_id);
-                finish_task(task_id, "cancelled", Some("user cancelled".into()));
+                finish_task(
+                    task_id,
+                    TaskFinishStatus::Cancelled,
+                    Some("user cancelled".into()),
+                );
                 return Ok(CoreResult::Cancelled);
             }
 
@@ -142,7 +154,7 @@ impl WuClient {
             let send_result = tokio::select! {
                 _ = Self::wait_cancelled(task_id.to_string()) => {
                     debug!("task={} 下载已取消（发送阶段）", task_id);
-                    finish_task(task_id, "cancelled", Some("user cancelled".into()));
+                    finish_task(task_id, TaskFinishStatus::Cancelled, Some("user cancelled".into()));
                     return Ok(CoreResult::Cancelled);
                 }
                 r = send_fut => r
@@ -163,7 +175,7 @@ impl WuClient {
                             let text_result = tokio::select! {
                                 _ = Self::wait_cancelled(task_id.to_string()) => {
                                     debug!("task={} 已取消（读取 body 阶段）", task_id);
-                                    finish_task(task_id, "cancelled", Some("user cancelled".into()));
+                                    finish_task(task_id, TaskFinishStatus::Cancelled, Some("user cancelled".into()));
                                     return Ok(CoreResult::Cancelled);
                                 }
                                 txt = valid_resp.text() => txt
@@ -173,7 +185,10 @@ impl WuClient {
                             debug!("task={} 响应 XML: {}", task_id, xml);
 
                             // 上报阶段：parsing
-                            update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::PARSING));
+                            update_progress(
+                                task_id,
+                                ProgressUpdate::advance(0).stage(TaskStage::PARSING),
+                            );
 
                             // 解析 XML（协议层函数的错误应能转为 CoreError）
                             let files = match self.protocol.parse_download_response(&xml) {
@@ -183,7 +198,7 @@ impl WuClient {
                                     // 解析失败通常是致命的，标 error 并返回 Err
                                     finish_task(
                                         task_id,
-                                        "error",
+                                        TaskFinishStatus::Error,
                                         Some("parse response failed".into()),
                                     );
                                     return Err(e);
@@ -202,7 +217,11 @@ impl WuClient {
                             } else {
                                 // 没有匹配的 URL
                                 if attempt == 3 {
-                                    finish_task(task_id, "error", Some("no matching url".into()));
+                                    finish_task(
+                                        task_id,
+                                        TaskFinishStatus::Error,
+                                        Some("no matching url".into()),
+                                    );
                                     return Err(CoreError::BadUpdateIdentity);
                                 } else {
                                     debug!(
@@ -218,12 +237,20 @@ impl WuClient {
                             // 如果用户在这里取消了，尽早检测并返回 cancelled
                             if is_cancelled(task_id) {
                                 debug!("task={} 已取消（HTTP error branch）", task_id);
-                                finish_task(task_id, "cancelled", Some("user cancelled".into()));
+                                finish_task(
+                                    task_id,
+                                    TaskFinishStatus::Cancelled,
+                                    Some("user cancelled".into()),
+                                );
                                 return Ok(CoreResult::Cancelled);
                             }
                             if attempt == 3 {
                                 // 最后一次失败：标 error 并返回
-                                finish_task(task_id, "error", Some("http status error".into()));
+                                finish_task(
+                                    task_id,
+                                    TaskFinishStatus::Error,
+                                    Some("http status error".into()),
+                                );
                                 return Err(CoreError::Request(e));
                             }
                             // 中间失败：记录并进入 backoff，继续尝试（不要 finish）
@@ -235,12 +262,20 @@ impl WuClient {
                     // 再次检查是否被取消
                     if is_cancelled(task_id) {
                         debug!("task={} 已取消（request error branch）", task_id);
-                        finish_task(task_id, "cancelled", Some("user cancelled".into()));
+                        finish_task(
+                            task_id,
+                            TaskFinishStatus::Cancelled,
+                            Some("user cancelled".into()),
+                        );
                         return Ok(CoreResult::Cancelled);
                     }
                     if attempt == 3 {
                         // 最后一次失败：标 error 并返回
-                        finish_task(task_id, "error", Some(format!("request failed: {:?}", err)));
+                        finish_task(
+                            task_id,
+                            TaskFinishStatus::Error,
+                            Some(format!("request failed: {:?}", err)),
+                        );
                         return Err(CoreError::Request(err));
                     }
                     // 中间失败：等待 backoff 然后重试（不要 finish）
@@ -254,7 +289,7 @@ impl WuClient {
             tokio::select! {
                 _ = Self::wait_cancelled(task_id_wait.clone()) => {
                     debug!("task={} 在 backoff 期间检测到取消", task_id);
-                    finish_task(task_id, "cancelled", Some("user cancelled".into()));
+                    finish_task(task_id, TaskFinishStatus::Cancelled, Some("user cancelled".into()));
                     return Ok(CoreResult::Cancelled);
                 }
                 _ = sleep(Duration::from_millis(backoff as u64)) => {}
@@ -262,7 +297,11 @@ impl WuClient {
         }
 
         // 理论上不应到达这里
-        finish_task(task_id, "error", Some("bad update identity".into()));
+        finish_task(
+            task_id,
+            TaskFinishStatus::Error,
+            Some("bad update identity".into()),
+        );
         Err(CoreError::BadUpdateIdentity)
     }
 }

@@ -135,6 +135,9 @@ pub(super) struct TaskChildViewModel {
     pub(super) percent: Option<f64>,
     pub(super) speed_text: Option<Arc<str>>,
     pub(super) depth: usize,
+    /// Segmented transfer visualization (multi-threaded downloads only).
+    pub(super) downloaded_segments: Option<Vec<DownloadedRangeSegment>>,
+    pub(super) thread_segments: Vec<ThreadSegment>,
 }
 
 #[derive(Clone)]
@@ -186,7 +189,6 @@ fn task_subject(snapshot: &TaskSnapshot) -> String {
     }
 }
 
-
 fn non_empty_arc(text: Option<&Arc<str>>) -> Option<Arc<str>> {
     text.filter(|value| !value.trim().is_empty()).cloned()
 }
@@ -218,15 +220,12 @@ fn format_task_speed(speed_bytes_per_sec: f64) -> Arc<str> {
     Arc::from(speed_text)
 }
 
-fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
-    let display_title = if snapshot.generic_title {
-        non_empty_arc(snapshot.detail.as_ref()).unwrap_or_else(|| snapshot.title.clone())
-    } else {
-        snapshot.title.clone()
-    };
-
+/// Builds the segmented transfer bars from a snapshot's visualization. Shared by
+/// top-level cards and child rows: any task reporting `downloaded_ranges` shows
+/// the segmented progress, not only downloads.
+fn downloaded_segments_for(snapshot: &TaskSnapshot) -> Option<Vec<DownloadedRangeSegment>> {
     let file_total = snapshot.total.unwrap_or(0);
-    let downloaded_segments = snapshot
+    snapshot
         .visualization
         .as_ref()
         .and_then(|visualization| visualization.downloaded_ranges.as_ref())
@@ -242,8 +241,12 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
                     })
                 })
                 .collect()
-        });
-    let thread_segments: Vec<ThreadSegment> = snapshot
+        })
+}
+
+fn thread_segments_for(snapshot: &TaskSnapshot) -> Vec<ThreadSegment> {
+    let file_total = snapshot.total.unwrap_or(0);
+    snapshot
         .visualization
         .as_ref()
         .and_then(|vis| vis.threads.as_ref())
@@ -260,8 +263,6 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
                     };
                     let progress = if thread.total > 0 {
                         (thread.done as f32 / thread.total as f32).clamp(0.0, 1.0)
-                    } else if thread.active {
-                        0.0
                     } else {
                         0.0
                     };
@@ -274,7 +275,18 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
                 })
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
+    let display_title = if snapshot.generic_title {
+        non_empty_arc(snapshot.detail.as_ref()).unwrap_or_else(|| snapshot.title.clone())
+    } else {
+        snapshot.title.clone()
+    };
+
+    let downloaded_segments = downloaded_segments_for(snapshot);
+    let thread_segments = thread_segments_for(snapshot);
 
     TaskCardViewModel {
         id: snapshot.id.clone(),
@@ -294,18 +306,21 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
             && snapshot.speed_bytes_per_sec > 0.0)
             .then(|| format_task_speed(snapshot.speed_bytes_per_sec)),
         eta_text: (snapshot.task_type != task_manager::TaskType::Workflow
-            && snapshot.eta.as_ref() != "unknown").then(|| snapshot.eta.clone()),
+            && snapshot.eta.as_ref() != "unknown")
+            .then(|| snapshot.eta.clone()),
         message: non_empty_arc(snapshot.message.as_ref()),
         percent_basis_points: snapshot
             .percent
             .map(|value| (value.clamp(0.0, 100.0) * 100.0).round() as u16),
         started_at_unix: snapshot.started_at_unix,
         last_update_unix: snapshot.last_update_unix,
+        // Pause toggles between running/paused; `pausing` is already mid-request
+        // so the button stays available only for resume (toggle logic below).
         can_pause: snapshot.supports_pause
-            && matches!(snapshot.status.as_ref(), "running" | "paused"),
+            && matches!(snapshot.status.as_ref(), "running" | "paused" | "pausing"),
         can_cancel: matches!(
             snapshot.status.as_ref(),
-            "running" | "paused" | "cancelling"
+            "running" | "paused" | "pausing" | "cancelling" | "queued"
         ),
         can_remove: matches!(
             snapshot.status.as_ref(),
@@ -445,6 +460,8 @@ fn append_child_models(
                 speed_text: (child.speed_bytes_per_sec > 0.0)
                     .then(|| format_task_speed(child.speed_bytes_per_sec)),
                 depth,
+                downloaded_segments: downloaded_segments_for(child),
+                thread_segments: thread_segments_for(child),
             });
             append_child_models(child.id.as_ref(), depth + 1, by_parent, visited, output);
         }
@@ -468,8 +485,9 @@ pub(super) fn build_render_model_from_snapshots(
     // Count active descendants too, without counting finished task worker pools.
     let thread_total = snapshots
         .iter()
-        .filter(|snapshot| snapshot.visibility == task_manager::TaskVisibility::Visible
-            && !snapshot.is_terminal())
+        .filter(|snapshot| {
+            snapshot.visibility == task_manager::TaskVisibility::Visible && !snapshot.is_terminal()
+        })
         .filter_map(|snapshot| snapshot.visualization.as_ref())
         .map(|visualization| visualization.worker_total.unwrap_or(0) as usize)
         .sum();
@@ -477,18 +495,54 @@ pub(super) fn build_render_model_from_snapshots(
     for snapshot in &snapshots {
         if snapshot.visibility == task_manager::TaskVisibility::Visible {
             if let Some(parent_id) = snapshot.parent_id.as_ref() {
-                by_parent.entry(parent_id.clone()).or_default().push(snapshot);
+                by_parent
+                    .entry(parent_id.clone())
+                    .or_default()
+                    .push(snapshot);
             }
         }
     }
     for children in by_parent.values_mut() {
         children.sort_by(|left, right| {
-            left.started_at_unix.cmp(&right.started_at_unix).then_with(|| left.id.cmp(&right.id))
+            left.started_at_unix
+                .cmp(&right.started_at_unix)
+                .then_with(|| left.id.cmp(&right.id))
         });
     }
     let make_model = |snapshot: &Arc<TaskSnapshot>| {
         let mut model = build_task_card_model(snapshot);
-        append_child_models(snapshot.id.as_ref(), 0, &by_parent, &mut HashSet::new(), &mut model.children);
+        append_child_models(
+            snapshot.id.as_ref(),
+            0,
+            &by_parent,
+            &mut HashSet::new(),
+            &mut model.children,
+        );
+        // A workflow card owns no transfer visualization of its own: mirror the
+        // active child's percent so the parent bar tracks the live phase. The
+        // segmented transfer bars stay on the child row that actually downloads
+        // — the total task shows a plain percent bar.
+        let mirrored = model
+            .children
+            .iter()
+            .find(|child| {
+                child.downloaded_segments.is_some()
+                    && !is_terminal_task_status(child.status.as_ref())
+            })
+            .or_else(|| {
+                model
+                    .children
+                    .iter()
+                    .find(|child| !is_terminal_task_status(child.status.as_ref()))
+            });
+        if let Some(child) = mirrored {
+            if child.percent.is_some() {
+                model.percent = child.percent;
+                model.percent_basis_points = model
+                    .percent
+                    .map(|value| (value.clamp(0.0, 100.0) * 100.0).round() as u16);
+            }
+        }
         model
     };
     let active: Vec<_> = snapshot_lists.active.iter().map(make_model).collect();
@@ -627,11 +681,12 @@ impl TasksPageView {
             return false;
         }
 
-        let affects_render_model = snapshot.parent_id.is_some() || current.is_none_or(|current| {
-            is_terminal_task_status(current.status.as_ref())
-                != is_terminal_task_status(snapshot.status.as_ref())
-                || self.render_model_contains_task(&snapshot.id)
-        });
+        let affects_render_model = snapshot.parent_id.is_some()
+            || current.is_none_or(|current| {
+                is_terminal_task_status(current.status.as_ref())
+                    != is_terminal_task_status(snapshot.status.as_ref())
+                    || self.render_model_contains_task(&snapshot.id)
+            });
         self.task_snapshots.insert(snapshot.id.clone(), snapshot);
         affects_render_model
     }
@@ -646,8 +701,13 @@ impl TasksPageView {
             .active
             .iter()
             .chain(&self.render_model.finished)
-            .any(|task| task.id.as_ref() == task_id ||
-                task.children.iter().any(|child| child.id.as_ref() == task_id))
+            .any(|task| {
+                task.id.as_ref() == task_id
+                    || task
+                        .children
+                        .iter()
+                        .any(|child| child.id.as_ref() == task_id)
+            })
             || self.transition_cards.contains_key(task_id)
     }
 

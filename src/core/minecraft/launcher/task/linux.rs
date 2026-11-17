@@ -3,8 +3,8 @@ use crate::core::linux_runtime::{
     RunnerKind, resolve_runner, runner_runtime_root, validate_proton_game_runtime,
 };
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskOptions, append_task_log, create_task, finish_task, register_abort_handle,
-    set_total, update_progress,
+    ProgressUpdate, TaskFinishStatus, TaskOptions, append_task_log, create_task, finish_task,
+    register_abort_handle, set_total, update_progress,
 };
 use std::collections::VecDeque;
 use std::env;
@@ -535,8 +535,8 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
             t!("TaskTitle.launch_version", name = request.display_name).to_string(),
             TaskStage::RESOLVING_RUNNER,
         )
-            .detail(request.version.to_string())
-            .total(LAUNCH_TOTAL_STEPS),
+        .detail(request.version.to_string())
+        .total(LAUNCH_TOTAL_STEPS),
     )
     .expect("task id must be unique");
     set_total(&task_id, Some(LAUNCH_TOTAL_STEPS));
@@ -554,17 +554,25 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                 );
                 finish_task(
                     &task_id_for_task,
-                    "completed",
+                    TaskFinishStatus::Completed,
                     Some(format!("游戏已启动，PID {process_id}")),
                 );
             }
             Ok(None) => {
-                finish_task(&task_id_for_task, "completed", Some("准备完成".to_string()));
+                finish_task(
+                    &task_id_for_task,
+                    TaskFinishStatus::Completed,
+                    Some("准备完成".to_string()),
+                );
             }
             Err(error) => {
                 error!(task_id = %task_id_for_task, %error, "Linux game launch failed");
                 append_task_log(&task_id_for_task, format!("启动失败：{error}"));
-                finish_task(&task_id_for_task, "error", Some(error.clone()));
+                finish_task(
+                    &task_id_for_task,
+                    TaskFinishStatus::Error,
+                    Some(error.clone()),
+                );
             }
         }
         let _ = completion_tx.send(result);
@@ -572,7 +580,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
         Ok(join_handle) => join_handle,
         Err(error) => {
             append_task_log(&task_id, format!("无法调度启动任务：{error}"));
-            finish_task(&task_id, "error", Some(error.clone()));
+            finish_task(&task_id, TaskFinishStatus::Error, Some(error.clone()));
             return LaunchTask {
                 task_id,
                 completion,

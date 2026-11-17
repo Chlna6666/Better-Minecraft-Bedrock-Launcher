@@ -33,7 +33,7 @@ impl Drop for View {
         if let Some(completion) = self.pending_paste_task_completion.take() {
             task_manager::finish_task(
                 &completion.task_id,
-                "completed",
+                TaskFinishStatus::Completed,
                 Some(
                     t!(
                         "MapViewer.core.view.map_window_closed",
@@ -80,9 +80,7 @@ impl View {
         self.render_generation = self.render_generation.saturating_add(1);
         self.viewport_idle_generation = self.viewport_idle_generation.saturating_add(1);
         self.tile_work_generation = self.tile_work_generation.saturating_add(1);
-        self.image_eviction_generation = self
-            .image_eviction_generation
-            .saturating_add(1);
+        self.image_eviction_generation = self.image_eviction_generation.saturating_add(1);
         self.pending_viewport_refresh = false;
         self.viewport_work_refresh_scheduled = false;
         self.viewport_composite_signature = None;
@@ -375,9 +373,10 @@ impl Render for View {
 }
 
 fn external_paths_are_importable(paths: &ExternalPaths) -> bool {
-    paths.paths().iter().any(|path| {
-        region_package::is_path(path) || mcstructure::is_mcstructure_path(path)
-    })
+    paths
+        .paths()
+        .iter()
+        .any(|path| region_package::is_path(path) || mcstructure::is_mcstructure_path(path))
 }
 
 pub fn open(init: Init, cx: &mut App) {

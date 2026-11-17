@@ -18,7 +18,7 @@ use super::{
     bundle::build_bundle,
     image_to_map::{MapPreviewResult, get_preview},
 };
-use crate::tasks::task_manager::ProgressUpdate;
+use crate::tasks::task_manager::{ProgressUpdate, TaskFinishStatus};
 use crate::tasks::{runtime, task_manager};
 
 enum InstallSource {
@@ -155,7 +155,11 @@ pub fn start_frame_grid_preflight(
     support: BlockState,
 ) -> Result<String, String> {
     let task_id = task_manager::create_task(
-        task_manager::TaskOptions::new(t!("TaskTitle.check_frame_area").to_string(), TaskStage::MAP_CHECK_FRAME_AREA).total(1),
+        task_manager::TaskOptions::new(
+            t!("TaskTitle.check_frame_area").to_string(),
+            TaskStage::MAP_CHECK_FRAME_AREA,
+        )
+        .total(1),
     )?;
     task_manager::register_cooperative_cancel(task_id.clone());
     let cancel = CancelFlag::new();
@@ -183,16 +187,16 @@ pub fn start_frame_grid_preflight(
         .await;
         let (status, message) = match result {
             Ok(Ok(())) => (
-                "completed",
+                TaskFinishStatus::Completed,
                 "放置区域检查通过；正式写入前仍会再次校验".to_owned(),
             ),
-            Ok(Err(error)) if error.contains("已取消") => ("cancelled", error),
-            Ok(Err(error)) => ("error", error),
-            Err(error) => ("error", error.to_string()),
+            Ok(Err(error)) if error.contains("已取消") => (TaskFinishStatus::Cancelled, error),
+            Ok(Err(error)) => (TaskFinishStatus::Error, error),
+            Err(error) => (TaskFinishStatus::Error, error.to_string()),
         };
         task_manager::finish_task(&worker_id, status, Some(message));
     }) {
-        task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        task_manager::finish_task(&task_id, TaskFinishStatus::Error, Some(error.clone()));
         return Err(error);
     }
     Ok(task_id)
@@ -212,7 +216,8 @@ fn start_install_task(
         InstallSource::File(_) => (TaskStage::MAP_READ_BUNDLE, 1),
     };
     let task_id = task_manager::create_task(
-        task_manager::TaskOptions::new(t!("TaskTitle.write_map_bundle").to_string(), phase).detail(title)
+        task_manager::TaskOptions::new(t!("TaskTitle.write_map_bundle").to_string(), phase)
+            .detail(title)
             .total(total),
     )?;
     task_manager::register_cooperative_cancel(task_id.clone());
@@ -225,9 +230,9 @@ fn start_install_task(
     if let Err(error) = runtime::spawn_io(async move {
         let result = install(source, world_path, target, history, &worker_id, &cancel).await;
         let status = match &result {
-            Ok(_) => "completed",
-            Err(message) if message.contains("已取消") => "cancelled",
-            Err(_) => "error",
+            Ok(_) => TaskFinishStatus::Completed,
+            Err(message) if message.contains("已取消") => TaskFinishStatus::Cancelled,
+            Err(_) => TaskFinishStatus::Error,
         };
         task_manager::finish_task(
             &worker_id,
@@ -237,7 +242,7 @@ fn start_install_task(
             }),
         );
     }) {
-        task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        task_manager::finish_task(&task_id, TaskFinishStatus::Error, Some(error.clone()));
         return Err(error);
     }
     Ok(task_id)
@@ -274,7 +279,9 @@ async fn install(
             let imported = runtime::blocking::run_io(move || read_map_import(&input)).await??;
             task_manager::update_progress(
                 task_id,
-                ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_READ_BUNDLE),
+                ProgressUpdate::advance(1)
+                    .total(1)
+                    .stage(TaskStage::MAP_READ_BUNDLE),
             );
             imported
         }
@@ -339,7 +346,9 @@ async fn install(
         let complete_history = history(map_ids.clone(), affected_chunks)?;
         task_manager::update_progress(
             &task_id,
-            ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_CREATE_UNDO_SNAPSHOT),
+            ProgressUpdate::advance(1)
+                .total(1)
+                .stage(TaskStage::MAP_CREATE_UNDO_SNAPSHOT),
         );
         if worker_cancel.is_cancelled() {
             return Err("地图包写入已取消".to_owned());
@@ -356,7 +365,9 @@ async fn install(
         complete_history().map_err(|error| format!("地图已写入，但撤销历史保存失败：{error}"))?;
         task_manager::update_progress(
             &task_id,
-            ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_SAVE_UNDO_HISTORY),
+            ProgressUpdate::advance(1)
+                .total(1)
+                .stage(TaskStage::MAP_SAVE_UNDO_HISTORY),
         );
         Ok::<_, String>(format!(
             "已写入 {} 张地图，ID：{:?}",

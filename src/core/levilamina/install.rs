@@ -1,14 +1,14 @@
+use crate::tasks::TaskStage;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use crate::tasks::TaskStage;
 
 use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::tasks::task_manager::{
-    self, ProgressUpdate, TaskOptions, TaskScope, TaskSnapshot, TaskType,
+    self, ProgressUpdate, TaskFinishStatus, TaskOptions, TaskScope, TaskSnapshot, TaskType,
 };
 
 use super::archive::{install_uncompressed_asset, install_zip_asset};
@@ -85,27 +85,31 @@ pub struct LeviLaminaInstallation {
 }
 
 pub fn start_install(request: LeviLaminaInstallRequest) -> Result<LeviLaminaInstallHandle, String> {
-    start_install_with_parent(request, None)
+    start_install_with_parent(request, None, None)
 }
 
-/// Use this entry point only when the loader installation belongs to an already
-/// running operation (for example, Minecraft + LeviLamina in one install plan).
-/// Standalone installations call `start_install` and stay visible as root tasks.
-pub fn start_install_under_parent(
+/// Starts the download phase immediately but holds installation until
+/// `game_ready` flips to `true`. Used by the game install workflow so the game
+/// package and the LeviLamina components download concurrently, while the
+/// components still install only after the game directory exists.
+pub fn start_install_under_parent_when_game_ready(
     request: LeviLaminaInstallRequest,
     parent_id: &str,
+    game_ready: watch::Receiver<bool>,
 ) -> Result<LeviLaminaInstallHandle, String> {
-    start_install_with_parent(request, Some(parent_id))
+    start_install_with_parent(request, Some(parent_id), Some(game_ready))
 }
 
 fn start_install_with_parent(
     request: LeviLaminaInstallRequest,
     parent_id: Option<&str>,
+    game_ready: Option<watch::Receiver<bool>>,
 ) -> Result<LeviLaminaInstallHandle, String> {
     let (title, detail) = match &request {
-        LeviLaminaInstallRequest::Loader { loader_version, .. } => {
-            (t!("TaskTitle.install_levilamina").to_string(), Some(loader_version.clone()))
-        }
+        LeviLaminaInstallRequest::Loader { loader_version, .. } => (
+            t!("TaskTitle.install_levilamina").to_string(),
+            Some(loader_version.clone()),
+        ),
         LeviLaminaInstallRequest::Mod {
             package_id,
             version,
@@ -116,7 +120,7 @@ fn start_install_with_parent(
         ),
     };
     start_operation(title, detail, parent_id, move |updates| async move {
-        run_install(request, Some(&updates))
+        run_install(request, Some(&updates), game_ready)
             .await
             .map(|_| LeviLaminaInstallStage::Completed {
                 message: Arc::from("LeviLamina 组件安装完成"),
@@ -150,6 +154,7 @@ pub async fn loader(
             loader_version,
         },
         None,
+        None,
     )
     .await?;
     inspect_installation(game_directory).await
@@ -177,6 +182,11 @@ where
     ));
     let mut options = TaskOptions::new(title, TaskStage::RESOLVING_LEVILAMINA)
         .id(operation_id.to_string())
+        // A determinate placeholder total keeps the card's bar at 0% instead of
+        // the indeterminate pill (which reads as "almost full") until the
+        // package plan provides the real total.
+        .total(1)
+        .pausable(true)
         .kind(TaskType::Workflow);
     options.detail = detail;
     if let Some(parent_id) = parent_id {
@@ -199,7 +209,7 @@ where
     }) {
         Ok(workflow) => workflow,
         Err(error) => {
-            task_manager::finish_task(&operation_id, "error", Some(error.clone()));
+            task_manager::finish_task(&operation_id, TaskFinishStatus::Error, Some(error.clone()));
             return Err(error);
         }
     };
@@ -225,10 +235,10 @@ where
 async fn run_install(
     request: LeviLaminaInstallRequest,
     updates: Option<&watch::Sender<LeviLaminaInstallSnapshot>>,
+    game_ready: Option<watch::Receiver<bool>>,
 ) -> Result<(), String> {
     let installing_levilamina = matches!(request, LeviLaminaInstallRequest::Loader { .. });
     let (game_directory, game_version, root) = root_package(&request)?;
-    validate_game_directory(&game_directory).await?;
     info!(
         directory = %game_directory.display(),
         version = %game_version,
@@ -251,15 +261,26 @@ async fn run_install(
         None
     };
     let ordered = installation_order(&plan)?;
+    // Two progress units per package (download + install), plus the resolve
+    // step. A determinate total from the start keeps the card's bar honest:
+    // the indeterminate pill reads as "almost full" while nothing is running.
+    let progress_total = (ordered.len() as u64).saturating_mul(2).max(1);
     if let Some(updates) = updates {
-        task_manager::set_total(&updates.borrow().operation_id, Some(ordered.len() as u64));
+        task_manager::set_total(&updates.borrow().operation_id, Some(progress_total));
     }
+
+    // Phase 1: download every package asset. This runs while the game package
+    // is still downloading/extracting, so the two transfers overlap instead of
+    // serializing behind each other.
+    let mut downloaded: Vec<(ResolvedPackage, Vec<DownloadedAsset>)> = Vec::new();
     for package in ordered {
+        wait_operation_active(updates).await?;
         if package.disposition == PackageDisposition::Reuse {
             if let Some(updates) = updates {
+                // Both the download and install units are already satisfied.
                 task_manager::update_progress(
                     &updates.borrow().operation_id,
-                    ProgressUpdate::advance(1),
+                    ProgressUpdate::advance(2),
                 );
             }
             info!(
@@ -272,7 +293,48 @@ async fn run_install(
         info!(
             package = %package.id.display(),
             version = %package.manifest.version,
-            "开始下载并安装 Lip 依赖"
+            "开始下载 Lip 依赖"
+        );
+        if let Some(updates) = updates {
+            publish_stage(
+                updates,
+                LeviLaminaInstallStage::Downloading {
+                    package: Arc::from(package.id.display()),
+                    task_id: Arc::from(""),
+                },
+            );
+        }
+        let assets = download_package_assets(package, updates).await?;
+        if let Some(updates) = updates {
+            task_manager::update_progress(
+                &updates.borrow().operation_id,
+                ProgressUpdate::advance(1),
+            );
+        }
+        downloaded.push((package.clone(), assets));
+    }
+
+    // Phase 2 gate: the game directory must exist before anything is written
+    // into it. When this install belongs to a game install workflow, that
+    // workflow signals readiness after extraction completes.
+    if let Some(mut game_ready) = game_ready {
+        while !*game_ready.borrow() {
+            game_ready
+                .changed()
+                .await
+                .map_err(|_| "游戏安装已结束，LeviLamina 安装取消".to_string())?;
+        }
+    }
+    wait_operation_active(updates).await?;
+    validate_game_directory(&game_directory).await?;
+
+    // Phase 3: install the downloaded assets.
+    for (package, assets) in downloaded {
+        wait_operation_active(updates).await?;
+        info!(
+            package = %package.id.display(),
+            version = %package.manifest.version,
+            "开始安装 Lip 依赖"
         );
         if let Some(updates) = updates {
             publish_stage(
@@ -282,7 +344,7 @@ async fn run_install(
                 },
             );
         }
-        install_package(&game_directory, package, updates).await?;
+        install_downloaded_package(&game_directory, &package, assets).await?;
         if let Some(updates) = updates {
             task_manager::update_progress(
                 &updates.borrow().operation_id,
@@ -376,10 +438,62 @@ async fn validate_game_directory(game_directory: &Path) -> Result<(), String> {
     .await?
 }
 
-async fn install_package(
-    game_directory: &Path,
+/// One package asset already downloaded to the temp cache. Installation into
+/// the game directory happens later, once the game directory exists.
+struct DownloadedAsset {
+    archive_path: PathBuf,
+    strip_root: bool,
+    kind: AssetKind,
+    placements: Vec<crate::core::levilamina::lip::AssetPlacement>,
+}
+
+/// Phase 1 of an install: download every asset of a package without touching
+/// the game directory. Safe to run while the game package is still downloading.
+async fn download_package_assets(
     package: &ResolvedPackage,
     updates: Option<&watch::Sender<LeviLaminaInstallSnapshot>>,
+) -> Result<Vec<DownloadedAsset>, String> {
+    let mut assets = Vec::new();
+    for (asset_index, asset) in package.variant.assets.iter().enumerate() {
+        let archive_path = match asset.kind {
+            AssetKind::Self_ => {
+                let repository = github_repository(&package.id.path)?;
+                let url = format!(
+                    "https://github.com/{repository}/archive/refs/tags/v{}.zip",
+                    package.manifest.version
+                );
+                download_asset(&url, package, asset_index, updates).await?
+            }
+            AssetKind::Zip | AssetKind::Uncompressed => {
+                download_asset_urls(&asset.urls, package, asset_index, updates).await?
+            }
+            AssetKind::Tar | AssetKind::Tgz => {
+                return Err(format!(
+                    "暂不支持 Lip {} 资产: {}",
+                    match asset.kind {
+                        AssetKind::Tar => "tar",
+                        _ => "tgz",
+                    },
+                    package.id.display()
+                ));
+            }
+        };
+        assets.push(DownloadedAsset {
+            archive_path,
+            strip_root: matches!(asset.kind, AssetKind::Self_),
+            kind: asset.kind,
+            placements: asset.placements.clone(),
+        });
+    }
+    Ok(assets)
+}
+
+/// Phase 2: install the downloaded assets into the game directory. Requires the
+/// game directory to exist (i.e. the game package has been extracted).
+async fn install_downloaded_package(
+    game_directory: &Path,
+    package: &ResolvedPackage,
+    assets: Vec<DownloadedAsset>,
 ) -> Result<(), String> {
     // Do not delete a working PreLoader before downloading its replacement:
     // a network failure previously left LeviLamina without a bootstrap DLL.
@@ -397,54 +511,29 @@ async fn install_package(
         );
     }
     let mut files = Vec::new();
-    for (asset_index, asset) in package.variant.assets.iter().enumerate() {
-        let (archive_path, strip_root) = match asset.kind {
-            AssetKind::Self_ => {
-                let repository = github_repository(&package.id.path)?;
-                let url = format!(
-                    "https://github.com/{repository}/archive/refs/tags/v{}.zip",
-                    package.manifest.version
-                );
-                (
-                    download_asset(&url, package, asset_index, updates).await?,
-                    true,
-                )
-            }
-            AssetKind::Zip => (
-                download_asset_urls(&asset.urls, package, asset_index, updates).await?,
-                false,
-            ),
+    for asset in assets {
+        let game_directory = game_directory.to_path_buf();
+        let placements = asset.placements;
+        match asset.kind {
             AssetKind::Uncompressed => {
-                let source =
-                    download_asset_urls(&asset.urls, package, asset_index, updates).await?;
-                let game_directory = game_directory.to_path_buf();
-                let placements = asset.placements.clone();
+                let source = asset.archive_path;
                 let installed = crate::tasks::runtime::blocking::run_archive(move || {
                     install_uncompressed_asset(&source, &game_directory, &placements)
                 })
                 .await??;
                 files.extend(installed);
-                continue;
             }
-            AssetKind::Tar | AssetKind::Tgz => {
-                return Err(format!(
-                    "暂不支持 Lip {} 资产: {}",
-                    match asset.kind {
-                        AssetKind::Tar => "tar",
-                        _ => "tgz",
-                    },
-                    package.id.display()
-                ));
+            _ => {
+                let archive_path = asset.archive_path;
+                let strip_root = asset.strip_root;
+                files.extend(
+                    crate::tasks::runtime::blocking::run_archive(move || {
+                        install_zip_asset(&archive_path, &game_directory, &placements, strip_root)
+                    })
+                    .await??,
+                );
             }
-        };
-        let game_directory = game_directory.to_path_buf();
-        let placements = asset.placements.clone();
-        files.extend(
-            crate::tasks::runtime::blocking::run_archive(move || {
-                install_zip_asset(&archive_path, &game_directory, &placements, strip_root)
-            })
-            .await??,
-        );
+        }
     }
 
     if package.id.path.eq_ignore_ascii_case(PRELOADER_PACKAGE) {
@@ -530,6 +619,23 @@ fn require_download_path(snapshot: &TaskSnapshot) -> Result<String, String> {
         .ok_or_else(|| "Lip 资产下载完成但没有返回文件路径".to_string())
 }
 
+/// Waits until the operation is no longer paused. Used at package boundaries so
+/// a pause holds before the next package starts installing.
+async fn wait_operation_active(
+    updates: Option<&watch::Sender<LeviLaminaInstallSnapshot>>,
+) -> Result<(), String> {
+    let Some(updates) = updates else {
+        return Ok(());
+    };
+    let task_id = updates.borrow().operation_id.clone();
+    if let Some(control) = task_manager::task_control(&task_id) {
+        if !task_manager::wait_until_active(&control).await {
+            return Err("已取消".to_string());
+        }
+    }
+    Ok(())
+}
+
 fn publish_stage(
     updates: &watch::Sender<LeviLaminaInstallSnapshot>,
     stage: LeviLaminaInstallStage,
@@ -558,10 +664,14 @@ fn publish_stage(
             task_manager::set_task_message(&task_id, Some(format!("正在安装 {package}")));
         }
         LeviLaminaInstallStage::Completed { message } => {
-            task_manager::finish_task(&task_id, "completed", Some(message.to_string()));
+            task_manager::finish_task(
+                &task_id,
+                TaskFinishStatus::Completed,
+                Some(message.to_string()),
+            );
         }
         LeviLaminaInstallStage::Failed { message } => {
-            task_manager::finish_task(&task_id, "error", Some(message.to_string()));
+            task_manager::finish_task(&task_id, TaskFinishStatus::Error, Some(message.to_string()));
         }
     }
     updates.send_modify(|snapshot| snapshot.stage = stage);

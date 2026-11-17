@@ -175,6 +175,12 @@ impl BlockProperties {
         state: &BlockState,
         entity: Option<&Preview3dBlockEntityModelState>,
     ) -> Option<Arc<Preview3dDetailShape>> {
+        // A bed's colour comes from its block entity, so a bed must never take the cached shape:
+        // that cache is keyed by palette entry, which cannot tell a red bed from a white one.
+        let entity_coloured = entity.is_some_and(|entity| entity.bed_colour.is_some());
+        if entity_coloured {
+            return detail_shape(state, entity).map(Arc::new);
+        }
         if self.resolved_shape || entity.is_none() {
             self.shape.clone()
         } else {

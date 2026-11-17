@@ -5,6 +5,8 @@ use crate::plugins::events::{
 };
 use crate::plugins::manifest::{PluginCapability, PluginManifest};
 use crate::plugins::ui_dsl::{self, ViewTree};
+use crate::tasks::TaskStage;
+use crate::tasks::task_manager::TaskFinishStatus;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use anyhow::{Context, Result, anyhow, bail};
@@ -28,7 +30,6 @@ use tinywasm::{
     Engine, FuncContext, Function, HostFunction, Imports, Module, ModuleInstance, Store,
 };
 use tracing::{debug, error, info, warn};
-use crate::tasks::TaskStage;
 
 use crate::plugins::services::{PluginRpcCallStack, PluginServiceRegistry};
 use crate::tasks::task_manager::ProgressUpdate;
@@ -59,9 +60,8 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 const HTTP_MAX_BYTES: usize = 512 * 1024;
 const STORAGE_KEY_MAX_BYTES: usize = 128;
 
-static ASYNC_APP_REFRESH_NOTIFICATION: OnceLock<
-    Mutex<Option<crate::plugins::watcher::Sender>>,
-> = OnceLock::new();
+static ASYNC_APP_REFRESH_NOTIFICATION: OnceLock<Mutex<Option<crate::plugins::watcher::Sender>>> =
+    OnceLock::new();
 static PLUGIN_PERSISTENCE_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<PluginPersistenceOp>> =
     OnceLock::new();
 
@@ -2241,11 +2241,7 @@ impl PluginRegistry {
         self.http_cache.has_finished_refreshes() || self.resource_cache.has_finished_refreshes()
     }
 
-    pub fn set_watcher(
-        &mut self,
-        sender: crate::plugins::watcher::Sender,
-        task: gpui::Task<()>,
-    ) {
+    pub fn set_watcher(&mut self, sender: crate::plugins::watcher::Sender, task: gpui::Task<()>) {
         self.reload_tx = Some(sender);
         self.watcher_task = Some(task);
     }
@@ -3347,8 +3343,10 @@ fn handle_app_request(
             if code == abi::AppOp::CreateTask.code() =>
         {
             state.require_capability(PluginCapability::TaskProgress)?;
-            let mut task_options =
-                crate::tasks::task_manager::TaskOptions::new(request.title, TaskStage::custom(request.stage.clone()));
+            let mut task_options = crate::tasks::task_manager::TaskOptions::new(
+                request.title,
+                TaskStage::custom(request.stage.clone()),
+            );
             if let Some(total) = request.total {
                 task_options = task_options.total(total);
             }
@@ -3358,19 +3356,74 @@ fn handle_app_request(
             if let Some(detail) = request.detail {
                 task_options = task_options.detail(detail);
             }
-            let task_id =
-                crate::tasks::task_manager::create_task(task_options).map_err(|error| {
-                    abi::AppError {
-                        code: "task-create-failed".to_string(),
-                        message: error,
-                    }
-                })?;
+            task_options = task_options.pausable(request.supports_pause);
+            let task_id = crate::tasks::task_manager::create_task_owned(
+                crate::tasks::task_manager::TaskOwner::Plugin(state.plugin_id.clone().into()),
+                task_options,
+            )
+            .map_err(|error| abi::AppError {
+                code: "task-create-failed".to_string(),
+                message: error,
+            })?;
+            Ok(abi::AppResponse::TaskId(task_id))
+        }
+        (code, abi::AppRequest::CreateTypedTask { request })
+            if code == abi::AppOp::CreateTypedTask.code() =>
+        {
+            state.require_capability(PluginCapability::TaskProgress)?;
+            // 定义必须已注册，且属于当前插件的命名空间，防止冒用宿主类型。
+            let definition = crate::tasks::registry::definition(&request.definition).ok_or_else(
+                || abi::AppError {
+                    code: "task-definition-unknown".to_string(),
+                    message: format!("任务类型未注册: {}", request.definition),
+                },
+            )?;
+            if !request
+                .definition
+                .starts_with(&format!("{}.", state.plugin_id))
+            {
+                return Err(abi::AppError {
+                    code: "task-definition-foreign".to_string(),
+                    message: format!("任务类型不属于插件 {}", state.plugin_id),
+                });
+            }
+            let inner = request.request;
+            let mut task_options = crate::tasks::task_manager::TaskOptions::new(
+                inner.title,
+                TaskStage::custom(inner.stage.clone()),
+            )
+            .definition(definition.type_id.clone())
+            .pausable(definition.capabilities.pausable);
+            if let Some(total) = inner.total {
+                task_options = task_options.total(total);
+            }
+            if let Some(task_id) = inner.task_id {
+                task_options = task_options.id(task_id);
+            }
+            if let Some(detail) = inner.detail {
+                task_options = task_options.detail(detail);
+            }
+            let task_id = crate::tasks::task_manager::create_task_owned(
+                crate::tasks::task_manager::TaskOwner::Plugin(state.plugin_id.clone().into()),
+                task_options,
+            )
+            .map_err(|error| abi::AppError {
+                code: "task-create-failed".to_string(),
+                message: error,
+            })?;
             Ok(abi::AppResponse::TaskId(task_id))
         }
         (code, abi::AppRequest::UpdateTask { request })
             if code == abi::AppOp::UpdateTask.code() =>
         {
             state.require_capability(PluginCapability::TaskProgress)?;
+            // 所有权校验：插件只能更新自己创建的任务，宿主和其他插件的任务不可见。
+            if !crate::tasks::task_manager::task_owned_by(&request.task_id, &state.plugin_id) {
+                return Err(abi::AppError {
+                    code: "task-not-owned".to_string(),
+                    message: format!("任务不存在或不属于插件 {}", state.plugin_id),
+                });
+            }
             let mut progress = ProgressUpdate::advance(request.done_delta);
             if let Some(total) = request.total {
                 progress = progress.total(total);
@@ -3388,11 +3441,62 @@ fn handle_app_request(
             if code == abi::AppOp::FinishTask.code() =>
         {
             state.require_capability(PluginCapability::TaskProgress)?;
-            crate::tasks::task_manager::finish_task(
-                &request.task_id,
-                &request.status,
-                request.message,
-            );
+            // 所有权校验同 UpdateTask；状态走类型化解析，拒绝未知终态字符串。
+            if !crate::tasks::task_manager::task_owned_by(&request.task_id, &state.plugin_id) {
+                return Err(abi::AppError {
+                    code: "task-not-owned".to_string(),
+                    message: format!("任务不存在或不属于插件 {}", state.plugin_id),
+                });
+            }
+            let status =
+                crate::tasks::task_manager::TaskFinishStatus::from_status_str(&request.status)
+                    .ok_or_else(|| abi::AppError {
+                        code: "task-invalid-status".to_string(),
+                        message: format!(
+                            "无效的任务终态: {}（允许 completed | cancelled | error）",
+                            request.status
+                        ),
+                    })?;
+            crate::tasks::task_manager::finish_task(&request.task_id, status, request.message);
+            Ok(abi::AppResponse::Unit)
+        }
+        (code, abi::AppRequest::RegisterTaskDefinition { request })
+            if code == abi::AppOp::RegisterTaskDefinition.code() =>
+        {
+            state.require_capability(PluginCapability::TaskProgress)?;
+            let pool = match request.pool.as_deref() {
+                None => None,
+                Some("download") => Some(crate::tasks::scheduler::TaskPool::Download),
+                Some("archive") => Some(crate::tasks::scheduler::TaskPool::Archive),
+                Some(other) => {
+                    return Err(abi::AppError {
+                        code: "task-definition-invalid-pool".to_string(),
+                        message: format!("未知的任务队列: {other}（允许 download | archive）"),
+                    });
+                }
+            };
+            let mut definition = crate::tasks::registry::TaskDefinition::new(request.type_id)
+                .capabilities(crate::tasks::registry::TaskCapabilities {
+                    cancellable: request.cancellable,
+                    pausable: request.pausable,
+                    prioritizable: request.prioritizable,
+                    retryable: request.retryable,
+                });
+            if let Some(title_key) = request.title_key {
+                definition = definition.title_key(title_key);
+            }
+            if let Some(pool) = pool {
+                definition = definition.pool(pool);
+            }
+            for phase in request.phases {
+                definition = definition.phase(phase, None);
+            }
+            crate::tasks::registry::register_for_plugin(&state.plugin_id, definition).map_err(
+                |error| abi::AppError {
+                    code: "task-definition-register-failed".to_string(),
+                    message: error.to_string(),
+                },
+            )?;
             Ok(abi::AppResponse::Unit)
         }
         (code, abi::AppRequest::AppInfo) if code == abi::AppOp::AppInfo.code() => {
@@ -4720,6 +4824,8 @@ fn uninstall_plugin_files(
     }
     fs::remove_dir_all(&root_dir)
         .with_context(|| format!("remove plugin directory {}", root_dir.display()))?;
+    // Task types registered by this plugin must not outlive it.
+    crate::tasks::registry::unregister_plugin_namespace(plugin_id);
     crate::plugins::state::remove(plugins_dir, plugin_id)
 }
 
@@ -5198,9 +5304,7 @@ fn notify_async_app_refresh_finished() {
     let Some(sender) = current.as_ref() else {
         return;
     };
-    if let Err(error) =
-        sender.unbounded_send(crate::plugins::watcher::Message::AsyncAppRefresh)
-    {
+    if let Err(error) = sender.unbounded_send(crate::plugins::watcher::Message::AsyncAppRefresh) {
         warn!(error = ?error, "plugin HTTP refresh notification receiver dropped");
     }
 }
@@ -5550,8 +5654,11 @@ pub fn start_uninstall_plugin_task(cx: &mut App, plugin_id: String) -> Result<St
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
 
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.uninstall_plugin").to_string(), TaskStage::QUEUED)
-            .detail(plugin_id.clone()),
+        crate::tasks::task_manager::TaskOptions::new(
+            t!("TaskTitle.uninstall_plugin").to_string(),
+            TaskStage::QUEUED,
+        )
+        .detail(plugin_id.clone()),
     )
     .map_err(anyhow::Error::msg)?;
     let worker_task_id = task_id.clone();
@@ -5577,22 +5684,28 @@ pub fn start_uninstall_plugin_task(cx: &mut App, plugin_id: String) -> Result<St
         match removed {
             Ok(Ok(())) => crate::tasks::task_manager::finish_task(
                 &worker_task_id,
-                "completed",
+                TaskFinishStatus::Completed,
                 Some("插件已卸载".to_string()),
             ),
             Ok(Err(error)) => crate::tasks::task_manager::finish_task(
                 &worker_task_id,
-                "error",
+                TaskFinishStatus::Error,
                 Some(crate::plugins::manifest::format_error_chain(&error)),
             ),
-            Err(error) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
-            }
+            Err(error) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                TaskFinishStatus::Error,
+                Some(error),
+            ),
         }
     }) {
         Ok(workflow) => workflow,
         Err(error) => {
-            crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+            crate::tasks::task_manager::finish_task(
+                &task_id,
+                TaskFinishStatus::Error,
+                Some(error.clone()),
+            );
             return Err(anyhow!(error));
         }
     };
@@ -5605,7 +5718,7 @@ pub fn start_uninstall_plugin_task(cx: &mut App, plugin_id: String) -> Result<St
         {
             crate::tasks::task_manager::finish_task(
                 &monitor_task_id,
-                "error",
+                TaskFinishStatus::Error,
                 Some(format!("插件卸载任务异常结束: {error}")),
             );
         }
@@ -5658,7 +5771,11 @@ pub fn start_import_plugin_task(cx: &mut App, source_path: PathBuf) -> Result<St
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
     let detail = file_name.to_string_lossy().into_owned();
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.import_plugin").to_string(), TaskStage::QUEUED).detail(detail),
+        crate::tasks::task_manager::TaskOptions::new(
+            t!("TaskTitle.import_plugin").to_string(),
+            TaskStage::QUEUED,
+        )
+        .detail(detail),
     )
     .map_err(anyhow::Error::msg)?;
     let worker_task_id = task_id.clone();
@@ -5771,22 +5888,28 @@ pub fn start_import_plugin_task(cx: &mut App, source_path: PathBuf) -> Result<St
         match imported {
             Ok(Ok(())) => crate::tasks::task_manager::finish_task(
                 &worker_task_id,
-                "completed",
+                TaskFinishStatus::Completed,
                 Some("插件包已导入".to_string()),
             ),
             Ok(Err(error)) => crate::tasks::task_manager::finish_task(
                 &worker_task_id,
-                "error",
+                TaskFinishStatus::Error,
                 Some(crate::plugins::manifest::format_error_chain(&error)),
             ),
-            Err(error) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
-            }
+            Err(error) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                TaskFinishStatus::Error,
+                Some(error),
+            ),
         }
     }) {
         Ok(workflow) => workflow,
         Err(error) => {
-            crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+            crate::tasks::task_manager::finish_task(
+                &task_id,
+                TaskFinishStatus::Error,
+                Some(error.clone()),
+            );
             return Err(anyhow!(error));
         }
     };
@@ -5799,7 +5922,7 @@ pub fn start_import_plugin_task(cx: &mut App, source_path: PathBuf) -> Result<St
         {
             crate::tasks::task_manager::finish_task(
                 &monitor_task_id,
-                "error",
+                TaskFinishStatus::Error,
                 Some(format!("插件导入任务异常结束: {error}")),
             );
         }
@@ -6008,9 +6131,7 @@ fn apply_open_window(cx: &mut App, request: abi::WindowRequest) {
         page_id,
         ..
     } = request;
-    if let Err(error) =
-        crate::plugins::window::open(cx, plugin_id.clone(), page_id, title)
-    {
+    if let Err(error) = crate::plugins::window::open(cx, plugin_id.clone(), page_id, title) {
         warn!(error = ?error, "plugin open-window effect failed");
         if let Err(error) = show_toast(cx, &plugin_id, "Unable to open plugin window".to_string()) {
             warn!(error = ?error, "plugin open-window fallback toast failed");

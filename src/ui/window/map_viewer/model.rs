@@ -1,20 +1,20 @@
 use super::editor::*;
 use super::generator_panel::GeneratorPanelState;
-use super::input::new_field;
-use super::render_support::cpu_chunk_batch_size;
 use super::image_generator_panel::ImageGeneratorPanelState;
+use super::input::new_field;
 use super::map_image_panel::MapImagePanelState;
 use super::panels::*;
 use super::player_workspace::*;
 use super::players::*;
 use super::prelude::*;
 pub(super) use super::query_cache::MapQueryBudget;
+use super::render_support::cpu_chunk_batch_size;
 use super::tile_state::*;
 use super::viewport::*;
-use crate::tasks::task_manager::ProgressUpdate;
+use crate::tasks::TaskStage;
+use crate::tasks::task_manager::{ProgressUpdate, TaskFinishStatus};
 use crate::ui::components::numeric_field::NumericField;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use crate::tasks::TaskStage;
 
 pub(super) const CHUNKS_PER_REGION: u32 = 32;
 pub(super) const CHUNKS_PER_TILE: u32 = 8;
@@ -570,9 +570,15 @@ pub(super) enum EditTarget {
         chunk: ChunkPos,
         source: Option<Bytes>,
     },
-    BlockEntityAt { chunk: ChunkPos, block: BlockPos },
+    BlockEntityAt {
+        chunk: ChunkPos,
+        block: BlockPos,
+    },
     Actors(ChunkPos),
-    Actor { chunk: ChunkPos, unique_id: i64 },
+    Actor {
+        chunk: ChunkPos,
+        unique_id: i64,
+    },
     HeightMap {
         chunk: ChunkPos,
         version: Option<ChunkVersion>,
@@ -608,8 +614,12 @@ impl EditTarget {
             Self::Actor { chunk, unique_id } => {
                 format!("edit actor {unique_id} in chunk {},{}", chunk.x, chunk.z)
             }
-            Self::HeightMap { chunk: pos, .. } => format!("edit heightmap chunk {},{}", pos.x, pos.z),
-            Self::BiomeStorage { chunk: pos, .. } => format!("edit biome storage chunk {},{}", pos.x, pos.z),
+            Self::HeightMap { chunk: pos, .. } => {
+                format!("edit heightmap chunk {},{}", pos.x, pos.z)
+            }
+            Self::BiomeStorage { chunk: pos, .. } => {
+                format!("edit biome storage chunk {},{}", pos.x, pos.z)
+            }
         }
     }
 }
@@ -1020,7 +1030,12 @@ pub(super) struct ChunkTransferProgress {
 
 impl ChunkTransferProgress {
     pub(super) fn label(&self) -> SharedString {
-        SharedString::from(format!("{} {}/{}", self.phase.label(), self.completed, self.total))
+        SharedString::from(format!(
+            "{} {}/{}",
+            self.phase.label(),
+            self.completed,
+            self.total
+        ))
     }
 
     pub(super) fn ratio(&self) -> f32 {
@@ -1127,18 +1142,18 @@ pub(super) fn map_operation_status_for_result<T>(
     result: &Result<T, String>,
     cancel: &CancelFlag,
     task_id: &str,
-) -> &'static str {
+) -> TaskFinishStatus {
     if result.is_ok() {
-        "completed"
+        TaskFinishStatus::Completed
     } else if map_operation_cancelled(cancel, task_id)
         || result
             .as_ref()
             .err()
             .is_some_and(|error| is_map_operation_cancelled_error(error))
     {
-        "cancelled"
+        TaskFinishStatus::Cancelled
     } else {
-        "error"
+        TaskFinishStatus::Error
     }
 }
 
@@ -1416,9 +1431,7 @@ impl PlayerQuickEdit {
                 dimension = dimension_label(*dimension)
             )
             .to_string(),
-            Self::ClearInventory => {
-                t!("MapViewer.core.model.clear_player_inventory").to_string()
-            }
+            Self::ClearInventory => t!("MapViewer.core.model.clear_player_inventory").to_string(),
         }
     }
 

@@ -1,10 +1,12 @@
 // src-tauri/src/commands/assets.rs
 use crate::core::minecraft::import::{
-    ImportCheckResult, PackagePreview, check_import_file, files_batch,
-    files_batch_cancellable, inspect_archive,
+    ImportCheckResult, PackagePreview, check_import_file, files_batch, files_batch_cancellable,
+    inspect_archive,
 };
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, resolve_target_parent};
+use crate::tasks::TaskStage;
 use crate::tasks::task_manager::ProgressUpdate;
+use crate::tasks::task_manager::TaskFinishStatus;
 use futures_util::stream::{self, StreamExt as _};
 use once_cell::sync::Lazy;
 use serde::Deserialize;
@@ -14,7 +16,6 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 use tracing::{debug, error};
-use crate::tasks::TaskStage;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct DeleteAssetPayload {
@@ -238,8 +239,11 @@ pub fn delete(payloads: Vec<DeleteAssetPayload>) -> Result<String, String> {
     }
     let detail = format!("{} 个资源", payloads.len());
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.delete_game_assets").to_string(), TaskStage::DELETING_ASSETS)
-            .detail(detail),
+        crate::tasks::task_manager::TaskOptions::new(
+            t!("TaskTitle.delete_game_assets").to_string(),
+            TaskStage::DELETING_ASSETS,
+        )
+        .detail(detail),
     )?;
     crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
 
@@ -255,27 +259,35 @@ pub fn delete(payloads: Vec<DeleteAssetPayload>) -> Result<String, String> {
             Ok(Ok(DeleteAssetsOutcome::Completed(message))) => {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
-                    "completed",
+                    TaskFinishStatus::Completed,
                     Some(message),
                 );
             }
             Ok(Ok(DeleteAssetsOutcome::Cancelled(message))) => {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
-                    "cancelled",
+                    TaskFinishStatus::Cancelled,
                     Some(message),
                 );
             }
-            Ok(Err(error)) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
-            }
-            Err(error) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
-            }
+            Ok(Err(error)) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                TaskFinishStatus::Error,
+                Some(error),
+            ),
+            Err(error) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                TaskFinishStatus::Error,
+                Some(error),
+            ),
         }
     })
     .map_err(|error| {
-        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        crate::tasks::task_manager::finish_task(
+            &task_id,
+            TaskFinishStatus::Error,
+            Some(error.clone()),
+        );
         error
     })?;
 
@@ -284,12 +296,16 @@ pub fn delete(payloads: Vec<DeleteAssetPayload>) -> Result<String, String> {
         if let Err(error) = workflow.await {
             crate::tasks::task_manager::finish_task(
                 &monitor_task_id,
-                "error",
+                TaskFinishStatus::Error,
                 Some(format!("资源删除任务异常结束: {error}")),
             );
         }
     }) {
-        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        crate::tasks::task_manager::finish_task(
+            &task_id,
+            TaskFinishStatus::Error,
+            Some(error.clone()),
+        );
         return Err(error);
     }
 
@@ -323,14 +339,14 @@ pub fn start_import_assets_task(
             Ok(result) if result.failed_count == 0 && result.imported_count > 0 => {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
-                    "completed",
+                    TaskFinishStatus::Completed,
                     Some(format!("已导入 {} 个内容包", result.imported_count)),
                 );
             }
             Ok(result) => {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
-                    "error",
+                    TaskFinishStatus::Error,
                     Some(format!(
                         "导入未完整完成：成功 {}，失败 {}",
                         result.imported_count, result.failed_count
@@ -340,14 +356,14 @@ pub fn start_import_assets_task(
             Err(error) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
-                    "cancelled",
+                    TaskFinishStatus::Cancelled,
                     Some(error.clone()),
                 );
             }
             Err(error) => {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
-                    "error",
+                    TaskFinishStatus::Error,
                     Some(error.clone()),
                 );
             }
@@ -355,7 +371,11 @@ pub fn start_import_assets_task(
     }) {
         Ok(workflow) => workflow,
         Err(error) => {
-            crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+            crate::tasks::task_manager::finish_task(
+                &task_id,
+                TaskFinishStatus::Error,
+                Some(error.clone()),
+            );
             return Err(error);
         }
     };
@@ -368,12 +388,16 @@ pub fn start_import_assets_task(
         {
             crate::tasks::task_manager::finish_task(
                 &monitor_task_id,
-                "error",
+                TaskFinishStatus::Error,
                 Some(format!("资源导入任务异常结束: {error}")),
             );
         }
     }) {
-        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        crate::tasks::task_manager::finish_task(
+            &task_id,
+            TaskFinishStatus::Error,
+            Some(error.clone()),
+        );
         return Err(error);
     }
 
@@ -537,8 +561,11 @@ pub(crate) fn start_import_inspection_task(
 
     let total = file_paths.len();
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.parse_import_files").to_string(), TaskStage::QUEUED)
-            .detail(format!("{total} 个文件")),
+        crate::tasks::task_manager::TaskOptions::new(
+            t!("TaskTitle.parse_import_files").to_string(),
+            TaskStage::QUEUED,
+        )
+        .detail(format!("{total} 个文件")),
     )?;
     let worker_task_id = task_id.clone();
 
@@ -562,7 +589,7 @@ pub(crate) fn start_import_inspection_task(
             Err(error) => {
                 task_manager::finish_task(
                     &worker_task_id,
-                    "error",
+                    TaskFinishStatus::Error,
                     Some(format!("读取导入文件大小失败：{error}")),
                 );
                 return;
@@ -616,7 +643,7 @@ pub(crate) fn start_import_inspection_task(
                     _ = control.wait_cancelled() => {
                         task_manager::finish_task(
                             &worker_task_id,
-                            "cancelled",
+                            TaskFinishStatus::Cancelled,
                             Some("导入包解析已取消".to_string()),
                         );
                         return;
@@ -671,7 +698,7 @@ pub(crate) fn start_import_inspection_task(
         if task_manager::is_cancelled(&worker_task_id) {
             task_manager::finish_task(
                 &worker_task_id,
-                "cancelled",
+                TaskFinishStatus::Cancelled,
                 Some("导入包解析已取消".to_string()),
             );
             return;
@@ -686,13 +713,17 @@ pub(crate) fn start_import_inspection_task(
 
         task_manager::finish_task(
             &worker_task_id,
-            "completed",
+            TaskFinishStatus::Completed,
             Some(format!("解析完成：{total} 个文件，{failed} 个失败")),
         );
     });
 
     if let Err(error) = spawn_result {
-        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        crate::tasks::task_manager::finish_task(
+            &task_id,
+            TaskFinishStatus::Error,
+            Some(error.clone()),
+        );
         return Err(error);
     }
 

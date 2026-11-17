@@ -1,4 +1,5 @@
 // src/archive/zip.rs
+use crate::tasks::TaskStage;
 use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
@@ -8,7 +9,6 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration as StdDuration;
 use std::time::Instant as StdInstant;
-use crate::tasks::TaskStage;
 
 use zip::ZipArchive;
 
@@ -17,8 +17,9 @@ use tracing::{debug, info, warn};
 
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskControl, TaskVisualization, control_cancelled, finish_task, is_cancelled,
-    is_visualization_enabled, set_task_visualization, set_total, task_control, update_progress,
+    ProgressUpdate, TaskControl, TaskFinishStatus, TaskVisualization, control_cancelled,
+    finish_task, is_cancelled, is_visualization_enabled, set_task_visualization, set_total,
+    task_control, update_progress,
 };
 
 /// 解压进度/可视化上报节流：每累计 1MB 或每 200ms 上报一次
@@ -481,7 +482,9 @@ fn extract_parallel(
     context.add_progress(0, true);
     update_progress(
         task_id,
-        ProgressUpdate::advance(0).total(total).stage(TaskStage::EXTRACTING),
+        ProgressUpdate::advance(0)
+            .total(total)
+            .stage(TaskStage::EXTRACTING),
     );
 
     info!(
@@ -772,7 +775,7 @@ pub async fn extract<R: Read + Seek + Send + 'static>(
                 // 写最终状态并返回（注意：finish_task 也可以放到 async 侧，但这里放在 blocking 侧也可以）
                 finish_task(
                     &task_id_clone_for_block,
-                    "cancelled",
+                    TaskFinishStatus::Cancelled,
                     Some("user cancelled".into()),
                 );
                 return Ok(());
@@ -841,7 +844,7 @@ pub async fn extract<R: Read + Seek + Send + 'static>(
                     debug!("解压在写入过程中被取消");
                     finish_task(
                         &task_id_clone_for_block,
-                        "cancelled",
+                        TaskFinishStatus::Cancelled,
                         Some("user cancelled".into()),
                     );
                     return Ok(());
@@ -904,7 +907,9 @@ pub async fn extract<R: Read + Seek + Send + 'static>(
 
         update_progress(
             &task_id_clone_for_block,
-            ProgressUpdate::advance(0).total(total).stage(TaskStage::EXTRACTING),
+            ProgressUpdate::advance(0)
+                .total(total)
+                .stage(TaskStage::EXTRACTING),
         );
 
         info!(

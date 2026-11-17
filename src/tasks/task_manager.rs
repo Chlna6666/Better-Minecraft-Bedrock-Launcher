@@ -132,16 +132,22 @@ impl TaskVisualization {
 
 #[derive(Debug)]
 pub struct TaskControl {
+    task_id: Arc<str>,
     cancelled: AtomicBool,
     paused: AtomicBool,
+    /// Set by the worker when it has actually stopped at a safe checkpoint.
+    /// The manager flips `Pausing -> Paused` once this is observed.
+    paused_acked: AtomicBool,
     notify: Notify,
 }
 
 impl TaskControl {
-    fn new() -> Self {
+    fn new(task_id: impl Into<Arc<str>>) -> Self {
         Self {
+            task_id: task_id.into(),
             cancelled: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            paused_acked: AtomicBool::new(false),
             notify: Notify::new(),
         }
     }
@@ -149,14 +155,17 @@ impl TaskControl {
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::Relaxed);
         self.paused.store(false, Ordering::Relaxed);
+        self.paused_acked.store(false, Ordering::Relaxed);
         self.notify.notify_waiters();
     }
 
     fn pause(&self) {
+        self.paused_acked.store(false, Ordering::Relaxed);
         self.paused.store(true, Ordering::Relaxed);
     }
 
     fn resume(&self) {
+        self.paused_acked.store(false, Ordering::Relaxed);
         self.paused.store(false, Ordering::Relaxed);
         self.notify.notify_waiters();
     }
@@ -167,6 +176,21 @@ impl TaskControl {
 
     pub fn paused_requested(&self) -> bool {
         self.paused.load(Ordering::Relaxed)
+    }
+
+    /// Called by the worker when it has fully stopped at a safe checkpoint after
+    /// observing `paused_requested()`. Sets the ack flag and settles the
+    /// snapshot `pausing -> paused` immediately, so every pause path (downloads,
+    /// archives, future scheduler workers) reports the settled state without a
+    /// polling loop.
+    pub fn acknowledge_paused(&self) {
+        self.paused_acked.store(true, Ordering::Relaxed);
+        settle_paused_state(&self.task_id);
+        self.notify.notify_waiters();
+    }
+
+    pub fn paused_acknowledged(&self) -> bool {
+        self.paused_acked.load(Ordering::Relaxed)
     }
 
     /// 挂起等待直到任务被取消（`cancel()` 会通过 `notify_waiters` 唤醒），
@@ -289,8 +313,30 @@ pub struct TaskRenderSnapshotLists {
     pub finished_total: usize,
 }
 
+/// Immutable ownership marker for a task. Plugins may only mutate tasks they
+/// created; core-created tasks are untouchable from the plugin bridge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaskOwner {
+    Core,
+    Plugin(Arc<str>),
+}
+
+impl TaskOwner {
+    /// The plugin id when this task belongs to a plugin, otherwise `None`.
+    pub fn plugin_id(&self) -> Option<&str> {
+        match self {
+            Self::Core => None,
+            Self::Plugin(id) => Some(id.as_ref()),
+        }
+    }
+}
+
 struct Task {
     id: Arc<str>,
+    owner: TaskOwner,
+    priority: crate::tasks::scheduler::TaskPriority,
+    /// Registered type id when the task declared one.
+    definition: Option<Arc<str>>,
     title: Arc<str>,
     detail: Option<Arc<str>>,
     stage: TaskStage,
@@ -300,7 +346,7 @@ struct Task {
     last_instant: Instant,
     last_done: u64,
     speed_ema: f64,
-    status: Arc<str>,
+    status: TaskState,
     cancel_requested: bool,
     message: Option<Arc<str>>,
     paused: bool,
@@ -315,7 +361,7 @@ struct Task {
 }
 
 impl Task {
-    fn new(id: Arc<str>, options: TaskOptions) -> Self {
+    fn new(id: Arc<str>, owner: TaskOwner, options: TaskOptions) -> Self {
         let TaskOptions {
             title,
             detail,
@@ -326,11 +372,16 @@ impl Task {
             kind,
             parent_id,
             generic_title,
+            priority,
+            definition,
             ..
         } = options;
         let now = Instant::now();
         Self {
             id,
+            owner,
+            priority,
+            definition: definition.map(Arc::<str>::from),
             title: Arc::from(title),
             detail: detail.map(Arc::<str>::from),
             stage,
@@ -340,7 +391,7 @@ impl Task {
             last_instant: now,
             last_done: 0,
             speed_ema: 0.0,
-            status: Arc::<str>::from("running"),
+            status: TaskState::Running,
             cancel_requested: false,
             message: None,
             paused: false,
@@ -395,7 +446,7 @@ impl Task {
             speed_bytes_per_sec: self.speed_ema,
             eta: eta_str,
             percent: percent_opt,
-            status: self.status.clone(),
+            status: Arc::<str>::from(self.status.as_str()),
             cancel_requested: self.cancel_requested,
             message: self.message.clone(),
             supports_pause: self.supports_pause,
@@ -422,6 +473,132 @@ impl Task {
 
 pub fn is_terminal_status(status: &str) -> bool {
     matches!(status, "completed" | "cancelled" | "error")
+}
+
+/// Task lifecycle state. Internally the manager tracks this as an enum with a
+/// validated transition table; snapshots keep serializing the historical wire
+/// strings so UI/test consumers need no changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskState {
+    /// Created but waiting for an execution slot (or scheduler dispatch).
+    Queued,
+    Running,
+    /// Pause requested; the worker has not reached a checkpoint yet.
+    Pausing,
+    /// Worker acknowledged the pause at a safe checkpoint.
+    Paused,
+    /// Cancel requested; cleanup/rollback may still be running.
+    Cancelling,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl TaskState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Pausing => "pausing",
+            Self::Paused => "paused",
+            Self::Cancelling => "cancelling",
+            Self::Succeeded => "completed",
+            Self::Failed => "error",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+    }
+
+    /// Parses the wire-format status string, including legacy values that were
+    /// previously accepted from untrusted input.
+    pub fn from_status_str(status: &str) -> Option<Self> {
+        match status {
+            "queued" => Some(Self::Queued),
+            "running" => Some(Self::Running),
+            "pausing" => Some(Self::Pausing),
+            "paused" => Some(Self::Paused),
+            "cancelling" => Some(Self::Cancelling),
+            "completed" => Some(Self::Succeeded),
+            "error" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+
+    /// Legal transitions. `Cancelling -> Succeeded` is intentional: a task that
+    /// crossed its commit boundary may legitimately finish successfully even
+    /// though a cancel request was already recorded (see `archive/zip.rs`).
+    pub const fn can_transition_to(self, next: Self) -> bool {
+        match self {
+            Self::Queued => matches!(
+                next,
+                Self::Running
+                    | Self::Pausing
+                    | Self::Paused
+                    | Self::Cancelling
+                    | Self::Cancelled
+                    | Self::Failed
+            ),
+            Self::Running => matches!(
+                next,
+                Self::Queued
+                    | Self::Pausing
+                    | Self::Paused
+                    | Self::Cancelling
+                    | Self::Succeeded
+                    | Self::Failed
+                    | Self::Cancelled
+            ),
+            Self::Pausing => matches!(
+                next,
+                Self::Paused
+                    | Self::Running
+                    | Self::Cancelling
+                    | Self::Succeeded
+                    | Self::Failed
+                    | Self::Cancelled
+            ),
+            Self::Paused => matches!(
+                next,
+                Self::Running | Self::Cancelling | Self::Cancelled | Self::Failed
+            ),
+            Self::Cancelling => matches!(next, Self::Cancelled | Self::Succeeded | Self::Failed),
+            Self::Succeeded | Self::Failed | Self::Cancelled => false,
+        }
+    }
+}
+
+/// Typed terminal outcome for [`finish_task`]. Free-form strings are rejected at
+/// the type level so a misspelled status can never leave a task un-terminated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskFinishStatus {
+    Completed,
+    Cancelled,
+    Error,
+}
+
+impl TaskFinishStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Error => "error",
+        }
+    }
+
+    /// Parses the wire-format status string. Used by the plugin bridge where the
+    /// host cannot control the caller's encoding.
+    pub fn from_status_str(status: &str) -> Option<Self> {
+        match status {
+            "completed" => Some(Self::Completed),
+            "cancelled" => Some(Self::Cancelled),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
 }
 
 pub fn subscribe_task_events() -> broadcast::Receiver<TaskEvent> {
@@ -577,6 +754,39 @@ pub fn task_control(task_id: &str) -> Option<Arc<TaskControl>> {
         .read()
         .ok()
         .and_then(|map| map.get(task_id).cloned())
+}
+
+/// Returns `true` when `task_id` exists and was created by `plugin_id`.
+/// Core-owned tasks never match, so the plugin bridge cannot touch host tasks.
+pub fn task_owned_by(task_id: &str, plugin_id: &str) -> bool {
+    TASKS
+        .lock()
+        .unwrap()
+        .get(task_id)
+        .is_some_and(|task| task.owner == TaskOwner::Plugin(Arc::from(plugin_id)))
+}
+
+/// Returns the owner of a task, if it still exists.
+pub fn task_owner_of(task_id: &str) -> Option<TaskOwner> {
+    TASKS
+        .lock()
+        .unwrap()
+        .get(task_id)
+        .map(|task| task.owner.clone())
+}
+
+/// Returns the dispatch priority of a task, if it still exists.
+pub fn task_priority(task_id: &str) -> Option<crate::tasks::scheduler::TaskPriority> {
+    TASKS.lock().unwrap().get(task_id).map(|task| task.priority)
+}
+
+/// Returns the registered task-type id of a task, if it declared one.
+pub fn task_definition_id(task_id: &str) -> Option<Arc<str>> {
+    TASKS
+        .lock()
+        .unwrap()
+        .get(task_id)
+        .and_then(|task| task.definition.clone())
 }
 
 pub fn abort_task(task_id: &str) -> bool {
@@ -749,6 +959,11 @@ pub struct TaskOptions {
     pub kind: TaskType,
     pub parent_id: Option<String>,
     pub generic_title: bool,
+    /// Dispatch priority for slot-limited pools. Defaults to `Normal`.
+    pub priority: crate::tasks::scheduler::TaskPriority,
+    /// Registered task-type id (`core.download.http`, ...). When set, capability
+    /// checks consult the registry definition instead of only `supports_pause`.
+    pub definition: Option<String>,
 }
 
 impl TaskOptions {
@@ -764,7 +979,21 @@ impl TaskOptions {
             kind: TaskType::Operation,
             parent_id: None,
             generic_title: false,
+            priority: crate::tasks::scheduler::TaskPriority::Normal,
+            definition: None,
         }
+    }
+
+    /// Sets the dispatch priority used when the task waits for a pool slot.
+    pub fn priority(mut self, priority: crate::tasks::scheduler::TaskPriority) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    /// Associates the task with a registered task type.
+    pub fn definition(mut self, type_id: impl Into<String>) -> Self {
+        self.definition = Some(type_id.into());
+        self
     }
 
     /// Sets an explicit task id. `create_task` rejects ids that are already registered.
@@ -838,8 +1067,7 @@ pub struct TaskScope {
 
 impl TaskScope {
     pub fn new(parent_id: &str) -> Result<Self, String> {
-        let parent =
-            snapshot_arc(parent_id).ok_or_else(|| format!("父任务不存在: {parent_id}"))?;
+        let parent = snapshot_arc(parent_id).ok_or_else(|| format!("父任务不存在: {parent_id}"))?;
         if parent.cancel_requested || parent.is_terminal() {
             return Err(format!("父任务已结束或正在取消: {parent_id}"));
         }
@@ -881,13 +1109,19 @@ impl TaskScope {
 /// Returns an error when the ID already exists, when the task would be its own parent,
 /// or when the requested parent is missing or already terminal.
 pub fn create_task(options: TaskOptions) -> Result<String, String> {
+    create_task_owned(TaskOwner::Core, options)
+}
+
+/// Creates a task with an explicit [`TaskOwner`]. The plugin bridge passes
+/// `TaskOwner::Plugin(id)` so later updates can be ownership-checked.
+pub fn create_task_owned(owner: TaskOwner, options: TaskOptions) -> Result<String, String> {
     let id = options.id.clone().unwrap_or_else(|| {
         let number = TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
         format!("task-{number}-{}", unix_now_seconds())
     });
     let kind = options.kind;
     let parent_id = options.parent_id.clone();
-    let mut task = Task::new(Arc::from(id.as_str()), options);
+    let mut task = Task::new(Arc::from(id.as_str()), owner, options);
     let snapshot = {
         let mut tasks = TASKS.lock().unwrap();
         if tasks.contains_key(&id) {
@@ -900,7 +1134,7 @@ pub fn create_task(options: TaskOptions) -> Result<String, String> {
             let parent = tasks
                 .get(parent_id)
                 .ok_or_else(|| format!("父任务不存在: {parent_id}"))?;
-            if parent.cancel_requested || is_terminal_status(parent.status.as_ref()) {
+            if parent.cancel_requested || parent.status.is_terminal() {
                 return Err(format!("父任务已结束或正在取消: {parent_id}"));
             }
             task.parent_id = Some(Arc::from(parent_id));
@@ -908,7 +1142,7 @@ pub fn create_task(options: TaskOptions) -> Result<String, String> {
         task.touch();
         let snapshot = task.snapshot();
         tasks.insert(id.clone(), task);
-        register_task_control(id.clone(), Arc::new(TaskControl::new()));
+        register_task_control(id.clone(), Arc::new(TaskControl::new(id.as_str())));
         snapshot
     };
 
@@ -1053,7 +1287,7 @@ pub fn update_progress(task_id: &str, update: ProgressUpdate) {
     {
         let mut map = TASKS.lock().unwrap();
         if let Some(t) = map.get_mut(task_id) {
-            if is_terminal_status(t.status.as_ref()) {
+            if t.status.is_terminal() {
                 return;
             }
             stage_changed = stage
@@ -1124,6 +1358,44 @@ pub fn update_progress(task_id: &str, update: ProgressUpdate) {
     }
 }
 
+/// Marks a task as waiting for a dispatch slot (`running -> queued`).
+/// Called by pool workers before they await a scheduler gate.
+pub fn mark_task_queued(task_id: &str) {
+    let mut snapshot_to_emit: Option<TaskSnapshot> = None;
+    {
+        let mut map = TASKS.lock().unwrap();
+        if let Some(t) = map.get_mut(task_id)
+            && t.status == TaskState::Running
+        {
+            t.status = TaskState::Queued;
+            t.touch();
+            snapshot_to_emit = Some(t.snapshot());
+        }
+    }
+    if let Some(snap) = snapshot_to_emit {
+        emit_task_update(snap);
+    }
+}
+
+/// Marks a queued task as executing (`queued -> running`) once the scheduler
+/// gate granted a slot. No-op for tasks that left the queue (e.g. cancelled).
+pub fn mark_task_running(task_id: &str) {
+    let mut snapshot_to_emit: Option<TaskSnapshot> = None;
+    {
+        let mut map = TASKS.lock().unwrap();
+        if let Some(t) = map.get_mut(task_id)
+            && t.status == TaskState::Queued
+        {
+            t.status = TaskState::Running;
+            t.touch();
+            snapshot_to_emit = Some(t.snapshot());
+        }
+    }
+    if let Some(snap) = snapshot_to_emit {
+        emit_task_update(snap);
+    }
+}
+
 /// Refresh transfer telemetry even when the network stream is temporarily silent.
 ///
 /// Byte-driven progress reporting otherwise leaves the last non-zero MB/s visible while a
@@ -1137,7 +1409,7 @@ pub fn refresh_task_telemetry(task_id: &str) -> bool {
         let Some(task) = map.get_mut(task_id) else {
             return false;
         };
-        if is_terminal_status(task.status.as_ref()) {
+        if task.status.is_terminal() {
             return false;
         }
 
@@ -1212,7 +1484,7 @@ pub fn reset_progress(task_id: &str, total: Option<u64>, stage: Option<TaskStage
     {
         let mut map = TASKS.lock().unwrap();
         if let Some(t) = map.get_mut(task_id) {
-            if is_terminal_status(t.status.as_ref()) {
+            if t.status.is_terminal() {
                 return;
             }
             t.total = total;
@@ -1248,7 +1520,7 @@ pub fn set_task_visualization(task_id: &str, visualization: Option<TaskVisualiza
     {
         let mut map = TASKS.lock().unwrap();
         if let Some(task) = map.get_mut(task_id) {
-            if is_terminal_status(task.status.as_ref()) {
+            if task.status.is_terminal() {
                 return false;
             }
             let next_visualization = visualization.unwrap_or_default();
@@ -1272,26 +1544,42 @@ pub fn set_task_visualization(task_id: &str, visualization: Option<TaskVisualiza
     changed
 }
 
-pub fn finish_task(task_id: &str, status: &str, message: Option<String>) {
+pub fn finish_task(task_id: &str, status: TaskFinishStatus, message: Option<String>) {
+    let next = match status {
+        TaskFinishStatus::Completed => TaskState::Succeeded,
+        TaskFinishStatus::Cancelled => TaskState::Cancelled,
+        TaskFinishStatus::Error => TaskState::Failed,
+    };
+    let status = next.as_str();
     let mut snapshot_to_emit: Option<TaskSnapshot> = None;
     let mut was_terminal = false;
     {
         let mut map = TASKS.lock().unwrap();
         if let Some(t) = map.get_mut(task_id) {
-            was_terminal = is_terminal_status(t.status.as_ref());
-            if was_terminal && t.status.as_ref() != status {
+            was_terminal = t.status.is_terminal();
+            // Terminal already: identical outcome is a no-op, a different one is
+            // rejected — the first terminal transition wins.
+            if was_terminal {
+                if t.status != next {
+                    return;
+                }
+            } else if !t.status.can_transition_to(next) {
+                // The transition table guards against e.g. finishing a task that
+                // was already removed from scheduling. Terminal completion of a
+                // live task is always legal from any non-terminal state except
+                // terminal itself.
                 return;
             }
-            t.status = Arc::from(status);
-            t.cancel_requested = status == "cancelled";
+            t.status = next;
+            t.cancel_requested = next == TaskState::Cancelled;
             t.message = message.map(Arc::<str>::from);
             t.paused = false;
-            if status == "completed"
+            if next == TaskState::Succeeded
                 && let Some(total) = t.total
             {
                 t.done = total;
             }
-            if is_terminal_status(status) {
+            if next.is_terminal() {
                 t.speed_ema = 0.0;
                 t.last_done = t.done;
                 t.last_instant = Instant::now();
@@ -1302,7 +1590,7 @@ pub fn finish_task(task_id: &str, status: &str, message: Option<String>) {
                 if visualization.worker_total.is_some() || visualization.worker_active.is_some() {
                     visualization.worker_active = Some(0);
                 }
-                if status == "completed"
+                if next == TaskState::Succeeded
                     && let Some(unit_total) = visualization.unit_total
                 {
                     visualization.unit_done = Some(unit_total);
@@ -1349,17 +1637,23 @@ pub fn cancel_task(task_id: &str) {
         let Some(t) = map.get_mut(task_id) else {
             return;
         };
-        if is_terminal_status(t.status.as_ref()) || t.cancel_requested {
+        if t.status.is_terminal() || t.cancel_requested {
             return;
         }
 
         t.cancel_requested = true;
         t.paused = false;
-        t.status = Arc::<str>::from(if cooperative {
-            "cancelling"
+        let next = if cooperative {
+            TaskState::Cancelling
         } else {
-            "cancelled"
-        });
+            TaskState::Cancelled
+        };
+        if !t.status.can_transition_to(next) {
+            // Terminal race (e.g. finished between the check and this write) —
+            // do not overwrite the terminal state.
+            return;
+        }
+        t.status = next;
         t.message = Some(Arc::<str>::from(if cooperative {
             "正在取消并清理资源"
         } else {
@@ -1404,6 +1698,9 @@ pub fn cancel_task(task_id: &str) {
         cancel_task(&child);
     }
     run_task_cancel_hook(task_id);
+    // A task cancelled while waiting for a pool slot must wake the dispatcher;
+    // otherwise its grant would wait for an unrelated slot release.
+    crate::tasks::scheduler::notify_cancelled(task_id);
 
     if !cooperative {
         let _ = abort_task(task_id);
@@ -1416,65 +1713,117 @@ pub fn is_cancelled(task_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether a pause has been requested for the task's worker. The scheduler uses
+/// this to skip paused waiters without granting them a slot.
+pub fn is_paused(task_id: &str) -> bool {
+    task_control(task_id)
+        .map(|control| control.paused.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
 pub fn pause_task(task_id: &str) -> bool {
     let mut snapshot_to_emit: Option<TaskSnapshot> = None;
-    let mut changed = false;
+    let mut requested = false;
     {
         let mut map = TASKS.lock().unwrap();
         if let Some(t) = map.get_mut(task_id) {
-            if t.supports_pause && !t.cancel_requested && t.status.as_ref() == "running" {
+            // Already paused (or mid-pause): idempotent success.
+            if t.supports_pause
+                && !t.cancel_requested
+                && matches!(t.status, TaskState::Paused | TaskState::Pausing)
+            {
+                requested = true;
+            } else if t.supports_pause
+                && !t.cancel_requested
+                && t.status.can_transition_to(TaskState::Pausing)
+            {
+                // `Pausing` means the request is recorded; the worker flips to
+                // `Paused` when it acknowledges at a safe checkpoint.
                 t.paused = true;
-                t.status = Arc::<str>::from("paused");
+                t.status = TaskState::Pausing;
                 t.speed_ema = 0.0;
                 t.last_done = t.done;
                 t.last_instant = Instant::now();
                 t.touch();
                 snapshot_to_emit = Some(t.snapshot());
-                changed = true;
+                requested = true;
             }
         }
     }
 
-    if let Some(snap) = snapshot_to_emit {
-        emit_task_update(snap);
+    // 状态未变更（不可暂停、已取消或不在运行）时不同步底层控制器，否则
+    // 一个返回 `false` 的暂停请求会把不可暂停任务的控制器留在暂停态。
+    if requested {
+        if let Some(control) = task_control(task_id) {
+            control.pause();
+        }
+        if let Some(snap) = snapshot_to_emit {
+            emit_task_update(snap);
+        }
+        // A workflow's work lives in its children: propagate the pause down the
+        // tree so the active download stops instead of the parent merely
+        // displaying a paused label.
+        let children = non_terminal_children(task_id);
+        for child in children {
+            pause_task(&child);
+        }
     }
 
-    if let Some(control) = task_control(task_id) {
-        control.pause();
-    }
-
-    changed
+    requested
 }
 
 pub fn resume_task(task_id: &str) -> bool {
     let mut snapshot_to_emit: Option<TaskSnapshot> = None;
-    let mut changed = false;
+    let mut resumed = false;
     {
         let mut map = TASKS.lock().unwrap();
         if let Some(t) = map.get_mut(task_id) {
-            if t.supports_pause && !t.cancel_requested && t.status.as_ref() == "paused" {
+            if t.supports_pause
+                && !t.cancel_requested
+                && t.status.can_transition_to(TaskState::Running)
+                && matches!(t.status, TaskState::Paused | TaskState::Pausing)
+            {
                 t.paused = false;
-                t.status = Arc::<str>::from("running");
+                t.status = TaskState::Running;
                 t.speed_ema = 0.0;
                 t.last_done = t.done;
                 t.last_instant = Instant::now();
                 t.last_emit_instant = Instant::now();
                 t.touch();
                 snapshot_to_emit = Some(t.snapshot());
-                changed = true;
+                resumed = true;
             }
         }
     }
 
-    if let Some(snap) = snapshot_to_emit {
-        emit_task_update(snap);
+    // 与 `pause_task` 对称：仅在实际从暂停态恢复时才唤醒工作循环。
+    if resumed {
+        if let Some(control) = task_control(task_id) {
+            control.resume();
+        }
+        if let Some(snap) = snapshot_to_emit {
+            emit_task_update(snap);
+        }
+        // A task paused while waiting for a scheduler slot was skipped by
+        // dispatch; re-run it so the grant is not delayed until an unrelated
+        // release.
+        crate::tasks::scheduler::notify_resumed(task_id);
+        let children = non_terminal_children(task_id);
+        for child in children {
+            resume_task(&child);
+        }
     }
 
-    if let Some(control) = task_control(task_id) {
-        control.resume();
-    }
+    resumed
+}
 
-    changed
+fn non_terminal_children(task_id: &str) -> Vec<String> {
+    let tasks = TASKS.lock().unwrap();
+    tasks
+        .values()
+        .filter(|task| task.parent_id.as_deref() == Some(task_id) && !task.status.is_terminal())
+        .map(|task| task.id.to_string())
+        .collect()
 }
 
 /// Remove a completed workflow with its descendant snapshots and log buffers.
@@ -1497,11 +1846,11 @@ pub fn remove_task(task_id: &str) -> bool {
             }
             cursor += 1;
         }
-        if ids.iter().skip(1).any(|id| {
-            tasks
-                .get(id)
-                .is_some_and(|task| !is_terminal_status(task.status.as_ref()))
-        }) {
+        if ids
+            .iter()
+            .skip(1)
+            .any(|id| tasks.get(id).is_some_and(|task| !task.status.is_terminal()))
+        {
             return false;
         }
         ids
@@ -1543,6 +1892,10 @@ pub async fn wait_for_task_active(task_id: &str) -> bool {
 
 pub async fn wait_until_active(control: &TaskControl) -> bool {
     loop {
+        // 先注册 waiter 再检查标志：`resume()` 走 `notify_waiters()`，不为后注册的
+        // 等待者保留通知；先查标志后等待会在检查与等待的窗口里丢失唤醒。
+        let mut notified = std::pin::pin!(control.notify.notified());
+        notified.as_mut().enable();
         if control.cancelled.load(Ordering::Relaxed) {
             return false;
         }
@@ -1550,8 +1903,41 @@ pub async fn wait_until_active(control: &TaskControl) -> bool {
             return true;
         }
 
-        control.notify.notified().await;
+        // The worker reached a safe checkpoint and is about to suspend: report
+        // the ack so the manager can flip the snapshot from `pausing` to
+        // `paused`. `acknowledge_paused` wakes other waiters, so the freshly
+        // enabled `notified` above is re-armed on the next loop iteration.
+        control.acknowledge_paused();
+        notified.await;
     }
+}
+
+/// Flips any stale `pausing` snapshots to `paused` once the worker acknowledged
+/// the checkpoint. Returns true when the task ended up in `paused`. Callers
+/// should poll this if they need the settled pause state (e.g. UI).
+pub fn settle_paused_state(task_id: &str) -> bool {
+    let mut snapshot_to_emit: Option<TaskSnapshot> = None;
+    let settled = {
+        let mut map = TASKS.lock().unwrap();
+        map.get_mut(task_id).is_some_and(|t| {
+            if t.status != TaskState::Pausing {
+                return t.status == TaskState::Paused;
+            }
+            let acked = task_control(task_id).is_some_and(|control| control.paused_acknowledged());
+            if acked {
+                t.status = TaskState::Paused;
+                t.touch();
+                snapshot_to_emit = Some(t.snapshot());
+                true
+            } else {
+                false
+            }
+        })
+    };
+    if let Some(snap) = snapshot_to_emit {
+        emit_task_update(snap);
+    }
+    settled
 }
 
 /// Reads the cancellation flag straight off an already-resolved control handle.
@@ -1798,7 +2184,10 @@ mod tests {
             operation_category("导入资源包", &TaskStage::INITIALIZING),
             "资源包导入"
         );
-        assert_eq!(operation_category("安装 Minecraft", &TaskStage::INSTALLING), "安装");
+        assert_eq!(
+            operation_category("安装 Minecraft", &TaskStage::INSTALLING),
+            "安装"
+        );
         assert_eq!(safe_operation_field("task-123"), "task-123");
         assert_eq!(
             safe_operation_field(r"C:\\Users\\Alice\\secret"),
@@ -1916,7 +2305,8 @@ mod tests {
         {
             let mut tasks = TASKS.lock().expect("task map lock");
             let task = tasks.get_mut(&task_id).expect("test task");
-            task.status = Arc::from("future-active-state");
+            // The render path must treat every non-terminal state as active.
+            task.status = TaskState::Pausing;
             task.touch();
             emit_task_update(task.snapshot());
         }
@@ -1945,7 +2335,11 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(!waiter.is_finished(), "queued task returned as terminal");
 
-        finish_task(&task_id, "completed", Some("done".to_string()));
+        finish_task(
+            &task_id,
+            TaskFinishStatus::Completed,
+            Some("done".to_string()),
+        );
         let snapshot = waiter
             .await
             .expect("terminal waiter should join")
@@ -1968,10 +2362,12 @@ mod tests {
         .expect("task id must be unique");
         update_progress(
             &task_id,
-            ProgressUpdate::advance(671).total(672).stage(TaskStage::TESTING),
+            ProgressUpdate::advance(671)
+                .total(672)
+                .stage(TaskStage::TESTING),
         );
 
-        finish_task(&task_id, "completed", None);
+        finish_task(&task_id, TaskFinishStatus::Completed, None);
 
         let snapshot = snapshot_arc(&task_id).expect("completed task snapshot");
         assert_eq!(snapshot.status.as_ref(), "completed");
@@ -1988,9 +2384,10 @@ mod tests {
         );
         let hook_ran = Arc::new(AtomicBool::new(false));
         let hook_ran_for_hook = hook_ran.clone();
-        let created_task_id =
-            create_task(TaskOptions::new("取消 Hook 测试", TaskStage::STARTING).id(task_id.clone()))
-                .expect("task id must be unique");
+        let created_task_id = create_task(
+            TaskOptions::new("取消 Hook 测试", TaskStage::STARTING).id(task_id.clone()),
+        )
+        .expect("task id must be unique");
         assert_eq!(created_task_id, task_id);
 
         register_cancel_hook(task_id.clone(), move || {
@@ -2029,7 +2426,11 @@ mod tests {
         assert!(!cancelling.is_terminal());
         assert!(is_cancelled(&task_id));
 
-        finish_task(&task_id, "cancelled", Some("cleanup complete".to_string()));
+        finish_task(
+            &task_id,
+            TaskFinishStatus::Cancelled,
+            Some("cleanup complete".to_string()),
+        );
         let cancelled = snapshot_arc(&task_id).expect("cancelled task snapshot");
         assert_eq!(cancelled.status.as_ref(), "cancelled");
         assert!(cancelled.is_terminal());
@@ -2077,15 +2478,13 @@ mod tests {
             TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         let stage = "task_manager_registered_stage_label_test";
-        let created_task_id =
-            create_task(TaskOptions::new("阶段文案测试", TaskStage::custom(stage)).id(task_id.clone()))
-                .expect("task id must be unique");
+        let created_task_id = create_task(
+            TaskOptions::new("阶段文案测试", TaskStage::custom(stage)).id(task_id.clone()),
+        )
+        .expect("task id must be unique");
         assert_eq!(created_task_id, task_id);
         assert_eq!(
-            snapshot_arc(&task_id)
-                .expect("task snapshot")
-                .stage
-                .code(),
+            snapshot_arc(&task_id).expect("task snapshot").stage.code(),
             stage
         );
         assert!(remove_task(&task_id));
@@ -2094,16 +2493,22 @@ mod tests {
     #[test]
     fn workflow_parentage_is_recorded_before_child_is_visible() {
         let root = create_task(
-            TaskOptions::new(t!("TaskTitle.install_minecraft").to_string(), TaskStage::INSTALLING_GAME)
-                .kind(TaskType::Workflow)
-                .total(100),
+            TaskOptions::new(
+                t!("TaskTitle.install_minecraft").to_string(),
+                TaskStage::INSTALLING_GAME,
+            )
+            .kind(TaskType::Workflow)
+            .total(100),
         )
         .expect("root task");
         let scope = TaskScope::new(&root).expect("root scope");
         let child = scope
             .create_task(
-                TaskOptions::new(t!("TaskTitle.install_levilamina").to_string(), TaskStage::RESOLVING_LEVILAMINA)
-                    .kind(TaskType::Workflow),
+                TaskOptions::new(
+                    t!("TaskTitle.install_levilamina").to_string(),
+                    TaskStage::RESOLVING_LEVILAMINA,
+                )
+                .kind(TaskType::Workflow),
             )
             .expect("child task");
         let root_snapshot = snapshot_arc(&root).expect("root snapshot");
@@ -2124,21 +2529,23 @@ mod tests {
                 .iter()
                 .any(|snapshot| snapshot.id.as_ref() == child)
         );
-        finish_task(&child, "completed", None);
-        finish_task(&root, "completed", None);
+        finish_task(&child, TaskFinishStatus::Completed, None);
+        finish_task(&root, TaskFinishStatus::Completed, None);
         remove_task(&child);
         remove_task(&root);
     }
 
     #[tokio::test]
     async fn task_scope_is_explicit_and_does_not_change_root_creation() {
-        let parent = create_task(TaskOptions::new("parent", TaskStage::RUNNING).kind(TaskType::Workflow))
-            .expect("parent");
+        let parent =
+            create_task(TaskOptions::new("parent", TaskStage::RUNNING).kind(TaskType::Workflow))
+                .expect("parent");
         let scope = TaskScope::new(&parent).expect("scope");
         let (nested, unrelated) = scope
             .run(async {
-                let nested = create_task(TaskOptions::new("child", TaskStage::RUNNING).in_current_scope())
-                    .expect("nested");
+                let nested =
+                    create_task(TaskOptions::new("child", TaskStage::RUNNING).in_current_scope())
+                        .expect("nested");
                 let unrelated = create_task(TaskOptions::new("unrelated", TaskStage::RUNNING))
                     .expect("independent root");
                 (nested, unrelated)
@@ -2149,9 +2556,9 @@ mod tests {
             Some(parent.as_str()),
         );
         assert_eq!(snapshot_arc(&unrelated).unwrap().parent_id, None);
-        finish_task(&nested, "completed", None);
-        finish_task(&unrelated, "completed", None);
-        finish_task(&parent, "completed", None);
+        finish_task(&nested, TaskFinishStatus::Completed, None);
+        finish_task(&unrelated, TaskFinishStatus::Completed, None);
+        finish_task(&parent, TaskFinishStatus::Completed, None);
         assert!(remove_task(&nested));
         assert!(remove_task(&unrelated));
         assert!(remove_task(&parent));
@@ -2159,8 +2566,9 @@ mod tests {
 
     #[tokio::test]
     async fn nested_scope_restores_outer_parent_after_return() {
-        let parent = create_task(TaskOptions::new("parent", TaskStage::RUNNING).kind(TaskType::Workflow))
-            .expect("parent");
+        let parent =
+            create_task(TaskOptions::new("parent", TaskStage::RUNNING).kind(TaskType::Workflow))
+                .expect("parent");
         let scope = TaskScope::new(&parent).expect("outer scope");
         let (middle, inner, sibling) = scope
             .run(async {
@@ -2173,8 +2581,10 @@ mod tests {
                 let inner_scope = TaskScope::new(&middle).expect("inner scope");
                 let inner = inner_scope
                     .run(async {
-                        create_task(TaskOptions::new("inner", TaskStage::RUNNING).in_current_scope())
-                            .expect("inner")
+                        create_task(
+                            TaskOptions::new("inner", TaskStage::RUNNING).in_current_scope(),
+                        )
+                        .expect("inner")
                     })
                     .await;
                 let sibling =
@@ -2196,7 +2606,7 @@ mod tests {
             Some(parent.as_str())
         );
         for id in [&inner, &sibling, &middle, &parent] {
-            finish_task(id, "completed", None);
+            finish_task(id, TaskFinishStatus::Completed, None);
         }
         for id in [&inner, &sibling, &middle, &parent] {
             assert!(remove_task(id));
@@ -2205,17 +2615,19 @@ mod tests {
 
     #[test]
     fn removing_workflow_cleans_descendants_and_logs() {
-        let root = create_task(TaskOptions::new("root", TaskStage::RUNNING).kind(TaskType::Workflow))
-            .expect("root");
-        let child = create_task(TaskOptions::new("child", TaskStage::RUNNING).parent(&root)).expect("child");
+        let root =
+            create_task(TaskOptions::new("root", TaskStage::RUNNING).kind(TaskType::Workflow))
+                .expect("root");
+        let child = create_task(TaskOptions::new("child", TaskStage::RUNNING).parent(&root))
+            .expect("child");
         append_task_log(&child, "child-log");
-        finish_task(&root, "completed", None);
+        finish_task(&root, TaskFinishStatus::Completed, None);
         assert!(
             !remove_task(&root),
             "active child must block removing the workflow"
         );
         assert!(snapshot_arc(&child).is_some());
-        finish_task(&child, "completed", None);
+        finish_task(&child, TaskFinishStatus::Completed, None);
         assert!(remove_task(&root));
         assert!(snapshot_arc(&root).is_none());
         assert!(snapshot_arc(&child).is_none());
@@ -2225,9 +2637,12 @@ mod tests {
     #[test]
     fn nested_task_rejects_missing_parent_without_publishing_a_root_card() {
         let result = create_task(
-            TaskOptions::new(t!("TaskTitle.install_levilamina").to_string(), TaskStage::RESOLVING_LEVILAMINA)
-                .kind(TaskType::Workflow)
-                .parent("nonexistent-workflow"),
+            TaskOptions::new(
+                t!("TaskTitle.install_levilamina").to_string(),
+                TaskStage::RESOLVING_LEVILAMINA,
+            )
+            .kind(TaskType::Workflow)
+            .parent("nonexistent-workflow"),
         );
         assert!(result.is_err());
     }
@@ -2255,5 +2670,169 @@ mod tests {
                 .all(|snapshot| snapshot.id.as_ref() != task_id)
         );
         assert!(remove_task(&task_id));
+    }
+
+    #[test]
+    fn state_transition_table_matches_lifecycle_rules() {
+        // Non-terminal lifecycle.
+        assert!(TaskState::Queued.can_transition_to(TaskState::Running));
+        assert!(TaskState::Running.can_transition_to(TaskState::Pausing));
+        assert!(TaskState::Running.can_transition_to(TaskState::Cancelling));
+        assert!(TaskState::Pausing.can_transition_to(TaskState::Paused));
+        assert!(TaskState::Pausing.can_transition_to(TaskState::Running));
+        assert!(TaskState::Paused.can_transition_to(TaskState::Running));
+        // Commit boundary: a cancelling task may still succeed.
+        assert!(TaskState::Cancelling.can_transition_to(TaskState::Succeeded));
+        // Terminal states never transition.
+        for terminal in [
+            TaskState::Succeeded,
+            TaskState::Failed,
+            TaskState::Cancelled,
+        ] {
+            assert!(terminal.is_terminal());
+            for next in [
+                TaskState::Queued,
+                TaskState::Running,
+                TaskState::Paused,
+                TaskState::Cancelling,
+            ] {
+                assert!(!terminal.can_transition_to(next));
+            }
+        }
+        // Wire strings stay stable for existing consumers.
+        assert_eq!(TaskState::Succeeded.as_str(), "completed");
+        assert_eq!(TaskState::Failed.as_str(), "error");
+        assert_eq!(TaskState::Queued.as_str(), "queued");
+        assert_eq!(TaskState::Pausing.as_str(), "pausing");
+        assert_eq!(
+            TaskState::from_status_str("completed"),
+            Some(TaskState::Succeeded)
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_request_moves_to_pausing_then_settles_after_worker_ack() {
+        let task_id = format!(
+            "task-manager-pausing-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        create_task(
+            TaskOptions::new("暂停状态机测试", TaskStage::RUNNING)
+                .id(task_id.clone())
+                .pausable(true),
+        )
+        .expect("task id must be unique");
+
+        assert!(pause_task(&task_id));
+        let pausing = snapshot_arc(&task_id).expect("pausing snapshot");
+        assert_eq!(pausing.status.as_ref(), "pausing");
+        // No worker ack yet: settle must not flip the state.
+        assert!(!settle_paused_state(&task_id));
+        assert_eq!(snapshot_arc(&task_id).unwrap().status.as_ref(), "pausing");
+
+        // Worker reports it stopped at a checkpoint.
+        let control = task_control(&task_id).expect("control");
+        control.acknowledge_paused();
+        assert!(settle_paused_state(&task_id));
+        let paused = snapshot_arc(&task_id).expect("paused snapshot");
+        assert_eq!(paused.status.as_ref(), "paused");
+
+        // Resume returns to running and clears the ack.
+        assert!(resume_task(&task_id));
+        assert_eq!(snapshot_arc(&task_id).unwrap().status.as_ref(), "running");
+        assert!(!control.paused_acknowledged());
+
+        finish_task(&task_id, TaskFinishStatus::Completed, None);
+        assert!(remove_task(&task_id));
+    }
+
+    #[tokio::test]
+    async fn cancel_while_pausing_enters_cancelling_and_can_complete() {
+        let task_id = format!(
+            "task-manager-pausing-cancel-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        create_task(
+            TaskOptions::new("暂停中取消测试", TaskStage::RUNNING)
+                .id(task_id.clone())
+                .pausable(true),
+        )
+        .expect("task id must be unique");
+        register_cooperative_cancel(task_id.clone());
+
+        assert!(pause_task(&task_id));
+        cancel_task(&task_id);
+        assert_eq!(
+            snapshot_arc(&task_id).unwrap().status.as_ref(),
+            "cancelling"
+        );
+
+        // Cooperative worker confirms the stop.
+        finish_task(&task_id, TaskFinishStatus::Cancelled, None);
+        assert_eq!(snapshot_arc(&task_id).unwrap().status.as_ref(), "cancelled");
+        assert!(remove_task(&task_id));
+    }
+
+    #[tokio::test]
+    async fn cancelling_task_can_still_succeed_at_commit_boundary() {
+        let task_id = format!(
+            "task-manager-commit-boundary-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        create_task(TaskOptions::new("提交边界测试", TaskStage::MAP_WRITE).id(task_id.clone()))
+            .expect("task id must be unique");
+        register_cooperative_cancel(task_id.clone());
+
+        cancel_task(&task_id);
+        assert_eq!(
+            snapshot_arc(&task_id).unwrap().status.as_ref(),
+            "cancelling"
+        );
+
+        // Late cancel request, but the write crossed its commit point.
+        finish_task(&task_id, TaskFinishStatus::Completed, None);
+        assert_eq!(snapshot_arc(&task_id).unwrap().status.as_ref(), "completed");
+        assert!(remove_task(&task_id));
+    }
+
+    #[tokio::test]
+    async fn pausing_a_workflow_pauses_its_active_child_and_resume_restores_it() {
+        let parent_id = format!(
+            "task-manager-workflow-pause-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        create_task(
+            TaskOptions::new("工作流暂停测试", TaskStage::INSTALLING_GAME)
+                .id(parent_id.clone())
+                .pausable(true)
+                .kind(TaskType::Workflow),
+        )
+        .expect("parent id must be unique");
+        let scope = TaskScope::new(&parent_id).expect("scope");
+        let child_id = scope
+            .run(async {
+                create_task(
+                    TaskOptions::new("子下载", TaskStage::DOWNLOADING_GAME)
+                        .pausable(true)
+                        .in_current_scope(),
+                )
+                .expect("child task")
+            })
+            .await;
+
+        // Pausing the workflow must pause the child too: the workflow's work is
+        // the child, so a paused label without a stopped download would lie.
+        assert!(pause_task(&parent_id));
+        assert_eq!(snapshot_arc(&child_id).unwrap().status.as_ref(), "pausing");
+        assert!(is_paused(&child_id));
+
+        assert!(resume_task(&parent_id));
+        assert_eq!(snapshot_arc(&child_id).unwrap().status.as_ref(), "running");
+        assert!(!is_paused(&child_id));
+
+        finish_task(&child_id, TaskFinishStatus::Completed, None);
+        finish_task(&parent_id, TaskFinishStatus::Completed, None);
+        assert!(remove_task(&child_id));
+        assert!(remove_task(&parent_id));
     }
 }

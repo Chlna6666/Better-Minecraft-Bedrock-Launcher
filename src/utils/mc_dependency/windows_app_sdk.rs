@@ -12,8 +12,7 @@ use tracing::{info, warn};
 
 use super::{
     DependencyEvent, download_file, emit_log, emit_progress, is_installed,
-    start_dependency_install_task,
-    wait_for_condition,
+    start_dependency_install_task, wait_for_condition,
 };
 
 pub const RELEASES_URL: &str =

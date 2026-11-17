@@ -1,7 +1,7 @@
+use crate::tasks::TaskStage;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::debug;
-use crate::tasks::TaskStage;
 
 use crate::downloads::integrity::verify_download_integrity;
 use crate::downloads::manager::{DownloadOptions, DownloadRequest, DownloaderManager};
@@ -9,8 +9,8 @@ use crate::downloads::wu_client::WuClient;
 use crate::http::proxy::clients::download_client;
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskOptions, TaskType, create_task, finish_task, is_cancelled,
-    register_abort_handle, update_progress,
+    ProgressUpdate, TaskFinishStatus, TaskOptions, TaskType, create_task, finish_task,
+    is_cancelled, register_abort_handle, update_progress,
 };
 use crate::utils::file_ops;
 
@@ -142,8 +142,7 @@ pub async fn download_appx(
     force_download: Option<bool>,
     download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
-    let client =
-        download_client().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    let client = download_client().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
     let parts: Vec<&str> = package_id.split('_').collect();
     if parts.len() != 2 {
@@ -159,14 +158,19 @@ pub async fn download_appx(
     let force = force_download.unwrap_or(false);
     if !force && local_file_ok(&dest, &md5).await {
         let task_id = create_task(
-            TaskOptions::new(t!("TaskTitle.download_game_package").to_string(), TaskStage::READY).generic_title()
-                .detail(task_target_name(&safe_name))
-                .pausable(true)
-                .kind(TaskType::Transfer)
-                .in_current_scope(),
+            TaskOptions::new(
+                t!("TaskTitle.download_game_package").to_string(),
+                TaskStage::READY,
+            )
+            .generic_title()
+            .detail(task_target_name(&safe_name))
+            .definition("core.download.http")
+            .pausable(true)
+            .kind(TaskType::Transfer)
+            .in_current_scope(),
         )?;
         let dest_str = dest.to_string_lossy().to_string();
-        finish_task(&task_id, "completed", Some(dest_str));
+        finish_task(&task_id, TaskFinishStatus::Completed, Some(dest_str));
         return Ok(task_id);
     }
     if force && dest.exists() {
@@ -175,11 +179,16 @@ pub async fn download_appx(
     }
 
     let task_id = create_task(
-        TaskOptions::new(t!("TaskTitle.download_game_package").to_string(), TaskStage::READY).generic_title()
-            .detail(task_target_name(&safe_name))
-            .pausable(true)
-            .kind(TaskType::Transfer)
-            .in_current_scope(),
+        TaskOptions::new(
+            t!("TaskTitle.download_game_package").to_string(),
+            TaskStage::READY,
+        )
+        .generic_title()
+        .detail(task_target_name(&safe_name))
+        .definition("core.download.http")
+        .pausable(true)
+        .kind(TaskType::Transfer)
+        .in_current_scope(),
     )?;
 
     let update_id = update_id.to_string();
@@ -192,7 +201,7 @@ pub async fn download_appx(
             if is_cancelled(&task_id_clone) {
                 finish_task(
                     &task_id_clone,
-                    "cancelled",
+                    TaskFinishStatus::Cancelled,
                     Some("cancelled before start".into()),
                 );
                 return;
@@ -207,7 +216,7 @@ pub async fn download_appx(
                 Err(error) => {
                     finish_task(
                         &task_id_clone,
-                        "error",
+                        TaskFinishStatus::Error,
                         Some(format!("获取下载地址失败: {error:?}")),
                     );
                     return;
@@ -217,21 +226,36 @@ pub async fn download_appx(
             let candidates = match file_result {
                 CoreResult::Success(files) => files.into_iter().map(|file| file.url).collect(),
                 CoreResult::Cancelled => {
-                    finish_task(&task_id_clone, "cancelled", Some("取消下载".into()));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Cancelled,
+                        Some("取消下载".into()),
+                    );
                     return;
                 }
                 CoreResult::Error(error) => {
-                    finish_task(&task_id_clone, "error", Some(format!("{error:?}")));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Error,
+                        Some(format!("{error:?}")),
+                    );
                     return;
                 }
             };
 
             if is_cancelled(&task_id_clone) {
-                finish_task(&task_id_clone, "cancelled", Some("取消下载".into()));
+                finish_task(
+                    &task_id_clone,
+                    TaskFinishStatus::Cancelled,
+                    Some("取消下载".into()),
+                );
                 return;
             }
 
-            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage(TaskStage::STARTING));
+            update_progress(
+                &task_id_clone,
+                ProgressUpdate::advance(0).stage(TaskStage::STARTING),
+            );
             let mut options = download_options.unwrap_or_default();
             if options.md5_expected.is_none() {
                 options.md5_expected = md5;
@@ -245,25 +269,37 @@ pub async fn download_appx(
             match res {
                 Ok(CoreResult::Success(final_path)) => {
                     let dest_str = final_path.to_string_lossy().to_string();
-                    finish_task(&task_id_clone, "completed", Some(dest_str));
+                    finish_task(&task_id_clone, TaskFinishStatus::Completed, Some(dest_str));
                 }
                 Ok(CoreResult::Cancelled) => {
-                    finish_task(&task_id_clone, "cancelled", Some("user cancelled".into()));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Cancelled,
+                        Some("user cancelled".into()),
+                    );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
                 Ok(CoreResult::Error(e)) => {
-                    finish_task(&task_id_clone, "error", Some(format!("{:?}", e)));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Error,
+                        Some(format!("{:?}", e)),
+                    );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
                 Err(e) => {
-                    finish_task(&task_id_clone, "error", Some(format!("{:?}", e)));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Error,
+                        Some(format!("{:?}", e)),
+                    );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
             }
         }) {
             Ok(abort_handle) => abort_handle,
             Err(error) => {
-                finish_task(&task_id, "error", Some(error));
+                finish_task(&task_id, TaskFinishStatus::Error, Some(error));
                 return Ok(task_id);
             }
         };
@@ -323,8 +359,7 @@ async fn download_resource_to_dir(
     download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
     let urls = crate::github::configured_download_urls(&url)?;
-    let client =
-        download_client().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    let client = download_client().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
     fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
     let safe_name = safe_file_name(&file_name);
@@ -333,14 +368,18 @@ async fn download_resource_to_dir(
     let force = force_download.unwrap_or(false);
     if !force && local_file_ok(&dest, &md5).await {
         let task_id = create_task(
-            TaskOptions::new(t!("TaskTitle.download_resource_file").to_string(), TaskStage::READY).generic_title()
-                .detail(task_target_name(&safe_name))
-                .pausable(true)
-                .kind(TaskType::Transfer)
-                .in_current_scope(),
+            TaskOptions::new(
+                t!("TaskTitle.download_resource_file").to_string(),
+                TaskStage::READY,
+            )
+            .generic_title()
+            .detail(task_target_name(&safe_name))
+            .pausable(true)
+            .kind(TaskType::Transfer)
+            .in_current_scope(),
         )?;
         let dest_str = dest.to_string_lossy().to_string();
-        finish_task(&task_id, "completed", Some(dest_str));
+        finish_task(&task_id, TaskFinishStatus::Completed, Some(dest_str));
         return Ok(task_id);
     }
     if force && dest.exists() {
@@ -349,11 +388,15 @@ async fn download_resource_to_dir(
     }
 
     let task_id = create_task(
-        TaskOptions::new(t!("TaskTitle.download_resource_file").to_string(), TaskStage::READY).generic_title()
-            .detail(task_target_name(&safe_name))
-            .pausable(true)
-            .kind(TaskType::Transfer)
-            .in_current_scope(),
+        TaskOptions::new(
+            t!("TaskTitle.download_resource_file").to_string(),
+            TaskStage::READY,
+        )
+        .generic_title()
+        .detail(task_target_name(&safe_name))
+        .pausable(true)
+        .kind(TaskType::Transfer)
+        .in_current_scope(),
     )?;
 
     let manager = DownloaderManager::with_client(client);
@@ -365,13 +408,16 @@ async fn download_resource_to_dir(
             if is_cancelled(&task_id_clone) {
                 finish_task(
                     &task_id_clone,
-                    "cancelled",
+                    TaskFinishStatus::Cancelled,
                     Some("cancelled before start".into()),
                 );
                 return;
             }
 
-            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage(TaskStage::STARTING));
+            update_progress(
+                &task_id_clone,
+                ProgressUpdate::advance(0).stage(TaskStage::STARTING),
+            );
 
             let mut options = download_options.unwrap_or_default();
             if options.md5_expected.is_none() {
@@ -384,25 +430,37 @@ async fn download_resource_to_dir(
             match res {
                 Ok(CoreResult::Success(final_path)) => {
                     let dest_str = final_path.to_string_lossy().to_string();
-                    finish_task(&task_id_clone, "completed", Some(dest_str));
+                    finish_task(&task_id_clone, TaskFinishStatus::Completed, Some(dest_str));
                 }
                 Ok(CoreResult::Cancelled) => {
-                    finish_task(&task_id_clone, "cancelled", Some("user cancelled".into()));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Cancelled,
+                        Some("user cancelled".into()),
+                    );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
                 Ok(CoreResult::Error(e)) => {
-                    finish_task(&task_id_clone, "error", Some(format!("{:?}", e)));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Error,
+                        Some(format!("{:?}", e)),
+                    );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
                 Err(e) => {
-                    finish_task(&task_id_clone, "error", Some(format!("{:?}", e)));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Error,
+                        Some(format!("{:?}", e)),
+                    );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
             }
         }) {
             Ok(abort_handle) => abort_handle,
             Err(error) => {
-                finish_task(&task_id, "error", Some(error));
+                finish_task(&task_id, TaskFinishStatus::Error, Some(error));
                 return Ok(task_id);
             }
         };
@@ -423,8 +481,7 @@ pub async fn download_for_task(
     download_options: Option<DownloadOptions>,
 ) -> Result<PathBuf, String> {
     let urls = crate::github::configured_download_urls(&url)?;
-    let client =
-        download_client().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    let client = download_client().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
     let cache_dir = file_ops::curseforge_downloads_dir();
     fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
@@ -459,8 +516,7 @@ pub async fn download_resource_to_cache(
     download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
     let urls = crate::github::configured_download_urls(&url)?;
-    let client =
-        download_client().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    let client = download_client().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
     let cache_dir = file_ops::curseforge_downloads_dir();
     fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
@@ -468,11 +524,15 @@ pub async fn download_resource_to_cache(
     let dest = cache_dir.join(&safe_name);
 
     let task_id = create_task(
-        TaskOptions::new(t!("TaskTitle.download_cache_file").to_string(), TaskStage::READY).generic_title()
-            .detail(task_target_name(&safe_name))
-            .pausable(true)
-            .kind(TaskType::Transfer)
-            .in_current_scope(),
+        TaskOptions::new(
+            t!("TaskTitle.download_cache_file").to_string(),
+            TaskStage::READY,
+        )
+        .generic_title()
+        .detail(task_target_name(&safe_name))
+        .pausable(true)
+        .kind(TaskType::Transfer)
+        .in_current_scope(),
     )?;
 
     let manager = DownloaderManager::with_client(client);
@@ -484,13 +544,16 @@ pub async fn download_resource_to_cache(
             if is_cancelled(&task_id_clone) {
                 finish_task(
                     &task_id_clone,
-                    "cancelled",
+                    TaskFinishStatus::Cancelled,
                     Some("cancelled before start".into()),
                 );
                 return;
             }
 
-            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage(TaskStage::STARTING));
+            update_progress(
+                &task_id_clone,
+                ProgressUpdate::advance(0).stage(TaskStage::STARTING),
+            );
 
             let mut options = download_options.unwrap_or_default();
             if options.md5_expected.is_none() {
@@ -503,25 +566,37 @@ pub async fn download_resource_to_cache(
             match res {
                 Ok(CoreResult::Success(final_path)) => {
                     let dest_str = final_path.to_string_lossy().to_string();
-                    finish_task(&task_id_clone, "completed", Some(dest_str));
+                    finish_task(&task_id_clone, TaskFinishStatus::Completed, Some(dest_str));
                 }
                 Ok(CoreResult::Cancelled) => {
-                    finish_task(&task_id_clone, "cancelled", Some("user cancelled".into()));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Cancelled,
+                        Some("user cancelled".into()),
+                    );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
                 Ok(CoreResult::Error(e)) => {
-                    finish_task(&task_id_clone, "error", Some(format!("{:?}", e)));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Error,
+                        Some(format!("{:?}", e)),
+                    );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
                 Err(e) => {
-                    finish_task(&task_id_clone, "error", Some(format!("{:?}", e)));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Error,
+                        Some(format!("{:?}", e)),
+                    );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
             }
         }) {
             Ok(abort_handle) => abort_handle,
             Err(error) => {
-                finish_task(&task_id, "error", Some(error));
+                finish_task(&task_id, TaskFinishStatus::Error, Some(error));
                 return Ok(task_id);
             }
         };
@@ -533,7 +608,7 @@ pub async fn download_resource_to_cache(
 #[cfg(test)]
 mod tests {
     use super::download_appx;
-    use crate::tasks::task_manager::{TaskSnapshot, snapshot_arc, remove_task};
+    use crate::tasks::task_manager::{TaskSnapshot, remove_task, snapshot_arc};
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::Once;
@@ -581,7 +656,7 @@ mod tests {
 
                 if !matches!(
                     snapshot.status.as_ref(),
-                    "running" | "paused" | "cancelling"
+                    "running" | "paused" | "pausing" | "cancelling" | "queued"
                 ) {
                     return snapshot;
                 }

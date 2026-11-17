@@ -1,31 +1,30 @@
 use super::canvas::*;
 use super::editor::*;
 use super::input::{optional_integer, zoom_scale};
-use super::menus::context_menu_chunk;
-use super::render_support::{
-    default_gpu_backend, default_backend, gpu_status_text,
-    gpu_backend_status_zh, tile_count_for_viewport, ui_tile_memory_budget_bytes,
-    visible_batch_size,
-};
-use super::viewport::clamp_stage_position;
 use super::interactions::*;
 use super::layout::{hud_stack_rects, top_toolbar_layout};
 use super::lifecycle::*;
 use super::mcstructure;
+use super::menus::context_menu_chunk;
 use super::model::*;
 use super::overlays::*;
 use super::paint::*;
 use super::players::*;
 use super::prelude::*;
 use super::query_cache::*;
+use super::render_support::{
+    default_backend, default_gpu_backend, gpu_backend_status_zh, gpu_status_text,
+    tile_count_for_viewport, ui_tile_memory_budget_bytes, visible_batch_size,
+};
 use super::selection::{RightSelectionIntent, SelectionResizeHandle};
 use super::slime_scan_dialog::*;
 use super::tile_cache::*;
-use super::viewport_tiles::*;
 use super::tile_render::*;
 use super::tile_state::*;
 use super::view::{MapLayerKind, map_render_layer_order, window_size_for_display};
+use super::viewport::clamp_stage_position;
 use super::viewport::*;
+use super::viewport_tiles::*;
 
 #[::core::prelude::v1::test]
 fn load_risk_queries_all_three_sources_without_enabling_other_markers() {
@@ -49,7 +48,7 @@ fn successful_map_write_remains_completed_after_late_cancel_request() {
     cancel.cancel();
     assert_eq!(
         map_operation_status_for_result(&Ok::<(), String>(()), &cancel, "missing-task"),
-        "completed"
+        TaskFinishStatus::Completed
     );
     assert_eq!(
         map_operation_status_for_result(
@@ -57,7 +56,7 @@ fn successful_map_write_remains_completed_after_late_cancel_request() {
             &cancel,
             "missing-task"
         ),
-        "cancelled"
+        TaskFinishStatus::Cancelled
     );
 }
 
@@ -132,13 +131,8 @@ fn decoded_rgba_tile_wraps_without_channel_swap() {
         pixel_format: TilePixelFormat::Rgba8,
     };
     let (image, _pixel_format, _width, _height, estimated_bytes) =
-        tile_image(
-            tile.width,
-            tile.height,
-            tile.pixel_format,
-            tile.pixels,
-        )
-        .expect("render decoded tile");
+        tile_image(tile.width, tile.height, tile.pixel_format, tile.pixels)
+            .expect("render decoded tile");
 
     assert_eq!(estimated_bytes, pixels.len());
     assert_eq!(image.as_bytes(0).expect("resident image bytes"), pixels);
@@ -161,13 +155,8 @@ fn decoded_shared_rgba_tile_reuses_pixel_storage() {
     };
 
     let (image, _pixel_format, _width, _height, estimated_bytes) =
-        tile_image(
-            tile.width,
-            tile.height,
-            tile.pixel_format,
-            tile.pixels,
-        )
-        .expect("render decoded tile");
+        tile_image(tile.width, tile.height, tile.pixel_format, tile.pixels)
+            .expect("render decoded tile");
 
     assert_eq!(estimated_bytes, pixels.len());
     assert!(std::ptr::eq(
@@ -366,10 +355,7 @@ fn chunk_transfer_task_progress_sync_resets_on_phase_change() {
 #[::core::prelude::v1::test]
 fn interactive_render_defaults_request_gpu_with_cpu_fallback() {
     assert_eq!(default_backend(), RenderBackend::Auto);
-    assert_eq!(
-        default_gpu_backend(),
-        RenderGpuBackend::Auto
-    );
+    assert_eq!(default_gpu_backend(), RenderGpuBackend::Auto);
 
     let options = interactive_render_options(
         default_backend(),
@@ -561,7 +547,10 @@ fn low_zoom_paint_bounds_remain_span_limited_when_visible_bounds_are_large() {
     let paint_bounds =
         paint_tile_bounds(viewport, layout, INTERACTION_RETAIN_RADIUS).expect("paint bounds");
 
-    assert!(tile_bounds_area(paint_bounds) < tile_bounds_area(visible.expand(INTERACTION_RETAIN_RADIUS)));
+    assert!(
+        tile_bounds_area(paint_bounds)
+            < tile_bounds_area(visible.expand(INTERACTION_RETAIN_RADIUS))
+    );
     assert!(tile_bounds_contains(paint_bounds, center));
 }
 
@@ -861,8 +850,8 @@ fn retained_tile_filter_matches_circular_retain_tiles() {
     } else {
         clamp_tile_count(&mut retained_bounds, center, max_tiles);
     }
-    let radius_squared = i64::from(INTERACTION_RETAIN_RADIUS)
-        .saturating_mul(i64::from(INTERACTION_RETAIN_RADIUS));
+    let radius_squared =
+        i64::from(INTERACTION_RETAIN_RADIUS).saturating_mul(i64::from(INTERACTION_RETAIN_RADIUS));
     let filter = retained_filter(viewport, layout, INTERACTION_RETAIN_RADIUS).expect("filter");
 
     for z in expanded.min_z..=expanded.max_z {
@@ -1640,10 +1629,7 @@ fn slime_farm_player_scope_is_bounded_and_uses_floor_for_negative_coordinates() 
 #[::core::prelude::v1::test]
 fn advanced_slime_scan_presets_are_bounded() {
     assert_eq!(AdvancedSlimeScanPreset::Nearby.radius_blocks(), 1_024);
-    assert_eq!(
-        AdvancedSlimeScanPreset::Nearby.query_chunk_count(),
-        16_641
-    );
+    assert_eq!(AdvancedSlimeScanPreset::Nearby.query_chunk_count(), 16_641);
     assert_eq!(
         AdvancedSlimeScanPreset::Regional.query_chunk_count(),
         66_049
@@ -3040,10 +3026,7 @@ fn visible_work_limit_reduces_work_while_dragging() {
         visible_work_limit(TileWorkMode::Dragging),
         INTERACTION_VISIBLE_TILE_FOREGROUND_WORK_LIMIT
     );
-    assert!(
-        visible_work_limit(TileWorkMode::Steady)
-            > visible_work_limit(TileWorkMode::Dragging)
-    );
+    assert!(visible_work_limit(TileWorkMode::Steady) > visible_work_limit(TileWorkMode::Dragging));
 }
 
 #[::core::prelude::v1::test]
@@ -4626,7 +4609,8 @@ fn imported_structure_targets_rotate_relative_offsets() {
     let size = bedrock_world::structure::McStructureSize::new(33, 4, 49).expect("structure size");
     let imported_structure = ImportedStructureData {
         structure: Arc::new(
-            bedrock_world::structure::McStructureFile::new_air(size, [0, 64, 0]).expect("air structure"),
+            bedrock_world::structure::McStructureFile::new_air(size, [0, 64, 0])
+                .expect("air structure"),
         ),
         source_anchor,
         origin_y: 64,
@@ -5266,10 +5250,7 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
         let transformed = reopened
             .chunk(transformed_target)
             .expect("read persisted transformed target chunk");
-        for version_tag in [
-            ChunkRecordTag::Version,
-            ChunkRecordTag::VersionOld,
-        ] {
+        for version_tag in [ChunkRecordTag::Version, ChunkRecordTag::VersionOld] {
             for expected in expected_records
                 .iter()
                 .filter(|record| record.key.tag == version_tag)

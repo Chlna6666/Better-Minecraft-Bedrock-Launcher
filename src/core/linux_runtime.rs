@@ -297,12 +297,7 @@ pub(crate) fn check_linux_runtime() -> LinuxRuntimeCheck {
                     runner: None,
                     missing_reason: Some(Arc::from(reason)),
                     install_plan: missing_i386_loader
-                        .then(|| {
-                            plan_i386_glibc_install(
-                                &os_release,
-                                distribution_name.clone(),
-                            )
-                        })
+                        .then(|| plan_i386_glibc_install(&os_release, distribution_name.clone()))
                         .flatten(),
                     distribution_name,
                     manual_install_hint: if missing_i386_loader {
@@ -388,8 +383,11 @@ pub(crate) fn start_proton_gdk_install_latest(source: ProtonGdkSource) -> String
         ProtonGdkSource::WeatherOs | ProtonGdkSource::LukasPah => "latest",
     };
     let task_id = create_task(
-        TaskOptions::new(t!("TaskTitle.install_proton_gdk").to_string(), TaskStage::RESOLVING_PROTON_GDK)
-            .detail(format!("{} · {release_label}", source.repository())),
+        TaskOptions::new(
+            t!("TaskTitle.install_proton_gdk").to_string(),
+            TaskStage::RESOLVING_PROTON_GDK,
+        )
+        .detail(format!("{} · {release_label}", source.repository())),
     )
     .expect("task id must be unique");
     if source == ProtonGdkSource::RoundMcDev {
@@ -411,18 +409,18 @@ pub(crate) fn start_proton_gdk_install_latest(source: ProtonGdkSource) -> String
         match install_latest_proton_gdk(source, &worker_task_id).await {
             Ok(install_path) => finish_task(
                 &worker_task_id,
-                "completed",
+                TaskFinishStatus::Completed,
                 Some(format!("Proton-GDK 已安装到 {}", install_path.display())),
             ),
             Err(error) => {
                 append_task_log(&worker_task_id, format!("安装失败：{error}"));
-                finish_task(&worker_task_id, "error", Some(error));
+                finish_task(&worker_task_id, TaskFinishStatus::Error, Some(error));
             }
         }
     }) {
         finish_task(
             &task_id,
-            "error",
+            TaskFinishStatus::Error,
             Some(format!("无法调度 Proton-GDK 安装任务：{error}")),
         );
     }
@@ -1382,8 +1380,11 @@ fn infer_proton_gdk_source(directory_name: &str) -> Option<ProtonGdkSource> {
 pub(crate) fn start_linux_runtime_install(plan: LinuxInstallPlan) -> String {
     let command_preview = plan.command_preview();
     let task_id = create_task(
-        TaskOptions::new(t!("TaskTitle.install_linux_runtime").to_string(), TaskStage::AWAITING_LINUX_AUTHORIZATION)
-            .detail(format!("{} · {}", plan.distribution_name, command_preview,)),
+        TaskOptions::new(
+            t!("TaskTitle.install_linux_runtime").to_string(),
+            TaskStage::AWAITING_LINUX_AUTHORIZATION,
+        )
+        .detail(format!("{} · {}", plan.distribution_name, command_preview,)),
     )
     .expect("task id must be unique");
     append_task_log(&task_id, format!("将执行：{command_preview}"));
@@ -1399,15 +1400,15 @@ pub(crate) fn start_linux_runtime_install(plan: LinuxInstallPlan) -> String {
         match outcome {
             Ok(()) => finish_task(
                 &task_id_for_task,
-                "completed",
+                TaskFinishStatus::Completed,
                 Some("兼容环境安装完成".to_string()),
             ),
-            Err(error) => finish_task(&task_id_for_task, "error", Some(error)),
+            Err(error) => finish_task(&task_id_for_task, TaskFinishStatus::Error, Some(error)),
         }
     }) {
         finish_task(
             &task_id,
-            "error",
+            TaskFinishStatus::Error,
             Some(format!("无法调度 Linux 兼容环境安装任务：{error}")),
         );
     }
@@ -1453,15 +1454,11 @@ async fn run_install_command(plan: &LinuxInstallPlan, task_id: &str) -> Result<(
     let stdout_task = child
         .stdout
         .take()
-        .map(|stdout| {
-            spawn_install_output_pump(task_id.to_string(), stdout, OutputStream::Stdout)
-        });
+        .map(|stdout| spawn_install_output_pump(task_id.to_string(), stdout, OutputStream::Stdout));
     let stderr_task = child
         .stderr
         .take()
-        .map(|stderr| {
-            spawn_install_output_pump(task_id.to_string(), stderr, OutputStream::Stderr)
-        });
+        .map(|stderr| spawn_install_output_pump(task_id.to_string(), stderr, OutputStream::Stderr));
     let status = child
         .wait()
         .await
@@ -1763,11 +1760,10 @@ mod tests {
     use super::{
         PROTON_GDK_METADATA_FILE, PROTON_GDK_METADATA_SCHEMA_VERSION, ProtonGdkIdentity,
         ProtonGdkRunnerMetadata, ProtonGdkSource, ROUNDMCDEV_ASSETS, ROUNDMCDEV_RELEASE_NAME,
-        ROUNDMCDEV_RELEASE_TAG, find_gdk_proton_root, find_proton_file,
-        infer_proton_gdk_source, installed_proton_gdk_runner, parse_os_release,
-        promote_staged_proton_gdk, proton_gdk_install_directory_name, proton_gdk_runner_root,
-        remove_managed_runner, roundmcdev_bundle_is_complete,
-        runner_install_root_for_path,
+        ROUNDMCDEV_RELEASE_TAG, find_gdk_proton_root, find_proton_file, infer_proton_gdk_source,
+        installed_proton_gdk_runner, parse_os_release, promote_staged_proton_gdk,
+        proton_gdk_install_directory_name, proton_gdk_runner_root, remove_managed_runner,
+        roundmcdev_bundle_is_complete, runner_install_root_for_path,
     };
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1856,10 +1852,7 @@ mod tests {
             infer_proton_gdk_source("weather-os-GDK-Proton10-32"),
             Some(ProtonGdkSource::WeatherOs)
         );
-        assert_eq!(
-            infer_proton_gdk_source("GDK-Proton10-32"),
-            None
-        );
+        assert_eq!(infer_proton_gdk_source("GDK-Proton10-32"), None);
     }
 
     #[test]
@@ -1905,11 +1898,8 @@ mod tests {
         )
         .expect("staging directory should be created");
 
-        let removed = remove_managed_runner(
-            &managed_root.join("umu/umu-run"),
-            &runners_root,
-        )
-        .expect("managed runner removal should succeed");
+        let removed = remove_managed_runner(&managed_root.join("umu/umu-run"), &runners_root)
+            .expect("managed runner removal should succeed");
 
         assert_eq!(removed, Some(managed_root.clone()));
         assert!(!managed_root.exists());

@@ -109,7 +109,7 @@ impl LauncherState {
         if let Some(snapshot) = self.last_snapshot.as_ref() {
             return matches!(
                 snapshot.status.as_ref(),
-                "running" | "paused" | "cancelling"
+                "running" | "paused" | "pausing" | "cancelling" | "queued"
             );
         }
 

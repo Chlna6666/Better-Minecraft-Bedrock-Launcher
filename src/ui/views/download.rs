@@ -313,6 +313,12 @@ fn apply_task_event_to_download_state(
                     state.local_files.insert(file_name);
                     return None;
                 }
+                // A user-requested cancellation is not a failure: clean up the
+                // operation and stay silent instead of toasting "operation
+                // failed". Real failures still surface their message.
+                if snapshot.status.as_ref() == "cancelled" {
+                    return None;
+                }
 
                 let message = snapshot
                     .message

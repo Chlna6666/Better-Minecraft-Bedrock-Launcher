@@ -1,6 +1,6 @@
 //! 3D writes participate in the map document's existing write ownership.
-use crate::tasks::TaskStage;
 use super::*;
+use crate::tasks::TaskStage;
 
 fn publish_outcome(
     editor: Option<WeakEntity<World3dEditorView>>,
@@ -46,9 +46,11 @@ impl View {
             World3dBlockEditKind::Fill { block_name } => {
                 t!("MapViewer.world3d.edit.label_fill", block = block_name).to_string()
             }
-            World3dBlockEditKind::Ellipsoid { block_name } => {
-                t!("MapViewer.world3d.edit.label_ellipsoid_fill", block = block_name).to_string()
-            }
+            World3dBlockEditKind::Ellipsoid { block_name } => t!(
+                "MapViewer.world3d.edit.label_ellipsoid_fill",
+                block = block_name
+            )
+            .to_string(),
             World3dBlockEditKind::Clear => {
                 t!("MapViewer.world3d.edit.label_clear_selection").to_string()
             }
@@ -88,8 +90,8 @@ impl View {
                 .await;
             // Always finish the task, even if the UI was closed or metadata reloaded.
             let (status, message) = match &result {
-                Ok((_, message, _)) => ("completed", message.clone()),
-                Err(error) => ("failed", error.clone()),
+                Ok((_, message, _)) => (TaskFinishStatus::Completed, message.clone()),
+                Err(error) => (TaskFinishStatus::Error, error.clone()),
             };
             task_manager::finish_task(&task_id, status, Some(message));
             if let Some(view) = handle.upgrade() {

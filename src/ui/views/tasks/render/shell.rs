@@ -87,6 +87,8 @@ pub(crate) fn task_visual_accent(kind: TaskVisualKind, colors: &ThemeColors) -> 
 
 pub(crate) fn task_status_accent(status: &str, kind: TaskVisualKind, colors: &ThemeColors) -> Hsla {
     match status {
+        "queued" => colors.text_muted,
+        "pausing" => colors.stat_orange_text,
         "paused" => colors.stat_orange_text,
         "cancelling" | "error" => colors.danger,
         "completed" => colors.stat_green_text,

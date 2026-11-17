@@ -7,14 +7,14 @@ fn screen_image_bounds(
 }
 
 use super::input::{self, initialize_values};
-use super::render_support::{
-    default_gpu_backend, default_backend, gpu_status_text, probe_blocking_pool,
-    request_system_memory_refresh, tile_cache_memory_limit, ui_tile_memory_budget_bytes,
-    visible_batch_size,
-};
 use super::model::*;
 use super::players::cached_item_catalog_snapshot;
 use super::prelude::*;
+use super::render_support::{
+    default_backend, default_gpu_backend, gpu_status_text, probe_blocking_pool,
+    request_system_memory_refresh, tile_cache_memory_limit, ui_tile_memory_budget_bytes,
+    visible_batch_size,
+};
 use super::tile_cache::decoded_tile_byte_len;
 use super::tile_occupancy::*;
 use super::tile_render::*;
@@ -206,9 +206,7 @@ impl View {
         else {
             return;
         };
-        self.image_eviction_generation = self
-            .image_eviction_generation
-            .saturating_add(1);
+        self.image_eviction_generation = self.image_eviction_generation.saturating_add(1);
         let generation = self.image_eviction_generation;
         let mut delay = next_ready_at.saturating_duration_since(Instant::now());
         if should_defer_image_evictions(self.viewport_interaction_active()) {
@@ -1133,11 +1131,7 @@ impl View {
             slime_runs: self.professional.slime_overlay_runs.clone(),
             selection: self.professional.selection,
             paste_preview: self.professional.paste_preview.clone(),
-            paste_controls_inset_top: if self.import_active() {
-                68.0
-            } else {
-                12.0
-            },
+            paste_controls_inset_top: if self.import_active() { 68.0 } else { 12.0 },
             map_frame_preview: self.map_frame_grid_preview(),
             paste_preview_images: self.paste_preview_images.clone(),
             paste_preview_images_generation: self.paste_preview_images_generation,
@@ -1177,11 +1171,7 @@ impl View {
                 .map(|cache| Arc::as_ptr(cache) as usize),
             selection: self.professional.selection,
             paste_preview: self.professional.paste_preview.clone(),
-            paste_controls_inset_top: if self.import_active() {
-                68.0
-            } else {
-                12.0
-            },
+            paste_controls_inset_top: if self.import_active() { 68.0 } else { 12.0 },
             map_frame_preview: self.map_frame_grid_preview(),
             paste_preview_images_generation: self.paste_preview_images_generation,
             highlighted_slime_candidate: self.professional.highlighted_slime_candidate.clone(),
@@ -1285,15 +1275,15 @@ impl View {
                     .active_render_request_tiles
                     .get(request_id)
                     .map(|requested_tiles| {
-                        tile_request_overlaps_viewport(requested_tiles, visible_bounds, retain_filter)
+                        tile_request_overlaps_viewport(
+                            requested_tiles,
+                            visible_bounds,
+                            retain_filter,
+                        )
                     })
                     .unwrap_or_else(|| {
                         visible_bounds.is_some_and(|bounds| {
-                            render_batch_matches_viewport(
-                                *request_center,
-                                current_center,
-                                bounds,
-                            )
+                            render_batch_matches_viewport(*request_center, current_center, bounds)
                         })
                     });
                 (!intersects_viewport).then_some(*request_id)
@@ -1789,12 +1779,8 @@ impl View {
                     // level.dat parsing is filesystem-backed too. Keep it on the same background
                     // metadata path instead of delaying map-window construction on the UI thread.
                     let spawn_center = spawn_center(&world_path);
-                    let occupancy = load_index(
-                        world_path,
-                        dimension,
-                        layout,
-                        metadata_cancel_for_task,
-                    );
+                    let occupancy =
+                        load_index(world_path, dimension, layout, metadata_cancel_for_task);
                     (occupancy, spawn_center)
                 })
                 .await;
@@ -1820,8 +1806,8 @@ impl View {
                         if let Some((block_x, block_z)) = pending_center_block {
                             this.viewport.center_on_block(block_x, block_z, layout);
                         } else if recenter
-                            && let Some((block_x, block_z)) = spawn_center
-                                .or_else(|| center_block(result.index.as_ref()))
+                            && let Some((block_x, block_z)) =
+                                spawn_center.or_else(|| center_block(result.index.as_ref()))
                         {
                             this.viewport.center_on_block(block_x, block_z, layout);
                         }
@@ -1984,11 +1970,7 @@ impl View {
             .iter()
             .copied()
             .filter(|coord| {
-                tile_requires_foreground_work(
-                    &self.tile_chunk_index,
-                    &self.tile_manager,
-                    *coord,
-                )
+                tile_requires_foreground_work(&self.tile_chunk_index, &self.tile_manager, *coord)
             })
             .take(work_limit.saturating_add(1))
             .collect::<Vec<_>>();
@@ -2153,11 +2135,7 @@ impl View {
             .iter()
             .copied()
             .filter(|coord| {
-                tile_requires_foreground_work(
-                    &self.tile_chunk_index,
-                    &self.tile_manager,
-                    *coord,
-                )
+                tile_requires_foreground_work(&self.tile_chunk_index, &self.tile_manager, *coord)
             })
             .take(work_limit.saturating_add(1))
             .collect::<Vec<_>>();
@@ -2330,13 +2308,9 @@ impl View {
         for coord in &visible_tiles {
             let chunk_positions = match self.tile_chunk_index.get(coord) {
                 Some(positions) => Some(Arc::clone(positions)),
-                None => bounded_tile_chunk_positions(
-                    dimension,
-                    *coord,
-                    layout,
-                    self.chunk_bounds,
-                )
-                .ok(),
+                None => {
+                    bounded_tile_chunk_positions(dimension, *coord, layout, self.chunk_bounds).ok()
+                }
             };
             if chunk_positions
                 .as_deref()
@@ -2562,11 +2536,9 @@ impl View {
                     render_cancel_for_owner.cancel();
                     return Ok(());
                 };
-                let error = result
-                    .err()
-                    .unwrap_or_else(|| {
-                        t!("MapViewer.world3d.lifecycle.composite_stream_ended").to_string()
-                    });
+                let error = result.err().unwrap_or_else(|| {
+                    t!("MapViewer.world3d.lifecycle.composite_stream_ended").to_string()
+                });
                 view.update(cx, move |this, cx| {
                     if this.viewport_composite_request_id != Some(request_id)
                         || !this.render_request_is_current(
@@ -2581,7 +2553,8 @@ impl View {
                     this.viewport_composite_signature = None;
                     this.viewport_composite_request_id = None;
                     if composite_error_is_cancelled(&error) {
-                        this.status = t!("MapViewer.world3d.lifecycle.viewport_changed_recompositing");
+                        this.status =
+                            t!("MapViewer.world3d.lifecycle.viewport_changed_recompositing");
                         tracing::debug!(request_id, "map_viewer viewport_composite_cancelled");
                     } else {
                         this.status = SharedString::from(error.clone());
@@ -2814,12 +2787,8 @@ impl View {
             let chunk_positions = match self.tile_chunk_index.get(&coord) {
                 Some(positions) => Some(Arc::clone(positions)),
                 None => {
-                    match bounded_tile_chunk_positions(
-                        dimension,
-                        coord,
-                        layout,
-                        self.chunk_bounds,
-                    ) {
+                    match bounded_tile_chunk_positions(dimension, coord, layout, self.chunk_bounds)
+                    {
                         Ok(positions) => Some(positions),
                         Err(error) => {
                             Self::drop_render_image(
@@ -2837,8 +2806,10 @@ impl View {
                 .is_some_and(|positions| positions.is_empty())
             {
                 Self::drop_render_image(
-                    self.tile_manager
-                        .mark_invalid(coord, t!("MapViewer.world3d.lifecycle.tile_index_confirms_no_chunks")),
+                    self.tile_manager.mark_invalid(
+                        coord,
+                        t!("MapViewer.world3d.lifecycle.tile_index_confirms_no_chunks"),
+                    ),
                     cx,
                 );
                 continue;
@@ -3573,7 +3544,11 @@ impl View {
             .to_string(),
             None => completion.message,
         };
-        task_manager::finish_task(&completion.task_id, "completed", Some(message));
+        task_manager::finish_task(
+            &completion.task_id,
+            TaskFinishStatus::Completed,
+            Some(message),
+        );
         probe_blocking_pool("map_paste_refresh_complete");
     }
 }

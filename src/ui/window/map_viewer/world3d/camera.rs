@@ -43,7 +43,6 @@ pub(super) struct World3dNavigation(Arc<Mutex<NavigationState>>);
 
 struct NavigationState {
     camera: World3dCamera,
-    render_origin: [i32; 3],
     keys_down: HashSet<String>,
     last_motion_at: Option<Instant>,
 }
@@ -52,7 +51,6 @@ impl World3dNavigation {
     pub(super) fn new(camera: World3dCamera) -> Self {
         Self(Arc::new(Mutex::new(NavigationState {
             camera,
-            render_origin: [0; 3],
             keys_down: HashSet::new(),
             last_motion_at: None,
         })))
@@ -78,10 +76,6 @@ impl World3dNavigation {
         state.camera
     }
 
-    pub(super) fn set_origin(&self, origin: [i32; 3]) {
-        self.state().render_origin = origin;
-    }
-
     pub(super) fn set_key(&self, key: &str, pressed: bool) -> bool {
         let mut state = self.state();
         let changed = if pressed {
@@ -101,10 +95,12 @@ impl World3dNavigation {
         state.last_motion_at = None;
     }
 
-    pub(super) fn sample_camera(&self, now: Instant) -> Camera {
+    // Geometry and camera must use the same immutable snapshot origin, even
+    // while the GPU owner is still presenting a previously queued SceneView.
+    pub(super) fn sample_camera(&self, now: Instant, render_origin: [i32; 3]) -> Camera {
         let mut state = self.state();
         state.tick_motion(now);
-        state.camera.gpu_camera(state.render_origin)
+        state.camera.gpu_camera(render_origin)
     }
 }
 
@@ -409,21 +405,36 @@ mod tests {
         navigation.set_key("w", true);
         let frame = Instant::now() + std::time::Duration::from_millis(16);
         let initial_z = navigation.camera().position[2];
-        let sampled = navigation.sample_camera(frame);
+        let sampled = navigation.sample_camera(frame, [0; 3]);
         assert!(sampled.eye.z < initial_z as f32);
         navigation.clear_keys();
         let stopped_z = navigation.camera().position[2];
-        navigation.sample_camera(frame + std::time::Duration::from_millis(16));
+        navigation.sample_camera(frame + std::time::Duration::from_millis(16), [0; 3]);
         assert_eq!(navigation.camera().position[2], stopped_z);
         navigation.update_camera(|camera| camera.position[0] = 512.5);
-        navigation.set_origin([512, 0, 0]);
         assert_close(
             navigation
-                .sample_camera(frame + std::time::Duration::from_millis(32))
+                .sample_camera(frame + std::time::Duration::from_millis(32), [512, 0, 0])
                 .eye
                 .x,
             0.5,
         );
+    }
+
+    #[test]
+    fn queued_camera_samples_preserve_each_scene_origin() {
+        let mut camera = World3dCamera::default();
+        camera.position = [512.5, 80., 0.5];
+        let navigation = World3dNavigation::new(camera);
+        let old_navigation = navigation.clone();
+        let old_sample = move |now| old_navigation.sample_camera(now, [0; 3]);
+        // The UI has rebased its next snapshot, while the GPU owner can still
+        // present the previously queued snapshot through its retained sampler.
+        let new_navigation = navigation.clone();
+        let new_sample = move |now| new_navigation.sample_camera(now, [512, 0, 0]);
+        let frame = Instant::now();
+        assert_close(old_sample(frame).eye.x, 512.5);
+        assert_close(new_sample(frame).eye.x, 0.5);
     }
 
     #[test]

@@ -499,14 +499,13 @@ fn streaming_move<D: Device + TextureTransferDevice>(
     state.dirty_sections.clear();
     state.dirty_lights.clear();
     let mut scene = std::sync::Arc::new(scene);
-    let camera_at = |position: [f64; 3]| {
+    let camera_at = |position: [f64; 3], render_origin: [i32; 3]| {
+        let relative: [f32; 3] = std::array::from_fn(|axis| {
+            (position[axis] - f64::from(render_origin[axis])) as f32
+        });
         Camera::perspective(
-            Vec3::new(position[0] as f32, position[1] as f32, position[2] as f32),
-            Vec3::new(
-                position[0] as f32 + 24.,
-                position[1] as f32 - 28.,
-                position[2] as f32,
-            ),
+            Vec3::new(relative[0], relative[1], relative[2]),
+            Vec3::new(relative[0] + 24., relative[1] - 28., relative[2]),
             Vec3::Y,
             70_f32.to_radians(),
             0.05,
@@ -531,7 +530,7 @@ fn streaming_move<D: Device + TextureTransferDevice>(
             ),
         }
     };
-    let configured = SceneView::new(scene.clone(), camera_at(*position))
+    let configured = SceneView::new(scene.clone(), camera_at(*position, current_origin))
         .with_voxel_shader()
         .with_culling_bounds(Some(culling_bounds(*position, current_origin)))
         .map(|view| view.with_continuous_presentation())
@@ -605,7 +604,7 @@ fn streaming_move<D: Device + TextureTransferDevice>(
             current_origin = next_origin;
             view = view
                 .with_scene(scene.clone())
-                .with_camera(camera_at(*position))
+                .with_camera(camera_at(*position, current_origin))
                 .with_culling_bounds(Some(culling_bounds(*position, current_origin)))
                 .expect("streaming culling bounds");
             if state.textures.len() != published_texture_count {
@@ -616,7 +615,7 @@ fn streaming_move<D: Device + TextureTransferDevice>(
             }
             publishes += 1;
         } else {
-            view = view.with_camera(camera_at(*position));
+            view = view.with_camera(camera_at(*position, current_origin));
         }
         registry_ms.push(started.elapsed().as_secs_f64() * 1000.);
 

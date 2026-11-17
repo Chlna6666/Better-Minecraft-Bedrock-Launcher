@@ -3,15 +3,16 @@ use crate::config::settings::read;
 use crate::core::minecraft::appx::utils::{patch_manifest, read_manifest_identity};
 use crate::core::minecraft::key_patcher::{PatchResult, patch_path};
 use crate::result::CoreResult;
+use crate::tasks::TaskStage;
 use crate::tasks::runtime::spawn_archive_task;
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskOptions, TaskType, create_task, finish_task, update_progress,
+    ProgressUpdate, TaskFinishStatus, TaskOptions, TaskType, create_task, finish_task,
+    update_progress,
 };
 use crate::utils::file_ops;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info};
-use crate::tasks::TaskStage;
 
 fn task_target_name(name: &str, fallback: &str) -> String {
     Path::new(name)
@@ -25,7 +26,7 @@ fn task_target_name(name: &str, fallback: &str) -> String {
 fn finish_error(task_id: &str, message: impl Into<String>) {
     let message = message.into();
     error!(task_id, message = %message, "archive task failed");
-    finish_task(task_id, "error", Some(message));
+    finish_task(task_id, TaskFinishStatus::Error, Some(message));
 }
 
 fn remove_file_if_exists(path: &Path, context: &str) -> bool {
@@ -53,10 +54,15 @@ pub async fn import_appx(source_path: String, file_name: Option<String>) -> Resu
         .map(|name| task_target_name(name, "导入安装包"))
         .unwrap_or_else(|| task_target_name(&source_path, "导入安装包"));
     let task_id = create_task(
-        TaskOptions::new(t!("TaskTitle.import_package").to_string(), TaskStage::QUEUED).generic_title()
-            .detail(task_label)
-            .kind(TaskType::Stage)
-            .in_current_scope(),
+        TaskOptions::new(
+            t!("TaskTitle.import_package").to_string(),
+            TaskStage::QUEUED,
+        )
+        .generic_title()
+        .detail(task_label)
+        .definition("core.install.zip")
+        .kind(TaskType::Stage)
+        .in_current_scope(),
     )?;
 
     if let Err(error) = spawn_archive_task(task_id.clone(), {
@@ -72,7 +78,10 @@ pub async fn import_appx(source_path: String, file_name: Option<String>) -> Resu
 }
 
 async fn run_import_appx_task(task_id: String, source_path: String, file_name: Option<String>) {
-    update_progress(&task_id, ProgressUpdate::advance(0).stage(TaskStage::STARTING));
+    update_progress(
+        &task_id,
+        ProgressUpdate::advance(0).stage(TaskStage::STARTING),
+    );
 
     let source = Path::new(&source_path);
     if !source.exists() || !source.is_file() {
@@ -145,13 +154,17 @@ async fn run_import_appx_task(task_id: String, source_path: String, file_name: O
             }
             finish_task(
                 &task_id,
-                "completed",
+                TaskFinishStatus::Completed,
                 Some(format!("已导入到 {}", extract_to.display())),
             );
             crate::core::version::catalog_events::notify_local_versions_changed();
         }
         Ok(CoreResult::Cancelled) => {
-            finish_task(&task_id, "cancelled", Some("user cancelled".into()));
+            finish_task(
+                &task_id,
+                TaskFinishStatus::Cancelled,
+                Some("user cancelled".into()),
+            );
         }
         Ok(CoreResult::Error(error)) => {
             finish_error(&task_id, format!("extract error: {error}"));
@@ -183,8 +196,10 @@ pub async fn extract_zip_appx(
 
     let task_target = task_target_name(&file_name, "游戏版本");
     let task_id = create_task(
-        TaskOptions::new(t!("TaskTitle.install_game").to_string(), TaskStage::QUEUED).generic_title()
+        TaskOptions::new(t!("TaskTitle.install_game").to_string(), TaskStage::QUEUED)
+            .generic_title()
             .detail(task_target)
+            .definition("core.install.minecraft")
             .kind(TaskType::Stage)
             .in_current_scope(),
     )?;
@@ -192,13 +207,7 @@ pub async fn extract_zip_appx(
     if let Err(error) = spawn_archive_task(task_id.clone(), {
         let task_id = task_id.clone();
         async move {
-            run_extract_zip_appx_task(
-                task_id,
-                file_name,
-                destination,
-                options,
-            )
-            .await;
+            run_extract_zip_appx_task(task_id, file_name, destination, options).await;
         }
     }) {
         finish_error(&task_id, error);
@@ -213,7 +222,10 @@ async fn run_extract_zip_appx_task(
     destination: String,
     options: AppxExtractOptions,
 ) {
-    update_progress(&task_id, ProgressUpdate::advance(0).stage(TaskStage::STARTING));
+    update_progress(
+        &task_id,
+        ProgressUpdate::advance(0).stage(TaskStage::STARTING),
+    );
 
     let versions_root = file_ops::bmcbl_subdir("versions");
     if let Err(error) = fs::create_dir_all(&versions_root) {
@@ -281,13 +293,17 @@ async fn run_extract_zip_appx_task(
 
             finish_task(
                 &task_id,
-                "completed",
+                TaskFinishStatus::Completed,
                 Some(format!("已安装到 {}", extract_to.display())),
             );
             crate::core::version::catalog_events::notify_local_versions_changed();
         }
         Ok(CoreResult::Cancelled) => {
-            finish_task(&task_id, "cancelled", Some("user cancelled".into()));
+            finish_task(
+                &task_id,
+                TaskFinishStatus::Cancelled,
+                Some("user cancelled".into()),
+            );
         }
         Ok(CoreResult::Error(error)) => {
             finish_error(&task_id, format!("extract error: {error}"));
@@ -299,7 +315,10 @@ async fn run_extract_zip_appx_task(
 }
 
 async fn finish_appx_install(task_id: &str, extract_to: &Path, remove_signature: bool) -> bool {
-    update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::PREPARING_FILES));
+    update_progress(
+        task_id,
+        ProgressUpdate::advance(0).stage(TaskStage::PREPARING_FILES),
+    );
 
     if remove_signature {
         let signature_path = extract_to.join("AppxSignature.p7x");
@@ -316,7 +335,10 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, remove_signature:
 
     if let Ok(config) = read() {
         if config.game.modify_appx_manifest {
-            update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::PATCHING));
+            update_progress(
+                task_id,
+                ProgressUpdate::advance(0).stage(TaskStage::PATCHING),
+            );
             match patch_manifest(extract_to) {
                 Ok(true) => debug!("Manifest 修改成功: {}", extract_to.display()),
                 Ok(false) => debug!("未找到 Manifest，跳过修改: {}", extract_to.display()),
@@ -348,7 +370,10 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, remove_signature:
         return true;
     }
 
-    update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::PATCHING));
+    update_progress(
+        task_id,
+        ProgressUpdate::advance(0).stage(TaskStage::PATCHING),
+    );
     let extract_clone = extract_to.to_path_buf();
     match crate::tasks::runtime::blocking::run_archive(move || patch_path(&extract_clone)).await {
         Ok(Ok(PatchResult::Patched(backup_path))) => {
@@ -373,7 +398,7 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, remove_signature:
 #[cfg(test)]
 mod tests {
     use super::{AppxExtractOptions, ZipConflictPolicy, extract_zip_appx};
-    use crate::tasks::task_manager::{TaskSnapshot, snapshot_arc, remove_task};
+    use crate::tasks::task_manager::{TaskSnapshot, remove_task, snapshot_arc};
     use crate::utils::file_ops;
     use std::path::Path;
     use std::sync::Arc;
@@ -411,7 +436,7 @@ mod tests {
 
                 if !matches!(
                     snapshot.status.as_ref(),
-                    "running" | "paused" | "cancelling"
+                    "running" | "paused" | "pausing" | "cancelling" | "queued"
                 ) {
                     return snapshot;
                 }

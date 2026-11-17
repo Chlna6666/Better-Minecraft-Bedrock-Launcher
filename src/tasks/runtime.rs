@@ -1,8 +1,8 @@
+use crate::tasks::TaskStage;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use crate::tasks::TaskStage;
 
 use once_cell::sync::OnceCell;
 use rayon::{ThreadPool, ThreadPoolBuilder};
@@ -11,16 +11,15 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
 use tracing::{debug, error, warn};
 
+use super::scheduler::{self, TaskPool};
 use super::task_manager::{
-    ProgressUpdate, TaskOptions, TaskVisibility, create_task, finish_task, snapshot_arc,
-    is_cancelled, refresh_task_telemetry, register_abort_handle,
-    register_cooperative_cancel, remove_task, update_progress,
+    ProgressUpdate, TaskFinishStatus, TaskOptions, TaskVisibility, create_task, finish_task,
+    is_cancelled, mark_task_queued, mark_task_running, refresh_task_telemetry, register_abort_handle,
+    register_cooperative_cancel, remove_task, snapshot_arc, task_priority, update_progress,
 };
 
 const DEFAULT_BLOCKING_TIMEOUT: Duration = Duration::from_secs(30);
 const FALLBACK_LOGICAL_THREADS: usize = 2;
-const MAX_CONCURRENT_DOWNLOAD_TASKS: usize = 2;
-const MAX_CONCURRENT_ARCHIVE_TASKS: usize = 2;
 
 static APP_RUNTIME: OnceCell<AppRuntime> = OnceCell::new();
 
@@ -32,8 +31,6 @@ pub struct AppRuntime {
     archive: OnceCell<Runtime>,
     cpu: ThreadPool,
     blocking_slots: Arc<Semaphore>,
-    download_slots: Arc<Semaphore>,
-    archive_slots: Arc<Semaphore>,
 }
 
 fn logical_thread_count() -> usize {
@@ -89,8 +86,6 @@ impl AppRuntime {
             archive: OnceCell::new(),
             cpu,
             blocking_slots: Arc::new(Semaphore::new(background_threads)),
-            download_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOAD_TASKS)),
-            archive_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_ARCHIVE_TASKS)),
         })
     }
 
@@ -229,18 +224,21 @@ where
 {
     register_cooperative_cancel(task_id.clone());
     let runtime = app_runtime()?;
-    let task_slots = Arc::clone(&runtime.download_slots);
+    let priority = task_priority(&task_id).unwrap_or_default();
     let task_id_for_worker = task_id.clone();
     let join_handle = runtime.spawn_download(async move {
         update_progress(
             &task_id_for_worker,
             ProgressUpdate::advance(0).stage(TaskStage::QUEUED),
         );
-        let Ok(_slot) = task_slots.acquire_owned().await else {
+        mark_task_queued(&task_id_for_worker);
+        let Some(_slot) =
+            scheduler::acquire(TaskPool::Download, &task_id_for_worker, priority).await
+        else {
             if !is_cancelled(&task_id_for_worker) {
                 finish_task(
                     &task_id_for_worker,
-                    "error",
+                    TaskFinishStatus::Error,
                     Some("下载队列已关闭".to_string()),
                 );
             }
@@ -250,11 +248,12 @@ where
         if is_cancelled(&task_id_for_worker) {
             finish_task(
                 &task_id_for_worker,
-                "cancelled",
+                TaskFinishStatus::Cancelled,
                 Some("cancelled before start".to_string()),
             );
             return;
         }
+        mark_task_running(&task_id_for_worker);
 
         let telemetry_task_id = task_id_for_worker.clone();
         let telemetry_watchdog = tokio::spawn(async move {
@@ -282,7 +281,7 @@ where
                 error!(task_id = %task_id, ?error, "download task failed before finishing");
                 finish_task(
                     &task_id,
-                    "error",
+                    TaskFinishStatus::Error,
                     Some(format!("下载任务异常结束: {error}")),
                 );
             }
@@ -298,18 +297,21 @@ where
 {
     register_cooperative_cancel(task_id.clone());
     let runtime = app_runtime()?;
-    let task_slots = Arc::clone(&runtime.archive_slots);
+    let priority = task_priority(&task_id).unwrap_or_default();
     let task_id_for_worker = task_id.clone();
     let join_handle = runtime.spawn_archive(async move {
         update_progress(
             &task_id_for_worker,
             ProgressUpdate::advance(0).stage(TaskStage::QUEUED),
         );
-        let Ok(_slot) = task_slots.acquire_owned().await else {
+        mark_task_queued(&task_id_for_worker);
+        let Some(_slot) =
+            scheduler::acquire(TaskPool::Archive, &task_id_for_worker, priority).await
+        else {
             if !is_cancelled(&task_id_for_worker) {
                 finish_task(
                     &task_id_for_worker,
-                    "error",
+                    TaskFinishStatus::Error,
                     Some("安装队列已关闭".to_string()),
                 );
             }
@@ -319,11 +321,12 @@ where
         if is_cancelled(&task_id_for_worker) {
             finish_task(
                 &task_id_for_worker,
-                "cancelled",
+                TaskFinishStatus::Cancelled,
                 Some("cancelled before start".to_string()),
             );
             return;
         }
+        mark_task_running(&task_id_for_worker);
         future.await;
     })?;
 
@@ -333,7 +336,11 @@ where
                 let still_running =
                     snapshot_arc(&task_id).is_some_and(|snapshot| !snapshot.is_terminal());
                 if still_running && !is_cancelled(&task_id) {
-                    finish_task(&task_id, "error", Some("安装任务未完成就退出".to_string()));
+                    finish_task(
+                        &task_id,
+                        TaskFinishStatus::Error,
+                        Some("安装任务未完成就退出".to_string()),
+                    );
                 }
             }
             Err(error) if error.is_cancelled() => {}
@@ -341,7 +348,7 @@ where
                 error!(task_id = %task_id, ?error, "archive task failed before finishing");
                 finish_task(
                     &task_id,
-                    "error",
+                    TaskFinishStatus::Error,
                     Some(format!("安装任务异常结束: {error}")),
                 );
             }
@@ -394,7 +401,7 @@ struct HiddenTaskGuard {
 }
 
 impl HiddenTaskGuard {
-    fn complete(mut self, status: &str, message: Option<String>) {
+    fn complete(mut self, status: TaskFinishStatus, message: Option<String>) {
         self.completed = true;
         finish_task(&self.task_id, status, message);
         remove_task(&self.task_id);
@@ -409,7 +416,7 @@ impl Drop for HiddenTaskGuard {
         self.abort_handle.abort();
         finish_task(
             &self.task_id,
-            "cancelled",
+            TaskFinishStatus::Cancelled,
             Some("调用方已取消任务".to_string()),
         );
         remove_task(&self.task_id);
@@ -511,7 +518,7 @@ pub mod blocking {
                     elapsed_ms = started_at.elapsed().as_millis(),
                     "hidden blocking task completed"
                 );
-                guard.complete("completed", None);
+                guard.complete(TaskFinishStatus::Completed, None);
             }
             Err(error) => {
                 warn!(
@@ -521,7 +528,7 @@ pub mod blocking {
                     %error,
                     "hidden blocking task failed"
                 );
-                guard.complete("error", Some(error.clone()));
+                guard.complete(TaskFinishStatus::Error, Some(error.clone()));
             }
         }
 

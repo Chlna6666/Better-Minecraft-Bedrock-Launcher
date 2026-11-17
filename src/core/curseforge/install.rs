@@ -3,10 +3,11 @@ use crate::core::minecraft::assets::{
     inspect_import_file,
 };
 use crate::core::minecraft::paths::{BuildType, Edition};
-use crate::tasks::task_manager::{
-    TaskOptions, create_task, finish_task, is_cancelled, register_abort_handle, reset_progress,
-};
 use crate::tasks::TaskStage;
+use crate::tasks::task_manager::{
+    TaskFinishStatus, TaskOptions, create_task, finish_task, is_cancelled, register_abort_handle,
+    reset_progress,
+};
 
 #[derive(Clone, Debug)]
 pub struct CurseForgeInstallTarget {
@@ -52,21 +53,21 @@ pub fn start_install(request: CurseForgeInstallRequest) -> Result<String, String
             match result {
                 Ok(result) => finish_task(
                     &worker_task_id,
-                    "completed",
+                    TaskFinishStatus::Completed,
                     Some(format!(
                         "已安装 {} 个内容包到 {}",
                         result.imported_count, result.target_version
                     )),
                 ),
                 Err(error) if is_cancelled(&worker_task_id) => {
-                    finish_task(&worker_task_id, "cancelled", Some(error))
+                    finish_task(&worker_task_id, TaskFinishStatus::Cancelled, Some(error))
                 }
-                Err(error) => finish_task(&worker_task_id, "error", Some(error)),
+                Err(error) => finish_task(&worker_task_id, TaskFinishStatus::Error, Some(error)),
             }
         }) {
             Ok(abort_handle) => abort_handle,
             Err(error) => {
-                finish_task(&task_id, "error", Some(error.clone()));
+                finish_task(&task_id, TaskFinishStatus::Error, Some(error.clone()));
                 return Err(error);
             }
         };

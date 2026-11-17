@@ -1,13 +1,14 @@
-use gpui::SharedString;
+use crate::tasks::TaskStage;
+use crate::tasks::task_manager::TaskFinishStatus;
 use anyhow::{Context as _, Result};
+use gpui::SharedString;
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
 use tracing::debug;
-use crate::tasks::TaskStage;
 
-use crate::core::version::launch_versions::{self, LaunchVersionEntry};
 use crate::core::version::installed::scan;
+use crate::core::version::launch_versions::{self, LaunchVersionEntry};
 use crate::utils::file_ops;
 
 pub async fn list() -> Result<Vec<LaunchVersionEntry>> {
@@ -99,7 +100,7 @@ where
         if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
             crate::tasks::task_manager::finish_task(
                 &worker_task_id,
-                "cancelled",
+                TaskFinishStatus::Cancelled,
                 Some("版本操作已取消".to_string()),
             );
             return;
@@ -113,7 +114,7 @@ where
             Ok(Ok(VersionMutationOutcome::Completed(message))) => {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
-                    "completed",
+                    TaskFinishStatus::Completed,
                     Some(message),
                 );
             }
@@ -121,18 +122,34 @@ where
                 if crate::tasks::task_manager::is_cancelled(&worker_task_id)
                     && error.contains("已取消") =>
             {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "cancelled", Some(error));
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    TaskFinishStatus::Cancelled,
+                    Some(error),
+                );
             }
             Ok(Err(error)) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    TaskFinishStatus::Error,
+                    Some(error),
+                );
             }
             Err(error) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    TaskFinishStatus::Error,
+                    Some(error),
+                );
             }
         }
     })
     .map_err(|error| {
-        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        crate::tasks::task_manager::finish_task(
+            &task_id,
+            TaskFinishStatus::Error,
+            Some(error.clone()),
+        );
         error
     })?;
 
@@ -144,9 +161,9 @@ where
                     .is_some_and(|snapshot| !snapshot.is_terminal());
                 if unfinished {
                     let status = if crate::tasks::task_manager::is_cancelled(&monitor_task_id) {
-                        "cancelled"
+                        crate::tasks::task_manager::TaskFinishStatus::Cancelled
                     } else {
-                        "error"
+                        crate::tasks::task_manager::TaskFinishStatus::Error
                     };
                     crate::tasks::task_manager::finish_task(
                         &monitor_task_id,
@@ -157,9 +174,9 @@ where
             }
             Err(error) => {
                 let status = if crate::tasks::task_manager::is_cancelled(&monitor_task_id) {
-                    "cancelled"
+                    crate::tasks::task_manager::TaskFinishStatus::Cancelled
                 } else {
-                    "error"
+                    crate::tasks::task_manager::TaskFinishStatus::Error
                 };
                 crate::tasks::task_manager::finish_task(
                     &monitor_task_id,
@@ -169,7 +186,11 @@ where
             }
         }
     }) {
-        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        crate::tasks::task_manager::finish_task(
+            &task_id,
+            TaskFinishStatus::Error,
+            Some(error.clone()),
+        );
         return Err(error);
     }
 

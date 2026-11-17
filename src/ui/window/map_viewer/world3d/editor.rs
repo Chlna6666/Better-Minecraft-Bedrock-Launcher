@@ -1777,7 +1777,6 @@ impl World3dEditorView {
             self.scene_view = Some(Arc::new(scene_view));
         }
         self.render_origin = next_origin;
-        self.navigation.set_origin(next_origin);
         if next_origin != previous_origin {
             self.update_target_scene();
         }
@@ -3605,8 +3604,10 @@ impl World3dEditorView {
                 }
             };
             let navigation = self.navigation.clone();
-            let snapshot =
-                Arc::new(snapshot.with_camera_sampler(move |now| navigation.sample_camera(now)));
+            let render_origin = self.render_origin;
+            let snapshot = Arc::new(snapshot.with_camera_sampler(move |now| {
+                navigation.sample_camera(now, render_origin)
+            }));
             viewport = viewport.child(
                 div()
                     .absolute()
@@ -3631,6 +3632,7 @@ impl World3dEditorView {
         {
             let camera = self.camera.gpu_camera(self.render_origin);
             let navigation = self.navigation.clone();
+            let render_origin = self.render_origin;
             viewport = viewport.child(
                 div()
                     .absolute()
@@ -3638,7 +3640,7 @@ impl World3dEditorView {
                     .child(gpui_3d::scene_view::element(Arc::new(
                         scene_view
                             .with_camera(camera)
-                            .with_camera_sampler(move |now| navigation.sample_camera(now)),
+                            .with_camera_sampler(move |now| navigation.sample_camera(now, render_origin)),
                     ))),
             );
         }

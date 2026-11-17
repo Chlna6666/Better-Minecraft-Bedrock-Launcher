@@ -1,14 +1,14 @@
-use super::menus::context_menu_chunk;
-use super::render_support::probe_blocking_pool;
 use super::mcstructure;
+use super::menus::context_menu_chunk;
 use super::model::*;
 use super::panels::*;
 use super::players::*;
 use super::prelude::*;
+use super::render_support::probe_blocking_pool;
 use super::tile_state::*;
-use crate::tasks::task_manager::ProgressUpdate;
-use rayon::prelude::*;
 use crate::tasks::TaskStage;
+use crate::tasks::task_manager::{ProgressUpdate, TaskFinishStatus};
+use rayon::prelude::*;
 
 mod records;
 
@@ -76,22 +76,19 @@ impl View {
         let target_for_task = target.clone();
         let query_budget = self.map_query_budget.clone();
         self.status = t!(
-                "MapViewer.edit.reading_operation",
-                operation = target.operation_label()
-            );
+            "MapViewer.edit.reading_operation",
+            operation = target.operation_label()
+        );
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let editor = WorldEditor::open(
-                        &world_path,
-                        bedrock_world::OpenOptions::default(),
-                    )
-                    .map_err(|error| error.to_string())?;
-                    load_edit_detail(&editor, target_for_task)
-                        .map_err(|error| error.to_string())
+                    let editor =
+                        WorldEditor::open(&world_path, bedrock_world::OpenOptions::default())
+                            .map_err(|error| error.to_string())?;
+                    load_edit_detail(&editor, target_for_task).map_err(|error| error.to_string())
                 })
                 .await;
             let Some(view) = handle.upgrade() else {
@@ -203,11 +200,10 @@ impl View {
             (&target, &action),
             (EditTarget::Player(_), EditAction::Delete)
         );
-        self.status =
-            t!(
-                "MapViewer.edit.writing_operation",
-                operation = edit_action_status(&action, &target)
-            );
+        self.status = t!(
+            "MapViewer.edit.writing_operation",
+            operation = edit_action_status(&action, &target)
+        );
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -223,13 +219,9 @@ impl View {
                         &target_for_task,
                         &action_for_task,
                     )?);
-                    let result = run_edit_action(
-                        &editor,
-                        target_for_task,
-                        action_for_task,
-                        document_text,
-                    )
-                    .map_err(|error| error.to_string());
+                    let result =
+                        run_edit_action(&editor, target_for_task, action_for_task, document_text)
+                            .map_err(|error| error.to_string());
                     match (history_capture, result) {
                         (Ok(capture), Ok(invalidation)) => {
                             complete_after(
@@ -251,14 +243,12 @@ impl View {
                             tracing::warn!(%error, "map history capture failed after record edit");
                             Ok(invalidation)
                         }
-                        (Err(history_error), Err(write_error)) => {
-                            Err(t!(
-                                "MapViewer.edit.history_capture_failed",
-                                error = write_error,
-                                historyError = history_error
-                            )
-                            .to_string())
-                        }
+                        (Err(history_error), Err(write_error)) => Err(t!(
+                            "MapViewer.edit.history_capture_failed",
+                            error = write_error,
+                            historyError = history_error
+                        )
+                        .to_string()),
                     }
                 })
                 .await;
@@ -594,11 +584,12 @@ impl View {
         let affected_chunk_list = affected_chunks.iter().copied().collect::<Vec<_>>();
         let progress_total = affected_chunk_list.len().max(1);
         let task_id = task_manager::create_task(
-            task_manager::TaskOptions::new(t!("MapViewer.edit.task_delete_selection"), TaskStage::MAP_DELETE)
-                .detail(
-                    t!("MapViewer.edit.detail_chunk_count", count = progress_total).to_string(),
-                )
-                .total(task_progress_units(progress_total)),
+            task_manager::TaskOptions::new(
+                t!("MapViewer.edit.task_delete_selection"),
+                TaskStage::MAP_DELETE,
+            )
+            .detail(t!("MapViewer.edit.detail_chunk_count", count = progress_total).to_string())
+            .total(task_progress_units(progress_total)),
         )
         .expect("task id must be unique");
         let cancel = CancelFlag::new();
@@ -730,7 +721,7 @@ impl View {
                 let status =
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
-                    (Ok(cleared), "completed") => Some(
+                    (Ok(cleared), TaskFinishStatus::Completed) => Some(
                         t!("MapViewer.edit.cleared_chunks", count = cleared).to_string(),
                     ),
                     (Err(error), _) => Some(error.clone()),
@@ -845,7 +836,12 @@ impl View {
         }
         let paste_progress_total = action
             .progress_seed()
-            .filter(|(phase, _)| matches!(*phase, TransferPhase::PASTE_CHUNKS | TransferPhase::PASTE_STRUCTURE))
+            .filter(|(phase, _)| {
+                matches!(
+                    *phase,
+                    TransferPhase::PASTE_CHUNKS | TransferPhase::PASTE_STRUCTURE
+                )
+            })
             .map(|(_, total)| total.max(1));
         if let Some(total) = paste_progress_total {
             if let Some(preview) = self.professional.paste_preview.as_mut() {
@@ -1027,20 +1023,18 @@ impl View {
                             tracing::warn!(%error, "map history capture failed after quick write");
                             Ok((message, invalidation))
                         }
-                        (Err(history_error), Err(write_error)) => {
-                            Err(t!(
-                                "MapViewer.edit.history_capture_failed",
-                                error = write_error,
-                                historyError = history_error
-                            )
-                            .to_string())
-                        }
+                        (Err(history_error), Err(write_error)) => Err(t!(
+                            "MapViewer.edit.history_capture_failed",
+                            error = write_error,
+                            historyError = history_error
+                        )
+                        .to_string()),
                     }
                 })();
                 let status =
                     map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
                 let message = match (&result, status) {
-                    (Ok((message, _)), "completed") => Some(message.clone()),
+                    (Ok((message, _)), TaskFinishStatus::Completed) => Some(message.clone()),
                     (Err(error), _) => Some(error.clone()),
                     _ => None,
                 };
@@ -1062,7 +1056,7 @@ impl View {
                     if quick_write_defers_task_completion(status, paste_progress_total) {
                         task_manager::finish_task(
                             &task_id_for_task,
-                            "completed",
+                            TaskFinishStatus::Completed,
                             completion_message,
                         );
                     }
@@ -1082,7 +1076,11 @@ impl View {
                 let task_id_for_ui = task_id.clone();
                 let Some(view) = handle.upgrade() else {
                     if let Some(message) = deferred_completion_message {
-                        task_manager::finish_task(&task_id, "completed", Some(message));
+                        task_manager::finish_task(
+                            &task_id,
+                            TaskFinishStatus::Completed,
+                            Some(message),
+                        );
                     }
                     return Ok(());
                 };
@@ -1093,7 +1091,7 @@ impl View {
                         {
                             task_manager::finish_task(
                                 &task_id_for_ui,
-                                "completed",
+                                TaskFinishStatus::Completed,
                                 Some(message.clone()),
                             );
                         }
@@ -1130,7 +1128,7 @@ impl View {
                                 } else if paste_progress_total.is_some() {
                                     task_manager::finish_task(
                                         &task_id_for_ui,
-                                        "completed",
+                                        TaskFinishStatus::Completed,
                                         Some(message.clone()),
                                     );
                                 }
@@ -1161,7 +1159,9 @@ impl View {
                                 }
                                 this.sync_world3d_import_preview(cx);
                                 if is_map_operation_cancelled_error(&error) {
-                                    let message = SharedString::from(t!("MapViewer.edit.map_write_cancelled"));
+                                    let message = SharedString::from(t!(
+                                        "MapViewer.edit.map_write_cancelled"
+                                    ));
                                     this.status = message.clone();
                                     this.resolve_task_toast(
                                         &task_id_for_ui,
@@ -1185,7 +1185,11 @@ impl View {
                 });
                 if let Err(error) = update {
                     if let Some(message) = deferred_completion_message {
-                        task_manager::finish_task(&task_id, "completed", Some(message));
+                        task_manager::finish_task(
+                            &task_id,
+                            TaskFinishStatus::Completed,
+                            Some(message),
+                        );
                     }
                     return Err(error.into());
                 }
@@ -1199,8 +1203,11 @@ impl View {
     }
 }
 
-fn quick_write_defers_task_completion(status: &str, paste_progress_total: Option<usize>) -> bool {
-    status == "completed" && paste_progress_total.is_some()
+fn quick_write_defers_task_completion(
+    status: TaskFinishStatus,
+    paste_progress_total: Option<usize>,
+) -> bool {
+    status == TaskFinishStatus::Completed && paste_progress_total.is_some()
 }
 
 fn paste_preview_write_progress(progress: &ChunkTransferProgress) -> Option<(usize, usize)> {
@@ -1285,10 +1292,22 @@ mod paste_preview_progress_tests {
 
     #[::core::prelude::v1::test]
     fn only_successful_paste_waits_for_tile_refresh_before_terminal_status() {
-        assert!(quick_write_defers_task_completion("completed", Some(672)));
-        assert!(!quick_write_defers_task_completion("failed", Some(672)));
-        assert!(!quick_write_defers_task_completion("cancelled", Some(672)));
-        assert!(!quick_write_defers_task_completion("completed", None));
+        assert!(quick_write_defers_task_completion(
+            TaskFinishStatus::Completed,
+            Some(672)
+        ));
+        assert!(!quick_write_defers_task_completion(
+            TaskFinishStatus::Error,
+            Some(672)
+        ));
+        assert!(!quick_write_defers_task_completion(
+            TaskFinishStatus::Cancelled,
+            Some(672)
+        ));
+        assert!(!quick_write_defers_task_completion(
+            TaskFinishStatus::Completed,
+            None
+        ));
     }
 }
 
@@ -1368,9 +1387,9 @@ pub(super) fn player_editor_detail(detail: PlayerDetail) -> ProfessionalDetail {
     ProfessionalDetail::Editor {
         target: EditTarget::Player(detail.id.clone()),
         title: t!(
-                "MapViewer.edit.title_player",
-                id = player_id_label(&detail.id)
-            ),
+            "MapViewer.edit.title_player",
+            id = player_id_label(&detail.id)
+        ),
         sections: vec![EditSection {
             title: SharedString::from(t!("MapViewer.edit.title_player_data")),
             rows: player_detail_rows(&detail),
@@ -1396,9 +1415,7 @@ pub(super) fn load_edit_detail(
                 .map_err(|error| bedrock_render::BedrockRenderError::Validation(error.to_string()))
         }
         EditTarget::BlockEntities { chunk, .. } => block_entities_detail(editor, chunk),
-        EditTarget::BlockEntityAt { chunk, block } => {
-            block_entity_detail_at(editor, chunk, block)
-        }
+        EditTarget::BlockEntityAt { chunk, block } => block_entity_detail_at(editor, chunk, block),
         EditTarget::Actors(pos) => actors_editor_detail(editor, pos),
         EditTarget::Actor { chunk, unique_id } => actor_editor_detail(editor, chunk, unique_id),
         EditTarget::HeightMap { chunk: pos, .. } => heightmap_editor_detail(editor, pos),
@@ -1482,19 +1499,32 @@ pub(super) fn run_edit_action(
             editor.world().delete_actor_by_unique_id(chunk, unique_id)?;
             Ok(EditInvalidation::chunk(chunk).with_metadata())
         }
-        (EditTarget::HeightMap { chunk, version: Some(version) }, EditAction::Save) => {
-            records::write_heightmap(editor, chunk, version, document_text)
-        }
-        (EditTarget::BiomeStorage { chunk, version: Some(ChunkVersion::New) }, EditAction::Save) => {
-            records::write_biomes(editor, chunk, document_text)
-        }
+        (
+            EditTarget::HeightMap {
+                chunk,
+                version: Some(version),
+            },
+            EditAction::Save,
+        ) => records::write_heightmap(editor, chunk, version, document_text),
+        (
+            EditTarget::BiomeStorage {
+                chunk,
+                version: Some(ChunkVersion::New),
+            },
+            EditAction::Save,
+        ) => records::write_biomes(editor, chunk, document_text),
         (EditTarget::SavedData(id), EditAction::Delete) => editor.delete_item(&id),
         (EditTarget::GlobalRecord { kind, source }, action) => {
             records::write_global(editor, kind, source, action, document_text)
         }
-        (EditTarget::TickQueues { chunk, pending, random }, action) => {
-            records::write_ticks(editor, chunk, (pending, random), action, document_text)
-        }
+        (
+            EditTarget::TickQueues {
+                chunk,
+                pending,
+                random,
+            },
+            action,
+        ) => records::write_ticks(editor, chunk, (pending, random), action, document_text),
         (target, action) => Err(bedrock_world::BedrockWorldError::Validation(format!(
             "{} does not support {} yet",
             target.operation_label(),
@@ -1566,7 +1596,10 @@ pub(super) fn hsa_editor_detail(
         sections: vec![EditSection {
             title: SharedString::from(t!("MapViewer.edit.title_hsa")),
             rows: if rows.is_empty() {
-                vec![readonly_row(t!("MapViewer.detail.record"), t!("MapViewer.detail.none"))]
+                vec![readonly_row(
+                    t!("MapViewer.detail.record"),
+                    t!("MapViewer.detail.none"),
+                )]
             } else {
                 rows
             },
@@ -1586,10 +1619,10 @@ pub(super) fn block_entities_detail(
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::BlockEntities { chunk: pos, source },
         title: t!(
-                "MapViewer.detail.title_block_entity_chunk",
-                x = pos.x,
-                z = pos.z
-            ),
+            "MapViewer.detail.title_block_entity_chunk",
+            x = pos.x,
+            z = pos.z
+        ),
         sections: vec![EditSection {
             title: SharedString::from(t!("MapViewer.detail.title_block_entity")),
             rows: block_entity_rows(&records),
@@ -1615,11 +1648,11 @@ pub(super) fn block_entity_detail_at(
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::BlockEntityAt { chunk, block },
         title: t!(
-                "MapViewer.detail.title_block_entity_pos",
-                x = block.x,
-                y = block.y,
-                z = block.z
-            ),
+            "MapViewer.detail.title_block_entity_pos",
+            x = block.x,
+            y = block.y,
+            z = block.z
+        ),
         sections: vec![EditSection {
             title: SharedString::from(t!("MapViewer.detail.title_current_pos")),
             rows: block_entity_rows(&matching),
@@ -1703,17 +1736,28 @@ pub(super) fn heightmap_editor_detail(
 ) -> bedrock_render::Result<ProfessionalDetail> {
     let biome = editor.world().biome_data(pos)?;
     let version = biome.as_ref().map(|data| data.version);
-    let heightmap = biome.map(|data| HeightMap2d::new(data.height_map)).transpose()?;
-    let rows = heightmap
-        .as_ref()
-        .map_or_else(|| vec![readonly_row(t!("MapViewer.detail.heightmap"), t!("MapViewer.detail.none"))], heightmap_rows);
+    let heightmap = biome
+        .map(|data| HeightMap2d::new(data.height_map))
+        .transpose()?;
+    let rows = heightmap.as_ref().map_or_else(
+        || {
+            vec![readonly_row(
+                t!("MapViewer.detail.heightmap"),
+                t!("MapViewer.detail.none"),
+            )]
+        },
+        heightmap_rows,
+    );
     Ok(ProfessionalDetail::Editor {
-        target: EditTarget::HeightMap { chunk: pos, version },
+        target: EditTarget::HeightMap {
+            chunk: pos,
+            version,
+        },
         title: t!(
-                "MapViewer.detail.title_heightmap_chunk",
-                x = pos.x,
-                z = pos.z
-            ),
+            "MapViewer.detail.title_heightmap_chunk",
+            x = pos.x,
+            z = pos.z
+        ),
         sections: vec![EditSection {
             title: SharedString::from(t!("MapViewer.detail.title_heightmap")),
             rows,
@@ -1735,16 +1779,21 @@ pub(super) fn biome_storage_editor_detail(
             chunk: pos,
             version: biome.as_ref().map(|data| data.version),
         },
-        title: t!(
-                "MapViewer.detail.title_biome_chunk",
-                x = pos.x,
-                z = pos.z
-            ),
+        title: t!("MapViewer.detail.title_biome_chunk", x = pos.x, z = pos.z),
         sections: vec![EditSection {
             title: t!("MapViewer.detail.title_biome_data").into(),
-            rows: vec![readonly_row(t!("MapViewer.detail.record"), if biome.is_some() { t!("MapViewer.detail.exists") } else { t!("MapViewer.detail.missing") })],
+            rows: vec![readonly_row(
+                t!("MapViewer.detail.record"),
+                if biome.is_some() {
+                    t!("MapViewer.detail.exists")
+                } else {
+                    t!("MapViewer.detail.missing")
+                },
+            )],
         }],
-        json: pretty_json(serde_json::json!({ "chunk": chunk_json(pos), "biome": biome.as_ref().map(records::biome_json) })),
+        json: pretty_json(
+            serde_json::json!({ "chunk": chunk_json(pos), "biome": biome.as_ref().map(records::biome_json) }),
+        ),
     })
 }
 
@@ -1754,7 +1803,12 @@ pub(super) fn map_item_editor_detail(
 ) -> bedrock_render::Result<ProfessionalDetail> {
     let record = editor.item(id)?;
     let rows = record.as_ref().map_or_else(
-        || vec![readonly_row(t!("MapViewer.detail.record"), t!("MapViewer.detail.not_exists"))],
+        || {
+            vec![readonly_row(
+                t!("MapViewer.detail.record"),
+                t!("MapViewer.detail.not_exists"),
+            )]
+        },
         |record| {
             vec![
                 readonly_row("id", record.id.as_str().to_string()),
@@ -1884,8 +1938,14 @@ pub(super) fn supports_editor_save(target: &EditTarget) -> bool {
         EditTarget::Player(_)
             | EditTarget::HsaChunk { .. }
             | EditTarget::BlockEntities { .. }
-            | EditTarget::HeightMap { version: Some(_), .. }
-            | EditTarget::BiomeStorage { version: Some(ChunkVersion::New), .. }
+            | EditTarget::HeightMap {
+                version: Some(_),
+                ..
+            }
+            | EditTarget::BiomeStorage {
+                version: Some(ChunkVersion::New),
+                ..
+            }
             | EditTarget::GlobalRecord { .. }
             | EditTarget::TickQueues { .. }
     )
@@ -1941,7 +2001,10 @@ pub(super) fn hsa_rows(index: usize, area: &HardcodedSpawnArea) -> Vec<EditRow> 
 
 pub(super) fn block_entity_rows(records: &[BlockEntityRecord]) -> Vec<EditRow> {
     if records.is_empty() {
-        return vec![readonly_row(t!("MapViewer.detail.record"), t!("MapViewer.detail.none"))];
+        return vec![readonly_row(
+            t!("MapViewer.detail.record"),
+            t!("MapViewer.detail.none"),
+        )];
     }
     records
         .iter()
@@ -1967,7 +2030,10 @@ pub(super) fn block_entity_rows(records: &[BlockEntityRecord]) -> Vec<EditRow> {
 
 pub(super) fn actor_rows(records: &[ActorRecord]) -> Vec<EditRow> {
     if records.is_empty() {
-        return vec![readonly_row(t!("MapViewer.detail.record"), t!("MapViewer.detail.none"))];
+        return vec![readonly_row(
+            t!("MapViewer.detail.record"),
+            t!("MapViewer.detail.none"),
+        )];
     }
     records
         .iter()
@@ -2199,7 +2265,9 @@ pub(super) fn run_quick_write_action(
             transform,
         } => {
             let copied_chunk = copied_chunk.ok_or_else(|| {
-                bedrock_world::BedrockWorldError::Validation(t!("MapViewer.edit.no_paste_copy").to_string())
+                bedrock_world::BedrockWorldError::Validation(
+                    t!("MapViewer.edit.no_paste_copy").to_string(),
+                )
             })?;
             paste_copied_chunk(
                 world,
@@ -2219,7 +2287,9 @@ pub(super) fn run_quick_write_action(
             transform,
         } => {
             let copied_chunk = copied_chunk.ok_or_else(|| {
-                bedrock_world::BedrockWorldError::Validation(t!("MapViewer.edit.no_paste_copy").to_string())
+                bedrock_world::BedrockWorldError::Validation(
+                    t!("MapViewer.edit.no_paste_copy").to_string(),
+                )
             })?;
             paste_copied_chunk(
                 world,
@@ -2239,7 +2309,9 @@ pub(super) fn run_quick_write_action(
             transform,
         } => {
             let imported_structure = imported_structure.ok_or_else(|| {
-                bedrock_world::BedrockWorldError::Validation(t!("MapViewer.edit.no_paste_structure").to_string())
+                bedrock_world::BedrockWorldError::Validation(
+                    t!("MapViewer.edit.no_paste_structure").to_string(),
+                )
             })?;
             mcstructure::paste_imported_structure(
                 world,
@@ -2286,7 +2358,8 @@ fn quick_write_history_spec(
             transform,
             ..
         } => {
-            let copied_chunk = copied_chunk.ok_or_else(|| t!("MapViewer.edit.no_paste_copy").to_string())?;
+            let copied_chunk =
+                copied_chunk.ok_or_else(|| t!("MapViewer.edit.no_paste_copy").to_string())?;
             chunks.extend(pasted_chunk_targets(
                 copied_chunk,
                 *source_anchor,
@@ -2300,8 +2373,8 @@ fn quick_write_history_spec(
             transform,
             ..
         } => {
-            let imported_structure =
-                imported_structure.ok_or_else(|| t!("MapViewer.edit.no_paste_structure").to_string())?;
+            let imported_structure = imported_structure
+                .ok_or_else(|| t!("MapViewer.edit.no_paste_structure").to_string())?;
             chunks.extend(mcstructure::imported_structure_targets(
                 imported_structure,
                 *target_anchor,
@@ -2445,14 +2518,7 @@ pub(super) fn paste_copied_chunk(
             .hardcoded_spawn_areas
             .iter()
             .cloned()
-            .map(|area| {
-                transform_spawn_area(
-                    area,
-                    snapshot.chunk,
-                    target_chunk,
-                    transform,
-                )
-            })
+            .map(|area| transform_spawn_area(area, snapshot.chunk, target_chunk, transform))
             .collect::<Vec<_>>();
         if !shifted_hsa.is_empty() {
             active_transaction.save_hardcoded_spawn_areas(target_chunk, &shifted_hsa)?;
@@ -2509,8 +2575,10 @@ pub(super) fn copied_chunk_structure_placement(
     let size = bedrock_world::structure::McStructureSize::new(16, height, 16)?;
     let source_origin_x = snapshot.chunk.x.saturating_mul(16);
     let source_origin_z = snapshot.chunk.z.saturating_mul(16);
-    let mut structure =
-        bedrock_world::structure::McStructureFile::new_air(size, [source_origin_x, min_y, source_origin_z])?;
+    let mut structure = bedrock_world::structure::McStructureFile::new_air(
+        size,
+        [source_origin_x, min_y, source_origin_z],
+    )?;
     let mut palette_indices = FxHashMap::default();
     let air_key = mcstructure_palette_key(&structure.palette[0]);
     palette_indices.insert(air_key, 0_i32);
@@ -2651,14 +2719,7 @@ fn paste_transformed_copied_chunks(
                 .hardcoded_spawn_areas
                 .iter()
                 .cloned()
-                .map(|area| {
-                    transform_spawn_area(
-                        area,
-                        snapshot.chunk,
-                        target_chunk,
-                        transform,
-                    )
-                })
+                .map(|area| transform_spawn_area(area, snapshot.chunk, target_chunk, transform))
                 .collect::<Vec<_>>();
             if !shifted_hsa.is_empty() {
                 world.save_hardcoded_spawn_areas(target_chunk, &shifted_hsa)?;
@@ -2697,7 +2758,9 @@ const fn mcstructure_rotation_for_paste(
         PasteRotation::NoRotation => bedrock_world::structure::McStructureRotation::None,
         PasteRotation::Clockwise90 => bedrock_world::structure::McStructureRotation::Clockwise90,
         PasteRotation::Rotate180 => bedrock_world::structure::McStructureRotation::Rotate180,
-        PasteRotation::CounterClockwise90 => bedrock_world::structure::McStructureRotation::CounterClockwise90,
+        PasteRotation::CounterClockwise90 => {
+            bedrock_world::structure::McStructureRotation::CounterClockwise90
+        }
     }
 }
 
@@ -3066,11 +3129,7 @@ pub(super) fn clear_chunks(
     Ok(cleared)
 }
 
-fn clear_chunk(
-    world: &World,
-    chunk: ChunkPos,
-    _guard: &WriteGuard,
-) -> bedrock_world::Result<()> {
+fn clear_chunk(world: &World, chunk: ChunkPos, _guard: &WriteGuard) -> bedrock_world::Result<()> {
     let actor_uids = world
         .actors(chunk)?
         .into_iter()

@@ -1,12 +1,12 @@
-use crate::tasks::TaskStage;
 use super::*;
+use crate::tasks::TaskStage;
+use crate::tasks::task_manager;
 use crate::ui::animation::{spring_motion, spring_smooth, spring_snappy};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::tokens::motion;
 use crate::ui::views::tasks::TaskCardMotionKind;
 use crate::ui::views::tasks::{TaskCardViewModel, TaskConfirmAction, TasksPageView};
-use crate::tasks::task_manager;
 use gpui::AnimationExt;
 use gpui::render_fingerprint;
 
@@ -106,6 +106,8 @@ fn thread_label_text(
 
 fn status_label(_i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
     match model.status.as_ref() {
+        "queued" => t!("Tasks.status.queued"),
+        "pausing" => t!("Tasks.status.pausing"),
         "paused" => t!("Tasks.status.paused"),
         "cancelling" => t!("Tasks.status.cancelling"),
         "completed" => t!("Tasks.status.completed"),
@@ -218,32 +220,42 @@ pub(super) fn render(
         );
     }
 
-    let mut metrics = div()
-        .flex()
-        .items_start()
-        .flex_wrap()
-        .gap(px(10.))
-        .child(meta_item(
+    // The percent label next to the bar already reports workflow progress, so
+    // the metrics row only carries the extra transfer details.
+    let mut metrics = div().flex().items_start().flex_wrap().gap(px(10.));
+    let mut has_metrics = false;
+    if model.task_type != task_manager::TaskType::Workflow {
+        metrics = metrics.child(meta_item(
             colors,
             t!("Tasks.progress"),
             task_amount_text(i18n, model),
             task_text_tertiary(colors),
         ));
+        has_metrics = true;
+    }
     if let Some(thread_text) = thread_label_text(i18n, model.worker_active, model.worker_total) {
-        metrics = metrics.child(meta_separator(colors)).child(meta_item(
+        if has_metrics {
+            metrics = metrics.child(meta_separator(colors));
+        }
+        metrics = metrics.child(meta_item(
             colors,
             t!("Tasks.threads"),
             thread_text,
             task_text_tertiary(colors),
         ));
+        has_metrics = true;
     }
     if let Some(eta_text) = model.eta_text.as_ref() {
-        metrics = metrics.child(meta_separator(colors)).child(meta_item(
+        if has_metrics {
+            metrics = metrics.child(meta_separator(colors));
+        }
+        metrics = metrics.child(meta_item(
             colors,
             t!("Tasks.eta"),
             SharedString::from(eta_text.clone()),
             task_text_tertiary(colors),
         ));
+        has_metrics = true;
     }
 
     let header_right_value = header_right_text(i18n, model);
@@ -298,10 +310,10 @@ pub(super) fn render(
         .w_full()
         .min_h(px(0.))
         .px(px(16.))
-        .py(px(14.))
+        .py(px(13.))
         .flex()
-        .items_center()
-        .gap(px(16.))
+        .items_start()
+        .gap(px(14.))
         .hover(|this| this.bg(card_hover_surface))
         .when(paused, |this| {
             this.opacity(0.72).border_color(Hsla {
@@ -311,14 +323,16 @@ pub(super) fn render(
         })
         .child(
             div()
-                .w(px(46.))
-                .h(px(46.))
+                .flex_none()
+                .mt(px(1.))
+                .w(px(40.))
+                .h(px(40.))
                 .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .flex()
                 .items_center()
                 .justify_center()
                 .bg(Hsla { a: 0.08, ..accent })
-                .child(themed_icon(icon_path, 24.0, accent)),
+                .child(themed_icon(icon_path, 21.0, accent)),
         )
         .child(
             div()
@@ -326,7 +340,7 @@ pub(super) fn render(
                 .min_w(px(0.))
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(px(7.))
                 .child(
                     div()
                         .w_full()
@@ -341,7 +355,7 @@ pub(super) fn render(
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
-                                    .text_size(px(15.))
+                                    .text_size(px(14.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(task_text_main(colors))
                                     .child(SharedString::from(model.title.clone())),
@@ -349,39 +363,82 @@ pub(super) fn render(
                         )
                         .child(
                             div()
-                                .text_size(px(12.))
+                                .flex_none()
+                                .text_size(px(11.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(header_right_color)
                                 .child(header_right_value),
                         ),
                 )
-                .child(div().w_full().child(super::progress::panel(
-                    task_id.as_ref(),
-                    kind,
-                    colors,
-                    model.status.as_ref(),
-                    progress_percent,
-                    model.downloaded_segments.as_deref(),
-                    &model.thread_segments,
-                )))
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(div().flex_1().min_w(px(0.)).child(super::progress::panel(
+                            task_id.as_ref(),
+                            kind,
+                            colors,
+                            model.status.as_ref(),
+                            progress_percent,
+                            model.downloaded_segments.as_deref(),
+                            &model.thread_segments,
+                            6.0,
+                        )))
+                        .child(
+                            div()
+                                .flex_none()
+                                .min_w(px(40.))
+                                .text_align(gpui::TextAlign::Right)
+                                .text_size(px(11.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(
+                                    if matches!(
+                                        model.status.as_ref(),
+                                        "completed" | "cancelled" | "error"
+                                    ) {
+                                        accent
+                                    } else {
+                                        task_text_secondary(colors)
+                                    },
+                                )
+                                .child(SharedString::from(format!(
+                                    "{:.1}%",
+                                    progress_percent.unwrap_or(0.0).clamp(0.0, 100.0)
+                                ))),
+                        ),
+                )
                 .children(message_line)
                 .when(!model.children.is_empty(), |this| {
                     this.child(
-                        div().w_full().mt(px(5.)).flex().flex_col().gap(px(9.))
+                        div()
+                            .w_full()
+                            .mt(px(2.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
                             .children(model.children.iter().map(|child| {
-                                let kind = task_visual_kind(child.stage.code(), child.status.as_ref());
+                                let kind =
+                                    task_visual_kind(child.stage.code(), child.status.as_ref());
                                 let color = task_status_accent(child.status.as_ref(), kind, colors);
                                 let label = match child.status.as_ref() {
+                                    "queued" => t!("Tasks.status.queued"),
+                                    "pausing" => t!("Tasks.status.pausing"),
+                                    "paused" => t!("Tasks.status.paused"),
                                     "completed" => t!("Tasks.status.completed"),
                                     "error" => t!("Tasks.status.error"),
                                     "cancelled" => t!("Tasks.status.cancelled"),
                                     "cancelling" => t!("Tasks.status.cancelling"),
                                     _ => {
-                                        let progress = child.percent.map(|percent| format!("{percent:.1}%"));
-                                        let rate = child.speed_text.as_ref()
-                                            .map(|rate| rate.to_string());
+                                        let progress =
+                                            child.percent.map(|percent| format!("{percent:.1}%"));
+                                        let rate =
+                                            child.speed_text.as_ref().map(|rate| rate.to_string());
                                         SharedString::from(match (progress, rate) {
-                                            (Some(progress), Some(rate)) => format!("{progress} · {rate}"),
+                                            (Some(progress), Some(rate)) => {
+                                                format!("{progress} · {rate}")
+                                            }
                                             (Some(progress), None) => progress,
                                             (None, Some(rate)) => rate,
                                             (None, None) => t!("Tasks.status.running").to_string(),
@@ -391,21 +448,54 @@ pub(super) fn render(
                                 let is_error = child.status.as_ref() == "error";
                                 let error_id = child.id.clone();
                                 let error_title = SharedString::from(child.title.clone());
-                                let error_message = child.message.as_ref()
+                                let error_message = child
+                                    .message
+                                    .as_ref()
                                     .map(|message| SharedString::from(message.clone()))
                                     .unwrap_or_else(|| t!("Tasks.status.error"));
-                                div().w_full().pl(px(child.depth as f32 * 12.))
-                                    .flex().flex_col().gap(px(3.))
-                                    .child(div().w_full().flex().items_center().justify_between()
-                                        .gap(px(8.))
-                                        .child(div().flex_1().min_w(px(0.)).text_size(px(11.))
-                                            .text_color(task_text_secondary(colors))
-                                            .child(SharedString::from(child.title.clone())))
-                                        .child(div().flex_none().text_size(px(11.))
-                                            .text_color(color).child(label)))
+                                div()
+                                    .w_full()
+                                    .pl(px(child.depth as f32 * 12.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .when(child.depth == 0, |row| {
+                                        row.pl(px(9.))
+                                            .border_l_1()
+                                            .border_color(Hsla { a: 0.16, ..accent })
+                                    })
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .text_size(px(11.))
+                                                    .text_color(task_text_secondary(colors))
+                                                    .child(SharedString::from(child.title.clone())),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_size(px(11.))
+                                                    .text_color(color)
+                                                    .child(label),
+                                            ),
+                                    )
                                     .child(super::progress::panel(
-                                        child.id.as_ref(), kind, colors,
-                                        child.status.as_ref(), child.percent, None, &[],
+                                        child.id.as_ref(),
+                                        kind,
+                                        colors,
+                                        child.status.as_ref(),
+                                        child.percent,
+                                        child.downloaded_segments.as_deref(),
+                                        &child.thread_segments,
+                                        4.0,
                                     ))
                                     .when(is_error, |row| {
                                         row.child(
@@ -435,7 +525,7 @@ pub(super) fn render(
                             })),
                     )
                 })
-                .child(metrics),
+                .when(has_metrics, |this| this.child(metrics)),
         )
         .when(
             model.can_pause || model.can_cancel || model.can_remove,
@@ -443,6 +533,7 @@ pub(super) fn render(
                 this.child(
                     div()
                         .flex_none()
+                        .mt(px(1.))
                         .flex()
                         .items_center()
                         .justify_center()

@@ -1,7 +1,8 @@
+use crate::tasks::TaskStage;
+use crate::tasks::task_manager::TaskFinishStatus;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use crate::tasks::TaskStage;
 
 use serde_json::json;
 
@@ -33,11 +34,14 @@ pub struct NativeModImportRequest {
 
 pub fn start_install(request: NativeModInstallRequest) -> Result<String, String> {
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.install_native_mod").to_string(), TaskStage::INSTALLING_NATIVE_MOD)
-            .detail(format!(
-                "{} · {}",
-                request.mod_entry.name, request.file_name
-            )),
+        crate::tasks::task_manager::TaskOptions::new(
+            t!("TaskTitle.install_native_mod").to_string(),
+            TaskStage::INSTALLING_NATIVE_MOD,
+        )
+        .detail(format!(
+            "{} · {}",
+            request.mod_entry.name, request.file_name
+        )),
     )?;
     crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
     let active_child_task = Arc::new(Mutex::new(None::<String>));
@@ -55,23 +59,29 @@ pub fn start_install(request: NativeModInstallRequest) -> Result<String, String>
         match result {
             Ok(path) => crate::tasks::task_manager::finish_task(
                 &task_id_for_workflow,
-                "completed",
+                TaskFinishStatus::Completed,
                 Some(path.to_string_lossy().into_owned()),
             ),
             Err(error) if crate::tasks::task_manager::is_cancelled(&task_id_for_workflow) => {
                 crate::tasks::task_manager::finish_task(
                     &task_id_for_workflow,
-                    "cancelled",
+                    TaskFinishStatus::Cancelled,
                     Some(error),
                 )
             }
-            Err(error) => {
-                crate::tasks::task_manager::finish_task(&task_id_for_workflow, "error", Some(error))
-            }
+            Err(error) => crate::tasks::task_manager::finish_task(
+                &task_id_for_workflow,
+                TaskFinishStatus::Error,
+                Some(error),
+            ),
         }
     })
     .map_err(|error| {
-        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        crate::tasks::task_manager::finish_task(
+            &task_id,
+            TaskFinishStatus::Error,
+            Some(error.clone()),
+        );
         error
     })?;
 
@@ -83,7 +93,7 @@ pub fn start_install(request: NativeModInstallRequest) -> Result<String, String>
         {
             crate::tasks::task_manager::finish_task(
                 &monitor_task_id,
-                "error",
+                TaskFinishStatus::Error,
                 Some(format!("原生 Mod 安装任务异常结束: {error}")),
             );
         }
@@ -98,9 +108,12 @@ pub fn start_import(request: NativeModImportRequest) -> Result<String, String> {
 
     let count = request.items.len();
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.import_mod").to_string(), TaskStage::INSTALLING_MOD)
-            .detail(format!("{} · {} 个文件", request.version_folder, count))
-            .total(count as u64),
+        crate::tasks::task_manager::TaskOptions::new(
+            t!("TaskTitle.import_mod").to_string(),
+            TaskStage::INSTALLING_MOD,
+        )
+        .detail(format!("{} · {} 个文件", request.version_folder, count))
+        .total(count as u64),
     )?;
     crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
@@ -109,19 +122,29 @@ pub fn start_import(request: NativeModImportRequest) -> Result<String, String> {
         match result {
             Ok(()) => crate::tasks::task_manager::finish_task(
                 &worker_task_id,
-                "completed",
+                TaskFinishStatus::Completed,
                 Some(format!("已导入 {count} 个 Mod")),
             ),
             Err(error) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "cancelled", Some(error))
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    TaskFinishStatus::Cancelled,
+                    Some(error),
+                )
             }
-            Err(error) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
-            }
+            Err(error) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                TaskFinishStatus::Error,
+                Some(error),
+            ),
         }
     })
     .map_err(|error| {
-        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        crate::tasks::task_manager::finish_task(
+            &task_id,
+            TaskFinishStatus::Error,
+            Some(error.clone()),
+        );
         error
     })?;
 
@@ -133,7 +156,7 @@ pub fn start_import(request: NativeModImportRequest) -> Result<String, String> {
         {
             crate::tasks::task_manager::finish_task(
                 &monitor_task_id,
-                "error",
+                TaskFinishStatus::Error,
                 Some(format!("Mod 导入任务异常结束: {error}")),
             );
         }

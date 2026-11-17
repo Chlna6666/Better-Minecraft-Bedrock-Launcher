@@ -1,7 +1,10 @@
 #![cfg(target_os = "windows")]
 use super::super::bloader;
+use super::super::preloader::resolve_bootstrap;
 use crate::config::settings::read;
-use crate::core::inject::pe::{ensure_backup, inject_dll_import, is_file_patched, restore_original_pe};
+use crate::core::inject::pe::{
+    ensure_backup, inject_dll_import, is_file_patched, restore_original_pe,
+};
 use crate::core::inject::runtime::{
     grant_all_application_packages_access, inject_existing_process, launch_win32,
     terminal_host_launch_metadata,
@@ -11,13 +14,13 @@ use crate::core::minecraft::appx::{register, remove};
 use crate::core::minecraft::launcher::start::{
     launch_uwp_command_only, wait_for_process_exit, wait_for_uwp_pid,
 };
-use super::super::preloader::resolve_bootstrap;
 use crate::core::minecraft::mouse_lock::start_window_monitor;
 use crate::core::minecraft::uwp_minimize_fix::enable_debugging_for_package;
 use crate::core::version::settings::read_version_config;
+use crate::tasks::TaskStage;
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskControl, TaskOptions, append_task_log, create_task, finish_task,
-    is_cancelled, register_abort_handle, set_task_labels, set_task_message, set_total,
+    ProgressUpdate, TaskControl, TaskFinishStatus, TaskOptions, append_task_log, create_task,
+    finish_task, is_cancelled, register_abort_handle, set_task_labels, set_task_message, set_total,
     task_control, update_progress,
 };
 use serde_json::{Value, json};
@@ -31,7 +34,6 @@ use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 use windows::Management::Deployment::PackageManager;
 use windows::core::HSTRING;
-use crate::tasks::TaskStage;
 
 use crate::utils::file_ops;
 
@@ -239,7 +241,11 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                     "游戏启动任务执行完成，已获得进程 PID"
                 );
                 append_log(&task_id_for_task, format!("游戏已启动，PID {pid}"));
-                finish_task(&task_id_for_task, "completed", Some("启动完成".to_string()));
+                finish_task(
+                    &task_id_for_task,
+                    TaskFinishStatus::Completed,
+                    Some("启动完成".to_string()),
+                );
             }
             Ok(None) => {
                 info!(
@@ -247,14 +253,18 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
                     "游戏启动任务执行完成，当前流程未实际拉起游戏进程"
                 );
                 append_log(&task_id_for_task, "启动流程完成".to_string());
-                finish_task(&task_id_for_task, "completed", Some("启动完成".to_string()));
+                finish_task(
+                    &task_id_for_task,
+                    TaskFinishStatus::Completed,
+                    Some("启动完成".to_string()),
+                );
             }
             Err(error) => {
                 if is_cancelled(&task_id_for_task) {
                     append_log(&task_id_for_task, "启动已取消".to_string());
                     finish_task(
                         &task_id_for_task,
-                        "cancelled",
+                        TaskFinishStatus::Cancelled,
                         Some("启动已取消".to_string()),
                     );
                     let _ = completion_tx.send(Err("启动已取消".to_string()));
@@ -263,7 +273,11 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
 
                 error!("launch task failed: {error}");
                 append_log(&task_id_for_task, format!("启动失败: {error}"));
-                finish_task(&task_id_for_task, "error", Some(error.clone()));
+                finish_task(
+                    &task_id_for_task,
+                    TaskFinishStatus::Error,
+                    Some(error.clone()),
+                );
             }
         }
         let _ = session_monitor_tx.send(monitor);
@@ -272,7 +286,7 @@ pub(crate) fn start_launch_task_observed(request: LaunchRequest) -> LaunchTask {
         Ok(join_handle) => join_handle,
         Err(error) => {
             append_log(&task_id, format!("无法调度启动任务: {error}"));
-            finish_task(&task_id, "error", Some(error.clone()));
+            finish_task(&task_id, TaskFinishStatus::Error, Some(error.clone()));
             return LaunchTask {
                 task_id,
                 completion,
@@ -596,8 +610,8 @@ async fn launch_game(
 
     let (identity_name, identity_version) =
         read_manifest_identity(std::path::Path::new(package_folder))
-        .await
-        .map_err(|error| format!("Manifest 解析失败: {error}"))?;
+            .await
+            .map_err(|error| format!("Manifest 解析失败: {error}"))?;
     let is_win32 = is_win32_version(&identity_version);
     *detected_platform = if is_win32 { "gdk" } else { "uwp" };
     let legacy_uwp_runtime_injection_only =
@@ -819,7 +833,11 @@ async fn launch_game(
                 .await
                 .map_err(|error| format!("注册 APPX 失败 ({package_folder}): {error:?}"))?;
         }
-        advance_step(task_id, TaskStage::INITIALIZING, "APPX 注册状态已就绪".to_string());
+        advance_step(
+            task_id,
+            TaskStage::INITIALIZING,
+            "APPX 注册状态已就绪".to_string(),
+        );
     } else {
         advance_step(
             task_id,
@@ -831,7 +849,11 @@ async fn launch_game(
     check_cancelled(task_id)?;
     if !request.auto_start {
         info!(task_id = %task_id, "本次仅执行准备流程，不实际启动游戏");
-        advance_step(task_id, TaskStage::LAUNCHING, "已完成准备，未执行启动".to_string());
+        advance_step(
+            task_id,
+            TaskStage::LAUNCHING,
+            "已完成准备，未执行启动".to_string(),
+        );
         return Ok(None);
     }
 
@@ -1020,7 +1042,11 @@ async fn launch_game(
         );
     }
 
-    advance_step(task_id, TaskStage::LAUNCHING, format!("游戏已成功拉起，PID {pid}"));
+    advance_step(
+        task_id,
+        TaskStage::LAUNCHING,
+        format!("游戏已成功拉起，PID {pid}"),
+    );
     info!(task_id = %task_id, pid, "游戏启动流程已完成");
     Ok(Some(pid))
 }

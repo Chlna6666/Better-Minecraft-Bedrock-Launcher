@@ -1,11 +1,11 @@
 use super::model::*;
 use super::prelude::*;
 use super::preview_3d::{Preview3dMesh, namespace, scene_data};
-use crate::tasks::task_manager::ProgressUpdate;
+use crate::tasks::TaskStage;
+use crate::tasks::task_manager::{ProgressUpdate, TaskFinishStatus};
 use ::bedrock_world::{ExactChunkSelection, exact_selection_stats};
 use bedrock_block_model::BlockModelRepository;
 use bedrock_render::exact_selection::Plan;
-use crate::tasks::TaskStage;
 
 impl View {
     /// Runs professional statistics against the exact selected chunk set instead
@@ -274,8 +274,7 @@ impl View {
                 let capture_package_paths = package_paths;
                 if cancel.is_cancelled() {
                     return Err(
-                        t!("MapViewer.core.exact_selection_ops.model_export_cancelled")
-                            .to_string(),
+                        t!("MapViewer.core.exact_selection_ops.model_export_cancelled").to_string(),
                     );
                 }
                 task_manager::reset_progress(
@@ -297,10 +296,7 @@ impl View {
                     .to_string()
                 })?;
                 let mut block_models = resolver.models().clone();
-                super::world3d::attach_capture_catalog(
-                    &mut block_models,
-                    &capture_package_paths,
-                );
+                super::world3d::attach_capture_catalog(&mut block_models, &capture_package_paths);
                 let block_models = Arc::new(block_models);
                 let mesh = load_preview_3d_mesh_exact(
                     ExactPreview3dLoadOptions {
@@ -314,8 +310,7 @@ impl View {
                 )?;
                 if cancel.is_cancelled() {
                     return Err(
-                        t!("MapViewer.core.exact_selection_ops.model_export_cancelled")
-                            .to_string(),
+                        t!("MapViewer.core.exact_selection_ops.model_export_cancelled").to_string(),
                     );
                 }
                 if mesh.omitted_face_count != 0 || mesh.truncated_chunk_count != 0 {
@@ -326,7 +321,11 @@ impl View {
                     )
                     .to_string());
                 }
-                task_manager::reset_progress(&background_id, Some(1), Some(TaskStage::MAP_OUTPUT_MODEL_ASSETS));
+                task_manager::reset_progress(
+                    &background_id,
+                    Some(1),
+                    Some(TaskStage::MAP_OUTPUT_MODEL_ASSETS),
+                );
                 let requested_ext = output
                     .extension()
                     .and_then(|s| s.to_str())
@@ -363,10 +362,10 @@ impl View {
                         |_completed, _total| {},
                     )?;
                     if cancel.is_cancelled() {
-                        return Err(
-                            t!("MapViewer.core.exact_selection_ops.model_export_cancelled")
-                                .to_string(),
-                        );
+                        return Err(t!(
+                            "MapViewer.core.exact_selection_ops.model_export_cancelled"
+                        )
+                        .to_string());
                     }
                     bedrock_block_model::obj::write_export_files(
                         &export,
@@ -395,29 +394,39 @@ impl View {
                 result?;
                 task_manager::update_progress(
                     &background_id,
-                    ProgressUpdate::advance(1).total(1).stage(TaskStage::COMPLETED),
+                    ProgressUpdate::advance(1)
+                        .total(1)
+                        .stage(TaskStage::COMPLETED),
                 );
-                Ok::<_, String>(t!(
-                    "MapViewer.core.exact_selection_ops.model_exported",
-                    count = chunk_count,
-                    path = output.display()
+                Ok::<_, String>(
+                    t!(
+                        "MapViewer.core.exact_selection_ops.model_exported",
+                        count = chunk_count,
+                        path = output.display()
+                    )
+                    .to_string(),
                 )
-                .to_string())
             })
             .await;
             match result {
-                Ok(Ok(message)) => {
-                    task_manager::finish_task(&worker_id, "completed", Some(message))
-                }
+                Ok(Ok(message)) => task_manager::finish_task(
+                    &worker_id,
+                    TaskFinishStatus::Completed,
+                    Some(message),
+                ),
                 Ok(Err(err)) => {
                     let status = if is_map_operation_cancelled_error(&err) {
-                        "cancelled"
+                        TaskFinishStatus::Cancelled
                     } else {
-                        "error"
+                        TaskFinishStatus::Error
                     };
                     task_manager::finish_task(&worker_id, status, Some(err));
                 }
-                Err(err) => task_manager::finish_task(&worker_id, "error", Some(err.to_string())),
+                Err(err) => task_manager::finish_task(
+                    &worker_id,
+                    TaskFinishStatus::Error,
+                    Some(err.to_string()),
+                ),
             }
         });
         match submitted {
@@ -428,7 +437,7 @@ impl View {
                 );
             }
             Err(error) => {
-                task_manager::finish_task(&task_id, "error", Some(error.clone()));
+                task_manager::finish_task(&task_id, TaskFinishStatus::Error, Some(error.clone()));
                 self.status = SharedString::from(error);
             }
         }

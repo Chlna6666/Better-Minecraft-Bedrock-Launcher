@@ -2,9 +2,10 @@ use crate::config::settings::{GithubSource, read};
 use crate::downloads::manager::{DownloadOptions, DownloadRequest, DownloaderManager};
 use crate::http::proxy::clients::client;
 use crate::result::CoreResult;
+use crate::tasks::TaskStage;
 use crate::tasks::task_manager::{
-    TaskOptions, create_task, finish_task, is_cancelled, register_cooperative_cancel,
-    reset_progress, set_task_message,
+    TaskFinishStatus, TaskOptions, create_task, finish_task, is_cancelled,
+    register_cooperative_cancel, reset_progress, set_task_message,
 };
 use crate::utils::app_info::{self, BuildChannel};
 use crate::utils::file_ops;
@@ -17,7 +18,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
-use crate::tasks::TaskStage;
 
 #[derive(Deserialize, Debug)]
 pub struct UpdateArgs {
@@ -291,7 +291,10 @@ pub async fn update(args: UpdateArgs) -> Result<serde_json::Value, String> {
     let timeout_secs = args.timeout_secs.unwrap_or(60u64);
     let auto_quit = args.auto_quit.unwrap_or(true);
 
-    let mut options = TaskOptions::new(t!("TaskTitle.download_update").to_string(), TaskStage::READY);
+    let mut options = TaskOptions::new(
+        t!("TaskTitle.download_update").to_string(),
+        TaskStage::READY,
+    );
     if let Some(task_id) = args.task_id {
         options = options.id(task_id);
     }
@@ -319,8 +322,8 @@ pub async fn update(args: UpdateArgs) -> Result<serde_json::Value, String> {
     let target = downloads_dir.join(&fname);
     info!("保存为：{}", target.display());
 
-    let client = client()
-        .map_err(|e| fail_update_task(&task_id, format!("构建 HTTP 客户端失败：{}", e)))?;
+    let client =
+        client().map_err(|e| fail_update_task(&task_id, format!("构建 HTTP 客户端失败：{}", e)))?;
     let manager = DownloaderManager::with_client(client);
     let download_urls =
         crate::github::configured_download_urls(&url).map_err(|e| fail_update_task(&task_id, e))?;
@@ -352,19 +355,27 @@ pub async fn update(args: UpdateArgs) -> Result<serde_json::Value, String> {
         Ok(CoreResult::Cancelled) => {
             info!("下载任务已取消：{}", task_id);
             let _ = fs::remove_file(&target);
-            finish_task(&task_id, "cancelled", Some("下载已取消".into()));
+            finish_task(
+                &task_id,
+                TaskFinishStatus::Cancelled,
+                Some("下载已取消".into()),
+            );
             return Ok(serde_json::json!({
                 "cancelled": true,
                 "task_id": task_id
             }));
         }
         Ok(CoreResult::Error(err)) => {
-            finish_task(&task_id, "error", Some(format!("{:?}", err)));
+            finish_task(
+                &task_id,
+                TaskFinishStatus::Error,
+                Some(format!("{:?}", err)),
+            );
             let _ = fs::remove_file(&target);
             return Err(format!("下载失败：{:?}", err));
         }
         Err(e) => {
-            finish_task(&task_id, "error", Some(format!("{:?}", e)));
+            finish_task(&task_id, TaskFinishStatus::Error, Some(format!("{:?}", e)));
             let _ = fs::remove_file(&target);
             return Err(format!("下载错误：{:?}", e));
         }
@@ -374,7 +385,11 @@ pub async fn update(args: UpdateArgs) -> Result<serde_json::Value, String> {
 
     if is_cancelled(&task_id) {
         let _ = fs::remove_file(&target);
-        finish_task(&task_id, "cancelled", Some("更新已取消".into()));
+        finish_task(
+            &task_id,
+            TaskFinishStatus::Cancelled,
+            Some("更新已取消".into()),
+        );
         return Ok(serde_json::json!({
             "cancelled": true,
             "task_id": task_id
@@ -425,7 +440,11 @@ pub async fn update(args: UpdateArgs) -> Result<serde_json::Value, String> {
     if is_cancelled(&task_id) {
         let _ = fs::remove_file(&updater_path);
         let _ = fs::remove_file(&target);
-        finish_task(&task_id, "cancelled", Some("更新已取消".into()));
+        finish_task(
+            &task_id,
+            TaskFinishStatus::Cancelled,
+            Some("更新已取消".into()),
+        );
         return Ok(serde_json::json!({
             "cancelled": true,
             "task_id": task_id
@@ -448,7 +467,7 @@ pub async fn update(args: UpdateArgs) -> Result<serde_json::Value, String> {
     );
     finish_task(
         &task_id,
-        "completed",
+        TaskFinishStatus::Completed,
         Some(format!("更新程序已启动 (pid={})", child.id())),
     );
 
@@ -477,7 +496,7 @@ pub async fn update(args: UpdateArgs) -> Result<serde_json::Value, String> {
 }
 
 fn fail_update_task(task_id: &str, message: String) -> String {
-    finish_task(task_id, "error", Some(message.clone()));
+    finish_task(task_id, TaskFinishStatus::Error, Some(message.clone()));
     message
 }
 

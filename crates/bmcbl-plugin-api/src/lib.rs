@@ -61,6 +61,8 @@ const OP_APP_INFO: i32 = 29;
 const OP_REGISTER_SERVICE: i32 = 30;
 const OP_CALL_SERVICE: i32 = 31;
 const OP_SIDECAR_CALL: i32 = 33;
+const OP_REGISTER_TASK_DEFINITION: i32 = 34;
+const OP_CREATE_TYPED_TASK: i32 = 35;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i32)]
@@ -98,6 +100,8 @@ pub enum AppOp {
     RegisterService = OP_REGISTER_SERVICE,
     CallService = OP_CALL_SERVICE,
     SidecarCall = OP_SIDECAR_CALL,
+    RegisterTaskDefinition = OP_REGISTER_TASK_DEFINITION,
+    CreateTypedTask = OP_CREATE_TYPED_TASK,
 }
 
 impl AppOp {
@@ -928,6 +932,42 @@ pub enum AppRequest {
     CallService {
         request: ServiceCallRequest,
     },
+    /// Registers a task type in the host registry. The type id must live under
+    /// the calling plugin's namespace (`<plugin_id>.<name>`).
+    RegisterTaskDefinition {
+        request: TaskDefinitionRequest,
+    },
+    /// Creates a task linked to a registered definition, so capability checks
+    /// use the declared type instead of per-task flags. Separate from
+    /// `CreateTask` to keep the old wire format stable.
+    CreateTypedTask {
+        request: TypedTaskCreateRequest,
+    },
+}
+
+/// Like [`TaskCreateRequest`] plus the registered type id.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TypedTaskCreateRequest {
+    pub request: TaskCreateRequest,
+    pub definition: String,
+}
+
+/// Wire-format declaration of a plugin task type. Mirrors the host registry's
+/// `TaskDefinition` with strings instead of enums so the ABI stays stable.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TaskDefinitionRequest {
+    /// Namespaced type id, e.g. `example.plugin.convert`.
+    pub type_id: String,
+    /// i18n key for the human-readable title.
+    pub title_key: Option<String>,
+    pub cancellable: bool,
+    pub pausable: bool,
+    pub prioritizable: bool,
+    pub retryable: bool,
+    /// Dispatch pool: `"download"`, `"archive"` or `None` for no pool.
+    pub pool: Option<String>,
+    /// Phase codes reported by the task, in order.
+    pub phases: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -2382,6 +2422,34 @@ pub fn finish_task(request: TaskFinishRequest) -> PluginResult<()> {
     app_call_unit(AppOp::FinishTask, &AppRequest::FinishTask { request })
 }
 
+/// Registers a task type owned by this plugin. The type id must start with the
+/// plugin's own id (`<plugin_id>.<name>`); the host rejects other namespaces.
+pub fn register_task_definition(request: TaskDefinitionRequest) -> PluginResult<()> {
+    app_call_unit(
+        AppOp::RegisterTaskDefinition,
+        &AppRequest::RegisterTaskDefinition { request },
+    )
+}
+
+/// Creates a task linked to a registered definition owned by this plugin.
+pub fn create_typed_task(
+    request: TaskCreateRequest,
+    definition: impl Into<String>,
+) -> PluginResult<String> {
+    match app_call(
+        AppOp::CreateTypedTask,
+        &AppRequest::CreateTypedTask {
+            request: TypedTaskCreateRequest {
+                request,
+                definition: definition.into(),
+            },
+        },
+    )? {
+        AppResponse::TaskId(task_id) => Ok(task_id),
+        other => unexpected_app_response(other, "create-typed-task"),
+    }
+}
+
 pub fn app_info() -> PluginResult<AppInfo> {
     match app_call(AppOp::AppInfo, &AppRequest::AppInfo)? {
         AppResponse::AppInfo(info) => Ok(info),
@@ -3008,11 +3076,11 @@ pub mod prelude {
         Page, PageRegistration, PageRenderRequest, Plugin, PluginContext, PluginError, PluginEvent,
         PluginEventKind, PluginMetadata, PluginResult, Registration, Registrations, SelectOption,
         ServiceCallRequest, ServiceRegistration, ShutdownReason, StorageEntry, TaskCreateRequest,
-        TaskFinishRequest, TaskUpdateRequest, TextSizeToken, ThemeColor, ThemeMode, ThemeSnapshot,
+        TaskDefinitionRequest, TaskFinishRequest, TaskUpdateRequest, TextSizeToken, TypedTaskCreateRequest, ThemeColor, ThemeMode, ThemeSnapshot,
         ThemeToken, ToastKind, View, ViewNode, ViewStyle, ViewTree, ViewTreeBuilder, Window,
         app_info, badge, badge_styled, bmcbl_plugin, button, button_action, call_plugin_service,
-        call_service, card, checkbox, create_task, current_locale,
-        current_unix_ms, default_style, emit_event, finish_task, http_get_text, icon, image,
+        call_service, card, checkbox, create_task, create_typed_task, current_locale,
+        current_unix_ms, default_style, emit_event, finish_task, http_get_text, register_task_definition, icon, image,
         image_options, invalidate, invalidate_all, invalidate_injection, invalidate_page,
         is_dark_mode, link, link_tooltip, log, log_debug, log_error, log_info, log_warn, navigate,
         navigate_page, navigate_path, open_external_url, open_modal, open_window, option,

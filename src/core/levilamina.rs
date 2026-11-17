@@ -15,8 +15,8 @@ pub(crate) mod support;
 
 pub use install::{
     LeviLaminaInstallHandle, LeviLaminaInstallRequest, LeviLaminaInstallStage,
-    LeviLaminaInstallation, inspect_installation, start_install, start_install_under_parent,
-    start_uninstall,
+    LeviLaminaInstallation, inspect_installation, start_install,
+    start_install_under_parent_when_game_ready, start_uninstall,
 };
 
 const LEVILAUNCHER_INDEX_URL: &str = "https://lipr.levimc.org/levilauncher.json";

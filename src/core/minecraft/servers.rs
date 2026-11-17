@@ -1,6 +1,7 @@
-use gpui::SharedString;
 use crate::tasks::TaskStage;
+use crate::tasks::task_manager::TaskFinishStatus;
 use anyhow::{Context, Result, bail};
+use gpui::SharedString;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
@@ -303,7 +304,8 @@ fn start_server_mutation_task(
     detail: String,
 ) -> Result<String, String> {
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(title, TaskStage::UPDATING_SERVERS).detail(detail),
+        crate::tasks::task_manager::TaskOptions::new(title, TaskStage::UPDATING_SERVERS)
+            .detail(detail),
     )?;
     crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
 
@@ -319,27 +321,35 @@ fn start_server_mutation_task(
             Ok(Ok(ServerMutationOutcome::Completed(message))) => {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
-                    "completed",
+                    TaskFinishStatus::Completed,
                     Some(message),
                 );
             }
             Ok(Ok(ServerMutationOutcome::Cancelled(message))) => {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
-                    "cancelled",
+                    TaskFinishStatus::Cancelled,
                     Some(message),
                 );
             }
-            Ok(Err(error)) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
-            }
-            Err(error) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
-            }
+            Ok(Err(error)) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                TaskFinishStatus::Error,
+                Some(error),
+            ),
+            Err(error) => crate::tasks::task_manager::finish_task(
+                &worker_task_id,
+                TaskFinishStatus::Error,
+                Some(error),
+            ),
         }
     })
     .map_err(|error| {
-        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        crate::tasks::task_manager::finish_task(
+            &task_id,
+            TaskFinishStatus::Error,
+            Some(error.clone()),
+        );
         error
     })?;
 
@@ -348,12 +358,16 @@ fn start_server_mutation_task(
         if let Err(error) = workflow.await {
             crate::tasks::task_manager::finish_task(
                 &monitor_task_id,
-                "error",
+                TaskFinishStatus::Error,
                 Some(format!("服务器任务异常结束: {error}")),
             );
         }
     }) {
-        crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        crate::tasks::task_manager::finish_task(
+            &task_id,
+            TaskFinishStatus::Error,
+            Some(error.clone()),
+        );
         return Err(error);
     }
 

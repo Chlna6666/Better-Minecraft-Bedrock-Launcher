@@ -8,8 +8,9 @@ use std::{collections::HashMap, sync::Arc};
 use bedrock_voxel::load_obj_textures;
 use bedrock_voxel::{ObjModel, SourceTexture, TextureAlphaKind, classify_texture_alpha};
 use gpui_3d::{
-    AlphaMode, Camera, ImportedScene, Mat4, Material, MaterialId, Mesh, MeshPart, Node, ProjectionRegion,
-    Scene, SceneView, ShadingModel, TextureAsset, TextureAssetId, Vec2, Vec3, Vertex,
+    AlphaMode, Camera, ImportedScene, Mat4, Material, MaterialId, Mesh, MeshPart, Node,
+    ProjectionRegion, Scene, SceneView, ShadingModel, TextureAsset, TextureAssetId, Vec2, Vec3,
+    Vertex,
 };
 
 /// Limit CPU/GPU retention while preserving a deterministic overview of huge models.
@@ -128,9 +129,9 @@ pub(super) fn build_preview(
                 material.albedo_texture = Some(texture.id());
                 textured_materials += 1;
                 if decoded.has_alpha {
-                    let kind = *alpha_by_source.entry(key).or_insert_with(|| {
-                        classify_texture_alpha(texture.pixels())
-                    });
+                    let kind = *alpha_by_source
+                        .entry(key)
+                        .or_insert_with(|| classify_texture_alpha(texture.pixels()));
                     material.alpha_mode = match kind {
                         TextureAlphaKind::Opaque => AlphaMode::Opaque,
                         TextureAlphaKind::Cutout => AlphaMode::Mask,
@@ -263,7 +264,8 @@ fn unlit_import_preview_scene(
                             AlphaMode::Blend
                                 if original.base_color[3] >= 0.999
                                     && original.albedo_texture.is_some_and(|id| {
-                                        mask_textures.get(&id).copied() == Some(TextureAlphaKind::Cutout)
+                                        mask_textures.get(&id).copied()
+                                            == Some(TextureAlphaKind::Cutout)
                                     }) =>
                             {
                                 AlphaMode::Mask
@@ -300,9 +302,18 @@ fn unlit_import_preview_scene(
         }
         // Lights, physical environment and PBR-only material maps deliberately
         // do not participate in a neutral source-geometry preview.
-        let id = output.insert(parent, copied).map_err(|error| error.to_string())?;
+        let id = output
+            .insert(parent, copied)
+            .map_err(|error| error.to_string())?;
         for &child in source.children(source_id).unwrap_or_default() {
-            append_node(source, output, child, Some(id), materials_cache, mask_textures)?;
+            append_node(
+                source,
+                output,
+                child,
+                Some(id),
+                materials_cache,
+                mask_textures,
+            )?;
         }
         Ok(())
     }
@@ -379,10 +390,10 @@ pub(super) fn source_preview_from_imported(
     .with_textures(scene.textures().iter().cloned())
     .map_err(|error| error.to_string())?
     .with_projection_region(ProjectionRegion::VisibleContent)
-        .with_projection_inset(4.0, 0.06)
-        .map_err(|error| error.to_string())?
-        // glTF/GLB source previews share the same occlusion-free inspection path.
-        .with_culling_disabled();
+    .with_projection_inset(4.0, 0.06)
+    .map_err(|error| error.to_string())?
+    // glTF/GLB source previews share the same occlusion-free inspection path.
+    .with_culling_disabled();
     let textured_materials = scene.textures().len();
     Ok(Arc::new(ObjSourcePreview {
         scene_view: Arc::new(view),
@@ -477,8 +488,7 @@ mod tests {
             width: 2,
             height: 2,
             pixels: std::sync::Arc::from(vec![
-                0, 0, 0, 0, 255, 255, 255, 255,
-                255, 255, 255, 255, 255, 255, 255, 128,
+                0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 128,
             ]),
             has_alpha: true,
         });
@@ -513,7 +523,10 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(node.mesh.as_ref().unwrap(), &mesh));
         let material = &node.materials[0];
         assert_eq!(material.shading_model, gpui_3d::ShadingModel::Unlit);
-        assert!(material.double_sided, "thin imported cape/cloth surfaces must render from both sides");
+        assert!(
+            material.double_sided,
+            "thin imported cape/cloth surfaces must render from both sides"
+        );
         assert_eq!(material.base_color, original.base_color);
         assert_eq!(material.alpha_mode, original.alpha_mode);
         assert_eq!(material.emissive, [0.0; 4]);
@@ -529,15 +542,23 @@ mod tests {
         let mut source = gpui_3d::Scene::new();
         let texture = std::sync::Arc::new(
             gpui_3d::TextureAsset::rgba8(
-                2, 2,
-                vec![255, 255, 255, 0, 255, 255, 255, 255,
-                    255, 255, 255, 255, 255, 255, 255, 0],
-            ).unwrap(),
+                2,
+                2,
+                vec![
+                    255, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0,
+                ],
+            )
+            .unwrap(),
         );
         let mut original = gpui_3d::Material::new();
         original.alpha_mode = gpui_3d::AlphaMode::Blend;
         original.albedo_texture = Some(texture.id());
-        source.insert(None, gpui_3d::Node::new().with_materials([std::sync::Arc::new(original)])).unwrap();
+        source
+            .insert(
+                None,
+                gpui_3d::Node::new().with_materials([std::sync::Arc::new(original)]),
+            )
+            .unwrap();
         let preview = super::unlit_import_preview_scene(&source, &[texture]).unwrap();
         let material = &preview.node(preview.roots()[0]).unwrap().materials[0];
         assert_eq!(material.alpha_mode, gpui_3d::AlphaMode::Mask);
@@ -549,8 +570,7 @@ mod tests {
     fn genuine_transparency_remains_blended() {
         assert_eq!(
             classify_texture_alpha(&[
-                0, 0, 0, 0, 255, 255, 255, 128,
-                255, 255, 255, 128, 255, 255, 255, 255,
+                0, 0, 0, 0, 255, 255, 255, 128, 255, 255, 255, 128, 255, 255, 255, 255,
             ]),
             TextureAlphaKind::Translucent
         );

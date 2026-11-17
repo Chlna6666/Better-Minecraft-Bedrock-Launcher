@@ -1,5 +1,6 @@
 #![cfg(target_os = "windows")]
 use crate::tasks::TaskStage;
+use crate::tasks::task_manager::TaskFinishStatus;
 
 use serde::Serialize;
 use std::fs::{self, File};
@@ -88,14 +89,21 @@ pub fn start_user_data_backup_task(
     destination_directory: PathBuf,
 ) -> Result<String, String> {
     let task_id = crate::tasks::task_manager::create_task(
-        crate::tasks::task_manager::TaskOptions::new(t!("TaskTitle.export_uwp_backup").to_string(), TaskStage::QUEUED)
-            .detail(destination_directory.display().to_string()),
+        crate::tasks::task_manager::TaskOptions::new(
+            t!("TaskTitle.export_uwp_backup").to_string(),
+            TaskStage::QUEUED,
+        )
+        .detail(destination_directory.display().to_string()),
     )?;
     crate::tasks::task_manager::register_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
     let workflow = match crate::tasks::runtime::spawn_io(async move {
-        crate::tasks::task_manager::reset_progress(&worker_task_id, None, Some(TaskStage::BACKING_UP_UWP));
+        crate::tasks::task_manager::reset_progress(
+            &worker_task_id,
+            None,
+            Some(TaskStage::BACKING_UP_UWP),
+        );
         crate::tasks::task_manager::set_task_message(
             &worker_task_id,
             Some("正在扫描并压缩 Minecraft UWP 用户数据".to_string()),
@@ -114,7 +122,7 @@ pub fn start_user_data_backup_task(
             Ok(Ok(result)) => {
                 crate::tasks::task_manager::finish_task(
                     &worker_task_id,
-                    "completed",
+                    TaskFinishStatus::Completed,
                     Some(format!(
                         "备份已导出：{} · {} 个文件 · {} 字节",
                         result.archive_path.display(),
@@ -124,22 +132,42 @@ pub fn start_user_data_backup_task(
                 );
             }
             Ok(Err(error)) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "cancelled", Some(error));
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    TaskFinishStatus::Cancelled,
+                    Some(error),
+                );
             }
             Ok(Err(error)) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    TaskFinishStatus::Error,
+                    Some(error),
+                );
             }
             Err(error) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "cancelled", Some(error));
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    TaskFinishStatus::Cancelled,
+                    Some(error),
+                );
             }
             Err(error) => {
-                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
+                crate::tasks::task_manager::finish_task(
+                    &worker_task_id,
+                    TaskFinishStatus::Error,
+                    Some(error),
+                );
             }
         }
     }) {
         Ok(workflow) => workflow,
         Err(error) => {
-            crate::tasks::task_manager::finish_task(&task_id, "error", Some(error.clone()));
+            crate::tasks::task_manager::finish_task(
+                &task_id,
+                TaskFinishStatus::Error,
+                Some(error.clone()),
+            );
             return Err(error);
         }
     };
@@ -152,7 +180,7 @@ pub fn start_user_data_backup_task(
         {
             crate::tasks::task_manager::finish_task(
                 &monitor_task_id,
-                "error",
+                TaskFinishStatus::Error,
                 Some(format!("UWP 备份任务异常结束: {error}")),
             );
         }

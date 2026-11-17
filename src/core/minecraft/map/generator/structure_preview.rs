@@ -13,12 +13,10 @@ use bedrock_voxel::{
 };
 use bedrock_world::{structure::McStructureFile, surface::CancelFlag};
 
-use super::image::{
-    ImageBlockHeight, ImageBlockOptions, decode_image, plan_blocks,
-};
+use super::image::{ImageBlockHeight, ImageBlockOptions, decode_image, plan_blocks};
 use super::model_import::prepare_map_model;
 use super::source_obj_preview::ObjSourcePreview;
-use crate::tasks::task_manager::ProgressUpdate;
+use crate::tasks::task_manager::{ProgressUpdate, TaskFinishStatus};
 use crate::tasks::{runtime, task_manager};
 
 const PREVIEW_LIMIT_BYTES: usize = 128 * 1024 * 1024;
@@ -165,8 +163,8 @@ fn check_preview_structure_extent(
     }
     let mut volume = 1_u64;
     for axis in 0..3 {
-        let extent = u64::try_from(max[axis] - min[axis] + 1)
-            .map_err(|_| "方块预览尺寸无效".to_owned())?;
+        let extent =
+            u64::try_from(max[axis] - min[axis] + 1).map_err(|_| "方块预览尺寸无效".to_owned())?;
         volume = volume
             .checked_mul(extent)
             .ok_or_else(|| "方块预览范围溢出".to_owned())?;
@@ -216,9 +214,9 @@ pub fn start(request: StructurePreviewRequest) -> Result<String, String> {
     if let Err(error) = runtime::spawn_io(async move {
         let result = generate_preview(request, &worker_id, &cancel).await;
         let status = match &result {
-            Ok(_) => "completed",
-            Err(error) if error.contains("已取消") => "cancelled",
-            Err(_) => "error",
+            Ok(_) => TaskFinishStatus::Completed,
+            Err(error) if error.contains("已取消") => TaskFinishStatus::Cancelled,
+            Err(_) => TaskFinishStatus::Error,
         };
         task_manager::finish_task(
             &worker_id,
@@ -228,7 +226,7 @@ pub fn start(request: StructurePreviewRequest) -> Result<String, String> {
             }),
         );
     }) {
-        task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        task_manager::finish_task(&task_id, TaskFinishStatus::Error, Some(error.clone()));
         return Err(error);
     }
     Ok(task_id)
@@ -364,7 +362,9 @@ async fn generate_preview(
     }
     task_manager::update_progress(
         task_id,
-        ProgressUpdate::advance(1).total(1).stage(TaskStage::MAP_SAVE_PREVIEW),
+        ProgressUpdate::advance(1)
+            .total(1)
+            .stage(TaskStage::MAP_SAVE_PREVIEW),
     );
     Ok(format!("方块预览已生成（{} KiB）", size.div_ceil(1024)))
 }
@@ -375,8 +375,8 @@ mod tests {
 
     #[test]
     fn preview_structure_extent_limits_dense_serialization_not_surface_voxelization() {
-        use bedrock_world::editor::{BlockOffset, BlockPlacementPlan, PlacementBlock};
         use bedrock_world::block::BlockState;
+        use bedrock_world::editor::{BlockOffset, BlockPlacementPlan, PlacementBlock};
         use std::collections::BTreeMap;
         let block = |x, y, z| PlacementBlock {
             offset: BlockOffset { x, y, z },
@@ -387,15 +387,13 @@ mod tests {
             },
         };
         // 324 × 256 × 100 still fits the 128 MiB two-layer format.
-        let accepted = BlockPlacementPlan::new(vec![
-            block(0, 0, 0), block(323, 255, 99),
-        ]).expect("placement");
+        let accepted =
+            BlockPlacementPlan::new(vec![block(0, 0, 0), block(323, 255, 99)]).expect("placement");
         super::check_preview_structure_extent(&accepted).expect("bounded structure");
         // The sparse voxelizer can represent this, but materializing a
         // 384³ .mcstructure would allocate hundreds of MiB for empty space.
-        let enormous = BlockPlacementPlan::new(vec![
-            block(0, 0, 0), block(383, 383, 383),
-        ]).expect("placement");
+        let enormous =
+            BlockPlacementPlan::new(vec![block(0, 0, 0), block(383, 383, 383)]).expect("placement");
         let error = super::check_preview_structure_extent(&enormous).unwrap_err();
         assert!(error.contains("128 MiB"), "{error}");
     }

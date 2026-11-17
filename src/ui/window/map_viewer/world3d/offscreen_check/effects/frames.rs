@@ -54,6 +54,14 @@ pub(super) fn frame<D: Device + TextureTransferDevice>(
     color: &Attachment,
     depth: &Attachment,
 ) -> (f64, f64, f64) {
+    // Each fixture iteration represents a new owner frame, not another view
+    // inside the same frame. The world fixture always uses a full target.
+    let context = RendererExtensionContext::for_target(
+        context.backend_kind(),
+        context.render_pass(),
+        context.color_format(),
+        context.viewport(),
+    );
     let start = Instant::now();
     let mut commands = Vec::new();
     renderer
@@ -78,9 +86,8 @@ pub(super) fn frame<D: Device + TextureTransferDevice>(
         }),
         clear_region: None,
         viewport: None,
-            resolve_target: None,
-
-        });
+        resolve_target: None,
+    });
     if std::env::var_os("GPUI_3D_TRACE_TIMINGS").is_some() {
         let command_count: usize = passes.iter().map(|pass| pass.commands.len()).sum();
         let indirect = passes
@@ -97,15 +104,11 @@ pub(super) fn frame<D: Device + TextureTransferDevice>(
         );
     }
     let submitted = Instant::now();
+    let native = submit_native(renderer, device);
     let submission = PresentationDevice::render_to_textures(device, &passes).unwrap();
     let record = submitted.elapsed().as_secs_f64() * 1000.;
     let waiting = Instant::now();
-    if let Some(submission) = submission {
-        SubmissionDevice::wait_submission(device, submission).unwrap();
-    } else {
-        SubmissionDevice::wait_queue_idle(device).unwrap();
-    }
-    renderer.render_passes_submitted();
+    complete_frame(renderer, device, submission, native);
     (encode, record, waiting.elapsed().as_secs_f64() * 1000.)
 }
 
@@ -117,10 +120,17 @@ pub(super) fn inspect_passes<D: Device>(
     color: &Attachment,
     depth: &Attachment,
 ) {
+    let context = RendererExtensionContext::for_target(
+        context.backend_kind(),
+        context.render_pass(),
+        context.color_format(),
+        context.viewport(),
+    );
     let mut commands = Vec::new();
     renderer
         .render(view, device, context.clone(), &mut commands)
         .unwrap();
+    let mut native = submit_native(renderer, device);
     let mut owned = Vec::new();
     renderer.drain_render_passes(&mut owned);
     // Diagnostic-only drains separate queued compute from graphics; never used by the editor.
@@ -146,26 +156,61 @@ pub(super) fn inspect_passes<D: Device>(
         }),
         clear_region: None,
         viewport: None,
-            resolve_target: None,
-
-        });
+        resolve_target: None,
+    });
     for (index, pass) in passes.iter().enumerate() {
         let start = Instant::now();
         let submission =
             PresentationDevice::render_to_textures(device, std::slice::from_ref(pass)).unwrap();
         let record = start.elapsed().as_secs_f64() * 1000.;
         let waiting = Instant::now();
-        if let Some(submission) = submission {
-            SubmissionDevice::wait_submission(device, submission).unwrap();
-        } else {
-            SubmissionDevice::wait_queue_idle(device).unwrap();
-        }
+        complete_frame(renderer, device, submission, std::mem::take(&mut native));
         eprintln!(
             "world3d isolated pass={index} commands={} record_ms={:.3} fence_wait_ms={:.3}",
             pass.commands.len(),
             record,
             waiting.elapsed().as_secs_f64() * 1000.
         );
+    }
+    renderer.render_passes_submitted();
+}
+
+// Follow nova's native producer -> GUI consumer order. Merely draining the
+// compatibility passes does not submit SceneView's native 3D commands.
+fn submit_native<D: Device>(
+    renderer: &mut dyn RendererExtensionRenderer,
+    device: &mut D,
+) -> Vec<SubmissionId> {
+    let mut accepted = Vec::new();
+    renderer.drain_accepted_native_submissions(&mut accepted);
+    if renderer.has_native_offscreen_work() {
+        if let Some(submission) = renderer.submit_native_offscreen(device).unwrap() {
+            if !accepted.contains(&submission) {
+                accepted.push(submission);
+            }
+        }
+        renderer.render_passes_submitted();
+    }
+    accepted
+}
+
+fn complete_frame<D: Device>(
+    renderer: &mut dyn RendererExtensionRenderer,
+    device: &mut D,
+    submission: Option<SubmissionId>,
+    native: Vec<SubmissionId>,
+) {
+    if let Some(submission) = submission {
+        renderer.gpu_submission_accepted(submission);
+        SubmissionDevice::wait_submission(device, submission).unwrap();
+        renderer.gpu_submission_completed(submission);
+    } else {
+        SubmissionDevice::wait_queue_idle(device).unwrap();
+        renderer.gpu_work_completed();
+    }
+    for producer in native {
+        SubmissionDevice::wait_submission(device, producer).unwrap();
+        renderer.gpu_submission_completed(producer);
     }
     renderer.render_passes_submitted();
 }

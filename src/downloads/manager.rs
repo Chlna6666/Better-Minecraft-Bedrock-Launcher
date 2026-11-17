@@ -4,9 +4,10 @@ use crate::downloads::integrity::{is_appx_download_path, verify_download_integri
 use crate::downloads::multi::download;
 use crate::downloads::single::download_file;
 use crate::result::{CoreError, CoreResult};
+use crate::tasks::TaskStage;
 use crate::tasks::runtime::spawn_download_task;
 use crate::tasks::task_manager::{
-    ProgressUpdate, TaskOptions, create_task, finish_task, register_abort_handle,
+    ProgressUpdate, TaskFinishStatus, TaskOptions, create_task, finish_task, register_abort_handle,
     reset_progress, task_control, update_progress,
 };
 use num_cpus;
@@ -17,7 +18,6 @@ use reqwest::header::HeaderMap;
 use std::path::Path;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
-use crate::tasks::TaskStage;
 
 #[derive(Debug, Clone)]
 pub struct DownloadOptions {
@@ -383,7 +383,10 @@ impl DownloaderManager {
         let task_control = task_control(task_id)
             .ok_or_else(|| CoreError::Other(format!("Task control missing for {task_id}")))?;
 
-        update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::DOWNLOADING));
+        update_progress(
+            task_id,
+            ProgressUpdate::advance(0).stage(TaskStage::DOWNLOADING),
+        );
 
         let final_dest = resolve_final_dest(&self.client, &url, &dest, options.headers.as_ref())
             .await
@@ -426,7 +429,10 @@ impl DownloaderManager {
 
             match res {
                 Ok(CoreResult::Success(_)) => {
-                    update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::VERIFYING));
+                    update_progress(
+                        task_id,
+                        ProgressUpdate::advance(0).stage(TaskStage::VERIFYING),
+                    );
                     if let Err(error) = verify_temp_download(&temp_dest).await {
                         remove_file_if_exists(&temp_dest).await;
                         if is_trivial_candidate_failure(&temp_dest, &error) {
@@ -452,7 +458,10 @@ impl DownloaderManager {
                     }
 
                     if temp_dest != final_dest {
-                        update_progress(task_id, ProgressUpdate::advance(0).stage(TaskStage::RENAMING));
+                        update_progress(
+                            task_id,
+                            ProgressUpdate::advance(0).stage(TaskStage::RENAMING),
+                        );
                         match rename_overwrite(&temp_dest, &final_dest).await {
                             Ok(()) => return Ok(CoreResult::Success(final_dest.clone())),
                             Err(e) => {
@@ -596,7 +605,11 @@ impl DownloaderManager {
 
     /// manager 创建新的 task 并 spawn 后台执行，立即返回 task_id
     pub fn start_download(&self, url: String, dest: PathBuf, options: DownloadOptions) -> String {
-        let mut task_options = TaskOptions::new(t!("TaskTitle.download_task").to_string(), TaskStage::READY).generic_title().pausable(true);
+        let mut task_options =
+            TaskOptions::new(t!("TaskTitle.download_task").to_string(), TaskStage::READY)
+                .generic_title()
+                .definition("core.download.http")
+                .pausable(true);
         if let Some(detail) = download_task_detail(dest.as_path()) {
             task_options = task_options.detail(detail);
         }
@@ -608,7 +621,10 @@ impl DownloaderManager {
         let task_id_clone = task_id.clone();
 
         let abort_handle = match spawn_download_task(task_id.clone(), async move {
-            update_progress(&task_id_clone, ProgressUpdate::advance(0).stage(TaskStage::STARTING));
+            update_progress(
+                &task_id_clone,
+                ProgressUpdate::advance(0).stage(TaskStage::STARTING),
+            );
 
             let manager = DownloaderManager::with_client(client);
 
@@ -621,31 +637,39 @@ impl DownloaderManager {
                 Ok(CoreResult::Success(final_path)) => {
                     finish_task(
                         &task_id_clone,
-                        "completed",
+                        TaskFinishStatus::Completed,
                         Some(final_path.to_string_lossy().to_string()),
                     );
                 }
                 Ok(CoreResult::Cancelled) => {
                     finish_task(
                         &task_id_clone,
-                        "cancelled",
+                        TaskFinishStatus::Cancelled,
                         Some("download cancelled".into()),
                     );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
                 Ok(CoreResult::Error(err)) => {
-                    finish_task(&task_id_clone, "error", Some(format!("{:?}", err)));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Error,
+                        Some(format!("{:?}", err)),
+                    );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
                 Err(e) => {
-                    finish_task(&task_id_clone, "error", Some(format!("{:?}", e)));
+                    finish_task(
+                        &task_id_clone,
+                        TaskFinishStatus::Error,
+                        Some(format!("{:?}", e)),
+                    );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
             }
         }) {
             Ok(abort_handle) => abort_handle,
             Err(error) => {
-                finish_task(&task_id, "error", Some(error));
+                finish_task(&task_id, TaskFinishStatus::Error, Some(error));
                 return task_id;
             }
         };
