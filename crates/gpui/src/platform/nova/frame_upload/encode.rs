@@ -427,6 +427,9 @@ impl FrameUpload {
                     self.encode_polychrome_sprites(
                         &scene.polychrome_sprites[range.clone()],
                         &mut summary,
+                        (drawable_size.width == target_size.width
+                            && drawable_size.height == target_size.height)
+                            .then_some(drawable_size),
                     );
                 }
                 PreparedSceneBatch::Underlines(range) => {

@@ -75,12 +75,13 @@ where
     verify_r8_transfers(device);
     relocation::verify_texture_copies(device);
     let config = SurfaceConfig::new(16, 16, Format::Bgra8Unorm).expect("config");
-    let core = create_renderer_core(device, config, "sprite hardware gate", shaders)
+    let core = create_renderer_core(device, config, "sprite hardware gate", shaders.clone())
         .expect("production core");
     let resources = create_renderer_resources(device, config, "sprite hardware gate", &core)
         .expect("production resources");
     let (target, view) = color_target(device, config.size);
-    upload_globals(device, resources.frame_resources[0].buffers);
+    upload_globals(device, resources.frame_resources[0].buffers, config.size);
+    primitives::verify_quad_clipping(device, &resources, target, view);
     relocation::verify_atlas_compaction(device, &resources, target, view);
     // Preserve the existing DX11/GL gates; the added backends validate atlas formats here.
     if matches!(
@@ -169,6 +170,9 @@ where
             bounds::verify(device, &resources, &atlas, target, view);
         }
     }
+    shadows::verify(device, shaders.clone());
+    underlines::verify(device, shaders.clone());
+    images::verify(device, shaders);
 }
 
 fn verify_r8_transfers<D: ResourceDevice + TextureTransferDevice>(device: &mut D) {
@@ -260,7 +264,11 @@ fn color_target<D: ResourceDevice>(device: &mut D, size: Extent2d) -> (TextureId
     (texture, view)
 }
 
-fn upload_globals<D: ResourceDevice>(device: &mut D, buffers: resources::FrameResourceBuffers) {
+fn upload_globals<D: ResourceDevice>(
+    device: &mut D,
+    buffers: resources::FrameResourceBuffers,
+    extent: Extent2d,
+) {
     let mut chunk_cache = RetainedChunkCache::default();
     let mut upload = FrameUpload::default();
     upload.encode(
@@ -269,12 +277,12 @@ fn upload_globals<D: ResourceDevice>(device: &mut D, buffers: resources::FrameRe
         &crate::window::retained::RetainedPaint::default(),
         &[],
         DrawableSize {
-            width: 16,
-            height: 16,
+            width: extent.width(),
+            height: extent.height(),
         },
         DrawableSize {
-            width: 16,
-            height: 16,
+            width: extent.width(),
+            height: extent.height(),
         },
         &RenderingParameters::system(),
         false,
@@ -491,10 +499,14 @@ fn bounds_device_pixels() -> Bounds<DevicePixels> {
 }
 
 mod bounds;
+mod comparison;
 mod filters;
+mod images;
 mod paths;
 mod primitives;
 mod relocation;
+mod shadows;
+mod underlines;
 
 pub(in crate::platform) mod native_window {
     use windows::{

@@ -69,6 +69,7 @@ fn batch_uploads_overlap(
             texture_id,
             first,
             count,
+            ..
         } => (texture_id, first, count, &frame.poly_atlas_tiles),
         _ => return false,
     };
@@ -158,6 +159,7 @@ mod tests {
                         texture_id,
                         first: number as u32,
                         count: 1,
+                        color_only: false,
                     }
                 });
                 frame.blur_content_ranges_cache.push(ColorContentRange {

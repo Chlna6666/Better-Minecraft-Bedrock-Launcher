@@ -23,8 +23,6 @@ struct QuadVarying {
     @builtin(position) position: vec4<f32>,
     @location(0) @interpolate(flat) border_color: vec4<f32>,
     @location(1) @interpolate(flat) quad_id: u32,
-    // TODO: use `clip_distance` once Naga supports it.
-    @location(2) clip_distances: vec4<f32>,
     @location(3) @interpolate(flat) background_solid: vec4<f32>,
     @location(4) @interpolate(flat) background_color0: vec4<f32>,
     @location(5) @interpolate(flat) background_color1: vec4<f32>,
@@ -43,7 +41,7 @@ fn vs_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
     let content_mask = animation_content_mask(quad.content_mask, animation);
 
     var out = QuadVarying();
-    out.position = to_device_position(unit_vertex, bounds);
+    out.position = to_clipped_device_position(unit_vertex, bounds, content_mask.bounds);
 
     let gradient = prepare_gradient_color(
         quad.background.tag,
@@ -61,7 +59,6 @@ fn vs_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
     out.border_color = rgba_to_vec4(quad.border_color);
     out.border_color.a *= animation.opacity;
     out.quad_id = instance_id;
-    out.clip_distances = distance_from_clip_rect(unit_vertex, bounds, content_mask.bounds);
     out.content_mask_bounds = vec4<f32>(content_mask.corner_bounds.origin, content_mask.corner_bounds.size);
     out.content_mask_radii = vec4<f32>(content_mask.corner_radii.top_left, content_mask.corner_radii.top_right, content_mask.corner_radii.bottom_right, content_mask.corner_radii.bottom_left);
     out.animation_slot = quad.animation_slot;
@@ -70,10 +67,6 @@ fn vs_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
 
 @fragment
 fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
-    // Alpha clip first, since we don't have `clip_distance`.
-    if (any(input.clip_distances < vec4<f32>(0.0))) {
-        return vec4<f32>(0.0);
-    }
     let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
     if (clip_coverage <= 0.0) {
         return vec4<f32>(0.0);

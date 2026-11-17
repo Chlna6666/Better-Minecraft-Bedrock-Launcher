@@ -117,8 +117,6 @@ struct UnderlineVarying {
     @location(1) @interpolate(flat) bounds: vec4<f32>,
     @location(2) @interpolate(flat) thickness: f32,
     @location(3) @interpolate(flat) wavy: u32,
-    // TODO: use `clip_distance` once Naga supports it.
-    @location(4) clip_distances: vec4<f32>,
     @location(5) @interpolate(flat) content_mask_bounds: vec4<f32>,
     @location(6) @interpolate(flat) content_mask_radii: vec4<f32>,
 }
@@ -132,13 +130,12 @@ fn vs_underline(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) 
     let content_mask = underline_animation_content_mask(underline.content_mask, animation);
 
     var out = UnderlineVarying();
-    out.position = to_device_position(unit_vertex, bounds);
+    out.position = to_clipped_device_position(unit_vertex, bounds, content_mask.bounds);
     out.color = rgba_to_vec4(underline.color);
     out.color.a *= animation.opacity;
     out.bounds = vec4<f32>(bounds.origin, bounds.size);
     out.thickness = underline.thickness * animation.scale;
     out.wavy = underline.wavy;
-    out.clip_distances = distance_from_clip_rect(unit_vertex, bounds, content_mask.bounds);
     out.content_mask_bounds = vec4<f32>(content_mask.corner_bounds.origin, content_mask.corner_bounds.size);
     out.content_mask_radii = vec4<f32>(content_mask.corner_radii.top_left, content_mask.corner_radii.top_right, content_mask.corner_radii.bottom_right, content_mask.corner_radii.bottom_left);
     return out;
@@ -149,11 +146,7 @@ fn fs_underline(input: UnderlineVarying) -> @location(0) vec4<f32> {
     const WAVE_FREQUENCY: f32 = 2.0;
     const WAVE_HEIGHT_RATIO: f32 = 0.8;
 
-    // Alpha clip first, since we don't have `clip_distance`.
     let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
-    if (any(input.clip_distances < vec4<f32>(0.0))) {
-        return vec4<f32>(0.0);
-    }
     if (clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }

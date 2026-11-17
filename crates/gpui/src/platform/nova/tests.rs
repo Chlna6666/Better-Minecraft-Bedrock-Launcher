@@ -6,6 +6,8 @@ use crate::{
 use gfx_core::RenderCommand;
 use std::cell::Cell;
 
+mod images;
+
 #[cfg(all(
     target_os = "windows",
     any(
@@ -1801,6 +1803,7 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
         },
         first: 0,
         count: 5,
+        color_only: false,
     });
     upload
         .batches
@@ -3174,7 +3177,6 @@ fn nova_fragment_shaders_skip_fully_transparent_instances() {
         include_str!("shaders/solid_quad.wgsl"),
         "fs_solid_quad",
         &[
-            "if (any(input.clip_distances < vec4<f32>(0.0)))",
             "if (input.color.a <= 0.0)",
             "return blend_color(input.color, clip_coverage)",
         ],
@@ -3209,7 +3211,6 @@ fn nova_fragment_shaders_skip_fully_transparent_instances() {
         include_str!("shaders/shadow.wgsl"),
         "fs_shadow",
         &[
-            "if (any(input.clip_distances < vec4<f32>(0.0)))",
             "if (input.color.a <= 0.0)",
             "if (input.blur_radius <= SHADER_EPSILON)",
             "let inverse_sigma = 1.0 / input.blur_radius",
@@ -3220,7 +3221,6 @@ fn nova_fragment_shaders_skip_fully_transparent_instances() {
         include_str!("shaders/underline.wgsl"),
         "fs_underline",
         &[
-            "if (any(input.clip_distances < vec4<f32>(0.0)))",
             "if (input.color.a <= 0.0)",
             "let underline_height = input.bounds.w",
             "if ((input.wavy & 0xFFu) == 0u)",
@@ -4077,6 +4077,7 @@ fn test_blend_pipelines(base: u32) -> BlendPipelines {
         #[cfg(target_os = "windows")]
         subpixel_sprites: test_render_pipeline_id(base + 10),
         poly_sprites: test_render_pipeline_id(base + 7),
+        poly_sprites_color: test_render_pipeline_id(base + 11),
         underlines: test_render_pipeline_id(base + 8),
         backdrop_blurs: test_render_pipeline_id(base + 9),
     }

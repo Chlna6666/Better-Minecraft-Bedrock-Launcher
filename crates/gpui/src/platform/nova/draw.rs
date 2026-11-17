@@ -252,12 +252,18 @@ pub(super) fn encode_clipped_draw_commands(
                 texture_id,
                 first,
                 count,
+                color_only,
             } => {
                 if let Some(bind_group) = sprite_bind_group(texture_id) {
-                    push_draw_command(
+                    push_image_draw_command(
                         steps,
+                        blend_pipelines,
                         DrawCommand {
-                            pipeline: blend_pipelines.poly_sprites,
+                            pipeline: if color_only {
+                                blend_pipelines.poly_sprites_color
+                            } else {
+                                blend_pipelines.poly_sprites
+                            },
                             bind_groups: bind_group_list([bind_group]),
                             vertex_count: 4,
                             first_vertex: 0,
@@ -383,6 +389,30 @@ fn push_draw_command(steps: &mut Vec<RenderCommand>, step: DrawCommand) {
         return;
     }
     steps.push(RenderCommand::Draw(step));
+}
+
+// Scissor/blur skipping can bring separate image batches together. Keep their
+// original merge opportunity even when only one batch qualifies for specialization.
+fn push_image_draw_command(
+    steps: &mut Vec<RenderCommand>,
+    pipelines: BlendPipelines,
+    mut step: DrawCommand,
+) {
+    if let Some(RenderCommand::Draw(previous)) = steps.last_mut()
+        && previous.pipeline != step.pipeline
+        && (previous.pipeline == pipelines.poly_sprites
+            || previous.pipeline == pipelines.poly_sprites_color)
+    {
+        let selected_pipeline = step.pipeline;
+        step.pipeline = previous.pipeline;
+        if commands_can_merge(previous, &step) {
+            previous.pipeline = pipelines.poly_sprites;
+            step.pipeline = pipelines.poly_sprites;
+        } else {
+            step.pipeline = selected_pipeline;
+        }
+    }
+    push_draw_command(steps, step);
 }
 
 fn commands_can_merge(previous: &DrawCommand, next: &DrawCommand) -> bool {

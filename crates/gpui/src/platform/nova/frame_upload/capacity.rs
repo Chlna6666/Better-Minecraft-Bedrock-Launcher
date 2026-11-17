@@ -317,6 +317,7 @@ impl FrameUpload {
                     texture_id,
                     first,
                     count,
+                    ..
                 } => {
                     textures.insert(texture_id);
                     let start = first as usize;

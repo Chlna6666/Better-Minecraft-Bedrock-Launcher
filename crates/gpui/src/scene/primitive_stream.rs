@@ -1,4 +1,5 @@
 //! Immutable ordered primitive payload segments. Window retention chooses which ranges may be shared.
+mod sort;
 #[cfg(test)]
 mod tests;
 use super::{DrawOrder, Quad, Shadow};
@@ -207,7 +208,7 @@ impl<T: Ordered> PrimitiveStream<T> {
     }
     fn freeze_pending(&mut self) {
         if !self.pending.is_empty() {
-            self.pending.sort_unstable_by_key(|quad| quad.order());
+            sort::pending(&mut self.pending);
             let pending = std::mem::take(&mut self.pending);
             let count = pending.len();
             // These primitives were already counted by push().

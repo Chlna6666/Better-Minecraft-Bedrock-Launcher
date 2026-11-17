@@ -1,4 +1,5 @@
 use super::*;
+use gfx_core::ShaderModuleId;
 
 /// Render pipelines and the color-only filter pass for one device and color format.
 ///
@@ -25,6 +26,7 @@ pub(super) struct BlendPipelines {
     #[cfg(target_os = "windows")]
     pub(super) subpixel_sprites: RenderPipelineId,
     pub(super) poly_sprites: RenderPipelineId,
+    pub(super) poly_sprites_color: RenderPipelineId,
     pub(super) underlines: RenderPipelineId,
     pub(super) backdrop_blurs: RenderPipelineId,
 }
@@ -206,36 +208,18 @@ where
                 )
             })?
     };
-    let poly_sprites = device
-        .create_render_pipeline(
-            &RenderPipelineDescriptor {
-                label: Some(format!(
-                    "{} {} poly sprite pipeline",
-                    descriptor.label, descriptor.suffix
-                )),
-                vertex_shader: descriptor.poly_vertex,
-                vertex_entry_point: "vs_poly_sprite".to_string(),
-                fragment_shader: descriptor.poly_fragment,
-                fragment_entry_point: "fs_poly_sprite".to_string(),
-                vertex_buffers: Vec::new(),
-                render_pass: descriptor.render_pass,
-                pipeline_layout: Some(descriptor.poly_pipeline_layout),
-                color_targets: vec![gfx_core::ColorTargetState::new(
-                    descriptor.color_format,
-                    descriptor.blend_mode,
-                )],
-                primitive_topology: PrimitiveTopology::TriangleStrip,
-                raster: Default::default(),
-                depth_state: None,
-            },
-            descriptor.size,
-        )
-        .with_context(|| {
-            format!(
-                "creating nova {} poly sprite render pipeline",
-                descriptor.suffix
-            )
-        })?;
+    let poly_sprites = create_poly_pipeline(
+        device,
+        &descriptor,
+        descriptor.poly_fragment,
+        "fs_poly_sprite",
+    )?;
+    let poly_sprites_color = create_poly_pipeline(
+        device,
+        &descriptor,
+        descriptor.poly_color_fragment,
+        "fs_poly_sprite_color",
+    )?;
     let underlines = device
         .create_render_pipeline(
             &RenderPipelineDescriptor {
@@ -305,7 +289,46 @@ where
         #[cfg(target_os = "windows")]
         subpixel_sprites,
         poly_sprites,
+        poly_sprites_color,
         underlines,
         backdrop_blurs,
     })
+}
+
+fn create_poly_pipeline<D: ResourceDevice + PipelineDevice>(
+    device: &mut D,
+    descriptor: &BlendPipelineDescriptor<'_>,
+    fragment: ShaderModuleId,
+    entry: &str,
+) -> Result<RenderPipelineId> {
+    device
+        .create_render_pipeline(
+            &RenderPipelineDescriptor {
+                label: Some(format!(
+                    "{} {} poly sprite pipeline",
+                    descriptor.label, descriptor.suffix
+                )),
+                vertex_shader: descriptor.poly_vertex,
+                vertex_entry_point: "vs_poly_sprite".to_string(),
+                fragment_shader: fragment,
+                fragment_entry_point: entry.to_string(),
+                vertex_buffers: Vec::new(),
+                render_pass: descriptor.render_pass,
+                pipeline_layout: Some(descriptor.poly_pipeline_layout),
+                color_targets: vec![gfx_core::ColorTargetState::new(
+                    descriptor.color_format,
+                    descriptor.blend_mode,
+                )],
+                primitive_topology: PrimitiveTopology::TriangleStrip,
+                raster: Default::default(),
+                depth_state: None,
+            },
+            descriptor.size,
+        )
+        .with_context(|| {
+            format!(
+                "creating nova {} poly sprite render pipeline",
+                descriptor.suffix
+            )
+        })
 }

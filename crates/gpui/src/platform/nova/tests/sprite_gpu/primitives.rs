@@ -96,6 +96,60 @@ pub(super) fn verify_pixels<D>(
     println!("production rounded quad, shadow, underline and clipping: native pixels verified");
 }
 
+/// Exercise the clipped vertex path through both production quad pipelines on every backend.
+pub(super) fn verify_quad_clipping<D>(
+    device: &mut D,
+    resources: &RendererResources,
+    target: TextureId,
+    view: TextureViewId,
+) where
+    D: ResourceDevice + PresentationDevice + TextureTransferDevice,
+{
+    let frame = resources.frame_resources[0];
+    let pipelines = resources.pipelines.alpha;
+    let quad_bounds = bounds(point(px(0.), px(0.)), size(px(16.), px(16.))).scale(1.);
+    for pipeline in [pipelines.solid_quads, pipelines.quads] {
+        for mask_x in [4.25, 20.] {
+            let mask = bounds(point(px(mask_x), px(4.25)), size(px(7.5), px(7.5))).scale(1.);
+            let mut bytes = Vec::new();
+            write_quad(
+                &mut bytes,
+                &Quad {
+                    bounds: quad_bounds,
+                    content_mask: crate::ContentMask::new(mask),
+                    background: crate::rgb(0xff0000).into(),
+                    ..Default::default()
+                },
+            );
+            device
+                .write_buffer(frame.buffers.quad_buffer, 0, &bytes)
+                .expect("clipped quad upload");
+            draw(
+                device,
+                resources,
+                view,
+                pipeline,
+                frame.bind_groups.quad_bind_group,
+            );
+            let pixels = device.read_texture(target).expect("clipped quad readback");
+            for y in 0..16 {
+                for x in 0..16 {
+                    let visible = mask_x < 16. && (4..12).contains(&x) && (4..12).contains(&y);
+                    assert_eq!(
+                        pixel(&pixels, x, y),
+                        if visible {
+                            [0, 0, 255, 255]
+                        } else {
+                            [0, 0, 0, 255]
+                        },
+                        "quad mask at ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn draw<D: PresentationDevice>(
     device: &mut D,
     resources: &RendererResources,
@@ -123,7 +177,11 @@ fn draw<D: PresentationDevice>(
                 alpha: 1.0,
             }),
             clear_region: None,
-            depth_attachment: None,
+            depth_attachment: Some(DepthAttachment {
+                target: resources.depth_texture_view,
+                depth_load_op: LoadOp::Clear(1.0),
+                stencil_load_op: None,
+            }),
             viewport: None,
             resolve_target: None,
         }])

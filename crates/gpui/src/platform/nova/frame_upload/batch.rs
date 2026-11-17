@@ -48,6 +48,7 @@ pub(in crate::platform::nova) enum UploadedBatch {
         texture_id: AtlasTextureId,
         first: u32,
         count: u32,
+        color_only: bool,
     },
     Underlines {
         first: u32,

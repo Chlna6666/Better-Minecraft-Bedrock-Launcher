@@ -37,8 +37,6 @@ struct ShadowVarying {
     @location(1) @interpolate(flat) blur_radius: f32,
     @location(2) @interpolate(flat) bounds: vec4<f32>,
     @location(3) @interpolate(flat) corner_radii: vec4<f32>,
-    // TODO: use `clip_distance` once Naga supports it.
-    @location(4) clip_distances: vec4<f32>,
     @location(5) @interpolate(flat) content_mask_bounds: vec4<f32>,
     @location(6) @interpolate(flat) content_mask_radii: vec4<f32>,
 }
@@ -63,7 +61,7 @@ fn vs_shadow(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) ins
     shadow.bounds.size += 2.0 * vec2<f32>(margin);
 
     var out = ShadowVarying();
-    out.position = to_device_position(unit_vertex, shadow.bounds);
+    out.position = to_clipped_device_position(unit_vertex, shadow.bounds, shadow.content_mask.bounds);
     out.color = rgba_to_vec4(shadow.color);
     out.color.a *= animation.opacity;
     out.blur_radius = shadow.blur_radius;
@@ -74,7 +72,6 @@ fn vs_shadow(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) ins
         shadow.corner_radii.bottom_right,
         shadow.corner_radii.bottom_left,
     );
-    out.clip_distances = distance_from_clip_rect(unit_vertex, shadow.bounds, shadow.content_mask.bounds);
     out.content_mask_bounds = vec4<f32>(shadow.content_mask.corner_bounds.origin, shadow.content_mask.corner_bounds.size);
     out.content_mask_radii = vec4<f32>(shadow.content_mask.corner_radii.top_left, shadow.content_mask.corner_radii.top_right, shadow.content_mask.corner_radii.bottom_right, shadow.content_mask.corner_radii.bottom_left);
     return out;
@@ -82,11 +79,7 @@ fn vs_shadow(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) ins
 
 @fragment
 fn fs_shadow(input: ShadowVarying) -> @location(0) vec4<f32> {
-    // Alpha clip first, since we don't have `clip_distance`.
     let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
-    if (any(input.clip_distances < vec4<f32>(0.0))) {
-        return vec4<f32>(0.0);
-    }
     if (clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }

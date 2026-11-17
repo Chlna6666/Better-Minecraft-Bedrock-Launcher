@@ -137,6 +137,7 @@ fn check_nova_wgsl_shaders() {
                 ANIMATION,
                 SHAPE,
                 "./src/platform/nova/shaders/poly_sprite.wgsl",
+                "./src/platform/nova/shaders/poly_sprite_color.wgsl",
             ][..],
         ),
         (
@@ -613,6 +614,15 @@ fn generate_nova_shader_bytes() {
                 .wgsl_file("./src/platform/nova/shaders/poly_sprite.wgsl")
                 .entry("vs_poly_sprite", ShaderStage::Vertex)
                 .entry("fs_poly_sprite", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("poly_sprite_color")
+                .wgsl_file(NOVA_CORE_WGSL)
+                .wgsl_file(NOVA_ANIMATION_WGSL)
+                .wgsl_file(NOVA_SHAPE_WGSL)
+                .wgsl_file("./src/platform/nova/shaders/poly_sprite.wgsl")
+                .wgsl_file("./src/platform/nova/shaders/poly_sprite_color.wgsl")
+                .entry("fs_poly_sprite_color", ShaderStage::Fragment),
         )
         .shader(
             Shader::new("underline")

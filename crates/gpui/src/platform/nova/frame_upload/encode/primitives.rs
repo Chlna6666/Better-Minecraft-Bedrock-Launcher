@@ -143,6 +143,7 @@ impl FrameUpload {
         &mut self,
         sprites: &[crate::PolychromeSprite],
         summary: &mut FrameUploadSummary,
+        full_resolution_viewport: Option<DrawableSize>,
     ) {
         let mut count = 0_u32;
         for sprite in sprites {
@@ -179,7 +180,17 @@ impl FrameUpload {
                     texture_id: id,
                     first,
                     count,
+                    color_only,
                 }) if *id == sprite.tile.texture_id && *first + *count == primitive_index => {
+                    if *color_only
+                        && !can_use_image_color_pipeline(
+                            &sprite,
+                            visual_bounds,
+                            full_resolution_viewport,
+                        )
+                    {
+                        *color_only = false;
+                    }
                     *count += 1;
                     merge_batch_bounds(
                         self.batch_visual_bounds
@@ -193,6 +204,11 @@ impl FrameUpload {
                         texture_id: sprite.tile.texture_id,
                         first: primitive_index,
                         count: 1,
+                        color_only: can_use_image_color_pipeline(
+                            &sprite,
+                            visual_bounds,
+                            full_resolution_viewport,
+                        ),
                     });
                     self.batch_visual_bounds.push(visual_bounds);
                 }
@@ -244,3 +260,37 @@ impl FrameUpload {
 
 #[cfg(test)]
 mod tests;
+
+// Only large, fully visible static color images amortize a specialized pipeline.
+const MIN_COLOR_IMAGE_AREA: f32 = 128.0 * 128.0;
+
+#[inline]
+fn can_use_image_color_pipeline(
+    sprite: &crate::PolychromeSprite,
+    visual_bounds: Option<crate::Bounds<crate::ScaledPixels>>,
+    full_resolution_viewport: Option<DrawableSize>,
+) -> bool {
+    if sprite.grayscale
+        || sprite.animation_id.is_some()
+        || !(sprite.opacity > 0.0)
+        || sprite.bounds.size.width.0 * sprite.bounds.size.height.0 < MIN_COLOR_IMAGE_AREA
+    {
+        return false;
+    }
+    let Some((visual, viewport)) = visual_bounds.zip(full_resolution_viewport) else {
+        return false;
+    };
+    // These bounds are already finite. Clamp scalars directly instead of using
+    // ScaledPixels' total ordering for a second Bounds intersection.
+    // Damage bounds include a two-pixel raster margin, not image coverage.
+    let left = visual.origin.x.0 + 2.0;
+    let top = visual.origin.y.0 + 2.0;
+    let right = visual.right().0 - 2.0;
+    let bottom = visual.bottom().0 - 2.0;
+    let width = (right.min(viewport.width as f32) - left.max(0.0)).max(0.0);
+    let height = (bottom.min(viewport.height as f32) - top.max(0.0)).max(0.0);
+    // Heavily clipped images did not show a reliable gain on every measured backend.
+    width * height >= MIN_COLOR_IMAGE_AREA
+        && width >= sprite.bounds.size.width.0
+        && height >= sprite.bounds.size.height.0
+}

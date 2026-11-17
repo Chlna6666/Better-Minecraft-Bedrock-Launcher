@@ -85,6 +85,15 @@ pub(super) const NOVA_POLY_SPRITE_SHADER_SOURCE: &str = concat!(
 );
 
 #[cfg(test)]
+const NOVA_POLY_SPRITE_COLOR_SHADER_SOURCE: &str = concat!(
+    include_str!("shaders/core.wgsl"),
+    include_str!("shaders/animation.wgsl"),
+    include_str!("shaders/shape.wgsl"),
+    include_str!("shaders/poly_sprite.wgsl"),
+    include_str!("shaders/poly_sprite_color.wgsl"),
+);
+
+#[cfg(test)]
 #[allow(dead_code)]
 pub(super) const NOVA_SURFACE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
@@ -122,6 +131,7 @@ pub(super) struct ShaderBinaries {
     pub(super) subpixel_grayscale_fragment: gfx_core::ShaderBinary,
     pub(super) poly_vertex: gfx_core::ShaderBinary,
     pub(super) poly_fragment: gfx_core::ShaderBinary,
+    pub(super) poly_color_fragment: gfx_core::ShaderBinary,
     pub(super) underline_vertex: gfx_core::ShaderBinary,
     pub(super) underline_fragment: gfx_core::ShaderBinary,
     pub(super) backdrop_blur_pass_vertex: gfx_core::ShaderBinary,
@@ -204,6 +214,11 @@ fn generated_nova_shader_binaries(
         )?,
         poly_vertex: generated_shader_binary(resolve, ShaderStage::Vertex, "vs_poly_sprite")?,
         poly_fragment: generated_shader_binary(resolve, ShaderStage::Fragment, "fs_poly_sprite")?,
+        poly_color_fragment: generated_shader_binary(
+            resolve,
+            ShaderStage::Fragment,
+            "fs_poly_sprite_color",
+        )?,
         underline_vertex: generated_shader_binary(resolve, ShaderStage::Vertex, "vs_underline")?,
         underline_fragment: generated_shader_binary(
             resolve,
@@ -330,6 +345,7 @@ pub(super) struct BlendPipelineDescriptor<'a> {
     pub(super) subpixel_grayscale_fragment: gfx_core::ShaderModuleId,
     pub(super) poly_vertex: gfx_core::ShaderModuleId,
     pub(super) poly_fragment: gfx_core::ShaderModuleId,
+    pub(super) poly_color_fragment: gfx_core::ShaderModuleId,
     pub(super) underline_vertex: gfx_core::ShaderModuleId,
     pub(super) underline_fragment: gfx_core::ShaderModuleId,
     pub(super) backdrop_blur_vertex: gfx_core::ShaderModuleId,
@@ -430,6 +446,12 @@ pub(super) fn compile_nova_shader_binaries(
             "fs_poly_sprite",
         )
         .context("compiling nova poly sprite fragment shader")?,
+        poly_color_fragment: compile(
+            NOVA_POLY_SPRITE_COLOR_SHADER_SOURCE,
+            ShaderStage::Fragment,
+            "fs_poly_sprite_color",
+        )
+        .context("compiling nova color-only poly sprite fragment shader")?,
         underline_vertex: compile(
             NOVA_UNDERLINE_SHADER_SOURCE,
             ShaderStage::Vertex,

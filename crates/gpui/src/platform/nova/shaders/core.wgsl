@@ -162,6 +162,14 @@ fn to_device_position(unit_vertex: vec2<f32>, bounds: Bounds) -> vec4<f32> {
     return to_device_position_impl(position);
 }
 
+// Clip axis-aligned geometry before rasterization; shading still uses the original bounds.
+fn to_clipped_device_position(unit_vertex: vec2<f32>, bounds: Bounds, mask: Bounds) -> vec4<f32> {
+    let origin = max(bounds.origin, mask.origin);
+    let corner = min(bounds.origin + bounds.size, mask.origin + mask.size);
+    let clipped_size = max(corner - origin, vec2<f32>(0.0));
+    return to_device_position_impl(origin + unit_vertex * clipped_size);
+}
+
 fn to_device_position_transformed(unit_vertex: vec2<f32>, bounds: Bounds, transform: TransformationMatrix) -> vec4<f32> {
     let position = unit_vertex * vec2<f32>(bounds.size) + bounds.origin;
     //Note: Rust side stores it as row-major, so transposing here

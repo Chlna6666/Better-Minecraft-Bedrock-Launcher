@@ -1,5 +1,7 @@
 use super::*;
 
+mod image_profile;
+
 fn shadow_paint() -> crate::scene::Painter {
     let mut painter = crate::scene::Painter::default();
     for _ in 0..2 {
@@ -283,7 +285,14 @@ fn relocated_sprite_draws_keep_independent_bounds_and_merge_coverage() {
         },
     );
     let mut summary = FrameUploadSummary::default();
-    upload.encode_polychrome_sprites(&[left, moving, right], &mut summary);
+    upload.encode_polychrome_sprites(
+        &[left, moving, right],
+        &mut summary,
+        Some(DrawableSize {
+            width: 1024,
+            height: 1024,
+        }),
+    );
     assert_eq!(upload.batches.len(), 3);
     assert_eq!(
         upload.batch_visual_bounds,
@@ -295,7 +304,14 @@ fn relocated_sprite_draws_keep_independent_bounds_and_merge_coverage() {
     );
     // A second prepared run relocated onto the last draw's page must extend it.
     let tail = sprite(54., 4, None);
-    upload.encode_polychrome_sprites(&[tail], &mut summary);
+    upload.encode_polychrome_sprites(
+        &[tail],
+        &mut summary,
+        Some(DrawableSize {
+            width: 1024,
+            height: 1024,
+        }),
+    );
     assert_eq!(upload.batches.len(), 3);
     let coverage = upload.batch_visual_bounds[2].expect("merged static image draw");
     assert_eq!(coverage.union(&tail.bounds), coverage);

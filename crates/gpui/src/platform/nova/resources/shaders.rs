@@ -25,6 +25,7 @@ pub(super) struct RendererShaders {
     pub(super) subpixel_grayscale_fragment: ShaderModuleId,
     pub(super) poly_vertex: ShaderModuleId,
     pub(super) poly_fragment: ShaderModuleId,
+    pub(super) poly_color_fragment: ShaderModuleId,
     pub(super) underline_vertex: ShaderModuleId,
     pub(super) underline_fragment: ShaderModuleId,
     pub(super) backdrop_blur_pass_vertex: ShaderModuleId,
@@ -149,6 +150,12 @@ where
             binary: shader_binaries.poly_fragment,
         })
         .context("creating nova poly sprite fragment shader module")?;
+    let poly_color_fragment = device
+        .create_shader_module(&ShaderModuleDescriptor {
+            label: Some(format!("{label} color-only poly sprite fragment shader")),
+            binary: shader_binaries.poly_color_fragment,
+        })
+        .context("creating nova color-only poly sprite fragment shader module")?;
     let underline_vertex = device
         .create_shader_module(&ShaderModuleDescriptor {
             label: Some(format!("{label} underline vertex shader")),
@@ -213,6 +220,7 @@ where
         subpixel_grayscale_fragment,
         poly_vertex,
         poly_fragment,
+        poly_color_fragment,
         underline_vertex,
         underline_fragment,
         backdrop_blur_pass_vertex,
