@@ -271,6 +271,13 @@ fn main() {
                 .msl_version(MslVersion::V1_2)
                 .entry("vs_sky", ShaderStage::Vertex)
                 .entry("fs_sky", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("offscreen_blit")
+                .wgsl_file("src/render/blit.wgsl")
+                .msl_version(MslVersion::V1_2)
+                .entry("vs_blit", ShaderStage::Vertex)
+                .entry("fs_blit", ShaderStage::Fragment),
         );
 
     if let Err(error) = shaders.emit() {

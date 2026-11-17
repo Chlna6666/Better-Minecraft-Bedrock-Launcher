@@ -58,6 +58,16 @@ required-features = ["native"]
 name = "scene_lab"
 path = "examples/scene_lab/main.rs"
 
+[[example]]
+name = "world_bench"
+path = "examples/world_bench/main.rs"
+required-features = ["native"]
+
+# Standalone real-time presenter: built with --no-default-features so it links no GPUI.
+[[example]]
+name = "native_realtime"
+path = "examples/native_realtime/main.rs"
+
 [dev-dependencies]
 criterion = "0.5"
 gfx-core = { path = "../nova-gfx/gfx-core" }

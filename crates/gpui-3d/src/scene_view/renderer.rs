@@ -607,6 +607,16 @@ fn defer_unprepared_scene(
     worker_pending && !committed_matches && !retained_compatible
 }
 
+// A sampler can capture a coordinate origin. A different sampler is not
+// proof that the incoming camera can safely render the old Scene geometry.
+fn same_camera_sampler(previous: &SceneView, current: &SceneView) -> bool {
+    match (&previous.camera_sampler, &current.camera_sampler) {
+        (Some(previous), Some(current)) => Arc::ptr_eq(previous, current),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// Input that produced a successfully enqueued offscreen capture.
 /// Retain only cheap Arc-backed view fields; never clone mesh data.
 struct CapturedInput {
@@ -1187,6 +1197,21 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_scene_camera_samplers_do_not_reinterpret_retained_geometry() {
+        use std::sync::Arc;
+        let camera = crate::Camera::orthographic(crate::Vec3::ZERO, -crate::Vec3::Z,
+            crate::Vec3::Y, 4., 0.1, 100.);
+        let original = crate::SceneView::new(Arc::new(crate::Scene::new()), camera);
+        assert!(super::same_camera_sampler(&original, &original));
+        let old = original.with_camera_sampler(move |_| camera);
+        let retained = old.with_scene(Arc::new(crate::Scene::new()));
+        assert!(super::same_camera_sampler(&old, &retained));
+        let rebased = original.with_camera_sampler(move |_| camera);
+        assert!(!super::same_camera_sampler(&old, &rebased));
+        assert!(!super::same_camera_sampler(&old, &original));
+    }
+
+    #[test]
     fn stable_gui_redraw_reuse_checks_every_shader_visible_input() {
         use super::same_static_capture_input;
         use crate::{Camera, Scene, Vec3};
@@ -1593,8 +1618,10 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         // extension keeps its frame alive until the worker publishes.
         let worker_pending = super::sidecar::pending(&scene_view);
         let retained = if worker_pending {
-            self.scenes
+            self.captured_inputs
                 .get(&scene_view.id)
+                .filter(|captured| same_camera_sampler(&captured.view, &scene_view))
+                .and_then(|_| self.scenes.get(&scene_view.id))
                 .and_then(|scene| scene.retained_sidecar_view(&scene_view))
         } else {
             None

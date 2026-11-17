@@ -355,6 +355,19 @@ impl GpuState {
         self.render_scale
     }
 
+    /// GPU view of the final, display-referred color produced by the post pass.
+    ///
+    /// The view stays valid until the renderer is resized, its render scale changes, or it is
+    /// destroyed; callers re-fetch after any of those operations. It is a plain generational
+    /// handle with no embedded fence: readers must submit their sampling work on the same ordered
+    /// device queue after `render()` and must not destroy the view or its texture.
+    pub(crate) fn color_view(&self) -> Result<gfx_core::TextureViewId, RenderError> {
+        self.targets
+            .as_ref()
+            .map(|targets| targets.post_color_view)
+            .ok_or(RenderError::Destroyed)
+    }
+
     fn set_shadow_resolution<D: Device + TextureTransferDevice + ?Sized>(
         &mut self,
         device: &mut D,
@@ -2985,7 +2998,9 @@ fn create_scene_targets<D: Device + ?Sized>(
         output_width,
         output_height,
         POST_COLOR_FORMAT,
-        TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
+        // SAMPLED lets an external presenter (native_realtime example) sample the final,
+        // display-referred color for a zero-copy fullscreen blit into a swapchain.
+        TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC | TextureUsage::SAMPLED,
     ) {
         Ok(targets) => targets,
         Err(error) => {

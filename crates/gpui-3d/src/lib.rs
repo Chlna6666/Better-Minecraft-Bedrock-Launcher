@@ -106,7 +106,7 @@ pub use raycast::{RaycastError, RaycastHit, RaycastScratch};
 pub use render::{
     AntialiasMode, BloomOptions, CapturedImage, DebugView, FrameStatistics, ObjectPick,
     OffscreenRenderer, PickError, PostEffects, RenderError, RenderOptions, RenderQuality,
-    RendererStatistics, ShadowOptions, Tonemap, pick, pick_evaluated, project,
+    RendererStatistics, ShadowOptions, Tonemap, blit_shader, pick, pick_evaluated, project,
 };
 pub use scene::{EvaluatedScene, LodLevel, Node, NodeError, NodeId, Occluder, Scene, SceneError};
 #[cfg(feature = "gpui-sidecar")]

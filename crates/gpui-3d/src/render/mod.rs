@@ -980,6 +980,26 @@ impl OffscreenRenderer {
         self.renderer_statistics
     }
 
+    /// GPU view of the final display-referred color produced by the most recent render pass.
+    ///
+    /// This is the same texture that [`OffscreenRenderer::capture`] reads back, exposed as a GPU
+    /// handle so callers can present it without a CPU round-trip (e.g. a fullscreen blit into a
+    /// swapchain). The view is created with `SAMPLED` usage for that purpose.
+    ///
+    /// The handle is only valid until the next [`OffscreenRenderer::resize`],
+    /// [`OffscreenRenderer::set_render_scale`], or [`OffscreenRenderer::destroy`]; re-fetch it
+    /// after any of those. It carries no fence: submit sampling work on the **same** device
+    /// queue after [`OffscreenRenderer::render`], and let [`OffscreenRenderer::poll_render`]
+    /// observe the render submission. Never destroy the returned view or its texture — the
+    /// renderer owns both.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError::Destroyed`] when called after [`OffscreenRenderer::destroy`].
+    pub fn color_view(&self) -> Result<gfx_core::TextureViewId, RenderError> {
+        self.gpu.color_view()
+    }
+
     /// Selects the nearest scene surface under a top-left-origin viewport pixel.
     ///
     /// Uses the CPU BVH and the camera pose supplied by the caller; it does not submit GPU work
@@ -1126,4 +1146,32 @@ impl OffscreenRenderer {
     ) -> Result<(), RenderError> {
         self.gpu.destroy(device)
     }
+}
+
+/// Returns the build-generated fullscreen-blit shader for a backend and stage.
+///
+/// The blit pair (`vs_blit` / `fs_blit`) samples one bound `texture_2d<f32>` and writes it to a
+/// color attachment, with no vertex buffers. It is embedded for every backend at build time so
+/// callers presenting [`OffscreenRenderer::color_view`] to a native swapchain never run a shader
+/// compiler at runtime. Pair it with a bind group of (sampled texture view, sampler) at bindings
+/// 0 and 1, and draw 3 vertices with `BlendMode::Replace` into the swapchain format.
+///
+/// # Errors
+///
+/// Returns [`RenderError::Gpu`] when this build has no embedded blit artifact for the backend, or
+/// when the embedded bytes are invalid.
+pub fn blit_shader(
+    backend: BackendKind,
+    stage: gfx_core::ShaderStage,
+) -> Result<gfx_core::ShaderBinary, RenderError> {
+    let entry = match stage {
+        gfx_core::ShaderStage::Vertex => "vs_blit",
+        gfx_core::ShaderStage::Fragment => "fs_blit",
+        gfx_core::ShaderStage::Compute => {
+            return Err(RenderError::Preparation(
+                "blit shader has no compute stage".to_string(),
+            ));
+        }
+    };
+    artifacts::embedded_shader(backend, stage, entry)
 }
