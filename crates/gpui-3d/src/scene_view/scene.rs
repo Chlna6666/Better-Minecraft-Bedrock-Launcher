@@ -15,6 +15,7 @@ use super::{
 use crate::{
     Aabb, AlphaMode, AnimationScratch, Camera, Mat4, MaterialId, Mesh, MeshId, MeshPart, NodeId,
     PreparedDraw, PreparedScene, Scene, ShadingModel, TextureAssetId,
+    prepare::CommandFrustum,
 };
 use anyhow::{Context as _, anyhow, bail};
 use gfx_core::{
@@ -73,6 +74,7 @@ pub(super) struct SceneResources {
     projection: Option<FrameProjection>,
     prepared: PreparedScene,
     pub(super) command_revision: u64,
+    pub(super) blend_only_command_change: bool,
     /// Increments after a successfully prepared *visible frame change*, not
     /// merely after rebuilding native draw commands. Camera/uniform changes
     /// also invalidate a cached offscreen capture even with identical draws.
@@ -84,6 +86,12 @@ pub(super) struct SceneResources {
     structural_bindings_spliced: bool,
     // Cached native commands remain valid while camera motion leaves CPU-pruned batches unchanged.
     command_visibility: Vec<bool>,
+    // DX11 still records one DrawInstancedIndirect per slot, even after
+    // grouping bind state. Keep its submission mask separate from the
+    // canonical commands and their structural deltas.
+    generated_command_visibility: Vec<bool>,
+    generated_command_frustum: Option<CommandFrustum>,
+    generated_visibility_revision: u64,
     batches: Vec<DrawBatchRange>,
     batch_workspace: super::batching::BatchWorkspace,
     previous_draws: Vec<(NodeId, MeshId, MeshPart, MaterialId)>,
@@ -756,10 +764,14 @@ impl SceneResources {
             projection: None,
             prepared: PreparedScene::default(),
             command_revision: 0,
+            blend_only_command_change: false,
             capture_revision: 0,
             command_delta: None,
             structural_bindings_spliced: false,
             command_visibility: Vec::new(),
+            generated_command_visibility: Vec::new(),
+            generated_command_frustum: None,
+            generated_visibility_revision: 0,
             batches: Vec::new(),
             batch_workspace: super::batching::BatchWorkspace::default(),
             previous_draws: Vec::new(),
@@ -847,6 +859,7 @@ impl SceneResources {
         let mut sdres_ms = 0.0;
         let mut cull_update_ms = 0.0;
         let mut cull_dispatch_ms = 0.0;
+        let mut hiz_update_ms = 0.0;
         let mut walk_ms = 0.0;
         let mut assets_ms = 0.0;
         let mut batch_ms = 0.0;
@@ -906,6 +919,8 @@ impl SceneResources {
             || self
                 .frame_state
                 .is_none_or(|state| !state.projection.visibility_matches(projection));
+        let occlusion_changed = self.culling.as_ref()
+            .is_some_and(|culling| culling.occlusion_disabled != scene_view.culling_disabled);
         let sampler_changed = self.sampler != Some(sampler);
         let voxel_shader_changed = self.voxel_shader != scene_view.voxel_shader;
         if !draw_state_changed
@@ -914,6 +929,7 @@ impl SceneResources {
             && !node_mask_changed
             && !sampler_changed
             && !voxel_shader_changed
+            && !occlusion_changed
         {
             return Ok(());
         }
@@ -1410,7 +1426,8 @@ impl SceneResources {
                 || node_mask_changed)
                 && let Some(culling) = &mut self.culling
             {
-                culling.hiz.update(
+                let hiz_started = trace_timings().then(Instant::now);
+                culling.hiz.update_prepared(
                     device,
                     self.prepared.occluder_bounds_excluding(
                         scene_view.culling_bounds,
@@ -1420,9 +1437,12 @@ impl SceneResources {
                     scene_view.camera.target - scene_view.camera.eye,
                     draw_state_changed || culling_bounds_changed || wire_changed || node_mask_changed,
                 )?;
+                if let Some(started) = hiz_started {
+                    hiz_update_ms = started.elapsed().as_secs_f64() * 1000.0;
+                }
             }
             if visibility_changed || draw_list_changed || culling_bounds_changed || wire_changed
-                || mask_uploaded
+                || mask_uploaded || occlusion_changed
             {
                 let dispatch_started = trace_timings().then(Instant::now);
                 let culling = self
@@ -1446,14 +1466,52 @@ impl SceneResources {
             }
         }
         drop(resource_phase);
-        // A shading-only frame update changes uniforms but never the CPU
-        // command inclusion mask. Avoid checking every resident Draw batch
-        // unless the draw layout or visibility volume actually changes.
-        // A canonical all-singleton scene publishes every Section command and
-        // lets the GPU cull own visibility, so the CPU mask is never consumed;
-        // skipping its per-camera refresh also keeps the native command list
-        // stable while the camera moves.
-        let singleton_only = self.generated_singleton_command_count().is_some();
+        // Keep the canonical command list and slot layout intact. DX11's
+        // offscreen path also needs a compact submission mask, since a zero
+        // instance count still costs one native DrawIndirect call.
+        let singleton_only = self.generated_singleton_count(scene_view.voxel_shader).is_some();
+        if singleton_only
+            && self.tracked_native_queue
+            && self.backend == BackendKind::Dx11
+            && self.batches.len() >= 4096
+            && native_command_pruning_enabled()
+        {
+            let translating = self.camera.is_some_and(|old| old.eye != scene_view.camera.eye);
+            let frustum = self.prepared.command_frustum(translating);
+            if draw_state_changed
+                || draw_list_changed
+                || culling_bounds_changed
+                || node_mask_changed
+                || self.generated_command_visibility.len() != self.batches.len()
+                || self.generated_command_frustum.as_ref().is_none_or(|old| !old.covers(&frustum))
+            {
+                let _phase =
+                    gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::CameraCull);
+                let hidden = scene_view.hidden_nodes.as_ref();
+                let mut last_node = None;
+                let mut node_visible = false;
+                if update_command_visibility(
+                    &mut self.generated_command_visibility,
+                    self.prepared.draws.iter().map(|draw| {
+                        if last_node != Some(draw.node) {
+                            last_node = Some(draw.node);
+                            node_visible = (hidden.is_empty() || !hidden.contains(&draw.node))
+                                && self.prepared.is_draw_in_culling_bounds(draw);
+                        }
+                        node_visible && (draw.pixel_offset != crate::Vec2::ZERO
+                            || draw.depth_bias != 0.0
+                            || frustum.includes(draw.bounds))
+                    }),
+                ) {
+                    self.generated_visibility_revision =
+                        self.generated_visibility_revision.wrapping_add(1);
+                }
+                self.generated_command_frustum = Some(frustum);
+            }
+        } else {
+            self.generated_command_visibility.clear();
+            self.generated_command_frustum = None;
+        }
         let command_visibility_changed = if singleton_only {
             false
         } else if reused_resident_slots && !visibility_changed && !culling_bounds_changed {
@@ -1485,14 +1543,15 @@ impl SceneResources {
         {
             self.command_delta = self.prepared.structural_draw_delta().cloned();
         }
-        if (draw_list_changed && !resident_commands_stable)
+        let command_inputs_changed = (draw_list_changed && !resident_commands_stable)
             || sampler_changed
             || shadow_created
             || voxel_shader_changed
             || wire_changed
-            || command_visibility_changed
-            || blend_order_changed
-        {
+            || command_visibility_changed;
+        self.blend_only_command_change =
+            blend_order_changed && !draw_list_changed && !command_inputs_changed;
+        if command_inputs_changed || blend_order_changed {
             self.command_revision = self.command_revision.wrapping_add(1);
         }
         self.scene = Some(scene_view.scene.clone());
@@ -1515,7 +1574,7 @@ impl SceneResources {
             let total_ms = started.elapsed().as_secs_f64() * 1000.0;
             if total_ms >= 16.0 {
                 eprintln!(
-                    "gpui3d prepare_detail draws={} assets_changed={} retirement_scan={} camera_ms={:.2} walk_ms={:.2} assets_ms={:.2} batch_ms={:.2} buffer_ms={:.2} (resident {:.2} structural {:.2} sbuffers {:.2} sdres {:.2}) cull_update={:.2} cull_dispatch={:.2} total_ms={:.2} batches={} merged_instances={}",
+                    "gpui3d prepare_detail draws={} assets_changed={} retirement_scan={} camera_ms={:.2} walk_ms={:.2} assets_ms={:.2} batch_ms={:.2} buffer_ms={:.2} (resident {:.2} structural {:.2} sbuffers {:.2} sdres {:.2}) cull_update={:.2} hiz_update={:.2} cull_dispatch={:.2} total_ms={:.2} batches={} merged_instances={}",
                     self.prepared.draws.len(),
                     assets_changed,
                     retirement_scan,
@@ -1529,6 +1588,7 @@ impl SceneResources {
                     sbuffers_ms,
                     sdres_ms,
                     cull_update_ms,
+                    hiz_update_ms,
                     cull_dispatch_ms,
                     total_ms,
                     self.batches.len(),
@@ -2207,9 +2267,12 @@ impl SceneResources {
             device.buffer_binding_limits().max_storage_binding_bytes,
         );
         let next_light_capacity = grow_capacity(self.light_capacity, light_headroom)?;
+        // Retired physical slots can grow the record tables before logical
+        // draws cross the same boundary. Grow their shared binding's mapping
+        // now too, avoiding a second full rebind on the next streaming update.
         let next_slot_capacity = grow_capacity(
             self.draw_slot_capacity,
-            dx11_streaming_headroom(self.backend, self.prepared.draws.len().max(1)),
+            draw_headroom.max(self.prepared.draws.len().max(1)),
         )?;
         let replace_draw = next_draw_capacity != self.draw_capacity;
         let replace_instances = next_instance_capacity != self.instance_capacity;
@@ -3714,8 +3777,12 @@ impl SceneResources {
     /// native indirect ABI. This view has one indirect address per canonical
     /// generated singleton, with resident bindings for every logical draw.
     pub(super) fn generated_singleton_command_count(&self) -> Option<usize> {
+        self.generated_singleton_count(self.voxel_shader)
+    }
+
+    fn generated_singleton_count(&self, voxel_shader: bool) -> Option<usize> {
         let count = self.prepared.draws.len();
-        (self.voxel_shader
+        (voxel_shader
             && self.culling.is_some()
             && self.page_refs.only_generated_meshes()
             && self.batch_workspace.singleton_layout()
@@ -3723,6 +3790,13 @@ impl SceneResources {
             && self.draw_resources.len() == count
             && self.draw_addresses.len() == count)
             .then_some(count)
+    }
+
+    pub(super) fn generated_command_visibility(&self) -> Option<(u64, &[bool])> {
+        (!self.generated_command_visibility.is_empty()).then_some((
+            self.generated_visibility_revision,
+            &self.generated_command_visibility,
+        ))
     }
 
     pub(super) fn native_command_delta(&self) -> Option<&crate::prepare::StructuralDrawDelta> {
@@ -3733,6 +3807,16 @@ impl SceneResources {
     /// Preserve the back-to-front order of the blended suffix when the
     /// renderer groups opaque indirect commands by native state.
     pub(super) fn first_blended_batch_index(&self) -> Option<usize> {
+        if self.batch_workspace.singleton_layout() && self.batches.len() == self.prepared.draws.len()
+        {
+            // Canonical singleton batches have the same indices as the
+            // partitioned draw list. Skip walking the opaque prefix.
+            let first = self
+                .prepared
+                .draws
+                .partition_point(|draw| draw.material.alpha_mode != AlphaMode::Blend);
+            return (first < self.batches.len()).then_some(first);
+        }
         self.batches.iter().position(|batch| {
             self.prepared.draws.get(batch.first_instance).is_some_and(|draw| {
                 draw.material.alpha_mode == AlphaMode::Blend
@@ -3912,10 +3996,8 @@ impl SceneResources {
         Ok(())
     }
 
-    /// Encodes an all-generated, canonical singleton scene directly from the
-    /// retained native BindGroup and indirect-address tables. The GPU culler
-    /// owns visibility counts; the CPU inclusion mask only avoids issuing
-    /// commands for completely offscreen singletons.
+    /// Encodes canonical singleton entries from the retained native
+    /// BindGroup and indirect-address tables.
     pub(super) fn append_generated_singleton_range(
         &self,
         renderer: &RendererResources,
@@ -3933,19 +4015,19 @@ impl SceneResources {
             .as_ref()
             .ok_or_else(|| anyhow!("GPU culling arguments are unavailable"))?
             .arguments;
-        // No CPU frustum prune: the GPU cull already zeroes the instance count
-        // of every unseen Section. Keeping the list camera-independent lets the
-        // native command cache and bind-group run coalescing work on every
-        // camera-only frame; pruned commands only saved native record time
-        // that grouping now removes.
+        // Keep the source list complete for structural range splices. The
+        // backend-specific offscreen mask filters the grouped snapshot.
         //
         // The blended tail keeps its camera-independent candidate order in the
         // draw tables; back-to-front render order comes from `blend_order`,
         // which whole-tail ranges follow at emission time.
         let draws_len = self.prepared.draws.len();
         let blend_order = self.prepared.blended_order();
-        let tail_start = draws_len.checked_sub(blend_order.len()).filter(|_| {
-            blend_order.iter().all(|&index| index < blend_order.len())
+        let tail_start = draws_len.checked_sub(blend_order.len()).filter(|&tail_start| {
+            // A structural edit may contain many opaque-only ranges. Those
+            // ranges never index the blended permutation.
+            range.end <= tail_start
+                || blend_order.iter().all(|&index| index < blend_order.len())
         });
         let push_command = |index: usize, steps: &mut Vec<RenderCommand>| -> gpui::Result<()> {
             let draw = &self.prepared.draws[index];
@@ -3981,10 +4063,8 @@ impl SceneResources {
             Some(tail_start) if range.end > tail_start => {
                 let local_start = range.start.max(tail_start) - tail_start;
                 let local_end = range.end - tail_start;
-                for (slot, &tail_index) in blend_order.iter().enumerate() {
-                    if slot >= local_start && slot < local_end {
-                        push_command(tail_start + tail_index, steps)?;
-                    }
+                for &tail_index in &blend_order[local_start..local_end] {
+                    push_command(tail_start + tail_index, steps)?;
                 }
             }
             _ => {
@@ -4909,6 +4989,18 @@ fn update_dirty_command_visibility(
         }
     }
     Some(changed)
+}
+
+fn native_command_pruning_enabled() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        !*DISABLED.get_or_init(|| std::env::var_os("GPUI_3D_DISABLE_NATIVE_COMMAND_PRUNING").is_some())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        true
+    }
 }
 
 fn update_command_visibility(

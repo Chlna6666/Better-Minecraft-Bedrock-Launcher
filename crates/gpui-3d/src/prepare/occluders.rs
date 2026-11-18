@@ -30,7 +30,7 @@ impl PreparedScene {
         &'a self,
         range: Option<Aabb>,
         hidden: &'a std::collections::HashSet<NodeId>,
-    ) -> impl Iterator<Item = crate::Occluder> + 'a {
+    ) -> impl Iterator<Item = &'a crate::Occluder> + 'a {
         self.occluders
             .iter()
             .filter(move |(id, (origin, _))| {
@@ -47,7 +47,7 @@ impl PreparedScene {
                         _ => true,
                     }
             })
-            .flat_map(|(_, (_, bounds))| bounds.iter().copied())
+            .flat_map(|(_, (_, bounds))| bounds.iter())
     }
 
     pub(super) fn record_occluders(&mut self, id: NodeId, node: &Node, world: Mat4) {
@@ -69,6 +69,18 @@ impl PreparedScene {
         }) {
             return;
         }
+        // Diagonal positive scale and translation preserve the extrema
+        // of every axis. The streamed Section path only needs two corners.
+        let affine = world.is_finite()
+            && columns[..3].iter().all(|column| column[3] == 0.0)
+            && columns[3][3] == 1.0;
+        let transform_corner = |point: Vec3| {
+            Vec3::new(
+                columns[0][0] * point.x + columns[3][0],
+                columns[1][1] * point.y + columns[3][1],
+                columns[2][2] * point.z + columns[3][2],
+            )
+        };
         let bounds = node
             .occluders
             .iter()
@@ -76,7 +88,15 @@ impl PreparedScene {
                 if occluder.faces & 63 == 0 {
                     return None;
                 }
-                let transformed = occluder.bounds.transformed(world);
+                let local = occluder.bounds;
+                let transformed = if affine && Aabb::new(local.min, local.max).is_some() {
+                    Aabb {
+                        min: transform_corner(local.min),
+                        max: transform_corner(local.max),
+                    }
+                } else {
+                    local.transformed(world)
+                };
                 let extent = transformed.max - transformed.min;
                 let components = [extent.x, extent.y, extent.z];
                 let faces = (0..3).fold(0, |mask, axis| {

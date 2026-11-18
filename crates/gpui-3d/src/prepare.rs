@@ -475,6 +475,10 @@ impl PreparedScene {
         move |bounds| visible(bounds, &planes)
     }
 
+    pub(crate) fn command_frustum(&self, translating: bool) -> CommandFrustum {
+        CommandFrustum(frustum_planes(self.view_projection), translating)
+    }
+
     pub(crate) fn is_draw_in_culling_bounds(&self, draw: &PreparedDraw) -> bool {
         !draw
             .culling_origin
@@ -797,41 +801,57 @@ impl PreparedScene {
         let start = self
             .draws
             .partition_point(|draw| draw.material.alpha_mode != AlphaMode::Blend);
-        for draw in &mut self.draws[start..] {
-            let center = (draw.bounds.min + draw.bounds.max) * 0.5;
-            draw.view_depth = (center - camera.eye).dot(direction);
-        }
         // JE-style Section clustering: Sections order by distance and keep
         // their candidate order internally. Per-draw depth sorting would
         // reshuffle logical rows on every camera move.
         let mut keys = std::mem::take(&mut self.blend_section_keys);
         keys.clear();
-        {
-            let groups = &self.candidate_groups;
-            let group_of = &self.candidate_group_index;
-            for draw in &self.draws[start..] {
-                keys.push(
-                    group_of
-                        .get(&draw.node)
-                        .and_then(|&index| groups.get(index))
-                        .map(|group| {
-                            let center = (group.bounds.min + group.bounds.max) * 0.5;
-                            (center - camera.eye).dot(direction)
-                        })
-                        .unwrap_or(f32::INFINITY),
-                );
+        let mut section = None;
+        let mut section_depth = f32::INFINITY;
+        let mut section_count = 0;
+        for draw in &mut self.draws[start..] {
+            let center = (draw.bounds.min + draw.bounds.max) * 0.5;
+            draw.view_depth = (center - camera.eye).dot(direction);
+            if section != Some(draw.node) {
+                section = Some(draw.node);
+                section_count += 1;
+                section_depth = self
+                    .candidate_group_index
+                    .get(&draw.node)
+                    .and_then(|&index| self.candidate_groups.get(index))
+                    .map_or(f32::INFINITY, |group| {
+                        let center = (group.bounds.min + group.bounds.max) * 0.5;
+                        (center - camera.eye).dot(direction)
+                    });
             }
+            keys.push(section_depth);
+        }
+        let compare = |left: usize, right: usize| {
+            keys[right].total_cmp(&keys[left]).then(left.cmp(&right))
+        };
+        // Translation often leaves the previous back-to-front order valid.
+        // Check the exact ranking including equal-depth tie breaks.
+        if !reorder_draws
+            && self.blend_order.len() == keys.len()
+            && self.blend_order.windows(2).all(|pair| {
+                compare(pair[0], pair[1]) != Ordering::Greater
+            })
+        {
+            self.blend_section_keys = keys;
+            return;
         }
         let mut next = std::mem::take(&mut self.blend_order_scratch);
         next.clear();
-        next.extend(0..keys.len());
         let ordered = keys
             .windows(2)
             .all(|pair| pair[0].total_cmp(&pair[1]) != Ordering::Less);
-        if !ordered {
-            next.sort_unstable_by(|&left, &right| {
-                keys[right].total_cmp(&keys[left]).then(left.cmp(&right))
-            });
+        if !ordered && keys.len() >= 512 && section_count <= keys.len() / 3 {
+            append_blend_run_order(&keys, &mut next, &mut self.blend_positions);
+        } else {
+            next.extend(0..keys.len());
+            if !ordered {
+                next.sort_unstable_by(|&left, &right| compare(left, right));
+            }
         }
         self.blend_order_changed = next != self.blend_order;
         if reorder_draws {
@@ -863,6 +883,28 @@ impl PreparedScene {
     }
 }
 
+/// Consecutive draws sharing a depth already have final order within their run.
+/// Sorting run endpoints preserves the existing candidate-index tie break.
+fn append_blend_run_order(keys: &[f32], order: &mut Vec<usize>, ranges: &mut Vec<usize>) {
+    ranges.clear();
+    let mut start = 0;
+    for (index, pair) in keys.windows(2).enumerate() {
+        if pair[0].to_bits() != pair[1].to_bits() {
+            let end = index + 1;
+            ranges.extend([start, end]);
+            start = end;
+        }
+    }
+    ranges.extend([start, keys.len()]);
+    let (runs, _) = ranges.as_chunks_mut::<2>();
+    runs.sort_unstable_by(|a, b| {
+        keys[b[0]].total_cmp(&keys[a[0]]).then(a[0].cmp(&b[0]))
+    });
+    for &[start, end] in runs.iter() {
+        order.extend(start..end);
+    }
+}
+
 fn contains_origin(bounds: Aabb, origin: Vec3) -> bool {
     origin.x >= bounds.min.x
         && origin.x < bounds.max.x
@@ -876,6 +918,64 @@ fn contains_origin(bounds: Aabb, origin: Vec3) -> bool {
 struct Plane {
     normal: Vec3,
     distance: f32,
+}
+
+/// A conservative CPU command filter. The GPU still tests the current view.
+pub(crate) struct CommandFrustum([Plane; 6], bool);
+
+impl CommandFrustum {
+    const DISTANCE_PAD: f32 = 1.0;
+    const NORMAL_PAD: f32 = 0.00025;
+
+    /// Each plane may drift by at most one unit in distance and by a small
+    /// amount per normal component. Test the actual planes, including near/far,
+    /// so reusing a mask does not depend on how the camera changed.
+    pub(crate) fn covers(&self, next: &Self) -> bool {
+        if self.1 != next.1 {
+            return false;
+        }
+        let (distance_pad, normal_pad) = if self.1 {
+            (Self::DISTANCE_PAD, Self::NORMAL_PAD)
+        } else {
+            (0.0, 0.0)
+        };
+        self.0.iter().zip(&next.0).all(|(a, b)| {
+            let delta = a.normal - b.normal;
+            (a.distance - b.distance).abs() <= distance_pad
+                && delta.x.abs() <= normal_pad
+                && delta.y.abs() <= normal_pad
+                && delta.z.abs() <= normal_pad
+        })
+    }
+
+    pub(crate) fn includes(&self, bounds: Aabb) -> bool {
+        !self.0.iter().any(|plane| {
+            let point = plane.positive_vertex(bounds);
+            let distance = plane.normal.dot(point) + plane.distance;
+            if distance >= 0.0 {
+                return false;
+            }
+            if !self.1 {
+                let magnitude = (plane.normal.x * point.x).abs()
+                    + (plane.normal.y * point.y).abs()
+                    + (plane.normal.z * point.z).abs()
+                    + plane.distance.abs();
+                return distance < -(0.125 + 8.0 * f32::EPSILON * magnitude);
+            }
+            // Bound the change in dot(normal, point) for every point in the
+            // box, including when a small rotation changes the support corner.
+            let x = bounds.min.x.abs().max(bounds.max.x.abs());
+            let y = bounds.min.y.abs().max(bounds.max.y.abs());
+            let z = bounds.min.z.abs().max(bounds.max.z.abs());
+            let drift = Self::DISTANCE_PAD + Self::NORMAL_PAD * (x + y + z);
+            let magnitude = (plane.normal.x.abs() + Self::NORMAL_PAD) * x
+                + (plane.normal.y.abs() + Self::NORMAL_PAD) * y
+                + (plane.normal.z.abs() + Self::NORMAL_PAD) * z
+                + plane.distance.abs()
+                + Self::DISTANCE_PAD;
+            distance < -(drift + 0.125 + 8.0 * f32::EPSILON * magnitude)
+        })
+    }
 }
 
 fn frustum_planes(matrix: Mat4) -> [Plane; 6] {
@@ -917,26 +1017,31 @@ fn sub(left: [f32; 4], right: [f32; 4]) -> [f32; 4] {
     std::array::from_fn(|index| left[index] - right[index])
 }
 
-fn visible(bounds: Aabb, planes: &[Plane; 6]) -> bool {
-    planes.iter().all(|plane| {
-        let positive = Vec3::new(
-            if plane.normal.x >= 0.0 {
+impl Plane {
+    fn positive_vertex(&self, bounds: Aabb) -> Vec3 {
+        Vec3::new(
+            if self.normal.x >= 0.0 {
                 bounds.max.x
             } else {
                 bounds.min.x
             },
-            if plane.normal.y >= 0.0 {
+            if self.normal.y >= 0.0 {
                 bounds.max.y
             } else {
                 bounds.min.y
             },
-            if plane.normal.z >= 0.0 {
+            if self.normal.z >= 0.0 {
                 bounds.max.z
             } else {
                 bounds.min.z
             },
-        );
-        plane.normal.dot(positive) + plane.distance >= 0.0
+        )
+    }
+}
+
+fn visible(bounds: Aabb, planes: &[Plane; 6]) -> bool {
+    planes.iter().all(|plane| {
+        plane.normal.dot(plane.positive_vertex(bounds)) + plane.distance >= 0.0
     })
 }
 
@@ -1036,6 +1141,52 @@ fn max_world_scale(world: Mat4) -> f32 {
 mod tests {
     use super::*;
     use crate::{LodLevel, Node, SpotLight, Transform, Vec2, Vertex};
+
+    #[test]
+    fn command_frustum_reuse_keeps_bounds_entering_the_view() {
+        let camera = |x, angle: f32| Camera::perspective(
+            Vec3::new(x, 12., 18.),
+            Vec3::new(x + angle, 3., -20.),
+            Vec3::Y,
+            1.0,
+            0.1,
+            640.,
+        );
+        let planes = |camera: Camera| frustum_planes(camera.view_projection(1.6).unwrap());
+        let initial = CommandFrustum(planes(camera(0., 0.)), true);
+        let moved = CommandFrustum(planes(camera(0.65, 0.002)), true);
+        assert!(initial.covers(&moved));
+        assert!(!initial.covers(&CommandFrustum(planes(camera(0., 12.)), true)));
+        assert!(!initial.covers(&CommandFrustum(planes(camera(8., 0.)), true)));
+        assert!(!initial.covers(&CommandFrustum(planes(camera(0., 0.)), false)));
+        let mut rejections = 0;
+        for x in -80..80 {
+            for z in -60..30 {
+                let min = Vec3::new(x as f32 * 0.5, 3., z as f32);
+                let bounds = Aabb::new(min, min + Vec3::new(0.4, 5., 1.)).unwrap();
+                if !initial.includes(bounds) {
+                    rejections += 1;
+                    assert!(!visible(bounds, &moved.0));
+                }
+            }
+        }
+        assert!(rejections > 0);
+    }
+
+    #[test]
+    fn blend_runs_preserve_draw_order_at_equal_depths() {
+        let depths = [1., -0., 0., -1., f32::INFINITY, f32::NEG_INFINITY, f32::NAN];
+        let keys = (0..192)
+            .flat_map(|index| {
+                std::iter::repeat_n(depths[(index * 5 + index / 7) % depths.len()], index % 6 + 1)
+            })
+            .collect::<Vec<_>>();
+        let mut expected = (0..keys.len()).collect::<Vec<_>>();
+        expected.sort_unstable_by(|&a, &b| keys[b].total_cmp(&keys[a]).then(a.cmp(&b)));
+        let mut actual = Vec::new();
+        append_blend_run_order(&keys, &mut actual, &mut Vec::new());
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn gpu_streaming_stably_partitions_opaque_and_sorts_only_transparent() {

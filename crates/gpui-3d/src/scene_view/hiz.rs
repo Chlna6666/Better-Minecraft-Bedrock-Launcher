@@ -144,10 +144,30 @@ impl HiZ {
         })
     }
 
-    pub(super) fn update(
+    pub(super) fn update<'a>(
         &mut self,
         device: &mut dyn ExtensionDevice,
-        bounds: impl Iterator<Item = Occluder>,
+        bounds: impl Iterator<Item = &'a Occluder>,
+        eye: Vec3,
+        forward: Vec3,
+        changed: bool,
+    ) -> gpui::Result<()> {
+        self.update_prepared(
+            device,
+            bounds.filter(|b| {
+                b.faces & 63 != 0 && Aabb::new(b.bounds.min, b.bounds.max).is_some()
+            }),
+            eye,
+            forward,
+            changed,
+        )
+    }
+
+    /// World-space proxies were already validated while preparing the scene.
+    pub(super) fn update_prepared<'a>(
+        &mut self,
+        device: &mut dyn ExtensionDevice,
+        bounds: impl Iterator<Item = &'a Occluder>,
         eye: Vec3,
         forward: Vec3,
         changed: bool,
@@ -164,21 +184,17 @@ impl HiZ {
             }
             return Ok(());
         }
-        let mut bounds = bounds
-            .filter(|b| b.faces & 63 != 0 && Aabb::new(b.bounds.min, b.bounds.max).is_some())
-            .collect::<Vec<_>>();
-        // The closest small voxel proxies used to monopolize the 512-box
-        // budget even when a slightly farther continuous roof or cliff would
-        // cover far more of the image. Favor conservative projected face area
-        // per distance, without a full sort or CPU visibility decisions.
-        // Omitting a proxy cannot hide geometry: it only reduces Hi-Z rejection.
-        retain_best_occluders(&mut bounds, eye, self.max_boxes);
-        let count = bounds.len();
+        let selected = if self.shadow {
+            select_occluders(bounds, eye, self.max_boxes)
+        } else {
+            select_hiz_occluders(bounds, eye, self.max_boxes)
+        };
+        let count = selected.len();
         // Estimate tile cost from occluder footprint, not just box count. Shadow
         // uses a 96-unit orthographic view; perspective Hi-Z uses distance to the
         // nearest point on the AABB as a conservative cost proxy. No GPU readback.
         let mut coverage_sum = 0.0_f32;
-        for b in &bounds {
+        for b in selected.iter().map(|entry| entry.occluder) {
             let extent = b.bounds.max - b.bounds.min;
             let span = extent.x.max(extent.y).max(extent.z).max(0.0);
             let denominator = if self.shadow {
@@ -198,7 +214,7 @@ impl HiZ {
         let header = encode_header(count, forward);
         let mut bytes = header.to_vec();
         bytes.reserve(count * 32);
-        for b in bounds {
+        for b in selected.into_iter().map(|entry| entry.occluder) {
             let bounds = b.bounds;
             for value in [
                 bounds.min.x,
@@ -320,33 +336,142 @@ impl HiZ {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ScoredOccluder<'a> {
+    occluder: &'a Occluder,
+    distance_sq: f32,
+    coverage: f32,
+}
+
+#[derive(Clone, Copy)]
+struct RankedOccluder<'a> {
+    score: ScoredOccluder<'a>,
+    ordinal: usize,
+}
+
+fn keep_ranked<T: Copy>(
+    candidates: &mut Vec<T>,
+    cutoff: &mut Option<T>,
+    entry: T,
+    count: usize,
+    order: impl Fn(&T, &T) -> std::cmp::Ordering,
+) {
+    if cutoff.as_ref().is_some_and(|last| !order(&entry, last).is_lt()) {
+        return;
+    }
+    candidates.push(entry);
+    if candidates.len() == count * 2 {
+        let (_, first_excluded, _) = candidates.select_nth_unstable_by(count, order);
+        *cutoff = Some(*first_excluded);
+        candidates.truncate(count);
+    }
+}
+
+/// Keep the nearest quota and enough coverage winners to fill the remainder
+/// after removing the nearest duplicates. Even a very large world needs
+/// only a bounded scratch table. Scores and the two quotas match the full
+/// selector. Input order breaks ties.
+fn select_hiz_occluders<'a>(
+    bounds: impl Iterator<Item = &'a Occluder>,
+    eye: Vec3,
+    limit: usize,
+) -> Vec<ScoredOccluder<'a>> {
+    let mut bounds = bounds.peekable();
+    let prefix = bounds
+        .by_ref()
+        .take(limit)
+        .map(|occluder| ScoredOccluder { occluder, distance_sq: 0.0, coverage: 0.0 })
+        .collect::<Vec<_>>();
+    if bounds.peek().is_none() {
+        return prefix;
+    }
+    let nearest_count = (limit / 4).max(1);
+    let mut nearest = Vec::with_capacity(nearest_count * 2);
+    let mut covered = Vec::with_capacity(limit * 2);
+    let (mut near_cutoff, mut coverage_cutoff) = (None, None);
+    let by_distance = |a: &RankedOccluder<'_>, b: &RankedOccluder<'_>| {
+        a.score.distance_sq.total_cmp(&b.score.distance_sq).then(a.ordinal.cmp(&b.ordinal))
+    };
+    let by_coverage = |a: &RankedOccluder<'_>, b: &RankedOccluder<'_>| {
+        b.score.coverage.total_cmp(&a.score.coverage).then(a.ordinal.cmp(&b.ordinal))
+    };
+    for (ordinal, occluder) in prefix.into_iter().map(|entry| entry.occluder).chain(bounds).enumerate() {
+        let distance_sq = distance_squared(occluder.bounds, eye);
+        let entry = RankedOccluder {
+            score: ScoredOccluder {
+                occluder,
+                distance_sq,
+                coverage: occluder_priority(occluder, distance_sq),
+            },
+            ordinal,
+        };
+        keep_ranked(&mut nearest, &mut near_cutoff, entry, nearest_count, by_distance);
+        keep_ranked(&mut covered, &mut coverage_cutoff, entry, limit, by_coverage);
+    }
+    if nearest.len() > nearest_count {
+        nearest.select_nth_unstable_by(nearest_count, by_distance);
+        nearest.truncate(nearest_count);
+    }
+    nearest.sort_unstable_by_key(|entry| entry.ordinal);
+    covered.retain(|entry| nearest.binary_search_by_key(&entry.ordinal, |near| near.ordinal).is_err());
+    let remaining = limit - nearest_count;
+    if covered.len() > remaining {
+        covered.select_nth_unstable_by(remaining, by_coverage);
+        covered.truncate(remaining);
+    }
+    nearest.into_iter().chain(covered).map(|entry| entry.score).collect()
+}
+
+fn distance_squared(bounds: Aabb, eye: Vec3) -> f32 {
+    (eye.max(bounds.min).min(bounds.max) - eye).length_squared()
+}
+
 /// Preserve a nearby occluder quota so the projected-area heuristic cannot
 /// starve a close cave wall or narrow tunnel entrance in favor of distant
 /// terrain. Fill the remaining budget with large certified surfaces. Both
 /// selections are linear-time nth partitions; neither sorts the entire set.
-fn retain_best_occluders(bounds: &mut Vec<Occluder>, eye: Vec3, limit: usize) {
-    if bounds.len() <= limit {
-        return;
+fn select_occluders<'a>(
+    bounds: impl Iterator<Item = &'a Occluder>,
+    eye: Vec3,
+    limit: usize,
+) -> Vec<ScoredOccluder<'a>> {
+    let mut bounds = bounds.peekable();
+    let mut selected: Vec<_> = bounds
+        .by_ref()
+        .take(limit)
+        .map(|occluder| ScoredOccluder {
+            occluder,
+            distance_sq: 0.0,
+            coverage: 0.0,
+        })
+        .collect();
+    if bounds.peek().is_none() {
+        return selected;
     }
-    if limit == 0 {
-        bounds.clear();
-        return;
+    // Small scenes need no ranking. For larger scenes, score the remaining
+    // proxies as they arrive rather than revisiting the entire table.
+    let score = |occluder: &'a Occluder| {
+        let distance_sq = distance_squared(occluder.bounds, eye);
+        ScoredOccluder {
+            occluder,
+            distance_sq,
+            coverage: occluder_priority(occluder, distance_sq),
+        }
+    };
+    for entry in &mut selected {
+        *entry = score(entry.occluder);
     }
+    selected.extend(bounds.map(score));
     let near = (limit / 4).max(1);
-    bounds.select_nth_unstable_by(near, |a, b| {
-        let distance = |occluder: &Occluder| {
-            let closest = eye.max(occluder.bounds.min).min(occluder.bounds.max);
-            (closest - eye).length_squared()
-        };
-        distance(a).total_cmp(&distance(b))
-    });
+    selected.select_nth_unstable_by(near, |a, b| a.distance_sq.total_cmp(&b.distance_sq));
     let coverage_count = limit - near;
     if coverage_count > 0 {
-        bounds[near..].select_nth_unstable_by(coverage_count, |a, b| {
-            occluder_priority(b, eye).total_cmp(&occluder_priority(a, eye))
+        selected[near..].select_nth_unstable_by(coverage_count, |a, b| {
+            b.coverage.total_cmp(&a.coverage)
         });
     }
-    bounds.truncate(limit);
+    selected.truncate(limit);
+    selected
 }
 
 /// Estimated projected coverage for the axis-aligned faces that are actually
@@ -354,7 +479,7 @@ fn retain_best_occluders(bounds: &mut Vec<Occluder>, eye: Vec3, limit: usize) {
 /// bias against wide planar walls. The stabilizer prevents tiny nearby patches
 /// from crowding out all large roofs and cliff faces. This is a selection hint,
 /// never a visibility test.
-fn occluder_priority(occluder: &Occluder, eye: Vec3) -> f32 {
+fn occluder_priority(occluder: &Occluder, distance_sq: f32) -> f32 {
     let extent = occluder.bounds.max - occluder.bounds.min;
     let mut area = 0.0_f32;
     if occluder.faces & 0b000011 != 0 {
@@ -366,8 +491,6 @@ fn occluder_priority(occluder: &Occluder, eye: Vec3) -> f32 {
     if occluder.faces & 0b110000 != 0 {
         area = area.max(extent.x * extent.y);
     }
-    let nearest = eye.max(occluder.bounds.min).min(occluder.bounds.max);
-    let distance_sq = (nearest - eye).length_squared();
     area / (distance_sq + 16.0)
 }
 
@@ -437,17 +560,15 @@ mod occluder_selection_tests {
 
     #[test]
     fn prioritizes_large_opaque_roofs_and_cliffs_over_nearby_tiny_faces() {
-        let eye = Vec3::ZERO;
         let small = proxy([0., 0., 2.], [1., 1., 3.], 1 << 4);
         let roof = proxy([-8., 10., -8.], [8., 10., 8.], 1 << 3);
         let wall = proxy([8., -8., -8.], [8., 8., 8.], 1 << 1);
-        assert!(occluder_priority(&roof, eye) > occluder_priority(&small, eye));
-        assert!(occluder_priority(&wall, eye) > occluder_priority(&small, eye));
-        assert_eq!(occluder_priority(&roof, eye), occluder_priority(&roof, eye));
+        assert!(occluder_priority(&roof, 100.) > occluder_priority(&small, 4.));
+        assert!(occluder_priority(&wall, 64.) > occluder_priority(&small, 4.));
         // Face masks are authoritative: a Y plane without a Y face is
         // not a certified occluder, regardless of its AABB footprint.
         let no_y_face = proxy([-8., 10., -8.], [8., 10., 8.], 1 << 1);
-        assert_eq!(occluder_priority(&no_y_face, eye), 0.0);
+        assert_eq!(occluder_priority(&no_y_face, 100.), 0.0);
     }
 
     #[test]
@@ -458,13 +579,43 @@ mod occluder_selection_tests {
             .collect::<Vec<_>>();
         let roof = proxy([-8., 10., -8.], [8., 10., 8.], 1 << 3);
         proxies.push(roof);
-        retain_best_occluders(&mut proxies, eye, 8);
-        assert_eq!(proxies.len(), 8);
-        assert!(proxies.iter().any(|b| b.bounds == roof.bounds));
+        let selected = select_occluders(proxies.iter(), eye, 8);
+        assert_eq!(selected.len(), 8);
+        assert!(selected.iter().any(|entry| entry.occluder.bounds == roof.bounds));
         // Retain at least the closest two proxies while using the other six
         // slots to cover larger structures.
-        assert!(proxies.iter().any(|b| b.bounds.min.x == 0.0));
-        assert!(proxies.iter().any(|b| b.bounds.min.x == 1.0));
+        assert!(selected.iter().any(|entry| entry.occluder.bounds.min.x == 0.0));
+        assert!(selected.iter().any(|entry| entry.occluder.bounds.min.x == 1.0));
+    }
+
+    #[test]
+    fn bounded_hiz_selection_keeps_both_ranked_quotas() {
+        let eye = Vec3::ZERO;
+        let limit = 64;
+        let nearby = limit / 4;
+        let proxies = (0..3072)
+            .map(|i| {
+                let x = (i + 1) as f32;
+                let width = ((i * 37) % 160 + 1) as f32;
+                proxy([x, 2., 0.], [x + 1., 2. + width, width], 1 << 1)
+            })
+            .collect::<Vec<_>>();
+        let mut expected = (nearby..proxies.len()).collect::<Vec<_>>();
+        expected.sort_unstable_by(|&a, &b| {
+            let priority = |index: usize| {
+                occluder_priority(&proxies[index], distance_squared(proxies[index].bounds, eye))
+            };
+            priority(b).total_cmp(&priority(a)).then(a.cmp(&b))
+        });
+        expected.truncate(limit - nearby);
+        expected.extend(0..nearby);
+        expected.sort_unstable();
+        let mut actual = select_hiz_occluders(proxies.iter(), eye, limit)
+            .iter()
+            .map(|entry| entry.occluder.bounds.min.x as usize - 1)
+            .collect::<Vec<_>>();
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
     }
 }
 

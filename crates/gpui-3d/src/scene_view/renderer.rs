@@ -91,6 +91,7 @@ struct CachedCommands {
     commands: Vec<RenderCommand>,
     /// Only this canonical layout may be remapped through logical Section deltas.
     generated_draw_count: Option<usize>,
+    blended_batch_start: Option<usize>,
     /// The same draws regrouped so consecutive commands share pipeline and
     /// bind groups. Backends coalesce each identical-state run into one
     /// native indirect call, so a 100K-command scene records as a handful of
@@ -99,6 +100,7 @@ struct CachedCommands {
     /// Immutable producer snapshot. Reuse this allocation while camera,
     /// frame uniforms or GPU culling change without changing Draw commands.
     shared_offscreen: Option<(u64, Arc<[RenderCommand]>, OffscreenCommandTraits)>,
+    visible_offscreen: Option<((u64, u64), Arc<[RenderCommand]>)>,
 }
 
 impl CachedCommands {
@@ -157,6 +159,88 @@ impl CachedCommands {
         }
     }
 
+    /// Camera motion may only permute the blended entries. A complete
+    /// generated table has one command per Batch, so its existing opaque
+    /// prefix and grouped order can survive that revision.
+    fn refresh_blended_suffix(
+        &mut self,
+        revision: u64,
+        count: usize,
+        first_blended: usize,
+        build_range: impl FnOnce(std::ops::Range<usize>, &mut Vec<RenderCommand>) -> gpui::Result<()>,
+    ) -> gpui::Result<()> {
+        if self.revision != Some(revision.wrapping_sub(1))
+            || self.generated_draw_count != Some(count)
+            || self.blended_batch_start != Some(first_blended)
+            || self.commands.len() != count
+            || first_blended >= count
+        {
+            return Ok(());
+        }
+        let mut suffix = Vec::with_capacity(count - first_blended);
+        build_range(first_blended..count, &mut suffix)?;
+        if suffix.len() != count - first_blended {
+            return Ok(());
+        }
+        self.grouped = self.grouped.as_ref().map(|previous| {
+            previous[..first_blended]
+                .iter()
+                .chain(suffix.iter())
+                .cloned()
+                .collect()
+        });
+        self.commands.truncate(first_blended);
+        self.commands.extend(suffix);
+        self.revision = Some(revision);
+        Ok(())
+    }
+
+    fn filter_offscreen(
+        &mut self,
+        revision: u64,
+        (commands, mut traits): (Arc<[RenderCommand]>, OffscreenCommandTraits),
+        visibility: Option<(u64, &[bool])>,
+    ) -> (Arc<[RenderCommand]>, OffscreenCommandTraits) {
+        let Some((visibility_revision, mask)) = visibility else {
+            self.visible_offscreen = None;
+            return (commands, traits);
+        };
+        let key = (revision, visibility_revision);
+        if let Some((previous, filtered)) = &self.visible_offscreen
+            && *previous == key
+        {
+            traits.indirect_only &= !filtered.is_empty();
+            return (Arc::clone(filtered), traits);
+        }
+        if mask.iter().all(|&visible| visible) {
+            self.visible_offscreen = Some((key, Arc::clone(&commands)));
+            return (commands, traits);
+        }
+        // Filter the already grouped snapshot. Its surviving commands keep
+        // their exact bind order, blended order and GPU argument addresses.
+        let filtered: Arc<[RenderCommand]> = commands
+            .iter()
+            .filter(|command| match command {
+                RenderCommand::DrawIndirect(draw) => {
+                    let logical = draw.offset / super::culling::ARGUMENT_STRIDE;
+                    mask.get(logical as usize).copied().unwrap_or(true)
+                }
+                _ => true,
+            })
+            .cloned()
+            .collect();
+        if trace_timings() && self.visible_offscreen.is_none() {
+            eprintln!(
+                "gpui3d native_command_visibility candidates={} recorded={}",
+                commands.len(),
+                filtered.len(),
+            );
+        }
+        traits.indirect_only &= !filtered.is_empty();
+        self.visible_offscreen = Some((key, Arc::clone(&filtered)));
+        (filtered, traits)
+    }
+
     /// Build the canonical command plan once. Publication into a GUI command
     /// list is intentionally a separate operation; native offscreen passes
     /// consume shared immutable snapshots instead.
@@ -177,6 +261,7 @@ impl CachedCommands {
         self.commands = next;
         self.grouped = grouped;
         self.generated_draw_count = None;
+        self.blended_batch_start = blended_batch_start;
         self.revision = Some(revision);
         Ok(())
     }
@@ -198,7 +283,8 @@ impl CachedCommands {
         if let (Some(count), Some(delta), Some(previous)) = (draw_count, delta, self.revision)
             && previous.wrapping_add(1) == revision
             && self.generated_draw_count == Some(delta.previous_count)
-            && let Some(next) = self.splice_generated(delta, count, &mut build_range)?
+            && let Some(next) =
+                self.splice_generated(delta, count, blended_batch_start, &mut build_range)?
         {
             if trace_timings() {
                 log::info!(
@@ -214,6 +300,7 @@ impl CachedCommands {
             self.grouped = grouped;
             self.revision = Some(revision);
             self.generated_draw_count = Some(count);
+            self.blended_batch_start = blended_batch_start;
             return Ok(());
         }
         self.rebuild(revision, blended_batch_start, build)?;
@@ -249,12 +336,20 @@ impl CachedCommands {
         &self,
         delta: &StructuralDrawDelta,
         new_count: usize,
+        blended_batch_start: Option<usize>,
         build_range: &mut impl FnMut(
             std::ops::Range<usize>,
             &mut Vec<RenderCommand>,
         ) -> gpui::Result<()>,
     ) -> gpui::Result<Option<Vec<RenderCommand>>> {
+        let old_opaque = self.blended_batch_start.unwrap_or(delta.previous_count);
+        let new_opaque = blended_batch_start.unwrap_or(new_count);
+        if old_opaque > delta.previous_count || new_opaque > new_count {
+            return Ok(None);
+        }
         let mut previous_command = None;
+        let mut opaque_commands = 0;
+        let mut blended = false;
         for command in &self.commands {
             let RenderCommand::DrawIndirect(draw) = command else {
                 return Ok(None);
@@ -262,13 +357,22 @@ impl CachedCommands {
             if draw.offset % 16 != 0 || draw.offset / 16 >= delta.previous_count as u64 {
                 return Ok(None);
             }
-            if previous_command.is_some_and(|old| old >= draw.offset) {
+            if draw.offset / 16 >= old_opaque as u64 {
+                blended = true;
+                continue;
+            }
+            if blended || previous_command.is_some_and(|old| old >= draw.offset) {
                 return Ok(None);
             }
+            opaque_commands += 1;
             previous_command = Some(draw.offset);
         }
+        let opaque = &self.commands[..opaque_commands];
         let mut old = 0;
         let mut new = 0;
+        let mut opaque_edits = 0;
+        let mut old_opaque_end = 0;
+        let mut new_opaque_end = 0;
         for edit in &delta.edits {
             if edit.old.start < old
                 || edit.new.start < new
@@ -280,10 +384,19 @@ impl CachedCommands {
             {
                 return Ok(None);
             }
+            if edit.old.end <= old_opaque && edit.new.end <= new_opaque {
+                opaque_edits += 1;
+                old_opaque_end = edit.old.end;
+                new_opaque_end = edit.new.end;
+            } else if edit.old.start < old_opaque || edit.new.start < new_opaque {
+                return Ok(None);
+            }
             old = edit.old.end;
             new = edit.new.end;
         }
-        if delta.previous_count - old != new_count - new {
+        if delta.previous_count - old != new_count - new
+            || old_opaque - old_opaque_end != new_opaque - new_opaque_end
+        {
             return Ok(None);
         }
         let mut next = Vec::with_capacity(
@@ -294,9 +407,9 @@ impl CachedCommands {
         let mut position = 0usize;
         let mut old_cursor = 0usize;
         let mut new_cursor = 0usize;
-        for edit in &delta.edits {
+        for edit in &delta.edits[..opaque_edits] {
             if !copy_native_survivors(
-                &self.commands,
+                opaque,
                 &mut position,
                 old_cursor..edit.old.start,
                 new_cursor,
@@ -304,7 +417,7 @@ impl CachedCommands {
             ) {
                 return Ok(None);
             }
-            while let Some(RenderCommand::DrawIndirect(draw)) = self.commands.get(position) {
+            while let Some(RenderCommand::DrawIndirect(draw)) = opaque.get(position) {
                 if draw.offset / 16 >= edit.old.end as u64 {
                     break;
                 }
@@ -319,14 +432,20 @@ impl CachedCommands {
             new_cursor = edit.new.end;
         }
         if !copy_native_survivors(
-            &self.commands,
+            opaque,
             &mut position,
-            old_cursor..delta.previous_count,
+            old_cursor..old_opaque,
             new_cursor,
             &mut next,
-        ) || position != self.commands.len()
+        ) || position != opaque.len()
         {
             return Ok(None);
+        }
+        // A camera movement can permute all transparent commands. Their
+        // resident rows are independent of that order, so rebuild only the
+        // command suffix even when its GPU rows reuse the sparse edit.
+        if new_opaque < new_count {
+            build_range(new_opaque..new_count, &mut next)?;
         }
         Ok(Some(next))
     }
@@ -611,7 +730,7 @@ fn defer_unprepared_scene(
 // proof that the incoming camera can safely render the old Scene geometry.
 fn same_camera_sampler(previous: &SceneView, current: &SceneView) -> bool {
     match (&previous.camera_sampler, &current.camera_sampler) {
-        (Some(previous), Some(current)) => Arc::ptr_eq(previous, current),
+        (Some(previous), Some(current)) => Arc::ptr_eq(&previous.0, &current.0),
         (None, None) => true,
         _ => false,
     }
@@ -645,6 +764,7 @@ fn same_static_capture_input(previous: &SceneView, current: &SceneView) -> bool 
         && previous.anisotropy_enabled == current.anisotropy_enabled
         && previous.sampling == current.sampling
         && previous.voxel_shader == current.voxel_shader
+        && previous.culling_disabled == current.culling_disabled
         && previous.fog == current.fog
         && previous.voxel_shading == current.voxel_shading
         && previous.culling_bounds == current.culling_bounds
@@ -1100,6 +1220,21 @@ mod tests {
             })
             .collect();
         assert_eq!(offsets, vec![0, 32, 16]);
+
+        // The mask is indexed by indirect argument slot, not grouped position.
+        let mask = [false, true, true];
+        let (filtered, _) =
+            cache.filter_offscreen(1, (Arc::clone(&shared), traits), Some((1, &mask)));
+        let offsets = filtered
+            .iter()
+            .map(|command| match command {
+                RenderCommand::DrawIndirect(draw) => draw.offset,
+                _ => unreachable!(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(offsets, [32, 16]);
+        let (again, _) = cache.filter_offscreen(1, (shared, traits), Some((1, &mask)));
+        assert!(Arc::ptr_eq(&filtered, &again));
     }
 
     #[test]
@@ -1138,8 +1273,46 @@ mod tests {
         };
         assert_eq!(offsets(&grouped[..3]), vec![0, 32, 16]);
         assert_eq!(offsets(&grouped[3..]), vec![48, 64, 80]);
+
+        let mut cache = CachedCommands {
+            revision: Some(1),
+            generated_draw_count: Some(input.len()),
+            blended_batch_start: Some(3),
+            commands: input.clone(),
+            grouped: Some(grouped.into()),
+            ..Default::default()
+        };
+        cache
+            .refresh_blended_suffix(2, 6, 3, |range, suffix| {
+                assert_eq!(range, 3..6);
+                suffix.extend([draw(80, 3), draw(48, 3), draw(64, 4)]);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(offsets(cache.commands.as_slice()), [0, 16, 32, 80, 48, 64]);
+        assert_eq!(offsets(cache.grouped.as_deref().unwrap()), [0, 32, 16, 80, 48, 64]);
         // When every command is transparent, no global reorder is legal.
         assert!(super::group_indirect_commands(&input[3..], Some(0)).is_none());
+
+        let delta = crate::prepare::StructuralDrawDelta {
+            previous_count: 6,
+            edits: vec![
+                crate::prepare::StructuralDrawEdit { old: 1..2, new: 1..1 },
+                crate::prepare::StructuralDrawEdit { old: 4..5, new: 3..5 },
+            ],
+        };
+        let spliced = cache
+            .splice_generated(&delta, 6, Some(2), &mut |range, commands| {
+                if range == (2..6) {
+                    commands.extend([draw(80, 3), draw(32, 4), draw(64, 3), draw(48, 3)]);
+                } else {
+                    assert!(range.is_empty());
+                }
+                Ok(())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(offsets(&spliced), [0, 16, 80, 32, 64, 48]);
     }
 
     #[test]
@@ -1232,6 +1405,7 @@ mod tests {
             &original,
             &original.with_scene(Arc::new(Scene::new())),
         ));
+        assert!(!same_static_capture_input(&original, &original.with_culling_disabled()));
         let mut moving = original.clone();
         moving.continuous_presentation = true;
         assert!(!same_static_capture_input(&original, &moving));
@@ -1708,15 +1882,27 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             let build_range = |range: std::ops::Range<usize>, output: &mut Vec<RenderCommand>| {
                 scene.append_generated_singleton_range(&self.resources, output, range)
             };
+            let generated_count = scene.generated_singleton_command_count();
+            let first_blended = scene.first_blended_batch_index();
             if self.offscreen.is_some() {
+                if scene.blend_only_command_change
+                    && let (Some(count), Some(first)) = (generated_count, first_blended)
+                {
+                    cache.refresh_blended_suffix(scene.command_revision, count, first, &build_range)?;
+                }
                 let shared = cache.shared_offscreen(
                     scene.command_revision,
-                    scene.generated_singleton_command_count(),
-                    scene.first_blended_batch_index(),
+                    generated_count,
+                    first_blended,
                     scene.native_command_delta(),
                     build,
                     build_range,
                 )?;
+                let shared = cache.filter_offscreen(
+                    scene.command_revision,
+                    shared,
+                    scene.generated_command_visibility(),
+                );
                 let count = shared.0.len();
                 capture_commands = Some(shared);
                 count
@@ -1724,8 +1910,8 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 let first_step = steps.len();
                 cache.append_spliced(
                     scene.command_revision,
-                    scene.generated_singleton_command_count(),
-                    scene.first_blended_batch_index(),
+                    generated_count,
+                    first_blended,
                     scene.native_command_delta(),
                     steps,
                     build,

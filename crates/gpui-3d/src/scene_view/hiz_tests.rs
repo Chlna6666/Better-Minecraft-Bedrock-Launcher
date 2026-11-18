@@ -114,7 +114,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
             .hiz
             .update(
                 &mut device,
-                boxes.into_iter(),
+                boxes.iter(),
                 eye,
                 Vec3::Z,
                 name != "covered again",
@@ -181,7 +181,7 @@ fn verify_shadow<D: Device + TextureTransferDevice>(mut device: D) {
         raster
             .update(
                 &mut device,
-                boxes.into_iter(),
+                boxes.iter(),
                 Vec3::new(0., 0., -1.),
                 Vec3::Z,
                 true,
@@ -202,7 +202,7 @@ fn verify_shadow<D: Device + TextureTransferDevice>(mut device: D) {
     shadow
         .update(
             &mut device,
-            std::iter::once(crate::Occluder { faces: 63, ..front }),
+            std::iter::once(&crate::Occluder { faces: 63, ..front }),
             Vec3::ZERO,
             Vec3::Z,
             true,

@@ -37,10 +37,10 @@ impl Shadow {
             key: None,
         })
     }
-    pub(super) fn update(
+    pub(super) fn update<'a>(
         &mut self,
         device: &mut dyn ExtensionDevice,
-        bounds: impl Iterator<Item = Occluder>,
+        bounds: impl Iterator<Item = &'a Occluder>,
         eye: Vec3,
         sun: Vec3,
         changed: bool,

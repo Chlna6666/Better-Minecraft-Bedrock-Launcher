@@ -76,29 +76,45 @@ impl PreparedScene {
                     .is_some_and(|draws| draws.len() == range.len())
                     && partial.candidate_group_index.contains_key(id)
             });
-        if fixed_layout {
-            // Stable GPU Draw Slots can be updated directly only if their
-            // opaque candidate ordering and per-part identity are unchanged.
-            // A material replacement, mesh topology change, or transparency
-            // transition falls back to the existing full GPU layout planner.
-            let stable_gpu_layout = self.gpu_culling
-                && self.opaque_resident_order
-                && self.draws.len() == self.candidates.len()
-                && groups.iter().all(|(_, range, id)| {
-                    replacements.get(id).is_some_and(|draws| {
-                        self.draws[range.clone()]
-                            .iter()
-                            .zip(draws)
-                            .all(|(old, new)| {
-                                old.node == new.node
-                                    && old.mesh.id() == new.mesh.id()
-                                    && old.part == new.part
-                                    && old.material.id() == new.material.id()
-                                    && old.material.alpha_mode != AlphaMode::Blend
-                                    && new.material.alpha_mode != AlphaMode::Blend
-                            })
+        let structural_ready = self.gpu_culling
+            && self.resident_prefix_order
+            && self.draws.len() == self.candidates.len();
+        // The direct dirty-slot path requires identical opaque draw identities.
+        // Other resident replacements still have a proven opaque prefix and
+        // can publish the same draw-space edits as insertions and removals.
+        let stable_gpu_layout = fixed_layout
+            && structural_ready
+            && self.opaque_resident_order
+            && groups.iter().all(|(_, range, id)| {
+                replacements.get(id).is_some_and(|draws| {
+                    self.draws[range.clone()].iter().zip(draws).all(|(old, new)| {
+                        old.node == new.node
+                            && old.mesh.id() == new.mesh.id()
+                            && old.part == new.part
+                            && old.material.id() == new.material.id()
+                            && old.material.alpha_mode != AlphaMode::Blend
+                            && new.material.alpha_mode != AlphaMode::Blend
                     })
-                });
+                })
+            });
+        let splice_replacements = fixed_layout
+            && structural_ready
+            && !groups.is_empty()
+            && !stable_gpu_layout
+            && {
+                #[cfg(debug_assertions)]
+                {
+                    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    !*DISABLED.get_or_init(|| {
+                        std::env::var_os("GPUI_3D_DISABLE_FIXED_LAYOUT_DELTA").is_some()
+                    })
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    true
+                }
+            };
+        if fixed_layout && !splice_replacements {
             let mut dirty = stable_gpu_layout
                 .then(|| Vec::with_capacity(groups.iter().map(|(_, range, _)| range.len()).sum()));
             self.changed_asset_draws.clear();
@@ -160,23 +176,23 @@ impl PreparedScene {
         if !inserted.is_empty() {
             return None;
         }
-        // The committed draw list is the previous full publication's
-        // [candidate-opaque prefix, depth-sorted blend tail]. Structural
-        // deltas are therefore expressed in draw space: every candidate
-        // edit maps to its opaque-prefix interval, and one final whole-tail
-        // edit covers blend removals, additions and camera re-sorting.
-        // This keeps deltas valid for blend-heavy worlds and moving cameras.
-        let structural_ready = self.gpu_culling
-            && self.resident_prefix_order
-            && self.draws.len() == self.candidates.len();
+        // Both partitions retain candidate order. Only native commands use
+        // the camera-dependent blend permutation.
         let is_blended = |draw: &PreparedDraw| draw.material.alpha_mode == AlphaMode::Blend;
         let prefix_blends = prefix.iter().filter(|draw| is_blended(draw)).count();
         let prefix_opaques = prefix.len() - prefix_blends;
         let mut draw_edits = Vec::<StructuralDrawEdit>::with_capacity(groups.len() + 2);
-        if !prefix.is_empty() {
+        let mut blend_edits = Vec::<StructuralDrawEdit>::new();
+        if prefix_opaques != 0 {
             draw_edits.push(StructuralDrawEdit {
                 old: 0..0,
                 new: 0..prefix_opaques,
+            });
+        }
+        if structural_ready && prefix_blends != 0 {
+            blend_edits.push(StructuralDrawEdit {
+                old: 0..0,
+                new: 0..prefix_blends,
             });
         }
         // Blends among candidates before the current group on each side.
@@ -208,6 +224,12 @@ impl PreparedScene {
                         new: (new_start - new_blends)..(new_start - new_blends + new_opaques),
                     });
                 }
+                if structural_ready && (group.blends != 0 || replacement_blends != 0) {
+                    blend_edits.push(StructuralDrawEdit {
+                        old: old_blends..old_blends + group.blends as usize,
+                        new: new_blends..new_blends + replacement_blends,
+                    });
+                }
                 old_blends += group.blends as usize;
                 new_blends += replacement_blends;
             } else {
@@ -223,11 +245,23 @@ impl PreparedScene {
         if structural_ready {
             let old_opaque_len = self.candidates.len() - old_blends;
             let new_opaque_len = next_start - new_blends;
-            if old_opaque_len < self.draws.len() || new_opaque_len < next_start {
+            #[cfg(debug_assertions)]
+            let whole_tail = {
+                static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *DISABLED.get_or_init(|| std::env::var_os("GPUI_3D_DISABLE_SPARSE_BLEND_DELTA").is_some())
+            };
+            #[cfg(not(debug_assertions))]
+            let whole_tail = false;
+            if whole_tail && (old_blends != 0 || new_blends != 0) {
                 draw_edits.push(StructuralDrawEdit {
                     old: old_opaque_len..self.draws.len(),
                     new: new_opaque_len..next_start,
                 });
+            } else {
+                draw_edits.extend(blend_edits.into_iter().map(|edit| StructuralDrawEdit {
+                    old: edit.old.start + old_opaque_len..edit.old.end + old_opaque_len,
+                    new: edit.new.start + new_opaque_len..edit.new.end + new_opaque_len,
+                }));
             }
         }
         // Repeated Vec::splice shifts the entire suffix for every changed section.
@@ -236,39 +270,44 @@ impl PreparedScene {
         // allocated across updates so section streaming does not churn the allocator.
         self.changed_asset_draws.clear();
         self.changed_asset_draws.extend(partial.candidates);
-        self.candidate_scratch.clear();
-        self.candidate_scratch.reserve(next_start);
-        self.candidate_scratch.extend(prefix);
-        let mut previous = self.candidates.drain(..);
-        let mut changed_groups = groups.into_iter().peekable();
-        for (index, group) in self.candidate_groups.iter().enumerate() {
-            let current = previous.by_ref().take(group.end - group.start);
-            if changed_groups
-                .peek()
-                .is_some_and(|(changed_index, _, _)| *changed_index == index)
-            {
-                let (_, _, id) = changed_groups.next()?;
-                // The old root has been replaced or removed.
-                for _ in current {}
-                self.candidate_scratch
-                    .extend(replacements.remove(&id).unwrap_or_default());
-            } else {
-                self.candidate_scratch.extend(current);
+        if fixed_layout {
+            for (_, range, id) in groups {
+                self.candidates[range].clone_from_slice(&replacements[&id]);
+            }
+        } else {
+            self.candidate_scratch.clear();
+            self.candidate_scratch.reserve(next_start);
+            self.candidate_scratch.extend(prefix);
+            let mut previous = self.candidates.drain(..);
+            let mut changed_groups = groups.into_iter().peekable();
+            for (index, group) in self.candidate_groups.iter().enumerate() {
+                let current = previous.by_ref().take(group.end - group.start);
+                if changed_groups
+                    .peek()
+                    .is_some_and(|(changed_index, _, _)| *changed_index == index)
+                {
+                    let (_, _, id) = changed_groups.next()?;
+                    // The old root has been replaced or removed.
+                    for _ in current {}
+                    self.candidate_scratch
+                        .extend(replacements.remove(&id).unwrap_or_default());
+                } else {
+                    self.candidate_scratch.extend(current);
+                }
+            }
+            debug_assert!(previous.next().is_none());
+            drop(previous);
+            std::mem::swap(&mut self.candidates, &mut self.candidate_scratch);
+            // Inserted/removed Sections shift offsets. Rebuild the lookup once.
+            self.candidate_group_index.clear();
+            for (index, group) in next_groups.iter().enumerate() {
+                self.candidate_group_index
+                    .insert(self.candidates[group.start].node, index);
             }
         }
-        debug_assert!(previous.next().is_none());
-        drop(previous);
-        std::mem::swap(&mut self.candidates, &mut self.candidate_scratch);
         self.occluders.retain(|id, _| !changed.contains(id));
         self.occluders.extend(partial.occluders);
         self.candidate_groups = next_groups;
-        // Inserted/removed Sections shift offsets. Rebuild the lookup once
-        // after the merged candidate list has been committed.
-        self.candidate_group_index.clear();
-        for (index, group) in self.candidate_groups.iter().enumerate() {
-            self.candidate_group_index
-                .insert(self.candidates[group.start].node, index);
-        }
         self.visible_candidates.clear();
         self.gpu_candidates_dirty = true;
         self.opaque_resident_order = false;
@@ -707,18 +746,14 @@ mod tests {
             old_cursor = edit.old.end;
             new_cursor = edit.new.end;
         }
-        assert_eq!(old_cursor, previous_draws.len());
         assert!(
             delta.edits.last().is_some_and(|edit| {
-                edit.old.end == delta.previous_count
-                    && edit.old.start < edit.old.end
-                    && edit.new.end > edit.new.start
+                edit.old.is_empty() && edit.new.len() == 1 && edit.old.end < delta.previous_count
             }),
-            "the final whole-tail edit covers the depth-sorted blend tail"
+            "the new transparent root must leave the existing tail resident"
         );
 
-        // A moving camera must not clear the delta: the tail edit already
-        // covers blend re-sorting, and the opaque prefix keeps its order.
+        // Geometry stays in its stable partition order as the camera moves.
         prepared.update_camera(moved_camera, 1.).unwrap();
         assert!(prepared.structural_draw_delta().is_some());
 
@@ -737,5 +772,25 @@ mod tests {
             .map(|draw| (draw.node, draw.world))
             .collect::<Vec<_>>();
         assert_eq!(spliced, walked, "splice must reproduce the full walk order");
+
+        // Replacing a root without changing its part count must publish
+        // edits as well, including draws transitioning into the blend tail.
+        let mut replaced = next.fork();
+        replaced.node_mut(ids[5]).unwrap().materials = vec![transparent];
+        assert_eq!(
+            prepared.update_nodes(&replaced, &[ids[5]], Mat4::IDENTITY),
+            Some(1)
+        );
+        let delta = prepared.structural_draw_delta().unwrap();
+        assert_eq!(delta.previous_count, full.draws.len());
+        assert_eq!(delta.edits[0].old.len(), 1);
+        assert!(delta.edits[0].new.is_empty());
+        prepared.update_camera(camera, 1.).unwrap();
+        full.update(&replaced, camera, 1.).unwrap();
+        assert_eq!(prepared.blend_order, full.blend_order);
+        assert!(prepared.draws.iter().zip(&full.draws).all(|(partial, full)| {
+            partial.node == full.node && partial.material.id() == full.material.id()
+        }));
+        assert_eq!(prepared.draws.len(), full.draws.len());
     }
 }
