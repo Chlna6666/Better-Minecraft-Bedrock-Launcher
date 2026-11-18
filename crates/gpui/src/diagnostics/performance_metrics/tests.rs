@@ -663,6 +663,7 @@ fn records_windows_vsync_stages_with_the_successful_animation_sample() {
         window_id,
         &sample,
         Some(crate::ActivePresentationTiming {
+            display_tick_at: None,
             frame_pacing_wait: Duration::from_millis(4),
             vsync_event_queue_delay: Duration::from_micros(300),
             window_dispatch_delay: Duration::from_micros(200),
@@ -739,6 +740,7 @@ fn records_extension_only_presentation_stages_without_animation_samples() {
         super::window::record_extension_present(
             window_id,
             crate::ActivePresentationTiming {
+                display_tick_at: None,
                 frame_pacing_wait: Duration::ZERO,
                 vsync_event_queue_delay: Duration::ZERO,
                 window_dispatch_delay: Duration::ZERO,

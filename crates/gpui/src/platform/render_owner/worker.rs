@@ -515,7 +515,10 @@ impl Entry {
                     return Ok(false);
                 }
                 let eligibility_time = Instant::now();
-                if !self.renderer.active_presentation_is_due(eligibility_time) {
+                let pace_time = timing
+                    .and_then(|timing| timing.display_tick_at)
+                    .unwrap_or(eligibility_time);
+                if !self.renderer.active_presentation_is_due(pace_time) {
                     return Ok(false);
                 }
                 #[cfg(not(target_os = "windows"))]

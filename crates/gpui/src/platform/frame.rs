@@ -598,11 +598,8 @@ mod tests {
         assert_eq!(latest.dirty_region.union_bounds(), Some(rect(0.0, 30.0)));
     }
 
-    #[test]
-    fn presentation_packet_deadline_tracks_successful_submission_and_frame_limit() {
-        let now = Instant::now();
-        let interval = Duration::from_millis(20);
-        let mut packet = PresentationPacket::new(
+    fn empty_presentation_packet(now: Instant) -> PresentationPacket {
+        PresentationPacket::new(
             std::sync::Arc::new(crate::window::Paint::new(
                 crate::Scene::default(),
                 std::sync::Arc::default(),
@@ -617,7 +614,14 @@ mod tests {
             DirtyRegion::empty(),
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
-        );
+        )
+    }
+
+    #[test]
+    fn presentation_packet_deadline_tracks_successful_submission_and_frame_limit() {
+        let now = Instant::now();
+        let interval = Duration::from_millis(20);
+        let mut packet = empty_presentation_packet(now);
         packet.set_frame_interval(Some(interval));
         assert_eq!(packet.presentation_deadline(), None);
         assert!(packet.presentation_is_due(now));
@@ -628,6 +632,30 @@ mod tests {
         packet.set_frame_interval(None);
         assert_eq!(packet.presentation_deadline(), None);
         assert!(packet.presentation_is_due(now));
+    }
+
+    #[test]
+    fn presentation_packet_keeps_120_fps_phase_on_a_165_hz_display() {
+        let now = Instant::now();
+        let interval = Duration::from_secs(1) / 120;
+        let refresh = Duration::from_secs(1) / 165;
+        let mut packet = empty_presentation_packet(now);
+        packet.set_frame_interval(Some(interval));
+        packet.record_presentation(now);
+
+        let mut presented = 1;
+        for refresh_index in 1..165 {
+            let tick = now + refresh * refresh_index;
+            if packet.presentation_is_due(tick) {
+                packet.record_display_presentation(tick);
+                presented += 1;
+            }
+        }
+        assert_eq!(presented, 120);
+
+        let after_stall = now + Duration::from_secs(2);
+        packet.record_display_presentation(after_stall);
+        assert_eq!(packet.presentation_deadline(), Some(after_stall + interval));
     }
 
     #[test]
@@ -1361,7 +1389,7 @@ pub(crate) struct PresentationPacket {
     pub(crate) partial_present_mode: PartialPresentMode,
     pub(crate) force_full_backdrop_blur_refresh: bool,
     frame_interval: Option<Duration>,
-    last_presented_at: Option<Instant>,
+    presentation_clock_anchor: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -1487,7 +1515,7 @@ impl PresentationPacket {
             partial_present_mode,
             force_full_backdrop_blur_refresh: false,
             frame_interval: None,
-            last_presented_at: None,
+            presentation_clock_anchor: None,
         }
     }
 
@@ -1496,20 +1524,32 @@ impl PresentationPacket {
     }
 
     pub(crate) fn presentation_is_due(&self, now: Instant) -> bool {
-        self.frame_interval
-            .zip(self.last_presented_at)
-            .is_none_or(|(interval, last_presented_at)| now >= last_presented_at + interval)
+        self.presentation_deadline().is_none_or(|deadline| now >= deadline)
     }
 
-    #[cfg(any(test, not(target_os = "windows")))]
     pub(crate) fn presentation_deadline(&self) -> Option<Instant> {
         self.frame_interval
-            .zip(self.last_presented_at)
+            .zip(self.presentation_clock_anchor)
             .map(|(interval, last)| last + interval)
     }
 
     pub(crate) fn record_presentation(&mut self, presented_at: Instant) {
-        self.last_presented_at = Some(presented_at);
+        self.presentation_clock_anchor = Some(presented_at);
+    }
+
+    /// Advance the limit on its own phase when a display tick arrives late.
+    /// Restarting from every rounded-up vblank would make 120 FPS on a
+    /// 165 Hz display wait two refreshes on every frame.
+    pub(crate) fn record_display_presentation(&mut self, tick: Instant) {
+        let anchor = self
+            .presentation_deadline()
+            .zip(self.frame_interval)
+            .filter(|&(deadline, interval)| {
+                tick.checked_duration_since(deadline)
+                    .is_some_and(|late| late < interval)
+            })
+            .map_or(tick, |(deadline, _)| deadline);
+        self.presentation_clock_anchor = Some(anchor);
     }
 
     /// Sample scene-owned visual timelines without consulting mutable UI state.
@@ -1778,6 +1818,8 @@ pub(crate) struct ActivePresentationFrame {
 /// Scheduling context for an active presentation initiated by a paced platform event.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ActivePresentationTiming {
+    /// Display event timestamp, absent on timer, readiness and unpaced wakes.
+    pub(crate) display_tick_at: Option<Instant>,
     pub(crate) frame_pacing_wait: Duration,
     pub(crate) vsync_event_queue_delay: Duration,
     pub(crate) window_dispatch_delay: Duration,
@@ -1798,6 +1840,7 @@ pub(crate) struct ActivePresentationTiming {
 impl ActivePresentationTiming {
     pub(crate) fn from_frame_start(frame_started_at: Instant) -> Self {
         Self {
+            display_tick_at: None,
             frame_pacing_wait: Duration::ZERO,
             vsync_event_queue_delay: Duration::ZERO,
             window_dispatch_delay: Duration::ZERO,

@@ -643,9 +643,14 @@ impl Platform for WindowsPlatform {
     }
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
-        let event_loop = EventLoop::<WindowsUserEvent>::with_user_event()
-            .build()
-            .expect("event loop");
+        let mut builder = EventLoop::<WindowsUserEvent>::with_user_event();
+        #[cfg(feature = "test-support")]
+        {
+            use winit::platform::windows::EventLoopBuilderExtWindows;
+            // Rust's test harness runs native window fixtures on a test thread.
+            builder.with_any_thread(true);
+        }
+        let event_loop = builder.build().expect("event loop");
         {
             let mut lock = self.event_loop_proxy.lock().unwrap();
             *lock = Some(event_loop.create_proxy());

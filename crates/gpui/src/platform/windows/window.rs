@@ -2360,6 +2360,9 @@ impl WindowsWindow {
                 // Ready/redraw wakes also need renderer/backend timings. Their
                 // VSync-specific durations are zero, not an absent timing sample.
                 let presentation_timing = Some(crate::platform::frame::ActivePresentationTiming {
+                    display_tick_at: vsync_timing.and_then(|(timing, _)| {
+                        timing.reported_refresh_period.map(|_| timing.enqueued_at)
+                    }),
                     frame_pacing_wait: vsync_timing
                         .map_or(Duration::ZERO, |(timing, _)| timing.pacing_wait),
                     vsync_event_queue_delay: vsync_timing.map_or(
@@ -2374,18 +2377,7 @@ impl WindowsWindow {
                             frame_started_at.saturating_duration_since(event_received_at)
                         },
                     ),
-                    frame_started_at,
-                    renderer_scene_prepare: Duration::ZERO,
-                    renderer_extension_prepare: Duration::ZERO,
-                    submission_prepare: Duration::ZERO,
-                    retained_resource_prepare: Duration::ZERO,
-                    frame_prepare_upload: Duration::ZERO,
-                    command_prepare: Duration::ZERO,
-                    buffer_upload: Duration::ZERO,
-                    atlas_upload: Duration::ZERO,
-                    offscreen_render: Duration::ZERO,
-                    backend_present: Duration::ZERO,
-                    renderer_post_present: Duration::ZERO,
+                    ..crate::platform::frame::ActivePresentationTiming::from_frame_start(frame_started_at)
                 });
                 match PlatformWindow::present_active_frame(
                     self,

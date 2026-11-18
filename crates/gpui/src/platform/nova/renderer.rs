@@ -1237,7 +1237,8 @@ impl NovaRenderer {
         if !was_pending && !reference.has_pending_presentation() {
             return Ok(None);
         }
-        if !reference.presentation_is_due(now) {
+        let display_tick_at = presentation_timing.and_then(|timing| timing.display_tick_at);
+        if !reference.presentation_is_due(display_tick_at.unwrap_or(now)) {
             let continues = reference.has_time_dependent_extensions()
                 || !reference.presentation_animation_timelines.is_empty();
             return Ok((continues || was_pending).then(|| ActivePresentationFrame {
@@ -1271,7 +1272,11 @@ impl NovaRenderer {
                     timing,
                 );
             }
-            packet.record_presentation(Instant::now());
+            if let Some(tick) = display_tick_at {
+                packet.record_display_presentation(tick);
+            } else {
+                packet.record_presentation(Instant::now());
+            }
         }
         record_animation_completion_sample(
             &mut self.pending_animation_completions,
