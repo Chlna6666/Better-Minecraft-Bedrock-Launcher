@@ -39,6 +39,8 @@ use std::sync::{Arc, mpsc::{self, Receiver, TryRecvError}};
 use std::time::{Duration, Instant};
 mod rendering;
 pub(in super::super) mod scene_registry;
+#[cfg(all(test, windows))]
+mod presentation_test;
 
 const TOP_BAR_HEIGHT: f32 = 46.0;
 const STATUS_BAR_HEIGHT: f32 = 26.0;
@@ -389,6 +391,71 @@ fn owner_path_summary(sample: &GpuOwnerJobSample) -> String {
     )
 }
 const RENDER_ORIGIN_GRID: f64 = 512.0;
+// A rebase changes every resident transform and culling row. Keep the origin
+// within this distance of the eye to avoid rewriting the scene near grid edges.
+const RENDER_ORIGIN_REBASE_DISTANCE: f64 = 1024.0;
+
+fn world_render_origin(eye: [f64; 3], previous: Option<[i32; 3]>) -> [i32; 3] {
+    if let Some(origin) = previous
+        && [0, 2].into_iter().all(|axis| {
+            (eye[axis] - f64::from(origin[axis])).abs() <= RENDER_ORIGIN_REBASE_DISTANCE
+        })
+    {
+        return origin;
+    }
+    let snap =
+        |coordinate: f64| ((coordinate / RENDER_ORIGIN_GRID).round() * RENDER_ORIGIN_GRID) as i32;
+    [snap(eye[0]), 0, snap(eye[2])]
+}
+
+#[cfg(test)]
+mod render_origin_tests {
+    use super::{World3dCamera, world_render_origin};
+
+    #[test]
+    fn stays_local_across_grid_edges() {
+        let origin = world_render_origin([-108.0, 144.0, 178.0], None);
+        assert_eq!(origin, [0, 0, 0]);
+        for x in [255.0, 257.0, 373.0, 1024.0, -1024.0] {
+            assert_eq!(world_render_origin([x, 144.0, 178.0], Some(origin)), origin);
+        }
+        let next = world_render_origin([1024.25, 144.0, 178.0], Some(origin));
+        assert_eq!(next, [1024, 0, 0]);
+        assert_eq!(
+            world_render_origin([1023.75, 144.0, 178.0], Some(next)),
+            next,
+        );
+        let far = world_render_origin([29_999_990.0, 144.0, -29_999_990.0], Some(next));
+        assert!((29_999_990 - far[0]).abs() <= 256);
+        assert!((-29_999_990 - far[2]).abs() <= 256);
+    }
+
+    #[test]
+    fn preserves_far_world_projection() {
+        let camera = World3dCamera {
+            position: [29_999_990.0, 144.0, -29_999_990.0],
+            ..Default::default()
+        };
+        let centered = world_render_origin(camera.position, None);
+        let retained = [centered[0] - 768, 0, centered[2] + 768];
+        assert_eq!(world_render_origin(camera.position, Some(retained)), retained);
+        let projection = |origin: [i32; 3], depth: f64| {
+            let view = camera.gpu_camera(origin).view_projection(16.0 / 9.0).unwrap();
+            let clip = view.transform4([
+                (camera.position[0] + 0.03125 - f64::from(origin[0])) as f32,
+                143.5,
+                (camera.position[2] - depth - f64::from(origin[2])) as f32,
+                1.0,
+            ]);
+            [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]]
+        };
+        for depth in [2.0, 8.0, 512.0] {
+            let near = projection(centered, depth);
+            let far = projection(retained, depth);
+            assert!(near.into_iter().zip(far).all(|(a, b)| (a - b).abs() < 0.0005));
+        }
+    }
+}
 
 mod gizmo;
 mod overlay;
@@ -950,13 +1017,7 @@ impl World3dEditorView {
             last_scene_build_at: None,
             import_preview: None,
             import_generation: 0,
-            render_origin: [
-                (camera.position[0] / RENDER_ORIGIN_GRID).floor() as i32
-                    * RENDER_ORIGIN_GRID as i32,
-                0,
-                (camera.position[2] / RENDER_ORIGIN_GRID).floor() as i32
-                    * RENDER_ORIGIN_GRID as i32,
-            ],
+            render_origin: world_render_origin(camera.position, None),
             stage_size,
             tool: World3dTool::Navigate,
             brush_index: 0,
@@ -1667,13 +1728,7 @@ impl World3dEditorView {
             self.texture_table_dirty |= self.textures.len() != previous_count;
         }
         let previous_origin = self.render_origin;
-        let next_origin = [
-            (self.camera.position[0] / RENDER_ORIGIN_GRID).round() as i32
-                * RENDER_ORIGIN_GRID as i32,
-            0,
-            (self.camera.position[2] / RENDER_ORIGIN_GRID).round() as i32
-                * RENDER_ORIGIN_GRID as i32,
-        ];
+        let next_origin = world_render_origin(self.camera.position, Some(previous_origin));
         let base = self
             .scene_view
             .as_ref()
@@ -1714,7 +1769,7 @@ impl World3dEditorView {
         }
         // Camera portal visibility is now a per-view GPU resident Bounds
         // overlay. Never fork a Scene merely to change Node::visible.
-        self.hidden_draw_nodes =
+        let hidden_draw_nodes =
             Arc::new(self.scene_nodes.hidden_draw_nodes(&self.hidden_sections));
         if let Some(preview) = self.import_preview.as_ref()
             && preview.target_anchor.dimension == self.dimension
@@ -1736,17 +1791,27 @@ impl World3dEditorView {
             _ => Arc::new(scene),
         };
         let textures_changed = self.texture_table_dirty;
-        let published = scene_publish_required(self.scene_view.as_ref(), &scene, textures_changed);
+        let origin_changed = next_origin != previous_origin;
+        let published = origin_changed
+            || scene_publish_required(self.scene_view.as_ref(), &scene, textures_changed);
         if published {
             let camera = self.camera.gpu_camera(next_origin);
             let base = match self.scene_view.as_ref() {
                 Some(view) => view.with_scene(scene).with_camera(camera),
                 None => SceneView::new(scene, camera),
             }
-            .with_hidden_nodes(Arc::clone(&self.hidden_draw_nodes))
+            .with_hidden_nodes(Arc::clone(&hidden_draw_nodes))
             .with_sampling(TextureSampling::PixelArt)
             .with_voxel_shader()
             .with_continuous_presentation();
+            // Keep the sampler identity across edits in the same coordinate
+            // space so the renderer can keep moving a retained scene.
+            let base = if origin_changed || self.scene_view.is_none() {
+                let navigation = self.navigation.clone();
+                base.with_camera_sampler(move |now| navigation.sample_camera(now, next_origin))
+            } else {
+                base
+            };
             let scene_view = if textures_changed {
                 match base.with_textures(
                     self.textures
@@ -1776,8 +1841,9 @@ impl World3dEditorView {
             };
             self.scene_view = Some(Arc::new(scene_view));
         }
+        self.hidden_draw_nodes = hidden_draw_nodes;
         self.render_origin = next_origin;
-        if next_origin != previous_origin {
+        if origin_changed {
             self.update_target_scene();
         }
         self.scene_has_preview = self.import_preview.is_some();
@@ -3603,16 +3669,11 @@ impl World3dEditorView {
                     snapshot
                 }
             };
-            let navigation = self.navigation.clone();
-            let render_origin = self.render_origin;
-            let snapshot = Arc::new(snapshot.with_camera_sampler(move |now| {
-                navigation.sample_camera(now, render_origin)
-            }));
             viewport = viewport.child(
                 div()
                     .absolute()
                     .inset_0()
-                    .child(gpui_3d::scene_view::element(snapshot)),
+                    .child(gpui_3d::scene_view::element(Arc::new(snapshot))),
             );
         } else {
             viewport = viewport.child(
@@ -3824,13 +3885,7 @@ impl Render for World3dEditorView {
                 window.request_animation_frame();
             }
         }
-        let desired_origin = [
-            (self.camera.position[0] / RENDER_ORIGIN_GRID).round() as i32
-                * RENDER_ORIGIN_GRID as i32,
-            0,
-            (self.camera.position[2] / RENDER_ORIGIN_GRID).round() as i32
-                * RENDER_ORIGIN_GRID as i32,
-        ];
+        let desired_origin = world_render_origin(self.camera.position, Some(self.render_origin));
         if desired_origin != self.render_origin {
             self.scene_dirty = true;
         }

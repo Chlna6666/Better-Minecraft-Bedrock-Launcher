@@ -3,7 +3,7 @@
 use super::{MaterialSlotKey, mipmapped_texture, texture_storage_bytes};
 use bedrock_block_model::banner_art::{BannerArt, CLOTH_PANELS, DYE_COLORS, PATTERN_CELL};
 use gpui_3d::{AlphaMode, Material, ShadingModel, TextureAsset, TextureAssetId};
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use rustc_hash::{FxHashMap, FxHasher};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Weak};
 
@@ -14,13 +14,13 @@ pub(super) struct MeshAssets {
     // streamed-out world releases both its CPU images and GPU resources.
     // GPU materials then see one stable TextureAssetId, enabling real
     // cross-Section batching without changing any texture coordinates.
-    content_textures: HashMap<u64, Vec<Weak<TextureAsset>>>,
-    materials: HashMap<MaterialSlotKey, Weak<Material>>,
+    content_textures: FxHashMap<u64, Vec<Weak<TextureAsset>>>,
+    materials: FxHashMap<MaterialSlotKey, Weak<Material>>,
     /// Derived grass-block sides keyed by `(dirt, overlay, biome tint)`.
-    grass_side_tints: HashMap<(TextureAssetId, TextureAssetId, [u8; 3]), TintEntry>,
+    grass_side_tints: FxHashMap<(TextureAssetId, TextureAssetId, [u8; 3]), TintEntry>,
     /// Dyed and pattern-composited banner sheets keyed by `(base, masks, art)`.
-    banner_sheets: HashMap<(TextureAssetId, Vec<TextureAssetId>, BannerArt), BannerSheetEntry>,
-    grayscale_masks: HashMap<TextureAssetId, bool>,
+    banner_sheets: FxHashMap<(TextureAssetId, Vec<TextureAssetId>, BannerArt), BannerSheetEntry>,
+    grayscale_masks: FxHashMap<TextureAssetId, bool>,
 }
 
 struct BannerSheetEntry {
@@ -55,7 +55,7 @@ impl MeshAssets {
     // contract, with a hash only as a fast candidate lookup. Collisions are
     // resolved with exact byte comparison, never by the hash alone.
     fn texture_fingerprint(texture: &TextureAsset) -> u64 {
-        let mut hash = DefaultHasher::new();
+        let mut hash = FxHasher::default();
         texture.dimensions().hash(&mut hash);
         texture.mip_level_count().hash(&mut hash);
         (texture.color_space() as u8).hash(&mut hash);
@@ -187,6 +187,46 @@ impl MeshAssets {
                 pixel[0] = (r * ratio[0]).clamp(0.0, 255.0) as u8;
                 pixel[1] = (g * ratio[1]).clamp(0.0, 255.0) as u8;
                 pixel[2] = (b * ratio[2]).clamp(0.0, 255.0) as u8;
+            }
+        }
+        let image = image::RgbaImage::from_raw(base.width(), base.height(), pixels)?;
+        let asset = self.intern_texture(mipmapped_texture(image)?);
+        self.grass_side_tints.insert(
+            key,
+            TintEntry {
+                _sources: [base.clone(), base.clone()],
+                texture: Arc::downgrade(&asset),
+            },
+        );
+        Some(asset)
+    }
+
+    /// Bakes the fixed water colour into the grayscale cauldron liquid sheet.
+    ///
+    /// Vanilla tints the cauldron's `cauldron_water` texture with the water colour; the
+    /// streaming path has no per-face water tint for detail blocks, so the tint is composited
+    /// into the texture once and the vertex colour stays white.
+    pub(super) fn tinted_cauldron_water(
+        &mut self,
+        base: Option<&Arc<TextureAsset>>,
+    ) -> Option<Arc<TextureAsset>> {
+        const WATER: [f32; 4] = [0.267, 0.686, 0.961, 1.0];
+        let base = base?;
+        let key = (base.id(), base.id(), tint_key(WATER));
+        if let Some(cached) = self
+            .grass_side_tints
+            .get(&key)
+            .and_then(|entry| entry.texture.upgrade())
+        {
+            return Some(cached);
+        }
+        let ratio = tint_key(WATER);
+        let mut pixels = base.pixels().to_vec();
+        for pixel in pixels.chunks_exact_mut(4) {
+            for channel in 0..3 {
+                pixel[channel] =
+                    u8::try_from(u16::from(pixel[channel]) * u16::from(ratio[channel]) / 255)
+                        .unwrap_or(u8::MAX);
             }
         }
         let image = image::RgbaImage::from_raw(base.width(), base.height(), pixels)?;

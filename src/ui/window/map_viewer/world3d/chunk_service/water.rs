@@ -60,6 +60,15 @@ fn animation_strip(
             && height <= TEXTURE_MAX_DIMENSION,
         "水动画必须为方形帧的垂直条带"
     );
+    // `replicate: N` repeats the art N×N inside each square frame (`water_flow` is a 32×32
+    // frame of 2×2 16 px tiles). Water faces show the art once, so each output frame keeps a
+    // single replicated tile.
+    let replicate = definition
+        .and_then(|v| v.get("replicate"))
+        .and_then(serde_json::Value::as_u64)
+        .filter(|replicate| (1..=8).contains(replicate))
+        .unwrap_or(1) as u32;
+    let frame = (width / replicate).max(1);
     let ticks = definition
         .and_then(|v| v.get("ticks_per_frame"))
         .and_then(serde_json::Value::as_u64)
@@ -75,18 +84,18 @@ fn animation_strip(
         !frames.is_empty() && frames.len() <= (TEXTURE_MAX_DIMENSION / width) as usize,
         "水动画帧序列过长或为空"
     );
-    let mut ordered = RgbaImage::new(width, width * frames.len() as u32);
-    for (index, frame) in frames.iter().enumerate() {
-        let row = frame
+    let mut ordered = RgbaImage::new(frame, frame * frames.len() as u32);
+    for (index, row_index) in frames.iter().enumerate() {
+        let row = row_index
             .as_u64()
             .ok_or_else(|| anyhow::anyhow!("水动画目前要求等时数字帧序列"))?;
         anyhow::ensure!(row < u64::from(height / width), "水动画帧索引越界");
-        let frame = image::imageops::crop_imm(&image, 0, row as u32 * width, width, width);
+        let tile = image::imageops::crop_imm(&image, 0, row as u32 * width, frame, frame);
         image::imageops::replace(
             &mut ordered,
-            &frame.to_image(),
+            &tile.to_image(),
             0,
-            i64::from(index as u32 * width),
+            i64::from(index as u32 * frame),
         );
     }
     Ok((ordered, ticks as f32 / 20.))

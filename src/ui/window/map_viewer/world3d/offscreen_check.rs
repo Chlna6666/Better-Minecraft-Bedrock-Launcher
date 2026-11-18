@@ -173,11 +173,14 @@ fn collect_world_with_timeout(
     };
     service.send(ChunkServiceCommand::SetLighting(lighting));
     let generation = 1;
+    // A complete snapshot requests geometry in every direction. A zero
+    // forward vector bypasses the streaming camera's rear and band deferral.
+    let forward_xz = if coverage.is_some() { [0.0, 0.0] } else { [0.0, -1.0] };
     service.send(ChunkServiceCommand::SetView {
         generation,
         dimension,
         camera: spawn,
-        forward_xz: [0.0, -1.0],
+        forward_xz,
         forward_y: 0.0,
         radius,
         view_distance: 256.0,

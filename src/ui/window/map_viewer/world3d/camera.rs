@@ -45,6 +45,8 @@ struct NavigationState {
     camera: World3dCamera,
     keys_down: HashSet<String>,
     last_motion_at: Option<Instant>,
+    #[cfg(test)]
+    scripted_input: bool,
 }
 
 impl World3dNavigation {
@@ -53,6 +55,8 @@ impl World3dNavigation {
             camera,
             keys_down: HashSet::new(),
             last_motion_at: None,
+            #[cfg(test)]
+            scripted_input: false,
         })))
     }
 
@@ -66,18 +70,30 @@ impl World3dNavigation {
 
     pub(super) fn set_camera(&self, camera: World3dCamera) {
         let mut state = self.state();
+        #[cfg(test)]
+        if state.scripted_input {
+            return;
+        }
         state.camera = camera;
         state.last_motion_at = Some(Instant::now());
     }
 
     pub(super) fn update_camera(&self, update: impl FnOnce(&mut World3dCamera)) -> World3dCamera {
         let mut state = self.state();
+        #[cfg(test)]
+        if state.scripted_input {
+            return state.camera;
+        }
         update(&mut state.camera);
         state.camera
     }
 
     pub(super) fn set_key(&self, key: &str, pressed: bool) -> bool {
         let mut state = self.state();
+        #[cfg(test)]
+        if state.scripted_input {
+            return false;
+        }
         let changed = if pressed {
             state.keys_down.insert(key.to_owned())
         } else {
@@ -91,8 +107,24 @@ impl World3dNavigation {
 
     pub(super) fn clear_keys(&self) {
         let mut state = self.state();
+        #[cfg(test)]
+        if state.scripted_input {
+            return;
+        }
         state.keys_down.clear();
         state.last_motion_at = None;
+    }
+
+    #[cfg(test)]
+    pub(super) fn script_input(&self, key: Option<&str>, update: impl FnOnce(&mut World3dCamera)) {
+        let mut state = self.state();
+        state.scripted_input = true;
+        state.keys_down.clear();
+        if let Some(key) = key {
+            state.keys_down.insert(key.to_owned());
+        }
+        update(&mut state.camera);
+        state.last_motion_at = key.map(|_| Instant::now());
     }
 
     // Geometry and camera must use the same immutable snapshot origin, even

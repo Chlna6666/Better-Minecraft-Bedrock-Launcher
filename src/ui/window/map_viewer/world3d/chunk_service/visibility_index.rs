@@ -54,10 +54,12 @@ fn source_revision(world: &Path) -> Option<u64> {
     let mut hash = OFFSET;
     let level = world.join("level.dat");
     let db = world.join("db");
-    let mut files = vec![level];
+    let level_metadata = fs::metadata(&level).ok()?;
+    let mut files = vec![(level, level_metadata)];
     let mut has_current = false;
-    for file in fs::read_dir(db).ok()? {
-        let path = file.ok()?.path();
+    for entry in fs::read_dir(db).ok()? {
+        let entry = entry.ok()?;
+        let path = entry.path();
         let name = path.file_name()?.to_string_lossy();
         let relevant = name == "CURRENT"
             || name.starts_with("MANIFEST-")
@@ -71,7 +73,15 @@ fn source_revision(world: &Path) -> Option<u64> {
                 && name.ends_with(".log"));
         if relevant {
             has_current |= name == "CURRENT";
-            files.push(path);
+            // On Windows read_dir already returns this metadata. Only a
+            // symbolic link needs a separate lookup to follow its target.
+            let metadata = entry.metadata().ok()?;
+            let metadata = if metadata.is_symlink() {
+                fs::metadata(&path).ok()?
+            } else {
+                metadata
+            };
+            files.push((path, metadata));
             if files.len() > 100_000 {
                 return None;
             }
@@ -80,9 +90,8 @@ fn source_revision(world: &Path) -> Option<u64> {
     if !has_current {
         return None;
     }
-    files.sort_unstable();
-    for path in files {
-        let metadata = fs::metadata(&path).ok()?;
+    files.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    for (path, metadata) in files {
         if !metadata.is_file() {
             return None;
         }

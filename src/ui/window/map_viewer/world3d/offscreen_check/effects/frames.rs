@@ -214,3 +214,26 @@ fn complete_frame<D: Device>(
     }
     renderer.render_passes_submitted();
 }
+
+#[expect(
+    unsafe_code,
+    reason = "WGL owns its private bootstrap window; only OS-owned raw display handles are borrowed"
+)]
+pub(super) fn opengl_device(descriptor: &DeviceDescriptor) -> gfx_opengl::OpenGlDevice {
+    use raw_window_handle::{
+        RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
+    };
+    // SAFETY: the desktop HWND is OS-owned and remains valid. WGL creates
+    // its own hidden bootstrap window and never renders into this handle.
+    unsafe {
+        let hwnd = windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow();
+        gfx_opengl::OpenGlDevice::new(
+            descriptor,
+            RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
+            RawWindowHandle::Win32(Win32WindowHandle::new(
+                std::num::NonZeroIsize::new(hwnd.0 as isize).expect("desktop handle"),
+            )),
+        )
+        .expect("OpenGL fixture device")
+    }
+}

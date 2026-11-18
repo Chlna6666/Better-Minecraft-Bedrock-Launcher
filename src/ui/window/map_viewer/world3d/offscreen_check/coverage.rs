@@ -1,5 +1,7 @@
 //! Fixed input coverage for opt-in, repeatable local-world rendering measurements.
 use super::*;
+use ::bedrock_world::chunk::{ChunkKey, ChunkRecordTag};
+use ::bedrock_world::storage::{StorageReadOptions, StorageVisitorControl};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
@@ -46,11 +48,19 @@ impl Coverage {
         }
         for &(x, z) in &columns {
             (x, z).hash(&mut hash);
-            let chunk = world.chunk(ChunkPos { x, z, dimension }).unwrap();
-            for record in chunk.records {
-                format!("{:?}", record.key).hash(&mut hash);
-                record.value.hash(&mut hash);
-            }
+            // Fingerprint the source bytes, including records newer than the
+            // typed chunk decoder. Rendering reads its known records directly.
+            let key = ChunkKey::new(ChunkPos { x, z, dimension }, ChunkRecordTag::Version)
+                .encode_inline();
+            let prefix = &key.as_bytes()[..key.len() - 1];
+            world
+                .storage()
+                .for_each_prefix_ref(prefix, StorageReadOptions::default(), &mut |entry| {
+                    entry.key.hash(&mut hash);
+                    entry.value.hash(&mut hash);
+                    Ok(StorageVisitorControl::Continue)
+                })
+                .unwrap();
         }
         assert!(
             !columns.is_empty(),

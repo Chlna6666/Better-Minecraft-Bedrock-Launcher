@@ -25,7 +25,7 @@ use bedrock_world::map_item::MapItemId;
 use bedrock_world::surface::ChunkData;
 use bedrock_world::surface::{
     BiomeDataRequirement, CancelFlag, ChunkDataRequest, ChunkLoadOptions, ChunkLoadPriority,
-    ChunkLoadStats, WorldPipelineOptions, WorldThreadingOptions,
+    ChunkLoadStats, ReadSubchunks, WorldPipelineOptions, WorldThreadingOptions,
 };
 use bedrock_world::world::{OpenOptions, World};
 use bedrock_world::{SlimeChunkBounds, SubChunkDecodeMode};
@@ -35,7 +35,10 @@ use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
+use std::sync::mpsc::{
+    Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError, channel,
+    sync_channel,
+};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -43,14 +46,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub(super) mod material_audit;
 mod mesh_assets;
 mod pbr;
+mod texture_alpha;
 mod water;
+use texture_alpha::{TextureAlphaContent, texture_alpha_content};
 use mesh_assets::MeshAssets;
 mod gpu_cubes;
 mod lighting;
 mod occluders;
 mod prefetch;
 mod visibility_index;
-use prefetch::{BatchWait, PendingChunkBatch};
+use prefetch::{BatchWait, IDLE_READ_INTERVAL, IdleChunkReads, PendingChunkBatch};
 use visibility_index::VisibilityIndex;
 
 const LOAD_BATCH_CHUNKS: usize = 16;
@@ -58,11 +63,11 @@ const LOAD_BATCH_CHUNKS: usize = 16;
 // camera-priority waves. Commands are observed between waves, so a rapid view
 // turn never forces finishing all 16 old-camera mesh builds.
 const STREAM_MESH_BATCH_CHUNKS: usize = 4;
-const REMESH_BATCH_CHUNKS: usize = 8;
 const MAX_PENDING_MESH_EVENTS: usize = 16;
 const CACHE_HYSTERESIS_CHUNKS: i32 = 2;
 const MESH_BAND_BLOCKS: i32 = 64;
 const MESH_BAND_HEIGHT: f64 = MESH_BAND_BLOCKS as f64;
+const TERRAIN_REFERENCE_Y: i32 = 64;
 const FAR_LOD_SCALE: i32 = 4;
 const TEXTURE_MAX_DIMENSION: u32 = 4096;
 const CHUNK_MESH_ID_SALT: u64 = 0x574f_524c_4433_444d;
@@ -223,6 +228,30 @@ struct ViewState {
     view_distance: f32,
 }
 
+impl ViewState {
+    fn terrain_focus(self) -> Option<(i32, i32)> {
+        // This estimate only orders requests. Real geometry, the active
+        // radius and portal visibility still decide what gets rendered.
+        let height_above_terrain = self.camera[1] - f64::from(TERRAIN_REFERENCE_Y);
+        let [fx, fz] = self.forward_xz.map(f64::from);
+        if height_above_terrain <= 16.0
+            || self.forward_y >= 0.0
+            || fx * fx + fz * fz < 0.0625
+        {
+            return None;
+        }
+        let distance = (height_above_terrain / f64::from(-self.forward_y).max(0.125))
+            .min(f64::from(self.radius) * 12.0);
+        let x = ((self.camera[0] + fx * distance) / 16.0).floor() as i32;
+        let z = ((self.camera[2] + fz * distance) / 16.0).floor() as i32;
+        Some((x, z))
+    }
+
+    fn focus_radius(self) -> i32 {
+        (self.radius / 3).clamp(2, 8)
+    }
+}
+
 #[derive(Default)]
 struct ChunkCursor {
     ring: i32,
@@ -337,13 +366,6 @@ fn inside_cache_hysteresis(
         center_z,
         radius.saturating_add(margin),
     )
-}
-
-fn prioritize_stream_meshes(loaded: &mut [ChunkPos], center: (i32, i32), forward_xz: [f32; 2]) {
-    // Every item already belongs to loaded. The old code rebuilt a HashSet
-    // from this same slice and tested membership for each sort key, a
-    // condition that was always true. Distance/direction is sufficient.
-    loaded.sort_by_key(|&pos| mesh_direction_distance_priority(pos, center, forward_xz));
 }
 
 #[inline]
@@ -651,6 +673,25 @@ fn forget_published_sections(
     }
 }
 
+fn retain_deferred_sections(
+    pos: ChunkPos,
+    deferred: &BTreeSet<(ChunkPos, i32)>,
+    published: &BTreeMap<(ChunkPos, i32), Weak<World3dChunkMesh>>,
+    complete: &mut Vec<i32>,
+    retained: &mut Vec<Arc<World3dChunkMesh>>,
+) -> usize {
+    let previous = retained.len();
+    for key in deferred.range((pos, i32::MIN)..=(pos, i32::MAX)) {
+        if !complete.contains(&key.1)
+            && let Some(mesh) = published.get(key).and_then(Weak::upgrade)
+        {
+            complete.push(key.1);
+            retained.push(mesh);
+        }
+    }
+    retained.len() - previous
+}
+
 /// Render state also includes Hi-Z occluder boxes. A change in those boxes
 /// needs a new Scene snapshot but does NOT require re-uploading the same voxel
 /// mesh to the GPU. Keep the two comparisons separate.
@@ -813,6 +854,7 @@ fn renderable_dirty_priority(pos: ChunkPos, view: ViewState) -> (u8, i64, u8, i6
     (1, (ring - 5) / 4, direction, distance_sq, pos)
 }
 
+#[cfg(test)]
 fn renderable_dirty_meshes(dirty: &BTreeSet<ChunkPos>, view: ViewState) -> Vec<ChunkPos> {
     let center_x = (view.camera[0] / 16.0).floor() as i32;
     let center_z = (view.camera[2] / 16.0).floor() as i32;
@@ -830,15 +872,16 @@ fn take_renderable_dirty_meshes(
     dirty: &mut BTreeSet<ChunkPos>,
     view: ViewState,
     limit: usize,
+    needs_first_mesh: impl Fn(ChunkPos) -> bool,
 ) -> Vec<ChunkPos> {
     if limit == 0 {
         return Vec::new();
     }
     let center_x = (view.camera[0] / 16.0).floor() as i32;
     let center_z = (view.camera[2] / 16.0).floor() as i32;
-    // O(N log K) selection, same order as the full dirty-drain path.
-    // The worker interleaves these tiny waves with DB reads, and a turn
-    // automatically changes the next selection without requeueing assets.
+    let focus = view.terrain_focus();
+    // Select a bounded wave in O(N log K). Within a distance group,
+    // give holes a mesh before refining already displayed neighbours.
     let mut nearest = std::collections::BinaryHeap::with_capacity(limit);
     for pos in dirty.iter().copied() {
         if !inside_view(pos, view.dimension, center_x, center_z, view.radius)
@@ -846,7 +889,20 @@ fn take_renderable_dirty_meshes(
         {
             continue;
         }
-        let key = renderable_dirty_priority(pos, view);
+        let (near, ring, heading, distance, _) = renderable_dirty_priority(pos, view);
+        let first = needs_first_mesh(pos);
+        let mut key = (near + 2, ring, !first, heading, distance, pos);
+        if first {
+            if pos.x == center_x && pos.z == center_z {
+                key = (0, 0, false, 0, distance, pos);
+            } else if let Some((x, z)) = focus
+                && inside_view(pos, view.dimension, x, z, view.focus_radius())
+            {
+                let dx = i64::from(pos.x) - i64::from(x);
+                let dz = i64::from(pos.z) - i64::from(z);
+                key = (1, dx * dx + dz * dz, false, 0, distance, pos);
+            }
+        }
         if nearest.len() < limit {
             nearest.push(key);
         } else if nearest.peek().is_some_and(|&worst| key < worst) {
@@ -857,7 +913,7 @@ fn take_renderable_dirty_meshes(
     let ready = nearest
         .into_sorted_vec()
         .into_iter()
-        .map(|(_, _, _, _, pos)| pos)
+        .map(|(_, _, _, _, _, pos)| pos)
         .collect::<Vec<_>>();
     for pos in &ready {
         dirty.remove(pos);
@@ -879,6 +935,15 @@ fn interleaved_mesh_wave_size(face_ms: u64, convert_ms: u64, send_wait_ms: u64) 
     } else {
         STREAM_MESH_BATCH_CHUNKS
     }
+}
+
+fn send_mesh_event(tx: &SyncSender<ChunkServiceEvent>, event: ChunkServiceEvent) -> Duration {
+    let Err(TrySendError::Full(event)) = tx.try_send(event) else {
+        return Duration::ZERO;
+    };
+    let started = Instant::now();
+    let _ = tx.send(event);
+    started.elapsed()
 }
 
 fn retain_urgent_chunks(urgent: &mut BTreeSet<ChunkPos>, view: ViewState) {
@@ -1148,7 +1213,7 @@ mod view_tests {
                 < super::renderable_dirty_priority(at(15, 0), view)
         );
         let mut dirty = BTreeSet::from([at(-3, 0), at(0, 7), at(7, 0)]);
-        let waves = super::take_renderable_dirty_meshes(&mut dirty, view, 2);
+        let waves = super::take_renderable_dirty_meshes(&mut dirty, view, 2, |_| true);
         assert_eq!(waves, [at(-3, 0), at(7, 0)]);
         assert_eq!(dirty, BTreeSet::from([at(0, 7)]));
     }
@@ -1195,44 +1260,52 @@ mod view_tests {
     }
 
     #[test]
-    fn staged_stream_meshes_sort_front_before_rear_and_keep_every_chunk() {
-        let dimension = Dimension::Overworld;
-        let mut loaded = vec![
-            ChunkPos {
-                x: -2,
-                z: 0,
-                dimension,
-            },
-            ChunkPos {
-                x: 3,
-                z: 0,
-                dimension,
-            },
-            ChunkPos {
-                x: -1,
-                z: 0,
-                dimension,
-            },
-            ChunkPos {
-                x: 1,
-                z: 0,
-                dimension,
-            },
-            ChunkPos {
-                x: 0,
-                z: 1,
-                dimension,
-            },
-        ];
-        super::prioritize_stream_meshes(&mut loaded, (0, 0), [1.0, 0.0]);
-        assert_eq!((loaded[0].x, loaded[0].z), (1, 0));
-        assert_eq!((loaded[1].x, loaded[1].z), (3, 0));
-        assert_eq!(loaded.len(), 5);
-        assert_eq!(loaded.iter().collect::<HashSet<_>>().len(), 5);
-        assert!(
-            loaded
-                .chunks(super::STREAM_MESH_BATCH_CHUNKS)
-                .all(|chunk| { chunk.len() <= super::STREAM_MESH_BATCH_CHUNKS })
+    fn first_meshes_share_priority_across_read_batches_and_precede_seam_rebuilds() {
+        let at = |x| ChunkPos { x, z: 0, dimension: Dimension::Overworld };
+        let view = super::ViewState {
+            generation: 2,
+            dimension: Dimension::Overworld,
+            camera: [8.0, 144.0, 8.0],
+            forward_xz: [1.0, 0.0],
+            forward_y: 0.0,
+            radius: 32,
+            view_distance: 512.0,
+        };
+        let mut queued = BTreeSet::from([at(0), at(3), at(6)]);
+        let needs_first_mesh = |pos| pos != at(0);
+        assert_eq!(
+            super::take_renderable_dirty_meshes(&mut queued, view, 1, needs_first_mesh),
+            [at(3)],
+        );
+        queued.insert(at(4)); // Another read finishes after the camera update.
+        assert_eq!(
+            super::take_renderable_dirty_meshes(&mut queued, view, 2, needs_first_mesh),
+            [at(4), at(0)],
+        );
+        assert_eq!(queued, BTreeSet::from([at(6)]));
+    }
+
+    #[test]
+    fn first_mesh_at_camera_precedes_terrain_focus_after_moving() {
+        let pos = |x, z| ChunkPos { x, z, dimension: Dimension::Overworld };
+        let view = ViewState {
+            generation: 2,
+            dimension: Dimension::Overworld,
+            camera: [104.0, 144.0, 8.0],
+            forward_xz: [0.0, -0.8],
+            forward_y: -0.6,
+            radius: 32,
+            view_distance: 512.0,
+        };
+        let (x, z) = view.terrain_focus().expect("camera points toward distant terrain");
+        let focus = pos(x, z);
+        let camera = pos(6, 0);
+        let near = pos(6, 2);
+        let prior_camera = pos(0, 0);
+        let mut queued = BTreeSet::from([focus, near, camera, prior_camera]);
+        assert_eq!(
+            super::take_renderable_dirty_meshes(&mut queued, view, 4, |_| true),
+            [camera, focus, near, prior_camera],
         );
     }
 
@@ -1328,6 +1401,25 @@ mod view_tests {
         forget_published_sections(&mut published, pos, &[1]);
         assert!(!published.contains_key(&(pos, 0)));
         assert!(published.contains_key(&(pos, 1)));
+
+        published.insert((pos, 0), Arc::downgrade(&original));
+        let mut complete = Vec::new();
+        let mut retained = Vec::new();
+        assert_eq!(
+            super::retain_deferred_sections(
+                pos,
+                &BTreeSet::from([(pos, 0), (pos, 2)]),
+                &published,
+                &mut complete,
+                &mut retained,
+            ),
+            1,
+        );
+        assert_eq!(complete, [0]);
+        assert!(Arc::ptr_eq(&retained[0], &original));
+        forget_published_sections(&mut published, pos, &complete);
+        assert!(published.contains_key(&(pos, 0)));
+        assert!(!published.contains_key(&(pos, 1)));
     }
 
     #[test]
@@ -1446,7 +1538,7 @@ mod view_tests {
             radius: 10,
             view_distance: 320.0,
         };
-        let visible = super::take_renderable_dirty_meshes(&mut dirty, view, 8);
+        let visible = super::take_renderable_dirty_meshes(&mut dirty, view, 8, |_| true);
         assert!(visible.contains(&pos(-1)) && visible.contains(&pos(2)));
         if std::env::var_os("BMCBL_WORLD3D_DISABLE_LAZY_MESH").is_none() {
             assert_eq!(dirty, BTreeSet::from([pos(-8)]));
@@ -2769,12 +2861,19 @@ fn unresolved_material_sources(
     faces: &[preview_3d_source::Preview3dStreamFace],
     cache: &HashMap<(String, [i32; 3]), Option<ObjResolvedTexture>>,
 ) -> Vec<(String, [i32; 3])> {
-    let mut seen = HashSet::new();
-    let mut seen_names = HashSet::new();
+    let mut seen = FxHashSet::default();
+    let mut seen_names = FxHashSet::default();
     let mut unresolved = Vec::new();
+    let mut previous = None;
     for face in faces {
-        // Interned faces share an Arc: keep their cheap per-face pointer check.
-        if !seen.insert((face.material.as_ptr() as usize, face.normal)) {
+        // Greedy meshing often emits contiguous faces with the same material.
+        // The pointer is valid for the lifetime of the input face slice.
+        let identity = (face.material.as_ptr() as usize, face.normal);
+        if previous == Some(identity) {
+            continue;
+        }
+        previous = Some(identity);
+        if !seen.insert(identity) {
             continue;
         }
         let material = face.material.as_ref();
@@ -2795,7 +2894,12 @@ fn cached_texture_source(
     key: &(String, [i32; 3]),
     resolve: impl FnOnce() -> Option<ObjResolvedTexture>,
 ) -> Option<ObjResolvedTexture> {
-    cache.entry(key.clone()).or_insert_with(resolve).clone()
+    if let Some(cached) = cache.get(key) {
+        return cached.clone();
+    }
+    let resolved = resolve();
+    cache.insert(key.clone(), resolved.clone());
+    resolved
 }
 
 fn resolve_material_source(
@@ -2863,6 +2967,7 @@ fn load_batch_from_world(
     options: ChunkLoadOptions,
     lazy_view: Option<ViewState>,
     cached_probes: Option<BTreeMap<ChunkPos, Arc<World3dChunkProbe>>>,
+    predecoded: BTreeMap<ChunkPos, ReadSubchunks>,
 ) -> LoadedChunkBatch {
     if positions.is_empty() {
         return LoadedChunkBatch {
@@ -2877,7 +2982,7 @@ fn load_batch_from_world(
     let options = request_for_stream_batch(options, positions, lazy_view);
     let cancel = options.cancel.clone();
     let (chunks, stats) =
-        match world.load_render_chunks_with_stats(positions.iter().copied(), options) {
+        match world.load_render_chunks_reusing_subchunks(positions.iter().copied(), options, predecoded) {
             Ok(result) => result,
             Err(error) => {
                 let message = format!("批量读取区块失败：{error}");
@@ -3052,6 +3157,8 @@ struct Worker {
     >,
     view: ViewState,
     cursor: ChunkCursor,
+    focus_cursor: Option<((i32, i32), ChunkCursor)>,
+    idle_reads: IdleChunkReads,
     cache: BTreeMap<ChunkPos, CachedChunk>,
     light_fields: HashMap<ChunkPos, Arc<lighting::ChunkLighting>>,
     // Immutable per-Probe halo decode, reused by the nine overlapping
@@ -3084,16 +3191,17 @@ struct Worker {
     retained_invalidated: BTreeSet<ChunkPos>,
     missing: BTreeSet<ChunkPos>,
     failed_positions: BTreeSet<ChunkPos>,
-    textures_by_path: HashMap<String, Option<Weak<TextureAsset>>>,
-    texture_alpha_content: HashMap<String, TextureAlphaContent>,
-    texture_lookup: HashMap<(String, [i32; 3]), Option<(Weak<TextureAsset>, TextureAlphaContent)>>,
+    // Cache color and linear-data decodes separately, indexed by is_data.
+    textures_by_path: [FxHashMap<PathBuf, Option<CachedTexture>>; 2],
+    map_textures: FxHashMap<String, CachedTexture>,
+    texture_lookup: HashMap<(String, [i32; 3]), Option<CachedTexture>>,
     resolved_texture_lookup: HashMap<(String, [i32; 3]), Option<ObjResolvedTexture>>,
     mesh_assets: MeshAssets,
     pbr: pbr::PbrCache,
     // Batch-local immutable material classification. Reused across height
     // Sections so each distinct material+face-direction resolves its texture
     // sources/PBR attributes once, but never pins assets between mesh waves.
-    face_material_cache: HashMap<(Arc<str>, [i32; 3]), FaceMaterialProperties>,
+    face_material_cache: FxHashMap<(Arc<str>, [i32; 3]), FaceMaterialProperties>,
     resolver_time: Duration,
     texture_read_time: Duration,
     texture_decode_time: Duration,
@@ -3166,6 +3274,8 @@ impl Worker {
                 view_distance: 320.0,
             },
             cursor: ChunkCursor::default(),
+            focus_cursor: None,
+            idle_reads: IdleChunkReads::default(),
             cache: BTreeMap::new(),
             light_fields: HashMap::new(),
             light_columns: HashMap::new(),
@@ -3182,13 +3292,13 @@ impl Worker {
             retained_invalidated: BTreeSet::new(),
             missing: BTreeSet::new(),
             failed_positions: BTreeSet::new(),
-            textures_by_path: HashMap::new(),
-            texture_alpha_content: HashMap::new(),
+            textures_by_path: Default::default(),
+            map_textures: FxHashMap::default(),
             texture_lookup: HashMap::new(),
             resolved_texture_lookup: HashMap::new(),
             mesh_assets: MeshAssets::default(),
             pbr: pbr::PbrCache::default(),
-            face_material_cache: HashMap::new(),
+            face_material_cache: FxHashMap::default(),
             resolver_time: Duration::ZERO,
             texture_read_time: Duration::ZERO,
             texture_decode_time: Duration::ZERO,
@@ -3254,8 +3364,10 @@ impl Worker {
             );
         let (mut texture_count, mut texture_bytes) = self
             .textures_by_path
-            .values()
-            .filter_map(|texture| texture.as_ref().and_then(Weak::upgrade))
+            .iter()
+            .flat_map(|cache| cache.values().flatten())
+            .chain(self.map_textures.values())
+            .filter_map(|(texture, _)| texture.upgrade())
             .fold((0usize, 0usize), |(count, bytes), texture| {
                 (
                     count.saturating_add(1),
@@ -3280,8 +3392,11 @@ impl Worker {
             loaded_chunks: self.cache.len(),
             coarse_chunks: self.lod_modes.values().filter(|coarse| **coarse).count(),
             pending_chunks: target_columns.saturating_sub(loaded_in_view),
-            // Metadata-only deferred columns must not count as GPU-meshed.
-            meshed_chunks: self.cache.len().saturating_sub(self.deferred_columns.len()),
+            meshed_chunks: self
+                .lod_modes
+                .keys()
+                .filter(|pos| self.cache.contains_key(pos))
+                .count(),
             face_count: self.cache.values().map(|chunk| chunk.faces).sum(),
             texture_count,
             texture_bytes,
@@ -3315,8 +3430,12 @@ impl Worker {
         }
         self.visibility_index.flush_if_due();
         self.mesh_assets.prune();
-        self.textures_by_path
-            .retain(|_, asset| asset.as_ref().is_none_or(|asset| asset.strong_count() > 0));
+        for cache in &mut self.textures_by_path {
+            cache.retain(|_, asset| {
+                asset.as_ref().is_none_or(|(texture, _)| texture.strong_count() > 0)
+            });
+        }
+        self.map_textures.retain(|_, (texture, _)| texture.strong_count() > 0);
         self.texture_lookup.retain(|_, asset| {
             asset
                 .as_ref()
@@ -3333,10 +3452,15 @@ impl Worker {
         )
     }
 
+    fn cached_texture_count(&self) -> usize {
+        self.textures_by_path.iter().map(FxHashMap::len).sum::<usize>() + self.map_textures.len()
+    }
+
     fn stream(
         &mut self,
         tx: &SyncSender<ChunkServiceEvent>,
         commands: &Receiver<ChunkServiceCommand>,
+        pending_batch: &mut Option<PendingChunkBatch>,
     ) -> Option<ChunkServiceCommand> {
         if let Ok(command) = commands.try_recv() {
             return Some(command);
@@ -3429,17 +3553,6 @@ impl Worker {
         if let Ok(command) = commands.try_recv() {
             return Some(command);
         }
-        let remesh =
-            take_renderable_dirty_meshes(&mut self.dirty_meshes, self.view, REMESH_BATCH_CHUNKS);
-        if !remesh.is_empty() {
-            self.mesh_targets(tx, &remesh, MeshTargetScope::ChangedOnly);
-            if self
-                .last_status_at
-                .is_none_or(|at| at.elapsed() >= Duration::from_millis(250))
-            {
-                self.publish_status(tx);
-            }
-        }
         self.missing.retain(|pos| {
             inside_cache_hysteresis(
                 *pos,
@@ -3451,68 +3564,94 @@ impl Worker {
         });
         retain_urgent_chunks(&mut self.urgent_chunks, self.view);
 
-        let mut pending_batch: Option<PendingChunkBatch> = None;
         let mut batch_number = 0u64;
+        let mut reads_exhausted = false;
         loop {
             if let Ok(command) = commands.try_recv() {
-                if let Some(pending) = pending_batch.take() {
-                    self.urgent_chunks.extend(pending.positions.iter().copied());
-                }
                 return Some(command);
             }
-            // A freshly turned camera may already have metadata/blocks in the
-            // cache, yet the old loop kept loading an entire render radius
-            // before it ever processed those now-visible dirty meshes.
-            // Interleave one bounded mesh wave with each DB read batch. Keep
-            // pending prefetched I/O live so the two stages overlap, but never
-            // launch more workers or build an unbounded GPU upload backlog.
+            if self.last_status_at.is_none_or(|at| at.elapsed() >= Duration::from_millis(250)) {
+                self.publish_status(tx);
+            }
+            let needs_first_mesh = |pos| !self.lod_modes.contains_key(&pos);
+            let queued = self.dirty_meshes.iter().copied().filter(|&pos| {
+                needs_first_mesh(pos)
+                    && inside_view(pos, self.view.dimension, center_x, center_z, self.view.radius)
+                    && !lazy_mesh_column(pos, self.view)
+            }).take(LOAD_BATCH_CHUNKS + 1).count();
+            let schedule_started = Instant::now();
+            // One outstanding read can overlap the ready wave. Stop
+            // admitting more reads once two waves of decoded columns could
+            // accumulate. The bounded event channel controls upload backlog.
+            if !reads_exhausted && pending_batch.is_none() && queued <= LOAD_BATCH_CHUNKS {
+                let positions = self.next_batch(center_x, center_z);
+                reads_exhausted = positions.is_empty();
+                if !reads_exhausted {
+                    *pending_batch = Some(self.prefetch_batch(positions));
+                }
+            }
+            let schedule_time = schedule_started.elapsed();
+            let textures_before = self.cached_texture_count();
+            let mesh_started = Instant::now();
+            let wave_size = if queued != 0 && self.last_send_wait_ms < 8 {
+                STREAM_MESH_BATCH_CHUNKS
+            } else {
+                interleaved_mesh_wave_size(
+                    self.last_face_ms, self.last_convert_ms, self.last_send_wait_ms,
+                )
+            };
             let ready = take_renderable_dirty_meshes(
                 &mut self.dirty_meshes,
                 self.view,
-                interleaved_mesh_wave_size(
-                    self.last_face_ms,
-                    self.last_convert_ms,
-                    self.last_send_wait_ms,
-                ),
+                wave_size,
+                |pos| !self.lod_modes.contains_key(&pos),
             );
-            if !ready.is_empty() {
+            let meshed = !ready.is_empty();
+            if meshed {
                 self.mesh_targets(tx, &ready, MeshTargetScope::ChangedOnly);
-                if let Ok(command) = commands.try_recv() {
-                    if let Some(pending) = pending_batch.take() {
-                        self.urgent_chunks.extend(pending.positions.iter().copied());
-                    }
-                    return Some(command);
-                }
             }
+            if let Ok(command) = commands.try_recv() {
+                return Some(command);
+            }
+            let mesh_time = mesh_started.elapsed();
             let batch_started = Instant::now();
-            let (loaded, load_time, prefetched) = if let Some(pending) = pending_batch.take() {
-                match pending.wait(commands) {
-                    BatchWait::Loaded(loaded, load_time) => (loaded, load_time, true),
-                    BatchWait::Command(command) => {
-                        self.urgent_chunks.extend(pending.positions.iter().copied());
-                        return Some(command);
-                    }
-                    BatchWait::Disconnected => {
-                        self.urgent_chunks.extend(pending.positions.iter().copied());
-                        let _ = tx.send(ChunkServiceEvent::Fatal {
-                            error: "区块预读任务意外结束".to_string(),
-                        });
-                        break;
-                    }
+            let Some(pending) = pending_batch.as_ref() else {
+                if meshed {
+                    continue;
                 }
-            } else {
-                let batch = self.next_batch(center_x, center_z);
-                if batch.is_empty() {
+                break;
+            };
+            let result = match pending.receiver.try_recv() {
+                Ok((loaded, elapsed)) => BatchWait::Loaded(loaded, elapsed),
+                Err(TryRecvError::Empty) if meshed => continue,
+                Err(TryRecvError::Empty) => pending.wait(commands),
+                Err(TryRecvError::Disconnected) => BatchWait::Disconnected,
+            };
+            let (loaded, load_time) = match result {
+                BatchWait::Loaded(loaded, load_time) => {
+                    pending_batch.take();
+                    (loaded, load_time)
+                }
+                BatchWait::Command(command) => return Some(command),
+                BatchWait::Disconnected => {
+                    self.urgent_chunks.extend(pending.positions.iter().copied());
+                    pending_batch.take();
+                    let _ = tx.send(ChunkServiceEvent::Fatal {
+                        error: "区块预读任务意外结束".to_string(),
+                    });
                     break;
                 }
-                let started = Instant::now();
-                let loaded = self.load_batch_lazy(&batch);
-                (loaded, started.elapsed(), false)
             };
-            if let Ok(command) = commands.try_recv() {
+            // Edits and lighting changes are barriers for an already
+            // decoded result. A camera notification only reprioritizes it.
+            let command = commands.try_recv().ok();
+            if command
+                .as_ref()
+                .is_some_and(|command| !matches!(command, ChunkServiceCommand::ViewUpdated))
+            {
                 self.urgent_chunks
                     .extend(loaded.chunks.iter().map(|(pos, _)| *pos));
-                return Some(command);
+                return command;
             }
             let wait_time = batch_started.elapsed();
             batch_number = batch_number.saturating_add(1);
@@ -3522,10 +3661,15 @@ impl Worker {
             self.last_collect_ms =
                 u64::try_from(loaded.collect_time.as_millis()).unwrap_or(u64::MAX);
             self.last_load_stats = loaded.stats;
-            let mut newly_loaded = Vec::new();
+            let mut loaded_chunks = 0;
             let mut preflight_masks = loaded.preflight_masks;
             let mut reused_index_masks = 0usize;
             for (pos, result) in loaded.chunks {
+                if !inside_view(
+                    pos, self.view.dimension, center_x, center_z, self.view.radius,
+                ) {
+                    continue;
+                }
                 match result {
                     Ok(Some(chunk)) => {
                         if self.visibility_index.enabled() {
@@ -3538,7 +3682,7 @@ impl Worker {
                             };
                             self.visibility_index.upsert(pos, masks);
                         }
-                        let deferred = chunk.blocks.is_none();
+                        let deferred = chunk.blocks.is_none() && lazy_mesh_column(pos, self.view);
                         self.deferred_bands
                             .extend(chunk.unexpanded_bands.iter().map(|&band| (pos, band)));
                         self.cache.insert(pos, chunk);
@@ -3548,7 +3692,8 @@ impl Worker {
                             self.deferred_columns.insert(pos);
                         } else {
                             self.deferred_columns.remove(&pos);
-                            newly_loaded.push(pos);
+                            self.dirty_meshes.insert(pos);
+                            loaded_chunks += 1;
                         }
                     }
                     Ok(None) => {
@@ -3577,63 +3722,15 @@ impl Worker {
                     }
                 }
             }
-            let loaded_chunks = newly_loaded.len();
-            let textures_before = self.textures_by_path.len();
-            let schedule_started = Instant::now();
-            if !newly_loaded.is_empty() {
-                let next_batch = self.next_batch(center_x, center_z);
-                if !next_batch.is_empty() {
-                    pending_batch = Some(self.prefetch_batch(next_batch));
-                }
+            if let Some(command) = command {
+                return Some(command);
             }
-            let schedule_time = schedule_started.elapsed();
-            let mesh_started = Instant::now();
-            if !newly_loaded.is_empty() {
-                prioritize_stream_meshes(
-                    &mut newly_loaded,
-                    (center_x, center_z),
-                    self.view.forward_xz,
-                );
-                // Publish one small immutable Section wave at a time rather
-                // than making the owner absorb an entire 16-column upload
-                // burst. Neighbor masks are supplied from the same cache;
-                // previously meshed seams are queued by boundary_pairs.
-                for (index, wave) in newly_loaded.chunks(STREAM_MESH_BATCH_CHUNKS).enumerate() {
-                    self.mesh_targets(tx, wave, MeshTargetScope::ChangedOnly);
-                    if let Ok(command) = commands.try_recv() {
-                        // Do not lose a decoded column when a newer camera
-                        // view preempts the current scene build. The ordinary
-                        // dirty queue resumes its Section meshing when visible.
-                        let done = (index + 1) * STREAM_MESH_BATCH_CHUNKS;
-                        self.dirty_meshes
-                            .extend(newly_loaded[done.min(newly_loaded.len())..].iter().copied());
-                        if let Some(pending) = pending_batch.take() {
-                            self.urgent_chunks.extend(pending.positions.iter().copied());
-                        }
-                        return Some(command);
-                    }
-                }
-            } else {
-                self.last_stage_ms = 0;
-                self.last_rehydrate_ms = 0;
-                self.last_face_ms = 0;
-                self.last_convert_ms = 0;
-                self.last_send_wait_ms = 0;
-                self.last_texture_lookup_ms = 0;
-                self.last_texture_read_ms = 0;
-                self.last_texture_decode_ms = 0;
-                self.last_mesh_targets = 0;
-                self.last_reused_sections = 0;
-                self.last_boundary_hits = 0;
-            }
-            let mesh_time = mesh_started.elapsed();
             if trace_timings() {
                 eprintln!(
-                    "world3d batch ts={} gen={} id={} prefetched={} requested={} loaded={} load_ms={} wait_ms={} query_ms={} db_ms={} decode_ms={} db_get_batches={} db_prefix_scans={} decoded_subchunks={} reused_index_masks={} collect_ms={} schedule_ms={} mesh_ms={} stage_ms={} rehydrate_ms={} faces_ms={} convert_ms={} send_wait_ms={} tex_lookup_ms={} tex_read_ms={} tex_decode_ms={} new_textures={} targets={} reused_sections={} boundary_hits={} cache_chunks={} lazy_pending={} cache_mib={:.1}",
+                    "world3d batch ts={} gen={} id={} requested={} loaded={} load_ms={} wait_ms={} query_ms={} db_ms={} decode_ms={} db_get_batches={} db_prefix_scans={} decoded_subchunks={} reused_index_masks={} collect_ms={} schedule_ms={} mesh_ms={} stage_ms={} rehydrate_ms={} faces_ms={} convert_ms={} send_wait_ms={} tex_lookup_ms={} tex_read_ms={} tex_decode_ms={} new_textures={} targets={} reused_sections={} boundary_hits={} cache_chunks={} lazy_pending={} cache_mib={:.1}",
                     trace_timestamp_ms(),
                     self.view.generation,
                     batch_number,
-                    prefetched,
                     requested_chunks,
                     loaded_chunks,
                     load_time.as_millis(),
@@ -3656,7 +3753,7 @@ impl Worker {
                     self.last_texture_lookup_ms,
                     self.last_texture_read_ms,
                     self.last_texture_decode_ms,
-                    self.textures_by_path.len().saturating_sub(textures_before),
+                    self.cached_texture_count().saturating_sub(textures_before),
                     self.last_mesh_targets,
                     self.last_reused_sections,
                     self.last_boundary_hits,
@@ -3668,39 +3765,6 @@ impl Worker {
                         .sum::<usize>() as f64
                         / 1048576.0,
                 );
-            }
-            if let Ok(command) = commands.try_recv() {
-                if let Some(pending) = pending_batch.take() {
-                    self.urgent_chunks.extend(pending.positions.iter().copied());
-                }
-                return Some(command);
-            }
-            if self
-                .last_status_at
-                .is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(250))
-            {
-                self.publish_status(tx);
-            }
-        }
-        let dirty = renderable_dirty_meshes(&self.dirty_meshes, self.view);
-        for remesh in dirty.chunks(REMESH_BATCH_CHUNKS) {
-            if let Ok(command) = commands.try_recv() {
-                return Some(command);
-            }
-            let remesh = remesh
-                .iter()
-                .copied()
-                .filter(|pos| self.dirty_meshes.remove(pos))
-                .collect::<Vec<_>>();
-            if remesh.is_empty() {
-                continue;
-            }
-            self.mesh_targets(tx, &remesh, MeshTargetScope::ChangedOnly);
-            if self
-                .last_status_at
-                .is_none_or(|at| at.elapsed() >= Duration::from_millis(250))
-            {
-                self.publish_status(tx);
             }
         }
         self.publish_status(tx);
@@ -3719,6 +3783,7 @@ impl Worker {
         if changed {
             self.index_hidden_columns.clear();
             self.index_plan_key = None;
+            self.idle_reads.clear();
             // External writers may change any column without issuing editor
             // invalidations. Rebuild stale resident data on the next mesh wave.
             let stale = self.cache.keys().copied().collect::<Vec<_>>();
@@ -3869,19 +3934,26 @@ impl Worker {
     }
 
     fn next_batch(&mut self, center_x: i32, center_z: i32) -> Vec<ChunkPos> {
-        self.refresh_visibility(if self.visibility_index.len() > 0 {
+        self.refresh_visibility(if self.visibility_index.len() > 0 || self.idle_reads.has_ready() {
             VisibilityRefresh::Verify
         } else {
             VisibilityRefresh::IfDue
         });
         let mut batch = Vec::with_capacity(LOAD_BATCH_CHUNKS);
+        // Read the camera column first. Nearby rings use the remaining
+        // capacity after the projected terrain, which can be much farther
+        // away when flying above the surface.
+        let center = (center_x, center_z);
+        let mut deferred_this_wave =
+            self.fill_camera_read_batch(center, 0, &mut batch);
+        let includes_camera = !batch.is_empty();
         let urgent = take_visible_urgent_chunks(
             &mut self.urgent_chunks,
             self.view.dimension,
             center_x,
             center_z,
             self.view.radius,
-            LOAD_BATCH_CHUNKS,
+            LOAD_BATCH_CHUNKS - batch.len(),
         );
         for pos in urgent {
             // Edit/invalidation requests bypass the ordinary rear-view
@@ -3890,12 +3962,67 @@ impl Worker {
             if !self.cache.contains_key(&pos)
                 && !self.missing.contains(&pos)
                 && !self.failed_positions.contains(&pos)
+                && !batch.contains(&pos)
             {
                 batch.push(pos);
             }
         }
-        let mut deferred_this_wave = 0usize;
-        while batch.len() < LOAD_BATCH_CHUNKS {
+        if let Some(focus) = self.view.terrain_focus() {
+            let (key, cursor) = self.focus_cursor
+                .get_or_insert_with(|| (focus, ChunkCursor::default()));
+            if *key != focus {
+                *key = focus;
+                *cursor = ChunkCursor::default();
+            }
+            while batch.len() < LOAD_BATCH_CHUNKS / 2 {
+                let Some(pos) = cursor.next(
+                    self.view.dimension, focus.0, focus.1, self.view.focus_radius(),
+                    self.view.forward_xz,
+                ) else {
+                    break;
+                };
+                if inside_view(pos, self.view.dimension, center_x, center_z, self.view.radius)
+                    && !self.cache.contains_key(&pos)
+                    && !self.missing.contains(&pos)
+                    && !self.failed_positions.contains(&pos)
+                    && !batch.contains(&pos)
+                    && !lazy_mesh_column(pos, self.view)
+                    && !self.index_hidden_columns.contains(&pos)
+                {
+                    self.deferred_db_reads.remove(&pos);
+                    batch.push(pos);
+                }
+            }
+        } else {
+            self.focus_cursor = None;
+        }
+        deferred_this_wave += self.fill_camera_read_batch(center, self.view.radius, &mut batch);
+        if includes_camera && trace_timings() {
+            eprintln!(
+                "world3d camera_priority_reads gen={} center={},{} total={}",
+                self.view.generation, center_x, center_z, batch.len(),
+            );
+        }
+        if deferred_this_wave > 0 && trace_timings() {
+            eprintln!(
+                "world3d db_deferred gen={} deferred_in_wave={} deferred_total={} selected={}",
+                self.view.generation,
+                deferred_this_wave,
+                self.deferred_db_reads.len(),
+                batch.len(),
+            );
+        }
+        batch
+    }
+
+    fn fill_camera_read_batch(
+        &mut self,
+        (center_x, center_z): (i32, i32),
+        through_ring: i32,
+        batch: &mut Vec<ChunkPos>,
+    ) -> usize {
+        let mut deferred = 0;
+        while batch.len() < LOAD_BATCH_CHUNKS && self.cursor.ring <= through_ring {
             let Some(pos) = self.cursor.next(
                 self.view.dimension,
                 center_x,
@@ -3918,25 +4045,17 @@ impl Worker {
             // transition promotes this key without restarting the cursor.
             if lazy_mesh_column(pos, self.view) || self.index_hidden_columns.contains(&pos) {
                 self.deferred_db_reads.insert(pos);
-                deferred_this_wave += 1;
+                deferred += 1;
                 continue;
             }
             self.deferred_db_reads.remove(&pos);
+            self.urgent_chunks.remove(&pos);
             batch.push(pos);
         }
-        if deferred_this_wave > 0 && trace_timings() {
-            eprintln!(
-                "world3d db_deferred gen={} deferred_in_wave={} deferred_total={} selected={}",
-                self.view.generation,
-                deferred_this_wave,
-                self.deferred_db_reads.len(),
-                batch.len(),
-            );
-        }
-        batch
+        deferred
     }
 
-    fn prefetch_batch(&self, positions: Vec<ChunkPos>) -> PendingChunkBatch {
+    fn prefetch_batch(&mut self, positions: Vec<ChunkPos>) -> PendingChunkBatch {
         let world = Arc::clone(&self.world);
         let models = Arc::clone(&self.models);
         let cancel = CancelFlag::new();
@@ -3946,6 +4065,17 @@ impl Worker {
         let requested = positions.clone();
         let view = self.view;
         let probes = self.portal_probe_snapshot();
+        let predecoded = positions.iter().filter_map(|&pos| {
+            self.idle_reads.take(pos).map(|read| (pos, read))
+        }).collect::<BTreeMap<_, _>>();
+        if trace_timings() && !predecoded.is_empty() {
+            let reused_keys = predecoded.values().map(|read| read.requested.len()).sum::<usize>();
+            let decoded_subchunks = predecoded.values().map(|read| read.present.len()).sum::<usize>();
+            eprintln!(
+                "world3d idle_read_hit gen={} columns={} keys={} decoded_subchunks={}",
+                view.generation, predecoded.len(), reused_keys, decoded_subchunks,
+            );
+        }
         rayon::spawn(move || {
             let started = Instant::now();
             let loaded = load_batch_from_world(
@@ -3955,6 +4085,7 @@ impl Worker {
                 options,
                 Some(view),
                 Some(probes),
+                predecoded,
             );
             let _ = sender.send((loaded, started.elapsed()));
         });
@@ -4069,14 +4200,20 @@ impl Worker {
             .copied()
             .collect::<std::collections::HashSet<_>>();
         let mut targets = targets.into_iter().collect::<Vec<_>>();
-        targets.sort_by_key(|pos| {
-            mesh_target_priority(
-                *pos,
-                &priority_targets,
-                (center_x, center_z),
-                self.view.forward_xz,
-            )
-        });
+        if scope == MeshTargetScope::ChangedOnly {
+            // The foreground scheduler already chose this bounded wave.
+            // Keep its camera-first order through face conversion and publication.
+            targets.sort_by_key(|pos| loaded.iter().position(|target| target == pos));
+        } else {
+            targets.sort_by_key(|pos| {
+                mesh_target_priority(
+                    *pos,
+                    &priority_targets,
+                    (center_x, center_z),
+                    self.view.forward_xz,
+                )
+            });
+        }
         // Preflight against already decoded Probe visibility BEFORE reading
         // discarded Sections back from LevelDB. In particular, a fully sealed
         // underground column does not need any DB rehydration, texture lookup,
@@ -4591,7 +4728,12 @@ impl Worker {
                 completed_sections.entry(chunk_faces.pos).or_default();
             }
             pending_sections.sort_by_key(|(pos, section_y, _, _)| {
-                section_priority(*pos, *section_y, self.view)
+                let column = if scope == MeshTargetScope::ChangedOnly {
+                    batch.iter().position(|target| target == pos).unwrap_or(usize::MAX)
+                } else {
+                    0
+                };
+                (column, section_priority(*pos, *section_y, self.view))
             });
             for (&pos, light) in &light_fields {
                 if let Ok(light) = light {
@@ -4701,11 +4843,7 @@ impl Worker {
                                 mesh,
                                 probe,
                             };
-                            let send_started = Instant::now();
-                            let _ = tx.send(ChunkServiceEvent::Chunk(payload));
-                            if trace {
-                                send_wait_time += send_started.elapsed();
-                            }
+                            send_wait_time += send_mesh_event(tx, ChunkServiceEvent::Chunk(payload));
                         }
                     }
                     Ok(None) => {}
@@ -4734,6 +4872,7 @@ impl Worker {
             convert_elapsed += convert_started.elapsed();
         }
         let mut completions = Vec::new();
+        let mut retained_deferred = 0usize;
         for pos in targets.iter().copied() {
             if failed_sections.contains(&pos) {
                 continue;
@@ -4743,7 +4882,20 @@ impl Worker {
                     self.lod_modes.insert(pos, *coarse);
                 }
                 self.retained_invalidated.remove(&pos);
-                let sections = completed_sections.remove(&pos).unwrap_or_default();
+                let mut sections = completed_sections.remove(&pos).unwrap_or_default();
+                let mut retained = retained_sections.remove(&pos).unwrap_or_default();
+                if !coarse_targets.contains(&pos) {
+                    // A partially skipped column still has resident meshes for
+                    // its deferred bands. Completion must not evict those
+                    // meshes: the camera may have moved back before it arrives.
+                    retained_deferred += retain_deferred_sections(
+                        pos,
+                        &hidden_bands,
+                        &self.published_sections,
+                        &mut sections,
+                        &mut retained,
+                    );
+                }
                 let faces = sections
                     .iter()
                     .filter_map(|band| {
@@ -4765,10 +4917,15 @@ impl Worker {
                     lighting: self.lighting,
                     pos,
                     sections,
-                    retained_meshes: retained_sections.remove(&pos).unwrap_or_default(),
+                    retained_meshes: retained,
                     probe,
                 });
             }
+        }
+        if trace && retained_deferred != 0 {
+            eprintln!(
+                "world3d deferred_meshes_retained gen={generation} sections={retained_deferred}"
+            );
         }
         // Only successfully completed columns participate in boundary reconciliation.
         // Track unordered neighbour PAIRS rather than columns: a column can gain a
@@ -4806,7 +4963,7 @@ impl Worker {
                 }
             }
         }
-        let _ = tx.send(ChunkServiceEvent::Completed(completions));
+        send_wait_time += send_mesh_event(tx, ChunkServiceEvent::Completed(completions));
         self.last_face_ms = u64::try_from(face_elapsed.as_millis()).unwrap_or(u64::MAX);
         if trace_verbose() {
             eprintln!("world3d worker: face passes {pass_faces:?}");
@@ -4908,17 +5065,7 @@ impl Worker {
             self.batch_load_options(positions.len()),
             None,
             None,
-        )
-    }
-
-    fn load_batch_lazy(&mut self, positions: &[ChunkPos]) -> LoadedChunkBatch {
-        load_batch_from_world(
-            &self.world,
-            &self.models,
-            positions,
-            self.batch_load_options(positions.len()),
-            Some(self.view),
-            Some(self.portal_probe_snapshot()),
+            BTreeMap::new(),
         )
     }
 
@@ -5016,14 +5163,15 @@ impl Worker {
         }
         let build_started = Instant::now();
         let origin = [pos.x * 16, 0, pos.z * 16];
-        let mut material_map = HashMap::<MaterialSlotKey, usize>::new();
+        let mut material_map = FxHashMap::<MaterialSlotKey, usize>::default();
         let mut opaque_proxies = Vec::new();
         let mut materials = Vec::<Arc<Material>>::new();
-        let mut bucket_map = HashMap::<(i32, usize), usize>::new();
+        let mut bucket_map = FxHashMap::<(i32, usize), usize>::default();
         let mut buckets = Vec::<FaceBucket>::new();
         let mut bucket_material_slots = Vec::<usize>::new();
         let mut used_textures = BTreeMap::<gpui_3d::TextureAssetId, Arc<TextureAsset>>::new();
-        let mut chunk_texture_lookup = HashMap::<(usize, [i32; 3]), FaceMaterialProperties>::new();
+        let mut chunk_texture_lookup =
+            FxHashMap::<(usize, [i32; 3]), FaceMaterialProperties>::default();
         let mut missing_texture_faces = 0usize;
         let trace = trace_verbose();
         let mut missing_materials = BTreeMap::<(&str, [i32; 3]), usize>::new();
@@ -5103,7 +5251,7 @@ impl Worker {
                         .insert((Arc::clone(&face.material), face.normal), result.clone());
                     result
                 });
-            let mut resolved_texture = properties.texture.clone();
+            let mut derived_texture = None;
             let mut uses_tint = properties.tint_mask;
             if face.normal[1] == 0 {
                 let composited =
@@ -5115,18 +5263,28 @@ impl Worker {
                                 .composited_grass_side(dirt, overlay, face.color)
                         });
                 if let Some(composited) = composited {
-                    resolved_texture = Some(composited);
+                    derived_texture = Some(composited);
                     uses_tint = false;
                 } else if is_full_grass_block_side_material(material_name)
                     && let Some(tinted) = self
                         .mesh_assets
-                        .tinted_grass_side(resolved_texture.as_ref(), face.color)
+                        .tinted_grass_side(properties.texture.as_ref(), face.color)
                 {
-                    resolved_texture = Some(tinted);
+                    derived_texture = Some(tinted);
                     uses_tint = false;
                 }
             }
-            let texture = resolved_texture.as_ref();
+            // The cauldron liquid sheet is grayscale; bake the water colour into it instead of
+            // tinting by the cauldron's own palette colour (grey metal).
+            if material_name.ends_with("__mat_cauldron_water")
+                && let Some(tinted) = self
+                    .mesh_assets
+                    .tinted_cauldron_water(derived_texture.as_ref().or(properties.texture.as_ref()))
+            {
+                derived_texture = Some(tinted);
+                uses_tint = false;
+            }
+            let texture = derived_texture.as_ref().or(properties.texture.as_ref());
             if let Some(started) = lookup_started {
                 texture_resolve_time += started.elapsed();
             }
@@ -5172,6 +5330,16 @@ impl Worker {
             } else {
                 [1.0, 1.0, 1.0]
             };
+            let base_color = if material_name.contains("end_portal") {
+                // Bedrock's EndPortal material amplifies its dark (RGB~20) luminance texture
+                // into a bright animated purple/cyan vortex with a procedural shader. With a
+                // static texture we approximate that emissive gain through the Unlit base
+                // colour (texture * base), which — unlike packed vertex colours — is not
+                // clamped to 0..1 on this path.
+                [base_color[0] * 4.5, base_color[1] * 4.0, base_color[2] * 5.0]
+            } else {
+                base_color
+            };
             let key = MaterialSlotKey {
                 water: face.pass == preview_3d_source::Preview3dStreamPass::Water,
                 glass: alpha_mode == AlphaMode::Blend
@@ -5215,6 +5383,11 @@ impl Worker {
                             "alpha_content": format!("{:?}", properties.alpha_content),
                             "surface": format!("{:?}", shared.surface),
                             "tint": uses_tint,
+                            "normal": face.normal,
+                            "path": self
+                                .resolver
+                                .texture_for(material_name, face.normal)
+                                .map(|t| t.relative_path),
                             "face_color": face.color,
                             "roughness": shared.roughness,
                             "alpha_zero_partial_opaque": alpha,
@@ -5391,9 +5564,7 @@ impl Worker {
         if unresolved.len() < 4 {
             return;
         }
-        let workers = std::thread::available_parallelism()
-            .map_or(4, |count| count.get())
-            .min(4);
+        let workers = rayon::current_num_threads().min(4);
         let item_count = unresolved
             .iter()
             .filter(|(material, _)| material.starts_with(ITEM_MATERIAL_PREFIX))
@@ -5557,21 +5728,10 @@ impl Worker {
         &mut self,
         id: &str,
     ) -> Option<(Arc<TextureAsset>, TextureAlphaContent)> {
-        let cache_key = format!("{MAP_MATERIAL_PREFIX}{id}");
-        if let Some(cached) = self.textures_by_path.get(&cache_key) {
-            match cached {
-                Some(texture) => {
-                    if let Some(texture) = texture.upgrade() {
-                        let content = self
-                            .texture_alpha_content
-                            .get(&cache_key)
-                            .copied()
-                            .unwrap_or(TEXTURE_ALPHA_CONTENT_UNKNOWN);
-                        return Some((texture, content));
-                    }
-                }
-                None => return None,
-            }
+        if let Some((texture, content)) = self.map_textures.get(id)
+            && let Some(texture) = texture.upgrade()
+        {
+            return Some((texture, *content));
         }
         let id = MapItemId::new(id.to_owned()).ok()?;
         let map = self.world.map_item(&id).ok()??;
@@ -5586,9 +5746,8 @@ impl Worker {
         let image = RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba)?;
         let content = texture_alpha_content(&image);
         let asset = self.mesh_assets.intern_texture(mipmapped_texture(image)?);
-        self.textures_by_path
-            .insert(cache_key.clone(), Some(Arc::downgrade(&asset)));
-        self.texture_alpha_content.insert(cache_key, content);
+        self.map_textures
+            .insert(id.as_str().to_owned(), (Arc::downgrade(&asset), content));
         Some((asset, content))
     }
 
@@ -5604,23 +5763,14 @@ impl Worker {
         resolved: bedrock_block_model::ObjResolvedTexture,
         is_data: bool,
     ) -> Option<(Arc<TextureAsset>, TextureAlphaContent)> {
-        let path = resolved.source_path.path().to_string_lossy();
+        let path = resolved.source_path.path();
         // A file used as both color and data must not share alpha-weighted mips.
-        let cache_key = if is_data {
-            format!("data:{path}")
-        } else {
-            path.into_owned()
-        };
-        if let Some(cached) = self.textures_by_path.get(&cache_key) {
+        let cache_index = usize::from(is_data);
+        if let Some(cached) = self.textures_by_path[cache_index].get(path) {
             match cached {
-                Some(texture) => {
+                Some((texture, content)) => {
                     if let Some(texture) = texture.upgrade() {
-                        let content = self
-                            .texture_alpha_content
-                            .get(&cache_key)
-                            .copied()
-                            .unwrap_or(TEXTURE_ALPHA_CONTENT_UNKNOWN);
-                        return Some((texture, content));
+                        return Some((texture, *content));
                     }
                 }
                 None => return None,
@@ -5630,8 +5780,8 @@ impl Worker {
         let bytes = match resolved.source_path.read() {
             Ok(bytes) => bytes,
             Err(error) => {
-                self.last_error = Some(format!("读取贴图 {cache_key} 失败：{error}"));
-                self.textures_by_path.insert(cache_key, None);
+                self.last_error = Some(format!("读取贴图 {} 失败：{error}", path.display()));
+                self.textures_by_path[cache_index].insert(path.to_owned(), None);
                 return None;
             }
         };
@@ -5650,10 +5800,10 @@ impl Worker {
             bedrock_block_model::obj::decode_texture_image(&bytes, is_tga)
         };
         let image = match decoded {
-            Ok(image) => image.to_rgba8(),
+            Ok(image) => image.into_rgba8(),
             Err(error) => {
-                self.last_error = Some(format!("解码贴图 {cache_key} 失败：{error}"));
-                self.textures_by_path.insert(cache_key, None);
+                self.last_error = Some(format!("解码贴图 {} 失败：{error}", path.display()));
+                self.textures_by_path[cache_index].insert(path.to_owned(), None);
                 return None;
             }
         };
@@ -5665,7 +5815,19 @@ impl Worker {
         let image = if self.resolver.is_flipbook_texture(&resolved.relative_path) {
             let (width, height) = image.dimensions();
             if height > width && height % width == 0 {
-                image::imageops::crop_imm(&image, 0, 0, width, width).to_image()
+                // `replicate: N` repeats the art N×N inside each square frame: `lava_flow` is a
+                // 32×32 frame of 2×2 16 px tiles. A block face shows the art ONCE, so keep one
+                // replicated tile — cropping the whole frame displayed the lava four times per
+                // face ("侧面不是平铺是使用很多岩浆贴图").
+                let replicate = self
+                    .resolver
+                    .flipbook_definition_for(&resolved)
+                    .and_then(|definition| definition.get("replicate"))
+                    .and_then(serde_json::Value::as_u64)
+                    .filter(|replicate| (1..=8).contains(replicate))
+                    .unwrap_or(1) as u32;
+                let tile = (width / replicate).max(1);
+                image::imageops::crop_imm(&image, 0, 0, tile, tile).to_image()
             } else {
                 image
             }
@@ -5678,7 +5840,7 @@ impl Worker {
             || width > TEXTURE_MAX_DIMENSION
             || height > TEXTURE_MAX_DIMENSION
         {
-            self.textures_by_path.insert(cache_key, None);
+            self.textures_by_path[cache_index].insert(path.to_owned(), None);
             return None;
         }
         let content = texture_alpha_content(&image);
@@ -5687,9 +5849,8 @@ impl Worker {
         } else {
             mipmapped_texture(image)
         }?);
-        self.textures_by_path
-            .insert(cache_key.clone(), Some(Arc::downgrade(&asset)));
-        self.texture_alpha_content.insert(cache_key, content);
+        self.textures_by_path[cache_index]
+            .insert(path.to_owned(), Some((Arc::downgrade(&asset), content)));
         Some((asset, content))
     }
 
@@ -5737,6 +5898,7 @@ impl Worker {
 
     fn invalidate(&mut self, chunks: &[ChunkPos]) {
         for pos in chunks {
+            self.idle_reads.take(*pos);
             self.visibility_index.invalidate(*pos);
             self.index_hidden_columns.remove(pos);
             self.index_plan_key = None;
@@ -6473,39 +6635,8 @@ struct FaceMaterialProperties {
     opaque_glass: bool,
 }
 
-/// Alpha content of a decoded texture, used to pick the alpha pipeline from
-/// real pixel data instead of guessing from the block name.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TextureAlphaContent {
-    /// Every pixel is fully opaque; the block can render in the opaque pass.
-    Opaque,
-    /// Alpha values are only 0 or 255 (vanilla glass, leaves, plants); render
-    /// as alpha-tested cutout instead of translucent blend.
-    Binary,
-    /// Intermediate alpha values exist (ice, slime, stained variants); keep
-    /// the translucent blend pipeline.
-    Partial,
-    /// The texture could not be resolved; use the model render pass as fallback.
-    Unknown,
-}
-
 const TEXTURE_ALPHA_CONTENT_UNKNOWN: TextureAlphaContent = TextureAlphaContent::Unknown;
-
-fn texture_alpha_content(image: &RgbaImage) -> TextureAlphaContent {
-    let mut transparent = false;
-    for pixel in image.pixels() {
-        match pixel.0[3] {
-            255 => {}
-            0 => transparent = true,
-            _ => return TextureAlphaContent::Partial,
-        }
-    }
-    if transparent {
-        TextureAlphaContent::Binary
-    } else {
-        TextureAlphaContent::Opaque
-    }
-}
+type CachedTexture = (Weak<TextureAsset>, TextureAlphaContent);
 
 /// The alpha pipeline follows the texture's real pixels: binary-alpha
 /// textures cut out, partially translucent ones blend, fully opaque ones
@@ -6616,9 +6747,33 @@ fn run_worker(
     worker.publish_status(&events);
 
     let mut pending: Option<ChunkServiceCommand> = None;
+    let mut pending_batch: Option<PendingChunkBatch> = None;
+    let mut stream_idle = false;
     loop {
         let command = match pending.take() {
             Some(command) => command,
+            None if stream_idle
+                && worker.view.generation != 0
+                && worker.visibility_index.enabled()
+                && worker.idle_reads.active() =>
+            {
+                match commands.recv_timeout(IDLE_READ_INTERVAL) {
+                    Ok(command) => command,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                    Err(RecvTimeoutError::Timeout) => {
+                        let options = worker.chunk_load_options();
+                        let center = worker.view_center_chunk();
+                        worker.idle_reads.step(
+                            Arc::clone(&worker.world),
+                            options,
+                            worker.view,
+                            center,
+                            |pos| worker.cache.contains_key(&pos) || worker.missing.contains(&pos),
+                        );
+                        continue;
+                    }
+                }
+            }
             None => match commands.recv() {
                 Ok(command) => command,
                 Err(_) => break,
@@ -6637,7 +6792,17 @@ fn run_worker(
         } else {
             command
         };
-        match command {
+        worker.idle_reads.pause();
+        // Keep a read across compatible camera updates. Ordered world and
+        // lighting mutations still invalidate it before touching the cache.
+        if !matches!(
+            command,
+            ChunkServiceCommand::SetView { .. } | ChunkServiceCommand::ProbeSurface { .. }
+        ) && let Some(batch) = pending_batch.take()
+        {
+            worker.urgent_chunks.extend(batch.positions.iter().copied());
+        }
+        let resume = match command {
             ChunkServiceCommand::SetLighting(lighting) => {
                 if worker.lighting != lighting {
                     worker.lighting = lighting;
@@ -6647,12 +6812,9 @@ fn run_worker(
                     worker.revisit_cache.clear();
                     worker.revisit_order.clear();
                     worker.dirty_meshes.extend(worker.cache.keys().copied());
-                    while pending.is_none() {
-                        match worker.stream(&events, &commands) {
-                            Some(command) => pending = Some(command),
-                            None => break,
-                        }
-                    }
+                    true
+                } else {
+                    !stream_idle && worker.view.generation != 0
                 }
             }
             ChunkServiceCommand::ViewUpdated => continue,
@@ -6668,15 +6830,32 @@ fn run_worker(
             } => {
                 let old_center = worker.view_center_chunk();
                 let old_radius = worker.view.radius;
+                let old_dimension = worker.view.dimension;
+                let old_forward = worker.view.forward_xz;
+                let first_view = worker.view.generation == 0;
                 let new_center = (
                     (camera[0] / 16.0).floor() as i32,
                     (camera[2] / 16.0).floor() as i32,
                 );
+                if pending_batch.as_ref().is_some_and(|batch| {
+                    !batch.positions.iter().any(|&pos| {
+                        inside_view(
+                            pos,
+                            dimension,
+                            new_center.0,
+                            new_center.1,
+                            radius.clamp(1, WORLD3D_MAX_VIEW_RADIUS),
+                        )
+                    })
+                }) {
+                    pending_batch.take();
+                }
                 if old_center != new_center
                     || worker.view.dimension != dimension
                     || worker.view.radius != radius
                 {
                     worker.cursor = ChunkCursor::default();
+                    worker.focus_cursor = None;
                 } else if worker.view.forward_xz != forward_xz {
                     // Position did not change, but a fast turn can make the
                     // rest of the current ring's old camera-first ordering
@@ -6712,6 +6891,11 @@ fn run_worker(
                     radius: radius.clamp(1, WORLD3D_MAX_VIEW_RADIUS),
                     view_distance,
                 };
+                if first_view || old_center != new_center || old_radius != worker.view.radius
+                    || old_dimension != dimension || old_forward != forward_xz
+                {
+                    worker.idle_reads.update_view(worker.view, new_center);
+                }
                 // Turned toward metadata-only columns? Promote them to the
                 // regular dirty queue. The batch mesher rehydrates and builds
                 // their faces without reloading columns still behind us.
@@ -6755,12 +6939,7 @@ fn run_worker(
                         worker.view.radius,
                     );
                 }
-                while pending.is_none() {
-                    match worker.stream(&events, &commands) {
-                        Some(command) => pending = Some(command),
-                        None => break,
-                    }
-                }
+                true
             }
             ChunkServiceCommand::ProbeSurface {
                 request_id,
@@ -6777,16 +6956,16 @@ fn run_worker(
                     request_id,
                     heights,
                 });
+                !stream_idle && worker.view.generation != 0
             }
             ChunkServiceCommand::Invalidate { chunks, .. } => {
                 worker.invalidate(&chunks);
-                while pending.is_none() {
-                    match worker.stream(&events, &commands) {
-                        Some(command) => pending = Some(command),
-                        None => break,
-                    }
-                }
+                true
             }
+        };
+        if resume {
+            pending = worker.stream(&events, &commands, &mut pending_batch);
+            stream_idle = pending.is_none();
         }
     }
     worker.resolver.flush_material_index();

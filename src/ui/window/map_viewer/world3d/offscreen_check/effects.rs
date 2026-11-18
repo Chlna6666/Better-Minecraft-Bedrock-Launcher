@@ -1,11 +1,14 @@
 //! Exercise the production SceneView multipass renderer against a read-only real world.
 use super::*;
 use gfx_core::*;
-use gpui::{RendererExtension, RendererExtensionContext};
+use gpui::{RendererExtension, RendererExtensionContext, RendererExtensionRenderer};
 use gpui_3d::{Aabb, SceneView, ScreenEffects, VoxelIllumination, VoxelShading};
 
 mod frames;
-use frames::{Attachment, frame, inspect_passes};
+mod presentation;
+use frames::{Attachment, frame, inspect_passes, opengl_device};
+
+const STREAM_LOOK: Vec3 = Vec3::new(24., -28., 0.);
 
 fn capture<D: Device + TextureTransferDevice>(
     mut device: D,
@@ -89,6 +92,15 @@ fn capture<D: Device + TextureTransferDevice>(
         .unwrap()
         .with_screen_effects(vibrant.then_some(settings))
         .unwrap();
+    if std::env::var("BMCBL_WORLD3D_TEST_WINDOW").as_deref() == Ok("1") {
+        assert_eq!(D::BACKEND_KIND, BackendKind::Dx11);
+        color.destroy(&mut device);
+        depth.destroy(&mut device);
+        PipelineDevice::destroy_render_pass(&mut device, pass).unwrap();
+        drop(device);
+        presentation::profile(view, camera, size);
+        return;
+    }
     let mut renderer = view.create_renderer(&mut device, context()).unwrap();
     frame(
         &mut device,
@@ -99,7 +111,8 @@ fn capture<D: Device + TextureTransferDevice>(
         &depth,
     );
     let image = TextureTransferDevice::read_texture(&mut device, color.texture).unwrap();
-    assert!(image.bytes.chunks_exact(4).all(|pixel| pixel[3] == 255));
+    let rgba = packed_rgba(&image, size);
+    assert!(rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
     if let Ok(Some(memory)) = gpui::diagnostics::process_memory::snapshot() {
         eprintln!(
             "world3d prepared_memory private_bytes={} working_set_bytes={}",
@@ -108,10 +121,9 @@ fn capture<D: Device + TextureTransferDevice>(
     }
     let output = env_path("BMCBL_WORLD3D_TEST_SNAPSHOT")
         .unwrap_or_else(|| PathBuf::from("target/world3d-effects.png"));
-    image::RgbaImage::from_raw(size.width(), size.height(), image.bytes)
-        .unwrap()
-        .save(&output)
-        .unwrap();
+    save_rgba(&output, &rgba, size);
+    compare_hiz(&mut device, renderer.as_mut(), &view, context(), (&color, &depth), &rgba);
+    let save_keyframes = std::env::var("BMCBL_WORLD3D_TEST_KEYFRAMES").as_deref() == Ok("1");
     eprintln!(
         "world3d effects adapter={} size={}x{} scale={} face_capacity={} source_count={} occluder_proxies={}",
         device.adapter_name(),
@@ -157,10 +169,11 @@ fn capture<D: Device + TextureTransferDevice>(
         );
         let pixels = TextureTransferDevice::read_texture(&mut device, color.texture).unwrap();
         if profile == "without_atmosphere" {
-            image::RgbaImage::from_raw(size.width(), size.height(), pixels.bytes)
-                .unwrap()
-                .save(output.with_file_name("world3d-effects-without-atmosphere.png"))
-                .unwrap();
+            save_rgba(
+                &output.with_file_name("world3d-effects-without-atmosphere.png"),
+                &packed_rgba(&pixels, size),
+                size,
+            );
         }
         for moving in [false, true] {
             let mut cpu = Vec::new();
@@ -193,6 +206,10 @@ fn capture<D: Device + TextureTransferDevice>(
                 submit.push(recorded + waited);
                 records.push(recorded);
                 waits.push(waited);
+                if save_keyframes && moving && matches!(index, 0 | 17 | 39) {
+                    let pixels = packed_rgba(&device.read_texture(color.texture).unwrap(), size);
+                    save_rgba(&output.with_extension(format!("{profile}.{index}.png")), &pixels, size);
+                }
             }
             cpu.sort_by(f64::total_cmp);
             submit.sort_by(f64::total_cmp);
@@ -324,6 +341,10 @@ fn profile_streaming_move() {
             gfx_dx11::Dx11Device::new(&descriptor).unwrap(), &mut state,
             &mut position, total_frames, speed,
         ),
+        Ok("opengl") => streaming_move(
+            opengl_device(&descriptor), &mut state,
+            &mut position, total_frames, speed,
+        ),
         Ok("vulkan") => streaming_move(
             gfx_vulkan::VulkanDevice::new(&descriptor).unwrap(), &mut state,
             &mut position, total_frames, speed,
@@ -371,12 +392,13 @@ impl StreamState {
 
     fn send_view(&mut self, position: [f64; 3]) {
         self.generation += 1;
+        let forward = STREAM_LOOK.normalized().unwrap();
         self.service.send(ChunkServiceCommand::SetView {
             generation: self.generation,
             dimension: self.dimension,
             camera: position,
-            forward_xz: [1.0, 0.0],
-            forward_y: -0.2,
+            forward_xz: [forward.x, forward.z],
+            forward_y: forward.y,
             radius: self.radius,
             view_distance: 256.0,
         });
@@ -428,6 +450,7 @@ impl StreamState {
                                 self.textures.insert(texture.id(), texture.clone());
                             }
                             self.meshes.insert(key, mesh);
+                            self.dirty_sections.insert(key);
                         }
                         let stale = self
                             .meshes
@@ -503,9 +526,10 @@ fn streaming_move<D: Device + TextureTransferDevice>(
         let relative: [f32; 3] = std::array::from_fn(|axis| {
             (position[axis] - f64::from(render_origin[axis])) as f32
         });
+        let eye = Vec3::new(relative[0], relative[1], relative[2]);
         Camera::perspective(
-            Vec3::new(relative[0], relative[1], relative[2]),
-            Vec3::new(relative[0] + 24., relative[1] - 28., relative[2]),
+            eye,
+            eye + STREAM_LOOK,
             Vec3::Y,
             70_f32.to_radians(),
             0.05,
@@ -577,7 +601,8 @@ fn streaming_move<D: Device + TextureTransferDevice>(
         // One editor frame: move, poll, rebuild, render.
         position[0] += f64::from(speed);
         let chunk_x = (position[0] / 16.0).floor() as i32;
-        if last_chunk != chunk_x {
+        let range_changed = last_chunk != chunk_x;
+        if range_changed {
             last_chunk = chunk_x;
             state.send_view(*position);
         }
@@ -616,6 +641,11 @@ fn streaming_move<D: Device + TextureTransferDevice>(
             publishes += 1;
         } else {
             view = view.with_camera(camera_at(*position, current_origin));
+            if range_changed {
+                view = view
+                    .with_culling_bounds(Some(culling_bounds(*position, current_origin)))
+                    .expect("streaming culling bounds");
+            }
         }
         registry_ms.push(started.elapsed().as_secs_f64() * 1000.);
 
@@ -722,10 +752,62 @@ fn streaming_move<D: Device + TextureTransferDevice>(
             stats.textures,
         );
     }
+    let pixels = device.read_texture(color.texture).expect("completed world pixels");
+    let rgba = packed_rgba(&pixels, size);
+    let non_uniform = rgba.chunks_exact(4).filter(|pixel| *pixel != &rgba[..4]).count();
+    eprintln!("world3d stream pixels non_uniform={non_uniform} total={}", 1280 * 800);
+    assert!(non_uniform > 0, "world fixture rendered only a uniform background; verify the camera pose");
+    if let Some(path) = env_path("BMCBL_WORLD3D_TEST_SNAPSHOT") {
+        save_rgba(&path, &rgba, size);
+    }
+    compare_hiz(&mut device, renderer.as_mut(), &view, context, (&color, &depth), &rgba);
     renderer.destroy(&mut device).unwrap();
     color.destroy(&mut device);
     depth.destroy(&mut device);
     PipelineDevice::destroy_render_pass(&mut device, pass).unwrap();
+}
+
+fn packed_rgba(image: &TextureReadback, size: Extent2d) -> Vec<u8> {
+    let width = size.width() as usize * 4;
+    let height = size.height() as usize;
+    let mut rgba = Vec::with_capacity(width * height);
+    for row in image.bytes.chunks_exact(image.bytes_per_row as usize).take(height) {
+        rgba.extend_from_slice(&row[..width]);
+    }
+    assert_eq!(rgba.len(), width * height);
+    rgba
+}
+
+fn save_rgba(path: &std::path::Path, rgba: &[u8], size: Extent2d) {
+    image::save_buffer_with_format(
+        path, rgba, size.width(), size.height(),
+        image::ColorType::Rgba8, image::ImageFormat::Png,
+    ).expect("world snapshot PNG");
+}
+
+fn compare_hiz<D: Device + TextureTransferDevice>(
+    device: &mut D,
+    renderer: &mut dyn RendererExtensionRenderer,
+    view: &SceneView,
+    context: RendererExtensionContext,
+    (color, depth): (&Attachment, &Attachment),
+    rgba: &[u8],
+) {
+    if std::env::var("BMCBL_WORLD3D_TEST_COMPARE_CULLING").as_deref() != Ok("1") {
+        return;
+    }
+    let size = context.viewport();
+    frame(device, renderer, &view.with_culling_disabled(), context, color, depth);
+    let control = packed_rgba(&device.read_texture(color.texture).unwrap(), size);
+    let changed = rgba.chunks_exact(4).zip(control.chunks_exact(4))
+        .filter(|(on, off)| on != off).count();
+    let max_error = rgba.iter().zip(&control)
+        .map(|(on, off)| on.abs_diff(*off)).max().unwrap_or(0);
+    eprintln!("world3d culling comparison changed_pixels={changed} max_channel_error={max_error}");
+    if let Some(path) = env_path("BMCBL_WORLD3D_TEST_SNAPSHOT") {
+        save_rgba(&path.with_extension("no-hiz.png"), &control, size);
+    }
+    assert_eq!(changed, 0, "Hi-Z culling changed visible world pixels");
 }
 
 fn render_world() {
@@ -754,6 +836,7 @@ fn render_world() {
             world,
             spawn,
         ),
+        Ok("opengl") => capture(opengl_device(&descriptor), world, spawn),
         Ok("vulkan") => capture(
             gfx_vulkan::VulkanDevice::new(&descriptor).unwrap(),
             world,
