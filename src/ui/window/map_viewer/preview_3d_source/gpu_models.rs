@@ -1,6 +1,7 @@
 //! Reusable model templates. Per-block vertices are expanded by the GPU, not this adapter.
 use super::*;
 use std::{
+    collections::hash_map::Entry,
     hash::{Hash, Hasher},
     ops::Range,
 };
@@ -127,6 +128,9 @@ impl ModelPlan {
                 });
             }
         }
+        // Each miss expands model UVs once. Reuse the temporary face allocation
+        // for the remaining misses, while the immutable templates keep their order.
+        let mut detail_faces = Vec::new();
         for (records, glass) in [
             (&blocks.detail_blocks, false),
             (&blocks.glass_detail_blocks, true),
@@ -137,33 +141,33 @@ impl ModelPlan {
                 if !custom && skip_cell(block.key.y, true) {
                     continue;
                 }
-                let query = builder.detail_shape_query(block);
                 let key = ModelKey::Detail(
                     Arc::as_ptr(&block.shape) as usize,
                     block.material.clone(),
                     block.color.map(f32::to_bits),
                     glass,
-                    query.clone().map(QueryKey),
+                    builder.detail_shape_query(block).map(QueryKey),
                 );
-                let range = models
-                    .entry(key)
-                    .or_insert_with(|| {
+                let range = match models.entry(key) {
+                    Entry::Occupied(entry) => entry.get().clone(),
+                    Entry::Vacant(entry) => {
                         let start = plan.faces.len() as u32;
+                        let ModelKey::Detail(_, _, _, _, query) = entry.key() else {
+                            unreachable!("only detail keys are inserted by this loop");
+                        };
                         let inferred = query
                             .as_ref()
-                            .and_then(model_family::resolve_shape)
+                            .and_then(|query| model_family::resolve_shape(&query.0))
                             .map(detail_shape_from_model);
-                        let mut prototype = block.clone();
-                        prototype.key = BlockKey { x: 0, y: 0, z: 0 };
-                        let mut faces = Vec::new();
                         push_detail_block_faces(
-                            &prototype,
+                            block,
+                            BlockKey { x: 0, y: 0, z: 0 },
                             inferred.as_ref().unwrap_or(&block.shape),
-                            &mut faces,
+                            &mut detail_faces,
                         );
                         let unshaded = block.normalized_name.ends_with("redstone_wire")
                             || is_unshaded_detail(&block.normalized_name);
-                        for mut face in faces {
+                        for mut face in detail_faces.drain(..) {
                             if unshaded {
                                 face.shade = 1.0;
                             }
@@ -192,9 +196,11 @@ impl ModelPlan {
                                 neighbour,
                             );
                         }
-                        start..plan.faces.len() as u32
-                    })
-                    .clone();
+                        let range = start..plan.faces.len() as u32;
+                        entry.insert(range.clone());
+                        range
+                    }
+                };
                 if !range.is_empty() {
                     plan.records.push(ModelRecord {
                         key: block.key,

@@ -446,6 +446,8 @@ enum Preview3dNeighborModel {
     Wall,
     RedstoneWire { power: u8 },
     Stairs,
+    HangingBanner,
+    StandingBanner,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -477,6 +479,10 @@ struct Preview3dBlockEntityModelState {
     /// Bedrock names every bed block plain `bed` and keeps the colour in the `Bed` block entity's
     /// `color` field, so the block name alone cannot tell a red bed from a white one.
     bed_colour: Option<&'static str>,
+    /// Copper golem statue pose stored on the block entity (`Pose` 0..=3).
+    pose: Option<i64>,
+    /// Skull yaw stored on the block entity (`Rotation`, degrees clockwise from south).
+    skull_yaw: Option<i32>,
 }
 
 #[derive(Clone, Debug)]
@@ -1526,7 +1532,7 @@ impl Preview3dMeshBuilder {
                 for block in blocks_for_chunk(blocks.1) {
                     let inferred_shape = self.inferred_detail_shape(block);
                     let shape = inferred_shape.as_ref().unwrap_or(&block.shape);
-                    push_detail_block_faces(block, shape, &mut faces);
+                    push_detail_block_faces(block, block.key, shape, &mut faces);
                 }
                 faces
             })
@@ -1731,7 +1737,9 @@ impl Preview3dMeshBuilder {
     }
 
     fn is_glass_detail_face_hidden(&self, face: &Preview3dFace) -> bool {
-        // Glass detail faces are transparent; cull only when the neighbor cell is opaque.
+        // Glass detail faces are transparent; cull when the neighbor cell is opaque OR a solid
+        // glass block. JE pane templates mark their end faces `cullface`, so a pane touching a
+        // full glass block drops the 2 px rim end instead of drawing a stub against the glass.
         let mut min = [f64::INFINITY; 3];
         for corner in &face.corners {
             for (axis, value) in corner.iter().enumerate() {
@@ -1749,7 +1757,10 @@ impl Preview3dMeshBuilder {
             y: block.y + normal[1],
             z: block.z + normal[2],
         };
-        self.block_class_at(neighbor) == Some(Preview3dBlockClass::Opaque)
+        matches!(
+            self.block_class_at(neighbor),
+            Some(Preview3dBlockClass::Opaque | Preview3dBlockClass::TransparentGlass)
+        )
     }
     fn is_opaque_neighbor(&self, block: BlockKey, face: FaceDefinition) -> bool {
         let neighbor = block.neighbor(face);
@@ -1891,6 +1902,34 @@ impl Preview3dMeshBuilder {
                     .with_state("vertical_half", if current.top { "top" } else { "bottom" })
                     .with_state("half", if current.top { "top" } else { "bottom" })
                     .with_state("shape", self.stair_shape(block.key, current));
+            }
+            Preview3dNeighborModel::HangingBanner => {
+                // Vertical attachment always hangs from the block above (`facing_direction`
+                // 0 in the family check); the cloth compresses when the cell below is solid.
+                let below = BlockKey {
+                    x: block.key.x,
+                    y: block.key.y.saturating_sub(1),
+                    z: block.key.z,
+                };
+                query = query
+                    .with_state("facing_direction", 0_i64)
+                    .with_state(
+                        "hanging_compressed",
+                        self.block_class_at(below) == Some(Preview3dBlockClass::Opaque),
+                    );
+            }
+            Preview3dNeighborModel::StandingBanner => {
+                // The standing banner's cloth hangs into the cell below; an occupant there
+                // squeezes the cloth back into the banner's own cell.
+                let below = BlockKey {
+                    x: block.key.x,
+                    y: block.key.y.saturating_sub(1),
+                    z: block.key.z,
+                };
+                query = query.with_state(
+                    "banner_compressed",
+                    self.block_class_at(below) == Some(Preview3dBlockClass::Opaque),
+                );
             }
         }
         Some(query)
@@ -2494,11 +2533,23 @@ pub(super) fn collect_chunk_blocks(
                     let fluid_state = classification.fluid_at(subchunk, local_x, local_y, local_z);
                     if let Some((state, block_class)) = fluid_state {
                         if primary_class != Some(block_class) {
-                            let face_mode = if matches!(
+                            // Cutout foliage (leaves) is riddled with transparent gaps: keep
+                            // all water walls so the water shows THROUGH those gaps like two
+                            // interleaved materials. Solid parts (opaque, glass, stairs,
+                            // slabs, fences) instead occupy most of the cell, so only the top
+                            // water surface is emitted — full water walls would wrap them in
+                            // a blue box.
+                            let cutout_foliage = primary_state
+                                .map(|state| is_foliage_block(state.name.strip_prefix("minecraft:").unwrap_or(&state.name)))
+                                .unwrap_or(false);
+                            let face_mode = if cutout_foliage {
+                                FluidFaceMode::AllFaces
+                            } else if matches!(
                                 primary_class,
                                 Some(
                                     Preview3dBlockClass::Opaque
                                         | Preview3dBlockClass::TransparentGlass
+                                        | Preview3dBlockClass::DetailOpaque
                                 )
                             ) {
                                 FluidFaceMode::TopOnly
@@ -3592,9 +3643,22 @@ fn push_structure_block(
             Preview3dBlockClass::Water | Preview3dBlockClass::Lava
         ) && primary_class != Some(block_class)
         {
-            let face_mode = if matches!(
+            // Cutout foliage keeps all water walls (water shows through the gaps); solid
+            // detail parts (stairs/slabs/fences) and opaque blocks only show the top.
+            let cutout_foliage = primary
+                .map(|state| {
+                    is_foliage_block(state.name.strip_prefix("minecraft:").unwrap_or(&state.name))
+                })
+                .unwrap_or(false);
+            let face_mode = if cutout_foliage {
+                FluidFaceMode::AllFaces
+            } else if matches!(
                 primary_class,
-                Some(Preview3dBlockClass::Opaque | Preview3dBlockClass::TransparentGlass)
+                Some(
+                    Preview3dBlockClass::Opaque
+                        | Preview3dBlockClass::TransparentGlass
+                        | Preview3dBlockClass::DetailOpaque
+                )
             ) {
                 FluidFaceMode::TopOnly
             } else {
@@ -3772,13 +3836,14 @@ fn block_face(block: BlockKey, face: FaceDefinition, color: [f32; 4]) -> Preview
 
 fn push_detail_block_faces(
     block: &Preview3dDetailBlock,
+    origin: BlockKey,
     shape: &Preview3dDetailShape,
     faces: &mut Vec<Preview3dFace>,
 ) {
     for cuboid in &shape.cuboids {
         push_cuboid_faces(
-            block.key,
-            cuboid.clone(),
+            origin,
+            cuboid,
             block.color,
             block.material.clone(),
             faces,
@@ -3786,15 +3851,15 @@ fn push_detail_block_faces(
     }
     for plane in &shape.planes {
         push_plane_face(
-            block.key,
-            plane.clone(),
+            origin,
+            plane,
             block.color,
             block.material.clone(),
             faces,
         );
         push_plane_face(
-            block.key,
-            Preview3dPlane {
+            origin,
+            &Preview3dPlane {
                 corners: [
                     plane.corners[3],
                     plane.corners[2],
@@ -3814,7 +3879,7 @@ fn push_detail_block_faces(
 
 fn push_cuboid_faces(
     block: BlockKey,
-    cuboid: Preview3dCuboid,
+    cuboid: &Preview3dCuboid,
     color: [f32; 4],
     material: Preview3dMaterialName,
     faces: &mut Vec<Preview3dFace>,
@@ -3866,13 +3931,13 @@ fn push_cuboid_faces(
         },
     ];
     for plane in planes {
-        push_plane_face(block, plane, color, material.clone(), faces);
+        push_plane_face(block, &plane, color, material.clone(), faces);
     }
 }
 
 fn push_plane_face(
     block: BlockKey,
-    plane: Preview3dPlane,
+    plane: &Preview3dPlane,
     color: [f32; 4],
     material: Preview3dMaterialName,
     faces: &mut Vec<Preview3dFace>,
@@ -3888,7 +3953,7 @@ fn push_plane_face(
         color,
         shade: normal_shade(plane.normal),
         normal: plane.normal,
-        material: plane_material_name(material, &plane),
+        material: plane_material_name(material, plane),
         uv: plane.uv,
     });
 }
@@ -4055,9 +4120,27 @@ fn block_entity_model_states(
                 states.insert(BlockKey { x, y: y - 1, z }, state.clone());
             }
         }
+        // The statue pose is a `Pose` int on the `CopperGolemStatue` block entity, never a
+        // block state.
+        if entity.id.as_deref() == Some("CopperGolemStatue") {
+            state.pose = nbt
+                .get("Pose")
+                .and_then(NbtTag::as_i32)
+                .map(i64::from)
+                .filter(|pose| (0..=3).contains(pose));
+        }
+        // A floor/ceiling skull's horizontal facing is the `Rotation` float on the `Skull`
+        // block entity; the block state only carries floor/ceiling/wall attachment.
+        if entity.id.as_deref() == Some("Skull")
+            && let Some(NbtTag::Float(degrees)) = nbt.get("Rotation")
+        {
+            state.skull_yaw = Some((*degrees).round() as i32);
+        }
         if state.chest_pair_direction.is_some()
             || state.banner.is_some()
             || state.bed_colour.is_some()
+            || state.pose.is_some()
+            || state.skull_yaw.is_some()
         {
             states.insert(BlockKey { x, y, z }, state);
         }
@@ -4168,6 +4251,14 @@ fn detail_shape(
         // A bed's colour is a block-entity field, so it reaches the shape as a synthetic state.
         if let Some(colour) = block_entity_state.bed_colour {
             query = query.with_state("bed_colour", colour);
+        }
+        // The golem statue pose likewise; `pose()` looks it up under this key.
+        if let Some(pose) = block_entity_state.pose {
+            query = query.with_state("block_entity_data.Pose", pose);
+        }
+        // The skull yaw likewise; floor/ceiling mounts rotate the head to it.
+        if let Some(yaw) = block_entity_state.skull_yaw {
+            query = query.with_state("block_entity_data.skull_yaw", yaw);
         }
     }
     let mut shape = model_family::resolve_shape(&query)
@@ -4404,6 +4495,19 @@ fn neighbor_model(state: &BlockState) -> Preview3dNeighborModel {
                 .clamp(0, 15) as u8,
         },
         ModelFamily::Stairs => Preview3dNeighborModel::Stairs,
+        // A wall banner attached vertically (`facing_direction` 0/1) hangs under the block
+        // above; whether the cloth stays two cells tall or compresses back into one depends
+        // on the block below, which only the neighbour pass can see. A standing banner's cloth
+        // hangs into the cell below the same way.
+        ModelFamily::Banner
+            if normalized_block_name(&state.name) == "wall_banner"
+                && matches!(state_i32(state, "facing_direction"), Some(0) | Some(1)) =>
+        {
+            Preview3dNeighborModel::HangingBanner
+        }
+        ModelFamily::Banner if normalized_block_name(&state.name) == "standing_banner" => {
+            Preview3dNeighborModel::StandingBanner
+        }
         _ => Preview3dNeighborModel::None,
     }
 }
@@ -8074,16 +8178,10 @@ mod tests {
 
         let isolated_bars_shape = detail_shape(&test_block_state("minecraft:iron_bars"), None)
             .unwrap_or_else(|| panic!("isolated iron bars should have detail shape"));
-        assert_eq!(isolated_bars_shape.cuboids.len(), 3);
-        assert!(
-            isolated_bars_shape
-                .cuboids
-                .iter()
-                .filter(|cuboid| cuboid.max[0] - cuboid.min[0] >= 1.0
-                    || cuboid.max[2] - cuboid.min[2] >= 1.0)
-                .count()
-                == 2
-        );
+        // The post is the only box; every disconnected side draws its `noside` card as a plane
+        // (a zero-thickness cuboid is skipped by the face emitter and renders as nothing).
+        assert_eq!(isolated_bars_shape.cuboids.len(), 1);
+        assert_eq!(isolated_bars_shape.planes.len(), 4);
 
         let plant_shape = detail_shape(&test_block_state("minecraft:poppy"), None)
             .unwrap_or_else(|| panic!("plant should have detail shape"));
@@ -9655,7 +9753,7 @@ impl Preview3dMeshBuilder {
                 } else {
                     &block.shape
                 };
-                push_detail_block_faces(block, shape, &mut faces);
+                push_detail_block_faces(block, block.key, shape, &mut faces);
                 // Vanilla plants and redstone dust render without directional shading.
                 let unshaded = block.normalized_name.ends_with("redstone_wire")
                     || is_unshaded_detail(&block.normalized_name);
@@ -9777,6 +9875,21 @@ mod streaming_fluid_level_tests {
             face_mode: FluidFaceMode::AllFaces,
             height,
         }
+    }
+
+    #[test]
+    fn fluid_side_uv_is_pinned_to_the_surface_not_stretched() {
+        // A liquid side is not a full cell: its texture is anchored to the surface, so a
+        // 0.5-tall column samples only the top half of the tile (v 0.5..1), not the whole 0..1
+        // squashed into half a cell. A neighbor hiding the bottom third shifts the sampled band.
+        let full = fluid_face_uv([0, 0, 1], 0.0, 1.0);
+        assert!((full[0][1] - 0.0).abs() < 1e-6 && (full[2][1] - 1.0).abs() < 1e-6);
+        let half = fluid_face_uv([0, 0, 1], 0.0, 0.5);
+        assert!((half[0][1] - 0.5).abs() < 1e-6 && (half[2][1] - 1.0).abs() < 1e-6);
+        let shifted = fluid_face_uv([0, 0, 1], 1.0 / 3.0, 1.0);
+        assert!((shifted[0][1] - 1.0 / 3.0).abs() < 1e-6);
+        // Top/bottom faces keep the whole tile.
+        assert_eq!(fluid_face_uv([0, 1, 0], 0.0, 0.5), cube_face_uv([0, 1, 0]));
     }
 
     #[test]
@@ -10190,8 +10303,30 @@ fn fluid_face_segment(
         shade: face.shade,
         normal: face.normal,
         material,
-        uv: None,
+        uv: Some(fluid_face_uv(face.normal, bottom, height)),
     }
+}
+
+/// UVs for a liquid face. A horizontal side is not a full-cell face: its texture is pinned to
+/// the liquid surface, so a `height`-tall column samples only the TOP `height` of the flowing
+/// tile (`v = 1-height .. 1`), stretching it over the visible band rather than squeezing the
+/// whole tile into a short strip. A neighbor that hides the lower part shifts `bottom` up and
+/// samples the correspondingly higher slice. Top/bottom faces keep the whole tile.
+fn fluid_face_uv(normal: [i32; 3], bottom: f32, height: f32) -> [[f32; 2]; 4] {
+    if normal[1] != 0 {
+        return cube_face_uv(normal);
+    }
+    let h = height.clamp(0.05, 1.0);
+    let b = bottom.clamp(0.0, h);
+    let v_bottom = 1.0 - h + b;
+    let v_top = 1.0;
+    // stream_face_corners side order: [bottom, bottom, top, top] in the y component.
+    [
+        [0.0, v_bottom],
+        [1.0, v_bottom],
+        [1.0, v_top],
+        [0.0, v_top],
+    ]
 }
 
 fn fluid_face(

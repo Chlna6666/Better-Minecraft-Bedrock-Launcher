@@ -177,7 +177,11 @@ impl BlockProperties {
     ) -> Option<Arc<Preview3dDetailShape>> {
         // A bed's colour comes from its block entity, so a bed must never take the cached shape:
         // that cache is keyed by palette entry, which cannot tell a red bed from a white one.
-        let entity_coloured = entity.is_some_and(|entity| entity.bed_colour.is_some());
+        // The golem statue pose and the skull yaw live on the block entity too and need the
+        // same bypass.
+        let entity_coloured = entity.is_some_and(|entity| {
+            entity.bed_colour.is_some() || entity.pose.is_some() || entity.skull_yaw.is_some()
+        });
         if entity_coloured {
             return detail_shape(state, entity).map(Arc::new);
         }
