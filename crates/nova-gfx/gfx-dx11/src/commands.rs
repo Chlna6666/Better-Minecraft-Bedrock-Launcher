@@ -326,16 +326,11 @@ impl Dx11Device {
                 if scissor.is_some_and(ScissorRect::is_empty) {
                     continue;
                 }
-                let target_formats = pass
-                    .color_attachments
-                    .iter()
-                    .map(|attachment| attachment.format)
-                    .collect::<Vec<_>>();
                 device.draw_step(
                     command,
                     scissor,
                     viewport_size,
-                    &target_formats,
+                    &pass.color_attachments,
                     dsv.is_some(),
                     &mut state,
                     indirect_index,
@@ -394,21 +389,24 @@ impl Dx11Device {
         command: &RenderCommand,
         step_scissor: Option<ScissorRect>,
         size: Extent2d,
-        target_formats: &[Format],
+        color_attachments: &[ColorAttachmentDescriptor],
         has_depth: bool,
         state: &mut Dx11PassState,
         indirect_index: usize,
     ) -> Result<()> {
-        let pipeline = self.pipelines.get(command.pipeline())?;
-        let formats_match = pipeline
-            .desc
-            .color_targets
-            .iter()
-            .map(|target| target.format)
-            .collect::<Vec<_>>()
-            .as_slice()
-            == target_formats;
-        if !formats_match || (pipeline.desc.depth_state.is_some() && !has_depth) {
+        let pipeline_id = command.pipeline();
+        let pipeline = self.pipelines.get(pipeline_id)?;
+        let pipeline_changed = state.pipeline != Some(pipeline_id.raw());
+        // A pass keeps the same attachments until its state is discarded.
+        if pipeline_changed
+            && (!pipeline
+                .desc
+                .color_targets
+                .iter()
+                .map(|target| target.format)
+                .eq(color_attachments.iter().map(|attachment| attachment.format))
+                || (pipeline.desc.depth_state.is_some() && !has_depth))
+        {
             return Err(Error::InvalidInput(
                 "D3D11 pipeline attachment mismatch".into(),
             ));
@@ -441,8 +439,7 @@ impl Dx11Device {
         // SAFETY: native state objects are retained by this pipeline; all slices
         // remain live through calls. Unchanged state is skipped only within this pass.
         unsafe {
-            let pipeline_key = command.pipeline().raw();
-            if state.pipeline != Some(pipeline_key) {
+            if pipeline_changed {
                 self.context.VSSetShader(&pipeline.vertex, None);
                 self.context.PSSetShader(&pipeline.fragment, None);
                 self.context
@@ -455,7 +452,7 @@ impl Dx11Device {
                         PrimitiveTopology::TriangleList => D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
                         PrimitiveTopology::TriangleStrip => D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
                     });
-                state.pipeline = Some(pipeline_key);
+                state.pipeline = Some(pipeline_id.raw());
             }
             let scissor_key = (rect.left, rect.top, rect.right, rect.bottom);
             if state.scissor != Some(scissor_key) {
