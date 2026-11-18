@@ -29,7 +29,7 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
     None
 }
 
-pub(crate) fn cauldron_shape() -> ModelShape {
+pub(crate) fn cauldron_shape(state: &BlockStateQuery) -> ModelShape {
     // Java Edition `block/cauldron`: four 2 px walls from y=3, a 2x1 inner floor, and eight
     // corner feet. The previous shape used a 16x3 slab plus four walls, so the silhouette was
     // a solid box rather than an open cauldron.
@@ -81,84 +81,176 @@ pub(crate) fn cauldron_shape() -> ModelShape {
             .with_face_material_slot(BlockFace::Side, "side"),
         );
     }
+    let liquid_surface = {
+        let fill = crate::model_family::direction::state_i64(state, "fill_level").unwrap_or(0);
+        let kind = crate::model_family::direction::state_string(state, "cauldron_liquid")
+            .unwrap_or("water");
+        if fill > 0 {
+            // Interior spans x/z 2..14, floor at y4, rim at y16. Level 2/4/6 = 1/3, 2/3, full.
+            let surface_y = 4.0 + (fill as f32 / 6.0) * 12.0;
+            let slot = match kind {
+                "lava" => "cauldron_lava",
+                "powder_snow" => "cauldron_snow",
+                _ => "cauldron_water",
+            };
+            Some(
+                ModelCuboid::new(
+                    [2.0 / 16.0, (surface_y - 1.0) / 16.0, 2.0 / 16.0],
+                    [14.0 / 16.0, surface_y / 16.0, 14.0 / 16.0],
+                )
+                .with_material_slot(slot),
+            )
+        } else {
+            None
+        }
+    };
+    boxes.extend(liquid_surface);
     ModelShape::from_cuboids(boxes)
 }
 
 use crate::model_family::shape::ModelPlane;
 
 pub(crate) fn flower_pot_shape(name: &str) -> ModelShape {
-    // Capture (ref 237): the native pot is ONE solid 6x6x6 box sampling the whole 16x16
-    // `flower_pot` tile per face. The tile's centre rows 6..9 are fully transparent, and the
-    // renderer alpha-tests binary-alpha textures, so the hollow rim comes from the texture —
-    // the previous five-box JE ring fought that by sampling partial rects onto solid walls.
-    let mut shape = ModelShape::from_cuboids([detail_cuboid_with_local_uv(ModelCuboid::new(
-        [px(5.0), 0.0, px(5.0)],
-        [px(11.0), px(6.0), px(11.0)],
-    ))]);
-    if let Some(plant) = name.strip_prefix("potted_") {
-        // Each potted plant keeps its own silhouette: a cactus is a 6 px column, a bamboo shoot a
-        // thin post, a mushroom a stem plus cap. Drawing every one of them as the same oversized
-        // cross plane (the previous model) made the whole family look alike.
-        shape.cuboids.extend(potted_plant_cuboids(plant));
-        if potted_plant_uses_cross(plant) {
-            shape.planes.extend(cross_plant_planes());
+    // JE `flower_pot` model: five boxes whose per-face UVs name the exact drawn regions of the
+    // 16x16 `flower_pot` tile (art only at x5..11, y5..16). The previous single solid box sampled
+    // the WHOLE tile per face, so the pot rendered as a plain brown block. The tile's transparent
+    // centre rows form the hollow rim through alpha-testing.
+    let pot = |min: [f32; 3], max: [f32; 3], faces: &[(BlockFace, [f32; 4])]| {
+        let mut cuboid = ModelCuboid::new(min.map(px), max.map(px));
+        for (face, rect) in faces {
+            let uv = if matches!(face, BlockFace::Up | BlockFace::Down) {
+                pot_top_uv(*rect)
+            } else {
+                pot_side_uv(*rect)
+            };
+            cuboid = cuboid.with_face_uv(*face, uv);
         }
+        cuboid
+    };
+    // uv rects are [u0, v0, u1, v1] in image pixels, measured from the texture top.
+    let mut cuboids = vec![
+        // west wall x5..6
+        pot(
+            [5.0, 0.0, 5.0],
+            [6.0, 6.0, 11.0],
+            &[
+                (BlockFace::Down, [5.0, 5.0, 6.0, 11.0]),
+                (BlockFace::Up, [5.0, 5.0, 6.0, 11.0]),
+                (BlockFace::North, [10.0, 10.0, 11.0, 16.0]),
+                (BlockFace::South, [5.0, 10.0, 6.0, 16.0]),
+                (BlockFace::West, [5.0, 10.0, 11.0, 16.0]),
+                (BlockFace::East, [5.0, 10.0, 11.0, 16.0]),
+            ],
+        ),
+        // east wall x10..11
+        pot(
+            [10.0, 0.0, 5.0],
+            [11.0, 6.0, 11.0],
+            &[
+                (BlockFace::Down, [10.0, 5.0, 11.0, 11.0]),
+                (BlockFace::Up, [10.0, 5.0, 11.0, 11.0]),
+                (BlockFace::North, [5.0, 10.0, 6.0, 16.0]),
+                (BlockFace::South, [10.0, 10.0, 11.0, 16.0]),
+                (BlockFace::West, [5.0, 10.0, 11.0, 16.0]),
+                (BlockFace::East, [5.0, 10.0, 11.0, 16.0]),
+            ],
+        ),
+        // north wall z5..6
+        pot(
+            [6.0, 0.0, 5.0],
+            [10.0, 6.0, 6.0],
+            &[
+                (BlockFace::Down, [6.0, 10.0, 10.0, 11.0]),
+                (BlockFace::Up, [6.0, 5.0, 10.0, 6.0]),
+                (BlockFace::North, [6.0, 10.0, 10.0, 16.0]),
+                (BlockFace::South, [6.0, 10.0, 10.0, 16.0]),
+            ],
+        ),
+        // south wall z10..11
+        pot(
+            [6.0, 0.0, 10.0],
+            [10.0, 6.0, 11.0],
+            &[
+                (BlockFace::Down, [6.0, 5.0, 10.0, 6.0]),
+                (BlockFace::Up, [6.0, 10.0, 10.0, 11.0]),
+                (BlockFace::North, [6.0, 10.0, 10.0, 16.0]),
+                (BlockFace::South, [6.0, 10.0, 10.0, 16.0]),
+            ],
+        ),
+        // inner floor (dirt on top)
+        pot(
+            [6.0, 0.0, 6.0],
+            [10.0, 4.0, 10.0],
+            &[
+                (BlockFace::Down, [6.0, 12.0, 10.0, 16.0]),
+            ],
+        ),
+    ];
+    let mut shape = ModelShape::from_cuboids(cuboids);
+    if let Some(plant) = name.strip_prefix("potted_") {
+        // Each potted plant keeps its own silhouette and its OWN flower sprite: the two crossed
+        // cards sample the plant's block texture (poppy → flower_rose, etc.) instead of the pot.
+        let plant_uv = crate::model_family::shape::full_texture_uv();
+        let cross = [
+            ModelPlane::new(
+                [
+                    [0.1625, 0.25, 0.0],
+                    [0.8375, 0.25, 1.0],
+                    [0.8375, 1.0, 1.0],
+                    [0.1625, 1.0, 0.0],
+                ],
+                [-1, 0, 1],
+            )
+            .with_uv(plant_uv),
+            ModelPlane::new(
+                [
+                    [1.0, 0.25, 0.0],
+                    [0.0, 0.25, 1.0],
+                    [0.0, 1.0, 1.0],
+                    [1.0, 1.0, 0.0],
+                ],
+                [1, 0, 1],
+            )
+            .with_uv(plant_uv),
+        ];
+        shape.planes.extend(cross.map(|plane| plane.with_material_slot(plant)));
+        shape.cuboids.extend(potted_plant_cuboids(plant));
     }
     shape
 }
 
-/// The solid part of a potted plant, sized from its own block model.
+/// The solid part of a potted plant, sized from its own block model. The cross cards above
+/// carry flowers/saplings; cactus, bamboo and mushrooms have their own volume.
 fn potted_plant_cuboids(plant: &str) -> Vec<ModelCuboid> {
     match plant {
-        // A potted cactus is a 6 px column rising out of the pot.
         "cactus" => vec![ModelCuboid::new(
             [px(5.0), px(6.0), px(5.0)],
             [px(11.0), px(13.0), px(11.0)],
         )],
-        // Bamboo keeps its thin 2 px shoot.
         "bamboo" => vec![ModelCuboid::new(
             [px(7.0), px(6.0), px(7.0)],
             [px(9.0), px(13.0), px(9.0)],
         )],
-        // Mushrooms are a narrow stem under a wider cap.
         "red_mushroom" | "brown_mushroom" => vec![
             ModelCuboid::new([px(7.0), px(6.0), px(7.0)], [px(9.0), px(10.0), px(9.0)]),
             ModelCuboid::new([px(5.0), px(10.0), px(5.0)], [px(11.0), px(12.0), px(11.0)]),
         ],
-        // A dead bush is bare twigs; the cross plane carries it.
-        "deadbush" => Vec::new(),
-        // Everything else is a cross-shaped plant.
         _ => Vec::new(),
     }
 }
 
-/// Whether the potted plant draws as a cross (flowers, saplings, ferns, dead bush, ...).
-fn potted_plant_uses_cross(plant: &str) -> bool {
-    !matches!(plant, "cactus" | "bamboo" | "red_mushroom" | "brown_mushroom")
+/// A cap UV (up/down) from a JE-style rect measured from the texture top: our face corner 0 is
+/// the bottom-left, so V is inverted.
+fn pot_top_uv(rect: [f32; 4]) -> [[f32; 2]; 4] {
+    let [u0, v0, u1, v1] = rect;
+    [[u0 / 16.0, v1 / 16.0], [u1 / 16.0, v1 / 16.0], [u1 / 16.0, v0 / 16.0], [u0 / 16.0, v0 / 16.0]]
 }
 
-/// The cross plane a potted plant uses, sitting inside the pot rim.
-fn cross_plant_planes() -> [ModelPlane; 2] {
-    [
-        ModelPlane::new(
-            [
-                [0.0625, 0.0, -0.0625],
-                [1.0625, 0.0, 0.9375],
-                [1.0625, 0.75, 0.9375],
-                [0.0625, 0.75, -0.0625],
-            ],
-            [-1, 0, 1],
-        ),
-        ModelPlane::new(
-            [
-                [1.0625, 0.0, -0.0625],
-                [0.0625, 0.0, 0.9375],
-                [0.0625, 0.75, 0.9375],
-                [1.0625, 0.75, -0.0625],
-            ],
-            [1, 0, 1],
-        ),
-    ]
+/// A side UV from a JE-style rect (V inverted like the caps, U mirrored for the renderer's
+/// front-face convention).
+fn pot_side_uv(rect: [f32; 4]) -> [[f32; 2]; 4] {
+    let [u0, v0, u1, v1] = rect;
+    [[u1 / 16.0, v1 / 16.0], [u0 / 16.0, v1 / 16.0], [u0 / 16.0, v0 / 16.0], [u1 / 16.0, v0 / 16.0]]
 }
 
 /// Bedrock decorated pot: a block-actor with five model keys — `decorated_pot_base` (top,
@@ -228,14 +320,19 @@ fn pot_face_uv(
 }
 
 pub(crate) fn brewing_stand_shape() -> ModelShape {
-    ModelShape::from_cuboids([
-        ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.125, 1.0]),
-        ModelCuboid::new([0.4375, 0.125, 0.4375], [0.5625, 0.875, 0.5625]),
-    ])
+    // The block body comes from the client's own tessellated mesh (capture geometry 854 /
+    // appearance 5381), decoded with its atlas UVs — see brewing_capture.rs. This replaces the
+    // old two-cuboid guess (a flat slab + thin post) that missed the four feet and the stand's
+    // sloped supports. The three potion bottles and the flame are block-entity art (not part of
+    // this mesh) and are keyed by the `brewing_stand_slot_*_bit` states elsewhere.
+    ModelShape::default().with_planes(super::brewing_capture::planes())
 }
 
 pub(crate) fn enchanting_table_shape() -> ModelShape {
-    ModelShape::from_cuboids([ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.75, 1.0])])
+    // The block base is a 0.75-tall box whose side UVs span only v 0.25..1; a full-tile
+    // projection (detail_cuboid_with_local_uv) stretched the art. Use the client's decoded mesh
+    // (capture geometry 403 / appearance 4607). The hovering book is block-entity art, separate.
+    ModelShape::default().with_planes(super::enchanting_capture::planes())
 }
 
 pub(crate) fn composter_shape(state: &BlockStateQuery) -> ModelShape {
@@ -278,10 +375,32 @@ pub(crate) fn end_portal_frame_shape(state: &BlockStateQuery) -> ModelShape {
             .with_face_material_slot(BlockFace::Side, "side"),
     )];
     if state_bool(state, "end_portal_eye_bit").unwrap_or(false) {
-        cuboids.push(detail_cuboid_with_local_uv(
-            ModelCuboid::new([px(4.0), px(13.0), px(4.0)], [px(12.0), 1.0, px(12.0)])
-                .with_material_slot("carried"),
-        ));
+        // `endframe_eye.png` paints the eye square at x4..12, y4..12 and a dark base band at
+        // y0..3. Java's `end_portal_frame_filled` binds exactly those: the top face samples the
+        // centred square uv [4,4,12,12] and the 3 px-tall sides take the top band uv
+        // [4,0,12,3]. Sampling the whole painted region on every face squeezed 12 px of art
+        // onto the 3 px sides — the striped bands the screenshots showed.
+        let eye_top = crate::model_family::shape::rect_uv(
+            4.0 / 16.0,
+            4.0 / 16.0,
+            12.0 / 16.0,
+            12.0 / 16.0,
+        );
+        let eye_side = [
+            [4.0 / 16.0, 3.0 / 16.0],
+            [12.0 / 16.0, 3.0 / 16.0],
+            [12.0 / 16.0, 0.0],
+            [4.0 / 16.0, 0.0],
+        ];
+        let eye_cube = ModelCuboid::new([px(4.0), px(13.0), px(4.0)], [px(12.0), 1.0, px(12.0)])
+            .with_material_slot("carried")
+            .with_face_uv(BlockFace::Up, eye_top)
+            .with_face_uv(BlockFace::Down, eye_top)
+            .with_face_uv(BlockFace::North, eye_side)
+            .with_face_uv(BlockFace::South, eye_side)
+            .with_face_uv(BlockFace::East, eye_side)
+            .with_face_uv(BlockFace::West, eye_side);
+        cuboids.push(eye_cube);
     }
     ModelShape::from_cuboids(cuboids)
 }

@@ -37,6 +37,12 @@ pub(crate) fn cross_plant_shape(name: &str, state: &BlockStateQuery) -> Option<M
     if name.ends_with("_coral_fan") {
         return Some(coral_fan_shape(state));
     }
+    // Solid coral blocks (tube/brain/bubble/fire/horn, alive and dead) share one captured shape
+    // (ref 149): two FULL-CELL diagonal sheets corner-to-corner, not the generic 45° mini-cross
+    // (which left them hollow). Use the exact captured corners.
+    if name.ends_with("_coral") {
+        return Some(coral_block_shape());
+    }
     if hangs_from_above(name) {
         return Some(cross_plane_shape_with_uv(
             0.0,
@@ -47,54 +53,86 @@ pub(crate) fn cross_plant_shape(name: &str, state: &BlockStateQuery) -> Option<M
     Some(cross_plane_shape(0.0, 1.0))
 }
 
-/// The floor coral fan: four sheets measured from the capture (ref 204, `coral_fan_direction`
-/// 0, tube). Blades A lean along +x with their top edge 5.6 px high spanning z 4..20 px; blades
-/// B lean −x with their top edge 8.8 px high spanning z −0.8..24.8 px. Direction 1 mirrors the
-/// pair along the other axis.
-fn coral_fan_shape(state: &BlockStateQuery) -> ModelShape {
-    let direction_one = state_i64(state, "coral_fan_direction")
-        .or_else(|| state_i64(state, "minecraft:coral_fan_direction"))
-        .unwrap_or(0)
-        & 1
-        == 1;
+/// A solid coral block: two full-cell diagonal sheets crossing corner to corner, from the exact
+/// capture geometry (ref 149, shared by every live/dead `*coral` block). The generic plant cross
+/// used inset 45° cards (`0.5 ± 0.354`), leaving the block hollow; these span 0..1 corner to
+/// corner. Each sheet is emitted double-sided so it reads from any angle.
+fn coral_block_shape() -> ModelShape {
     let uv = upright_full_texture_uv();
-    let sheet = |bottom_x: f32, top_x: f32, z0: f32, z1: f32, top_y: f32| {
+    let sheet = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]| {
         [
-            ModelPlane::new(
-                [
-                    [bottom_x, 0.0, z1],
-                    [bottom_x, 0.0, z0],
-                    [top_x, top_y, z0],
-                    [top_x, top_y, z1],
-                ],
-                [0, 0, 1],
-            )
-            .with_uv(uv),
-            ModelPlane::new(
-                [
-                    [bottom_x, 0.0, z0],
-                    [bottom_x, 0.0, z1],
-                    [top_x, top_y, z1],
-                    [top_x, top_y, z0],
-                ],
-                [0, 0, -1],
-            )
-            .with_uv(uv),
+            ModelPlane::new([a, b, c, d], [0, 1, 0]).with_uv(uv),
+            ModelPlane::new([d, c, b, a], [0, -1, 0]).with_uv(uv),
         ]
     };
-    // Captured corners in block units; blades overhang by construction.
-    let blades_a = sheet(0.2833, 1.0833, 0.25, 1.25, 0.35);
-    let blades_b = sheet(0.7833, -0.2167, -0.05, 1.55, 0.55);
-    let mut shape = ModelShape::default().with_planes(
-        blades_a
-            .into_iter()
-            .chain(blades_b)
-            .collect::<Vec<_>>(),
-    );
-    if direction_one {
-        shape = rotate_shape_y_degrees(shape, 90.0);
-    }
-    shape
+    ModelShape::default().with_planes(
+        // sheet 1: (0,0,1)-(1,1,0)
+        sheet(
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+        )
+        .into_iter()
+        // sheet 2: (0,0,0)-(1,1,1)
+        .chain(sheet(
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 0.0, 1.0],
+        ))
+        .collect::<Vec<_>>(),
+    )
+}
+
+/// The floor coral fan: a shallow, mostly-flat fan. The capture (ref 204 tube) gives four
+/// diagonal sheets with an X/Z outline that matches the game, but its y values (0..0.55) are the
+/// model-space lift of the overhanging tips — in world the fan lies almost flat on the ground.
+/// Flatten y so the blades spread across the floor like the game's fan, not stand up as fins.
+/// The `coral_fan_direction` state rotates the same outline through 0/90/180/270 degrees.
+fn coral_fan_shape(state: &BlockStateQuery) -> ModelShape {
+    let direction = state_i64(state, "coral_fan_direction")
+        .or_else(|| state_i64(state, "minecraft:coral_fan_direction"))
+        .unwrap_or(0)
+        .rem_euclid(4);
+    let uv = upright_full_texture_uv();
+    // Flatten the model-space lift: tips stay just above the floor.
+    let flat = |c: [f32; 3]| [c[0], c[1] * 0.18, c[2]];
+    let quad = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]| {
+        let corners = [flat(a), flat(b), flat(c), flat(d)];
+        ModelPlane::new(corners, [0, 1, 0]).with_uv(uv)
+    };
+    let shape = ModelShape::default().with_planes([
+        // low blade leaning +x
+        quad(
+            [0.2833, 0.0, 0.25],
+            [0.2833, 0.0, 1.25],
+            [1.0833, 0.35, 1.25],
+            [1.0833, 0.35, 0.25],
+        ),
+        // blade reaching z 1.55
+        quad(
+            [0.7833, 0.55, 1.55],
+            [-0.2167, 0.55, 1.55],
+            [-0.2167, 0.0, 0.75],
+            [0.7833, 0.0, 0.75],
+        ),
+        // blade reaching z -0.05
+        quad(
+            [0.7833, 0.55, -0.05],
+            [-0.2167, 0.55, -0.05],
+            [-0.2167, 0.0, 0.75],
+            [0.7833, 0.0, 0.75],
+        ),
+        // low blade leaning -x
+        quad(
+            [-0.5167, 0.35, 1.25],
+            [-0.5167, 0.35, 0.25],
+            [0.2833, 0.0, 0.25],
+            [0.2833, 0.0, 1.25],
+        ),
+    ]);
+    rotate_shape_y_degrees(shape, direction as f32 * 90.0)
 }
 
 /// Two-cell plants draw three crossed cards per cell, not one pair.

@@ -527,7 +527,17 @@ fn quarter_turn_clockwise(cuboid: &ModelCuboid) -> ModelCuboid {
             .insert(clockwise_face(*face), slot.clone());
     }
     for (face, uv) in &cuboid.face_uvs {
-        rotated.face_uvs.insert(clockwise_face(*face), *uv);
+        // The caps carry the art that has to turn with the block: a directional top texture
+        // (the repeater's mechanism grooves, a comparator's arrow) stays put if only the face
+        // slot moves, which left the base art pointing the authored way while the torches
+        // turned. Rotate the cap UVs inside their face; seen from below a clockwise turn reads
+        // counter-clockwise, hence the opposite quarter count on the underside.
+        let uv = match face {
+            BlockFace::Up => rotate_uv_quarter(*uv, 1),
+            BlockFace::Down => rotate_uv_quarter(*uv, 3),
+            _ => *uv,
+        };
+        rotated.face_uvs.insert(clockwise_face(*face), uv);
     }
     rotated
 }

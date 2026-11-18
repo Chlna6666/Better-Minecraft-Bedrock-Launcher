@@ -243,26 +243,6 @@ fn push_cube_planes(
             corner[1] = corner[1].clamp(low, high);
             uvs[index] = model_uv(face, uv, min, max, *corner);
         }
-        // The bed's four **vertical** sides in world space are the model's East/West faces.
-        //
-        // `point_to_block` maps model `z` to world `Y`, so the model's `x`-normal faces (East and
-        // West) become the upright sides, while the model's `z`-normal faces (North and South)
-        // become the horizontal caps. The box unwrap gives East/West
-        // `v = depth + (y1 - model_y)` — a V that follows the model's **length** (32 px) — but
-        // that face is only `depth` (6 px) tall in world space, so the art is squashed by
-        // `32 / depth` and the 1-texel frame rail at `v 6..7` covers a sixth of the side instead
-        // of a sixteenth. That is what made the brown frame read as too big and in the wrong
-        // place. Remap V onto the unwrap's own side band, `v0 + depth .. v0 + 2*depth`, using the
-        // model `z` that actually became the world height.
-        if matches!(face, BlockFace::East | BlockFace::West) {
-            let depth = max[2] - min[2];
-            let band_start = uv[1] + depth;
-            for (index, corner) in clipped.iter().enumerate() {
-                // model z 0 is the top (world Y highest), model z = depth is the underside.
-                let height = (corner[2] - min[2]) / depth.max(1e-6);
-                uvs[index][1] = (band_start + height * depth) / BED_TEXTURE_SPAN;
-            }
-        }
         let block = clipped.map(|point| point_to_block(point, half_low));
         let block = rotate_corners(block, direction);
         let normal = plane_normal(block);
@@ -295,6 +275,17 @@ fn model_uv(
     point: [f32; 3],
 ) -> [f32; 2] {
     let [u, v] = box_unwrap_uv(face, uv, min, max, point);
+    // The +Y end cap becomes the bed's head-end vertical face after `point_to_block` (model z
+    // maps to world Y inverted: small z → high Y). The generic box unwrap runs V as `z - z0`,
+    // which puts the sprite's brown frame row (v 0..2) at the top of the face — reversed. The
+    // -Y cap (foot end) already uses `z1 - z`, so both end faces must run V the same way for
+    // the white sheet to sit above the frame. Flip the +Y cap's V to match.
+    let v = if face == BlockFace::Up {
+        let [_, _, z1] = max;
+        uv[1] + (z1 - point[2])
+    } else {
+        v
+    };
     [u / BED_TEXTURE_SPAN, v / BED_TEXTURE_SPAN]
 }
 

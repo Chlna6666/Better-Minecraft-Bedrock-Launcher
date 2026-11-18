@@ -89,13 +89,18 @@ pub(crate) fn lever_shape(state: &BlockStateQuery) -> ModelShape {
 /// north when on, off a pivot at the plate's top centre. Every handle face samples the stick
 /// strip `lever[7..9, 6..16]` (the base plate samples cobblestone through the block's own map).
 fn canonical_lever(open: bool) -> ModelShape {
+    // The plate is cobblestone (`blocks.json` east = lever_particle → cobblestone), sampled
+    // through the capture's own windows: the 6 x 8 top/down patch and the bottom 3 px band on
+    // the sides. The previous map took the band from rows 0..3 and left the plate on the
+    // lever sheet, which is what read as a stretched handle texture.
     let base = ModelCuboid::new([5.0, 0.0, 4.0].map(px), [11.0, 3.0, 12.0].map(px))
         .with_face_uv(BlockFace::Up, uv16(5.0, 4.0, 11.0, 12.0))
         .with_face_uv(BlockFace::Down, uv16(5.0, 4.0, 11.0, 12.0))
-        .with_face_uv(BlockFace::North, uv16(5.0, 0.0, 11.0, 3.0))
-        .with_face_uv(BlockFace::South, uv16(5.0, 0.0, 11.0, 3.0))
-        .with_face_uv(BlockFace::West, uv16(4.0, 0.0, 12.0, 3.0))
-        .with_face_uv(BlockFace::East, uv16(4.0, 0.0, 12.0, 3.0));
+        .with_face_uv(BlockFace::North, uv16(5.0, 13.0, 11.0, 16.0))
+        .with_face_uv(BlockFace::South, uv16(5.0, 13.0, 11.0, 16.0))
+        .with_face_uv(BlockFace::West, uv16(4.0, 13.0, 12.0, 16.0))
+        .with_face_uv(BlockFace::East, uv16(4.0, 13.0, 12.0, 16.0))
+        .with_material_slot("lever_base");
 
     // Captured cross-section (y, z) in pixels, pivot (2, 8) first, then pivot->tip edges.
     let section: [[f32; 2]; 4] = if open {
@@ -113,7 +118,11 @@ fn canonical_lever(open: bool) -> ModelShape {
             [8.3744, 15.96],
         ]
     };
+    // The capture binds the handle's long faces to the stick column's lower 10 px and its two
+    // END faces to just the top 2 px (uv 7..9, 6..8); stretching the full column onto the end
+    // caps smeared the stick art across them.
     let section_uv = uv16(7.0, 6.0, 9.0, 16.0);
+    let end_uv = uv16(7.0, 6.0, 9.0, 8.0);
     let (x0, x1) = (px(7.0), px(9.0));
     let at = |index: usize, x: f32| {
         [x, section[index][0] / 16.0, section[index][1] / 16.0]
@@ -129,12 +138,17 @@ fn canonical_lever(open: bool) -> ModelShape {
             .with_uv(section_uv),
         );
     }
-    // The four strips connecting the sheets along the handle's length.
+    // The four strips connecting the sheets along the handle's length. Edges (0,1) and (2,3)
+    // are the pivot and tip ends (2 px tall); the other two run the handle's full length.
     for (a, b) in [(0usize, 1usize), (1, 2), (2, 3), (3, 0)] {
         let normal = strip_normal(section[a], section[b]);
+        let uv = if matches!((a, b), (0, 1) | (2, 3)) {
+            end_uv
+        } else {
+            section_uv
+        };
         planes.push(
-            ModelPlane::new([at(a, x0), at(a, x1), at(b, x1), at(b, x0)], normal)
-                .with_uv(section_uv),
+            ModelPlane::new([at(a, x0), at(a, x1), at(b, x1), at(b, x0)], normal).with_uv(uv),
         );
     }
     ModelShape::from_cuboids([base]).with_planes(planes)

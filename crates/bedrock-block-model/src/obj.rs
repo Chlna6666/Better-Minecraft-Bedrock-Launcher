@@ -864,6 +864,11 @@ impl ObjTextureResolver {
                 .strip_suffix("_shulker_box")
                 .filter(|color| *color != "undyed")
                 .unwrap_or("undyed");
+            // Bedrock keeps the legacy dye names for the art: the modern `light_gray` block
+            // ships as `silver` (`shulker_silver`, `shulker_top_silver`). Formatting the block
+            // suffix directly missed the skin, so those boxes fell back to the 16x16 top tile
+            // on every face.
+            let color = if color == "light_gray" { "silver" } else { color };
             let is_top = slot.is_none_or(|slot| slot == "up");
             let texture_key = if is_top {
                 format!("textures/blocks/shulker_top_{color}")
@@ -1649,6 +1654,13 @@ pub fn material_texture_tint(material_name: &str, color: [f32; 4]) -> Option<[f3
     if is_water_block(&block) {
         return Some([0.267, 0.686, 0.961]);
     }
+    // The cauldron liquid is the vanilla grey sheet; the standard water colour replaces the
+    // biome sample the full water blocks use, since the cauldron is not itself a water block.
+    if block == "cauldron"
+        && material_instance_slot(material_name).as_deref() == Some("cauldron_water")
+    {
+        return Some([0.267, 0.686, 0.961]);
+    }
     if !biome_tint_applies(material_name) {
         return None;
     }
@@ -1708,6 +1720,10 @@ pub fn material_uses_texture_alpha(material_name: &str) -> bool {
     }
     if is_foliage_block(&block) {
         return !texture_name.ends_with("_opaque");
+    }
+    if block == "cauldron" {
+        // Only the liquid sheet is half-transparent; the metal body stays opaque.
+        return material_instance_slot(material_name).as_deref() == Some("cauldron_water");
     }
     if is_cross_plant(&block) || is_transparent_detail_block(&block) {
         return true;
@@ -2025,6 +2041,39 @@ fn texture_value_keys(normal: [i32; 3]) -> &'static [&'static str] {
 #[must_use]
 /// Terrain material for a model slot whose art lives in a sibling block entry.
 fn shared_slot_texture(block: &str, slot: &str) -> Option<String> {
+    // `repeater_torch` / `comparator_torch` are two-frame terrain arrays [off, on]. The shape
+    // puts the powered state in the slot suffix (`torch_on`/`torch_off`) so an active repeater's
+    // redstone torch lights up instead of always using frame 0 (off).
+    if let Some(state) = slot.strip_prefix("torch_")
+        && (block.ends_with("repeater") || block.ends_with("comparator"))
+    {
+        let key = if block.ends_with("repeater") {
+            "repeater_torch"
+        } else {
+            "comparator_torch"
+        };
+        return match state {
+            "on" => Some(format!("{key}#1")),
+            "off" => Some(format!("{key}#0")),
+            _ => None,
+        };
+    }
+    // Repeater/comparator slab: the mechanism art on top is the two-frame `repeater_up` /
+    // `comparator_up` array [off, on]; the stone base is the shared floor slab.
+    if block.ends_with("repeater") || block.ends_with("comparator") {
+        let top_key = if block.ends_with("repeater") {
+            "repeater_up"
+        } else {
+            "comparator_up"
+        };
+        match slot {
+            "top_off" => return Some(format!("{top_key}#0")),
+            "top_on" => return Some(format!("{top_key}#1")),
+            "repeater_floor" => return Some("repeater_floor".to_owned()),
+            "comparator_floor" => return Some("comparator_stone_slab".to_owned()),
+            _ => {}
+        }
+    }
     if slot == "torch" && block.ends_with("repeater") {
         return Some("repeater_torch".to_owned());
     }
@@ -2052,9 +2101,70 @@ fn shared_slot_texture(block: &str, slot: &str) -> Option<String> {
     if block == "sniffer_egg" && let Some(stage) = slot.strip_prefix("sniffer_") {
         return sniffer_stage_key(stage);
     }
+    if block == "cocoa" && let Some(stage) = slot.strip_prefix("cocoa_") {
+        // `cocoa` is a 3-frame terrain array [stage0, stage1, stage2] indexed by the pod age.
+        return stage.parse::<usize>().ok().map(|frame| format!("cocoa#{frame}"));
+    }
     if block == "decorated_pot" {
         return match slot {
             "pot_base" => Some("decorated_pot#1".to_owned()),
+            _ => None,
+        };
+    }
+    // The capture-baked anvil meshes name their faces `flattened_anvil_top` / `_base`. The top
+    // art is a four-frame `anvil_top_damaged_x` array indexed by damage, so the pristine alias
+    // alone painted every chipped/damaged anvil with the undamaged top.
+    if slot == "flattened_anvil_top" && matches!(block, "anvil" | "chipped_anvil" | "damaged_anvil")
+    {
+        let damage = match block {
+            "chipped_anvil" => 1,
+            "damaged_anvil" => 2,
+            _ => 0,
+        };
+        return Some(format!("anvil_top_damaged_x#{damage}"));
+    }
+    // A potted plant's cross cards name the plant species as their material slot; resolve it
+    // to that flower's own block texture (e.g. poppy -> flower_rose.png) instead of the pot.
+    if block.starts_with("potted_") && !slot.starts_with("flower_pot") {
+        let plant = &block[7..];
+        if let Some(key) = shared_slot_texture(&format!("minecraft:{plant}"), slot) {
+            return Some(key);
+        }
+        return Some(format!("{plant}"));
+    }
+    if slot == "lever_base" && block.ends_with("lever") {
+        // The lever's cobblestone plate; `blocks.json` only exposes it through the east slot.
+        return Some("lever_particle".to_owned());
+    }
+    if block.ends_with("sculk_sensor") {
+        // The sensor's art (base faces, tendril sheets, calibrated amethyst cross) has no
+        // `blocks.json` entry, so each slot names its own terrain key directly.
+        let calibrated = block.starts_with("calibrated_");
+        return match slot {
+            "sculk_top" => Some(
+                if calibrated {
+                    "calibrated_sculk_sensor_top"
+                } else {
+                    "sculk_sensor_top"
+                }
+                .to_owned(),
+            ),
+            "sculk_side" => Some("sculk_sensor_side".to_owned()),
+            "sculk_input_side" => Some("calibrated_sculk_sensor_input_side".to_owned()),
+            "sculk_bottom" => Some("sculk_sensor_bottom".to_owned()),
+            "sculk_tendrils" => Some("sculk_sensor_tendril_inactive".to_owned()),
+            "sculk_amethyst" => Some("calibrated_sculk_sensor_amethyst".to_owned()),
+            _ => None,
+        };
+    }
+    if block == "cauldron" {
+        // The liquid surface is its own texture, not a face of the metal body:
+        // `cauldron_water` is the vanilla grey half-transparent sheet (tinted like water
+        // below), lava and powder snow reuse their block textures.
+        return match slot {
+            "cauldron_water" => Some("cauldron_water".to_owned()),
+            "cauldron_lava" => Some("still_lava".to_owned()),
+            "cauldron_snow" => Some("snow".to_owned()),
             _ => None,
         };
     }
@@ -2100,7 +2210,10 @@ fn shared_spike_segment_texture(block: &str, slot: &str) -> Option<String> {
 /// `sniffer_<stage>_<face>`, and `terrain_texture.json` registers one three-frame array per
 /// face — `[not_cracked, slightly_cracked, very_cracked]` selected by the `#frame` suffix.
 fn sniffer_stage_key(slot: &str) -> Option<String> {
-    let (stage, face) = slot.split_once('_')?;
+    // The stage name itself contains underscores (`max_cracked`), so split at the LAST
+    // underscore — `split_once` cut `max_cracked_top` into stage=`max`, face=`cracked_top`,
+    // which matched no stage and fell back to the uncracked sheet.
+    let (stage, face) = slot.rsplit_once('_')?;
     let frame = match stage {
         "" | "no_cracks" => 0,
         "cracked" => 1,

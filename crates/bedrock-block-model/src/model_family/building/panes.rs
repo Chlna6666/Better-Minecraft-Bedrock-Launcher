@@ -71,9 +71,17 @@ impl PaneKind {
 
 /// The 2 px post that every pane has at its centre.
 fn pane_post_cuboid(kind: PaneKind) -> ModelCuboid {
+    // Capture (geo 290 / app 3075, standalone pane): the 2 px post sides sample the u7..9,
+    // v0..16 strip of the glass sheet; the caps take the u7..9, v7..9 patch. Leaving side UVs
+    // unset made the renderer stretch the whole 16x16 tile over the 2 px faces ("拉扯").
+    let side_uv = uv16(7.0, 0.0, 9.0, 16.0);
     ModelCuboid::new([0.4375, 0.0, 0.4375], [0.5625, 1.0, 0.5625])
         .with_face_uv(BlockFace::Up, uv16(7.0, 7.0, 9.0, 9.0))
         .with_face_uv(BlockFace::Down, uv16(7.0, 7.0, 9.0, 9.0))
+        .with_face_uv(BlockFace::North, side_uv)
+        .with_face_uv(BlockFace::South, side_uv)
+        .with_face_uv(BlockFace::West, side_uv)
+        .with_face_uv(BlockFace::East, side_uv)
         .with_face_material_slot(BlockFace::Up, kind.edge_slot())
         .with_face_material_slot(BlockFace::Down, kind.edge_slot())
         .with_face_material_slot(BlockFace::North, kind.face_slot())

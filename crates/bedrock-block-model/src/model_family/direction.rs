@@ -205,6 +205,33 @@ impl FaceRotation {
 
     /// The identity rotation, used for blocks that never turn.
     pub(super) const NONE: Self = Self { yaw: 0, pitch: 0 };
+
+    /// The authored face whose art lands on `world` under this rotation.
+    ///
+    /// `apply` sends an authored face to its world face; this inverts it, so a world face's
+    /// slot is the slot authored on the returned face. Blocks with distinct front/back/side
+    /// art (jigsaw, observer) need the whole map — keeping the authored roles in place leaves
+    /// the front art on the wrong side faces once the block turns.
+    #[must_use]
+    pub(super) fn authored_face_for(
+        self,
+        world: crate::material::BlockFace,
+    ) -> crate::material::BlockFace {
+        use crate::material::BlockFace;
+        for authored in [
+            BlockFace::Up,
+            BlockFace::Down,
+            BlockFace::North,
+            BlockFace::South,
+            BlockFace::East,
+            BlockFace::West,
+        ] {
+            if self.apply(authored) == world {
+                return authored;
+            }
+        }
+        world
+    }
 }
 
 /// One ±90 degree pitch about the X axis.
@@ -258,7 +285,7 @@ pub(super) fn face_rotation(name: &str, state: &BlockStateQuery) -> FaceRotation
     FaceRotation::NONE
 }
 
-fn target_face(facing: BlockFacing) -> crate::material::BlockFace {
+pub(super) fn target_face(facing: BlockFacing) -> crate::material::BlockFace {
     use crate::material::BlockFace;
     match facing {
         BlockFacing::North => BlockFace::North,

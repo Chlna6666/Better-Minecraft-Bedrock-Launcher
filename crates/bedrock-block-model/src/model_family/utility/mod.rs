@@ -1,5 +1,8 @@
+pub(super) mod anvil_capture;
+pub(super) mod brewing_capture;
 pub(super) mod containers;
 pub(super) mod crafting;
+pub(super) mod enchanting_capture;
 pub(super) mod stations;
 
 use crate::model_family::ModelFamily;

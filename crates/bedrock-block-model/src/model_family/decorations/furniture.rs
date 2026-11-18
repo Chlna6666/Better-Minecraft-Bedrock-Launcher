@@ -204,30 +204,59 @@ const fn px(value: f32) -> f32 {
     value / 16.0
 }
 
-/// Standing banners are two blocks, like doors: `standing_banner` carries the pole and the lower
-/// half of the cloth, and the `banner` block above carries the upper half. A lone `banner` (the
-/// lower block removed) still draws its own half. Wall banners are a single block and squeeze the
-/// whole cloth into it.
+/// Banners are ONE block each in Bedrock (`standing_banner` / `wall_banner`; there is no plain
+/// `banner` block): the visual simply spills out of the cell. A standing banner's pole spans its
+/// cell and the full 20 x 40 px cloth hangs from the pole top into the cell below — the
+/// two-block-tall look. When that cell is occupied (`banner_compressed`, resolved from the
+/// neighbour) the cloth squeezes back into the banner's own cell. A vertically attached wall
+/// banner (`facing_direction` 0/1) hangs under the block above with the same compression rule
+/// (`hanging_compressed`); wall-mounted ones (2..5) keep the cloth flat against the mount face.
 pub(crate) fn banner_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
-    let upper = name == "banner";
     if name.ends_with("wall_banner") {
+        let facing = crate::model_family::direction::state_i64(state, "facing_direction");
+        if matches!(facing, Some(0) | Some(1)) {
+            let compressed = crate::model_family::direction::state_bool(
+                state,
+                "hanging_compressed",
+            )
+            .unwrap_or(false);
+            if !compressed {
+                return ModelShape::from_cuboids([
+                    banner_cloth(hanging_banner_cloth(), true, true),
+                    banner_rod(hanging_banner_rod()),
+                ]);
+            }
+            return ModelShape::from_cuboids([
+                banner_cloth(hanging_banner_cloth_compressed(), true, true),
+                banner_rod(hanging_banner_rod()),
+            ]);
+        }
         let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
         return ModelShape::from_cuboids([
             banner_cloth(wall_banner_cloth(direction), true, true),
             banner_rod(wall_banner_rod(direction)),
         ]);
     }
-    // Vanilla standing banner: a 2 px pole with a 20 x 40 px cloth hanging in front of it; the
-    // cloth is split across the two blocks at its middle (`ground_sign_direction` 0 = south,
-    // 22.5 degrees per step clockwise from above).
+    // Standing banner (and the legacy `banner` spelling): the pole spans the cell, the cloth
+    // hangs from the pole top — y 16 down to y −24 px, i.e. 2.5 cells — and the rod rides the
+    // cloth's bottom edge. `ground_sign_direction` 0 = south, 22.5 degrees per step clockwise.
+    let compressed = crate::model_family::direction::state_bool(state, "banner_compressed")
+        .unwrap_or(false);
+    let cloth = if compressed {
+        banner_cloth_cuboid()
+    } else {
+        ModelCuboid::new([-0.125, -1.5, 0.5625], [1.125, 1.0, 0.625])
+    };
+    let rod = if compressed {
+        banner_rod_cuboid()
+    } else {
+        ModelCuboid::new([-0.125, -1.5, 0.5625], [1.125, -1.4375, 0.625])
+    };
     let mut cuboids = vec![
-        banner_cloth(banner_cloth_cuboid(), !upper, false),
+        banner_cloth(cloth, true, true),
         banner_pole_cuboid(),
+        banner_rod(rod),
     ];
-    if !upper {
-        // The bottom edge of the cloth carries the wooden rod from the sheet.
-        cuboids.push(banner_rod(banner_rod_cuboid()));
-    }
     rotate_shape_y_degrees(ModelShape::from_cuboids(cuboids), ground_sign_degrees(state))
 }
 
@@ -397,6 +426,22 @@ fn wall_banner_cloth(direction: CardinalDirection) -> ModelCuboid {
         CardinalDirection::East => ModelCuboid::new([0.9375, 0.0, -0.125], [1.0, 0.9375, 1.125]),
         CardinalDirection::West => ModelCuboid::new([0.0, 0.0, -0.125], [0.0625, 0.9375, 1.125]),
     }
+}
+
+/// A hanging banner hangs under the block above it: the rod hugs the mount and the full
+/// 40 px cloth panel drops below the cell (2.5 blocks total).
+fn hanging_banner_cloth() -> ModelCuboid {
+    ModelCuboid::new([-0.125, -1.5625, 0.5625], [1.125, 0.9375, 0.625])
+}
+
+/// The squeezed hanging cloth: the whole panel compressed back into one cell because the
+/// block below the mount is occupied.
+fn hanging_banner_cloth_compressed() -> ModelCuboid {
+    ModelCuboid::new([-0.125, 0.0, 0.5625], [1.125, 0.9375, 0.625])
+}
+
+fn hanging_banner_rod() -> ModelCuboid {
+    ModelCuboid::new([-0.125, 0.9375, 0.5625], [1.125, 1.0, 0.625])
 }
 
 fn wall_banner_rod(direction: CardinalDirection) -> ModelCuboid {

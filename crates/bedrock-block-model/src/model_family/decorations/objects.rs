@@ -104,44 +104,15 @@ pub(crate) fn scaffolding_shape(state: &BlockStateQuery) -> ModelShape {
 /// the per-rail UVs never lined up with the pack's single shelf texture.
 pub(crate) fn shelf_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::South);
-    // Capture (ref 118 south): a back panel spanning the full cell width and height 3 px deep,
-    // plus two 2 px lips at y 0..4 and y 12..16 reaching z 3..5 — not one solid 5 px slab (the
-    // previous model filled the shelf interior).
-    let back = ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 1.0, px(3.0)]);
-    let top_lip = ModelCuboid::new([0.0, px(12.0), px(3.0)], [1.0, 1.0, px(5.0)]);
-    let bottom_lip = ModelCuboid::new([0.0, 0.0, px(3.0)], [1.0, px(4.0), px(5.0)]);
-    // The pack art is the 32x32 unfolded sheet (`oak_shelf.png`): the right half carries the
-    // shelf interior, the left half the three south-facing bands (lips + back), and the thin
-    // strips the rims. Rects below follow the captured appearance (appearance ref 2376).
-    let sheet = |u0: f32, v0: f32, u1: f32, v1: f32| {
-        crate::model_family::shape::rect_uv(u0 / 32.0, v0 / 32.0, u1 / 32.0, v1 / 32.0)
-    };
-    // South face pieces (the room-facing side): bottom lip band, back band, top lip band.
-    let back = back
-        .with_face_uv(BlockFace::South, sheet(0.0, 8.1, 15.8, 23.9))
-        .with_face_uv(BlockFace::Up, sheet(16.1, 18.2, 32.0, 23.9))
-        .with_face_uv(BlockFace::Down, sheet(16.1, 14.2, 32.0, 19.9))
-        .with_face_uv(BlockFace::East, sheet(29.1, 0.0, 32.0, 32.0))
-        .with_face_uv(BlockFace::West, sheet(16.1, 0.0, 18.9, 32.0))
-        .with_face_uv(BlockFace::North, sheet(16.1, 0.0, 32.0, 32.0));
-    let top_lip = top_lip
-        .with_face_uv(BlockFace::South, sheet(0.0, 24.2, 15.8, 32.0))
-        .with_face_uv(BlockFace::East, sheet(3.0, 24.2, 4.8, 32.0))
-        .with_face_uv(BlockFace::West, sheet(11.0, 24.2, 12.9, 32.0))
-        .with_face_uv(BlockFace::Down, sheet(0.0, 24.2, 15.8, 32.0));
-    let bottom_lip = bottom_lip
-        .with_face_uv(BlockFace::South, sheet(0.0, 0.0, 15.8, 7.8))
-        .with_face_uv(BlockFace::East, sheet(3.0, 0.0, 4.8, 7.8))
-        .with_face_uv(BlockFace::West, sheet(11.0, 0.0, 12.9, 7.8))
-        .with_face_uv(BlockFace::Up, sheet(0.0, 0.0, 15.8, 7.8));
-    let shape = ModelShape::from_cuboids([back, top_lip, bottom_lip]);
-    ModelShape::from_cuboids(
-        shape
-            .cuboids
-            .into_iter()
-            .map(|cuboid| rotate_cuboid_from_south(cuboid, direction))
-            .collect::<Vec<_>>(),
-    )
+    // The UVs here must come from the client's own tessellation (capture geometry 118-121 /
+    // appearance 2376-2379). The earlier hand-estimated rects from the atlas-space appearance
+    // stretched the art. Each of the four facings has its own captured 16-plane mesh.
+    ModelShape::default().with_planes(match direction {
+        CardinalDirection::South => super::shelf_capture::planes_south(),
+        CardinalDirection::West => super::shelf_capture::planes_west(),
+        CardinalDirection::North => super::shelf_capture::planes_north(),
+        CardinalDirection::East => super::shelf_capture::planes_east(),
+    })
 }
 
 pub(crate) fn heavy_core_shape() -> ModelShape {
@@ -152,27 +123,52 @@ pub(crate) fn heavy_core_shape() -> ModelShape {
 }
 
 pub(crate) fn conduit_shape() -> ModelShape {
-    ModelShape::from_cuboids([detail_cuboid_with_local_uv(ModelCuboid::new(
-        [px(5.0), 0.0, px(5.0)],
-        [px(11.0), px(6.0), px(11.0)],
-    ))])
+    // `conduit_base.png` is a 24x12 atlas: the middle 12x12 columns (x6..18) are the main face
+    // art and the left/right 6x6 cells (upper half only) are the side art. The old code sampled
+    // the whole atlas on every face of the 6x6x6 box, smearing all three regions into one.
+    // Keep the client's single-box silhouette but give each face the central main tile.
+    let uv = [
+        [6.0 / 24.0, 12.0 / 12.0],
+        [18.0 / 24.0, 12.0 / 12.0],
+        [18.0 / 24.0, 0.0],
+        [6.0 / 24.0, 0.0],
+    ];
+    let mut cuboid = ModelCuboid::new([px(5.0), 0.0, px(5.0)], [px(11.0), px(6.0), px(11.0)])
+        .with_material_slot("conduit_base");
+    for face in [
+        BlockFace::Up,
+        BlockFace::Down,
+        BlockFace::North,
+        BlockFace::South,
+        BlockFace::East,
+        BlockFace::West,
+    ] {
+        cuboid = cuboid.with_face_uv(face, uv);
+    }
+    ModelShape::from_cuboids([cuboid])
 }
 
 pub(crate) fn dried_ghast_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::South);
-    // `dried_ghast_<face>` terrain keys are four-variant arrays indexed by rehydration_level + 1,
-    // so the stage travels in the per-face slot (`ghast_<stage>_<face>`) and `obj.rs` binds the
-    // matching frame; the geometry itself is identical across stages (capture refs 398..401).
+    // The ghast textures live in the vanilla_1.21.90 overlay as seven four-frame terrain
+    // arrays named for the GHAST's own sides — `dried_ghast_front/back/left/right/top/bottom/
+    // tentacles`, each [state_1..state_4] indexed by rehydration_level. The authored model
+    // faces south (front = south), so the head slots carry those ghast-side names
+    // (`ghast_<stage>_<face>`) and `obj.rs` binds `dried_ghast_<face>#<stage>`. The previous
+    // slots used north/south/east/west/down — no such terrain keys — so every head face fell
+    // back to the top tile and the tentacle slabs had no slot at all.
     let stage = state_i64(state, "rehydration_level").unwrap_or(0).clamp(0, 3);
     let slot = |face: &str| format!("ghast_{stage}_{face}");
     let mut cuboids = vec![
         ModelCuboid::new([px(3.0), 0.0, px(3.0)], [px(13.0), px(10.0), px(13.0)])
             .with_face_material_slot(BlockFace::Up, &slot("top"))
-            .with_face_material_slot(BlockFace::Down, &slot("down"))
-            .with_face_material_slot(BlockFace::North, &slot("north"))
-            .with_face_material_slot(BlockFace::South, &slot("south"))
-            .with_face_material_slot(BlockFace::East, &slot("east"))
-            .with_face_material_slot(BlockFace::West, &slot("west")),
+            .with_face_material_slot(BlockFace::Down, &slot("bottom"))
+            // Authored facing south: the face looks south, the back is north, and the ghast's
+            // own left hand points east.
+            .with_face_material_slot(BlockFace::South, &slot("front"))
+            .with_face_material_slot(BlockFace::North, &slot("back"))
+            .with_face_material_slot(BlockFace::East, &slot("left"))
+            .with_face_material_slot(BlockFace::West, &slot("right")),
     ];
     cuboids.extend([
         ModelCuboid::new([0.0, 0.0, px(5.0)], [px(3.0), px(1.0), px(7.0)]),
@@ -186,7 +182,10 @@ pub(crate) fn dried_ghast_shape(state: &BlockStateQuery) -> ModelShape {
     ModelShape::from_cuboids(
         cuboids
             .into_iter()
-            .map(|cuboid| detail_cuboid_with_local_uv(rotate_cuboid_from_south(cuboid, direction)))
+            .map(|cuboid| {
+                detail_cuboid_with_local_uv(rotate_cuboid_from_south(cuboid, direction))
+                    .with_material_slot(&slot("tentacles"))
+            })
             .collect::<Vec<_>>(),
     )
 }
@@ -311,15 +310,19 @@ pub(crate) fn egg_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
         // cracked_state), so the stage travels in the material slot.
         let stage = egg_stage_suffix(state, "sniffer_egg");
         let slot = |face: &str| format!("sniffer_{stage}_{face}");
-        return ModelShape::from_cuboids([detail_cuboid_with_local_uv(
-            ModelCuboid::new([px(1.0), 0.0, px(2.0)], [px(15.0), 1.0, px(14.0)])
-                .with_face_material_slot(BlockFace::Up, &slot("top"))
-                .with_face_material_slot(BlockFace::Down, &slot("down"))
-                .with_face_material_slot(BlockFace::North, &slot("north"))
-                .with_face_material_slot(BlockFace::South, &slot("south"))
-                .with_face_material_slot(BlockFace::East, &slot("east"))
-                .with_face_material_slot(BlockFace::West, &slot("west")),
-        )]);
+        let mut egg = ModelCuboid::new([px(1.0), 0.0, px(2.0)], [px(15.0), 1.0, px(14.0)]);
+        let uv = crate::model_family::shape::full_texture_uv();
+        for (face, name) in [
+            (BlockFace::Up, "top"),
+            (BlockFace::Down, "down"),
+            (BlockFace::North, "north"),
+            (BlockFace::South, "south"),
+            (BlockFace::East, "east"),
+            (BlockFace::West, "west"),
+        ] {
+            egg = egg.with_face_material_slot(face, &slot(name)).with_face_uv(face, uv);
+        }
+        return ModelShape::from_cuboids([egg]);
     }
 
     let count = match state_string(state, "turtle_egg_count").unwrap_or("one_egg") {
@@ -344,13 +347,24 @@ pub(crate) fn egg_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     ModelShape::from_cuboids(cuboids)
 }
 
-/// One turtle egg box; every face samples the whole sheet (the tile is isotropic egg art, and
-/// `turtle_egg` is one terrain key whose three array frames are the crack stages).
+/// One turtle egg box; every face samples the WHOLE 16x16 sheet. The tile is a complete egg
+/// shell art (roughly x0..14, y0..15), so the per-box projection would crop each small egg to
+/// a strip of it — the shell speckles and crack marks would never line up. `turtle_egg` is one
+/// terrain key whose three array frames are the crack stages.
 fn egg_cuboid(x0: f32, x1: f32, y_max: f32, z0: f32, z1: f32, stage: &str) -> ModelCuboid {
-    detail_cuboid_with_local_uv(
-        ModelCuboid::new([x0, 0.0, z0], [x1, y_max, z1])
-            .with_material_slot(&format!("turtle_{stage}")),
-    )
+    let cuboid = ModelCuboid::new([x0, 0.0, z0], [x1, y_max, z1])
+        .with_material_slot(&format!("turtle_{stage}"));
+    let uv = crate::model_family::shape::full_texture_uv();
+    [
+        BlockFace::Up,
+        BlockFace::Down,
+        BlockFace::North,
+        BlockFace::South,
+        BlockFace::East,
+        BlockFace::West,
+    ]
+    .into_iter()
+    .fold(cuboid, |cuboid, face| cuboid.with_face_uv(face, uv))
 }
 
 /// The crack-stage suffix for one egg state: `no_cracks` keeps the default slot, the two cracked

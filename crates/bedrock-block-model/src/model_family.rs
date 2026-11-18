@@ -187,7 +187,7 @@ fn model_shape(state: &BlockStateQuery) -> Option<ModelShape> {
             Some(utility::containers::chiseled_bookshelf_shape(state))
         }
         ModelFamily::Anvil => Some(utility::stations::anvil_shape(state)),
-        ModelFamily::Cauldron => Some(utility::crafting::cauldron_shape()),
+        ModelFamily::Cauldron => Some(utility::crafting::cauldron_shape(state)),
         ModelFamily::Composter => Some(utility::crafting::composter_shape(state)),
         ModelFamily::EndPortalFrame => Some(utility::crafting::end_portal_frame_shape(state)),
         ModelFamily::FlowerPot => Some(utility::crafting::flower_pot_shape(name)),
@@ -288,6 +288,10 @@ pub fn needs_engine_fallback(name: &str) -> bool {
         || name.ends_with("_bed")
         || name == "shulker_box"
         || name.ends_with("_shulker_box")
+        // The cauldron family carries the liquid surface (water/lava/powder snow by
+        // `cauldron_liquid` + `fill_level`), which the registry block definition cannot
+        // express — registry geometry would drop the interior contents.
+        || name == "cauldron"
 }
 
 #[must_use]
@@ -324,15 +328,73 @@ pub fn full_block_shape(_name: &str, state: &BlockStateQuery) -> ModelShape {
 
     // Only blocks whose `blocks.json` entry has a `front` slot turn their faces. A pillar's
     // `pillar_axis` already assigned `top`/`side`, and re-running the face map would clobber it.
-    // A block with a `front` slot shows that art on the face its state points at. The other
-    // faces keep their **role** — a furnace's `east`/`west` sides stay `east`/`west` no matter
-    // which way it faces. Rotating the whole slot map (the previous approach) moved `side` art
-    // onto the front and swapped the side pairs, which is why multi-face blocks looked spliced.
+    // Each world face takes the slot authored on the face the rotation sends there, so the
+    // whole textured model turns as a unit: jigsaw's socket lands on the facing face with the
+    // arrows rolled onto the remaining four, and a west-facing furnace shows plain sides on its
+    // back instead of a second front. Keeping the authored roles in place (the previous
+    // approach) left `front`/`back` art stuck on the north/south faces for every non-identity
+    // facing.
     //
     // A pillar's `pillar_axis` already assigned `top`/`side`; re-running the face map would
-    // clobber it, so axis-aligned blocks skip this step.
-    if !matches!(axis, "x" | "z") {
-        let front = direction::front_face_for(_name, state);
+    // clobber it, so axis-aligned blocks skip this step. Six-face-uniform blocks (e.g. end
+    // gateway, whose `blocks.json` has a single `textures` key) must also skip it: giving one
+    // face a `front` slot made the resolver fall through to the `textures/items` icon.
+    if normalized_block_name(_name) == "jigsaw" {
+        // The jigsaw turns its whole textured cube: the authored model (socket north, dark
+        // south, arrows on the four roll faces, all arrows running along the socket axis) aims
+        // its socket at `facing_direction`, then `rotation` rolls it around that axis. The
+        // slot-map path below would place the textures on the right faces but leave every
+        // arrow upright — the arrows must travel with the rigid rotation instead.
+        let mut rotated = ModelShape::from_cuboids([shape::detail_cuboid_with_local_uv(cuboid)]);
+        match direction::block_facing(state).map(direction::target_face) {
+            Some(crate::material::BlockFace::South) => {
+                rotated = shape::rotate_shape_y_degrees(rotated, 180.0);
+            }
+            Some(crate::material::BlockFace::East) => {
+                rotated = shape::rotate_shape_y_degrees(rotated, 90.0);
+            }
+            Some(crate::material::BlockFace::West) => {
+                rotated = shape::rotate_shape_y_degrees(rotated, 270.0);
+            }
+            Some(crate::material::BlockFace::Up) => {
+                rotated = shape::rotate_shape_x(rotated, 1);
+            }
+            Some(crate::material::BlockFace::Down) => {
+                rotated = shape::rotate_shape_x(rotated, 3);
+            }
+            _ => {}
+        }
+        let roll = direction::state_i64(state, "rotation").unwrap_or(0).rem_euclid(4) as i32;
+        let roll_y = |degrees: f32, shape: ModelShape| shape::rotate_shape_y_degrees(shape, degrees);
+        match direction::block_facing(state).map(direction::target_face) {
+            Some(crate::material::BlockFace::North) => {
+                rotated = roll_y(90.0, rotated);
+                rotated = shape::rotate_shape_x(rotated, roll);
+                rotated = roll_y(270.0, rotated);
+            }
+            Some(crate::material::BlockFace::South) => {
+                rotated = roll_y(270.0, rotated);
+                rotated = shape::rotate_shape_x(rotated, roll);
+                rotated = roll_y(90.0, rotated);
+            }
+            Some(crate::material::BlockFace::East) => {
+                rotated = shape::rotate_shape_x(rotated, roll);
+            }
+            Some(crate::material::BlockFace::West) => {
+                rotated = shape::rotate_shape_x(rotated, 4 - roll);
+            }
+            Some(crate::material::BlockFace::Up) => {
+                rotated = roll_y((roll * 90) as f32, rotated);
+            }
+            Some(crate::material::BlockFace::Down) => {
+                rotated = roll_y(((4 - roll) * 90) as f32, rotated);
+            }
+            _ => {}
+        }
+        return rotated;
+    }
+    if !matches!(axis, "x" | "z") && is_oriented_full_block_name(_name) {
+        let rotation = direction::face_rotation(_name, state);
         for face in [
             crate::material::BlockFace::Up,
             crate::material::BlockFace::Down,
@@ -341,10 +403,7 @@ pub fn full_block_shape(_name: &str, state: &BlockStateQuery) -> ModelShape {
             crate::material::BlockFace::East,
             crate::material::BlockFace::West,
         ] {
-            if Some(face) == front {
-                continue;
-            }
-            let slot = match face {
+            let slot = match rotation.authored_face_for(face) {
                 crate::material::BlockFace::Up => "up",
                 crate::material::BlockFace::Down => "down",
                 crate::material::BlockFace::North => "north",
@@ -353,9 +412,6 @@ pub fn full_block_shape(_name: &str, state: &BlockStateQuery) -> ModelShape {
                 _ => "west",
             };
             cuboid = cuboid.with_face_material_slot(face, slot);
-        }
-        if let Some(front) = front {
-            cuboid = cuboid.with_face_material_slot(front, "front");
         }
     }
     ModelShape::from_cuboids([shape::detail_cuboid_with_local_uv(cuboid)])
@@ -1122,7 +1178,6 @@ fn is_oriented_full_block_name(name: &str) -> bool {
             | "lit_furnace"
             | "lit_smoker"
             | "crafter"
-            | "end_gateway"
             | "jigsaw"
             | "loom"
             | "command_block"
@@ -1536,12 +1591,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing scaffolding"));
         assert!(scaffolding.cuboids.len() >= 9);
 
-        // The shelf is a back panel (3 px) plus two lips (2 px), measured from the client
-        // (capture ref 118); the single 5 px slab was the old, solid shape.
+        // The shelf uses the client's own tessellated mesh (capture geo 118 / appearance 2376),
+        // with one 16-plane mesh per facing — not 3 hand-built cuboids with estimated UVs.
         let shelf = model_shape(&BlockStateQuery::new("minecraft:pale_oak_shelf"))
             .unwrap_or_else(|| panic!("missing shelf"));
-        assert_eq!(shelf.cuboids.len(), 3);
-        assert!((shelf.cuboids[0].max[2] - 0.1875).abs() < 0.001);
+        assert!(shelf.cuboids.is_empty());
+        assert_eq!(shelf.planes.len(), 16);
 
         let heavy_core = model_shape(&BlockStateQuery::new("minecraft:heavy_core"))
             .unwrap_or_else(|| panic!("missing heavy core"));
@@ -1572,14 +1627,16 @@ mod tests {
                 .iter()
                 .any(|cuboid| (cuboid.max[1] - 1.5).abs() < 0.001)
         );
-        let body_north_uv = copper_golem_standing.cuboids[0]
+        // The golem's face is on its south (+Z) face; Bedrock's box unwrap puts that panel at
+        // `u + depth` (verified against the eyes in copper_golem.png), not the north panel.
+        let body_south_uv = copper_golem_standing.cuboids[0]
             .face_uvs
-            .get(&BlockFace::North)
-            .unwrap_or_else(|| panic!("missing copper golem body north UV"));
-        assert!((body_north_uv[0][0] - 6.0 / 64.0).abs() < 0.001);
-        assert!((body_north_uv[0][1] - 21.0 / 64.0).abs() < 0.001);
-        assert!((body_north_uv[2][0] - 14.0 / 64.0).abs() < 0.001);
-        assert!((body_north_uv[2][1] - 27.0 / 64.0).abs() < 0.001);
+            .get(&BlockFace::South)
+            .unwrap_or_else(|| panic!("missing copper golem body south UV"));
+        assert!((body_south_uv[0][0] - 6.0 / 64.0).abs() < 0.001);
+        assert!((body_south_uv[0][1] - 21.0 / 64.0).abs() < 0.001);
+        assert!((body_south_uv[2][0] - 14.0 / 64.0).abs() < 0.001);
+        assert!((body_south_uv[2][1] - 27.0 / 64.0).abs() < 0.001);
 
         let copper_golem_sitting = model_shape(
             &BlockStateQuery::new("minecraft:exposed_copper_golem_statue")
@@ -1953,15 +2010,18 @@ mod tests {
     }
 
     #[test]
-    fn banner_halves_split_the_cloth_across_two_blocks() {
+    fn standing_banner_is_one_block_spilling_into_the_cell_below() {
         use crate::material::BlockFace;
 
-        // A standing banner is two blocks: `standing_banner` shows the pole plus the lower half
-        // of the 20 x 40 px cloth, the `banner` above shows the upper half. Rendering the whole
-        // banner in both blocks stacked two banners on top of each other.
-        fn cloth(name: &str) -> ((f32, f32), (f32, f32), f32, f32) {
-            let shape = model_shape(&BlockStateQuery::new(name))
-                .unwrap_or_else(|| panic!("missing {name}"));
+        // A standing banner is ONE block: the pole spans its cell and the full 20 x 40 px
+        // cloth hangs from the pole top into the cell below (the two-block-tall look). The
+        // compressed neighbour state squeezes the cloth back into the banner's own cell.
+        fn cloth(name: &str, compressed: bool) -> ((f32, f32), (f32, f32), f32, f32, usize) {
+            let mut query = BlockStateQuery::new(name);
+            if compressed {
+                query = query.with_state("banner_compressed", true);
+            }
+            let shape = model_shape(&query).unwrap_or_else(|| panic!("missing {name}"));
             let cuboid = shape
                 .cuboids
                 .iter()
@@ -1979,24 +2039,27 @@ mod tests {
                 (cuboid.min[1], cuboid.max[1]),
                 v_min,
                 v_max,
+                shape.cuboids.len(),
             )
         }
 
-        let (lower_x, lower_y, lower_v0, lower_v1) = cloth("minecraft:standing_banner");
-        let (upper_x, upper_y, upper_v0, upper_v1) = cloth("minecraft:banner");
-        // Both halves have to line up: same width, same one-block height in their own cell.
-        assert!((lower_x.0 - upper_x.0).abs() < 1e-4 && (lower_x.1 - upper_x.1).abs() < 1e-4);
-        assert!((lower_y.0 - upper_y.0).abs() < 1e-4 && (lower_y.1 - upper_y.1).abs() < 1e-4);
-        // The cloth panel starts at row 1; rows 1..21 are the upper half and 21..41 the lower.
-        assert!((upper_v0 - 1.0 / 64.0).abs() < 1e-4 && (upper_v1 - 21.0 / 64.0).abs() < 1e-4);
-        assert!((lower_v0 - 21.0 / 64.0).abs() < 1e-4 && (lower_v1 - 41.0 / 64.0).abs() < 1e-4);
-
-        // Only the bottom block carries the rod; the top block is cloth and pole.
-        let bottom = model_shape(&BlockStateQuery::new("minecraft:standing_banner"))
-            .expect("standing banner");
-        let top = model_shape(&BlockStateQuery::new("minecraft:banner")).expect("banner");
-        assert_eq!(bottom.cuboids.len(), 3, "pole, cloth and bottom rod");
-        assert_eq!(top.cuboids.len(), 2, "pole and cloth only");
+        let (free_x, free_y, free_v0, free_v1, free_parts) =
+            cloth("minecraft:standing_banner", false);
+        // The cloth keeps its 20 px width and the full panel art (rows 1..41 on the sheet).
+        assert!((free_x.0 + 0.125).abs() < 1e-4 && (free_x.1 - 1.125).abs() < 1e-4);
+        assert!((free_v0 - 1.0 / 64.0).abs() < 1e-4 && (free_v1 - 41.0 / 64.0).abs() < 1e-4);
+        // The free cloth hangs from the pole top down into the cell below.
+        assert!((free_y.0 + 1.5).abs() < 1e-4 && (free_y.1 - 1.0).abs() < 1e-4);
+        assert_eq!(free_parts, 3, "pole, cloth and bottom rod");
+        // The compressed cloth keeps the full panel but squeezes into the banner's own cell.
+        let (_, squeezed_y, squeezed_v0, squeezed_v1, squeezed_parts) =
+            cloth("minecraft:standing_banner", true);
+        assert!((squeezed_y.0).abs() < 1e-4 && (squeezed_y.1 - 1.0).abs() < 1e-4);
+        assert!((squeezed_v0 - free_v0).abs() < 1e-4 && (squeezed_v1 - free_v1).abs() < 1e-4);
+        assert_eq!(squeezed_parts, free_parts);
+        // The legacy `banner` spelling renders the same full banner.
+        let (legacy_x, _, _, _, _) = cloth("minecraft:banner", false);
+        assert!((legacy_x.0 - free_x.0).abs() < 1e-4 && (legacy_x.1 - free_x.1).abs() < 1e-4);
     }
 
     #[test]
@@ -2276,9 +2339,7 @@ mod tests {
         let connected_shape =
             model_shape(&connected).unwrap_or_else(|| panic!("missing connected pane shape"));
 
-        // Vanilla's multipart model is post + one slab per connected side + one `noside` quad per
-        // open side. A connected pane therefore has one cuboid (the post), one arm, and three
-        // single-face cards.
+        // Vanilla multipart: post + one arm per connected side + one noside quad per open side.
         assert_eq!(connected_shape.cuboids.len(), 2);
         assert_eq!(connected_shape.planes.len(), 3);
         assert_eq!(
@@ -2320,8 +2381,7 @@ mod tests {
         let isolated_shape =
             model_shape(&isolated).unwrap_or_else(|| panic!("missing isolated pane shape"));
 
-        // An isolated pane is the post plus four `noside` quads, none of which spans the cell: it
-        // must not fill the block with a pair of full-size cards.
+        // An isolated pane is the post plus four noside quads, none spans the full cell.
         assert_eq!(isolated_shape.cuboids.len(), 1, "only the post is a box");
         assert_eq!(isolated_shape.planes.len(), 4, "one open card per direction");
         assert!(
@@ -2678,8 +2738,8 @@ mod tests {
             }
             for plane in &shape.planes {
                 parts.push(format!(
-                    "{:?}{:?}{:?}",
-                    plane.normal, plane.corners, plane.material_slot
+                    "{:?}{:?}{:?}{:?}",
+                    plane.normal, plane.corners, plane.material_slot, plane.uv
                 ));
             }
             parts.join("|")
@@ -3059,11 +3119,11 @@ mod tests {
     }
 
     #[test]
-    fn bed_side_faces_sample_the_thickness_band_not_the_length() {
-        // A bed's upright sides are the geometry's East/West faces (model `z` becomes world Y).
-        // The box unwrap gives them a V that follows the model's 32 px length, but the face is
-        // only 6 px tall, so sampling that squashed the art 32/6 times and stretched the 1-texel
-        // frame rail. The sides must instead take the 6 px thickness band `v 6..12`.
+    fn bed_side_faces_sample_the_length_band() {
+        // Bedrock's box-UV unwrap of the 6 px mattress cube puts its +X/-X (world upright)
+        // sides on `u 0..6 / 22..28` (the 6 px thickness) with V running along the bed's length.
+        // Each half therefore spans 16 px of V (the full bed is 32 px). An earlier remap forced
+        // V onto a 6 px band, collapsing the side quads to a line and sampling the leg art.
         let shape = model_shape(
             &BlockStateQuery::new("minecraft:bed")
                 .with_state("direction", 0)
@@ -3086,8 +3146,8 @@ mod tests {
             let v0 = uv.iter().map(|c| c[1] * 64.0).fold(f32::INFINITY, f32::min);
             let v1 = uv.iter().map(|c| c[1] * 64.0).fold(f32::NEG_INFINITY, f32::max);
             assert!(
-                (v1 - v0 - 6.0).abs() < 1e-3,
-                "mattress side spans v {v0}..{v1}, expected a 6 px thickness band"
+                (v1 - v0 - 16.0).abs() < 1e-3,
+                "mattress side spans v {v0}..{v1}, expected a 16 px length band"
             );
             checked += 1;
         }
@@ -3310,16 +3370,14 @@ mod tests {
         let anvil = BlockStateQuery::new("minecraft:anvil")
             .with_state("minecraft:cardinal_direction", "east");
         let anvil_shape = model_shape(&anvil).unwrap_or_else(|| panic!("missing anvil shape"));
-        assert_eq!(anvil_shape.cuboids.len(), 4);
-        assert_eq!(
-            anvil_shape.cuboids[0].material_slot.as_deref(),
-            Some("side")
-        );
+        // The anvil now uses the client's decoded mesh (4 boxes = 24 planes per facing).
+        assert!(anvil_shape.cuboids.is_empty());
+        assert_eq!(anvil_shape.planes.len(), 24);
         assert!(
             anvil_shape
-                .cuboids
+                .planes
                 .iter()
-                .any(|cuboid| cuboid.max[1] == 1.0)
+                .any(|p| p.corners.iter().any(|c| (c[1] - 1.0).abs() < 0.001))
         );
 
         let stonecutter = BlockStateQuery::new("minecraft:stonecutter")
@@ -3359,10 +3417,10 @@ mod tests {
         let potted = BlockStateQuery::new("minecraft:potted_poppy");
         let potted_shape =
             model_shape(&potted).unwrap_or_else(|| panic!("missing flower pot shape"));
-        // The capture pot is one solid 6x6x6 box (the texture's transparent centre opens the
-        // rim through alpha cutout), then the plant adds its own silhouette (a cross-plane pair
-        // for a poppy).
-        assert_eq!(potted_shape.cuboids.len(), 1);
+        // JE `flower_pot` model: five boxes whose per-face UVs name the painted regions of the
+        // 16x16 tile (the earlier single-box + alpha-cutout approach sampled the whole tile and
+        // rendered a plain brown block). The poppy adds a cross-plane pair.
+        assert_eq!(potted_shape.cuboids.len(), 5);
         assert_eq!(potted_shape.planes.len(), 2);
     }
 
@@ -3448,7 +3506,8 @@ mod tests {
             BlockStateQuery::new("minecraft:unpowered_repeater").with_state("repeater_delay", 3);
         let shape_d0 = model_shape(&repeater_d0).unwrap();
         let shape_d3 = model_shape(&repeater_d3).unwrap();
-        assert_ne!(shape_d0.cuboids[2].min[2], shape_d3.cuboids[2].min[2]);
+        // Cuboids: [0] base, [1] input stick, [2] input cap, [3] delay stick, [4] delay cap.
+        assert_ne!(shape_d0.cuboids[3].min[2], shape_d3.cuboids[3].min[2]);
 
         // Bedrock keeps the base and the head in separate blocks, so both states are one box.
         let piston_normal = BlockStateQuery::new("minecraft:piston");

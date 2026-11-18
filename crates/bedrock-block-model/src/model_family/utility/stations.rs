@@ -27,52 +27,16 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
 
 pub(crate) fn anvil_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
-    let turns = match direction {
-        CardinalDirection::North => 0,
-        CardinalDirection::East => 1,
-        CardinalDirection::South => 2,
-        CardinalDirection::West => 3,
-    };
-    // Every anvil box is symmetric, so the facing only shows in the texture: rotate each face's
-    // UV quad inside the face instead of relying on the geometry turn.
-    let mut shape = rotate_shape_cardinal(
-        ModelShape::from_cuboids([
-            anvil_side_cuboid_with_uv(ModelCuboid::new([0.125, 0.0, 0.125], [0.875, 0.25, 0.875])),
-            anvil_side_cuboid_with_uv(ModelCuboid::new(
-                [0.25, 0.25, 0.1875],
-                [0.75, 0.3125, 0.8125],
-            )),
-            anvil_cuboid_with_uv(
-                ModelCuboid::new([0.375, 0.3125, 0.25], [0.625, 0.625, 0.75]),
-                uv16(6.0, 5.0, 10.0, 13.0),
-                uv16(0.0, 0.0, 16.0, 16.0),
-            ),
-            anvil_cuboid_with_uv(
-                ModelCuboid::new([0.1875, 0.625, 0.0], [0.8125, 1.0, 1.0]),
-                uv16(0.0, 0.0, 16.0, 10.0),
-                uv16(0.0, 0.0, 16.0, 16.0),
-            ),
-        ]),
-        direction,
-    );
-    for cuboid in &mut shape.cuboids {
-        for face in [
-            BlockFace::Up,
-            BlockFace::Down,
-            BlockFace::North,
-            BlockFace::South,
-            BlockFace::East,
-            BlockFace::West,
-        ] {
-            if let Some(uv) = cuboid.face_uvs.get(&face).copied() {
-                cuboid.face_uvs.insert(
-                    face,
-                    crate::model_family::shape::rotate_uv_quarter(uv, turns),
-                );
-            }
-        }
-    }
-    shape
+    // Client's own tessellation (capture geo 516 for north/south, 517 for east/west; appearance
+    // 4558/4561). The old hand-written box UVs + in-face rotation put the top/bottom art on the
+    // wrong faces and the facing came out mirrored. These planes carry the authored UVs; obj.rs
+    // still resolves `flattened_anvil_top/base` to the chipped/damaged variants per block name.
+    ModelShape::default().with_planes(match direction {
+        CardinalDirection::North => super::anvil_capture::planes_north(),
+        CardinalDirection::South => super::anvil_capture::planes_south(),
+        CardinalDirection::East => super::anvil_capture::planes_east(),
+        CardinalDirection::West => super::anvil_capture::planes_west(),
+    })
 }
 
 pub(crate) fn stonecutter_shape(state: &BlockStateQuery) -> ModelShape {

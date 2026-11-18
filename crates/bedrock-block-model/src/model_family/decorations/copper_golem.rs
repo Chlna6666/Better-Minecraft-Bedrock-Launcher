@@ -81,18 +81,24 @@ fn entity_cuboid(cube: EntityCube) -> ModelCuboid {
 fn entity_box_uv(cuboid: ModelCuboid, uv: [f32; 2], size: [f32; 3]) -> ModelCuboid {
     let [width, height, depth] = size;
     let [u, v] = uv;
-    // Standard Bedrock box unwrap: the side strip is
-    // `[depth][width][depth][width]` = east, north, west, south, with the two caps above it.
-    // Putting `west` at `width + depth` (the previous code) shifted the whole strip by one
-    // `depth`, so every side sampled its neighbour's art.
+    // Standard Bedrock box unwrap (uv = top-left origin). The four side faces run, left to
+    // right: east(+X), south(+Z), west(-X), north(-Z) — with the caps above them:
+    //   up      (u+d,       v)     [w × d]
+    //   down    (u+d+w,     v)     [w × d]
+    //   east    (u,         v+d)   [d × h]
+    //   south   (u+d,       v+d)   [w × h]
+    //   west    (u+d+w,     v+d)   [d × h]
+    //   north   (u+2d+w,    v+d)   [w × h]
+    // The previous code put north at u+d and south at u+2d+w — swapped. The golem's front
+    // (south, +Z) therefore sampled the back panel art and its face read as mirrored strips.
     cuboid
         .with_face_uv(BlockFace::Up, uv64(u + depth, v, width, depth))
         .with_face_uv(BlockFace::Down, uv64(u + depth + width, v, width, depth))
         .with_face_uv(BlockFace::East, uv64(u, v + depth, depth, height))
-        .with_face_uv(BlockFace::North, uv64(u + depth, v + depth, width, height))
+        .with_face_uv(BlockFace::South, uv64(u + depth, v + depth, width, height))
         .with_face_uv(BlockFace::West, uv64(u + depth + width, v + depth, depth, height))
         .with_face_uv(
-            BlockFace::South,
+            BlockFace::North,
             uv64(u + depth * 2.0 + width, v + depth, width, height),
         )
 }

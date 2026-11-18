@@ -5,7 +5,7 @@ use crate::model_family::direction::{
 };
 use crate::model_family::shape::{
     ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv, full_texture_uv, ground_plane,
-    upright_full_texture_uv,
+    rect_uv, upright_full_texture_uv,
 };
 use crate::state::BlockStateQuery;
 
@@ -58,23 +58,119 @@ pub(crate) fn bamboo_shape(state: &BlockStateQuery) -> ModelShape {
 }
 
 pub(crate) fn cocoa_shape(state: &BlockStateQuery) -> ModelShape {
-    let age = state_i64(state, "age").unwrap_or(2).clamp(0, 2);
+    let age = state_i64(state, "age").unwrap_or(2).clamp(0, 2) as usize;
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::South);
-    let (width, height, depth) = match age {
-        0 => (px(4.0), px(5.0), px(4.0)),
-        1 => (px(6.0), px(7.0), px(6.0)),
-        _ => (px(8.0), px(9.0), px(8.0)),
+
+    // Per-stage pod body from the JE `cocoa_stage{0,1,2}` models (geometry only — JE's from/to
+    // match the Bedrock capture geo 716 at stage 2 exactly: [4,3,7]..[12,12,15]). All stages are
+    // authored on the +Z (south) face; the stem is a zero-thickness 2-sided sheet above it.
+    // UVs are JE's 16-pixel rects, which map 1:1 onto the Bedrock cocoa_stage_*.png 16x16 tiles.
+    let (from, to, cap_uv, side_uv) = match age {
+        0 => (
+            [6.0, 7.0, 11.0],
+            [10.0, 12.0, 15.0],
+            [0.0, 0.0, 4.0, 4.0],
+            [11.0, 4.0, 15.0, 9.0],
+        ),
+        1 => (
+            [5.0, 5.0, 9.0],
+            [11.0, 12.0, 15.0],
+            [0.0, 0.0, 6.0, 6.0],
+            [9.0, 4.0, 15.0, 11.0],
+        ),
+        _ => (
+            [4.0, 3.0, 7.0],
+            [12.0, 12.0, 15.0],
+            [0.0, 0.0, 8.0, 8.0],
+            [8.0, 4.0, 16.0, 13.0],
+        ),
     };
-    let cuboid = cocoa_pod_cuboid(direction, width, height, depth);
-    ModelShape::from_cuboids([detail_cuboid_with_local_uv(
-        cuboid
-            .with_face_material_slot(BlockFace::Up, "up")
-            .with_face_material_slot(BlockFace::Down, "down")
-            .with_face_material_slot(BlockFace::North, "side")
-            .with_face_material_slot(BlockFace::South, "side")
-            .with_face_material_slot(BlockFace::East, "side")
-            .with_face_material_slot(BlockFace::West, "side"),
-    )])
+    let uv16 = |r: [f32; 4]| rect_uv(r[0] / 16.0, r[1] / 16.0, r[2] / 16.0, r[3] / 16.0);
+    let cap = uv16(cap_uv);
+    let side = uv16(side_uv);
+    // `cocoa` is a 3-frame terrain array [stage0, stage1, stage2]; the slot suffix carries the
+    // age so obj.rs binds the right frame (otherwise every stage samples stage0's near-empty art).
+    let slot: &'static str = match age {
+        0 => "cocoa_0",
+        1 => "cocoa_1",
+        _ => "cocoa_2",
+    };
+    let body = ModelCuboid::new(from.map(px), to.map(px))
+        .with_face_uv(BlockFace::Up, cap)
+        .with_face_uv(BlockFace::Down, cap)
+        .with_face_uv(BlockFace::North, side)
+        .with_face_uv(BlockFace::South, side)
+        .with_face_uv(BlockFace::East, side)
+        .with_face_uv(BlockFace::West, side)
+        .with_material_slot(slot);
+
+    // The stem is the same for every stage: a zero-thickness sheet at x=8..8, z=12..16, y=12..16.
+    let stem_uv = uv16([12.0, 0.0, 16.0, 4.0]);
+    let stem = ModelPlane::new(
+        [
+            [px(8.0), px(16.0), px(12.0)],
+            [px(8.0), px(16.0), px(16.0)],
+            [px(8.0), px(12.0), px(16.0)],
+            [px(8.0), px(12.0), px(12.0)],
+        ],
+        [1, 0, 0],
+    )
+    .with_uv(stem_uv)
+    .with_material_slot(slot);
+
+    // Rotate from the south-authored model to the block's direction. `quarter_turn_clockwise`
+    // maps +Z(south) → -X(west) → -Z(north) → +X(east), so the count from south is:
+    // South 0, West 1, North 2, East 3.
+    let turns = match direction {
+        CardinalDirection::South => 0usize,
+        CardinalDirection::West => 1,
+        CardinalDirection::North => 2,
+        CardinalDirection::East => 3,
+    };
+    let rotated_body = (0..turns).fold(body, |c, _| rotate_cuboid_south_clockwise(&c));
+    let stem = (0..turns).fold(stem, |p, _| rotate_plane_south_clockwise(&p));
+    let mut shape = ModelShape::from_cuboids([rotated_body]);
+    shape.planes.push(stem);
+    shape
+}
+
+/// One clockwise quarter turn of a south-authored cuboid about the cell centre: `(x,z) -> (1-z, x)`.
+fn rotate_cuboid_south_clockwise(c: &ModelCuboid) -> ModelCuboid {
+    let mut r = ModelCuboid::new(
+        [1.0 - c.max[2], c.min[1], c.min[0]],
+        [1.0 - c.min[2], c.max[1], c.max[0]],
+    );
+    r.material_slot = c.material_slot.clone();
+    for (face, slot) in &c.face_material_slots {
+        r.face_material_slots.insert(cw_face(*face), slot.clone());
+    }
+    for (face, uv) in &c.face_uvs {
+        r.face_uvs.insert(cw_face(*face), *uv);
+    }
+    r
+}
+
+/// One clockwise quarter turn of a south-authored plane.
+fn rotate_plane_south_clockwise(p: &ModelPlane) -> ModelPlane {
+    let corners = p.corners.map(|[x, y, z]| [1.0 - z, y, x]);
+    let mut r = ModelPlane::new(corners, cw_normal(p.normal));
+    r.material_slot = p.material_slot.clone();
+    r.uv = p.uv;
+    r
+}
+
+fn cw_face(face: BlockFace) -> BlockFace {
+    match face {
+        BlockFace::North => BlockFace::East,
+        BlockFace::East => BlockFace::South,
+        BlockFace::South => BlockFace::West,
+        BlockFace::West => BlockFace::North,
+        other => other,
+    }
+}
+
+fn cw_normal(n: [i32; 3]) -> [i32; 3] {
+    [n[2], n[1], -n[0]]
 }
 
 pub(crate) fn azalea_shape() -> ModelShape {

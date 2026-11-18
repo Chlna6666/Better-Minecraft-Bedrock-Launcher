@@ -328,7 +328,7 @@ pub(crate) fn mangrove_propagule_shape(state: &BlockStateQuery) -> ModelShape {
         [stage as usize];
     if hanging {
         return ModelShape::from_cuboids(hanging_propagule_cuboids().map(|cuboid| {
-            plant_cuboid_with_upright_art(detail_cuboid_with_local_uv(cuboid))
+            plant_cuboid_with_upright_art(cuboid)
         }));
     }
     // The two cards, authored in place, then slid by the stage offset.
@@ -396,15 +396,73 @@ pub(crate) fn mangrove_propagule_shape(state: &BlockStateQuery) -> ModelShape {
 
 /// The hanging propagule (ref 772): stem, body, four collar plates and a top cap.
 fn hanging_propagule_cuboids() -> [ModelCuboid; 7] {
+    // The hanging seedling samples the sprite's own art regions: the long hypocotyl takes the
+    // stem column (x 7..9, y 7..16), the seed body and the four collar plates take the sprout
+    // (x 4..11, y 1..7), and the tip takes the sprout's top. Whole-tile UVs sampled mostly
+    // transparent pixels and rendered the seedling as sparse ghost wisps.
     [
-        ModelCuboid::new([0.5725, 0.0, 0.3725], [0.6609, 0.625, 0.4609]),
-        ModelCuboid::new([0.5542, 0.625, 0.3542], [0.6792, 0.8125, 0.4792]),
-        ModelCuboid::new([0.5725, 0.875, 0.3725], [0.6609, 1.0, 0.4609]),
-        ModelCuboid::new([0.4387, 0.7647, 0.3542], [0.5542, 0.8125, 0.4792]),
-        ModelCuboid::new([0.6792, 0.7647, 0.3542], [0.7947, 0.8125, 0.4792]),
-        ModelCuboid::new([0.5542, 0.7647, 0.2387], [0.6792, 0.8125, 0.3542]),
-        ModelCuboid::new([0.5542, 0.7647, 0.4792], [0.6792, 0.8125, 0.5947]),
+        plant_slice_cuboid(
+            ModelCuboid::new([0.5725, 0.0, 0.3725], [0.6609, 0.625, 0.4609]),
+            (7.0, 7.0, 9.0, 16.0),
+        ),
+        plant_slice_cuboid(
+            ModelCuboid::new([0.5542, 0.625, 0.3542], [0.6792, 0.8125, 0.4792]),
+            (4.0, 1.0, 11.0, 7.0),
+        ),
+        plant_slice_cuboid(
+            ModelCuboid::new([0.5725, 0.875, 0.3725], [0.6609, 1.0, 0.4609]),
+            (7.0, 1.0, 9.0, 7.0),
+        ),
+        plant_slice_cuboid(
+            ModelCuboid::new([0.4387, 0.7647, 0.3542], [0.5542, 0.8125, 0.4792]),
+            (4.0, 1.0, 11.0, 7.0),
+        ),
+        plant_slice_cuboid(
+            ModelCuboid::new([0.6792, 0.7647, 0.3542], [0.7947, 0.8125, 0.4792]),
+            (4.0, 1.0, 11.0, 7.0),
+        ),
+        plant_slice_cuboid(
+            ModelCuboid::new([0.5542, 0.7647, 0.2387], [0.6792, 0.8125, 0.3542]),
+            (4.0, 1.0, 11.0, 7.0),
+        ),
+        plant_slice_cuboid(
+            ModelCuboid::new([0.5542, 0.7647, 0.4792], [0.6792, 0.8125, 0.5947]),
+            (4.0, 1.0, 11.0, 7.0),
+        ),
     ]
+}
+
+/// Wraps a small plant box so every face samples an upright art slice of the sprite instead of
+/// the whole (mostly transparent) tile.
+fn plant_slice_cuboid(cuboid: ModelCuboid, (u0, v0, u1, v1): (f32, f32, f32, f32)) -> ModelCuboid {
+    use crate::model_family::shape::full_texture_face_uv;
+    let upright = full_texture_face_uv(BlockFace::North)
+        .iter()
+        .map(|corner| {
+            [
+                u0 / 16.0 + corner[0] * (u1 - u0) / 16.0,
+                v0 / 16.0 + corner[1] * (v1 - v0) / 16.0,
+            ]
+        })
+        .collect::<Vec<_>>();
+    let upright: [[f32; 2]; 4] = [upright[0], upright[1], upright[2], upright[3]];
+    let flat = full_texture_uv()
+        .iter()
+        .map(|corner| {
+            [
+                u0 / 16.0 + corner[0] * (u1 - u0) / 16.0,
+                v0 / 16.0 + corner[1] * (v1 - v0) / 16.0,
+            ]
+        })
+        .collect::<Vec<_>>();
+    let flat: [[f32; 2]; 4] = [flat[0], flat[1], flat[2], flat[3]];
+    cuboid
+        .with_face_uv(BlockFace::Up, flat)
+        .with_face_uv(BlockFace::Down, flat)
+        .with_face_uv(BlockFace::North, upright)
+        .with_face_uv(BlockFace::South, upright)
+        .with_face_uv(BlockFace::East, upright)
+        .with_face_uv(BlockFace::West, upright)
 }
 
 /// Gives a box whole-tile art on its caps and upright art on its sides.
@@ -451,23 +509,105 @@ pub(crate) fn spore_blossom_shape() -> ModelShape {
 }
 
 pub(crate) fn sculk_sensor_shape(name: &str) -> ModelShape {
-    let mut shape = ModelShape::from_cuboids([detail_cuboid_with_local_uv(ModelCuboid::new(
-        [0.0, 0.0, 0.0],
-        [1.0, px(8.0), 1.0],
-    ))]);
+    let calibrated = name == "calibrated_sculk_sensor";
+    // Base slab 16 x 8 x 16 with per-face art (JE `sculk_sensor`): the four sides sample the
+    // BOTTOM half of the side tile (uv 0,8..16), the calibrated sensor paints its south face
+    // with the input-side sheet, and the caps use their own tiles. `blocks.json` has no
+    // sculk_sensor entry, so the slot names are resolved explicitly in `obj.rs`.
+    let side_uv = flipped_uv(0.0, 8.0, 16.0, 16.0);
+    let cap_uv = crate::model_family::shape::full_texture_uv();
+    let base = ModelCuboid::new([0.0, 0.0, 0.0], [1.0, px(8.0), 1.0])
+        .with_face_uv(BlockFace::Up, cap_uv)
+        .with_face_uv(BlockFace::Down, cap_uv)
+        .with_face_uv(BlockFace::North, side_uv)
+        .with_face_uv(BlockFace::South, side_uv)
+        .with_face_uv(BlockFace::East, side_uv)
+        .with_face_uv(BlockFace::West, side_uv)
+        .with_face_material_slot(BlockFace::Up, "sculk_top")
+        .with_face_material_slot(BlockFace::Down, "sculk_bottom")
+        .with_face_material_slot(BlockFace::North, "sculk_side")
+        .with_face_material_slot(BlockFace::East, "sculk_side")
+        .with_face_material_slot(BlockFace::West, "sculk_side")
+        .with_face_material_slot(
+            BlockFace::South,
+            if calibrated {
+                "sculk_input_side"
+            } else {
+                "sculk_side"
+            },
+        );
+    let mut shape = ModelShape::from_cuboids([base]);
+
+    // Tendrils (capture refs 470/471 normal, 603/604/605 calibrated; JE `sculk_sensor`): four
+    // vertical diagonal sheets at the cell corners, y 8..24 px (0.5..1.5), overhanging the
+    // corners by 2.76 px. Each sheet samples the 8 x 8 window of `sculk_sensor_tendril_inactive`
+    // (uv 4..12, 8..16) — sampling the block's own side tile stretched dark slabs across the
+    // blades. The detail-face emitter mirrors every plane, so one sheet covers both sides.
+    let lo = 0.5_f32;
+    let hi = 1.5_f32;
+    let inner = 0.4525_f32;
+    let outer = 1.1725_f32;
+    let tendril_uv = flipped_uv(4.0, 8.0, 12.0, 16.0);
+    let tendril = |bx0: f32, bz0: f32, bx1: f32, bz1: f32, normal: [i32; 3]| {
+        ModelPlane::new(
+            [
+                [bx0, lo, bz0],
+                [bx1, lo, bz1],
+                [bx1, hi, bz1],
+                [bx0, hi, bz0],
+            ],
+            normal,
+        )
+        .with_uv(tendril_uv)
+        .with_material_slot("sculk_tendrils")
+    };
     shape.planes.extend([
-        tendril_plane_z(px(2.0)),
-        tendril_plane_z(px(14.0)),
-        tendril_plane_x(px(2.0)),
-        tendril_plane_x(px(14.0)),
+        tendril(outer, inner, inner, outer, [1, 0, 1]),
+        tendril(outer, 0.5475, inner, -0.1725, [1, 0, -1]),
+        tendril(0.5475, -0.1725, -0.1725, 0.5475, [-1, 0, 1]),
+        tendril(0.5475, 1.1725, -0.1725, 0.4525, [-1, 0, 1]),
     ]);
-    if name == "calibrated_sculk_sensor" {
+    if calibrated {
+        // The amethyst cross on top: two crossed diagonal sheets sampling the amethyst sheet
+        // (uv 0,4..16,16), y 8..24 px per the capture.
+        let amethyst_uv = flipped_uv(0.0, 4.0, 16.0, 16.0);
         shape.planes.extend([
-            vertical_plane_z(px(8.0), "south"),
-            vertical_plane_x(px(8.0), "south"),
+            ModelPlane::new(
+                [
+                    [0.86, hi, 0.14],
+                    [0.14, hi, 0.86],
+                    [0.14, lo, 0.86],
+                    [0.86, lo, 0.14],
+                ],
+                [1, 0, 1],
+            )
+            .with_uv(amethyst_uv)
+            .with_material_slot("sculk_amethyst"),
+            ModelPlane::new(
+                [
+                    [0.86, hi, 0.86],
+                    [0.14, hi, 0.14],
+                    [0.14, lo, 0.14],
+                    [0.86, lo, 0.86],
+                ],
+                [-1, 0, 1],
+            )
+            .with_uv(amethyst_uv)
+            .with_material_slot("sculk_amethyst"),
         ]);
     }
     shape
+}
+
+/// One rect of a 16 x 16 sheet, emitted bottom-left first (the authored rect measures V from
+/// the texture top).
+fn flipped_uv(u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
+    [
+        [u0 / 16.0, v1 / 16.0],
+        [u1 / 16.0, v1 / 16.0],
+        [u1 / 16.0, v0 / 16.0],
+        [u0 / 16.0, v0 / 16.0],
+    ]
 }
 
 pub(crate) fn sculk_shrieker_shape() -> ModelShape {

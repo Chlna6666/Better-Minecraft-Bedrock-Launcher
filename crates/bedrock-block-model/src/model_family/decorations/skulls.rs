@@ -79,6 +79,10 @@ const DRAGON_HEAD: &[HeadCube] = &[
 ];
 
 /// The `head` bone of `geometry.piglin`: a 10 px skull with a 1 px snout, on a 64x64 skin.
+// geometry.piglin (Mojang bedrock-samples): the head is 10 px wide, the snout and the two
+// 1 x 2 x 1 inner ears hang on the front face, and a 1 x 5 x 4 ear sticks out of each side.
+// The earlier table dropped the side ears entirely and gave the inner ears the snout's uv,
+// which read as an open orange box instead of a head.
 const PIGLIN_HEAD: &[HeadCube] = &[
     HeadCube {
         min: [-5.0, 24.0, -4.0],
@@ -90,21 +94,25 @@ const PIGLIN_HEAD: &[HeadCube] = &[
         max: [2.0, 28.0, -4.0],
         uv: [31.0, 1.0],
     },
-    // Ears are their own 10 x 5 px patches on the skin (x 33..43 and 44..54, y 0..5), not the
-    // head's left column. Sampling `[2, 0]` took head pixels and stretched them over the ear,
-    // which is what made the ears and the top of the head look wrong.
-    // The two ear patches are at (31, 1) and (51, 10) on the 64 x 64 piglin skin; `[2, 0]`
-    // sampled head pixels and `[44, 0]` landed on empty space, which is why the ears were
-    // missing and the head read as transparent there.
-    HeadCube {
-        min: [-3.0, 24.0, -5.0],
-        max: [-2.0, 26.0, -4.0],
-        uv: [31.0, 1.0],
-    },
     HeadCube {
         min: [2.0, 24.0, -5.0],
         max: [3.0, 26.0, -4.0],
-        uv: [51.0, 10.0],
+        uv: [2.0, 4.0],
+    },
+    HeadCube {
+        min: [-3.0, 24.0, -5.0],
+        max: [-2.0, 26.0, -4.0],
+        uv: [2.0, 0.0],
+    },
+    HeadCube {
+        min: [4.0, 25.0, -2.0],
+        max: [5.0, 30.0, 2.0],
+        uv: [51.0, 6.0],
+    },
+    HeadCube {
+        min: [-5.0, 25.0, -2.0],
+        max: [-4.0, 30.0, 2.0],
+        uv: [39.0, 6.0],
     },
 ];
 
@@ -221,12 +229,29 @@ pub(crate) fn head_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     };
     let bounds = HeadBounds::of(skin.cubes);
     let mount = Mount::from_facing(facing_from_state(state));
-    ModelShape::from_cuboids(
+    let mut shape = ModelShape::from_cuboids(
         skin.cubes
             .iter()
             .map(|cube| head_cuboid(*cube, bounds, mount, skin.span))
             .collect::<Vec<_>>(),
-    )
+    );
+    // Floor and ceiling skulls aim their face along the `Skull` block entity's `Rotation` yaw
+    // (degrees clockwise from south, injected as `block_entity_data.skull_yaw`); the block
+    // state only names the mount. The authored head faces north — 180 in that convention — so
+    // the yaw turns the face onto the stored direction. Wall skulls take their facing from the
+    // block state instead.
+    if matches!(mount, Mount::Floor | Mount::Ceiling)
+        && let Some(yaw) = crate::model_family::direction::state_i64(
+            state,
+            "block_entity_data.skull_yaw",
+        )
+    {
+        shape = crate::model_family::shape::rotate_shape_y_degrees(
+            shape,
+            (yaw as f32 - 180.0).rem_euclid(360.0),
+        );
+    }
+    shape
 }
 
 /// Places one authored cube and gives each of its faces the box-unwrap UV the entity model uses.

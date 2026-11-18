@@ -573,6 +573,48 @@ impl RuntimeCaptureCatalog {
         )
     }
 
+    /// Debug/authoring helper: decode one geometry+appearance pair into textured quads using the
+    /// capture's own atlas rects. Used to port block-actor models (brewing stand, …) whose state
+    /// is `unsupported` by the catalog but whose mesh is present in the pool.
+    #[must_use]
+    pub fn debug_decoded_shape(
+        &self,
+        geometry_id: u32,
+        appearance_id: u32,
+        material_ref: u32,
+    ) -> Option<ModelShape> {
+        let geometry = self.shared_geometry(&geometry_id)?;
+        let appearance = self.shared_appearance(&appearance_id)?;
+        let table: CaptureMaterialTable = self
+            .pool
+            .read(2, material_ref)
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+        if table.schema != 2 {
+            return None;
+        }
+        let aliases: HashMap<usize, CaptureMaterialSlot> = table
+            .texture_bindings
+            .into_iter()
+            .filter(|t| !t.resource_alias.is_empty())
+            .map(|t| {
+                let variants = t
+                    .atlas_variants
+                    .into_iter()
+                    .map(|v| ((v.variant, v.frame), v.atlas_uv))
+                    .collect();
+                (
+                    t.slot,
+                    CaptureMaterialSlot {
+                        alias: t.resource_alias,
+                        atlas_variants: variants,
+                    },
+                )
+            })
+            .collect();
+        let planes = shared_mesh_planes(&geometry, &appearance, &geometry_id, &aliases)?;
+        Some(ModelShape::default().with_planes(planes))
+    }
+
     /// Debug helper: one pool material table as `(slot, texture alias)` pairs.
     ///
     /// A block whose faces take different art is defined by this table, not by the face direction,
