@@ -868,7 +868,7 @@ pub(crate) fn render_chunk_from_raw(
     insert_render_biome_storages(&mut render_biomes, biome_data, data_request);
     timing.biome_parse_us = biome_started.elapsed().as_micros();
 
-    let mut subchunks = BTreeMap::new();
+    let mut subchunks = raw.predecoded.present;
     let subchunk_started = Instant::now();
     let preferred_decode = options.data_request.preferred_decode_mode();
     let subchunk_decode = match (preferred_decode, options.subchunk_decode) {

@@ -528,6 +528,12 @@ impl RenderPalette {
         if normalized == "leaf_litter" {
             return Some(SurfaceTintKind::DryFoliage);
         }
+        // Lily pads are a greyscale mask multiplied by a FIXED green (#208030), never a biome
+        // foliage/grass tint. Marking them FixedFoliage makes textured callers bind the green
+        // directly and skips the legacy-biome-colour fallback that would recolour them grey.
+        if normalized == "waterlily" || normalized == "lily_pad" {
+            return Some(SurfaceTintKind::FixedFoliage);
+        }
         if is_foliage_tinted_block(name) {
             return Some(if fixed_foliage_tint(name).is_some() {
                 SurfaceTintKind::FixedFoliage
@@ -1089,6 +1095,14 @@ impl RenderPalette {
         }
     }
     fn find_block_color(&self, name: &str) -> Option<RgbaColor> {
+        // Lily pads ship a greyscale alpha mask (`waterlily.png`); the client multiplies it by
+        // the fixed world colour #208030 (inventory #71c35c). The imported map-colour entry is
+        // the mask average (grey), which renders the pad dark grey. Override with the documented
+        // fixed green. Wiki confirms lily pads take no biome grass/foliage tint.
+        let short = name.strip_prefix("minecraft:").unwrap_or(name);
+        if short == "waterlily" || short == "lily_pad" {
+            return Some(RgbaColor::new(32, 128, 48, 255));
+        }
         self.block_colors
             .get(name)
             .copied()
@@ -1547,6 +1561,9 @@ fn fixed_foliage_tint(name: &str) -> Option<RgbaColor> {
     match name.strip_prefix("minecraft:").unwrap_or(name) {
         "birch_leaves" | "birch" => Some(RgbaColor::new(128, 167, 85, 255)),
         "spruce_leaves" | "spruce" => Some(RgbaColor::new(97, 153, 97, 255)),
+        // Bedrock lily pad world colour (#208030); the greyscale waterlily mask multiplies by
+        // this to produce the familiar green pad.
+        "waterlily" | "lily_pad" => Some(RgbaColor::new(32, 128, 48, 255)),
         _ => None,
     }
 }

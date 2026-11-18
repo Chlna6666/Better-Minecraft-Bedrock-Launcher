@@ -574,11 +574,24 @@ impl ChunkData {
     }
 }
 
+/// Previously completed exact SubChunk reads from the same world revision.
+///
+/// A requested height without a decoded record was checked and had no
+/// record. Any other height still needs a storage lookup.
+#[derive(Debug, Default, Clone)]
+pub struct ReadSubchunks {
+    /// Heights whose exact keys were checked, including absent records.
+    pub requested: Vec<i8>,
+    /// SubChunks found at those heights.
+    pub present: BTreeMap<i8, SubChunk>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RawChunkData {
     pub(crate) pos: ChunkPos,
     pub(crate) biome_record: Option<(ChunkRecordTag, Bytes)>,
     pub(crate) subchunks: BTreeMap<i8, Bytes>,
+    pub(crate) predecoded: ReadSubchunks,
     pub(crate) block_entities: Option<Bytes>,
     pub(crate) legacy_terrain: Option<Bytes>,
 }

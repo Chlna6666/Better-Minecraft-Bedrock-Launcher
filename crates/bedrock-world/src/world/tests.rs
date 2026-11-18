@@ -2432,6 +2432,46 @@ fn legacy_terrain_is_renderable_and_exact_batch_loaded() {
 }
 
 #[test]
+fn full_render_read_reuses_checked_heights_and_loads_unrequested_ones() {
+    let storage = Arc::new(MemoryStorage::new());
+    let pos = ChunkPos { x: 0, z: 0, dimension: Dimension::Overworld };
+    for (y, name) in [(4, "minecraft:stone"), (6, "minecraft:air"), (8, "minecraft:oak_leaves")] {
+        storage.put(
+            &ChunkKey::subchunk(pos, y).encode(),
+            &test_uniform_named_subchunk_bytes(name),
+        ).unwrap();
+    }
+    let world = World::from_storage("memory", storage, OpenOptions::default());
+    let full = ChunkLoadOptions {
+        data_request: ChunkDataRequest::new().full_3d_indices(),
+        subchunk_decode: crate::SubChunkDecodeMode::PackedIndices,
+        ..ChunkLoadOptions::default()
+    };
+    let mut partial = world.load_render_chunks(
+        [pos],
+        ChunkLoadOptions {
+            data_request: ChunkDataRequest::new().layer(64).layer(80).layer(96),
+            ..full.clone()
+        },
+    ).unwrap();
+    let present = partial.pop().unwrap().subchunks;
+    assert!(present.contains_key(&4));
+    assert!(!present.contains_key(&5));
+    assert!(present.contains_key(&6));
+    assert!(!present.contains_key(&8));
+    let (expected, cold) = world.load_render_chunks_with_stats([pos], full.clone()).unwrap();
+    let (actual, warm) = world.load_render_chunks_reusing_subchunks(
+        [pos], full,
+        BTreeMap::from([(pos, crate::surface::ReadSubchunks {
+            requested: vec![4, 5, 6], present,
+        })]),
+    ).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(warm.keys_requested + 3, cold.keys_requested);
+    assert_eq!(warm.subchunks_decoded + 2, cold.subchunks_decoded);
+}
+
+#[test]
 fn legacy_terrain_biome_rgb_takes_priority_over_data2d_biome_id() {
     let storage = Arc::new(MemoryStorage::new());
     let pos = ChunkPos {

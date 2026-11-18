@@ -719,6 +719,20 @@ where
         positions: impl IntoIterator<Item = ChunkPos>,
         options: ChunkLoadOptions,
     ) -> Result<(Vec<ChunkData>, ChunkLoadStats)> {
+        self.load_render_chunks_reusing_subchunks(positions, options, BTreeMap::new())
+    }
+
+    /// Load a render batch using earlier exact reads from this same snapshot.
+    ///
+    /// The caller must discard prior reads after a source revision change
+    /// and use the same SubChunk decode mode for both reads. This entry point
+    /// reuses prior reads for full 3D requests.
+    pub fn load_render_chunks_reusing_subchunks(
+        &self,
+        positions: impl IntoIterator<Item = ChunkPos>,
+        options: ChunkLoadOptions,
+        mut predecoded: BTreeMap<ChunkPos, crate::surface::ReadSubchunks>,
+    ) -> Result<(Vec<ChunkData>, ChunkLoadStats)> {
         let started = Instant::now();
         let positions = positions.into_iter().collect::<Vec<_>>();
         if positions.is_empty() {
@@ -738,7 +752,12 @@ where
                 .resolve_queue_depth(worker_count, positions.len()),
             options.priority
         );
-        self.load_render_chunks_exact_batch_sorted(positions, options, worker_count, started)
+        if options.data_request.subchunks.as_slice()
+            != [crate::surface::SubchunkDataRequirement::Full3dIndices]
+        {
+            predecoded.clear();
+        }
+        self.load_render_chunks_exact_batch_sorted(positions, options, worker_count, started, predecoded)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -748,6 +767,7 @@ where
         options: ChunkLoadOptions,
         worker_count: usize,
         started: Instant,
+        mut predecoded: BTreeMap<ChunkPos, crate::surface::ReadSubchunks>,
     ) -> Result<(Vec<ChunkData>, ChunkLoadStats)> {
         check_render_load_cancelled(&options)?;
         let mut raw_chunks = positions
@@ -757,6 +777,7 @@ where
                 pos,
                 biome_record: None,
                 subchunks: BTreeMap::new(),
+                predecoded: predecoded.remove(&pos).unwrap_or_default(),
                 block_entities: None,
                 legacy_terrain: None,
             })
@@ -799,6 +820,9 @@ where
             }
             if !uses_hint_surface_subchunks(&options) {
                 for y in planned_render_subchunk_ys(pos, &options, None)? {
+                    if raw_chunks[chunk_index].predecoded.requested.contains(&y) {
+                        continue;
+                    }
                     push_render_record_request(
                         &mut keys,
                         &mut requests,
@@ -835,7 +859,10 @@ where
             let mut fallback_keys = Vec::new();
             let mut fallback_requests = Vec::new();
             for (chunk_index, raw) in raw_chunks.iter().enumerate() {
-                if raw.subchunks.is_empty() && raw.legacy_terrain.is_none() {
+                if raw.subchunks.is_empty()
+                    && raw.predecoded.present.is_empty()
+                    && raw.legacy_terrain.is_none()
+                {
                     push_render_record_request(
                         &mut fallback_keys,
                         &mut fallback_requests,
@@ -901,6 +928,7 @@ where
         }
 
         check_render_load_cancelled(&options)?;
+        let reused_subchunks = raw_chunks.iter().map(|raw| raw.predecoded.present.len()).sum();
         let decode_started = Instant::now();
         let (mut chunks, decode_timing) = if worker_count == 1 {
             let mut chunks = Vec::with_capacity(raw_chunks.len());
@@ -935,6 +963,7 @@ where
         let full_reload_ms = self.reload_incomplete_surface_chunks(&mut chunks, &options)?;
         let decode_ms = decode_started.elapsed().as_millis();
         let mut stats = render_load_stats(&chunks, worker_count, 0, started.elapsed().as_millis());
+        stats.subchunks_decoded = stats.subchunks_decoded.saturating_sub(reused_subchunks);
         stats.keys_requested = keys_requested;
         stats.keys_found = keys_found;
         stats.exact_get_batches = exact_get_batches;

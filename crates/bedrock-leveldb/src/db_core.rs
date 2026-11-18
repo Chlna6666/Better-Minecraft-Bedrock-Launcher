@@ -477,30 +477,22 @@ impl Db {
             return Ok(Vec::new());
         }
 
-        let (version, mut results, mut resolved, mut unresolved) = {
+        let (version, mut results, mut unresolved) = {
             let inner = read_lock(&self.shared.inner, "acquiring database batch-read lock")?;
             let mut results = vec![None; keys.len()];
-            let mut resolved = vec![false; keys.len()];
             let mut unresolved = Vec::with_capacity(keys.len());
             for (index, key) in keys.iter().enumerate() {
                 if let Some(value) = inner.active.get(key.as_ref()) {
                     results[index].clone_from(value);
-                    resolved[index] = true;
                 } else if let Some(immutable) = &inner.immutable
                     && let Some(value) = immutable.get(key.as_ref())
                 {
                     results[index] = value;
-                    resolved[index] = true;
                 } else {
                     unresolved.push(index);
                 }
             }
-            (
-                Arc::clone(&inner.version),
-                results,
-                resolved,
-                unresolved,
-            )
+            (Arc::clone(&inner.version), results, unresolved)
         };
 
         unresolved.sort_unstable_by(|left, right| {
@@ -515,12 +507,16 @@ impl Db {
             if unresolved.is_empty() {
                 break;
             }
-            let table_indices = unresolved
-                .iter()
-                .copied()
-                .filter(|index| table_meta.may_contain_user_key(keys[*index].as_ref()))
-                .collect::<Vec<_>>();
-            if table_indices.is_empty() {
+            // The unresolved indices stay sorted by key after compaction.
+            // Find the inclusive table range without revisiting every key.
+            let first = table_meta.smallest_user_key().map_or(0, |smallest| {
+                unresolved.partition_point(|&index| keys[index].as_ref() < smallest)
+            });
+            let candidates = &unresolved[first..];
+            let count = table_meta.largest_user_key().map_or(candidates.len(), |largest| {
+                candidates.partition_point(|&index| keys[index].as_ref() <= largest)
+            });
+            if count == 0 {
                 continue;
             }
             let path = self
@@ -530,7 +526,7 @@ impl Db {
             if !path.exists() {
                 continue;
             }
-            let table_keys = table_indices
+            let table_keys = candidates[..count]
                 .iter()
                 .map(|index| keys[*index].clone())
                 .collect::<Vec<_>>();
@@ -541,17 +537,23 @@ impl Db {
                 read_checksums(&self.shared.options, &options),
                 read_cache(&options, &self.shared.block_cache),
             )?;
-            for (input_index, lookup) in table_indices.into_iter().zip(lookups) {
+            let end = first + count;
+            let mut next_unresolved = first;
+            for (candidate, lookup) in (first..end).zip(lookups) {
+                let input_index = unresolved[candidate];
                 match lookup {
-                    table::TableLookup::Value(value) => {
-                        results[input_index] = Some(value);
-                        resolved[input_index] = true;
+                    table::TableLookup::Value(value) => results[input_index] = Some(value),
+                    table::TableLookup::Deleted => {}
+                    table::TableLookup::Missing => {
+                        unresolved[next_unresolved] = input_index;
+                        next_unresolved += 1;
                     }
-                    table::TableLookup::Deleted => resolved[input_index] = true,
-                    table::TableLookup::Missing => {}
                 }
             }
-            unresolved.retain(|index| !resolved[*index]);
+            if next_unresolved != end {
+                unresolved.copy_within(end.., next_unresolved);
+                unresolved.truncate(unresolved.len() - (end - next_unresolved));
+            }
         }
         log::debug!(
             "batch exact get complete (keys={}, hits={}, table_probes={}, elapsed_ms={})",
