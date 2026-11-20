@@ -1,9 +1,8 @@
 use crate::material::BlockFace;
-use crate::banner_art::CLOTH_PANELS;
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{CardinalDirection, cardinal_direction};
 use crate::model_family::shape::{
-    ModelCuboid, ModelShape, rect_uv, rotate_shape_cardinal, rotate_shape_y_degrees,
+    ModelCuboid, ModelPlane, ModelShape, rect_uv, rotate_shape_cardinal, rotate_shape_y_degrees,
 };
 use crate::state::BlockStateQuery;
 
@@ -41,36 +40,79 @@ pub(crate) fn sign_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     }
 
     if name.ends_with("_hanging_sign") || name == "hanging_sign" {
+        // Official states (minecraft.wiki/w/Hanging_Sign): `hanging` — whether
+        // the sign hangs from the block above; `attached_bit` — whether the
+        // chains converge to a single point on that block (narrow support ∧)
+        // instead of hanging as two parallel chains (wide support); and
+        // `ground_sign_direction` (0..15, 0 = south) rotates the assembly like
+        // a standing sign. The previous build ignored the rotation entirely
+        // and keyed the chain shapes off `attached_bit` alone.
+        let hanging = crate::model_family::direction::state_bool(state, "hanging")
+            .unwrap_or(false);
+        let attached = crate::model_family::direction::state_bool(state, "attached_bit")
+            .unwrap_or(false);
         let mut cuboids = vec![hanging_sign_board_uv(ModelCuboid::new(
             [px(1.0), 0.0, px(7.0)],
             [px(15.0), px(10.0), px(9.0)],
         ))];
-        if crate::model_family::direction::state_bool(state, "attached_bit").unwrap_or(false) {
-            cuboids.push(
-                hanging_sign_chain_uv(ModelCuboid::new(
-                    [0.0, px(10.0), px(7.5)],
-                    [1.0, 1.0, px(8.5)],
-                ))
-                .with_face_uv(BlockFace::South, sign_uv(12.0, 6.0, 16.0, 6.0))
-                .with_face_uv(BlockFace::North, sign_uv(12.0, 6.0, 16.0, 6.0)),
-            );
+        let mut planes = Vec::new();
+        if hanging {
+            if attached {
+                // Narrow support: the two chains rise from the board's top
+                // corners and converge at one point on the block above (the
+                // official ∧ silhouette; entity-sheet rows v6..12 hold the
+                // diagonal chain art).
+                let diagonal = |x_a: f32, x_b: f32| {
+                    ModelPlane::new(
+                        [
+                            [px(x_a), px(10.0), px(7.5)],
+                            [px(x_b), px(10.0), px(7.5)],
+                            [px(7.0), 1.0, px(8.5)],
+                            [px(9.0), 1.0, px(8.5)],
+                        ],
+                        [0, 0, 1],
+                    )
+                    .with_material_slot("chain")
+                    .with_uv(sign_uv(0.0, 6.0, 24.0, 12.0))
+                };
+                planes.push(diagonal(1.0, 4.5));
+                planes.push(diagonal(15.0, 11.5));
+            } else {
+                // Wide support: two parallel chains from the block above.
+                cuboids.push(hanging_sign_chain_uv(ModelCuboid::new(
+                    [px(1.5), px(10.0), px(7.5)],
+                    [px(4.5), 1.0, px(8.5)],
+                )));
+                cuboids.push(hanging_sign_chain_uv(ModelCuboid::new(
+                    [px(11.5), px(10.0), px(7.5)],
+                    [px(14.5), 1.0, px(8.5)],
+                )));
+            }
         } else {
-            cuboids.push(hanging_sign_chain_uv(ModelCuboid::new(
-                [px(1.5), px(10.0), px(7.5)],
-                [px(4.5), 1.0, px(8.5)],
-            )));
-            cuboids.push(hanging_sign_chain_uv(ModelCuboid::new(
-                [px(11.5), px(10.0), px(7.5)],
-                [px(14.5), 1.0, px(8.5)],
-            )));
-        }
-        if !crate::model_family::direction::state_bool(state, "hanging").unwrap_or(false) {
+            // Self-supporting bracket: the collidable bar across the top with
+            // the two side chains spanning bar -> board.
             cuboids.push(hanging_sign_bar_uv(ModelCuboid::new(
                 [0.0, px(14.0), px(6.0)],
                 [1.0, 1.0, px(10.0)],
             )));
+            cuboids.push(hanging_sign_chain_uv(ModelCuboid::new(
+                [px(1.5), px(10.0), px(7.5)],
+                [px(4.5), px(14.0), px(8.5)],
+            )));
+            cuboids.push(hanging_sign_chain_uv(ModelCuboid::new(
+                [px(11.5), px(10.0), px(7.5)],
+                [px(14.5), px(14.0), px(8.5)],
+            )));
         }
-        return ModelShape::from_cuboids(cuboids);
+        // `ground_sign_direction` (0..15): 22.5° per step, 0 = south — the
+        // whole assembly (board, chains, bar) turns together.
+        let degrees = crate::model_family::direction::state_i64(state, "ground_sign_direction")
+            .unwrap_or(0)
+            .rem_euclid(16) as f32 * 22.5;
+        return rotate_shape_y_degrees(
+            ModelShape::from_cuboids(cuboids).with_planes(planes),
+            degrees,
+        );
     }
 
     // Standing signs have sixteen 22.5 degree orientations. Value 0 faces south and the value
@@ -205,59 +247,28 @@ const fn px(value: f32) -> f32 {
 }
 
 /// Banners are ONE block each in Bedrock (`standing_banner` / `wall_banner`; there is no plain
-/// `banner` block): the visual simply spills out of the cell. A standing banner's pole spans its
-/// cell and the full 20 x 40 px cloth hangs from the pole top into the cell below — the
-/// two-block-tall look. When that cell is occupied (`banner_compressed`, resolved from the
-/// neighbour) the cloth squeezes back into the banner's own cell. A vertically attached wall
-/// banner (`facing_direction` 0/1) hangs under the block above with the same compression rule
-/// (`hanging_compressed`); wall-mounted ones (2..5) keep the cloth flat against the mount face.
+/// `banner` block). The official entity model (JE `BannerModel` / `BannerFlagModel`, applied by
+/// the renderer's `(0.5, 0, 0.5)` translation and `(2/3, -2/3, -2/3)` scale; the vanilla
+/// Bedrock sheet paints exactly that box unwrap) stands UP from the ground: a 2 x 42 px pole
+/// rises the full banner height, the 20 x 40 px cloth hangs from the 2 px bar capping the top,
+/// and the banner reaches 1.83 blocks while its hitbox stays one block. Bedrock only ships two
+/// forms — the standing banner (`ground_sign_direction`, 0 = south, 22.5 degrees per step
+/// clockwise) and the wall banner (`facing_direction` 2..5 names the side the art faces; the
+/// bar mounts on the opposite edge at mid height and the cloth hangs from it, dipping below
+/// the block line). There is no compressed variant: the banner simply overlaps whatever shares
+/// its space, which is why solid blocks may cover half of one.
 pub(crate) fn banner_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     if name.ends_with("wall_banner") {
-        let facing = crate::model_family::direction::state_i64(state, "facing_direction");
-        if matches!(facing, Some(0) | Some(1)) {
-            let compressed = crate::model_family::direction::state_bool(
-                state,
-                "hanging_compressed",
-            )
-            .unwrap_or(false);
-            if !compressed {
-                return ModelShape::from_cuboids([
-                    banner_cloth(hanging_banner_cloth(), true, true),
-                    banner_rod(hanging_banner_rod()),
-                ]);
-            }
-            return ModelShape::from_cuboids([
-                banner_cloth(hanging_banner_cloth_compressed(), true, true),
-                banner_rod(hanging_banner_rod()),
-            ]);
-        }
+        // `facing_direction` 0/1 never occurs in vanilla data; they fall through to the
+        // default north facing like any unmapped state.
         let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
-        return ModelShape::from_cuboids([
-            banner_cloth(wall_banner_cloth(direction), true, true),
-            banner_rod(wall_banner_rod(direction)),
-        ]);
+        // The official wall assembly is authored facing south; turning model-north onto the
+        // opposite edge points the cloth front onto `facing_direction`.
+        return rotate_shape_cardinal(wall_banner_shape(), direction.opposite());
     }
-    // Standing banner (and the legacy `banner` spelling): the pole spans the cell, the cloth
-    // hangs from the pole top — y 16 down to y −24 px, i.e. 2.5 cells — and the rod rides the
-    // cloth's bottom edge. `ground_sign_direction` 0 = south, 22.5 degrees per step clockwise.
-    let compressed = crate::model_family::direction::state_bool(state, "banner_compressed")
-        .unwrap_or(false);
-    let cloth = if compressed {
-        banner_cloth_cuboid()
-    } else {
-        ModelCuboid::new([-0.125, -1.5, 0.5625], [1.125, 1.0, 0.625])
-    };
-    let rod = if compressed {
-        banner_rod_cuboid()
-    } else {
-        ModelCuboid::new([-0.125, -1.5, 0.5625], [1.125, -1.4375, 0.625])
-    };
-    let mut cuboids = vec![
-        banner_cloth(cloth, true, true),
-        banner_pole_cuboid(),
-        banner_rod(rod),
-    ];
-    rotate_shape_y_degrees(ModelShape::from_cuboids(cuboids), ground_sign_degrees(state))
+    // Standing banner (and the legacy `banner` spelling): the official assembly authored
+    // south-facing, turned by `ground_sign_direction`.
+    rotate_shape_y_degrees(standing_banner_shape(), ground_sign_degrees(state))
 }
 
 pub(crate) fn bell_shape(state: &BlockStateQuery) -> ModelShape {
@@ -332,80 +343,97 @@ fn bell_uv(u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
     ]
 }
 
-/// The banner cloth box: 20 px wide, 1 px thick, standing in front of the pole at z 6..7.
-fn banner_cloth_cuboid() -> ModelCuboid {
-    ModelCuboid::new([-0.125, 0.0, 0.5625], [1.125, 1.0, 0.625])
+/// One model pixel of the banner entity at the official 2/3 block scale: the 44 px assembly
+/// spans 44/24 blocks.
+const fn banner_px(value: f32) -> f32 {
+    value / 24.0
 }
 
-/// `banner_base` holds the 20 x 40 px cloth twice: the front panel at `(1, 1)..(21, 41)` and a
-/// mirrored back panel at `(22, 1)..(42, 41)`. `lower` selects the bottom half of that cloth,
-/// `full` squeezes the whole panel onto a single-block wall banner.
-fn banner_cloth(cuboid: ModelCuboid, lower: bool, full: bool) -> ModelCuboid {
-    let [_, front_y0, _, front_y1] = CLOTH_PANELS[0];
-    let (v0, v1) = if full {
-        (front_y0 as f32, front_y1 as f32)
-    } else if lower {
-        (front_y0 as f32 + 20.0, front_y1 as f32)
-    } else {
-        (front_y0 as f32, front_y0 as f32 + 20.0)
-    };
-    let [front_x0, _, front_x1, _] = CLOTH_PANELS[0];
-    let [back_x0, _, back_x1, _] = CLOTH_PANELS[1];
-    let front = banner_sheet(front_x0 as f32, v0, front_x1 as f32, v1);
-    // The back panel is the same art mirrored, so its U order is reversed.
-    let back = banner_sheet(back_x1 as f32, v0, back_x0 as f32, v1);
-    cuboid
-        .with_material_slot("front")
-        .with_face_uv(BlockFace::North, front)
-        .with_face_uv(BlockFace::East, front)
-        .with_face_uv(BlockFace::West, front)
-        .with_face_uv(BlockFace::Up, front)
-        .with_face_uv(BlockFace::Down, front)
-        .with_face_uv(BlockFace::South, back)
+/// The official standing assembly — pole, cloth, top bar — authored facing south.
+fn standing_banner_shape() -> ModelShape {
+    ModelShape::from_cuboids([
+        banner_pole_cuboid(),
+        banner_flag_cuboid(
+            banner_px(4.0),
+            banner_px(44.0),
+            0.5 + banner_px(1.0),
+            0.5 + banner_px(2.0),
+        ),
+        banner_bar_cuboid(
+            banner_px(42.0),
+            banner_px(44.0),
+            0.5 - banner_px(1.0),
+            0.5 + banner_px(1.0),
+        ),
+    ])
 }
 
-/// The 2 px pole that runs up both banner blocks, sampling the sheet's pole strip.
+/// The official wall assembly — cloth hanging from the mount bar — authored facing south; the
+/// caller turns model-north onto the wall side. The cloth hangs from the bar at mid height and
+/// dips 19.5 model px below the block line, the official wall-banner silhouette.
+fn wall_banner_shape() -> ModelShape {
+    ModelShape::from_cuboids([
+        banner_flag_cuboid(
+            -banner_px(19.5),
+            banner_px(20.5),
+            0.5 - banner_px(9.5),
+            0.5 - banner_px(8.5),
+        ),
+        banner_bar_cuboid(
+            banner_px(18.5),
+            banner_px(20.5),
+            0.5 - banner_px(11.5),
+            0.5 - banner_px(9.5),
+        ),
+    ])
+}
+
+/// The 2 x 42 px pole rising from the ground to the top bar. The vanilla sheet paints every
+/// box-UV window of the official pole cube (`texOffs(44, 0)`); the renderer's Y/Z mirror swaps
+/// which world face reads each window, so the south face reads the north window and the up cap
+/// reads the down cap.
 fn banner_pole_cuboid() -> ModelCuboid {
-    // The pole strip is the 2 px column at x 44..45, painted for the whole sheet height.
-    let pole = banner_sheet(44.0, 2.0, 46.0, 44.0);
-    let mut cuboid =
-        ModelCuboid::new([0.4375, 0.0, 0.4375], [0.5625, 1.0, 0.5625]).with_material_slot("front");
-    for face in [
-        BlockFace::North,
-        BlockFace::South,
-        BlockFace::East,
-        BlockFace::West,
-        BlockFace::Up,
-        BlockFace::Down,
-    ] {
-        cuboid = cuboid.with_face_uv(face, pole);
-    }
-    cuboid
+    ModelCuboid::new(
+        [0.5 - banner_px(1.0), 0.0, 0.5 - banner_px(1.0)],
+        [0.5 + banner_px(1.0), banner_px(42.0), 0.5 + banner_px(1.0)],
+    )
+    .with_material_slot("front")
+    .with_face_uv(BlockFace::South, banner_sheet(46.0, 2.0, 48.0, 44.0))
+    .with_face_uv(BlockFace::North, banner_sheet(50.0, 2.0, 52.0, 44.0))
+    .with_face_uv(BlockFace::East, banner_sheet(48.0, 2.0, 50.0, 44.0))
+    .with_face_uv(BlockFace::West, banner_sheet(44.0, 2.0, 46.0, 44.0))
+    .with_face_uv(BlockFace::Up, banner_sheet(48.0, 0.0, 50.0, 2.0))
+    .with_face_uv(BlockFace::Down, banner_sheet(46.0, 0.0, 48.0, 2.0))
 }
 
-/// The 20 px rod under the cloth, drawn from the sheet's bottom bar.
-fn banner_rod_cuboid() -> ModelCuboid {
-    ModelCuboid::new([-0.125, 0.0, 0.5625], [1.125, 0.0625, 0.625])
+/// The 20 x 40 px cloth panel: the front art on the south face and the shaded back panel on
+/// the north face, with the official 1 px edge and cap windows on the rest. Every window is
+/// painted in the vanilla sheet; the panel art reads un-mirrored from outside both faces.
+fn banner_flag_cuboid(y0: f32, y1: f32, z0: f32, z1: f32) -> ModelCuboid {
+    ModelCuboid::new([0.5 - banner_px(10.0), y0, z0], [0.5 + banner_px(10.0), y1, z1])
+        .with_material_slot("front")
+        .with_face_uv(BlockFace::South, banner_sheet(1.0, 1.0, 21.0, 41.0))
+        .with_face_uv(BlockFace::North, banner_sheet(22.0, 1.0, 42.0, 41.0))
+        .with_face_uv(BlockFace::East, banner_sheet(21.0, 1.0, 22.0, 41.0))
+        .with_face_uv(BlockFace::West, banner_sheet(0.0, 1.0, 1.0, 41.0))
+        .with_face_uv(BlockFace::Up, banner_sheet(21.0, 0.0, 41.0, 1.0))
+        .with_face_uv(BlockFace::Down, banner_sheet(1.0, 0.0, 21.0, 1.0))
 }
 
-fn banner_rod(cuboid: ModelCuboid) -> ModelCuboid {
-    // The rod is the 40 x 2 px band under the cloth panels, `(2, 42)..(42, 44)`.
-    let rod = banner_sheet(2.0, 42.0, 42.0, 44.0);
-    let mut rod_cuboid = cuboid.with_material_slot("front");
-    for face in [
-        BlockFace::North,
-        BlockFace::South,
-        BlockFace::East,
-        BlockFace::West,
-        BlockFace::Up,
-        BlockFace::Down,
-    ] {
-        rod_cuboid = rod_cuboid.with_face_uv(face, rod);
-    }
-    rod_cuboid
+/// The 20 x 2 x 2 px bar capping the banner — the top of the standing form, the mount bar of
+/// the wall form. Official cube windows from `texOffs(0, 42)`, mirrored like the pole's.
+fn banner_bar_cuboid(y0: f32, y1: f32, z0: f32, z1: f32) -> ModelCuboid {
+    ModelCuboid::new([0.5 - banner_px(10.0), y0, z0], [0.5 + banner_px(10.0), y1, z1])
+        .with_material_slot("front")
+        .with_face_uv(BlockFace::South, banner_sheet(2.0, 44.0, 22.0, 46.0))
+        .with_face_uv(BlockFace::North, banner_sheet(24.0, 44.0, 44.0, 46.0))
+        .with_face_uv(BlockFace::East, banner_sheet(22.0, 44.0, 24.0, 46.0))
+        .with_face_uv(BlockFace::West, banner_sheet(0.0, 44.0, 2.0, 46.0))
+        .with_face_uv(BlockFace::Up, banner_sheet(22.0, 42.0, 42.0, 44.0))
+        .with_face_uv(BlockFace::Down, banner_sheet(2.0, 42.0, 22.0, 44.0))
 }
 
-/// One rect of the 64 x 64 `banner_base` sheet, emitted bottom-left first (the authored rect
+/// One rect of the 64 x 64 banner entity sheet, emitted bottom-left first (the authored rect
 /// measures V from the texture top).
 fn banner_sheet(u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
     [
@@ -414,41 +442,4 @@ fn banner_sheet(u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
         [u1 / 64.0, v0 / 64.0],
         [u0 / 64.0, v0 / 64.0],
     ]
-}
-
-/// Wall banners keep the cloth in one block, flat against the mount face.
-fn wall_banner_cloth(direction: CardinalDirection) -> ModelCuboid {
-    // `facing_direction` names the side the art faces, so the cloth hangs on the opposite edge,
-    // flat against the wall it is mounted on.
-    match direction.opposite() {
-        CardinalDirection::North => ModelCuboid::new([-0.125, 0.0, 0.0], [1.125, 0.9375, 0.0625]),
-        CardinalDirection::South => ModelCuboid::new([-0.125, 0.0, 0.9375], [1.125, 0.9375, 1.0]),
-        CardinalDirection::East => ModelCuboid::new([0.9375, 0.0, -0.125], [1.0, 0.9375, 1.125]),
-        CardinalDirection::West => ModelCuboid::new([0.0, 0.0, -0.125], [0.0625, 0.9375, 1.125]),
-    }
-}
-
-/// A hanging banner hangs under the block above it: the rod hugs the mount and the full
-/// 40 px cloth panel drops below the cell (2.5 blocks total).
-fn hanging_banner_cloth() -> ModelCuboid {
-    ModelCuboid::new([-0.125, -1.5625, 0.5625], [1.125, 0.9375, 0.625])
-}
-
-/// The squeezed hanging cloth: the whole panel compressed back into one cell because the
-/// block below the mount is occupied.
-fn hanging_banner_cloth_compressed() -> ModelCuboid {
-    ModelCuboid::new([-0.125, 0.0, 0.5625], [1.125, 0.9375, 0.625])
-}
-
-fn hanging_banner_rod() -> ModelCuboid {
-    ModelCuboid::new([-0.125, 0.9375, 0.5625], [1.125, 1.0, 0.625])
-}
-
-fn wall_banner_rod(direction: CardinalDirection) -> ModelCuboid {
-    match direction.opposite() {
-        CardinalDirection::North => ModelCuboid::new([-0.125, 0.9375, 0.0], [1.125, 1.0, 0.0625]),
-        CardinalDirection::South => ModelCuboid::new([-0.125, 0.9375, 0.9375], [1.125, 1.0, 1.0]),
-        CardinalDirection::East => ModelCuboid::new([0.9375, 0.9375, -0.125], [1.0, 1.0, 1.125]),
-        CardinalDirection::West => ModelCuboid::new([0.0, 0.9375, -0.125], [0.0625, 1.0, 1.125]),
-    }
 }

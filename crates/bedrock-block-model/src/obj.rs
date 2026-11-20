@@ -606,6 +606,15 @@ impl ObjTextureResolver {
             .as_deref()
             .and_then(crate::runtime_capture::decode_texture_slot)
         {
+            // Some capture aliases name shared art that a sibling entry owns and
+            // that varies by state — the anvil's damage top is a per-block frame
+            // of `anvil_top_damaged_x`. The shared table needs the block context,
+            // so it resolves first; every other alias keeps the direct path.
+            if let Some(texture_key) = shared_slot_texture(&lookup_block, &alias)
+                && let Some((pack, path)) = self.texture_path(&texture_key)
+            {
+                return Some(pack.resolved_texture(&self.texture_directory_name, path));
+            }
             // An explicit capture alias must never silently fall back to the
             // block's generic north/top texture on a missing asset.
             return self
@@ -2041,6 +2050,18 @@ fn texture_value_keys(normal: [i32; 3]) -> &'static [&'static str] {
 #[must_use]
 /// Terrain material for a model slot whose art lives in a sibling block entry.
 fn shared_slot_texture(block: &str, slot: &str) -> Option<String> {
+    // The piston head block (`pistonArmCollision` / `stickyPistonArmCollision`) draws its
+    // plate from the piston's own face art: `platform` is the normal/sticky top and `inner`
+    // the dark hole band behind it (`piston_top` = `piston_inner` in terrain_texture).
+    if block.ends_with("arm_collision") {
+        return match slot {
+            "platform" => Some("piston_top_normal".to_owned()),
+            "platform_sticky" => Some("piston_top_sticky".to_owned()),
+            "inner" => Some("piston_top".to_owned()),
+            "side" => Some("piston_side".to_owned()),
+            _ => None,
+        };
+    }
     // `repeater_torch` / `comparator_torch` are two-frame terrain arrays [off, on]. The shape
     // puts the powered state in the slot suffix (`torch_on`/`torch_off`) so an active repeater's
     // redstone torch lights up instead of always using frame 0 (off).
@@ -2071,6 +2092,19 @@ fn shared_slot_texture(block: &str, slot: &str) -> Option<String> {
             "top_on" => return Some(format!("{top_key}#1")),
             "repeater_floor" => return Some("repeater_floor".to_owned()),
             "comparator_floor" => return Some("comparator_stone_slab".to_owned()),
+            _ => {}
+        }
+    }
+    // The lectern's capture/model parts name their own sheet (base, front,
+    // sides, top, bottom); blocks.json only exposes those sheets through the
+    // face map, so part slots resolve here.
+    if block == "lectern" {
+        match slot {
+            "base" => return Some("lectern_base".to_owned()),
+            "front" => return Some("lectern_front".to_owned()),
+            "sides" => return Some("lectern_sides".to_owned()),
+            "top" => return Some("lectern_top".to_owned()),
+            "bottom" => return Some("lectern_bottom".to_owned()),
             _ => {}
         }
     }
@@ -5076,6 +5110,7 @@ mod tests {
                     "wood_spruce": {"textures":"textures/blocks/wood_spruce"},
                     "wood_birch": {"textures":"textures/blocks/wood_birch"},
                     "flattened_anvil_top": {"textures":"textures/blocks/anvil_top_damaged_0"},
+                    "anvil_top_damaged_x": {"textures": ["textures/blocks/anvil_top_damaged_0", "textures/blocks/anvil_top_damaged_1", "textures/blocks/anvil_top_damaged_2", "textures/blocks/anvil_base"]},
                     "glass": {"textures":"textures/blocks/glass"},
                     "glass_pane_top": {"textures":"textures/blocks/glass_pane_top"},
                     "still_water": {"textures":"textures/blocks/water_still"}
@@ -5103,6 +5138,9 @@ mod tests {
             "wood_spruce.png",
             "wood_birch.png",
             "anvil_top_damaged_0.png",
+            "anvil_top_damaged_1.png",
+            "anvil_top_damaged_2.png",
+            "anvil_base.png",
             "glass.png",
             "glass_pane_top.png",
             "water_still.png",
@@ -5197,6 +5235,37 @@ mod tests {
         assert_eq!(
             resolved_relative_path(&resolver, "minecraft_anvil_up", [0, 1, 0]).as_deref(),
             Some("textures/blocks/anvil_top_damaged_0.png")
+        );
+        // Capture meshes encode their engine aliases as `bsc_` hex slots; the
+        // anvil damage top must pick its frame from the block name, not paint
+        // every damaged variant with the pristine texture.
+        let top_alias = crate::runtime_capture::encode_texture_slot("flattened_anvil_top");
+        assert_eq!(
+            resolved_relative_path(
+                &resolver,
+                &format!("minecraft_anvil__mat_{top_alias}"),
+                [0, 1, 0],
+            )
+            .as_deref(),
+            Some("textures/blocks/anvil_top_damaged_0.png")
+        );
+        assert_eq!(
+            resolved_relative_path(
+                &resolver,
+                &format!("minecraft_chipped_anvil__mat_{top_alias}"),
+                [0, 1, 0],
+            )
+            .as_deref(),
+            Some("textures/blocks/anvil_top_damaged_1.png")
+        );
+        assert_eq!(
+            resolved_relative_path(
+                &resolver,
+                &format!("minecraft_damaged_anvil__mat_{top_alias}"),
+                [0, 1, 0],
+            )
+            .as_deref(),
+            Some("textures/blocks/anvil_top_damaged_2.png")
         );
         assert_eq!(
             resolved_relative_path(&resolver, "minecraft_glass_pane__mat_east", [0, 1, 0])

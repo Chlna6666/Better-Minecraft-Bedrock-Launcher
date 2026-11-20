@@ -253,70 +253,111 @@ fn pot_side_uv(rect: [f32; 4]) -> [[f32; 2]; 4] {
     [[u1 / 16.0, v1 / 16.0], [u0 / 16.0, v1 / 16.0], [u0 / 16.0, v0 / 16.0], [u1 / 16.0, v0 / 16.0]]
 }
 
-/// Bedrock decorated pot: a block-actor with five model keys — `decorated_pot_base` (top,
-/// bottom and the narrow neck) plus one sherd-textured side per face. The silhouette is a squat
-/// pot: a **near-full-width 14 px body** rising ~10 px, tapering through a shorter 10 px upper
-/// body to an 8 px neck/rim. The old 7 px-wide, 13 px-tall column read as a flower vase.
-///
-/// UVs: the body sides sample `decorated_pot_side` (16 x 16 sherd sheet, opaque x1..14), the
-/// neck sides and its cap sample the 32 x 32 `decorated_pot_base` unfold (shoulder band v8..12,
-/// top/bottom v0..8).
+/// Official decorated pot (JE `DecoratedPotRenderer.createBaseLayer`/`createSidesLayer`,
+/// applied 1:1 by the Bedrock client; the capture catalog marks every state `unsupported`).
+/// Four 14 x 16 px sherd cards stand inset 1 px from each face, a 14 x 14 cap closes the
+/// bottom and the top, and the mouth is an 8 x 3 x 8 neck inset inside the top with a
+/// 6 x 1 x 6 rim grown 0.2 px above it — the 1.19.80 fix that stopped the old proud neck
+/// from z-fighting. The vase-stack silhouette (14 px body + 12 px shoulder + proud neck)
+/// this replaces was wrong on both geometry and UVs.
 pub(crate) fn decorated_pot_shape() -> ModelShape {
-    let side = crate::model_family::shape::uv16(1.0, 0.0, 15.0, 16.0);
-    // Lower body: 14 px wide (x1..15), 10 px tall — the broad belly of the pot.
-    let body = ModelCuboid::new([px(1.0), 0.0, px(1.0)], [px(15.0), px(10.0), px(15.0)])
-        .with_face_uv(BlockFace::North, side)
-        .with_face_uv(BlockFace::South, side)
-        .with_face_uv(BlockFace::East, side)
-        .with_face_uv(BlockFace::West, side)
-        .with_material_slot("pot_side");
-    // Upper body: 12 px wide, tapering from y10 to y13.
-    let upper = ModelCuboid::new([px(2.0), px(10.0), px(2.0)], [px(14.0), px(13.0), px(14.0)])
-        .with_material_slot("pot_base");
-    let upper = pot_face_uv(upper, [0.0, 13.0, 7.0, 27.0], [0.0, 13.0, 7.0, 27.0]);
-    // Neck/rim: 8 px wide, y13..16, one px proud of nothing (the mouth).
-    let neck = ModelCuboid::new([px(4.0), px(13.0), px(4.0)], [px(12.0), 1.0, px(12.0)])
-        .with_material_slot("pot_base");
-    let neck = pot_face_uv(neck, [0.0, 8.0, 8.0, 12.0], [0.0, 8.0, 8.0, 12.0]);
-    let neck = neck
-        .with_face_uv(BlockFace::Up, [
-            [8.0 / 32.0, 8.0 / 32.0],
-            [24.0 / 32.0, 8.0 / 32.0],
-            [24.0 / 32.0, 0.0],
-            [8.0 / 32.0, 0.0],
-        ])
-        .with_face_uv(BlockFace::Down, [
-            [8.0 / 32.0, 8.0 / 32.0],
-            [24.0 / 32.0, 8.0 / 32.0],
-            [24.0 / 32.0, 0.0],
-            [8.0 / 32.0, 0.0],
-        ]);
-    ModelShape::from_cuboids([body, upper, neck])
+    // Cards are zero-thickness planes in the official model; emit them as thin boxes so the
+    // renderer's double-sided plane path is not required for solid shading. The sherd sheet
+    // is 16 x 16 with the art painted at x 1..14; every outward face samples that band.
+    let sherd = crate::model_family::shape::uv16(1.0, 0.0, 15.0, 16.0);
+    let mut cuboids = vec![
+        // Bottom and top caps sample the official cap windows (texOffs(-14,13): top face
+        // u0..14, bottom face u14..28, both v13..27 on the 32 x 32 sheet).
+        cap_cuboid([px(1.0), 0.0, px(1.0)], [px(15.0), 0.001, px(15.0)], 14.0, 13.0),
+        cap_cuboid([px(1.0), 1.0, px(1.0)], [px(15.0), 1.001, px(15.0)], 14.0, 13.0),
+        ModelCuboid::new([px(1.0), 0.0, px(1.0)], [px(1.001), 1.0, px(15.0)])
+            .with_material_slot("pot_side"),
+        ModelCuboid::new([px(15.0), 0.0, px(1.0)], [px(15.001), 1.0, px(15.0)])
+            .with_material_slot("pot_side"),
+        ModelCuboid::new([px(1.0), 0.0, px(1.0)], [px(15.0), 1.0, px(1.001)])
+            .with_material_slot("pot_side"),
+        ModelCuboid::new([px(1.0), 0.0, px(15.0)], [px(15.0), 1.0, px(15.001)])
+            .with_material_slot("pot_side"),
+    ];
+    for cuboid in &mut cuboids {
+        for face in [
+            BlockFace::Up,
+            BlockFace::Down,
+            BlockFace::North,
+            BlockFace::South,
+            BlockFace::East,
+            BlockFace::West,
+        ] {
+            *cuboid = cuboid.clone().with_face_uv(face, sherd);
+        }
+    }
+    // Neck 8 x 3 x 8 at y 13..16, plus the 6 x 1 x 6 rim above it. The sheet windows are the
+    // official box unwraps: neck texOffs(0,0) (caps u 8..16 / 16..24 at v 0..8, side strip
+    // v 8..11 with west u0..8, north u8..16, east u16..24, south u24..32) and rim
+    // texOffs(0,5) shifted down one row (caps v 5..11, side strip v 11..12).
+    let neck = box_unwrap_cuboid(
+        [px(4.0), px(13.0), px(4.0)],
+        [px(12.0), 1.0, px(12.0)],
+        [0.0, 0.0],
+        [32.0, 32.0],
+    )
+    .with_material_slot("pot_base");
+    let rim_growth = px(0.2);
+    let rim = box_unwrap_cuboid(
+        [px(5.0) - rim_growth, 1.0, px(5.0) - rim_growth],
+        [px(11.0) + rim_growth, 1.0 + px(0.2), px(11.0) + rim_growth],
+        [0.0, 5.0],
+        [32.0, 32.0],
+    )
+    .with_material_slot("pot_base");
+    cuboids.push(neck);
+    cuboids.push(rim);
+    ModelShape::from_cuboids(cuboids)
 }
 
-/// Maps one box's four sides onto a strip of `sides` (four equal columns) and its caps onto
-/// `caps`.
-fn pot_face_uv(
-    cuboid: ModelCuboid,
-    sides: [f32; 4],
-    _caps: [f32; 4],
+/// The 14 x 14 cap slab sampling the official cap windows of `decorated_pot_base`
+/// (texOffs(-14, 13)): the up face reads u 0..14, the down face u 14..28, both v 13..27.
+fn cap_cuboid(min: [f32; 3], max: [f32; 3], width: f32, v0: f32) -> ModelCuboid {
+    let u = |value: f32| value / 32.0;
+    let v = |value: f32| value / 32.0;
+    let top = [
+        [u(0.0), v(v0 + width)],
+        [u(width), v(v0 + width)],
+        [u(width), v(v0)],
+        [u(0.0), v(v0)],
+    ];
+    let bottom = [
+        [u(width), v(v0 + width)],
+        [u(2.0 * width), v(v0 + width)],
+        [u(2.0 * width), v(v0)],
+        [u(width), v(v0)],
+    ];
+    ModelCuboid::new(min, max)
+        .with_material_slot("pot_base")
+        .with_face_uv(BlockFace::Up, top)
+        .with_face_uv(BlockFace::Down, bottom)
+}
+
+/// One Bedrock box unwrap onto a 32 x 32 sheet: caps above the side strip, side faces in the
+/// east/north/west/south strip order the entity box convention uses, normalized to `span`.
+/// `origin` is the box's texOffs in authoring pixels.
+fn box_unwrap_cuboid(
+    min: [f32; 3],
+    max: [f32; 3],
+    origin: [f32; 2],
+    span: [f32; 2],
 ) -> ModelCuboid {
-    let [u0, v0, u1, v1] = sides;
-    let width = (u1 - u0) / 4.0;
-    let rect = |index: usize| {
-        let left = u0 + width * index as f32;
-        [
-            [left / 32.0, v1 / 32.0],
-            [(left + width) / 32.0, v1 / 32.0],
-            [(left + width) / 32.0, v0 / 32.0],
-            [left / 32.0, v0 / 32.0],
-        ]
-    };
+    let uvs = crate::model_family::shape::box_unwrap_face_uvs(
+        min.map(|v| v * 16.0),
+        max.map(|v| v * 16.0),
+        origin,
+        span,
+    );
+    let mut cuboid = ModelCuboid::new(min, max);
+    for (face, uv) in uvs {
+        cuboid = cuboid.with_face_uv(face, uv);
+    }
     cuboid
-        .with_face_uv(BlockFace::North, rect(0))
-        .with_face_uv(BlockFace::East, rect(1))
-        .with_face_uv(BlockFace::South, rect(2))
-        .with_face_uv(BlockFace::West, rect(3))
 }
 
 pub(crate) fn brewing_stand_shape() -> ModelShape {

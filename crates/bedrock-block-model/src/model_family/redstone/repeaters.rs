@@ -3,7 +3,9 @@ use crate::model_family::ModelFamily;
 use crate::model_family::direction::{
     CardinalDirection, cardinal_direction, state_bool, state_i64, state_string,
 };
-use crate::model_family::shape::{ModelCuboid, ModelShape, rotate_cuboid_cardinal};
+use crate::model_family::shape::{
+    ModelCuboid, ModelPlane, ModelShape, rotate_cuboid_cardinal, rotate_plane_cardinal,
+};
 use crate::state::BlockStateQuery;
 
 pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
@@ -15,31 +17,38 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
 }
 
 pub(crate) fn shape(name: &str, state: &BlockStateQuery) -> ModelShape {
-    let output = repeater_output_direction(state);
+    let is_comparator = name.contains("comparator");
 
-    // The redstone torches are drawn from the two-frame `repeater_torch`/`comparator_torch`
-    // terrain arrays [off, on]. Repeater activation lives in the block name (powered_ vs
-    // unpowered_); comparator activation in `output_lit_bit`. Both can also arrive as a bool
-    // state, so check every spelling before falling back to off.
-    let lit = name.contains("powered")
-        && !name.contains("unpowered")
+    // Official block state (minecraft.wiki/w/Redstone_Repeater):
+    // `cardinal_direction` "points from the output side to the input side", so
+    // the output faces the opposite direction. The frame below is the official
+    // model (JE `repeater_<n>tick` / `comparator`), whose output faces
+    // model-north; the whole assembly turns model-north onto the output.
+    let facing = repeater_facing_direction(state);
+    let output = facing.opposite();
+
+    let powered = (name.contains("powered") && !name.contains("unpowered"))
         || state_bool(state, "powered_bit").unwrap_or(false)
         || state_bool(state, "powered").unwrap_or(false)
         || state_bool(state, "output_lit_bit").unwrap_or(false);
-    let torch_slot = if lit { "torch_on" } else { "torch_off" };
+    // The comparator's subtract mode lights the front (output) post only; the
+    // two input posts light with the powered output (JE `comparator_subtract`
+    // binds the front torch to `#lit` while the inputs stay `#unlit`).
+    let is_subtract = is_comparator
+        && (state_bool(state, "output_subtract_bit").unwrap_or(false)
+            || state_string(state, "comparator_mode")
+                .is_some_and(|mode| mode == "subtract" || mode == "1"));
 
-    // Base slab (JE `repeater_1tick` / `comparator`): the TOP carries the mechanism art
-    // (`repeater_up` / `comparator_up`, a two-frame [off, on] array), while the sides show the
-    // bottom 2 px band of the stone slab and the underside the whole slab tile. The previous
-    // base had no slot at all, so every face fell back to the block's own texture — the
-    // stone base read as a second copy of the mechanism art with the grooves pointing the
-    // wrong way.
-    let top_slot = if lit { "top_on" } else { "top_off" };
-    let floor_slot = if name.contains("comparator") {
+    let top_slot = if powered { "top_on" } else { "top_off" };
+    let floor_slot = if is_comparator {
         "comparator_floor"
     } else {
         "repeater_floor"
     };
+
+    // Base slab: the top carries the mechanism art (`repeater_up` /
+    // `comparator_up`, two-frame [off, on]); the sides show the bottom 2 px
+    // band of the stone slab and the underside the whole slab tile.
     let slab_band = flipped_uv(0.0, 14.0, 16.0, 16.0);
     let mut cuboids = vec![
         ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.125, 1.0])
@@ -56,108 +65,175 @@ pub(crate) fn shape(name: &str, state: &BlockStateQuery) -> ModelShape {
             .with_face_material_slot(BlockFace::East, floor_slot)
             .with_face_material_slot(BlockFace::West, floor_slot),
     ];
+    let mut planes = Vec::new();
 
-    // Bedrock draws the redstone "torches" as flat slab bars 2..7.9 px tall (capture refs: north
-    // repeater 560/564/568/570, south comparators 274 compare / 278 subtract). The authored frame
-    // below is the capture frame after the rotation each family already applies, so the bars
-    // land where the client puts them per facing.
-    if name.contains("comparator") {
-        let is_subtract = state_bool(state, "output_subtract_bit")
-            .or_else(|| state_string(state, "comparator_mode").map(|s| s == "subtract" || s == "1"))
-            .unwrap_or(false);
-
-        // Two input bars flanking the centre at the back, and the output bar at the front. The
-        // compare-mode output bar is wider and shorter (x 6..10, y to 4.9); subtract mode keeps
-        // it narrow but taller (x 7..9, y to 5.9).
-        cuboids.push(torch_bar(px(4.0), px(7.9), px(10.0), px(14.0), torch_slot));
-        cuboids.push(torch_bar(px(10.0), px(7.9), px(10.0), px(14.0), torch_slot));
-        if is_subtract {
-            cuboids.push(torch_bar(px(7.0), px(5.9), px(1.0), px(5.0), torch_slot));
-        } else {
-            cuboids.push(torch_bar_wide(px(6.0), px(4.0), px(4.9), px(1.0), px(5.0), torch_slot));
+    // Torch posts (official models, authored in 16 px units): every post is a
+    // 2 x ? x 2 column standing on the base slab. The repeater's output post
+    // sits at the output edge (z 2..4) and the delay post slides 2 px per
+    // delay step away from it; the comparator has a short output post (3 px)
+    // flanked by the two 5 px input posts at the back. Lit posts also grow the
+    // official glow cross around themselves.
+    let mut push_post = |cuboid: ModelCuboid, lit: bool, side_uv_v1: f32| {
+        let x0 = cuboid.min[0];
+        let x1 = cuboid.max[0];
+        let z0 = cuboid.min[2];
+        let z1 = cuboid.max[2];
+        let y_top = cuboid.max[1];
+        let slot = if lit { "torch_on" } else { "torch_off" };
+        let mut post = cuboid.with_material_slot(slot);
+        let side = torch_slice_uv(7.0, 6.0, 9.0, side_uv_v1);
+        let head = torch_slice_uv(7.0, 6.0, 9.0, 8.0);
+        for (face, uv) in [
+            (BlockFace::North, side),
+            (BlockFace::South, side),
+            (BlockFace::East, side),
+            (BlockFace::West, side),
+            (BlockFace::Up, head),
+        ] {
+            post = post.with_face_uv(face, uv);
         }
+        cuboids.push(post);
+        if lit {
+            planes.extend(torch_glow_planes(x0, x1, y_top, z0, z1));
+        }
+    };
+
+    if is_comparator {
+        let back_lit = powered;
+        let front_lit = is_subtract;
+        // Output post (3 px tall): (7,2,2)-(9,5,4), side window [7,6,9,9].
+        push_post(
+            ModelCuboid::new([px(7.0), px(2.0), px(2.0)], [px(9.0), px(5.0), px(4.0)]),
+            front_lit,
+            9.0,
+        );
+        // Input posts (5 px tall): (4,2,11)-(6,7,13) and (10,2,11)-(12,7,13).
+        push_post(
+            ModelCuboid::new([px(4.0), px(2.0), px(11.0)], [px(6.0), px(7.0), px(13.0)]),
+            back_lit,
+            11.0,
+        );
+        push_post(
+            ModelCuboid::new([px(10.0), px(2.0), px(11.0)], [px(12.0), px(7.0), px(13.0)]),
+            back_lit,
+            11.0,
+        );
     } else {
-        let delay = state_i64(state, "repeater_delay")
+        let tick = state_i64(state, "repeater_delay")
             .or_else(|| state_i64(state, "delay"))
             .unwrap_or(0)
             .clamp(0, 3);
-
-        // Capture (refs 558-570, north frame): both sticks sit centred at x 7..9. The input
-        // torch is fixed at z 11..15; the delay torch starts touching it at z 7..11 and slides
-        // toward the output (north) 2 px per delay step, reaching z 1..5 at delay 3. Each torch
-        // carries a 2 px cap at y 6.9..7.9 and a pair of 4 px-wide flat art cards across its
-        // cap, which is what gives the torch its wider head silhouette.
-        let shift = px(2.0 * delay as f32);
-        cuboids.push(torch_bar(px(7.0), px(7.9), px(11.0), px(15.0), torch_slot));
-        cuboids.push(torch_cap(px(7.0), px(12.0), px(14.0), torch_slot));
-        cuboids.push(torch_bar(px(7.0), px(7.9), px(7.0) - shift, px(11.0) - shift, torch_slot));
-        cuboids.push(torch_cap(px(7.0), px(10.0) - shift, px(12.0) - shift, torch_slot));
+        // Output post fixed at the output edge; the delay post starts 4 px
+        // away and slides 2 px per delay step (1tick z 6..8 .. 4tick z 12..14).
+        push_post(
+            ModelCuboid::new([px(7.0), px(2.0), px(2.0)], [px(9.0), px(7.0), px(4.0)]),
+            powered,
+            11.0,
+        );
+        let delay_z0 = px(6.0 + 2.0 * tick as f32);
+        push_post(
+            ModelCuboid::new(
+                [px(7.0), px(2.0), delay_z0],
+                [px(9.0), px(7.0), delay_z0 + px(2.0)],
+            ),
+            powered,
+            11.0,
+        );
     }
 
-    // The torches above are authored with the input torch on the south side; the whole
-    // assembly turns with the block.
-    ModelShape::from_cuboids(
-        cuboids
-            .iter()
-            .map(|cuboid| rotate_cuboid_cardinal(cuboid, output))
-            .collect::<Vec<_>>(),
-    )
-}
-
-/// One redstone torch bar: a 2 px wide slab spanning `z0..z1` at `x0..x0+2`, standing on the base
-/// slab. Samples the shared `repeater_torch` / `comparator_torch` art, which is not part of the
-/// block's own texture map. The art is a 16 x 16 standing-torch sprite whose 2 px stick runs at
-/// x 7..9 from y 6 down — a full-tile UV squeezes the whole sprite (mostly transparent) onto the
-/// 2 px face, so every face samples the stick column slice instead.
-fn torch_bar(x0: f32, y_max: f32, z0: f32, z1: f32, slot: &'static str) -> ModelCuboid {
-    torch_bar_wide(x0, px(2.0), y_max, z0, z1, slot)
-}
-
-/// The torch head cap: a 2 x 2 x 1 px block sitting on the stick at `z0..z1`, sampling the
-/// sprite's glowing head rows.
-fn torch_cap(x0: f32, z0: f32, z1: f32, slot: &'static str) -> ModelCuboid {
-    let mut cap = ModelCuboid::new([x0, px(6.9), z0], [x0 + px(2.0), px(7.9), z1])
-        .with_material_slot(slot);
-    for face in [
-        BlockFace::Up,
-        BlockFace::Down,
-        BlockFace::North,
-        BlockFace::South,
-        BlockFace::East,
-        BlockFace::West,
-    ] {
-        cap = cap.with_face_uv(face, torch_slice_uv(6.0, 6.0, 10.0, 8.0));
+    let rotated_cuboids = cuboids
+        .iter()
+        .map(|cuboid| rotate_cuboid_cardinal(cuboid, output))
+        .collect::<Vec<_>>();
+    let rotated_planes = planes
+        .iter()
+        .map(|plane| rotate_plane_cardinal(plane, output))
+        .collect::<Vec<_>>();
+    ModelShape {
+        cuboids: rotated_cuboids,
+        planes: rotated_planes,
     }
-    cap
 }
 
-/// The general bar form, for the comparator's wider compare-mode output bar.
-fn torch_bar_wide(
-    x0: f32,
-    width: f32,
-    y_max: f32,
-    z0: f32,
-    z1: f32,
-    slot: &'static str,
-) -> ModelCuboid {
-    let mut bar = ModelCuboid::new([x0, px(2.0), z0], [x0 + width, y_max, z1])
-        .with_material_slot(slot);
-    // JE `repeater_1tick` binds the torch art window exactly: sides uv [7,6,9,11] and the cap
-    // [7,6,9,8] on the 2 px stick, so the flame reads as the sprite's own head instead of a
-    // stretched slice of the column.
-    let side = torch_slice_uv(7.0, 6.0, 9.0, 11.0);
-    let head = torch_slice_uv(7.0, 6.0, 9.0, 8.0);
-    for (face, uv) in [
-        (BlockFace::North, side),
-        (BlockFace::South, side),
-        (BlockFace::East, side),
-        (BlockFace::West, side),
-        (BlockFace::Up, head),
-        (BlockFace::Down, side),
-    ] {
-        bar = bar.with_face_uv(face, uv);
-    }
-    bar
+/// The official lit-torch glow cross (JE lit models bind six 3 x 3 single-face
+/// quads one half-pixel outside the post). Each quad samples a 1 px window of
+/// the lit torch art.
+fn torch_glow_planes(x0: f32, x1: f32, y_top: f32, z0: f32, z1: f32) -> Vec<ModelPlane> {
+    let (u0, u1) = (x0 - px(0.5), x1 + px(0.5));
+    let (w0, w1) = (z0 - px(0.5), z1 + px(0.5));
+    let mid_up = y_top - px(2.5);
+    let glow_top = y_top + px(0.5);
+    let glow_bottom = y_top - px(2.5);
+    let slot = "torch_on";
+    let plane = |corners: [[f32; 3]; 4], normal: [i32; 3], uv: [f32; 4]| {
+        ModelPlane::new(corners, normal)
+            .with_material_slot(slot)
+            .with_uv(torch_slice_uv(uv[0], uv[1], uv[2], uv[3]))
+    };
+    vec![
+        // Horizontal glow quads: one crossing the post's height, one above it.
+        plane(
+            [
+                [u0, mid_up, w0],
+                [u1, mid_up, w0],
+                [u1, mid_up, w1],
+                [u0, mid_up, w1],
+            ],
+            [0, 1, 0],
+            [8.0, 5.0, 9.0, 6.0],
+        ),
+        plane(
+            [
+                [u0, glow_top, w1],
+                [u1, glow_top, w1],
+                [u1, glow_top, w0],
+                [u0, glow_top, w0],
+            ],
+            [0, -1, 0],
+            [7.0, 5.0, 8.0, 6.0],
+        ),
+        // Four vertical quads wrapping the post, each half a pixel outside.
+        plane(
+            [
+                [u1, glow_bottom, w0],
+                [u0, glow_bottom, w0],
+                [u0, glow_top, w0],
+                [u1, glow_top, w0],
+            ],
+            [0, 0, 1],
+            [9.0, 6.0, 10.0, 7.0],
+        ),
+        plane(
+            [
+                [u0, glow_bottom, w1],
+                [u1, glow_bottom, w1],
+                [u1, glow_top, w1],
+                [u0, glow_top, w1],
+            ],
+            [0, 0, -1],
+            [6.0, 6.0, 7.0, 7.0],
+        ),
+        plane(
+            [
+                [u0, glow_bottom, w1],
+                [u0, glow_bottom, w0],
+                [u0, glow_top, w0],
+                [u0, glow_top, w1],
+            ],
+            [1, 0, 0],
+            [9.0, 7.0, 10.0, 8.0],
+        ),
+        plane(
+            [
+                [u1, glow_bottom, w0],
+                [u1, glow_bottom, w1],
+                [u1, glow_top, w1],
+                [u1, glow_top, w0],
+            ],
+            [-1, 0, 0],
+            [6.0, 7.0, 7.0, 8.0],
+        ),
+    ]
 }
 
 /// A flipped sprite slice: bottom-left corner first, matching the renderer's face order while
@@ -171,36 +247,16 @@ fn torch_slice_uv(u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
     ]
 }
 
-fn head_slice_uv() -> [[f32; 2]; 4] {
-    torch_slice_uv(7.0, 6.0, 9.0, 8.0)
-}
-
 const fn px(value: f32) -> f32 {
     value / 16.0
 }
 
-/// Resolves the side the repeater drives power towards.
-///
-/// The capture's north-facing frame (ref 560) carries the fixed input torch at the south end
-/// with the delay torch sliding north, so `minecraft:cardinal_direction` names the OUTPUT side
-/// directly. The deprecated `direction` integer does the same (0=north, 1=east, 2=south,
-/// 3=west).
-fn repeater_output_direction(state: &BlockStateQuery) -> CardinalDirection {
-    if let Some(direction) = state_string(state, "minecraft:cardinal_direction")
-        .or_else(|| state_string(state, "cardinal_direction"))
-        .and_then(crate::model_family::direction::from_string)
-    {
-        return direction;
-    }
-    if let Some(value) = state_i64(state, "direction") {
-        return match value.rem_euclid(4) {
-            0 => CardinalDirection::North,
-            1 => CardinalDirection::East,
-            2 => CardinalDirection::South,
-            _ => CardinalDirection::West,
-        };
-    }
-    cardinal_direction(state).unwrap_or(CardinalDirection::North)
+/// Resolves the side the repeater's state points towards: from the output side
+/// to the input side (minecraft.wiki/w/Redstone_Repeater). The deprecated
+/// integer state uses the legacy data order 0=south / 1=west / 2=north /
+/// 3=east, which `cardinal_direction` already applies.
+fn repeater_facing_direction(state: &BlockStateQuery) -> CardinalDirection {
+    cardinal_direction(state).unwrap_or(CardinalDirection::South)
 }
 
 /// One rect of a 16 x 16 sheet, emitted bottom-left first (the authored rect measures V from
@@ -213,3 +269,4 @@ fn flipped_uv(u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
         [u0 / 16.0, v0 / 16.0],
     ]
 }
+

@@ -123,13 +123,13 @@ pub(crate) fn bubble_column_shape() -> ModelShape {
     ])
 }
 
-/// Bedrock tripwire: two flat strips lying at `y = 0.2188`, one per horizontal axis.
-///
-/// Measured from the client: the strip is a zero-height quad at `y 0.2188`, `x 0.4844..0.5156`,
-/// running the full cell. The old 1..2 px box sat too low and read as a solid bar. The wire only
-/// runs along the axes its state connects, so a wire with no neighbours draws nothing.
+/// Bedrock tripwire: a flat 0.5 px-wide string plane at `y = 1.5` px, running the full cell
+/// along each connected axis. The official `tripwire_n` model splits it into 4 px segments
+/// that each read the string band `trip_wire` rows 4..6 along their length (`up
+/// [0,4,16,6]` rot 90); one 16 px quad with that window is equivalent. The wire only runs
+/// along the axes its state connects, so a wire with no neighbours draws nothing.
 pub(crate) fn tripwire_shape(state: &BlockStateQuery) -> ModelShape {
-    let y = 0.2188_f32;
+    let y = 1.5 / 16.0;
     let (lo, hi) = (0.4844_f32, 0.5156_f32);
     let along_x = state_bool(state, "minecraft:east")
         .or_else(|| state_bool(state, "east"))
@@ -143,14 +143,17 @@ pub(crate) fn tripwire_shape(state: &BlockStateQuery) -> ModelShape {
         || state_bool(state, "minecraft:south")
             .or_else(|| state_bool(state, "south"))
             .unwrap_or(true);
+    // Corners run length-first so the quad's U axis is the wire's length, reading the
+    // dotted band along it (the renderer's U mapping takes the first two corners).
+    let band_uv = [[0.0, 6.0 / 16.0], [1.0, 6.0 / 16.0], [1.0, 4.0 / 16.0], [0.0, 4.0 / 16.0]];
     let mut planes = Vec::with_capacity(2);
     if along_z {
         planes.push(
             ModelPlane::new(
-                [[lo, y, 0.0], [hi, y, 0.0], [hi, y, 1.0], [lo, y, 1.0]],
+                [[lo, y, 0.0], [lo, y, 1.0], [hi, y, 1.0], [hi, y, 0.0]],
                 [0, 1, 0],
             )
-            .with_uv(upright_full_texture_uv()),
+            .with_uv(band_uv),
         );
     }
     if along_x {
@@ -159,7 +162,7 @@ pub(crate) fn tripwire_shape(state: &BlockStateQuery) -> ModelShape {
                 [[0.0, y, lo], [1.0, y, lo], [1.0, y, hi], [0.0, y, hi]],
                 [0, 1, 0],
             )
-            .with_uv(upright_full_texture_uv()),
+            .with_uv(band_uv),
         );
     }
     ModelShape::default().with_planes(planes)
@@ -327,9 +330,7 @@ pub(crate) fn mangrove_propagule_shape(state: &BlockStateQuery) -> ModelShape {
     let (stage_x, stage_z) = [(0.0, 0.0), (0.0, 0.2666), (0.3667, 0.1333), (-0.1, 0.1), (0.2, 0.4)]
         [stage as usize];
     if hanging {
-        return ModelShape::from_cuboids(hanging_propagule_cuboids().map(|cuboid| {
-            plant_cuboid_with_upright_art(cuboid)
-        }));
+        return hanging_propagule_shape(stage);
     }
     // The two cards, authored in place, then slid by the stage offset.
     //
@@ -394,75 +395,171 @@ pub(crate) fn mangrove_propagule_shape(state: &BlockStateQuery) -> ModelShape {
     }))
 }
 
-/// The hanging propagule (ref 772): stem, body, four collar plates and a top cap.
-fn hanging_propagule_cuboids() -> [ModelCuboid; 7] {
-    // The hanging seedling samples the sprite's own art regions: the long hypocotyl takes the
-    // stem column (x 7..9, y 7..16), the seed body and the four collar plates take the sprout
-    // (x 4..11, y 1..7), and the tip takes the sprout's top. Whole-tile UVs sampled mostly
-    // transparent pixels and rendered the seedling as sparse ghost wisps.
-    [
-        plant_slice_cuboid(
-            ModelCuboid::new([0.5725, 0.0, 0.3725], [0.6609, 0.625, 0.4609]),
-            (7.0, 7.0, 9.0, 16.0),
-        ),
-        plant_slice_cuboid(
-            ModelCuboid::new([0.5542, 0.625, 0.3542], [0.6792, 0.8125, 0.4792]),
-            (4.0, 1.0, 11.0, 7.0),
-        ),
-        plant_slice_cuboid(
-            ModelCuboid::new([0.5725, 0.875, 0.3725], [0.6609, 1.0, 0.4609]),
-            (7.0, 1.0, 9.0, 7.0),
-        ),
-        plant_slice_cuboid(
-            ModelCuboid::new([0.4387, 0.7647, 0.3542], [0.5542, 0.8125, 0.4792]),
-            (4.0, 1.0, 11.0, 7.0),
-        ),
-        plant_slice_cuboid(
-            ModelCuboid::new([0.6792, 0.7647, 0.3542], [0.7947, 0.8125, 0.4792]),
-            (4.0, 1.0, 11.0, 7.0),
-        ),
-        plant_slice_cuboid(
-            ModelCuboid::new([0.5542, 0.7647, 0.2387], [0.6792, 0.8125, 0.3542]),
-            (4.0, 1.0, 11.0, 7.0),
-        ),
-        plant_slice_cuboid(
-            ModelCuboid::new([0.5542, 0.7647, 0.4792], [0.6792, 0.8125, 0.5947]),
-            (4.0, 1.0, 11.0, 7.0),
-        ),
-    ]
-}
+/// The hanging propagule hangs from the block above it, and each `propagule_stage` 1..4 grows
+/// the hypocotyl longer. Numbers come from the official JE `mangrove_propagule_hanging_{1..4}`
+/// models (y in model pixels maps 1:1 to world y): the leaf pair is a 2 px crossed card at the
+/// attachment (y 14..16), the seed body is a 2 x 3 x 2 box at y 10..13, four collar plates fan
+/// out at y ≈ 11.6..12.4, and the hypocotyl is a crossed 2 px pair running from the body down —
+/// model y 7 (stage 2), 3 (stage 3) or 0 (stage 4). The plant samples the dedicated
+/// `mangrove_propagule_hanging` sprite (the standing tile's art sits at different pixels), whose
+/// painted columns are the stem pair at x 0..2 / 3..5 and the sprout at x 6..10.
+///
+/// Rotations: the leaf and stem boxes are 2 px planes turned ±45° about Y (diagonal cards,
+/// corners at 7.2929..8.7071 px); the collars are near-horizontal plates tilted ±22.5°.
+fn hanging_propagule_shape(stage: i64) -> ModelShape {
+    let px = |value: f32| value / 16.0;
+    // Sprite windows from the JE hanging models.
+    let leaf_uv = uv16(0.0, 0.0, 2.0, 2.0);
+    let cap_side_uv = uv16(0.0, 2.0, 2.0, 3.0);
+    let cap_up_uv = uv16(0.0, 0.0, 2.0, 2.0);
+    let cap_down_uv = uv16(0.0, 3.0, 2.0, 5.0);
+    let body_side_uv = uv16(0.0, 7.0, 2.0, 10.0);
+    let body_up_uv = uv16(0.0, 5.0, 2.0, 7.0);
+    // Stage 2+ point the body's bottom face at the sprout tip art below the body column.
+    let body_down_uv = if stage >= 2 {
+        uv16(0.0, 10.0, 2.0, 12.0)
+    } else {
+        uv16(0.0, 5.0, 2.0, 7.0)
+    };
+    let collar_up_uv = uv16(8.0, 3.0, 10.0, 5.0);
+    let collar_down_uv = uv16(6.0, 3.0, 8.0, 5.0);
+    // The hypocotyl pair grows with the stage; the window rides the art column x3..5.
+    let stem_v0 = match stage {
+        0 | 1 => 7.0,
+        2 => 7.0,
+        3 => 3.0,
+        _ => 0.0,
+    };
+    let stem_uv = uv16(3.0, stem_v0, 5.0, 10.0);
 
-/// Wraps a small plant box so every face samples an upright art slice of the sprite instead of
-/// the whole (mostly transparent) tile.
-fn plant_slice_cuboid(cuboid: ModelCuboid, (u0, v0, u1, v1): (f32, f32, f32, f32)) -> ModelCuboid {
-    use crate::model_family::shape::full_texture_face_uv;
-    let upright = full_texture_face_uv(BlockFace::North)
-        .iter()
-        .map(|corner| {
+    let mut planes = Vec::new();
+    // Leaf pair at the attachment: two diagonal cards, y 14..16 px.
+    let diag_lo = px(7.2929);
+    let diag_hi = px(8.7071);
+    let leaf_top = px(16.0);
+    let leaf_bottom = px(14.0);
+    for (normal, corners) in [
+        (
+            [1, 0, 1],
             [
-                u0 / 16.0 + corner[0] * (u1 - u0) / 16.0,
-                v0 / 16.0 + corner[1] * (v1 - v0) / 16.0,
-            ]
-        })
-        .collect::<Vec<_>>();
-    let upright: [[f32; 2]; 4] = [upright[0], upright[1], upright[2], upright[3]];
-    let flat = full_texture_uv()
-        .iter()
-        .map(|corner| {
+                [diag_lo, leaf_bottom, diag_hi],
+                [diag_hi, leaf_bottom, diag_lo],
+                [diag_hi, leaf_top, diag_lo],
+                [diag_lo, leaf_top, diag_hi],
+            ],
+        ),
+        (
+            [-1, 0, 1],
             [
-                u0 / 16.0 + corner[0] * (u1 - u0) / 16.0,
-                v0 / 16.0 + corner[1] * (v1 - v0) / 16.0,
-            ]
-        })
-        .collect::<Vec<_>>();
-    let flat: [[f32; 2]; 4] = [flat[0], flat[1], flat[2], flat[3]];
-    cuboid
-        .with_face_uv(BlockFace::Up, flat)
-        .with_face_uv(BlockFace::Down, flat)
-        .with_face_uv(BlockFace::North, upright)
-        .with_face_uv(BlockFace::South, upright)
-        .with_face_uv(BlockFace::East, upright)
-        .with_face_uv(BlockFace::West, upright)
+                [diag_lo, leaf_bottom, diag_lo],
+                [diag_hi, leaf_bottom, diag_hi],
+                [diag_hi, leaf_top, diag_hi],
+                [diag_lo, leaf_top, diag_lo],
+            ],
+        ),
+    ] {
+        planes.push(ModelPlane::new(corners, normal).with_uv(leaf_uv));
+    }
+    // Hypocotyl pair: same diagonal cross, running from the body down to the stage depth
+    // (stage 1 ships no stem; stages 2..4 start at model y 7 / 3 / 0).
+    if stage >= 2 {
+        let stem_top = px(10.0);
+        let stem_bottom = px(match stage {
+            2 => 7.0,
+            3 => 3.0,
+            _ => 0.0,
+        });
+        for (normal, corners) in [
+            (
+                [1, 0, 1],
+                [
+                    [diag_lo, stem_bottom, diag_hi],
+                    [diag_hi, stem_bottom, diag_lo],
+                    [diag_hi, stem_top, diag_lo],
+                    [diag_lo, stem_top, diag_hi],
+                ],
+            ),
+            (
+                [-1, 0, 1],
+                [
+                    [diag_lo, stem_bottom, diag_lo],
+                    [diag_hi, stem_bottom, diag_hi],
+                    [diag_hi, stem_top, diag_hi],
+                    [diag_lo, stem_top, diag_lo],
+                ],
+            ),
+        ] {
+            planes.push(ModelPlane::new(corners, normal).with_uv(stem_uv));
+        }
+    }
+    // The four collar plates: near-horizontal quads tilted ±22.5°, fanning out of the body's
+    // top corners (rotated corners computed from the official element boxes).
+    let collars: [(&str, [f32; 3], [f32; 3], [f32; 3], [f32; 3]); 4] = [
+        (
+            "south",
+            [px(7.0), px(12.391), px(12.0615)],
+            [px(9.0), px(12.391), px(12.0615)],
+            [px(9.0), px(11.6257), px(13.9092)],
+            [px(7.0), px(11.6257), px(13.9092)],
+        ),
+        (
+            "north",
+            [px(7.0), px(11.6257), px(3.9385)],
+            [px(9.0), px(11.6257), px(3.9385)],
+            [px(9.0), px(12.391), px(2.0908)],
+            [px(7.0), px(12.391), px(2.0908)],
+        ),
+        (
+            "east",
+            [px(12.0615), px(12.391), px(7.0)],
+            [px(12.0615), px(12.391), px(9.0)],
+            [px(13.9092), px(11.6257), px(9.0)],
+            [px(13.9092), px(11.6257), px(7.0)],
+        ),
+        (
+            "west",
+            [px(3.9385), px(11.6257), px(7.0)],
+            [px(3.9385), px(11.6257), px(9.0)],
+            [px(2.0908), px(12.391), px(9.0)],
+            [px(2.0908), px(12.391), px(7.0)],
+        ),
+    ];
+    for (name, c0, c1, c2, c3) in collars {
+        let normal = match name {
+            "south" => [0, 0, 1],
+            "north" => [0, 0, -1],
+            "east" => [1, 0, 0],
+            _ => [-1, 0, 0],
+        };
+        planes.push(
+            ModelPlane::new([c0, c1, c2, c3], normal)
+                .with_uv(collar_up_uv)
+                .with_material_slot("collar"),
+        );
+        // The underside carries the sprout art; emit the flipped face too.
+        planes.push(
+            ModelPlane::new([c3, c2, c1, c0], [-normal[0], -normal[1], -normal[2]])
+                .with_uv(collar_down_uv)
+                .with_material_slot("collar"),
+        );
+    }
+    // Body (2 x 3 x 2 at y 10..13) and cap (2 x 1 x 2 at y 13..14) as small cuboids with the
+    // official per-face windows.
+    let body = ModelCuboid::new([px(7.0), px(10.0), px(7.0)], [px(9.0), px(13.0), px(9.0)])
+        .with_face_uv(BlockFace::North, body_side_uv)
+        .with_face_uv(BlockFace::South, body_side_uv)
+        .with_face_uv(BlockFace::East, body_side_uv)
+        .with_face_uv(BlockFace::West, body_side_uv)
+        .with_face_uv(BlockFace::Up, body_up_uv)
+        .with_face_uv(BlockFace::Down, body_down_uv);
+    let cap = ModelCuboid::new([px(7.0), px(13.0), px(7.0)], [px(9.0), px(14.0), px(9.0)])
+        .with_face_uv(BlockFace::North, cap_side_uv)
+        .with_face_uv(BlockFace::South, cap_side_uv)
+        .with_face_uv(BlockFace::East, cap_side_uv)
+        .with_face_uv(BlockFace::West, cap_side_uv)
+        .with_face_uv(BlockFace::Up, cap_up_uv)
+        .with_face_uv(BlockFace::Down, cap_down_uv);
+    ModelShape::from_cuboids([body, cap]).with_planes(planes)
 }
 
 /// Gives a box whole-tile art on its caps and upright art on its sides.

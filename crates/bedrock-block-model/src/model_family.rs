@@ -395,6 +395,20 @@ pub fn full_block_shape(_name: &str, state: &BlockStateQuery) -> ModelShape {
     }
     if !matches!(axis, "x" | "z") && is_oriented_full_block_name(_name) {
         let rotation = direction::face_rotation(_name, state);
+        // Glazed terracotta ships ONE texture key: every face resolves the same art, so the
+        // slot map below cannot express the official `minecraft:transformation` rotation —
+        // the pattern must turn with the block. A rigid yaw about Y keeps the side art
+        // upright (each side face shows the art exactly as authored) and only the top/bottom
+        // caps rotate in-plane by the yaw amount.
+        if is_single_texture_oriented_name(_name) {
+            let yaw = rotation.quarter_turns();
+            if yaw != 0 {
+                let full = shape::full_texture_uv();
+                cuboid = cuboid
+                    .with_face_uv(crate::material::BlockFace::Up, shape::rotate_uv_quarter(full, yaw))
+                    .with_face_uv(crate::material::BlockFace::Down, shape::rotate_uv_quarter(full, yaw));
+            }
+        }
         for face in [
             crate::material::BlockFace::Up,
             crate::material::BlockFace::Down,
@@ -1168,6 +1182,12 @@ fn normalized_block_name(name: &str) -> &str {
     name.strip_prefix("minecraft:").unwrap_or(name)
 }
 
+/// Oriented blocks whose `blocks.json` entry ships ONE texture key (glazed terracotta): the
+/// slot remap has nothing to remap, so the official rigid rotation must turn the cap UVs.
+fn is_single_texture_oriented_name(name: &str) -> bool {
+    name.ends_with("_glazed_terracotta")
+}
+
 fn is_oriented_full_block_name(name: &str) -> bool {
     matches!(
         name,
@@ -1692,18 +1712,22 @@ mod tests {
         assert!(end_rod.cuboids.iter().any(|cuboid| cuboid.max[0] == 1.0));
 
         let sea_pickle = model_shape(
-            &BlockStateQuery::new("minecraft:sea_pickle").with_state("cluster_count", 3),
+            &BlockStateQuery::new("minecraft:sea_pickle").with_state("cluster_count", 2),
         )
         .unwrap_or_else(|| panic!("missing sea pickle"));
-        // Four tubes, each with its glowing crown, matching capture ref 609.
-        assert_eq!(sea_pickle.cuboids.len(), 8);
+        // Official model: three body cuboids (cluster_count 2 = three pickles),
+        // each with a flat cap quad and two sprout sheets as planes — no
+        // glowing crown boxes.
+        assert_eq!(sea_pickle.cuboids.len(), 3);
+        assert_eq!(sea_pickle.planes.len(), 9);
         let dead_pickle = model_shape(
             &BlockStateQuery::new("minecraft:sea_pickle")
-                .with_state("cluster_count", 3)
+                .with_state("cluster_count", 2)
                 .with_state("dead_bit", 1),
         )
         .unwrap_or_else(|| panic!("missing dead sea pickle"));
-        assert_eq!(dead_pickle.cuboids.len(), 4);
+        assert_eq!(dead_pickle.cuboids.len(), 3);
+        assert_eq!(dead_pickle.planes.len(), 0);
 
         let turtle_egg = model_shape(
             &BlockStateQuery::new("minecraft:turtle_egg")
@@ -2010,56 +2034,74 @@ mod tests {
     }
 
     #[test]
-    fn standing_banner_is_one_block_spilling_into_the_cell_below() {
+    fn standing_banner_stands_up_with_the_official_assembly() {
         use crate::material::BlockFace;
 
-        // A standing banner is ONE block: the pole spans its cell and the full 20 x 40 px
-        // cloth hangs from the pole top into the cell below (the two-block-tall look). The
-        // compressed neighbour state squeezes the cloth back into the banner's own cell.
-        fn cloth(name: &str, compressed: bool) -> ((f32, f32), (f32, f32), f32, f32, usize) {
-            let mut query = BlockStateQuery::new(name);
-            if compressed {
-                query = query.with_state("banner_compressed", true);
-            }
-            let shape = model_shape(&query).unwrap_or_else(|| panic!("missing {name}"));
-            let cuboid = shape
-                .cuboids
-                .iter()
-                .find(|cuboid| cuboid.max[0] - cuboid.min[0] > 1.0)
-                .unwrap_or_else(|| panic!("{name} paints no cloth"));
-            let front = cuboid
-                .face_uvs
-                .get(&BlockFace::North)
-                .copied()
-                .unwrap_or_else(|| panic!("{name} cloth has no front uv"));
-            let v_min = front.iter().map(|corner| corner[1]).fold(f32::INFINITY, f32::min);
-            let v_max = front.iter().map(|corner| corner[1]).fold(0.0_f32, f32::max);
-            (
-                (cuboid.min[0], cuboid.max[0]),
-                (cuboid.min[1], cuboid.max[1]),
-                v_min,
-                v_max,
-                shape.cuboids.len(),
-            )
+        // The official entity model (2/3 block scale) stands UP from the ground: a 2 x 42 px
+        // pole, the 20 x 40 px cloth hanging from the 2 px bar capping the top. The banner
+        // reaches 1.83 blocks with a one-block hitbox and nothing dips below the floor.
+        fn banner(name: &str) -> crate::ModelShape {
+            model_shape(&BlockStateQuery::new(name))
+                .unwrap_or_else(|| panic!("missing {name}"))
         }
 
-        let (free_x, free_y, free_v0, free_v1, free_parts) =
-            cloth("minecraft:standing_banner", false);
-        // The cloth keeps its 20 px width and the full panel art (rows 1..41 on the sheet).
-        assert!((free_x.0 + 0.125).abs() < 1e-4 && (free_x.1 - 1.125).abs() < 1e-4);
-        assert!((free_v0 - 1.0 / 64.0).abs() < 1e-4 && (free_v1 - 41.0 / 64.0).abs() < 1e-4);
-        // The free cloth hangs from the pole top down into the cell below.
-        assert!((free_y.0 + 1.5).abs() < 1e-4 && (free_y.1 - 1.0).abs() < 1e-4);
-        assert_eq!(free_parts, 3, "pole, cloth and bottom rod");
-        // The compressed cloth keeps the full panel but squeezes into the banner's own cell.
-        let (_, squeezed_y, squeezed_v0, squeezed_v1, squeezed_parts) =
-            cloth("minecraft:standing_banner", true);
-        assert!((squeezed_y.0).abs() < 1e-4 && (squeezed_y.1 - 1.0).abs() < 1e-4);
-        assert!((squeezed_v0 - free_v0).abs() < 1e-4 && (squeezed_v1 - free_v1).abs() < 1e-4);
-        assert_eq!(squeezed_parts, free_parts);
-        // The legacy `banner` spelling renders the same full banner.
-        let (legacy_x, _, _, _, _) = cloth("minecraft:banner", false);
-        assert!((legacy_x.0 - free_x.0).abs() < 1e-4 && (legacy_x.1 - free_x.1).abs() < 1e-4);
+        let shape = banner("minecraft:standing_banner");
+        assert_eq!(shape.cuboids.len(), 3, "pole, cloth and top bar");
+        for cuboid in &shape.cuboids {
+            assert!(cuboid.min[1] > -1e-4, "nothing hangs below the floor");
+        }
+        // The cloth spans x 10 px, y 4..44 px and hangs one model px in front of the pole;
+        // every number is the official box divided by 24.
+        let flag = shape
+            .cuboids
+            .iter()
+            .find(|cuboid| cuboid.max[1] > 1.8 && cuboid.max[0] - cuboid.min[0] > 0.8)
+            .expect("cloth");
+        assert!((flag.min[0] - (0.5 - 10.0 / 24.0)).abs() < 1e-4);
+        assert!((flag.min[1] - 4.0 / 24.0).abs() < 1e-4);
+        assert!((flag.max[1] - 44.0 / 24.0).abs() < 1e-4);
+        assert!((flag.min[2] - (0.5 + 1.0 / 24.0)).abs() < 1e-4);
+        // The south face carries the front panel, the north face the shaded back panel.
+        let front = flag.face_uvs.get(&BlockFace::South).expect("front uv");
+        let u = front.iter().map(|corner| corner[0]).collect::<Vec<_>>();
+        let v = front.iter().map(|corner| corner[1]).collect::<Vec<_>>();
+        assert!(u.contains(&(1.0 / 64.0)) && u.contains(&(21.0 / 64.0)));
+        assert!(v.contains(&(1.0 / 64.0)) && v.contains(&(41.0 / 64.0)));
+        let back = flag.face_uvs.get(&BlockFace::North).expect("back uv");
+        assert!(back
+            .iter()
+            .any(|corner| (corner[0] - 22.0 / 64.0).abs() < 1e-4));
+        // The pole rises the full 42 px and the bar caps the top at 42..44 px.
+        let pole = shape
+            .cuboids
+            .iter()
+            .find(|cuboid| cuboid.max[0] - cuboid.min[0] < 0.1)
+            .expect("pole");
+        assert!((pole.max[1] - 42.0 / 24.0).abs() < 1e-4 && pole.min[1].abs() < 1e-4);
+        let bar = shape
+            .cuboids
+            .iter()
+            .find(|cuboid| cuboid.min[1] >= 42.0 / 24.0 - 1e-4)
+            .expect("top bar");
+        assert!((bar.min[1] - 42.0 / 24.0).abs() < 1e-4);
+        assert!((bar.max[1] - 44.0 / 24.0).abs() < 1e-4);
+        // The bar reads the official wood windows: south at (2, 44)..(22, 46).
+        let bar_front = bar.face_uvs.get(&BlockFace::South).expect("bar uv");
+        assert!(bar_front
+            .iter()
+            .any(|corner| (corner[1] - 46.0 / 64.0).abs() < 1e-4));
+        // The legacy `banner` spelling renders the same assembly.
+        let legacy = banner("minecraft:banner");
+        assert_eq!(legacy.cuboids.len(), shape.cuboids.len());
+        // The wall banner mounts the bar on the wall edge and dips below the block line.
+        let wall = banner("minecraft:wall_banner");
+        assert_eq!(wall.cuboids.len(), 2, "cloth and mount bar");
+        let wall_flag = wall
+            .cuboids
+            .iter()
+            .find(|cuboid| cuboid.min[1] < 0.0)
+            .expect("hanging cloth");
+        assert!((wall_flag.min[1] + 19.5 / 24.0).abs() < 1e-4);
     }
 
     #[test]
@@ -2626,17 +2668,18 @@ mod tests {
 
     #[test]
     fn repeater_output_torch_follows_the_opposite_cardinal() {
-        fn front_torch_xz(direction: &str) -> ([f32; 2], [f32; 2]) {
+        fn output_post(direction: &str) -> ([f32; 2], [f32; 2]) {
             let state = BlockStateQuery::new("minecraft:unpowered_repeater")
                 .with_state("minecraft:cardinal_direction", direction)
                 .with_state("repeater_delay", 0);
             let shape = model_shape(&state).unwrap_or_else(|| panic!("missing repeater shape"));
-            // The output torch is the slab bar nearest the block border; the delay bar stays at
-            // the centre (capture silhouette: bars 2 px wide, tops at y 7.9 px).
+            // The output post hugs the output edge (official repeater model:
+            // authored at z 2..4 px, 2 px wide, standing 2..7 px on the slab);
+            // the delay post stays nearer the centre.
             let torch = shape
                 .cuboids
                 .iter()
-                .filter(|cuboid| (cuboid.max[1] - 0.49375).abs() < 0.001)
+                .filter(|cuboid| (cuboid.max[1] - 0.4375).abs() < 0.001)
                 .min_by(|a, b| {
                     let distance = |c: &crate::model_family::ModelCuboid| {
                         let centre_x = (c.min[0] + c.max[0]) / 2.0 - 0.5;
@@ -2649,17 +2692,80 @@ mod tests {
             ([torch.min[0], torch.max[0]], [torch.min[2], torch.max[2]])
         }
 
-        // `minecraft:cardinal_direction` points from the output towards the input, so the
-        // output torch sits on the opposite side of the cell. Bars span 4 px along the axis
-        // (capture silhouette), touching the cell border on the output side.
-        let south = front_torch_xz("south");
-        assert!((south.1[0] - 0.0625).abs() < 0.001 && (south.1[1] - 0.3125).abs() < 0.001);
-        let north = front_torch_xz("north");
-        assert!((north.1[0] - 0.6875).abs() < 0.001 && (north.1[1] - 0.9375).abs() < 0.001);
-        let west = front_torch_xz("west");
-        assert!((west.0[0] - 0.6875).abs() < 0.001 && (west.0[1] - 0.9375).abs() < 0.001);
-        let east = front_torch_xz("east");
-        assert!((east.0[0] - 0.0625).abs() < 0.001 && (east.0[1] - 0.3125).abs() < 0.001);
+        // `minecraft:cardinal_direction` points from the output towards the input (minecraft
+        // wiki), so the output post lands on the opposite edge. The official post is a 2 x 5 x 2
+        // column 2 px inside the output edge (JE repeater model z 2..4).
+        let south = output_post("south");
+        assert!((south.1[0] - 0.125).abs() < 0.001 && (south.1[1] - 0.25).abs() < 0.001);
+        let north = output_post("north");
+        assert!((north.1[0] - 0.75).abs() < 0.001 && (north.1[1] - 0.875).abs() < 0.001);
+        let east = output_post("east");
+        assert!((east.0[0] - 0.125).abs() < 0.001 && (east.0[1] - 0.25).abs() < 0.001);
+        let west = output_post("west");
+        assert!((west.0[0] - 0.75).abs() < 0.001 && (west.0[1] - 0.875).abs() < 0.001);
+    }
+
+    #[test]
+    fn repeater_delay_post_slides_two_px_per_delay_step() {
+        fn delay_post_z(tick: i64) -> ([f32; 2], [f32; 2]) {
+            let state = BlockStateQuery::new("minecraft:unpowered_repeater")
+                .with_state("minecraft:cardinal_direction", "south")
+                .with_state("repeater_delay", tick);
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing repeater shape"));
+            // The delay post is the one nearer the cell centre (output south ->
+            // rotation north leaves the authored frame: posts at z 2..4 and
+            // z 6..8 for delay 0).
+            let torch = shape
+                .cuboids
+                .iter()
+                .filter(|cuboid| (cuboid.max[1] - 0.4375).abs() < 0.001)
+                .max_by(|a, b| {
+                    let centre_a = (a.min[2] + a.max[2]) / 2.0;
+                    let centre_b = (b.min[2] + b.max[2]) / 2.0;
+                    centre_a.total_cmp(&centre_b)
+                })
+                .unwrap_or_else(|| panic!("missing repeater torches"));
+            ([torch.min[2], torch.max[2]], [torch.min[0], torch.max[0]])
+        }
+
+        // Official models: 1tick z 6..8, 2tick z 8..10, 3tick z 10..12, 4tick z 12..14.
+        assert_eq!(delay_post_z(0).0, [0.375, 0.5]);
+        assert_eq!(delay_post_z(1).0, [0.5, 0.625]);
+        assert_eq!(delay_post_z(2).0, [0.625, 0.75]);
+        assert_eq!(delay_post_z(3).0, [0.75, 0.875]);
+    }
+
+    #[test]
+    fn comparator_front_post_lights_only_in_subtract_mode() {
+        fn posts(mode: Option<&str>, lit_bit: bool) -> (usize, Vec<String>) {
+            let mut state =
+                BlockStateQuery::new("minecraft:unpowered_comparator").with_state("output_subtract_bit", lit_bit);
+            if let Some(mode) = mode {
+                state = state.with_state("comparator_mode", mode);
+            }
+            let shape = model_shape(&state).unwrap_or_else(|| panic!("missing comparator shape"));
+            let lit = shape
+                .cuboids
+                .iter()
+                .filter(|cuboid| {
+                    cuboid
+                        .material_slot
+                        .as_deref()
+                        .is_some_and(|slot| slot == "torch_on")
+                })
+                .count();
+            let slots: Vec<String> = shape
+                .cuboids
+                .iter()
+                .filter_map(|cuboid| cuboid.material_slot.clone())
+                .collect();
+            (lit, slots)
+        }
+
+        // Official comparator models: the short front post lights in subtract
+        // mode; the two 5 px input posts light with the powered output.
+        assert_eq!(posts(Some("compare"), false).0, 0);
+        assert_eq!(posts(Some("subtract"), true).0, 1);
     }
 
     #[test]
@@ -2684,12 +2790,28 @@ mod tests {
             Some("top_normal")
         );
 
-        // The head plate touches the base, so an upward piston keeps it on its floor.
+        // The head block is the official plate + shaft assembly (two cuboids) spanning its
+        // whole cell; the shaft's last 4 px reach into the base block.
         let arm = BlockStateQuery::new("minecraft:piston_arm_collision")
             .with_state("facing_direction", 1);
         let arm_shape = model_shape(&arm).unwrap_or_else(|| panic!("missing piston arm shape"));
-        assert!(arm_shape.cuboids[0].min[1].abs() < 0.001);
-        assert!((arm_shape.cuboids[0].max[1] - 0.25).abs() < 0.001);
+        assert_eq!(arm_shape.cuboids.len(), 2, "plate and shaft");
+        let top = arm_shape
+            .cuboids
+            .iter()
+            .max_by(|a, b| a.max[1].total_cmp(&b.max[1]))
+            .expect("plate");
+        assert!((top.max[1] - 1.0).abs() < 0.001, "the plate caps the cell top");
+        assert!((top.max[1] - top.min[1] - 0.25).abs() < 0.001, "plate is 4 px");
+        let bottom = arm_shape
+            .cuboids
+            .iter()
+            .min_by(|a, b| a.min[1].total_cmp(&b.min[1]))
+            .expect("shaft");
+        assert!(
+            bottom.min[1] < -0.2,
+            "the shaft reaches 4 px into the base block"
+        );
     }
 
     #[test]
@@ -3072,16 +3194,31 @@ mod tests {
                 "stage {stage} keeps the standing height"
             );
         }
-        // The hanging bud (ref 772) spans the full cell: a stem reaching the floor, the body and
-        // collar around `y 0.625..0.8125`, and a cap at the ceiling.
+        // The hanging seedling (official JE hanging models): leaf pair at the ceiling, cap,
+        // body at y 0.625..0.8125, four tilted collar plates fanning to x/z 0.13..0.87, and
+        // the stage-4 hypocotyl reaching the floor.
         let (hang_min, hang_max) = bounds("minecraft:mangrove_propagule", true, 4);
         assert!(hang_min[1].abs() < 1e-3, "the hanging stem reaches the floor");
         assert!((hang_max[1] - 1.0).abs() < 1e-3, "and its cap reaches the ceiling");
         assert!(
-            (hang_min[0] - 0.4387).abs() < 1e-3,
-            "the collar spreads to 0.4387 in x"
+            (hang_min[0] - 2.0908 / 16.0).abs() < 1e-3,
+            "the collar spreads to 2.0908 px in x"
         );
-        assert!((hang_max[2] - 0.5947).abs() < 1e-3);
+        assert!((hang_max[2] - 13.9092 / 16.0).abs() < 1e-3);
+        // The hypocotyl grows with the stage: stage 1 has none, stages 2..4 start at
+        // model y 7 / 3 / 0.
+        for (stage, floor) in [(2, 7.0 / 16.0), (3, 3.0 / 16.0), (4, 0.0)] {
+            let (stage_min, _) = bounds("minecraft:mangrove_propagule", true, stage);
+            assert!(
+                (stage_min[1] - floor).abs() < 1e-3,
+                "stage {stage} stem starts at {floor}"
+            );
+        }
+        let (stage1_min, _) = bounds("minecraft:mangrove_propagule", true, 1);
+        assert!(
+            stage1_min[1] > 0.5,
+            "stage 1 ships no hypocotyl below the body"
+        );
     }
 
     #[test]
@@ -3506,21 +3643,28 @@ mod tests {
             BlockStateQuery::new("minecraft:unpowered_repeater").with_state("repeater_delay", 3);
         let shape_d0 = model_shape(&repeater_d0).unwrap();
         let shape_d3 = model_shape(&repeater_d3).unwrap();
-        // Cuboids: [0] base, [1] input stick, [2] input cap, [3] delay stick, [4] delay cap.
-        assert_ne!(shape_d0.cuboids[3].min[2], shape_d3.cuboids[3].min[2]);
+        // Cuboids: [0] base, [1] output post, [2] delay post (official model).
+        assert_ne!(shape_d0.cuboids[2].min[2], shape_d3.cuboids[2].min[2]);
 
-        // Bedrock keeps the base and the head in separate blocks, so both states are one box.
+        // Bedrock keeps the base and the head in separate blocks: the base is a full cube,
+        // the head is the plate + shaft assembly.
         let piston_normal = BlockStateQuery::new("minecraft:piston");
         let piston_extended =
             BlockStateQuery::new("minecraft:piston").with_state("extended_bit", true);
         assert_eq!(model_shape(&piston_normal).unwrap().cuboids.len(), 1);
         assert_eq!(model_shape(&piston_extended).unwrap().cuboids.len(), 1);
-        // The head is its own block with its own direction.
+        // The head is its own block with its own direction: plate (0.25 thick) + shaft.
         let arm = BlockStateQuery::new("minecraft:piston_arm_collision")
             .with_state("facing_direction", 3);
         let arm_shape = model_shape(&arm).unwrap();
-        assert_eq!(arm_shape.cuboids.len(), 1);
-        assert!(arm_shape.cuboids[0].max[2] - arm_shape.cuboids[0].min[2] <= 0.25);
+        assert_eq!(arm_shape.cuboids.len(), 2);
+        let plate = arm_shape
+            .cuboids
+            .iter()
+            .find(|cuboid| cuboid.max[0] - cuboid.min[0] > 0.9)
+            .expect("plate");
+        assert!((plate.max[0] - plate.min[0]).abs() > 0.9);
+        assert!(plate.min[0].abs() < 0.001, "plate caps the west push face");
 
         // Capture ref 760 lectern: base + post cuboids plus the six planes of the 2 px tilted
         // board slab; the book is an extra cuboid when the lectern holds one.

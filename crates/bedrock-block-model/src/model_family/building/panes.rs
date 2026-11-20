@@ -71,23 +71,16 @@ impl PaneKind {
 
 /// The 2 px post that every pane has at its centre.
 fn pane_post_cuboid(kind: PaneKind) -> ModelCuboid {
-    // Capture (geo 290 / app 3075, standalone pane): the 2 px post sides sample the u7..9,
-    // v0..16 strip of the glass sheet; the caps take the u7..9, v7..9 patch. Leaving side UVs
-    // unset made the renderer stretch the whole 16x16 tile over the 2 px faces ("拉扯").
-    let side_uv = uv16(7.0, 0.0, 9.0, 16.0);
+    // Official `template_glass_pane_post`: the post only carries its top/bottom
+    // caps (uv [7,7,9,9] of the edge sheet) — the four side faces are NOT drawn
+    // (the per-direction visuals come from the connection arms and the noside
+    // cards). The previous capture-derived side faces were redundant coplanar
+    // duplicates of the noside cards.
     ModelCuboid::new([0.4375, 0.0, 0.4375], [0.5625, 1.0, 0.5625])
         .with_face_uv(BlockFace::Up, uv16(7.0, 7.0, 9.0, 9.0))
         .with_face_uv(BlockFace::Down, uv16(7.0, 7.0, 9.0, 9.0))
-        .with_face_uv(BlockFace::North, side_uv)
-        .with_face_uv(BlockFace::South, side_uv)
-        .with_face_uv(BlockFace::West, side_uv)
-        .with_face_uv(BlockFace::East, side_uv)
         .with_face_material_slot(BlockFace::Up, kind.edge_slot())
         .with_face_material_slot(BlockFace::Down, kind.edge_slot())
-        .with_face_material_slot(BlockFace::North, kind.face_slot())
-        .with_face_material_slot(BlockFace::South, kind.face_slot())
-        .with_face_material_slot(BlockFace::West, kind.face_slot())
-        .with_face_material_slot(BlockFace::East, kind.face_slot())
 }
 
 /// The `noside` card: one quad on the post's outward face.
@@ -144,7 +137,6 @@ fn pane_arm_cuboid(direction: CardinalDirection, kind: PaneKind) -> ModelCuboid 
         CardinalDirection::East => ModelCuboid::new([0.5625, 0.0, 0.4375], [1.0, 1.0, 0.5625]),
         CardinalDirection::West => ModelCuboid::new([0.0, 0.0, 0.4375], [0.4375, 1.0, 0.5625]),
     };
-    let side_uv = uv16(0.0, 0.0, 16.0, 16.0);
     let rim_uv = uv16(7.0, 0.0, 9.0, 16.0);
     let mut cuboid = cuboid
         .with_face_uv(BlockFace::Up, uv16(7.0, 0.0, 9.0, 7.0))
@@ -157,9 +149,23 @@ fn pane_arm_cuboid(direction: CardinalDirection, kind: PaneKind) -> ModelCuboid 
         CardinalDirection::East => ([BlockFace::North, BlockFace::South], BlockFace::East),
         CardinalDirection::West => ([BlockFace::North, BlockFace::South], BlockFace::West),
     };
-    for face in long_faces {
-        cuboid = cuboid.with_face_uv(face, side_uv);
-    }
+    // Official long-face windows: the `side` template family (north/east arms)
+    // samples the right half-strip of the glass sheet (u9..16), while the
+    // `side_alt` family (south/west arms) samples the left half-strip (u0..7).
+    // The previous full-sheet UV painted the whole glass frame onto the arm.
+    let (long_west, long_east) = match direction {
+        // side template, north arm: west [16,0,9,16] (V-flipped), east [9,0,16,16].
+        CardinalDirection::North => (uv16(16.0, 0.0, 9.0, 16.0), uv16(9.0, 0.0, 16.0, 16.0)),
+        // side_alt template, south arm: west [7,0,0,16] (V-flipped), east [0,0,7,16].
+        CardinalDirection::South => (uv16(7.0, 0.0, 0.0, 16.0), uv16(0.0, 0.0, 7.0, 16.0)),
+        // side template rotated 90°, east arm: same u9..16 half-strip.
+        CardinalDirection::East => (uv16(16.0, 0.0, 9.0, 16.0), uv16(9.0, 0.0, 16.0, 16.0)),
+        // side_alt rotated 90°, west arm: same u0..7 half-strip.
+        CardinalDirection::West => (uv16(7.0, 0.0, 0.0, 16.0), uv16(0.0, 0.0, 7.0, 16.0)),
+    };
+    let [long_a, long_b] = long_faces;
+    cuboid = cuboid.with_face_uv(long_a, long_west);
+    cuboid = cuboid.with_face_uv(long_b, long_east);
     cuboid = cuboid.with_face_uv(rim_face, rim_uv);
     for face in [
         BlockFace::North,

@@ -206,6 +206,12 @@ impl FaceRotation {
     /// The identity rotation, used for blocks that never turn.
     pub(super) const NONE: Self = Self { yaw: 0, pitch: 0 };
 
+    /// The yaw as quarter turns about Y (0..3), for rigid-cap UV rotation.
+    #[must_use]
+    pub(super) fn quarter_turns(self) -> i32 {
+        i32::from(self.yaw.rem_euclid(4))
+    }
+
     /// The authored face whose art lands on `world` under this rotation.
     ///
     /// `apply` sends an authored face to its world face; this inverts it, so a world face's

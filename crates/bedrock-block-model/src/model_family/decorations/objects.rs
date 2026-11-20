@@ -4,7 +4,7 @@ use crate::model_family::direction::{
     CardinalDirection, cardinal_direction, state_i64, state_string,
 };
 use crate::model_family::shape::{
-    ModelCuboid, ModelShape, detail_cuboid_with_local_uv, full_texture_face_uv,
+    ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv, full_texture_face_uv,
 };
 use crate::state::BlockStateQuery;
 
@@ -123,27 +123,34 @@ pub(crate) fn heavy_core_shape() -> ModelShape {
 }
 
 pub(crate) fn conduit_shape() -> ModelShape {
-    // `conduit_base.png` is a 24x12 atlas: the middle 12x12 columns (x6..18) are the main face
-    // art and the left/right 6x6 cells (upper half only) are the side art. The old code sampled
-    // the whole atlas on every face of the 6x6x6 box, smearing all three regions into one.
-    // Keep the client's single-box silhouette but give each face the central main tile.
-    let uv = [
-        [6.0 / 24.0, 12.0 / 12.0],
-        [18.0 / 24.0, 12.0 / 12.0],
-        [18.0 / 24.0, 0.0],
-        [6.0 / 24.0, 0.0],
-    ];
+    // `conduit_base.png` is a 24x12 atlas. The installed sheet reads: the top
+    // 6 px band carries the box's up tile at x12..18 and its down tile at
+    // x6..12, and the bottom 6 px band holds the four 6 px side tiles across
+    // the full width. The old window (central 12x12) smeared all four regions
+    // into one face.
+    let px_w = 1.0 / 24.0;
+    let px_h = 1.0 / 12.0;
+    let window = |u0: f32, v0: f32, u1: f32, v1: f32| {
+        [
+            [u0 * px_w, v1 * px_h],
+            [u1 * px_w, v1 * px_h],
+            [u1 * px_w, v0 * px_h],
+            [u0 * px_w, v0 * px_h],
+        ]
+    };
     let mut cuboid = ModelCuboid::new([px(5.0), 0.0, px(5.0)], [px(11.0), px(6.0), px(11.0)])
-        .with_material_slot("conduit_base");
-    for face in [
-        BlockFace::Up,
-        BlockFace::Down,
-        BlockFace::North,
-        BlockFace::South,
-        BlockFace::East,
-        BlockFace::West,
+        .with_material_slot("conduit_base")
+        .with_face_uv(BlockFace::Up, window(12.0, 0.0, 18.0, 6.0))
+        .with_face_uv(BlockFace::Down, window(6.0, 0.0, 12.0, 6.0));
+    // Side strips in engine order across the bottom band; rendered against the
+    // game's own box these read as the four walls of the casing.
+    for (face, u0) in [
+        (BlockFace::North, 0.0),
+        (BlockFace::West, 6.0),
+        (BlockFace::South, 12.0),
+        (BlockFace::East, 18.0),
     ] {
-        cuboid = cuboid.with_face_uv(face, uv);
+        cuboid = cuboid.with_face_uv(face, window(u0, 6.0, u0 + 6.0, 12.0));
     }
     ModelShape::from_cuboids([cuboid])
 }
@@ -263,44 +270,105 @@ fn java_top_uv(rect: [f32; 4]) -> [[f32; 2]; 4] {
 /// centred on the tube, running from `body_top - 0.8` to `body_top + 2.4` px. The four dead
 /// variants (610-613) keep the tubes and drop the crowns, so `dead_bit` only removes the glow.
 pub(crate) fn sea_pickle_shape(state: &BlockStateQuery) -> ModelShape {
-    let count = state_i64(state, "cluster_count").unwrap_or(0).clamp(0, 3) + 1;
+    let count = state_i64(state, "cluster_count").unwrap_or(0).clamp(0, 3) as usize;
     let dead = state_i64(state, "dead_bit").unwrap_or(0) != 0;
-    // (x0, x1, z0, z1, body_top) in authoring pixels.
-    let bodies: &[(f32, f32, f32, f32, f32)] = match count {
-        1 => &[(6.0, 10.0, 6.0, 10.0, 6.0)],
-        2 => &[
-            (3.6, 7.6, 3.6, 7.6, 6.0),
-            (8.4, 12.4, 8.4, 12.4, 3.92),
-        ],
-        3 => &[
-            (2.8, 6.8, 2.8, 6.8, 6.96),
-            (6.0, 10.0, 9.2, 13.2, 3.92),
-            (7.6, 11.6, 3.6, 7.6, 6.0),
-        ],
-        _ => &[
-            (2.0, 6.0, 8.72, 12.72, 6.96),
-            (2.64, 6.64, 2.96, 6.96, 6.0),
-            (9.04, 13.04, 2.32, 6.32, 4.88),
-            (9.36, 13.36, 10.16, 14.16, 3.92),
-        ],
+    // Official JE `sea_pickle[_2/3/4]` models (the Bedrock sheet is the same
+    // 16x16 layout): one body cuboid per pickle plus a flat cap quad at its
+    // top and a small cross of two vertical sprout sheets above it. Dead
+    // pickles drop the cap and sprouts. Every body face binds its own window
+    // of the shared sheet (the old full-sheet local UVs squeezed the whole
+    // layout onto each post).
+    let bodies: &[&[(f32, f32, f32, f32, f32)]] = match count {
+        0 => &[&[(6.0, 10.0, 6.0, 10.0, 6.0)]],
+        1 => &[&[(3.0, 7.0, 3.0, 7.0, 6.0), (8.0, 12.0, 8.0, 12.0, 4.0)]],
+        2 => &[&[(6.0, 10.0, 9.0, 13.0, 6.0), (2.0, 6.0, 2.0, 6.0, 4.0), (8.0, 12.0, 4.0, 8.0, 6.0)]],
+        _ => &[&[(2.0, 6.0, 2.0, 6.0, 6.0), (9.0, 13.0, 10.0, 14.0, 4.0), (9.0, 13.0, 2.0, 6.0, 6.0), (2.0, 6.0, 8.0, 12.0, 7.0)]],
     };
-
-    let mut cuboids = Vec::with_capacity(bodies.len() * 2);
-    for (x0, x1, z0, z1, body_top) in bodies {
-        cuboids.push(detail_cuboid_with_local_uv(ModelCuboid::new(
-            [px(*x0), 0.0, px(*z0)],
-            [px(*x1), px(*body_top), px(*z1)],
-        )));
-        if dead {
-            continue;
+    let uv16 = |u0: f32, v0: f32, u1: f32, v1: f32| {
+        crate::model_family::shape::rect_uv(u0 / 16.0, v1 / 16.0, u1 / 16.0, v0 / 16.0)
+    };
+    // Body face windows from the official model (the sheet stores one pickle
+    // spread across the tile: up [4,1,8,5], down [8,1,12,5], and the four
+    // side strips along v5..16 keyed by facing). Side windows shrink with the
+    // post height so the art never stretches (JE heights 4..7 px).
+    let body_faces = |x0: f32, x1: f32, z0: f32, z1: f32, height: f32| {
+        let v1 = 5.0 + height;
+        ModelCuboid::new(
+            [x0 / 16.0, 0.0, z0 / 16.0],
+            [x1 / 16.0, height / 16.0, z1 / 16.0],
+        )
+        .with_face_material_slot(BlockFace::Up, "up")
+        .with_face_uv(BlockFace::Up, uv16(4.0, 1.0, 8.0, 5.0))
+        .with_face_material_slot(BlockFace::Down, "down")
+        .with_face_uv(BlockFace::Down, uv16(8.0, 1.0, 12.0, 5.0))
+        .with_face_material_slot(BlockFace::North, "north")
+        .with_face_uv(BlockFace::North, uv16(4.0, 5.0, 8.0, v1))
+        .with_face_material_slot(BlockFace::South, "south")
+        .with_face_uv(BlockFace::South, uv16(0.0, 5.0, 4.0, v1))
+        .with_face_material_slot(BlockFace::West, "west")
+        .with_face_uv(BlockFace::West, uv16(8.0, 5.0, 12.0, v1))
+        .with_face_material_slot(BlockFace::East, "east")
+        .with_face_uv(BlockFace::East, uv16(12.0, 5.0, 16.0, v1))
+    };
+    let mut cuboids = Vec::new();
+    let mut planes = Vec::new();
+    for row in bodies.iter() {
+        for &(x0, x1, z0, z1, height) in row.iter() {
+            cuboids.push(body_faces(x0, x1, z0, z1, height));
+            if dead {
+                continue;
+            }
+            // Flat cap quad at the pickle's top (up window [8,1,12,5]).
+            let cap = height / 16.0 - 0.05 / 16.0;
+            planes.push(
+                ModelPlane::new(
+                    [
+                        [x0 / 16.0, cap, z0 / 16.0],
+                        [x1 / 16.0, cap, z0 / 16.0],
+                        [x1 / 16.0, cap, z1 / 16.0],
+                        [x0 / 16.0, cap, z1 / 16.0],
+                    ],
+                    [0, 1, 0],
+                )
+                .with_material_slot("up")
+                .with_uv(uv16(8.0, 1.0, 12.0, 5.0)),
+            );
+            // Two vertical sprout sheets crossing above the cap.
+            let (cx, cz) = ((x0 + x1) / 32.0, (z0 + z1) / 32.0);
+            let base = (height + 0.2) / 16.0;
+            let top = (height + 3.7) / 16.0;
+            planes.push(
+                ModelPlane::new(
+                    [
+                        [cx - 0.03125, base, cz],
+                        [cx + 0.03125, base, cz],
+                        [cx + 0.03125, top, cz],
+                        [cx - 0.03125, top, cz],
+                    ],
+                    [0, 0, 1],
+                )
+                .with_material_slot("up")
+                .with_uv(uv16(1.0, 0.0, 3.0, 5.0)),
+            );
+            planes.push(
+                ModelPlane::new(
+                    [
+                        [cx, base, cz - 0.03125],
+                        [cx, base, cz + 0.03125],
+                        [cx, top, cz + 0.03125],
+                        [cx, top, cz - 0.03125],
+                    ],
+                    [1, 0, 0],
+                )
+                .with_material_slot("up")
+                .with_uv(uv16(13.0, 0.0, 15.0, 5.0)),
+            );
         }
-        let (centre_x, centre_z) = ((x0 + x1) * 0.5, (z0 + z1) * 0.5);
-        cuboids.push(detail_cuboid_with_local_uv(ModelCuboid::new(
-            [px(centre_x - 0.64), px(body_top - 0.8), px(centre_z - 0.64)],
-            [px(centre_x + 0.64), px(body_top + 2.4), px(centre_z + 0.64)],
-        )));
     }
-    ModelShape::from_cuboids(cuboids)
+    let shape = ModelShape { cuboids, planes };
+    let direction = state_i64(state, "coral_fan_direction").unwrap_or(0);
+    let _ = direction;
+    shape
 }
 
 pub(crate) fn egg_shape(name: &str, state: &BlockStateQuery) -> ModelShape {

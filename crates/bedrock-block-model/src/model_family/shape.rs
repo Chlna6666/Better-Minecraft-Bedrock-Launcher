@@ -564,34 +564,56 @@ pub fn detail_cuboid_with_local_uv(cuboid: ModelCuboid) -> ModelCuboid {
     let [x1, y1, z1] = cuboid.max;
     let v_top = 1.0 - y1;
     let v_bottom = 1.0 - y0;
+    // Faces that already carry explicit UVs (rigid-rotation caps, unfolded art) keep them;
+    // the derived projection would silently overwrite the authored orientation.
+    let mut cuboid = cuboid;
+    let authored = cuboid.face_uvs.clone();
+    let derived = move |face: BlockFace, uv: [[f32; 2]; 4]| -> [[f32; 2]; 4] {
+        authored.get(&face).copied().unwrap_or(uv)
+    };
     cuboid
-        .with_face_uv(BlockFace::Up, rect_uv(x0, z0, x1, z1))
-        .with_face_uv(BlockFace::Down, rect_uv(x0, 1.0 - z1, x1, 1.0 - z0))
+        .with_face_uv(BlockFace::Up, derived(BlockFace::Up, rect_uv(x0, z0, x1, z1)))
+        .with_face_uv(
+            BlockFace::Down,
+            derived(BlockFace::Down, rect_uv(x0, 1.0 - z1, x1, 1.0 - z0)),
+        )
         .with_face_uv(
             BlockFace::North,
-            [
-                [1.0 - x0, v_bottom],
-                [1.0 - x1, v_bottom],
-                [1.0 - x1, v_top],
-                [1.0 - x0, v_top],
-            ],
+            derived(
+                BlockFace::North,
+                [
+                    [1.0 - x0, v_bottom],
+                    [1.0 - x1, v_bottom],
+                    [1.0 - x1, v_top],
+                    [1.0 - x0, v_top],
+                ],
+            ),
         )
         .with_face_uv(
             BlockFace::South,
-            [[x1, v_bottom], [x0, v_bottom], [x0, v_top], [x1, v_top]],
+            derived(
+                BlockFace::South,
+                [[x1, v_bottom], [x0, v_bottom], [x0, v_top], [x1, v_top]],
+            ),
         )
         .with_face_uv(
             BlockFace::West,
-            [[z1, v_bottom], [z0, v_bottom], [z0, v_top], [z1, v_top]],
+            derived(
+                BlockFace::West,
+                [[z1, v_bottom], [z0, v_bottom], [z0, v_top], [z1, v_top]],
+            ),
         )
         .with_face_uv(
             BlockFace::East,
-            [
-                [1.0 - z0, v_bottom],
-                [1.0 - z1, v_bottom],
-                [1.0 - z1, v_top],
-                [1.0 - z0, v_top],
-            ],
+            derived(
+                BlockFace::East,
+                [
+                    [1.0 - z0, v_bottom],
+                    [1.0 - z1, v_bottom],
+                    [1.0 - z1, v_top],
+                    [1.0 - z0, v_top],
+                ],
+            ),
         )
 }
 

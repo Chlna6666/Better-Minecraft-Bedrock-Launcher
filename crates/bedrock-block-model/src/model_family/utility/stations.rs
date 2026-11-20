@@ -2,7 +2,8 @@ use crate::material::BlockFace;
 use crate::model_family::ModelFamily;
 use crate::model_family::direction::{CardinalDirection, cardinal_direction};
 use crate::model_family::shape::{
-    ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv, rotate_shape_cardinal, uv16,
+    ModelCuboid, ModelPlane, ModelShape, detail_cuboid_with_local_uv, rotate_shape_cardinal,
+    rotate_uv_quarter, uv16,
 };
 use crate::state::BlockStateQuery;
 
@@ -239,17 +240,51 @@ pub(crate) fn lectern_shape(state: &BlockStateQuery) -> ModelShape {
         .unwrap_or(false);
 
     // A full-footprint 2 px base, a 8x13 px post, and a 16x4 px board tilted -22.5 degrees
-    // about X. `blocks.json` gives the lectern one material per face (up=lectern_top,
-    // down=lectern_bottom, north=lectern_front, south/west=lectern_sides, east=lectern_base), so
-    // both boxes keep the face-driven materials instead of naming parts the pack does not have.
-    let base = crate::model_family::shape::detail_cuboid_with_local_uv(ModelCuboid::new(
-        [0.0, 0.0, 0.0],
-        [1.0, 0.125, 1.0],
-    ));
-    let post = crate::model_family::shape::detail_cuboid_with_local_uv(ModelCuboid::new(
-        [0.25, 0.125, 0.25],
-        [0.75, 0.9375, 0.75],
-    ));
+    // about X. The base and post carry the official JE `lectern` model windows — the Bedrock
+    // pack ships the same 16x16 art sheets, so the windows map directly (the previous
+    // full-sheet local UVs squeezed the whole `lectern_base` sheet, redstone row included,
+    // onto every base face). The face slots force the per-part art because the blocks.json
+    // face map (east=lectern_base, south=lectern_sides) does not match the model's own
+    // sheet assignment.
+    let lectern_uv = |u0: f32, v0: f32, u1: f32, v1: f32| {
+        crate::model_family::shape::rect_uv(
+            u0 / 16.0,
+            v1 / 16.0,
+            u1 / 16.0,
+            v0 / 16.0,
+        )
+    };
+    let base = ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.125, 1.0])
+        .with_face_material_slot(BlockFace::Up, "base")
+        .with_face_uv(
+            BlockFace::Up,
+            rotate_uv_quarter(lectern_uv(0.0, 0.0, 16.0, 16.0), 2),
+        )
+        .with_face_material_slot(BlockFace::Down, "bottom")
+        .with_face_uv(BlockFace::Down, lectern_uv(0.0, 0.0, 16.0, 16.0))
+        .with_face_material_slot(BlockFace::North, "base")
+        .with_face_uv(BlockFace::North, lectern_uv(0.0, 14.0, 16.0, 16.0))
+        .with_face_material_slot(BlockFace::East, "base")
+        .with_face_uv(BlockFace::East, lectern_uv(0.0, 6.0, 16.0, 8.0))
+        .with_face_material_slot(BlockFace::South, "base")
+        .with_face_uv(BlockFace::South, lectern_uv(0.0, 6.0, 16.0, 8.0))
+        .with_face_material_slot(BlockFace::West, "base")
+        .with_face_uv(BlockFace::West, lectern_uv(0.0, 6.0, 16.0, 8.0));
+    let post = ModelCuboid::new([0.25, 0.125, 0.25], [0.75, 0.9375, 0.75])
+        .with_face_material_slot(BlockFace::North, "front")
+        .with_face_uv(BlockFace::North, lectern_uv(0.0, 0.0, 8.0, 13.0))
+        .with_face_material_slot(BlockFace::South, "front")
+        .with_face_uv(BlockFace::South, lectern_uv(8.0, 3.0, 16.0, 16.0))
+        .with_face_material_slot(BlockFace::East, "sides")
+        .with_face_uv(
+            BlockFace::East,
+            rotate_uv_quarter(lectern_uv(2.0, 8.0, 15.0, 16.0), 1),
+        )
+        .with_face_material_slot(BlockFace::West, "sides")
+        .with_face_uv(
+            BlockFace::West,
+            rotate_uv_quarter(lectern_uv(2.0, 8.0, 15.0, 16.0), 1),
+        );
     let mut shape = ModelShape::from_cuboids([base, post]);
     // Board: the capture (ref 760, south) stores the desk as a **2 px-thick slab tilted about X**,
     // not a single sheet. Its four cross-section corners at the west edge (y, z) are
@@ -276,14 +311,7 @@ pub(crate) fn lectern_shape(state: &BlockStateQuery) -> ModelShape {
     //   down = bottom[0,0,16,13].
     // Faces start at their bottom-left corner, so a JE rect [u0,v0,u1,v1] (V measured from the
     // texture top) is emitted bottom-up.
-    let board_uv = |u0: f32, v0: f32, u1: f32, v1: f32| {
-        crate::model_family::shape::rect_uv(
-            u0 / 16.0,
-            v1 / 16.0,
-            u1 / 16.0,
-            v0 / 16.0,
-        )
-    };
+    let board_uv = lectern_uv;
     // Top / bottom surfaces.
     shape.planes.push(
         ModelPlane::new(board_top, [0, 1, 0])

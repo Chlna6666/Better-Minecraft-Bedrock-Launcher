@@ -85,52 +85,36 @@ fn coral_block_shape() -> ModelShape {
     )
 }
 
-/// The floor coral fan: a shallow, mostly-flat fan. The capture (ref 204 tube) gives four
-/// diagonal sheets with an X/Z outline that matches the game, but its y values (0..0.55) are the
-/// model-space lift of the overhanging tips — in world the fan lies almost flat on the ground.
-/// Flatten y so the blades spread across the floor like the game's fan, not stand up as fins.
-/// The `coral_fan_direction` state rotates the same outline through 0/90/180/270 degrees.
+/// The floor coral fan, official `coral_fan` model: four horizontal full-square
+/// quads lying on the cell floor (y = 0), each 16 px wide and centred on the
+/// cell, with two of them overhanging the cell by 8 px — together they read as
+/// one round coral cluster spread across the floor. Every quad binds the
+/// coral's own fan art full-sheet (up, and a V-flipped down face).
+/// The `coral_fan_direction` state rotates the cross, which is symmetric.
 fn coral_fan_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = state_i64(state, "coral_fan_direction")
         .or_else(|| state_i64(state, "minecraft:coral_fan_direction"))
         .unwrap_or(0)
         .rem_euclid(4);
     let uv = upright_full_texture_uv();
-    // Flatten the model-space lift: tips stay just above the floor.
-    let flat = |c: [f32; 3]| [c[0], c[1] * 0.18, c[2]];
-    let quad = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]| {
-        let corners = [flat(a), flat(b), flat(c), flat(d)];
-        ModelPlane::new(corners, [0, 1, 0]).with_uv(uv)
+    let quad = |x0: f32, z0: f32, x1: f32, z1: f32| {
+        ModelPlane::new(
+            [
+                [x0, 0.0, z0],
+                [x1, 0.0, z0],
+                [x1, 0.0, z1],
+                [x0, 0.0, z1],
+            ],
+            [0, 1, 0],
+        )
+        .with_uv(uv)
     };
+    // Model units are 1/16 px, so the overhangs become -0.5 and 1.5 here.
     let shape = ModelShape::default().with_planes([
-        // low blade leaning +x
-        quad(
-            [0.2833, 0.0, 0.25],
-            [0.2833, 0.0, 1.25],
-            [1.0833, 0.35, 1.25],
-            [1.0833, 0.35, 0.25],
-        ),
-        // blade reaching z 1.55
-        quad(
-            [0.7833, 0.55, 1.55],
-            [-0.2167, 0.55, 1.55],
-            [-0.2167, 0.0, 0.75],
-            [0.7833, 0.0, 0.75],
-        ),
-        // blade reaching z -0.05
-        quad(
-            [0.7833, 0.55, -0.05],
-            [-0.2167, 0.55, -0.05],
-            [-0.2167, 0.0, 0.75],
-            [0.7833, 0.0, 0.75],
-        ),
-        // low blade leaning -x
-        quad(
-            [-0.5167, 0.35, 1.25],
-            [-0.5167, 0.35, 0.25],
-            [0.2833, 0.0, 0.25],
-            [0.2833, 0.0, 1.25],
-        ),
+        quad(-0.5, 0.0, 0.5, 1.0),  // west arm, overhanging 8 px
+        quad(0.5, 0.0, 1.5, 1.0),   // east arm, overhanging 8 px
+        quad(0.0, -0.5, 1.0, 0.5),  // north arm, overhanging 8 px
+        quad(0.0, 0.5, 1.0, 1.5),   // south arm, overhanging 8 px
     ]);
     rotate_shape_y_degrees(shape, direction as f32 * 90.0)
 }

@@ -212,35 +212,265 @@ fn uv16(u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
     ]
 }
 
-/// Bedrock tripwire hook: a mounting plate, a pair of slanted hook arms, and — when a wire is
-/// attached — a straight line running away from the block.
+/// Bedrock tripwire hook. Geometry and UVs come from the official JE
+/// `tripwire_hook[_attached][_on]` models element by element (BE ships the same
+/// `trip_wire_source` art, so the windows transfer 1:1). The model is authored facing north
+/// with the plate against the south wall; it turns onto the state's facing like the repeaters.
+/// Four variants keyed by `(attached_bit, powered_bit)`:
 ///
-/// Verified against the client: the idle hook has 24 vertices (plate `y 0.05..0.55`, `z 0..0.125`,
-/// plus two slanted arm pairs at `x 0.4062/0.5938` and `0.4531/0.5469`), and the attached hook has
-/// 30 — the extra six are the `y 0.2188` wire strip reaching `z 1.0`. Modelling it as two plain
-/// boxes lost the arms entirely.
+/// * idle: the head box leans back 45° about X, the arm leans forward 45°.
+/// * powered (`powered_bit`): the head drops flat (y 4.2..5.0) and the arm settles to -22.5°.
+/// * attached (`attached_bit`): the head sits at -22.5° and a sagging wire runs from the north
+///   edge of the cell to the hook tip.
+/// * attached + powered: flat head at y 3.4..4.2, arm at -22.5°, wire from y 0.46.
+///
+/// The rotated boxes cannot be expressed as axis-aligned cuboids, so every rotated face is
+/// emitted as a quad with the element's own UV window; the plate stays a cuboid. Material
+/// slots follow the `blocks.json` face map: hook parts read `north` (`trip_wire_source`), the
+/// plate reads `down` (`trip_wire_base` = oak planks), the attached wire reads `south`
+/// (`trip_wire`).
 pub(crate) fn tripwire_hook_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
     let attached = state_bool(state, "attached_bit").unwrap_or(false);
-    let mut cuboids = vec![
-        // Mounting plate against the block the hook is fixed to.
-        ModelCuboid::new([0.375, 0.05, 0.0], [0.625, 0.55, 0.125]),
-        // The two slanted hook arms; each pair is a thin plate leaning away from the plate.
-        ModelCuboid::new([0.4062, 0.35, 0.0543], [0.4531, 0.4215, 0.3833]),
-        ModelCuboid::new([0.5469, 0.35, 0.0543], [0.5938, 0.4215, 0.3833]),
-        // The hook tips.
-        ModelCuboid::new([0.4062, 0.3197, 0.3642], [0.4531, 0.3942, 0.5543]),
-        ModelCuboid::new([0.5469, 0.3197, 0.3642], [0.5938, 0.3942, 0.5543]),
-    ];
-    if attached {
-        // The wire leaves the hook along the block's own axis.
-        cuboids.push(ModelCuboid::new(
-            [0.4844, 0.2188, 0.5],
-            [0.5156, 0.3197, 1.0],
-        ));
+    let powered = state_bool(state, "powered_bit").unwrap_or(false);
+
+    let hook_uv = |uv: [f32; 4]| {
+        crate::model_family::shape::rect_uv(
+            uv[0] / 16.0,
+            uv[1] / 16.0,
+            uv[2] / 16.0,
+            uv[3] / 16.0,
+        )
+    };
+    const HOOK_SLOT: &str = "north";
+    const PLATE_SLOT: &str = "down";
+    const WIRE_SLOT: &str = "south";
+    let plane = |corners: [[f32; 3]; 4], normal: [i32; 3], uv: [f32; 4], slot: &'static str| {
+        // The official model numbers are authoring pixels; the shape space is blocks.
+        let corners = corners.map(|corner| [px(corner[0]), px(corner[1]), px(corner[2])]);
+        ModelPlane::new(corners, normal)
+            .with_uv(hook_uv(uv))
+            .with_material_slot(slot)
+    };
+
+    // Head box (6.2,?,6.7)-(9.8,?,10.3) under each variant's tilt; `head_y` is the bottom.
+    // The rotation origins are the official per-variant `rotation.origin` values: the idle
+    // dangle turns about (y 6, z 5.2), the attached tilt about (y 4.2, z 6.7).
+    let (head_y, head_deg, head_origin_y, head_origin_z) = match (attached, powered) {
+        (false, false) => (3.8, -45.0, 6.0, 5.2),
+        (false, true) => (4.2, 0.0, 6.0, 5.2),
+        (true, false) => (4.2, -22.5, 4.2, 6.7),
+        (true, true) => (3.4, 0.0, 4.2, 6.7),
+    };
+    let arm_deg = match (attached, powered) {
+        // Official per-variant arm rotations: idle hangs 45° up, the attached upright arm
+        // settles to 0°, and a powered hook pulls the arm to -22.5° in both attach states.
+        (_, true) => -22.5,
+        (true, false) => 0.0,
+        (false, false) => 45.0,
+    };
+    let mut planes = Vec::new();
+    push_rotated_box(
+        &mut planes,
+        &plane,
+        [6.2, head_y, 6.7],
+        [9.8, head_y + 0.8, 10.3],
+        head_deg,
+        head_origin_y,
+        head_origin_z,
+    );
+    if head_deg != 0.0 {
+        push_head_edge_cards(&mut planes, &plane, head_y, head_deg, head_origin_y, head_origin_z);
     }
-    let shape = ModelShape::from_cuboids(cuboids);
+    // Arm box (7.4,5.2,10)-(8.8,6.8,14), rotated about its top-front edge (y 6, z 14).
+    push_rotated_box(
+        &mut planes,
+        &plane,
+        [7.4, 5.2, 10.0],
+        [8.8, 6.8, 14.0],
+        arm_deg,
+        6.0,
+        14.0,
+    );
+    if attached {
+        // The sagging wire: a 2 px band rotated -22.5° about the cell's bottom-north edge,
+        // running from the north edge to the hook tip. Its two cap faces carry the 16 x 2
+        // wire band windows; the wire hangs at the variant's sag height.
+        let wire_y = if powered { 0.5 } else { 1.5 };
+        let (down, up) = wire_quads(wire_y);
+        planes.push(plane(down, [0, -1, 0], [16.0, 6.0, 0.0, 8.0], WIRE_SLOT));
+        planes.push(plane(up, [0, 1, 0], [0.0, 6.0, 16.0, 8.0], WIRE_SLOT));
+    }
+    // Mounting plate: an axis-aligned cuboid against the south wall with the JE plate
+    // windows (the plate element (6,1,14)-(10,9,16)).
+    let plate = ModelCuboid::new([0.375, 0.0625, 0.875], [0.625, 0.5625, 1.0])
+        .with_face_material_slot(BlockFace::Up, PLATE_SLOT)
+        .with_face_material_slot(BlockFace::Down, PLATE_SLOT)
+        .with_face_material_slot(BlockFace::North, PLATE_SLOT)
+        .with_face_material_slot(BlockFace::South, PLATE_SLOT)
+        .with_face_material_slot(BlockFace::East, PLATE_SLOT)
+        .with_face_material_slot(BlockFace::West, PLATE_SLOT)
+        .with_face_uv(BlockFace::Down, hook_uv([6.0, 14.0, 10.0, 16.0]))
+        .with_face_uv(BlockFace::Up, hook_uv([6.0, 0.0, 10.0, 2.0]))
+        .with_face_uv(BlockFace::North, hook_uv([6.0, 7.0, 10.0, 15.0]))
+        .with_face_uv(BlockFace::South, hook_uv([6.0, 7.0, 10.0, 15.0]))
+        .with_face_uv(BlockFace::West, hook_uv([0.0, 7.0, 2.0, 15.0]))
+        .with_face_uv(BlockFace::East, hook_uv([14.0, 7.0, 16.0, 15.0]));
+    let shape = ModelShape::from_cuboids(vec![plate]).with_planes(planes);
     rotate_shape_cardinal(shape, direction)
+}
+
+/// Emits the six faces of a box rotated `deg` about the X axis through `(origin_y, origin_z)`,
+/// each face sampling the official hook-art windows. Corner winding matches the cuboid faces.
+fn push_rotated_box(
+    planes: &mut Vec<ModelPlane>,
+    plane: &impl Fn([[f32; 3]; 4], [i32; 3], [f32; 4], &'static str) -> ModelPlane,
+    min: [f32; 3],
+    max: [f32; 3],
+    deg: f32,
+    origin_y: f32,
+    origin_z: f32,
+) {
+    let rotate = |corner: [f32; 3]| {
+        let radians = deg.to_radians();
+        let (sin, cos) = radians.sin_cos();
+        let (dy, dz) = (corner[1] - origin_y, corner[2] - origin_z);
+        [
+            corner[0],
+            origin_y + dy * cos - dz * sin,
+            origin_z + dy * sin + dz * cos,
+        ]
+    };
+    // The GPU voxel templates only accept the six axis neighbour offsets, and the opaque
+    // culling projects that neighbour one cell out. A tilted face's true normal is diagonal,
+    // so pick its dominant axis (ties break toward the horizontal component, whose neighbour
+    // is air instead of the mount block above/below) — keeping the authored axis normal
+    // culled the grey head art against whatever sits straight above/below the hook.
+    let face_normal = |authored: [i32; 3]| -> [i32; 3] {
+        if deg.abs() < 0.001 {
+            return authored;
+        }
+        let radians = deg.to_radians();
+        let (sin, cos) = radians.sin_cos();
+        let ry = authored[1] as f32 * cos - authored[2] as f32 * sin;
+        let rz = authored[1] as f32 * sin + authored[2] as f32 * cos;
+        if ry.abs() > rz.abs() {
+            [0, if ry > 0.0 { 1 } else { -1 }, 0]
+        } else {
+            [0, 0, if rz > 0.0 { 1 } else { -1 }]
+        }
+    };
+    let [x0, y0, z0] = min;
+    let [x1, y1, z1] = max;
+    let faces: [([i32; 3], [f32; 4], [[f32; 3]; 4]); 6] = [
+        (
+            [0, -1, 0],
+            [5.0, 3.0, 11.0, 9.0],
+            [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]],
+        ),
+        (
+            [0, 1, 0],
+            [5.0, 3.0, 11.0, 9.0],
+            [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]],
+        ),
+        (
+            [0, 0, -1],
+            [5.0, 3.0, 11.0, 4.0],
+            [[x0, y1, z0], [x1, y1, z0], [x1, y0, z0], [x0, y0, z0]],
+        ),
+        (
+            [0, 0, 1],
+            [5.0, 8.0, 11.0, 9.0],
+            [[x1, y1, z1], [x0, y1, z1], [x0, y0, z1], [x1, y0, z1]],
+        ),
+        (
+            [-1, 0, 0],
+            [5.0, 8.0, 11.0, 9.0],
+            [[x0, y1, z1], [x0, y1, z0], [x0, y0, z0], [x0, y0, z1]],
+        ),
+        (
+            [1, 0, 0],
+            [5.0, 3.0, 11.0, 4.0],
+            [[x1, y1, z0], [x1, y1, z1], [x1, y0, z1], [x1, y0, z0]],
+        ),
+    ];
+    for (normal, uv, corners) in faces {
+        planes.push(plane(corners.map(rotate), face_normal(normal), uv, "north"));
+    }
+}
+
+/// The head's four zero-thickness hole-wall cards (JE elements 2..5): the stick-hole through
+/// the ring — a north plane at z 9.1, a south plane at z 7.9, an east plane at x 7.4 and a
+/// west plane at x 8.6, each a 2 x 2 px window riding the rotated plane. The official UVs
+/// alternate rows: north/east read row 8, south/west row 3.
+fn push_head_edge_cards(
+    planes: &mut Vec<ModelPlane>,
+    plane: &impl Fn([[f32; 3]; 4], [i32; 3], [f32; 4], &'static str) -> ModelPlane,
+    head_y: f32,
+    deg: f32,
+    origin_y: f32,
+    origin_z: f32,
+) {
+    let rotate = |corner: [f32; 3]| {
+        let radians = deg.to_radians();
+        let (sin, cos) = radians.sin_cos();
+        let (dy, dz) = (corner[1] - origin_y, corner[2] - origin_z);
+        [
+            corner[0],
+            origin_y + dy * cos - dz * sin,
+            origin_z + dy * sin + dz * cos,
+        ]
+    };
+    let y0 = head_y;
+    let y1 = head_y + 0.8;
+    let cards: [([f32; 4], [i32; 3], [[f32; 3]; 4]); 4] = [
+        (
+            [7.0, 8.0, 9.0, 9.0],
+            [0, 0, -1],
+            [[7.4, y1, 9.1], [8.6, y1, 9.1], [8.6, y0, 9.1], [7.4, y0, 9.1]],
+        ),
+        (
+            [7.0, 3.0, 9.0, 4.0],
+            [0, 0, 1],
+            [[7.4, y1, 7.9], [8.6, y1, 7.9], [8.6, y0, 7.9], [7.4, y0, 7.9]],
+        ),
+        (
+            [7.0, 8.0, 9.0, 9.0],
+            [1, 0, 0],
+            [[7.4, y1, 9.1], [7.4, y1, 7.9], [7.4, y0, 7.9], [7.4, y0, 9.1]],
+        ),
+        (
+            [7.0, 3.0, 9.0, 4.0],
+            [-1, 0, 0],
+            [[8.6, y1, 9.1], [8.6, y1, 7.9], [8.6, y0, 7.9], [8.6, y0, 9.1]],
+        ),
+    ];
+    for (uv, normal, corners) in cards {
+        planes.push(plane(corners.map(rotate), normal, uv, "north"));
+    }
+}
+
+/// The attached tripwire line (JE element 0): a 0.5 px wide, 6.7 px long band rotated
+/// -22.5° about X through the cell's bottom-north corner, running from the north edge down
+/// to the hook tip. Its up/down faces sample the string band (trip_wire rows 6..8) rotated
+/// 90° so the art runs along the wire, the north copy mirrored.
+fn wire_quads(wire_y: f32) -> ([[f32; 3]; 4], [[f32; 3]; 4]) {
+    let radians = (-22.5f32).to_radians();
+    let (sin, cos) = radians.sin_cos();
+    let rotated_y = |z: f32| wire_y * cos - z * sin;
+    let rotated_z = |z: f32| wire_y * sin + z * cos;
+    // The wire box spans x 7.75..8.25 (0.5 px wide), y wire_y..wire_y+0.5, z 0..6.7.
+    // Corners run length-first (z 0→6.7 then across the width) so the quad's U axis is the
+    // wire's length — the official rot-90 band windows then read the string art along it.
+    let band = |delta_y: f32| {
+        [
+            [7.75, rotated_y(0.0) + delta_y, rotated_z(0.0)],
+            [7.75, rotated_y(6.7) + delta_y, rotated_z(6.7)],
+            [8.25, rotated_y(6.7) + delta_y, rotated_z(6.7)],
+            [8.25, rotated_y(0.0) + delta_y, rotated_z(0.0)],
+        ]
+    };
+    (band(0.0), band(0.5))
 }
 
 #[cfg(test)]
