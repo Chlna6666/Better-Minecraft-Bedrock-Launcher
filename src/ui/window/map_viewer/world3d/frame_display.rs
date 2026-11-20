@@ -1,6 +1,6 @@
 //! Item-frame display faces decoded from Bedrock block entities.
 
-use crate::ui::window::map_viewer::preview_3d_source::{Preview3dStreamFace, Preview3dStreamPass};
+use bedrock_scene::stream::{StreamFace, StreamPass};
 use bedrock_world::NbtTag;
 use bedrock_world::map_item::{MapItemId, filled_map_id};
 use bedrock_world::surface::ChunkData;
@@ -122,7 +122,7 @@ impl FrameDisplay {
             .collect()
     }
 
-    pub(super) fn face(&self) -> Preview3dStreamFace {
+    pub(super) fn face(&self) -> StreamFace {
         // right x up must equal the facing normal so the content is never mirrored when seen
         // from the front. Vertical frames keep world up; horizontal frames keep map-north up.
         let (right, up): ([f64; 3], [f64; 3]) = match self.normal {
@@ -161,7 +161,7 @@ impl FrameDisplay {
             let (x, y) = (x * cos + y * sin, -x * sin + y * cos);
             std::array::from_fn(|axis| center[axis] + right[axis] * x + up[axis] * y)
         });
-        Preview3dStreamFace {
+        StreamFace {
             corners,
             color: [1.0; 4],
             shade: 1.0,
@@ -169,7 +169,7 @@ impl FrameDisplay {
             normal: self.normal,
             material: Arc::from(material),
             uv: Some([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]),
-            pass: Preview3dStreamPass::DetailOpaque,
+            pass: StreamPass::DetailOpaque,
         }
     }
 }

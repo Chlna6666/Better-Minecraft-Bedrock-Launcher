@@ -116,9 +116,9 @@ pub(crate) fn run(world_path: PathBuf, package_roots: Vec<PathBuf>) {
     for (state_index, batch) in state_list.chunks(1).enumerate() {
         let data = isolated_states(pos, batch);
             let blocks =
-                preview_3d_source::collect_chunk_blocks(&data, Some(&worker.models), None, |_| true)
+                bedrock_scene::chunk::collect(&data, Some(&worker.models), None, |_| true)
                     .unwrap();
-        let mut builder = preview_3d_source::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+        let mut builder = bedrock_scene::SceneBuilder::new_stream(SlimeChunkBounds {
             dimension: pos.dimension,
             min_chunk_x: 0,
             max_chunk_x: 0,
@@ -128,7 +128,7 @@ pub(crate) fn run(world_path: PathBuf, package_roots: Vec<PathBuf>) {
         builder.insert_stream_chunk(pos, blocks);
         let before = face_count;
         for chunk in
-            builder.build_stream_faces(&[pos], preview_3d_source::StreamFaceOptions::default())
+            builder.build_stream_faces(&[pos], bedrock_scene::stream::StreamFaceOptions::default())
         {
             face_count += chunk.faces.len();
             for face in chunk.faces {
@@ -201,7 +201,7 @@ impl MaterialAudit {
     fn check(
         &mut self,
         worker: &mut Worker,
-        face: &preview_3d_source::Preview3dStreamFace,
+        face: &bedrock_scene::stream::StreamFace,
         context: &str,
     ) {
         let key = (face.material.to_string(), face.normal);

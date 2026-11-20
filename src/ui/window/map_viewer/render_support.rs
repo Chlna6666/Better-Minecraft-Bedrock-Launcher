@@ -23,9 +23,9 @@ pub(super) fn probe_blocking_pool(stage: &'static str) {
     }
 }
 
-pub(super) fn io_error(message: impl Into<String>) -> bedrock_render::BedrockRenderError {
+pub(super) fn io_error(message: impl Into<String>) -> bedrock_map_render::BedrockRenderError {
     let message = message.into();
-    bedrock_render::BedrockRenderError::io(message.clone(), std::io::Error::other(message))
+    bedrock_map_render::BedrockRenderError::io(message.clone(), std::io::Error::other(message))
 }
 
 pub(super) fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {

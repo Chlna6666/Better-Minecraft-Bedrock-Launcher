@@ -2,7 +2,7 @@ pub(super) use super::tile_render_composite::*;
 
 use super::prelude::*;
 use super::{tile_render_composite, tile_render_core};
-use bedrock_render::RenderLayout;
+use bedrock_map_render::RenderLayout;
 
 pub(super) const fn tile_texture_render_layout(
     world_layout: RenderLayout,

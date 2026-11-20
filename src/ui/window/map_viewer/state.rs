@@ -2,7 +2,7 @@ use super::layout::{
     IDE_DIVIDER_WIDTH, IDE_LEFT_DOCK_WIDTH, IDE_LEFT_STRIPE_WIDTH, IDE_SPLITTER_WIDTH,
     IDE_STATUS_BAR_HEIGHT, IDE_TOP_BAR_HEIGHT,
 };
-use bedrock_render::{ChunkPos, Dimension};
+use bedrock_map_render::{ChunkPos, Dimension};
 use gpui::SharedString;
 use std::sync::Arc;
 

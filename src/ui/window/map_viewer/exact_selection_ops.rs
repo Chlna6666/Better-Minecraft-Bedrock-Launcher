@@ -5,7 +5,7 @@ use crate::tasks::TaskStage;
 use crate::tasks::task_manager::{ProgressUpdate, TaskFinishStatus};
 use ::bedrock_world::{ExactChunkSelection, exact_selection_stats};
 use bedrock_block_model::BlockModelRepository;
-use bedrock_render::exact_selection::Plan;
+use bedrock_map_render::exact_selection::Plan;
 
 impl View {
     /// Runs professional statistics against the exact selected chunk set instead

@@ -281,7 +281,7 @@ impl ChunkLighting {
     pub(super) fn gpu_levels(
         &self,
         pos: ChunkPos,
-        band: &preview_3d_source::GpuCubeBand,
+        band: &bedrock_scene::stream::GpuCubeBand,
     ) -> Vec<u8> {
         (0..band.size[0] * band.size[1] * band.size[2])
             .map(|i| {

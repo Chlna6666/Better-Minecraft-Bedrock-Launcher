@@ -1818,10 +1818,10 @@ impl View {
                             tile_count = tile_count,
                             chunk_count = chunk_count,
                             source = match result.source {
-                                bedrock_render::cache::occupancy::LoadSource::DiskCache => {
+                                bedrock_map_render::cache::occupancy::LoadSource::DiskCache => {
                                     t!("MapViewer.world3d.lifecycle.load_source_disk_cache")
                                 }
-                                bedrock_render::cache::occupancy::LoadSource::KeySpaceScan => {
+                                bedrock_map_render::cache::occupancy::LoadSource::KeySpaceScan => {
                                     t!("MapViewer.world3d.lifecycle.load_source_keyspace_scan")
                                 }
                             }
@@ -2351,7 +2351,7 @@ impl View {
         let render_backend = self.render_backend;
         let render_gpu_backend = self.render_gpu_backend;
         let tile_cache_validation_seed =
-            bedrock_render::cache::preset_validation_seed(render_backend, render_gpu_backend);
+            bedrock_map_render::cache::preset_validation_seed(render_backend, render_gpu_backend);
         let render_cancel = RenderCancelFlag::new();
         let render_cancel_for_owner = render_cancel.clone();
         self.track_render_request(
@@ -2964,7 +2964,7 @@ impl View {
         let tile_cache_validation_seed = if unindexed_tiles > 0 && metadata_indexed_tiles == 0 {
             0
         } else {
-            bedrock_render::cache::preset_validation_seed(render_backend, render_gpu_backend)
+            bedrock_map_render::cache::preset_validation_seed(render_backend, render_gpu_backend)
         };
         let work_estimate = selected_tile_work_estimate(&requested_tiles, &self.tile_chunk_index);
         let quick_reveal = !viewport_interacting

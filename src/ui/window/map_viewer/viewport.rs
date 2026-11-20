@@ -7,7 +7,7 @@ const CANVAS_PAINT_GUARD_TILES: i32 = 8;
 
 pub(super) fn paint_tile_bounds(
     viewport: super::model::MapViewport,
-    layout: bedrock_render::RenderLayout,
+    layout: bedrock_map_render::RenderLayout,
     radius: i32,
 ) -> Option<TileBounds> {
     let bounds = raw_paint_bounds(

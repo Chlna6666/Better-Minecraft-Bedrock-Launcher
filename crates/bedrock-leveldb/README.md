@@ -102,7 +102,7 @@ repair, flush, or write to the database directory.
   block entities. It preserves input order and avoids prefix scans during tile
   rendering. It returns raw values byte-for-byte; X/Y/Z coordinate interpretation
   and legacy biome priority are intentionally tested and implemented in
-  `bedrock-world`/`bedrock-render`.
+  `bedrock-world`, `bedrock-map-render` and `bedrock-scene`.
 - With the default `async` feature, `Arc<Db>` now provides owned async read
   helpers: `get_async`, `get_with_async`, `collect_keys_owned_async`,
   `collect_prefix_keys_owned_async`, and `collect_prefix_owned_async`. They use

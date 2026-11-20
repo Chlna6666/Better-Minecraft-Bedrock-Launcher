@@ -5,8 +5,8 @@ impl Worker {
     pub(super) fn build_gpu_cube_mesh(
         &mut self,
         pos: ChunkPos,
-        band: preview_3d_source::GpuCubeBand,
-        faces: &[preview_3d_source::Preview3dStreamFace],
+        band: bedrock_scene::stream::GpuCubeBand,
+        faces: &[bedrock_scene::stream::StreamFace],
         lighting: Option<&super::lighting::ChunkLighting>,
     ) -> Result<Option<World3dChunkMesh>, String> {
         let lighting = lighting.filter(|_| self.lighting.is_lit());
@@ -84,7 +84,7 @@ mod direct_template_tests {
 
     #[test]
     fn direct_gpu_template_matches_cpu_packed_quad_geometry() {
-        let face = preview_3d_source::Preview3dStreamFace {
+        let face = bedrock_scene::stream::StreamFace {
             ambient_light: [1.0; 4],
             corners: [
                 [0.0, 4.0, 0.0],
@@ -97,7 +97,7 @@ mod direct_template_tests {
             normal: [0, 1, 0],
             material: Arc::from("unit_test"),
             uv: Some([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
-            pass: preview_3d_source::Preview3dStreamPass::Opaque,
+            pass: bedrock_scene::stream::StreamPass::Opaque,
         };
         for local in [false, true] {
             let coordinate_space = if local {

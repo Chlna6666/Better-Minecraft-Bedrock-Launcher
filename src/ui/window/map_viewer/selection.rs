@@ -1,4 +1,4 @@
-use bedrock_render::{ChunkPos, Dimension};
+use bedrock_map_render::{ChunkPos, Dimension};
 use bedrock_world::{SlimeChunkBounds, rasterize_chunk_line};
 use gpui::{Pixels, Point, px};
 use std::collections::{HashMap, HashSet};

@@ -89,7 +89,7 @@ pub(super) fn append_map_asset_actions(
                                 version: version.clone(),
                                 world_path: asset.file_path.clone(),
                                 asset,
-                                initial_mode: bedrock_render::RenderMode::SurfaceBlocks,
+                                initial_mode: bedrock_map_render::RenderMode::SurfaceBlocks,
                             },
                             cx,
                         );

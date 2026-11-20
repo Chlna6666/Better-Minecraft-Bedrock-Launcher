@@ -2027,7 +2027,7 @@ pub struct View {
     pub(super) tile_reveal_state: TileRevealState,
     pub(super) available_tiles: BTreeSet<(i32, i32)>,
     pub(super) tile_chunk_index: TileChunkIndex,
-    pub(super) tile_occupancy_index: Option<Arc<bedrock_render::cache::occupancy::Index>>,
+    pub(super) tile_occupancy_index: Option<Arc<bedrock_map_render::cache::occupancy::Index>>,
     pub(super) chunk_bounds: Option<ChunkBounds>,
     pub(super) tile_manager: RegionManager,
     pub(super) canvas_tile_snapshot: Arc<TilePaintSnapshot>,

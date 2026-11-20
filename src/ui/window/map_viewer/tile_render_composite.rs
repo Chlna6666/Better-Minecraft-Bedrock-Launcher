@@ -7,7 +7,7 @@ use super::tile_cache::decoded_tile_byte_len;
 use super::tile_render_core;
 use super::tile_state::MapRenderRange;
 use super::viewport::{tile_paint_rect, tile_render_range};
-use bedrock_render::RenderLayout;
+use bedrock_map_render::RenderLayout;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const PROGRESSIVE_PREVIEW_TILE_GROUP: usize = 8;
@@ -130,20 +130,20 @@ pub(super) fn render_viewport_composite_stream(
             let failed_tiles = Arc::clone(&failed_tiles);
             move |event| {
                 if stream_cancel.is_cancelled() {
-                    return Err(bedrock_render::BedrockRenderError::Cancelled);
+                    return Err(bedrock_map_render::BedrockRenderError::Cancelled);
                 }
                 match event {
                     DecodedTileEvent::Ready { planned, tile, .. } => {
                         let coord = (planned.job.coord.x, planned.job.coord.z);
                         let preview = {
                             let mut compositor = compositor.lock().map_err(|_| {
-                                bedrock_render::BedrockRenderError::Validation(
+                                bedrock_map_render::BedrockRenderError::Validation(
                                     t!("MapViewer.render.tile_render_composite.composite_state_lock_poisoned").to_string(),
                                 )
                             })?;
                             compositor
                                 .blend_tile(coord, &tile)
-                                .map_err(bedrock_render::BedrockRenderError::Validation)?
+                                .map_err(bedrock_map_render::BedrockRenderError::Validation)?
                         };
                         if let Some(preview) = preview {
                             tile_render_core::send_composite_event_or_cancel(
@@ -171,14 +171,14 @@ pub(super) fn render_viewport_composite_stream(
                         stats.planned_tiles = requested_tile_count;
                         let (frame, rendered_tiles) = {
                             let mut compositor = compositor.lock().map_err(|_| {
-                                bedrock_render::BedrockRenderError::Validation(
+                                bedrock_map_render::BedrockRenderError::Validation(
                                     t!("MapViewer.render.tile_render_composite.composite_state_lock_poisoned").to_string(),
                                 )
                             })?;
                             let rendered_tiles = compositor.rendered_tiles();
                             let frame = compositor
                                 .finish_frame()
-                                .map_err(bedrock_render::BedrockRenderError::Validation)?;
+                                .map_err(bedrock_map_render::BedrockRenderError::Validation)?;
                             (frame, rendered_tiles)
                         };
                         let failed = failed_tiles.load(Ordering::Relaxed);

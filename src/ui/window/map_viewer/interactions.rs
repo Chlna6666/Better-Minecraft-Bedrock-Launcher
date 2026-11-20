@@ -4577,7 +4577,7 @@ fn render_copy_previews(
     let render_cancel = RenderCancelFlag::new();
     let (event_sender, mut event_receiver) = unbounded::<TileRenderEvent>();
     let tile_cache_validation_seed =
-        bedrock_render::cache::preset_validation_seed(render_backend, render_gpu_backend);
+        bedrock_map_render::cache::preset_validation_seed(render_backend, render_gpu_backend);
     render_tile_batch_stream(
         TileBatchRequest {
             render_session,

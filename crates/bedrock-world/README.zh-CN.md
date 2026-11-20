@@ -20,7 +20,7 @@ NBT/SNBT 值模型与编解码由 [bedrock-nbt](../bedrock-nbt/README.zh-CN.md) 
 
 ## 边界
 
-- 不依赖 UI/GPU；不负责渲染（渲染在 `bedrock-render`）。
+- 不依赖 UI/GPU；提供供 `bedrock-map-render` 和 `bedrock-scene` 使用的世界数据。
 - 不直接实现 LevelDB 存储机制（在 `bedrock-leveldb`）。
 - 写入/升级操作必须先预检并保留可回滚路径。
 

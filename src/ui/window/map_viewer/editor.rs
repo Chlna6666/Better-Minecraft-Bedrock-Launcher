@@ -1401,18 +1401,18 @@ pub(super) fn player_editor_detail(detail: PlayerDetail) -> ProfessionalDetail {
 pub(super) fn load_edit_detail(
     editor: &WorldEditor,
     target: EditTarget,
-) -> bedrock_render::Result<ProfessionalDetail> {
+) -> bedrock_map_render::Result<ProfessionalDetail> {
     match target {
         EditTarget::HsaChunk { chunk, .. } => hsa_editor_detail(editor, chunk),
         EditTarget::Player(id) => {
             let data = editor.world().player(&id)?.ok_or_else(|| {
-                bedrock_render::BedrockRenderError::Validation(
+                bedrock_map_render::BedrockRenderError::Validation(
                     "player record does not exist".to_string(),
                 )
             })?;
             player_detail_from_data(data)
                 .map(player_editor_detail)
-                .map_err(|error| bedrock_render::BedrockRenderError::Validation(error.to_string()))
+                .map_err(|error| bedrock_map_render::BedrockRenderError::Validation(error.to_string()))
         }
         EditTarget::BlockEntities { chunk, .. } => block_entities_detail(editor, chunk),
         EditTarget::BlockEntityAt { chunk, block } => block_entity_detail_at(editor, chunk, block),
@@ -1431,7 +1431,7 @@ pub(super) fn run_edit_action(
     target: EditTarget,
     action: EditAction,
     document_text: Option<String>,
-) -> bedrock_render::Result<EditInvalidation> {
+) -> bedrock_map_render::Result<EditInvalidation> {
     let invalidation = match (target, action) {
         (EditTarget::Player(id), EditAction::Delete) => {
             editor.world().delete_player(&id)?;
@@ -1439,22 +1439,22 @@ pub(super) fn run_edit_action(
         }
         (EditTarget::Player(id), EditAction::Save) => {
             let text = document_text.ok_or_else(|| {
-                bedrock_render::BedrockRenderError::Validation(
+                bedrock_map_render::BedrockRenderError::Validation(
                     "missing player JSON document".to_string(),
                 )
             })?;
             let tag = serde_json::from_str::<NbtTag>(&text).map_err(|error| {
-                bedrock_render::BedrockRenderError::Validation(format!(
+                bedrock_map_render::BedrockRenderError::Validation(format!(
                     "player JSON is not valid NBT JSON: {error}"
                 ))
             })?;
             let replacement = PlayerData::from_nbt(id.clone(), tag, None).map_err(|error| {
-                bedrock_render::BedrockRenderError::Validation(format!(
+                bedrock_map_render::BedrockRenderError::Validation(format!(
                     "player NBT serialize failed: {error}"
                 ))
             })?;
             let mut player = editor.world().player(&id)?.ok_or_else(|| {
-                bedrock_render::BedrockRenderError::Validation(
+                bedrock_map_render::BedrockRenderError::Validation(
                     "player record no longer exists".to_string(),
                 )
             })?;
@@ -1473,7 +1473,7 @@ pub(super) fn run_edit_action(
         }
         (EditTarget::Actors(pos), EditAction::Delete) => {
             let Some(uid) = editor.actors(pos)?.into_iter().find_map(|actor| actor.uid) else {
-                return Err(bedrock_render::BedrockRenderError::Validation(
+                return Err(bedrock_map_render::BedrockRenderError::Validation(
                     "chunk has no modern actor UID to delete".to_string(),
                 ));
             };
@@ -1481,12 +1481,12 @@ pub(super) fn run_edit_action(
         }
         (EditTarget::Actor { chunk, unique_id }, EditAction::Save) => {
             let text = document_text.ok_or_else(|| {
-                bedrock_render::BedrockRenderError::Validation(
+                bedrock_map_render::BedrockRenderError::Validation(
                     "missing actor JSON document".to_string(),
                 )
             })?;
             let nbt = serde_json::from_str::<NbtTag>(&text).map_err(|error| {
-                bedrock_render::BedrockRenderError::Validation(format!(
+                bedrock_map_render::BedrockRenderError::Validation(format!(
                     "actor JSON is not valid NBT JSON: {error}"
                 ))
             })?;
@@ -1583,7 +1583,7 @@ fn edit_history_spec(
 pub(super) fn hsa_editor_detail(
     editor: &WorldEditor,
     pos: ChunkPos,
-) -> bedrock_render::Result<ProfessionalDetail> {
+) -> bedrock_map_render::Result<ProfessionalDetail> {
     let (areas, source) = editor.world().hardcoded_spawn_areas_snapshot(pos)?;
     let rows = areas
         .iter()
@@ -1614,7 +1614,7 @@ pub(super) fn hsa_editor_detail(
 pub(super) fn block_entities_detail(
     editor: &WorldEditor,
     pos: ChunkPos,
-) -> bedrock_render::Result<ProfessionalDetail> {
+) -> bedrock_map_render::Result<ProfessionalDetail> {
     let (records, source) = editor.world().block_entities_snapshot(pos)?;
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::BlockEntities { chunk: pos, source },
@@ -1638,7 +1638,7 @@ pub(super) fn block_entity_detail_at(
     editor: &WorldEditor,
     chunk: ChunkPos,
     block: BlockPos,
-) -> bedrock_render::Result<ProfessionalDetail> {
+) -> bedrock_map_render::Result<ProfessionalDetail> {
     let records = editor.block_entities(chunk)?;
     let matching = records
         .iter()
@@ -1668,7 +1668,7 @@ pub(super) fn block_entity_detail_at(
 pub(super) fn actors_editor_detail(
     editor: &WorldEditor,
     pos: ChunkPos,
-) -> bedrock_render::Result<ProfessionalDetail> {
+) -> bedrock_map_render::Result<ProfessionalDetail> {
     let actors = editor.actors(pos)?;
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::Actors(pos),
@@ -1688,13 +1688,13 @@ pub(super) fn actor_editor_detail(
     editor: &WorldEditor,
     chunk: ChunkPos,
     unique_id: i64,
-) -> bedrock_render::Result<ProfessionalDetail> {
+) -> bedrock_map_render::Result<ProfessionalDetail> {
     let actor = editor
         .actors(chunk)?
         .into_iter()
         .find(|actor| actor.entity.unique_id == Some(unique_id))
         .ok_or_else(|| {
-            bedrock_render::BedrockRenderError::Validation(format!(
+            bedrock_map_render::BedrockRenderError::Validation(format!(
                 "actor UniqueID {unique_id} does not exist in chunk {},{}",
                 chunk.x, chunk.z
             ))
@@ -1733,7 +1733,7 @@ pub(super) fn actor_editor_detail(
 pub(super) fn heightmap_editor_detail(
     editor: &WorldEditor,
     pos: ChunkPos,
-) -> bedrock_render::Result<ProfessionalDetail> {
+) -> bedrock_map_render::Result<ProfessionalDetail> {
     let biome = editor.world().biome_data(pos)?;
     let version = biome.as_ref().map(|data| data.version);
     let heightmap = biome
@@ -1772,7 +1772,7 @@ pub(super) fn heightmap_editor_detail(
 pub(super) fn biome_storage_editor_detail(
     editor: &WorldEditor,
     pos: ChunkPos,
-) -> bedrock_render::Result<ProfessionalDetail> {
+) -> bedrock_map_render::Result<ProfessionalDetail> {
     let biome = editor.world().biome_data(pos)?;
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::BiomeStorage {
@@ -1800,7 +1800,7 @@ pub(super) fn biome_storage_editor_detail(
 pub(super) fn map_item_editor_detail(
     editor: &WorldEditor,
     id: &MapItemId,
-) -> bedrock_render::Result<ProfessionalDetail> {
+) -> bedrock_map_render::Result<ProfessionalDetail> {
     let record = editor.item(id)?;
     let rows = record.as_ref().map_or_else(
         || {

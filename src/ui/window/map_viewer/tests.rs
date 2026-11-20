@@ -2979,7 +2979,7 @@ fn interactive_session_config_culls_missing_chunks() {
     assert!(config.cull_missing_chunks);
     assert_eq!(
         config.world_signature,
-        bedrock_render::cache::world_cache_identity(world_path).world_signature
+        bedrock_map_render::cache::world_cache_identity(world_path).world_signature
     );
     assert_eq!(
         config.region_bake_cache_memory_limit,
@@ -5272,12 +5272,12 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
                 .iter()
                 .any(|record| record.key.tag == ChunkRecordTag::SubChunkPrefix)
         );
-        let renderer = bedrock_render::MapRenderer::new(
+        let renderer = bedrock_map_render::MapRenderer::new(
             Arc::new(reopened),
-            bedrock_render::RenderPalette::default(),
+            bedrock_map_render::RenderPalette::default(),
         );
         let bake = renderer
-            .bake_chunk(transformed_target, bedrock_render::BakeOptions::default())
+            .bake_chunk(transformed_target, bedrock_map_render::BakeOptions::default())
             .expect("bake persisted transformed chunk");
         assert_eq!(bake.pos, transformed_target);
     }

@@ -32,7 +32,7 @@ const LOG_THROTTLE_WINDOW: Duration = Duration::from_secs(3);
 const LOG_THROTTLE_RETENTION: Duration = Duration::from_secs(120);
 const LOG_THROTTLE_CLEANUP_INTERVAL: Duration = Duration::from_secs(15);
 const LOG_THROTTLE_MAX_TRACKED: usize = 4096;
-const DEBUG_LOG_FILTER: &str = "bmcbl=debug,bmcbl::ui::window::map_viewer=debug,bedrock_leveldb=info,bedrock_world=debug,bedrock_render=debug,gpui=debug,reqwest=info,hyper=warn,hyper_util=warn,h2=warn,rustls=warn,info";
+const DEBUG_LOG_FILTER: &str = "bmcbl=debug,bmcbl::ui::window::map_viewer=debug,bedrock_leveldb=info,bedrock_world=debug,bedrock_map_render=debug,gpui=debug,reqwest=info,hyper=warn,hyper_util=warn,h2=warn,rustls=warn,info";
 
 static LOG_THROTTLE_STATE: Lazy<Mutex<LogThrottleState>> =
     Lazy::new(|| Mutex::new(LogThrottleState::default()));
@@ -289,7 +289,7 @@ fn default_log_filter(debug_enabled: bool, gpui_trace_enabled: bool) -> String {
     } else {
         ""
     };
-    format!("{log_level}{gpui_trace},blade_graphics=warn,easytier=warn")
+    format!("{log_level}{gpui_trace},blade_graphics=warn")
 }
 
 fn install_panic_hook() {
@@ -469,14 +469,13 @@ mod tests {
         assert!(filter.contains("bmcbl=debug"));
         assert!(filter.contains("gpui=debug"));
         assert!(filter.contains("blade_graphics=warn"));
-        assert!(filter.contains("easytier=warn"));
     }
 
     #[test]
     fn default_non_debug_filter_stays_at_info() {
         assert_eq!(
             default_log_filter(false, false),
-            "info,blade_graphics=warn,easytier=warn"
+            "info,blade_graphics=warn"
         );
     }
 

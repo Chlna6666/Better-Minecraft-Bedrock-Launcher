@@ -24,7 +24,7 @@ use super::world3d::camera_overlay::{CameraOverlayContext, MapCameraOverlayView}
 use super::world3d::types::{CameraOverlayMode, World3dCameraSnapshot};
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::ThemeColors;
-use bedrock_render::RenderLayout;
+use bedrock_map_render::RenderLayout;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -2114,7 +2114,7 @@ fn arc_option_ptr<T>(value: &Option<Arc<T>>) -> Option<usize> {
 pub(super) fn build_tile_paint_snapshot(
     tile_manager: &super::tile_state::RegionManager,
     viewport: super::model::MapViewport,
-    layout: bedrock_render::RenderLayout,
+    layout: bedrock_map_render::RenderLayout,
     diagnostics_open: bool,
     paint_radius: i32,
     generation: u64,
@@ -2194,7 +2194,7 @@ pub(super) fn patch_tile_paint_snapshot(
     current: &TilePaintSnapshot,
     tile_manager: &super::tile_state::RegionManager,
     viewport: super::model::MapViewport,
-    layout: bedrock_render::RenderLayout,
+    layout: bedrock_map_render::RenderLayout,
     diagnostics_open: bool,
     paint_radius: i32,
     changed_tiles: &[(i32, i32)],

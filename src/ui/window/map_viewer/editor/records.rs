@@ -45,7 +45,7 @@ fn required_queue<'de, D: serde::Deserializer<'de>>(
 pub(super) fn global_detail(
     editor: &WorldEditor,
     kind: GlobalRecordKind,
-) -> bedrock_render::Result<ProfessionalDetail> {
+) -> bedrock_map_render::Result<ProfessionalDetail> {
     let record = editor.global(kind.clone())?;
     let source = record.as_ref().and_then(|record| record.source().cloned());
     let roots = record.as_ref().map_or(&[][..], global::Record::roots);
@@ -76,7 +76,7 @@ pub(super) fn global_detail(
 pub(super) fn ticks_detail(
     editor: &WorldEditor,
     chunk: ChunkPos,
-) -> bedrock_render::Result<ProfessionalDetail> {
+) -> bedrock_map_render::Result<ProfessionalDetail> {
     let ticks = editor.world().chunk_ticks(chunk)?;
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::TickQueues {

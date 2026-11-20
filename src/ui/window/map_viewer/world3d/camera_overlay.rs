@@ -7,7 +7,8 @@ use super::super::model::MapViewport;
 use super::super::paint::{overlay_marker_screen_x, overlay_marker_screen_y};
 use super::types::{CameraOverlayMode, World3dCameraSnapshot, World3dProjectionKind};
 use crate::ui::theme::ThemeColors;
-use bedrock_render::{Dimension, RenderLayout};
+use bedrock_map_render::RenderLayout;
+use bedrock_world::Dimension;
 use gpui::*;
 
 /// Snapshot used to project world coordinates into the 2D map canvas.
@@ -302,7 +303,7 @@ mod tests {
     use super::{
         CameraOverlayMode, World3dCameraSnapshot, World3dProjectionKind, frustum_polygon_points,
     };
-    use bedrock_render::Dimension;
+    use bedrock_world::Dimension;
 
     fn camera() -> World3dCameraSnapshot {
         World3dCameraSnapshot {

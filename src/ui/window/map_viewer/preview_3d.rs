@@ -1,9 +1,11 @@
 mod mesh_namespace;
+use bedrock_scene::mesh::{IndexRange, MaterialRanges};
+
 pub(super) use mesh_namespace::namespace;
 
 pub(super) use super::preview_3d_source::{
-    IndexRange, Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState,
-    Preview3dMaterialRanges, Preview3dMeshSource, Preview3dModelRotation, Preview3dMovementInput,
+    Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState,
+    Preview3dMeshSource, Preview3dModelRotation, Preview3dMovementInput,
     Preview3dSelectionSignature, Preview3dSource, Preview3dStatus,
 };
 
@@ -372,7 +374,7 @@ struct SourceMeshSignature {
     max_y: i16,
 }
 
-fn source_mesh_signature(mesh: &super::preview_3d_source::Preview3dMesh) -> SourceMeshSignature {
+fn source_mesh_signature(mesh: &bedrock_scene::mesh::SceneMesh) -> SourceMeshSignature {
     SourceMeshSignature {
         processed_chunks: mesh.processed_chunk_count,
         surface_faces: mesh.surface_face_count(),
@@ -394,8 +396,8 @@ pub(super) fn load_mesh(
 
 fn load_incremental(
     loader: impl FnOnce(
-        Box<dyn FnMut(Arc<super::preview_3d_source::Preview3dMesh>, Preview3dBuildStatus) + Send>,
-    ) -> Result<super::preview_3d_source::Preview3dMesh, String>,
+        Box<dyn FnMut(Arc<bedrock_scene::mesh::SceneMesh>, Preview3dBuildStatus) + Send>,
+    ) -> Result<bedrock_scene::mesh::SceneMesh, String>,
     mut update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
 ) -> Result<Preview3dMesh, String> {
     let cache = Arc::new(Mutex::new(RegionMeshReuseCache::default()));
@@ -452,7 +454,7 @@ pub(super) fn build_preview_mesh(source: Preview3dMeshSource<'_>) -> Result<Prev
 }
 
 fn convert_source_mesh(
-    source_mesh: &super::preview_3d_source::Preview3dMesh,
+    source_mesh: &bedrock_scene::mesh::SceneMesh,
     cache: &mut RegionMeshReuseCache,
     preserve_all_faces: bool,
 ) -> Result<Preview3dMesh, String> {
@@ -753,7 +755,7 @@ fn region_faces_fingerprint(faces: &[RegionFace], build_lods: bool) -> RegionFac
 }
 
 fn extract_legacy_faces(
-    chunk: &super::preview_3d_source::Preview3dChunkMesh,
+    chunk: &bedrock_scene::mesh::ChunkMesh,
     selection_bounds: [[f32; 2]; 3],
     groups: &mut FxHashMap<(Preview3dRegionKey, Preview3dRegionPass), Vec<RegionFace>>,
     extracted_faces: &mut usize,
@@ -846,8 +848,8 @@ fn preview_quad_within_selection(corners: &[[f32; 3]; 4], bounds: [[f32; 2]; 3])
 
 fn classify_pass(
     first_index: usize,
-    ranges: Preview3dMaterialRanges,
-    metadata: Option<&super::preview_3d_source::Preview3dFaceMetadata>,
+    ranges: MaterialRanges,
+    metadata: Option<&bedrock_scene::mesh::FaceMetadata>,
 ) -> Preview3dRegionPass {
     let first_index = first_index as u32;
     if range_contains(ranges.glass, first_index) || range_contains(ranges.water, first_index) {

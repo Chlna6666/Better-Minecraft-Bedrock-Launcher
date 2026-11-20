@@ -41,9 +41,9 @@ pub(super) fn render_session_config(
     world_path: &std::path::Path,
     render_gpu_backend: RenderGpuBackend,
 ) -> MapRenderSessionConfig {
-    let cache_identity = bedrock_render::cache::world_cache_identity(world_path);
+    let cache_identity = bedrock_map_render::cache::world_cache_identity(world_path);
     let mut config = MapRenderSessionConfig::max_speed(
-        file_ops::cache_subdir("bedrock-render"),
+        file_ops::cache_subdir("bedrock-map-render"),
         cache_identity.world_id,
         cache_identity.world_signature,
     );
@@ -340,7 +340,7 @@ pub(super) fn render_tile_batch_stream(
             let requested_tiles = requested_tiles.clone();
             move |event| {
                 if stream_cancel.is_cancelled() {
-                    return Err(bedrock_render::BedrockRenderError::Cancelled);
+                    return Err(bedrock_map_render::BedrockRenderError::Cancelled);
                 }
                 match event {
                     DecodedTileEvent::Ready {
@@ -377,7 +377,7 @@ pub(super) fn render_tile_batch_stream(
                                             message: error.clone(),
                                         },
                                     )?;
-                                    return Err(bedrock_render::BedrockRenderError::Validation(
+                                    return Err(bedrock_map_render::BedrockRenderError::Validation(
                                         error,
                                     ));
                                 }
@@ -637,7 +637,7 @@ pub(super) fn send_tile_event_or_cancel(
     sender: &UnboundedSender<TileRenderEvent>,
     cancel: &RenderCancelFlag,
     event: TileRenderEvent,
-) -> Result<(), bedrock_render::BedrockRenderError> {
+) -> Result<(), bedrock_map_render::BedrockRenderError> {
     if send_tile_event(sender, event) {
         Ok(())
     } else {
@@ -649,9 +649,9 @@ pub(super) fn send_composite_event_or_cancel(
     sender: &UnboundedSender<ViewportCompositeEvent>,
     cancel: &RenderCancelFlag,
     event: ViewportCompositeEvent,
-) -> Result<(), bedrock_render::BedrockRenderError> {
+) -> Result<(), bedrock_map_render::BedrockRenderError> {
     if cancel.is_cancelled() {
-        return Err(bedrock_render::BedrockRenderError::Cancelled);
+        return Err(bedrock_map_render::BedrockRenderError::Cancelled);
     }
     if sender.unbounded_send(event).is_err() {
         tracing::debug!("map viewport composite event receiver was dropped");
@@ -664,7 +664,7 @@ fn send_ready_tiles_or_cancel(
     sender: &UnboundedSender<TileRenderEvent>,
     cancel: &RenderCancelFlag,
     tiles: Option<Vec<ReadyTile>>,
-) -> Result<(), bedrock_render::BedrockRenderError> {
+) -> Result<(), bedrock_map_render::BedrockRenderError> {
     let Some(tiles) = tiles else {
         return Ok(());
     };
@@ -673,9 +673,9 @@ fn send_ready_tiles_or_cancel(
 
 pub(super) fn cancel_render_stream(
     cancel: &RenderCancelFlag,
-) -> Result<(), bedrock_render::BedrockRenderError> {
+) -> Result<(), bedrock_map_render::BedrockRenderError> {
     cancel.cancel();
-    Err(bedrock_render::BedrockRenderError::Cancelled)
+    Err(bedrock_map_render::BedrockRenderError::Cancelled)
 }
 
 pub(super) fn cancel_metadata_flag(cancel: &mut Option<RenderTaskControl>) -> bool {

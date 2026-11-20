@@ -11,14 +11,13 @@ use super::types::{
     PROBE_FLAG_SOLID, ProbingSubChunk, WORLD3D_MAX_VIEW_RADIUS, World3dChunkCompletion,
     World3dChunkMesh, World3dChunkPayload, World3dChunkProbe,
 };
-use crate::ui::window::map_viewer::preview_3d_source;
 use bedrock_block_model::banner_art::BannerArt;
 use bedrock_block_model::obj::material_texture_name;
 use bedrock_block_model::resource_pack::vanilla_roots_for_packages;
 use bedrock_block_model::{
     MATERIAL_SLOT_SEPARATOR, ObjResolvedTexture, ObjTextureResolver,
 };
-use bedrock_render::{ChunkPos, Dimension};
+use bedrock_world::{ChunkPos, Dimension};
 use bedrock_world::block::BlockState;
 use bedrock_world::chunk::{ChunkVersion, SubChunkFormat};
 use bedrock_world::map_item::MapItemId;
@@ -542,10 +541,10 @@ fn coarse_lod_for_view(pos: ChunkPos, view: ViewState) -> bool {
 
 fn partition_section_faces(
     pos: ChunkPos,
-    faces: Vec<preview_3d_source::Preview3dStreamFace>,
+    faces: Vec<bedrock_scene::stream::StreamFace>,
     view: ViewState,
-) -> Vec<(i32, Vec<preview_3d_source::Preview3dStreamFace>)> {
-    let mut sections = BTreeMap::<i32, Vec<preview_3d_source::Preview3dStreamFace>>::new();
+) -> Vec<(i32, Vec<bedrock_scene::stream::StreamFace>)> {
+    let mut sections = BTreeMap::<i32, Vec<bedrock_scene::stream::StreamFace>>::new();
     for face in faces {
         sections.entry(face_band_y(&face)).or_default().push(face);
     }
@@ -986,12 +985,12 @@ mod view_tests {
         FaceColorOptions, MeshTargetScope,
         inside_view, intern_face_materials, is_full_grass_block_side_material,
         mesh_target_positions, mesh_target_priority, mipmapped_texture, partition_section_faces,
-        premesh_opaque_terrain, preview_3d_source, same_chunk_render_geometry, section_priority,
+        premesh_opaque_terrain, same_chunk_render_geometry, section_priority,
         skip_premesh_subchunk, surrounded_chunk_candidates, take_visible_dirty_meshes,
         take_visible_urgent_chunks, unexpanded_rehydration_required, visible_dirty_meshes,
     };
     use bedrock_block_model::{ObjResolvedTexture, ResourceFile};
-    use bedrock_render::{ChunkPos, Dimension};
+    use bedrock_world::{ChunkPos, Dimension};
     use gpui_3d::TextureColorSpace;
     use image::{Rgba, RgbaImage};
     use std::collections::BTreeSet;
@@ -1701,7 +1700,7 @@ mod view_tests {
             radius: 8,
             view_distance: 320.0,
         };
-        let face_at = |y: f64| preview_3d_source::Preview3dStreamFace {
+        let face_at = |y: f64| bedrock_scene::stream::StreamFace {
             ambient_light: [1.0; 4],
             corners: [[0.0, y, 0.0]; 4],
             color: [1.0; 4],
@@ -1709,7 +1708,7 @@ mod view_tests {
             normal: [0, 1, 0],
             material: Arc::from("test"),
             uv: None,
-            pass: preview_3d_source::Preview3dStreamPass::Opaque,
+            pass: bedrock_scene::stream::StreamPass::Opaque,
         };
         let sections = partition_section_faces(
             pos,
@@ -1725,14 +1724,14 @@ mod view_tests {
 
     #[test]
     fn cube_and_detail_faces_do_not_share_sidedness() {
-        use preview_3d_source::Preview3dStreamPass;
-        assert!(!super::face_double_sided(Preview3dStreamPass::Opaque));
+        use bedrock_scene::stream::StreamPass;
+        assert!(!super::face_double_sided(StreamPass::Opaque));
         for pass in [
-            Preview3dStreamPass::DetailOpaque,
-            Preview3dStreamPass::Glass,
-            Preview3dStreamPass::DetailGlass,
-            Preview3dStreamPass::Water,
-            Preview3dStreamPass::Lava,
+            StreamPass::DetailOpaque,
+            StreamPass::Glass,
+            StreamPass::DetailGlass,
+            StreamPass::Water,
+            StreamPass::Lava,
         ] {
             assert!(super::face_double_sided(pass));
         }
@@ -1770,11 +1769,11 @@ mod view_tests {
     fn missing_textures_do_not_make_ordinary_blocks_translucent() {
         use super::TextureAlphaContent;
         use gpui_3d::AlphaMode;
-        use preview_3d_source::Preview3dStreamPass;
+        use bedrock_scene::stream::StreamPass;
         for pass in [
-            Preview3dStreamPass::Opaque,
-            Preview3dStreamPass::DetailOpaque,
-            Preview3dStreamPass::Lava,
+            StreamPass::Opaque,
+            StreamPass::DetailOpaque,
+            StreamPass::Lava,
         ] {
             assert_eq!(
                 super::alpha_mode_for_pass(pass, TextureAlphaContent::Unknown),
@@ -1795,9 +1794,9 @@ mod view_tests {
             );
         }
         for pass in [
-            Preview3dStreamPass::Glass,
-            Preview3dStreamPass::DetailGlass,
-            Preview3dStreamPass::Water,
+            StreamPass::Glass,
+            StreamPass::DetailGlass,
+            StreamPass::Water,
         ] {
             assert_eq!(
                 super::alpha_mode_for_pass(pass, TextureAlphaContent::Unknown),
@@ -2215,7 +2214,7 @@ mod view_tests {
 
     #[test]
     fn section_assignment_uses_world_height_and_unique_mesh_ids() {
-        let face = preview_3d_source::Preview3dStreamFace {
+        let face = bedrock_scene::stream::StreamFace {
             ambient_light: [1.0; 4],
             corners: [
                 [0.0, -1.0, 0.0],
@@ -2228,7 +2227,7 @@ mod view_tests {
             normal: [0, 0, 1],
             material: Arc::from("test"),
             uv: None,
-            pass: preview_3d_source::Preview3dStreamPass::Opaque,
+            pass: bedrock_scene::stream::StreamPass::Opaque,
         };
         assert_eq!(face_band_y(&face), -1);
         let mut face = face;
@@ -2254,7 +2253,7 @@ mod view_tests {
 
     #[test]
     fn face_material_names_share_one_allocation_per_chunk() {
-        let face = preview_3d_source::Preview3dStreamFace {
+        let face = bedrock_scene::stream::StreamFace {
             ambient_light: [1.0; 4],
             corners: [[0.0; 3]; 4],
             color: [1.0; 4],
@@ -2262,7 +2261,7 @@ mod view_tests {
             normal: [0, 1, 0],
             material: Arc::from("minecraft:stone"),
             uv: None,
-            pass: preview_3d_source::Preview3dStreamPass::Opaque,
+            pass: bedrock_scene::stream::StreamPass::Opaque,
         };
         let mut faces = [face.clone(), face];
         faces[1].material = Arc::from("minecraft:stone");
@@ -2273,7 +2272,7 @@ mod view_tests {
 
     #[test]
     fn source_batch_deduplicates_equal_names_with_distinct_arcs_and_keeps_face_directions() {
-        let face = preview_3d_source::Preview3dStreamFace {
+        let face = bedrock_scene::stream::StreamFace {
             ambient_light: [1.0; 4],
             corners: [[0.0; 3]; 4],
             color: [1.0; 4],
@@ -2281,7 +2280,7 @@ mod view_tests {
             normal: [0, 1, 0],
             material: Arc::from("minecraft_stone"),
             uv: None,
-            pass: preview_3d_source::Preview3dStreamPass::Opaque,
+            pass: bedrock_scene::stream::StreamPass::Opaque,
         };
         let mut other = face.clone();
         other.material = Arc::from("minecraft_stone");
@@ -2305,7 +2304,7 @@ mod view_tests {
 
     #[test]
     fn pre_tinted_face_keeps_vertex_color_neutral() {
-        let face = preview_3d_source::Preview3dStreamFace {
+        let face = bedrock_scene::stream::StreamFace {
             ambient_light: [1.0; 4],
             corners: [[0.0; 3]; 4],
             color: [0.5, 0.7, 0.3, 1.0],
@@ -2313,7 +2312,7 @@ mod view_tests {
             normal: [0, 0, 1],
             material: Arc::from("minecraft:grass"),
             uv: None,
-            pass: preview_3d_source::Preview3dStreamPass::Opaque,
+            pass: bedrock_scene::stream::StreamPass::Opaque,
         };
         assert_eq!(
             face_vertex_color(
@@ -2381,7 +2380,7 @@ mod cache_tests {
         ChunkServiceConfig, ChunkServiceEvent, MaterialSlotKey, MeshTargetScope, ViewState, Worker,
         desired_chunk_positions,
     };
-    use bedrock_render::{ChunkPos, Dimension};
+    use bedrock_world::{ChunkPos, Dimension};
     use bedrock_world::world::{OpenOptions, World};
     use std::collections::{BTreeSet, HashMap};
     use std::path::PathBuf;
@@ -2395,7 +2394,7 @@ mod cache_tests {
             dimension: Dimension::Overworld,
         };
         let mut blocks =
-            super::preview_3d_source::Preview3dChunkBlocks::test_cubes(&[[15, 64, 15]]);
+            bedrock_scene::chunk::ChunkBlocks::test_cubes(&[[15, 64, 15]]);
         let boundary = std::sync::Arc::new(blocks.boundary_snapshot());
         let mut cached = super::CachedChunk {
             bytes: blocks.estimated_cpu_bytes(),
@@ -2433,7 +2432,7 @@ mod cache_tests {
             z: 0,
             dimension: Dimension::Overworld,
         };
-        let blocks = super::preview_3d_source::Preview3dChunkBlocks::test_cubes(&[[0, 1, 0]]);
+        let blocks = bedrock_scene::chunk::ChunkBlocks::test_cubes(&[[0, 1, 0]]);
         let mut chunk = super::CachedChunk {
             bytes: blocks.estimated_cpu_bytes(),
             blocks: Some(blocks),
@@ -2505,7 +2504,7 @@ mod cache_tests {
             .map(|(pos, chunk)| (pos, chunk.unwrap().unwrap()))
             .collect::<HashMap<_, _>>();
         let mut target = columns.remove(&center).unwrap();
-        target.blocks = Some(super::preview_3d_source::Preview3dChunkBlocks::test_cubes(
+        target.blocks = Some(bedrock_scene::chunk::ChunkBlocks::test_cubes(
             &[
                 [center.x * 16 + 15, 8, center.z * 16 + 8],
                 [center.x * 16 + 15, 136, center.z * 16 + 8],
@@ -2538,7 +2537,7 @@ mod cache_tests {
             .unwrap()
             .clone();
         let mut new_neighbor = columns.remove(&east).unwrap();
-        new_neighbor.blocks = Some(super::preview_3d_source::Preview3dChunkBlocks::test_cubes(
+        new_neighbor.blocks = Some(bedrock_scene::chunk::ChunkBlocks::test_cubes(
             &[[east.x * 16, 136, east.z * 16 + 8]],
         ));
         new_neighbor.frame_displays.clear();
@@ -2595,7 +2594,7 @@ mod cache_tests {
             .1
             .unwrap()
             .unwrap();
-        removed.blocks = Some(super::preview_3d_source::Preview3dChunkBlocks::test_cubes(
+        removed.blocks = Some(bedrock_scene::chunk::ChunkBlocks::test_cubes(
             &[],
         ));
         removed.frame_displays.clear();
@@ -2733,8 +2732,8 @@ mod cache_tests {
 }
 
 struct CachedChunk {
-    blocks: Option<preview_3d_source::Preview3dChunkBlocks>,
-    boundary: Option<Arc<preview_3d_source::Preview3dChunkBoundary>>,
+    blocks: Option<bedrock_scene::chunk::ChunkBlocks>,
+    boundary: Option<Arc<bedrock_scene::chunk::ChunkBoundary>>,
     frame_displays: Vec<FrameDisplay>,
     probe: Arc<World3dChunkProbe>,
     bytes: usize,
@@ -2858,7 +2857,7 @@ fn trace_verbose() -> bool {
 }
 
 fn unresolved_material_sources(
-    faces: &[preview_3d_source::Preview3dStreamFace],
+    faces: &[bedrock_scene::stream::StreamFace],
     cache: &HashMap<(String, [i32; 3]), Option<ObjResolvedTexture>>,
 ) -> Vec<(String, [i32; 3])> {
     let mut seen = FxHashSet::default();
@@ -3091,7 +3090,7 @@ fn load_batch_from_world(
     // biome/model collection. When any foreground column is present, keep
     // its original neighbor biomes for exact tinting at chunk boundaries.
     let biome_blend =
-        need_mesh_data.then(|| preview_3d_source::Preview3dBiomeBlendField::from_chunks(&chunks));
+        need_mesh_data.then(|| bedrock_scene::biome::BiomeBlendField::from_chunks(&chunks));
     let collect_started = Instant::now();
     let processed = chunks
         .into_par_iter()
@@ -4274,7 +4273,7 @@ impl Worker {
                 self.cache.len()
             );
         }
-        let mut builder = preview_3d_source::Preview3dMeshBuilder::new_stream(bounds);
+        let mut builder = bedrock_scene::SceneBuilder::new_stream(bounds);
         builder.set_ambient_occlusion(self.lighting.is_lit());
         let mut boundary_hits = 0usize;
         let target_set = targets.iter().copied().collect::<HashSet<_>>();
@@ -4555,7 +4554,7 @@ impl Worker {
             .map(|(&pos, bands)| {
                 (
                     pos,
-                    preview_3d_source::Preview3dBandSelection {
+                    bedrock_scene::stream::BandSelection {
                         affected: bands.clone(),
                         retained: completed_sections
                             .get(&pos)
@@ -4569,7 +4568,7 @@ impl Worker {
             })
             .collect::<FxHashMap<_, _>>();
         let mut coarse_faces_by_pos =
-            None::<HashMap<ChunkPos, preview_3d_source::Preview3dStreamChunkFaces>>;
+            None::<HashMap<ChunkPos, bedrock_scene::stream::ChunkFaces>>;
         let (first, remaining) = targets.split_at(targets.len().min(4));
         for batch in std::iter::once(first).chain(remaining.chunks(8)) {
             let face_started = Instant::now();
@@ -4607,7 +4606,7 @@ impl Worker {
             }
             let mut faces = builder.build_stream_faces(
                 &fine,
-                preview_3d_source::StreamFaceOptions {
+                bedrock_scene::stream::StreamFaceOptions {
                     selections: Some(&selections),
                     gpu_cubes: Some(&gpu_targets),
                     hidden_bands: Some(&hidden_bands),
@@ -4641,7 +4640,7 @@ impl Worker {
             }
             faces.extend(builder.build_stream_faces(
                 &coarse_fallback,
-                preview_3d_source::StreamFaceOptions::default(),
+                bedrock_scene::stream::StreamFaceOptions::default(),
             ));
             for pos in &fine {
                 completed_modes.insert(*pos, false);
@@ -4654,12 +4653,12 @@ impl Worker {
             if trace_verbose() {
                 for face in faces.iter().flat_map(|chunk| &chunk.faces) {
                     let pass = match face.pass {
-                        preview_3d_source::Preview3dStreamPass::Opaque => 0,
-                        preview_3d_source::Preview3dStreamPass::DetailOpaque => 1,
-                        preview_3d_source::Preview3dStreamPass::Glass => 2,
-                        preview_3d_source::Preview3dStreamPass::DetailGlass => 3,
-                        preview_3d_source::Preview3dStreamPass::Water => 4,
-                        preview_3d_source::Preview3dStreamPass::Lava => 5,
+                        bedrock_scene::stream::StreamPass::Opaque => 0,
+                        bedrock_scene::stream::StreamPass::DetailOpaque => 1,
+                        bedrock_scene::stream::StreamPass::Glass => 2,
+                        bedrock_scene::stream::StreamPass::DetailGlass => 3,
+                        bedrock_scene::stream::StreamPass::Water => 4,
+                        bedrock_scene::stream::StreamPass::Lava => 5,
                     };
                     pass_faces[pass] += 1;
                 }
@@ -5077,7 +5076,7 @@ impl Worker {
             .map_err(|error| format!("读取区块 {},{} 失败：{error}", pos.x, pos.z))?;
         let trace = trace_verbose();
         let biome_blend =
-            preview_3d_source::Preview3dBiomeBlendField::from_chunks(std::slice::from_ref(&data));
+            bedrock_scene::biome::BiomeBlendField::from_chunks(std::slice::from_ref(&data));
         let chunk = collect_cached_chunk(
             data,
             self.models.as_ref(),
@@ -5105,7 +5104,7 @@ impl Worker {
         &mut self,
         pos: ChunkPos,
         section_y: i32,
-        faces: &[preview_3d_source::Preview3dStreamFace],
+        faces: &[bedrock_scene::stream::StreamFace],
         light: Option<&lighting::ChunkLighting>,
     ) -> Result<Option<World3dChunkMesh>, String> {
         let mut templates = Vec::with_capacity(faces.len());
@@ -5149,7 +5148,7 @@ impl Worker {
         &mut self,
         pos: ChunkPos,
         section_y: i32,
-        faces: &[preview_3d_source::Preview3dStreamFace],
+        faces: &[bedrock_scene::stream::StreamFace],
         mut gpu_templates: Option<&mut Vec<gpui_3d::VoxelFaceTemplate>>,
         template_local_faces: usize,
     ) -> Result<Option<World3dChunkMesh>, String> {
@@ -5341,12 +5340,12 @@ impl Worker {
                 base_color
             };
             let key = MaterialSlotKey {
-                water: face.pass == preview_3d_source::Preview3dStreamPass::Water,
+                water: face.pass == bedrock_scene::stream::StreamPass::Water,
                 glass: alpha_mode == AlphaMode::Blend
                     && matches!(
                         face.pass,
-                        preview_3d_source::Preview3dStreamPass::Glass
-                            | preview_3d_source::Preview3dStreamPass::DetailGlass
+                        bedrock_scene::stream::StreamPass::Glass
+                            | bedrock_scene::stream::StreamPass::DetailGlass
                     ),
                 texture: texture.map(|texture| texture.id()),
                 normal: properties.normal.as_ref().map(|asset| asset.id()),
@@ -5559,7 +5558,7 @@ impl Worker {
         Ok(Some(mesh))
     }
 
-    fn resolve_chunk_texture_sources(&mut self, faces: &[preview_3d_source::Preview3dStreamFace]) {
+    fn resolve_chunk_texture_sources(&mut self, faces: &[bedrock_scene::stream::StreamFace]) {
         let unresolved = unresolved_material_sources(faces, &self.resolved_texture_lookup);
         if unresolved.len() < 4 {
             return;
@@ -6061,7 +6060,7 @@ struct FaceColorOptions {
 }
 
 fn face_vertex_color(
-    face: &preview_3d_source::Preview3dStreamFace,
+    face: &bedrock_scene::stream::StreamFace,
     options: FaceColorOptions,
 ) -> [f32; 4] {
     let FaceColorOptions {
@@ -6071,7 +6070,7 @@ fn face_vertex_color(
         alpha_content,
     } = options;
     let tinted = has_texture
-        && (uses_tint || matches!(face.pass, preview_3d_source::Preview3dStreamPass::Water));
+        && (uses_tint || matches!(face.pass, bedrock_scene::stream::StreamPass::Water));
     let (r, g, b) = if tinted {
         (
             face.color[0].clamp(0.0, 1.0),
@@ -6083,14 +6082,14 @@ fn face_vertex_color(
     };
     let shade = face.shade.clamp(0.0, 1.0);
     let alpha = match face.pass {
-        preview_3d_source::Preview3dStreamPass::Glass
-        | preview_3d_source::Preview3dStreamPass::DetailGlass
+        bedrock_scene::stream::StreamPass::Glass
+        | bedrock_scene::stream::StreamPass::DetailGlass
             if opaque_glass =>
         {
             1.0
         }
-        preview_3d_source::Preview3dStreamPass::Glass
-        | preview_3d_source::Preview3dStreamPass::DetailGlass => {
+        bedrock_scene::stream::StreamPass::Glass
+        | bedrock_scene::stream::StreamPass::DetailGlass => {
             // Textures with hard 0/255 alpha (vanilla glass) render as cutout;
             // only genuinely translucent textures keep the vertex alpha.
             match alpha_content {
@@ -6100,7 +6099,7 @@ fn face_vertex_color(
                 }
             }
         }
-        preview_3d_source::Preview3dStreamPass::Water => face.color[3].clamp(0.08, 1.0),
+        bedrock_scene::stream::StreamPass::Water => face.color[3].clamp(0.08, 1.0),
         _ => 1.0,
     };
     [
@@ -6490,7 +6489,7 @@ fn collect_cached_chunk(
     data: ChunkData,
     models: &bedrock_block_model::BlockModelRepository,
     trace: bool,
-    biome_blend: Option<&preview_3d_source::Preview3dBiomeBlendField>,
+    biome_blend: Option<&bedrock_scene::biome::BiomeBlendField>,
     hidden_bands: &BTreeSet<i32>,
     preflight_masks: Option<&BTreeMap<i8, [u64; 64]>>,
 ) -> Result<Option<CachedChunk>, String> {
@@ -6518,9 +6517,9 @@ fn collect_cached_chunk(
     let blocks = if model_input_subchunks == 0 {
         // A fully occluded column needs only its retained Probe. No block
         // models, materials, geometry, or biome work are needed yet.
-        preview_3d_source::Preview3dChunkBlocks::default()
+        bedrock_scene::chunk::ChunkBlocks::default()
     } else {
-        preview_3d_source::collect_chunk_blocks(&data, Some(models), biome_blend, |y| {
+        bedrock_scene::chunk::collect(&data, Some(models), biome_blend, |y| {
             !skip_premesh_subchunk(y, hidden_bands)
         })
         .map_err(|error| format!("收集区块 {},{} 方块失败：{error}", pos.x, pos.z))?
@@ -6567,7 +6566,7 @@ fn collect_cached_chunk(
 /// Shared CPU packed-mesh fallback and GPU source-template vertex semantics.
 #[inline]
 fn face_vertices(
-    face: &preview_3d_source::Preview3dStreamFace,
+    face: &bedrock_scene::stream::StreamFace,
     origin: [f64; 3],
     coordinate_space: MeshCoordinateSpace,
     color: [f32; 4],
@@ -6607,7 +6606,7 @@ fn chunk_mesh_corner(corner: [f64; 3], origin: [f64; 3], space: MeshCoordinateSp
     )
 }
 
-fn intern_face_materials(faces: &mut [preview_3d_source::Preview3dStreamFace]) {
+fn intern_face_materials(faces: &mut [bedrock_scene::stream::StreamFace]) {
     let mut names = HashMap::<Arc<str>, Arc<str>>::new();
     for face in faces {
         if let Some(shared) = names.get(&face.material) {
@@ -6643,34 +6642,34 @@ type CachedTexture = (Weak<TextureAsset>, TextureAlphaContent);
 /// render opaque. When pixels are unavailable, only a transmissive model pass
 /// selects blending; missing ordinary textures must not turn blocks into glass.
 fn alpha_mode_for_pass(
-    pass: preview_3d_source::Preview3dStreamPass,
+    pass: bedrock_scene::stream::StreamPass,
     alpha_content: TextureAlphaContent,
 ) -> AlphaMode {
-    use preview_3d_source::Preview3dStreamPass;
+    use bedrock_scene::stream::StreamPass;
     match alpha_content {
         TextureAlphaContent::Opaque => match pass {
-            Preview3dStreamPass::Water => AlphaMode::Blend,
+            StreamPass::Water => AlphaMode::Blend,
             _ => AlphaMode::Opaque,
         },
         TextureAlphaContent::Binary => match pass {
-            Preview3dStreamPass::Water => AlphaMode::Blend,
+            StreamPass::Water => AlphaMode::Blend,
             _ => AlphaMode::Mask,
         },
         TextureAlphaContent::Partial => AlphaMode::Blend,
         TextureAlphaContent::Unknown => match pass {
-            Preview3dStreamPass::Water
-            | Preview3dStreamPass::Glass
-            | Preview3dStreamPass::DetailGlass => AlphaMode::Blend,
+            StreamPass::Water
+            | StreamPass::Glass
+            | StreamPass::DetailGlass => AlphaMode::Blend,
             _ => AlphaMode::Opaque,
         },
     }
 }
 
-fn face_double_sided(pass: preview_3d_source::Preview3dStreamPass) -> bool {
-    !matches!(pass, preview_3d_source::Preview3dStreamPass::Opaque)
+fn face_double_sided(pass: bedrock_scene::stream::StreamPass) -> bool {
+    !matches!(pass, bedrock_scene::stream::StreamPass::Opaque)
 }
 
-fn face_inside_block(face: &preview_3d_source::Preview3dStreamFace, pos: [i32; 3]) -> bool {
+fn face_inside_block(face: &bedrock_scene::stream::StreamFace, pos: [i32; 3]) -> bool {
     const EPSILON: f64 = 0.001;
     face.corners.iter().all(|corner| {
         corner[0] >= f64::from(pos[0]) - EPSILON
@@ -6682,7 +6681,7 @@ fn face_inside_block(face: &preview_3d_source::Preview3dStreamFace, pos: [i32; 3
     })
 }
 
-fn face_band_y(face: &preview_3d_source::Preview3dStreamFace) -> i32 {
+fn face_band_y(face: &bedrock_scene::stream::StreamFace) -> i32 {
     let sum: f64 = face.corners.iter().map(|corner| corner[1]).sum();
     (sum / 4.0 / MESH_BAND_HEIGHT).floor() as i32
 }

@@ -96,7 +96,7 @@ pub(super) use ::bedrock_world::{
     surface::CancelFlag,
     world::World,
 };
-pub(super) use bedrock_render::{
+pub(super) use bedrock_map_render::{
     AtlasRenderOptions, BlockBoundaryRenderOptions, BlockVolumeRenderOptions, ChunkBounds,
     ChunkPos, ChunkRegion, DEFAULT_PALETTE_VERSION, DecodedTileEvent, DecodedTileImage, Dimension,
     ImageFormat, MapRenderSession, MapRenderSessionConfig, NbtTag, PlannedTile,

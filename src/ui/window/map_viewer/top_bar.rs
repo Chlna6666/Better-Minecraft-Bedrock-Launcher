@@ -8,7 +8,7 @@ use super::panels::{mode_button, status_badge};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::ThemeColors;
-use bedrock_render::Dimension;
+use bedrock_map_render::Dimension;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Context, CursorStyle, Div, EventEmitter, Hsla, InteractiveElement, IntoElement,

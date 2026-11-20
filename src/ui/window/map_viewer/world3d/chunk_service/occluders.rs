@@ -2,19 +2,19 @@
 use super::*;
 
 #[cfg(test)]
-fn cube_cell(face: &preview_3d_source::Preview3dStreamFace) -> Option<([i32; 3], u8)> {
-    if face.pass != preview_3d_source::Preview3dStreamPass::Opaque {
+fn cube_cell(face: &bedrock_scene::stream::StreamFace) -> Option<([i32; 3], u8)> {
+    if face.pass != bedrock_scene::stream::StreamPass::Opaque {
         return None;
     }
     full_face(face.corners, face.normal, gpui_3d::FrontFace::Cw)
 }
 
 pub(super) fn face_proxy(
-    face: &preview_3d_source::Preview3dStreamFace,
+    face: &bedrock_scene::stream::StreamFace,
     origin: [i32; 3],
     coordinate_space: MeshCoordinateSpace,
 ) -> Option<gpui_3d::Occluder> {
-    if face.pass != preview_3d_source::Preview3dStreamPass::Opaque {
+    if face.pass != bedrock_scene::stream::StreamPass::Opaque {
         return None;
     }
     let (min, max, axis) = quad_bounds(face.corners, face.normal, gpui_3d::FrontFace::Cw)?;
@@ -51,7 +51,7 @@ mod tests {
             z: 0,
             dimension: Dimension::Overworld,
         };
-        let mut builder = preview_3d_source::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+        let mut builder = bedrock_scene::SceneBuilder::new_stream(SlimeChunkBounds {
             dimension: pos.dimension,
             min_chunk_x: 0,
             max_chunk_x: 0,
@@ -60,10 +60,10 @@ mod tests {
         });
         builder.insert_stream_chunk(
             pos,
-            preview_3d_source::Preview3dChunkBlocks::test_cubes(&[[3, 4, 5]]),
+            bedrock_scene::chunk::ChunkBlocks::test_cubes(&[[3, 4, 5]]),
         );
         let faces = builder
-            .build_stream_faces(&[pos], preview_3d_source::StreamFaceOptions::default())
+            .build_stream_faces(&[pos], bedrock_scene::stream::StreamFaceOptions::default())
             .remove(0)
             .faces;
         assert_eq!(faces.len(), 6);
@@ -96,7 +96,7 @@ mod tests {
             z: 0,
             dimension: Dimension::Overworld,
         };
-        let mut builder = preview_3d_source::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+        let mut builder = bedrock_scene::SceneBuilder::new_stream(SlimeChunkBounds {
             dimension: pos.dimension,
             min_chunk_x: 0,
             max_chunk_x: 0,
@@ -105,10 +105,10 @@ mod tests {
         });
         builder.insert_stream_chunk(
             pos,
-            preview_3d_source::Preview3dChunkBlocks::test_cubes(&[[3, 4, 5]]),
+            bedrock_scene::chunk::ChunkBlocks::test_cubes(&[[3, 4, 5]]),
         );
         let faces = builder
-            .build_stream_faces(&[pos], preview_3d_source::StreamFaceOptions::default())
+            .build_stream_faces(&[pos], bedrock_scene::stream::StreamFaceOptions::default())
             .remove(0)
             .faces;
         let origin = [16, 0, 32];
@@ -153,7 +153,7 @@ mod tests {
             z: 0,
             dimension: Dimension::Overworld,
         };
-        let mut builder = preview_3d_source::Preview3dMeshBuilder::new_stream(SlimeChunkBounds {
+        let mut builder = bedrock_scene::SceneBuilder::new_stream(SlimeChunkBounds {
             dimension: pos.dimension,
             min_chunk_x: 0,
             max_chunk_x: 0,
@@ -165,10 +165,10 @@ mod tests {
             .collect::<Vec<_>>();
         builder.insert_stream_chunk(
             pos,
-            preview_3d_source::Preview3dChunkBlocks::test_cubes(&cells),
+            bedrock_scene::chunk::ChunkBlocks::test_cubes(&cells),
         );
         let faces = builder
-            .build_stream_faces(&[pos], preview_3d_source::StreamFaceOptions::default())
+            .build_stream_faces(&[pos], bedrock_scene::stream::StreamFaceOptions::default())
             .remove(0)
             .faces;
         let proxies = merge_boxes(
@@ -205,7 +205,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut classes = vec![0; 27];
         classes[13] = 16;
-        let mut band = preview_3d_source::GpuCubeBand {
+        let mut band = bedrock_scene::stream::GpuCubeBand {
             size: [3; 3],
             origin: Vec3::new(-1., -1., -1.),
             cells: vec![0; 27],
@@ -420,7 +420,7 @@ pub(super) fn merge_boxes(mut proxies: Vec<gpui_3d::Occluder>) -> Arc<[gpui_3d::
 }
 
 pub(super) fn gpu_boxes(
-    band: &preview_3d_source::GpuCubeBand,
+    band: &bedrock_scene::stream::GpuCubeBand,
     templates: &[gpui_3d::VoxelFaceTemplate],
     materials: &[Arc<Material>],
 ) -> Arc<[gpui_3d::Occluder]> {
