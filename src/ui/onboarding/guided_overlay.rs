@@ -941,18 +941,6 @@ fn render_tools_overview(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
             t!("Onboarding.tools.optional"),
             t!("Onboarding.tools.optional_detail"),
         ))
-        .child(step(
-            colors,
-            2,
-            t!("Onboarding.tools.online"),
-            t!("Onboarding.tools.online_detail"),
-        ))
-        .child(step(
-            colors,
-            3,
-            t!("Onboarding.tools.advanced"),
-            t!("Onboarding.tools.advanced_detail"),
-        ))
         .into_any_element()
 }
 

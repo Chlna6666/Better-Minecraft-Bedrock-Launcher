@@ -429,12 +429,6 @@ fn build_state(cx: &mut App, bootstrap: &AppBootstrap) {
     #[cfg(target_os = "windows")]
     cx.default_global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
     cx.default_global::<crate::ui::views::manage::state::ManagePageState>();
-    cx.default_global::<crate::ui::views::tools::state::ToolsPageState>();
-    cx.update_global(
-        |state: &mut crate::ui::views::tools::state::ToolsPageState, _cx| {
-            state.apply_config(&bootstrap.config.online);
-        },
-    );
     cx.set_global(crate::ui::views::settings::state::SettingsPageState::from_config(config));
     cx.default_global::<crate::ui::state::theme::ThemeState>();
     cx.default_global::<crate::ui::state::update::UpdateState>();

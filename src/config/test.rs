@@ -63,26 +63,14 @@ fn missing_glass_effect_enabled_defaults_to_true() {
         super::settings::GithubSource::Auto
     );
     assert!(config.launcher.download.github.custom_mirror.is_empty());
-    assert_eq!(config.online.player_name.len(), 6);
-    assert!(
-        config
-            .online
-            .player_name
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric())
-    );
-    assert_eq!(config.online.game_ports, "7551");
-    assert!(!config.online.disable_p2p);
 }
 
 #[test]
-fn default_online_player_name_is_six_alphanumeric_characters() {
-    let name = super::settings::default_online_player_name();
-    assert_eq!(name.len(), 6);
-    assert!(
-        name.chars()
-            .all(|character| character.is_ascii_alphanumeric())
-    );
+fn legacy_online_settings_are_discarded() {
+    let mut old = toml::to_string(&super::settings::default_config()).unwrap();
+    old.push_str("\n[online]\nbootstrap_peers = 'old.example'\nplayer_name = 'legacy'\ngame_ports = '7551'\ndisable_p2p = true\n");
+    let config: super::settings::Config = toml::from_str(&old).unwrap();
+    assert!(!toml::to_string(&config).unwrap().contains("[online]"));
 }
 
 #[test]

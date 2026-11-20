@@ -2,7 +2,7 @@ use super::settings::{
     CURRENT_CONFIG_VERSION, Config, DEFAULT_APPX_API, FONT_SOURCE_DEFAULT, FONT_SOURCE_LOCAL,
     FONT_SOURCE_SYSTEM, INCORRECT_MIRROR_APPX_API, LEGACY_DEFAULT_APPX_API,
     RETIRED_DEFAULT_APPX_API, clamp_background_blur, default_error_report_sentry_dsn,
-    default_glass_effect_enabled, default_gpu_adapter_name, default_online_player_name,
+    default_glass_effect_enabled, default_gpu_adapter_name,
     default_config, normalize_font_source, normalize_gpu_adapter_name, normalize_language_code,
     normalize_renderer_backend, normalize_theme_mode,
 };
@@ -229,8 +229,7 @@ fn load_from_disk() -> io::Result<Config> {
     let has_theme_mode = content.contains("theme_mode");
     let has_font_source = content.contains("font_source");
     let has_obsolete_music_section = has_obsolete_music_section(&content);
-    let has_online_section = content.contains("[online]");
-    let has_online_player_name = content.contains("player_name");
+    let has_obsolete_online_section = content.lines().any(|line| line.trim() == "[online]");
     let has_login_section = content.lines().any(|line| line.trim() == "[login]");
     let has_bedrock_auth_section = content.lines().any(|line| line.trim() == "[bedrock_auth]");
     let has_log_management = content.contains("[launcher.log_management]");
@@ -356,18 +355,10 @@ fn load_from_disk() -> io::Result<Config> {
     if !has_font_source {
         migrated = true;
     }
-    if !has_online_section {
+    if has_obsolete_online_section {
         migrated = true;
     }
     if !has_login_section || !has_bedrock_auth_section {
-        migrated = true;
-    }
-    if !has_online_player_name
-        || config.online.player_name.trim().is_empty()
-        || config.online.player_name.trim() == "BMCBL_USER"
-        || config.online.player_name.trim().starts_with("BMCBL_USER_")
-    {
-        config.online.player_name = default_online_player_name();
         migrated = true;
     }
     migrated |=

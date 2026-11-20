@@ -7,7 +7,6 @@ pub enum AppRoute {
     Home,
     Download,
     Manage,
-    Tools,
     Tasks,
     Settings,
 }
@@ -16,6 +15,8 @@ pub enum AppRoute {
 pub enum RouteTarget {
     Builtin(AppRoute),
     Plugin { plugin_id: String, page_id: String },
+    Tools,
+    Tool { plugin_id: String, page_id: String },
 }
 
 impl Default for AppRoute {
@@ -31,8 +32,7 @@ impl AppRoute {
             0 => Self::Home,
             1 => Self::Download,
             2 => Self::Manage,
-            3 => Self::Tools,
-            4 => Self::Tasks,
+            3 => Self::Tasks,
             _ => Self::Settings,
         }
     }
@@ -43,7 +43,6 @@ impl AppRoute {
             Self::Home => "/",
             Self::Download => "/download",
             Self::Manage => "/list",
-            Self::Tools => "/tools/online",
             Self::Tasks => "/tasks",
             Self::Settings => "/settings",
         }
@@ -53,7 +52,7 @@ impl AppRoute {
     pub fn from_pathname(pathname: &str) -> Self {
         match RouteTarget::from_pathname(pathname) {
             RouteTarget::Builtin(route) => route,
-            RouteTarget::Plugin { .. } => Self::Home,
+            _ => Self::Home,
         }
     }
 
@@ -64,12 +63,10 @@ impl AppRoute {
             "/download" => Self::Download,
             "/versions" => Self::Manage,
             "/manage" => Self::Manage,
-            "/tools" => Self::Tools,
             "/list" => Self::Manage,
             "/tasks" => Self::Tasks,
             "/settings" => Self::Settings,
             _ if pathname.starts_with("/manage/") => Self::Manage,
-            _ if pathname.starts_with("/tools/") => Self::Tools,
             _ => Self::default(),
         }
     }
@@ -80,9 +77,8 @@ impl AppRoute {
             Self::Home => 0,
             Self::Download => 1,
             Self::Manage => 2,
-            Self::Tools => 3,
-            Self::Tasks => 4,
-            Self::Settings => 5,
+            Self::Tasks => 3,
+            Self::Settings => 4,
         }
     }
 }
@@ -90,6 +86,12 @@ impl AppRoute {
 impl RouteTarget {
     #[must_use]
     pub fn from_pathname(pathname: &str) -> Self {
+        if matches!(pathname, "/tools" | "/online" | "/tools/online") {
+            return Self::Tools;
+        }
+        if let Some((plugin_id, page_id)) = pathname.strip_prefix("/tools/").and_then(parse_plugin_page) {
+            return Self::Tool { plugin_id, page_id };
+        }
         if let Some((plugin_id, page_id)) = parse_plugin_pathname(pathname) {
             return Self::Plugin { plugin_id, page_id };
         }
@@ -104,43 +106,53 @@ impl RouteTarget {
             Self::Plugin { plugin_id, page_id } => {
                 Cow::Owned(format!("/plugins/{plugin_id}/{page_id}"))
             }
+            Self::Tools => Cow::Borrowed("/tools"),
+            Self::Tool { plugin_id, page_id } => Cow::Owned(format!("/tools/{plugin_id}/{page_id}")),
         }
     }
 
     #[must_use]
     pub fn visual_index(&self, cx: &gpui::App) -> usize {
+        let tools_visible = tools_visible(cx);
         match self {
-            Self::Builtin(route) => route.index(),
-            Self::Plugin { plugin_id, page_id } => {
-                let pages = cx
-                    .global::<crate::plugins::runtime::PluginRegistry>()
-                    .pages();
-                let mut plugin_pages = pages
-                    .into_iter()
-                    .filter(|page| page.navigation.is_some())
-                    .collect::<Vec<_>>();
-                plugin_pages.sort_by(|left, right| {
-                    let left_nav = left.navigation.as_ref();
-                    let right_nav = right.navigation.as_ref();
-                    left_nav
-                        .map_or(0, |nav| nav.order)
-                        .cmp(&right_nav.map_or(0, |nav| nav.order))
-                        .then_with(|| left.plugin_id.cmp(&right.plugin_id))
-                        .then_with(|| left.page_id.cmp(&right.page_id))
-                });
-
-                plugin_pages
-                    .iter()
-                    .position(|page| &page.plugin_id == plugin_id && &page.page_id == page_id)
-                    .map_or(6, |index| 6 + index)
-            }
+            Self::Builtin(route) => route.index() + usize::from(tools_visible && route.index() >= AppRoute::Tasks.index()),
+            Self::Tool { .. } | Self::Tools => AppRoute::Tasks.index(),
+            Self::Plugin { .. } => AppRoute::Home.index(),
         }
+    }
+}
+
+pub(crate) fn tools_visible(cx: &gpui::App) -> bool {
+    cx.try_global::<crate::plugins::runtime::PluginRegistry>()
+        .is_some_and(|registry| registry.has_tools())
+}
+
+pub(crate) fn resolve_tool_route(target: RouteTarget, cx: &gpui::App) -> RouteTarget {
+    let Some(registry) = cx.try_global::<crate::plugins::runtime::PluginRegistry>() else {
+        return target;
+    };
+    match target {
+        RouteTarget::Tool { ref plugin_id, ref page_id }
+            if registry.is_tool(plugin_id, page_id) => target,
+        RouteTarget::Tool { .. } | RouteTarget::Tools => registry.tool_pages()
+            .into_iter().next()
+            .map_or(RouteTarget::Builtin(AppRoute::Home), |page| RouteTarget::Tool {
+                plugin_id: page.plugin_id,
+                page_id: page.page_id,
+            }),
+        RouteTarget::Plugin { plugin_id, page_id } if registry.is_tool(&plugin_id, &page_id) => {
+            RouteTarget::Tool { plugin_id, page_id }
+        }
+        _ => target,
     }
 }
 
 #[must_use]
 pub fn parse_plugin_pathname(pathname: &str) -> Option<(String, String)> {
-    let suffix = pathname.strip_prefix("/plugins/")?;
+    parse_plugin_page(pathname.strip_prefix("/plugins/")?)
+}
+
+fn parse_plugin_page(suffix: &str) -> Option<(String, String)> {
     let mut parts = suffix.split('/');
     let plugin_id = parts.next()?.trim();
     let page_id = parts.next()?.trim();
@@ -161,14 +173,14 @@ pub fn parse_plugin_pathname(pathname: &str) -> Option<(String, String)> {
 pub fn current_route(cx: &gpui::App) -> AppRoute {
     match current_route_target(cx) {
         RouteTarget::Builtin(route) => route,
-        RouteTarget::Plugin { .. } => AppRoute::Home,
+        _ => AppRoute::Home,
     }
 }
 
 #[must_use]
 pub fn current_route_target(cx: &gpui::App) -> RouteTarget {
     let location = gpui_router::use_location(cx);
-    RouteTarget::from_pathname(&location.pathname)
+    resolve_tool_route(RouteTarget::from_pathname(&location.pathname), cx)
 }
 
 pub fn set_route(cx: &mut gpui::App, route: AppRoute) {
@@ -184,6 +196,7 @@ pub fn navigate_plugin(cx: &mut gpui::App, plugin_id: String, page_id: String) {
 }
 
 pub fn navigate_target(cx: &mut gpui::App, target: RouteTarget) {
+    let target = resolve_tool_route(target, cx);
     let path = target.pathname().into_owned();
     let visual_index = target.visual_index(cx);
     cx.update_global(|nav: &mut NavState, _cx| {
@@ -231,7 +244,14 @@ mod tests {
         );
         assert_eq!(
             RouteTarget::from_pathname("/tools/online"),
-            RouteTarget::Builtin(AppRoute::Tools)
+            RouteTarget::Tools
         );
+    }
+
+    #[test]
+    fn tool_paths_keep_both_namespaces() {
+        let tool = RouteTarget::Tool { plugin_id: "first-plugin".into(), page_id: "convert".into() };
+        assert_eq!(RouteTarget::from_pathname(&tool.pathname()), tool);
+        assert_eq!(RouteTarget::from_pathname("/tools"), RouteTarget::Tools);
     }
 }

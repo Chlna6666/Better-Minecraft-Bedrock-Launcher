@@ -13,7 +13,7 @@ use super::defaults::{
 };
 pub use super::defaults::{
     default_background_blur, default_error_report_sentry_dsn, default_font_source,
-    default_glass_effect_enabled, default_gpu_adapter_name, default_online_player_name,
+    default_glass_effect_enabled, default_gpu_adapter_name,
     default_telemetry_endpoint, default_telemetry_key, default_theme_mode, default_config,
 };
 
@@ -329,26 +329,6 @@ impl std::fmt::Debug for DownloadConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(default)]
-pub struct OnlineConfig {
-    pub bootstrap_peers: String,
-    pub player_name: String,
-    pub game_ports: String,
-    pub disable_p2p: bool,
-}
-
-impl Default for OnlineConfig {
-    fn default() -> Self {
-        Self {
-            bootstrap_peers: String::new(),
-            player_name: default_online_player_name(),
-            game_ports: "7551".to_string(),
-            disable_p2p: false,
-        }
-    }
-}
-
 /// Selects which Xbox login source is used when launching Bedrock.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -473,8 +453,6 @@ pub struct Config {
     pub custom_style: CustomStyle,
     pub launcher: Launcher,
     pub game: GameConfig,
-    #[serde(default)]
-    pub online: OnlineConfig,
     #[serde(default)]
     pub login: LoginConfig,
     #[serde(default)]

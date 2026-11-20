@@ -1,14 +1,12 @@
 pub(crate) mod api_cache;
 pub(crate) mod bedrock_auth;
 pub mod curseforge;
-pub mod easytier;
 pub mod inject;
 pub mod levilamina;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux_runtime;
 pub mod minecraft;
 pub mod native_mods;
-pub mod online;
 pub mod sponsors;
 #[cfg(target_os = "windows")]
 pub(crate) mod system_xbox_user;

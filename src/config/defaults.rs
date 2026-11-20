@@ -2,7 +2,7 @@ use super::settings::{
     AppStateConfig, BedrockAuthConfig, CURRENT_CONFIG_VERSION, Config, CustomStyle,
     DEFAULT_APPX_API, DEFAULT_ERROR_REPORT_SENTRY_DSN, DEFAULT_TELEMETRY_ENDPOINT,
     DEFAULT_TELEMETRY_KEY, DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, GithubConfig, Launcher,
-    LoginConfig, OnlineConfig, ProxyConfig, ProxyType, UpdateChannel, default_frame_rate_limit,
+    LoginConfig, ProxyConfig, ProxyType, UpdateChannel, default_frame_rate_limit,
     default_frame_rate_mode,
 };
 
@@ -92,11 +92,6 @@ pub fn default_theme_mode() -> String {
     super::settings::THEME_MODE_LIGHT.to_string()
 }
 
-pub fn default_online_player_name() -> String {
-    let suffix = uuid::Uuid::new_v4().simple().to_string();
-    suffix[..6].to_string()
-}
-
 pub fn default_config() -> Config {
     Config {
         config_version: CURRENT_CONFIG_VERSION,
@@ -160,7 +155,6 @@ pub fn default_config() -> Config {
             modify_appx_manifest: true,
             uwp_minimize_fix: true,
         },
-        online: OnlineConfig::default(),
         login: LoginConfig::default(),
         bedrock_auth: BedrockAuthConfig::default(),
         app_state: AppStateConfig::default(),

@@ -15,7 +15,6 @@ pub(crate) mod mod_loaders;
 #[cfg(target_os = "windows")]
 pub mod mouse_lock;
 pub mod paths;
-pub mod process;
 pub mod remote_versions;
 pub mod resource_packs;
 pub mod screenshots;
