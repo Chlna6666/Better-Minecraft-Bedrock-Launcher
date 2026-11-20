@@ -1,4 +1,4 @@
-use crate::plugins::ui_dsl::render_validated_view_tree;
+use crate::ui::views::plugin::elements::render_validated_view_tree;
 use crate::ui::state::theme::ThemeState;
 use anyhow::{Result, anyhow};
 use gpui::{
@@ -39,10 +39,10 @@ impl Render for View {
             render_validated_view_tree(&tree, &self.plugin_id, Some(&self.page_id), window, cx)
                 .into_any_element()
         } else if let Some(error) = registry.cached_page_error(&self.plugin_id, &self.page_id) {
-            crate::plugins::ui_dsl::fallback_panel(error.to_string()).into_any_element()
+            crate::ui::views::plugin::elements::fallback_panel(error.to_string()).into_any_element()
         } else {
             crate::plugins::runtime::request_page_render(cx, &self.plugin_id, &self.page_id);
-            crate::plugins::ui_dsl::loading_panel("正在加载插件窗口...").into_any_element()
+            crate::ui::views::plugin::elements::loading_panel("正在加载插件窗口...").into_any_element()
         }
     }
 }

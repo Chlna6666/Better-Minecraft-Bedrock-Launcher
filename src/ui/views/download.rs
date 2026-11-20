@@ -17,6 +17,7 @@ mod loading;
 mod mod_install;
 mod mods;
 mod native;
+pub(crate) mod plugins;
 pub mod state;
 mod toolbar;
 mod version_import;
@@ -420,6 +421,7 @@ impl DownloadPageView {
             // Game owns a separate retained View. Do not clone Mod/CurseForge
             // signatures on every task-progress update for an unrelated tab.
             match tab {
+                DownloadTab::Plugin => cx.notify(),
                 DownloadTab::Game => {
                     if tab_changed && this.active {
                         cx.notify();
@@ -510,7 +512,7 @@ impl DownloadPageView {
                                     }
                                 }
                             }
-                            DownloadTab::Mod => {}
+                            DownloadTab::Mod | DownloadTab::Plugin => {}
                         });
                         let _ = input.update(cx, |st, cx| {
                             st.set_text(SharedString::from(""), cx);
@@ -595,7 +597,7 @@ impl DownloadPageView {
             cx.read_global(|state: &DownloadPageState, _cx| {
                 self.last_observed_tab = state.tab;
                 match state.tab {
-                    DownloadTab::Game => {}
+                    DownloadTab::Game | DownloadTab::Plugin => {}
                     DownloadTab::Mod => {
                         self.last_observed_mod_panel_signature =
                             build_mod_panel_observe_signature(state);
@@ -748,6 +750,7 @@ pub(super) fn render_download_page(
                 .map(IntoElement::into_any_element)
                 .unwrap_or_else(|| div().size_full().into_any_element()),
             DownloadTab::ResourcePack => curseforge_resource_panel.clone().into_any_element(),
+            DownloadTab::Plugin => plugins::render(&colors, cx, mod_image_cache).into_any_element(),
             DownloadTab::Mod => mods::render_mod_panel(
                 cx,
                 &colors,

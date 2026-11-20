@@ -6,12 +6,12 @@
 pub use crate::plugins::events::{
     EventCascade, InjectionSlot, PluginEvent, PluginEventKind, ROUTE_CHANGED_EVENT,
 };
-pub use crate::plugins::manifest::PluginManifest;
+pub use crate::plugins::manifest::{CURRENT_API_VERSION, PluginManifest};
 pub use crate::plugins::runtime::{
     PluginMemoryReport, PluginRegistry, PluginStatus, RenderedInjection,
 };
 pub use crate::plugins::services::DependencyGraph;
-pub use crate::plugins::ui_dsl::ViewTree;
+pub use bmcbl_plugin_runtime::ViewTree;
 
 #[cfg(target_os = "windows")]
 pub use crate::core::minecraft::appx::utils::{find_any_game_executable, find_game_executable};

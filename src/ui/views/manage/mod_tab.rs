@@ -1,5 +1,77 @@
 use super::*;
 
+pub(super) fn render_virtual_mods(
+    colors: &ThemeColors,
+    version: &ManagedVersionEntry,
+    state: &ManagePageState,
+    cx: &mut Context<ManagePageView>,
+) -> Option<AnyElement> {
+    let mods = crate::plugins::runtime::game_mods(cx);
+    if mods.is_empty() {
+        return None;
+    }
+    let mut rows = div().id("plugin-game-mods").max_h(px(218.)).overflow_y_scroll()
+        .flex().flex_col().gap(px(6.)).p(px(8.))
+        .child(div().text_sm().text_color(colors.text_secondary).child(t!("ManagePage.plugin_game_mods")));
+    for game_mod in mods {
+        let enabled = game_mod.enabled(&state.version_config.virtual_mods);
+        let mod_loading = !state.version_config.disable_mod_loading;
+        let supported = game_mod.supports(&version.version);
+        let label = match (supported, mod_loading, enabled) {
+            (false, _, _) => t!("ManagePage.plugin_game_mod_unavailable"),
+            (_, false, _) => t!("ManagePage.plugin_game_mod_disabled_by_version"),
+            (_, _, true) => t!("ManagePage.plugin_game_mod_disable"),
+            _ => t!("ManagePage.plugin_game_mod_enable"),
+        };
+        let folder = version.folder.clone();
+        let option = div()
+            .id(SharedString::from(format!("virtual-mod-{}", game_mod.key)))
+            .px(px(10.)).py(px(6.)).rounded(px(6.))
+            .bg(colors.surface_hover)
+            .text_sm().text_color(colors.text_primary)
+            .child(label);
+        let option = if supported && mod_loading {
+            option.cursor_pointer().on_click(cx.listener({
+                let game_mod = game_mod.clone();
+                move |_this, _, _, cx| save_virtual_mod(folder.clone(), game_mod.clone(), !enabled, cx)
+            }))
+        } else { option };
+        rows = rows.child(div().flex().justify_between().items_center().gap(px(8.))
+            .child(div().flex().flex_col()
+                .child(game_mod.declaration.name)
+                .child(div().text_xs().text_color(colors.text_muted).child(game_mod.plugin)))
+            .child(option));
+    }
+    Some(rows.into_any_element())
+}
+
+fn save_virtual_mod(
+    version: SharedString,
+    game_mod: crate::plugins::game_mods::GameMod,
+    enabled: bool,
+    cx: &mut Context<ManagePageView>,
+) {
+    let folder = version.to_string();
+    cx.spawn(async move |handle, cx| {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
+            crate::plugins::game_mods::set_enabled(&folder, &game_mod, enabled)
+        }).await.and_then(|result| result);
+        let _ = handle.update(cx, |this, cx| match result {
+            Ok(approvals) => {
+                let selected = this.selected_version(cx.global::<ManagePageState>())
+                    .is_some_and(|entry| entry.folder == version);
+                if selected {
+                    cx.update_global(|state: &mut ManagePageState, _| state.version_config.virtual_mods = approvals);
+                    cx.notify();
+                }
+            }
+            Err(error) => {
+                toast::error(cx, SharedString::from(error));
+            }
+        });
+    }).detach();
+}
+
 impl ManagePageView {
     pub(super) fn toggle_mod_enabled(&mut self, asset: ManageAssetEntry, cx: &mut Context<Self>) {
         let state = cx.global::<ManagePageState>();

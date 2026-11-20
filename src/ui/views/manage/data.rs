@@ -36,7 +36,11 @@ pub async fn load_version_config(
     version: &ManagedVersionEntry,
 ) -> Result<ManageVersionConfig, String> {
     let config = manage_service::load_version_config(version.folder.to_string()).await?;
-    Ok(version_config_from_core(config))
+    let folder = version.folder.to_string();
+    let virtual_mods = crate::tasks::runtime::blocking::run_io(move || {
+        crate::plugins::game_mods::approvals(&folder)
+    }).await??;
+    Ok(ManageVersionConfig { virtual_mods, ..version_config_from_core(config) })
 }
 
 pub async fn save_manage_version_config(
@@ -464,6 +468,7 @@ pub fn backup_map(folder_path: &str, map_name: &str) -> Result<String, String> {
 
 fn version_config_from_core(config: VersionConfig) -> ManageVersionConfig {
     ManageVersionConfig {
+        virtual_mods: Default::default(),
         enable_debug_console: config.enable_debug_console,
         enable_redirection: config.enable_redirection,
         editor_mode: config.editor_mode,

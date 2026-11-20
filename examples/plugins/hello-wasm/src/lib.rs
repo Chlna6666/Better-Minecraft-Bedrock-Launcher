@@ -1,8 +1,14 @@
 use bmcbl_plugin_api::prelude::*;
+use bmcbl_plugin_api::{r#async::Job, world};
+use std::cell::RefCell;
 
 const PLUGIN: PluginMetadata = plugin_metadata!();
 
 struct EssentialsPlugin;
+
+thread_local! {
+    static SLIME_QUERY: RefCell<Option<Job<bool>>> = const { RefCell::new(None) };
+}
 
 plugin_actions! {
     pub enum EssentialsAction {
@@ -14,14 +20,26 @@ plugin_actions! {
 impl Plugin for EssentialsPlugin {
     fn init(context: PluginContext) -> PluginResult<Vec<Registration>> {
         log_info!("{} initialized for {}", PLUGIN.name, context.plugin_id);
+        if let Ok(job) = world::is_slime_chunk(-2, 7) {
+            SLIME_QUERY.set(Some(job));
+        }
         Ok(registrations! {
-            page "main", title = PLUGIN.name, nav = Nav::new("Essentials").icon("plug").order(1000);
+            page "main", title = PLUGIN.name, tool = Tool::new("Essentials").icon("plug").order(1000);
             injection InjectionSlot::MainRootOverlay, priority = 1000;
             subscribe "route-changed";
         })
     }
 
     fn handle_event(event: PluginEvent) -> PluginResult<()> {
+        SLIME_QUERY.with_borrow_mut(|pending| {
+            if pending.as_ref().is_some_and(|job| job.is_ready(&event))
+                && let Some(job) = pending.take()
+                && let Some(is_slime_chunk) = job.try_take()?
+            {
+                log_info!("host world query: {is_slime_chunk}");
+            }
+            Ok::<(), PluginError>(())
+        })?;
         if event.action_is(EssentialsAction::OpenWindow.as_str()) {
             log_info!("open-window action received");
             toast!(success, tr!("essentials.toast.opened"))?;

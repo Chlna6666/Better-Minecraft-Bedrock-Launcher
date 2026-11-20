@@ -4,57 +4,32 @@ use crate::plugins::events::{
     ROUTE_CHANGED_EVENT, sort_injections,
 };
 use crate::plugins::manifest::{PluginCapability, PluginManifest};
-use crate::plugins::ui_dsl::{self, ViewTree};
+use bmcbl_plugin_runtime::ViewTree;
 use crate::tasks::TaskStage;
 use crate::tasks::task_manager::TaskFinishStatus;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use anyhow::{Context, Result, anyhow, bail};
-use bmcbl_plugin_api as abi;
+use bmcbl_plugin_runtime as abi;
 use gpui::{App, BorrowAppContext, ClipboardItem, Global, Hsla, SharedString};
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs::{self};
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::rc::Rc;
 use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tinywasm::engine::{Config as TinyConfig, FuelPolicy, StackConfig};
-use tinywasm::types::{MemoryArch, WasmType, WasmValue};
-use tinywasm::{
-    Engine, FuncContext, Function, HostFunction, Imports, Module, ModuleInstance, Store,
-};
+
 use tracing::{debug, error, info, warn};
 
-use crate::plugins::services::{PluginRpcCallStack, PluginServiceRegistry};
-use crate::tasks::task_manager::ProgressUpdate;
+use crate::plugins::services::{DependencyGraph, PluginRpcCallStack, PluginServiceRegistry};
 
-pub const INIT_TIMEOUT: Duration = Duration::from_secs(1);
-pub const RENDER_WARN_THRESHOLD: Duration = Duration::from_millis(16);
-pub const RENDER_TIMEOUT: Duration = Duration::from_millis(100);
-pub const EVENT_TIMEOUT: Duration = Duration::from_millis(50);
-pub const RPC_TIMEOUT: Duration = Duration::from_millis(500);
-const APP_BUFFER_MAX_BYTES: usize = 1024 * 1024;
-const ABI_MESSAGE_MAX_BYTES: usize = 1024 * 1024;
-const ABI_IMPORT_MODULE: &str = abi::APP_MODULE;
-const ABI_LEGACY_IMPORT_MODULE: &str = "env";
-const ABI_IMPORT_NAME: &str = abi::APP_CALL_NAME;
-const ABI_EXPORT_MEMORY: &str = "memory";
-const ABI_EXPORT_ALLOC: &str = "bmcbl_alloc";
-const ABI_EXPORT_DEALLOC: &str = "bmcbl_dealloc";
-const ABI_EXPORT_INIT: &str = "bmcbl_init";
-const ABI_EXPORT_HANDLE_EVENT: &str = "bmcbl_handle_event";
-const ABI_EXPORT_RENDER_PAGE: &str = "bmcbl_render_page";
-const ABI_EXPORT_RENDER_INJECTION: &str = "bmcbl_render_injection";
-const ABI_EXPORT_SHUTDOWN: &str = "bmcbl_shutdown";
-const ABI_EXPORT_CALL_SERVICE: &str = "bmcbl_call_service";
-// 插件入口调用统一按墙钟时间预算执行：每次恢复只保证不超过剩余时间，
-// 因此 INIT_TIMEOUT/RENDER_TIMEOUT/EVENT_TIMEOUT 是真实的执行上限。
+pub use bmcbl_plugin_runtime::{
+    EVENT_TIMEOUT, RENDER_TIMEOUT, RENDER_WARN_THRESHOLD,
+};
 const HTTP_DEFAULT_TTL: Duration = Duration::from_secs(30 * 60);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 const HTTP_MAX_BYTES: usize = 512 * 1024;
@@ -134,12 +109,20 @@ pub struct PluginInstance {
     pub enabled: bool,
     prepared_wasm: PreparedPluginWasm,
     prepared_resources: PreparedPluginResources,
-    runtime: Option<Rc<RefCell<PluginExecution>>>,
+    runtime: Option<Arc<Mutex<abi::PluginExecution>>>,
+}
+
+/// 插件 wasm 线性内存快照（预算评估用）。
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PluginWasmMemorySnapshot {
+    pub linear_bytes: usize,
+    pub page_count: usize,
 }
 
 #[derive(Clone)]
 enum PreparedPluginWasm {
-    Ready { module: Module, sha256: String },
+    /// 原始组件字节 + 内容摘要；编译延迟到实例化时（有磁盘缓存）。
+    Ready { wasm: Arc<[u8]>, sha256: String },
     Error(Arc<str>),
 }
 
@@ -153,13 +136,6 @@ impl PreparedPluginWasm {
         }
     }
 
-    /// 已解析 wasm 的内容哈希；准备失败时为 `None`。
-    fn sha256(&self) -> Option<&str> {
-        match self {
-            Self::Ready { sha256, .. } => Some(sha256),
-            Self::Error(_) => None,
-        }
-    }
 }
 
 impl std::fmt::Debug for PreparedPluginWasm {
@@ -220,7 +196,7 @@ struct PreparedPluginResources {
     config_text: std::result::Result<String, Arc<str>>,
     storage_values: std::result::Result<BTreeMap<String, String>, Arc<str>>,
     resource_values: BTreeMap<String, Arc<[u8]>>,
-    sidecar_files: BTreeSet<String>,
+    game_mods: Vec<super::game_mods::GameMod>,
     source_stamp: PluginSourceStamp,
 }
 
@@ -233,7 +209,7 @@ impl PreparedPluginResources {
             && self.config_text == other.config_text
             && self.storage_values == other.storage_values
             && self.resource_values == other.resource_values
-            && self.sidecar_files == other.sidecar_files
+            && self.game_mods == other.game_mods
     }
 }
 
@@ -403,7 +379,7 @@ pub struct RenderedInjection {
 }
 
 #[derive(Clone, Debug)]
-enum RenderContext {
+pub(crate) enum RenderContext {
     Page {
         page_id: String,
     },
@@ -440,11 +416,11 @@ impl PluginInvalidationTarget {
 }
 
 #[derive(Clone, Debug)]
-struct HttpCacheSnapshot {
-    state: abi::HttpCacheState,
-    body: Option<String>,
-    error: Option<String>,
-    fetched_at_unix_ms: Option<u64>,
+pub(crate) struct HttpCacheSnapshot {
+    pub state: abi::HttpCacheState,
+    pub body: Option<String>,
+    pub error: Option<String>,
+    pub fetched_at_unix_ms: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -464,7 +440,7 @@ struct HttpRefreshResult {
 }
 
 #[derive(Clone, Debug)]
-struct PluginHttpFetchCache {
+pub(crate) struct PluginHttpFetchCache {
     state: Arc<Mutex<PluginHttpFetchCacheState>>,
     finished_refresh_pending: Arc<AtomicBool>,
 }
@@ -497,7 +473,7 @@ struct ResourceLoadResult {
 }
 
 #[derive(Clone, Debug)]
-struct PluginResourceCache {
+pub(crate) struct PluginResourceCache {
     state: Arc<Mutex<PluginResourceCacheState>>,
     finished_refresh_pending: Arc<AtomicBool>,
 }
@@ -554,12 +530,14 @@ struct RenderCache {
     pages: BTreeMap<PageRenderCacheKey, Arc<ViewTree>>,
     page_errors: BTreeMap<PageRenderCacheKey, Arc<str>>,
     injections: BTreeMap<InjectionRenderCacheKey, Vec<RenderedInjection>>,
-    pending_pages: BTreeSet<PageRenderCacheKey>,
+    pending_pages: BTreeMap<PageRenderCacheKey, u64>,
+    pending_injections: BTreeMap<InjectionRenderCacheKey, u64>,
+    ticket: u64,
 }
 
 #[derive(Clone)]
 pub(crate) struct ServiceDispatcher(
-    pub Rc<dyn Fn(&str, abi::ServiceCallRequest) -> std::result::Result<Vec<u8>, abi::AppError>>,
+    pub Arc<dyn Fn(&str, abi::ServiceCallRequest) -> Result<Vec<u8>, abi::PluginError> + Send + Sync>,
 );
 
 impl std::fmt::Debug for ServiceDispatcher {
@@ -568,52 +546,49 @@ impl std::fmt::Debug for ServiceDispatcher {
     }
 }
 
-/// 构造跨插件服务分发器。
-///
-/// 插件在执行期间通过宿主调用发起服务请求，宿主用这个闭包把请求路由到提供方插件：
-/// 先按 `target_plugin` 或服务名解析提供方，再用 RPC 栈做防环与深度限制，最后借用目标
-/// 插件的 `PluginExecution` 调用它的 `bmcbl_call_service` 导出。
-///
-/// 目标插件正在执行（例如它自己发起了这次调用）时返回“忙”，而不是 panic；目标插件抛出的
-/// 宿主效果在这里被丢弃，因为服务调用没有对应的渲染上下文。
-fn create_service_dispatcher(
-    service_registry: Rc<RefCell<PluginServiceRegistry>>,
-    service_runtimes: Rc<RefCell<BTreeMap<String, Rc<RefCell<PluginExecution>>>>>,
-    rpc_stack: PluginRpcCallStack,
+
+pub(crate) fn create_service_dispatcher(
+    service_registry: Arc<Mutex<PluginServiceRegistry>>,
+    service_runtimes: Arc<Mutex<BTreeMap<String, Arc<Mutex<abi::PluginExecution>>>>>,
+    rpc_stack: Arc<Mutex<PluginRpcCallStack>>,
 ) -> ServiceDispatcher {
-    ServiceDispatcher(Rc::new(
+    ServiceDispatcher(Arc::new(
         move |caller_id: &str, request: abi::ServiceCallRequest| {
             let target_plugin_id = match &request.target_plugin {
                 Some(target) => target.clone(),
                 None => service_registry
-                    .borrow()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
                     .find_service(&request.service_name)
                     .map(|descriptor| descriptor.provider_plugin_id.clone())
-                    .ok_or_else(|| abi::AppError {
-                        code: "service-not-found".to_string(),
-                        message: format!("service '{}' is not registered", request.service_name),
+                    .ok_or_else(|| {
+                        abi::PluginError::not_found(format!(
+                            "service '{}' is not registered",
+                            request.service_name
+                        ))
                     })?,
             };
             let _guard = rpc_stack
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .enter(&target_plugin_id)
-                .map_err(|error| abi::AppError {
-                    code: "service-call-rejected".to_string(),
-                    message: error.to_string(),
+                .map_err(|error| {
+                    abi::PluginError::denied(error.to_string())
                 })?;
             let runtime = service_runtimes
-                .borrow()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
                 .get(&target_plugin_id)
                 .cloned()
-                .ok_or_else(|| abi::AppError {
-                    code: "service-provider-unavailable".to_string(),
-                    message: format!("plugin '{target_plugin_id}' is not loaded"),
+                .ok_or_else(|| {
+                    abi::PluginError::not_found(format!(
+                        "plugin '{target_plugin_id}' is not loaded"
+                    ))
                 })?;
-            let mut execution = runtime.try_borrow_mut().map_err(|_| abi::AppError {
-                code: "service-provider-busy".to_string(),
-                message: format!("plugin '{target_plugin_id}' is already executing"),
-            })?;
+            let mut execution = runtime.try_lock()
+                .map_err(|_| abi::PluginError::new("busy", "target plugin is already executing"))?;
             let result = execution.call_service(request);
-            let effects = execution.drain_effects();
+            let effects = execution.take_effects();
             drop(execution);
             if !effects.is_empty() {
                 warn!(
@@ -623,61 +598,154 @@ fn create_service_dispatcher(
                     "plugin service call emitted plugin effects; effects are discarded"
                 );
             }
-            result.map_err(|error| abi::AppError {
-                code: "service-call-failed".to_string(),
-                message: format!("{error:#}"),
+            result.map_err(|error| {
+                abi::PluginError::new("service-call-failed", format!("{error:#}"))
             })
         },
     ))
 }
 
-#[derive(Debug)]
-struct ExecutionState {
-    plugin_id: String,
-    capabilities: BTreeSet<PluginCapability>,
-    manifest: PluginManifest,
-    locale: String,
-    translations: BTreeMap<String, BTreeMap<String, String>>,
-    session: BTreeMap<String, String>,
+
+
+#[derive(Clone)]
+struct PluginActivation {
+    engine: Arc<std::sync::OnceLock<Result<abi::PluginEngine, String>>>,
+    cache_dir: PathBuf,
+    package_cache_dir: PathBuf,
     http_cache: PluginHttpFetchCache,
     resource_cache: PluginResourceCache,
-    render_context: Option<RenderContext>,
-    theme_snapshot: abi::ThemeSnapshot,
-    storage_dir: PathBuf,
-    config_text: std::result::Result<String, Arc<str>>,
-    storage_values: std::result::Result<BTreeMap<String, String>, Arc<str>>,
-    sidecar_files: BTreeSet<String>,
-    clipboard_text: Option<String>,
-    effects: Vec<PluginEffect>,
-    next_window_id: u64,
-    pub(crate) service_dispatcher: Option<ServiceDispatcher>,
-    pub(crate) service_registry: Option<Rc<RefCell<PluginServiceRegistry>>>,
+    dispatcher: ServiceDispatcher,
 }
 
-struct PluginExecution {
-    store: Store,
-    instance: ModuleInstance,
-    memory: tinywasm::Memory,
-    alloc: Function,
-    dealloc: Function,
-    init: Function,
-    handle_event: Function,
-    render_page: Function,
-    render_injection: Function,
-    call_service: Option<Function>,
-    shutdown: Function,
-    state: Rc<RefCell<ExecutionState>>,
-    /// 入口调用请求的编码缓冲；复用容量，避免每次渲染/事件都重新分配。
-    request_buffer: Vec<u8>,
-    /// 入口调用响应的解码缓冲；复用容量，避免每次调用都 `read_vec`。
-    response_buffer: Vec<u8>,
+impl PluginActivation {
+    fn instantiate(&self, instance: &PluginInstance) -> Result<abi::PluginExecution> {
+        let manifest = &instance.manifest;
+        let resources = &instance.prepared_resources;
+        let wasm = match &instance.prepared_wasm {
+            PreparedPluginWasm::Ready { wasm, .. } => wasm,
+            PreparedPluginWasm::Error(error) => return Err(anyhow!("{error}")),
+        };
+        let engine = self.engine.get_or_init(|| {
+            abi::PluginEngine::with_cache(Some(&self.cache_dir)).map_err(|error| error.to_string())
+        }).as_ref().map_err(|error| anyhow!("{error}"))?;
+        let artifact = engine.load_component(wasm).context("compile plugin component")?;
+        self.resource_cache.seed(&manifest.id, &resources.resource_values);
+        let context = crate::plugins::host_context::AppPluginHostContext {
+            manifest: manifest.clone(),
+            http_cache: self.http_cache.clone(),
+            resource_cache: self.resource_cache.clone(),
+            storage_dir: self.package_cache_dir.join("storage").join(sanitize_storage_segment(&manifest.id)),
+            service_dispatcher: Some(self.dispatcher.clone()),
+            services: super::app_services::ServiceJobs::new(manifest, instance.generation),
+        };
+        abi::PluginExecution::instantiate(
+            engine,
+            &artifact,
+            plugin_policy_from_manifest(manifest),
+            Arc::new(context),
+            abi::PluginInitState {
+                locale: current_locale_code(),
+                translations: instance.translations.clone(),
+                theme: abi::ThemeSnapshot::light_default(),
+                clipboard_text: None,
+                storage_snapshot: resources.storage_values.clone().map_err(|error| error.to_string()),
+                config_text: resources.config_text.clone().map_err(|error| error.to_string()),
+            },
+        ).context("instantiate plugin component")
+    }
+
+    fn activate(&self, mut instance: PluginInstance) -> Result<PluginInstance> {
+        let mut execution = self.instantiate(&instance)?;
+        let manifest = &instance.manifest;
+        let context = abi::PluginContext {
+            plugin_id: manifest.id.clone(),
+            api_version: manifest.api_version.clone(),
+        };
+        let registrations: Vec<abi::Registration> =
+            execution.init(context).map_err(plugin_error_to_anyhow)?;
+        let effects = execution.take_effects();
+        if !effects.is_empty() {
+            warn!(
+                plugin_id = manifest.id,
+                count = effects.len(),
+                "plugin init emitted plugin effects; effects are ignored during init"
+            );
+        }
+
+        let mut pages = Vec::new();
+        let mut injections = Vec::new();
+        let mut subscriptions = BTreeSet::new();
+        let mut services = BTreeSet::new();
+
+        for registration in registrations {
+            match bootstrap_registration_from_abi(&manifest.id, registration)? {
+                BootstrapRegistration::Page {
+                    page_id,
+                    title,
+                    navigation,
+                } => {
+                    manifest.require_capability(PluginCapability::UiPage)?;
+                    pages.push(PluginPageRegistration {
+                        plugin_id: manifest.id.clone(),
+                        page_id,
+                        title,
+                        navigation,
+                    });
+                }
+                BootstrapRegistration::Injection {
+                    slot,
+                    page,
+                    priority,
+                    layout,
+                } => {
+                    manifest.require_capability(PluginCapability::UiHook)?;
+                    injections.push(PluginInjectionRegistration {
+                        plugin_id: manifest.id.clone(),
+                        slot,
+                        page,
+                        priority,
+                        layout,
+                    });
+                }
+                BootstrapRegistration::Subscription { event } => {
+                    manifest.require_capability(PluginCapability::EventGlobal)?;
+                    subscriptions.insert(event);
+                }
+                BootstrapRegistration::Service { service_name } => {
+                    services.insert(service_name);
+                }
+            }
+        }
+
+        if pages.is_empty() && manifest.has_capability(&PluginCapability::UiPage) {
+            pages.push(PluginPageRegistration {
+                plugin_id: manifest.id.clone(),
+                page_id: "main".to_string(),
+                title: manifest.name.clone(),
+                navigation: None,
+            });
+        }
+
+        instance.pages = pages;
+        instance.injections = injections;
+        instance.subscriptions = subscriptions;
+        instance.services = services;
+        instance.runtime = Some(Arc::new(Mutex::new(execution)));
+        instance.state = PluginLoadState::Loaded { generation: instance.generation };
+        Ok(instance)
+    }
 }
 
 pub struct PluginRegistry {
     plugins_dir: PathBuf,
     cache_dir: PathBuf,
     package_cache_dir: PathBuf,
-    engine: Option<Engine>,
+    engine: Arc<std::sync::OnceLock<Result<abi::PluginEngine, String>>>,
+    activating: BTreeSet<(String, u64)>,
+    event_queue: VecDeque<(PluginEvent, Arc<Mutex<EventCascade>>)>,
+    event_pending: bool,
+    early_job_events: Vec<(String, u64, String)>,
+    background_activation: bool,
     plugins: BTreeMap<String, PluginInstance>,
     pages: BTreeMap<(String, String), PluginPage>,
     injections: Vec<PluginInjectionRegistration>,
@@ -688,7 +756,6 @@ pub struct PluginRegistry {
     log_snapshots: BTreeMap<String, Arc<[PluginLogEntry]>>,
     http_cache: PluginHttpFetchCache,
     resource_cache: PluginResourceCache,
-    module_cache: BTreeMap<String, Module>,
     prepare_cache: PluginPrepareCache,
     generation: u64,
     reload_tx: Option<crate::plugins::watcher::Sender>,
@@ -704,9 +771,9 @@ pub struct PluginRegistry {
     /// pending 期间又收到 reload 请求；完成当前任务后合并为一次后续 reload。
     reload_prepare_requested: bool,
     active_modal: Option<PluginModalState>,
-    pub service_registry: Rc<RefCell<PluginServiceRegistry>>,
-    pub rpc_stack: PluginRpcCallStack,
-    service_runtimes: Rc<RefCell<BTreeMap<String, Rc<RefCell<PluginExecution>>>>>,
+    pub service_registry: Arc<Mutex<PluginServiceRegistry>>,
+    pub rpc_stack: Arc<Mutex<PluginRpcCallStack>>,
+    service_runtimes: Arc<Mutex<BTreeMap<String, Arc<Mutex<abi::PluginExecution>>>>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -760,7 +827,9 @@ impl Default for PluginRegistry {
         let plugins_dir = crate::utils::file_ops::bmcbl_subdir("plugins");
         let cache_dir = crate::utils::file_ops::cache_subdir("wasm");
         let package_cache_dir = crate::utils::file_ops::cache_subdir("plugins");
-        Self::new(plugins_dir, cache_dir, package_cache_dir)
+        let mut registry = Self::new(plugins_dir, cache_dir, package_cache_dir);
+        registry.background_activation = true;
+        registry
     }
 }
 
@@ -770,7 +839,12 @@ impl PluginRegistry {
             plugins_dir,
             cache_dir,
             package_cache_dir,
-            engine: None,
+            engine: Arc::default(),
+            activating: BTreeSet::new(),
+            event_queue: VecDeque::new(),
+            event_pending: false,
+            early_job_events: Vec::new(),
+            background_activation: false,
             plugins: BTreeMap::new(),
             pages: BTreeMap::new(),
             injections: Vec::new(),
@@ -780,7 +854,6 @@ impl PluginRegistry {
             log_snapshots: BTreeMap::new(),
             http_cache: PluginHttpFetchCache::default(),
             resource_cache: PluginResourceCache::default(),
-            module_cache: BTreeMap::new(),
             prepare_cache: PluginPrepareCache::default(),
             generation: 0,
             reload_tx: None,
@@ -792,9 +865,9 @@ impl PluginRegistry {
             reload_prepare_pending: false,
             reload_prepare_requested: false,
             active_modal: None,
-            service_registry: Rc::new(RefCell::new(PluginServiceRegistry::new())),
-            rpc_stack: PluginRpcCallStack::new(),
-            service_runtimes: Rc::new(RefCell::new(BTreeMap::new())),
+            service_registry: Arc::new(Mutex::new(PluginServiceRegistry::new())),
+            rpc_stack: Arc::new(Mutex::new(PluginRpcCallStack::new())),
+            service_runtimes: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -872,11 +945,15 @@ impl PluginRegistry {
             .plugins
             .values()
             .map(|instance| {
-                let wasm = instance
+                let linear_bytes = instance
                     .runtime
                     .as_ref()
-                    .and_then(|runtime| runtime.borrow().memory_snapshot().ok())
+                    .and_then(|runtime| runtime.try_lock().ok().map(|execution| execution.observed_memory_bytes()))
                     .unwrap_or_default();
+                let wasm = PluginWasmMemorySnapshot {
+                    linear_bytes,
+                    page_count: linear_bytes / (64 * 1024),
+                };
                 let render_cache = self
                     .render_cache
                     .plugin_memory(instance.manifest.id.as_str());
@@ -926,18 +1003,14 @@ impl PluginRegistry {
                 .cmp(&left.total_estimated_bytes)
                 .then_with(|| left.plugin_id.cmp(&right.plugin_id))
         });
-        let module_cache_entries = self.module_cache.len();
-        let module_cache_estimated_bytes =
-            module_cache_entries.saturating_mul(std::mem::size_of::<Module>());
         let total_estimated_bytes = plugins
             .iter()
             .map(|plugin| plugin.total_estimated_bytes)
-            .sum::<usize>()
-            .saturating_add(module_cache_estimated_bytes);
+            .sum::<usize>();
         PluginMemoryReport {
             plugins,
-            module_cache_entries,
-            module_cache_estimated_bytes,
+            module_cache_entries: 0,
+            module_cache_estimated_bytes: 0,
             total_estimated_bytes,
         }
     }
@@ -1065,11 +1138,28 @@ impl PluginRegistry {
         self.pages.values().cloned().collect()
     }
 
-    pub fn navigation_pages(&self) -> Vec<PluginPage> {
+    pub(crate) fn has_tools(&self) -> bool {
+        self.pages.values().any(|page| self.is_enabled_tool(page))
+    }
+
+    pub(crate) fn is_tool(&self, plugin_id: &str, page_id: &str) -> bool {
+        self.pages
+            .get(&(plugin_id.to_string(), page_id.to_string()))
+            .is_some_and(|page| self.is_enabled_tool(page))
+    }
+
+    fn is_enabled_tool(&self, page: &PluginPage) -> bool {
+        page.navigation.is_some()
+            && self.plugins.get(&page.plugin_id).is_some_and(|instance| {
+                instance.enabled && !matches!(instance.state, PluginLoadState::Failed { .. })
+            })
+    }
+
+    pub fn tool_pages(&self) -> Vec<PluginPage> {
         let mut pages = self
             .pages
             .values()
-            .filter(|page| page.navigation.is_some())
+            .filter(|page| self.is_enabled_tool(page))
             .cloned()
             .collect::<Vec<_>>();
         pages.sort_by(|left, right| {
@@ -1082,11 +1172,6 @@ impl PluginRegistry {
                 .then_with(|| left.page_id.cmp(&right.page_id))
         });
         pages
-    }
-
-    /// Changes when a plugin reload can replace registered navigation pages.
-    pub(crate) fn navigation_revision(&self) -> u64 {
-        self.generation
     }
 
     pub fn page(&self, plugin_id: &str, page_id: &str) -> Option<PluginPage> {
@@ -1104,11 +1189,7 @@ impl PluginRegistry {
             plugin_id: manifest.id.clone(),
             page_id: "main".to_string(),
             title: manifest.name.clone(),
-            navigation: Some(PluginNavigationEntry {
-                label: manifest.name.clone(),
-                icon: Some("plug".to_string()),
-                order: 1000,
-            }),
+            navigation: None,
         }]
     }
 
@@ -1183,7 +1264,7 @@ impl PluginRegistry {
     pub fn is_page_pending(&self, plugin_id: &str, page_id: &str) -> bool {
         self.render_cache
             .pending_pages
-            .contains(&PageRenderCacheKey {
+            .contains_key(&PageRenderCacheKey {
                 plugin_id: plugin_id.to_string(),
                 page_id: page_id.to_string(),
             })
@@ -1214,7 +1295,7 @@ impl PluginRegistry {
         {
             return false;
         }
-        self.has_pending_ui_hook_loads() || self.has_injections(slot, page)
+        self.has_injections(slot, page)
     }
 
     pub fn last_error(&self) -> Option<SharedString> {
@@ -1223,21 +1304,6 @@ impl PluginRegistry {
 
     pub fn loaded_once(&self) -> bool {
         self.loaded_once
-    }
-
-    pub fn init_engine(&mut self) -> Result<()> {
-        if self.engine.is_some() {
-            return Ok(());
-        }
-
-        let limiter = crate::plugins::budget::PluginResourceLimiter::default();
-        let config = TinyConfig::new()
-            .with_fuel_policy(FuelPolicy::Weighted)
-            .with_call_stack(StackConfig::fixed(256))
-            .with_value_stack(StackConfig::dynamic(1024, 16 * 1024))
-            .with_resource_limiter(limiter);
-        self.engine = Some(Engine::new(config));
-        Ok(())
     }
 
     pub fn reload_all(&mut self) -> Result<()> {
@@ -1316,7 +1382,7 @@ impl PluginRegistry {
                 } else {
                     abi::ShutdownReason::Unload
                 };
-                previous.shutdown_logged(shutdown_reason, "plugin shutdown before reload failed");
+                self.retire(previous, shutdown_reason);
             }
 
             let pages = enabled
@@ -1342,10 +1408,7 @@ impl PluginRegistry {
 
         // 仍然留在注册表里的实例已不在扫描结果中，属于被卸载的插件。
         for (plugin_id, previous) in std::mem::take(&mut self.plugins) {
-            previous.shutdown_logged(
-                abi::ShutdownReason::Unload,
-                "plugin shutdown before unload failed",
-            );
+            self.retire(previous, abi::ShutdownReason::Unload);
             rebuilt.push(plugin_id);
         }
         for plugin_id in &rebuilt {
@@ -1361,6 +1424,18 @@ impl PluginRegistry {
         Ok(())
     }
 
+    fn retire(&self, instance: PluginInstance, reason: abi::ShutdownReason) {
+        if self.background_activation {
+            let _ = crate::tasks::runtime::spawn_io(async move {
+                let _ = crate::tasks::runtime::blocking::run_io(move || {
+                    instance.shutdown_logged(reason, "plugin shutdown failed");
+                }).await;
+            });
+        } else {
+            instance.shutdown_logged(reason, "plugin shutdown failed");
+        }
+    }
+
     /// 丢弃某个插件的渲染缓存与资源缓存，使它在下一次渲染时重新读取插件目录。
     fn invalidate_plugin_caches(&mut self, plugin_id: &str) {
         self.render_cache.invalidate_plugin(plugin_id);
@@ -1371,9 +1446,13 @@ impl PluginRegistry {
     fn rebuild_registrations(&mut self) {
         self.pages.clear();
         self.injections.clear();
-        let mut reg = self.service_registry.borrow_mut();
+        let mut reg = self.service_registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         *reg = PluginServiceRegistry::new();
-        let mut runtimes = self.service_runtimes.borrow_mut();
+        let mut runtimes = self.service_runtimes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         runtimes.clear();
         for instance in self.plugins.values() {
             Self::insert_pages(&mut self.pages, instance);
@@ -1392,146 +1471,6 @@ impl PluginRegistry {
     fn retain_runtime_caches(&mut self) {
         let installed = self.plugins.keys().cloned().collect::<BTreeSet<_>>();
         self.resource_cache.retain_plugins(&installed);
-        let live_modules = self
-            .plugins
-            .values()
-            .filter_map(|instance| instance.prepared_wasm.sha256().map(str::to_string))
-            .collect::<BTreeSet<_>>();
-        self.module_cache
-            .retain(|sha256, _module| live_modules.contains(sha256));
-    }
-
-    fn set_theme_snapshot(&mut self, snapshot: abi::ThemeSnapshot) {
-        for instance in self.plugins.values_mut() {
-            if let Some(runtime) = instance.runtime.as_ref() {
-                runtime.borrow_mut().state.borrow_mut().theme_snapshot = snapshot;
-            }
-        }
-    }
-
-    fn set_clipboard_snapshot(&mut self, text: Option<String>) {
-        for instance in self.plugins.values_mut() {
-            if let Some(runtime) = instance.runtime.as_ref() {
-                runtime.borrow_mut().set_clipboard_snapshot(text.clone());
-            }
-        }
-    }
-
-    fn load_manifest(
-        &mut self,
-        manifest: PluginManifest,
-        translations: BTreeMap<String, BTreeMap<String, String>>,
-        prepared_wasm: PreparedPluginWasm,
-        prepared_resources: PreparedPluginResources,
-    ) -> Result<PluginInstance> {
-        let mut execution =
-            self.instantiate_plugin(&manifest, translations, &prepared_wasm, &prepared_resources)?;
-
-        let started = Instant::now();
-        let context = abi::PluginContext {
-            plugin_id: manifest.id.clone(),
-            api_version: manifest.api_version.clone(),
-        };
-        let registrations: Vec<abi::Registration> =
-            execution.call_entry(EntryCall::Init(context), INIT_TIMEOUT)?;
-        let elapsed = started.elapsed();
-        if elapsed > INIT_TIMEOUT {
-            return Err(anyhow!("plugin init exceeded {:?}", INIT_TIMEOUT));
-        }
-        let effects = execution.drain_effects();
-        if !effects.is_empty() {
-            warn!(
-                plugin_id = manifest.id,
-                count = effects.len(),
-                "plugin init emitted plugin effects; effects are ignored during init"
-            );
-        }
-
-        let mut pages = Vec::new();
-        let mut injections = Vec::new();
-        let mut subscriptions = BTreeSet::new();
-        let mut services = BTreeSet::new();
-
-        for registration in registrations {
-            match bootstrap_registration_from_abi(&manifest.id, registration)? {
-                BootstrapRegistration::Page {
-                    page_id,
-                    title,
-                    navigation,
-                } => {
-                    manifest.require_capability(PluginCapability::UiPage)?;
-                    pages.push(PluginPageRegistration {
-                        plugin_id: manifest.id.clone(),
-                        page_id,
-                        title,
-                        navigation,
-                    });
-                }
-                BootstrapRegistration::Injection {
-                    slot,
-                    page,
-                    priority,
-                    layout,
-                } => {
-                    manifest.require_capability(PluginCapability::UiHook)?;
-                    injections.push(PluginInjectionRegistration {
-                        plugin_id: manifest.id.clone(),
-                        slot,
-                        page,
-                        priority,
-                        layout,
-                    });
-                }
-                BootstrapRegistration::Subscription { event } => {
-                    manifest.require_capability(PluginCapability::EventGlobal)?;
-                    subscriptions.insert(event);
-                }
-                BootstrapRegistration::Service { service_name } => {
-                    services.insert(service_name);
-                }
-            }
-        }
-
-        if pages.is_empty() && manifest.has_capability(&PluginCapability::UiPage) {
-            pages.push(PluginPageRegistration {
-                plugin_id: manifest.id.clone(),
-                page_id: "main".to_string(),
-                title: manifest.name.clone(),
-                navigation: Some(PluginNavigationEntry {
-                    label: manifest.name.clone(),
-                    icon: Some("plug".to_string()),
-                    order: 1000,
-                }),
-            });
-        }
-
-        let translations = execution.state.borrow().translations.clone();
-        let execution_rc = Rc::new(RefCell::new(execution));
-        self.service_runtimes
-            .borrow_mut()
-            .insert(manifest.id.clone(), execution_rc.clone());
-        for service_name in &services {
-            let _ = self
-                .service_registry
-                .borrow_mut()
-                .register_service(manifest.id.clone(), service_name.clone());
-        }
-        Ok(PluginInstance {
-            manifest,
-            generation: self.generation.saturating_add(1),
-            pages,
-            injections,
-            subscriptions,
-            services,
-            translations,
-            state: PluginLoadState::Loaded {
-                generation: self.generation.saturating_add(1),
-            },
-            enabled: true,
-            prepared_wasm,
-            prepared_resources,
-            runtime: Some(execution_rc),
-        })
     }
 
     fn ensure_plugin_runtime(&mut self, plugin_id: &str) -> Result<()> {
@@ -1548,25 +1487,16 @@ impl PluginRegistry {
             return Ok(());
         }
 
-        let manifest = existing.manifest.clone();
-        let translations = existing.translations.clone();
-        let prepared_wasm = existing.prepared_wasm.clone();
-        let prepared_resources = existing.prepared_resources.clone();
-        match self.load_manifest(manifest, translations, prepared_wasm, prepared_resources) {
-            Ok(mut instance) => {
-                if let Some(previous) = self
-                    .plugins
-                    .get(plugin_id)
-                    .filter(|instance| matches!(instance.state, PluginLoadState::Loaded { .. }))
-                    && let Err(error) = previous.shutdown(abi::ShutdownReason::Reload)
-                {
-                    warn!(
-                        plugin_id = previous.manifest.id,
-                        error = %crate::plugins::manifest::format_error_chain(&error),
-                        "plugin shutdown before lazy reload failed"
-                    );
-                }
+        if self.background_activation {
+            return Err(anyhow!("plugin {plugin_id} is waiting for background activation"));
+        }
+        let result = self.activation_context().activate(existing.clone());
+        self.finish_activation(plugin_id, result)
+    }
 
+    fn finish_activation(&mut self, plugin_id: &str, result: Result<PluginInstance>) -> Result<()> {
+        match result {
+            Ok(instance) => {
                 info!(
                     plugin_id = %instance.manifest.id,
                     name = %instance.manifest.name,
@@ -1591,12 +1521,10 @@ impl PluginRegistry {
                 Self::insert_pages(&mut self.pages, &instance);
                 self.injections.extend(instance.injections.clone());
                 sort_injections(&mut self.injections);
-                instance.state = PluginLoadState::Loaded {
-                    generation: instance.generation,
-                };
                 self.render_cache.invalidate_plugin(plugin_id);
                 self.plugins.insert(plugin_id.to_string(), instance);
                 self.rebuild_event_subscribers();
+                self.rebuild_registrations();
                 Ok(())
             }
             Err(error) => {
@@ -1674,7 +1602,10 @@ impl PluginRegistry {
         let _ = instance.shutdown(abi::ShutdownReason::Unload);
         instance.runtime = None;
         instance.state = PluginLoadState::Unloaded;
-        self.service_runtimes.borrow_mut().remove(plugin_id);
+        self.service_runtimes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(plugin_id);
         self.render_cache.invalidate_plugin(plugin_id);
         info!(
             plugin_id,
@@ -1698,7 +1629,6 @@ impl PluginRegistry {
 
     /// 评估所有插件归属内存，执行 8 MiB 软预算自适应回收策略（清理冷缓存或安全休眠）
     pub fn enforce_memory_budgets(&mut self, system_memory_pressure: bool) {
-        let budget = crate::plugins::budget::PluginMemoryBudget::default();
         let report = self.memory_report();
         for snapshot in report.plugins {
             if !snapshot.loaded {
@@ -1708,18 +1638,18 @@ impl PluginRegistry {
                 .active_modal
                 .as_ref()
                 .is_some_and(|m| m.plugin_id == snapshot.plugin_id);
-            let evaluation = crate::plugins::budget::evaluate_plugin_budget(
-                &budget,
+            let evaluation = abi::sandbox::evaluate_plugin_budget(
+                abi::DEFAULT_SOFT_BUDGET_BYTES,
                 snapshot.total_estimated_bytes,
                 is_idle,
                 system_memory_pressure,
             );
             match evaluation {
-                crate::plugins::budget::BudgetEvaluation::Normal => {}
-                crate::plugins::budget::BudgetEvaluation::TrimCaches => {
+                abi::BudgetEvaluation::Normal => {}
+                abi::BudgetEvaluation::TrimCaches => {
                     self.trim_plugin_caches(&snapshot.plugin_id);
                 }
-                crate::plugins::budget::BudgetEvaluation::Hibernate => {
+                abi::BudgetEvaluation::Hibernate => {
                     let _ = self.hibernate_plugin(&snapshot.plugin_id);
                 }
             }
@@ -1735,7 +1665,10 @@ impl PluginRegistry {
         let target_plugin_id = if let Some(target) = &request.target_plugin {
             target.clone()
         } else {
-            let reg = self.service_registry.borrow();
+            let reg = self
+                .service_registry
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let desc = reg.find_service(&request.service_name).ok_or_else(|| {
                 anyhow!(
                     "service '{}' not found in service bus",
@@ -1746,11 +1679,17 @@ impl PluginRegistry {
         };
 
         self.ensure_plugin_runtime(&target_plugin_id)?;
-        let _guard = self.rpc_stack.enter(&target_plugin_id)?;
+        let _guard = self
+            .rpc_stack
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .enter(&target_plugin_id)?;
         let (_, runtime) = self.plugin_runtime(&target_plugin_id)?;
-        let mut exec = runtime.borrow_mut();
-        let result = exec.call_service(request);
-        let effects = exec.drain_effects();
+        let mut exec = runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let result = exec.call_service(request).map_err(plugin_error_to_anyhow);
+        let effects = exec.take_effects();
         if !effects.is_empty() {
             warn!(
                 target_plugin_id,
@@ -1761,88 +1700,17 @@ impl PluginRegistry {
         result
     }
 
-    fn instantiate_plugin(
-        &mut self,
-        manifest: &PluginManifest,
-        translations: BTreeMap<String, BTreeMap<String, String>>,
-        prepared_wasm: &PreparedPluginWasm,
-        prepared_resources: &PreparedPluginResources,
-    ) -> Result<PluginExecution> {
-        self.init_engine()?;
-
-        let Some(engine) = &self.engine else {
-            return Err(anyhow!("plugin engine is not initialized"));
-        };
-
-        let (prepared_module, wasm_hash) = match prepared_wasm {
-            PreparedPluginWasm::Ready { module, sha256 } => (module.clone(), sha256.clone()),
-            PreparedPluginWasm::Error(error) => return Err(anyhow!("{}", error)),
-        };
-        let module = if let Some(module) = self.module_cache.get(&wasm_hash) {
-            module.clone()
-        } else {
-            self.module_cache.insert(wasm_hash, prepared_module.clone());
-            prepared_module
-        };
-
-        let locale = current_locale_code();
-        let storage_dir = self.plugin_storage_dir(&manifest.id);
-        self.resource_cache
-            .seed(&manifest.id, &prepared_resources.resource_values);
-        let state = Rc::new(RefCell::new(ExecutionState::new(
-            manifest,
-            locale,
-            translations,
-            self.http_cache.clone(),
-            self.resource_cache.clone(),
-            storage_dir,
-            prepared_resources.config_text.clone(),
-            prepared_resources.storage_values.clone(),
-            prepared_resources.sidecar_files.clone(),
-        )));
-        let dispatcher = create_service_dispatcher(
-            self.service_registry.clone(),
-            self.service_runtimes.clone(),
-            self.rpc_stack.clone(),
-        );
-        {
-            let mut state = state.borrow_mut();
-            state.service_dispatcher = Some(dispatcher);
-            state.service_registry = Some(self.service_registry.clone());
+    fn activation_context(&self) -> PluginActivation {
+        PluginActivation {
+            engine: self.engine.clone(),
+            cache_dir: self.cache_dir.join("plugin-components"),
+            package_cache_dir: self.package_cache_dir.clone(),
+            http_cache: self.http_cache.clone(),
+            resource_cache: self.resource_cache.clone(),
+            dispatcher: create_service_dispatcher(
+                self.service_registry.clone(), self.service_runtimes.clone(), self.rpc_stack.clone(),
+            ),
         }
-        let mut store = Store::new(engine.clone());
-        let imports = app_imports(state.clone());
-        let instance = ModuleInstance::instantiate(&mut store, &module, Some(&imports))
-            .map_err(|error| anyhow!("instantiate plugin module failed: {error}"))?;
-        let memory = instance
-            .memory(ABI_EXPORT_MEMORY)
-            .map_err(|error| anyhow!("plugin missing exported memory: {error}"))?;
-        let alloc = alloc_function_export(&instance, &store)?;
-        let dealloc = dealloc_function_export(&instance, &store)?;
-        let init = entry_function_export(&instance, &store, ABI_EXPORT_INIT)?;
-        let handle_event = entry_function_export(&instance, &store, ABI_EXPORT_HANDLE_EVENT)?;
-        let render_page = entry_function_export(&instance, &store, ABI_EXPORT_RENDER_PAGE)?;
-        let render_injection =
-            entry_function_export(&instance, &store, ABI_EXPORT_RENDER_INJECTION)?;
-        let call_service =
-            entry_function_export_optional(&instance, &store, ABI_EXPORT_CALL_SERVICE);
-        let shutdown = entry_function_export(&instance, &store, ABI_EXPORT_SHUTDOWN)?;
-        Ok(PluginExecution {
-            store,
-            instance,
-            memory,
-            alloc,
-            dealloc,
-            init,
-            handle_event,
-            render_page,
-            render_injection,
-            call_service,
-            shutdown,
-            state,
-            request_buffer: Vec::new(),
-            response_buffer: Vec::new(),
-        })
     }
 
     pub fn render_page(&mut self, plugin_id: &str, page_id: &str) -> Result<Arc<ViewTree>> {
@@ -1868,14 +1736,13 @@ impl PluginRegistry {
             page_id: page_id.to_string(),
         };
         let tree = {
-            let mut runtime = runtime.borrow_mut();
-            runtime.set_render_context(Some(RenderContext::Page {
-                page_id: page_id.to_string(),
-            }));
-            let tree = runtime.call_entry(EntryCall::RenderPage(request), RENDER_TIMEOUT);
-            runtime.set_render_context(None);
-            let tree = tree?;
-            let effects = runtime.drain_effects();
+            let mut runtime = runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let tree = runtime
+                .render_page(request)
+                .map_err(plugin_error_to_anyhow)?;
+            let effects = runtime.take_effects();
             if !effects.is_empty() {
                 warn!(
                     plugin_id,
@@ -1999,15 +1866,13 @@ impl PluginRegistry {
             slot: injection_slot_to_abi(slot),
             page: page.map(str::to_string),
         };
-        let mut runtime = runtime.borrow_mut();
-        runtime.set_render_context(Some(RenderContext::Injection {
-            slot,
-            page: page.map(str::to_string),
-        }));
-        let tree = runtime.call_entry(EntryCall::RenderInjection(request), RENDER_TIMEOUT);
-        runtime.set_render_context(None);
-        let tree: Option<abi::ViewTree> = tree?;
-        let effects = runtime.drain_effects();
+        let mut runtime = runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let tree: Option<abi::ViewTree> = runtime
+            .render_injection(request)
+            .map_err(plugin_error_to_anyhow)?;
+        let effects = runtime.take_effects();
         if !effects.is_empty() {
             warn!(
                 plugin_id,
@@ -2029,10 +1894,10 @@ impl PluginRegistry {
         &mut self,
         event: PluginEvent,
         cascade: &mut EventCascade,
-    ) -> Vec<PluginEffect> {
+    ) -> Vec<abi::PluginEffect> {
         let started = Instant::now();
         match &event.kind {
-            PluginEventKind::Action { .. } => {
+            PluginEventKind::Action { .. } | PluginEventKind::JobReady { .. } => {
                 for plugin_id in self.event_targets(&event) {
                     if let Err(error) = self.ensure_plugin_runtime(&plugin_id) {
                         warn!(plugin_id, error = %error, "plugin action target load failed");
@@ -2071,10 +1936,12 @@ impl PluginRegistry {
             };
             let event = plugin_event_to_abi(&event);
             let result = {
-                let mut runtime = runtime.borrow_mut();
+                let mut runtime = runtime
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
                 let result: Result<()> =
-                    runtime.call_entry(EntryCall::HandleEvent(event), EVENT_TIMEOUT);
-                effects.extend(runtime.drain_effects());
+                    runtime.handle_event(event).map_err(plugin_error_to_anyhow);
+                effects.extend(runtime.take_effects());
                 result
             };
             if let Err(error) = result {
@@ -2095,7 +1962,7 @@ impl PluginRegistry {
 
     fn invalidate_render_cache_for_event(&mut self, event: &PluginEvent, targets: &[String]) {
         match &event.kind {
-            PluginEventKind::Action { .. } => {
+            PluginEventKind::Action { .. } | PluginEventKind::JobReady { .. } => {
                 if let Some(plugin_id) = event.plugin_id.as_deref() {
                     self.render_cache
                         .invalidate_page(plugin_id, event.page_id.as_deref());
@@ -2134,14 +2001,16 @@ impl PluginRegistry {
 
     fn event_targets(&self, event: &PluginEvent) -> Vec<String> {
         match &event.kind {
-            PluginEventKind::Global { name, .. } => self.subscribers_of(name),
+            PluginEventKind::Global { name, .. } => self.subscribers_of(name).into_iter()
+                .filter(|id| event.plugin_id.as_ref().is_none_or(|target| target == id)).collect(),
             PluginEventKind::RouteChanged { .. } => self.subscribers_of(ROUTE_CHANGED_EVENT),
-            PluginEventKind::Action { .. } => event.plugin_id.iter().cloned().collect(),
+            PluginEventKind::Action { .. } | PluginEventKind::JobReady { .. } => event.plugin_id.iter().cloned().collect(),
         }
     }
 
     fn event_requires_clipboard_snapshot(&self, event: &PluginEvent) -> bool {
         match &event.kind {
+            PluginEventKind::JobReady { .. } => false,
             PluginEventKind::Action { .. } => event.plugin_id.as_deref().is_some_and(|plugin_id| {
                 self.plugins.get(plugin_id).is_some_and(|plugin| {
                     plugin.enabled
@@ -2166,7 +2035,7 @@ impl PluginRegistry {
     fn plugin_runtime(
         &self,
         plugin_id: &str,
-    ) -> Result<(PluginManifest, Rc<RefCell<PluginExecution>>)> {
+    ) -> Result<(PluginManifest, Arc<Mutex<abi::PluginExecution>>)> {
         let instance = self
             .plugins
             .get(plugin_id)
@@ -2287,9 +2156,13 @@ impl PluginInstance {
             return Ok(());
         };
 
-        let mut runtime = runtime.borrow_mut();
-        runtime.call_entry::<()>(EntryCall::Shutdown(reason), EVENT_TIMEOUT)?;
-        let effects = runtime.drain_effects();
+        let mut runtime = runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        runtime
+            .shutdown(reason)
+            .map_err(plugin_error_to_anyhow)?;
+        let effects = runtime.take_effects();
         if !effects.is_empty() {
             warn!(
                 plugin_id = self.manifest.id,
@@ -2301,325 +2174,41 @@ impl PluginInstance {
     }
 }
 
-impl ExecutionState {
-    fn new(
-        manifest: &PluginManifest,
-        locale: String,
-        translations: BTreeMap<String, BTreeMap<String, String>>,
-        http_cache: PluginHttpFetchCache,
-        resource_cache: PluginResourceCache,
-        storage_dir: PathBuf,
-        config_text: std::result::Result<String, Arc<str>>,
-        storage_values: std::result::Result<BTreeMap<String, String>, Arc<str>>,
-        sidecar_files: BTreeSet<String>,
-    ) -> Self {
-        Self {
-            plugin_id: manifest.id.clone(),
-            capabilities: manifest.capabilities.clone(),
-            manifest: manifest.clone(),
-            locale,
-            translations,
-            session: BTreeMap::new(),
-            http_cache,
-            resource_cache,
-            render_context: None,
-            theme_snapshot: abi::ThemeSnapshot::light_default(),
-            storage_dir,
-            config_text,
-            storage_values,
-            sidecar_files,
-            clipboard_text: None,
-            effects: Vec::new(),
-            next_window_id: 1,
-            service_dispatcher: None,
-            service_registry: None,
-        }
+
+
+
+
+/// 把 manifest 的 capability/allowlist/limits 解析为运行时沙箱策略。
+fn plugin_policy_from_manifest(manifest: &PluginManifest) -> abi::PluginPolicy {
+    let capabilities = &manifest.capabilities;
+    abi::PluginPolicy {
+        plugin_id: manifest.id.clone(),
+        capabilities: abi::PluginCapabilities {
+            ui_page: capabilities.contains(&PluginCapability::UiPage),
+            ui_window: capabilities.contains(&PluginCapability::UiWindow),
+            ui_hook: capabilities.contains(&PluginCapability::UiHook),
+            event_global: capabilities.contains(&PluginCapability::EventGlobal),
+            toast: capabilities.contains(&PluginCapability::Toast),
+            network_http: capabilities.contains(&PluginCapability::NetworkHttp),
+            clipboard_read: capabilities.contains(&PluginCapability::ClipboardRead),
+            clipboard_write: capabilities.contains(&PluginCapability::ClipboardWrite),
+            external_open: capabilities.contains(&PluginCapability::ExternalOpen),
+            resource_read: capabilities.contains(&PluginCapability::ResourceRead),
+            storage_kv: capabilities.contains(&PluginCapability::StorageKv),
+            task_progress: capabilities.contains(&PluginCapability::TaskProgress),
+            config_read: capabilities.contains(&PluginCapability::ConfigRead),
+            config_write: capabilities.contains(&PluginCapability::ConfigWrite),
+            download_start: capabilities.contains(&PluginCapability::DownloadStart),
+        },
+        limits: abi::PluginLimits {
+            max_http_bytes: manifest.limits.max_http_bytes,
+            max_resource_bytes: manifest.limits.max_resource_bytes,
+            max_storage_bytes: manifest.limits.max_storage_bytes,
+        },
+        network_allow: abi::Allowlist::new(manifest.permissions.network_allow.clone()),
+        resource_allow: abi::Allowlist::new(manifest.permissions.resource_allow.clone()),
+        external_allow: abi::Allowlist::new(manifest.permissions.external_allow.clone()),
     }
-
-    fn has_capability(&self, capability: &PluginCapability) -> bool {
-        self.capabilities.contains(capability)
-    }
-
-    fn require_capability(
-        &self,
-        capability: PluginCapability,
-    ) -> std::result::Result<(), abi::AppError> {
-        if self.has_capability(&capability) {
-            return Ok(());
-        }
-
-        Err(abi::AppError {
-            code: "capability-denied".to_string(),
-            message: format!(
-                "plugin {} did not declare {}",
-                self.plugin_id,
-                capability.as_str()
-            ),
-        })
-    }
-}
-
-impl PluginExecution {
-    fn set_render_context(&mut self, context: Option<RenderContext>) {
-        self.state.borrow_mut().render_context = context;
-    }
-
-    fn set_clipboard_snapshot(&mut self, text: Option<String>) {
-        self.state.borrow_mut().clipboard_text = text;
-    }
-
-    fn memory_snapshot(&self) -> Result<PluginWasmMemorySnapshot> {
-        Ok(PluginWasmMemorySnapshot {
-            linear_bytes: self.memory.len(&self.store)?,
-            page_count: self.memory.page_count(&self.store)?,
-        })
-    }
-
-    fn drain_effects(&mut self) -> Vec<PluginEffect> {
-        std::mem::take(&mut self.state.borrow_mut().effects)
-    }
-
-    /// 调用插件的 `bmcbl_call_service` 导出，返回响应载荷。
-    ///
-    /// 服务调用复用入口调用那条路径：借用同一对请求/响应缓冲，并使用同一套墙钟预算中断
-    /// 超时的插件代码（`EVENT_TIMEOUT`，与事件处理同量级；递归深度由 `MAX_RPC_DEPTH` 限制）。
-    /// 插件没有导出该入口时返回明确错误，而不是让调用方拿到空白响应。
-    fn call_service(&mut self, request: abi::ServiceCallRequest) -> Result<Vec<u8>> {
-        let Some(function) = self.call_service.clone() else {
-            let plugin_id = self.state.borrow().plugin_id.clone();
-            bail!("plugin {plugin_id} does not export {ABI_EXPORT_CALL_SERVICE}");
-        };
-        let mut request_buffer = std::mem::take(&mut self.request_buffer);
-        let result = self.call_entry_with_buffer::<Vec<u8>>(
-            &function,
-            &EntryCall::CallService(request),
-            &mut request_buffer,
-            EVENT_TIMEOUT,
-        );
-        self.request_buffer = request_buffer;
-        result
-    }
-
-    /// 调用插件入口函数，并保证总执行时间不超过 `timeout`。
-    ///
-    /// 时间预算由解释器在指令之间检查，因此超时的插件调用会真正被中断，而不是
-    /// 只在燃料切片之间被检查一次。
-    fn call_entry<R>(&mut self, call: EntryCall, timeout: Duration) -> Result<R>
-    where
-        R: serde::de::DeserializeOwned,
-    {
-        let function = match &call {
-            EntryCall::Init(_) => self.init.clone(),
-            EntryCall::HandleEvent(_) => self.handle_event.clone(),
-            EntryCall::RenderPage(_) => self.render_page.clone(),
-            EntryCall::RenderInjection(_) => self.render_injection.clone(),
-            // 服务入口是可选的，必须走 `call_service`：那里才有“未导出”的可读错误。
-            EntryCall::CallService(_) => {
-                bail!("service calls must use PluginExecution::call_service")
-            }
-            EntryCall::Shutdown(_) => self.shutdown.clone(),
-        };
-
-        // 请求缓冲在调用期间借出，避免和 `&mut self` 的其它字段借用冲突。
-        let mut request_buffer = std::mem::take(&mut self.request_buffer);
-        let result =
-            self.call_entry_with_buffer::<R>(&function, &call, &mut request_buffer, timeout);
-        self.request_buffer = request_buffer;
-        result
-    }
-
-    /// 用调用方提供的缓冲执行一次入口调用。
-    fn call_entry_with_buffer<R>(
-        &mut self,
-        function: &Function,
-        call: &EntryCall,
-        request_buffer: &mut Vec<u8>,
-        timeout: Duration,
-    ) -> Result<R>
-    where
-        R: serde::de::DeserializeOwned,
-    {
-        call.encode_into(request_buffer)?;
-        let request_len = request_buffer.len();
-        if request_len > ABI_MESSAGE_MAX_BYTES {
-            bail!("plugin request exceeds {ABI_MESSAGE_MAX_BYTES} bytes");
-        }
-        let request_ptr = self.alloc_bytes(&request_buffer[..])?;
-
-        let result = (|| {
-            let args = [(request_ptr as i32).into(), (request_len as i32).into()];
-            let mut results = [WasmValue::I64(0)];
-            let mut execution = function
-                .call_resumable(&mut self.store, &args, &mut results)
-                .map_err(|error| anyhow!("start plugin call failed: {error}"))?;
-            let started = Instant::now();
-            loop {
-                let remaining = timeout.saturating_sub(started.elapsed());
-                if remaining.is_zero() {
-                    bail!("plugin call exceeded {:?}", timeout);
-                }
-                match execution
-                    .resume_with_time_budget(remaining)
-                    .map_err(|error| anyhow!("resume plugin call failed: {error}"))?
-                {
-                    tinywasm::ExecProgress::Completed(()) => break,
-                    tinywasm::ExecProgress::Suspended => {}
-                }
-            }
-            drop(execution);
-            let Some(&WasmValue::I64(packed)) = results.first() else {
-                bail!("plugin call returned unexpected result shape");
-            };
-            self.read_plugin_result::<R>(packed)
-        })();
-
-        self.deallocate(request_ptr, request_len)?;
-        result
-    }
-
-    fn alloc_bytes(&mut self, bytes: &[u8]) -> Result<u32> {
-        let mut results = [WasmValue::I32(0)];
-        self.alloc
-            .call(
-                &mut self.store,
-                &[(bytes.len() as i32).into(), 1_i32.into()],
-                &mut results,
-            )
-            .map_err(|error| anyhow!("plugin alloc failed: {error}"))?;
-        let Some(&WasmValue::I32(ptr)) = results.first() else {
-            bail!("plugin alloc returned unexpected value");
-        };
-        self.memory
-            .write(&mut self.store, ptr as usize, bytes)
-            .map_err(|error| anyhow!("write guest memory failed: {error}"))?;
-        Ok(ptr as u32)
-    }
-
-    fn deallocate(&mut self, ptr: u32, len: usize) -> Result<()> {
-        if ptr == 0 || len == 0 {
-            return Ok(());
-        }
-        self.dealloc
-            .call(
-                &mut self.store,
-                &[(ptr as i32).into(), (len as i32).into(), 1_i32.into()],
-                &mut [],
-            )
-            .map_err(|error| anyhow!("plugin dealloc failed: {error}"))?;
-        Ok(())
-    }
-
-    fn read_plugin_result<R: serde::de::DeserializeOwned>(&mut self, packed: i64) -> Result<R> {
-        let packed = packed as u64;
-        let ptr = (packed >> 32) as u32;
-        let len = (packed & 0xffff_ffff) as usize;
-        if len > ABI_MESSAGE_MAX_BYTES {
-            bail!("plugin response exceeds {ABI_MESSAGE_MAX_BYTES} bytes");
-        }
-
-        // 复用解码缓冲：先读进已有容量，再归还 guest 内存，最后解码宿主副本。
-        let mut response_buffer = std::mem::take(&mut self.response_buffer);
-        response_buffer.clear();
-        response_buffer.resize(len, 0);
-        let read = self
-            .memory
-            .read_exact(&self.store, ptr as usize, &mut response_buffer)
-            .map_err(|error| anyhow!("read guest memory failed: {error}"));
-        let deallocated = self.deallocate(ptr, len);
-        let decoded = read.and_then(|()| {
-            postcard::from_bytes::<abi::AbiResult<R>>(&response_buffer)
-                .map_err(|error| anyhow!("decode plugin response failed: {error}"))
-        });
-        self.response_buffer = response_buffer;
-        deallocated?;
-
-        match decoded? {
-            abi::AbiResult::Ok(value) => Ok(value),
-            abi::AbiResult::Err(error) => Err(plugin_error_to_anyhow(error)),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct PluginWasmMemorySnapshot {
-    linear_bytes: usize,
-    page_count: usize,
-}
-
-enum EntryCall {
-    Init(abi::PluginContext),
-    HandleEvent(abi::PluginEvent),
-    RenderPage(abi::PageRenderRequest),
-    RenderInjection(abi::InjectionRequest),
-    CallService(abi::ServiceCallRequest),
-    Shutdown(abi::ShutdownReason),
-}
-
-impl EntryCall {
-    /// 把请求编码进调用方提供的缓冲，复用其容量。
-    fn encode_into(&self, buffer: &mut Vec<u8>) -> Result<()> {
-        match self {
-            Self::Init(context) => encode_request_into(context, buffer),
-            Self::HandleEvent(event) => encode_request_into(event, buffer),
-            Self::RenderPage(request) => encode_request_into(request, buffer),
-            Self::RenderInjection(request) => encode_request_into(request, buffer),
-            Self::CallService(request) => encode_request_into(request, buffer),
-            Self::Shutdown(reason) => encode_request_into(reason, buffer),
-        }
-    }
-}
-
-/// 把 `&mut Vec<u8>` 适配成 postcard 需要的 `Extend<u8>` 写入器，从而复用已有容量。
-struct VecWriter<'a>(&'a mut Vec<u8>);
-
-impl Extend<u8> for VecWriter<'_> {
-    fn extend<I: IntoIterator<Item = u8>>(&mut self, bytes: I) {
-        self.0.extend(bytes);
-    }
-}
-
-/// 把请求编码进复用缓冲。
-fn encode_request_into<T: serde::Serialize>(request: &T, buffer: &mut Vec<u8>) -> Result<()> {
-    buffer.clear();
-    postcard::to_extend(request, VecWriter(buffer))
-        .map(|_writer| ())
-        .map_err(|error| anyhow!("encode plugin request failed: {error}"))
-}
-
-fn entry_function_export(instance: &ModuleInstance, store: &Store, name: &str) -> Result<Function> {
-    instance
-        .func::<(i32, i32), i64>(store, name)
-        .map(|typed| typed.func)
-        .map_err(|error| anyhow!("plugin missing export {name}: {error}"))
-}
-
-/// 取可选入口导出。
-///
-/// 服务总线是可选的 ABI：插件没有导出 `bmcbl_call_service` 时返回 `None`，由调用方给出明确
-/// 错误，而不是让整个插件加载失败。
-fn entry_function_export_optional(
-    instance: &ModuleInstance,
-    store: &Store,
-    name: &str,
-) -> Option<Function> {
-    instance
-        .func::<(i32, i32), i64>(store, name)
-        .ok()
-        .map(|typed| typed.func)
-}
-
-fn alloc_function_export(instance: &ModuleInstance, store: &Store) -> Result<Function> {
-    instance
-        .func::<(i32, i32), i32>(store, ABI_EXPORT_ALLOC)
-        .map(|typed| typed.func)
-        .map_err(|error| anyhow!("plugin missing export {ABI_EXPORT_ALLOC}: {error}"))
-}
-
-fn dealloc_function_export(instance: &ModuleInstance, store: &Store) -> Result<Function> {
-    instance
-        .func::<(i32, i32, i32), ()>(store, ABI_EXPORT_DEALLOC)
-        .map(|typed| typed.func)
-        .map_err(|error| anyhow!("plugin missing export {ABI_EXPORT_DEALLOC}: {error}"))
 }
 
 fn plugin_loaded_log_message(manifest: &PluginManifest) -> String {
@@ -2696,182 +2285,29 @@ fn theme_color_from_hsla(color: Hsla) -> abi::ThemeColor {
     }
 }
 
-fn validate_module_abi(module: &Module) -> Result<()> {
-    let imports = module.imports().collect::<Vec<_>>();
-    if imports.len() != 1 {
-        bail!("plugin must import exactly one app function");
-    }
-    let import = &imports[0];
-    if !is_supported_app_import(import.module, import.name) {
-        bail!(
-            "plugin imports unsupported app function {}.{}; expected {}.{} or {}.{}",
-            import.module,
-            import.name,
-            ABI_IMPORT_MODULE,
-            ABI_IMPORT_NAME,
-            ABI_LEGACY_IMPORT_MODULE,
-            ABI_IMPORT_NAME
-        );
-    }
-    let tinywasm::types::ImportType::Func(func_type) = import.ty else {
-        bail!("plugin app import must be a function");
-    };
-    if func_type.params()
-        != [
-            WasmType::I32,
-            WasmType::I32,
-            WasmType::I32,
-            WasmType::I32,
-            WasmType::I32,
-        ]
-        || func_type.results() != [WasmType::I64]
-    {
-        bail!("plugin app import has invalid signature");
-    }
 
-    let memory_types = module.memory_types.as_ref();
-    if memory_types.len() != 1 {
-        bail!("plugin must define exactly one linear memory");
-    }
-    let memory_type = &memory_types[0];
-    if memory_type.arch() != MemoryArch::I32 {
-        bail!("plugin memory must use 32-bit addressing");
-    }
-    let exports = module.exports().collect::<Vec<_>>();
-    for required in [
-        ABI_EXPORT_MEMORY,
-        ABI_EXPORT_ALLOC,
-        ABI_EXPORT_DEALLOC,
-        ABI_EXPORT_INIT,
-        ABI_EXPORT_HANDLE_EVENT,
-        ABI_EXPORT_RENDER_PAGE,
-        ABI_EXPORT_RENDER_INJECTION,
-        ABI_EXPORT_SHUTDOWN,
-    ] {
-        if !exports.iter().any(|export| export.name == required) {
-            bail!("plugin missing required export {required}");
-        }
-    }
-    Ok(())
-}
 
-fn is_supported_app_import(module: &str, name: &str) -> bool {
-    name == ABI_IMPORT_NAME && (module == ABI_IMPORT_MODULE || module == ABI_LEGACY_IMPORT_MODULE)
-}
 
-/// 单次宿主调用复用的编解码缓冲。
-#[derive(Default)]
-struct CallBuffers {
-    request: Vec<u8>,
-    response: Vec<u8>,
-}
-
-fn app_imports(state: Rc<RefCell<ExecutionState>>) -> Imports {
-    let mut imports = Imports::new();
-    // 每次 app call 都重新分配两个 Vec 会形成稳定的堆压力，这里按插件实例复用容量。
-    let buffers = Rc::new(RefCell::new(CallBuffers::default()));
-    let app_call = HostFunction::from_untyped(
-        &tinywasm::types::FuncType::new(
-            &[
-                WasmType::I32,
-                WasmType::I32,
-                WasmType::I32,
-                WasmType::I32,
-                WasmType::I32,
-            ],
-            &[WasmType::I64],
-        ),
-        move |mut ctx: FuncContext<'_>, args: &[WasmValue], results: &mut [WasmValue]| {
-            let &[
-                WasmValue::I32(op),
-                WasmValue::I32(req_ptr),
-                WasmValue::I32(req_len),
-                WasmValue::I32(resp_ptr),
-                WasmValue::I32(resp_cap),
-            ] = args
-            else {
-                return Err(tinywasm::Error::Other("invalid app-call signature".into()));
-            };
-
-            let memory = ctx.memory(ABI_EXPORT_MEMORY)?;
-            // 先按声明的长度校验，再写入复用缓冲，避免插件用一个超大长度触发巨额分配。
-            let Ok(request_len) = usize::try_from(req_len) else {
-                return Err(tinywasm::Error::Other(
-                    "app request length is invalid".into(),
-                ));
-            };
-            if request_len > ABI_MESSAGE_MAX_BYTES {
-                return Err(tinywasm::Error::Other(
-                    "app request exceeds size limit".into(),
-                ));
-            }
-            let request = {
-                let mut buffers = buffers.borrow_mut();
-                buffers.request.clear();
-                buffers.request.resize(request_len, 0);
-                memory
-                    .read_exact(ctx.store(), req_ptr as usize, &mut buffers.request)
-                    .map_err(|error| {
-                        tinywasm::Error::Other(format!("read app request failed: {error}"))
-                    })?;
-                postcard::from_bytes::<abi::AppRequest>(&buffers.request).map_err(|error| {
-                    tinywasm::Error::Other(format!("decode app request failed: {error}"))
-                })?
-            };
-            let response = handle_app_request(&state, op, request);
-
-            let mut buffers = buffers.borrow_mut();
-            buffers.response.clear();
-            {
-                let _writer = postcard::to_extend(&response, VecWriter(&mut buffers.response))
-                    .map_err(|error| {
-                        tinywasm::Error::Other(format!("encode app response failed: {error}"))
-                    })?;
-            }
-            let response_len = buffers.response.len();
-
-            if response_len > resp_cap as usize {
-                if !results.is_empty() {
-                    results[0] = WasmValue::I64(-(response_len as i64));
-                }
-                return Ok(());
-            }
-
-            memory
-                .write(ctx.store_mut(), resp_ptr as usize, &buffers.response)
-                .map_err(|error| {
-                    tinywasm::Error::Other(format!("write app response failed: {error}"))
-                })?;
-            if !results.is_empty() {
-                results[0] = WasmValue::I64(response_len as i64);
-            }
-            Ok(())
-        },
-    );
-    imports.define(ABI_IMPORT_MODULE, ABI_IMPORT_NAME, app_call.clone());
-    imports.define(ABI_LEGACY_IMPORT_MODULE, ABI_IMPORT_NAME, app_call);
-    imports
-}
 
 fn schedule_plugin_persistence(
     operation: PluginPersistenceOp,
-) -> std::result::Result<(), abi::AppError> {
+) -> Result<(), abi::PluginError> {
     let sender = if let Some(sender) = PLUGIN_PERSISTENCE_TX.get() {
         sender
     } else {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        start_plugin_persistence_worker(receiver).map_err(|error| abi::AppError {
+        start_plugin_persistence_worker(receiver).map_err(|error| abi::PluginError {
             code: "persistence-schedule-failed".to_string(),
             message: error,
         })?;
         let _ = PLUGIN_PERSISTENCE_TX.set(sender);
-        PLUGIN_PERSISTENCE_TX.get().ok_or_else(|| abi::AppError {
+        PLUGIN_PERSISTENCE_TX.get().ok_or_else(|| abi::PluginError {
             code: "persistence-schedule-failed".to_string(),
             message: "plugin persistence queue initialization failed".to_string(),
         })?
     };
 
-    sender.send(operation).map_err(|error| abi::AppError {
+    sender.send(operation).map_err(|error| abi::PluginError {
         code: "persistence-schedule-failed".to_string(),
         message: format!("plugin persistence queue is unavailable: {error}"),
     })
@@ -2963,12 +2399,12 @@ fn storage_snapshot_next_used_bytes(
 fn ensure_blocking_io_allowed(
     render_context: Option<&RenderContext>,
     operation: &'static str,
-) -> std::result::Result<(), abi::AppError> {
+) -> Result<(), abi::PluginError> {
     if render_context.is_none() {
         return Ok(());
     }
 
-    Err(abi::AppError {
+    Err(abi::PluginError {
         code: "blocking-io-render-denied".to_string(),
         message: format!(
             "{operation} is not allowed while rendering plugin UI; load or persist data during init/event handling and keep render state in memory"
@@ -2976,580 +2412,7 @@ fn ensure_blocking_io_allowed(
     })
 }
 
-fn handle_app_request(
-    state: &Rc<RefCell<ExecutionState>>,
-    op: i32,
-    request: abi::AppRequest,
-) -> std::result::Result<abi::AppResponse, abi::AppError> {
-    let mut state = state.borrow_mut();
-    match (op, request) {
-        (code, abi::AppRequest::Log { level, message }) if code == abi::AppOp::Log.code() => {
-            let plugin_id = state.plugin_id.clone();
-            state.effects.push(PluginEffect::Log {
-                plugin_id: plugin_id.clone(),
-                level,
-                message: message.clone(),
-            });
-            match level {
-                abi::LogLevel::Debug => debug!(plugin_id, "{message}"),
-                abi::LogLevel::Info => tracing::info!(plugin_id, "{message}"),
-                abi::LogLevel::Warn => warn!(plugin_id, "{message}"),
-                abi::LogLevel::Error => error!(plugin_id, "{message}"),
-            }
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::ShowToast { kind, message })
-            if code == abi::AppOp::ShowToast.code() =>
-        {
-            state.require_capability(PluginCapability::Toast)?;
-            state.effects.push(PluginEffect::Toast { kind, message });
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::Navigate { target }) if code == abi::AppOp::Navigate.code() => {
-            state.effects.push(PluginEffect::Navigate { target });
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::OpenWindow { request })
-            if code == abi::AppOp::OpenWindow.code() =>
-        {
-            state.require_capability(PluginCapability::UiWindow)?;
-            let plugin_id = state.plugin_id.clone();
-            if request.plugin_id != plugin_id {
-                return Err(abi::AppError {
-                    code: "invalid-window-request".to_string(),
-                    message: "plugin can only open its own windows".to_string(),
-                });
-            }
 
-            let window_id = state.next_window_id;
-            state.next_window_id = state.next_window_id.saturating_add(1);
-            state.effects.push(PluginEffect::OpenWindow { request });
-            Ok(abi::AppResponse::WindowId(window_id))
-        }
-        (code, abi::AppRequest::OpenModal { request }) if code == abi::AppOp::OpenModal.code() => {
-            state.require_capability(PluginCapability::UiPage)?;
-            let plugin_id = state.plugin_id.clone();
-            if request.plugin_id != plugin_id {
-                return Err(abi::AppError {
-                    code: "invalid-modal-request".to_string(),
-                    message: "plugin can only open its own modal pages".to_string(),
-                });
-            }
-
-            state.effects.push(PluginEffect::OpenModal { request });
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::CloseWindow { window_id })
-            if code == abi::AppOp::CloseWindow.code() =>
-        {
-            state.require_capability(PluginCapability::UiWindow)?;
-            state.effects.push(PluginEffect::CloseWindow { window_id });
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::EmitEvent { name, payload })
-            if code == abi::AppOp::EmitEvent.code() =>
-        {
-            state.require_capability(PluginCapability::EventGlobal)?;
-            state
-                .effects
-                .push(PluginEffect::EmitEvent { name, payload });
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::Invalidate { target }) if code == abi::AppOp::Invalidate.code() => {
-            let plugin_id = state.plugin_id.clone();
-            state
-                .effects
-                .push(PluginEffect::Invalidate { plugin_id, target });
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::CurrentLocale) if code == abi::AppOp::CurrentLocale.code() => {
-            Ok(abi::AppResponse::String(state.locale.clone()))
-        }
-        (code, abi::AppRequest::Translate { key, args })
-            if code == abi::AppOp::Translate.code() =>
-        {
-            Ok(abi::AppResponse::String(translate_plugin_key(
-                &state.translations,
-                &state.locale,
-                &key,
-                &args,
-            )))
-        }
-        (code, abi::AppRequest::ReadConfig) if code == abi::AppOp::ReadConfig.code() => {
-            state.require_capability(PluginCapability::ConfigRead)?;
-            match &state.config_text {
-                Ok(config) => Ok(abi::AppResponse::String(config.clone())),
-                Err(error) => Err(abi::AppError {
-                    code: "config-read-failed".to_string(),
-                    message: error.to_string(),
-                }),
-            }
-        }
-        (
-            code,
-            abi::AppRequest::HttpGetText {
-                url,
-                ttl_seconds,
-                max_bytes,
-            },
-        ) if code == abi::AppOp::HttpGetText.code() => {
-            let snapshot = state.http_cache.snapshot(
-                &state.manifest,
-                &state.plugin_id,
-                state.render_context.as_ref(),
-                &url,
-                ttl_seconds,
-                max_bytes,
-            )?;
-            Ok(abi::AppResponse::HttpTextResponse {
-                state: snapshot.state,
-                body: snapshot.body,
-                error: snapshot.error,
-                fetched_at_unix_ms: snapshot.fetched_at_unix_ms,
-            })
-        }
-        (code, abi::AppRequest::WriteClipboardText { text })
-            if code == abi::AppOp::WriteClipboardText.code() =>
-        {
-            state.require_capability(PluginCapability::ClipboardWrite)?;
-            state.effects.push(PluginEffect::EmitEvent {
-                name: "__plugin_write_clipboard".to_string(),
-                payload: text,
-            });
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::ReadClipboardText)
-            if code == abi::AppOp::ReadClipboardText.code() =>
-        {
-            state.require_capability(PluginCapability::ClipboardRead)?;
-            Ok(abi::AppResponse::SessionValue(state.clipboard_text.clone()))
-        }
-        (code, abi::AppRequest::CurrentUnixMs) if code == abi::AppOp::CurrentUnixMs.code() => {
-            Ok(abi::AppResponse::U64(current_unix_ms()))
-        }
-        (code, abi::AppRequest::OpenExternalUrl { url })
-            if code == abi::AppOp::OpenExternalUrl.code() =>
-        {
-            state.require_capability(PluginCapability::ExternalOpen)?;
-            if !url.starts_with("https://") {
-                return Err(abi::AppError {
-                    code: "invalid-url".to_string(),
-                    message: "external URLs must use https".to_string(),
-                });
-            }
-            if !state.manifest.allows_external_url(&url) {
-                return Err(abi::AppError {
-                    code: "external-url-denied".to_string(),
-                    message: format!("plugin {} is not allowed to open {url}", state.plugin_id),
-                });
-            }
-            state.effects.push(PluginEffect::EmitEvent {
-                name: "__plugin_open_external_url".to_string(),
-                payload: url,
-            });
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::ReadResourceText { path })
-            if code == abi::AppOp::ReadResourceText.code() =>
-        {
-            let bytes = state.resource_cache.read(
-                &state.manifest,
-                &state.plugin_id,
-                state.render_context.as_ref(),
-                &path,
-            )?;
-            let text = std::str::from_utf8(bytes.as_ref())
-                .map_err(|error| abi::AppError {
-                    code: "resource-not-utf8".to_string(),
-                    message: format!("plugin resource {path} is not utf-8: {error}"),
-                })?
-                .to_owned();
-            Ok(abi::AppResponse::String(text))
-        }
-        (code, abi::AppRequest::ReadResourceBytes { path })
-            if code == abi::AppOp::ReadResourceBytes.code() =>
-        {
-            let bytes = state.resource_cache.read(
-                &state.manifest,
-                &state.plugin_id,
-                state.render_context.as_ref(),
-                &path,
-            )?;
-            Ok(abi::AppResponse::Bytes(bytes.as_ref().to_vec()))
-        }
-        (
-            code,
-            abi::AppRequest::SidecarCall {
-                name,
-                args,
-                timeout_ms,
-                max_output_bytes,
-            },
-        ) if code == abi::AppOp::SidecarCall.code() => {
-            if state.render_context.is_some() {
-                return Err(abi::AppError {
-                    code: "sidecar-render-denied".to_string(),
-                    message: "sidecar calls are not allowed while rendering plugin UI".to_string(),
-                });
-            }
-            if max_output_bytes != 0 {
-                return Err(abi::AppError {
-                    code: "sidecar-sync-output-denied".to_string(),
-                    message: format!(
-                        "synchronous sidecar output capture is disabled to keep the UI thread non-blocking (requested timeout {timeout_ms} ms)"
-                    ),
-                });
-            }
-            schedule_plugin_sidecar_start(&state.manifest, &state.sidecar_files, &name, args)?;
-            Ok(abi::AppResponse::String(String::new()))
-        }
-        (code, abi::AppRequest::SessionGet { key }) if code == abi::AppOp::SessionGet.code() => Ok(
-            abi::AppResponse::SessionValue(state.session.get(&key).cloned()),
-        ),
-        (code, abi::AppRequest::SessionSet { key, value })
-            if code == abi::AppOp::SessionSet.code() =>
-        {
-            match value {
-                Some(value) => {
-                    state.session.insert(key, value);
-                }
-                None => {
-                    state.session.remove(&key);
-                }
-            }
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::StorageGet { key }) if code == abi::AppOp::StorageGet.code() => {
-            state.require_capability(PluginCapability::StorageKv)?;
-            validate_storage_key(&key)?;
-            match &state.storage_values {
-                Ok(values) => Ok(abi::AppResponse::SessionValue(values.get(&key).cloned())),
-                Err(error) => Err(abi::AppError {
-                    code: "storage-read-failed".to_string(),
-                    message: error.to_string(),
-                }),
-            }
-        }
-        (code, abi::AppRequest::StorageSet { key, value })
-            if code == abi::AppOp::StorageSet.code() =>
-        {
-            state.require_capability(PluginCapability::StorageKv)?;
-            ensure_blocking_io_allowed(state.render_context.as_ref(), "storage set")?;
-            validate_storage_key(&key)?;
-            let values = state
-                .storage_values
-                .as_ref()
-                .map_err(|error| abi::AppError {
-                    code: "storage-state-unavailable".to_string(),
-                    message: error.to_string(),
-                })?;
-            let quota_bytes = state.manifest.limits.max_storage_bytes;
-            let next_used = storage_snapshot_next_used_bytes(values, &key, &value);
-            if next_used > quota_bytes {
-                return Err(abi::AppError {
-                    code: "storage-quota-exceeded".to_string(),
-                    message: format!(
-                        "plugin storage quota exceeded ({next_used}/{quota_bytes} bytes)"
-                    ),
-                });
-            }
-
-            schedule_plugin_persistence(PluginPersistenceOp::StorageSet {
-                plugin_id: state.plugin_id.clone(),
-                storage_dir: state.storage_dir.clone(),
-                key: key.clone(),
-                value: value.clone(),
-            })?;
-            if let Ok(values) = &mut state.storage_values {
-                values.insert(key, value);
-            }
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::StorageDelete { key })
-            if code == abi::AppOp::StorageDelete.code() =>
-        {
-            state.require_capability(PluginCapability::StorageKv)?;
-            ensure_blocking_io_allowed(state.render_context.as_ref(), "storage delete")?;
-            validate_storage_key(&key)?;
-            let values = state
-                .storage_values
-                .as_ref()
-                .map_err(|error| abi::AppError {
-                    code: "storage-state-unavailable".to_string(),
-                    message: error.to_string(),
-                })?;
-            if !values.contains_key(&key) {
-                return Ok(abi::AppResponse::Unit);
-            }
-
-            schedule_plugin_persistence(PluginPersistenceOp::StorageDelete {
-                plugin_id: state.plugin_id.clone(),
-                storage_dir: state.storage_dir.clone(),
-                key: key.clone(),
-            })?;
-            if let Ok(values) = &mut state.storage_values {
-                values.remove(&key);
-            }
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::StorageList { prefix })
-            if code == abi::AppOp::StorageList.code() =>
-        {
-            state.require_capability(PluginCapability::StorageKv)?;
-            if let Some(prefix) = prefix.as_deref() {
-                validate_storage_key_prefix(prefix)?;
-            }
-            match &state.storage_values {
-                Ok(values) => Ok(abi::AppResponse::StringList(
-                    values
-                        .keys()
-                        .filter(|key| {
-                            prefix
-                                .as_deref()
-                                .is_none_or(|prefix| key.starts_with(prefix))
-                        })
-                        .cloned()
-                        .collect(),
-                )),
-                Err(error) => Err(abi::AppError {
-                    code: "storage-list-failed".to_string(),
-                    message: error.to_string(),
-                }),
-            }
-        }
-        (code, abi::AppRequest::WriteConfig { text }) if code == abi::AppOp::WriteConfig.code() => {
-            state.require_capability(PluginCapability::ConfigWrite)?;
-            ensure_blocking_io_allowed(state.render_context.as_ref(), "config write")?;
-            crate::plugins::manifest::validate_user_config(&state.manifest, &text).map_err(
-                |error| abi::AppError {
-                    code: "config-write-failed".to_string(),
-                    message: error.to_string(),
-                },
-            )?;
-            schedule_plugin_persistence(PluginPersistenceOp::Config {
-                plugin_id: state.plugin_id.clone(),
-                manifest: state.manifest.clone(),
-                content: text.clone(),
-            })?;
-            state.config_text = Ok(text);
-            let plugin_id = state.plugin_id.clone();
-            state.effects.push(PluginEffect::Invalidate {
-                plugin_id,
-                target: abi::InvalidateTarget::All,
-            });
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::CreateTask { request })
-            if code == abi::AppOp::CreateTask.code() =>
-        {
-            state.require_capability(PluginCapability::TaskProgress)?;
-            let mut task_options = crate::tasks::task_manager::TaskOptions::new(
-                request.title,
-                TaskStage::custom(request.stage.clone()),
-            );
-            if let Some(total) = request.total {
-                task_options = task_options.total(total);
-            }
-            if let Some(task_id) = request.task_id {
-                task_options = task_options.id(task_id);
-            }
-            if let Some(detail) = request.detail {
-                task_options = task_options.detail(detail);
-            }
-            task_options = task_options.pausable(request.supports_pause);
-            let task_id = crate::tasks::task_manager::create_task_owned(
-                crate::tasks::task_manager::TaskOwner::Plugin(state.plugin_id.clone().into()),
-                task_options,
-            )
-            .map_err(|error| abi::AppError {
-                code: "task-create-failed".to_string(),
-                message: error,
-            })?;
-            Ok(abi::AppResponse::TaskId(task_id))
-        }
-        (code, abi::AppRequest::CreateTypedTask { request })
-            if code == abi::AppOp::CreateTypedTask.code() =>
-        {
-            state.require_capability(PluginCapability::TaskProgress)?;
-            // 定义必须已注册，且属于当前插件的命名空间，防止冒用宿主类型。
-            let definition = crate::tasks::registry::definition(&request.definition).ok_or_else(
-                || abi::AppError {
-                    code: "task-definition-unknown".to_string(),
-                    message: format!("任务类型未注册: {}", request.definition),
-                },
-            )?;
-            if !request
-                .definition
-                .starts_with(&format!("{}.", state.plugin_id))
-            {
-                return Err(abi::AppError {
-                    code: "task-definition-foreign".to_string(),
-                    message: format!("任务类型不属于插件 {}", state.plugin_id),
-                });
-            }
-            let inner = request.request;
-            let mut task_options = crate::tasks::task_manager::TaskOptions::new(
-                inner.title,
-                TaskStage::custom(inner.stage.clone()),
-            )
-            .definition(definition.type_id.clone())
-            .pausable(definition.capabilities.pausable);
-            if let Some(total) = inner.total {
-                task_options = task_options.total(total);
-            }
-            if let Some(task_id) = inner.task_id {
-                task_options = task_options.id(task_id);
-            }
-            if let Some(detail) = inner.detail {
-                task_options = task_options.detail(detail);
-            }
-            let task_id = crate::tasks::task_manager::create_task_owned(
-                crate::tasks::task_manager::TaskOwner::Plugin(state.plugin_id.clone().into()),
-                task_options,
-            )
-            .map_err(|error| abi::AppError {
-                code: "task-create-failed".to_string(),
-                message: error,
-            })?;
-            Ok(abi::AppResponse::TaskId(task_id))
-        }
-        (code, abi::AppRequest::UpdateTask { request })
-            if code == abi::AppOp::UpdateTask.code() =>
-        {
-            state.require_capability(PluginCapability::TaskProgress)?;
-            // 所有权校验：插件只能更新自己创建的任务，宿主和其他插件的任务不可见。
-            if !crate::tasks::task_manager::task_owned_by(&request.task_id, &state.plugin_id) {
-                return Err(abi::AppError {
-                    code: "task-not-owned".to_string(),
-                    message: format!("任务不存在或不属于插件 {}", state.plugin_id),
-                });
-            }
-            let mut progress = ProgressUpdate::advance(request.done_delta);
-            if let Some(total) = request.total {
-                progress = progress.total(total);
-            }
-            if let Some(stage) = request.stage.as_deref() {
-                progress = progress.stage(TaskStage::custom(stage));
-            }
-            crate::tasks::task_manager::update_progress(&request.task_id, progress);
-            if request.message.is_some() {
-                crate::tasks::task_manager::set_task_message(&request.task_id, request.message);
-            }
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::FinishTask { request })
-            if code == abi::AppOp::FinishTask.code() =>
-        {
-            state.require_capability(PluginCapability::TaskProgress)?;
-            // 所有权校验同 UpdateTask；状态走类型化解析，拒绝未知终态字符串。
-            if !crate::tasks::task_manager::task_owned_by(&request.task_id, &state.plugin_id) {
-                return Err(abi::AppError {
-                    code: "task-not-owned".to_string(),
-                    message: format!("任务不存在或不属于插件 {}", state.plugin_id),
-                });
-            }
-            let status =
-                crate::tasks::task_manager::TaskFinishStatus::from_status_str(&request.status)
-                    .ok_or_else(|| abi::AppError {
-                        code: "task-invalid-status".to_string(),
-                        message: format!(
-                            "无效的任务终态: {}（允许 completed | cancelled | error）",
-                            request.status
-                        ),
-                    })?;
-            crate::tasks::task_manager::finish_task(&request.task_id, status, request.message);
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::RegisterTaskDefinition { request })
-            if code == abi::AppOp::RegisterTaskDefinition.code() =>
-        {
-            state.require_capability(PluginCapability::TaskProgress)?;
-            let pool = match request.pool.as_deref() {
-                None => None,
-                Some("download") => Some(crate::tasks::scheduler::TaskPool::Download),
-                Some("archive") => Some(crate::tasks::scheduler::TaskPool::Archive),
-                Some(other) => {
-                    return Err(abi::AppError {
-                        code: "task-definition-invalid-pool".to_string(),
-                        message: format!("未知的任务队列: {other}（允许 download | archive）"),
-                    });
-                }
-            };
-            let mut definition = crate::tasks::registry::TaskDefinition::new(request.type_id)
-                .capabilities(crate::tasks::registry::TaskCapabilities {
-                    cancellable: request.cancellable,
-                    pausable: request.pausable,
-                    prioritizable: request.prioritizable,
-                    retryable: request.retryable,
-                });
-            if let Some(title_key) = request.title_key {
-                definition = definition.title_key(title_key);
-            }
-            if let Some(pool) = pool {
-                definition = definition.pool(pool);
-            }
-            for phase in request.phases {
-                definition = definition.phase(phase, None);
-            }
-            crate::tasks::registry::register_for_plugin(&state.plugin_id, definition).map_err(
-                |error| abi::AppError {
-                    code: "task-definition-register-failed".to_string(),
-                    message: error.to_string(),
-                },
-            )?;
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::AppInfo) if code == abi::AppOp::AppInfo.code() => {
-            Ok(abi::AppResponse::AppInfo(abi::AppInfo {
-                version: crate::utils::app_info::version().to_string(),
-                build_info: crate::utils::app_info::build_info(),
-                api_version: abi::API_VERSION.to_string(),
-            }))
-        }
-        (code, abi::AppRequest::ThemeSnapshot) if code == abi::AppOp::ThemeSnapshot.code() => {
-            Ok(abi::AppResponse::ThemeSnapshot(state.theme_snapshot))
-        }
-        (code, abi::AppRequest::RegisterService { name })
-            if code == abi::AppOp::RegisterService.code() =>
-        {
-            // 注册失败（重名/空名）在应用效果时记录，插件本体不受影响。
-            if name.trim().is_empty() {
-                return Err(abi::AppError {
-                    code: "service-name-invalid".to_string(),
-                    message: "service name must not be empty".to_string(),
-                });
-            }
-            let plugin_id = state.plugin_id.clone();
-            state.effects.push(PluginEffect::RegisterService {
-                plugin_id,
-                service_name: name,
-            });
-            Ok(abi::AppResponse::Unit)
-        }
-        (code, abi::AppRequest::CallService { request })
-            if code == abi::AppOp::CallService.code() =>
-        {
-            let dispatcher = state
-                .service_dispatcher
-                .as_ref()
-                .ok_or_else(|| abi::AppError {
-                    code: "service-bus-unavailable".to_string(),
-                    message: "launcher has no service dispatcher".to_string(),
-                })?
-                .0
-                .clone();
-            let caller_id = state.plugin_id.clone();
-            // 释放调用方状态锁：目标插件可能在自己的执行里发起新的宿主调用。
-            drop(state);
-            let payload = dispatcher(&caller_id, request)?;
-            Ok(abi::AppResponse::Bytes(payload))
-        }
-        (_code, _request) => Err(abi::AppError {
-            code: "invalid-host-operation".to_string(),
-            message: "plugin issued an unsupported app operation".to_string(),
-        }),
-    }
-}
 
 fn manifest_has_any_readme(manifest: &PluginManifest) -> bool {
     manifest.readme_path(None).is_some_and(|path| path.exists())
@@ -3559,65 +2422,10 @@ fn manifest_has_any_readme(manifest: &PluginManifest) -> bool {
             .any(|path| manifest.root_dir.join(path).exists())
 }
 
-fn schedule_plugin_sidecar_start(
-    manifest: &PluginManifest,
-    sidecar_files: &BTreeSet<String>,
-    name: &str,
-    args: Vec<String>,
-) -> std::result::Result<(), abi::AppError> {
-    let executable = manifest.sidecar_path(name).map_err(|error| abi::AppError {
-        code: "sidecar-denied".to_string(),
-        message: error.to_string(),
-    })?;
-    if !sidecar_files.contains(name) {
-        return Err(abi::AppError {
-            code: "sidecar-not-found".to_string(),
-            message: format!("sidecar does not exist: {}", executable.display()),
-        });
-    }
 
-    let plugin_id = manifest.id.clone();
-    crate::tasks::runtime::spawn_io(async move {
-        let executable_for_log = executable.clone();
-        let started = crate::tasks::runtime::blocking::run_io(move || {
-            Command::new(&executable)
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map(|_child| ())
-                .map_err(|error| format!("start {}: {error}", executable.display()))
-        })
-        .await;
-
-        match started {
-            Ok(Ok(())) => {
-                debug!(
-                    plugin_id,
-                    executable = %executable_for_log.display(),
-                    "plugin sidecar started"
-                );
-            }
-            Ok(Err(error)) | Err(error) => {
-                warn!(
-                    plugin_id,
-                    executable = %executable_for_log.display(),
-                    error = %error,
-                    "plugin sidecar background start failed"
-                );
-            }
-        }
-    })
-    .map(|_| ())
-    .map_err(|error| abi::AppError {
-        code: "sidecar-start-schedule-failed".to_string(),
-        message: error,
-    })
-}
 fn load_storage_snapshot(
     storage_dir: &Path,
-) -> std::result::Result<BTreeMap<String, String>, abi::AppError> {
+) -> Result<BTreeMap<String, String>, abi::PluginError> {
     let mut values = BTreeMap::new();
     for key in storage_list(storage_dir, None)? {
         if let Some(value) = storage_get(storage_dir, &key)? {
@@ -3630,14 +2438,14 @@ fn load_storage_snapshot(
 fn storage_get(
     storage_dir: &Path,
     key: &str,
-) -> std::result::Result<Option<String>, abi::AppError> {
+) -> Result<Option<String>, abi::PluginError> {
     let path = storage_path(storage_dir, key)?;
     if !path.exists() {
         return Ok(None);
     }
     fs::read_to_string(&path)
         .map(Some)
-        .map_err(|error| abi::AppError {
+        .map_err(|error| abi::PluginError {
             code: "storage-read-failed".to_string(),
             message: format!("read plugin storage key {key} failed: {error}"),
         })
@@ -3648,7 +2456,7 @@ fn storage_set(
     key: &str,
     value: &str,
     quota_bytes: u64,
-) -> std::result::Result<(), abi::AppError> {
+) -> Result<(), abi::PluginError> {
     let path = storage_path(storage_dir, key)?;
     let existing_len = fs::metadata(&path)
         .map(|metadata| metadata.len())
@@ -3658,7 +2466,7 @@ fn storage_set(
         .saturating_sub(existing_len)
         .saturating_add(value.len() as u64);
     if next_used > quota_bytes {
-        return Err(abi::AppError {
+        return Err(abi::PluginError {
             code: "storage-quota-exceeded".to_string(),
             message: format!("plugin storage quota exceeded ({next_used}/{quota_bytes} bytes)"),
         });
@@ -3670,24 +2478,24 @@ fn persist_storage_value(
     storage_dir: &Path,
     key: &str,
     value: &str,
-) -> std::result::Result<(), abi::AppError> {
+) -> Result<(), abi::PluginError> {
     let path = storage_path(storage_dir, key)?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| abi::AppError {
+        fs::create_dir_all(parent).map_err(|error| abi::PluginError {
             code: "storage-create-failed".to_string(),
             message: format!("create plugin storage {} failed: {error}", parent.display()),
         })?;
     }
-    fs::write(&path, value).map_err(|error| abi::AppError {
+    fs::write(&path, value).map_err(|error| abi::PluginError {
         code: "storage-write-failed".to_string(),
         message: format!("write plugin storage key {key} failed: {error}"),
     })
 }
 
-fn storage_delete(storage_dir: &Path, key: &str) -> std::result::Result<(), abi::AppError> {
+fn storage_delete(storage_dir: &Path, key: &str) -> Result<(), abi::PluginError> {
     let path = storage_path(storage_dir, key)?;
     if path.exists() {
-        fs::remove_file(&path).map_err(|error| abi::AppError {
+        fs::remove_file(&path).map_err(|error| abi::PluginError {
             code: "storage-delete-failed".to_string(),
             message: format!("delete plugin storage key {key} failed: {error}"),
         })?;
@@ -3698,7 +2506,7 @@ fn storage_delete(storage_dir: &Path, key: &str) -> std::result::Result<(), abi:
 fn storage_list(
     storage_dir: &Path,
     prefix: Option<&str>,
-) -> std::result::Result<Vec<String>, abi::AppError> {
+) -> Result<Vec<String>, abi::PluginError> {
     if let Some(prefix) = prefix {
         validate_storage_key_prefix(prefix)?;
     }
@@ -3706,14 +2514,14 @@ fn storage_list(
         return Ok(Vec::new());
     }
     let mut keys = Vec::new();
-    for entry in fs::read_dir(storage_dir).map_err(|error| abi::AppError {
+    for entry in fs::read_dir(storage_dir).map_err(|error| abi::PluginError {
         code: "storage-list-failed".to_string(),
         message: format!(
             "list plugin storage {} failed: {error}",
             storage_dir.display()
         ),
     })? {
-        let entry = entry.map_err(|error| abi::AppError {
+        let entry = entry.map_err(|error| abi::PluginError {
             code: "storage-list-failed".to_string(),
             message: format!(
                 "list plugin storage {} failed: {error}",
@@ -3741,45 +2549,21 @@ fn storage_list(
     Ok(keys)
 }
 
-fn storage_path(storage_dir: &Path, key: &str) -> std::result::Result<PathBuf, abi::AppError> {
+fn storage_path(storage_dir: &Path, key: &str) -> Result<PathBuf, abi::PluginError> {
     validate_storage_key(key)?;
     Ok(storage_dir.join(storage_file_name(key)))
 }
 
-fn validate_storage_key_prefix(prefix: &str) -> std::result::Result<(), abi::AppError> {
-    if prefix.len() > STORAGE_KEY_MAX_BYTES {
-        return Err(abi::AppError {
-            code: "invalid-storage-key".to_string(),
-            message: format!("storage key prefix must be <= {STORAGE_KEY_MAX_BYTES} bytes"),
-        });
-    }
-    if prefix.bytes().any(|byte| !is_storage_key_byte(byte)) {
-        return Err(abi::AppError {
-            code: "invalid-storage-key".to_string(),
-            message: "storage key prefix contains unsupported characters".to_string(),
-        });
-    }
-    Ok(())
+/// 校验 KV key；委托运行时沙箱规则，但保留旧 ABI 的错误码。
+fn validate_storage_key(key: &str) -> Result<(), abi::PluginError> {
+    abi::sandbox::validate_storage_key(key)
+        .map_err(|error| abi::PluginError::new("invalid-storage-key", error.message))
 }
 
-fn validate_storage_key(key: &str) -> std::result::Result<(), abi::AppError> {
-    if key.is_empty() || key.len() > STORAGE_KEY_MAX_BYTES {
-        return Err(abi::AppError {
-            code: "invalid-storage-key".to_string(),
-            message: format!("storage key must be 1..={STORAGE_KEY_MAX_BYTES} bytes"),
-        });
-    }
-    if key.bytes().any(|byte| !is_storage_key_byte(byte)) {
-        return Err(abi::AppError {
-            code: "invalid-storage-key".to_string(),
-            message: "storage key contains unsupported characters".to_string(),
-        });
-    }
-    Ok(())
-}
-
-fn is_storage_key_byte(byte: u8) -> bool {
-    byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_' | b':')
+/// 校验 KV key 前缀；委托运行时沙箱规则，但保留旧 ABI 的错误码。
+fn validate_storage_key_prefix(prefix: &str) -> Result<(), abi::PluginError> {
+    abi::sandbox::validate_storage_key_prefix(prefix)
+        .map_err(|error| abi::PluginError::new("invalid-storage-key", error.message))
 }
 
 fn storage_file_name(key: &str) -> String {
@@ -3809,19 +2593,19 @@ fn storage_key_from_file_name(file_name: &str) -> Option<String> {
     Some(key)
 }
 
-fn storage_used_bytes(storage_dir: &Path) -> std::result::Result<u64, abi::AppError> {
+fn storage_used_bytes(storage_dir: &Path) -> Result<u64, abi::PluginError> {
     if !storage_dir.exists() {
         return Ok(0);
     }
     let mut used = 0_u64;
-    for entry in fs::read_dir(storage_dir).map_err(|error| abi::AppError {
+    for entry in fs::read_dir(storage_dir).map_err(|error| abi::PluginError {
         code: "storage-quota-check-failed".to_string(),
         message: format!(
             "read plugin storage {} failed: {error}",
             storage_dir.display()
         ),
     })? {
-        let entry = entry.map_err(|error| abi::AppError {
+        let entry = entry.map_err(|error| abi::PluginError {
             code: "storage-quota-check-failed".to_string(),
             message: format!(
                 "read plugin storage {} failed: {error}",
@@ -3851,13 +2635,19 @@ fn sanitize_storage_segment(value: &str) -> String {
 }
 
 impl RenderCache {
+    fn next_ticket(&mut self) -> u64 {
+        self.ticket = self.ticket.wrapping_add(1);
+        self.ticket
+    }
+
     fn invalidate_plugin(&mut self, plugin_id: &str) {
+        self.pending_injections.clear();
         self.pages
             .retain(|key, _tree| key.plugin_id.as_str() != plugin_id);
         self.page_errors
             .retain(|key, _error| key.plugin_id.as_str() != plugin_id);
         self.pending_pages
-            .retain(|key| key.plugin_id.as_str() != plugin_id);
+            .retain(|key, _| key.plugin_id.as_str() != plugin_id);
         for trees in self.injections.values_mut() {
             trees.retain(|tree| tree.plugin_id.as_str() != plugin_id);
         }
@@ -3865,6 +2655,7 @@ impl RenderCache {
     }
 
     fn invalidate_page(&mut self, plugin_id: &str, page_id: Option<&str>) {
+        self.pending_injections.clear();
         self.pages.retain(|key, _tree| {
             if key.plugin_id.as_str() != plugin_id {
                 return true;
@@ -3877,7 +2668,7 @@ impl RenderCache {
             }
             page_id.is_some_and(|page_id| key.page_id.as_str() != page_id)
         });
-        self.pending_pages.retain(|key| {
+        self.pending_pages.retain(|key, _| {
             if key.plugin_id.as_str() != plugin_id {
                 return true;
             }
@@ -3887,10 +2678,12 @@ impl RenderCache {
     }
 
     fn invalidate_all_injections(&mut self) {
+        self.pending_injections.clear();
         self.injections.clear();
     }
 
     fn invalidate_plugin_page(&mut self, plugin_id: &str, page_id: &str) {
+        self.pending_injections.clear();
         self.pages.retain(|key, _tree| {
             key.plugin_id.as_str() != plugin_id || key.page_id.as_str() != page_id
         });
@@ -3898,11 +2691,12 @@ impl RenderCache {
             key.plugin_id.as_str() != plugin_id || key.page_id.as_str() != page_id
         });
         self.pending_pages
-            .retain(|key| key.plugin_id.as_str() != plugin_id || key.page_id.as_str() != page_id);
+            .retain(|key, _| key.plugin_id.as_str() != plugin_id || key.page_id.as_str() != page_id);
         self.invalidate_plugin_injections(plugin_id);
     }
 
     fn invalidate_plugin_injections(&mut self, plugin_id: &str) {
+        self.pending_injections.clear();
         for trees in self.injections.values_mut() {
             trees.retain(|tree| tree.plugin_id.as_str() != plugin_id);
         }
@@ -3915,6 +2709,7 @@ impl RenderCache {
         slot: InjectionSlot,
         page: Option<&str>,
     ) {
+        self.pending_injections.clear();
         self.injections.retain(|key, trees| {
             if key.slot != slot {
                 return true;
@@ -3987,7 +2782,7 @@ struct PluginLogMemory {
 }
 
 impl PluginHttpFetchCache {
-    fn snapshot(
+    pub(crate) fn snapshot(
         &self,
         manifest: &PluginManifest,
         plugin_id: &str,
@@ -3995,21 +2790,21 @@ impl PluginHttpFetchCache {
         url: &str,
         ttl_seconds: u32,
         max_bytes: u32,
-    ) -> std::result::Result<HttpCacheSnapshot, abi::AppError> {
+    ) -> std::result::Result<HttpCacheSnapshot, abi::PluginError> {
         manifest
             .require_capability(PluginCapability::NetworkHttp)
-            .map_err(|error| abi::AppError {
+            .map_err(|error| abi::PluginError {
                 code: "capability-denied".to_string(),
                 message: error.to_string(),
             })?;
         if !manifest.allows_network_url(url) {
-            return Err(abi::AppError {
+            return Err(abi::PluginError {
                 code: "network-url-denied".to_string(),
                 message: format!("plugin {plugin_id} is not allowed to request {url}"),
             });
         }
         if !url.starts_with("https://") {
-            return Err(abi::AppError {
+            return Err(abi::PluginError {
                 code: "network-url-invalid".to_string(),
                 message: "plugin HTTP requests must use https:// URLs".to_string(),
             });
@@ -4036,7 +2831,7 @@ impl PluginHttpFetchCache {
             },
         });
 
-        let mut state = self.state.lock().map_err(|_| abi::AppError {
+        let mut state = self.state.lock().map_err(|_| abi::PluginError {
             code: "network-cache-lock-failed".to_string(),
             message: "plugin HTTP cache lock failed".to_string(),
         })?;
@@ -4227,22 +3022,22 @@ impl PluginResourceCache {
             .retain(|key, _entry| installed.contains(&key.plugin_id));
     }
 
-    fn read(
+    pub(crate) fn read(
         &self,
         manifest: &PluginManifest,
         plugin_id: &str,
         render_context: Option<&RenderContext>,
         path: &str,
-    ) -> std::result::Result<Arc<[u8]>, abi::AppError> {
+    ) -> std::result::Result<Arc<[u8]>, abi::PluginError> {
         manifest
             .require_capability(PluginCapability::ResourceRead)
-            .map_err(|error| abi::AppError {
+            .map_err(|error| abi::PluginError {
                 code: "capability-denied".to_string(),
                 message: error.to_string(),
             })?;
         let resource_path = manifest
             .resource_path(path)
-            .map_err(|error| abi::AppError {
+            .map_err(|error| abi::PluginError {
                 code: "resource-denied".to_string(),
                 message: error.to_string(),
             })?;
@@ -4265,7 +3060,7 @@ impl PluginResourceCache {
             },
         };
 
-        let mut state = self.state.lock().map_err(|_| abi::AppError {
+        let mut state = self.state.lock().map_err(|_| abi::PluginError {
             code: "resource-cache-lock-failed".to_string(),
             message: "plugin resource cache lock failed".to_string(),
         })?;
@@ -4285,7 +3080,7 @@ impl PluginResourceCache {
             return Ok(Arc::clone(bytes));
         }
         if let Some(error) = entry.error.as_ref() {
-            return Err(abi::AppError {
+            return Err(abi::PluginError {
                 code: "resource-read-failed".to_string(),
                 message: error.clone(),
             });
@@ -4294,6 +3089,7 @@ impl PluginResourceCache {
             entry.loading = true;
             spawn_resource_refresh(
                 key,
+                manifest.root_dir.clone(),
                 resource_path,
                 usize::try_from(manifest.limits.max_resource_bytes).unwrap_or(usize::MAX),
                 sender,
@@ -4301,7 +3097,7 @@ impl PluginResourceCache {
             );
         }
 
-        Err(abi::AppError {
+        Err(abi::PluginError {
             code: "resource-loading".to_string(),
             message: format!("plugin resource {path} is loading in the background"),
         })
@@ -4408,6 +3204,7 @@ fn plugin_log_memory(slices: Option<(&[PluginLogEntry], &[PluginLogEntry])>) -> 
 
 fn spawn_resource_refresh(
     key: ResourceCacheKey,
+    root_dir: PathBuf,
     resource_path: PathBuf,
     max_bytes: usize,
     sender: mpsc::Sender<ResourceLoadResult>,
@@ -4418,7 +3215,7 @@ fn spawn_resource_refresh(
     let fallback_finished_refresh_pending = Arc::clone(&finished_refresh_pending);
     if let Err(error) = crate::tasks::runtime::spawn_io(async move {
         let loaded = crate::tasks::runtime::blocking::run_io(move || {
-            read_plugin_resource_path(&resource_path, max_bytes)
+            read_plugin_resource_path(&root_dir, &resource_path, max_bytes)
         })
         .await;
         let result = match loaded {
@@ -4445,11 +3242,19 @@ fn spawn_resource_refresh(
 }
 
 fn read_plugin_resource_path(
+    root: &Path,
     path: &Path,
     max_bytes: usize,
 ) -> std::result::Result<Vec<u8>, String> {
-    let bytes = fs::read(path)
-        .map_err(|error| format!("read plugin resource {} failed: {error}", path.display()))?;
+    let root = root.canonicalize().map_err(|error| error.to_string())?;
+    let path = path.canonicalize().map_err(|error| error.to_string())?;
+    if !path.starts_with(&root) || !path.is_file() {
+        return Err("plugin resource is outside its package".into());
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(path).map_err(|error| error.to_string())?
+        .take(max_bytes as u64 + 1).read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
     if bytes.len() > max_bytes {
         return Err(format!("plugin resource exceeds {max_bytes} bytes"));
     }
@@ -4466,7 +3271,7 @@ fn spawn_http_refresh(
     let fallback_sender = sender.clone();
     let fallback_finished_refresh_pending = Arc::clone(&finished_refresh_pending);
     if let Err(error) = crate::tasks::runtime::spawn_io(async move {
-        let result = fetch_http_text(&url, max_bytes).await;
+        let result = fetch_http_text(&url, max_bytes, None).await;
         if let Err(error) = sender.send(HttpRefreshResult { url, result }) {
             warn!(error = ?error, "plugin HTTP refresh result receiver dropped");
             return;
@@ -4486,30 +3291,48 @@ fn spawn_http_refresh(
     }
 }
 
-async fn fetch_http_text(
+pub(super) async fn fetch_http_text(
     url: &str,
     max_bytes: usize,
+    redirects: Option<&PluginManifest>,
 ) -> std::result::Result<(String, u64), String> {
     let client = crate::http::proxy::clients::client()
         .map_err(|error| format!("build HTTP client failed: {error}"))?;
-    let response = client
-        .get(url)
-        .timeout(HTTP_TIMEOUT)
-        .send()
-        .await
-        .map_err(|error| format!("HTTP request failed: {error}"))?;
+    let mut url = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
+    let options = crate::http::request::RequestOptions {
+        method: "GET",
+        headers: None,
+        timeout_ms: Some(HTTP_TIMEOUT.as_millis() as u64),
+        allow_redirects: Some(false),
+    };
+    let mut response = crate::http::request::send(&client, &url, &options).await?;
+    if let Some(manifest) = redirects {
+        for _ in 0..4 {
+            if !response.status().is_redirection() {
+                break;
+            }
+            let location = response.headers().get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| "HTTP redirect is missing a location".to_owned())?;
+            url = url.join(location).map_err(|error| error.to_string())?;
+            if !manifest.allows_network_url(url.as_str()) {
+                return Err("HTTP redirect is outside the plugin allowlist".into());
+            }
+            response = crate::http::request::send(&client, &url, &options).await?;
+        }
+    }
     let status = response.status();
     if !status.is_success() {
         return Err(format!("HTTP status {status}"));
     }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("read HTTP body failed: {error}"))?;
-    if bytes.len() > max_bytes {
-        return Err(format!("HTTP body exceeds {max_bytes} bytes"));
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if chunk.len() > max_bytes.saturating_sub(bytes.len()) {
+            return Err(format!("HTTP response exceeds {max_bytes} bytes"));
+        }
+        bytes.extend_from_slice(&chunk);
     }
-    let text = String::from_utf8(bytes.to_vec())
+    let text = String::from_utf8(bytes)
         .map_err(|error| format!("HTTP body is not utf-8: {error}"))?;
     Ok((text, current_unix_ms()))
 }
@@ -4551,7 +3374,7 @@ fn bootstrap_registration_from_abi(
         abi::Registration::Page(page) => Ok(BootstrapRegistration::Page {
             page_id: page.page_id,
             title: page.title,
-            navigation: page.navigation.map(|navigation| PluginNavigationEntry {
+            navigation: page.tool.map(|navigation| PluginNavigationEntry {
                 label: navigation.label,
                 icon: navigation.icon,
                 order: navigation.order,
@@ -4623,7 +3446,10 @@ fn plugin_event_to_abi(event: &PluginEvent) -> abi::PluginEvent {
         plugin_id: event.plugin_id.clone(),
         page_id: event.page_id.clone(),
         kind: match &event.kind {
-            PluginEventKind::RouteChanged { path } => {
+            PluginEventKind::JobReady { job_id } => abi::PluginEventKind::JobReady(abi::JobReadyEvent {
+            job_id: job_id.clone(),
+        }),
+        PluginEventKind::RouteChanged { path } => {
                 abi::PluginEventKind::RouteChanged(abi::RouteChangedEvent { path: path.clone() })
             }
             PluginEventKind::Action { action_id, value } => {
@@ -4642,172 +3468,9 @@ fn plugin_event_to_abi(event: &PluginEvent) -> abi::PluginEvent {
     }
 }
 
-fn view_tree_from_abi(tree: abi::ViewTree) -> Result<ViewTree> {
-    let root = node_from_abi_index(tree.root, &tree.nodes, 0)?;
-    let view_tree = ViewTree { root };
-    view_tree.validate()?;
-    Ok(view_tree)
-}
-
-fn node_from_abi_index(
-    index: u32,
-    nodes: &[abi::ViewNode],
-    depth: usize,
-) -> Result<ui_dsl::ViewNode> {
-    if depth > ui_dsl::MAX_VIEW_DEPTH {
-        bail!("plugin view exceeds max depth {}", ui_dsl::MAX_VIEW_DEPTH);
-    }
-
-    let index = usize::try_from(index).context("plugin view node index overflow")?;
-    let Some(node) = nodes.get(index) else {
-        bail!("plugin view references missing node index {index}");
-    };
-
-    Ok(match node {
-        abi::ViewNode::Container(container) => ui_dsl::ViewNode::Container {
-            style: view_style_from_abi(container.style),
-            children: children_from_abi(&container.children, nodes, depth)?,
-        },
-        abi::ViewNode::Text(text) => ui_dsl::ViewNode::Text {
-            text: text.text.clone(),
-            style: view_style_from_abi(text.style),
-        },
-        abi::ViewNode::Button(button) => ui_dsl::ViewNode::Button {
-            label: button.label.clone(),
-            action_id: button.action_id.clone(),
-            action_value: button.action_value.clone(),
-            style: view_style_from_abi(button.style),
-        },
-        abi::ViewNode::Input(input) => ui_dsl::ViewNode::Input {
-            value: input.value.clone(),
-            placeholder: input.placeholder.clone(),
-            action_id: input.action_id.clone(),
-            style: view_style_from_abi(input.style),
-        },
-        abi::ViewNode::Checkbox(checkbox) => ui_dsl::ViewNode::Checkbox {
-            label: checkbox.label.clone(),
-            checked: checkbox.checked,
-            action_id: checkbox.action_id.clone(),
-            action_value: checkbox.action_value.clone(),
-            style: view_style_from_abi(checkbox.style),
-        },
-        abi::ViewNode::Toggle(toggle) => ui_dsl::ViewNode::Toggle {
-            label: toggle.label.clone(),
-            enabled: toggle.enabled,
-            action_id: toggle.action_id.clone(),
-            action_value: toggle.action_value.clone(),
-            style: view_style_from_abi(toggle.style),
-        },
-        abi::ViewNode::Select(select) => ui_dsl::ViewNode::Select {
-            label: select.label.clone(),
-            action_id: select.action_id.clone(),
-            options: select
-                .options
-                .iter()
-                .map(|option| ui_dsl::SelectOption {
-                    label: option.label.clone(),
-                    value: option.value.clone(),
-                })
-                .collect(),
-            selected: select.selected.clone(),
-            style: view_style_from_abi(select.style),
-        },
-        abi::ViewNode::Progress(progress) => ui_dsl::ViewNode::Progress {
-            label: progress.label.clone(),
-            value: progress.value,
-            total: progress.total,
-            style: view_style_from_abi(progress.style),
-        },
-        abi::ViewNode::Link(link) => ui_dsl::ViewNode::Link {
-            label: link.label.clone(),
-            url: link.url.clone(),
-            tooltip: link.tooltip.clone(),
-            style: view_style_from_abi(link.style),
-        },
-        abi::ViewNode::ItemList(list) => ui_dsl::ViewNode::List {
-            items: children_from_abi(&list.items, nodes, depth)?,
-            style: view_style_from_abi(list.style),
-        },
-        abi::ViewNode::Separator => ui_dsl::ViewNode::Separator,
-        abi::ViewNode::Badge(badge) => ui_dsl::ViewNode::Badge {
-            label: badge.label.clone(),
-            style: view_style_from_abi(badge.style),
-        },
-        abi::ViewNode::Icon(icon) => ui_dsl::ViewNode::Icon {
-            name: icon.name.clone(),
-            style: view_style_from_abi(icon.style),
-        },
-        abi::ViewNode::Image(image) => ui_dsl::ViewNode::Image {
-            src: image.src.clone(),
-            alt: image.alt.clone(),
-            caption: image.caption.clone(),
-            placeholder: image.placeholder.clone(),
-            fallback: image.fallback.clone(),
-            style: view_style_from_abi(image.style),
-            height: image.height,
-            min_height: image.min_height,
-            max_height: image.max_height,
-            aspect_ratio_x: image.aspect_ratio_x,
-            aspect_ratio_y: image.aspect_ratio_y,
-            corner_radius: image.corner_radius,
-            fit: match image.fit {
-                abi::ImageFit::Cover => ui_dsl::ImageFit::Cover,
-                abi::ImageFit::Contain => ui_dsl::ImageFit::Contain,
-            },
-        },
-        abi::ViewNode::Spacer(spacer) => ui_dsl::ViewNode::Spacer { size: spacer.size },
-    })
-}
-
-fn children_from_abi(
-    children: &[u32],
-    nodes: &[abi::ViewNode],
-    depth: usize,
-) -> Result<Vec<ui_dsl::ViewNode>> {
-    children
-        .iter()
-        .copied()
-        .map(|child| node_from_abi_index(child, nodes, depth + 1))
-        .collect()
-}
-
-fn view_style_from_abi(style: abi::ViewStyle) -> ui_dsl::ViewStyle {
-    ui_dsl::ViewStyle {
-        direction: match style.direction {
-            abi::LayoutDirection::Row => ui_dsl::LayoutDirection::Row,
-            abi::LayoutDirection::Column => ui_dsl::LayoutDirection::Column,
-        },
-        gap: style.gap,
-        padding: style.padding,
-        align: match style.align {
-            abi::Align::Start => ui_dsl::Align::Start,
-            abi::Align::Center => ui_dsl::Align::Center,
-            abi::Align::End => ui_dsl::Align::End,
-            abi::Align::Stretch => ui_dsl::Align::Stretch,
-        },
-        color: style.color.map(theme_token_from_abi),
-        background: style.background.map(theme_token_from_abi),
-        text_size: match style.text_size {
-            abi::TextSizeToken::Small => ui_dsl::TextSizeToken::Small,
-            abi::TextSizeToken::Body => ui_dsl::TextSizeToken::Body,
-            abi::TextSizeToken::Title => ui_dsl::TextSizeToken::Title,
-        },
-        emphasis: style.emphasis,
-        full_width: style.full_width,
-        corner_radius: style.corner_radius,
-    }
-}
-
-fn theme_token_from_abi(token: abi::ThemeToken) -> ui_dsl::ThemeToken {
-    match token {
-        abi::ThemeToken::PrimaryText => ui_dsl::ThemeToken::PrimaryText,
-        abi::ThemeToken::SecondaryText => ui_dsl::ThemeToken::SecondaryText,
-        abi::ThemeToken::MutedText => ui_dsl::ThemeToken::MutedText,
-        abi::ThemeToken::Accent => ui_dsl::ThemeToken::Accent,
-        abi::ThemeToken::Surface => ui_dsl::ThemeToken::Surface,
-        abi::ThemeToken::Border => ui_dsl::ThemeToken::Border,
-        abi::ThemeToken::Danger => ui_dsl::ThemeToken::Danger,
-    }
+fn view_tree_from_abi(tree: ViewTree) -> Result<ViewTree> {
+    tree.validate()?;
+    Ok(tree)
 }
 
 fn uninstall_plugin_files(
@@ -4824,6 +3487,9 @@ fn uninstall_plugin_files(
     }
     fs::remove_dir_all(&root_dir)
         .with_context(|| format!("remove plugin directory {}", root_dir.display()))?;
+    if let Err(error) = super::native::remove_components(plugin_id) {
+        tracing::warn!(%plugin_id, %error, "mark native components for cleanup");
+    }
     // Task types registered by this plugin must not outlive it.
     crate::tasks::registry::unregister_plugin_namespace(plugin_id);
     crate::plugins::state::remove(plugins_dir, plugin_id)
@@ -4979,7 +3645,6 @@ fn prepare_plugin_resources(
     let storage_values =
         load_storage_snapshot(&storage_dir).map_err(|error| Arc::<str>::from(error.message));
     let resource_values = prepare_plugin_resource_values(manifest);
-    let sidecar_files = prepare_plugin_sidecar_files(manifest);
     let source_stamp = PluginSourceStamp::read(&manifest.root_dir);
 
     PreparedPluginResources {
@@ -4991,32 +3656,9 @@ fn prepare_plugin_resources(
         config_text,
         storage_values,
         resource_values,
-        sidecar_files,
+        game_mods: super::game_mods::prepare(manifest),
         source_stamp,
     }
-}
-
-fn prepare_plugin_sidecar_files(manifest: &PluginManifest) -> BTreeSet<String> {
-    if !manifest.has_capability(&PluginCapability::SidecarExec) {
-        return BTreeSet::new();
-    }
-    let Some(sidecar_dir) = manifest.sidecar_dir.as_deref() else {
-        return BTreeSet::new();
-    };
-    let Ok(entries) = std::fs::read_dir(manifest.root_dir.join(sidecar_dir)) else {
-        return BTreeSet::new();
-    };
-
-    entries
-        .flatten()
-        .filter(|entry| {
-            entry
-                .file_type()
-                .map(|file_type| file_type.is_file())
-                .unwrap_or(false)
-        })
-        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
-        .collect()
 }
 
 fn prepare_plugin_resource_values(manifest: &PluginManifest) -> BTreeMap<String, Arc<[u8]>> {
@@ -5034,16 +3676,7 @@ fn prepare_plugin_resource_values(manifest: &PluginManifest) -> BTreeMap<String,
         let Ok(path) = manifest.resource_path(normalized) else {
             continue;
         };
-        let Ok(metadata) = std::fs::metadata(&path) else {
-            continue;
-        };
-        if !metadata.is_file() || metadata.len() > manifest.limits.max_resource_bytes {
-            continue;
-        }
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        if bytes.len() <= max_bytes {
+        if let Ok(bytes) = read_plugin_resource_path(&manifest.root_dir, &path, max_bytes) {
             values.insert(normalized.to_string(), Arc::<[u8]>::from(bytes));
         }
     }
@@ -5052,7 +3685,7 @@ fn prepare_plugin_resource_values(manifest: &PluginManifest) -> BTreeMap<String,
 
 fn prepare_plugin_wasm(manifest: &PluginManifest) -> PreparedPluginWasm {
     let path = manifest.wasm_path();
-    let bytes = match std::fs::read(&path) {
+    let bytes = match read_plugin_resource_path(&manifest.root_dir, &path, 32 * 1024 * 1024) {
         Ok(bytes) => bytes,
         Err(error) => {
             return PreparedPluginWasm::Error(Arc::<str>::from(format!(
@@ -5062,22 +3695,13 @@ fn prepare_plugin_wasm(manifest: &PluginManifest) -> PreparedPluginWasm {
         }
     };
 
+    // 组件校验与编译延迟到实例化时（wasmtime 引擎 + Cranelift 磁盘缓存）；
+    // 这里只负责内容读取与摘要，供增量 reload 复用。
     let sha256 = crate::plugins::manifest::sha256_hex(&bytes);
-    let module = match tinywasm::parse_bytes(&bytes)
-        .map_err(|error| anyhow!("parse plugin wasm {} failed: {error}", path.display()))
-        .and_then(|module| {
-            validate_module_abi(&module)?;
-            Ok(module)
-        }) {
-        Ok(module) => module,
-        Err(error) => {
-            return PreparedPluginWasm::Error(Arc::<str>::from(
-                crate::plugins::manifest::format_error_chain(&error),
-            ));
-        }
-    };
-
-    PreparedPluginWasm::Ready { module, sha256 }
+    PreparedPluginWasm::Ready {
+        wasm: Arc::from(bytes.as_slice()),
+        sha256,
+    }
 }
 
 pub fn init(cx: &mut App) {
@@ -5173,6 +3797,7 @@ fn spawn_initial_reload_task(cx: &mut App) {
                 }
                 std::mem::take(&mut registry.reload_prepare_requested)
             });
+            start_pending_activations(cx);
             cx.refresh_windows();
             if reload_requested {
                 reload_all(cx);
@@ -5218,10 +3843,8 @@ pub fn reload_all(cx: &mut App) {
         .await;
 
         cx.update(|cx| {
-            let theme_snapshot = current_theme_snapshot(cx);
             let reload_requested = cx.update_global(|registry: &mut PluginRegistry, _cx| {
                 registry.reload_prepare_pending = false;
-                registry.set_theme_snapshot(theme_snapshot);
                 let result = match prepared {
                     Ok(Ok(prepared)) => registry.reload_prepared_manifests(prepared),
                     Ok(Err(error)) => Err(error),
@@ -5232,10 +3855,10 @@ pub fn reload_all(cx: &mut App) {
                     error!(error = %error_message, "plugin reload failed");
                     registry.last_error = Some(SharedString::from(error_message));
                 } else {
-                    registry.set_theme_snapshot(theme_snapshot);
-                }
+                    }
                 std::mem::take(&mut registry.reload_prepare_requested)
             });
+            start_pending_activations(cx);
             cx.refresh_windows();
             if reload_requested {
                 reload_all(cx);
@@ -5245,6 +3868,59 @@ pub fn reload_all(cx: &mut App) {
         Ok::<(), anyhow::Error>(())
     })
     .detach();
+}
+
+/// Compiles and initializes pending components outside GPUI. Results from a superseded
+/// package generation cannot re-register its pages or services.
+fn start_pending_activations(cx: &mut App) {
+    let next = cx.update_global(|registry: &mut PluginRegistry, _| {
+        if !registry.activating.is_empty() {
+            return None;
+        }
+        let mut graph = DependencyGraph::new();
+        for instance in registry.plugins.values().filter(|instance| instance.enabled) {
+            graph.add_plugin(instance.manifest.id.clone(), instance.manifest.dependencies.keys().cloned().collect());
+        }
+        let order = graph.compute_load_order().unwrap_or_else(|_| registry.plugins.keys().cloned().collect());
+        let instance = order.iter().filter_map(|id| registry.plugins.get(id)).find(|instance| {
+            instance.enabled && instance.runtime.is_none()
+                && matches!(instance.state, PluginLoadState::Unloaded)
+        })?.clone();
+        registry.activating.insert((instance.manifest.id.clone(), instance.generation));
+        Some((registry.activation_context(), instance))
+    });
+    let Some((activation, instance)) = next else { return };
+    let plugin_id = instance.manifest.id.clone();
+    let generation = instance.generation;
+    cx.spawn(async move |cx| {
+        let result = crate::tasks::runtime::blocking::run_io(move || activation.activate(instance))
+            .await.map_err(|error| anyhow!("{error}")).and_then(|result| result);
+        let _ = cx.update(|cx| {
+            let theme = current_theme_snapshot(cx);
+            let retry_later = cx.update_global(|registry: &mut PluginRegistry, _| {
+                registry.activating.remove(&(plugin_id.clone(), generation));
+                if !registry.plugins.get(&plugin_id).is_some_and(|instance| instance.enabled && instance.generation == generation) {
+                    return false;
+                }
+                let retry_later = result.as_ref().err().is_some_and(|error| format!("{error:#}").contains("resource-loading"));
+                if let Ok(instance) = &result
+                    && let Some(runtime) = &instance.runtime
+                {
+                    runtime.lock().unwrap_or_else(|error| error.into_inner()).set_theme(theme);
+                }
+                let _ = registry.finish_activation(&plugin_id, result);
+                retry_later
+            });
+            if !retry_later {
+                start_pending_activations(cx);
+            }
+            let early = cx.update_global(|registry: &mut PluginRegistry, _| std::mem::take(&mut registry.early_job_events));
+            for (id, generation, job_id) in early {
+                dispatch_job_ready(cx, id, generation, job_id);
+            }
+            cx.refresh_windows();
+        });
+    }).detach();
 }
 
 pub fn ensure_manifest_index(cx: &mut App) {
@@ -5309,39 +3985,27 @@ fn notify_async_app_refresh_finished() {
     }
 }
 
-pub fn render_page(cx: &mut App, plugin_id: &str, page_id: &str) -> Result<Arc<ViewTree>> {
-    ensure_loaded(cx);
-    drain_async_app_refreshes(cx);
-
-    {
-        let registry = cx.global::<PluginRegistry>();
-        if let Some(tree) = registry.cached_page(plugin_id, page_id) {
-            return Ok(tree);
-        }
-        if let Some(error) = registry.cached_page_error(plugin_id, page_id) {
-            return Err(anyhow!("{}", error));
-        }
-    }
-
-    let theme_snapshot = current_theme_snapshot(cx);
-    cx.update_global(|registry: &mut PluginRegistry, _cx| {
-        registry.set_theme_snapshot(theme_snapshot);
-        registry.render_page(plugin_id, page_id)
-    })
-}
-
-/// 请求页面渲染：渲染路径只做只读检查，插件代码在帧结束后执行。
-///
-/// 该函数可以在 `Render` 中调用：它不加载插件、不执行 Wasm，也不会在渲染期间为
-/// 请求本身改写 `PluginRegistry`（只有已经完成的后台刷新会在此时落地），因此不会
-/// 阻塞当前帧或触发重绘循环。
+/// Schedules one background render for a cache miss.
 pub fn request_page_render(cx: &mut App, plugin_id: &str, page_id: &str) {
     // 已完成的后台刷新在这里落地：正常情况下只做一次原子检查，不会改写注册表。
     drain_async_app_refreshes(cx);
 
+    let hibernated = {
+        let registry = cx.global::<PluginRegistry>();
+        registry.plugins.get(plugin_id).is_some_and(|plugin| {
+            plugin.enabled && plugin.runtime.is_none() && matches!(plugin.state, PluginLoadState::Unloaded)
+                && registry.activating.is_empty()
+        })
+    };
+    if hibernated {
+        cx.defer(start_pending_activations);
+        return;
+    }
+
     let needs_render = {
         let registry = cx.global::<PluginRegistry>();
-        registry.cached_page(plugin_id, page_id).is_none()
+        registry.plugins.get(plugin_id).is_some_and(|plugin| plugin.enabled && plugin.runtime.is_some())
+            && registry.cached_page(plugin_id, page_id).is_none()
             && registry.cached_page_error(plugin_id, page_id).is_none()
             && !registry.is_page_pending(plugin_id, page_id)
     };
@@ -5357,48 +4021,48 @@ pub fn request_page_render(cx: &mut App, plugin_id: &str, page_id: &str) {
 /// 在非渲染上下文执行页面渲染：加载插件、执行 Wasm，并把结果写入渲染缓存。
 fn request_page_render_now(cx: &mut App, plugin_id: &str, page_id: &str) {
     ensure_loaded(cx);
-    drain_async_app_refreshes(cx);
-
-    let already_handled = {
-        let registry = cx.global::<PluginRegistry>();
-        registry.cached_page(plugin_id, page_id).is_some()
-            || registry.cached_page_error(plugin_id, page_id).is_some()
-            || registry.is_page_pending(plugin_id, page_id)
-    };
-    if already_handled {
-        return;
-    }
-
-    cx.update_global(|registry: &mut PluginRegistry, _cx| {
-        registry
-            .render_cache
-            .pending_pages
-            .insert(PageRenderCacheKey {
-                plugin_id: plugin_id.to_string(),
-                page_id: page_id.to_string(),
-            });
+    let key = PageRenderCacheKey { plugin_id: plugin_id.to_string(), page_id: page_id.to_string() };
+    let prepared = cx.update_global(|registry: &mut PluginRegistry, _| {
+        let instance = registry.plugins.get(plugin_id)?;
+        let runtime = instance.runtime.clone()?;
+        let cache = &mut registry.render_cache;
+        if cache.pages.contains_key(&key) || cache.page_errors.contains_key(&key)
+            || cache.pending_pages.contains_key(&key) || cache.pending_pages.len() >= 32 {
+            return None;
+        }
+        let ticket = cache.next_ticket();
+        cache.pending_pages.insert(key.clone(), ticket);
+        Some((runtime, ticket))
     });
-
-    let plugin_id = plugin_id.to_string();
-    let page_id = page_id.to_string();
-    let theme_snapshot = current_theme_snapshot(cx);
-
+    let Some((runtime, ticket)) = prepared else { return };
+    let theme = current_theme_snapshot(cx);
+    let request = abi::PageRenderRequest { plugin_id: key.plugin_id.clone(), page_id: key.page_id.clone() };
     cx.spawn(async move |cx| {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
+            let mut runtime = runtime.lock().unwrap_or_else(|error| error.into_inner());
+            runtime.set_theme(theme);
+            let rendered = runtime.render_page(request);
+            runtime.take_effects();
+            view_tree_from_abi(rendered.map_err(plugin_error_to_anyhow)?)
+        }).await.map_err(|error| anyhow!("{error}")).and_then(|result| result);
         let _ = cx.update(|cx| {
-            cx.update_global(|registry: &mut PluginRegistry, _cx| {
-                registry
-                    .render_cache
-                    .pending_pages
-                    .remove(&PageRenderCacheKey {
-                        plugin_id: plugin_id.clone(),
-                        page_id: page_id.clone(),
-                    });
-                registry.set_theme_snapshot(theme_snapshot);
-                let _ = registry.render_page(&plugin_id, &page_id);
+            cx.update_global(|registry: &mut PluginRegistry, _| {
+                let cache = &mut registry.render_cache;
+                if cache.pending_pages.get(&key) != Some(&ticket) {
+                    return;
+                }
+                cache.pending_pages.remove(&key);
+                match result {
+                    Ok(tree) => { cache.pages.insert(key, Arc::new(tree)); }
+                    Err(error) => {
+                        let message = format!("{error:#}");
+                        cache.page_errors.insert(key.clone(), Arc::from(message.clone()));
+                        registry.mark_unhealthy(&key.plugin_id, message);
+                    }
+                }
             });
         });
-    })
-    .detach();
+    }).detach();
 }
 
 /// 渲染路径读取插件注入：只投影已缓存的树，缓存缺失时登记一次延迟渲染。
@@ -5418,7 +4082,8 @@ pub fn render_injections(
         let registry = cx.global::<PluginRegistry>();
         match registry.cached_injections(slot, page) {
             Some(trees) => return trees,
-            None => registry.injections_need_render(slot, page),
+            None => registry.injections_need_render(slot, page) && !registry.render_cache.pending_injections.keys()
+                .any(|key| key.slot == slot && key.page.as_deref() == page),
         }
     };
     if !should_request {
@@ -5433,23 +4098,55 @@ pub fn render_injections(
 }
 
 /// 在非渲染上下文执行注入渲染：加载插件、执行 Wasm，并把结果写入渲染缓存。
-fn render_injections_now(
-    cx: &mut App,
-    slot: InjectionSlot,
-    page: Option<&str>,
-) -> Vec<RenderedInjection> {
+fn render_injections_now(cx: &mut App, slot: InjectionSlot, page: Option<&str>) {
     ensure_loaded(cx);
-    drain_async_app_refreshes(cx);
-
-    let theme_snapshot = current_theme_snapshot(cx);
-    let rendered = cx.update_global(|registry: &mut PluginRegistry, _cx| {
-        registry.set_theme_snapshot(theme_snapshot);
-        registry.render_injections(slot, page)
+    let key = InjectionRenderCacheKey { slot, page: page.map(str::to_owned) };
+    let prepared = cx.update_global(|registry: &mut PluginRegistry, _| {
+        let cache = &mut registry.render_cache;
+        if cache.injections.contains_key(&key) || cache.pending_injections.contains_key(&key)
+            || cache.pending_injections.len() >= 32 {
+            return None;
+        }
+        let work: Vec<_> = registry.injections.iter().filter(|item| {
+            item.slot == slot && item.page.as_deref().is_none_or(|id| Some(id) == page)
+        }).filter_map(|item| {
+            let instance = registry.plugins.get(&item.plugin_id)?;
+            Some((item.clone(), instance.runtime.clone()?))
+        }).collect();
+        if work.is_empty() {
+            return None;
+        }
+        let ticket = cache.next_ticket();
+        cache.pending_injections.insert(key.clone(), ticket);
+        Some((work, ticket))
     });
-    if !rendered.is_empty() {
-        cx.refresh_windows();
-    }
-    rendered
+    let Some((work, ticket)) = prepared else { return };
+    let theme = current_theme_snapshot(cx);
+    let request = abi::InjectionRequest { slot: injection_slot_to_abi(slot), page: key.page.clone() };
+    cx.spawn(async move |cx| {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
+            work.into_iter().filter_map(|(item, runtime)| {
+                let mut runtime = runtime.lock().unwrap_or_else(|error| error.into_inner());
+                runtime.set_theme(theme);
+                let tree = runtime.render_injection(request.clone());
+                runtime.take_effects();
+                let tree = view_tree_from_abi(tree.ok()??).ok()?;
+                Some(RenderedInjection { plugin_id: item.plugin_id, tree: Arc::new(tree), layout: item.layout })
+            }).collect::<Vec<_>>()
+        }).await;
+        let _ = cx.update(|cx| {
+            cx.update_global(|registry: &mut PluginRegistry, _| {
+                let cache = &mut registry.render_cache;
+                if cache.pending_injections.get(&key) == Some(&ticket) {
+                    cache.pending_injections.remove(&key);
+                    if let Ok(trees) = result {
+                        cache.injections.insert(key, trees);
+                    }
+                }
+            });
+            cx.refresh_windows();
+        });
+    }).detach();
 }
 
 pub fn injection_registrations(
@@ -5479,15 +4176,39 @@ pub(crate) fn drain_async_app_refreshes(cx: &mut App) -> bool {
         return false;
     }
 
-    cx.update_global(|registry: &mut PluginRegistry, _cx| registry.apply_async_app_refreshes())
+    let changed = cx.update_global(|registry: &mut PluginRegistry, _cx| registry.apply_async_app_refreshes());
+    if changed {
+        start_pending_activations(cx);
+    }
+    changed
 }
 
 pub fn has_injections(cx: &App, slot: InjectionSlot, page: Option<&str>) -> bool {
     cx.global::<PluginRegistry>().has_injections(slot, page)
 }
 
-pub fn navigation_pages(cx: &App) -> Vec<PluginPage> {
-    cx.global::<PluginRegistry>().navigation_pages()
+pub(crate) fn game_mods(cx: &App) -> Vec<super::game_mods::GameMod> {
+    cx.try_global::<PluginRegistry>().into_iter().flat_map(|registry| registry.plugins.values())
+        .filter(|instance| instance.enabled && matches!(instance.state, PluginLoadState::Loaded { .. }))
+        .flat_map(|instance| instance.prepared_resources.game_mods.iter().cloned()).collect()
+}
+
+pub fn tool_pages(cx: &App) -> Vec<PluginPage> {
+    cx.global::<PluginRegistry>().tool_pages()
+}
+
+pub(crate) fn plugin_image(cx: &App, id: &str, path: &str) -> Option<gpui::EncodedImageBytes> {
+    let format = match Path::new(path).extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => gpui::ImageFormat::Png,
+        "jpg" | "jpeg" => gpui::ImageFormat::Jpeg,
+        "webp" => gpui::ImageFormat::Webp,
+        "gif" => gpui::ImageFormat::Gif,
+        _ => return None,
+    };
+    let registry = cx.global::<PluginRegistry>();
+    let plugin = registry.plugins.get(id).filter(|plugin| plugin.enabled)?;
+    let bytes = registry.resource_cache.read(&plugin.manifest, id, None, path).ok()?;
+    Some(gpui::EncodedImageBytes::new(format, bytes))
 }
 
 pub fn statuses(cx: &App) -> Vec<PluginStatus> {
@@ -5553,58 +4274,39 @@ where
         return;
     };
 
-    let plugin_id_for_io = plugin_id.clone();
     let content_for_state = content.clone();
     cx.spawn(async move |cx| {
-        let persisted = crate::tasks::runtime::blocking::run_io(move || {
+        let mut result = crate::tasks::runtime::blocking::run_io(move || {
             crate::plugins::manifest::write_user_config(&manifest, &content)
-        })
-        .await;
-
+        }).await.map_err(|error| anyhow!("{error}")).and_then(|result| result);
+        if result.is_ok() {
+            let runtime = cx.update(|cx| {
+                cx.global::<PluginRegistry>().plugins.get(&plugin_id)
+                    .and_then(|instance| instance.runtime.clone())
+            })?;
+            if let Some(runtime) = runtime {
+                result = crate::tasks::runtime::blocking::run_io(move || {
+                    runtime.lock().unwrap_or_else(|error| error.into_inner())
+                        .set_config_text(Ok(content_for_state));
+                }).await.map_err(|error| anyhow!("{error}"));
+            }
+        }
         cx.update(|cx| {
-            let result = match persisted {
-                Ok(Ok(())) => {
-                    let mut cascade = EventCascade::new();
-                    let effects = cx.update_global(|registry: &mut PluginRegistry, _cx| {
-                        let instance = registry
-                            .plugins
-                            .get_mut(&plugin_id)
-                            .ok_or_else(|| anyhow!("unknown plugin {plugin_id}"))?;
-                        if let Some(runtime) = instance.runtime.as_ref() {
-                            runtime.borrow_mut().state.borrow_mut().config_text =
-                                Ok(content_for_state.clone());
-                        }
-                        registry.render_cache.invalidate_plugin(&plugin_id);
-                        Ok(registry.handle_event(
-                            PluginEvent {
-                                plugin_id: Some(plugin_id.clone()),
-                                page_id: None,
-                                kind: PluginEventKind::Global {
-                                    name: "config-changed".to_string(),
-                                    payload: String::new(),
-                                },
-                            },
-                            &mut cascade,
-                        ))
-                    });
-                    match effects {
-                        Ok(effects) => {
-                            apply_plugin_effects(cx, effects, &mut cascade);
-                            Ok(())
-                        }
-                        Err(error) => Err(error),
-                    }
-                }
-                Ok(Err(error)) => Err(error),
-                Err(error) => Err(anyhow!("{error}")),
-            };
+            if result.is_ok() {
+                cx.update_global(|registry: &mut PluginRegistry, _| {
+                    registry.render_cache.invalidate_plugin(&plugin_id);
+                });
+                dispatch_app_event(cx, PluginEvent {
+                    plugin_id: Some(plugin_id),
+                    page_id: None,
+                    kind: PluginEventKind::Global {
+                        name: "config-changed".to_string(),
+                        payload: String::new(),
+                    },
+                });
+            }
             on_complete(cx, result);
         })?;
-
-        tracing::debug!(
-            plugin_id = plugin_id_for_io,
-            "plugin config persistence task finished"
-        );
         Ok::<(), anyhow::Error>(())
     })
     .detach();
@@ -5791,94 +4493,9 @@ pub fn start_import_plugin_task(cx: &mut App, source_path: PathBuf) -> Result<St
                 bail!("插件导入已取消");
             }
 
-            std::fs::create_dir_all(&plugins_dir)
-                .with_context(|| format!("create plugin directory {}", plugins_dir.display()))?;
-            let destination = plugins_dir.join(&file_name);
-            let source = std::fs::canonicalize(&source_path)
-                .with_context(|| format!("canonicalize plugin package {}", source_path.display()))?;
-            let destination_matches_source = destination
-                .exists()
-                .then(|| std::fs::canonicalize(&destination))
-                .transpose()
-                .with_context(|| format!("canonicalize plugin package {}", destination.display()))?
-                .is_some_and(|destination| destination == source);
-            if destination_matches_source {
-                return Ok::<(), anyhow::Error>(());
-            }
-
-            let staging = plugins_dir.join(format!(
-                ".{}.{}.importing",
-                destination
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("plugin"),
-                io_task_id
-            ));
-            if staging.exists() {
-                let _ = std::fs::remove_file(&staging);
-            }
-            std::fs::copy(&source_path, &staging).with_context(|| {
-                format!(
-                    "copy plugin package {} to staging {}",
-                    source_path.display(),
-                    staging.display()
-                )
-            })?;
-
-            if crate::tasks::task_manager::is_cancelled(&io_task_id) {
-                let _ = std::fs::remove_file(&staging);
-                bail!("插件导入已取消");
-            }
-
-            let backup = destination.exists().then(|| {
-                plugins_dir.join(format!(
-                    ".{}.{}.backup",
-                    destination
-                        .file_name()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or("plugin"),
-                    io_task_id
-                ))
-            });
-            if let Some(backup) = backup.as_ref() {
-                if backup.exists() {
-                    let _ = std::fs::remove_file(backup);
-                }
-                std::fs::rename(&destination, backup).with_context(|| {
-                    format!(
-                        "move previous plugin package {} to backup {}",
-                        destination.display(),
-                        backup.display()
-                    )
-                })?;
-            }
-
-            if let Err(error) = std::fs::rename(&staging, &destination) {
-                if let Some(backup) = backup.as_ref()
-                    && let Err(restore_error) = std::fs::rename(backup, &destination)
-                {
-                    return Err(anyhow!(
-                        "commit plugin package failed: {error}; rollback also failed: {restore_error}"
-                    ));
-                }
-                let _ = std::fs::remove_file(&staging);
-                return Err(anyhow!(
-                    "commit plugin package {} to {} failed: {error}",
-                    staging.display(),
-                    destination.display()
-                ));
-            }
-
-            if let Some(backup) = backup
-                && let Err(error) = std::fs::remove_file(&backup)
-            {
-                warn!(
-                    path = %backup.display(),
-                    %error,
-                    "plugin import committed but stale backup cleanup failed"
-                );
-            }
-            Ok::<(), anyhow::Error>(())
+            crate::plugins::manifest::install_package(&source_path, &plugins_dir)
+                .with_context(|| format!("install plugin package {}", source_path.display()))?;
+            Ok(())
         })
         .await;
 
@@ -5930,6 +4547,93 @@ pub fn start_import_plugin_task(cx: &mut App, source_path: PathBuf) -> Result<St
     Ok(task_id)
 }
 
+pub(super) fn notify_job_ready(plugin_id: &str, generation: u64, job_id: String) {
+    if let Some(sender) = ASYNC_APP_REFRESH_NOTIFICATION.get().and_then(|sender| {
+        sender.lock().unwrap_or_else(|error| error.into_inner()).clone()
+    }) {
+        let _ = sender.unbounded_send(crate::plugins::watcher::Message::JobReady {
+            plugin_id: plugin_id.to_string(), generation, job_id,
+        });
+    }
+}
+
+pub(super) async fn confirm_native_download(
+    plugin_id: &str,
+    generation: u64,
+    sha: &str,
+) -> Result<(), abi::PluginError> {
+    let sender = ASYNC_APP_REFRESH_NOTIFICATION
+        .get()
+        .and_then(|sender| sender.lock().ok()?.clone())
+        .ok_or_else(|| abi::PluginError::app("native approval requires an open BMCBL window"))?;
+    let (reply, decision) = tokio::sync::oneshot::channel();
+    sender
+        .unbounded_send(crate::plugins::watcher::Message::NativeApproval {
+            plugin_id: plugin_id.to_owned(),
+            generation,
+            sha: sha.to_owned(),
+            reply,
+        })
+        .map_err(|_| abi::PluginError::app("native approval window is unavailable"))?;
+    if decision.await == Ok(true) {
+        Ok(())
+    } else {
+        Err(abi::PluginError::denied("native component approval was not granted"))
+    }
+}
+
+pub(super) fn prompt_native_download(
+    cx: &mut App,
+    plugin_id: String,
+    generation: u64,
+    sha: String,
+    reply: tokio::sync::oneshot::Sender<bool>,
+) {
+    static PROMPT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+    let registry = cx.global::<PluginRegistry>();
+    if reply.is_closed() || !registry.plugins.get(&plugin_id).is_some_and(|instance| {
+        instance.enabled && instance.generation == generation
+    }) {
+        return;
+    }
+    let window = cx.active_window().or_else(|| cx.windows().first().copied());
+    let (Ok(permit), Some(window)) = (PROMPT.try_acquire(), window) else {
+        return;
+    };
+    let detail = format!("插件 {plugin_id}\nSHA-256  {sha}\n授权后，该原生组件可在 BMCBL 进程中运行。请确认你信任这个插件和组件。");
+    let Ok(decision) = window.update(cx, |_, window, cx| {
+        window.prompt(
+            gpui::PromptLevel::Warning,
+            "授权安装原生组件",
+            Some(&detail),
+            &[gpui::PromptButton::ok("授权安装"), gpui::PromptButton::cancel("取消")],
+            cx,
+        )
+    }) else { return };
+    cx.spawn(async move |_| {
+        let _permit = permit;
+        let _ = reply.send(decision.await == Ok(0));
+    }).detach();
+}
+
+pub(super) fn dispatch_job_ready(cx: &mut App, plugin_id: String, generation: u64, job_id: String) {
+    let registry = cx.global::<PluginRegistry>();
+    if !registry.plugins.get(&plugin_id).is_some_and(|instance| instance.enabled && instance.generation == generation) {
+        return;
+    }
+    if registry.activating.contains(&(plugin_id.clone(), generation)) {
+        cx.update_global(|registry: &mut PluginRegistry, _| {
+            if registry.early_job_events.len() < 32 {
+                registry.early_job_events.push((plugin_id, generation, job_id));
+            }
+        });
+        return;
+    }
+    dispatch_app_event(cx, PluginEvent {
+        plugin_id: Some(plugin_id), page_id: None, kind: PluginEventKind::JobReady { job_id },
+    });
+}
+
 pub fn dispatch_plugin_action(
     cx: &mut App,
     plugin_id: String,
@@ -5942,17 +4646,7 @@ pub fn dispatch_plugin_action(
         page_id,
         kind: PluginEventKind::Action { action_id, value },
     };
-    let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot_for_event(cx, &event);
-    let mut cascade = EventCascade::new();
-    let effects = cx.update_global(|registry: &mut PluginRegistry, _cx| {
-        registry.set_theme_snapshot(theme_snapshot);
-        if let Some(clipboard_text) = clipboard_text {
-            registry.set_clipboard_snapshot(clipboard_text);
-        }
-        registry.handle_event(event, &mut cascade)
-    });
-    apply_plugin_effects(cx, effects, &mut cascade);
+    dispatch_app_event(cx, event);
 }
 
 pub fn show_toast(cx: &mut App, plugin_id: &str, message: String) -> Result<()> {
@@ -5988,17 +4682,7 @@ pub(crate) fn dispatch_global_event(cx: &mut App, name: String, payload: String)
         page_id: None,
         kind: PluginEventKind::Global { name, payload },
     };
-    let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot_for_event(cx, &event);
-    let mut cascade = EventCascade::new();
-    let effects = cx.update_global(|registry: &mut PluginRegistry, _cx| {
-        registry.set_theme_snapshot(theme_snapshot);
-        if let Some(clipboard_text) = clipboard_text {
-            registry.set_clipboard_snapshot(clipboard_text);
-        }
-        registry.handle_event(event, &mut cascade)
-    });
-    apply_plugin_effects(cx, effects, &mut cascade);
+    dispatch_app_event(cx, event);
 }
 
 pub(crate) fn dispatch_route_changed(cx: &mut App, path: String) {
@@ -6007,33 +4691,106 @@ pub(crate) fn dispatch_route_changed(cx: &mut App, path: String) {
         page_id: None,
         kind: PluginEventKind::RouteChanged { path },
     };
-    let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot_for_event(cx, &event);
-    let mut cascade = EventCascade::new();
-    let effects = cx.update_global(|registry: &mut PluginRegistry, _cx| {
-        registry.set_theme_snapshot(theme_snapshot);
-        if let Some(clipboard_text) = clipboard_text {
-            registry.set_clipboard_snapshot(clipboard_text);
+    dispatch_app_event(cx, event);
+}
+
+fn dispatch_app_event(cx: &mut App, event: PluginEvent) {
+    enqueue_app_event(cx, event, Arc::new(Mutex::new(EventCascade::new())));
+}
+
+fn enqueue_app_event(cx: &mut App, event: PluginEvent, cascade: Arc<Mutex<EventCascade>>) {
+    cx.update_global(|registry: &mut PluginRegistry, _| {
+        if registry.event_queue.len() < 128 {
+            registry.event_queue.push_back((event, cascade));
         }
-        registry.handle_event(event, &mut cascade)
     });
-    apply_plugin_effects(cx, effects, &mut cascade);
+    run_app_events(cx);
+}
+
+fn run_app_events(cx: &mut App) {
+    let event = cx.update_global(|registry: &mut PluginRegistry, _| {
+        if registry.event_pending {
+            return None;
+        }
+        let entry = registry.event_queue.pop_front()?;
+        registry.event_pending = true;
+        Some(entry)
+    });
+    let Some((event, cascade)) = event else { return };
+    let theme = current_theme_snapshot(cx);
+    let clipboard = clipboard_text_snapshot_for_event(cx, &event);
+    let work = {
+        let registry = cx.global::<PluginRegistry>();
+        let mut budget = cascade.lock().unwrap_or_else(|error| error.into_inner());
+        registry.event_targets(&event).into_iter().filter_map(|id| {
+            let instance = registry.plugins.get(&id)?;
+            if !instance.enabled || matches!(instance.state, PluginLoadState::Failed { .. })
+                || !budget.try_deliver(&id, event.cascade_name()) {
+                return None;
+            }
+            Some((id, instance.generation, instance.runtime.clone()?))
+        }).collect::<Vec<_>>()
+    };
+    let input = plugin_event_to_abi(&event);
+    cx.spawn(async move |cx| {
+        let result = crate::tasks::runtime::blocking::run_io(move || {
+            work.into_iter().map(|(id, generation, runtime)| {
+                let mut runtime = runtime.lock().unwrap_or_else(|error| error.into_inner());
+                runtime.set_theme(theme);
+                if let Some(text) = &clipboard {
+                    runtime.set_clipboard_text(text.clone());
+                }
+                let result = runtime.handle_event(input.clone());
+                (id, generation, result, runtime.take_effects(), runtime.is_poisoned())
+            }).collect::<Vec<_>>()
+        }).await;
+        let _ = cx.update(|cx| {
+            let effects = cx.update_global(|registry: &mut PluginRegistry, _| {
+                let mut effects = Vec::new();
+                let mut targets = Vec::new();
+                for (id, generation, result, pending, poisoned) in result.unwrap_or_default() {
+                    if !registry.plugins.get(&id).is_some_and(|instance| {
+                        instance.enabled && instance.generation == generation
+                    }) {
+                        continue;
+                    }
+                    if let Err(error) = result {
+                        let text = format!("plugin event failed: {}", error.message);
+                        registry.push_log(id.clone(), abi::LogLevel::Error, text.clone());
+                        if poisoned {
+                            registry.mark_unhealthy(&id, text);
+                        }
+                    }
+                    targets.push(id);
+                    effects.extend(pending);
+                }
+                if !targets.is_empty() {
+                    registry.invalidate_render_cache_for_event(&event, &targets);
+                }
+                effects
+            });
+            apply_plugin_effects(cx, effects, &cascade);
+            cx.update_global(|registry: &mut PluginRegistry, _| registry.event_pending = false);
+            run_app_events(cx);
+            cx.refresh_windows();
+        });
+    }).detach();
 }
 
 /// 应用一次插件调用产生的宿主效果。
 ///
 /// 插件通过 `emit_event` 触发的后续事件放进同一个队列迭代处理，而不是递归调用本函数；
 /// 级联总量由 [`EventCascade`] 限制，保证两个插件互相触发时也能收敛。
-pub(crate) fn apply_plugin_effects(
+fn apply_plugin_effects(
     cx: &mut App,
-    effects: Vec<PluginEffect>,
-    cascade: &mut EventCascade,
+    effects: Vec<abi::PluginEffect>,
+    cascade: &Arc<Mutex<EventCascade>>,
 ) {
-    let mut queue: VecDeque<PluginEffect> = effects.into();
+    let mut queue: VecDeque<abi::PluginEffect> = effects.into();
     let mut cascade_warned = false;
     while let Some(effect) = queue.pop_front() {
         match effect {
-            PluginEffect::Toast { kind, message } => {
+            abi::PluginEffect::Toast { kind, message, .. } => {
                 let kind = match kind {
                     abi::ToastKind::Info => crate::ui::components::toast::ToastKind::Info,
                     abi::ToastKind::Success => crate::ui::components::toast::ToastKind::Success,
@@ -6041,56 +4798,42 @@ pub(crate) fn apply_plugin_effects(
                 };
                 crate::ui::components::toast::push_kind(cx, kind, SharedString::from(message));
             }
-            PluginEffect::Navigate { target } => {
+            abi::PluginEffect::Navigate { target, .. } => {
                 let target = route_target_from_abi(target);
                 crate::ui::navigation::navigate_target(cx, target);
             }
-            PluginEffect::OpenWindow { request } => apply_open_window(cx, request),
-            PluginEffect::OpenModal { request } => apply_open_modal(cx, request),
-            PluginEffect::CloseWindow { window_id } => {
+            abi::PluginEffect::OpenWindow { request, .. } => apply_open_window(cx, request),
+            abi::PluginEffect::OpenModal { request, .. } => apply_open_modal(cx, request),
+            abi::PluginEffect::CloseWindow { window_id, .. } => {
                 warn!(
                     window_id,
                     "plugin close-window effect requested; close by id is not wired yet"
                 );
             }
-            PluginEffect::EmitEvent { name, payload } => {
-                if name == "__plugin_write_clipboard" {
-                    cx.write_to_clipboard(ClipboardItem::new_string(payload));
-                    continue;
-                }
-                if name == "__plugin_open_external_url" {
-                    cx.open_url(&payload);
-                    continue;
-                }
-                if cascade.is_exhausted() {
+            abi::PluginEffect::EmitEvent { name, payload, .. } => {
+                let budget = cascade.lock().unwrap_or_else(|error| error.into_inner());
+                if budget.is_exhausted() {
                     if !cascade_warned {
                         cascade_warned = true;
                         warn!(
                             event = %name,
-                            deliveries = cascade.deliveries(),
+                            deliveries = budget.deliveries(),
                             "plugin event cascade budget exhausted; dropping cascaded plugin events"
                         );
                     }
                     continue;
                 }
-                let effects = cx.update_global(|registry: &mut PluginRegistry, _cx| {
-                    registry.handle_event(
-                        PluginEvent {
-                            plugin_id: None,
-                            page_id: None,
-                            kind: PluginEventKind::Global { name, payload },
-                        },
-                        cascade,
-                    )
-                });
-                queue.extend(effects);
+                drop(budget);
+                enqueue_app_event(cx, PluginEvent {
+                    plugin_id: None, page_id: None, kind: PluginEventKind::Global { name, payload },
+                }, cascade.clone());
             }
-            PluginEffect::Invalidate { plugin_id, target } => {
+            abi::PluginEffect::Invalidate { plugin_id, target } => {
                 cx.update_global(|registry: &mut PluginRegistry, _cx| {
                     registry.invalidate_from_plugin(&plugin_id, target);
                 });
             }
-            PluginEffect::Log {
+            abi::PluginEffect::Log {
                 plugin_id,
                 level,
                 message,
@@ -6099,14 +4842,15 @@ pub(crate) fn apply_plugin_effects(
                     registry.push_log(plugin_id, level, message);
                 });
             }
-            PluginEffect::RegisterService {
+            abi::PluginEffect::RegisterService {
                 plugin_id,
                 service_name,
             } => {
                 let registered = cx.update_global(|registry: &mut PluginRegistry, _cx| {
                     registry
                         .service_registry
-                        .borrow_mut()
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
                         .register_service(plugin_id.clone(), service_name.clone())
                 });
                 if let Err(error) = registered {
@@ -6119,8 +4863,55 @@ pub(crate) fn apply_plugin_effects(
                     );
                 }
             }
+            abi::PluginEffect::OpenExternalUrl { url, .. } => {
+                cx.open_url(&url);
+            }
+            abi::PluginEffect::WriteClipboard { text, .. } => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            abi::PluginEffect::PersistStorage {
+                plugin_id,
+                key,
+                value,
+            } => {
+                if let Some((manifest, storage_dir)) = plugin_persistence_target(cx, &plugin_id) {
+                    let _ = schedule_plugin_persistence(PluginPersistenceOp::StorageSet {
+                        plugin_id,
+                        storage_dir,
+                        key,
+                        value,
+                    });
+                    let _ = manifest;
+                }
+            }
+            abi::PluginEffect::DeleteStorage { plugin_id, key } => {
+                if let Some((_manifest, storage_dir)) = plugin_persistence_target(cx, &plugin_id) {
+                    let _ = schedule_plugin_persistence(PluginPersistenceOp::StorageDelete {
+                        plugin_id,
+                        storage_dir,
+                        key,
+                    });
+                }
+            }
+            abi::PluginEffect::PersistConfig { plugin_id, text } => {
+                if let Some((manifest, _storage_dir)) = plugin_persistence_target(cx, &plugin_id) {
+                    let _ = schedule_plugin_persistence(PluginPersistenceOp::Config {
+                        plugin_id,
+                        manifest,
+                        content: text,
+                    });
+                }
+            }
         }
     }
+}
+
+/// 查找插件持久化所需的清单与存储目录；未知插件返回 `None`。
+fn plugin_persistence_target(cx: &mut App, plugin_id: &str) -> Option<(PluginManifest, PathBuf)> {
+    cx.update_global(|registry: &mut PluginRegistry, _cx| {
+        let manifest = registry.plugins.get(plugin_id)?.manifest.clone();
+        Some((manifest, registry.plugin_storage_dir(plugin_id)))
+    })
 }
 
 /// 应用插件打开窗口效果；失败时回退到插件提示，避免静默失败。
@@ -6155,7 +4946,7 @@ fn apply_open_modal(cx: &mut App, request: abi::ModalRequest) {
     }
 }
 
-fn current_locale_code() -> String {
+pub(super) fn current_locale_code() -> String {
     crate::config::settings::read()
         .ok()
         .map(|config| config.launcher.language)
@@ -6268,584 +5059,85 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prepared_sidecar_index_only_contains_files() {
-        let root = unique_temp_dir("bmcbl-plugin-sidecar-index");
-        let sidecar_dir = root.join("bin");
-        fs::create_dir_all(sidecar_dir.join("nested")).expect("create sidecar test directory");
-        fs::write(sidecar_dir.join("tool.exe"), b"stub").expect("write sidecar test file");
-
-        let manifest = PluginManifest::parse(
-            &root,
-            &format!(
-                r#"
-schema_version = 2
-id = "sidecar-test"
-name = "Sidecar Test"
-version = "0.1.0"
-api_version = "{}"
-entry = "plugin.wasm"
-capabilities = ["sidecar.exec"]
-sidecar_dir = "bin"
-"#,
-                crate::plugins::manifest::CURRENT_API_VERSION
-            ),
-        )
-        .expect("sidecar manifest should parse");
-
-        let files = prepare_plugin_sidecar_files(&manifest);
-        assert!(files.contains("tool.exe"));
-        assert!(!files.contains("nested"));
-    }
-
-    #[test]
-    fn blocking_app_io_is_denied_during_page_render() {
-        let context = RenderContext::Page {
-            page_id: "main".to_string(),
-        };
-
-        let error = ensure_blocking_io_allowed(Some(&context), "storage get")
-            .expect_err("render-time blocking I/O must be rejected");
-
-        assert_eq!(error.code, "blocking-io-render-denied");
-    }
-
-    #[test]
-    fn blocking_app_io_is_allowed_outside_render() {
-        ensure_blocking_io_allowed(None, "storage get")
-            .expect("event/init host I/O remains available");
-    }
-
-    #[test]
-    fn storage_snapshot_quota_replacement_does_not_double_count_old_value() {
-        let values = BTreeMap::from([
-            ("first".to_string(), "12345".to_string()),
-            ("second".to_string(), "12".to_string()),
-        ]);
-
-        assert_eq!(storage_snapshot_next_used_bytes(&values, "first", "123"), 5);
-        assert_eq!(
-            storage_snapshot_next_used_bytes(&values, "third", "123"),
-            10
-        );
-    }
-
-    #[test]
-    fn storage_rejects_quota_overflow() {
-        let root = unique_temp_dir("bmcbl-plugin-storage-quota");
-        storage_set(&root, "first", "12345", 8).expect("first write should fit");
-        let error =
-            storage_set(&root, "second", "12345", 8).expect_err("second write should exceed quota");
-
-        assert_eq!(error.code, "storage-quota-exceeded");
-    }
-
-    #[test]
-    fn storage_lists_keys_with_prefix() {
-        let root = unique_temp_dir("bmcbl-plugin-storage-list");
-        storage_set(&root, "note:one", "1", 128).expect("write should succeed");
-        storage_set(&root, "note:two", "2", 128).expect("write should succeed");
-        storage_set(&root, "other", "3", 128).expect("write should succeed");
-
-        let keys = storage_list(&root, Some("note:")).expect("list should succeed");
-
-        assert_eq!(keys, vec!["note:one".to_string(), "note:two".to_string()]);
-    }
-
-    #[test]
-    fn resource_read_respects_manifest_allowlist() {
-        let root = unique_temp_dir("bmcbl-plugin-resource");
-        fs::create_dir_all(root.join("assets")).expect("assets dir should be created");
-        fs::write(root.join("assets/readme.txt"), "hello").expect("resource should be written");
-        let manifest = PluginManifest::parse(
-            &root,
-            &format!(
-                r#"
-schema_version = 2
-id = "hello-plugin"
-name = "Hello"
-version = "0.1.0"
-api_version = "{}"
-entry = "plugin.wasm"
-capabilities = ["resource.read"]
-
-[permissions.resource]
-allow = ["assets/"]
-
-[limits]
-max_resource_bytes = 16
-"#,
-                crate::plugins::manifest::CURRENT_API_VERSION
-            ),
-        )
-        .expect("manifest should parse");
-
-        let allowed_path = manifest
-            .resource_path("assets/readme.txt")
-            .expect("listed resource path should be allowed");
-        let bytes = read_plugin_resource_path(&allowed_path, 16).expect("resource should read");
-        assert_eq!(bytes, b"hello");
-
-        let error = manifest
-            .resource_path("plugin.toml")
-            .expect_err("unlisted resource should be denied");
-        assert!(error.to_string().contains("not allowed"));
-    }
-
-    #[test]
-    fn memory_report_empty_registry_is_stable() {
-        let root = unique_temp_dir("bmcbl-plugin-memory-report");
-        let registry = PluginRegistry::new(
-            root.join("plugins"),
-            root.join("cache"),
-            root.join("packages"),
-        );
-
-        let report = registry.memory_report();
-
-        assert!(report.plugins.is_empty());
-        assert_eq!(
-            report.total_estimated_bytes,
-            report.module_cache_estimated_bytes
-        );
-    }
-
-    #[test]
-    fn route_event_without_plugins_does_not_require_clipboard_snapshot() {
-        let root = unique_temp_dir("bmcbl-plugin-route-clipboard");
-        let registry = PluginRegistry::new(
-            root.join("plugins"),
-            root.join("cache"),
-            root.join("packages"),
-        );
-        let event = PluginEvent {
-            plugin_id: None,
-            page_id: None,
-            kind: PluginEventKind::RouteChanged {
-                path: "/settings".to_string(),
-            },
-        };
-
-        assert!(!registry.event_requires_clipboard_snapshot(&event));
-    }
-
-    #[test]
-    fn route_event_requires_clipboard_only_for_capable_plugin() {
-        let root = unique_temp_dir("bmcbl-plugin-route-clipboard-capability");
-        let mut registry = PluginRegistry::new(
-            root.join("plugins"),
-            root.join("cache"),
-            root.join("packages"),
-        );
-        let plugin_root = root.join("route-listener");
-        let manifest = PluginManifest::parse(
-            &plugin_root,
-            &format!(
-                r#"
-schema_version = 2
-id = "route-listener"
-name = "Route Listener"
-version = "0.1.0"
-api_version = "{}"
-entry = "plugin.wasm"
-capabilities = ["event.global"]
-"#,
-                crate::plugins::manifest::CURRENT_API_VERSION
-            ),
-        )
-        .expect("manifest should parse");
-        registry
-            .reload_manifests(vec![manifest])
-            .expect("manifest should load");
-        registry
-            .plugins
-            .get_mut("route-listener")
-            .expect("route listener should exist")
-            .subscriptions
-            .insert("route-changed".to_string());
-        // 测试直接改写了插件订阅，必须同步事件订阅倒排索引。
-        registry.rebuild_event_subscribers();
-        let event = PluginEvent {
-            plugin_id: None,
-            page_id: None,
-            kind: PluginEventKind::RouteChanged {
-                path: "/settings".to_string(),
-            },
-        };
-
-        assert!(!registry.event_requires_clipboard_snapshot(&event));
-
-        let clipboard_manifest = PluginManifest::parse(
-            &plugin_root,
-            &format!(
-                r#"
-schema_version = 2
-id = "route-listener"
-name = "Route Listener"
-version = "0.1.0"
-api_version = "{}"
-entry = "plugin.wasm"
-capabilities = ["event.global", "clipboard.read"]
-"#,
-                crate::plugins::manifest::CURRENT_API_VERSION
-            ),
-        )
-        .expect("clipboard manifest should parse");
-        registry
-            .reload_manifests(vec![clipboard_manifest])
-            .expect("clipboard manifest should load");
-        registry
-            .plugins
-            .get_mut("route-listener")
-            .expect("clipboard route listener should exist")
-            .subscriptions
-            .insert("route-changed".to_string());
-        registry.rebuild_event_subscribers();
-
-        assert!(registry.event_requires_clipboard_snapshot(&event));
-    }
-
-    #[test]
-    fn http_refresh_drain_is_idle_without_finished_marker() {
-        let cache = PluginHttpFetchCache::default();
-
-        assert!(!cache.has_finished_refreshes());
-        assert!(cache.drain_finished().is_empty());
-        assert!(!cache.has_finished_refreshes());
-    }
-
-    #[test]
-    fn http_refresh_drain_consumes_finished_result() {
-        let cache = PluginHttpFetchCache::default();
-        let invalidation = PluginInvalidationTarget::Page {
-            plugin_id: "hello-plugin".to_string(),
-            page_id: "main".to_string(),
-        };
-        {
-            let mut state = cache
-                .state
-                .lock()
-                .expect("HTTP cache state lock should not be poisoned");
-            state.entries.insert(
-                "https://example.com/data.json".to_string(),
-                HttpCacheEntry {
-                    body: None,
-                    error: None,
-                    fetched_at: None,
-                    fetched_at_unix_ms: None,
-                    refreshing: true,
-                    subscribers: BTreeSet::from([invalidation.clone()]),
-                },
+    fn storage_file_name_roundtrips_through_key_parsing() {
+        for key in ["tasks.sync", "a", "with_underscore:colon-dash"] {
+            let file_name = storage_file_name(key);
+            assert!(file_name.starts_with("kv-"));
+            assert_eq!(
+                storage_key_from_file_name(&file_name).as_deref(),
+                Some(key)
             );
-            state
-                .sender
-                .send(HttpRefreshResult {
-                    url: "https://example.com/data.json".to_string(),
-                    result: Ok(("{\"ok\":true}".to_string(), 42)),
-                })
-                .expect("HTTP refresh result should be queued");
         }
-        cache
-            .finished_refresh_pending
-            .store(true, Ordering::Release);
-
-        assert_eq!(cache.drain_finished(), vec![invalidation]);
-        assert!(!cache.has_finished_refreshes());
+        assert_eq!(storage_key_from_file_name("kv-zz"), None);
+        assert_eq!(storage_key_from_file_name("not-a-key"), None);
     }
 
     #[test]
-    fn injection_render_is_only_requested_while_uncached() {
-        let root = unique_temp_dir("bmcbl-plugin-injection-request");
-        let mut registry =
-            PluginRegistry::new(root.clone(), root.join("wasm"), root.join("packages"));
-        let slot = InjectionSlot::MainRootOverlay;
-
-        // 没有插件注册时渲染路径不登记任何请求。
-        assert!(!registry.injections_need_render(slot, Some("/")));
-
-        registry.injections.push(PluginInjectionRegistration {
-            plugin_id: "alpha".to_string(),
-            slot,
-            page: None,
-            priority: 0,
-            layout: None,
-        });
-        assert!(registry.injections_need_render(slot, Some("/")));
-
-        // 渲染结果（即使是空结果）写入缓存后不能再登记请求，否则渲染路径会每帧触发延迟渲染。
-        registry.render_cache.injections.insert(
-            InjectionRenderCacheKey {
-                slot,
-                page: Some("/".to_string()),
-            },
-            Vec::new(),
-        );
-        assert!(!registry.injections_need_render(slot, Some("/")));
+    fn storage_keys_delegate_to_runtime_sandbox_rules() {
+        assert!(validate_storage_key("tasks.sync").is_ok());
+        assert!(validate_storage_key("").is_err());
+        assert!(validate_storage_key("UPPER").is_err());
+        assert!(validate_storage_key_prefix("tasks.").is_ok());
     }
 
     #[test]
-    fn event_targets_come_from_the_subscription_index() {
-        let root = unique_temp_dir("bmcbl-plugin-event-targets");
-        let manifest = PluginManifest::parse(
-            &root,
-            &format!(
-                r#"
-schema_version = 2
-id = "event-listener"
-name = "Event Listener"
+    fn sanitize_storage_segment_replaces_unsafe_characters() {
+        assert_eq!(sanitize_storage_segment("abc-123"), "abc-123");
+        assert_eq!(sanitize_storage_segment("../evil"), "..-evil");
+    }
+
+    fn test_manifest(capabilities: &[&str]) -> PluginManifest {
+        let capability_list = capabilities
+            .iter()
+            .map(|capability| format!(r#""{capability}""#))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let content = format!(
+            r#"
+schema_version = 1
+id = "policy-plugin"
+name = "Policy"
 version = "0.1.0"
-api_version = "{}"
+api_version = "1.0.0"
 entry = "plugin.wasm"
-capabilities = ["event.global"]
-"#,
-                crate::plugins::manifest::CURRENT_API_VERSION
-            ),
-        )
-        .expect("event listener manifest should parse");
-
-        let plugin_id = manifest.id.clone();
-        let mut registry =
-            PluginRegistry::new(root.clone(), root.join("wasm"), root.join("packages"));
-        registry.plugins.insert(
-            plugin_id.clone(),
-            PluginInstance {
-                manifest,
-                generation: 1,
-                pages: Vec::new(),
-                injections: Vec::new(),
-                subscriptions: BTreeSet::from([
-                    "download-finished".to_string(),
-                    ROUTE_CHANGED_EVENT.to_string(),
-                ]),
-                services: BTreeSet::new(),
-                translations: BTreeMap::new(),
-                state: PluginLoadState::Unloaded,
-                enabled: true,
-                prepared_wasm: PreparedPluginWasm::Error(Arc::from("test fixture")),
-                prepared_resources: PreparedPluginResources {
-                    has_readme: false,
-                    has_config: false,
-                    icon_path: None,
-                    config_text: Ok(String::new()),
-                    storage_values: Ok(BTreeMap::new()),
-                    resource_values: BTreeMap::new(),
-                    sidecar_files: BTreeSet::new(),
-                    source_stamp: PluginSourceStamp::default(),
-                },
-                runtime: None,
-            },
+capabilities = [{capability_list}]
+"#
         );
-        registry.rebuild_event_subscribers();
-
-        let global_event = |name: &str| PluginEvent {
-            plugin_id: None,
-            page_id: None,
-            kind: PluginEventKind::Global {
-                name: name.to_string(),
-                payload: String::new(),
-            },
-        };
-        assert_eq!(
-            registry.event_targets(&global_event("download-finished")),
-            vec![plugin_id.clone()]
-        );
-        assert!(registry.event_targets(&global_event("other")).is_empty());
-
-        let route_event = PluginEvent {
-            plugin_id: None,
-            page_id: None,
-            kind: PluginEventKind::RouteChanged {
-                path: "/settings".to_string(),
-            },
-        };
-        assert_eq!(registry.event_targets(&route_event), vec![plugin_id]);
+        PluginManifest::parse("policy", &content).expect("manifest should parse")
     }
 
     #[test]
-    fn reload_reuses_unchanged_plugins_and_invalidates_changed_ones() {
-        let plugins_dir = unique_temp_dir("bmcbl-plugin-incremental-plugins");
-        let cache_dir = unique_temp_dir("bmcbl-plugin-incremental-cache");
-        let package_cache_dir = unique_temp_dir("bmcbl-plugin-incremental-packages");
-        let plugin_dir = plugins_dir.join("alpha");
-        fs::create_dir_all(&plugin_dir).expect("create plugin directory");
-        fs::write(plugin_dir.join("plugin.wasm"), b"not a wasm module").expect("write wasm stub");
-
-        let manifest_text = |version: &str| {
-            format!(
-                r#"
-schema_version = 2
-id = "alpha-plugin"
-name = "Alpha Plugin"
-version = "{version}"
-api_version = "{}"
-entry = "plugin.wasm"
-capabilities = ["ui.page"]
-"#,
-                crate::plugins::manifest::CURRENT_API_VERSION
-            )
-        };
-        fs::write(plugin_dir.join("plugin.toml"), manifest_text("0.1.0"))
-            .expect("write plugin manifest");
-
-        let mut registry = PluginRegistry::new(plugins_dir.clone(), cache_dir, package_cache_dir);
-        registry
-            .reload_all()
-            .expect("initial reload should succeed");
-
-        let plugin_id = "alpha-plugin".to_string();
-        let cached_page = PageRenderCacheKey {
-            plugin_id: plugin_id.clone(),
-            page_id: "main".to_string(),
-        };
-        registry
-            .render_cache
-            .page_errors
-            .insert(cached_page.clone(), Arc::<str>::from("cached"));
-        let generation = registry.plugins[&plugin_id].generation;
-
-        registry
-            .reload_all()
-            .expect("unchanged reload should succeed");
-        assert_eq!(
-            registry.plugins[&plugin_id].generation, generation,
-            "unchanged plugin must reuse its instance"
-        );
-        assert!(
-            registry.render_cache.page_errors.contains_key(&cached_page),
-            "unchanged plugin must keep its render cache"
-        );
-
-        fs::write(plugin_dir.join("asset.txt"), b"asset").expect("write plugin asset");
-        registry.reload_all().expect("asset reload should succeed");
-        assert_eq!(
-            registry.plugins[&plugin_id].generation, generation,
-            "asset-only change must keep the plugin instance"
-        );
-        assert!(
-            !registry.render_cache.page_errors.contains_key(&cached_page),
-            "asset-only change must drop the plugin render cache"
-        );
-
-        fs::write(plugin_dir.join("plugin.toml"), manifest_text("0.2.0"))
-            .expect("rewrite plugin manifest");
-        registry
-            .reload_all()
-            .expect("manifest reload should succeed");
-        assert_ne!(
-            registry.plugins[&plugin_id].generation, generation,
-            "manifest change must rebuild the plugin instance"
-        );
+    fn plugin_loaded_log_message_lists_capabilities() {
+        let manifest = test_manifest(&["ui.page", "toast"]);
+        let message = plugin_loaded_log_message(&manifest);
+        assert!(message.contains("Policy 0.1.0"));
+        assert!(message.contains("ui.page, toast"));
     }
 
     #[test]
-    fn prepare_cache_reuses_unchanged_plugin_directories() {
-        let plugins_dir = unique_temp_dir("bmcbl-plugin-prepare-cache");
-        let package_cache_dir = unique_temp_dir("bmcbl-plugin-prepare-cache-packages");
-        let plugin_dir = plugins_dir.join("alpha");
-        fs::create_dir_all(&plugin_dir).expect("create plugin directory");
-        fs::write(plugin_dir.join("plugin.wasm"), b"not a wasm module").expect("write wasm stub");
-        fs::write(
-            plugin_dir.join("plugin.toml"),
-            format!(
-                r#"
-schema_version = 2
-id = "alpha-plugin"
-name = "Alpha Plugin"
-version = "0.1.0"
-api_version = "{}"
-entry = "plugin.wasm"
-capabilities = ["ui.page"]
-"#,
-                crate::plugins::manifest::CURRENT_API_VERSION
-            ),
-        )
-        .expect("write plugin manifest");
-
-        let manifest = PluginManifest::load_from_dir(&plugin_dir).expect("manifest should load");
-        let cache = PluginPrepareCache::default();
-        let prepare = |cache: &PluginPrepareCache| {
-            prepare_plugin_manifests(
-                vec![manifest.clone()],
-                &plugins_dir,
-                &package_cache_dir,
-                cache,
-            )
-        };
-
-        let first = prepare(&cache);
-        let first_stamp = first.plugins[0].resources.source_stamp.clone();
-        let first_prepared = cache
-            .lookup(&plugin_dir, &manifest, &first_stamp)
-            .expect("first preparation should be cached");
-        assert_eq!(first_prepared.manifest.id, "alpha-plugin");
-
-        // 目录指纹一致：复用同一份准备结果，不重新读取 wasm 与资源。
-        let second = prepare(&cache);
-        let second_prepared = cache
-            .lookup(
-                &plugin_dir,
-                &manifest,
-                &second.plugins[0].resources.source_stamp,
-            )
-            .expect("unchanged directory should hit the cache");
-        assert!(
-            Arc::ptr_eq(&first_prepared, &second_prepared),
-            "unchanged directory must reuse the cached preparation"
-        );
-
-        // 目录内容变化：指纹变化，必须重新准备。
-        fs::write(plugin_dir.join("asset.txt"), b"asset").expect("write plugin asset");
-        let third = prepare(&cache);
-        let third_prepared = cache
-            .lookup(
-                &plugin_dir,
-                &manifest,
-                &third.plugins[0].resources.source_stamp,
-            )
-            .expect("changed directory should be prepared again");
-        assert!(
-            !Arc::ptr_eq(&first_prepared, &third_prepared),
-            "changed directory must not reuse the cached preparation"
-        );
+    fn policy_conversion_maps_capabilities() {
+        let manifest = test_manifest(&["ui.page", "network.http", "download.start"]);
+        let policy = plugin_policy_from_manifest(&manifest);
+        assert!(policy.capabilities.ui_page);
+        assert!(policy.capabilities.network_http);
+        assert!(policy.capabilities.download_start);
+        assert!(!policy.capabilities.toast);
+        assert_eq!(policy.plugin_id, "policy-plugin");
     }
 
-    #[test]
-    fn entry_call_encoding_reuses_the_request_buffer() {
-        let mut buffer = Vec::new();
-        let init = EntryCall::Init(abi::PluginContext {
-            plugin_id: "alpha".to_string(),
-            api_version: abi::API_VERSION.to_string(),
-        });
-        init.encode_into(&mut buffer).expect("init should encode");
-        let capacity = buffer.capacity();
-        assert!(capacity > 0, "encoding must fill the buffer");
-        assert_eq!(
-            postcard::from_bytes::<abi::PluginContext>(&buffer).expect("request should decode"),
-            abi::PluginContext {
-                plugin_id: "alpha".to_string(),
-                api_version: abi::API_VERSION.to_string(),
-            }
-        );
-
-        let shutdown = EntryCall::Shutdown(abi::ShutdownReason::Unload);
-        shutdown
-            .encode_into(&mut buffer)
-            .expect("shutdown should encode");
-        assert_eq!(
-            buffer.capacity(),
-            capacity,
-            "encoding a second request must reuse the same buffer capacity"
-        );
-        assert_eq!(
-            postcard::from_bytes::<abi::ShutdownReason>(&buffer).expect("request should decode"),
-            abi::ShutdownReason::Unload
-        );
-    }
-
-    fn unique_temp_dir(prefix: &str) -> PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock should be after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{prefix}-{nonce}"))
+    #[tokio::test]
+    #[ignore = "requires access to a public GitHub Release asset"]
+    async fn release_text_checks_each_redirect_without_credentials() {
+        let url = "https://github.com/BMCBL/PaperConnect/releases/download/v0.1.0/paperconnect-native-abi1-windows-x86_64-msvc.dll.sha256";
+        let mut manifest = test_manifest(&["network.http"]);
+        manifest.permissions.network_allow.push(url.to_string());
+        let error = fetch_http_text(url, 1024, Some(&manifest)).await.unwrap_err();
+        assert!(error.contains("outside the plugin allowlist"), "{error}");
+        manifest.permissions.network_allow.extend([
+            "https://release-assets.githubusercontent.com/".to_owned(),
+            "https://objects.githubusercontent.com/".to_owned(),
+        ]);
+        let (checksum, _) = fetch_http_text(url, 1024, Some(&manifest)).await.unwrap();
+        assert!(checksum.contains("paperconnect-native-abi1-windows-x86_64-msvc.dll"));
     }
 }

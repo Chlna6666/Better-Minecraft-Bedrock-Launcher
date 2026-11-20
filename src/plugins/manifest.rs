@@ -4,15 +4,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use toml_edit::{DocumentMut, Entry};
 use tracing::warn;
 
-pub const CURRENT_API_VERSION: &str = "0.6";
+pub const CURRENT_API_VERSION: &str = bmcbl_plugin_api::API_VERSION;
 pub const PLUGIN_MANIFEST_FILE: &str = "plugin.toml";
 pub const DEFAULT_ENTRY: &str = "plugin.wasm";
 pub const PLUGIN_PACKAGE_EXTENSION: &str = "bmcblx";
 pub const PLUGIN_USER_CONFIG_FILE: &str = "config.toml";
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = bmcbl_plugin_api::MANIFEST_SCHEMA_VERSION;
 pub const DEFAULT_HTTP_LIMIT_BYTES: u64 = 512 * 1024;
 pub const DEFAULT_RESOURCE_LIMIT_BYTES: u64 = 1024 * 1024;
 pub const DEFAULT_STORAGE_LIMIT_BYTES: u64 = 1024 * 1024;
@@ -21,6 +22,7 @@ pub const HARD_RESOURCE_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
 pub const HARD_STORAGE_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
 const PENDING_BACKUP_FILE: &str = ".bmcbl-plugin-backup";
 const SHA256_PREFIX: &str = "sha256:";
+static PACKAGE_INSTALL: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum PluginCapability {
@@ -38,7 +40,7 @@ pub enum PluginCapability {
     TaskProgress,
     ConfigRead,
     ConfigWrite,
-    SidecarExec,
+    DownloadStart,
 }
 
 impl PluginCapability {
@@ -58,7 +60,7 @@ impl PluginCapability {
             "task.progress" => Some(Self::TaskProgress),
             "config.read" => Some(Self::ConfigRead),
             "config.write" => Some(Self::ConfigWrite),
-            "sidecar.exec" => Some(Self::SidecarExec),
+            "download.start" => Some(Self::DownloadStart),
             _ => None,
         }
     }
@@ -79,7 +81,7 @@ impl PluginCapability {
             Self::TaskProgress => "task.progress",
             Self::ConfigRead => "config.read",
             Self::ConfigWrite => "config.write",
-            Self::SidecarExec => "sidecar.exec",
+            Self::DownloadStart => "download.start",
         }
     }
 }
@@ -130,8 +132,6 @@ struct RawPluginManifest {
     #[serde(default)]
     config_schema: Option<String>,
     #[serde(default)]
-    sidecar_dir: Option<String>,
-    #[serde(default)]
     package_hash: Option<String>,
     #[serde(default)]
     permissions: RawPluginPermissions,
@@ -141,6 +141,8 @@ struct RawPluginManifest {
     dependencies: BTreeMap<String, String>,
     #[serde(default)]
     capabilities: Vec<String>,
+    #[serde(default)]
+    game_mods: Vec<super::game_mods::Declaration>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -213,13 +215,13 @@ pub struct PluginManifest {
     pub lang_dir: Option<String>,
     pub config_default: Option<String>,
     pub config_schema: Option<String>,
-    pub sidecar_dir: Option<String>,
     pub package_hash: Option<String>,
     pub network_allowlist: Vec<String>,
     pub permissions: PluginPermissions,
     pub limits: PluginLimits,
     pub dependencies: BTreeMap<String, String>,
     pub capabilities: BTreeSet<PluginCapability>,
+    pub(crate) game_mods: Vec<super::game_mods::Declaration>,
     pub root_dir: PathBuf,
     pub pending_backup_dir: Option<PathBuf>,
 }
@@ -238,15 +240,19 @@ impl PluginManifest {
         let raw: RawPluginManifest = toml::from_str(content)?;
         validate_plugin_id(&raw.id)?;
 
-        if raw.schema_version != CURRENT_SCHEMA_VERSION {
-            bail!("unsupported plugin schema_version {}", raw.schema_version);
-        }
-
         if raw.api_version != CURRENT_API_VERSION {
             bail!(
-                "unsupported plugin api_version {}, expected {}",
+                "unsupported plugin api_version {}, expected {}; rebuild the component and package",
                 raw.api_version,
                 CURRENT_API_VERSION
+            );
+        }
+
+        if raw.schema_version != CURRENT_SCHEMA_VERSION {
+            bail!(
+                "unsupported plugin schema_version {}, expected {}; rebuild the package",
+                raw.schema_version,
+                CURRENT_SCHEMA_VERSION
             );
         }
 
@@ -286,7 +292,17 @@ impl PluginManifest {
         validate_optional_package_path(raw.lang_dir.as_deref(), PackagePathKind::Directory)?;
         validate_optional_package_path(raw.config_default.as_deref(), PackagePathKind::File)?;
         validate_optional_package_path(raw.config_schema.as_deref(), PackagePathKind::File)?;
-        validate_optional_package_path(raw.sidecar_dir.as_deref(), PackagePathKind::Directory)?;
+        let mut mod_ids = BTreeSet::new();
+        if raw.game_mods.len() > 32 {
+            bail!("a plugin package may declare at most 32 game mods");
+        }
+        for game_mod in &raw.game_mods {
+            validate_plugin_id(&game_mod.id)?;
+            validate_package_path(&game_mod.path, PackagePathKind::File)?;
+            if !mod_ids.insert(game_mod.id.as_str()) || !game_mod.valid() {
+                bail!("invalid or duplicate game mod {}", game_mod.id);
+            }
+        }
         let permissions = plugin_permissions_from_raw(raw.permissions)?;
         let limits = plugin_limits_from_raw(raw.limits);
 
@@ -297,10 +313,6 @@ impl PluginManifest {
             };
             capabilities.insert(parsed);
         }
-        if capabilities.is_empty() {
-            bail!("plugin capabilities must not be empty");
-        }
-
         let mut tags = Vec::new();
         for tag in raw.tags {
             let tag = tag.trim();
@@ -336,13 +348,13 @@ impl PluginManifest {
             lang_dir: raw.lang_dir,
             config_default: raw.config_default,
             config_schema: raw.config_schema,
-            sidecar_dir: raw.sidecar_dir,
             package_hash: raw.package_hash,
             network_allowlist: permissions.network_allow.clone(),
             permissions,
             limits,
             dependencies: raw.dependencies,
             capabilities,
+            game_mods: raw.game_mods,
             root_dir,
             pending_backup_dir,
         })
@@ -392,19 +404,6 @@ impl PluginManifest {
 
     pub fn user_config_path(&self) -> PathBuf {
         self.root_dir.join(PLUGIN_USER_CONFIG_FILE)
-    }
-
-    pub fn sidecar_path(&self, name: &str) -> Result<PathBuf> {
-        self.require_capability(PluginCapability::SidecarExec)?;
-        let directory = self
-            .sidecar_dir
-            .as_deref()
-            .ok_or_else(|| anyhow!("plugin {} has no sidecar_dir", self.id))?;
-        let file_name = validate_package_path(name, PackagePathKind::File)?;
-        if file_name.components().count() != 1 {
-            bail!("sidecar name must be a file name");
-        }
-        Ok(self.root_dir.join(directory).join(file_name))
     }
 
     pub fn has_capability(&self, capability: &PluginCapability) -> bool {
@@ -474,9 +473,7 @@ fn plugin_limits_from_raw(raw: RawPluginLimits) -> PluginLimits {
 }
 
 fn allowlist_contains_url(allowlist: &[String], url: &str) -> bool {
-    allowlist
-        .iter()
-        .any(|allowed| url == allowed || url.starts_with(allowed))
+    bmcbl_plugin_runtime::Allowlist::new(allowlist.to_vec()).allows_url(url)
 }
 
 fn allowlist_contains_path(allowlist: &[String], path: &str) -> bool {
@@ -754,10 +751,13 @@ pub fn load_manifest_from_package(
     Ok(cached_manifest)
 }
 
-pub fn install_from_package(
-    package_path: &Path,
-    plugins_dir: &Path,
-) -> Result<PluginManifest> {
+fn install_from_package(package_path: &Path, plugins_dir: &Path) -> Result<PluginManifest> {
+    let manifest = install_package(package_path, plugins_dir)?;
+    remove_installed_package_file(package_path)?;
+    Ok(manifest)
+}
+
+pub(super) fn install_package(package_path: &Path, plugins_dir: &Path) -> Result<PluginManifest> {
     if !is_plugin_package_path(package_path) {
         bail!("plugin package must use .{PLUGIN_PACKAGE_EXTENSION} extension");
     }
@@ -795,9 +795,11 @@ pub fn install_from_package(
         }
     }
 
+    let _install = PACKAGE_INSTALL
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let install_dir = plugins_dir.join(&manifest_for_metadata.id);
     if installed_package_matches(&install_dir, &manifest_for_metadata)? {
-        remove_installed_package_file(package_path)?;
         return PluginManifest::load_from_dir(install_dir);
     }
 
@@ -836,7 +838,6 @@ pub fn install_from_package(
         );
     }
 
-    remove_installed_package_file(package_path)?;
     let manifest = PluginManifest::load_from_dir(install_dir)?;
     ensure_user_config(&manifest)?;
     Ok(manifest)
@@ -1283,7 +1284,7 @@ mod tests {
     fn sample_manifest(id: &str) -> String {
         format!(
             r#"
-schema_version = 2
+schema_version = 1
 id = "{id}"
 name = "Hello"
 version = "0.1.0"
@@ -1325,24 +1326,37 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
     }
 
     #[test]
-    fn manifest_rejects_v03_schema() {
+    fn manifest_rejects_old_schema() {
         let content =
-            sample_manifest("hello-plugin").replace("schema_version = 2", "schema_version = 1");
+            sample_manifest("hello-plugin").replace("schema_version = 1", "schema_version = 2");
         let error =
-            PluginManifest::parse("hello", &content).expect_err("schema v1 should be rejected");
+            PluginManifest::parse("hello", &content).expect_err("schema v2 should be rejected");
 
         assert!(
             error
                 .to_string()
-                .contains("unsupported plugin schema_version 1")
+                .contains("unsupported plugin schema_version 2")
         );
     }
 
     #[test]
-    fn manifest_parses_v2_permissions_and_limits() {
+    fn manifest_rejects_dev_api_before_loading_component() {
+        let content = sample_manifest("hello-plugin").replace(
+            &format!("api_version = \"{CURRENT_API_VERSION}\""),
+            "api_version = \"0.1.0-dev\"",
+        );
+        let error = PluginManifest::parse("hello", &content)
+            .expect_err("dev API should be rejected")
+            .to_string();
+        assert!(error.contains("unsupported plugin api_version 0.1.0-dev"));
+        assert!(error.contains("rebuild the component and package"));
+    }
+
+    #[test]
+    fn manifest_parses_permissions_and_limits() {
         let content = format!(
             r#"
-schema_version = 2
+schema_version = 1
 id = "hello-plugin"
 name = "Hello"
 version = "0.1.0"
@@ -1367,7 +1381,7 @@ max_storage_bytes = 4096
         );
 
         let manifest = PluginManifest::parse("hello", &content)
-            .expect("manifest with v2 permissions should parse");
+            .expect("manifest with permissions should parse");
 
         assert!(manifest.has_capability(&PluginCapability::StorageKv));
         assert!(manifest.allows_network_url("https://example.com/api/list"));
@@ -1387,7 +1401,7 @@ max_storage_bytes = 4096
     fn manifest_rejects_resource_path_traversal() {
         let content = format!(
             r#"
-schema_version = 2
+schema_version = 1
 id = "hello-plugin"
 name = "Hello"
 version = "0.1.0"
@@ -1432,7 +1446,7 @@ allow = ["../secrets"]
     fn manifest_parses_professional_metadata() {
         let content = format!(
             r#"
-schema_version = 2
+schema_version = 1
 id = "bmcbl-essentials"
 name = "BMCBL Essentials"
 version = "0.1.0"
@@ -1502,7 +1516,7 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
         let hash = sha256_hex(wasm);
         let manifest = format!(
             r#"
-schema_version = 2
+schema_version = 1
 id = "bmcbl-essentials"
 name = "BMCBL Essentials"
 version = "0.1.0"
@@ -1535,6 +1549,20 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
             !package_path.exists(),
             "installed package file should be removed"
         );
+    }
+
+    #[test]
+    #[ignore = "requires BMCBL_IMPORT_FIXTURE pointing to an exported .bmcblx package"]
+    fn external_package_is_installed_without_consuming_source() {
+        let package = PathBuf::from(std::env::var_os("BMCBL_IMPORT_FIXTURE").unwrap());
+        let temporary = tempfile::tempdir().unwrap();
+        let plugins_dir = temporary.path().join("plugins");
+        let installed = install_package(&package, &plugins_dir).expect("install selected package");
+        assert!(package.is_file());
+        assert!(installed.wasm_path().is_file());
+        let discovered = load_manifests_from_sources(&plugins_dir, temporary.path()).unwrap();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].id, installed.id);
     }
 
     #[test]
@@ -1772,7 +1800,7 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
     fn test_manifest(version: &str, wasm_hash: &str) -> String {
         format!(
             r#"
-schema_version = 2
+schema_version = 1
 id = "bmcbl-essentials"
 name = "BMCBL Essentials"
 version = "{version}"

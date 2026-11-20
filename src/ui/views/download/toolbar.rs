@@ -12,36 +12,59 @@ use gpui::AnimationExt as _;
 use gpui::*;
 
 const CONTROL_HEIGHT: f32 = 38.0;
+const CONTROL_GAP: f32 = 12.0;
+const SEARCH_MIN_WIDTH: f32 = 160.0;
+const GAME_LOADER_WIDTH: f32 = 132.0;
+const GAME_CHANNEL_WIDTH: f32 = 112.0;
+const RESOURCE_VERSION_WIDTH: f32 = 148.0;
+const RESOURCE_SORT_WIDTH: f32 = 112.0;
+const MOD_SOURCE_WIDTH: f32 = 120.0;
+const MOD_VERSION_WIDTH: f32 = 130.0;
 const TAB_INSET: f32 = 3.0;
 const TAB_HEIGHT: f32 = CONTROL_HEIGHT - 2.0 * (TAB_INSET + 1.0);
 
 pub(super) fn render_toolbar(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n) -> Div {
     let search = render_toolbar_search(colors, state, i18n);
+    let controls_width = match state.tab {
+        DownloadTab::Game => {
+            GAME_LOADER_WIDTH + GAME_CHANNEL_WIDTH + 2.0 * CONTROL_HEIGHT + 3.0 * CONTROL_GAP
+        }
+        DownloadTab::ResourcePack => {
+            RESOURCE_VERSION_WIDTH + RESOURCE_SORT_WIDTH + CONTROL_HEIGHT + 2.0 * CONTROL_GAP
+        }
+        DownloadTab::Mod => {
+            MOD_SOURCE_WIDTH + MOD_VERSION_WIDTH + CONTROL_HEIGHT + 2.0 * CONTROL_GAP
+        }
+        DownloadTab::Plugin => CONTROL_HEIGHT,
+    };
 
     div()
         .relative()
         .w_full()
         .flex_none()
-        .min_h(px(CONTROL_HEIGHT + 28.0))
-        .bg(Hsla {
-            a: 0.0,
-            ..colors.surface
-        })
         .px(px(20.))
-        .py(px(14.))
+        .py(px(12.))
         .flex()
         .flex_wrap()
         .items_center()
-        .gap(px(12.))
+        .gap(px(CONTROL_GAP))
         .child(render_tabs(colors, state, i18n))
         .child(
             div()
+                .flex()
                 .flex_1()
-                .min_w(px(160.))
-                .h(px(CONTROL_HEIGHT))
-                .child(search),
+                .items_center()
+                .gap(px(CONTROL_GAP))
+                .min_w(px(SEARCH_MIN_WIDTH + CONTROL_GAP + controls_width))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(SEARCH_MIN_WIDTH))
+                        .h(px(CONTROL_HEIGHT))
+                        .child(search),
+                )
+                .child(render_toolbar_controls(colors, state, i18n)),
         )
-        .child(render_toolbar_controls(colors, state, i18n).ml_auto())
         .child(crate::ui::onboarding::anchor::observe(
             crate::ui::onboarding::state::OnboardingAnchor::DownloadToolbar,
         ))
@@ -56,6 +79,7 @@ fn render_toolbar_search(
         DownloadTab::Game => t!("DownloadPage.search_game"),
         DownloadTab::ResourcePack => t!("DownloadPage.search_resource"),
         DownloadTab::Mod => t!("DownloadPage.search_mods"),
+        DownloadTab::Plugin => t!("DownloadPage.search_plugins"),
     };
 
     let shell_background = Hsla {
@@ -116,20 +140,29 @@ fn render_toolbar_search(
     }
 }
 
-fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) -> Div {
+fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, i18n: &I18n) -> Div {
     let active = state.tab;
     let from = state.tab_anim_from;
     let transition_seq = state.tab_anim_seq;
 
-    let idx = |tab: DownloadTab| match tab {
-        DownloadTab::Game => 0f32,
-        DownloadTab::ResourcePack => 1f32,
-        DownloadTab::Mod => 2f32,
+    let item_width = |tab| match tab {
+        DownloadTab::Plugin if i18n.locale().code() == "ja-JP" => 96.0,
+        _ => 82.0,
     };
-
-    let item_w = 104.0f32;
-    let from_x = idx(from) * item_w;
-    let to_x = idx(active) * item_w;
+    let offset_before = |tab: DownloadTab| {
+        [
+            DownloadTab::Game,
+            DownloadTab::ResourcePack,
+            DownloadTab::Mod,
+            DownloadTab::Plugin,
+        ]
+        .into_iter()
+        .take(tab.index())
+        .map(item_width)
+        .sum::<f32>()
+    };
+    let from_x = offset_before(from);
+    let to_x = offset_before(active);
 
     let tab = |id: &'static str,
                icon_path: &'static str,
@@ -141,6 +174,7 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) ->
             DownloadTab::Game => t!("DownloadPage.search_game"),
             DownloadTab::ResourcePack => t!("DownloadPage.search_resource"),
             DownloadTab::Mod => t!("DownloadPage.search_mods"),
+            DownloadTab::Plugin => t!("DownloadPage.search_plugins"),
         };
         let fg = if is_active {
             colors.text_primary
@@ -153,7 +187,7 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) ->
 
         div()
             .id(id)
-            .w(px(item_w))
+            .w(px(item_width(tab)))
             .h(px(TAB_HEIGHT))
             .rounded(px(crate::ui::theme::tokens::radius::SM))
             .cursor_pointer()
@@ -210,6 +244,7 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) ->
                                 .set_offset(point(px(0.), px(0.)));
                         }
                         DownloadTab::Mod => {}
+                        DownloadTab::Plugin => s.page_index = 0,
                     }
                 });
 
@@ -242,6 +277,7 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) ->
                             super::ensure_levilauncher_loaded(cx);
                         }
                     }
+                    DownloadTab::Plugin => super::plugins::load(cx, false),
                 });
             })
     };
@@ -252,10 +288,18 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) ->
         .absolute()
         .left(px(to_x + TAB_INSET))
         .top(px(TAB_INSET))
-        .w(px(item_w))
+        .w(px(item_width(active)))
         .h(px(TAB_HEIGHT))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
-        .bg(colors.surface);
+        .border_1()
+        .border_color(Hsla {
+            a: 0.20,
+            ..colors.accent
+        })
+        .bg(Hsla {
+            a: 0.14,
+            ..colors.accent
+        });
     let offset =
         if transition_seq != 0 && from != active && !crate::core::ui_prefs::reduced_motion() {
             from_x - to_x
@@ -316,6 +360,16 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) ->
             DownloadTab::Mod,
             active,
         ))
+        .child(tab(
+            "download-tab-plugin",
+            lucide_gpui::icon!(plug),
+            t!("DownloadPage.tab_plugins"),
+            DownloadTab::Plugin,
+            active,
+        ))
+        .child(crate::ui::onboarding::anchor::observe(
+            crate::ui::onboarding::state::OnboardingAnchor::DownloadTabs,
+        ))
 }
 
 fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) -> Div {
@@ -331,6 +385,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                 || state.curseforge_page_commit_task.is_some()
         }
         DownloadTab::Mod => false,
+        DownloadTab::Plugin => state.plugin_catalog.loading,
     };
 
     let _icon_btn = |id: &'static str, icon_path: &'static str, disabled: bool| {
@@ -364,7 +419,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
         Dropdown::new(
             "download-channel-filter",
             colors,
-            px(112.),
+            px(GAME_CHANNEL_WIDTH),
             label,
             options,
             selected_index,
@@ -402,7 +457,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
         Dropdown::new(
             "download-loader-filter",
             colors,
-            px(132.),
+            px(GAME_LOADER_WIDTH),
             label,
             vec![
                 DropdownOption::from(t!("common.all")),
@@ -446,6 +501,10 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
         .disabled(refresh_disabled)
         .on_click(|_ev, window, cx: &mut App| {
             let refreshed_tab = cx.read_global(|s: &DownloadPageState, _cx| s.tab);
+            if refreshed_tab == DownloadTab::Plugin {
+                super::plugins::load(cx, true);
+                return;
+            }
             if refreshed_tab == DownloadTab::Mod {
                 crate::core::levilamina::support::clear_cache();
                 let native_source = cx.read_global(|state: &DownloadPageState, _cx| {
@@ -458,6 +517,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                 }
             }
             cx.update_global(|s: &mut DownloadPageState, cx| match s.tab {
+                DownloadTab::Plugin => {}
                 DownloadTab::Game => {
                     s.force_refresh_next = true;
                     s.loaded = false;
@@ -519,10 +579,11 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
         .flex_none()
         .flex()
         .items_center()
-        .gap(px(12.))
+        .gap(px(CONTROL_GAP))
         .justify_end();
 
     match tab {
+        DownloadTab::Plugin => row = row.child(refresh),
         DownloadTab::Game => {
             row = row
                 .child(loader_filter)
@@ -588,7 +649,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
             let version_select = Dropdown::new(
                 "download-cf-version",
                 colors,
-                px(148.),
+                px(RESOURCE_VERSION_WIDTH),
                 version_label,
                 version_options,
                 selected_version_index,
@@ -646,7 +707,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
             let sort_select = Dropdown::new(
                 "download-cf-sort",
                 colors,
-                px(112.),
+                px(RESOURCE_SORT_WIDTH),
                 if enabled {
                     sort_label
                 } else {
@@ -725,7 +786,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
             let loader_type_select = Dropdown::new(
                 "download-mod-source",
                 colors,
-                px(120.),
+                px(MOD_SOURCE_WIDTH),
                 loader_type_label,
                 loader_type_options,
                 selected_loader_type_index,
@@ -796,7 +857,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
             let ver_select = Dropdown::new(
                 "download-levilauncher-version",
                 colors,
-                px(130.),
+                px(MOD_VERSION_WIDTH),
                 ver_label,
                 ver_options,
                 selected_ver_index,
@@ -834,4 +895,63 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
     }
 
     row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::components::dropdown::DropdownOverlayState;
+    use crate::ui::components::page_shell::PAGE_INSET_X;
+    use crate::ui::onboarding::state::{OnboardingAnchor, OnboardingScene, OnboardingTourState};
+    use crate::ui::theme::LightColors;
+
+    struct ToolbarProbe(DownloadPageState);
+
+    impl Render for ToolbarProbe {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().px(PAGE_INSET_X).child(render_toolbar(
+                &LightColors::theme(),
+                &self.0,
+                cx.global::<I18n>(),
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn search_and_filters_wrap_together_at_narrow_width(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(I18n::new());
+            cx.set_global(DropdownOverlayState::default());
+            let mut tour = OnboardingTourState::default();
+            tour.visible = true;
+            tour.scene = OnboardingScene::DownloadNavigation;
+            cx.set_global(tour);
+        });
+        let (probe, visual) = cx.add_window_view(|_, _| ToolbarProbe(DownloadPageState::default()));
+        for (width, tab, height) in [
+            (972., DownloadTab::Game, 62.),
+            (760., DownloadTab::Game, 112.),
+            (760., DownloadTab::Plugin, 62.),
+            (972., DownloadTab::ResourcePack, 62.),
+        ] {
+            visual.simulate_resize(size(px(width), px(560.)));
+            probe.update(visual, |probe, cx| {
+                probe.0.tab = tab;
+                cx.notify();
+            });
+            visual.update(|_, cx| {
+                let tour = cx.global::<OnboardingTourState>();
+                assert_eq!(
+                    tour.anchor(OnboardingAnchor::DownloadToolbar)
+                        .unwrap()
+                        .size
+                        .height,
+                    px(height),
+                    "{tab:?} at {width}px",
+                );
+                let tabs = tour.anchor(OnboardingAnchor::DownloadTabs).unwrap();
+                assert_eq!(tabs.size.height, px(CONTROL_HEIGHT - 2.));
+            });
+        }
+    }
 }

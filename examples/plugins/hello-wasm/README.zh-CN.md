@@ -14,9 +14,9 @@
 ## 构建
 
 ```powershell
-rustup target add wasm32-unknown-unknown
-cargo build --release --target wasm32-unknown-unknown --manifest-path examples/plugins/hello-wasm/Cargo.toml
+rustup target add wasm32-wasip2
+cargo build --release --target wasm32-wasip2 --manifest-path examples/plugins/hello-wasm/Cargo.toml
 ```
 
 构建脚本会通过 `bmcbl_plugin_api::pack::auto_pack()` 生成 `.bmcblx`。
-插件 API 版本为 `0.6`。
+插件 API 版本为 `1.0.0`。

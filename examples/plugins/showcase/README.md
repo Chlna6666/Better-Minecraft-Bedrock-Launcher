@@ -5,11 +5,11 @@ BMCBL 插件 API 的**功能全集示例**：一个插件覆盖页面、注入�
 
 ## 构建
 
-需要 Rust 的 `wasm32-unknown-unknown` 目标：
+需要 Rust 的 `wasm32-wasip2` 目标：
 
 ```powershell
-rustup target add wasm32-unknown-unknown
-cargo build --release --target wasm32-unknown-unknown --manifest-path examples/plugins/showcase/Cargo.toml
+rustup target add wasm32-wasip2
+cargo build --release --target wasm32-wasip2 --manifest-path examples/plugins/showcase/Cargo.toml
 ```
 
 `build.rs` 会调用 `bmcbl_plugin_api::pack::auto_pack()`：从
@@ -59,4 +59,3 @@ cargo build --release --target wasm32-unknown-unknown --manifest-path examples/p
 ## 与其它示例的关系
 
 `examples/plugins/hello-wasm` 是最小骨架（页面 + 注入 + 事件）适合入门；本示例是完整参考实现。
-需要演示原生 sidecar 时，可参考 `Cargo.toml` 中的 `sidecar_dir` 声明与 `sidecar_call` API。

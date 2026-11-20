@@ -186,7 +186,8 @@ impl Render for BrandChromeView {
 struct NavChromeView {
     _subscriptions: Vec<Subscription>,
     items: Vec<chrome::NavItem>,
-    revision: (u64, u64),
+    tools_visible: bool,
+    locale_revision: u64,
     signature: (usize, usize, usize, bool),
     last_pill_target: Option<usize>,
     pill_epoch: u64,
@@ -195,11 +196,8 @@ struct NavChromeView {
 
 impl NavChromeView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let revision = (
-            cx.global::<crate::plugins::runtime::PluginRegistry>()
-                .navigation_revision(),
-            cx.global::<I18n>().revision(),
-        );
+        let tools_visible = crate::ui::navigation::tools_visible(cx);
+        let locale_revision = cx.global::<I18n>().revision();
         let items = chrome::navigation_items(cx);
         let signature = Self::nav_signature(cx);
         let subscriptions = vec![
@@ -213,18 +211,16 @@ impl NavChromeView {
             cx.observe_global::<ThemeState>(|_, cx| cx.notify()),
             cx.observe_global::<I18n>(|this, cx| {
                 let revision = cx.global::<I18n>().revision();
-                if this.revision.1 != revision {
-                    this.revision.1 = revision;
+                if this.locale_revision != revision {
+                    this.locale_revision = revision;
                     this.items = chrome::navigation_items(cx);
                     cx.notify();
                 }
             }),
             cx.observe_global::<crate::plugins::runtime::PluginRegistry>(|this, cx| {
-                let revision = cx
-                    .global::<crate::plugins::runtime::PluginRegistry>()
-                    .navigation_revision();
-                if this.revision.0 != revision {
-                    this.revision.0 = revision;
+                let visible = crate::ui::navigation::tools_visible(cx);
+                if this.tools_visible != visible {
+                    this.tools_visible = visible;
                     this.items = chrome::navigation_items(cx);
                     cx.notify();
                 }
@@ -265,7 +261,8 @@ impl NavChromeView {
         Self {
             _subscriptions: subscriptions,
             items,
-            revision,
+            tools_visible,
+            locale_revision,
             signature,
             last_pill_target: Some(signature.0),
             pill_epoch: 0,
@@ -524,14 +521,18 @@ impl Render for WindowControlsView {
 
 #[cfg(test)]
 mod nav_pill_tests {
-    use super::{NavChromeView, NavState};
+    use super::{I18n, NavChromeView, NavState, ThemeState};
+    use crate::plugins::runtime::PluginRegistry;
+    use crate::ui::navigation::{RouteTarget, resolve_tool_route};
+    use gpui::BorrowAppContext;
 
     #[test]
     fn layout_rebuilds_do_not_replay_the_previous_route() {
         let mut view = NavChromeView {
             _subscriptions: Vec::new(),
             items: Vec::new(),
-            revision: (0, 0),
+            tools_visible: false,
+            locale_revision: 0,
             signature: (0, 0, 0, true),
             last_pill_target: Some(0),
             pill_epoch: 0,
@@ -558,7 +559,8 @@ mod nav_pill_tests {
         let mut view = NavChromeView {
             _subscriptions: Vec::new(),
             items: Vec::new(),
-            revision: (0, 0),
+            tools_visible: false,
+            locale_revision: 0,
             signature: (0, 0, 0, true),
             last_pill_target: Some(0),
             pill_epoch: 0,
@@ -570,5 +572,74 @@ mod nav_pill_tests {
         assert_eq!(view.last_pill_target, Some(5));
         assert!(!view.update_minimized_pill(false, 5));
         assert_eq!(view.pill_epoch, 1);
+    }
+
+    #[test]
+    #[ignore = "requires BMCBL_TOOL_FIXTURE_PACKAGE, BMCBL_TOOL_FIXTURE_ID and a second tool fixture"]
+    fn tool_registration_updates_navigation_without_rescanning() {
+        let package = std::env::var_os("BMCBL_TOOL_FIXTURE_PACKAGE").unwrap();
+        let plugin_id = std::env::var("BMCBL_TOOL_FIXTURE_ID").unwrap();
+        let other_package = std::env::var_os("BMCBL_SECOND_TOOL_FIXTURE_PACKAGE").unwrap();
+        let other_id = std::env::var("BMCBL_SECOND_TOOL_FIXTURE_ID").unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let plugins = directory.path().join("plugins");
+        std::fs::create_dir(&plugins).unwrap();
+        std::fs::copy(package, plugins.join("tool.bmcblx")).unwrap();
+        std::fs::copy(other_package, plugins.join("other.bmcblx")).unwrap();
+
+        let mut cx = gpui::TestAppContext::single();
+        cx.update(|app| {
+            app.set_global(I18n::new());
+            app.set_global(NavState::default());
+            app.set_global(ThemeState::default());
+            let mut registry = PluginRegistry::new(
+                plugins,
+                directory.path().join("cache"),
+                directory.path().join("package-cache"),
+            );
+            registry.reload_all().unwrap();
+            app.set_global(registry);
+        });
+        let window = cx.add_window(NavChromeView::new);
+        let count = || cx.update(|app| window.update(app, |view, _, _| view.items.len()).unwrap());
+        let initial = count();
+
+        cx.update(|app| {
+            app.update_global(|registry: &mut PluginRegistry, _| {
+                registry.render_page(&plugin_id, "main").unwrap();
+            });
+        });
+        assert_eq!(count(), initial + 1);
+
+        cx.update(|app| {
+            app.update_global(|registry: &mut PluginRegistry, _| {
+                registry.render_page(&other_id, "main").unwrap();
+                assert_eq!(registry.tool_pages().len(), 2);
+            });
+        });
+        assert_eq!(count(), initial + 1);
+        let tool = |id: &str| RouteTarget::Tool {
+            plugin_id: id.to_owned(),
+            page_id: "main".to_owned(),
+        };
+        cx.read(|app| {
+            assert_eq!(resolve_tool_route(tool(&plugin_id), app), tool(&plugin_id));
+            assert_eq!(resolve_tool_route(tool(&other_id), app), tool(&other_id));
+        });
+
+        cx.update(|app| {
+            app.update_global(|registry: &mut PluginRegistry, _| {
+                registry.set_plugin_enabled(&plugin_id, false).unwrap();
+            });
+        });
+        assert_eq!(count(), initial + 1);
+        cx.read(|app| assert_eq!(resolve_tool_route(tool(&plugin_id), app), tool(&other_id)));
+
+        cx.update(|app| {
+            app.update_global(|registry: &mut PluginRegistry, _| {
+                registry.set_plugin_enabled(&other_id, false).unwrap();
+            });
+        });
+        assert_eq!(count(), initial);
     }
 }

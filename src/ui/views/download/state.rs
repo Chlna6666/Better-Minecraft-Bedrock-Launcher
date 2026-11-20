@@ -11,6 +11,7 @@ pub enum DownloadTab {
     Game,
     ResourcePack,
     Mod,
+    Plugin,
 }
 
 impl DownloadTab {
@@ -19,6 +20,7 @@ impl DownloadTab {
             Self::Game => 0,
             Self::ResourcePack => 1,
             Self::Mod => 2,
+            Self::Plugin => 3,
         }
     }
 }
@@ -152,6 +154,7 @@ pub enum CurseForgeInstallStage {
 
 pub struct DownloadPageState {
     pub tab: DownloadTab,
+    pub(super) plugin_catalog: super::plugins::State,
     pub loaded: bool,
     pub loading: bool,
     pub error: Option<SharedString>,
@@ -289,6 +292,7 @@ impl Default for DownloadPageState {
     fn default() -> Self {
         Self {
             tab: DownloadTab::Game,
+            plugin_catalog: super::plugins::State::default(),
             loaded: false,
             loading: false,
             error: None,

@@ -757,7 +757,7 @@ impl HomePageView {
         let injections =
             crate::plugins::runtime::render_injections(cx, InjectionSlot::HomeSidebar, Some("/"));
         for injection in injections {
-            panel = panel.child(crate::plugins::ui_dsl::render_validated_view_tree(
+            panel = panel.child(crate::ui::views::plugin::elements::render_validated_view_tree(
                 &injection.tree,
                 &injection.plugin_id,
                 Some("/"),

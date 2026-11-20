@@ -75,6 +75,7 @@ pub enum PluginEventKind {
         action_id: String,
         value: Option<String>,
     },
+    JobReady { job_id: String },
     Global {
         name: String,
         payload: String,
@@ -102,6 +103,7 @@ impl PluginEvent {
     pub fn cascade_name(&self) -> &str {
         match &self.kind {
             PluginEventKind::Global { name, .. } => name,
+            PluginEventKind::JobReady { .. } => "job-ready",
             PluginEventKind::RouteChanged { .. } => ROUTE_CHANGED_EVENT,
             PluginEventKind::Action { action_id, .. } => action_id,
         }

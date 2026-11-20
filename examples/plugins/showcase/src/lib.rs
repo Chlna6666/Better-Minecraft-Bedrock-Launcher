@@ -11,10 +11,10 @@
 //!
 //! 代码组织：`state` 维护会话与持久状态，`actions` 分发动作，`views` 只负责渲染。
 //!
-//! 构建与打包（需要 `wasm32-unknown-unknown` 目标）：
+//! 构建与打包（需要 `wasm32-wasip2` 目标）：
 //!
 //! ```text
-//! cargo build --release --target wasm32-unknown-unknown \
+//! cargo build --release --target wasm32-wasip2 \
 //!     --manifest-path examples/plugins/showcase/Cargo.toml
 //! ```
 //!
@@ -56,7 +56,7 @@ impl Plugin for ShowcasePlugin {
         log_info!("{} initialized for {}", PLUGIN.name, context.plugin_id);
 
         Ok(registrations! {
-            page PAGE_MAIN, title = PLUGIN.name, nav = Nav::new(tr!("showcase.nav")).icon("plug").order(40);
+            page PAGE_MAIN, title = PLUGIN.name, tool = Tool::new(tr!("showcase.nav")).icon("plug").order(40);
             page PAGE_WINDOW, title = tr!("showcase.window.title");
             page PAGE_MODAL, title = tr!("showcase.modal.title");
             injection InjectionSlot::MainRootOverlay, page = PAGE_MAIN, priority = 20, layout = InjectionLayout::sidebar();

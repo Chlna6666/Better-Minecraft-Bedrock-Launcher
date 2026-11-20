@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-pub const API_VERSION: &str = "0.6";
+use crate::{API_VERSION, MANIFEST_SCHEMA_VERSION};
 pub const PLUGIN_MANIFEST_FILE: &str = "plugin.toml";
 pub const PLUGIN_WASM_FILE: &str = "plugin.wasm";
 pub const PLUGIN_PACKAGE_EXTENSION: &str = "bmcblx";
-const WASM_TARGET: &str = "wasm32-unknown-unknown";
+const WASM_TARGET: &str = "wasm32-wasip2";
 
 #[derive(Debug, Clone)]
 pub struct PackOptions {
@@ -91,9 +91,9 @@ struct BmcblPluginMetadata {
     #[serde(default)]
     config_schema: Option<String>,
     #[serde(default)]
-    sidecar_dir: Option<String>,
-    #[serde(default)]
     permissions: BmcblPluginPermissions,
+    #[serde(default)]
+    game_mods: Vec<toml::Value>,
     #[serde(default)]
     limits: BmcblPluginLimits,
 }
@@ -142,16 +142,12 @@ pub fn create(options: PackOptions) -> Result<PackResult> {
     validate_plugin_id(&metadata.id)?;
     let version = Version::parse(&cargo_manifest.package.version)
         .with_context(|| format!("invalid plugin version {}", cargo_manifest.package.version))?;
-    if metadata.capabilities.is_empty() {
-        bail!("metadata.bmcbl-plugin.capabilities must not be empty");
-    }
     validate_optional_package_path(metadata.readme.as_deref(), PackagePathKind::File)?;
     validate_package_path_map(&metadata.readme_locales, PackagePathKind::File)?;
     validate_optional_package_path(metadata.icon.as_deref(), PackagePathKind::File)?;
     validate_optional_package_path(metadata.lang_dir.as_deref(), PackagePathKind::Directory)?;
     validate_optional_package_path(metadata.config_default.as_deref(), PackagePathKind::File)?;
     validate_optional_package_path(metadata.config_schema.as_deref(), PackagePathKind::File)?;
-    validate_optional_package_path(metadata.sidecar_dir.as_deref(), PackagePathKind::Directory)?;
     validate_url_allowlist(
         "permissions.network.allow",
         &metadata.permissions.network.allow,
@@ -183,7 +179,7 @@ pub fn create(options: PackOptions) -> Result<PackResult> {
     });
     let wasm = fs::read(&wasm_path).with_context(|| format!("read {}", wasm_path.display()))?;
     let wasm_hash = sha256_hex(&wasm);
-    let manifest_text = generate_plugin_manifest(&cargo_manifest, metadata, &wasm_hash);
+    let manifest_text = generate_plugin_manifest(&cargo_manifest, metadata, &wasm_hash)?;
     let package_path = package_output_path(
         &manifest_dir,
         options.out_dir.as_deref(),
@@ -252,15 +248,13 @@ fn generate_plugin_manifest(
     cargo_manifest: &CargoManifest,
     metadata: &BmcblPluginMetadata,
     wasm_hash: &str,
-) -> String {
+) -> Result<String> {
     let package = &cargo_manifest.package;
     let name = metadata.name.as_deref().unwrap_or(&package.name);
     let description = package.description.as_deref().unwrap_or_default();
-    let license = package.license.as_deref().unwrap_or_default();
-    let website = metadata.website.as_deref().unwrap_or_default();
 
-    [
-        "schema_version = 2".to_string(),
+    let mut manifest = [
+        format!("schema_version = {MANIFEST_SCHEMA_VERSION}"),
         format!("id = {}", toml_string(&metadata.id)),
         format!("name = {}", toml_string(name)),
         format!("version = {}", toml_string(&package.version)),
@@ -268,8 +262,8 @@ fn generate_plugin_manifest(
         format!("entry = {}", toml_string(PLUGIN_WASM_FILE)),
         format!("authors = {}", toml_array(&package.authors)),
         format!("description = {}", toml_string(description)),
-        format!("website = {}", toml_string(website)),
-        format!("license = {}", toml_string(license)),
+        optional_manifest_string("website", metadata.website.as_deref()),
+        optional_manifest_string("license", package.license.as_deref()),
         "load_order = \"startup\"".to_string(),
         format!("tags = {}", toml_array(&metadata.tags)),
         optional_manifest_path("readme", metadata.readme.as_deref()),
@@ -278,7 +272,6 @@ fn generate_plugin_manifest(
         optional_manifest_path("lang_dir", metadata.lang_dir.as_deref()),
         optional_manifest_path("config_default", metadata.config_default.as_deref()),
         optional_manifest_path("config_schema", metadata.config_schema.as_deref()),
-        optional_manifest_path("sidecar_dir", metadata.sidecar_dir.as_deref()),
         format!(
             "package_hash = {}",
             toml_string(&format!("sha256:{wasm_hash}"))
@@ -290,7 +283,11 @@ fn generate_plugin_manifest(
         manifest_limits_section(&metadata.limits),
         String::new(),
     ]
-    .join("\n")
+    .join("\n");
+    if !metadata.game_mods.is_empty() {
+        manifest.push_str(&toml::to_string(&BTreeMap::from([("game_mods", &metadata.game_mods)]))?);
+    }
+    Ok(manifest)
 }
 
 fn package_output_path(
@@ -507,7 +504,20 @@ fn write_package(
     writer.file("config_default")?;
     writer.file("config_schema")?;
     writer.dir("lang_dir")?;
-    writer.dir("sidecar_dir")?;
+    let manifest: toml::Value = toml::from_str(manifest_text)?;
+    if let Some(mods) = manifest.get("game_mods").and_then(toml::Value::as_array) {
+        for game_mod in mods {
+            let path = game_mod.get("path").and_then(toml::Value::as_str)
+                .context("each game mod must declare a relative path")?;
+            if !path.starts_with("game-mods/") {
+                anyhow::bail!("game mod paths must be under game-mods/");
+            }
+            let path = validate_package_path(Path::new(path), PackagePathKind::File)?;
+            if written_files.insert(normalize_package_path(&path.to_string_lossy())) {
+                write_package_file(&mut zip, plugin_dir, &path, &path)?;
+            }
+        }
+    }
 
     write_allowed_resource_entries(plugin_dir, &mut zip, &mut written_files, manifest_text)?;
 
@@ -1145,6 +1155,12 @@ fn validate_plugin_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+fn optional_manifest_string(key: &str, value: Option<&str>) -> String {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map_or_else(String::new, |value| format!("{key} = {}", toml_string(value)))
+}
+
 fn optional_manifest_path(key: &str, value: Option<&str>) -> String {
     value.map_or_else(String::new, |value| {
         format!("{key} = {}", toml_string(&normalize_package_path(value)))
@@ -1318,7 +1334,7 @@ mod tests {
                         lang_dir: Some("lang".to_string()),
                         config_default: Some("config/default.toml".to_string()),
                         config_schema: Some("config/schema.toml".to_string()),
-                        sidecar_dir: None,
+                        game_mods: Vec::new(),
                         permissions: BmcblPluginPermissions {
                             network: BmcblPluginAllowList {
                                 allow: vec![
@@ -1347,11 +1363,13 @@ mod tests {
             .as_ref()
             .expect("metadata should exist");
 
-        let manifest = generate_plugin_manifest(&cargo_manifest, metadata, "abc123");
+        let manifest = generate_plugin_manifest(&cargo_manifest, metadata, "abc123").unwrap();
 
         assert!(manifest.contains("id = \"bmcbl-essentials\""));
         assert!(manifest.contains("name = \"BMCBL Essentials\""));
         assert!(manifest.contains("entry = \"plugin.wasm\""));
+        assert!(manifest.contains("website = \"https://bmcbl.com\""));
+        assert!(manifest.contains("license = \"GPL-3.0\""));
         assert!(manifest.contains("load_order = \"startup\""));
         assert!(manifest.contains("readme = \"README.md\""));
         assert!(manifest.contains(
@@ -1370,6 +1388,27 @@ mod tests {
         assert!(manifest.contains("[limits]"));
         assert!(manifest.contains("max_http_bytes = 524288"));
         assert!(manifest.contains("package_hash = \"sha256:abc123\""));
+    }
+
+    #[test]
+    fn generated_manifest_omits_missing_and_blank_optional_metadata() {
+        let cargo_manifest: CargoManifest = toml::from_str(
+            r#"
+[package]
+name = "plugin"
+version = "0.1.0"
+license = "  "
+
+[package.metadata.bmcbl-plugin]
+id = "test-plugin"
+"#,
+        )
+        .unwrap();
+        let metadata = cargo_manifest.package.metadata.bmcbl_plugin.as_ref().unwrap();
+        let manifest = generate_plugin_manifest(&cargo_manifest, metadata, "abc123").unwrap();
+        let document: toml::Table = toml::from_str(&manifest).unwrap();
+        assert!(!document.contains_key("website"));
+        assert!(!document.contains_key("license"));
     }
 
     #[test]
@@ -1394,7 +1433,7 @@ mod tests {
             .expect("config schema should be written");
         let package_path = root.join("out.bmcblx");
         let manifest = r#"
-schema_version = 2
+schema_version = 1
 readme = "README.md"
 readme_locales = { "en-US" = "README.md", "zh-CN" = "README.zh-CN.md" }
 lang_dir = "lang"

@@ -1,0 +1,11 @@
+package bmcbl:plugin@1.0.0;
+
+interface host-app {
+    use types.{plugin-error};
+
+    /// Submit an authorized BMCBL service call. The SDK encodes the typed payload.
+    invoke: func(service: string, arguments: list<u8>) -> result<string, plugin-error>;
+    /// Returns none while a job is pending and consumes a completed result.
+    take: func(job-id: string) -> result<option<list<u8>>, plugin-error>;
+    cancel: func(job-id: string) -> result<_, plugin-error>;
+}

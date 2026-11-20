@@ -26,14 +26,6 @@ impl MainWindowView {
             });
         }
 
-        let tools_page_active = matches!(route, RouteTarget::Builtin(AppRoute::Tools));
-        if let Some(view) = &self.tools_page_view {
-            let _ = view.update(cx, |view, cx| {
-                view.set_active(tools_page_active, cx);
-                Ok::<(), anyhow::Error>(())
-            });
-        }
-
         let tasks_page_active = matches!(route, RouteTarget::Builtin(AppRoute::Tasks));
         if let Some(view) = &self.tasks_page_view {
             let _ = view.update(cx, |view, cx| {
@@ -66,11 +58,6 @@ impl MainWindowView {
             AppRoute::Manage => {
                 let _ = get_or_create_page_view(&mut self.manage_page_view, cx, |cx| {
                     cx.new(crate::ui::views::manage::ManagePageView::new)
-                });
-            }
-            AppRoute::Tools => {
-                let _ = get_or_create_page_view(&mut self.tools_page_view, cx, |cx| {
-                    cx.new(crate::ui::views::tools::ToolsPageView::new)
                 });
             }
             AppRoute::Tasks => {
@@ -108,17 +95,18 @@ impl MainWindowView {
     fn plugin_key_matches_target(key: &(String, String), target: &RouteTarget) -> bool {
         matches!(
             target,
-            RouteTarget::Plugin { plugin_id, page_id }
+            RouteTarget::Plugin { plugin_id, page_id } | RouteTarget::Tool { plugin_id, page_id }
                 if &key.0 == plugin_id && &key.1 == page_id
         )
     }
 
     pub(super) fn ensure_page_view(&mut self, target: &RouteTarget, cx: &mut Context<Self>) {
         match target {
+            RouteTarget::Tools => {}
             RouteTarget::Builtin(route) => {
                 self.ensure_builtin_page(*route, cx);
             }
-            RouteTarget::Plugin { plugin_id, page_id } => {
+            RouteTarget::Plugin { plugin_id, page_id } | RouteTarget::Tool { plugin_id, page_id } => {
                 let key = (plugin_id.clone(), page_id.clone());
                 if self.plugin_page_key.as_ref() == Some(&key) {
                     return;
@@ -138,11 +126,9 @@ impl MainWindowView {
                     .take()
                     .zip(self.plugin_page_view.take());
                 if let Some((previous_key, previous_view)) = previous_plugin {
-                    let previous_target = RouteTarget::Plugin {
-                        plugin_id: previous_key.0.clone(),
-                        page_id: previous_key.1.clone(),
-                    };
-                    if self.recent_page_target.as_ref() == Some(&previous_target) {
+                    if self.recent_page_target.as_ref().is_some_and(|target| {
+                        Self::plugin_key_matches_target(&previous_key, target)
+                    }) {
                         self.recent_plugin_page_key = Some(previous_key);
                         self.recent_plugin_page_view = Some(previous_view);
                     }
@@ -289,11 +275,18 @@ impl MainWindowView {
         );
         self._reactor_subscriptions.push(
             cx.observe_global::<crate::plugins::runtime::PluginRegistry>(|_this, cx| {
-                let route = crate::ui::navigation::current_route_target(cx);
-                let plugin_page_active = matches!(route, RouteTarget::Plugin { .. });
-                if plugin_page_active || crate::plugins::runtime::active_modal(cx).is_some() {
-                    cx.notify();
+                use crate::ui::navigation::{self, RouteTarget};
+                let raw = RouteTarget::from_pathname(&gpui_router::use_location(cx).pathname);
+                let route = navigation::resolve_tool_route(raw.clone(), cx);
+                if raw != route && matches!(raw, RouteTarget::Tool { .. } | RouteTarget::Tools) {
+                    navigation::navigate_target(cx, route);
+                } else {
+                    let index = route.visual_index(cx);
+                    if cx.global::<crate::ui::state::navigation::NavState>().visual_active_index() != index {
+                        cx.update_global(|nav: &mut crate::ui::state::navigation::NavState, _| nav.sync_to_route(index));
+                    }
                 }
+                cx.notify();
             }),
         );
         self._reactor_subscriptions.push(
@@ -436,39 +429,6 @@ impl MainWindowView {
         );
     }
 
-    pub(super) fn release_tools_page(&mut self, cx: &mut Context<Self>) {
-        let has_page_resources = self.tools_page_view.is_some()
-            || self.tools_controls_initialized
-            || !self.tools_controls_subscriptions.is_empty();
-        let has_route_state = cx.read_global(
-            |state: &crate::ui::views::tools::state::ToolsPageState, _cx| {
-                state.room_code_input.is_some()
-                    || state.bootstrap_peers_input.is_some()
-                    || state.player_name_input.is_some()
-                    || state.game_ports_input.is_some()
-            },
-        );
-        if !has_page_resources && !has_route_state {
-            return;
-        }
-
-        clear_optional_page_view(&mut self.tools_page_view);
-        self.tools_controls_initialized = false;
-        self.tools_controls_subscriptions.clear();
-        if !has_route_state {
-            return;
-        }
-
-        cx.update_global(
-            |state: &mut crate::ui::views::tools::state::ToolsPageState, _cx| {
-                state.room_code_input = None;
-                state.bootstrap_peers_input = None;
-                state.player_name_input = None;
-                state.game_ports_input = None;
-            },
-        );
-    }
-
     pub(super) fn release_settings_page(&mut self, cx: &mut Context<Self>) {
         let has_page_resources = self.settings_page_view.is_some()
             || self.settings_controls_initialized
@@ -579,9 +539,6 @@ impl MainWindowView {
         }
         if !keep_builtin(AppRoute::Manage) {
             self.release_manage_page(cx);
-        }
-        if !keep_builtin(AppRoute::Tools) {
-            self.release_tools_page(cx);
         }
         if !keep_builtin(AppRoute::Tasks) {
             self.release_tasks_page();
@@ -744,7 +701,6 @@ impl MainWindowView {
             home_page_view: None,
             download_page_view: None,
             manage_page_view: None,
-            tools_page_view: None,
             settings_page_view: None,
             tasks_page_view: None,
             plugin_page_view: None,
@@ -763,8 +719,6 @@ impl MainWindowView {
             download_curseforge_invalidate_pending_seen: false,
             manage_controls_initialized: false,
             manage_controls_subscriptions: Vec::new(),
-            tools_controls_initialized: false,
-            tools_controls_subscriptions: Vec::new(),
             settings_controls_initialized: false,
             settings_controls_subscriptions: Vec::new(),
             _route_subscriptions: Vec::new(),
@@ -789,10 +743,6 @@ impl MainWindowView {
             last_auth_blocked: None,
             last_handled_game_launch: None,
             game_diagnostics_listener_installed: false,
-            last_minecraft_termination_dialog: cx
-                .global::<crate::ui::views::tools::state::ToolsPageState>()
-                .minecraft_termination_dialog
-                .clone(),
             easter_egg: easter_egg::EasterEggState::default(),
         };
 
@@ -834,12 +784,6 @@ impl MainWindowView {
         }
     }
 
-    pub(super) fn notify_tools_page(&self, cx: &mut App) {
-        if let Some(view) = &self.tools_page_view {
-            notify_view(view, cx);
-        }
-    }
-
     pub(super) fn notify_settings_page(&self, cx: &mut App) {
         if let Some(view) = &self.settings_page_view {
             notify_view(view, cx);
@@ -862,7 +806,6 @@ impl MainWindowView {
         self.notify_home_page(cx);
         self.notify_download_page(cx);
         self.notify_manage_page(cx);
-        self.notify_tools_page(cx);
         self.notify_settings_page(cx);
         self.notify_tasks_page(cx);
         if let Some(view) = &self.plugin_page_view {

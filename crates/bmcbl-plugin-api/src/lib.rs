@@ -1,126 +1,179 @@
-#![cfg_attr(target_arch = "wasm32", no_std)]
-#![expect(
-    unsafe_code,
-    reason = "plugin ABI crosses app-call and guest-memory boundaries"
-)]
+//! BMCBL 插件 API（组件模型 / WIT 契约版，API 1.0.0）。
+//!
+//! 本 crate 是插件与启动器之间的契约层：
+//! - `wit/plugin.wit` 定义 WIT 世界 `bmcbl:plugin/plugin-world@1.0.0`，是唯一的 ABI 契约；
+//! - guest 侧绑定由 `wit-bindgen` 在构建期生成（目标 `wasm32-wasip2`，cargo 直接产出
+//!   组件），本 crate 不再包含任何手写编解码、内存管理或 host-call 胶水；
+//! - 保留人机工程层：`Plugin` trait、`Registrations`/`Page`/`Injection` 构建器、`view!`
+//!   宏、toast/log/tr 宏与 `prelude`，它们只是生成绑定之上的便利 API；
+//! - `.bmcblx` 打包在 feature `pack` 下（`pack.rs`）。
+//!
+//! 边界：只负责契约与打包；不依赖 GPUI/应用代码。host 能力由宿主运行时
+//! （`bmcbl_plugin_runtime` + 应用侧 host context）做 capability/allowlist 校验。
 
-extern crate alloc;
-
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::sync::Arc;
-use alloc::vec;
-use alloc::vec::Vec;
+pub mod bindings {
+    wit_bindgen::generate!({
+        path: "wit",
+        world: "plugin-world",
+        // 让生成的 `export!` 宏为 pub，插件作者才能通过 `export_plugin!` /
+        // `#[bmcbl_plugin]` 跨 crate 调用。
+        pub_export_macro: true,
+    });
+}
 
 pub use bmcbl_plugin_macros::{bmcbl_plugin, plugin_metadata};
+
+pub mod app;
+pub mod native;
+
+/// Reads from the installed plugin package.
+pub mod filesystem {
+    pub use crate::{read_resource_bytes, read_resource_text};
+}
+
+/// Requests through BMCBL's HTTP client and download manager.
+pub mod network {
+    pub use crate::{
+        DownloadRequest, HttpCacheState, HttpTextResponse, download_resource,
+        http_get_text as get_text,
+    };
+}
+
+/// Operations running on BMCBL's async runtime.
+pub mod r#async {
+    pub use crate::app::Job;
+}
+
+/// Integration with BMCBL's task manager.
+pub mod tasks {
+    pub use crate::{
+        TaskCreateRequest, TaskDefinitionRequest, TaskFinishRequest, TaskUpdateRequest, create_task,
+        create_typed_task, finish_task, register_task_definition, update_task,
+    };
+}
+
+/// Native Bedrock world queries.
+pub use app::world;
+
+/// Pages rendered by BMCBL's native GPUI runtime.
+pub mod ui {
+    pub use crate::{
+        Page, Tool, View, ViewTree, ViewTreeBuilder, invalidate_page, navigate, open_modal,
+        open_window, show_toast, view,
+    };
+}
 
 #[cfg(feature = "pack")]
 pub mod pack;
 
-pub const API_VERSION: &str = "0.6";
-pub const APP_MODULE: &str = "bmcbl";
-/// wasm 导入符号名。字符串值是冻结的 ABI 名称，不随 Rust 命名调整而变化。
-pub const APP_CALL_NAME: &str = "bmcbl_host_call";
-pub const DEFAULT_APP_BUFFER_CAPACITY: usize = 256;
-/// 文本类请求（配置、翻译、存储）的初始响应缓冲。
-const MEDIUM_HOST_BUFFER_CAPACITY: usize = 1024;
-/// 二进制/大文本类请求（资源读取、HTTP 文本）的初始响应缓冲上限。
-const LARGE_HOST_BUFFER_CAPACITY: usize = 16 * 1024;
-pub const MAX_APP_BUFFER_CAPACITY: usize = 1024 * 1024;
+use bindings::bmcbl::plugin::types;
 
-const OP_LOG: i32 = 0;
-const OP_SHOW_TOAST: i32 = 1;
-const OP_NAVIGATE: i32 = 2;
-const OP_OPEN_WINDOW: i32 = 3;
-const OP_CLOSE_WINDOW: i32 = 4;
-const OP_EMIT_EVENT: i32 = 5;
-const OP_INVALIDATE: i32 = 6;
-const OP_CURRENT_LOCALE: i32 = 7;
-const OP_TRANSLATE: i32 = 8;
-const OP_READ_CONFIG: i32 = 9;
-const OP_HTTP_GET_TEXT: i32 = 10;
-const OP_WRITE_CLIPBOARD_TEXT: i32 = 11;
-const OP_CURRENT_UNIX_MS: i32 = 12;
-const OP_OPEN_EXTERNAL_URL: i32 = 13;
-const OP_SESSION_GET: i32 = 14;
-const OP_SESSION_SET: i32 = 15;
-const OP_THEME_SNAPSHOT: i32 = 16;
-const OP_OPEN_MODAL: i32 = 17;
-const OP_READ_CLIPBOARD_TEXT: i32 = 18;
-const OP_READ_RESOURCE_TEXT: i32 = 19;
-const OP_READ_RESOURCE_BYTES: i32 = 20;
-const OP_STORAGE_GET: i32 = 21;
-const OP_STORAGE_SET: i32 = 22;
-const OP_STORAGE_DELETE: i32 = 23;
-const OP_STORAGE_LIST: i32 = 24;
-const OP_WRITE_CONFIG: i32 = 25;
-const OP_CREATE_TASK: i32 = 26;
-const OP_UPDATE_TASK: i32 = 27;
-const OP_FINISH_TASK: i32 = 28;
-const OP_APP_INFO: i32 = 29;
-const OP_REGISTER_SERVICE: i32 = 30;
-const OP_CALL_SERVICE: i32 = 31;
-const OP_SIDECAR_CALL: i32 = 33;
-const OP_REGISTER_TASK_DEFINITION: i32 = 34;
-const OP_CREATE_TYPED_TASK: i32 = 35;
+pub use bindings::exports::bmcbl::plugin::plugin::Guest;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(i32)]
-pub enum AppOp {
-    Log = OP_LOG,
-    ShowToast = OP_SHOW_TOAST,
-    Navigate = OP_NAVIGATE,
-    OpenWindow = OP_OPEN_WINDOW,
-    CloseWindow = OP_CLOSE_WINDOW,
-    EmitEvent = OP_EMIT_EVENT,
-    Invalidate = OP_INVALIDATE,
-    CurrentLocale = OP_CURRENT_LOCALE,
-    Translate = OP_TRANSLATE,
-    ReadConfig = OP_READ_CONFIG,
-    HttpGetText = OP_HTTP_GET_TEXT,
-    WriteClipboardText = OP_WRITE_CLIPBOARD_TEXT,
-    CurrentUnixMs = OP_CURRENT_UNIX_MS,
-    OpenExternalUrl = OP_OPEN_EXTERNAL_URL,
-    SessionGet = OP_SESSION_GET,
-    SessionSet = OP_SESSION_SET,
-    ThemeSnapshot = OP_THEME_SNAPSHOT,
-    OpenModal = OP_OPEN_MODAL,
-    ReadClipboardText = OP_READ_CLIPBOARD_TEXT,
-    ReadResourceText = OP_READ_RESOURCE_TEXT,
-    ReadResourceBytes = OP_READ_RESOURCE_BYTES,
-    StorageGet = OP_STORAGE_GET,
-    StorageSet = OP_STORAGE_SET,
-    StorageDelete = OP_STORAGE_DELETE,
-    StorageList = OP_STORAGE_LIST,
-    WriteConfig = OP_WRITE_CONFIG,
-    CreateTask = OP_CREATE_TASK,
-    UpdateTask = OP_UPDATE_TASK,
-    FinishTask = OP_FINISH_TASK,
-    AppInfo = OP_APP_INFO,
-    RegisterService = OP_REGISTER_SERVICE,
-    CallService = OP_CALL_SERVICE,
-    SidecarCall = OP_SIDECAR_CALL,
-    RegisterTaskDefinition = OP_REGISTER_TASK_DEFINITION,
-    CreateTypedTask = OP_CREATE_TYPED_TASK,
-}
+pub use types::{
+    ActionEvent, Align, AppInfo, BadgeNode, ButtonNode, CheckboxNode, CompactBehavior,
+    ContainerNode, DownloadRequest, EventSubscription, GlobalEvent, HttpCacheState,
+    HttpTextResponse, I18nArg, IconNode, ImageFit, ImageNode, InjectionLayout, InjectionRegistration,
+    InjectionRequest, InjectionSlot, InputNode, InvalidateTarget, LayoutDirection, LinkNode,
+    ListNode, LogLevel, ModalRequest, ToolEntry, PageRegistration, PageRenderRequest,
+    PluginContext, PluginError, PluginEvent, PluginEventKind, ProgressNode, Registration,
+    RouteChangedEvent, RouteTarget, SelectNode, SelectOption, ServiceCallRequest,
+    ServiceRegistration, ShutdownReason,
+    SpacerNode, TaskCreateRequest, TaskDefinitionRequest, TaskFinishRequest, TaskUpdateRequest,
+    TextNode, TextSizeToken, ThemeColor, ThemeMode, ThemeSnapshot, ThemeToken, ToastKind,
+    ToggleNode, ViewNode, ViewStyle, ViewTree, WindowRequest,
+};
 
-impl AppOp {
-    #[must_use]
-    pub const fn code(self) -> i32 {
-        self as i32
+pub use bindings::bmcbl::plugin::{host_clipboard, host_config, host_downloads, host_events,
+    host_log, host_network, host_resources, host_services, host_storage, host_system,
+    host_tasks, host_toast, host_ui};
+
+pub const API_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Version of the package manifest layout.
+pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
+
+/// 插件实现 trait（静态方法，单实例语义：插件用自身静态/线程局部状态保存数据）。
+pub trait Plugin {
+    fn init(context: PluginContext) -> PluginResult<Vec<Registration>>;
+
+    fn handle_event(_event: PluginEvent) -> PluginResult<()> {
+        Ok(())
+    }
+
+    fn render_page(request: PageRenderRequest) -> PluginResult<ViewTree>;
+
+    fn render_injection(_request: InjectionRequest) -> PluginResult<Option<ViewTree>> {
+        Ok(None)
+    }
+
+    fn call_service(_request: ServiceCallRequest) -> PluginResult<Vec<u8>> {
+        Err(PluginError::new(
+            "service-not-found",
+            "service call not implemented by this plugin",
+        ))
+    }
+
+    fn shutdown(_reason: ShutdownReason) -> PluginResult<()> {
+        Ok(())
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PluginContext {
-    pub plugin_id: String,
-    pub api_version: String,
-}
+/// 把 [`Plugin`] 实现桥接到 wit-bindgen 生成的组件导出。
+///
+/// 插件作者通过 `#[bmcbl_plugin]` 或 `export_plugin!(MyPlugin)` 导出。
+#[macro_export]
+macro_rules! export_plugin {
+    ($plugin:ty) => {
+        #[doc(hidden)]
+        struct __BmcblPluginBridge;
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PluginError {
-    pub code: String,
-    pub message: String,
+        impl $crate::Guest for __BmcblPluginBridge {
+            fn init(
+                context: $crate::PluginContext,
+            ) -> ::core::result::Result<
+                ::std::vec::Vec<$crate::Registration>,
+                $crate::PluginError,
+            > {
+                <$plugin as $crate::Plugin>::init(context)
+            }
+
+            fn handle_event(
+                event: $crate::PluginEvent,
+            ) -> ::core::result::Result<(), $crate::PluginError> {
+                <$plugin as $crate::Plugin>::handle_event(event)
+            }
+
+            fn render_page(
+                request: $crate::PageRenderRequest,
+            ) -> ::core::result::Result<$crate::ViewTree, $crate::PluginError> {
+                <$plugin as $crate::Plugin>::render_page(request)
+            }
+
+            fn render_injection(
+                request: $crate::InjectionRequest,
+            ) -> ::core::result::Result<
+                ::core::option::Option<$crate::ViewTree>,
+                $crate::PluginError,
+            > {
+                <$plugin as $crate::Plugin>::render_injection(request)
+            }
+
+            fn call_service(
+                request: $crate::ServiceCallRequest,
+            ) -> ::core::result::Result<::std::vec::Vec<u8>, $crate::PluginError> {
+                <$plugin as $crate::Plugin>::call_service(request)
+            }
+
+            fn shutdown(
+                reason: $crate::ShutdownReason,
+            ) -> ::core::result::Result<(), $crate::PluginError> {
+                <$plugin as $crate::Plugin>::shutdown(reason)
+            }
+        }
+
+        $crate::bindings::export!(__BmcblPluginBridge with_types_in $crate::bindings);
+    };
 }
 
 impl PluginError {
@@ -159,869 +212,7 @@ impl PluginError {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct AppError {
-    pub code: String,
-    pub message: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum AbiResult<T> {
-    Ok(T),
-    Err(PluginError),
-}
-
 pub type PluginResult<T> = Result<T, PluginError>;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum LogLevel {
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ToastKind {
-    Info,
-    Success,
-    Error,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum LayoutDirection {
-    Row,
-    Column,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum Align {
-    Start,
-    Center,
-    End,
-    Stretch,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ThemeToken {
-    PrimaryText,
-    SecondaryText,
-    MutedText,
-    Accent,
-    Surface,
-    Border,
-    Danger,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ThemeMode {
-    Light,
-    Dark,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ThemeColor {
-    pub h: f32,
-    pub s: f32,
-    pub l: f32,
-    pub a: f32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ThemeSnapshot {
-    pub mode: ThemeMode,
-    pub dark_factor: f32,
-    pub accent: ThemeColor,
-    pub primary_text: ThemeColor,
-    pub secondary_text: ThemeColor,
-    pub muted_text: ThemeColor,
-    pub surface: ThemeColor,
-    pub surface_hover: ThemeColor,
-    pub border: ThemeColor,
-    pub danger: ThemeColor,
-}
-
-impl ThemeSnapshot {
-    #[must_use]
-    pub const fn light_default() -> Self {
-        Self {
-            mode: ThemeMode::Light,
-            dark_factor: 0.0,
-            accent: ThemeColor {
-                h: 0.60,
-                s: 0.88,
-                l: 0.60,
-                a: 1.0,
-            },
-            primary_text: ThemeColor {
-                h: 0.61,
-                s: 0.30,
-                l: 0.20,
-                a: 1.0,
-            },
-            secondary_text: ThemeColor {
-                h: 0.60,
-                s: 0.16,
-                l: 0.45,
-                a: 1.0,
-            },
-            muted_text: ThemeColor {
-                h: 0.59,
-                s: 0.14,
-                l: 0.61,
-                a: 1.0,
-            },
-            surface: ThemeColor {
-                h: 0.58,
-                s: 0.24,
-                l: 0.96,
-                a: 0.86,
-            },
-            surface_hover: ThemeColor {
-                h: 0.58,
-                s: 0.18,
-                l: 0.93,
-                a: 0.90,
-            },
-            border: ThemeColor {
-                h: 0.60,
-                s: 0.20,
-                l: 0.84,
-                a: 0.72,
-            },
-            danger: ThemeColor {
-                h: 0.06,
-                s: 0.93,
-                l: 0.53,
-                a: 1.0,
-            },
-        }
-    }
-
-    #[must_use]
-    pub const fn is_dark(self) -> bool {
-        matches!(self.mode, ThemeMode::Dark)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum TextSizeToken {
-    Small,
-    Body,
-    Title,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ImageFit {
-    Cover,
-    Contain,
-}
-
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
-)]
-pub enum InjectionSlot {
-    MainRootOverlay,
-    PageHeader,
-    PageBody,
-    HomeSidebar,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ShutdownReason {
-    Reload,
-    Unload,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct I18nArg {
-    pub key: String,
-    pub value: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum HttpCacheState {
-    Loading,
-    Fresh,
-    Stale,
-    Error,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct HttpTextResponse {
-    pub state: HttpCacheState,
-    pub body: Option<String>,
-    pub error: Option<String>,
-    pub fetched_at_unix_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SessionEntry {
-    pub key: String,
-    pub value: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct StorageEntry {
-    pub key: String,
-    pub value: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct TaskCreateRequest {
-    pub task_id: Option<String>,
-    pub title: String,
-    pub detail: Option<String>,
-    pub stage: String,
-    pub total: Option<u64>,
-    pub supports_pause: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct TaskUpdateRequest {
-    pub task_id: String,
-    pub stage: Option<String>,
-    pub total: Option<u64>,
-    pub done_delta: u64,
-    pub message: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct TaskFinishRequest {
-    pub task_id: String,
-    pub status: String,
-    pub message: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct AppInfo {
-    pub version: String,
-    pub build_info: String,
-    pub api_version: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct RouteTarget {
-    pub plugin_id: Option<String>,
-    pub page_id: Option<String>,
-    pub path: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct WindowRequest {
-    pub title: String,
-    pub plugin_id: String,
-    pub page_id: String,
-    pub width: u32,
-    pub height: u32,
-    pub resizable: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ModalRequest {
-    pub title: String,
-    pub plugin_id: String,
-    pub page_id: String,
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PageRenderRequest {
-    pub plugin_id: String,
-    pub page_id: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct InjectionRequest {
-    pub slot: InjectionSlot,
-    pub page: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct NavigationEntry {
-    pub label: String,
-    pub icon: Option<String>,
-    pub order: i32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PageRegistration {
-    pub page_id: String,
-    pub title: String,
-    pub navigation: Option<NavigationEntry>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct InjectionRegistration {
-    pub slot: InjectionSlot,
-    pub page: Option<String>,
-    pub priority: i32,
-    pub layout: Option<InjectionLayout>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum CompactBehavior {
-    None,
-    Scroll,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct InjectionLayout {
-    pub preferred_width: Option<u16>,
-    pub min_width: Option<u16>,
-    pub max_width: Option<u16>,
-    pub max_height: Option<u16>,
-    pub priority: i32,
-    pub compact_behavior: CompactBehavior,
-}
-
-impl InjectionLayout {
-    #[must_use]
-    pub const fn sidebar() -> Self {
-        Self {
-            preferred_width: None,
-            min_width: None,
-            max_width: None,
-            max_height: None,
-            priority: 0,
-            compact_behavior: CompactBehavior::None,
-        }
-    }
-
-    #[must_use]
-    pub const fn width(mut self, width: u16) -> Self {
-        self.preferred_width = Some(width);
-        self
-    }
-
-    #[must_use]
-    pub const fn min_width(mut self, width: u16) -> Self {
-        self.min_width = Some(width);
-        self
-    }
-
-    #[must_use]
-    pub const fn max_width(mut self, width: u16) -> Self {
-        self.max_width = Some(width);
-        self
-    }
-
-    #[must_use]
-    pub const fn max_height(mut self, height: u16) -> Self {
-        self.max_height = Some(height);
-        self
-    }
-
-    #[must_use]
-    pub const fn priority(mut self, priority: i32) -> Self {
-        self.priority = priority;
-        self
-    }
-
-    #[must_use]
-    pub const fn compact_behavior(mut self, behavior: CompactBehavior) -> Self {
-        self.compact_behavior = behavior;
-        self
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct EventSubscription {
-    pub event: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ServiceRegistration {
-    pub service_name: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum Registration {
-    Page(PageRegistration),
-    Injection(InjectionRegistration),
-    Subscription(EventSubscription),
-    Service(ServiceRegistration),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct RouteChangedEvent {
-    pub path: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ActionEvent {
-    pub action_id: String,
-    pub value: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct GlobalEvent {
-    pub name: String,
-    pub payload: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum PluginEventKind {
-    RouteChanged(RouteChangedEvent),
-    Action(ActionEvent),
-    Global(GlobalEvent),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PluginEvent {
-    pub plugin_id: Option<String>,
-    pub page_id: Option<String>,
-    pub kind: PluginEventKind,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum InvalidateTarget {
-    All,
-    Page(String),
-    Injection(InjectionRequest),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ViewStyle {
-    pub direction: LayoutDirection,
-    pub gap: u16,
-    pub padding: u16,
-    pub align: Align,
-    pub color: Option<ThemeToken>,
-    pub background: Option<ThemeToken>,
-    pub text_size: TextSizeToken,
-    pub emphasis: bool,
-    pub full_width: bool,
-    pub corner_radius: Option<u16>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ContainerNode {
-    pub style: ViewStyle,
-    pub children: Vec<u32>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct TextNode {
-    pub text: Arc<str>,
-    pub style: ViewStyle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ButtonNode {
-    pub label: Arc<str>,
-    pub action_id: Arc<str>,
-    pub action_value: Option<Arc<str>>,
-    pub style: ViewStyle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct InputNode {
-    pub value: Arc<str>,
-    pub placeholder: Arc<str>,
-    pub action_id: Arc<str>,
-    pub action_value: Option<Arc<str>>,
-    pub style: ViewStyle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct CheckboxNode {
-    pub label: Arc<str>,
-    pub checked: bool,
-    pub action_id: Arc<str>,
-    pub action_value: Option<Arc<str>>,
-    pub style: ViewStyle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ToggleNode {
-    pub label: Arc<str>,
-    pub enabled: bool,
-    pub action_id: Arc<str>,
-    pub action_value: Option<Arc<str>>,
-    pub style: ViewStyle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SelectOption {
-    pub label: Arc<str>,
-    pub value: Arc<str>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SelectNode {
-    pub label: Arc<str>,
-    pub action_id: Arc<str>,
-    pub options: Vec<SelectOption>,
-    pub selected: Option<Arc<str>>,
-    pub style: ViewStyle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ProgressNode {
-    pub label: Arc<str>,
-    pub value: u64,
-    pub total: Option<u64>,
-    pub style: ViewStyle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct LinkNode {
-    pub label: Arc<str>,
-    pub url: Arc<str>,
-    pub tooltip: Option<Arc<str>>,
-    pub style: ViewStyle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ListNode {
-    pub items: Vec<u32>,
-    pub style: ViewStyle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct BadgeNode {
-    pub label: Arc<str>,
-    pub style: ViewStyle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct IconNode {
-    pub name: Arc<str>,
-    pub style: ViewStyle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ImageNode {
-    pub src: Arc<str>,
-    pub alt: Arc<str>,
-    pub caption: Arc<str>,
-    pub placeholder: Arc<str>,
-    pub fallback: Arc<str>,
-    pub style: ViewStyle,
-    pub height: Option<u16>,
-    pub min_height: Option<u16>,
-    pub max_height: Option<u16>,
-    pub aspect_ratio_x: Option<u16>,
-    pub aspect_ratio_y: Option<u16>,
-    pub corner_radius: Option<u16>,
-    pub fit: ImageFit,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ImageOptions {
-    pub caption: Arc<str>,
-    pub placeholder: Arc<str>,
-    pub fallback: Arc<str>,
-    pub height: Option<u16>,
-    pub min_height: Option<u16>,
-    pub max_height: Option<u16>,
-    pub aspect_ratio_x: Option<u16>,
-    pub aspect_ratio_y: Option<u16>,
-    pub corner_radius: Option<u16>,
-    pub fit: ImageFit,
-}
-
-impl Default for ImageOptions {
-    fn default() -> Self {
-        Self {
-            caption: Arc::from(""),
-            placeholder: Arc::from(""),
-            fallback: Arc::from(""),
-            height: None,
-            min_height: None,
-            max_height: None,
-            aspect_ratio_x: None,
-            aspect_ratio_y: None,
-            corner_radius: None,
-            fit: ImageFit::Cover,
-        }
-    }
-}
-
-impl ImageOptions {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[must_use]
-    pub fn caption(mut self, caption: impl Into<Arc<str>>) -> Self {
-        self.caption = caption.into();
-        self
-    }
-
-    #[must_use]
-    pub fn placeholder(mut self, placeholder: impl Into<Arc<str>>) -> Self {
-        self.placeholder = placeholder.into();
-        self
-    }
-
-    #[must_use]
-    pub fn fallback(mut self, fallback: impl Into<Arc<str>>) -> Self {
-        self.fallback = fallback.into();
-        self
-    }
-
-    #[must_use]
-    pub fn height(mut self, height: u16) -> Self {
-        self.height = Some(height);
-        self
-    }
-
-    #[must_use]
-    pub fn min_height(mut self, min_height: u16) -> Self {
-        self.min_height = Some(min_height);
-        self
-    }
-
-    #[must_use]
-    pub fn max_height(mut self, max_height: u16) -> Self {
-        self.max_height = Some(max_height);
-        self
-    }
-
-    #[must_use]
-    pub fn aspect_ratio(mut self, width: u16, height: u16) -> Self {
-        self.aspect_ratio_x = Some(width);
-        self.aspect_ratio_y = Some(height);
-        self
-    }
-
-    #[must_use]
-    pub fn corner_radius(mut self, corner_radius: u16) -> Self {
-        self.corner_radius = Some(corner_radius);
-        self
-    }
-
-    #[must_use]
-    pub fn fit(mut self, fit: ImageFit) -> Self {
-        self.fit = fit;
-        self
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SpacerNode {
-    pub size: u16,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ViewNode {
-    Container(ContainerNode),
-    Text(TextNode),
-    Button(ButtonNode),
-    Input(InputNode),
-    Checkbox(CheckboxNode),
-    Toggle(ToggleNode),
-    Select(SelectNode),
-    Progress(ProgressNode),
-    Link(LinkNode),
-    ItemList(ListNode),
-    Separator,
-    Badge(BadgeNode),
-    Icon(IconNode),
-    Image(ImageNode),
-    Spacer(SpacerNode),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ViewTree {
-    pub root: u32,
-    pub nodes: Vec<ViewNode>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum AppRequest {
-    Log {
-        level: LogLevel,
-        message: String,
-    },
-    ShowToast {
-        kind: ToastKind,
-        message: String,
-    },
-    Navigate {
-        target: RouteTarget,
-    },
-    OpenWindow {
-        request: WindowRequest,
-    },
-    CloseWindow {
-        window_id: u64,
-    },
-    EmitEvent {
-        name: String,
-        payload: String,
-    },
-    Invalidate {
-        target: InvalidateTarget,
-    },
-    CurrentLocale,
-    Translate {
-        key: String,
-        args: Vec<I18nArg>,
-    },
-    ReadConfig,
-    HttpGetText {
-        url: String,
-        ttl_seconds: u32,
-        max_bytes: u32,
-    },
-    WriteClipboardText {
-        text: String,
-    },
-    CurrentUnixMs,
-    OpenExternalUrl {
-        url: String,
-    },
-    SessionGet {
-        key: String,
-    },
-    SessionSet {
-        key: String,
-        value: Option<String>,
-    },
-    ThemeSnapshot,
-    OpenModal {
-        request: ModalRequest,
-    },
-    ReadClipboardText,
-    ReadResourceText {
-        path: String,
-    },
-    ReadResourceBytes {
-        path: String,
-    },
-    StorageGet {
-        key: String,
-    },
-    StorageSet {
-        key: String,
-        value: String,
-    },
-    StorageDelete {
-        key: String,
-    },
-    StorageList {
-        prefix: Option<String>,
-    },
-    WriteConfig {
-        text: String,
-    },
-    CreateTask {
-        request: TaskCreateRequest,
-    },
-    UpdateTask {
-        request: TaskUpdateRequest,
-    },
-    FinishTask {
-        request: TaskFinishRequest,
-    },
-    AppInfo,
-    SidecarCall {
-        name: String,
-        args: Vec<String>,
-        timeout_ms: u32,
-        max_output_bytes: u32,
-    },
-    RegisterService {
-        name: String,
-    },
-    CallService {
-        request: ServiceCallRequest,
-    },
-    /// Registers a task type in the host registry. The type id must live under
-    /// the calling plugin's namespace (`<plugin_id>.<name>`).
-    RegisterTaskDefinition {
-        request: TaskDefinitionRequest,
-    },
-    /// Creates a task linked to a registered definition, so capability checks
-    /// use the declared type instead of per-task flags. Separate from
-    /// `CreateTask` to keep the old wire format stable.
-    CreateTypedTask {
-        request: TypedTaskCreateRequest,
-    },
-}
-
-/// Like [`TaskCreateRequest`] plus the registered type id.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct TypedTaskCreateRequest {
-    pub request: TaskCreateRequest,
-    pub definition: String,
-}
-
-/// Wire-format declaration of a plugin task type. Mirrors the host registry's
-/// `TaskDefinition` with strings instead of enums so the ABI stays stable.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct TaskDefinitionRequest {
-    /// Namespaced type id, e.g. `example.plugin.convert`.
-    pub type_id: String,
-    /// i18n key for the human-readable title.
-    pub title_key: Option<String>,
-    pub cancellable: bool,
-    pub pausable: bool,
-    pub prioritizable: bool,
-    pub retryable: bool,
-    /// Dispatch pool: `"download"`, `"archive"` or `None` for no pool.
-    pub pool: Option<String>,
-    /// Phase codes reported by the task, in order.
-    pub phases: Vec<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ServiceCallRequest {
-    pub target_plugin: Option<String>,
-    pub service_name: String,
-    pub method: String,
-    pub payload: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum AppResponse {
-    Unit,
-    WindowId(u64),
-    String(String),
-    U64(u64),
-    HttpTextResponse {
-        state: HttpCacheState,
-        body: Option<String>,
-        error: Option<String>,
-        fetched_at_unix_ms: Option<u64>,
-    },
-    SessionValue(Option<String>),
-    Bytes(Vec<u8>),
-    StringList(Vec<String>),
-    TaskId(String),
-    AppInfo(AppInfo),
-    ThemeSnapshot(ThemeSnapshot),
-}
-
-pub trait Plugin {
-    fn init(context: PluginContext) -> PluginResult<Vec<Registration>>;
-
-    fn handle_event(_event: PluginEvent) -> PluginResult<()> {
-        Ok(())
-    }
-
-    fn render_page(request: PageRenderRequest) -> PluginResult<ViewTree>;
-
-    fn render_injection(_request: InjectionRequest) -> PluginResult<Option<ViewTree>> {
-        Ok(None)
-    }
-
-    fn call_service(_request: ServiceCallRequest) -> PluginResult<Vec<u8>> {
-        Err(PluginError::new(
-            "service-not-found",
-            "service call not implemented by this plugin",
-        ))
-    }
-
-    fn shutdown(_reason: ShutdownReason) -> PluginResult<()> {
-        Ok(())
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PluginMetadata {
@@ -1100,7 +291,7 @@ impl PluginEvent {
     pub fn action_id(&self) -> Option<&str> {
         match &self.kind {
             PluginEventKind::Action(action) => Some(action.action_id.as_str()),
-            PluginEventKind::RouteChanged(_) | PluginEventKind::Global(_) => None,
+            _ => None,
         }
     }
 
@@ -1114,7 +305,7 @@ impl PluginEvent {
     pub fn route_path(&self) -> Option<&str> {
         match &self.kind {
             PluginEventKind::RouteChanged(route) => Some(route.path.as_str()),
-            PluginEventKind::Action(_) | PluginEventKind::Global(_) => None,
+            _ => None,
         }
     }
 
@@ -1122,10 +313,359 @@ impl PluginEvent {
     pub fn global_event(&self) -> Option<(&str, &str)> {
         match &self.kind {
             PluginEventKind::Global(event) => Some((event.name.as_str(), event.payload.as_str())),
-            PluginEventKind::Action(_) | PluginEventKind::RouteChanged(_) => None,
+            _ => None,
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 宿主调用封装：每个函数直接转调 wit-bindgen 生成的导入，错误类型就是 WIT
+// `plugin-error` 对应的生成类型，无需任何编解码/重试逻辑。
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub fn log(level: LogLevel, message: impl AsRef<str>) {
+    host_log::log(level, message.as_ref());
+}
+
+pub fn log_debug(message: impl AsRef<str>) {
+    log(LogLevel::Debug, message);
+}
+
+pub fn log_info(message: impl AsRef<str>) {
+    log(LogLevel::Info, message);
+}
+
+pub fn log_warn(message: impl AsRef<str>) {
+    log(LogLevel::Warn, message);
+}
+
+pub fn log_error(message: impl AsRef<str>) {
+    log(LogLevel::Error, message);
+}
+
+pub fn show_toast(kind: ToastKind, message: impl AsRef<str>) -> PluginResult<()> {
+    host_toast::show_toast(kind, message.as_ref())
+}
+
+pub fn open_window(request: &WindowRequest) -> PluginResult<u64> {
+    host_ui::open_window(request)
+}
+
+pub fn open_modal(request: &ModalRequest) -> PluginResult<()> {
+    host_ui::open_modal(request)
+}
+
+pub fn navigate(target: &RouteTarget) -> PluginResult<()> {
+    host_ui::navigate(target)
+}
+
+pub fn navigate_plugin(
+    plugin_id: impl Into<String>,
+    page_id: impl Into<String>,
+) -> PluginResult<()> {
+    navigate(&RouteTarget {
+        plugin_id: Some(plugin_id.into()),
+        page_id: Some(page_id.into()),
+        path: String::new(),
+    })
+}
+
+pub fn navigate_page(plugin: PluginMetadata, page_id: impl Into<String>) -> PluginResult<()> {
+    navigate_plugin(plugin.id, page_id)
+}
+
+pub fn navigate_path(path: impl Into<String>) -> PluginResult<()> {
+    navigate(&RouteTarget {
+        plugin_id: None,
+        page_id: None,
+        path: path.into(),
+    })
+}
+
+pub fn emit_event(name: impl AsRef<str>, payload: impl AsRef<str>) -> PluginResult<()> {
+    host_events::emit_event(name.as_ref(), payload.as_ref())
+}
+
+pub fn invalidate(target: InvalidateTarget) -> PluginResult<()> {
+    host_events::invalidate(&target)
+}
+
+pub fn invalidate_all() -> PluginResult<()> {
+    invalidate(InvalidateTarget::All)
+}
+
+pub fn invalidate_page(page_id: impl Into<String>) -> PluginResult<()> {
+    invalidate(InvalidateTarget::Page(page_id.into()))
+}
+
+pub fn invalidate_injection(
+    slot: InjectionSlot,
+    page: Option<impl Into<String>>,
+) -> PluginResult<()> {
+    invalidate(InvalidateTarget::Injection(InjectionRequest {
+        slot,
+        page: page.map(Into::into),
+    }))
+}
+
+#[must_use]
+pub fn current_locale() -> String {
+    host_ui::current_locale()
+}
+
+#[must_use]
+pub fn tr(key: impl AsRef<str>) -> String {
+    tr_args(key, &[])
+}
+
+#[must_use]
+pub fn tr_args(key: impl AsRef<str>, args: &[I18nArg]) -> String {
+    host_ui::translate(key.as_ref(), args)
+}
+
+#[must_use]
+pub fn tr_arg(key: impl Into<String>, value: impl Into<String>) -> I18nArg {
+    I18nArg {
+        key: key.into(),
+        value: value.into(),
+    }
+}
+
+/// Reads plugin configuration through the launcher.
+///
+/// This performs launcher filesystem I/O and is rejected while rendering plugin UI. Read it during
+/// initialization or event handling and retain render-facing values in session/plugin state.
+pub fn read_config() -> PluginResult<String> {
+    host_config::read()
+}
+
+pub fn write_config(text: impl AsRef<str>) -> PluginResult<()> {
+    host_config::write(text.as_ref())
+}
+
+pub fn http_get_text(
+    url: impl AsRef<str>,
+    ttl_seconds: u32,
+    max_bytes: u32,
+) -> PluginResult<HttpTextResponse> {
+    host_network::get_text(url.as_ref(), ttl_seconds, max_bytes)
+}
+
+pub fn write_clipboard_text(text: impl AsRef<str>) -> PluginResult<()> {
+    host_clipboard::write_text(text.as_ref())
+}
+
+pub fn read_clipboard_text() -> PluginResult<Option<String>> {
+    host_clipboard::read_text()
+}
+
+pub fn current_unix_ms() -> PluginResult<u64> {
+    Ok(host_system::current_unix_ms())
+}
+
+pub fn open_external_url(url: impl AsRef<str>) -> PluginResult<()> {
+    host_system::open_external_url(url.as_ref())
+}
+
+/// Reads a declared/allowed text resource through the launcher resource cache.
+///
+/// Exact-file allowlist entries are prewarmed during plugin reload. Other cache misses schedule a
+/// background read and return a `resource-loading` error; render callers are invalidated
+/// automatically when the resource becomes ready.
+pub fn read_resource_text(path: impl AsRef<str>) -> PluginResult<String> {
+    host_resources::read_text(path.as_ref())
+}
+
+/// Reads a declared/allowed binary resource through the launcher resource cache.
+pub fn read_resource_bytes(path: impl AsRef<str>) -> PluginResult<Vec<u8>> {
+    host_resources::read_bytes(path.as_ref())
+}
+
+pub fn session_get(key: impl AsRef<str>) -> PluginResult<Option<String>> {
+    Ok(host_storage::session_get(key.as_ref()))
+}
+
+pub fn session_set(key: impl AsRef<str>, value: Option<impl AsRef<str>>) -> PluginResult<()> {
+    let value = value.map(|value| value.as_ref().to_string());
+    host_storage::session_set(key.as_ref(), value.as_deref());
+    Ok(())
+}
+
+/// Reads the launcher-prepared persistent plugin KV snapshot.
+///
+/// Reads are memory-only and safe while rendering plugin UI.
+pub fn storage_get(key: impl AsRef<str>) -> PluginResult<Option<String>> {
+    host_storage::kv_get(key.as_ref())
+}
+
+/// Updates persistent plugin KV storage.
+///
+/// The launcher validates quota and updates the in-memory snapshot immediately, then queues ordered
+/// background persistence. Mutating storage is rejected while rendering plugin UI.
+pub fn storage_set(key: impl AsRef<str>, value: impl AsRef<str>) -> PluginResult<()> {
+    host_storage::kv_set(key.as_ref(), value.as_ref())
+}
+
+/// Deletes a persistent plugin KV value.
+pub fn storage_delete(key: impl AsRef<str>) -> PluginResult<()> {
+    host_storage::kv_delete(key.as_ref())
+}
+
+/// Lists keys from the launcher-prepared persistent plugin KV snapshot.
+pub fn storage_list(prefix: Option<impl AsRef<str>>) -> PluginResult<Vec<String>> {
+    let prefix = prefix.map(|prefix| prefix.as_ref().to_string());
+    host_storage::kv_list(prefix.as_deref())
+}
+
+pub fn create_task(request: TaskCreateRequest) -> PluginResult<String> {
+    host_tasks::create(&request)
+}
+
+pub fn update_task(request: TaskUpdateRequest) -> PluginResult<()> {
+    host_tasks::update(&request)
+}
+
+pub fn finish_task(request: TaskFinishRequest) -> PluginResult<()> {
+    host_tasks::finish(&request)
+}
+
+/// Registers a task type owned by this plugin. The type id must start with the
+/// plugin's own id (`<plugin_id>.<name>`); the host rejects other namespaces.
+pub fn register_task_definition(request: TaskDefinitionRequest) -> PluginResult<()> {
+    host_tasks::register_definition(&request)
+}
+
+/// Creates a task linked to a registered definition owned by this plugin.
+pub fn create_typed_task(
+    request: TaskCreateRequest,
+    definition: impl Into<String>,
+) -> PluginResult<String> {
+    let definition = definition.into();
+    host_tasks::create_typed(&request, &definition)
+}
+
+pub fn app_info() -> PluginResult<AppInfo> {
+    Ok(host_system::get_app_info())
+}
+
+pub fn register_service(name: impl Into<String>) -> PluginResult<()> {
+    host_services::register(&name.into())
+}
+
+pub fn call_service(
+    service_name: impl Into<String>,
+    method: impl Into<String>,
+    payload: impl Into<Vec<u8>>,
+) -> PluginResult<Vec<u8>> {
+    call_plugin_service(None, service_name, method, payload)
+}
+
+pub fn call_plugin_service(
+    target_plugin: Option<String>,
+    service_name: impl Into<String>,
+    method: impl Into<String>,
+    payload: impl Into<Vec<u8>>,
+) -> PluginResult<Vec<u8>> {
+    let request = ServiceCallRequest {
+        target_plugin,
+        service_name: service_name.into(),
+        method: method.into(),
+        payload: payload.into(),
+    };
+    host_services::call(&request)
+}
+
+pub fn theme_snapshot() -> PluginResult<ThemeSnapshot> {
+    Ok(host_ui::get_theme_snapshot())
+}
+
+#[must_use]
+pub fn is_dark_mode() -> bool {
+    theme_snapshot()
+        .map(ThemeSnapshot::is_dark)
+        .unwrap_or(false)
+}
+
+#[must_use]
+pub fn theme_accent() -> Option<ThemeColor> {
+    host_ui::theme_accent()
+}
+
+/// Schedules a download using the launcher's task manager.
+pub fn download_resource(request: DownloadRequest) -> PluginResult<String> {
+    host_downloads::start(&request)
+}
+
+pub fn plugin_error(code: impl Into<String>, message: impl Into<String>) -> PluginError {
+    PluginError::new(code, message)
+}
+
+impl ThemeSnapshot {
+    #[must_use]
+    pub const fn light_default() -> Self {
+        Self {
+            mode: ThemeMode::Light,
+            dark_factor: 0.0,
+            accent: ThemeColor {
+                h: 0.60,
+                s: 0.88,
+                l: 0.60,
+                a: 1.0,
+            },
+            primary_text: ThemeColor {
+                h: 0.61,
+                s: 0.30,
+                l: 0.20,
+                a: 1.0,
+            },
+            secondary_text: ThemeColor {
+                h: 0.60,
+                s: 0.16,
+                l: 0.45,
+                a: 1.0,
+            },
+            muted_text: ThemeColor {
+                h: 0.59,
+                s: 0.14,
+                l: 0.61,
+                a: 1.0,
+            },
+            surface: ThemeColor {
+                h: 0.58,
+                s: 0.24,
+                l: 0.96,
+                a: 0.86,
+            },
+            surface_hover: ThemeColor {
+                h: 0.58,
+                s: 0.18,
+                l: 0.93,
+                a: 0.90,
+            },
+            border: ThemeColor {
+                h: 0.60,
+                s: 0.20,
+                l: 0.84,
+                a: 0.72,
+            },
+            danger: ThemeColor {
+                h: 0.06,
+                s: 0.93,
+                l: 0.53,
+                a: 1.0,
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn is_dark(self) -> bool {
+        matches!(self.mode, ThemeMode::Dark)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 注册构建器
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Default)]
 pub struct Registrations {
@@ -1211,7 +751,7 @@ impl IntoRegistration for Injection {
 pub struct Page {
     page_id: String,
     title: String,
-    navigation: Option<NavigationEntry>,
+    tool: Option<ToolEntry>,
 }
 
 impl Page {
@@ -1220,13 +760,13 @@ impl Page {
         Self {
             page_id: page_id.into(),
             title: title.into(),
-            navigation: None,
+            tool: None,
         }
     }
 
     #[must_use]
-    pub fn nav(mut self, navigation: Nav) -> Self {
-        self.navigation = Some(navigation.finish());
+    pub fn tool(mut self, tool: Tool) -> Self {
+        self.tool = Some(tool.finish());
         self
     }
 
@@ -1235,19 +775,19 @@ impl Page {
         PageRegistration {
             page_id: self.page_id,
             title: self.title,
-            navigation: self.navigation,
+            tool: self.tool,
         }
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Nav {
+pub struct Tool {
     label: String,
     icon: Option<String>,
     order: i32,
 }
 
-impl Nav {
+impl Tool {
     #[must_use]
     pub fn new(label: impl Into<String>) -> Self {
         Self {
@@ -1270,8 +810,8 @@ impl Nav {
     }
 
     #[must_use]
-    pub fn finish(self) -> NavigationEntry {
-        NavigationEntry {
+    pub fn finish(self) -> ToolEntry {
+        ToolEntry {
             label: self.label,
             icon: self.icon,
             order: self.order,
@@ -1324,6 +864,56 @@ impl Injection {
             priority: self.priority,
             layout: self.layout,
         }
+    }
+}
+
+impl InjectionLayout {
+    #[must_use]
+    pub const fn sidebar() -> Self {
+        Self {
+            preferred_width: None,
+            min_width: None,
+            max_width: None,
+            max_height: None,
+            priority: 0,
+            compact_behavior: CompactBehavior::None,
+        }
+    }
+
+    #[must_use]
+    pub const fn width(mut self, width: u16) -> Self {
+        self.preferred_width = Some(width);
+        self
+    }
+
+    #[must_use]
+    pub const fn min_width(mut self, width: u16) -> Self {
+        self.min_width = Some(width);
+        self
+    }
+
+    #[must_use]
+    pub const fn max_width(mut self, width: u16) -> Self {
+        self.max_width = Some(width);
+        self
+    }
+
+    #[must_use]
+    pub const fn max_height(mut self, height: u16) -> Self {
+        self.max_height = Some(height);
+        self
+    }
+
+    #[must_use]
+    pub const fn priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    #[must_use]
+    pub const fn compact_behavior(mut self, behavior: CompactBehavior) -> Self {
+        self.compact_behavior = behavior;
+        self
     }
 }
 
@@ -1421,6 +1011,10 @@ impl Modal {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// UI DSL 构建层
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[derive(Clone, Debug)]
 pub struct View {
     node: ViewNode,
@@ -1446,87 +1040,118 @@ impl View {
         Container::new(LayoutDirection::Row)
     }
 
+    /// A primary column and a secondary column which stack in a compact window.
     #[must_use]
-    pub fn text(value: impl Into<Arc<str>>) -> Self {
+    pub fn columns() -> Container {
+        Self::row().align(Align::Stretch).full_width()
+    }
+
+    #[must_use]
+    pub fn text(value: impl Into<String>) -> Self {
         Self::node(crate::text(value))
     }
 
     #[must_use]
-    pub fn title(text: impl Into<Arc<str>>) -> Self {
+    pub fn title(text: impl Into<String>) -> Self {
         Self::node(title(text))
     }
 
     #[must_use]
-    pub fn badge(label: impl Into<Arc<str>>) -> Self {
+    pub fn badge(label: impl Into<String>) -> Self {
         Self::node(badge(label))
     }
 
     #[must_use]
-    pub fn badge_styled(label: impl Into<Arc<str>>, style: ViewStyle) -> Self {
+    pub fn badge_styled(label: impl Into<String>, style: ViewStyle) -> Self {
         Self::node(badge_styled(label, style))
     }
 
     #[must_use]
-    pub fn button(label: impl Into<Arc<str>>, action_id: impl Into<Arc<str>>) -> Self {
+    pub fn button(label: impl Into<String>, action_id: impl Into<String>) -> Self {
         Self::node(button(label, action_id))
     }
 
     #[must_use]
+    pub fn secondary_button(label: impl Into<String>, action_id: impl Into<String>) -> Self {
+        let mut node = button(label, action_id);
+        if let ViewNode::Button(button) = &mut node {
+            button.style.color = Some(ThemeToken::SecondaryText);
+        }
+        Self::node(node)
+    }
+
+    /// Dispatches the current text as the action value when the user edits the input.
+    #[must_use]
+    pub fn input(
+        value: impl Into<String>,
+        placeholder: impl Into<String>,
+        action_id: impl Into<String>,
+    ) -> Self {
+        Self::node(ViewNode::Input(InputNode {
+            value: value.into(),
+            placeholder: placeholder.into(),
+            action_id: action_id.into(),
+            action_value: None,
+            style: ViewStyle { full_width: true, ..default_style() },
+        }))
+    }
+
+    #[must_use]
     pub fn button_action(
-        label: impl Into<Arc<str>>,
-        action_id: impl Into<Arc<str>>,
-        action_value: impl Into<Arc<str>>,
+        label: impl Into<String>,
+        action_id: impl Into<String>,
+        action_value: impl Into<String>,
     ) -> Self {
         Self::node(button_action(label, action_id, action_value))
     }
 
     #[must_use]
     pub fn checkbox(
-        label: impl Into<Arc<str>>,
+        label: impl Into<String>,
         checked: bool,
-        action_id: impl Into<Arc<str>>,
+        action_id: impl Into<String>,
     ) -> Self {
         Self::node(checkbox(label, checked, action_id))
     }
 
     #[must_use]
     pub fn toggle(
-        label: impl Into<Arc<str>>,
+        label: impl Into<String>,
         enabled: bool,
-        action_id: impl Into<Arc<str>>,
+        action_id: impl Into<String>,
     ) -> Self {
         Self::node(toggle(label, enabled, action_id))
     }
 
     #[must_use]
     pub fn select(
-        label: impl Into<Arc<str>>,
-        action_id: impl Into<Arc<str>>,
+        label: impl Into<String>,
+        action_id: impl Into<String>,
         options: impl IntoIterator<Item = SelectOption>,
-        selected: Option<impl Into<Arc<str>>>,
+        selected: Option<impl Into<String>>,
     ) -> Self {
         Self::node(select(label, action_id, options, selected))
     }
 
     #[must_use]
-    pub fn progress(label: impl Into<Arc<str>>, value: u64, total: Option<u64>) -> Self {
+    pub fn progress(label: impl Into<String>, value: u64, total: Option<u64>) -> Self {
         Self::node(progress(label, value, total))
     }
 
     #[must_use]
-    pub fn link(label: impl Into<Arc<str>>, url: impl Into<Arc<str>>) -> Self {
+    pub fn link(label: impl Into<String>, url: impl Into<String>) -> Self {
         Self::node(link(label, url))
     }
 
     #[must_use]
-    pub fn image(src: impl Into<Arc<str>>, alt: impl Into<Arc<str>>) -> Self {
+    pub fn image(src: impl Into<String>, alt: impl Into<String>) -> Self {
         Self::node(image(src, alt))
     }
 
     #[must_use]
     pub fn image_options(
-        src: impl Into<Arc<str>>,
-        alt: impl Into<Arc<str>>,
+        src: impl Into<String>,
+        alt: impl Into<String>,
         options: ImageOptions,
     ) -> Self {
         Self::node(image_options(src, alt, options))
@@ -1629,6 +1254,100 @@ impl Container {
     }
 }
 
+/// [`ImageNode`] 的可选项构建器（caption/placeholder/fallback/尺寸等）。
+#[derive(Clone, Debug)]
+pub struct ImageOptions {
+    caption: String,
+    placeholder: String,
+    fallback: String,
+    height: Option<u16>,
+    min_height: Option<u16>,
+    max_height: Option<u16>,
+    aspect_ratio_x: Option<u16>,
+    aspect_ratio_y: Option<u16>,
+    corner_radius: Option<u16>,
+    fit: ImageFit,
+}
+
+impl Default for ImageOptions {
+    fn default() -> Self {
+        Self {
+            caption: String::new(),
+            placeholder: String::new(),
+            fallback: String::new(),
+            height: None,
+            min_height: None,
+            max_height: None,
+            aspect_ratio_x: None,
+            aspect_ratio_y: None,
+            corner_radius: None,
+            fit: ImageFit::Cover,
+        }
+    }
+}
+
+impl ImageOptions {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn caption(mut self, caption: impl Into<String>) -> Self {
+        self.caption = caption.into();
+        self
+    }
+
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    #[must_use]
+    pub fn fallback(mut self, fallback: impl Into<String>) -> Self {
+        self.fallback = fallback.into();
+        self
+    }
+
+    #[must_use]
+    pub fn height(mut self, height: u16) -> Self {
+        self.height = Some(height);
+        self
+    }
+
+    #[must_use]
+    pub fn min_height(mut self, min_height: u16) -> Self {
+        self.min_height = Some(min_height);
+        self
+    }
+
+    #[must_use]
+    pub fn max_height(mut self, max_height: u16) -> Self {
+        self.max_height = Some(max_height);
+        self
+    }
+
+    #[must_use]
+    pub fn aspect_ratio(mut self, width: u16, height: u16) -> Self {
+        self.aspect_ratio_x = Some(width);
+        self.aspect_ratio_y = Some(height);
+        self
+    }
+
+    #[must_use]
+    pub fn corner_radius(mut self, corner_radius: u16) -> Self {
+        self.corner_radius = Some(corner_radius);
+        self
+    }
+
+    #[must_use]
+    pub fn fit(mut self, fit: ImageFit) -> Self {
+        self.fit = fit;
+        self
+    }
+}
+
 #[must_use]
 pub fn card(children: impl IntoIterator<Item = View>) -> View {
     let mut container = View::column()
@@ -1644,7 +1363,7 @@ pub fn card(children: impl IntoIterator<Item = View>) -> View {
 }
 
 #[must_use]
-pub fn section(title_text: impl Into<Arc<str>>, children: impl IntoIterator<Item = View>) -> View {
+pub fn section(title_text: impl Into<String>, children: impl IntoIterator<Item = View>) -> View {
     let mut container = View::column()
         .padding(0)
         .gap(10)
@@ -1761,7 +1480,7 @@ pub fn container(children: Vec<u32>) -> ViewNode {
 }
 
 #[must_use]
-pub fn text(text: impl Into<Arc<str>>) -> ViewNode {
+pub fn text(text: impl Into<String>) -> ViewNode {
     ViewNode::Text(TextNode {
         text: text.into(),
         style: default_style(),
@@ -1769,7 +1488,7 @@ pub fn text(text: impl Into<Arc<str>>) -> ViewNode {
 }
 
 #[must_use]
-pub fn title(text: impl Into<Arc<str>>) -> ViewNode {
+pub fn title(text: impl Into<String>) -> ViewNode {
     ViewNode::Text(TextNode {
         text: text.into(),
         style: title_style(),
@@ -1777,7 +1496,7 @@ pub fn title(text: impl Into<Arc<str>>) -> ViewNode {
 }
 
 #[must_use]
-pub fn badge(label: impl Into<Arc<str>>) -> ViewNode {
+pub fn badge(label: impl Into<String>) -> ViewNode {
     ViewNode::Badge(BadgeNode {
         label: label.into(),
         style: default_style(),
@@ -1785,7 +1504,7 @@ pub fn badge(label: impl Into<Arc<str>>) -> ViewNode {
 }
 
 #[must_use]
-pub fn badge_styled(label: impl Into<Arc<str>>, style: ViewStyle) -> ViewNode {
+pub fn badge_styled(label: impl Into<String>, style: ViewStyle) -> ViewNode {
     ViewNode::Badge(BadgeNode {
         label: label.into(),
         style,
@@ -1793,7 +1512,7 @@ pub fn badge_styled(label: impl Into<Arc<str>>, style: ViewStyle) -> ViewNode {
 }
 
 #[must_use]
-pub fn button(label: impl Into<Arc<str>>, action_id: impl Into<Arc<str>>) -> ViewNode {
+pub fn button(label: impl Into<String>, action_id: impl Into<String>) -> ViewNode {
     ViewNode::Button(ButtonNode {
         label: label.into(),
         action_id: action_id.into(),
@@ -1804,9 +1523,9 @@ pub fn button(label: impl Into<Arc<str>>, action_id: impl Into<Arc<str>>) -> Vie
 
 #[must_use]
 pub fn button_action(
-    label: impl Into<Arc<str>>,
-    action_id: impl Into<Arc<str>>,
-    action_value: impl Into<Arc<str>>,
+    label: impl Into<String>,
+    action_id: impl Into<String>,
+    action_value: impl Into<String>,
 ) -> ViewNode {
     ViewNode::Button(ButtonNode {
         label: label.into(),
@@ -1818,40 +1537,40 @@ pub fn button_action(
 
 #[must_use]
 pub fn checkbox(
-    label: impl Into<Arc<str>>,
+    label: impl Into<String>,
     checked: bool,
-    action_id: impl Into<Arc<str>>,
+    action_id: impl Into<String>,
 ) -> ViewNode {
     ViewNode::Checkbox(CheckboxNode {
         label: label.into(),
         checked,
         action_id: action_id.into(),
-        action_value: Some(Arc::from(if checked { "false" } else { "true" })),
+        action_value: Some(if checked { "false" } else { "true" }.to_string()),
         style: default_style(),
     })
 }
 
 #[must_use]
 pub fn toggle(
-    label: impl Into<Arc<str>>,
+    label: impl Into<String>,
     enabled: bool,
-    action_id: impl Into<Arc<str>>,
+    action_id: impl Into<String>,
 ) -> ViewNode {
     ViewNode::Toggle(ToggleNode {
         label: label.into(),
         enabled,
         action_id: action_id.into(),
-        action_value: Some(Arc::from(if enabled { "false" } else { "true" })),
+        action_value: Some(if enabled { "false" } else { "true" }.to_string()),
         style: default_style(),
     })
 }
 
 #[must_use]
 pub fn select(
-    label: impl Into<Arc<str>>,
-    action_id: impl Into<Arc<str>>,
+    label: impl Into<String>,
+    action_id: impl Into<String>,
     options: impl IntoIterator<Item = SelectOption>,
-    selected: Option<impl Into<Arc<str>>>,
+    selected: Option<impl Into<String>>,
 ) -> ViewNode {
     ViewNode::Select(SelectNode {
         label: label.into(),
@@ -1863,7 +1582,7 @@ pub fn select(
 }
 
 #[must_use]
-pub fn option(label: impl Into<Arc<str>>, value: impl Into<Arc<str>>) -> SelectOption {
+pub fn option(label: impl Into<String>, value: impl Into<String>) -> SelectOption {
     SelectOption {
         label: label.into(),
         value: value.into(),
@@ -1871,7 +1590,7 @@ pub fn option(label: impl Into<Arc<str>>, value: impl Into<Arc<str>>) -> SelectO
 }
 
 #[must_use]
-pub fn progress(label: impl Into<Arc<str>>, value: u64, total: Option<u64>) -> ViewNode {
+pub fn progress(label: impl Into<String>, value: u64, total: Option<u64>) -> ViewNode {
     ViewNode::Progress(ProgressNode {
         label: label.into(),
         value,
@@ -1881,7 +1600,7 @@ pub fn progress(label: impl Into<Arc<str>>, value: u64, total: Option<u64>) -> V
 }
 
 #[must_use]
-pub fn link(label: impl Into<Arc<str>>, url: impl Into<Arc<str>>) -> ViewNode {
+pub fn link(label: impl Into<String>, url: impl Into<String>) -> ViewNode {
     ViewNode::Link(LinkNode {
         label: label.into(),
         url: url.into(),
@@ -1895,9 +1614,9 @@ pub fn link(label: impl Into<Arc<str>>, url: impl Into<Arc<str>>) -> ViewNode {
 
 #[must_use]
 pub fn link_tooltip(
-    label: impl Into<Arc<str>>,
-    url: impl Into<Arc<str>>,
-    tooltip: impl Into<Arc<str>>,
+    label: impl Into<String>,
+    url: impl Into<String>,
+    tooltip: impl Into<String>,
 ) -> ViewNode {
     ViewNode::Link(LinkNode {
         label: label.into(),
@@ -1911,7 +1630,7 @@ pub fn link_tooltip(
 }
 
 #[must_use]
-pub fn icon(name: impl Into<Arc<str>>) -> ViewNode {
+pub fn icon(name: impl Into<String>) -> ViewNode {
     ViewNode::Icon(IconNode {
         name: name.into(),
         style: default_style(),
@@ -1919,13 +1638,13 @@ pub fn icon(name: impl Into<Arc<str>>) -> ViewNode {
 }
 
 #[must_use]
-pub fn image(src: impl Into<Arc<str>>, alt: impl Into<Arc<str>>) -> ViewNode {
+pub fn image(src: impl Into<String>, alt: impl Into<String>) -> ViewNode {
     ViewNode::Image(ImageNode {
         src: src.into(),
         alt: alt.into(),
-        caption: Arc::from(""),
-        placeholder: Arc::from(""),
-        fallback: Arc::from(""),
+        caption: String::new(),
+        placeholder: String::new(),
+        fallback: String::new(),
         style: default_style(),
         height: None,
         min_height: None,
@@ -1939,8 +1658,8 @@ pub fn image(src: impl Into<Arc<str>>, alt: impl Into<Arc<str>>) -> ViewNode {
 
 #[must_use]
 pub fn image_options(
-    src: impl Into<Arc<str>>,
-    alt: impl Into<Arc<str>>,
+    src: impl Into<String>,
+    alt: impl Into<String>,
     options: ImageOptions,
 ) -> ViewNode {
     ViewNode::Image(ImageNode {
@@ -1965,928 +1684,9 @@ pub fn spacer(size: u16) -> ViewNode {
     ViewNode::Spacer(SpacerNode { size })
 }
 
-fn plugin_error_from_app_error(error: AppError) -> PluginError {
-    PluginError {
-        code: error.code,
-        message: error.message,
-    }
-}
-
-pub fn log(level: LogLevel, message: impl AsRef<str>) {
-    let request = AppRequest::Log {
-        level,
-        message: message.as_ref().to_string(),
-    };
-    let _ = app_call_unit(AppOp::Log, &request);
-}
-
-pub fn log_debug(message: impl AsRef<str>) {
-    log(LogLevel::Debug, message);
-}
-
-pub fn log_info(message: impl AsRef<str>) {
-    log(LogLevel::Info, message);
-}
-
-pub fn log_warn(message: impl AsRef<str>) {
-    log(LogLevel::Warn, message);
-}
-
-pub fn log_error(message: impl AsRef<str>) {
-    log(LogLevel::Error, message);
-}
-
-pub fn show_toast(kind: ToastKind, message: impl AsRef<str>) -> PluginResult<()> {
-    app_call_unit(
-        AppOp::ShowToast,
-        &AppRequest::ShowToast {
-            kind,
-            message: message.as_ref().to_string(),
-        },
-    )
-}
-
-pub fn open_window(request: &WindowRequest) -> PluginResult<u64> {
-    match app_call(
-        AppOp::OpenWindow,
-        &AppRequest::OpenWindow {
-            request: request.clone(),
-        },
-    )? {
-        AppResponse::WindowId(window_id) => Ok(window_id),
-        AppResponse::Unit
-        | AppResponse::String(_)
-        | AppResponse::U64(_)
-        | AppResponse::SessionValue(_)
-        | AppResponse::Bytes(_)
-        | AppResponse::StringList(_)
-        | AppResponse::TaskId(_)
-        | AppResponse::AppInfo(_)
-        | AppResponse::ThemeSnapshot(_)
-        | AppResponse::HttpTextResponse { .. } => Err(plugin_error(
-            "invalid-host-response",
-            "open-window returned unexpected response type",
-        )),
-    }
-}
-
-pub fn open_modal(request: &ModalRequest) -> PluginResult<()> {
-    app_call_unit(
-        AppOp::OpenModal,
-        &AppRequest::OpenModal {
-            request: request.clone(),
-        },
-    )
-}
-
-pub fn navigate(target: &RouteTarget) -> PluginResult<()> {
-    app_call_unit(
-        AppOp::Navigate,
-        &AppRequest::Navigate {
-            target: target.clone(),
-        },
-    )
-}
-
-pub fn navigate_plugin(
-    plugin_id: impl Into<String>,
-    page_id: impl Into<String>,
-) -> PluginResult<()> {
-    navigate(&RouteTarget {
-        plugin_id: Some(plugin_id.into()),
-        page_id: Some(page_id.into()),
-        path: String::new(),
-    })
-}
-
-pub fn navigate_page(plugin: PluginMetadata, page_id: impl Into<String>) -> PluginResult<()> {
-    navigate_plugin(plugin.id, page_id)
-}
-
-pub fn navigate_path(path: impl Into<String>) -> PluginResult<()> {
-    navigate(&RouteTarget {
-        plugin_id: None,
-        page_id: None,
-        path: path.into(),
-    })
-}
-
-pub fn emit_event(name: impl AsRef<str>, payload: impl AsRef<str>) -> PluginResult<()> {
-    app_call_unit(
-        AppOp::EmitEvent,
-        &AppRequest::EmitEvent {
-            name: name.as_ref().to_string(),
-            payload: payload.as_ref().to_string(),
-        },
-    )
-}
-
-pub fn invalidate(target: InvalidateTarget) -> PluginResult<()> {
-    app_call_unit(AppOp::Invalidate, &AppRequest::Invalidate { target })
-}
-
-pub fn invalidate_all() -> PluginResult<()> {
-    invalidate(InvalidateTarget::All)
-}
-
-pub fn invalidate_page(page_id: impl Into<String>) -> PluginResult<()> {
-    invalidate(InvalidateTarget::Page(page_id.into()))
-}
-
-pub fn invalidate_injection(
-    slot: InjectionSlot,
-    page: Option<impl Into<String>>,
-) -> PluginResult<()> {
-    invalidate(InvalidateTarget::Injection(InjectionRequest {
-        slot,
-        page: page.map(Into::into),
-    }))
-}
-
-#[must_use]
-pub fn current_locale() -> String {
-    match app_call(AppOp::CurrentLocale, &AppRequest::CurrentLocale) {
-        Ok(AppResponse::String(locale)) => locale,
-        Ok(
-            AppResponse::Unit
-            | AppResponse::WindowId(_)
-            | AppResponse::U64(_)
-            | AppResponse::SessionValue(_)
-            | AppResponse::Bytes(_)
-            | AppResponse::StringList(_)
-            | AppResponse::TaskId(_)
-            | AppResponse::AppInfo(_)
-            | AppResponse::ThemeSnapshot(_)
-            | AppResponse::HttpTextResponse { .. },
-        )
-        | Err(_) => String::new(),
-    }
-}
-
-#[must_use]
-pub fn tr(key: impl AsRef<str>) -> String {
-    tr_args(key, &[])
-}
-
-#[must_use]
-pub fn tr_args(key: impl AsRef<str>, args: &[I18nArg]) -> String {
-    match app_call(
-        AppOp::Translate,
-        &AppRequest::Translate {
-            key: key.as_ref().to_string(),
-            args: args.to_vec(),
-        },
-    ) {
-        Ok(AppResponse::String(value)) => value,
-        Ok(
-            AppResponse::Unit
-            | AppResponse::WindowId(_)
-            | AppResponse::U64(_)
-            | AppResponse::SessionValue(_)
-            | AppResponse::Bytes(_)
-            | AppResponse::StringList(_)
-            | AppResponse::TaskId(_)
-            | AppResponse::AppInfo(_)
-            | AppResponse::ThemeSnapshot(_)
-            | AppResponse::HttpTextResponse { .. },
-        )
-        | Err(_) => key.as_ref().to_string(),
-    }
-}
-
-#[must_use]
-pub fn tr_arg(key: impl Into<String>, value: impl Into<String>) -> I18nArg {
-    I18nArg {
-        key: key.into(),
-        value: value.into(),
-    }
-}
-
-/// Reads plugin configuration through the launcher.
-///
-/// This performs launcher filesystem I/O and is rejected while rendering plugin UI. Read it during
-/// initialization or event handling and retain render-facing values in session/plugin state.
-pub fn read_config() -> PluginResult<String> {
-    match app_call(AppOp::ReadConfig, &AppRequest::ReadConfig)? {
-        AppResponse::String(text) => Ok(text),
-        AppResponse::Unit
-        | AppResponse::WindowId(_)
-        | AppResponse::U64(_)
-        | AppResponse::SessionValue(_)
-        | AppResponse::Bytes(_)
-        | AppResponse::StringList(_)
-        | AppResponse::TaskId(_)
-        | AppResponse::AppInfo(_)
-        | AppResponse::ThemeSnapshot(_)
-        | AppResponse::HttpTextResponse { .. } => Err(plugin_error(
-            "invalid-host-response",
-            "read-config returned unexpected response type",
-        )),
-    }
-}
-
-pub fn http_get_text(
-    url: impl AsRef<str>,
-    ttl_seconds: u32,
-    max_bytes: u32,
-) -> PluginResult<HttpTextResponse> {
-    match app_call(
-        AppOp::HttpGetText,
-        &AppRequest::HttpGetText {
-            url: url.as_ref().to_string(),
-            ttl_seconds,
-            max_bytes,
-        },
-    )? {
-        AppResponse::HttpTextResponse {
-            state,
-            body,
-            error,
-            fetched_at_unix_ms,
-        } => Ok(HttpTextResponse {
-            state,
-            body,
-            error,
-            fetched_at_unix_ms,
-        }),
-        AppResponse::Unit
-        | AppResponse::WindowId(_)
-        | AppResponse::String(_)
-        | AppResponse::U64(_)
-        | AppResponse::SessionValue(_)
-        | AppResponse::Bytes(_)
-        | AppResponse::StringList(_)
-        | AppResponse::TaskId(_)
-        | AppResponse::AppInfo(_)
-        | AppResponse::ThemeSnapshot(_) => Err(plugin_error(
-            "invalid-host-response",
-            "http-get-text returned unexpected response type",
-        )),
-    }
-}
-
-pub fn write_clipboard_text(text: impl AsRef<str>) -> PluginResult<()> {
-    app_call_unit(
-        AppOp::WriteClipboardText,
-        &AppRequest::WriteClipboardText {
-            text: text.as_ref().to_string(),
-        },
-    )
-}
-
-pub fn read_clipboard_text() -> PluginResult<Option<String>> {
-    match app_call(AppOp::ReadClipboardText, &AppRequest::ReadClipboardText)? {
-        AppResponse::SessionValue(value) => Ok(value),
-        other => unexpected_app_response(other, "read-clipboard-text"),
-    }
-}
-
-pub fn current_unix_ms() -> PluginResult<u64> {
-    match app_call(AppOp::CurrentUnixMs, &AppRequest::CurrentUnixMs)? {
-        AppResponse::U64(value) => Ok(value),
-        AppResponse::Unit
-        | AppResponse::WindowId(_)
-        | AppResponse::String(_)
-        | AppResponse::SessionValue(_)
-        | AppResponse::Bytes(_)
-        | AppResponse::StringList(_)
-        | AppResponse::TaskId(_)
-        | AppResponse::AppInfo(_)
-        | AppResponse::ThemeSnapshot(_)
-        | AppResponse::HttpTextResponse { .. } => Err(plugin_error(
-            "invalid-host-response",
-            "current-unix-ms returned unexpected response type",
-        )),
-    }
-}
-
-pub fn open_external_url(url: impl AsRef<str>) -> PluginResult<()> {
-    app_call_unit(
-        AppOp::OpenExternalUrl,
-        &AppRequest::OpenExternalUrl {
-            url: url.as_ref().to_string(),
-        },
-    )
-}
-
-/// Reads a declared/allowed text resource through the launcher resource cache.
-///
-/// Exact-file allowlist entries are prewarmed during plugin reload. Other cache misses schedule a
-/// background read and return a `resource-loading` error; render callers are invalidated
-/// automatically when the resource becomes ready.
-pub fn read_resource_text(path: impl AsRef<str>) -> PluginResult<String> {
-    match app_call(
-        AppOp::ReadResourceText,
-        &AppRequest::ReadResourceText {
-            path: path.as_ref().to_string(),
-        },
-    )? {
-        AppResponse::String(text) => Ok(text),
-        other => unexpected_app_response(other, "read-resource-text"),
-    }
-}
-
-/// Reads a declared/allowed binary resource through the launcher resource cache.
-///
-/// Exact-file allowlist entries are prewarmed during plugin reload. Other cache misses schedule a
-/// background read and return a `resource-loading` error; render callers are invalidated
-/// automatically when the resource becomes ready.
-pub fn read_resource_bytes(path: impl AsRef<str>) -> PluginResult<Vec<u8>> {
-    match app_call(
-        AppOp::ReadResourceBytes,
-        &AppRequest::ReadResourceBytes {
-            path: path.as_ref().to_string(),
-        },
-    )? {
-        AppResponse::Bytes(bytes) => Ok(bytes),
-        other => unexpected_app_response(other, "read-resource-bytes"),
-    }
-}
-
-pub fn session_get(key: impl AsRef<str>) -> PluginResult<Option<String>> {
-    match app_call(
-        AppOp::SessionGet,
-        &AppRequest::SessionGet {
-            key: key.as_ref().to_string(),
-        },
-    )? {
-        AppResponse::SessionValue(value) => Ok(value),
-        AppResponse::Unit
-        | AppResponse::WindowId(_)
-        | AppResponse::String(_)
-        | AppResponse::U64(_)
-        | AppResponse::Bytes(_)
-        | AppResponse::StringList(_)
-        | AppResponse::TaskId(_)
-        | AppResponse::AppInfo(_)
-        | AppResponse::ThemeSnapshot(_)
-        | AppResponse::HttpTextResponse { .. } => Err(plugin_error(
-            "invalid-host-response",
-            "session-get returned unexpected response type",
-        )),
-    }
-}
-
-pub fn session_set(key: impl AsRef<str>, value: Option<impl AsRef<str>>) -> PluginResult<()> {
-    app_call_unit(
-        AppOp::SessionSet,
-        &AppRequest::SessionSet {
-            key: key.as_ref().to_string(),
-            value: value.map(|value| value.as_ref().to_string()),
-        },
-    )
-}
-
-/// Reads the launcher-prepared persistent plugin KV snapshot.
-///
-/// Reads are memory-only and safe while rendering plugin UI.
-pub fn storage_get(key: impl AsRef<str>) -> PluginResult<Option<String>> {
-    match app_call(
-        AppOp::StorageGet,
-        &AppRequest::StorageGet {
-            key: key.as_ref().to_string(),
-        },
-    )? {
-        AppResponse::SessionValue(value) => Ok(value),
-        other => unexpected_app_response(other, "storage-get"),
-    }
-}
-
-/// Updates persistent plugin KV storage.
-///
-/// The launcher validates quota and updates the in-memory snapshot immediately, then queues ordered
-/// background persistence. Mutating storage is rejected while rendering plugin UI.
-pub fn storage_set(key: impl AsRef<str>, value: impl AsRef<str>) -> PluginResult<()> {
-    app_call_unit(
-        AppOp::StorageSet,
-        &AppRequest::StorageSet {
-            key: key.as_ref().to_string(),
-            value: value.as_ref().to_string(),
-        },
-    )
-}
-
-/// Deletes a persistent plugin KV value.
-///
-/// The in-memory snapshot updates immediately and disk persistence is queued in order. Mutating
-/// storage is rejected while rendering plugin UI.
-pub fn storage_delete(key: impl AsRef<str>) -> PluginResult<()> {
-    app_call_unit(
-        AppOp::StorageDelete,
-        &AppRequest::StorageDelete {
-            key: key.as_ref().to_string(),
-        },
-    )
-}
-
-/// Lists keys from the launcher-prepared persistent plugin KV snapshot.
-///
-/// Reads are memory-only and safe while rendering plugin UI.
-pub fn storage_list(prefix: Option<impl AsRef<str>>) -> PluginResult<Vec<String>> {
-    match app_call(
-        AppOp::StorageList,
-        &AppRequest::StorageList {
-            prefix: prefix.map(|prefix| prefix.as_ref().to_string()),
-        },
-    )? {
-        AppResponse::StringList(keys) => Ok(keys),
-        other => unexpected_app_response(other, "storage-list"),
-    }
-}
-
-/// Updates plugin configuration through the launcher.
-///
-/// TOML is validated and the in-memory snapshot updates immediately; atomic disk persistence is
-/// queued on the launcher I/O runtime. Configuration mutation is rejected while rendering plugin UI.
-pub fn write_config(text: impl AsRef<str>) -> PluginResult<()> {
-    app_call_unit(
-        AppOp::WriteConfig,
-        &AppRequest::WriteConfig {
-            text: text.as_ref().to_string(),
-        },
-    )
-}
-
-pub fn create_task(request: TaskCreateRequest) -> PluginResult<String> {
-    match app_call(AppOp::CreateTask, &AppRequest::CreateTask { request })? {
-        AppResponse::TaskId(task_id) => Ok(task_id),
-        other => unexpected_app_response(other, "create-task"),
-    }
-}
-
-pub fn update_task(request: TaskUpdateRequest) -> PluginResult<()> {
-    app_call_unit(AppOp::UpdateTask, &AppRequest::UpdateTask { request })
-}
-
-pub fn finish_task(request: TaskFinishRequest) -> PluginResult<()> {
-    app_call_unit(AppOp::FinishTask, &AppRequest::FinishTask { request })
-}
-
-/// Registers a task type owned by this plugin. The type id must start with the
-/// plugin's own id (`<plugin_id>.<name>`); the host rejects other namespaces.
-pub fn register_task_definition(request: TaskDefinitionRequest) -> PluginResult<()> {
-    app_call_unit(
-        AppOp::RegisterTaskDefinition,
-        &AppRequest::RegisterTaskDefinition { request },
-    )
-}
-
-/// Creates a task linked to a registered definition owned by this plugin.
-pub fn create_typed_task(
-    request: TaskCreateRequest,
-    definition: impl Into<String>,
-) -> PluginResult<String> {
-    match app_call(
-        AppOp::CreateTypedTask,
-        &AppRequest::CreateTypedTask {
-            request: TypedTaskCreateRequest {
-                request,
-                definition: definition.into(),
-            },
-        },
-    )? {
-        AppResponse::TaskId(task_id) => Ok(task_id),
-        other => unexpected_app_response(other, "create-typed-task"),
-    }
-}
-
-pub fn app_info() -> PluginResult<AppInfo> {
-    match app_call(AppOp::AppInfo, &AppRequest::AppInfo)? {
-        AppResponse::AppInfo(info) => Ok(info),
-        other => unexpected_app_response(other, "app-info"),
-    }
-}
-
-/// Starts an executable shipped inside the plugin's declared sidecar directory.
-///
-/// This is the non-blocking sidecar path. The launcher validates the pre-indexed executable name and
-/// queues process creation on its I/O runtime; successful scheduling returns immediately.
-pub fn sidecar_start(
-    name: impl Into<String>,
-    args: impl IntoIterator<Item = impl Into<String>>,
-) -> PluginResult<()> {
-    sidecar_call(name, args, 0, 0).map(|_| ())
-}
-
-/// Compatibility entry point for the sidecar app operation.
-///
-/// `max_output_bytes == 0` queues a non-blocking start. Synchronous captured output is intentionally
-/// rejected by the host because waiting for a child process inside a WASM app call can stall the
-/// GPUI foreground thread for seconds.
-pub fn sidecar_call(
-    name: impl Into<String>,
-    args: impl IntoIterator<Item = impl Into<String>>,
-    timeout_ms: u32,
-    max_output_bytes: u32,
-) -> PluginResult<String> {
-    match app_call(
-        AppOp::SidecarCall,
-        &AppRequest::SidecarCall {
-            name: name.into(),
-            args: args.into_iter().map(Into::into).collect(),
-            timeout_ms,
-            max_output_bytes,
-        },
-    )? {
-        AppResponse::String(output) => Ok(output),
-        other => unexpected_app_response(other, "sidecar-call"),
-    }
-}
-
-pub fn register_service(name: impl Into<String>) -> PluginResult<()> {
-    app_call_unit(
-        AppOp::RegisterService,
-        &AppRequest::RegisterService { name: name.into() },
-    )
-}
-
-pub fn call_service(
-    service_name: impl Into<String>,
-    method: impl Into<String>,
-    payload: impl Into<Vec<u8>>,
-) -> PluginResult<Vec<u8>> {
-    call_plugin_service(None, service_name, method, payload)
-}
-
-pub fn call_plugin_service(
-    target_plugin: Option<String>,
-    service_name: impl Into<String>,
-    method: impl Into<String>,
-    payload: impl Into<Vec<u8>>,
-) -> PluginResult<Vec<u8>> {
-    match app_call(
-        AppOp::CallService,
-        &AppRequest::CallService {
-            request: ServiceCallRequest {
-                target_plugin,
-                service_name: service_name.into(),
-                method: method.into(),
-                payload: payload.into(),
-            },
-        },
-    )? {
-        AppResponse::Bytes(data) => Ok(data),
-        other => unexpected_app_response(other, "call-service"),
-    }
-}
-
-pub fn theme_snapshot() -> PluginResult<ThemeSnapshot> {
-    match app_call(AppOp::ThemeSnapshot, &AppRequest::ThemeSnapshot)? {
-        AppResponse::ThemeSnapshot(snapshot) => Ok(snapshot),
-        AppResponse::Unit
-        | AppResponse::WindowId(_)
-        | AppResponse::String(_)
-        | AppResponse::U64(_)
-        | AppResponse::SessionValue(_)
-        | AppResponse::Bytes(_)
-        | AppResponse::StringList(_)
-        | AppResponse::TaskId(_)
-        | AppResponse::AppInfo(_)
-        | AppResponse::HttpTextResponse { .. } => Err(plugin_error(
-            "invalid-host-response",
-            "theme-snapshot returned unexpected response type",
-        )),
-    }
-}
-
-#[must_use]
-pub fn is_dark_mode() -> bool {
-    theme_snapshot()
-        .map(ThemeSnapshot::is_dark)
-        .unwrap_or(false)
-}
-
-#[must_use]
-pub fn theme_accent() -> Option<ThemeColor> {
-    theme_snapshot().ok().map(|snapshot| snapshot.accent)
-}
-
-pub fn plugin_error(code: impl Into<String>, message: impl Into<String>) -> PluginError {
-    PluginError::new(code, message)
-}
-
-fn unexpected_app_response<T>(_response: AppResponse, operation: &'static str) -> PluginResult<T> {
-    Err(plugin_error(
-        "invalid-host-response",
-        format!("{operation} returned unexpected response type"),
-    ))
-}
-
-fn app_call_unit(op: AppOp, request: &AppRequest) -> PluginResult<()> {
-    match app_call(op, request)? {
-        AppResponse::Unit => Ok(()),
-        AppResponse::WindowId(_)
-        | AppResponse::String(_)
-        | AppResponse::U64(_)
-        | AppResponse::SessionValue(_)
-        | AppResponse::Bytes(_)
-        | AppResponse::StringList(_)
-        | AppResponse::TaskId(_)
-        | AppResponse::AppInfo(_)
-        | AppResponse::ThemeSnapshot(_)
-        | AppResponse::HttpTextResponse { .. } => Err(plugin_error(
-            "invalid-host-response",
-            "host returned unexpected response type",
-        )),
-    }
-}
-
-fn app_call(op: AppOp, request: &AppRequest) -> PluginResult<AppResponse> {
-    let request_bytes = postcard::to_allocvec(request).map_err(|error| {
-        plugin_error(
-            "postcard-encode-failed",
-            format!("encode app request failed: {error}"),
-        )
-    })?;
-    let mut response = vec![0_u8; initial_app_response_capacity(request)];
-
-    loop {
-        let written = unsafe_app_call(
-            op.code(),
-            request_bytes.as_ptr(),
-            request_bytes.len(),
-            response.as_mut_ptr(),
-            response.len(),
-        );
-
-        if written < 0 {
-            let required = usize::try_from(-written).unwrap_or(MAX_APP_BUFFER_CAPACITY + 1);
-            if required == 0 || required > MAX_APP_BUFFER_CAPACITY {
-                return Err(plugin_error(
-                    "host-buffer-too-large",
-                    format!("app requested invalid response size {required}"),
-                ));
-            }
-            response.resize(required, 0);
-            continue;
-        }
-
-        let written = usize::try_from(written).map_err(|_error| {
-            plugin_error(
-                "host-response-invalid",
-                "host returned a negative or overflowing response size",
-            )
-        })?;
-        if written > response.len() {
-            return Err(plugin_error(
-                "host-response-out-of-bounds",
-                "host wrote more bytes than the provided response buffer",
-            ));
-        }
-
-        let response_value: Result<AppResponse, AppError> =
-            postcard::from_bytes(&response[..written]).map_err(|error| {
-                plugin_error(
-                    "postcard-decode-failed",
-                    format!("decode app response failed: {error}"),
-                )
-            })?;
-        return response_value.map_err(plugin_error_from_app_error);
-    }
-}
-
-/// 按请求预估初始响应缓冲，减少“容量不足 → 重新调用宿主”的往返。
-///
-/// 宿主在响应放不下时不会写入任何字节，只回报所需长度；插件随后必须重新发起同一次
-/// 调用，而宿主会重新执行该动作（重新读取资源、重新编码响应）。因此容量估算直接影响
-/// 读取资源、读取配置、HTTP 文本等热路径的调用次数。
-fn initial_app_response_capacity(request: &AppRequest) -> usize {
-    match request {
-        AppRequest::ReadResourceBytes { .. } | AppRequest::CallService { .. } => {
-            LARGE_HOST_BUFFER_CAPACITY
-        }
-        AppRequest::HttpGetText { max_bytes, .. } => usize::try_from(*max_bytes)
-            .unwrap_or(LARGE_HOST_BUFFER_CAPACITY)
-            .clamp(DEFAULT_APP_BUFFER_CAPACITY, LARGE_HOST_BUFFER_CAPACITY),
-        AppRequest::ReadResourceText { .. }
-        | AppRequest::ReadConfig
-        | AppRequest::Translate { .. }
-        | AppRequest::StorageGet { .. }
-        | AppRequest::StorageList { .. } => MEDIUM_HOST_BUFFER_CAPACITY,
-        AppRequest::AppInfo | AppRequest::ThemeSnapshot => 512,
-        _ => DEFAULT_APP_BUFFER_CAPACITY,
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn unsafe_app_call(
-    op: i32,
-    request_ptr: *const u8,
-    request_len: usize,
-    response_ptr: *mut u8,
-    response_capacity: usize,
-) -> i64 {
-    // SAFETY: The imported function is provided by the BMCBL host and follows the ABI declared
-    // below. All pointers refer to this plugin instance's linear memory for the duration of the
-    // synchronous call.
-    unsafe {
-        bmcbl_host_call(
-            op,
-            i32::try_from(request_ptr as usize).unwrap_or(i32::MAX),
-            i32::try_from(request_len).unwrap_or(i32::MAX),
-            i32::try_from(response_ptr as usize).unwrap_or(i32::MAX),
-            i32::try_from(response_capacity).unwrap_or(i32::MAX),
-        )
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn unsafe_app_call(
-    _op: i32,
-    _request_ptr: *const u8,
-    _request_len: usize,
-    _response_ptr: *mut u8,
-    _response_capacity: usize,
-) -> i64 {
-    0
-}
-
-#[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "bmcbl")]
-unsafe extern "C" {
-    fn bmcbl_host_call(
-        op: i32,
-        request_ptr: i32,
-        request_len: i32,
-        response_ptr: i32,
-        response_capacity: i32,
-    ) -> i64;
-}
-
-#[doc(hidden)]
-pub fn encode_plugin_result<T: serde::Serialize>(result: PluginResult<T>) -> u64 {
-    let response = match result {
-        Ok(value) => AbiResult::Ok(value),
-        Err(error) => AbiResult::Err(error),
-    };
-    let bytes = postcard::to_allocvec(&response).unwrap_or_else(|error| {
-        let fallback = AbiResult::<()>::Err(plugin_error(
-            "postcard-encode-failed",
-            format!("encode plugin response failed: {error}"),
-        ));
-        postcard::to_allocvec(&fallback).unwrap_or_default()
-    });
-    export_allocated_bytes(bytes)
-}
-
-#[doc(hidden)]
-/// Decodes a request sent through the plugin host ABI.
-///
-/// # Safety
-///
-/// When `len` is nonzero, `ptr` must point to `len` readable bytes in this plugin's current
-/// WebAssembly linear memory for the duration of this call.
-pub unsafe fn decode_request<T: serde::de::DeserializeOwned>(
-    ptr: u32,
-    len: u32,
-) -> PluginResult<T> {
-    let slice = if len == 0 {
-        &[]
-    } else {
-        // SAFETY: The caller guarantees that the host-provided guest-memory range is readable.
-        unsafe { alloc::slice::from_raw_parts(ptr as *const u8, len as usize) }
-    };
-    postcard::from_bytes(slice).map_err(|error| {
-        plugin_error(
-            "postcard-decode-failed",
-            format!("decode plugin request failed: {error}"),
-        )
-    })
-}
-
-fn export_allocated_bytes(bytes: Vec<u8>) -> u64 {
-    let mut bytes = bytes.into_boxed_slice();
-    let len = bytes.len();
-    let ptr = bytes.as_mut_ptr();
-    core::mem::forget(bytes);
-    (u64::from(ptr as u32) << 32) | u64::from(len as u32)
-}
-
-#[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn bmcbl_alloc(len: u32, _align: u32) -> u32 {
-    if len == 0 {
-        return 0;
-    }
-    let mut bytes = Vec::<u8>::with_capacity(len as usize);
-    let ptr = bytes.as_mut_ptr();
-    core::mem::forget(bytes);
-    ptr as u32
-}
-
-#[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn bmcbl_dealloc(ptr: u32, len: u32, _align: u32) {
-    if ptr == 0 || len == 0 {
-        return;
-    }
-    // SAFETY: `ptr` must have been returned by `bmcbl_alloc` or by the plugin response allocator.
-    // The ABI always passes back the original allocation length, which is the allocation capacity
-    // for this byte buffer.
-    unsafe {
-        let _ = Vec::from_raw_parts(ptr as *mut u8, 0, len as usize);
-    }
-}
-
-#[macro_export]
-macro_rules! export_plugin {
-    ($plugin:ty) => {
-        #[cfg(target_arch = "wasm32")]
-        #[expect(
-            unsafe_code,
-            reason = "plugin entrypoint decodes host-provided guest memory"
-        )]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn bmcbl_init(ptr: u32, len: u32) -> u64 {
-            let context = match unsafe { $crate::decode_request::<$crate::PluginContext>(ptr, len) }
-            {
-                Ok(context) => context,
-                Err(error) => {
-                    return $crate::encode_plugin_result::<Vec<$crate::Registration>>(Err(error))
-                }
-            };
-            $crate::encode_plugin_result(<$plugin as $crate::Plugin>::init(context))
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        #[expect(
-            unsafe_code,
-            reason = "plugin entrypoint decodes host-provided guest memory"
-        )]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn bmcbl_handle_event(ptr: u32, len: u32) -> u64 {
-            let event = match unsafe { $crate::decode_request::<$crate::PluginEvent>(ptr, len) } {
-                Ok(event) => event,
-                Err(error) => return $crate::encode_plugin_result::<()>(Err(error)),
-            };
-            $crate::encode_plugin_result(<$plugin as $crate::Plugin>::handle_event(event))
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        #[expect(
-            unsafe_code,
-            reason = "plugin entrypoint decodes host-provided guest memory"
-        )]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn bmcbl_render_page(ptr: u32, len: u32) -> u64 {
-            let request = match unsafe {
-                $crate::decode_request::<$crate::PageRenderRequest>(ptr, len)
-            } {
-                Ok(request) => request,
-                Err(error) => return $crate::encode_plugin_result::<$crate::ViewTree>(Err(error)),
-            };
-            $crate::encode_plugin_result(<$plugin as $crate::Plugin>::render_page(request))
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        #[expect(
-            unsafe_code,
-            reason = "plugin entrypoint decodes host-provided guest memory"
-        )]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn bmcbl_render_injection(ptr: u32, len: u32) -> u64 {
-            let request = match unsafe {
-                $crate::decode_request::<$crate::InjectionRequest>(ptr, len)
-            } {
-                Ok(request) => request,
-                Err(error) => {
-                    return $crate::encode_plugin_result::<Option<$crate::ViewTree>>(Err(error));
-                }
-            };
-            $crate::encode_plugin_result(<$plugin as $crate::Plugin>::render_injection(request))
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        #[expect(
-            unsafe_code,
-            reason = "plugin entrypoint decodes host-provided guest memory"
-        )]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn bmcbl_call_service(ptr: u32, len: u32) -> u64 {
-            let request =
-                match unsafe { $crate::decode_request::<$crate::ServiceCallRequest>(ptr, len) } {
-                    Ok(request) => request,
-                    Err(error) => return $crate::encode_plugin_result::<Vec<u8>>(Err(error)),
-                };
-            $crate::encode_plugin_result(<$plugin as $crate::Plugin>::call_service(request))
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        #[expect(
-            unsafe_code,
-            reason = "plugin entrypoint decodes host-provided guest memory"
-        )]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn bmcbl_shutdown(ptr: u32, len: u32) -> u64 {
-            let reason = match unsafe { $crate::decode_request::<$crate::ShutdownReason>(ptr, len) }
-            {
-                Ok(reason) => reason,
-                Err(error) => return $crate::encode_plugin_result::<()>(Err(error)),
-            };
-            $crate::encode_plugin_result(<$plugin as $crate::Plugin>::shutdown(reason))
-        }
-    };
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// 宏
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[macro_export]
 macro_rules! plugin_actions {
@@ -2924,9 +1724,9 @@ macro_rules! registrations {
     () => {
         $crate::Registrations::new().finish()
     };
-    (page $page_id:expr, title = $title:expr, nav = $nav:expr; $($rest:tt)*) => {
+    (page $page_id:expr, title = $title:expr, tool = $tool:expr; $($rest:tt)*) => {
         $crate::Registrations::new()
-            .page($crate::Page::new($page_id, $title).nav($nav))
+            .page($crate::Page::new($page_id, $title).tool($tool))
             .extend($crate::registrations!($($rest)*))
             .finish()
     };
@@ -3070,25 +1870,28 @@ macro_rules! invalidate {
 
 pub mod prelude {
     pub use crate::{
-        AbiResult, Align, CompactBehavior, Container, EventSubscription, HttpCacheState,
-        HttpTextResponse, I18nArg, ImageFit, ImageOptions, Injection, InjectionLayout,
-        InjectionRegistration, InjectionRequest, InjectionSlot, LogLevel, Modal, ModalRequest, Nav,
-        Page, PageRegistration, PageRenderRequest, Plugin, PluginContext, PluginError, PluginEvent,
-        PluginEventKind, PluginMetadata, PluginResult, Registration, Registrations, SelectOption,
-        ServiceCallRequest, ServiceRegistration, ShutdownReason, StorageEntry, TaskCreateRequest,
-        TaskDefinitionRequest, TaskFinishRequest, TaskUpdateRequest, TextSizeToken, TypedTaskCreateRequest, ThemeColor, ThemeMode, ThemeSnapshot,
-        ThemeToken, ToastKind, View, ViewNode, ViewStyle, ViewTree, ViewTreeBuilder, Window,
-        app_info, badge, badge_styled, bmcbl_plugin, button, button_action, call_plugin_service,
+        Align, AppInfo, CompactBehavior, Container, DownloadRequest, EventSubscription,
+        HttpCacheState, HttpTextResponse, I18nArg, ImageFit, ImageOptions, Injection,
+        InjectionLayout, InjectionRegistration, InjectionRequest, InjectionSlot, LogLevel, Modal,
+        ModalRequest, Tool, Page, PageRegistration, PageRenderRequest, Plugin, PluginAction,
+        PluginContext, PluginError, PluginEvent, PluginEventKind, PluginMetadata, PluginResult,
+        Registration, Registrations, SelectOption, ServiceCallRequest, ServiceRegistration,
+        ShutdownReason, TaskCreateRequest, TaskDefinitionRequest, TaskFinishRequest,
+        TaskUpdateRequest, TextSizeToken, ThemeColor, ThemeMode, ThemeSnapshot, ThemeToken,
+        ToastKind, View, ViewNode, ViewStyle, ViewTree, ViewTreeBuilder, Window,
+            app_info, badge, badge_styled, bmcbl_plugin, button, button_action, call_plugin_service,
         call_service, card, checkbox, create_task, create_typed_task, current_locale,
-        current_unix_ms, default_style, emit_event, finish_task, http_get_text, register_task_definition, icon, image,
-        image_options, invalidate, invalidate_all, invalidate_injection, invalidate_page,
-        is_dark_mode, link, link_tooltip, log, log_debug, log_error, log_info, log_warn, navigate,
-        navigate_page, navigate_path, open_external_url, open_modal, open_window, option,
-        plugin_actions, plugin_error, plugin_metadata, progress, read_clipboard_text, read_config,
-        read_resource_bytes, read_resource_text, register_service, registrations, section, select,
-        session_get, session_set, show_toast, sidecar_call, spacer, storage_delete, storage_get,
-        storage_list, storage_set, text, theme_accent, theme_snapshot, title, toast, toggle, tr,
-        tr_arg, tr_args, update_task, view, write_clipboard_text, write_config,
+        current_unix_ms, default_style, download_resource, emit_event, finish_task,
+        http_get_text, icon, image, image_options, invalidate, invalidate_all,
+        invalidate_injection, invalidate_page, is_dark_mode, link, link_tooltip,
+        log, log_debug, log_error, log_info, log_warn, navigate, navigate_page,
+        navigate_path, open_external_url, open_modal, open_window, option, plugin_actions,
+        plugin_error, plugin_metadata, progress, read_clipboard_text, read_config,
+        read_resource_bytes, read_resource_text, register_service,
+        register_task_definition, registrations, section, select, session_get, session_set,
+        show_toast, spacer, storage_delete, storage_get, storage_list, storage_set,
+        text, theme_accent, theme_snapshot, title, toast, toggle, tr, tr_arg, tr_args, update_task,
+        view, write_clipboard_text, write_config,
     };
 }
 
@@ -3099,7 +1902,7 @@ mod tests {
     #[test]
     fn registrations_builder_outputs_page_injection_and_subscription() {
         let registrations = Registrations::new()
-            .page(Page::new("main", "Main").nav(Nav::new("Essentials").icon("plug").order(7)))
+            .page(Page::new("main", "Main").tool(Tool::new("Essentials").icon("plug").order(7)))
             .injection(Injection::new(InjectionSlot::MainRootOverlay).priority(3))
             .subscribe("route-changed")
             .finish();
@@ -3160,33 +1963,6 @@ mod tests {
     }
 
     #[test]
-    fn app_request_response_roundtrip_covers_v04_types() {
-        let request = AppRequest::CreateTask {
-            request: TaskCreateRequest {
-                task_id: None,
-                title: "Build".to_string(),
-                detail: Some("Plugin task".to_string()),
-                stage: "starting".to_string(),
-                total: Some(100),
-                supports_pause: false,
-            },
-        };
-        let encoded = postcard::to_allocvec(&request).expect("request should encode");
-        let decoded = postcard::from_bytes::<AppRequest>(&encoded).expect("request should decode");
-        assert_eq!(decoded, request);
-
-        let response = AppResponse::AppInfo(AppInfo {
-            version: "1.0.0".to_string(),
-            build_info: "build".to_string(),
-            api_version: API_VERSION.to_string(),
-        });
-        let encoded = postcard::to_allocvec(&response).expect("response should encode");
-        let decoded =
-            postcard::from_bytes::<AppResponse>(&encoded).expect("response should decode");
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
     fn action_helper_matches_action_events() {
         let event = PluginEvent {
             plugin_id: Some("plugin".to_string()),
@@ -3220,9 +1996,9 @@ mod tests {
         let ViewNode::Image(image) = node else {
             panic!("node should be an image");
         };
-        assert_eq!(&*image.caption, "Caption");
-        assert_eq!(&*image.placeholder, "Loading");
-        assert_eq!(&*image.fallback, "Unavailable");
+        assert_eq!(image.caption, "Caption");
+        assert_eq!(image.placeholder, "Loading");
+        assert_eq!(image.fallback, "Unavailable");
         assert_eq!(image.height, Some(180));
         assert_eq!(image.min_height, Some(120));
         assert_eq!(image.max_height, Some(240));
@@ -3230,30 +2006,6 @@ mod tests {
         assert_eq!(image.aspect_ratio_y, Some(9));
         assert_eq!(image.corner_radius, Some(12));
         assert_eq!(image.fit, ImageFit::Contain);
-    }
-
-    #[test]
-    fn service_registration_and_call_request_roundtrip() {
-        let registration = Registration::Service(ServiceRegistration {
-            service_name: "test-service".to_string(),
-        });
-        let bytes = postcard::to_allocvec(&registration).expect("service reg should encode");
-        let decoded =
-            postcard::from_bytes::<Registration>(&bytes).expect("service reg should decode");
-        assert_eq!(decoded, registration);
-
-        let request = AppRequest::CallService {
-            request: ServiceCallRequest {
-                target_plugin: Some("calc".to_string()),
-                service_name: "math".to_string(),
-                method: "add".to_string(),
-                payload: vec![1, 2, 3],
-            },
-        };
-        let bytes = postcard::to_allocvec(&request).expect("service call request should encode");
-        let decoded =
-            postcard::from_bytes::<AppRequest>(&bytes).expect("service call request should decode");
-        assert_eq!(decoded, request);
     }
 
     #[test]
@@ -3272,66 +2024,16 @@ mod tests {
             )
             .finish();
 
-        let bytes = postcard::to_allocvec(&registration).expect("layout should encode");
-        let decoded =
-            postcard::from_bytes::<InjectionRegistration>(&bytes).expect("layout should decode");
-
-        assert_eq!(decoded, registration);
         assert_eq!(
-            decoded.layout.and_then(|layout| layout.preferred_width),
+            registration.layout.and_then(|layout| layout.preferred_width),
             Some(320)
         );
     }
 
     #[test]
-    fn theme_snapshot_response_roundtrips() {
-        let snapshot = ThemeSnapshot {
-            dark_factor: 1.0,
-            mode: ThemeMode::Dark,
-            accent: ThemeColor {
-                h: 0.6,
-                s: 0.8,
-                l: 0.5,
-                a: 1.0,
-            },
-            ..ThemeSnapshot::light_default()
-        };
-        let response = AppResponse::ThemeSnapshot(snapshot);
-
-        let bytes = postcard::to_allocvec(&response).expect("theme snapshot should encode");
-        let decoded =
-            postcard::from_bytes::<AppResponse>(&bytes).expect("theme snapshot should decode");
-
-        assert_eq!(decoded, response);
-        assert!(snapshot.is_dark());
-    }
-
-    #[test]
-    fn app_response_capacity_hint_reduces_retries_for_large_reads() {
-        assert_eq!(
-            initial_app_response_capacity(&AppRequest::ReadResourceBytes {
-                path: "assets/data.bin".to_string(),
-            }),
-            LARGE_HOST_BUFFER_CAPACITY
-        );
-        assert_eq!(
-            initial_app_response_capacity(&AppRequest::ReadConfig),
-            MEDIUM_HOST_BUFFER_CAPACITY
-        );
-        assert_eq!(
-            initial_app_response_capacity(&AppRequest::CurrentUnixMs),
-            DEFAULT_APP_BUFFER_CAPACITY
-        );
-
-        // HTTP 初始容量跟随请求上限，但被夹在默认值与上限之间，避免按 512 KiB 预分配。
-        let http = AppRequest::HttpGetText {
-            url: "https://example.com/data.json".to_string(),
-            ttl_seconds: 0,
-            max_bytes: 512 * 1024,
-        };
-        assert_eq!(
-            initial_app_response_capacity(&http),
-            LARGE_HOST_BUFFER_CAPACITY
-        );
+    fn theme_snapshot_default_is_light() {
+        let snapshot = ThemeSnapshot::light_default();
+        assert!(!snapshot.is_dark());
+        assert_eq!(snapshot.mode, ThemeMode::Light);
     }
 }

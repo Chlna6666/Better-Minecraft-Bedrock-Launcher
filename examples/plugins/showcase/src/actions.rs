@@ -74,7 +74,7 @@ pub fn handle(event: PluginEvent) -> PluginResult<()> {
     let action_id = event.action_id().unwrap_or_default().to_string();
     let action_value = match &event.kind {
         PluginEventKind::Action(action) => action.value.clone(),
-        PluginEventKind::RouteChanged(_) | PluginEventKind::Global(_) => None,
+        _ => None,
     };
 
     for &(action, handler) in ACTIONS {

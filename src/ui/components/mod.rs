@@ -8,6 +8,7 @@ pub mod dialog;
 pub mod dropdown;
 pub mod html_renderer;
 pub mod icon;
+pub(crate) mod plugin_icon;
 pub mod input;
 pub mod inspector;
 pub mod numeric_field;

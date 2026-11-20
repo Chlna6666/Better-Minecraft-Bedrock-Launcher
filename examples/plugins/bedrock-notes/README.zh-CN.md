@@ -14,6 +14,6 @@
 ## 构建
 
 ```powershell
-rustup target add wasm32-unknown-unknown
-cargo build --release --target wasm32-unknown-unknown --manifest-path examples/plugins/bedrock-notes/Cargo.toml
+rustup target add wasm32-wasip2
+cargo build --release --target wasm32-wasip2 --manifest-path examples/plugins/bedrock-notes/Cargo.toml
 ```

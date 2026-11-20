@@ -107,7 +107,7 @@ pub const MAX_RPC_DEPTH: usize = 8;
 /// 防重入与循环调用 RPC 栈
 #[derive(Clone, Debug, Default)]
 pub struct PluginRpcCallStack {
-    active_calls: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    active_calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl PluginRpcCallStack {
@@ -117,7 +117,10 @@ impl PluginRpcCallStack {
 
     /// 尝试进入一个插件的 RPC 调用上下文，若超出深度或检测到环路则报错。
     pub fn enter(&self, target_plugin_id: &str) -> Result<CallStackGuard> {
-        let mut calls = self.active_calls.borrow_mut();
+        let mut calls = self
+            .active_calls
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if calls.len() >= MAX_RPC_DEPTH {
             bail!("maximum RPC recursion depth ({MAX_RPC_DEPTH}) exceeded");
         }
@@ -135,18 +138,24 @@ impl PluginRpcCallStack {
     }
 
     pub fn current_depth(&self) -> usize {
-        self.active_calls.borrow().len()
+        self.active_calls
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
     }
 }
 
 #[derive(Debug)]
 pub struct CallStackGuard {
-    stack: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    stack: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl Drop for CallStackGuard {
     fn drop(&mut self) {
-        self.stack.borrow_mut().pop();
+        self.stack
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pop();
     }
 }
 

@@ -86,11 +86,10 @@ fn route_enter_animation_key(route: &RouteTarget) -> SharedString {
             AppRoute::Home => "main-route-page-enter:/",
             AppRoute::Download => "main-route-page-enter:/download",
             AppRoute::Manage => "main-route-page-enter:/list",
-            AppRoute::Tools => "main-route-page-enter:/tools/online",
             AppRoute::Tasks => "main-route-page-enter:/tasks",
             AppRoute::Settings => "main-route-page-enter:/settings",
         }),
-        RouteTarget::Plugin { .. } => {
+        RouteTarget::Plugin { .. } | RouteTarget::Tool { .. } | RouteTarget::Tools => {
             SharedString::from(format!("main-route-page-enter:{}", route.pathname()))
         }
     }
@@ -221,7 +220,6 @@ pub struct MainWindowView {
     home_page_view: Option<Entity<crate::ui::views::home::HomePageView>>,
     download_page_view: Option<Entity<crate::ui::views::download::DownloadPageView>>,
     manage_page_view: Option<Entity<crate::ui::views::manage::ManagePageView>>,
-    tools_page_view: Option<Entity<crate::ui::views::tools::ToolsPageView>>,
     settings_page_view: Option<Entity<crate::ui::views::settings::SettingsPageView>>,
     tasks_page_view: Option<Entity<crate::ui::views::tasks::TasksPageView>>,
     plugin_page_view: Option<Entity<crate::ui::views::plugin::PluginPageView>>,
@@ -240,8 +238,6 @@ pub struct MainWindowView {
     download_curseforge_invalidate_pending_seen: bool,
     manage_controls_initialized: bool,
     manage_controls_subscriptions: Vec<Subscription>,
-    tools_controls_initialized: bool,
-    tools_controls_subscriptions: Vec<Subscription>,
     settings_controls_initialized: bool,
     settings_controls_subscriptions: Vec<Subscription>,
     _route_subscriptions: Vec<Subscription>,
@@ -268,8 +264,6 @@ pub struct MainWindowView {
     last_auth_blocked: Option<bool>,
     last_handled_game_launch: Option<String>,
     game_diagnostics_listener_installed: bool,
-    last_minecraft_termination_dialog:
-        crate::ui::views::tools::state::MinecraftTerminationDialogState,
     easter_egg: easter_egg::EasterEggState,
 }
 
@@ -282,18 +276,6 @@ impl MainWindowView {
         }
         self.game_diagnostics_listener_installed = true;
 
-        let subscription =
-            cx.observe_global::<crate::ui::views::tools::state::ToolsPageState>(|this, cx| {
-                let dialog = cx
-                    .global::<crate::ui::views::tools::state::ToolsPageState>()
-                    .minecraft_termination_dialog
-                    .clone();
-                if this.last_minecraft_termination_dialog != dialog {
-                    this.last_minecraft_termination_dialog = dialog;
-                    cx.notify();
-                }
-            });
-        self._reactor_subscriptions.push(subscription);
         self._reactor_subscriptions.push(
             cx.observe_global::<crate::ui::state::game_diagnostics::GameDiagnosticsState>(
                 |_, cx| {
@@ -516,7 +498,7 @@ impl MainWindowView {
         let route = crate::ui::navigation::current_route_target(cx);
         let builtin_route = match &route {
             RouteTarget::Builtin(route) => *route,
-            RouteTarget::Plugin { .. } => AppRoute::Home,
+            _ => AppRoute::Home,
         };
         let debug_enabled = cx.global::<DebugState>().enabled;
         let update_render_state = self.read_update_render_state(now, debug_enabled, cx);
@@ -605,9 +587,6 @@ impl MainWindowView {
                 AppRoute::Manage.pathname(),
                 self.manage_page_view.clone(),
             ),
-            RouteTarget::Builtin(AppRoute::Tools) => {
-                optional_page_view_element(AppRoute::Tools.pathname(), self.tools_page_view.clone())
-            }
             RouteTarget::Builtin(AppRoute::Tasks) => {
                 optional_page_view_element(AppRoute::Tasks.pathname(), self.tasks_page_view.clone())
             }
@@ -615,7 +594,7 @@ impl MainWindowView {
                 AppRoute::Settings.pathname(),
                 self.settings_page_view.clone(),
             ),
-            RouteTarget::Plugin { .. } => {
+            RouteTarget::Plugin { .. } | RouteTarget::Tool { .. } | RouteTarget::Tools => {
                 let route_key = route.pathname();
                 optional_page_view_element(route_key.as_ref(), self.plugin_page_view.clone())
             }
@@ -670,19 +649,6 @@ impl MainWindowView {
                     .inset_0()
                     .child(self.settings_overlay_view.clone()),
             );
-        }
-
-        if model.builtin_route == AppRoute::Tools
-            && let Some(tools_overlay) = crate::ui::views::tools::render_tools_overlay(
-                &model.theme_colors,
-                cx.global::<I18n>(),
-                model.window_width,
-                model.window_height,
-                cx.global::<crate::ui::views::tools::state::ToolsPageState>(),
-            )
-        {
-            auth_blocked = true;
-            root = root.child(tools_overlay);
         }
 
         if model.builtin_route == AppRoute::Manage
@@ -864,17 +830,6 @@ impl MainWindowView {
             root = root.child(self.render_plugin_modal(modal, model, window, cx));
         }
 
-        if !model.agreement_render_state.visible
-            && let Some(dialog) = crate::ui::views::tools::online::render_termination_dialog(
-                &model.theme_colors,
-                cx.global::<crate::ui::views::tools::state::ToolsPageState>(),
-                cx.global::<I18n>(),
-            )
-        {
-            auth_blocked = true;
-            root = root.child(dialog);
-        }
-
         if model.toast_visible {
             let toast_state = cx.global::<crate::ui::components::toast::ToastState>();
             root = root.child(crate::ui::components::toast::render_overlay(
@@ -900,14 +855,15 @@ impl MainWindowView {
 
         let active_page_id = match &model.route {
             RouteTarget::Builtin(route) => route.pathname(),
-            RouteTarget::Plugin { page_id, .. } => page_id.as_str(),
+            RouteTarget::Plugin { page_id, .. } | RouteTarget::Tool { page_id, .. } => page_id.as_str(),
+            RouteTarget::Tools => "/tools",
         };
         for injection in crate::plugins::runtime::render_injections(
             cx,
             InjectionSlot::MainRootOverlay,
             Some(active_page_id),
         ) {
-            root = root.child(crate::plugins::ui_dsl::render_validated_view_tree(
+            root = root.child(crate::ui::views::plugin::elements::render_validated_view_tree(
                 &injection.tree,
                 &injection.plugin_id,
                 None,
@@ -962,7 +918,7 @@ impl MainWindowView {
         let page = {
             let registry = cx.global::<crate::plugins::runtime::PluginRegistry>();
             if let Some(tree) = registry.cached_page(&modal.plugin_id, &modal.page_id) {
-                crate::plugins::ui_dsl::render_validated_view_tree(
+                crate::ui::views::plugin::elements::render_validated_view_tree(
                     &tree,
                     &modal.plugin_id,
                     Some(&modal.page_id),
@@ -971,10 +927,10 @@ impl MainWindowView {
                 )
             } else if let Some(error) = registry.cached_page_error(&modal.plugin_id, &modal.page_id)
             {
-                crate::plugins::ui_dsl::fallback_panel(error.to_string()).into_any_element()
+                crate::ui::views::plugin::elements::fallback_panel(error.to_string()).into_any_element()
             } else {
                 crate::plugins::runtime::request_page_render(cx, &modal.plugin_id, &modal.page_id);
-                crate::plugins::ui_dsl::loading_panel(t!("MainWindow.loading_dialog"))
+                crate::ui::views::plugin::elements::loading_panel(t!("MainWindow.loading_dialog"))
                     .into_any_element()
             }
         };

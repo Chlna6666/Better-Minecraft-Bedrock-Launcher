@@ -16,10 +16,17 @@ use tracing::warn;
 pub const HOT_RELOAD_DEBOUNCE: Duration = Duration::from_millis(250);
 pub type Sender = UnboundedSender<Message>;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum Message {
     Changed(PathBuf),
     AsyncAppRefresh,
+    JobReady { plugin_id: String, generation: u64, job_id: String },
+    NativeApproval {
+        plugin_id: String,
+        generation: u64,
+        sha: String,
+        reply: tokio::sync::oneshot::Sender<bool>,
+    },
     Stop,
 }
 
@@ -73,6 +80,14 @@ async fn run_watcher_loop(
     while let Some(message) = rx.next().await {
         let (mut change_count, mut last_path) = match message {
             Message::Stop => return,
+            Message::JobReady { plugin_id, generation, job_id } => {
+                let _ = cx.update(|cx| crate::plugins::runtime::dispatch_job_ready(cx, plugin_id, generation, job_id));
+                continue;
+            }
+            Message::NativeApproval { plugin_id, generation, sha, reply } => {
+                let _ = cx.update(|cx| crate::plugins::runtime::prompt_native_download(cx, plugin_id, generation, sha, reply));
+                continue;
+            }
             Message::AsyncAppRefresh => {
                 let refreshed =
                     cx.update(|cx| crate::plugins::runtime::drain_async_app_refreshes(cx));
@@ -105,6 +120,12 @@ async fn run_watcher_loop(
             loop {
                 match rx.next().now_or_never() {
                     Some(Some(Message::Stop)) => return,
+                    Some(Some(Message::JobReady { plugin_id, generation, job_id })) => {
+                        let _ = cx.update(|cx| crate::plugins::runtime::dispatch_job_ready(cx, plugin_id, generation, job_id));
+                    }
+                    Some(Some(Message::NativeApproval { plugin_id, generation, sha, reply })) => {
+                        let _ = cx.update(|cx| crate::plugins::runtime::prompt_native_download(cx, plugin_id, generation, sha, reply));
+                    }
                     Some(Some(Message::AsyncAppRefresh)) => {
                         let refreshed =
                             cx.update(|cx| crate::plugins::runtime::drain_async_app_refreshes(cx));

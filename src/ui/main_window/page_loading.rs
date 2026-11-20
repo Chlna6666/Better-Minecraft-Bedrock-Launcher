@@ -9,7 +9,7 @@ impl MainWindowView {
         match route {
             AppRoute::Download => self.ensure_download_route_data_loaded(cx),
             AppRoute::Manage => self.ensure_manage_page_loaded(cx),
-            AppRoute::Home | AppRoute::Tools | AppRoute::Tasks | AppRoute::Settings => {}
+            AppRoute::Home | AppRoute::Tasks | AppRoute::Settings => {}
         }
     }
 
@@ -20,6 +20,9 @@ impl MainWindowView {
         let tab = download_state.tab;
 
         match tab {
+            crate::ui::views::download::state::DownloadTab::Plugin => {
+                crate::ui::views::download::plugins::load(cx, false);
+            }
             crate::ui::views::download::state::DownloadTab::Game => {
                 self.ensure_download_page_loaded(force_refresh, cx);
             }

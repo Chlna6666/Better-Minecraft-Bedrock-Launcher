@@ -13,7 +13,7 @@ use crate::ui::views::settings::state::{
     PluginReadmeCacheKey, PluginResourceCacheKey, PluginSettingsSubTab, SettingsPageState,
     SettingsTab,
 };
-use bmcbl_plugin_api::LogLevel;
+use bmcbl_plugin_runtime::LogLevel;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use serde::Deserialize;
@@ -629,8 +629,8 @@ fn plugin_list(
                         .gap(px(4.))
                         .child(
                             icon_only_button(colors, lucide_gpui::icon!(file_up), true)
-                                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
-                                    import_plugin_package_from_picker(cx);
+                                .on_mouse_down(MouseButton::Left, |_event, window, cx| {
+                                    import_plugin_package_from_picker(window, cx);
                                 }),
                         )
                         .child(
@@ -1223,7 +1223,26 @@ fn plugin_permissions_panel(colors: &ThemeColors, status: &PluginStatus) -> AnyE
     for (label, value) in limit_rows {
         panel = panel.child(plugin_info_row(colors, label, value));
     }
-    panel.into_any_element()
+    let plugin_id = status.id.clone();
+    panel
+        .child(plugin_info_row(colors, "Native components", "Approved native libraries run inside the BMCBL process with its permissions.".into()))
+        .child(small_icon_button(colors, "Approve native library", lucide_gpui::icon!(shield))
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                let Some(source) = crate::utils::file_picker::pick_file_path(Some(window), "Choose a native library you trust", &[std::env::consts::DLL_EXTENSION]) else { return; };
+                let plugin = plugin_id.clone();
+                cx.spawn(async move |cx| {
+                    let outcome = crate::tasks::runtime::blocking::run_io(move || {
+                        crate::plugins::native::approve_component(&plugin, &PathBuf::from(source))
+                    }).await;
+                    cx.update(|cx| match outcome {
+                        Ok(Ok(sha)) => toast::success(cx, SharedString::from(format!("Approved native SHA-256 {sha}"))),
+                        Ok(Err(error)) => toast::error(cx, SharedString::from(error.message)),
+                        Err(error) => toast::error(cx, SharedString::from(error)),
+                    })?;
+                    Ok::<(), anyhow::Error>(())
+                }).detach();
+            }))
+        .into_any_element()
 }
 
 fn plugin_info_row(colors: &ThemeColors, label: &str, value: String) -> Div {
@@ -1663,35 +1682,8 @@ fn empty_panel(colors: &ThemeColors, message: SharedString) -> AnyElement {
 }
 
 fn plugin_icon(status: &PluginStatus, colors: &ThemeColors, size: Pixels) -> AnyElement {
-    let fallback = || {
-        div()
-            .w(size)
-            .h(size)
-            .rounded(px(crate::ui::theme::tokens::radius::MD))
-            .bg(Hsla {
-                a: 0.12,
-                ..colors.accent
-            })
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(themed_icon(
-                lucide_gpui::icon!(plug),
-                (size / px(1.) * 0.58).clamp(12.0, 24.0),
-                colors.accent,
-            ))
-            .into_any_element()
-    };
-    status.icon_path.as_ref().map_or_else(fallback, |path| {
-        div()
-            .w(size)
-            .h(size)
-            .rounded(px(crate::ui::theme::tokens::radius::MD))
-            .overflow_hidden()
-            .bg(colors.surface)
-            .child(img(path.clone()).size_full().object_fit(ObjectFit::Contain))
-            .into_any_element()
-    })
+    let image = status.icon_path.as_deref().map(img);
+    crate::ui::components::plugin_icon::render(colors, size, image)
 }
 
 fn icon_only_button(colors: &ThemeColors, icon_path: &'static str, enabled: bool) -> Stateful<Div> {
@@ -1788,18 +1780,28 @@ fn observe_plugin_task(
     .detach();
 }
 
-fn import_plugin_package_from_picker(cx: &mut App) {
-    let Some(path) = crate::utils::file_picker::pick_file_path(None, "BMCBL Plugin", &["bmcblx"])
+fn import_plugin_package_from_picker(window: &Window, cx: &mut App) {
+    let Some(selection) =
+        crate::utils::file_picker::prompt_for_file_path(window, "BMCBL Plugin", &["bmcblx"])
     else {
         return;
     };
+    cx.spawn(async move |cx| {
+        if let Some(path) = selection.await {
+            cx.update(|cx| import_plugin_package(cx, path))?;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
+}
+
+fn import_plugin_package(cx: &mut App, source: PathBuf) {
     let (success_message, failed_message) = cx.read_global(|_i18n: &I18n, _cx| {
         (
             t!("PluginSettings.import_success"),
             t!("PluginSettings.import_failed"),
         )
     });
-    let source = PathBuf::from(path);
     let source_for_log = source.clone();
     match crate::plugins::runtime::start_import_plugin_task(cx, source) {
         Ok(task_id) => observe_plugin_task(

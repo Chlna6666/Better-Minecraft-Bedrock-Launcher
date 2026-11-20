@@ -1,0 +1,574 @@
+package bmcbl:plugin@1.0.0;
+
+interface types {
+    // ── 错误与生命周期 ──
+    record plugin-error {
+        code: string,
+        message: string,
+    }
+
+    record plugin-context {
+        plugin-id: string,
+        api-version: string,
+    }
+
+    record app-info {
+        version: string,
+        build-info: string,
+        api-version: string,
+    }
+
+    enum log-level {
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    enum toast-kind {
+        info,
+        success,
+        error,
+    }
+
+    enum shutdown-reason {
+        reload,
+        unload,
+    }
+
+    // ── UI DSL（扁平节点数组，root 为索引）──
+    enum layout-direction {
+        row,
+        column,
+    }
+
+    enum align {
+        start,
+        center,
+        end,
+        stretch,
+    }
+
+    enum theme-token {
+        primary-text,
+        secondary-text,
+        muted-text,
+        accent,
+        surface,
+        border,
+        danger,
+    }
+
+    enum text-size-token {
+        small,
+        body,
+        title,
+    }
+
+    enum image-fit {
+        cover,
+        contain,
+    }
+
+    enum compact-behavior {
+        none,
+        scroll,
+    }
+
+    enum injection-slot {
+        main-root-overlay,
+        page-header,
+        page-body,
+        home-sidebar,
+    }
+
+    record theme-color {
+        h: f32,
+        s: f32,
+        l: f32,
+        a: f32,
+    }
+
+    enum theme-mode {
+        light,
+        dark,
+    }
+
+    record theme-snapshot {
+        mode: theme-mode,
+        dark-factor: f32,
+        accent: theme-color,
+        primary-text: theme-color,
+        secondary-text: theme-color,
+        muted-text: theme-color,
+        surface: theme-color,
+        surface-hover: theme-color,
+        border: theme-color,
+        danger: theme-color,
+    }
+
+    record view-style {
+        direction: layout-direction,
+        gap: u16,
+        padding: u16,
+        align: align,
+        color: option<theme-token>,
+        background: option<theme-token>,
+        text-size: text-size-token,
+        emphasis: bool,
+        full-width: bool,
+        corner-radius: option<u16>,
+    }
+
+    record container-node {
+        style: view-style,
+        children: list<u32>,
+    }
+
+    record text-node {
+        text: string,
+        style: view-style,
+    }
+
+    record button-node {
+        label: string,
+        action-id: string,
+        action-value: option<string>,
+        style: view-style,
+    }
+
+    record input-node {
+        value: string,
+        placeholder: string,
+        action-id: string,
+        action-value: option<string>,
+        style: view-style,
+    }
+
+    record checkbox-node {
+        label: string,
+        checked: bool,
+        action-id: string,
+        action-value: option<string>,
+        style: view-style,
+    }
+
+    record toggle-node {
+        label: string,
+        enabled: bool,
+        action-id: string,
+        action-value: option<string>,
+        style: view-style,
+    }
+
+    record select-option {
+        label: string,
+        value: string,
+    }
+
+    record select-node {
+        label: string,
+        action-id: string,
+        options: list<select-option>,
+        selected: option<string>,
+        style: view-style,
+    }
+
+    record progress-node {
+        label: string,
+        value: u64,
+        total: option<u64>,
+        style: view-style,
+    }
+
+    record link-node {
+        label: string,
+        url: string,
+        tooltip: option<string>,
+        style: view-style,
+    }
+
+    record list-node {
+        items: list<u32>,
+        style: view-style,
+    }
+
+    record badge-node {
+        label: string,
+        style: view-style,
+    }
+
+    record icon-node {
+        name: string,
+        style: view-style,
+    }
+
+    record image-node {
+        src: string,
+        alt: string,
+        caption: string,
+        placeholder: string,
+        fallback: string,
+        style: view-style,
+        height: option<u16>,
+        min-height: option<u16>,
+        max-height: option<u16>,
+        aspect-ratio-x: option<u16>,
+        aspect-ratio-y: option<u16>,
+        corner-radius: option<u16>,
+        fit: image-fit,
+    }
+
+    record spacer-node {
+        size: u16,
+    }
+
+    variant view-node {
+        container(container-node),
+        text(text-node),
+        button(button-node),
+        input(input-node),
+        checkbox(checkbox-node),
+        toggle(toggle-node),
+        select(select-node),
+        progress(progress-node),
+        link(link-node),
+        item-list(list-node),
+        separator,
+        badge(badge-node),
+        icon(icon-node),
+        image(image-node),
+        spacer(spacer-node),
+    }
+
+    record view-tree {
+        root: u32,
+        nodes: list<view-node>,
+    }
+
+    // ── 注册 ──
+    record tool-entry {
+        label: string,
+        icon: option<string>,
+        order: s32,
+    }
+
+    record page-registration {
+        page-id: string,
+        title: string,
+        tool: option<tool-entry>,
+    }
+
+    record injection-layout {
+        preferred-width: option<u16>,
+        min-width: option<u16>,
+        max-width: option<u16>,
+        max-height: option<u16>,
+        priority: s32,
+        compact-behavior: compact-behavior,
+    }
+
+    record injection-registration {
+        slot: injection-slot,
+        page: option<string>,
+        priority: s32,
+        layout: option<injection-layout>,
+    }
+
+    record event-subscription {
+        event: string,
+    }
+
+    record service-registration {
+        service-name: string,
+    }
+
+    variant registration {
+        page(page-registration),
+        injection(injection-registration),
+        subscription(event-subscription),
+        service(service-registration),
+    }
+
+    // ── 事件 ──
+    record injection-request {
+        slot: injection-slot,
+        page: option<string>,
+    }
+
+    variant invalidate-target {
+        all,
+        page(string),
+        injection(injection-request),
+    }
+
+    record route-changed-event {
+        path: string,
+    }
+
+    record action-event {
+        action-id: string,
+        value: option<string>,
+    }
+
+    record global-event {
+        name: string,
+        payload: string,
+    }
+
+    record job-ready-event {
+        job-id: string,
+    }
+
+    variant plugin-event-kind {
+        route-changed(route-changed-event),
+        action(action-event),
+        global(global-event),
+        job-ready(job-ready-event),
+    }
+
+    record plugin-event {
+        plugin-id: option<string>,
+        page-id: option<string>,
+        kind: plugin-event-kind,
+    }
+
+    // ── UI 请求 ──
+    record route-target {
+        plugin-id: option<string>,
+        page-id: option<string>,
+        path: string,
+    }
+
+    record window-request {
+        title: string,
+        plugin-id: string,
+        page-id: string,
+        width: u32,
+        height: u32,
+        resizable: bool,
+    }
+
+    record modal-request {
+        title: string,
+        plugin-id: string,
+        page-id: string,
+        width: u32,
+        height: u32,
+    }
+
+    record page-render-request {
+        plugin-id: string,
+        page-id: string,
+    }
+
+    // ── i18n ──
+    record i18n-arg {
+        key: string,
+        value: string,
+    }
+
+    // ── 网络 ──
+    enum http-cache-state {
+        loading,
+        fresh,
+        stale,
+        error,
+    }
+
+    record http-text-response {
+        state: http-cache-state,
+        body: option<string>,
+        error: option<string>,
+        fetched-at-unix-ms: option<u64>,
+    }
+
+    // ── 任务 ──
+    record task-create-request {
+        task-id: option<string>,
+        title: string,
+        detail: option<string>,
+        stage: string,
+        total: option<u64>,
+        supports-pause: bool,
+    }
+
+    record task-update-request {
+        task-id: string,
+        stage: option<string>,
+        total: option<u64>,
+        done-delta: u64,
+        message: option<string>,
+    }
+
+    record task-finish-request {
+        task-id: string,
+        status: string,
+        message: option<string>,
+    }
+
+    // 与宿主 registry 的 TaskDefinition 镜像；枚举以字符串传递保持契约稳定。
+    record task-definition-request {
+        type-id: string,
+        title-key: option<string>,
+        cancellable: bool,
+        pausable: bool,
+        prioritizable: bool,
+        retryable: bool,
+        pool: option<string>,
+        phases: list<string>,
+    }
+
+    // ── 跨插件服务 ──
+    record service-call-request {
+        target-plugin: option<string>,
+        service-name: string,
+        method: string,
+        payload: list<u8>,
+    }
+
+    // ── 新数据域：下载 ──
+    record download-request {
+        url: string,
+        file-name: string,
+        md5: option<string>,
+        force-download: bool,
+    }
+}
+
+interface host-log {
+    use types.{log-level};
+
+    log: func(level: log-level, message: string);
+}
+
+interface host-toast {
+    use types.{plugin-error, toast-kind};
+
+    show-toast: func(kind: toast-kind, message: string) -> result<_, plugin-error>;
+}
+
+interface host-ui {
+    use types.{
+        plugin-error, route-target, window-request, modal-request, theme-snapshot, theme-color,
+        i18n-arg,
+    };
+
+    navigate: func(target: route-target) -> result<_, plugin-error>;
+    open-window: func(request: window-request) -> result<u64, plugin-error>;
+    close-window: func(window-id: u64) -> result<_, plugin-error>;
+    open-modal: func(request: modal-request) -> result<_, plugin-error>;
+    get-theme-snapshot: func() -> theme-snapshot;
+    theme-accent: func() -> option<theme-color>;
+    current-locale: func() -> string;
+    translate: func(key: string, args: list<i18n-arg>) -> string;
+}
+
+interface host-events {
+    use types.{plugin-error, invalidate-target};
+
+    emit-event: func(name: string, payload: string) -> result<_, plugin-error>;
+    invalidate: func(target: invalidate-target) -> result<_, plugin-error>;
+}
+
+interface host-clipboard {
+    use types.{plugin-error};
+
+    read-text: func() -> result<option<string>, plugin-error>;
+    write-text: func(text: string) -> result<_, plugin-error>;
+}
+
+interface host-network {
+    use types.{plugin-error, http-text-response};
+
+    get-text: func(url: string, ttl-seconds: u32, max-bytes: u32)
+        -> result<http-text-response, plugin-error>;
+}
+
+interface host-config {
+    use types.{plugin-error};
+
+    read: func() -> result<string, plugin-error>;
+    write: func(text: string) -> result<_, plugin-error>;
+}
+
+interface host-storage {
+    use types.{plugin-error};
+
+    session-get: func(key: string) -> option<string>;
+    session-set: func(key: string, value: option<string>);
+    kv-get: func(key: string) -> result<option<string>, plugin-error>;
+    kv-set: func(key: string, value: string) -> result<_, plugin-error>;
+    kv-delete: func(key: string) -> result<_, plugin-error>;
+    kv-list: func(prefix: option<string>) -> result<list<string>, plugin-error>;
+}
+
+interface host-resources {
+    use types.{plugin-error};
+
+    read-text: func(path: string) -> result<string, plugin-error>;
+    read-bytes: func(path: string) -> result<list<u8>, plugin-error>;
+}
+
+interface host-system {
+    use types.{plugin-error, app-info};
+
+    current-unix-ms: func() -> u64;
+    get-app-info: func() -> app-info;
+    open-external-url: func(url: string) -> result<_, plugin-error>;
+}
+
+interface host-tasks {
+    use types.{plugin-error, task-create-request, task-update-request, task-finish-request, task-definition-request};
+
+    create: func(request: task-create-request) -> result<string, plugin-error>;
+    update: func(request: task-update-request) -> result<_, plugin-error>;
+    finish: func(request: task-finish-request) -> result<_, plugin-error>;
+    register-definition: func(request: task-definition-request) -> result<_, plugin-error>;
+    create-typed: func(request: task-create-request, definition: string) -> result<string, plugin-error>;
+}
+
+interface host-services {
+    use types.{plugin-error, service-call-request};
+
+    register: func(name: string) -> result<_, plugin-error>;
+    call: func(request: service-call-request) -> result<list<u8>, plugin-error>;
+}
+
+interface host-downloads {
+    use types.{plugin-error, download-request};
+
+    start: func(request: download-request) -> result<string, plugin-error>;
+}
+
+interface plugin {
+    use types.{
+        plugin-context, plugin-error, registration, plugin-event, page-render-request, view-tree,
+        injection-request, service-call-request, shutdown-reason,
+    };
+
+    init: func(context: plugin-context) -> result<list<registration>, plugin-error>;
+    handle-event: func(event: plugin-event) -> result<_, plugin-error>;
+    render-page: func(request: page-render-request) -> result<view-tree, plugin-error>;
+    render-injection: func(request: injection-request) -> result<option<view-tree>, plugin-error>;
+    call-service: func(request: service-call-request) -> result<list<u8>, plugin-error>;
+    shutdown: func(reason: shutdown-reason) -> result<_, plugin-error>;
+}
+
+world plugin-world {
+    import host-log;
+    import host-toast;
+    import host-ui;
+    import host-events;
+    import host-clipboard;
+    import host-network;
+    import host-config;
+    import host-storage;
+    import host-resources;
+    import host-system;
+    import host-tasks;
+    import host-services;
+    import host-downloads;
+    import host-app;
+    export plugin;
+}

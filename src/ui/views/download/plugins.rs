@@ -1,0 +1,287 @@
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+use gpui::prelude::FluentBuilder as _;
+use gpui::*;
+
+use crate::downloads::verified;
+use crate::plugins::{registry, runtime};
+use crate::tasks::task_manager::wait_for_task;
+use crate::ui::components::button::{primary_button, secondary_button};
+use crate::ui::components::plugin_icon;
+use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::components::toast;
+use crate::ui::theme::ThemeColors;
+
+use super::state::{DownloadPageState, DownloadTab};
+
+const PAGE_SIZE: usize = 20;
+
+#[derive(Default)]
+pub(super) struct State {
+    catalog: Option<registry::Catalog>,
+    pub(super) loading: bool,
+    error: Option<String>,
+    installing: BTreeSet<String>,
+}
+
+pub(crate) fn load(cx: &mut App, refresh: bool) {
+    let previous = cx.update_global(|state: &mut DownloadPageState, _| {
+        let state = &mut state.plugin_catalog;
+        if state.loading || (!refresh && (state.catalog.is_some() || state.error.is_some())) {
+            return None;
+        }
+        state.loading = true;
+        state.error = None;
+        Some(state.catalog.clone().unwrap_or_default())
+    });
+    let Some(previous) = previous else { return };
+    cx.spawn(async move |cx| {
+        let result = match crate::tasks::runtime::spawn_io(registry::catalog(previous)) {
+            Ok(job) => job
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result),
+            Err(error) => Err(error),
+        };
+        let _ = cx.update_global(|state: &mut DownloadPageState, _| {
+            state.plugin_catalog.loading = false;
+            match result {
+                Ok(catalog) => state.plugin_catalog.catalog = Some(catalog),
+                Err(error) => state.plugin_catalog.error = Some(error),
+            }
+        });
+    })
+    .detach();
+}
+
+pub(super) fn render(
+    colors: &ThemeColors,
+    cx: &App,
+    image_cache: &Entity<BoundedImageCache>,
+) -> Div {
+    let state = cx.global::<DownloadPageState>();
+    let registry = &state.plugin_catalog;
+    let query = state.search_query.trim().to_lowercase();
+    let entries: Vec<_> = registry
+        .catalog
+        .iter()
+        .flat_map(|catalog| catalog.plugins.iter())
+        .filter(|plugin| {
+            query.is_empty()
+                || [
+                    &plugin.name,
+                    &plugin.id,
+                    &plugin.publisher,
+                    &plugin.description,
+                ]
+                .into_iter()
+                .any(|value| value.to_lowercase().contains(&query))
+        })
+        .collect();
+    let pages = entries.len().div_ceil(PAGE_SIZE).max(1);
+    let page = state.page_index.min(pages - 1);
+    let mut list = div()
+        .id(("plugin-catalog", page))
+        .overflow_y_scrollbar()
+        .flex_1()
+        .min_h(px(0.))
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .p(px(14.));
+    if let Some(error) = &registry.error {
+        list = list.child(div().text_color(colors.danger).child(error.clone()));
+    }
+    if registry.loading {
+        list = list.child(
+            div()
+                .text_color(colors.text_secondary)
+                .child(t!("DownloadPage.plugins_loading")),
+        );
+    } else if entries.is_empty() && registry.error.is_none() {
+        list = list.child(
+            div()
+                .text_color(colors.text_secondary)
+                .child(t!("DownloadPage.plugins_empty")),
+        );
+    }
+    for plugin in entries.iter().skip(page * PAGE_SIZE).take(PAGE_SIZE) {
+        let installed = runtime::plugin_manifest_snapshot(cx, &plugin.id)
+            .map(|manifest| manifest.version.to_string());
+        let busy = registry.installing.contains(&plugin.id);
+        let compatible = crate::plugins::manifest::validate_plugin_id(&plugin.id).is_ok();
+        let current = installed.as_ref().is_some_and(|version| {
+            version == &plugin.version
+                || semver::Version::parse(version)
+                    .ok()
+                    .zip(semver::Version::parse(&plugin.version).ok())
+                    .is_some_and(|(installed, available)| installed >= available)
+        });
+        let status = match plugin.status.as_str() {
+            "official" => t!("DownloadPage.plugins_official"),
+            "verified" => t!("DownloadPage.plugins_verified"),
+            _ => t!("DownloadPage.plugins_community"),
+        };
+        let action = if !compatible {
+            t!("DownloadPage.plugins_incompatible")
+        } else if busy {
+            t!("DownloadPage.plugins_installing")
+        } else if current {
+            t!("DownloadPage.plugins_installed")
+        } else if installed.is_some() {
+            t!("DownloadPage.plugins_update")
+        } else {
+            t!("DownloadPage.plugins_install")
+        };
+        let entry = (*plugin).clone();
+        let icon = plugin
+            .icon
+            .as_ref()
+            .and_then(|icon| icon.url(&plugin.id))
+            .map(|url| img(url).image_cache(image_cache));
+        list = list.child(
+            crate::ui::components::page_shell::glass_card(colors)
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(14.))
+                .p(px(12.))
+                .child(plugin_icon::render(colors, px(42.), icon))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(plugin.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(colors.text_secondary)
+                                .child(format!(
+                                    "{} · {status} · v{}",
+                                    plugin.publisher, plugin.version
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(colors.text_secondary)
+                                .child(plugin.description.clone()),
+                        ),
+                )
+                .child(
+                    primary_button(
+                        colors,
+                        SharedString::from(format!("registry-{}", plugin.id)),
+                        action,
+                    )
+                    .when(!compatible || busy || current, |button| {
+                        button.opacity(0.55).cursor_default()
+                    })
+                    .when(compatible && !busy && !current, |button| {
+                        button.on_click(move |_, _, cx| install(cx, entry.clone()))
+                    }),
+                ),
+        );
+    }
+    let mut panel = div()
+        .size_full()
+        .min_h(px(0.))
+        .flex()
+        .flex_col()
+        .child(list);
+    if pages > 1 {
+        panel = panel.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(12.))
+                .p(px(10.))
+                .child(
+                    secondary_button(colors, "plugins-prev", "‹")
+                        .when(page == 0, |button| button.opacity(0.55).cursor_default())
+                        .when(page > 0, |button| {
+                            button.on_click(move |_, _, cx| set_page(cx, page - 1))
+                        }),
+                )
+                .child(format!("{} / {pages}", page + 1))
+                .child(
+                    secondary_button(colors, "plugins-next", "›")
+                        .when(page + 1 >= pages, |button| {
+                            button.opacity(0.55).cursor_default()
+                        })
+                        .when(page + 1 < pages, |button| {
+                            button.on_click(move |_, _, cx| set_page(cx, page + 1))
+                        }),
+                ),
+        );
+    }
+    panel
+}
+
+fn set_page(cx: &mut App, page: usize) {
+    cx.update_global(|state: &mut DownloadPageState, _| {
+        if state.tab == DownloadTab::Plugin {
+            state.page_index = page;
+        }
+    });
+}
+
+fn install(cx: &mut App, plugin: registry::Plugin) {
+    if !cx.update_global(|state: &mut DownloadPageState, _| {
+        state.plugin_catalog.installing.insert(plugin.id.clone())
+    }) {
+        return;
+    }
+    cx.spawn(async move |cx| {
+        let result = async {
+            let id = plugin.id.clone();
+            let version = plugin.version.clone();
+            let package = crate::tasks::runtime::spawn_io(async move {
+                let request = registry::package(&id, &version).await?;
+                let task = verified::start(request)?;
+                let result = completed(&task).await?;
+                Ok::<_, String>(PathBuf::from(result))
+            })?
+            .await
+            .map_err(|error| error.to_string())??;
+            let task = cx
+                .update(|cx| runtime::start_import_plugin_task(cx, package))
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+            crate::tasks::runtime::spawn_io(async move { completed(&task).await })?
+                .await
+                .map_err(|error| error.to_string())??;
+            Ok::<_, String>(())
+        }
+        .await;
+        let _ = cx.update(|cx| {
+            cx.update_global(|state: &mut DownloadPageState, _| {
+                state.plugin_catalog.installing.remove(&plugin.id);
+            });
+            match result {
+                Ok(()) => toast::success(cx, t!("DownloadPage.plugins_install_success")),
+                Err(error) => toast::error(cx, error.into()),
+            }
+        });
+    })
+    .detach();
+}
+
+async fn completed(task: &str) -> Result<String, String> {
+    let snapshot = wait_for_task(task).await?;
+    let message = snapshot.message.as_deref().unwrap_or_default().to_owned();
+    if snapshot.status.as_ref() == "completed" {
+        Ok(message)
+    } else {
+        Err(message)
+    }
+}

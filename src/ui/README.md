@@ -241,7 +241,7 @@ window-root or UI-runtime glue.
 | `views/plugin.rs` | Plugin page. |
 | `views/settings.rs`, `views/settings/` | Settings page and settings sections. |
 | `views/tasks.rs`, `views/tasks/` | Task list page and task render modules. |
-| `views/tools.rs`, `views/tools/` | Tools page and online/EasyTier UI. |
+| `views/plugin.rs`, `views/plugin/` | Plugin tool pages and shared tool navigation. |
 
 Page root files may be larger than simple module entrances when GPUI view
 state and subscriptions are tightly coupled, but they should still avoid
@@ -309,22 +309,10 @@ stay in non-UI modules. Settings UI should present and commit choices.
 
 | Path | Responsibility |
 | --- | --- |
-| `views/tools/state.rs` | Tools page state and online operation state machine. |
-| `views/tools/sidebar.rs` | Extensible tools navigation sidebar. |
-| `views/tools/online.rs` | Thin online tool module entry and scoped exports. |
-| `views/tools/online/actions.rs` | Create, join, refresh, disconnect, NAT, and stale-result guards. |
-| `views/tools/online/layout.rs` | Online business-content composition inside the shared split content panel. |
-| `views/tools/online/room.rs` | Primary create/join room workflow. |
-| `views/tools/online/room_options.rs` | Progressive room option fields. |
-| `views/tools/online/controls.rs` | Session controls and online preference persistence bridge. |
-| `views/tools/online/peers.rs` | Peer list UI. |
-| `views/tools/online/settings.rs` | EasyTier settings modal. |
-| `views/tools/online/widgets.rs` | Online-scoped buttons and visual primitives. |
 | `views/tasks/data.rs` | Task page data projection. |
 | `views/tasks/render.rs`, `views/tasks/render/` | Task page render shell, progress, card, overlay, and page rendering. |
 
-EasyTier runtime and online domain logic belong under `src/core/easytier` and
-`src/core/online`.
+Multiplayer tools register their pages through the plugin SDK.
 
 ## Standalone Windows
 

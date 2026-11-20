@@ -197,12 +197,7 @@ fn apply_scene_route(scene: OnboardingScene, cx: &mut App) {
             crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Settings);
         }
         OnboardingScene::ToolsOverview => {
-            cx.update_global(
-                |state: &mut crate::ui::views::tools::state::ToolsPageState, _cx| {
-                    state.tab = crate::ui::views::tools::state::ToolsTab::Online;
-                },
-            );
-            crate::ui::navigation::navigate_to(cx, crate::ui::navigation::AppRoute::Tools);
+            crate::ui::navigation::navigate_target(cx, crate::ui::navigation::RouteTarget::Tools);
         }
         OnboardingScene::PlatformSetup => {
             #[cfg(target_os = "linux")]
@@ -238,6 +233,7 @@ fn prepare_download(tab: crate::ui::views::download::state::DownloadTab, cx: &mu
             state.tab = tab;
             state.search_query = SharedString::from("");
             match tab {
+                crate::ui::views::download::state::DownloadTab::Plugin => state.page_index = 0,
                 crate::ui::views::download::state::DownloadTab::Game => {
                     state.page_index = 0;
                     state
