@@ -30,12 +30,11 @@ if (Test-Path (Join-Path $root "docs/naming-audit.md")) {
 # 2. Every workspace library crate has English and Chinese READMEs.
 $firstPartyDirs = @(
     "crates/bedrock-block-model", "crates/bedrock-brarchive", "crates/bedrock-leveldb",
-    "crates/bedrock-render", "crates/bedrock-voxel", "crates/bedrock-world",
+    "crates/bedrock-map-render", "crates/bedrock-scene", "crates/bedrock-voxel", "crates/bedrock-world",
     "crates/bmcbl-plugin-api", "crates/bmcbl-plugin-macros",
     "crates/egpui", "crates/egpui-build", "crates/egpui-manifest",
     "crates/gpui", "crates/gpui-3d", "crates/gpui-hooks", "crates/gpui-hooks-macros",
-    "crates/gpui-macros", "crates/gpui_tokio", "crates/lucide-gpui",
-    "crates/easytier-bmcbl", "crates/nethernet"
+    "crates/gpui-macros", "crates/gpui_tokio", "crates/lucide-gpui"
 )
 Get-ChildItem (Join-Path $root "crates/nova-gfx") -Directory |
     Where-Object { $_.Name -ne "examples" } |

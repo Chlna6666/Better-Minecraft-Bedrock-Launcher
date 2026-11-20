@@ -14,7 +14,7 @@ workspace. Commands are PowerShell-first; Linux differences are noted.
   `libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev nasm yasm`.
 - `LIBCLANG_PATH`/`PATH` must resolve `libclang` (`libclang.dll` on Windows, `libclang.so` on
   Linux).
-- Plugin development additionally needs `rustup target add wasm32-unknown-unknown`.
+- Plugin development additionally needs `rustup target add wasm32-wasip2`.
 
 ## 2. Build and run
 
@@ -130,6 +130,21 @@ cargo bench --features bench-support --bench plugin_runtime
 
 Benchmark output must not be committed under `docs/`.
 
+## 4.1 Plugin runtime and example plugins
+
+```powershell
+# Plugin runtime unit tests (headless)
+cargo test -p bmcbl_plugin_runtime
+
+# End-to-end fixture: compile the example component, then run runtime integration tests
+rustup target add wasm32-wasip2
+cargo build --target wasm32-wasip2 --manifest-path examples/plugins/hello-wasm/Cargo.toml
+cargo test -p bmcbl_plugin_runtime --test fixture -- --ignored
+
+# Example packaging (build.rs auto_pack produces .bmcblx)
+cargo build --release --target wasm32-wasip2 --manifest-path examples/plugins/hello-wasm/Cargo.toml
+```
+
 ## 5. Formatting, lints and documentation checks
 
 ```powershell
@@ -165,8 +180,6 @@ section.
   `target` directory if necessary. Do not hand-edit `Cargo.lock`.
 - **Windows test process stack failure (`0xc0000409`)**: raise the test thread stack
   (`RUST_MIN_STACK`) or split the test run by module; do not record it as a business failure.
-- **EasyTier is missing `wintun.dll`**: the build only warns; supply the DLL from the vendored
-  directory or an EasyTier release when networking is needed.
 - **Hardware tests are skipped**: pass `--ignored` and ensure a window/GPU is available.
 
 ## 8. Documentation and artefacts

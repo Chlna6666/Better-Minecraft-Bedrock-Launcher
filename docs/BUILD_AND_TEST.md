@@ -13,7 +13,7 @@ Linux 差异单独标注。
   `libwayland-dev libx11-dev libx11-xcb-dev libxcb-*-dev libxcursor-dev libxi-dev`、
   `libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev nasm yasm`。
 - `LIBCLANG_PATH`/`PATH` 需要能找到 `libclang.dll`（Windows）或 `libclang.so`（Linux）。
-- 插件开发额外需要 `rustup target add wasm32-unknown-unknown`。
+- 插件开发额外需要 `rustup target add wasm32-wasip2`（组件模型 guest 目标）。
 
 ## 2. 构建与运行
 
@@ -128,6 +128,21 @@ cargo bench --features bench-support --bench plugin_runtime
 
 基准入口只在 `bench-support` 下存在，不能把基准输出写入 `docs/`。
 
+## 4.1 插件运行时与示例插件
+
+```powershell
+# 插件运行时单元测试（无头）
+cargo test -p bmcbl_plugin_runtime
+
+# 端到端 fixture：先编译示例组件，再跑运行时集成测试
+rustup target add wasm32-wasip2
+cargo build --target wasm32-wasip2 --manifest-path examples/plugins/hello-wasm/Cargo.toml
+cargo test -p bmcbl_plugin_runtime --test fixture -- --ignored
+
+# 示例打包（build.rs auto_pack 产出 .bmcblx）
+cargo build --release --target wasm32-wasip2 --manifest-path examples/plugins/hello-wasm/Cargo.toml
+```
+
 ## 5. 格式、Lint 与文档检查
 
 ```powershell
@@ -166,8 +181,6 @@ pwsh -File scripts/check-naming.ps1
   `Cargo.lock`。
 - **测试进程栈异常（Windows `0xc0000409`）**：提高测试线程栈（`RUST_MIN_STACK`），或按测试
   模块拆分运行；不要把它记录为业务失败。
-- **EasyTier 联机缺失 `wintun.dll`**：构建只会告警；需要联机时从 vendored 目录或 EasyTier
-  发布物补齐。
 - **硬件测试被跳过**：确认已加 `--ignored`，且窗口/GPU 可用。
 
 ## 8. 文档与产物

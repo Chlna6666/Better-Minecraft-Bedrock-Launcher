@@ -4,7 +4,7 @@
 
 Better Minecraft Bedrock Launcher（BMCBL）是一个使用 Rust + GPUI 构建的
 Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebView / React
-架构完全迁移到 GPUI 原生界面，核心目标是在 Windows 上提供可下载、可管理、可联机、
+架构完全迁移到 GPUI 原生界面，核心目标是在 Windows 上提供可下载、可管理、
 可编辑地图的单体桌面启动器。
 
 > 当前状态：Windows 是主要支持平台；Linux 的 GDK 游戏启动链路处于测试阶段，已经可以
@@ -20,7 +20,7 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 | Linux | 测试阶段：支持通过 Proton / Wine 运行 GDK 游戏；成就、在线状态等不完整 |
 | Minecraft 版本类型 | UWP、GDK，含正式版 / 预览版 / 教育版相关分支 |
 | 渲染后端 | GPUI nova-gfx 路径，Windows 提供 DX11、DX12、Vulkan、OpenGL 4.5，默认 DX11；Linux 提供 Vulkan、OpenGL 4.5，默认 Vulkan |
-| 插件系统 | WASM 沙箱插件，API 版本 `0.6` |
+| 插件系统 | WASM 沙箱插件，API 版本 `1.0.0` |
 | 许可证 | GPL-3.0 |
 | 变更记录 | [CHANGELOG.md](CHANGELOG.md) |
 
@@ -41,7 +41,7 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 | Windows 多用户登录 | ✅ 支持 | 支持 Windows 系统本地 Xbox 账号和 BMCBL 托管的多个账号 |
 | BMCBL 托管账号的 Xbox 成就/在线状态 | ⚠️ 不可用 | 非 Windows 系统本地账号登录时，成就和在线状态无效 |
 | BMCBL 托管账号的新版本云存档 | ⚠️ 不可用 | 新版本游戏的云存档不支持；系统本地账号走微软官方登录路径 |
-| EasyTier 联机 | ✅ Windows / 🧪 Linux | 房间、节点、NAT、端口和连接日志；Linux 仍在测试 |
+| 插件工具 | ✅ Windows / 🧪 Linux | 启用插件注册页面后显示「工具」入口 |
 | WASM 插件 | ✅ Windows / 🧪 Linux | 沙箱插件、页面/窗口注入、权限和任务能力 |
 | macOS | ❌ 不支持 | 当前及后续都不在支持计划内 |
 
@@ -129,14 +129,10 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 渲染栈与地图窗口的高层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；
 构建、后端与测试矩阵见 [docs/BUILD_AND_TEST.md](docs/BUILD_AND_TEST.md)。
 
-### 联机
+### 插件工具
 
-- 基于 EasyTier 的联机面板。
-- 支持创建房间、加入房间、显示房间码、网络名、节点和虚拟 IPv4。
-- 支持 NAT 检测、玩家名、游戏端口配置。
-- 支持自动公共节点，也可手动填写引导节点。
-- 支持 `disable_p2p`、`no_tun` 等兼容性开关。
-- 显示在线节点、连接地址和运行日志。
+- 启用的插件可以注册交互页面，统一从「工具」打开。
+- PaperConnect 在独立的 Wasm 插件项目中开发。
 
 ### 个性化与设置
 
@@ -153,7 +149,7 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 BMCBL 的插件系统已经不是旧版 JavaScript 插件，而是 WASM 沙箱插件。
 
 - 插件清单文件为 `plugin.toml`，包格式为 `.bmcblx`。
-- 当前插件 API 版本为 `0.6`，manifest schema 版本为 `2`。
+- 当前插件 API 版本为 `1.0.0`，manifest schema 版本为 `1`。
 - 插件可注册导航页、独立窗口、UI 注入点和全局事件订阅。
 - Host 能力包括 Toast、导航、窗口、模态框、剪贴板、HTTP 文本请求、资源读取、
   KV 存储、任务进度、配置读写、主题快照和应用信息。
@@ -169,7 +165,7 @@ WebView 或 Tauri command wrapper。
 
 ```mermaid
 flowchart TD
-    UI["src/ui\nGPUI 视图、组件、窗口、状态"] --> Core["src/core\nMinecraft、下载、CurseForge、EasyTier"]
+    UI["src/ui\nGPUI 视图、组件、窗口、状态"] --> Core["src/core\nMinecraft、下载、CurseForge"]
     UI --> Plugins["src/plugins\nWASM 插件运行时"]
     UI --> Config["src/config\n配置和迁移"]
     Core --> Downloads["src/downloads\n多线程下载、WU 协议、完整性校验"]
@@ -185,7 +181,7 @@ EGPUI --> GPUI
 | 路径 | 说明 |
 | --- | --- |
 | `src/ui` | GPUI 页面、组件、窗口、主题和应用状态 |
-| `src/core` | Minecraft、版本、地图、资源包、联机、CurseForge 等核心逻辑 |
+| `src/core` | Minecraft、版本、地图、资源包、CurseForge 等核心逻辑 |
 | `src/downloads` | 下载任务、多线程下载、Windows Update 协议和完整性校验 |
 | `src/plugins` | WASM 插件加载、沙箱执行、UI DSL、热更新和包安装 |
 | `src/i18n` | 运行时多语言切换 |
@@ -205,7 +201,7 @@ gpui/nova-gfx 边界约束见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## 实现与加载器说明
 
-- BMCBL 的启动器、GPUI 界面、版本管理、下载、账号流程、世界编辑器、联机和 Linux
+- BMCBL 的启动器、GPUI 界面、版本管理、下载、账号流程、世界编辑器和 Linux
   Proton / Wine 启动适配均在本仓库中以 Rust 模块独立实现。
 - 本项目不是对其他启动器页面或业务代码的 1:1 搬运；BedrockBoot、BedrockLauncher.Core
   等项目只作为协议、文件格式和兼容性研究参考，BMCBL 的代码和模块结构独立维护。
@@ -221,7 +217,7 @@ gpui/nova-gfx 边界约束见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 - Rust stable，项目使用 edition 2024。
 - MSVC 工具链和 Windows SDK。
 - Git。
-- 可访问 Cargo registry 和 EasyTier Git 依赖。
+- 可访问 Cargo registry 和所用 Git 依赖。
 
 工作区 crate 位于本仓库 `crates/`，通过根 `Cargo.toml` 的 `[workspace]` 管理；
 外部依赖来自 crates.io 或锁定版本的 Git 依赖（见 `Cargo.lock`），不要求额外的同级仓库。
@@ -248,10 +244,7 @@ cargo run --bin BMCBL --no-default-features
 cargo run --bin BMCBL --no-default-features --features gpui-opengl
 ```
 
-`build.rs` 会嵌入 Windows 图标 / manifest、字体、本地化、图片、`BLoader.dll` 和
-EasyTier 运行时负载元数据。EasyTier 的 `wintun.dll` 会从本地
-vendored 目录或 Cargo Git checkout 中查找；缺失时构建会给出 warning，部分联机模式
-可能不可用。
+`build.rs` 会嵌入 Windows 图标、manifest、字体、本地化、图片和 `BLoader.dll`。
 
 ### 常用检查
 
@@ -333,7 +326,6 @@ pwsh -File scripts/check_i18n_lang.ps1
 - MCAPPX：版本索引与元数据支持。
 - MCMrARM / mc-w10-version-launcher：Windows Update 协议和版本获取思路参考。
 - BedrockLauncher.Core：GDK 解包等 Bedrock 相关实现参考。
-- EasyTier：联机模块基础能力。
 - Aetopia / AppLifecycleOptOut：UWP 最小化停滞修复参考。
 - MCIM：CurseForge 镜像和下载加速服务。
 - GPUI / Zed GPUI：原生 UI 和渲染框架基础。

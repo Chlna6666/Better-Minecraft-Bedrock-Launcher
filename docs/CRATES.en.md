@@ -50,7 +50,8 @@ examples, not library APIs.
 | `bedrock-nbt` | `crates/bedrock-nbt` | Independent NBT/SNBT codecs, LE/network encoding, borrowed views and batches | Active | [README](../crates/bedrock-nbt/README.md) |
 | `bedrock-world` | `crates/bedrock-world` | Reusable world semantic layer for parsing, querying and editing `level.dat`, players, chunks, blocks, biomes, entities and map items; abstracts storage through `WorldStorage` and commits through transactions | Active | [README](../crates/bedrock-world/README.md) |
 | `bedrock-leveldb` | `crates/bedrock-leveldb` | Raw Mojang-modified LevelDB key/value and file mechanics; no map-domain semantics | Active | [README](../crates/bedrock-leveldb/README.md) |
-| `bedrock-render` | `crates/bedrock-render` | CPU world tile renderer | Active | [README](../crates/bedrock-render/README.md) |
+| `bedrock-map-render` | `crates/bedrock-map-render` | CPU world tile renderer | Active | [README](../crates/bedrock-map-render/README.md) |
+| `bedrock-scene` | `crates/bedrock-scene` | Bedrock chunk and structure geometry, material mapping, and chunk boundaries | Active | [README](../crates/bedrock-scene/README.md) |
 | `bedrock-light` | `crates/bedrock-light` | Storage-independent voxel light propagation | Active | [README](../crates/bedrock-light/README.md) |
 | `bedrock-block-model` | `crates/bedrock-block-model` | Resource-pack block model resolution | Active | [README](../crates/bedrock-block-model/README.md) |
 | `bedrock-brarchive` | `crates/bedrock-brarchive` | Read-only BRArchive v1 access | Active | [README](../crates/bedrock-brarchive/README.md) |
@@ -60,10 +61,8 @@ examples, not library APIs.
 
 | Crate | Path | Responsibility | Status | Docs |
 | --- | --- | --- | --- | --- |
-| `bmcbl_plugin_api` | `crates/bmcbl-plugin-api` | Plugin ABI, macros, `.bmcblx` packing | Active (API `0.6`) | [README](../crates/bmcbl-plugin-api/README.md) |
+| `bmcbl_plugin_api` | `crates/bmcbl-plugin-api` | Plugin ABI, macros, `.bmcblx` packing | Active (API `1.0.0`) | [README](../crates/bmcbl-plugin-api/README.md) |
 | `bmcbl_plugin_macros` | `crates/bmcbl-plugin-macros` | Plugin attribute macros | Internal | [README](../crates/bmcbl-plugin-macros/README.md) |
-| `nethernet` | `crates/nethernet` | Bedrock NetherNet (WebRTC) transport | Active | [README](../crates/nethernet/README.md) |
-| `easytier-bmcbl` | `crates/easytier-bmcbl` | EasyTier wrapper (threads/instance management) | Active | [README](../crates/easytier-bmcbl/README.md) |
 
 ## 6. External and vendored code
 
@@ -72,7 +71,7 @@ repository documentation rules do not apply to them:
 
 | Path | Notes |
 | --- | --- |
-| `crates/easytier` | EasyTier upstream sources (excluded) |
+| `crates/easytier`, `crates/easytier-bmcbl`, `crates/nethernet` | Archived multiplayer sources (outside the workspace build) |
 | `crates/raknet` | RakNet upstream/port sources (excluded) |
 | `vendor/*` | Patched dependencies such as `dtls`, `webrtc`, `webrtc-ice`, `gpu-allocator`, `gpui-router` |
 

@@ -50,7 +50,8 @@
 | `bedrock-nbt` | `crates/bedrock-nbt` | 独立 NBT/SNBT 编解码、小端与网络编码、借用视图及批处理 | 活跃 | [README](../crates/bedrock-nbt/README.md) |
 | `bedrock-world` | `crates/bedrock-world` | 可复用的地图语义中间层：解析、查询和编辑 `level.dat`、玩家、区块、方块、群系、实体、地图物品；以 `WorldStorage` 抽象存储并统一事务提交 | 活跃 | [README](../crates/bedrock-world/README.md) |
 | `bedrock-leveldb` | `crates/bedrock-leveldb` | Mojang 修改版 LevelDB 原始键值与文件存储机制，不处理地图领域语义 | 活跃 | [README](../crates/bedrock-leveldb/README.md) |
-| `bedrock-render` | `crates/bedrock-render` | 世界瓦片 CPU 渲染 | 活跃 | [README](../crates/bedrock-render/README.md) |
+| `bedrock-map-render` | `crates/bedrock-map-render` | 世界瓦片 CPU 渲染 | 活跃 | [README](../crates/bedrock-map-render/README.md) |
+| `bedrock-scene` | `crates/bedrock-scene` | Bedrock 区块与结构的 3D 几何、材质映射及邻块边界 | 活跃 | [README](../crates/bedrock-scene/README.zh-CN.md) |
 | `bedrock-light` | `crates/bedrock-light` | 无存储依赖的体素光传播 | 活跃 | [README](../crates/bedrock-light/README.md) |
 | `bedrock-block-model` | `crates/bedrock-block-model` | 资源包方块模型解析 | 活跃 | [README](../crates/bedrock-block-model/README.md) |
 | `bedrock-brarchive` | `crates/bedrock-brarchive` | BRArchive v1 只读访问 | 活跃 | [README](../crates/bedrock-brarchive/README.md) |
@@ -60,10 +61,9 @@
 
 | crate | 路径 | 职责 | 状态 | 文档 |
 | --- | --- | --- | --- | --- |
-| `bmcbl_plugin_api` | `crates/bmcbl-plugin-api` | 插件 ABI、宏、`.bmcblx` 打包 | 活跃（API `0.6`） | [README](../crates/bmcbl-plugin-api/README.md) |
+| `bmcbl_plugin_api` | `crates/bmcbl-plugin-api` | WIT 契约、guest 绑定、宏、`.bmcblx` 打包 | 活跃（API `1.0.0`） | [README](../crates/bmcbl-plugin-api/README.md) |
+| `bmcbl_plugin_runtime` | `crates/bmcbl-plugin-runtime` | wasmtime(Cranelift) 组件运行时：引擎、沙箱、capability 门禁 | 活跃 | [README](../crates/bmcbl-plugin-runtime/README.md) |
 | `bmcbl_plugin_macros` | `crates/bmcbl-plugin-macros` | 插件属性宏 | 内部 | [README](../crates/bmcbl-plugin-macros/README.md) |
-| `nethernet` | `crates/nethernet` | Bedrock NetherNet（WebRTC）传输 | 活跃 | [README](../crates/nethernet/README.md) |
-| `easytier-bmcbl` | `crates/easytier-bmcbl` | EasyTier 的 BMCBL 封装（线程/实例管理） | 活跃 | [README](../crates/easytier-bmcbl/README.md) |
 
 ## 6. 外部/ vendored 代码
 
@@ -71,7 +71,7 @@
 
 | 路径 | 说明 |
 | --- | --- |
-| `crates/easytier` | EasyTier 上游源码（excluded） |
+| `crates/easytier`、`crates/easytier-bmcbl`、`crates/nethernet` | 旧联机源码（不参与工作区构建） |
 | `crates/raknet` | RakNet 上游/移植代码（excluded） |
 | `vendor/*` | `dtls`、`webrtc`、`webrtc-ice`、`gpu-allocator`、`gpui-router` 等补丁依赖 |
 

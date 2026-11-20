@@ -18,7 +18,7 @@ are no longer part of the main UI path.
 | Primary platform | Windows 10 / Windows 11 |
 | Linux | Testing: Proton/Wine GDK launch works; achievements/presence incomplete |
 | Rendering | GPUI nova-gfx path: DX11, DX12, Vulkan, OpenGL 4.5 on Windows (default DX11); Vulkan + OpenGL on Linux (default Vulkan) |
-| Plugins | WASM sandbox, plugin API `0.6`, manifest schema `2` |
+| Plugins | WASM sandbox, plugin API `1.0.0`, manifest schema `1` |
 | License | GPL-3.0 |
 
 ## Features
@@ -36,7 +36,7 @@ are no longer part of the main UI path.
 - Image import: PNG, JPG, TGA and WebP images can be converted to block structures with adjustable
   output size, dithering and depth, then previewed before placement.
 - `.mcstructure` import/export, chunk/record editing and player tools in the map editor.
-- EasyTier-based multiplayer (Windows stable, Linux testing).
+- Enabled plugins can register interactive pages under Tools. PaperConnect is developed as a separate Wasm plugin.
 - WASM plugin host with capability-based permissions and UI injection.
 - Runtime i18n (Simplified/Traditional Chinese, English, Japanese, Korean), themes, fonts,
   renderer/adapter selection and diagnostics.

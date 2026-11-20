@@ -9,7 +9,7 @@
 flowchart TB
     subgraph App["应用层"]
         UI["src/ui\nGPUI 页面/组件/窗口/地图预览"]
-        Core["src/core\nMinecraft/版本/资源/联机/地图"]
+        Core["src/core\nMinecraft/版本/资源/地图"]
         Downloads["src/downloads\n下载与完整性校验"]
         Config["src/config\n配置与迁移"]
         Plugins["src/plugins\nWASM 插件宿主"]
@@ -26,9 +26,10 @@ flowchart TB
         Nova["nova-gfx\ngfx-core + 后端"]
     end
     subgraph Domain["领域与存储"]
-        Bedrock["bedrock-world / bedrock-leveldb\nbedrock-render / block-model / voxel / brarchive"]
+        Bedrock["bedrock-world / bedrock-leveldb\nbedrock-map-render / bedrock-scene / block-model / voxel / brarchive"]
     end
     UI --> Core
+    UI --> Bedrock
     UI --> Config
     UI --> Plugins
     Core --> Downloads
@@ -45,11 +46,12 @@ flowchart TB
 
 ```text
 BMCBL app (src/)
-  -> egpui, gpui, gpui-3d, bedrock-*, bmcbl-plugin-api, nethernet, easytier-bmcbl
+  -> egpui, gpui, gpui-3d, bedrock-*, bmcbl-plugin-runtime
 egpui -> gpui
 gpui-3d (纯 3D 模块) -> gfx-core (+无 UI 的通用库)
 gpui-3d (feature: gpui-sidecar) -> gpui + gfx-core  # 默认启用，可 --no-default-features 禁用
 gpui -> gfx-core + 所选 gfx-<backend>
+bedrock-scene -> bedrock-world + bedrock-block-model + bedrock-map-render + gpui-3d (无 gpui-sidecar)
 gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 ```
 
@@ -60,6 +62,9 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 - **应用框架不拥有业务**：`egpui` 只提供生命周期、运行时、UI bridge、i18n 与持久任务抽象；
   下载/存档/地图等语义留在 `src/`。
 - **领域 crate 不依赖 UI/GPU**：`bedrock-*` 负责 Bedrock 数据与 CPU 渲染，不依赖 `gpui`。
+- **Bedrock 场景构建在领域层**：`bedrock-scene` 将已解码的区块与结构转换为带材质的面、网格和体素描述，
+  提供边界快照用于相邻区块的增量构建。它复用 `bedrock-map-render` 的调色板和纯引擎的
+  CPU 侧数据类型。世界读取、可见区块调度、纹理上传和 GPU 提交由调用方负责。
 - **世界语义与数据库机制分层**：`bedrock-world` 是可复用的地图数据中间层，负责解析、查询和
   编辑有类型的世界数据，包括 `level.dat`、玩家、区块、方块、群系、实体和地图物品；通过
   `WorldStorage` 抽象读写记录，事务统一校验并提交。它不要求调用方直接依赖 LevelDB，可使用
@@ -117,13 +122,14 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 | `nova-gfx` 族 | 后端无关图形 API 与 DX11/DX12/Vulkan/OpenGL/Metal/WebGL 实现 | 纯图形库，详见 [CRATES](CRATES.md) |
 | `bedrock-world` | Bedrock 世界/level.dat/NBT/玩家/区块读写与多版本语义 | 拥有 Bedrock 世界语义 |
 | `bedrock-leveldb` | Mojang 修改版 LevelDB 存储引擎 | 只负责存储机制 |
-| `bedrock-render` | 世界瓦片 CPU 渲染 | 不依赖 gpui |
+| `bedrock-map-render` | 世界瓦片 CPU 渲染 | 不依赖 gpui |
+| `bedrock-scene` | Bedrock 区块与结构的 3D 场景构建、材质与邻块边界 | 输出 CPU 侧几何与材质描述 |
 | `bedrock-light` | 有界体素天空光/方块光传播 | 不依赖 UI、GPU 或世界存储 |
 | `bedrock-block-model` | 资源包方块模型解析 | 只产出模型描述 |
 | `bedrock-brarchive` | BRArchive v1 只读访问 | 不负责解包/解码 |
 | `bedrock-voxel` | 图片/OBJ → 方块放置计划 | 不直接写世界 |
-| `bmcbl-plugin-api` / `-macros` | WASM 插件 ABI、宏与 `.bmcblx` 打包 | API 版本 `0.6`，manifest schema `2` |
-| `nethernet` | Bedrock NetherNet（WebRTC）传输 | 协议层，不做 UI |
+| `bmcbl-plugin-api` / `-macros` | WIT 契约、guest 绑定、宏与 `.bmcblx` 打包 | API 版本 `1.0.0`，manifest schema `1` |
+| `bmcbl-plugin-runtime` | wasmtime(Cranelift) 组件运行时：epoch 中断、内存熔断、capability 门禁、编译缓存 | 组件模型（WIT `bmcbl:plugin@1.0.0`），不依赖 GPUI |
 
 完整 crate 目录、状态与边界见 [CRATES](CRATES.md)。
 
@@ -187,8 +193,9 @@ platform input -> gpui window/entity update
   `TaskScope` 提供取消与终态；`UiHandle`/`UiStreamBridge`/`UiTaskBridge` 把后台结果
   合并后送回 GPUI 前台执行。
 - **gpui_tokio**：在 GPUI 任务域中安全使用 Tokio 的适配层；禁止在 render 路径阻塞等待。
-- **插件**：WASM 插件在沙箱中执行；host 能力通过 capability/allowlist 暴露，UI 注入和
-  事件订阅走插件运行时，不直接持有 GPUI 内部句柄。
+- **插件**：WASM 组件（`wasm32-wasip2` + wit-bindgen）在 wasmtime 沙箱中执行；guest
+  侧绑定构建期生成，host 能力通过 WIT 接口分组暴露并按 capability/allowlist 门禁，
+  UI 注入和事件订阅走插件运行时，不直接持有 GPUI 内部句柄。
 
 ## 6. 应用层模块
 
@@ -197,10 +204,10 @@ platform input -> gpui window/entity update
 | `src/ui` | 页面、组件、窗口、主题；只做渲染与 UI 协调 |
 | `src/cli` | 终端命令行子命令、输出格式与退出码 |
 | `src/startup_args` | 启动程序的参数：快捷方式、文件关联、更新器与兼容别名 |
-| `src/core` | Minecraft/GDK/版本/账号/CurseForge/地图/联机等领域逻辑 |
+| `src/core` | Minecraft/GDK/版本/账号/CurseForge/地图等领域逻辑 |
 | `src/downloads` | 下载任务、并发、WU 协议、校验 |
 | `src/config` | 配置结构、默认值、迁移、持久化 |
-| `src/plugins` | 插件加载、manifest、WASM 沙箱、UI DSL、打包 |
+| `src/plugins` | 插件加载、manifest、宿主服务和权限。引擎在 `bmcbl-plugin-runtime`，插件页面由 `src/ui/views/plugin` 使用 GPUI 呈现 |
 | `src/i18n` | 运行时多语言 |
 | `src/tasks` / `src/utils` / `src/http` / `src/archive` | 任务、工具、HTTP、归档支撑 |
 | `src/ui/window/map_viewer` | 地图窗口：瓦片流式渲染、区块/记录编辑、结构导入导出、3D 预览 |

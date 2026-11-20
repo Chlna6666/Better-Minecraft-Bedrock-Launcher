@@ -16,6 +16,8 @@
 | [STARTUP_ARGUMENTS](STARTUP_ARGUMENTS.md) | 快捷方式/文件关联/更新器使用的启动参数与兼容参数 |
 | [CAPE_PACK_FORMAT](CAPE_PACK_FORMAT.md) | 披风包清单、纹理、图标、本地化和导入格式 |
 | [NAMING](NAMING.md) | Rust 命名规范（API 职责、参数、模块路径与文件布局） |
+| [BLOADER_PLUGIN_MODS](BLOADER_PLUGIN_MODS.md) | 插件虚拟 Mod 清单、版本授权与 BLoader 会话协议 |
+| [PLUGIN_NATIVE_ABI](PLUGIN_NATIVE_ABI.md) | Wasm 插件调用原生模块的 C ABI 与资源生命周期 |
 
 英文镜像：
 [README.en.md](README.en.md) · [ARCHITECTURE.en.md](ARCHITECTURE.en.md) ·

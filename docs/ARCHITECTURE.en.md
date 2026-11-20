@@ -27,9 +27,10 @@ flowchart TB
         Nova["nova-gfx - gfx-core plus backends"]
     end
     subgraph Domain["Domain and storage"]
-        Bedrock["bedrock-world / bedrock-leveldb / bedrock-render and related crates"]
+        Bedrock["bedrock-world / bedrock-leveldb / bedrock-map-render / bedrock-scene and related crates"]
     end
     UI --> Core
+    UI --> Bedrock
     UI --> Config
     UI --> Plugins
     Core --> Downloads
@@ -46,10 +47,11 @@ flowchart TB
 
 ```text
 BMCBL app (src/)
-  -> egpui, gpui, gpui-3d, bedrock-*, bmcbl-plugin-api, nethernet, easytier-bmcbl
+  -> egpui, gpui, gpui-3d, bedrock-*, bmcbl-plugin-runtime
 egpui -> gpui
 gpui-3d -> gpui + gfx-core
 gpui -> gfx-core + selected gfx-<backend>
+bedrock-scene -> bedrock-world + bedrock-block-model + bedrock-map-render + gpui-3d (without gpui-sidecar)
 gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
 ```
 
@@ -61,6 +63,11 @@ gfx-<backend> -> gfx-core (+ gfx-memory / gfx-shader)
   and durable-task abstractions; downloads, worlds and maps remain in `src/`.
 - **Domain crates stay free of UI/GPU policy.** `bedrock-*` handles Bedrock data and CPU
   rendering without depending on `gpui`.
+- **Bedrock scene construction belongs to the domain layer.** `bedrock-scene` converts decoded
+  chunks and structures into material-tagged faces, meshes and voxel descriptions. Boundary
+  snapshots support incremental builds across chunk edges. The crate reuses the map palette
+  and the standalone engine's CPU-side data types. Callers own world I/O, visibility scheduling,
+  texture uploads and GPU submission.
 - **World semantics and database mechanics stay separate.** `bedrock-world` is the reusable
   semantic layer for parsing, querying, and editing typed world data, including `level.dat`,
   players, chunks, blocks, biomes, entities, and map items. It accesses records through
@@ -105,13 +112,13 @@ loss and in-flight resource reuse need failure paths.
 | `nova-gfx` family | Backend-neutral graphics API and backends | Pure graphics library; see [CRATES](CRATES.md) |
 | `bedrock-world` | Bedrock world, level.dat, NBT, players, chunks, versions | Owns Bedrock world semantics |
 | `bedrock-leveldb` | Modified LevelDB storage engine | Storage mechanics only |
-| `bedrock-render` | CPU tile rendering for worlds | No gpui dependency |
+| `bedrock-map-render` | CPU tile rendering for worlds | No gpui dependency |
+| `bedrock-scene` | Bedrock chunk and structure scene construction, materials and chunk boundaries | CPU-side geometry and material descriptions |
 | `bedrock-light` | Bounded voxel sky/block-light propagation | No UI, GPU or world-storage dependency |
 | `bedrock-block-model` | Resource-pack block model resolution | Produces model descriptions only |
 | `bedrock-brarchive` | Read-only BRArchive v1 access | No extraction or decoding |
 | `bedrock-voxel` | Image/OBJ to block placement plans | Does not write worlds |
-| `bmcbl-plugin-api` / `-macros` | WASM plugin ABI, macros, `.bmcblx` packing | API version `0.6`, manifest schema `2` |
-| `nethernet` | Bedrock NetherNet (WebRTC) transport | Protocol layer only |
+| `bmcbl-plugin-api` / `-macros` | WASM plugin ABI, macros, `.bmcblx` packing | API version `1.0.0`, manifest schema `1` |
 
 See [CRATES](CRATES.en.md) for the full catalog, status and boundaries.
 
