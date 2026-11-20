@@ -1,5 +1,5 @@
 use super::{ThemeState, World3dEditorInit, World3dEditorView, World3dWorldKey, window_options};
-use bedrock_render::{ChunkPos, Dimension};
+use bedrock_world::{ChunkPos, Dimension};
 use gpui::{
     AppContext as _, Application, FrameClock, GpuPowerPreference, RendererBackend,
     RendererFallback, RendererOptions, Timer, Window,

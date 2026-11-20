@@ -2,7 +2,7 @@
 
 use super::super::model::{PasteRotation, PasteTransform};
 use super::super::preview_3d::Preview3dMesh;
-use bedrock_render::ChunkPos;
+use bedrock_world::ChunkPos;
 use gpui_3d::{Quat, Transform, Vec3};
 use std::f32::consts::{FRAC_PI_2, PI};
 use std::sync::Arc;
@@ -118,7 +118,7 @@ fn placement_transform(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bedrock_render::Dimension;
+    use bedrock_world::Dimension;
 
     #[test]
     fn preview_centers_match_structure_and_chunk_placement() {

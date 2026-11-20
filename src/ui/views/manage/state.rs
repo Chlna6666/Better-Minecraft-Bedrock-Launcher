@@ -76,6 +76,7 @@ pub enum ManageAssetKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManageVersionConfig {
+    pub virtual_mods: std::collections::BTreeMap<String, String>,
     pub enable_debug_console: bool,
     pub enable_redirection: bool,
     pub editor_mode: bool,
@@ -91,6 +92,7 @@ pub struct ManageVersionConfig {
 impl Default for ManageVersionConfig {
     fn default() -> Self {
         Self {
+            virtual_mods: Default::default(),
             enable_debug_console: false,
             enable_redirection: false,
             editor_mode: false,

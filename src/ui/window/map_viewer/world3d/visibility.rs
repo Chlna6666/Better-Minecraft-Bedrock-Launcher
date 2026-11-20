@@ -6,7 +6,7 @@
 //! These graphs are computed once per decoded column, never per rendered frame.
 
 use super::types::{World3dChunkMesh, World3dChunkProbe};
-use bedrock_render::{ChunkPos, Dimension};
+use bedrock_world::{ChunkPos, Dimension};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 

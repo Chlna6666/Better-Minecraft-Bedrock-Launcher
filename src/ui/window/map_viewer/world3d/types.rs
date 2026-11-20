@@ -1,6 +1,6 @@
 //! Shared state types for the independent 3D world editor.
 
-use bedrock_render::{ChunkPos, Dimension};
+use bedrock_world::{ChunkPos, Dimension};
 use bedrock_world::block::BlockState;
 use bedrock_world::chunk::{SubChunk, SubChunkFormat};
 use bedrock_world::surface::ChunkLoadStats;

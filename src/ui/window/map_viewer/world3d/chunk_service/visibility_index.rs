@@ -11,7 +11,7 @@
 
 use super::super::types::World3dChunkProbe;
 use super::super::visibility::SectionVisibility;
-use bedrock_render::{ChunkPos, Dimension};
+use bedrock_world::{ChunkPos, Dimension};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};

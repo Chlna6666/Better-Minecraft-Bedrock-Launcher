@@ -231,7 +231,7 @@ mod tests {
         let old_center = (-7, 11);
         let view = ViewState {
             generation: 1,
-            dimension: bedrock_render::Dimension::Overworld,
+            dimension: bedrock_world::Dimension::Overworld,
             camera: [-108.0, 144.0, 178.0],
             forward_xz: [0.0, -1.0],
             forward_y: -0.35,

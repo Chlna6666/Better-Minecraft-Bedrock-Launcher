@@ -5,7 +5,7 @@ use super::types::{
     WORLD3D_NEAR_PLANE, WORLD3D_SURFACE_EYE_OFFSET, World3dCameraSnapshot, World3dProjectionKind,
     World3dSelection,
 };
-use bedrock_render::Dimension;
+use bedrock_world::Dimension;
 use gpui_3d::{Camera, Vec3};
 use std::{
     collections::HashSet,
@@ -390,7 +390,7 @@ fn wrap_angle(value: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::ui::window::map_viewer::world3d::types::{World3dProjectionKind, World3dSelection};
-    use bedrock_render::Dimension;
+    use bedrock_world::Dimension;
 
     fn assert_close(left: f32, right: f32) {
         assert!((left - right).abs() < 1.0e-4, "{left} != {right}");

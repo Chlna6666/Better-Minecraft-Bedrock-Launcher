@@ -1,4 +1,6 @@
 use gpui::Window;
+use std::future::Future;
+use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tracing::warn;
@@ -92,6 +94,24 @@ pub fn pick_file_path(
     dialog
         .pick_file()
         .map(|path| path.to_string_lossy().to_string())
+}
+
+/// Opens a parented file picker and returns its selection without blocking GPUI.
+pub fn prompt_for_file_path(
+    window: &Window,
+    filter_name: &str,
+    extensions: &[&str],
+) -> Option<impl Future<Output = Option<PathBuf>> + use<>> {
+    let guard = try_open_native_file_dialog()?;
+    window.activate_window();
+    let mut dialog = rfd::AsyncFileDialog::new().set_parent(window);
+    if !extensions.is_empty() {
+        dialog = dialog.add_filter(filter_name, extensions);
+    }
+    Some(async move {
+        let _guard = guard;
+        dialog.pick_file().await.map(|file| file.path().to_owned())
+    })
 }
 
 /// Open a native file picker and return a selected background image path.

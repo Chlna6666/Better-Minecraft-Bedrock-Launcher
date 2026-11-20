@@ -5,4 +5,5 @@ mod md5;
 mod multi;
 mod progress_ranges;
 mod single;
+pub(crate) mod verified;
 pub mod wu_client;

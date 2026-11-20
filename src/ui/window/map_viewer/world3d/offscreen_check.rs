@@ -517,8 +517,14 @@ fn stream_real_world_produces_textured_meshes() {
         eprintln!("skip: BMCBL_WORLD3D_TEST_WORLD is not set");
         return;
     };
-    let package_roots = env_path("BMCBL_WORLD3D_TEST_PACKAGE")
-        .into_iter()
+    // Semicolon-separated list: terrain overlays live in sibling packs, so
+    // data-driven sheets (dried ghast states, sniffer egg cracks) need them
+    // merged in the resolver's texture search order.
+    let package_roots = std::env::var("BMCBL_WORLD3D_TEST_PACKAGE")
+        .unwrap_or_default()
+        .split(';')
+        .filter(|part| !part.trim().is_empty())
+        .map(PathBuf::from)
         .collect::<Vec<_>>();
     let spawn = read_world_spawn(&world_path);
     let radius = env_i32("BMCBL_WORLD3D_TEST_RADIUS").unwrap_or(2);
@@ -575,8 +581,14 @@ fn render_real_world_snapshot() {
         eprintln!("skip: BMCBL_WORLD3D_TEST_WORLD is not set");
         return;
     };
-    let package_roots = env_path("BMCBL_WORLD3D_TEST_PACKAGE")
-        .into_iter()
+    // Semicolon-separated list: terrain overlays live in sibling packs, so
+    // data-driven sheets (dried ghast states, sniffer egg cracks) need them
+    // merged in the resolver's texture search order.
+    let package_roots = std::env::var("BMCBL_WORLD3D_TEST_PACKAGE")
+        .unwrap_or_default()
+        .split(';')
+        .filter(|part| !part.trim().is_empty())
+        .map(PathBuf::from)
         .collect::<Vec<_>>();
     let spawn = read_world_spawn(&world_path);
     let radius = env_i32("BMCBL_WORLD3D_TEST_RADIUS")
@@ -927,8 +939,14 @@ fn profile_chunk_timings() {
         eprintln!("skip: BMCBL_WORLD3D_TEST_WORLD is not set");
         return;
     };
-    let package_roots = env_path("BMCBL_WORLD3D_TEST_PACKAGE")
-        .into_iter()
+    // Semicolon-separated list: terrain overlays live in sibling packs, so
+    // data-driven sheets (dried ghast states, sniffer egg cracks) need them
+    // merged in the resolver's texture search order.
+    let package_roots = std::env::var("BMCBL_WORLD3D_TEST_PACKAGE")
+        .unwrap_or_default()
+        .split(';')
+        .filter(|part| !part.trim().is_empty())
+        .map(PathBuf::from)
         .collect::<Vec<_>>();
     let spawn = read_world_spawn(&world_path);
     let (world, mut service) = collect_world_with_timeout(
@@ -954,8 +972,14 @@ fn profile_radius32_stream_budget() {
         eprintln!("skip: BMCBL_WORLD3D_TEST_WORLD is not set");
         return;
     };
-    let package_roots = env_path("BMCBL_WORLD3D_TEST_PACKAGE")
-        .into_iter()
+    // Semicolon-separated list: terrain overlays live in sibling packs, so
+    // data-driven sheets (dried ghast states, sniffer egg cracks) need them
+    // merged in the resolver's texture search order.
+    let package_roots = std::env::var("BMCBL_WORLD3D_TEST_PACKAGE")
+        .unwrap_or_default()
+        .split(';')
+        .filter(|part| !part.trim().is_empty())
+        .map(PathBuf::from)
         .collect::<Vec<_>>();
     let spawn = read_world_spawn(&world_path);
     let center = [
@@ -1001,8 +1025,14 @@ fn profile_scene_registry_fusion() {
         eprintln!("skip: BMCBL_WORLD3D_TEST_WORLD is not set");
         return;
     };
-    let package_roots = env_path("BMCBL_WORLD3D_TEST_PACKAGE")
-        .into_iter()
+    // Semicolon-separated list: terrain overlays live in sibling packs, so
+    // data-driven sheets (dried ghast states, sniffer egg cracks) need them
+    // merged in the resolver's texture search order.
+    let package_roots = std::env::var("BMCBL_WORLD3D_TEST_PACKAGE")
+        .unwrap_or_default()
+        .split(';')
+        .filter(|part| !part.trim().is_empty())
+        .map(PathBuf::from)
         .collect::<Vec<_>>();
     let spawn = read_world_spawn(&world_path);
     let radius = env_i32("BMCBL_WORLD3D_TEST_RADIUS").unwrap_or(32);

@@ -30,7 +30,7 @@ pub(super) struct NavItem {
     target: std::sync::Arc<RouteTarget>,
 }
 
-const BUILTIN_NAV: [(AppRoute, &'static str, crate::i18n::I18nKey); 6] = [
+const BUILTIN_NAV: [(AppRoute, &'static str, crate::i18n::I18nKey); 5] = [
     (
         AppRoute::Home,
         lucide_gpui::icon!(house),
@@ -47,11 +47,6 @@ const BUILTIN_NAV: [(AppRoute, &'static str, crate::i18n::I18nKey); 6] = [
         crate::i18n_key!("Sidebar.versions"),
     ),
     (
-        AppRoute::Tools,
-        lucide_gpui::icon!(wrench),
-        crate::i18n_key!("Sidebar.tools"),
-    ),
-    (
         AppRoute::Tasks,
         lucide_gpui::icon!(activity),
         crate::i18n_key!("Tasks.nav_title"),
@@ -65,30 +60,25 @@ const BUILTIN_NAV: [(AppRoute, &'static str, crate::i18n::I18nKey); 6] = [
 
 pub(super) fn navigation_items(cx: &App) -> Vec<NavItem> {
     let i18n = cx.global::<crate::ui::state::i18n::I18n>();
-    let plugin_pages = crate::plugins::runtime::navigation_pages(cx);
-    let mut items = Vec::with_capacity(BUILTIN_NAV.len() + plugin_pages.len());
-    items.extend(BUILTIN_NAV.iter().map(|(route, icon_path, key)| NavItem {
-        id: route.pathname().into(),
-        icon_path,
-        image_icon_path: None,
-        label: i18n.t_key(*key),
-        target: std::sync::Arc::new(RouteTarget::Builtin(*route)),
-    }));
-    items.extend(plugin_pages.into_iter().map(|page| {
-        let target = RouteTarget::Plugin {
-            plugin_id: page.plugin_id,
-            page_id: page.page_id,
-        };
-        NavItem {
-            id: target.pathname().into(),
-            icon_path: lucide_gpui::icon!(plug),
-            image_icon_path: page.icon_path.map(Into::into),
-            label: page
-                .navigation
-                .map_or(page.title, |navigation| navigation.label.into()),
-            target: std::sync::Arc::new(target),
+    let mut items = Vec::with_capacity(BUILTIN_NAV.len() + 1);
+    for &(route, icon_path, key) in &BUILTIN_NAV {
+        if route == AppRoute::Tasks && navigation::tools_visible(cx) {
+            items.push(NavItem {
+                id: "/tools".into(),
+                icon_path: lucide_gpui::icon!(wrench),
+                image_icon_path: None,
+                label: i18n.t_key(crate::i18n_key!("Sidebar.tools")),
+                target: std::sync::Arc::new(RouteTarget::Tools),
+            });
         }
-    }));
+        items.push(NavItem {
+            id: route.pathname().into(),
+            icon_path,
+            image_icon_path: None,
+            label: i18n.t_key(key),
+            target: std::sync::Arc::new(RouteTarget::Builtin(route)),
+        });
+    }
     items
 }
 

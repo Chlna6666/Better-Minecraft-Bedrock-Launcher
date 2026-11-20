@@ -55,13 +55,13 @@ impl Default for RenderSettings {
 impl RenderSettings {
     pub(super) fn shading_for_dimension(
         self,
-        dimension: bedrock_render::Dimension,
+        dimension: bedrock_world::Dimension,
     ) -> VoxelShading {
         let mut shading = self.shading();
-        if dimension != bedrock_render::Dimension::Overworld {
+        if dimension != bedrock_world::Dimension::Overworld {
             shading.sun_intensity = 0.;
             shading.shadow_strength = 0.;
-            shading.sky_brightness = if dimension == bedrock_render::Dimension::Nether {
+            shading.sky_brightness = if dimension == bedrock_world::Dimension::Nether {
                 0.25
             } else {
                 0.15

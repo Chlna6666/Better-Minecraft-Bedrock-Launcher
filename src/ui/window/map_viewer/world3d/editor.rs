@@ -22,7 +22,7 @@ use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::settings::state::SettingsPageState;
 use crate::ui::window::map_viewer::model::View;
-use bedrock_render::{ChunkPos, Dimension};
+use bedrock_world::{ChunkPos, Dimension};
 use gpui::diagnostics::gpu_owner::{
     GpuOwnerJobKind, GpuOwnerJobOutcome, GpuOwnerJobPhases, GpuOwnerJobSample,
 };
@@ -233,7 +233,7 @@ mod camera_snapshot_tests {
 #[cfg(test)]
 mod section_epoch_tests {
     use super::accept_section_epoch;
-    use bedrock_render::{ChunkPos, Dimension};
+    use bedrock_world::{ChunkPos, Dimension};
     use std::collections::HashMap;
 
     #[test]
@@ -648,7 +648,7 @@ mod async_portal_visibility_tests {
         PORTAL_RESULT_CACHE_ENTRIES, PortalResultCache, PortalVisibilityKey,
         portal_snapshot_compatible, same_portal_region,
     };
-    use bedrock_render::{ChunkPos, Dimension};
+    use bedrock_world::{ChunkPos, Dimension};
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
