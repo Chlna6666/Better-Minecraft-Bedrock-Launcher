@@ -42,24 +42,6 @@ impl CardinalDirection {
         }
     }
 
-    pub(super) const fn clockwise(self) -> Self {
-        match self {
-            Self::North => Self::East,
-            Self::East => Self::South,
-            Self::South => Self::West,
-            Self::West => Self::North,
-        }
-    }
-
-    pub(super) const fn counter_clockwise(self) -> Self {
-        match self {
-            Self::North => Self::West,
-            Self::West => Self::South,
-            Self::South => Self::East,
-            Self::East => Self::North,
-        }
-    }
-
     pub(super) const fn normal(self) -> [i32; 3] {
         match self {
             Self::North => [0, 0, -1],
@@ -151,22 +133,6 @@ pub(super) fn model_front(name: &str) -> crate::material::BlockFace {
     // Everything else with a `front` slot (furnaces, chests, beehives, dispensers, ...) is
     // authored facing south.
     BlockFace::South
-}
-
-/// The face a block's `front` art lands on for this state.
-///
-/// Blocks with a `front` slot paint it on the face their facing names; a block with no facing
-/// keeps the art on its authored face.
-pub(super) fn front_face_for(
-    name: &str,
-    state: &BlockStateQuery,
-) -> Option<crate::material::BlockFace> {
-    use crate::material::BlockFace;
-    let authored = model_front(name);
-    match block_facing(state).map(target_face) {
-        Some(target) => Some(target),
-        None => Some(authored),
-    }
 }
 
 /// How a block's six faces map when its authored front is turned onto the state's facing.
