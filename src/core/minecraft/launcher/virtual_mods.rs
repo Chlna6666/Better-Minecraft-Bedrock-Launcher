@@ -1,6 +1,7 @@
 //! Authenticated, per-game BMCBL -> BLoader virtual Mod handoff.
 //! Only the launcher constructs the plan; the DLLs remain at
 //! BMCBL/plugins/<plugin_id>/game-mods/*.dll and are never copied.
+mod rpc;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "windows")]
@@ -14,6 +15,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 pub(crate) use crate::plugins::game_mods::LaunchPlan;
+pub(crate) use rpc::call as call_native;
 #[cfg(target_os = "linux")]
 pub(crate) use linux::prepare as prepare_linux;
 #[cfg(target_os = "windows")]
@@ -121,8 +123,9 @@ fn check_seq(frame: &Value, last: u64) -> Result<u64, String> {
     Ok(number)
 }
 
-fn serve<T: Read + Write>(
+fn serve<T: Read + Write, W: Write + Send + 'static>(
     stream: &mut T,
+    outgoing: W,
     plan: &LaunchPlan,
     plugins_root_windows: &str,
     transport: &str,
@@ -177,8 +180,10 @@ fn serve<T: Read + Write>(
     tracing::info!(session_id, modules = plan.modules.len(), transport,
         "BLoader accepted virtual Mod launch plan");
 
+    let rpc_session = rpc::register(session_id, plan, outgoing)?;
     let mut last = 2_u64;
     // Each game owns a background receiver. No polling of .log files.
+    let outcome = (|| -> Result<(), String> {
     loop {
         let frame = match read_frame(stream) {
             Ok(frame) => frame,
@@ -192,13 +197,16 @@ fn serve<T: Read + Write>(
             return Err("cross-session virtual Mod IPC packet".into());
         }
         match frame.get("type").and_then(Value::as_str) {
-            Some("module_status") => record_status(session_id, &frame),
-            Some("rpc_response" | "mod_event") => {
-                // Never treat a native DLL-originated message as a launcher
-                // command. Only a future permission-checked plugin Host API
-                // may subscribe to these messages.
-                tracing::trace!(session_id, "unsubscribed virtual Mod RPC/event dropped");
+            Some("module_status") => {
+                rpc_session.observe_status(&frame);
+                record_status(session_id, &frame);
             }
+            Some("rpc_response") => rpc_session.handle_response(&frame)?,
+            Some("mod_event") => {
+                // Event subscriptions will be permission-checked separately.
+                // Never treat native DLL messages as launcher commands.
+                tracing::trace!(session_id, "unsubscribed native Mod event dropped");
+            },
             Some("error") => {
                 tracing::warn!(session_id,
                     error_code = ?frame.get("error_code").and_then(Value::as_str),
@@ -208,6 +216,15 @@ fn serve<T: Read + Write>(
         }
     }
     Ok(())
+    })();
+    rpc_session.close();
+    outcome
+}
+
+fn valid_rpc_name(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric()
+            || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 pub(crate) fn plan_for_launch(game_version: &str) -> Result<Option<LaunchPlan>, String> {
