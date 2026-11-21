@@ -1,6 +1,6 @@
 //! Permission-checked in-process routing for WASM -> its own authorized native
 //! game Mod. The plugin never obtains the pipe, guest PID, session key or path.
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::Write;
 use std::sync::{
     Arc, Mutex, OnceLock,
@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
+use serde::{Serialize, Deserialize};
 use tokio::sync::oneshot;
 
 use super::{LaunchPlan, write_frame};
@@ -19,11 +20,37 @@ use super::{LaunchPlan, write_frame};
 const MAX_PENDING: usize = 256;
 const MAX_PER_MODULE: usize = 32;
 const MAX_BODY: usize = 32 * 1024;
+const MAX_EVENT_BODY: usize = 8 * 1024;
+const MAX_EVENTS_PER_PLUGIN: usize = 32;
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 static SESSIONS: OnceLock<Mutex<BTreeMap<String, Arc<RpcSession>>>> = OnceLock::new();
 
 type Reply = oneshot::Sender<Result<Vec<u8>, String>>;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct NativeEvent {
+    pub module_id: String,
+    pub name: String,
+    pub body: Vec<u8>,
+}
+
+struct PendingGuard {
+    session: Arc<RpcSession>,
+    request_id: u64,
+    module: String,
+    generation: String,
+    armed: bool,
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.session.cancel(self.request_id, &self.module, &self.generation);
+        }
+    }
+}
+
 
 struct PendingCall {
     module: String,
@@ -54,6 +81,7 @@ pub(super) struct RpcSession {
     generations: BTreeMap<String, u64>,
     module_generations: BTreeMap<String, String>,
     ready: Mutex<BTreeSet<String>>,
+    events: Mutex<BTreeMap<String, VecDeque<NativeEvent>>>,
     pending: Mutex<HashMap<u64, PendingCall>>,
     outgoing: SyncSender<Command>,
     next_request_id: AtomicU64,
@@ -82,6 +110,7 @@ pub(super) fn register<W: Write + Send + 'static>(
             module.plugin_generation.clone(),
         )).collect(),
         ready: Mutex::new(BTreeSet::new()),
+        events: Mutex::new(BTreeMap::new()),
         pending: Mutex::new(HashMap::new()),
         outgoing,
         next_request_id: AtomicU64::new(1),
@@ -152,6 +181,46 @@ impl RpcSession {
         }
     }
 
+    pub(super) fn handle_event(&self, frame: &Value) -> Result<(), String> {
+        let module = frame.get("module").and_then(Value::as_str)
+            .ok_or("native Mod event lacks module")?;
+        let generation = frame.get("plugin_generation").and_then(Value::as_str)
+            .ok_or("native Mod event lacks generation")?;
+        if self.module_generations.get(module).map(String::as_str) != Some(generation) {
+            return Err("native Mod event has wrong module generation".into());
+        }
+        let (plugin_id, module_id) = module.split_once('/')
+            .ok_or("invalid native module identifier")?;
+        if !self.generations.contains_key(plugin_id) {
+            return Err("native Mod event from unauthorized plugin".into());
+        }
+        let name = frame.get("name").and_then(Value::as_str)
+            .ok_or("native Mod event missing name")?;
+        if !super::valid_rpc_name(name) {
+            return Err("invalid native Mod event name".into());
+        }
+        let payload = frame.get("body_b64").and_then(Value::as_str)
+            .ok_or("native Mod event missing body")?;
+        if payload.len() > MAX_EVENT_BODY * 2 {
+            return Err("native Mod event exceeds bounded payload".into());
+        }
+        let body = STANDARD.decode(payload).map_err(|_| "invalid native Mod event base64")?;
+        if body.len() > MAX_EVENT_BODY {
+            return Err("native Mod event payload exceeds 8 KiB".into());
+        }
+        let mut events = lock(&self.events);
+        let queue = events.entry(plugin_id.to_string()).or_default();
+        if queue.len() >= MAX_EVENTS_PER_PLUGIN {
+            queue.pop_front();
+        }
+        queue.push_back(NativeEvent {
+            module_id: module_id.to_string(),
+            name: name.to_string(),
+            body,
+        });
+        Ok(())
+    }
+
     pub(super) fn handle_response(&self, frame: &Value) -> Result<(), String> {
         let module = frame.get("module").and_then(Value::as_str)
             .ok_or("virtual Mod response lacks module")?;
@@ -204,6 +273,7 @@ impl RpcSession {
     pub(super) fn close(&self) {
         if self.closed.swap(true, Ordering::AcqRel) { return; }
         lock(&self.ready).clear();
+        lock(&self.events).clear();
         for pending in std::mem::take(&mut *lock(&self.pending)).into_values() {
             let _ = pending.reply.send(Err("SESSION_CLOSED".into()));
         }
@@ -216,6 +286,28 @@ impl RpcSession {
             && self.module_generations.contains_key(module)
             && lock(&self.ready).contains(module)
     }
+}
+
+pub(crate) fn take_events(
+    plugin_id: &str,
+    generation: u64,
+) -> Result<Vec<NativeEvent>, String> {
+    if !super::valid_rpc_name(plugin_id) {
+        return Err("invalid native Mod plugin identity".into());
+    }
+    let matching = lock(sessions()).values()
+        .filter(|session| !session.closed.load(Ordering::Acquire)
+            && session.generations.get(plugin_id) == Some(&generation))
+        .cloned().collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err(if matching.is_empty() {
+            "MODULE_UNAVAILABLE: no active game session for plugin events"
+        } else {
+            "AMBIGUOUS_SESSION: multiple games are running native Mods"
+        }.into());
+    }
+    let mut events = lock(&matching[0].events);
+    Ok(events.entry(plugin_id.to_string()).or_default().drain(..).collect())
 }
 
 pub(crate) async fn call(
@@ -267,13 +359,21 @@ pub(crate) async fn call(
         session.cancel(id, &full_id, &generation);
         return Err("BUSY: Mod IPC writer queue is unavailable".into());
     }
+    // Aborting a plugin job drops this guard, releasing its pending slot.
+    let mut cancellation = PendingGuard {
+        session: session.clone(),
+        request_id: id,
+        module: full_id,
+        generation,
+        armed: true,
+    };
     match tokio::time::timeout(CALL_TIMEOUT, response).await {
-        Ok(Ok(result)) => result,
-        Ok(Err(_)) => Err("SESSION_CLOSED: Mod response channel closed".into()),
-        Err(_) => {
-            session.cancel(id, &full_id, &generation);
-            Err("TIMEOUT: Mod did not reply within 5 seconds".into())
+        Ok(Ok(result)) => {
+            cancellation.armed = false;
+            result
         }
+        Ok(Err(_)) => Err("SESSION_CLOSED: Mod response channel closed".into()),
+        Err(_) => Err("TIMEOUT: Mod did not reply within 5 seconds".into()),
     }
 }
 
