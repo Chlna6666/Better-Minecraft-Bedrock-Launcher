@@ -26,6 +26,24 @@ pub use bmcbl_plugin_macros::{bmcbl_plugin, plugin_metadata};
 pub mod app;
 pub mod native;
 
+/// Calls native Bedrock DLLs installed once under BMCBL/plugins.
+///
+/// Requests are resolved by the launcher's game session and require
+/// `game-mod.call` capability plus per-version SHA-256 approval.
+/// Guest code cannot supply paths, guest PIDs or foreign plugin IDs.
+pub mod game_mod {
+    use crate::PluginResult;
+    use crate::app::{Job, invoke};
+
+    /// Submit a bounded (32 KiB) asynchronous call to a Mod declared in this
+    /// plugin's `[[game_mods]]`. Returns a job resolved by `JobReady`.
+    /// Calls are unavailable if multiple concurrent games make the target
+    /// ambiguous, or if the plugin generation has been revoked.
+    pub fn call(module_id: &str, method: &str, payload: &[u8]) -> PluginResult<Job<Vec<u8>>> {
+        invoke("game-mod.call", &(module_id, method, payload))
+    }
+}
+
 /// Reads from the installed plugin package.
 pub mod filesystem {
     pub use crate::{read_resource_bytes, read_resource_text};
