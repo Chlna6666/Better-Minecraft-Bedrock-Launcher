@@ -116,16 +116,6 @@ pub(super) fn fluid_face_uv(normal: [i32; 3], bottom: f32, height: f32) -> [[f32
     [[0.0, v_bottom], [1.0, v_bottom], [1.0, v_top], [0.0, v_top]]
 }
 
-pub(super) fn fluid_face(
-    block: BlockKey,
-    face: FaceDefinition,
-    color: [f32; 4],
-    material: MaterialName,
-    height: f32,
-) -> Face {
-    fluid_face_segment(block, face, color, material, 0.0, height)
-}
-
 pub(super) fn stream_fluid_face_segment(
     block: BlockKey,
     face: FaceDefinition,
