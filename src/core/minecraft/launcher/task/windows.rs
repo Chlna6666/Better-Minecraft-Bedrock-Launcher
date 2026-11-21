@@ -898,6 +898,19 @@ async fn launch_game(
 
         let (mut secure_launch_metadata, gamertag) = prepare_direct_win32_auth(task_id).await?;
         launch_gamertag = gamertag;
+        // Only the launcher process selects an activated, version-approved DLL.
+        // This is a shared BMCBL/plugins path, not a copy into a game Mod folder.
+        let virtual_mod_plan = if version_config.disable_mod_loading {
+            None
+        } else {
+            match super::super::virtual_mods::plan_for_launch(&identity_version) {
+                Ok(plan) => plan.map(|plan| (plan, identity_version.clone())),
+                Err(error) => {
+                    append_log(task_id, format!("虚拟 Mod 授权或文件校验失败，已跳过：{error}"));
+                    None
+                }
+            }
+        };
 
         let pid = if let Some(host) = terminal_host {
             let host_pid = host.host_pid;
@@ -912,6 +925,7 @@ async fn launch_game(
                 final_launch_args.as_deref(),
                 Vec::new(),
                 secure_launch_metadata,
+                virtual_mod_plan.clone(),
                 false,
                 Some(log_callback.clone()),
             )
@@ -946,6 +960,7 @@ async fn launch_game(
                 final_launch_args.as_deref(),
                 Vec::new(),
                 secure_launch_metadata,
+                virtual_mod_plan,
                 version_config.enable_debug_console,
                 Some(log_callback.clone()),
             )
