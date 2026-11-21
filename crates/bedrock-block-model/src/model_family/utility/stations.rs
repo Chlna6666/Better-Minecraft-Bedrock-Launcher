@@ -391,27 +391,3 @@ pub(crate) fn lectern_shape(state: &BlockStateQuery) -> ModelShape {
     rotate_shape_cardinal(shape, direction)
 }
 
-fn anvil_cuboid_with_uv(
-    cuboid: ModelCuboid,
-    top_uv: [[f32; 2]; 4],
-    side_uv: [[f32; 2]; 4],
-) -> ModelCuboid {
-    detail_cuboid_with_local_uv(cuboid)
-        .with_face_uv(BlockFace::Up, top_uv)
-        .with_face_uv(BlockFace::Down, top_uv)
-        .with_face_uv(BlockFace::North, side_uv)
-        .with_face_uv(BlockFace::South, side_uv)
-        .with_face_uv(BlockFace::West, side_uv)
-        .with_face_uv(BlockFace::East, side_uv)
-}
-
-fn anvil_side_cuboid_with_uv(cuboid: ModelCuboid) -> ModelCuboid {
-    detail_cuboid_with_local_uv(cuboid)
-        .with_material_slot("side")
-        .with_face_uv(BlockFace::Up, uv16(0.0, 0.0, 16.0, 16.0))
-        .with_face_uv(BlockFace::Down, uv16(0.0, 0.0, 16.0, 16.0))
-        .with_face_uv(BlockFace::North, uv16(0.0, 0.0, 16.0, 16.0))
-        .with_face_uv(BlockFace::South, uv16(0.0, 0.0, 16.0, 16.0))
-        .with_face_uv(BlockFace::West, uv16(0.0, 0.0, 16.0, 16.0))
-        .with_face_uv(BlockFace::East, uv16(0.0, 0.0, 16.0, 16.0))
-}
