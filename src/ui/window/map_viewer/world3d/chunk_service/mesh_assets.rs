@@ -330,14 +330,18 @@ impl MeshAssets {
         let height = front[3] - front[1];
 
         let dye = DYE_COLORS[usize::from(art.base.min(15))];
-        for [x0, y0, x1, y1] in [front, back] {
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let offset = ((y * SHEET + x) * 4) as usize;
-                    for channel in 0..3 {
-                        pixels[offset + channel] =
-                            multiply_channel(pixels[offset + channel], dye[channel]);
-                    }
+        // Dye the whole painted cloth strip `x 0..42, y 1..41`, not just the two panel
+        // windows: the sheet paints 1 px of edge bleed beyond each panel (`x 0` and
+        // `x 21` on the front, `x 41` on the back), and the cloth's thin edge faces
+        // sample exactly those columns — leaving them un-dyed drew a white border
+        // around every dyed banner. The pole (x 44..46) and rod band (v 42..44) stay
+        // outside this rect and keep their wood art.
+        for y in 1..41 {
+            for x in 0..42 {
+                let offset = ((y * SHEET + x) * 4) as usize;
+                for channel in 0..3 {
+                    pixels[offset + channel] =
+                        multiply_channel(pixels[offset + channel], dye[channel]);
                 }
             }
         }
