@@ -63,6 +63,7 @@ impl ServiceJobs {
             .or((service == "download.fetch-text").then_some("download.fetch-text"))
             .or((service == "download.verified").then_some("download.verified"))
             .or((service == "game-mod.call").then_some("game-mod.call"))
+            .or((service == "game-mod.read-events").then_some("game-mod.read-events"))
             .or_else(|| {
                 super::native::OPERATIONS
                     .iter()
@@ -92,7 +93,7 @@ impl ServiceJobs {
         let generation = self.generation;
         let jobs = self.state.clone();
         let native = self.native.clone();
-        let manifest = (service.starts_with("download.") || service == "game-mod.call")
+        let manifest = (service.starts_with("download.") || service.starts_with("game-mod."))
             .then(|| manifest.clone());
         let task = crate::tasks::runtime::spawn_io(async move {
             let _permit = permit;
@@ -130,6 +131,20 @@ impl ServiceJobs {
                         Some(manifest),
                     ).await.map_err(PluginError::app)?;
                     encode(&text)
+                } else if service == "game-mod.read-events" {
+                    use super::manifest::PluginCapability;
+                    let manifest = manifest.as_ref().expect("game-mod.read-events requires manifest");
+                    if !manifest.has_capability(&PluginCapability::GameModCall) {
+                        return Err(PluginError::denied("plugin lacks game-mod.call capability"));
+                    }
+                    if !arguments.is_empty() {
+                        let _: () = postcard::from_bytes(&arguments)
+                            .map_err(|error| PluginError::invalid_input(error.to_string()))?;
+                    }
+                    let events = crate::core::minecraft::launcher::virtual_mods::take_events(
+                        &plugin_id, generation,
+                    ).map_err(PluginError::app)?;
+                    encode(&events)
                 } else if service == "game-mod.call" {
                     use super::manifest::PluginCapability;
                     let manifest = manifest.as_ref().expect("game-mod.call requires manifest");
