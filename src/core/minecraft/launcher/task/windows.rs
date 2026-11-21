@@ -903,7 +903,7 @@ async fn launch_game(
         let virtual_mod_plan = if version_config.disable_mod_loading {
             None
         } else {
-            match super::super::virtual_mods::plan_for_launch(&identity_version) {
+            match super::super::virtual_mods::plan_for_launch(request.folder_name.as_ref(), &identity_version) {
                 Ok(plan) => plan.map(|plan| (plan, identity_version.clone())),
                 Err(error) => {
                     append_log(task_id, format!("虚拟 Mod 授权或文件校验失败，已跳过：{error}"));
