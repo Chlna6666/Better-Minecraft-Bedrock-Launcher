@@ -1,16 +1,16 @@
 # BMCBL 插件虚拟 Mod ↔ BLoader 协议规范
 
-> 状态：**协议设计基线（v1 草案，未完成双方实现）**。本文是实现契约，不表示 BLoader 已支持所列消息或原生 ABI。协议主版本 `1`、次版本 `0`；首次落地前必须由 BMCBL 与 BLoader 联合验证。开发阶段允许破坏性修订，但两端必须同时更新并通过兼容性测试。
+> 状态：**协议设计及分阶段实现基线（v1；尚未完成双端联调）**。BLoader 已开始实现通信、加载与可选原生 ABI，但 BMCBL 会话宿主尚未完成，不能视为端到端已可用。协议主版本 `1`、次版本 `0`；开发阶段允许破坏性修订，必须同步更新双方及测试。
 
 ## 1. 范围、术语与职责
 
-“虚拟 Mod”是**插件拥有、按 Minecraft 版本授权、由 BLoader 在游戏进程中加载的原生 DLL**，并非 WASM 沙箱内运行的 Mod，也不代表 DLL 永远不落盘。
+“虚拟 Mod”是**BMCBL 插件目录里已安装的公共 DLL，由 BMCBL 按游戏版本授权后通知 BLoader 直接从原位置加载**的机制。**不复制、不创建额外 Mod 暂存目录、不写进游戏的 `mods/`**；“虚拟”指与各个游戏版本的 Mod 目录解耦，而不是内存 PE 加载或 WASM 沙箱。典型路径为 `BMCBL/plugins/<plugin_id>/game-mods/<module>.dll`，多个 Minecraft 版本可以共用同一文件，但各自独立授权。
 
 | 组件 | 唯一职责 | 明确禁止 |
 | --- | --- | --- |
 | BMCBL 插件打包器 | 验证 `game_mods` 声明，把 DLL 纳入 `.bmcblx` | 将插件提供的绝对路径当作运行时加载目标 |
 | BMCBL 插件管理器 | 安装、启停、逐版本逐摘要授权；生成不可变启动快照 | 允许 WASM 插件自行选择 Minecraft PID、会话或任意 DLL |
-| BMCBL 会话宿主 | 创建受限本地 IPC、校验进程、准备受保护载荷、转发有权限的业务消息 | 把账号令牌、启动器内部 API 或原始主机文件系统暴露给 Mod RPC |
+| BMCBL 会话宿主 | 创建受限 IPC、校验进程、重验已安装插件 DLL、传递公共插件根路径与相对模块路径 | 为每个游戏版本复制 DLL、创建额外 Mod 暂存树，或把账号令牌和启动器特权 API 暴露给 Mod RPC |
 | BLoader | 校验启动计划及实际载荷、在指定阶段加载 DLL、报告状态、提供受限原生 ABI | 自行枚举 BMCBL 插件目录、解释插件配置权限或重新决定授权 |
 | 插件 WASM | 通过 BMCBL 授权的宿主接口与**自己的** Mod 通信 | 直接访问 BLoader IPC、指定加载路径、伪造其他插件的模块身份 |
 
@@ -27,10 +27,10 @@
 - BMCBL `src/plugins/game_mods.rs`：解析声明、限制主 DLL 32 MiB、验证 PE x64、计算 SHA-256，并按版本保存 `plugin_id/module_id → sha256` 授权。
 - BMCBL `src/plugins/manifest.rs` 和 `crates/bmcbl-plugin-api/src/pack.rs`：每插件最多 32 个声明；打包时将 `game-mods/` 文件加入包。
 - BMCBL `src/plugins/runtime.rs`、`src/ui/views/manage/mod_tab.rs`：只枚举启用且已加载插件的 Mod 并提供管理页开关。
-- BLoader `src/loader/mod.rs`：既有 `mod-preload` / `mod-native` 从 BLoader 管理的磁盘目录发现，具备独立的依赖规划、加载和诊断流程；**尚未接入 BMCBL 虚拟 Mod 启动计划**。
+- BLoader `src/loader/mod.rs`：既有 `mod-preload` / `mod-native` 从其管理的磁盘目录发现；新 `src/virtual_mods/` 另接收启动计划并按插件公共路径加载，**不扫描或移动插件文件**。需要 Windows 与 Wine 双端联调才能宣布可用。
 - BMCBL `src/core/inject/legacy.rs` 与 BLoader `src/bootstrap/xuser_bridge/ipc.rs` 存在专用 XUser 单次管道，**不是** Mod IPC，不可直接复用其载荷、消息类型、密钥或授权逻辑。
 
-**本协议尚需实现**：会话型双向 IPC、启动计划快照和交接、只读暂存/复验、虚拟 Mod 调度、原生 Mod 回调 ABI、插件业务消息路由、取消与诊断回传。管理页显示“已授权”不等于 Mod 已在游戏中加载成功。
+**尚需完成和验证**：BMCBL 会话型双向 IPC、启动计划快照和交接、原地文件复验、插件业务消息路由、取消与诊断回传；BLoader 现有代码必须经过持续集成与 Windows/Wine 实际加载测试。管理页显示“已授权”不等于 Mod 已在游戏中加载成功。
 
 ## 3. 清单与授权
 
@@ -124,7 +124,7 @@ Wine 对 Windows Winsock `AF_UNIX` 的支持存在不同版本/补丁集差异�
 
 #### 5.2.2 Linux 一次性启动引导
 
-1. BMCBL 先完成每版本授权快照、DLL 校验和受保护暂存，**然后**创建游戏会话。使用操作系统加密安全随机源产生至少 **256 bit** 的 `session_secret`、随机 `session_id` 和单实例端点；不得复用旧启动秘密。
+1. BMCBL 先完成每版本授权快照及**原地** DLL 校验（`BMCBL/plugins/<plugin_id>/game-mods/`），**不创建或复制 DLL 暂存文件**，然后创建游戏会话。使用操作系统加密安全随机源产生至少 **256 bit** 的 `session_secret`、随机 `session_id` 和单实例端点；不得复用旧启动秘密。
 2. 为游戏会话建立 `0700` 的私有目录，启动描述符文件权限 `0600`，以安全创建、禁用符号链接/重解析逃逸、原子写入方式存放：`session_id`、`endpoint`、`transport`、随机 `session_secret`、过期时间和允许的目标游戏/运行器身份绑定材料。BMCBL 不接受插件提供的描述符路径。描述符最长存活至本次握手完成/超时；断开和异常时清理。不能仅靠 Unix 文件权限声称防御**同 UID 已被入侵**的进程。
 3. BMCBL 通过使用**相同 WINEPREFIX/Proton 运行环境**的路径转换，将这个**描述符的 Windows 可见绝对路径**传给 BLoader。建议只把路径写进启动参数以外的私有启动环境变量 `BMCBL_VMOD_BOOTSTRAP`，绝不在环境变量/命令行中传 `session_secret`；同时验证 UMU/Proton 启动器不会清除该路径变量。若运行器隔离导致 Windows 侧无法打开此路径，则安全禁用虚拟 Mod，不扫描磁盘尝试发现其他会话。
 4. BLoader 只有在**退出 loader lock 后**才打开、限长读取并关闭描述符。检查时效、文件类型/路径、协议版本和运行器关联；成功后及时清除内存中的敏感明文并由宿主删除启动描述符。不允许 XUser Bridge 或普通 Mod 读取/重用该秘密。游戏进程内的不可信 DLL 可读到进程内数据，因此仍不构成同进程沙箱。
@@ -134,9 +134,9 @@ Wine 对 Windows Winsock `AF_UNIX` 的支持存在不同版本/补丁集差异�
 
 #### 5.2.3 Linux 文件路径与生命周期
 
-- BMCBL 用 Linux 路径读取/哈希已授权 DLL；必要时将其在游戏可访问的受保护目录内暂存，再按**当前运行器与 Wine Prefix**转换为 Windows 绝对路径。不得假定 `Z:` 始终映射到宿主根目录。
+- BMCBL 用 Linux 原生路径核验 `BMCBL/plugins/` 下 DLL，使用**当前运行器与 Wine Prefix**将**插件根目录**转换为 Windows 可访问的绝对路径 `plugins_root`，不复制 DLL。必须验证该 Prefix/沙箱确实能访问原目录；不假定 `Z:` 一定存在或映射宿主根。
 - BLoader 仅可按 `windows-x86_64` PE DLL 加载，使用同第 7 节的校验与依赖安全要求；Wine 的文件共享/重解析规则与原生 Windows 不完全等同，必须测试“校验后替换”的竞态。
-- 运行中模块只依附当前游戏会话；Wine/Proton 进程退出或断链后，Linux 宿主取消 RPC、释放端点、清理私有暂存，并更新诊断。无法保证 DLL 在游戏退出前被强制卸载。
+- 运行中模块只依附当前游戏会话；Wine/Proton 进程退出或断链后，Linux 宿主取消 RPC、释放端点、清理**一次性连接描述符**并更新诊断。公共插件 DLL 保持原位置，不在游戏退出时删除。无法保证 DLL 在游戏退出前被强制卸载。
 - Linux UWP/GDK 需要由实际 Proton-GDK 启动链验证 BLoader 注入/加载时序；如只能晚期注入，不可声称已支持 `preload`。根据实际能力声明 `phases`，可能仅有 `ready`。
 
 #### 5.2.4 Linux 可执行时序
@@ -144,22 +144,22 @@ Wine 对 Windows Winsock `AF_UNIX` 的支持存在不同版本/补丁集差异�
 ```text
 BMCBL (Linux, native Rust)                  Minecraft (Wine/Proton PE, BLoader)
 授权快照、DLL 预校验
-建立私有暂存、一次性 bootstrap
+建立一次性 IPC bootstrap（仅认证材料；无 DLL 复制）
 监听 Unix Socket / 127.0.0.1:随机端口
-使用当前 Wine Prefix 转换 bootstrap 路径
+使用当前 Wine Prefix 转换 bootstrap 路径与 BMCBL/plugins 根路径
 启动 Minecraft，传入非秘密描述符路径 ──────> BLoader 退出 loader lock
                                            读取 bootstrap，连接对应端点
 Linux 端点核验 + 双向 HMAC challenge <──────> 验证认证证明
 hello/welcome → launch_plan ───────────────> BLoader 安全复验、执行阶段加载
 插件 WASM → 宿主校验 → RPC ─────────────────> DLL BLoaderModEntryV1
 插件 WASM ← 宿主过滤 ← response/event <────── DLL 原生回调
-游戏退出 → 撤销转发、关闭 IPC、清理暂存
+游戏退出 → 撤销转发、关闭 IPC、清理会话描述符（DLL 不动）
 ```
 
 ### 5.3 时序与阻塞预算
 
 ```text
-BMCBL：插件/版本/授权快照 → 核验载荷 → 受保护暂存 → 创建平台传输端点
+BMCBL：插件/版本/授权快照 → 核验原位置 DLL → 创建平台传输端点
                                       ↓ 放行 Minecraft
 BLoader：退出 loader lock → 完成平台端点验证/会话认证 → hello
 BMCBL：校验目标 PID/进程 → welcome → launch_plan（一次性）
@@ -226,6 +226,7 @@ BMCBL → BLoader（`launch_plan` 仅允许发送一次，不接受游戏进程�
   "type": "launch_plan",
   "seq": "0000000000000002",
   "session_id": "e64a40d8-47d4-49dc-85bb-68588a40ef1b",
+  "plugins_root": "C:\\BMCBL\\plugins",
   "modules": [
     {
       "plugin_id": "example-plugin",
@@ -235,13 +236,13 @@ BMCBL → BLoader（`launch_plan` 仅允许发送一次，不接受游戏进程�
       "size_bytes": 102400,
       "platform": "windows-x86_64",
       "phase": "ready",
-      "staged_path": "C:\\BMCBL\\state\\mod-stage\\example.dll"
+      "relative_path": "game-mods/example.dll"
     }
   ]
 }
 ```
 
-`staged_path` 是**BMCBL 核验后在受保护暂存区生成的路径**，不是插件传入的 `game-mods` 源路径。上例仅示意路径编码；实际地址由宿主决定。任何远端/插件 RPC 均不得提供它。
+`plugins_root` 是 BMCBL 本次启动会话**认证后交付的公共插件根目录的 Windows 绝对路径**，即安装后的 `BMCBL/plugins`；Linux 上由 BMCBL 按当前 Wine/Proton Prefix 转换。`relative_path` 必须严格取自已验证的插件清单（如 `game-mods/example.dll`），不得是任意绝对路径。BLoader 只按 `plugins_root/<plugin_id>/<relative_path>` 组成 DLL 路径，再检查目录归属、重解析点、文件 SHA-256 与架构；**不复制、不移动文件**。普通 Mod/WASM 不能直接设定 `plugins_root` 或模块路径。
 
 BLoader → BMCBL（`plan_ack` 对每个条目报告是否**接受调度**，拒绝项给出确定的 `error_code`）：
 
@@ -255,7 +256,7 @@ BLoader → BMCBL（`plan_ack` 对每个条目报告是否**接受调度**，拒
 }
 ```
 
-两端对计划施加上限：单游戏会话最多 **256 个**条目、唯一 `plugin_id/module_id`、单插件至多 32 个、所有 ID 和十六进制摘要按清单规则校验、路径须在宿主本次私有暂存根内且必须是绝对路径。整份计划不合法时拒绝整个计划，禁止“截断后照常加载”；单模块文件不兼容则给出该模块的失败状态，其他模块可独立继续。
+两端对计划施加上限：单游戏会话最多 **256 个**条目、唯一 `plugin_id/module_id`、单插件至多 32 个、所有 ID 和十六进制摘要按清单规则校验；`plugins_root` 必须是有效绝对路径且以 `plugins` 目录为根，`relative_path` 必须在当前插件的 `game-mods/` 目录内。协议帧仍限 64 KiB，超出时**拒绝整个计划**，不能截断。单模块文件不兼容时报告独立失败状态，不波及其他模块。
 
 ### 6.3 状态、请求、响应、事件
 
@@ -327,23 +328,21 @@ BLoader → BMCBL（仅可对正在等待的 `request_id` 回应；失败用统�
 
 每模块最多 **32** 个未完成请求、**64** 个待派发请求；全会话最多 **256** 个未完成请求、累计待派发数据不超过 **4 MiB**。达到上限立即返回 `BUSY`，不得无限排队。读取循环、原生模块调用和回调投递必须解耦；不得在持有全局状态锁时调用不可信 DLL。每个模块可独立失败，不得因单个卡死模块阻塞控制帧、状态上报或其他模块的队列。超时与断开须清理映射、完成等待任务并停止向旧 generation 投递。
 
-## 7. DLL 文件交接和加载安全
+## 7. 公共插件 DLL 的原地加载与安全要求
 
-**重要**：正常 Windows `LoadLibraryExW` 依赖文件系统和 Windows PE 装载器。这里的“虚拟”仅表示**不向游戏 Mod 目录安装文件、由 BMCBL 授权并交接**；不承诺纯内存 PE 加载、零磁盘暂存或跨版本零拷贝。
+**语义**：虚拟 Mod 不产生新的 DLL 副本，始终从 BMCBL 已安装的 `plugins/<plugin_id>/game-mods/` 文件路径装载。每个游戏版本可以有不同授权快照，但各版本引用同一 DLL；不是内存加载、独立进程隔离或 Wine 原生 `.so`。
 
-强制执行下列流程：
+1. **BMCBL** 将 `plugins_root` 固定为当前插件注册表的安装根（Windows 的原生绝对路径，Linux 的真实目录需转换成当前 Wine/Proton Prefix 的 Windows 绝对路径），仅把已安装、启用且按当前版本 `SHA-256` 授权的 Mod 纳入计划；`relative_path` 来自已经核验的插件清单，禁止让 WASM 调用方传入 DLL 绝对路径。
+2. **路径合成**：BLoader 用 `plugins_root / plugin_id / relative_path` 合成绝对路径。要求 `relative_path` 以 `game-mods/` 开头、以 `.dll` 结尾、只含安全路径组件；禁止盘符、UNC、设备路径、`..`、`.`、反斜杠、ADS、保留设备名称和空组件。规范化后 DLL 必须仍位于**对应插件目录**；不得仅凭字符串包含 `plugins` 就认定路径可信。
+3. **原地复验**：在 `LoadLibraryExW` 前拒绝插件目录内任何重解析/符号链接逃逸，核对实际文件类型、文件大小、PE x64 DLL 头、授权的 `SHA-256`。Windows 使用不允许写入/删除共享的打开方式，在复验到装载窗口内保持文件句柄；Wine 的文件共享语义和文件替换竞态必须单独实测。若无法提供可靠的加载期字节稳定性，拒绝宣称具备 TOCTOU 防护保证。
+4. **装载**：使用校验后的完整绝对路径调用 `LoadLibraryExW`，限制依赖搜索目录（例如经过验证的 `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`）；不退回当前目录或通过任意文件名搜索。查询模块实际加载位置，不匹配则失败并报告。仅核验主 DLL 不保证依赖安全；额外非系统依赖必须另有白名单/摘要校验，不应默认信任目录内的全部依赖。
+5. **更新与生命周期**：公共插件 DLL 可能同时被多个游戏进程使用。BMCBL 更新、卸载插件时应避开活跃游戏会话（延迟更新/拒绝覆盖已加载文件），防止 Windows 共享冲突及 Linux/Wine 下的路径替换竞态；禁用授权只影响后续启动，不应强制卸载已执行的 DLL。游戏退出不删除公共插件文件。
 
-1. BMCBL 在插件快照后以流式方式读取源 DLL，验证尺寸、PE 架构和原 SHA-256 授权。将获准字节写入**宿主私有、按内容摘要寻址且不能覆盖已有不同内容**的暂存位置；安全创建临时文件、完整写入/刷新、原子提交。路径不由插件决定。
-2. 禁止从用户可写的临时公共目录、游戏 `mods/`、不受保护的符号链接/目录接合点直接加载。暂存目录逐级检查重解析点、真实文件身份和权限；拒绝 `..`、UNC、设备路径、相对路径、重解析逃逸及文件类型异常。
-3. BLoader 校验路径是本次受信任宿主交付的**私有暂存根内**文件；打开后复查大小、PE 头、SHA-256。Windows 实现应通过安全共享模式持有文件句柄覆盖“复验→加载”窗口，阻止写入、重命名与删除；此机制及 Wine 兼容性必须用真实文件替换竞态测试验证。若无法可靠固定已验证文件，则不得宣称具备无 TOCTOU 保证。
-4. 使用**完整绝对路径**的 `LoadLibraryExW`，显式限制依赖搜索目录，例如经适配验证的 `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`；不可退回当前工作目录任意搜寻，也不可为插件修改全进程全局 DLL 搜索路径。所有非系统依赖应处在受保护并独立核验的依赖集合内，发现同名已加载模块、版本冲突或未授权依赖则拒绝并报告。具体系统 DLL/API-set 加载行为须单独验证。
-5. 对结果模块句柄查询实际加载路径与文件身份；确认符合预期后才上报 `loaded`。加载失败不要“尝试旁边另一个 DLL”或退化为 `LoadLibraryA` 模糊路径查找。维持模块在游戏进程中的生命周期；已加载后禁止通过强制 `FreeLibrary` 假装热禁用。
+只有传输已认证、权限快照通过、真实路径及载荷复验成功后才进入对应加载阶段。不要因为某个 Mod 校验失败而阻塞 Minecraft 的正常启动。
 
-仅校验主 DLL 的 SHA-256 不保证传递性依赖安全。没有单独依赖声明与校验机制的 v1 **必须拒绝需要额外未授权私有 DLL 的模块**；不要默认允许插件目录中所有同名依赖。微软对安全 DLL 搜索和 `LoadLibraryEx` 标志的说明见：
+参考：
 - https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-security
 - https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw
-
-`preload` 必须确保所有文件验证、网络访问、插件执行和解压已在 BMCBL **启动前阶段**完成；BLoader 关键路径只做有界计划接收、文件复验和必要的装载，不得在 loader lock 内运行。
 
 ## 8. 原生通信 ABI（v1 新增接口；不影响旧 DLL）
 
@@ -398,7 +397,7 @@ int32_t BLoaderModEntryV1(const BLoaderHostV1 *host, BLoaderModV1 *out_mod);
 | 两个 Minecraft 版本共享一份插件 DLL | 独立授权；相同 SHA-256；会话互不串扰 |
 | 插件禁用、卸载、升级、重新启用及 `generation` 更新 | 新启动计划正确变化，旧请求/事件不能回流 |
 | 修改 DLL、摘要不符、替换同名 DLL | 禁止加载且报告 `HASH_MISMATCH` 或 `FILE_UNSAFE` |
-| 同名不同 DLL、依赖劫持、符号链接/接合点、暂存竞态 | 不从未授权来源加载；路径与文件身份复验 |
+| 同名不同 DLL、依赖劫持、符号链接/接合点、更新时文件替换竞态 | 不从未授权来源加载；公共插件目录归属、路径与文件身份复验 |
 | 伪造 PID、复用旧 session、抢占管道、同用户其他进程连接 | 端点验证失败，计划与 RPC 不泄露 |
 | 超长/零长/截断帧、重复 JSON 键、未知 type、倒序 seq、错误 generation | 受控拒绝，内存/CPU 有界，不崩溃 |
 | 无 Mod、全未授权、BLoader 缺失、不同主版本或握手超时 | 原游戏可继续启动，虚拟 Mod 明确标记跳过 |
@@ -410,9 +409,9 @@ int32_t BLoaderModEntryV1(const BLoaderHostV1 *host, BLoaderModV1 *out_mod);
 
 ## 11. 落地顺序与验收门槛
 
-1. **BMCBL**：启动时重验授权与字节、固定快照，安全暂存；先实现宿主 IPC、消息模型和错误规范。不要先向现有插件开放无权限的 `native.load` 或路径调用。
+1. **BMCBL**：启动时重验授权与 DLL 字节、固定插件清单/授权快照，发送真实安装目录的 `plugins_root` 和模块 `relative_path`；先实现宿主 IPC、消息模型和错误规范。**不复制 DLL、不创建额外 Mod 目录**，不要向插件开放无权限的 `native.load` 或任意路径调用。
 2. **BLoader**：新增独立虚拟 Mod 模块（建议 `src/virtual_mods/{protocol,transport,session,artifact,loader,rpc,abi}.rs`），在现有引导流程中插入一次性计划获取，并复用**验证过的**阶段调度/依赖诊断，不重写 PreLoader/LeviLamina 的归属逻辑。
-3. **双端**：实现 `hello`、`welcome`、`launch_plan`、`plan_ack`、`module_status` 与失败路径；完成 Windows 端安全暂存和文件竞态测试，随后才允许加载真实 DLL。
+3. **双端**：实现 `hello`、`welcome`、`launch_plan`、`plan_ack`、`module_status` 与失败路径；完成 Windows 端原地路径验证、共享文件句柄和更新替换竞态测试，随后才允许加载真实 DLL。
 4. **双端 + 插件 API**：实现可选 `BLoaderModEntryV1`、RPC/事件、配额和 generation 撤销；完善管理页、诊断及模组加载结果展示。
 5. **跨平台**：逐条验证 Wine/Proton 安全端点、进程关联和路径转换，再声明能力支持。无安全验证的目标平台**保持关闭**。
 
