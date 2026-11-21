@@ -627,7 +627,7 @@ fn render_loading_placeholder(colors: &ThemeColors, state: &DownloadPageState) -
 }
 
 pub(super) fn render_game_panel(
-    window: &mut Window,
+    _window: &mut Window,
     cx: &mut App,
     colors: &ThemeColors,
     icon_cache: &Entity<BoundedImageCache>,
