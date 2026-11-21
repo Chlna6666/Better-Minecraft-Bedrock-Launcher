@@ -727,6 +727,39 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         return Ok(None);
     }
 
+    // The Linux launcher owns the real DLL paths and one-time IPC secret.
+    // Wine/Proton only sees the authenticated descriptor path, never its contents
+    // in command-line arguments, and no shared DLL is copied into game/mods.
+    let version_config = crate::core::version::settings::read_version_config(
+        request.folder_name.to_string(),
+    ).await.unwrap_or_default();
+    let virtual_mod_session = if version_config.disable_mod_loading {
+        None
+    } else {
+        match super::super::virtual_mods::plan_for_launch(request.version.as_ref()) {
+            Ok(Some(plan)) => {
+                let wine_prefix = match runner.kind {
+                    RunnerKind::Wine => prefix_path.clone(),
+                    RunnerKind::Proton | RunnerKind::Umu => proton_wine_prefix_path(&prefix_path),
+                };
+                match super::super::virtual_mods::prepare_linux(
+                    plan, request.version.to_string(), &wine_prefix,
+                ) {
+                    Ok(session) => Some(session),
+                    Err(error) => {
+                        append_task_log(task_id, format!("Wine 虚拟 Mod 已安全跳过：{error}"));
+                        None
+                    }
+                }
+            }
+            Ok(None) => None,
+            Err(error) => {
+                append_task_log(task_id, format!("Wine 虚拟 Mod 授权校验失败，已安全跳过：{error}"));
+                None
+            }
+        }
+    };
+
     let launch_auth = if runner_supports_winegdk_login(runner.kind) {
         let wine_prefix = proton_wine_prefix_path(&prefix_path);
         let launch_auth = crate::core::bedrock_auth::prepare_launch(&wine_prefix).await?;
@@ -824,6 +857,9 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     if let Some(auth) = &launch_auth {
         auth.apply_to_command(&mut command)?;
     }
+    if let Some(ref session) = virtual_mod_session {
+        session.apply_to_command(&mut command);
+    }
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -843,6 +879,11 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     let log_offsets = crate::core::minecraft::diagnostics::capture_log_offsets(Path::new(
         request.package_folder.as_ref(),
     ));
+    if let Some(session) = virtual_mod_session
+        && let Err(error) = session.start()
+    {
+        append_task_log(task_id, format!("Linux 虚拟 Mod IPC 未能建立，已跳过：{error}"));
+    }
     let mut child = command
         .spawn()
         .map_err(|error| format!("无法启动兼容环境 {}：{error}", runner.executable.display()))?;
