@@ -1238,7 +1238,7 @@ impl NovaRenderer {
             return Ok(None);
         }
         let display_tick_at = presentation_timing.and_then(|timing| timing.display_tick_at);
-        if !reference.presentation_is_due(display_tick_at.unwrap_or(now)) {
+        if !reference.presentation_is_due(now, display_tick_at) {
             let continues = reference.has_time_dependent_extensions()
                 || !reference.presentation_animation_timelines.is_empty();
             return Ok((continues || was_pending).then(|| ActivePresentationFrame {
@@ -1327,13 +1327,17 @@ impl NovaRenderer {
                 .is_some_and(PresentationPacket::has_pending_presentation)
     }
 
-    pub(crate) fn active_presentation_is_due(&self, now: Instant) -> bool {
+    pub(crate) fn active_presentation_is_due(
+        &self,
+        now: Instant,
+        display_tick_at: Option<Instant>,
+    ) -> bool {
         self.pending_presentation_packet
             .as_ref()
             .or(self.active_presentation_packet.as_ref())
             .is_some_and(|packet| {
                 (self.pending_presentation_packet.is_some() || packet.has_pending_presentation())
-                    && packet.presentation_is_due(now)
+                    && packet.presentation_is_due(now, display_tick_at)
             })
     }
 

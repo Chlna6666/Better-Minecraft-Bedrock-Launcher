@@ -39,6 +39,7 @@ pub(super) const WM_MODAL_UI_TASKS: u32 = WM_APP + 0x476;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct VSyncEventTiming {
+    pub(super) display_tick_at: Option<Instant>,
     pub(super) pacing_wait: Duration,
     pub(super) reported_refresh_period: Option<Duration>,
     pub(super) reported_composition_period: Option<Duration>,
@@ -47,6 +48,7 @@ pub(crate) struct VSyncEventTiming {
 
 #[derive(Clone, Copy)]
 struct VSyncPacing {
+    display_tick_at: Option<Instant>,
     elapsed: Duration,
     reported_refresh_period: Option<Duration>,
     reported_composition_period: Option<Duration>,
@@ -54,7 +56,7 @@ struct VSyncPacing {
 
 #[derive(Clone, Copy)]
 struct DwmRefreshTiming {
-    wait_until_refresh: Duration,
+    next_refresh_at: Instant,
     refresh_period: Duration,
     composition_period: Option<Duration>,
 }
@@ -149,6 +151,10 @@ impl VSyncScheduler {
 
     pub(super) fn native_unpaced_interval(&self) -> Option<Duration> {
         (self.is_active() && self.unpaced.load(Ordering::Acquire)).then(native_unpaced_interval)
+    }
+
+    pub(super) fn uses_display_clock(&self) -> bool {
+        self.is_active() && !self.unpaced.load(Ordering::Acquire)
     }
 
     pub(super) fn request_frame(&self) -> bool {
@@ -311,6 +317,7 @@ pub(super) fn spawn_vsync_thread(
                     last_unpaced_tick = None;
                     last_foreground_tick = None;
                     VSyncPacing {
+                        display_tick_at: None,
                         elapsed: wait_for_background_tick(
                             &thread_scheduler,
                             &mut last_background_tick,
@@ -324,6 +331,7 @@ pub(super) fn spawn_vsync_thread(
                     break;
                 }
                 let timing = VSyncEventTiming {
+                    display_tick_at: pacing.display_tick_at,
                     pacing_wait: pacing.elapsed,
                     reported_refresh_period: pacing.reported_refresh_period,
                     reported_composition_period: pacing.reported_composition_period,
@@ -414,6 +422,7 @@ fn wait_for_unpaced_tick(
         }
     }
     VSyncPacing {
+        display_tick_at: None,
         elapsed: started.elapsed(),
         reported_refresh_period: None,
         reported_composition_period: None,
@@ -464,9 +473,11 @@ fn wait_for_vsync(interval: Duration, last_tick: &mut Option<Instant>) -> VSyncP
         // DwmFlush drains this process's pending DirectX updates. Used after DXGI presentation,
         // that completion barrier can consume another refresh instead of pacing the next sample.
         // Follow the current DWM vblank phase; swapchain readiness remains the backpressure gate.
-        std::thread::sleep(timing.wait_until_refresh);
+        let tick = timing.next_refresh_at;
+        std::thread::sleep(tick.saturating_duration_since(Instant::now()));
         *last_tick = Some(Instant::now());
         return VSyncPacing {
+            display_tick_at: Some(tick),
             elapsed: started_at.elapsed(),
             reported_refresh_period: Some(timing.refresh_period),
             reported_composition_period: timing.composition_period,
@@ -493,6 +504,7 @@ fn wait_for_vsync(interval: Duration, last_tick: &mut Option<Instant>) -> VSyncP
 
     *last_tick = Some(Instant::now());
     VSyncPacing {
+        display_tick_at: None,
         elapsed: started_at.elapsed(),
         reported_refresh_period: None,
         reported_composition_period: None,
@@ -509,9 +521,13 @@ fn dwm_next_refresh_wait() -> Option<DwmRefreshTiming> {
     // SAFETY: All outputs point to initialized stack storage; null HWND requests desktop timing.
     unsafe {
         DwmGetCompositionTimingInfo(HWND::default(), &raw mut timing).ok()?;
-        QueryPerformanceCounter(&raw mut counter).ok()?;
         QueryPerformanceFrequency(&raw mut frequency).ok()?;
     }
+    // Capture the Instant and QPC samples together to translate the selected
+    // vblank into the same clock as UI and GPU scheduling.
+    let sampled_at = Instant::now();
+    // SAFETY: counter is initialized stack storage for the QPC output.
+    unsafe { QueryPerformanceCounter(&raw mut counter).ok()? };
     let frequency = u64::try_from(frequency).ok().filter(|value| *value != 0)?;
     let counter = u64::try_from(counter).ok()?;
     let period = timing.qpcRefreshPeriod;
@@ -523,7 +539,7 @@ fn dwm_next_refresh_wait() -> Option<DwmRefreshTiming> {
         return None;
     }
     Some(DwmRefreshTiming {
-        wait_until_refresh: Duration::from_secs_f64(ticks as f64 / frequency as f64),
+        next_refresh_at: sampled_at + Duration::from_secs_f64(ticks as f64 / frequency as f64),
         refresh_period: Duration::from_secs_f64(period as f64 / frequency as f64),
         composition_period: refresh_interval(
             u64::from(timing.rateCompose.uiNumerator),
@@ -650,12 +666,14 @@ mod tests {
     #[test]
     fn modal_frame_coalesces_to_latest_timing() {
         let first = VSyncEventTiming {
+            display_tick_at: None,
             pacing_wait: Duration::from_millis(4),
             reported_refresh_period: None,
             reported_composition_period: None,
             enqueued_at: Instant::now(),
         };
         let latest = VSyncEventTiming {
+            display_tick_at: Some(first.enqueued_at),
             pacing_wait: Duration::from_millis(8),
             reported_refresh_period: Some(Duration::from_micros(4_167)),
             reported_composition_period: Some(Duration::from_micros(8_333)),
@@ -672,6 +690,7 @@ mod tests {
             .take()
             .expect("latest frame should be pending");
         assert_eq!(received.enqueued_at, latest.enqueued_at);
+        assert_eq!(received.display_tick_at, latest.display_tick_at);
         assert_eq!(received.pacing_wait, latest.pacing_wait);
         assert!(target.publish(first));
     }
@@ -682,6 +701,7 @@ mod tests {
         scheduler.active.store(true, Ordering::Release);
         assert!(scheduler.start_modal_loop(1));
         let timing = VSyncEventTiming {
+            display_tick_at: None,
             pacing_wait: Duration::ZERO,
             reported_refresh_period: None,
             reported_composition_period: None,

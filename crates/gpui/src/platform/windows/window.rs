@@ -1475,6 +1475,7 @@ pub(crate) struct WindowsWindowInner {
     // Retain one retry bit so the next native cadence re-reads the authoritative HWND size.
     pending_native_size_retry: Cell<bool>,
     frame_dispatch_in_progress: Cell<bool>,
+    ui_frame_cadence: Cell<crate::platform::FrameCadence>,
 
     // Native and watchdog frame starts are separate clocks. OS WM_PAINT and modal
     // UI-task callbacks must not consume the queued scene ahead of DWM.
@@ -1580,10 +1581,30 @@ pub(crate) struct Callbacks {
 
 impl WindowsWindow {
     pub(crate) fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
+        let mut cadence = self.0.ui_frame_cadence.get();
+        cadence.interval = interval;
+        self.0.ui_frame_cadence.set(cadence);
         let mut renderer_state = self.0.renderer.borrow_mut();
         if let WindowsRendererState::Ready(renderer) = &mut *renderer_state {
             renderer.set_frame_interval(interval);
         }
+    }
+
+    fn claim_ui_frame(&self, display_tick: Option<Instant>, geometry_pending: bool) -> bool {
+        if !self.0.vsync_scheduler.uses_display_clock() {
+            return true;
+        }
+        let now = Instant::now();
+        let cadence = self.0.ui_frame_cadence.get();
+        if !geometry_pending && !cadence.is_due(now, display_tick) {
+            return false;
+        }
+        // A geometry transaction may bypass the limit and start a new phase.
+        let display_tick = if geometry_pending { None } else { display_tick };
+        self.0
+            .ui_frame_cadence
+            .set(cadence.record(now, display_tick));
+        true
     }
 
     /// Consume without holding the GPU mailbox lock across GPUI callbacks.
@@ -1881,6 +1902,7 @@ impl WindowsWindow {
             committed_scale_factor: Cell::new(scale_factor),
             pending_native_size_retry: Cell::new(false),
             frame_dispatch_in_progress: Cell::new(false),
+            ui_frame_cadence: Cell::default(),
 
             last_native_vsync_frame_at: Cell::new(None),
             last_unpaced_frame_at: Cell::new(None),
@@ -2333,6 +2355,7 @@ impl WindowsWindow {
         self.dispatch_pending_resize();
         let options = self.take_pending_frame_request();
         if options.requires_frame() {
+            let display_tick_at = vsync_timing.and_then(|(timing, _)| timing.display_tick_at);
             if !options.ui_commit_required() {
                 self.recover_stale_pending_renderer_resize();
             }
@@ -2360,9 +2383,7 @@ impl WindowsWindow {
                 // Ready/redraw wakes also need renderer/backend timings. Their
                 // VSync-specific durations are zero, not an absent timing sample.
                 let presentation_timing = Some(crate::platform::frame::ActivePresentationTiming {
-                    display_tick_at: vsync_timing.and_then(|(timing, _)| {
-                        timing.reported_refresh_period.map(|_| timing.enqueued_at)
-                    }),
+                    display_tick_at,
                     frame_pacing_wait: vsync_timing
                         .map_or(Duration::ZERO, |(timing, _)| timing.pacing_wait),
                     vsync_event_queue_delay: vsync_timing.map_or(
@@ -2416,7 +2437,12 @@ impl WindowsWindow {
                 // GPU packet waits for readiness. The owner replaces queued
                 // Resize/Draw pairs; waiting here would force the old layout to
                 // present first and postpone its replacement to another tick.
-                self.invoke_request_frame(options);
+                if self.claim_ui_frame(display_tick_at, matching_scene_pending) {
+                    self.invoke_request_frame(options);
+                } else {
+                    // Keep both work domains pending until a usable native tick.
+                    self.0.queue_frame_request(options);
+                }
             }
         }
         self.0.frame_dispatch_in_progress.set(false);
@@ -3010,7 +3036,11 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn native_frame_clock_interval(&self) -> Option<Duration> {
-        self.0.vsync_scheduler.native_unpaced_interval()
+        if self.0.vsync_scheduler.uses_display_clock() {
+            self.0.ui_frame_cadence.get().interval
+        } else {
+            self.0.vsync_scheduler.native_unpaced_interval()
+        }
     }
 
     fn on_live_resize_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest) -> bool>) {

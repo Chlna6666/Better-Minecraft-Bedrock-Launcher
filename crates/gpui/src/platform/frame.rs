@@ -139,6 +139,47 @@ pub(crate) enum PlatformFrameResult {
     Deferred,
 }
 
+/// Tracks a fixed-rate deadline while preserving phase on native display ticks.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FrameCadence {
+    pub(crate) interval: Option<Duration>,
+    anchor: Option<Instant>,
+}
+
+impl FrameCadence {
+    pub(crate) fn deadline(self) -> Option<Instant> {
+        self.interval
+            .zip(self.anchor)
+            .map(|(interval, anchor)| anchor + interval)
+    }
+
+    pub(crate) fn is_due(self, now: Instant, display_tick: Option<Instant>) -> bool {
+        self.deadline().is_none_or(|deadline| match display_tick {
+            // DWM refresh periods and Instant use different rounding. Preserve
+            // the deadline phase if a vblank is only a few microseconds early.
+            Some(tick) => deadline.saturating_duration_since(tick) <= Duration::from_micros(10),
+            None => now >= deadline,
+        })
+    }
+
+    pub(crate) fn record(self, now: Instant, display_tick: Option<Instant>) -> Self {
+        let anchor = match display_tick {
+            Some(tick) => self
+                .deadline()
+                .zip(self.interval)
+                // Carry fractional refresh periods forward. After a stall,
+                // start a new phase instead of catching up on missed frames.
+                .filter(|&(deadline, interval)| tick.saturating_duration_since(deadline) < interval)
+                .map_or(tick, |(deadline, _)| deadline),
+            None => now,
+        };
+        Self {
+            anchor: Some(anchor),
+            ..self
+        }
+    }
+}
+
 impl PlatformFrameResult {
     pub(crate) const fn is_accepted(self) -> bool {
         matches!(self, Self::Submitted | Self::Queued)
@@ -624,14 +665,14 @@ mod tests {
         let mut packet = empty_presentation_packet(now);
         packet.set_frame_interval(Some(interval));
         assert_eq!(packet.presentation_deadline(), None);
-        assert!(packet.presentation_is_due(now));
+        assert!(packet.presentation_is_due(now, None));
         packet.record_presentation(now);
         assert_eq!(packet.presentation_deadline(), Some(now + interval));
-        assert!(!packet.presentation_is_due(now + interval - Duration::from_nanos(1)));
-        assert!(packet.presentation_is_due(now + interval));
+        assert!(!packet.presentation_is_due(now + interval - Duration::from_nanos(1), None));
+        assert!(packet.presentation_is_due(now + interval, None));
         packet.set_frame_interval(None);
         assert_eq!(packet.presentation_deadline(), None);
-        assert!(packet.presentation_is_due(now));
+        assert!(packet.presentation_is_due(now, None));
     }
 
     #[test]
@@ -646,7 +687,7 @@ mod tests {
         let mut presented = 1;
         for refresh_index in 1..165 {
             let tick = now + refresh * refresh_index;
-            if packet.presentation_is_due(tick) {
+            if packet.presentation_is_due(tick, Some(tick)) {
                 packet.record_display_presentation(tick);
                 presented += 1;
             }
@@ -656,6 +697,41 @@ mod tests {
         let after_stall = now + Duration::from_secs(2);
         packet.record_display_presentation(after_stall);
         assert_eq!(packet.presentation_deadline(), Some(after_stall + interval));
+    }
+
+    #[test]
+    fn native_display_cadence_preserves_the_120_fps_cap_across_refresh_rates() {
+        let start = Instant::now();
+        let interval = Duration::from_nanos(1_000_000_000_u64.div_ceil(120));
+        for refresh_rate in [60_u32, 120, 144, 165, 240] {
+            let mut cadence = FrameCadence {
+                interval: Some(interval),
+                ..FrameCadence::default()
+            };
+            let mut accepted = 0;
+            let mut previous = None;
+            let refresh = Duration::from_secs_f64(1.0 / f64::from(refresh_rate));
+            let max_gap = if refresh_rate <= 120 {
+                refresh
+            } else {
+                interval + refresh
+            };
+            for index in 0..refresh_rate {
+                let tick =
+                    start + Duration::from_secs_f64(f64::from(index) / f64::from(refresh_rate));
+                // Vary event delivery time enough to cross a display refresh.
+                let now = tick + Duration::from_millis(u64::from(index % 6));
+                if cadence.is_due(now, Some(tick)) {
+                    if let Some(previous) = previous {
+                        assert!(tick - previous <= max_gap + Duration::from_nanos(1));
+                    }
+                    cadence = cadence.record(now, Some(tick));
+                    previous = Some(tick);
+                    accepted += 1;
+                }
+            }
+            assert_eq!(accepted, refresh_rate.min(120), "{refresh_rate} Hz");
+        }
     }
 
     #[test]
@@ -1388,8 +1464,7 @@ pub(crate) struct PresentationPacket {
     pub(crate) backdrop_blur_damage: BackdropBlurDamagePlan,
     pub(crate) partial_present_mode: PartialPresentMode,
     pub(crate) force_full_backdrop_blur_refresh: bool,
-    frame_interval: Option<Duration>,
-    presentation_clock_anchor: Option<Instant>,
+    presentation_cadence: FrameCadence,
 }
 
 #[derive(Clone, Copy)]
@@ -1514,42 +1589,32 @@ impl PresentationPacket {
             backdrop_blur_damage,
             partial_present_mode,
             force_full_backdrop_blur_refresh: false,
-            frame_interval: None,
-            presentation_clock_anchor: None,
+            presentation_cadence: FrameCadence::default(),
         }
     }
 
     pub(crate) fn set_frame_interval(&mut self, frame_interval: Option<Duration>) {
-        self.frame_interval = frame_interval;
+        self.presentation_cadence.interval = frame_interval;
     }
 
-    pub(crate) fn presentation_is_due(&self, now: Instant) -> bool {
-        self.presentation_deadline().is_none_or(|deadline| now >= deadline)
+    pub(crate) fn presentation_is_due(&self, now: Instant, display_tick: Option<Instant>) -> bool {
+        self.presentation_cadence.is_due(now, display_tick)
     }
 
+    #[cfg(any(test, not(target_os = "windows")))]
     pub(crate) fn presentation_deadline(&self) -> Option<Instant> {
-        self.frame_interval
-            .zip(self.presentation_clock_anchor)
-            .map(|(interval, last)| last + interval)
+        self.presentation_cadence.deadline()
     }
 
     pub(crate) fn record_presentation(&mut self, presented_at: Instant) {
-        self.presentation_clock_anchor = Some(presented_at);
+        self.presentation_cadence = self.presentation_cadence.record(presented_at, None);
     }
 
     /// Advance the limit on its own phase when a display tick arrives late.
     /// Restarting from every rounded-up vblank would make 120 FPS on a
     /// 165 Hz display wait two refreshes on every frame.
     pub(crate) fn record_display_presentation(&mut self, tick: Instant) {
-        let anchor = self
-            .presentation_deadline()
-            .zip(self.frame_interval)
-            .filter(|&(deadline, interval)| {
-                tick.checked_duration_since(deadline)
-                    .is_some_and(|late| late < interval)
-            })
-            .map_or(tick, |(deadline, _)| deadline);
-        self.presentation_clock_anchor = Some(anchor);
+        self.presentation_cadence = self.presentation_cadence.record(tick, Some(tick));
     }
 
     /// Sample scene-owned visual timelines without consulting mutable UI state.

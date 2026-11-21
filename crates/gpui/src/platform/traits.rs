@@ -279,10 +279,10 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn native_inactive_frame_clock_interval(&self) -> Option<Duration> {
         None
     }
-    /// Native UI-frame cadence, if the platform itself enforces a fixed interval.
+    /// Native UI-frame limit, if the platform itself enforces a fixed interval.
     /// A matching per-window FrameClock must not schedule a *second* timer before
-    /// entering this same cadence. Platforms that do not own fixed-rate UI
-    /// scheduling, including VSync-only backends, return None.
+    /// entering this same cadence. This includes platforms that enforce the
+    /// window's cap directly on display ticks.
     fn native_frame_clock_interval(&self) -> Option<Duration> {
         None
     }
