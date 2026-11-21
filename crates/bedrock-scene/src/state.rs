@@ -202,13 +202,6 @@ pub(super) fn normalized_block_name(name: &str) -> String {
     name.strip_prefix("minecraft:").unwrap_or(name).to_string()
 }
 
-pub(super) fn is_pane_like_block(normalized: &str) -> bool {
-    normalized == "iron_bars"
-        || normalized.ends_with("_pane")
-        || normalized == "pane"
-        || normalized.ends_with("_glass_pane")
-}
-
 pub(super) fn cardinal_direction_from_int(value: i32) -> Option<CardinalDirection> {
     match value.rem_euclid(4) {
         0 => Some(CardinalDirection::South),
@@ -269,13 +262,5 @@ pub(super) fn state_bool(state: &BlockState, key: &str) -> Option<bool> {
             _ => None,
         },
         _ => None,
-    }
-}
-pub(super) fn block_face_from_direction(direction: CardinalDirection) -> BlockFace {
-    match direction {
-        CardinalDirection::North => BlockFace::North,
-        CardinalDirection::South => BlockFace::South,
-        CardinalDirection::East => BlockFace::East,
-        CardinalDirection::West => BlockFace::West,
     }
 }
