@@ -101,37 +101,9 @@ pub(super) fn shape_from_block_geometry(geometry: &BlockGeometry) -> Option<Deta
     geometry::model_shape(geometry).map(detail_shape_from_model)
 }
 
-pub(super) fn shape_from_named_geometry(
-    repository: &BlockModelRepository,
-    identifier: &str,
-) -> Option<DetailShape> {
-    let geometry = repository.geometries.get(identifier)?;
-    let mut shape = shape_from_block_geometry(geometry)?;
-    if identifier == "geometry.shulker.v1.8" {
-        normalize_shulker_geometry_shape(&mut shape);
-    }
-    Some(shape).filter(|shape| !shape.is_empty())
-}
-
 pub(super) fn is_bed_state(name: &str) -> bool {
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
     name == "bed" || name.ends_with("_bed")
-}
-
-pub(super) fn normalize_shulker_geometry_shape(shape: &mut DetailShape) {
-    shape.cuboids.retain(|cuboid| {
-        let width = cuboid.max[0] - cuboid.min[0];
-        let height = cuboid.max[1] - cuboid.min[1];
-        let depth = cuboid.max[2] - cuboid.min[2];
-        !(width <= 0.4 && height <= 0.4 && depth <= 0.4)
-    });
-    for cuboid in &mut shape.cuboids {
-        *cuboid = detail_cuboid_with_local_uv(cuboid.clone())
-            .with_face_material_slot(BlockFace::Down, "down")
-            .with_face_material_slot(BlockFace::Up, "up")
-            .with_face_material_slot(BlockFace::Side, "side");
-    }
-    shape.planes.clear();
 }
 
 pub(super) fn material_slot_from_value(value: &str) -> Option<MaterialSlot> {
