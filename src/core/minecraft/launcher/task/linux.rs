@@ -736,7 +736,9 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     let virtual_mod_session = if version_config.disable_mod_loading {
         None
     } else {
-        match super::super::virtual_mods::plan_for_launch(request.version.as_ref()) {
+        match super::super::virtual_mods::plan_for_launch(
+            request.folder_name.as_ref(), request.version.as_ref(),
+        ) {
             Ok(Some(plan)) => {
                 let wine_prefix = match runner.kind {
                     RunnerKind::Wine => prefix_path.clone(),
