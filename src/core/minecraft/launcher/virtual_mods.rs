@@ -227,8 +227,8 @@ fn valid_rpc_name(value: &str) -> bool {
             || matches!(byte, b'.' | b'_' | b'-'))
 }
 
-pub(crate) fn plan_for_launch(game_version: &str) -> Result<Option<LaunchPlan>, String> {
-    crate::plugins::game_mods::launch_plan(game_version)
+pub(crate) fn plan_for_launch(version_id: &str, game_version: &str) -> Result<Option<LaunchPlan>, String> {
+    crate::plugins::game_mods::launch_plan(version_id, game_version)
 }
 
 pub(crate) fn new_session_id() -> String {
