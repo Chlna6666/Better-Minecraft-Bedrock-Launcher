@@ -113,8 +113,10 @@ impl PendingLinuxSession {
                     let _ = fs::remove_file(&descriptor_path);
                     stream.set_read_timeout(None).map_err(|error| error.to_string())?;
                     stream.set_write_timeout(None).map_err(|error| error.to_string())?;
+                    let writer = stream.try_clone()
+                        .map_err(|error| format!("cannot clone virtual Mod socket: {error}"))?;
                     return serve(
-                        &mut stream, &self.plan, &self.plugins_root_in_wine,
+                        &mut stream, writer, &self.plan, &self.plugins_root_in_wine,
                         "authenticated-loopback", None, &self.session_id, &self.game_version,
                     );
                 }
