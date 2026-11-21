@@ -167,7 +167,10 @@ pub(crate) fn publish_active(mods: Vec<(GameMod, u64)>) {
         .unwrap_or_else(|error| error.into_inner()) = mods;
 }
 
-pub(crate) fn launch_plan(game_version: &str) -> Result<Option<LaunchPlan>, String> {
+/// version_id is the launcher installation folder, whereas game_version is
+/// the Minecraft executable version. Approval keys use version_id; runtime
+/// compatibility matching uses game_version.
+pub(crate) fn launch_plan(version_id: &str, game_version: &str) -> Result<Option<LaunchPlan>, String> {
     let live = ACTIVE
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
@@ -176,7 +179,7 @@ pub(crate) fn launch_plan(game_version: &str) -> Result<Option<LaunchPlan>, Stri
     if live.is_empty() {
         return Ok(None);
     }
-    let permissions = approvals(game_version)?;
+    let permissions = approvals(version_id)?;
     let plugins_root = crate::utils::file_ops::bmcbl_subdir("plugins")
         .canonicalize()
         .map_err(|error| format!("cannot resolve installed plugin root: {error}"))?;
