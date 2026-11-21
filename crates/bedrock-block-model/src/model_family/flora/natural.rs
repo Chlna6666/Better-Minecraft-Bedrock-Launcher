@@ -562,21 +562,6 @@ fn hanging_propagule_shape(stage: i64) -> ModelShape {
     ModelShape::from_cuboids([body, cap]).with_planes(planes)
 }
 
-/// Gives a box whole-tile art on its caps and upright art on its sides.
-///
-/// Plant textures are single tiles, so a side that sampled the tile top-down would show the
-/// sprout hanging from the top of the face instead of standing on it.
-fn plant_cuboid_with_upright_art(cuboid: ModelCuboid) -> ModelCuboid {
-    use crate::model_family::shape::{full_texture_face_uv, full_texture_uv};
-    cuboid
-        .with_face_uv(BlockFace::Up, full_texture_uv())
-        .with_face_uv(BlockFace::Down, full_texture_uv())
-        .with_face_uv(BlockFace::North, full_texture_face_uv(BlockFace::North))
-        .with_face_uv(BlockFace::South, full_texture_face_uv(BlockFace::South))
-        .with_face_uv(BlockFace::East, full_texture_face_uv(BlockFace::East))
-        .with_face_uv(BlockFace::West, full_texture_face_uv(BlockFace::West))
-}
-
 pub(crate) fn dripleaf_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     if name == "small_dripleaf_block" {
         return small_dripleaf_shape(state);
@@ -835,24 +820,6 @@ fn upper_dripleaf_leaf(direction: CardinalDirection) -> ModelShape {
     shape
 }
 
-fn vertical_plane_z(z: f32, material_slot: &'static str) -> ModelPlane {
-    ModelPlane::new(
-        [[0.0, 0.0, z], [1.0, 0.0, z], [1.0, 1.0, z], [0.0, 1.0, z]],
-        [0, 0, 1],
-    )
-    .with_material_slot(material_slot)
-    .with_uv(upright_full_texture_uv())
-}
-
-fn vertical_plane_x(x: f32, material_slot: &'static str) -> ModelPlane {
-    ModelPlane::new(
-        [[x, 0.0, 0.0], [x, 0.0, 1.0], [x, 1.0, 1.0], [x, 1.0, 0.0]],
-        [1, 0, 0],
-    )
-    .with_material_slot(material_slot)
-    .with_uv(upright_full_texture_uv())
-}
-
 fn drooping_plane_z(z: f32) -> ModelPlane {
     ModelPlane::new(
         [
@@ -877,32 +844,6 @@ fn drooping_plane_x(x: f32) -> ModelPlane {
         [1, -1, 0],
     )
     .with_uv(full_texture_uv())
-}
-
-fn tendril_plane_z(z: f32) -> ModelPlane {
-    ModelPlane::new(
-        [
-            [px(3.0), px(8.0), z],
-            [px(13.0), px(8.0), z],
-            [px(13.0), px(16.0), z],
-            [px(3.0), px(16.0), z],
-        ],
-        [0, 0, 1],
-    )
-    .with_uv(upright_full_texture_uv())
-}
-
-fn tendril_plane_x(x: f32) -> ModelPlane {
-    ModelPlane::new(
-        [
-            [x, px(8.0), px(3.0)],
-            [x, px(8.0), px(13.0)],
-            [x, px(16.0), px(13.0)],
-            [x, px(16.0), px(3.0)],
-        ],
-        [1, 0, 0],
-    )
-    .with_uv(upright_full_texture_uv())
 }
 
 const fn px(value: f32) -> f32 {
