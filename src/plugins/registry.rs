@@ -27,6 +27,8 @@ pub(crate) struct Plugin {
     pub(crate) status: String,
     pub(crate) version: String,
     #[serde(default)]
+    pub(crate) github_download_count: Option<u64>,
+    #[serde(default)]
     pub(crate) tags: Vec<String>,
     pub(crate) icon: Option<Icon>,
 }
@@ -267,7 +269,7 @@ mod tests {
     use super::Plugin;
 
     #[test]
-    fn registry_summary_accepts_tags_and_old_entries_without_tags() {
+    fn registry_summary_accepts_optional_tags_and_github_downloads() {
         let mut summary = serde_json::json!({
             "id": "test-tools",
             "name": "Test Tools",
@@ -276,9 +278,13 @@ mod tests {
             "description": "",
             "version": "0.1.0",
         });
-        assert!(serde_json::from_value::<Plugin>(summary.clone()).unwrap().tags.is_empty());
+        let previous = serde_json::from_value::<Plugin>(summary.clone()).unwrap();
+        assert!(previous.tags.is_empty());
+        assert_eq!(previous.github_download_count, None);
         summary["tags"] = serde_json::json!(["networking", "p2p"]);
+        summary["github_download_count"] = serde_json::json!(0);
         let plugin = serde_json::from_value::<Plugin>(summary).unwrap();
         assert_eq!(plugin.tags, ["networking", "p2p"]);
+        assert_eq!(plugin.github_download_count, Some(0));
     }
 }

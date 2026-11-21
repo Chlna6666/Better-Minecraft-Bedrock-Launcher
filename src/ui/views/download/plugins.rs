@@ -11,10 +11,11 @@ use crate::plugins::{registry, runtime};
 use crate::tasks::task_manager::wait_for_task;
 use crate::ui::components::button::{ghost_button, primary_button, secondary_button};
 use crate::ui::components::markdown::{Document, parse_document, render_document};
-use crate::ui::components::{plugin_icon, plugin_tags};
+use crate::ui::components::page_shell::glass_card;
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::components::toast;
 use crate::ui::components::{dialog, modal};
+use crate::ui::components::{plugin_icon, plugin_tags};
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::ThemeColors;
 
@@ -143,7 +144,7 @@ pub(super) fn render(
         .flex()
         .flex_col()
         .gap(px(8.))
-        .p(px(14.));
+        .p(px(12.));
     if let Some(error) = &registry.error {
         list = list.child(div().text_color(colors.danger).child(error.clone()));
     }
@@ -160,28 +161,16 @@ pub(super) fn render(
                 .child(t!("DownloadPage.plugins_empty")),
         );
     }
-    for plugin in entries.iter().skip(page * PAGE_SIZE).take(PAGE_SIZE) {
-        let busy = registry.installing.contains(&plugin.id);
-        let entry = (*plugin).clone();
-        list = list.child(
-            crate::ui::components::page_shell::glass_card(colors)
-                .id(SharedString::from(format!("catalog-card-{}", plugin.id)))
-                .w_full()
-                .flex()
-                .items_center()
-                .gap(px(14.))
-                .p(px(12.))
-                .cursor_pointer()
-                .hover(|style| style.bg(colors.surface_hover))
-                .on_click(move |_, window, cx| {
-                    window.blur(cx);
-                    open_details(cx, entry.clone());
-                })
-                .child(icon(colors, image_cache, plugin))
-                .child(summary(colors, plugin))
-                .child(install_button(colors, cx, plugin, busy)),
-        );
-    }
+    let first = page * PAGE_SIZE;
+    list = list.children(entries[first..].iter().take(PAGE_SIZE).map(|plugin| {
+        catalog_row(
+            colors,
+            cx,
+            image_cache,
+            plugin,
+            registry.installing.contains(&plugin.id),
+        )
+    }));
     let mut panel = div()
         .size_full()
         .min_h(px(0.))
@@ -218,6 +207,111 @@ pub(super) fn render(
     panel
 }
 
+fn catalog_row(
+    colors: &ThemeColors,
+    cx: &App,
+    image_cache: &Entity<BoundedImageCache>,
+    plugin: &registry::Plugin,
+    busy: bool,
+) -> Stateful<Div> {
+    let entry = plugin.clone();
+    let hover = colors.surface_hover;
+    glass_card(colors)
+        .shadow(Vec::new())
+        .id(SharedString::from(format!("catalog-row-{}", plugin.id)))
+        .debug_selector(|| format!("catalog-row-{}", plugin.id))
+        .w_full()
+        .flex_none()
+        .px(px(12.))
+        .py(px(8.))
+        .line_height(px(16.))
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover))
+        .on_click(move |_, window, cx| {
+            window.blur(cx);
+            open_details(cx, entry.clone());
+        })
+        .child(icon(colors, image_cache, plugin))
+        .child(catalog_summary(colors, plugin))
+        .child(
+            div()
+                .flex_none()
+                .max_w(relative(0.36))
+                .flex()
+                .flex_col()
+                .items_end()
+                .gap(px(2.))
+                .child(
+                    install_button(colors, cx, plugin, busy)
+                        .h(px(30.))
+                        .px(px(11.))
+                        .py(px(0.)),
+                )
+                .children(
+                    github_downloads(colors, plugin).map(|count| count.max_w_full().truncate()),
+                ),
+        )
+}
+
+fn catalog_summary(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
+    div()
+        .flex_1()
+        .min_w(px(0.))
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .child(
+            div()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .truncate()
+                .child(plugin.name.clone()),
+        )
+        .when(!plugin.description.trim().is_empty(), |item| {
+            item.child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(colors.text_secondary)
+                    .truncate()
+                    .child(super::common::sanitize_single_line(&plugin.description)),
+            )
+        })
+        .child(catalog_metadata(colors, plugin))
+}
+
+fn catalog_metadata(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
+    let tags = plugin_tags::render(colors, &plugin.tags[..plugin.tags.len().min(2)]);
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(
+            div()
+                .min_w(px(0.))
+                .text_size(px(11.))
+                .line_height(px(14.))
+                .text_color(colors.text_secondary)
+                .truncate()
+                .child(plugin_metadata(plugin)),
+        )
+        .children(tags.map(|tags| tags.flex_1().flex_nowrap().overflow_hidden()))
+}
+
+fn github_downloads(colors: &ThemeColors, plugin: &registry::Plugin) -> Option<Div> {
+    let count = plugin.github_download_count?.to_string();
+    Some(
+        div()
+            .text_size(px(11.))
+            .text_color(colors.text_secondary)
+            .whitespace_nowrap()
+            .child(t!("DownloadPage.plugins_github_downloads", count = count)),
+    )
+}
+
 fn icon(
     colors: &ThemeColors,
     image_cache: &Entity<BoundedImageCache>,
@@ -228,15 +322,19 @@ fn icon(
         .as_ref()
         .and_then(|icon| icon.url(&plugin.id))
         .map(|url| img(url).image_cache(image_cache));
-    plugin_icon::render(colors, px(42.), icon)
+    plugin_icon::render(colors, px(34.), icon)
 }
 
-fn summary(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
+fn plugin_metadata(plugin: &registry::Plugin) -> String {
     let status = match plugin.status.as_str() {
         "official" => t!("DownloadPage.plugins_official"),
         "verified" => t!("DownloadPage.plugins_verified"),
         _ => t!("DownloadPage.plugins_community"),
     };
+    format!("{} · {status} · v{}", plugin.publisher, plugin.version)
+}
+
+fn summary(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
     div()
         .flex_1()
         .min_w(px(0.))
@@ -252,10 +350,7 @@ fn summary(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
             div()
                 .text_size(px(12.))
                 .text_color(colors.text_secondary)
-                .child(format!(
-                    "{} · {status} · v{}",
-                    plugin.publisher, plugin.version
-                )),
+                .child(plugin_metadata(plugin)),
         )
         .when(!plugin.description.trim().is_empty(), |item| {
             item.child(
@@ -266,6 +361,7 @@ fn summary(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
             )
         })
         .children(plugin_tags::render(colors, &plugin.tags))
+        .children(github_downloads(colors, plugin))
 }
 
 fn install_button(
@@ -550,6 +646,74 @@ mod tests {
         }
     }
 
+    struct CatalogProbe(Entity<BoundedImageCache>);
+
+    impl Render for CatalogProbe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            render(&LightColors::theme(), cx, &self.0)
+        }
+    }
+
+    fn sample_plugin(id: &str) -> registry::Plugin {
+        registry::Plugin {
+            id: id.into(),
+            name: "Test Tools".into(),
+            description: "Plugin description with enough text to exceed a narrow card. ".repeat(6),
+            publisher: "BMCBL".into(),
+            status: "official".into(),
+            version: "1.0.0".into(),
+            github_download_count: Some(42),
+            tags: vec!["tools".into(), "networking".into(), "p2p".into()],
+            icon: None,
+        }
+    }
+
+    #[gpui::test]
+    fn plugin_catalog_rows_fill_the_list_and_open_details(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(I18n::new());
+            cx.set_global(runtime::PluginRegistry::default());
+            let mut state = DownloadPageState::default();
+            state.tab = DownloadTab::Plugin;
+            let mut catalog = registry::Catalog::default();
+            catalog.plugins = vec![sample_plugin("first")].into();
+            state.plugin_catalog.catalog = Some(catalog);
+            cx.set_global(state);
+        });
+        let (_, visual) = cx.add_window_view(|_, cx| {
+            CatalogProbe(BoundedImageCache::new(
+                BoundedImageCacheConfig::default(),
+                cx,
+            ))
+        });
+        visual.simulate_resize(size(px(972.), px(600.)));
+        let wide = visual.debug_bounds("catalog-row-first").unwrap();
+        assert!(wide.right() >= px(950.), "{wide:?}");
+        assert!(wide.size.height < px(90.), "{wide:?}");
+
+        visual.update(|_, cx| {
+            cx.update_global(|state: &mut DownloadPageState, _| {
+                state.plugin_catalog.catalog.as_mut().unwrap().plugins =
+                    vec![sample_plugin("first"), sample_plugin("second")].into();
+            });
+        });
+        visual.simulate_resize(size(px(640.), px(460.)));
+        let first = visual.debug_bounds("catalog-row-first").unwrap();
+        let second = visual.debug_bounds("catalog-row-second").unwrap();
+        assert!(first.right() >= px(618.), "{first:?}");
+        assert_eq!(first.size.height, wide.size.height);
+        assert_eq!(first.left(), second.left());
+        assert_eq!(first.right(), second.right());
+        assert!(first.bottom() < second.top());
+        visual.simulate_click(first.center(), Modifiers::default());
+        visual.update(|_, cx| {
+            let state = cx.global::<DownloadPageState>();
+            let details = state.plugin_catalog.details.as_ref().unwrap();
+            assert_eq!(details.plugin.id, "first");
+            assert_eq!(details.plugin.github_download_count, Some(42));
+        });
+    }
+
     #[gpui::test]
     fn plugin_readme_dialog_keeps_the_search_and_list_page(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -560,16 +724,7 @@ mod tests {
             state.search_query = "test-tools".into();
             state.page_index = 2;
             state.plugin_catalog.details = Some(Details {
-                plugin: registry::Plugin {
-                    id: "test-tools".into(),
-                    name: "Test Tools".into(),
-                    description: String::new(),
-                    publisher: "BMCBL".into(),
-                    status: "official".into(),
-                    version: "1.0.0".into(),
-                    tags: vec!["tools".into(), "p2p".into()],
-                    icon: None,
-                },
+                plugin: sample_plugin("test-tools"),
                 readme: Readme::Ready(Some(parse_document(&"README paragraph.\n\n".repeat(80)))),
                 load: None,
             });

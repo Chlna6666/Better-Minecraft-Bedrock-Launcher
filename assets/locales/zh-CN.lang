@@ -372,6 +372,7 @@ DownloadPage.plugins_installing=正在安装…
 DownloadPage.plugins_installed=已安装
 DownloadPage.plugins_incompatible=不兼容
 DownloadPage.plugins_update=更新
+DownloadPage.plugins_github_downloads=GitHub 下载 {{count}}
 DownloadPage.plugins_install=安装
 DownloadPage.plugins_install_success=插件安装成功
 DownloadPage.tab_resource=资源包

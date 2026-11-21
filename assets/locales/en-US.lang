@@ -372,6 +372,7 @@ DownloadPage.plugins_installing=Installing…
 DownloadPage.plugins_installed=Installed
 DownloadPage.plugins_incompatible=Incompatible
 DownloadPage.plugins_update=Update
+DownloadPage.plugins_github_downloads=GitHub downloads: {{count}}
 DownloadPage.plugins_install=Install
 DownloadPage.plugins_install_success=Plugin installed
 DownloadPage.tab_resource=Packs
