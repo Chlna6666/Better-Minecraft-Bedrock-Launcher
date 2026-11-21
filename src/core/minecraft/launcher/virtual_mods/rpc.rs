@@ -129,7 +129,6 @@ pub(super) fn register<W: Write + Send + 'static>(
         // Bound the number of live session records, rejecting new sessions
         // rather than evicting another running Minecraft instance.
         if sessions.len() >= 16 {
-            session.close();
             return Err("too many concurrent Minecraft virtual Mod sessions".into());
         }
         sessions.insert(id.to_string(), session.clone());
