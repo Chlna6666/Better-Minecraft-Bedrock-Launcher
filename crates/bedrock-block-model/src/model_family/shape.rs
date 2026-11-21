@@ -485,7 +485,10 @@ fn quarter_turn_x(cuboid: &ModelCuboid) -> ModelCuboid {
             .insert(x_quarter_face(*face), slot.clone());
     }
     for (face, uv) in &cuboid.face_uvs {
-        rotated.face_uvs.insert(x_quarter_face(*face), *uv);
+        // Rigid pitch: every face's art rotates one quarter with the geometry.
+        rotated
+            .face_uvs
+            .insert(x_quarter_face(*face), rotate_uv_quarter(*uv, 1));
     }
     rotated
 }
@@ -527,15 +530,15 @@ fn quarter_turn_clockwise(cuboid: &ModelCuboid) -> ModelCuboid {
             .insert(clockwise_face(*face), slot.clone());
     }
     for (face, uv) in &cuboid.face_uvs {
-        // The caps carry the art that has to turn with the block: a directional top texture
-        // (the repeater's mechanism grooves, a comparator's arrow) stays put if only the face
-        // slot moves, which left the base art pointing the authored way while the torches
-        // turned. Rotate the cap UVs inside their face; seen from below a clockwise turn reads
-        // counter-clockwise, hence the opposite quarter count on the underside.
+        // Rigid model turn: every face's art rotates with the block. The caps already
+        // carried this (a directional top texture — the repeater's mechanism grooves, a
+        // comparator's arrow — stays put if only the face slot moves); the side faces
+        // need it too: a clockwise turn seen from outside a side face reads as a
+        // clockwise in-face rotation, and the underside reads counter-clockwise.
         let uv = match face {
             BlockFace::Up => rotate_uv_quarter(*uv, 1),
             BlockFace::Down => rotate_uv_quarter(*uv, 3),
-            _ => *uv,
+            _ => rotate_uv_quarter(*uv, 1),
         };
         rotated.face_uvs.insert(clockwise_face(*face), uv);
     }
