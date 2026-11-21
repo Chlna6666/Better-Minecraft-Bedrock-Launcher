@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 pub(crate) use crate::plugins::game_mods::LaunchPlan;
-pub(crate) use rpc::call as call_native;
+pub(crate) use rpc::{call as call_native, take_events, NativeEvent};
 #[cfg(target_os = "linux")]
 pub(crate) use linux::prepare as prepare_linux;
 #[cfg(target_os = "windows")]
@@ -202,11 +202,7 @@ fn serve<T: Read + Write, W: Write + Send + 'static>(
                 record_status(session_id, &frame);
             }
             Some("rpc_response") => rpc_session.handle_response(&frame)?,
-            Some("mod_event") => {
-                // Event subscriptions will be permission-checked separately.
-                // Never treat native DLL messages as launcher commands.
-                tracing::trace!(session_id, "unsubscribed native Mod event dropped");
-            },
+            Some("mod_event") => rpc_session.handle_event(&frame)?,
             Some("error") => {
                 tracing::warn!(session_id,
                     error_code = ?frame.get("error_code").and_then(Value::as_str),
