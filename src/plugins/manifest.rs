@@ -41,6 +41,7 @@ pub enum PluginCapability {
     ConfigRead,
     ConfigWrite,
     DownloadStart,
+    GameModCall,
 }
 
 impl PluginCapability {
@@ -61,6 +62,7 @@ impl PluginCapability {
             "config.read" => Some(Self::ConfigRead),
             "config.write" => Some(Self::ConfigWrite),
             "download.start" => Some(Self::DownloadStart),
+            "game-mod.call" => Some(Self::GameModCall),
             _ => None,
         }
     }
@@ -82,6 +84,7 @@ impl PluginCapability {
             Self::ConfigRead => "config.read",
             Self::ConfigWrite => "config.write",
             Self::DownloadStart => "download.start",
+            Self::GameModCall => "game-mod.call",
         }
     }
 }
