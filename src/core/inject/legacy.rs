@@ -245,6 +245,7 @@ pub async fn launch_win32(
     args: Option<&str>,
     dll_paths: Vec<String>,
     launch_metadata: Option<Vec<(String, String)>>,
+    virtual_mod_plan: Option<(crate::plugins::game_mods::LaunchPlan, String)>,
     enable_console: bool,
     on_progress: Option<InjectProgressCb>,
 ) -> Result<u32> {
@@ -334,6 +335,16 @@ pub async fn launch_win32(
                 log("未提供 XUser 会话；不会创建登录通道或触发 QueryApiImpl Hook");
                 None
             };
+
+            // Create the one-use, PID-bound virtual-Mod endpoint while Minecraft
+            // is still suspended. The channel is independent from the XUser pipe.
+            if let Some((plan, game_version)) = virtual_mod_plan
+                && let Err(error) = crate::core::minecraft::launcher::virtual_mods::start_windows(
+                    pid, plan, game_version,
+                )
+            {
+                log(&format!("Virtual Mod session unavailable; game continues: {error}"));
+            }
 
             if !dll_paths.is_empty() {
                 let kernel = GetModuleHandleW(windows::core::w!("kernel32.dll"))?;
