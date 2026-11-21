@@ -18,7 +18,7 @@
 - `plugin_generation` 是 BMCBL 内一次插件运行实例的标识；插件卸载、重载、禁用后不得复用。`session_id` 是一次游戏启动的随机会话标识。二者都**不是密码或安全能力凭据**。
 - `preload` 表示 BLoader 自有 `mod-preload`，须在 Minecraft OEP 释放前、但在 Windows loader lock 之外执行；`ready` 表示 BLoader 自有 `mod-native`，在 OEP 已释放并满足 `ReadyLevel::Process` 后执行。它们与 PreLoader/LeviLamina 的 Mod 类型没有替代或隐式接管关系。BLoader 当前流程先处理 PreLoader，再处理自身 `mod-preload`；不要把 `preload` 误解为“早于 PreLoader”。
 - 已在 `mods/`、`BLoader/mods/` 中由既有机制管理的 Mod 保留原有行为；虚拟 Mod **不得写入这些目录或伪装为 LeviLamina Mod**。
-- Win32 x64 PE DLL 是 v1 唯一载荷格式。Wine/Proton 中的 Windows x64 Minecraft 仍使用 PE DLL；Linux 原生 `.so` 不属于本协议。GDK/UWP 等启动形态须逐个验证，未验证时返回不支持，不推断普遍可用。
+- v1 `game_mods.platform` 指**Minecraft 进程内的目标二进制 ABI**，不是 BMCBL 宿主操作系统：`windows-x86_64` PE DLL 可同时用于 Windows 原生游戏及 Linux 上 Wine/Proton/UMU 内运行的 Windows x64 Minecraft。不能因为宿主为 Linux 就将它重标记为 `linux-x86_64`。Linux 原生 `.so` 不得直接用 BLoader 的 Windows `LoadLibraryExW` 加载；如需 Linux 原生组件，应通过独立的 BMCBL Native Bridge 在 Linux 宿主侧管理。GDK/UWP 等具体启动形态与 BLoader 是否能在相应阶段启动必须逐个验证，未验证时返回不支持。
 
 ## 2. 现有实现与尚未实现的边界
 
@@ -53,11 +53,28 @@ game_versions = ["1.21.120", "26.10"]
 | `id` | 每插件唯一，匹配当前插件 ID 校验规则：3～64 字节、小写 ASCII 字母开头，其余小写 ASCII 字母/数字/单个中划线，不以中划线结尾 |
 | `name` | 非空 UTF-8 展示名称，最多 128 字节；**不参与安全标识** |
 | `path` | 使用 `/` 的包内相对文件路径，必须位于 `game-mods/` 下并以 `.dll` 结尾；拒绝绝对路径、`..`、设备路径、UNC、空组件、反斜线与逃逸链接 |
-| `platform` | v1 仅 `windows-x86_64`；未知值拒绝 |
+| `platform` | 目标**游戏进程 ABI**；v1 的游戏内 DLL 仅 `windows-x86_64`，含 Linux Wine/Proton/UMU 运行的 Windows Minecraft；未知值拒绝。`linux-x86_64` `.so` 是未来 Linux **宿主原生组件**场景，不应直接加入 BLoader 游戏内 `game_mods` |
 | `phase` | `preload` 或 `ready`；未知值拒绝 |
 | `game_versions` | 1～32 个非空点分数字前缀，单项最多 32 字节；只按**组件边界**匹配，`26.10` 可匹配 `26.10.2`，不能匹配 `26.100` |
 
 每包最多 32 个 Mod，主 DLL 不超过 32 MiB。清单解析与解压都必须设资源上限；压缩包索引路径经过规范化后不得重复、大小写碰撞或映射到同一磁盘文件。不得因为未声明 `game_mods` 而扫描其余 DLL。
+
+**宿主 OS 与目标 ABI 必须分离。** 现有 Rust `Declaration` 使用 `#[serde(deny_unknown_fields)]`，尚无 `host_platforms` 字段；下列方案为**待两端同步实现的清单扩展**，不能在未修改解析器时直接用于已发布插件：
+
+```toml
+[[game_mods]]
+id = "example-mod"
+name = "Example Mod"
+path = "game-mods/example.dll"
+platform = "windows-x86_64" # 游戏进程 ABI，不是宿主 OS
+host_platforms = ["windows", "linux"] # 待实现：可选宿主限制
+phase = "ready"
+game_versions = ["26.10"]
+```
+
+- 推荐 `host_platforms` 为**可选限制条件**，未设置不意味着只允许 Windows：只要游戏二进制 ABI 匹配、BLoader 可达、IPC 安全可用、用户已授权即可在 Linux 运行 Windows DLL。若插件有特定宿主 OS 限制，再显式填写。
+- Windows 原生、Wine、Proton、UMU 是**运行器能力**而非 DLL ABI。运行器能力应由宿主在启动时探测，不能通过插件的任意声明自行开启。宿主可记录 `runtime_kind = native-windows | wine | proton | umu`，避免重复打包同一 DLL。
+- 如未来真的出现 Linux 原生 Minecraft 与原生 Linux Mod 加载器，再通过新平台值和对应本机加载后端扩展；不能将其等同于运行在 Wine 中的 Windows 游戏。
 
 ### 3.2 授权的安全语义
 
@@ -89,19 +106,62 @@ game_versions = ["1.21.120", "26.10"]
 - 身份验证通过之后才交换 `hello/welcome`、启动计划和任何载荷路径。`session_id` 与随机挑战/一次性连接材料仅用于防止跨启动混淆；**不能单靠自报 nonce、PID 或 SHA-256 当作认证**。任何握手材料不写入环境变量、命令行、日志或插件存储。
 - 每次启动仅接受一次经认证的连接；重复连接、超时或会话关闭后不自动复用旧计划。支持重连需另行定义重新认证、已加载模块与请求状态恢复，**不属于 v1**。
 
-### 5.2 Wine/Proton 与启动形态
+### 5.2 Linux 宿主 ↔ Wine/Proton/UMU 中的 BLoader
 
-Linux 原生宿主不能假设可直接建立 Wine 客户端可访问且具备完整 Windows PID 校验语义的 Windows Named Pipe。v1 必须经实际测试确定：可验证的 Wine 内桥接代理，或 Linux AF_UNIX 套接字 + `SO_PEERCRED` 与可信代理/句柄传递。**不能**以无法鉴别来源的 `127.0.0.1` TCP、普通文件轮询或“校验一下用户目录”代替安全传输。
+BMCBL 是**Linux 原生进程**，BLoader 是 Wine/Proton 中运行的 **Windows PE DLL**。两个进程不共享 Windows Named Pipe 命名空间；Linux 原生宿主也不能直接把 Wine 内部 Windows PID 当作 Linux PID 使用。**保持第 6 节的消息格式与第 8 节 ABI 不变，仅替换传输和启动引导层。**
 
-- 宿主负责把载荷转换成 Wine 可访问的 Windows 路径，BLoader 只接收 Windows 侧可解析的受保护暂存路径。
-- 若当前启动器、Wine/Proton、UWP/GDK 启动形态无法实现本节要求，能力协商明确不支持并跳过虚拟 Mod；不得默默使用不安全的回退连接方式。
+#### 5.2.1 传输优先级
+
+| 宿主/运行器 | BMCBL 端 | BLoader 端 | 使用条件 |
+| --- | --- | --- | --- |
+| Windows 原生 | Windows Named Pipe | Win32 Named Pipe | 必须双向校验目标与服务端进程身份 |
+| Linux + 已验证支持 AF_UNIX 的 Wine/Proton/UMU | `tokio::net::UnixListener` | Wine Winsock `AF_UNIX/SOCK_STREAM` | 必须在**实际使用的 Wine/Proton 构建**上验证 socket/connect/路径映射；Linux 侧校验 `SO_PEERCRED`；仍执行独立会话认证 |
+| Linux + 未验证/不支持 AF_UNIX 的 Wine/Proton/UMU | `tokio::net::TcpListener` 仅绑定 `127.0.0.1:0` | Winsock `AF_INET/SOCK_STREAM` | **一次性高熵秘密 + 双向挑战认证通过后**才允许进入应用协议；没有安全引导材料时拒绝连接 |
+
+Wine 对 Windows Winsock `AF_UNIX` 的支持存在不同版本/补丁集差异。不得根据宿主内核支持 Unix Socket 或 Wine 版本号直接宣告支持；需要真实运行时探测。**不允许未经认证的 loopback TCP**。如果使用网络命名空间/沙箱，必须验证宿主与游戏可达同一个 loopback；不能将端点自动发布到 `0.0.0.0`、公网或 LAN。
+
+这两种 Linux 传输**都应使用相同的会话认证**，`SO_PEERCRED` 仅作为补充身份信息。与 Wine 的其他内部 socket/wineserver 私有协议保持隔离，不依赖私有 Wine ABI。**无需额外启动一个 Windows 桥接进程**，除非具体 Proton/UMU 隔离机制使两种直连传输均不可用，并通过单独验证后才引入代理。
+
+#### 5.2.2 Linux 一次性启动引导
+
+1. BMCBL 先完成每版本授权快照、DLL 校验和受保护暂存，**然后**创建游戏会话。使用操作系统加密安全随机源产生至少 **256 bit** 的 `session_secret`、随机 `session_id` 和单实例端点；不得复用旧启动秘密。
+2. 为游戏会话建立 `0700` 的私有目录，启动描述符文件权限 `0600`，以安全创建、禁用符号链接/重解析逃逸、原子写入方式存放：`session_id`、`endpoint`、`transport`、随机 `session_secret`、过期时间和允许的目标游戏/运行器身份绑定材料。BMCBL 不接受插件提供的描述符路径。描述符最长存活至本次握手完成/超时；断开和异常时清理。不能仅靠 Unix 文件权限声称防御**同 UID 已被入侵**的进程。
+3. BMCBL 通过使用**相同 WINEPREFIX/Proton 运行环境**的路径转换，将这个**描述符的 Windows 可见绝对路径**传给 BLoader。建议只把路径写进启动参数以外的私有启动环境变量 `BMCBL_VMOD_BOOTSTRAP`，绝不在环境变量/命令行中传 `session_secret`；同时验证 UMU/Proton 启动器不会清除该路径变量。若运行器隔离导致 Windows 侧无法打开此路径，则安全禁用虚拟 Mod，不扫描磁盘尝试发现其他会话。
+4. BLoader 只有在**退出 loader lock 后**才打开、限长读取并关闭描述符。检查时效、文件类型/路径、协议版本和运行器关联；成功后及时清除内存中的敏感明文并由宿主删除启动描述符。不允许 XUser Bridge 或普通 Mod 读取/重用该秘密。游戏进程内的不可信 DLL 可读到进程内数据，因此仍不构成同进程沙箱。
+5. 两端在发送 `hello/welcome/launch_plan` **之前**完成双向挑战认证：双方各生成独立的 256 bit 随机 nonce；用 `HMAC-SHA256(session_secret, domain || session_id || client_nonce || server_nonce || role)` 分别生成服务端与客户端证明，`domain` 为固定协议域分隔符（例如 `BMCBL-VMOD-IPC-V1`），`role` 分别为 `host`/`loader`；固定长度、固定顺序、常数时间比较。挑战/响应不得把原始秘密传输在连接上。**完整消息顺序、字节编码与测试向量必须由双方共享一份协议实现固定后，才能开启 Linux 传输**。
+6. 握手上下文绑定当前启动会话、协议主版本、端点和游戏身份；只有认证成功的连接可发送应用协议帧。单连接、2 秒累计超时；拒绝重放/错误 nonce/错误 role/过期会话/多余连接，密钥和失败详情不写日志。
+7. `127.0.0.1` 的传输不具备 Unix socket 的内核对端 PID 认证能力；安全性依赖私有引导材料和**密码学握手**，不是“localhost 就安全”。未来若应用消息可能包含敏感数据，应把两种 Linux 传输统一升级为经过审查的 **AEAD 加密会话**（例如有标准测试向量的 Noise PSK 模式），而非自行设计流加密。v1 明确禁止通过这个 RPC 传送 Xbox 登录令牌/隐私凭据。
+
+#### 5.2.3 Linux 文件路径与生命周期
+
+- BMCBL 用 Linux 路径读取/哈希已授权 DLL；必要时将其在游戏可访问的受保护目录内暂存，再按**当前运行器与 Wine Prefix**转换为 Windows 绝对路径。不得假定 `Z:` 始终映射到宿主根目录。
+- BLoader 仅可按 `windows-x86_64` PE DLL 加载，使用同第 7 节的校验与依赖安全要求；Wine 的文件共享/重解析规则与原生 Windows 不完全等同，必须测试“校验后替换”的竞态。
+- 运行中模块只依附当前游戏会话；Wine/Proton 进程退出或断链后，Linux 宿主取消 RPC、释放端点、清理私有暂存，并更新诊断。无法保证 DLL 在游戏退出前被强制卸载。
+- Linux UWP/GDK 需要由实际 Proton-GDK 启动链验证 BLoader 注入/加载时序；如只能晚期注入，不可声称已支持 `preload`。根据实际能力声明 `phases`，可能仅有 `ready`。
+
+#### 5.2.4 Linux 可执行时序
+
+```text
+BMCBL (Linux, native Rust)                  Minecraft (Wine/Proton PE, BLoader)
+授权快照、DLL 预校验
+建立私有暂存、一次性 bootstrap
+监听 Unix Socket / 127.0.0.1:随机端口
+使用当前 Wine Prefix 转换 bootstrap 路径
+启动 Minecraft，传入非秘密描述符路径 ──────> BLoader 退出 loader lock
+                                           读取 bootstrap，连接对应端点
+Linux 端点核验 + 双向 HMAC challenge <──────> 验证认证证明
+hello/welcome → launch_plan ───────────────> BLoader 安全复验、执行阶段加载
+插件 WASM → 宿主校验 → RPC ─────────────────> DLL BLoaderModEntryV1
+插件 WASM ← 宿主过滤 ← response/event <────── DLL 原生回调
+游戏退出 → 撤销转发、关闭 IPC、清理暂存
+```
 
 ### 5.3 时序与阻塞预算
 
 ```text
-BMCBL：插件/版本/授权快照 → 核验载荷 → 受保护暂存 → 创建管道
+BMCBL：插件/版本/授权快照 → 核验载荷 → 受保护暂存 → 创建平台传输端点
                                       ↓ 放行 Minecraft
-BLoader：退出 loader lock → 校验管道服务端 → hello
+BLoader：退出 loader lock → 完成平台端点验证/会话认证 → hello
 BMCBL：校验目标 PID/进程 → welcome → launch_plan（一次性）
 BLoader：校验计划和载荷 → plan_ack
        ├─ preload：在 OEP 前依既定 BLoader 阶段加载
@@ -120,7 +180,7 @@ BMCBL：按启动 session + 插件 generation 路由、撤销与诊断
 
 每个帧为 `u32 little-endian` 的**载荷字节长度**，紧接该长度的 UTF-8 JSON 对象。长度不包含 4 字节头；v1 硬上限 **65,536 字节 JSON 载荷**，`hello` 双方还须协商更小上限，最终取最小值。拒绝零长度、超过上限、截断帧、非法 UTF-8、非 JSON 对象、重复 JSON 键、非法数字、未知 `type` 与必需字段缺失；收到协议级错误即关闭本次连接并撤销未完成请求。
 
-- 所有消息有 `type`。除首次 `hello` 外，消息携带 `session_id`（标准 UUID 字符串）；`session_id` 必须精确匹配当前连接会话。
+- 所有消息有 `type`。除首次 `hello` 外，消息携带 `session_id`（标准 UUID 字符串）；`session_id` 必须精确匹配当前连接会话。`hello.transport` 必填，允许 `named-pipe`、`unix-stream` 或 `authenticated-loopback`，必须与实际建立的端点一致，不允许客户端自报后切换传输类型。
 - `seq` 为本方向单调递增的 64 位正整数，用 **16 位小写十六进制字符串**编码（例如 `"0000000000000001"`）。同一连接禁止重复、倒序及回绕；不能直接用可能丢失精度的 JSON 数字表示 `u64`。
 - `request_id` 与 `seq` 使用相同编码，但关联一个待处理 RPC；每一方向分别分配，不在同一未完成集合中复用。响应必须携带发起方的原 `request_id`。
 - 未定义扩展字段、类型及枚举值不得被推断为已授权行为。v1 接收者拒绝未知控制字段；未来的可选扩展必须通过 `capabilities` 显式协商，新增不兼容语义升级主版本。
@@ -128,7 +188,7 @@ BMCBL：按启动 session + 插件 generation 路由、撤销与诊断
 
 ### 6.2 协商与启动计划示例
 
-BLoader → BMCBL（连接建立并完成 OS 端点校验后）：
+BLoader → BMCBL（连接建立并完成对应平台的端点验证与会话认证后）：
 
 ```json
 {
@@ -137,6 +197,7 @@ BLoader → BMCBL（连接建立并完成 OS 端点校验后）：
   "protocol_major": 1,
   "protocol_minor": 0,
   "target_pid": 12345,
+  "transport": "named-pipe",
   "max_frame_bytes": 65536,
   "phases": ["preload", "ready"],
   "capabilities": ["module_abi_v1", "rpc_v1"]
@@ -344,7 +405,8 @@ int32_t BLoaderModEntryV1(const BLoaderHostV1 *host, BLoaderModV1 *out_mod);
 | `preload` / `ready` 与 PreLoader/LeviLamina 并存 | 正确时序，无 loader-lock 等待，无重复加载 |
 | 请求 5 s 超时、断链、取消、事件洪泛、模块阻塞 | 及时完成等待、背压生效，不拖死其他模块 |
 | 多实例、多插件同名 `module_id`、最多 256 个条目 | 完整逻辑 ID 隔离，超限拒绝 |
-| Windows 原生、Wine、Proton、GDK/UWP 各启动方式 | 有身份验证证据才宣告支持，否则安全降级 |
+| Windows 原生、Wine、Proton、UMU、GDK/UWP 各启动方式 | 有端点认证与真实启动阶段的验证证据才宣告支持，否则安全降级 |
+| Linux AF_UNIX 可用、不可用、路径不可见、loopback 不通、错误启动密钥 | 按已验证能力选择安全传输，认证失败或不可达时跳过虚拟 Mod |
 
 ## 11. 落地顺序与验收门槛
 
