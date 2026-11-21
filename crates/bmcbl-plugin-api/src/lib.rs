@@ -33,6 +33,20 @@ pub mod native;
 /// Guest code cannot supply paths, guest PIDs or foreign plugin IDs.
 pub mod game_mod {
     use crate::PluginResult;
+    use serde::{Serialize, Deserialize};
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct Event {
+        pub module_id: String,
+        pub name: String,
+        pub body: Vec<u8>,
+    }
+
+    /// Drain the caller's bounded native event queue (max 32 events per game).
+    pub fn read_events() -> PluginResult<super::app::Job<Vec<Event>>> {
+        super::app::invoke("game-mod.read-events", &())
+    }
+
     use crate::app::{Job, invoke};
 
     /// Submit a bounded (32 KiB) asynchronous call to a Mod declared in this
