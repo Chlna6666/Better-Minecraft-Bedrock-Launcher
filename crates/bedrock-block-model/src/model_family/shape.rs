@@ -569,7 +569,6 @@ pub fn detail_cuboid_with_local_uv(cuboid: ModelCuboid) -> ModelCuboid {
     let v_bottom = 1.0 - y0;
     // Faces that already carry explicit UVs (rigid-rotation caps, unfolded art) keep them;
     // the derived projection would silently overwrite the authored orientation.
-    let mut cuboid = cuboid;
     let authored = cuboid.face_uvs.clone();
     let derived = move |face: BlockFace, uv: [[f32; 2]; 4]| -> [[f32; 2]; 4] {
         authored.get(&face).copied().unwrap_or(uv)
