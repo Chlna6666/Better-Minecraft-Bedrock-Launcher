@@ -399,35 +399,6 @@ fn full_ground_cover_shape(y: f32) -> ModelShape {
     )])
 }
 
-fn cocoa_pod_cuboid(
-    direction: CardinalDirection,
-    width: f32,
-    height: f32,
-    depth: f32,
-) -> ModelCuboid {
-    let min_y = px(12.0) - height;
-    let max_y = px(12.0);
-    let half_width = width * 0.5;
-    match direction {
-        CardinalDirection::North => ModelCuboid::new(
-            [0.5 - half_width, min_y, 0.0],
-            [0.5 + half_width, max_y, depth],
-        ),
-        CardinalDirection::South => ModelCuboid::new(
-            [0.5 - half_width, min_y, 1.0 - depth],
-            [0.5 + half_width, max_y, 1.0],
-        ),
-        CardinalDirection::East => ModelCuboid::new(
-            [1.0 - depth, min_y, 0.5 - half_width],
-            [1.0, max_y, 0.5 + half_width],
-        ),
-        CardinalDirection::West => ModelCuboid::new(
-            [0.0, min_y, 0.5 - half_width],
-            [depth, max_y, 0.5 + half_width],
-        ),
-    }
-}
-
 fn bamboo_leaf_planes(material_slot: &'static str) -> [ModelPlane; 2] {
     [
         ModelPlane::new(
