@@ -485,10 +485,14 @@ fn quarter_turn_x(cuboid: &ModelCuboid) -> ModelCuboid {
             .insert(x_quarter_face(*face), slot.clone());
     }
     for (face, uv) in &cuboid.face_uvs {
-        // Rigid pitch: every face's art rotates one quarter with the geometry.
-        rotated
-            .face_uvs
-            .insert(x_quarter_face(*face), rotate_uv_quarter(*uv, 1));
+        // Rigid pitch, corner-attached UVs: the pitch maps (x, y, z) -> (x, 1 - z, y),
+        // so the north face transfers onto the up face unrotated, the caps land on the
+        // north/south faces unrotated, and the east/west faces spin one quarter
+        // in place — all falling out of the same corner bookkeeping.
+        rotated.face_uvs.insert(
+            x_quarter_face(*face),
+            turned_face_uv(*face, *uv, |[x, y, z]| [x, 1 - z, y]),
+        );
     }
     rotated
 }
@@ -530,19 +534,56 @@ fn quarter_turn_clockwise(cuboid: &ModelCuboid) -> ModelCuboid {
             .insert(clockwise_face(*face), slot.clone());
     }
     for (face, uv) in &cuboid.face_uvs {
-        // Rigid model turn: every face's art rotates with the block. The caps already
-        // carried this (a directional top texture — the repeater's mechanism grooves, a
-        // comparator's arrow — stays put if only the face slot moves); the side faces
-        // need it too: a clockwise turn seen from outside a side face reads as a
-        // clockwise in-face rotation, and the underside reads counter-clockwise.
-        let uv = match face {
-            BlockFace::Up => rotate_uv_quarter(*uv, 1),
-            BlockFace::Down => rotate_uv_quarter(*uv, 3),
-            _ => rotate_uv_quarter(*uv, 1),
-        };
-        rotated.face_uvs.insert(clockwise_face(*face), uv);
+        // Rigid model turn, corner-attached UVs: every texture corner travels with its
+        // geometry corner, which is what a real model rotation does. The per-move corner
+        // bookkeeping (side faces transfer unrotated, caps spin in place) falls out of
+        // the position map instead of a per-face heuristic.
+        rotated
+            .face_uvs
+            .insert(clockwise_face(*face), turned_face_uv(*face, *uv, |[x, y, z]| [1 - z, y, x]));
     }
     rotated
+}
+
+/// Unit-cube corner (per-axis 0/1) of each face's four uv slots, in emission order.
+const FACE_UV_CORNERS: [(BlockFace, [[u8; 3]; 4]); 6] = [
+    (BlockFace::Up, [[0, 1, 0], [1, 1, 0], [1, 1, 1], [0, 1, 1]]),
+    (BlockFace::Down, [[0, 0, 1], [1, 0, 1], [1, 0, 0], [0, 0, 0]]),
+    (BlockFace::East, [[1, 0, 0], [1, 0, 1], [1, 1, 1], [1, 1, 0]]),
+    (BlockFace::West, [[0, 0, 1], [0, 0, 0], [0, 1, 0], [0, 1, 1]]),
+    (BlockFace::South, [[1, 0, 1], [0, 0, 1], [0, 1, 1], [1, 1, 1]]),
+    (BlockFace::North, [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]),
+];
+
+/// Re-attaches one face's uv quad after a turn: corner `k`'s uv value lands on the
+/// destination corner the turn moves that geometry corner to.
+fn turned_face_uv(
+    face: BlockFace,
+    uv: [[f32; 2]; 4],
+    map_corner: impl Fn([u8; 3]) -> [u8; 3],
+) -> [[f32; 2]; 4] {
+    let Some((_, corners)) = FACE_UV_CORNERS.iter().find(|(candidate, _)| *candidate == face)
+    else {
+        return uv;
+    };
+    let destination = clockwise_face(face);
+    let Some((_, destination_corners)) = FACE_UV_CORNERS
+        .iter()
+        .find(|(candidate, _)| *candidate == destination)
+    else {
+        return uv;
+    };
+    let mut turned = uv;
+    for (index, corner) in corners.iter().enumerate() {
+        let moved = map_corner(*corner);
+        if let Some(slot) = destination_corners
+            .iter()
+            .position(|candidate| *candidate == moved)
+        {
+            turned[slot] = uv[index];
+        }
+    }
+    turned
 }
 
 fn clockwise_face(face: BlockFace) -> BlockFace {

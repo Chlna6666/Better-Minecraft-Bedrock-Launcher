@@ -89,6 +89,70 @@ pub(super) fn block_face_from_state<'a>(state: &'a BlockState) -> Option<&'a str
         .or_else(|| state_string(state, "torch_facing_direction"))
 }
 
+/// A piston base's own facing, read from the world state.
+///
+/// Bedrock's piston `facing_direction` int is **not** the shared table: pistons point
+/// `0=down, 1=up, 2=south, 3=north, 4=east, 5=west` (minecraft.wiki/w/Piston block
+/// states). Modern worlds write the string-valued `minecraft:facing_direction`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PistonFacing {
+    /// Neighbour offset in the facing direction.
+    pub(super) normal: [i32; 3],
+    /// The facing as a `facing_direction` state value.
+    pub(super) direction: &'static str,
+}
+
+pub(super) fn piston_facing(state: &BlockState) -> Option<PistonFacing> {
+    let normalized = normalized_block_name(&state.name);
+    if !matches!(normalized.as_str(), "piston" | "sticky_piston") {
+        return None;
+    }
+    let direction = piston_facing_direction(state)?;
+    let normal = match direction {
+        "north" => [0, 0, -1],
+        "south" => [0, 0, 1],
+        "east" => [1, 0, 0],
+        "west" => [-1, 0, 0],
+        "up" => [0, 1, 0],
+        "down" => [0, -1, 0],
+        _ => return None,
+    };
+    Some(PistonFacing { normal, direction })
+}
+
+/// Reads the piston's facing the way the model layer does: string spellings first, then
+/// the piston's own non-uniform int table.
+fn piston_facing_direction(state: &BlockState) -> Option<&'static str> {
+    for key in [
+        "minecraft:facing_direction",
+        "facing_direction",
+        "minecraft:block_face",
+        "block_face",
+    ] {
+        if let Some(value) = state_string(state, key) {
+            match value.trim().strip_prefix("minecraft:").unwrap_or(value.trim()) {
+                "down" | "bottom" => return Some("down"),
+                "up" | "top" => return Some("up"),
+                "north" => return Some("north"),
+                "south" => return Some("south"),
+                "west" => return Some("west"),
+                "east" => return Some("east"),
+                _ => {}
+            }
+        }
+    }
+    let value = state_i32(state, "facing_direction")?;
+    match value {
+        0 => Some("down"),
+        1 => Some("up"),
+        2 => Some("south"),
+        3 => Some("north"),
+        4 => Some("east"),
+        5 => Some("west"),
+        _ => None,
+    }
+}
+
 pub(super) fn neighbor_model(state: &BlockState) -> NeighborModel {
     let family = model_family::classify(&state.name);
     match family {
@@ -118,6 +182,17 @@ pub(super) fn connection_kind(state: &BlockState) -> Option<ConnectionKind> {
         ModelFamily::RedstoneWire => Some(ConnectionKind::RedstoneWire),
         ModelFamily::Button | ModelFamily::PressurePlate => Some(ConnectionKind::RedstoneAny),
         ModelFamily::RedstoneDevice => redstone_device_connection_kind(state),
+        // The door lower half is the functional half: it stores the hinge and open states
+        // the upper half cannot encode reliably, so they reach the upper block through
+        // this per-position kind.
+        ModelFamily::Door
+            if !door_is_upper(state) =>
+        {
+            Some(ConnectionKind::DoorLower {
+                hinge: door_hinge_right(state),
+                open: door_open(state),
+            })
+        }
         _ => {
             let normalized = normalized_block_name(&state.name);
             matches!(
@@ -135,6 +210,34 @@ pub(super) fn connection_kind(state: &BlockState) -> Option<ConnectionKind> {
     }
 }
 
+/// Whether the door block is the upper half (`upper_block_bit`, with legacy spellings).
+pub(super) fn door_is_upper(state: &BlockState) -> bool {
+    state_bool(state, "upper_block_bit").unwrap_or(false)
+}
+
+/// The door's hinge side from its own states (`door_hinge_bit`, legacy `hinge_bit`/`hinge`).
+pub(super) fn door_hinge_right(state: &BlockState) -> bool {
+    state_bool(state, "door_hinge_bit")
+        .or_else(|| state_bool(state, "hinge_bit"))
+        .or_else(|| state_string(state, "hinge").map(|value| value == "right"))
+        .unwrap_or(false)
+}
+
+/// The door's open state from its own states (`open_bit`, legacy `open`).
+pub(super) fn door_open(state: &BlockState) -> bool {
+    state_bool(state, "open_bit").or_else(|| state_bool(state, "open")).unwrap_or(false)
+}
+
+/// A door upper half resolves its placement from the lower half below; only the facing
+/// direction is its own.
+pub(super) fn door_upper(state: &BlockState) -> Option<CardinalDirection> {
+    let family = model_family::classify(&state.name);
+    if family != ModelFamily::Door || !door_is_upper(state) {
+        return None;
+    }
+    cardinal_direction(state)
+}
+
 pub(super) fn redstone_device_connection_kind(state: &BlockState) -> Option<ConnectionKind> {
     let normalized = normalized_block_name(&state.name);
     if normalized.contains("repeater") || normalized.contains("comparator") {
@@ -142,6 +245,13 @@ pub(super) fn redstone_device_connection_kind(state: &BlockState) -> Option<Conn
             CardinalDirection::East | CardinalDirection::West => ConnectionKind::RedstoneAxisX,
             CardinalDirection::North | CardinalDirection::South => ConnectionKind::RedstoneAxisZ,
         });
+    }
+    // The piston head block gets its own kind: piston bases derive their extended
+    // pushed-face art from it, which must not fire for every other redstone device.
+    // `blocks.json` spells the id `pistonArmCollision` while world palettes write the
+    // flattened snake_case form; match both.
+    if normalized.contains("arm_collision") || normalized.contains("ArmCollision") {
+        return Some(ConnectionKind::PistonArm);
     }
     Some(ConnectionKind::RedstoneAny)
 }

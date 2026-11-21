@@ -246,6 +246,38 @@ impl SceneBuilder {
                     .with_state("half", if current.top { "top" } else { "bottom" })
                     .with_state("shape", self.stair_shape(block.key, current));
             }
+            NeighborModel::PistonBase(facing) => {
+                // Modern Bedrock states carry no `extended_bit`; an extended base is the
+                // one with the arm block in the facing direction. Without it the cached
+                // palette shape (the retracted platform cube) is already correct, so no
+                // query is returned and the caller keeps `block.shape`.
+                let neighbor = BlockKey {
+                    x: block.key.x + facing.normal[0],
+                    y: block.key.y + facing.normal[1],
+                    z: block.key.z + facing.normal[2],
+                };
+                if self.connection_kind_at(neighbor) != Some(ConnectionKind::PistonArm) {
+                    return None;
+                }
+                query = query
+                    .with_state("minecraft:facing_direction", facing.direction)
+                    .with_state("extended_bit", true);
+            }
+            NeighborModel::DoorUpper(direction) => {
+                // The upper half's own hinge/open storage is unreliable (a right hinge is
+                // not encodable, `open_bit` degenerate), so the placement mirrors the
+                // functional lower half below. A missing/mismatched half below degrades
+                // to the closed hinge-left door.
+                let (hinge, open) = match self.connection_kind_at(block.key.below()) {
+                    Some(ConnectionKind::DoorLower { hinge, open }) => (hinge, open),
+                    _ => (false, false),
+                };
+                query = query
+                    .with_state("minecraft:cardinal_direction", direction.as_str())
+                    .with_state("open_bit", open)
+                    .with_state("door_hinge_bit", hinge)
+                    .with_state("upper_block_bit", true);
+            }
         }
         Some(query)
     }
@@ -268,10 +300,20 @@ impl SceneBuilder {
         direction: CardinalDirection,
     ) -> bool {
         let neighbor = block.cardinal_neighbor(direction);
-        matches!(
+        let connects = matches!(
             self.block_class_at(neighbor),
             Some(BlockClass::Opaque | BlockClass::TransparentGlass)
-        ) || self.connection_kind_at(neighbor) == Some(ConnectionKind::Pane)
+        ) || self.connection_kind_at(neighbor) == Some(ConnectionKind::Pane);
+        // TEMP DEBUG
+        if block.y == 72 {
+            eprintln!(
+                "pane debug: key={:?} dir={direction:?} neighbor={neighbor:?} class={:?} kind={:?} -> {connects}",
+                block,
+                self.block_class_at(neighbor),
+                self.connection_kind_at(neighbor)
+            );
+        }
+        connects
     }
 
     pub(super) fn fence_neighbor_connects(
@@ -329,7 +371,9 @@ impl SceneBuilder {
         direction: CardinalDirection,
     ) -> bool {
         match self.connection_kind_at(block) {
-            Some(ConnectionKind::RedstoneWire | ConnectionKind::RedstoneAny) => true,
+            // The piston arm keeps its old redstone-connectable behaviour even though it
+            // now carries its own connection kind.
+            Some(ConnectionKind::RedstoneWire | ConnectionKind::RedstoneAny | ConnectionKind::PistonArm) => true,
             Some(ConnectionKind::RedstoneAxisX) => {
                 matches!(direction, CardinalDirection::East | CardinalDirection::West)
             }

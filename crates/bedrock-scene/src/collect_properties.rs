@@ -5,7 +5,8 @@ use super::{
     BlockState, ConnectionKind, DetailShape, FxHashMap, MaterialName, NeighborModel, RenderPalette,
     StairState, block_color, block_face_colors, connection_kind, detail_shape, fluid_height,
     lava_color, material_block_name, material_name, neighbor_model, normalized_block_name,
-    resolved_detail_shape, stair_state, transparent_color, water_color,
+    door_upper, piston_facing, resolved_detail_shape, stair_state, transparent_color,
+    water_color,
 };
 
 pub(super) struct BlockPropertiesCache<'a> {
@@ -143,20 +144,33 @@ impl BlockProperties {
                     .flatten()
             })
             .map(Arc::new);
-        Self {
+        let properties = Self {
             material: material_name(material_source.as_ref(), class),
             normalized_name: Arc::from(normalized_block_name(&state.name)),
             stair_state: stair_state(state),
             connection_kind: connection_kind(state),
-            neighbor_model: if resolved_shape {
-                NeighborModel::None
-            } else {
-                neighbor_model(state)
-            },
+            // Piston bases keep the resolved palette shape (the retracted platform cube)
+            // AND stay neighbour-driven: an arm block in the facing direction flips the
+            // pushed face to the dark inner art, which the cached shape cannot know.
+            // Door upper halves are the same shape of problem: their own hinge/open
+            // storage is unreliable, so the placement comes from the lower half below.
+            neighbor_model: door_upper(state)
+                .map(NeighborModel::DoorUpper)
+                .or_else(|| {
+                    piston_facing(state).map(NeighborModel::PistonBase)
+                })
+                .unwrap_or_else(|| {
+                    if resolved_shape {
+                        NeighborModel::None
+                    } else {
+                        neighbor_model(state)
+                    }
+                }),
             fluid_height: fluid_height(state),
             shape,
             resolved_shape,
-        }
+        };
+        properties
     }
 
     pub(super) fn shape(

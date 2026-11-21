@@ -2062,6 +2062,26 @@ fn shared_slot_texture(block: &str, slot: &str) -> Option<String> {
             _ => None,
         };
     }
+    // The observer's back is the two-frame `observer_south` terrain array
+    // `[observer_back, observer_back_lit]`; a powered observer lights its red dot up,
+    // which the shape selects with the `south_on` slot suffix.
+    if block == "observer" && slot == "south_on" {
+        return Some("observer_south#1".to_owned());
+    }
+    // The piston base's own slots name terrain keys directly (`piston_top_normal` /
+    // `piston_top_sticky`), which `blocks.json` never exposes — its map only has
+    // `up`/`down`/`side`. Without this branch the slot fell through the face chain and
+    // repainted the retracted platform face with the dark side/bottom art.
+    if block == "piston" || block == "sticky_piston" {
+        return match slot {
+            "top_normal" => Some("piston_top_normal".to_owned()),
+            "top_sticky" => Some("piston_top_sticky".to_owned()),
+            "top" => Some("piston_top".to_owned()),
+            "bottom" => Some("piston_bottom".to_owned()),
+            "side" => Some("piston_side".to_owned()),
+            _ => None,
+        };
+    }
     // `repeater_torch` / `comparator_torch` are two-frame terrain arrays [off, on]. The shape
     // puts the powered state in the slot suffix (`torch_on`/`torch_off`) so an active repeater's
     // redstone torch lights up instead of always using frame 0 (off).

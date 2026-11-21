@@ -60,6 +60,14 @@ pub(super) enum NeighborModel {
     Wall,
     RedstoneWire { power: u8 },
     Stairs,
+    /// Piston bases decide their pushed-face art from the arm block in front: modern
+    /// Bedrock states carry no `extended_bit`, and an extended base swaps its pushed
+    /// face to the dark inner art when a `piston_arm_collision` block faces back at it.
+    PistonBase(PistonFacing),
+    /// A door **upper** half. Its own `door_hinge_bit`/`open_bit` are unreliable storage
+    /// (the metadata cannot encode a right hinge), so the placement comes from the lower
+    /// half below; only the facing direction is read from the upper block itself.
+    DoorUpper(CardinalDirection),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,6 +80,15 @@ pub(super) enum ConnectionKind {
     RedstoneAny,
     RedstoneAxisX,
     RedstoneAxisZ,
+    /// The `piston_arm_collision` / `sticky_piston_arm_collision` head block. Its own
+    /// connection kind so a piston base can tell the arm apart from other redstone
+    /// devices when it derives its extended look from the facing neighbour.
+    PistonArm,
+    /// A door **lower** half carrying the functional hinge/open states. Bedrock stores the
+    /// reliable `door_hinge_bit`/`open_bit` on the lower half only — the upper half cannot
+    /// encode a right hinge and its `open_bit` is degenerate — so an upper half derives its
+    /// placement from the kind stored on the half below it.
+    DoorLower { hinge: bool, open: bool },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

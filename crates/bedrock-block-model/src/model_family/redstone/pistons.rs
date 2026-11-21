@@ -15,7 +15,12 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
 /// Bedrock splits the piston into two independent blocks:
 ///
 /// * `piston` / `sticky_piston` — the base, always a FULL cube (Bedrock ships no recessed
-///   variant; an extended piston's arm block covers the pushed face).
+///   variant; an extended piston's arm block covers the pushed face). The extended look is a
+///   **neighbour rule**: modern Bedrock states carry no `extended_bit` (the block schema holds
+///   only `facing_direction`), and the engine swaps the pushed face to the dark inner art
+///   whenever a `piston_arm_collision` block sits in the facing direction. The scene feeds
+///   that in as a synthetic `extended_bit` state (`bedrock-scene` `NeighborModel::PistonBase`),
+///   so the palette-level shape stays the retracted platform cube.
 /// * `piston_arm_collision` / `sticky_piston_arm_collision` — the head, per the official JE
 ///   `template_piston_head`: a 16 x 16 x 4 plate at the push-end face plus a 4 x 4 x 16 shaft
 ///   running back through the cell (its last 4 px reach into the base block, where the full
@@ -43,8 +48,11 @@ fn piston_facing(state: &BlockStateQuery) -> BlockFacing {
 pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
     let name = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
     let facing = piston_facing(state);
-    if name.contains("arm_collision") {
-        return arm_shape(facing, name.starts_with("sticky"));
+    let sticky = name.starts_with("sticky");
+    // `blocks.json` spells the head `pistonArmCollision` while world palettes write the
+    // flattened snake_case id; accept both so neither source falls into the base shape.
+    if name.contains("arm_collision") || name.contains("ArmCollision") {
+        return arm_shape(facing, sticky);
     }
     base_shape(
         facing,
@@ -55,11 +63,12 @@ pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
 
 fn base_shape(facing: BlockFacing, sticky: bool, extended: bool) -> ModelShape {
     // The official `template_piston` authored facing north: the platform on the north
-    // (push) face, `piston_bottom` on the south face, and the side tile with the official
-    // per-face UV rotations — down rot 180, east rot 90, west rot 270 (the side art turns
-    // with the model, which is why each facing shows the frame at its own orientation).
-    // An extended piston's base shows the dark inner frame on its pushed face (the shaft
-    // covers its centre); an idle one keeps the wooden platform.
+    // (push) face, `piston_bottom` on the south face, and the side tile's wood band
+    // (texture rows 0..4) rotated onto the edge that touches the platform — in this
+    // engine's corner conventions that is up rot 2, down rot 0, east rot 1, west rot 3
+    // (the JE template's 180/0/90/270 under the equivalent permutation). An extended
+    // piston's base shows the dark inner frame on its pushed face (the shaft covers its
+    // centre); an idle one keeps the wooden platform.
     let platform_slot = if sticky { "top_sticky" } else { "top_normal" };
     let pushed_slot = if extended { "top" } else { platform_slot };
     let full = crate::model_family::shape::full_texture_uv();
@@ -70,9 +79,9 @@ fn base_shape(facing: BlockFacing, sticky: bool, extended: bool) -> ModelShape {
         .with_face_material_slot(BlockFace::South, "bottom")
         .with_face_uv(BlockFace::South, full)
         .with_face_material_slot(BlockFace::Up, "side")
-        .with_face_uv(BlockFace::Up, turned(0))
+        .with_face_uv(BlockFace::Up, turned(2))
         .with_face_material_slot(BlockFace::Down, "side")
-        .with_face_uv(BlockFace::Down, turned(2))
+        .with_face_uv(BlockFace::Down, turned(0))
         .with_face_material_slot(BlockFace::East, "side")
         .with_face_uv(BlockFace::East, turned(1))
         .with_face_material_slot(BlockFace::West, "side")
@@ -151,6 +160,9 @@ fn authoured_head(platform_slot: &str, px: impl Fn(f32) -> f32) -> ModelShape {
             [px(0.0), px(v0 + 4.0)],
         ]
     };
+    // The official `template_piston_head` draws no shaft end caps: the north end is covered
+    // by the plate's back face (an own cap there is coplanar and z-fights at the junction),
+    // and the south end sits inside the base cube.
     let shaft = ModelCuboid::new([px(6.0), px(6.0), px(4.0)], [px(10.0), px(10.0), px(20.0)])
         .with_face_material_slot(BlockFace::East, "side")
         .with_face_material_slot(BlockFace::West, "side")
@@ -161,12 +173,7 @@ fn authoured_head(platform_slot: &str, px: impl Fn(f32) -> f32) -> ModelShape {
         .with_face_uv(BlockFace::East, shaft_long(0.0))
         .with_face_uv(BlockFace::West, shaft_long(0.0))
         .with_face_uv(BlockFace::Up, shaft_long(0.0))
-        .with_face_uv(BlockFace::Down, shaft_long(0.0))
-        // The shaft's end cap sits inside the base block; give it the hole art.
-        .with_face_material_slot(BlockFace::North, "inner")
-        .with_face_uv(BlockFace::North, crate::model_family::shape::full_texture_uv())
-        .with_face_material_slot(BlockFace::South, "inner")
-        .with_face_uv(BlockFace::South, crate::model_family::shape::full_texture_uv());
+        .with_face_uv(BlockFace::Down, shaft_long(0.0));
     ModelShape::from_cuboids([plate, shaft])
 }
 

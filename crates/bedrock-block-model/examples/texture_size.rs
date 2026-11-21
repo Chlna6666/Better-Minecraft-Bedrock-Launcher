@@ -16,13 +16,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("===== geometry {identifier}");
         for bone in &geometry.bones {
-            if let Some(raw) = bone.raw.as_object() {
-                for cube in raw.get("cubes").and_then(|c| c.as_array()).into_iter().flatten() {
-                    println!(
-                        " origin {:?} size {:?} uv {:?}",
-                        cube.get("origin"), cube.get("size"), cube.get("uv"),
-                    );
-                }
+            for cube in &bone.cubes {
+                println!(
+                    " origin {:?} size {:?} uv {:?}",
+                    cube.origin,
+                    cube.size,
+                    cube.uv.as_ref().map(|uv| &uv.raw),
+                );
             }
         }
     }
