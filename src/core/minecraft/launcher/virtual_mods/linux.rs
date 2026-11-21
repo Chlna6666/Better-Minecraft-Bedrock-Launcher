@@ -60,7 +60,7 @@ pub(crate) fn prepare(
         "transport": "authenticated-loopback",
         "endpoint": address.to_string(),
         "session_secret": STANDARD.encode(key),
-        "expires_at": now.saturating_add(30)
+        "expires_at": now.saturating_add(120)
     });
     let serialized = serde_json::to_vec(&descriptor)
         .map_err(|error| format!("serialize virtual Mod descriptor: {error}"))?;
@@ -121,7 +121,7 @@ impl PendingLinuxSession {
                     );
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
-                    && start.elapsed() < Duration::from_secs(2) =>
+                    && start.elapsed() < Duration::from_secs(90) =>
                 {
                     thread::sleep(Duration::from_millis(5));
                 }
