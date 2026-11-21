@@ -1470,7 +1470,7 @@ fn render_sidebar(
 }
 
 fn render_content(
-    window: &mut Window,
+    _window: &mut Window,
     cx: &mut App,
     colors: &ThemeColors,
     results_list: &Entity<ResultsListView>,
