@@ -1,3 +1,5 @@
+#![expect(unsafe_code, reason = "Loading explicitly approved native libraries and validating C ABI tables requires unsafe FFI")]
+
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Read;
