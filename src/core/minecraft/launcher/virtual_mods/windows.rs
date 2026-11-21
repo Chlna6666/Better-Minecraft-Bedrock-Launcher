@@ -17,7 +17,9 @@ const PIPE_NOWAIT: u32 = 0x0000_0001;
 const PIPE_REJECT_REMOTE_CLIENTS: u32 = 0x0000_0008;
 const PIPE_CONNECTED: u32 = 535;
 const PIPE_LISTENING: u32 = 536;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+// BLoader may start after a slow PreLoader and game runtime initialization.
+// This wait is entirely off the launcher and game main threads.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const SDDL_REVISION_1: u32 = 1;
 
 #[repr(C)]
