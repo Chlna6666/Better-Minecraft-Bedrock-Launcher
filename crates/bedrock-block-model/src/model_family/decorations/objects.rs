@@ -760,16 +760,6 @@ fn scaffolding_cuboid(min: [f32; 3], max: [f32; 3]) -> ModelCuboid {
         .with_face_material_slot(BlockFace::Down, "down")
 }
 
-fn face_slot_cuboid(min: [f32; 3], max: [f32; 3]) -> ModelCuboid {
-    detail_cuboid_with_local_uv(ModelCuboid::new(min, max))
-        .with_face_material_slot(BlockFace::Up, "up")
-        .with_face_material_slot(BlockFace::Down, "down")
-        .with_face_material_slot(BlockFace::North, "north")
-        .with_face_material_slot(BlockFace::South, "south")
-        .with_face_material_slot(BlockFace::East, "east")
-        .with_face_material_slot(BlockFace::West, "west")
-}
-
 fn side_slot_cuboid(min: [f32; 3], max: [f32; 3]) -> ModelCuboid {
     detail_cuboid_with_local_uv(ModelCuboid::new(min, max))
         .with_face_material_slot(BlockFace::North, "side")
