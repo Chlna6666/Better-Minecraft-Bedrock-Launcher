@@ -53,7 +53,6 @@ pub(crate) fn prepare(
     fs::set_permissions(bootstrap_dir.path(), fs::Permissions::from_mode(0o700))
         .map_err(|error| format!("protect private virtual Mod session: {error}"))?;
     let descriptor_path = bootstrap_dir.path().join("bootstrap.json");
-    let bootstrap_path_in_wine = wine_visible_path(&descriptor_path, wine_prefix)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)
         .map_err(|error| format!("clock error: {error}"))?.as_secs();
     let descriptor = json!({
@@ -70,6 +69,7 @@ pub(crate) fn prepare(
         .map_err(|error| format!("write private virtual Mod descriptor: {error}"))?;
     file.write_all(&serialized).map_err(|error| format!("save Mod descriptor: {error}"))?;
     file.sync_all().map_err(|error| format!("flush Mod descriptor: {error}"))?;
+    let bootstrap_path_in_wine = wine_visible_path(&descriptor_path, wine_prefix)?;
     Ok(PendingLinuxSession {
         bootstrap_dir, bootstrap_path_in_wine, listener, key, session_id,
         plan, plugins_root_in_wine: wine_root, game_version,
