@@ -18,6 +18,7 @@ pub(super) struct DetailShape {
 }
 
 impl DetailShape {
+    #[cfg(test)]
     pub(super) fn from_cuboids(cuboids: impl Into<Vec<Cuboid>>) -> Self {
         Self {
             cuboids: cuboids.into(),
@@ -25,10 +26,6 @@ impl DetailShape {
         }
     }
 
-    pub(super) fn with_planes(mut self, planes: impl Into<Vec<Plane>>) -> Self {
-        self.planes = planes.into();
-        self
-    }
 
     pub(super) const fn is_empty(&self) -> bool {
         self.cuboids.is_empty() && self.planes.is_empty()
@@ -45,6 +42,7 @@ pub(super) struct Cuboid {
 }
 
 impl Cuboid {
+    #[cfg(test)]
     pub(super) fn new(min: [f32; 3], max: [f32; 3]) -> Self {
         Self {
             min,
@@ -55,15 +53,6 @@ impl Cuboid {
         }
     }
 
-    pub(super) fn with_material_slots(
-        mut self,
-        material_slot: Option<MaterialSlot>,
-        face_material_slots: BTreeMap<BlockFace, MaterialSlot>,
-    ) -> Self {
-        self.material_slot = material_slot;
-        self.face_material_slots = face_material_slots;
-        self
-    }
 
     pub(super) fn face_material_slot(&self, normal: [i32; 3]) -> Option<MaterialSlot> {
         let face = obj::block_face_from_normal(normal);
@@ -83,12 +72,6 @@ impl Cuboid {
             .or_else(|| self.material_slot.clone())
     }
 
-    pub(super) fn with_face_material_slot(mut self, face: BlockFace, slot: &str) -> Self {
-        if let Some(slot) = material_slot_from_value(slot) {
-            self.face_material_slots.insert(face, slot);
-        }
-        self
-    }
 
     pub(super) fn face_uv(&self, normal: [i32; 3]) -> Option<[[f32; 2]; 4]> {
         let face = obj::block_face_from_normal(normal);
@@ -107,22 +90,6 @@ impl Cuboid {
             .copied()
     }
 
-    pub(super) fn with_face_uv(mut self, face: BlockFace, uv: [[f32; 2]; 4]) -> Self {
-        self.face_uvs.insert(face, uv);
-        self
-    }
-}
-
-pub(super) fn detail_cuboid_with_local_uv(cuboid: Cuboid) -> Cuboid {
-    let min = cuboid.min;
-    let max = cuboid.max;
-    cuboid
-        .with_face_uv(BlockFace::Up, rect_uv(min[0], min[2], max[0], max[2]))
-        .with_face_uv(BlockFace::Down, rect_uv(min[0], min[2], max[0], max[2]))
-        .with_face_uv(BlockFace::North, rect_uv(min[0], min[1], max[0], max[1]))
-        .with_face_uv(BlockFace::South, rect_uv(min[0], min[1], max[0], max[1]))
-        .with_face_uv(BlockFace::West, rect_uv(min[2], min[1], max[2], max[1]))
-        .with_face_uv(BlockFace::East, rect_uv(min[2], min[1], max[2], max[1]))
 }
 
 pub(super) fn rect_uv(u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
