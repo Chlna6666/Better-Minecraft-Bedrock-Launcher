@@ -242,7 +242,6 @@ pub(crate) fn tripwire_hook_shape(state: &BlockStateQuery) -> ModelShape {
             uv[3] / 16.0,
         )
     };
-    const HOOK_SLOT: &str = "north";
     const PLATE_SLOT: &str = "down";
     const WIRE_SLOT: &str = "south";
     let plane = |corners: [[f32; 3]; 4], normal: [i32; 3], uv: [f32; 4], slot: &'static str| {
