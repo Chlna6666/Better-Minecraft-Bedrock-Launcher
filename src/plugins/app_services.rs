@@ -62,6 +62,7 @@ impl ServiceJobs {
             .find(|name| *name == service)
             .or((service == "download.fetch-text").then_some("download.fetch-text"))
             .or((service == "download.verified").then_some("download.verified"))
+            .or((service == "game-mod.call").then_some("game-mod.call"))
             .or_else(|| {
                 super::native::OPERATIONS
                     .iter()
@@ -91,7 +92,8 @@ impl ServiceJobs {
         let generation = self.generation;
         let jobs = self.state.clone();
         let native = self.native.clone();
-        let manifest = service.starts_with("download.").then(|| manifest.clone());
+        let manifest = (service.starts_with("download.") || service == "game-mod.call")
+            .then(|| manifest.clone());
         let task = crate::tasks::runtime::spawn_io(async move {
             let _permit = permit;
             let timeout = if matches!(service, "native.stage-download" | "native.install-download") {
@@ -128,6 +130,27 @@ impl ServiceJobs {
                         Some(manifest),
                     ).await.map_err(PluginError::app)?;
                     encode(&text)
+                } else if service == "game-mod.call" {
+                    use super::manifest::PluginCapability;
+                    let manifest = manifest.as_ref().expect("game-mod.call requires manifest");
+                    if !manifest.has_capability(&PluginCapability::GameModCall) {
+                        return Err(PluginError::denied("plugin lacks game-mod.call capability"));
+                    }
+                    let (module_id, method, body): (String, String, Vec<u8>) =
+                        postcard::from_bytes(&arguments)
+                            .map_err(|error| PluginError::invalid_input(error.to_string()))?;
+                    if !manifest.game_mods.iter().any(|decl| decl.id == module_id) {
+                        return Err(PluginError::denied(
+                            "module is not declared by the calling plugin"
+                        ));
+                    }
+                    if body.len() > 32 * 1024 {
+                        return Err(PluginError::invalid_input("native Mod RPC payload exceeds 32 KiB"));
+                    }
+                    let response = crate::core::minecraft::launcher::virtual_mods::call_native(
+                        &plugin_id, generation, &module_id, &method, body,
+                    ).await.map_err(PluginError::app)?;
+                    encode(&response)
                 } else if service.starts_with("native.") || service == "download.read-text" {
                     native.invoke(service, &arguments).await
                 } else {
