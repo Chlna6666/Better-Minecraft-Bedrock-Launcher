@@ -25,91 +25,93 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download and verify pinned BLoader
+      - name: Fetch pinned successful BLoader build
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $lockPath = 'assets/bin/BLoader.lock'
-          if (-not (Test-Path $lockPath -PathType Leaf)) {
-            throw "Missing $lockPath"
+          $lockFile = 'assets/bin/BLoader.lock'
+          if (-not (Test-Path $lockFile)) {
+            Write-Host 'No BLoader.lock; no embed update requested.'
+            exit 0
           }
-
           $entries = @{}
-          foreach ($line in Get-Content $lockPath) {
+          foreach ($line in Get-Content $lockFile) {
             if ($line -match '^([^=]+)=(.*)$') {
               $entries[$Matches[1].Trim()] = $Matches[2].Trim()
             }
           }
-          $version = $entries['version']
-          if (-not $version) { throw 'BLoader.lock is missing version=' }
-
-          $tag = "v$version"
-          $archiveName = "BLoader-$version-windows-x64.zip"
-          $base = "https://github.com/Chlna6666/BLoader/releases/download/$tag"
-          $archive = Join-Path $env:RUNNER_TEMP $archiveName
-          $archiveHashFile = "$archive.sha256"
-          $extract = Join-Path $env:RUNNER_TEMP "bloader-$version"
-
-          $downloaded = $false
-          for ($attempt = 1; $attempt -le 30; $attempt++) {
-            try {
-              Invoke-WebRequest -Uri "$base/$archiveName" -OutFile $archive
-              Invoke-WebRequest -Uri "$base/$archiveName.sha256" -OutFile $archiveHashFile
-              $downloaded = $true
-              break
-            } catch {
-              if ($attempt -eq 30) { throw }
-              Write-Host "BLoader $tag release is not ready yet; retry $attempt/30"
-              Start-Sleep -Seconds 10
-            }
-          }
-          if (-not $downloaded) { throw "Unable to download BLoader $tag" }
-
-          $expectedArchiveHash = ((Get-Content $archiveHashFile -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
-          $actualArchiveHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualArchiveHash -ne $expectedArchiveHash) {
-            throw "Archive SHA-256 mismatch: expected=$expectedArchiveHash actual=$actualArchiveHash"
+          $version = $entries.version
+          $runId = $entries.run_id
+          $sourceSha = $entries.source_sha
+          $expectedHash = $entries.sha256
+          $expectedSize = $entries.size
+          if ($version -notmatch '^\d+\.\d+\.\d+$' -or $runId -notmatch '^\d+$' -or
+              $sourceSha -notmatch '^[0-9a-f]{40}$' -or
+              $expectedHash -notmatch '^[0-9a-f]{64}$' -or
+              $expectedSize -notmatch '^\d+$') {
+            throw 'BLoader.lock contains invalid pinned version, commit, run, hash, or size'
           }
 
-          Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
-          Expand-Archive -Path $archive -DestinationPath $extract -Force
-          $dll = Join-Path $extract 'BLoader.dll'
-          $dllHashFile = Join-Path $extract 'BLoader.dll.sha256'
-          if (-not (Test-Path $dll -PathType Leaf)) { throw 'Release archive has no BLoader.dll' }
-          if (-not (Test-Path $dllHashFile -PathType Leaf)) { throw 'Release archive has no BLoader.dll.sha256' }
-
-          $expectedDllHash = ((Get-Content $dllHashFile -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
-          $actualDllHash = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualDllHash -ne $expectedDllHash) {
-            throw "DLL SHA-256 mismatch: expected=$expectedDllHash actual=$actualDllHash"
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+            'User-Agent' = 'BMCBL-Pinned-BLoader-Sync'
+          }
+          $repo = 'Chlna6666/BLoader'
+          $base = "https://api.github.com/repos/$repo"
+          $run = Invoke-RestMethod -Uri "$base/actions/runs/$runId" -Headers $headers
+          if ($run.event -ne 'push' -or $run.head_branch -ne 'master' -or
+              $run.head_sha -ne $sourceSha -or $run.conclusion -ne 'success') {
+            throw 'Pinned BLoader run is not a successful master push for source_sha'
           }
 
-          $destination = 'assets/bin/BLoader.dll'
-          New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-          Copy-Item $dll $destination -Force
-          $size = (Get-Item $destination).Length
+          $artifacts = Invoke-RestMethod -Uri "$base/actions/runs/$runId/artifacts?per_page=100" -Headers $headers
+          $artifact = @($artifacts.artifacts | Where-Object {
+            $_.name -eq 'BLoader-windows-x64' -and -not $_.expired
+          }) | Select-Object -First 1
+          if (-not $artifact) { throw 'Pinned BLoader CI artifact is not available' }
 
-          @(
-            "version=$version"
-            "sha256=$actualDllHash"
-            "size=$size"
-            "source=https://github.com/Chlna6666/BLoader/releases/tag/$tag"
-          ) | Set-Content $lockPath -Encoding utf8NoBOM
-
-          Write-Host "Embedded BLoader version: $version"
-          Write-Host "Embedded BLoader SHA-256: $actualDllHash"
-          Write-Host "Embedded BLoader size: $size"
+          $archive = Join-Path $env:RUNNER_TEMP 'bloader-ci-artifact.zip'
+          $directory = Join-Path $env:RUNNER_TEMP 'bloader-ci-extract'
+          Invoke-WebRequest -Uri "$base/actions/artifacts/$($artifact.id)/zip" -Headers $headers -OutFile $archive -MaximumRedirection 5
+          Expand-Archive -Path $archive -DestinationPath $directory -Force
+          $dll = Join-Path $directory 'target/x86_64-pc-windows-msvc/release/BLoader.dll'
+          $hashFile = Join-Path $directory "dist/BLoader-$version-windows-x64/BLoader.dll.sha256"
+          $manifestFile = Join-Path $directory "dist/BLoader-$version-windows-x64/manifest.json"
+          if (!(Test-Path $dll) -or !(Test-Path $hashFile) -or !(Test-Path $manifestFile)) {
+            throw 'BLoader artifact layout or version is unexpected'
+          }
+          $manifest = Get-Content $manifestFile -Raw | ConvertFrom-Json
+          $actualHash = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          $publishedHash = ((Get-Content $hashFile -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          $actualSize = (Get-Item $dll).Length
+          if ($expectedHash -ne $actualHash -or $actualHash -ne $publishedHash -or
+              $actualSize -ne [long]$expectedSize) {
+            throw 'Pinned BLoader DLL SHA-256 or file size mismatch'
+          }
+          if ($manifest.version -and $manifest.version -ne $version) {
+            throw 'Pinned BLoader manifest version mismatch'
+          }
+          Copy-Item $dll 'assets/bin/BLoader.dll' -Force
+          Write-Host "Embedded BLoader $version from $sourceSha (CI run $runId), SHA-256=$actualHash"
 
       - name: Commit updated embedded DLL
         shell: pwsh
         run: |
+          if (!(Test-Path assets/bin/BLoader.lock)) { exit 0 }
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- assets/bin/BLoader.dll assets/bin/BLoader.lock
+          git add -- assets/bin/BLoader.dll
           if (git diff --cached --quiet) {
-            Write-Host 'Embedded BLoader is already current.'
+            Write-Host 'Embedded BLoader already matches the pinned artifact.'
             exit 0
           }
-          $version = ((Get-Content assets/bin/BLoader.lock | Where-Object { $_ -like 'version=*' } | Select-Object -First 1) -split '=', 2)[1]
-          git commit -m "chore: embed BLoader $version"
+          $version = ((Get-Content assets/bin/BLoader.lock | Where-Object {
+            $_ -like 'version=*'
+          } | Select-Object -First 1) -split '=', 2)[1]
+          git commit -m "chore: embed verified BLoader $version"
+          git pull --rebase origin master
           git push origin HEAD:master
