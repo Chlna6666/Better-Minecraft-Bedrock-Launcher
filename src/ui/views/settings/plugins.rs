@@ -4,7 +4,7 @@ use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{Input, InputSize, InputState};
 use crate::ui::components::markdown::{parse_document, render_document};
 use crate::ui::components::plugin_tags;
-use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::components::scroll::{ScrollableElement as _, Scrollbar};
 use crate::ui::components::toast;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
@@ -275,6 +275,7 @@ pub(super) fn ensure_plugin_resources<T: 'static>(
                 state.selected_plugin_id = selected_status
                     .as_ref()
                     .map(|status| SharedString::from(status.id.clone()));
+                state.plugin_detail_scroll = ScrollHandle::new();
                 state.plugin_config_loaded_for = None;
                 state.plugin_config_draft = SharedString::from("");
                 state.plugin_config_inputs.clear();
@@ -716,6 +717,7 @@ fn plugin_list(
                         state.plugin_config_inputs.clear();
                         state.plugin_config_inputs_for = None;
                         state.plugin_sub_tab = PluginSettingsSubTab::Readme;
+                        state.plugin_detail_scroll = ScrollHandle::new();
                     });
                 })
                 .child(
@@ -786,12 +788,16 @@ fn plugin_detail(
             );
     };
 
-    card(colors, "settings-plugin-detail")
-        .flex_1()
+    let scroll = &state.plugin_detail_scroll;
+    let body = match state.plugin_sub_tab {
+        PluginSettingsSubTab::Readme => plugin_readme_panel(colors, i18n, model),
+        PluginSettingsSubTab::Permissions => plugin_permissions_panel(colors, status),
+        PluginSettingsSubTab::Config => plugin_config_panel(colors, i18n, state, model, status),
+        PluginSettingsSubTab::Logs => plugin_logs_panel(colors, i18n, model),
+    };
+    let content = div()
         .min_w(px(0.))
-        .min_h(px(0.))
-        .overflow_hidden()
-        .p(px(14.))
+        .p(px(12.))
         .flex()
         .flex_col()
         .gap(px(10.))
@@ -802,23 +808,24 @@ fn plugin_detail(
             &status.id,
             state.plugin_sub_tab,
         ))
+        .child(body);
+    card(colors, "settings-plugin-detail")
+        .flex_1()
+        .min_w(px(0.))
+        .min_h(px(0.))
+        .overflow_hidden()
+        .flex()
         .child(
             div()
                 .id("settings-plugin-detail-scroll")
                 .flex_1()
                 .min_w(px(0.))
                 .min_h(px(0.))
-                .overflow_scroll()
-                .scrollbar_width(px(0.))
-                .child(match state.plugin_sub_tab {
-                    PluginSettingsSubTab::Readme => plugin_readme_panel(colors, i18n, model),
-                    PluginSettingsSubTab::Permissions => plugin_permissions_panel(colors, status),
-                    PluginSettingsSubTab::Config => {
-                        plugin_config_panel(colors, i18n, state, model, status)
-                    }
-                    PluginSettingsSubTab::Logs => plugin_logs_panel(colors, i18n, model),
-                }),
+                .overflow_y_scroll()
+                .track_scroll(scroll)
+                .child(content),
         )
+        .child(Scrollbar::new("settings-plugin-detail-scrollbar", scroll, colors))
 }
 
 fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus) -> Div {
@@ -833,8 +840,6 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
     } else {
         status.authors.join(", ")
     };
-
-    let capabilities = status.capabilities.clone();
 
     div()
         .w_full()
@@ -951,7 +956,6 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                     ),
                 ),
         )
-        .children(plugin_tags::render(colors, &status.tags))
         .child(
             div()
                 .flex()
@@ -965,22 +969,7 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                         .flex_1()
                         .min_w(px(0.))
                         .items_center()
-                        .flex_wrap()
-                        .gap(px(6.))
-                        .children(capabilities.into_iter().map(|cap| {
-                            div()
-                                .px(px(7.))
-                                .py(px(2.))
-                                .rounded(px(crate::ui::theme::tokens::radius::XS))
-                                .bg(Hsla {
-                                    a: 0.08,
-                                    ..colors.accent
-                                })
-                                .text_size(px(10.))
-                                .text_color(colors.accent)
-                                .child(cap)
-                                .into_any_element()
-                        })),
+                        .children(plugin_tags::render(colors, &status.tags)),
                 )
                 .child(
                     div()
@@ -1121,7 +1110,10 @@ fn plugin_sub_tabs(
             .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                 cx.update_global(|state: &mut SettingsPageState, _cx| {
                     state.selected_plugin_id = Some(SharedString::from(plugin_id.clone()));
-                    state.plugin_sub_tab = tab;
+                    if state.plugin_sub_tab != tab {
+                        state.plugin_sub_tab = tab;
+                        state.plugin_detail_scroll = ScrollHandle::new();
+                    }
                 });
             })
     };
@@ -1215,6 +1207,13 @@ fn plugin_permissions_panel(colors: &ThemeColors, status: &PluginStatus) -> AnyE
     ];
 
     let mut panel = div().w_full().flex().flex_col().gap(px(10.));
+    if !status.capabilities.is_empty() {
+        panel = panel.child(plugin_info_row(
+            colors,
+            "Capabilities",
+            status.capabilities.join(" · "),
+        ));
+    }
     for (label, value) in permission_rows {
         panel = panel.child(plugin_info_row(colors, label, value));
     }
@@ -2077,7 +2076,83 @@ fn log_level_color(colors: &ThemeColors, level: LogLevel) -> Hsla {
 
 #[cfg(test)]
 mod tests {
-    use super::PluginConfigSchema;
+    use super::*;
+    use crate::plugins::runtime::PluginLimitStatus;
+    use crate::ui::theme::LightColors;
+
+    struct DetailProbe {
+        state: SettingsPageState,
+        model: PluginSettingsModel,
+    }
+
+    impl Render for DetailProbe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().flex().child(plugin_detail(
+                &LightColors::theme(),
+                cx.global::<I18n>(),
+                &self.state,
+                &self.model,
+                self.model.statuses.first(),
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn plugin_detail_scrolls_from_header_to_end_of_readme(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(I18n::new()));
+        let state = SettingsPageState::default();
+        let scroll = state.plugin_detail_scroll.clone();
+        let (_, mut visual) = cx.add_window_view(|_, _| DetailProbe {
+            state,
+            model: PluginSettingsModel {
+                statuses: vec![PluginStatus {
+                    id: "test-tools".into(),
+                    name: "Test Tools".into(),
+                    version: "1.0.0".into(),
+                    healthy: true,
+                    error: None,
+                    generation: 1,
+                    authors: vec![],
+                    description: None,
+                    website: None,
+                    license: None,
+                    tags: vec!["tools".into()],
+                    capabilities: vec!["ui.page".into()],
+                    enabled: true,
+                    loaded: true,
+                    permissions: Default::default(),
+                    limits: PluginLimitStatus {
+                        max_http_bytes: 1024,
+                        max_resource_bytes: 1024,
+                        max_storage_bytes: 1024,
+                    },
+                    has_readme: true,
+                    has_config: false,
+                    icon_path: None,
+                    root_dir: PathBuf::new(),
+                }],
+                selected_id: Some("test-tools".into()),
+                readme: Some(Arc::new(parse_document(&"README paragraph.\n\n".repeat(40)))),
+                config_text: None,
+                config_schema: None,
+                logs: Arc::from([]),
+                locale: "en-US".into(),
+                translations: BTreeMap::new(),
+                is_dark: false,
+            },
+        });
+        visual.simulate_resize(size(px(620.), px(260.)));
+        let viewport = scroll.bounds();
+        let extent = scroll.max_offset().height;
+        assert!(viewport.size.height >= px(245.));
+        assert!(extent > viewport.size.height);
+        visual.simulate_event(ScrollWheelEvent {
+            position: point(viewport.left() + px(24.), viewport.top() + px(24.)),
+            delta: ScrollDelta::Pixels(point(px(0.), -extent * 2.)),
+            ..Default::default()
+        });
+        assert_eq!(scroll.offset().y, -extent);
+    }
 
     #[::core::prelude::v1::test]
     fn schema_fields_allow_localization_keys() {

@@ -195,6 +195,7 @@ pub struct SettingsPageState {
     pub font_restart_confirm_open: bool,
     pub selected_plugin_id: Option<SharedString>,
     pub plugin_sub_tab: PluginSettingsSubTab,
+    pub plugin_detail_scroll: ScrollHandle,
     pub plugin_config_draft: SharedString,
     pub plugin_config_loaded_for: Option<SharedString>,
     pub plugin_config_inputs: BTreeMap<String, Entity<InputState>>,
@@ -351,6 +352,7 @@ impl SettingsPageState {
             font_restart_confirm_open: false,
             selected_plugin_id: None,
             plugin_sub_tab: PluginSettingsSubTab::Readme,
+            plugin_detail_scroll: ScrollHandle::new(),
             plugin_config_draft: SharedString::from(""),
             plugin_config_loaded_for: None,
             plugin_config_inputs: BTreeMap::new(),
@@ -614,6 +616,7 @@ impl SettingsPageState {
         self.font_restart_confirm_open = false;
         self.selected_plugin_id = None;
         self.plugin_sub_tab = PluginSettingsSubTab::Readme;
+        self.plugin_detail_scroll = ScrollHandle::new();
         self.plugin_config_draft = SharedString::from("");
         self.plugin_config_loaded_for = None;
         self.plugin_config_inputs.clear();
