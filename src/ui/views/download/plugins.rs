@@ -11,7 +11,7 @@ use crate::plugins::{registry, runtime};
 use crate::tasks::task_manager::wait_for_task;
 use crate::ui::components::button::{ghost_button, primary_button, secondary_button};
 use crate::ui::components::markdown::{Document, parse_document, render_document};
-use crate::ui::components::plugin_icon;
+use crate::ui::components::{plugin_icon, plugin_tags};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::components::toast;
 use crate::ui::components::{dialog, modal};
@@ -265,6 +265,7 @@ fn summary(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
                     .child(plugin.description.clone()),
             )
         })
+        .children(plugin_tags::render(colors, &plugin.tags))
 }
 
 fn install_button(
@@ -566,6 +567,7 @@ mod tests {
                     publisher: "BMCBL".into(),
                     status: "official".into(),
                     version: "1.0.0".into(),
+                    tags: vec!["tools".into(), "p2p".into()],
                     icon: None,
                 },
                 readme: Readme::Ready(Some(parse_document(&"README paragraph.\n\n".repeat(80)))),

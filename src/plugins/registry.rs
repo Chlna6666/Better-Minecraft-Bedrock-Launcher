@@ -26,6 +26,8 @@ pub(crate) struct Plugin {
     pub(crate) publisher: String,
     pub(crate) status: String,
     pub(crate) version: String,
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
     pub(crate) icon: Option<Icon>,
 }
 
@@ -258,4 +260,25 @@ async fn fetch(client: &reqwest::Client, path: &str, limit: usize) -> Result<Vec
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Plugin;
+
+    #[test]
+    fn registry_summary_accepts_tags_and_old_entries_without_tags() {
+        let mut summary = serde_json::json!({
+            "id": "test-tools",
+            "name": "Test Tools",
+            "publisher": "BMCBL",
+            "status": "official",
+            "description": "",
+            "version": "0.1.0",
+        });
+        assert!(serde_json::from_value::<Plugin>(summary.clone()).unwrap().tags.is_empty());
+        summary["tags"] = serde_json::json!(["networking", "p2p"]);
+        let plugin = serde_json::from_value::<Plugin>(summary).unwrap();
+        assert_eq!(plugin.tags, ["networking", "p2p"]);
+    }
 }

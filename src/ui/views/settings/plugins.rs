@@ -3,6 +3,7 @@ use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{Input, InputSize, InputState};
 use crate::ui::components::markdown::{parse_document, render_document};
+use crate::ui::components::plugin_tags;
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::components::toast;
 use crate::ui::components::toggle_switch::ToggleSwitch;
@@ -950,6 +951,7 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                     ),
                 ),
         )
+        .children(plugin_tags::render(colors, &status.tags))
         .child(
             div()
                 .flex()
