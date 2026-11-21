@@ -1,5 +1,7 @@
 mod bloader;
 mod preloader;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod virtual_mods;
 #[cfg(target_os = "windows")]
 pub mod preflight;
 #[cfg(target_os = "windows")]
