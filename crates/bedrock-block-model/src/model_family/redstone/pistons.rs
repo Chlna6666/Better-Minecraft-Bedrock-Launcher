@@ -184,13 +184,3 @@ fn rotate_head_to_facing(shape: ModelShape, facing: BlockFacing) -> ModelShape {
     }
 }
 
-const fn facing_face(facing: BlockFacing) -> BlockFace {
-    match facing {
-        BlockFacing::Down => BlockFace::Down,
-        BlockFacing::Up => BlockFace::Up,
-        BlockFacing::North => BlockFace::North,
-        BlockFacing::South => BlockFace::South,
-        BlockFacing::West => BlockFace::West,
-        BlockFacing::East => BlockFace::East,
-    }
-}
