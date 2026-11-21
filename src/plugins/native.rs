@@ -1,4 +1,5 @@
 //! A plugin generation's module and instance table. The host never decodes commands or events.
+#![expect(unsafe_code, reason = "Audited native plugin C ABI calls and wake callbacks require unsafe FFI")]
 
 mod module;
 
