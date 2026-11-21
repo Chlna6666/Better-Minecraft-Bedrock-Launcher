@@ -16,8 +16,10 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
 
 pub(crate) fn shape(state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
-    let open = state_bool(state, "open")
-        .or_else(|| state_bool(state, "open_bit"))
+    // BE's canonical bool is `open_bit`; read it before any legacy `open` key — a world
+    // that carries both with a stale `open` value must follow the bit.
+    let open = state_bool(state, "open_bit")
+        .or_else(|| state_bool(state, "open"))
         .or_else(|| state_bool(state, "minecraft:open"))
         .unwrap_or(false);
     let hinge_right = state_bool(state, "door_hinge_bit")

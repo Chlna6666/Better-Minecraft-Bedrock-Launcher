@@ -84,8 +84,18 @@ fn pane_post_cuboid(kind: PaneKind) -> ModelCuboid {
 }
 
 /// The `noside` card: one quad on the post's outward face.
+///
+/// The official `template_glass_pane_noside` draws a single face whose UV runs `u 9..7`
+/// (mirrored), and the quad is one-sided — each direction has its own card, so emitting the
+/// plane double-sided drew every disconnected side twice and stacked translucent glass.
 fn pane_open_plane(direction: CardinalDirection, kind: PaneKind) -> ModelPlane {
-    // `template_glass_pane_noside` is `from [7,0,7] to [9,16,9]` with only one face drawn.
+    // Mirrored window, emitted bottom-left first: `u 9..7` reads right-to-left.
+    let uv = [
+        [9.0 / 16.0, 1.0],
+        [7.0 / 16.0, 1.0],
+        [7.0 / 16.0, 0.0],
+        [9.0 / 16.0, 0.0],
+    ];
     let (corners, normal) = match direction {
         CardinalDirection::North => (
             [
@@ -125,8 +135,9 @@ fn pane_open_plane(direction: CardinalDirection, kind: PaneKind) -> ModelPlane {
         ),
     };
     ModelPlane::new(corners, normal)
+        .front_only()
         .with_material_slot(kind.face_slot())
-        .with_uv(uv16(7.0, 0.0, 9.0, 16.0))
+        .with_uv(uv)
 }
 
 /// One 2 px arm from the post to a connected side.
