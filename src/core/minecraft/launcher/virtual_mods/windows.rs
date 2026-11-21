@@ -131,5 +131,7 @@ fn run_pipe(
     if unsafe { set_pipe_mode(raw, &mut blocking_byte_mode, ptr::null_mut(), ptr::null_mut()) } == 0 {
         return Err("failed to enter blocking byte-mode pipe transport".into());
     }
-    serve(&mut pipe, &plan, root, "named-pipe", Some(pid), session, version)
+    let writer = pipe.try_clone()
+        .map_err(|error| format!("cannot clone virtual Mod pipe for RPC: {error}"))?;
+    serve(&mut pipe, writer, &plan, root, "named-pipe", Some(pid), session, version)
 }
