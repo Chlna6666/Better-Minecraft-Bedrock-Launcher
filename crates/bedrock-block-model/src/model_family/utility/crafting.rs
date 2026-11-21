@@ -128,7 +128,7 @@ pub(crate) fn flower_pot_shape(name: &str) -> ModelShape {
         cuboid
     };
     // uv rects are [u0, v0, u1, v1] in image pixels, measured from the texture top.
-    let mut cuboids = vec![
+    let cuboids = vec![
         // west wall x5..6
         pot(
             [5.0, 0.0, 5.0],
