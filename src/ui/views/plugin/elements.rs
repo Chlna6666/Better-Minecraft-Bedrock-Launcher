@@ -4,7 +4,7 @@ use gpui::{
 };
 
 use crate::ui::components::icon::themed_icon;
-use crate::ui::components::input::{Input, InputEvent, InputState};
+use crate::ui::components::input::{Input, InputEvent, InputSize, InputState};
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 
@@ -13,6 +13,9 @@ use bmcbl_plugin_runtime::{
     InputNode, LayoutDirection, LinkNode, ListNode, ProgressNode, SelectNode, SpacerNode, TextNode,
     TextSizeToken, ThemeToken, ToggleNode, ViewNode, ViewStyle, ViewTree,
 };
+
+#[cfg(test)]
+mod tests;
 
 pub fn render_validated_view_tree(
     tree: &ViewTree,
@@ -49,6 +52,9 @@ fn render_node(
                 && style.full_width
                 && children.len() == 2;
             let compact = columns && window.bounds().size.width <= px(1280.);
+            let stretch_row = style.direction == LayoutDirection::Row
+                && style.align == Align::Center
+                && style.full_width;
             let surface = (style.background == Some(ThemeToken::Surface))
                 .then(|| crate::ui::components::page_shell::glass_card(&colors));
             let mut element = styled_container_on(style, &colors, surface);
@@ -58,8 +64,8 @@ fn render_node(
                     element = element.flex_col();
                 }
             }
-            for (position, child) in children.iter().enumerate() {
-                let child = render_node(nodes, *child, plugin_id, page_id, window, cx, colors);
+            for (position, &index) in children.iter().enumerate() {
+                let child = render_node(nodes, index, plugin_id, page_id, window, cx, colors);
                 if columns {
                     let child = div().min_w(px(0.)).child(child);
                     element = element.child(if compact {
@@ -69,6 +75,11 @@ fn render_node(
                     } else {
                         child.w(px(330.)).flex_none()
                     });
+                } else if stretch_row {
+                    let cell = row_cell(&nodes[index as usize], child);
+                    #[cfg(test)]
+                    let cell = cell.debug_selector(|| format!("plugin-row-cell-{index}"));
+                    element = element.child(cell);
                 } else {
                     element = element.child(child);
                 }
@@ -89,10 +100,16 @@ fn render_node(
             let plugin_id = plugin_id.to_string();
             let page_id = page_id.map(str::to_string);
             let id = SharedString::from(format!("plugin-{plugin_id}-{index}"));
-            let mut button = if style.color == Some(ThemeToken::SecondaryText) {
-                crate::ui::components::button::secondary_button(&colors, id, label.clone())
-            } else {
-                crate::ui::components::button::primary_button(&colors, id, label.clone())
+            use crate::ui::components::button::{ghost_button, primary_button, secondary_button};
+            let mut button = match (style.color, style.text_size) {
+                (Some(ThemeToken::SecondaryText), TextSizeToken::Small) => {
+                    ghost_button(&colors, id, label.clone())
+                }
+                (Some(ThemeToken::SecondaryText), _) => secondary_button(&colors, id, label.clone()),
+                (_, TextSizeToken::Small) => primary_button(&colors, id, label.clone())
+                    .px(px(12.))
+                    .py(px(6.)),
+                _ => primary_button(&colors, id, label.clone()),
             };
             if style.full_width {
                 button = button.w_full();
@@ -508,12 +525,32 @@ fn render_input(
         }
         state.input.clone()
     });
-    let control = Input::new(&input).min_w(px(0.));
+    let mut control = Input::new(&input).min_w(px(0.));
+    if node.style.text_size == TextSizeToken::Small {
+        // A definite height lets the input's full-height text area resolve inside a row.
+        control = control
+            .with_size(InputSize::Small)
+            .appearance(false)
+            .h(px(32.))
+            .px(px(8.));
+    }
     if node.style.full_width {
         control.w_full().into_any_element()
     } else {
         control.into_any_element()
     }
+}
+
+fn row_cell(node: &ViewNode, child: AnyElement) -> gpui::Div {
+    let fills_row = match node {
+        ViewNode::Container(node) => node.style.full_width,
+        ViewNode::Text(node) => node.style.full_width,
+        ViewNode::Input(node) => node.style.full_width,
+        ViewNode::Button(node) => node.style.full_width,
+        _ => false,
+    };
+    let cell = div().min_w(px(0.)).child(child);
+    if fills_row { cell.flex_1() } else { cell.flex_none() }
 }
 
 fn styled_container(style: &ViewStyle, colors: &ThemeColors) -> gpui::Div {

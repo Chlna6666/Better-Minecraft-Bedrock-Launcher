@@ -365,21 +365,21 @@ impl PluginManifest {
     }
 
     pub fn readme_path(&self, locale: Option<&str>) -> Option<PathBuf> {
+        self.readme_entry(locale).map(|path| self.root_dir.join(path))
+    }
+
+    fn readme_entry(&self, locale: Option<&str>) -> Option<&str> {
         if let Some(locale) = locale {
             for candidate in readme_locale_candidates(locale) {
                 if let Some(path) = self.readme_locales.get(&candidate) {
-                    return Some(self.root_dir.join(path));
+                    return Some(path);
                 }
             }
         }
 
-        self.readme
-            .as_ref()
-            .map(|path| self.root_dir.join(path))
-            .or_else(|| {
-                locale.and_then(|_| self.readme_locales.values().next())
-                    .map(|path| self.root_dir.join(path))
-            })
+        self.readme.as_deref().or_else(|| {
+            locale.and_then(|_| self.readme_locales.values().next()).map(String::as_str)
+        })
     }
 
     pub fn icon_path(&self) -> Option<PathBuf> {
@@ -1009,6 +1009,44 @@ fn read_package_entry_to_string<R: Read + Seek>(
 ) -> Result<String> {
     let bytes = read_package_entry_to_bytes(archive, name)?;
     String::from_utf8(bytes).with_context(|| format!("plugin package entry {name} is not utf-8"))
+}
+
+pub(super) fn read_package_readme(
+    path: &Path,
+    id: &str,
+    version: &str,
+    locale: &str,
+) -> Result<Option<String>> {
+    let mut archive = zip::ZipArchive::new(fs::File::open(path)?)?;
+    let manifest = read_package_text(&mut archive, PLUGIN_MANIFEST_FILE, 64 * 1024)?;
+    let manifest = PluginManifest::parse(path, &manifest)?;
+    if manifest.id != id || manifest.version != version {
+        bail!("plugin package identity or version does not match the catalog");
+    }
+    let entry = manifest.readme_entry(Some(locale)).or_else(|| {
+        archive
+            .file_names()
+            .any(|name| name.is_ok_and(|name| name == "README.md"))
+            .then_some("README.md")
+    });
+    entry.map(|entry| read_package_text(&mut archive, entry, 256 * 1024)).transpose()
+}
+
+fn read_package_text<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    name: &str,
+    limit: u64,
+) -> Result<String> {
+    let entry = archive.by_name(name)?;
+    if entry.size() > limit {
+        bail!("plugin package entry {name} exceeds the text size limit");
+    }
+    let mut text = String::new();
+    entry.take(limit + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > limit {
+        bail!("plugin package entry {name} exceeds the text size limit");
+    }
+    Ok(text)
 }
 
 fn read_package_entry_to_bytes<R: Read + Seek>(
@@ -1724,6 +1762,19 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
             .expect("system clock should be after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("{prefix}-{nonce}"))
+    }
+
+    #[test]
+    fn catalog_readme_uses_package_locale_and_checks_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("essentials.bmcblx");
+        let wasm = b"fixture";
+        write_test_package_with_resources(&path, &test_manifest("1.0.0", &sha256_hex(wasm)), wasm);
+
+        let read = |version, locale| read_package_readme(&path, "bmcbl-essentials", version, locale);
+        assert_eq!(read("1.0.0", "zh-CN").unwrap().as_deref(), Some("# Essentials CN\n"));
+        assert_eq!(read("1.0.0", "en-US").unwrap().as_deref(), Some("# Essentials\n"));
+        assert!(read("2.0.0", "en-US").is_err());
     }
 
     fn write_test_package(package_path: &Path, manifest: &str, wasm: &[u8]) {

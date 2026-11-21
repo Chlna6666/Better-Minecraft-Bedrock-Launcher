@@ -2,7 +2,6 @@ use crate::tasks::TaskStage;
 use crate::core::minecraft::remote_versions;
 use crate::plugins::events::InjectionSlot;
 use crate::ui::components::color_picker::normalize_hex_color;
-use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{InputEvent, InputState};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::navigation::{AppRoute, RouteTarget};
@@ -906,18 +905,37 @@ impl MainWindowView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let width = px((modal.width as f32)
-            .min(model.window_width_px - 32.0)
-            .max(280.0));
-        let height = px((modal.height as f32)
-            .min(model.window_height / px(1.0) - 40.0)
-            .max(240.0));
+        let width = px(modal.width as f32).min((px(model.window_width_px) - px(32.)).max(px(0.)));
+        let height = px(modal.height as f32).min((model.window_height - px(40.)).max(px(0.)));
         let close = Rc::new(|cx: &mut App| {
             crate::plugins::runtime::close_modal(cx);
         });
         let page = {
+            let retained = window.use_keyed_state(
+                SharedString::from(format!(
+                    "plugin-modal-page/{}/{}",
+                    modal.plugin_id, modal.page_id
+                )),
+                cx,
+                |_, _| None::<Arc<bmcbl_plugin_runtime::ViewTree>>,
+            );
             let registry = cx.global::<crate::plugins::runtime::PluginRegistry>();
-            if let Some(tree) = registry.cached_page(&modal.plugin_id, &modal.page_id) {
+            let error = registry.cached_page_error(&modal.plugin_id, &modal.page_id);
+            let tree = if error.is_some() {
+                retained.update(cx, |page, _| *page = None);
+                None
+            } else if let Some(tree) = registry.cached_page(&modal.plugin_id, &modal.page_id) {
+                retained.update(cx, |page, _| *page = Some(tree.clone()));
+                Some(tree)
+            } else {
+                crate::plugins::runtime::request_page_render(cx, &modal.plugin_id, &modal.page_id);
+                // Keep the inputs mounted while the guest processes the action and renders again.
+                retained.read(cx).clone()
+            };
+            if let Some(error) = error {
+                crate::ui::views::plugin::elements::fallback_panel(error.to_string())
+                    .into_any_element()
+            } else if let Some(tree) = tree {
                 crate::ui::views::plugin::elements::render_validated_view_tree(
                     &tree,
                     &modal.plugin_id,
@@ -925,86 +943,55 @@ impl MainWindowView {
                     window,
                     cx,
                 )
-            } else if let Some(error) = registry.cached_page_error(&modal.plugin_id, &modal.page_id)
-            {
-                crate::ui::views::plugin::elements::fallback_panel(error.to_string()).into_any_element()
             } else {
-                crate::plugins::runtime::request_page_render(cx, &modal.plugin_id, &modal.page_id);
                 crate::ui::views::plugin::elements::loading_panel(t!("MainWindow.loading_dialog"))
                     .into_any_element()
             }
         };
         let title = modal.title.clone();
-        let content = div()
-            .flex()
-            .flex_col()
-            .w(width)
-            .max_w(px(model.window_width_px - 32.0))
+        let content = crate::ui::components::dialog::container(&model.theme_colors, width)
             .h(height)
-            .max_h(px(model.window_height / px(1.0) - 40.0))
-            .overflow_hidden()
-            .rounded(px(crate::ui::theme::tokens::radius::SM))
-            .border_1()
-            .border_color(Hsla {
-                a: 0.56,
-                ..model.theme_colors.border
-            })
-            .bg(Hsla {
-                a: if model.theme_k > 0.5 { 0.90 } else { 0.84 },
-                ..model.theme_colors.settings_card_bg
-            })
             .shadow_lg()
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .flex_row()
                     .items_center()
                     .justify_between()
                     .gap(px(12.0))
-                    .px(px(16.0))
-                    .py(px(10.0))
+                    .px(px(22.0))
+                    .py(px(12.0))
                     .border_b_1()
                     .border_color(Hsla {
-                        a: 0.48,
+                        a: 0.24,
                         ..model.theme_colors.border
                     })
                     .child(
                         div()
-                            .text_size(px(14.0))
+                            .text_size(px(17.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(model.theme_colors.text_primary)
                             .child(title),
                     )
                     .child(
-                        div()
-                            .w(px(30.0))
-                            .h(px(30.0))
-                            .rounded_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover({
-                                let hover_color = model.theme_colors.surface_hover;
-                                move |style| style.bg(hover_color)
-                            })
-                            .child(themed_icon(
-                                lucide_gpui::icon!(x),
-                                15.0,
-                                model.theme_colors.text_secondary,
-                            ))
-                            .on_mouse_up(MouseButton::Left, |_event, _window, cx| {
-                                crate::plugins::runtime::close_modal(cx);
-                            }),
+                        crate::ui::components::button::ghost_button(
+                            &model.theme_colors,
+                            "plugin-modal-close",
+                            t!("common.close"),
+                        )
+                        .on_click(|_, _, cx| {
+                            crate::plugins::runtime::close_modal(cx);
+                        }),
                     ),
             )
             .child(
                 div()
                     .flex_1()
+                    .min_h(px(0.))
                     .overflow_y_scrollbar()
-                    .scrollbar_width(px(0.0))
-                    .px(px(16.0))
-                    .py(px(14.0))
+                    .px(px(22.0))
+                    .py(px(18.0))
                     .child(page),
             );
 
@@ -1797,9 +1784,30 @@ impl Render for MainWindowView {
             }));
         auth_blocked |= self.easter_egg.is_active();
 
-        let root = if let Some(import_overlay) =
-            crate::ui::window::import::render_import_overlay(&model.theme_colors, window, cx)
-        {
+        let import_overlay =
+            crate::ui::window::import::render_import_overlay(&model.theme_colors, window, cx);
+        let plugin_modal_open = !model.agreement_render_state.visible
+            && crate::plugins::runtime::active_modal(cx).is_some();
+        let plugin_details_open = model.builtin_route == AppRoute::Download
+            && cx
+                .global::<crate::ui::views::download::state::DownloadPageState>()
+                .plugin_details_open();
+        let root = root.when(
+            import_overlay.is_none() && (plugin_modal_open || plugin_details_open),
+            |root| {
+                root.capture_key_down(move |event, _, cx| {
+                    if event.keystroke.key == "escape" {
+                        if plugin_modal_open {
+                            crate::plugins::runtime::close_modal(cx);
+                        } else {
+                            crate::ui::views::download::plugins::close_details(cx);
+                        }
+                        cx.stop_propagation();
+                    }
+                })
+            },
+        );
+        let root = if let Some(import_overlay) = import_overlay {
             auth_blocked = true;
             root.child(import_overlay)
         } else {

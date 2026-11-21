@@ -177,6 +177,19 @@ pub(crate) async fn catalog(previous: Catalog) -> Result<Catalog, String> {
     })
 }
 
+pub(crate) async fn readme(
+    id: String,
+    version: String,
+    locale: String,
+) -> Result<Option<String>, String> {
+    let package = crate::downloads::verified::fetch(package(&id, &version).await?).await?;
+    crate::tasks::runtime::blocking::run_io(move || {
+        super::manifest::read_package_readme(&package, &id, &version, &locale)
+            .map_err(|error| error.to_string())
+    })
+    .await?
+}
+
 pub(crate) async fn package(id: &str, version: &str) -> Result<Request, String> {
     super::manifest::validate_plugin_id(id).map_err(|error| error.to_string())?;
     let client = crate::http::proxy::clients::client().map_err(|error| error.to_string())?;

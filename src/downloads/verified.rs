@@ -5,7 +5,7 @@ use std::time::Duration;
 
 pub(crate) use bmcbl_plugin_api::app::VerifiedDownload as Request;
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt as _;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::tasks::TaskStage;
 use crate::tasks::task_manager::{
@@ -14,27 +14,7 @@ use crate::tasks::task_manager::{
 };
 
 pub(crate) fn start(request: Request) -> Result<String, String> {
-    if !valid_sha256(&request.sha256)
-        || !(1..=256 * 1024 * 1024).contains(&request.size)
-        || request.filename.len() > 128
-        || request.filename.starts_with('.')
-        || !request.filename.contains('.')
-        || !request
-            .filename
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-        || !(1..=8).contains(&request.urls.len())
-        || request.urls.iter().any(|url| {
-            !reqwest::Url::parse(url).is_ok_and(|url| {
-                url.scheme() == "https"
-                    && url.host_str().is_some()
-                    && url.username().is_empty()
-                    && url.password().is_none()
-            })
-        })
-    {
-        return Err("无效的下载来源、文件名、大小或 SHA-256".into());
-    }
+    validate(&request)?;
     let task = create_task(
         TaskOptions::new(
             t!("TaskTitle.download_resource_file").to_string(),
@@ -46,7 +26,7 @@ pub(crate) fn start(request: Request) -> Result<String, String> {
     )?;
     let id = task.clone();
     match crate::tasks::runtime::spawn_download_task(task.clone(), async move {
-        let result = download(&id, request).await;
+        let result = download(Some(&id), request).await;
         if is_cancelled(&id) {
             return;
         }
@@ -68,6 +48,36 @@ pub(crate) fn start(request: Request) -> Result<String, String> {
     Ok(task)
 }
 
+pub(crate) async fn fetch(request: Request) -> Result<PathBuf, String> {
+    validate(&request)?;
+    download(None, request).await
+}
+
+fn validate(request: &Request) -> Result<(), String> {
+    if !valid_sha256(&request.sha256)
+        || !(1..=256 * 1024 * 1024).contains(&request.size)
+        || request.filename.len() > 128
+        || request.filename.starts_with('.')
+        || !request.filename.contains('.')
+        || !request
+            .filename
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        || !(1..=8).contains(&request.urls.len())
+        || request.urls.iter().any(|url| {
+            !reqwest::Url::parse(url).is_ok_and(|url| {
+                url.scheme() == "https"
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+            })
+        })
+    {
+        return Err("无效的下载来源、文件名、大小或 SHA-256".into());
+    }
+    Ok(())
+}
+
 pub(crate) fn valid_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -75,23 +85,28 @@ pub(crate) fn valid_sha256(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-async fn download(task: &str, request: Request) -> Result<PathBuf, String> {
-    let client =
-        crate::http::proxy::clients::download_client().map_err(|error| error.to_string())?;
+async fn download(task: Option<&str>, request: Request) -> Result<PathBuf, String> {
     let directory = crate::utils::file_ops::mod_downloads_dir()
         .join("verified")
         .join(&request.sha256);
+    let path = directory.join(&request.filename);
+    if matches_file(&path, &request).await.unwrap_or(false) {
+        return Ok(path);
+    }
+    let client =
+        crate::http::proxy::clients::download_client().map_err(|error| error.to_string())?;
     tokio::fs::create_dir_all(&directory)
         .await
         .map_err(|error| error.to_string())?;
-    let path = directory.join(&request.filename);
     let mut last_error = String::new();
     for source in &request.urls {
         for url in crate::github::configured_download_urls(source)? {
-            if is_cancelled(task) {
-                return Err("下载已取消".into());
+            if let Some(task) = task {
+                if is_cancelled(task) {
+                    return Err("下载已取消".into());
+                }
+                reset_progress(task, Some(request.size), Some(TaskStage::STARTING));
             }
-            reset_progress(task, Some(request.size), Some(TaskStage::STARTING));
             let temporary =
                 tempfile::NamedTempFile::new_in(&directory).map_err(|error| error.to_string())?;
             let output = temporary.reopen().map_err(|error| error.to_string())?;
@@ -105,9 +120,11 @@ async fn download(task: &str, request: Request) -> Result<PathBuf, String> {
             .await;
             match result {
                 Ok(()) => {
-                    temporary
-                        .persist(&path)
-                        .map_err(|error| error.to_string())?;
+                    if let Err(error) = temporary.persist(&path)
+                        && !matches_file(&path, &request).await.unwrap_or(false)
+                    {
+                        return Err(error.to_string());
+                    }
                     return Ok(path);
                 }
                 Err(error) => last_error = error,
@@ -117,11 +134,29 @@ async fn download(task: &str, request: Request) -> Result<PathBuf, String> {
     Err(format!("下载来源均不可用：{last_error}"))
 }
 
+async fn matches_file(path: &std::path::Path, request: &Request) -> std::io::Result<bool> {
+    let file = tokio::fs::File::open(path).await?;
+    if file.metadata().await?.len() != request.size {
+        return Ok(false);
+    }
+    let mut file = file.take(request.size + 1);
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 32 * 1024];
+    loop {
+        let count = file.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(file.limit() == 1 && hex::encode(hash.finalize()) == request.sha256)
+}
+
 async fn transfer(
     client: &reqwest::Client,
     url: &str,
     mut output: tokio::fs::File,
-    task: &str,
+    task: Option<&str>,
     request: &Request,
 ) -> Result<(), String> {
     let mut response = client
@@ -147,7 +182,9 @@ async fn transfer(
             .await
             .map_err(|error| error.to_string())?;
         hash.update(&chunk);
-        update_progress(task, ProgressUpdate::advance(chunk.len() as u64));
+        if let Some(task) = task {
+            update_progress(task, ProgressUpdate::advance(chunk.len() as u64));
+        }
     }
     if received != request.size || hex::encode(hash.finalize()) != request.sha256 {
         return Err("下载文件的大小或 SHA-256 不匹配".into());

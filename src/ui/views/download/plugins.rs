@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -7,10 +9,13 @@ use gpui::*;
 use crate::downloads::verified;
 use crate::plugins::{registry, runtime};
 use crate::tasks::task_manager::wait_for_task;
-use crate::ui::components::button::{primary_button, secondary_button};
+use crate::ui::components::button::{ghost_button, primary_button, secondary_button};
+use crate::ui::components::markdown::{Document, parse_document, render_document};
 use crate::ui::components::plugin_icon;
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::components::toast;
+use crate::ui::components::{dialog, modal};
+use crate::ui::state::i18n::I18n;
 use crate::ui::theme::ThemeColors;
 
 use super::state::{DownloadPageState, DownloadTab};
@@ -23,6 +28,55 @@ pub(super) struct State {
     pub(super) loading: bool,
     error: Option<String>,
     installing: BTreeSet<String>,
+    details: Option<Details>,
+}
+
+struct Details {
+    plugin: registry::Plugin,
+    readme: Readme,
+    load: Option<tokio::task::AbortHandle>,
+}
+
+impl DownloadPageState {
+    pub(crate) fn plugin_details_open(&self) -> bool {
+        self.tab == DownloadTab::Plugin && self.plugin_catalog.details.is_some()
+    }
+
+    pub(crate) fn hash_plugin_details(&self, hasher: &mut impl Hasher) {
+        if let Some(details) = &self.plugin_catalog.details {
+            details.plugin.id.hash(hasher);
+            details.plugin.version.hash(hasher);
+            self.plugin_catalog
+                .installing
+                .contains(&details.plugin.id)
+                .hash(hasher);
+            std::mem::discriminant(&details.readme).hash(hasher);
+            details.load.as_ref().map(|load| load.id()).hash(hasher);
+            if let Readme::Error(error) = &details.readme {
+                error.hash(hasher);
+            }
+        }
+    }
+}
+
+impl State {
+    pub(super) fn dismiss_details(&mut self) {
+        self.details = None;
+    }
+}
+
+enum Readme {
+    Loading,
+    Ready(Option<Document>),
+    Error(String),
+}
+
+impl Drop for Details {
+    fn drop(&mut self) {
+        if let Some(load) = &self.load {
+            load.abort();
+        }
+    }
 }
 
 pub(crate) fn load(cx: &mut App, refresh: bool) {
@@ -107,88 +161,25 @@ pub(super) fn render(
         );
     }
     for plugin in entries.iter().skip(page * PAGE_SIZE).take(PAGE_SIZE) {
-        let installed = runtime::plugin_manifest_snapshot(cx, &plugin.id)
-            .map(|manifest| manifest.version.to_string());
         let busy = registry.installing.contains(&plugin.id);
-        let compatible = crate::plugins::manifest::validate_plugin_id(&plugin.id).is_ok();
-        let current = installed.as_ref().is_some_and(|version| {
-            version == &plugin.version
-                || semver::Version::parse(version)
-                    .ok()
-                    .zip(semver::Version::parse(&plugin.version).ok())
-                    .is_some_and(|(installed, available)| installed >= available)
-        });
-        let status = match plugin.status.as_str() {
-            "official" => t!("DownloadPage.plugins_official"),
-            "verified" => t!("DownloadPage.plugins_verified"),
-            _ => t!("DownloadPage.plugins_community"),
-        };
-        let action = if !compatible {
-            t!("DownloadPage.plugins_incompatible")
-        } else if busy {
-            t!("DownloadPage.plugins_installing")
-        } else if current {
-            t!("DownloadPage.plugins_installed")
-        } else if installed.is_some() {
-            t!("DownloadPage.plugins_update")
-        } else {
-            t!("DownloadPage.plugins_install")
-        };
         let entry = (*plugin).clone();
-        let icon = plugin
-            .icon
-            .as_ref()
-            .and_then(|icon| icon.url(&plugin.id))
-            .map(|url| img(url).image_cache(image_cache));
         list = list.child(
             crate::ui::components::page_shell::glass_card(colors)
+                .id(SharedString::from(format!("catalog-card-{}", plugin.id)))
                 .w_full()
                 .flex()
                 .items_center()
                 .gap(px(14.))
                 .p(px(12.))
-                .child(plugin_icon::render(colors, px(42.), icon))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(5.))
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(plugin.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(colors.text_secondary)
-                                .child(format!(
-                                    "{} · {status} · v{}",
-                                    plugin.publisher, plugin.version
-                                )),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(colors.text_secondary)
-                                .child(plugin.description.clone()),
-                        ),
-                )
-                .child(
-                    primary_button(
-                        colors,
-                        SharedString::from(format!("registry-{}", plugin.id)),
-                        action,
-                    )
-                    .when(!compatible || busy || current, |button| {
-                        button.opacity(0.55).cursor_default()
-                    })
-                    .when(compatible && !busy && !current, |button| {
-                        button.on_click(move |_, _, cx| install(cx, entry.clone()))
-                    }),
-                ),
+                .cursor_pointer()
+                .hover(|style| style.bg(colors.surface_hover))
+                .on_click(move |_, window, cx| {
+                    window.blur(cx);
+                    open_details(cx, entry.clone());
+                })
+                .child(icon(colors, image_cache, plugin))
+                .child(summary(colors, plugin))
+                .child(install_button(colors, cx, plugin, busy)),
         );
     }
     let mut panel = div()
@@ -225,6 +216,263 @@ pub(super) fn render(
         );
     }
     panel
+}
+
+fn icon(
+    colors: &ThemeColors,
+    image_cache: &Entity<BoundedImageCache>,
+    plugin: &registry::Plugin,
+) -> AnyElement {
+    let icon = plugin
+        .icon
+        .as_ref()
+        .and_then(|icon| icon.url(&plugin.id))
+        .map(|url| img(url).image_cache(image_cache));
+    plugin_icon::render(colors, px(42.), icon)
+}
+
+fn summary(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
+    let status = match plugin.status.as_str() {
+        "official" => t!("DownloadPage.plugins_official"),
+        "verified" => t!("DownloadPage.plugins_verified"),
+        _ => t!("DownloadPage.plugins_community"),
+    };
+    div()
+        .flex_1()
+        .min_w(px(0.))
+        .flex()
+        .flex_col()
+        .gap(px(5.))
+        .child(
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(plugin.name.clone()),
+        )
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(colors.text_secondary)
+                .child(format!(
+                    "{} · {status} · v{}",
+                    plugin.publisher, plugin.version
+                )),
+        )
+        .when(!plugin.description.trim().is_empty(), |item| {
+            item.child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(colors.text_secondary)
+                    .child(plugin.description.clone()),
+            )
+        })
+}
+
+fn install_button(
+    colors: &ThemeColors,
+    cx: &App,
+    plugin: &registry::Plugin,
+    busy: bool,
+) -> Stateful<Div> {
+    let installed =
+        runtime::plugin_manifest_snapshot(cx, &plugin.id).map(|manifest| manifest.version);
+    let compatible = crate::plugins::manifest::validate_plugin_id(&plugin.id).is_ok();
+    let current = installed.as_ref().is_some_and(|version| {
+        version == &plugin.version
+            || semver::Version::parse(version)
+                .ok()
+                .zip(semver::Version::parse(&plugin.version).ok())
+                .is_some_and(|(installed, available)| installed >= available)
+    });
+    let action = if !compatible {
+        t!("DownloadPage.plugins_incompatible")
+    } else if busy {
+        t!("DownloadPage.plugins_installing")
+    } else if current {
+        t!("DownloadPage.plugins_installed")
+    } else if installed.is_some() {
+        t!("DownloadPage.plugins_update")
+    } else {
+        t!("DownloadPage.plugins_install")
+    };
+    let enabled = compatible && !busy && !current;
+    let plugin = plugin.clone();
+    primary_button(
+        colors,
+        SharedString::from(format!("registry-{}", plugin.id)),
+        action,
+    )
+    .flex_none()
+    .when(!enabled, |button| button.opacity(0.55).cursor_default())
+    .when(enabled, |button| {
+        button.on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            install(cx, plugin.clone());
+        })
+    })
+}
+
+pub(super) fn render_details(
+    colors: &ThemeColors,
+    window: &Window,
+    cx: &App,
+) -> Option<AnyElement> {
+    let state = cx.global::<DownloadPageState>();
+    if state.tab != DownloadTab::Plugin {
+        return None;
+    }
+    let details = state.plugin_catalog.details.as_ref()?;
+    let plugin = &details.plugin;
+    let busy = state.plugin_catalog.installing.contains(&plugin.id);
+    let image = plugin
+        .icon
+        .as_ref()
+        .and_then(|icon| icon.url(&plugin.id))
+        .map(img);
+    let header = div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(14.))
+        .px(px(24.))
+        .py(px(18.))
+        .border_b_1()
+        .border_color(Hsla {
+            a: 0.24,
+            ..colors.border
+        })
+        .child(plugin_icon::render(colors, px(48.), image))
+        .child(summary(colors, plugin).text_size(px(19.)));
+    let readme = match &details.readme {
+        Readme::Loading => div()
+            .text_color(colors.text_secondary)
+            .child(t!("common.loading")),
+        Readme::Ready(Some(document)) => render_document(document, colors, colors.bg.l < 0.5),
+        Readme::Ready(None) => div()
+            .text_color(colors.text_secondary)
+            .child(t!("PluginSettings.readme_empty")),
+        Readme::Error(error) => {
+            let plugin = plugin.clone();
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(px(10.))
+                .child(div().text_color(colors.danger).child(error.clone()))
+                .child(
+                    secondary_button(colors, "plugin-readme-retry", t!("common.retry"))
+                        .on_click(move |_, _, cx| open_details(cx, plugin.clone())),
+                )
+        }
+    };
+    let height = (window.bounds().size.height - px(64.))
+        .min(px(680.))
+        .max(px(0.));
+    let width = (window.bounds().size.width - px(32.))
+        .min(px(740.))
+        .max(px(0.));
+    let content = dialog::container(colors, width)
+        .debug_selector(|| "plugin-readme-dialog".to_string())
+        .h(height)
+        .shadow_lg()
+        .child(header)
+        .child(
+            div()
+                .id(SharedString::from(format!(
+                    "plugin-readme-{}-{}",
+                    plugin.id, plugin.version
+                )))
+                .overflow_y_scrollbar()
+                .flex_1()
+                .min_h(px(0.))
+                .px(px(24.))
+                .py(px(18.))
+                .child(readme),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_end()
+                .gap(px(10.))
+                .px(px(24.))
+                .py(px(12.))
+                .border_t_1()
+                .border_color(Hsla {
+                    a: 0.24,
+                    ..colors.border
+                })
+                .child(
+                    ghost_button(colors, "plugin-details-close", t!("common.close"))
+                        .debug_selector(|| "plugin-readme-close".to_string())
+                        .on_click(|_, _, cx| {
+                            close_details(cx);
+                        }),
+                )
+                .child(install_button(colors, cx, plugin, busy)),
+        );
+    Some(modal::dismissible_layer(
+        content,
+        hsla(0.0, 0.0, 0.0, 0.56),
+        Rc::new(|cx| {
+            close_details(cx);
+        }),
+        modal::DismissOptions::default(),
+    ))
+}
+
+fn open_details(cx: &mut App, plugin: registry::Plugin) {
+    let locale = cx.global::<I18n>().locale().code().to_owned();
+    let id = plugin.id.clone();
+    let version = plugin.version.clone();
+    let job = crate::tasks::runtime::spawn_io(async move {
+        registry::readme(id, version, locale).await.map(|readme| {
+            readme
+                .filter(|text| !text.trim().is_empty())
+                .map(|text| parse_document(&text))
+        })
+    });
+    let (readme, load) = match &job {
+        Ok(job) => (Readme::Loading, Some(job.abort_handle())),
+        Err(error) => (Readme::Error(error.clone()), None),
+    };
+    cx.update_global(|state: &mut DownloadPageState, _| {
+        state.plugin_catalog.details = Some(Details {
+            plugin,
+            readme,
+            load,
+        });
+    });
+    let Ok(job) = job else { return };
+    let id = job.id();
+    cx.spawn(async move |cx| {
+        let readme = match job
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result)
+        {
+            Ok(document) => Readme::Ready(document),
+            Err(error) => Readme::Error(error),
+        };
+        let _ = cx.update_global(|state: &mut DownloadPageState, _| {
+            if let Some(details) = state.plugin_catalog.details.as_mut()
+                && details.load.as_ref().is_some_and(|load| load.id() == id)
+            {
+                details.readme = readme;
+                details.load = None;
+            }
+        });
+    })
+    .detach();
+}
+
+pub(crate) fn close_details(cx: &mut App) -> bool {
+    let state = cx.global::<DownloadPageState>();
+    if !state.plugin_details_open() {
+        return false;
+    }
+    cx.update_global(|state: &mut DownloadPageState, _| state.plugin_catalog.dismiss_details());
+    true
 }
 
 fn set_page(cx: &mut App, page: usize) {
@@ -283,5 +531,61 @@ async fn completed(task: &str) -> Result<String, String> {
         Ok(message)
     } else {
         Err(message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::theme::LightColors;
+
+    struct DetailsProbe;
+
+    impl Render for DetailsProbe {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .children(render_details(&LightColors::theme(), window, cx))
+        }
+    }
+
+    #[gpui::test]
+    fn plugin_readme_dialog_keeps_the_search_and_list_page(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(I18n::new());
+            cx.set_global(runtime::PluginRegistry::default());
+            let mut state = DownloadPageState::default();
+            state.tab = DownloadTab::Plugin;
+            state.search_query = "test-tools".into();
+            state.page_index = 2;
+            state.plugin_catalog.details = Some(Details {
+                plugin: registry::Plugin {
+                    id: "test-tools".into(),
+                    name: "Test Tools".into(),
+                    description: String::new(),
+                    publisher: "BMCBL".into(),
+                    status: "official".into(),
+                    version: "1.0.0".into(),
+                    icon: None,
+                },
+                readme: Readme::Ready(Some(parse_document(&"README paragraph.\n\n".repeat(80)))),
+                load: None,
+            });
+            cx.set_global(state);
+        });
+        let (_, visual) = cx.add_window_view(|_, _| DetailsProbe);
+        visual.simulate_resize(size(px(760.), px(460.)));
+        let bounds = visual.debug_bounds("plugin-readme-dialog").unwrap();
+        assert!(bounds.size.width <= px(728.) && bounds.size.height <= px(396.));
+        let close = visual.debug_bounds("plugin-readme-close").unwrap();
+        assert!(close.origin.y + close.size.height <= bounds.origin.y + bounds.size.height);
+        visual.simulate_click(close.center(), Modifiers::default());
+        visual.update(|window, cx| {
+            assert!(render_details(&LightColors::theme(), window, cx).is_none());
+            let state = cx.global::<DownloadPageState>();
+            assert_eq!(state.tab, DownloadTab::Plugin);
+            assert_eq!(state.search_query.as_ref(), "test-tools");
+            assert_eq!(state.page_index, 2);
+        });
     }
 }

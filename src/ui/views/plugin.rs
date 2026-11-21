@@ -1,5 +1,7 @@
 pub(crate) mod elements;
 
+use std::{sync::Arc, time::Duration};
+
 use crate::ui::components::page_shell::{page_frame, page_panel, split_page, split_sidebar_panel};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::navigation::{self, RouteTarget};
@@ -8,13 +10,16 @@ use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::plugin::elements::render_validated_view_tree;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Context, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div, px,
+    Animation, AnimationExt, AnimationProperty, AnimationSpec, Context, Easing, FillMode,
+    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Window, div, px,
 };
 
 pub struct PluginPageView {
     plugin_id: String,
     page_id: String,
+    content: Option<Arc<bmcbl_plugin_runtime::ViewTree>>,
+    animate_content: bool,
     _subscriptions: Vec<Subscription>,
     window_bounds: Option<Subscription>,
 }
@@ -25,6 +30,8 @@ impl PluginPageView {
         Self {
             plugin_id,
             page_id,
+            content: None,
+            animate_content: !crate::core::ui_prefs::reduced_motion(),
             window_bounds: None,
             _subscriptions: vec![
                 cx.observe_global::<crate::plugins::runtime::PluginRegistry>(|_this, cx| {
@@ -51,14 +58,42 @@ impl Render for PluginPageView {
             theme.factor(now),
             theme.accent,
         );
+        let tool = matches!(
+            navigation::current_route_target(cx),
+            RouteTarget::Tool { .. }
+        );
 
         let registry = cx.global::<crate::plugins::runtime::PluginRegistry>();
-        let content = if let Some(tree) = registry.cached_page(&self.plugin_id, &self.page_id) {
-            render_validated_view_tree(&tree, &self.plugin_id, Some(&self.page_id), window, cx)
-        } else if let Some(error) = registry.cached_page_error(&self.plugin_id, &self.page_id) {
-            crate::ui::views::plugin::elements::fallback_panel(error.to_string()).into_any_element()
-        } else {
+        let error = registry.cached_page_error(&self.plugin_id, &self.page_id);
+        if let Some(tree) = registry.cached_page(&self.plugin_id, &self.page_id) {
+            self.content = Some(tree);
+        } else if error.is_none() {
+            // Keep the input and visual track mounted during background re-renders.
             crate::plugins::runtime::request_page_render(cx, &self.plugin_id, &self.page_id);
+        }
+        let content = if let Some(error) = error {
+            self.content = None;
+            crate::ui::views::plugin::elements::fallback_panel(error.to_string()).into_any_element()
+        } else if let Some(tree) = &self.content {
+            let body =
+                render_validated_view_tree(tree, &self.plugin_id, Some(&self.page_id), window, cx);
+            if tool && self.animate_content {
+                let enter = Animation::from_spec(
+                    AnimationSpec::new(Duration::from_millis(180))
+                        .ease(Easing::OutCubic)
+                        .fill_mode(FillMode::Forwards),
+                )
+                .with_property(AnimationProperty::opacity(0.0, 1.0));
+                div()
+                    .w_full()
+                    .child(body)
+                    .with_visual_animation("plugin-content-ready", enter)
+                    .expect("opacity is a presentation property")
+                    .into_any_element()
+            } else {
+                body
+            }
+        } else {
             crate::ui::views::plugin::elements::loading_panel("正在加载插件页面...")
                 .into_any_element()
         };
@@ -71,10 +106,6 @@ impl Render for PluginPageView {
                 .overflow_y_scrollbar()
                 .p(px(14.))
                 .child(content),
-        );
-        let tool = matches!(
-            navigation::current_route_target(cx),
-            RouteTarget::Tool { .. }
         );
         page_frame(if tool {
             split_page(self.tools_sidebar(&colors, cx), panel)

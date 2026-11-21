@@ -14,7 +14,8 @@ pub(super) fn settings_visible(state: &SettingsPageState) -> bool {
 }
 
 pub(super) fn download_visible(state: &DownloadPageState) -> bool {
-    state.game_dialog.is_some()
+    state.plugin_details_open()
+        || state.game_dialog.is_some()
         || (state.levilauncher_modal_open && state.levilauncher_selected_mod.is_some())
         || (state.native_mod_modal_open && state.native_mod_selected.is_some())
         || (state.tab == DownloadTab::ResourcePack
@@ -174,7 +175,10 @@ fn download_projection(
     local_versions: &LocalVersionsState,
 ) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    if let Some(dialog) = &state.game_dialog {
+    if state.plugin_details_open() {
+        5_u8.hash(&mut hasher);
+        state.hash_plugin_details(&mut hasher);
+    } else if let Some(dialog) = &state.game_dialog {
         1_u8.hash(&mut hasher);
         (dialog.kind as u8).hash(&mut hasher);
         dialog.version.hash(&mut hasher);

@@ -575,7 +575,10 @@ impl DownloadPageView {
 
         self.active = active;
         if !active {
-            cx.update_global(|state: &mut DownloadPageState, _| state.tab_anim_from = state.tab);
+            cx.update_global(|state: &mut DownloadPageState, _| {
+                state.tab_anim_from = state.tab;
+                state.plugin_catalog.dismiss_details();
+            });
         }
         let current_tab = cx.global::<DownloadPageState>().tab;
         let curseforge_active = active && current_tab == DownloadTab::ResourcePack;
@@ -668,6 +671,9 @@ impl Render for DownloadPageView {
                 }
             })
             .on_action(|_: &CloseOverlay, _window, cx| {
+                if plugins::close_details(cx) {
+                    return;
+                }
                 let (mod_modal_open, game_dialog_open) =
                     cx.read_global(|s: &DownloadPageState, _cx| {
                         (s.levilauncher_modal_open, s.game_dialog.is_some())
@@ -821,6 +827,9 @@ pub fn render_download_overlay(
     window: &Window,
     cx: &App,
 ) -> Option<AnyElement> {
+    if let Some(details) = plugins::render_details(colors, window, cx) {
+        return Some(details);
+    }
     let (has_game_dialog, levilauncher_modal_open, native_mod_modal_open) =
         cx.read_global(|state: &DownloadPageState, _cx| {
             (

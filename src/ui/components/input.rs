@@ -169,6 +169,11 @@ pub struct InputState {
 impl EventEmitter<InputEvent> for InputState {}
 
 impl InputState {
+    #[cfg(test)]
+    pub(crate) fn text_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.last_bounds
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle().tab_stop(true);
         let _ = cx.on_focus(&focus_handle, window, |this, _, cx| {
