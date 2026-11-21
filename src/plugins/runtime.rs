@@ -875,7 +875,8 @@ impl PluginRegistry {
         super::game_mods::publish_active(
             self.plugins.values()
                 .filter(|instance| instance.enabled && matches!(instance.state, PluginLoadState::Loaded { .. }))
-                .flat_map(|instance| instance.prepared_resources.game_mods.iter().cloned())
+                .flat_map(|instance| instance.prepared_resources.game_mods.iter().cloned()
+                    .map(move |module| (module, instance.generation)))
                 .collect(),
         );
     }
