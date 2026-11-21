@@ -871,6 +871,15 @@ impl PluginRegistry {
         }
     }
 
+    fn publish_active_game_mods(&self) {
+        super::game_mods::publish_active(
+            self.plugins.values()
+                .filter(|instance| instance.enabled && matches!(instance.state, PluginLoadState::Loaded { .. }))
+                .flat_map(|instance| instance.prepared_resources.game_mods.iter().cloned())
+                .collect(),
+        );
+    }
+
     pub fn plugins_dir(&self) -> &Path {
         &self.plugins_dir
     }
@@ -1421,6 +1430,7 @@ impl PluginRegistry {
         self.rebuild_registrations();
         self.retain_runtime_caches();
         self.loaded_once = true;
+        self.publish_active_game_mods();
         Ok(())
     }
 
@@ -1523,6 +1533,7 @@ impl PluginRegistry {
                 sort_injections(&mut self.injections);
                 self.render_cache.invalidate_plugin(plugin_id);
                 self.plugins.insert(plugin_id.to_string(), instance);
+                self.publish_active_game_mods();
                 self.rebuild_event_subscribers();
                 self.rebuild_registrations();
                 Ok(())
@@ -1542,6 +1553,7 @@ impl PluginRegistry {
                         instance.state = PluginLoadState::Unloaded;
                         instance.runtime = None;
                     }
+                    self.publish_active_game_mods();
                     return Err(anyhow!("{}", error_message));
                 }
 
@@ -1568,6 +1580,7 @@ impl PluginRegistry {
                     };
                 }
                 self.last_error = Some(SharedString::from(error_message.clone()));
+                self.publish_active_game_mods();
                 Err(anyhow!("{}", error_message))
             }
         }
@@ -1607,6 +1620,7 @@ impl PluginRegistry {
             .unwrap_or_else(|error| error.into_inner())
             .remove(plugin_id);
         self.render_cache.invalidate_plugin(plugin_id);
+        self.publish_active_game_mods();
         info!(
             plugin_id,
             "plugin hibernated; Store and Wasm linear memory released"
@@ -2054,6 +2068,7 @@ impl PluginRegistry {
                 error,
             };
         }
+        self.publish_active_game_mods();
     }
 
     fn invalidate_from_plugin(&mut self, plugin_id: &str, target: abi::InvalidateTarget) {
