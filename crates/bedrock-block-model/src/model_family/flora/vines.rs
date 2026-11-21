@@ -124,7 +124,7 @@ fn coral_wall_fan_shape(direction: CardinalDirection) -> ModelShape {
         CardinalDirection::South => ([0.05, 0.5, 0.19], [0.95, 0.65, 0.99], [0, 0, 1]),
         CardinalDirection::North => ([0.05, 0.5, 0.01], [0.95, 0.65, 0.81], [0, 0, -1]),
     };
-    let [x0, y0, z0] = min;
+    let [x0, _, z0] = min;
     let [x1, y1, z1] = max;
     let (corners, normal) = match normal[0] {
         1 | -1 => (
