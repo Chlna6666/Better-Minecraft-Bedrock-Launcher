@@ -16,7 +16,7 @@ const MAX_MODULE_BYTES: u64 = 32 * 1024 * 1024;
 static SETTINGS: Mutex<()> = Mutex::new(());
 // Publication is owned by the active GPUI PluginRegistry, not by scanning
 // arbitrary plugin directories from the game-launch worker.
-static ACTIVE: OnceLock<Mutex<Vec<GameMod>>> = OnceLock::new();
+static ACTIVE: OnceLock<Mutex<Vec<(GameMod, u64)>>> = OnceLock::new();
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,11 +154,13 @@ pub(crate) struct LaunchModule {
 pub(crate) struct LaunchPlan {
     pub plugins_root: PathBuf,
     pub modules: Vec<LaunchModule>,
+    /// Host-only runtime generation; never sent over the wire.
+    pub runtime_generations: BTreeMap<String, u64>,
 }
 
 /// Refresh on registry activation/reload/shutdown. Only enabled, successfully
 /// activated WASM plugins may request an associated native DLL.
-pub(crate) fn publish_active(mods: Vec<GameMod>) {
+pub(crate) fn publish_active(mods: Vec<(GameMod, u64)>) {
     *ACTIVE
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
@@ -180,8 +182,9 @@ pub(crate) fn launch_plan(game_version: &str) -> Result<Option<LaunchPlan>, Stri
         .map_err(|error| format!("cannot resolve installed plugin root: {error}"))?;
     let disabled = super::state::disabled(&plugins_root);
     let mut generations = BTreeMap::<String, Uuid>::new();
+    let mut runtime_generations = BTreeMap::<String, u64>::new();
     let mut modules = Vec::new();
-    for game_mod in &live {
+    for (game_mod, runtime_generation) in &live {
         if !game_mod.supports(game_version) || !game_mod.enabled(&permissions) {
             continue;
         }
@@ -210,6 +213,7 @@ pub(crate) fn launch_plan(game_version: &str) -> Result<Option<LaunchPlan>, Stri
         let generation = generations
             .entry(plugin_id.to_string())
             .or_insert_with(Uuid::new_v4);
+        runtime_generations.insert(plugin_id.to_string(), *runtime_generation);
         modules.push(LaunchModule {
             plugin_id: plugin_id.to_string(),
             module_id: module_id.to_string(),
@@ -232,7 +236,7 @@ pub(crate) fn launch_plan(game_version: &str) -> Result<Option<LaunchPlan>, Stri
     if modules.len() > 256 {
         return Err("virtual Mod launch plan contains more than 256 modules".to_string());
     }
-    Ok(Some(LaunchPlan { plugins_root, modules }))
+    Ok(Some(LaunchPlan { plugins_root, modules, runtime_generations }))
 }
 
 fn valid_module_id(value: &str) -> bool {
