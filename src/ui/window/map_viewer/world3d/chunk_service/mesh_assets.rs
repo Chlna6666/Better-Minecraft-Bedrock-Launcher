@@ -1,7 +1,7 @@
 //! Shares mesh assets without keeping unloaded chunks' assets alive.
 
 use super::{MaterialSlotKey, mipmapped_texture, texture_storage_bytes};
-use bedrock_block_model::banner_art::{BannerArt, CLOTH_PANELS, DYE_COLORS, PATTERN_CELL};
+use bedrock_block_model::banner_art::{BannerArt, CLOTH_PANELS, DYE_COLORS};
 use gpui_3d::{AlphaMode, Material, ShadingModel, TextureAsset, TextureAssetId};
 use rustc_hash::{FxHashMap, FxHasher};
 use std::hash::{Hash, Hasher};
