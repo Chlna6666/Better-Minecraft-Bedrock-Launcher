@@ -8,6 +8,8 @@ not copied into this file.
 
 ## [Unreleased]
 
+- Windows CLI/主程序控制台改为 Unicode 输出：真实控制台使用 WriteConsoleW (UTF-16)，管道与重定向文件保持 UTF-8；日志、CLI 启动信息、参数帮助和错误通道统一兼容非 UTF-8 代码页。仅在成功协商 VT 输出模式后显示 ANSI 彩色，不支持时回退纯文本，不修改 Minecraft/第三方 Mod 的全局代码页。
+
 ## [0.2.2] - 2026-10-08
 ## [0.2.1] - 2026-10-07
 ## [0.2.1] - 2026-10-07
