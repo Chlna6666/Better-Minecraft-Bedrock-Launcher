@@ -1469,7 +1469,8 @@ pub(crate) fn parse_data3d(value: &[u8]) -> Result<BiomeData, String> {
     Ok(data)
 }
 
-pub(crate) fn parse_data3d_with_min_y(value: &[u8], min_y: i32) -> Result<BiomeData, String> {
+/// Parses a `Data3D` biome payload whose minimum section Y is `min_y`.
+pub fn parse_data3d_with_min_y(value: &[u8], min_y: i32) -> Result<BiomeData, String> {
     if value.len() < 512 {
         return Err(format!("Data3D is too short: {}", value.len()));
     }
