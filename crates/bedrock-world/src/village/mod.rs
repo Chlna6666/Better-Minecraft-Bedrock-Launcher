@@ -1,9 +1,14 @@
-//! Bedrock `VILLAGE_*` database entries.
+//! Bedrock `VILLAGE_*` database entries and their point-of-interest model.
+
+mod poi;
 
 use crate::nbt::NbtTag;
 use bytes::Bytes;
 
 pub use crate::chunk::key::{VillageKey, VillageRecordKind};
+pub use poi::{
+    InterestInstance, InterestKind, VillagerInterests, java_interest_type, parse_poi_record,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 /// One persisted village database entry.
