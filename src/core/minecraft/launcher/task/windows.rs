@@ -16,6 +16,7 @@ use crate::core::minecraft::launcher::start::{
 };
 use crate::core::minecraft::mouse_lock::start_window_monitor;
 use crate::core::minecraft::uwp_minimize_fix::enable_debugging_for_package;
+use crate::core::version::platform::{self, BloaderSupport};
 use crate::core::version::settings::read_version_config;
 use crate::tasks::TaskStage;
 use crate::tasks::task_manager::{
@@ -40,7 +41,6 @@ use crate::utils::file_ops;
 const LAUNCH_TOTAL_STEPS: u64 = 5;
 const GAME_INFO_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BLOADER_DEFAULT_REDIRECTION_ROOT: &str = "Minecraft Bedrock";
-const LEGACY_UWP_RUNTIME_INJECTION_CUTOFF: &str = "1.21.0.0";
 
 #[cfg(test)]
 mod tests;
@@ -516,19 +516,8 @@ fn build_editor_deeplink(is_win32: bool, is_preview: bool) -> String {
     }
 }
 
-fn is_win32_version(version: &str) -> bool {
-    if version.starts_with("1.22.") || version.starts_with("1.23.") {
-        return true;
-    }
-    let parsed = parse_version_to_vec_simple(version);
-    if parsed.len() >= 3 && parsed[0] == 1 && parsed[1] == 21 && parsed[2] >= 12201 {
-        return true;
-    }
-    compare_versions(version, "1.21.12000.21") != Ordering::Less
-}
-
 fn is_legacy_uwp_runtime_injection_only(version: &str, is_win32: bool) -> bool {
-    !is_win32 && compare_versions(version, LEGACY_UWP_RUNTIME_INJECTION_CUTOFF) == Ordering::Less
+    !is_win32 && platform::is_legacy_uwp(version)
 }
 
 pub fn embedded_dll_version_string() -> Option<String> {
@@ -612,8 +601,9 @@ async fn launch_game(
         read_manifest_identity(std::path::Path::new(package_folder))
             .await
             .map_err(|error| format!("Manifest 解析失败: {error}"))?;
-    let is_win32 = is_win32_version(&identity_version);
+    let is_win32 = platform::is_win32_version(&identity_version);
     *detected_platform = if is_win32 { "gdk" } else { "uwp" };
+    let bloader_support = platform::bloader_support(&identity_version);
     let legacy_uwp_runtime_injection_only =
         is_legacy_uwp_runtime_injection_only(&identity_version, is_win32);
     info!(
@@ -621,9 +611,22 @@ async fn launch_game(
         identity_name = %identity_name,
         identity_version = %identity_version,
         is_win32,
+        bloader_support = bloader_support.as_str(),
         legacy_uwp_runtime_injection_only,
         "游戏包 Manifest 解析完成"
     );
+    match bloader_support {
+        BloaderSupport::Unsupported => append_log(
+            task_id,
+            "BLoader 不支持该版本（Legacy UWP < 1.21）：跳过 BLoader 部署与 PE 修补"
+                .to_string(),
+        ),
+        BloaderSupport::PhysicalModOnly => append_log(
+            task_id,
+            "BLoader 虚拟 Mod 未接入 UWP：插件 DLL 需物理安装到 BLoader/mods".to_string(),
+        ),
+        BloaderSupport::VirtualMods => {}
+    }
     advance_step(
         task_id,
         TaskStage::PARSING,

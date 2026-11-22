@@ -5,4 +5,5 @@ pub mod gdk_users;
 pub mod icons;
 pub mod launch_versions;
 pub mod installed;
+pub(crate) mod platform;
 pub mod settings;

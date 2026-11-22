@@ -4,82 +4,13 @@ use crate::core::minecraft::appx::utils::{
 use crate::core::version::launch_versions::LaunchVersionEntry;
 use anyhow::{Context as _, Result};
 use rayon::prelude::*;
-use std::cmp::Ordering;
 use std::fs::DirEntry;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::debug;
 
-fn next_version_number(version: &str, cursor: &mut usize) -> Option<u64> {
-    let bytes = version.as_bytes();
-    let len = bytes.len();
-
-    while *cursor < len {
-        let byte = bytes[*cursor];
-        if byte.is_ascii_digit() {
-            break;
-        }
-        *cursor += 1;
-    }
-
-    if *cursor >= len {
-        return None;
-    }
-
-    let start = *cursor;
-    while *cursor < len && bytes[*cursor].is_ascii_digit() {
-        *cursor += 1;
-    }
-
-    version[start..*cursor].parse::<u64>().ok()
-}
-
-fn compare_versions(left: &str, right: &str) -> Ordering {
-    let mut left_cursor = 0;
-    let mut right_cursor = 0;
-
-    loop {
-        let left_number = next_version_number(left, &mut left_cursor);
-        let right_number = next_version_number(right, &mut right_cursor);
-
-        match (left_number, right_number) {
-            (Some(left_number), Some(right_number)) => match left_number.cmp(&right_number) {
-                Ordering::Equal => continue,
-                non_equal => return non_equal,
-            },
-            (Some(left_number), None) => {
-                return if left_number == 0 {
-                    Ordering::Equal
-                } else {
-                    Ordering::Greater
-                };
-            }
-            (None, Some(right_number)) => {
-                return if right_number == 0 {
-                    Ordering::Equal
-                } else {
-                    Ordering::Less
-                };
-            }
-            (None, None) => return Ordering::Equal,
-        }
-    }
-}
-
-pub(crate) fn is_win32_version(version: &str) -> bool {
-    let mut cursor = 0;
-    let major = next_version_number(version, &mut cursor).unwrap_or(0);
-    let minor = next_version_number(version, &mut cursor).unwrap_or(0);
-    let build = next_version_number(version, &mut cursor).unwrap_or(0);
-
-    if major == 1 && minor == 21 && build >= 12201 {
-        return true;
-    }
-
-    const THRESHOLD: &str = "1.21.12000.20";
-    compare_versions(version, THRESHOLD) != Ordering::Less
-}
+use super::platform::is_win32_version;
 
 fn determine_kind_from_version(version: &str) -> &'static str {
     if is_win32_version(version) {
