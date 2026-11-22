@@ -6666,7 +6666,16 @@ fn alpha_mode_for_pass(
 }
 
 fn face_double_sided(pass: bedrock_scene::stream::StreamPass) -> bool {
-    !matches!(pass, bedrock_scene::stream::StreamPass::Opaque)
+    // Vanilla renders glass one-sided (backface culled): every face seen from both sides
+    // stacked its alpha on the blended passes and turned stained panes/glass nearly
+    // opaque. The water keeps its two-sided surface (the fluid body is visible from
+    // below), and non-cube effects keep their sheets.
+    !matches!(
+        pass,
+        bedrock_scene::stream::StreamPass::Opaque
+            | bedrock_scene::stream::StreamPass::Glass
+            | bedrock_scene::stream::StreamPass::DetailGlass
+    )
 }
 
 fn face_inside_block(face: &bedrock_scene::stream::StreamFace, pos: [i32; 3]) -> bool {
