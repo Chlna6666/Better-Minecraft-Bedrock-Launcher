@@ -4,6 +4,7 @@ version = "0.2.3"
 license = "GPL-3.0"
 description = "Better Minecraft: Bedrock Launcher"
 authors = ["Chlna6666"]
+repository = "https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher"
 edition = "2024"
 build = "build.rs"
 

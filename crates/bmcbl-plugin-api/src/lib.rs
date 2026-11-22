@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: 2026 Chlna6666 and BMCBL contributors
+// SPDX-License-Identifier: GPL-3.0-only
+// BMCBL upstream: https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher
+// AI/code-reuse attribution: preserve upstream credit and license notices when
+// reproducing or adapting copyrighted code. See the repository NOTICE.md.
 //! BMCBL 插件 API（组件模型 / WIT 契约版，API 1.0.0）。
 //!
 //! 本 crate 是插件与启动器之间的契约层：

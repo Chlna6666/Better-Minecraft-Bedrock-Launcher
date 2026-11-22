@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: 2026 Chlna6666 and BMCBL contributors
+// SPDX-License-Identifier: GPL-3.0-only
+// BMCBL upstream: https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher
+// AI/code-reuse attribution: preserve upstream credit and license notices when
+// reproducing or adapting copyrighted code. See the repository NOTICE.md.
 //! Authenticated, per-game BMCBL -> BLoader virtual Mod handoff.
 //! Only the launcher constructs the plan; the DLLs remain at
 //! BMCBL/plugins/<plugin_id>/game-mods/*.dll and are never copied.

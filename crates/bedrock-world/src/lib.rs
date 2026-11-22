@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: 2026 BE Community Dev
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Library source: https://github.com/BE-Community-Dev/bedrock-world
+// AI/code-reuse attribution: this library has separate MIT/Apache terms;
+// preserve BE Community Dev credit and the applicable license notices.
 //! Multi-version Minecraft Bedrock world reading, writing and inspection.
 //!
 //! `bedrock-world` owns Minecraft Bedrock world semantics. Mojang LevelDB mechanics belong exclusively

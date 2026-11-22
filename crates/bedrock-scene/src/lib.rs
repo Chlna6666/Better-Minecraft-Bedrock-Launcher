@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: 2026 Chlna6666 and BMCBL contributors
+// SPDX-License-Identifier: GPL-3.0-only
+// BMCBL upstream: https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher
+// AI/code-reuse attribution: preserve upstream credit and license notices when
+// reproducing or adapting copyrighted code. See the repository NOTICE.md.
 //! CPU-side construction of Bedrock chunk and structure scenes.
 //!
 //! The caller provides decoded world data and schedules the resulting geometry.

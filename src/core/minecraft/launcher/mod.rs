@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: 2026 Chlna6666 and BMCBL contributors
+// SPDX-License-Identifier: GPL-3.0-only
+// BMCBL upstream: https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher
+// AI/code-reuse attribution: preserve upstream credit and license notices when
+// reproducing or adapting copyrighted code. See the repository NOTICE.md.
 mod bloader;
 mod preloader;
 #[cfg(any(target_os = "windows", target_os = "linux"))]

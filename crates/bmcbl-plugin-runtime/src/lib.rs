@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: 2026 Chlna6666 and BMCBL contributors
+// SPDX-License-Identifier: GPL-3.0-only
+// BMCBL upstream: https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher
+// AI/code-reuse attribution: preserve upstream credit and license notices when
+// reproducing or adapting copyrighted code. See the repository NOTICE.md.
 //! BMCBL 插件运行时（宿主侧）：wasmtime(Cranelift) 组件引擎、沙箱与宿主能力门禁。
 //!
 //! 职责：

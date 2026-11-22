@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: 2026 BE Community Dev
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Library source: https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher/tree/master/crates/bedrock-nbt
+// AI/code-reuse attribution: this library has separate MIT/Apache terms;
+// preserve BE Community Dev credit and the applicable license notices.
 //! Bedrock NBT/SNBT codecs, independent of world versions and storage.
 //!
 //! The root helpers retain the little-endian compound-root contract used by

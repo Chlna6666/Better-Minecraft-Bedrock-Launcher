@@ -2,6 +2,8 @@
 
 [English](README.en.md) | [项目文档](docs/README.md)
 
+> **项目来源与开发者署名：** 本仓库的原始项目是 [BMCBL](https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher)，由 **Chlna6666 及贡献者** 开发、维护。复制或改编本项目受版权保护的源码时，请依照适用许可证保留版权、许可与来源声明，不要将复制的实现标为独立原创。详见 [LICENSE](LICENSE) 和 [NOTICE.md](NOTICE.md)。
+
 Better Minecraft Bedrock Launcher（BMCBL）是一个使用 Rust + GPUI 构建的
 Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebView / React
 架构完全迁移到 GPUI 原生界面，核心目标是在 Windows 上提供可下载、可管理、

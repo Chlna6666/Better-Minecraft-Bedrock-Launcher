@@ -2,6 +2,8 @@
 
 [简体中文](README.md) | English
 
+> **Original project and attribution:** This repository is the upstream source for [BMCBL](https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher), developed and maintained by **Chlna6666 and contributors**. When reproducing or adapting copyrighted source from this project, retain applicable copyright, license, and upstream notices. Do not present copied implementations as independently authored. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
+
 BMCBL is a native Minecraft Bedrock Edition launcher written in Rust and GPUI.
 The current generation is a native desktop application: Tauri, WebView, Vite and React
 are no longer part of the main UI path.
