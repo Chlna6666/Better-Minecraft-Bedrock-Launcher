@@ -35,6 +35,27 @@ mod utils;
 
 pub use app::APP_ID;
 
+/// Render process-level failures through the Unicode-aware console boundary.
+pub fn print_cli_error(message: &str) {
+    let _ = utils::console_output::write_stderr(message);
+}
+
+fn exit_parse_error(error: clap::Error) -> ! {
+    // Clap's default .exit() writes UTF-8 through CRT stdout/stderr, which is
+    // unreadable in legacy OEM code pages. Render without ANSI and preserve
+    // Clap's normal destination and exit code.
+    let message = error.render().to_string();
+    let exit_code = error.exit_code();
+    let output = if error.use_stderr() {
+        utils::console_output::write_stderr(&message)
+    } else {
+        utils::console_output::write_stdout(&message)
+    };
+    let _ = output;
+    std::process::exit(exit_code);
+}
+
+
 pub fn run() -> anyhow::Result<()> {
     let args = migrate_legacy_invocation(std::env::args_os().collect());
     let is_cli = cli::is_cli_invocation(&args);
@@ -51,7 +72,7 @@ pub fn run() -> anyhow::Result<()> {
             Err(error) => {
                 #[cfg(target_os = "windows")]
                 utils::console::attach_parent_console();
-                error.exit()
+                exit_parse_error(error)
             }
         };
     }
@@ -67,7 +88,7 @@ pub fn run() -> anyhow::Result<()> {
         Err(error) => {
             #[cfg(target_os = "windows")]
             utils::console::attach_parent_console();
-            error.exit()
+            exit_parse_error(error)
         }
     }
 }

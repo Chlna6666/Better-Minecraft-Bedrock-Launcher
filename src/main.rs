@@ -10,7 +10,7 @@ fn main() -> std::process::ExitCode {
     match bmcbl::run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("Error: {error:#}");
+            bmcbl::print_cli_error(&format!("Error: {error:#}\n"));
             std::process::ExitCode::from(1)
         }
     }

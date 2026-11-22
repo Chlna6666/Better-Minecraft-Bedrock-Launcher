@@ -263,7 +263,7 @@ fn append_crash_line(message: &str) {
     // asynchronous writer. This only runs on panic/unhandled-exception paths.
     let _ = crate::utils::log_manager::flush_async_logs(Duration::from_millis(200));
     let Some(path) = LATEST_LOG_PATH.get() else {
-        eprintln!("{message}");
+        let _ = crate::utils::console_output::write_stderr(&format!("{message}\n"));
         return;
     };
 
@@ -271,7 +271,7 @@ fn append_crash_line(message: &str) {
         let _ = writeln!(file, "{message}");
         let _ = file.flush();
     } else {
-        eprintln!("{message}");
+        let _ = crate::utils::console_output::write_stderr(&format!("{message}\n"));
     }
 }
 
@@ -315,7 +315,7 @@ fn install_panic_hook() {
         if let Err(error) =
             diagnostics::record_panic_signal(Some(location), payload, Some(backtrace.to_string()))
         {
-            eprintln!("Failed to persist panic diagnostics: {error:#}");
+            let _ = crate::utils::console_output::write_stderr(&format!("Failed to persist panic diagnostics: {error:#}\n"));
         }
     }));
 }
@@ -386,7 +386,7 @@ pub fn init_logging(
     let logs_dir: PathBuf = file_ops::logs_dir();
     let latest_log_file = logs_dir.join("latest.log");
     if LATEST_LOG_PATH.set(latest_log_file.clone()).is_err() {
-        eprintln!("Latest log path was already initialized");
+        let _ = crate::utils::console_output::write_stderr("Latest log path was already initialized\n");
     }
 
     // tracing-subscriber installs its own log bridge from try_init below; calling
@@ -396,11 +396,11 @@ pub fn init_logging(
     let log_writer = match ManagedLogWriter::initialize(&logs_dir, log_management) {
         Ok(writer) => writer,
         Err(error) => {
-            eprintln!(
-                "Failed to initialize managed logs in {}: {}",
+            let _ = crate::utils::console_output::write_stderr(&format!(
+                "Failed to initialize managed logs in {}: {}\n",
                 logs_dir.display(),
                 error
-            );
+            ));
             return;
         }
     };
@@ -438,7 +438,7 @@ pub fn init_logging(
         .with(latest_log_layer); // 最新日志文件层
 
     if let Err(error) = registry.try_init() {
-        eprintln!("Failed to initialize tracing subscriber: {error}");
+        let _ = crate::utils::console_output::write_stderr(&format!("Failed to initialize tracing subscriber: {error}\n"));
         return;
     }
 
