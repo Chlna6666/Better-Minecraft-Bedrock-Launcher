@@ -33,6 +33,23 @@ const RUN_MAX_BLOCKS: usize = if cfg!(any(windows, target_os = "linux", target_o
 };
 const MAX_PREFETCH_RUNS_PER_TABLE: usize = 32;
 const MIN_RUN_BUFFER_POOL: usize = 2;
+/// Total decoded-run budget across all table lanes of one scan.
+///
+/// Every lane keeps one decoded run resident so the merge can compare its
+/// current key, so the resident set is `table_count * run_bytes`. A 443 MB
+/// world has 200+ SST tables: at the 1 MiB per-run target that pinned ~1.4 GB
+/// of decoded blocks for a scan that only needs to look at keys. Shrinking the
+/// per-run target keeps the resident set bounded with no measurable time cost.
+const SCAN_RESIDENT_RUN_BUDGET: usize = 32 * 1024 * 1024;
+/// Smallest run worth scheduling (one LevelDB block plus a few neighbours).
+const MIN_RUN_TARGET_BYTES: u64 = 32 * 1024;
+
+/// Per-run encoded size that keeps `table_count` resident runs inside the budget.
+fn run_target_for(table_count: usize) -> u64 {
+    let budget = u64::try_from(SCAN_RESIDENT_RUN_BUDGET).unwrap_or(u64::MAX);
+    let per_table = budget / u64::try_from(table_count.max(1)).unwrap_or(1);
+    per_table.clamp(MIN_RUN_TARGET_BYTES, RUN_TARGET_ENCODED_BYTES)
+}
 
 #[cfg(windows)]
 const WINDOWS_WORKER_FILE_CACHE_CAPACITY: usize = 8;
@@ -82,6 +99,7 @@ impl NativeTablePlan {
         lower: Option<&[u8]>,
         upper: Option<&[u8]>,
         paranoid_checks: bool,
+        run_target: u64,
         planning: &mut PlanningScratch,
     ) -> Result<PlanOpen> {
         if !table_overlaps(table, lower, upper) {
@@ -121,7 +139,7 @@ impl NativeTablePlan {
         if blocks.is_empty() {
             return Ok(PlanOpen::Skip);
         }
-        let runs = plan_block_runs(&blocks)?;
+        let runs = plan_block_runs(&blocks, run_target)?;
         if runs.is_empty() {
             return Ok(PlanOpen::Skip);
         }
@@ -717,6 +735,7 @@ fn prepare_native_scan(
     options: &ReadOptions,
 ) -> Result<PreparedScan> {
     let (lower, upper) = prefix_bounds(prefix);
+    let run_target = run_target_for(tables_newest_first.len());
     let mut planning = PlanningScratch::default();
     let mut plans = Vec::<Arc<NativeTablePlan>>::new();
     for (rank, table) in tables_newest_first.iter().enumerate() {
@@ -727,6 +746,7 @@ fn prepare_native_scan(
             lower.as_deref(),
             upper.as_deref(),
             paranoid_checks,
+            run_target,
             &mut planning,
         )? {
             PlanOpen::Native(plan) => plans.push(Arc::new(plan)),
@@ -782,10 +802,15 @@ where
     let prefetch = target_inflight
         .div_ceil(table_count.max(1))
         .clamp(1, MAX_PREFETCH_RUNS_PER_TABLE);
+    // The window bounds how many decoded runs stay resident at once. Summing
+    // the per-table prefetch would scale with the table count (a 443 MB world
+    // has 200+ tables), keeping hundreds of decoded runs alive; cap it at the
+    // in-flight budget the scheduler actually targets.
     let window_count = plans
         .iter()
         .map(|plan| plan.runs.len().min(prefetch))
         .sum::<usize>()
+        .min(target_inflight.max(MIN_RUN_BUFFER_POOL))
         .max(MIN_RUN_BUFFER_POOL);
 
     log::debug!(
@@ -795,7 +820,7 @@ where
         workers,
         window_count,
         prefetch,
-        RUN_TARGET_ENCODED_BYTES / 1024
+        run_target_for(table_count) / 1024
     );
 
     let pool = scan_pool(workers)?;
@@ -1294,7 +1319,7 @@ fn decode_index_handles(
     Ok(handles)
 }
 
-fn plan_block_runs(blocks: &[BlockHandle]) -> Result<Vec<BlockRun>> {
+fn plan_block_runs(blocks: &[BlockHandle], run_target: u64) -> Result<Vec<BlockRun>> {
     let Some(first) = blocks.first().copied() else {
         return Ok(Vec::new());
     };
@@ -1308,7 +1333,7 @@ fn plan_block_runs(blocks: &[BlockHandle]) -> Result<Vec<BlockRun>> {
         let end = block_end(handle)?;
         let contiguous = handle.offset == run_end;
         let candidate_len = end.saturating_sub(run_offset);
-        if contiguous && candidate_len <= RUN_TARGET_ENCODED_BYTES && block_count < RUN_MAX_BLOCKS {
+        if contiguous && candidate_len <= run_target && block_count < RUN_MAX_BLOCKS {
             run_end = end;
             block_count = block_count.saturating_add(1);
             continue;
@@ -1689,7 +1714,7 @@ mod tests {
                 size: 50,
             },
         ];
-        let runs = plan_block_runs(&blocks).expect("plan runs");
+        let runs = plan_block_runs(&blocks, RUN_TARGET_ENCODED_BYTES).expect("plan runs");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].block_count, 3);
         assert_eq!(runs[0].encoded_len, 365);
@@ -1707,7 +1732,7 @@ mod tests {
                 size: 100,
             },
         ];
-        let runs = plan_block_runs(&blocks).expect("plan runs");
+        let runs = plan_block_runs(&blocks, RUN_TARGET_ENCODED_BYTES).expect("plan runs");
         assert_eq!(runs.len(), 2);
     }
 
