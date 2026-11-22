@@ -144,7 +144,7 @@ fn persist_diagnostics_report(report: DiagnosticsReport) -> Option<DiagnosticsRe
         Ok(()) => Some(report),
         Err(error) => {
             error!(?error, "failed to persist diagnostics report");
-            eprintln!("Failed to persist diagnostics report: {error:#}");
+            let _ = crate::utils::console_output::write_stderr(&format!("Failed to persist diagnostics report: {error:#}\n"));
             None
         }
     }
@@ -171,7 +171,7 @@ fn show_reported_error_dialog(title: &str, message: &str, report: Option<&Diagno
 
 pub fn show_error_dialog(title: &str, message: &str) {
     error!(title, message, "showing application error dialog");
-    eprintln!("{title}: {message}");
+    let _ = crate::utils::console_output::write_stderr(&format!("{title}: {message}\n"));
 
     let shown = rfd::MessageDialog::new()
         .set_title(title)
@@ -181,6 +181,6 @@ pub fn show_error_dialog(title: &str, message: &str) {
         .show();
 
     if matches!(shown, rfd::MessageDialogResult::Custom(_)) {
-        eprintln!("{title}: {message}");
+        let _ = crate::utils::console_output::write_stderr(&format!("{title}: {message}\n"));
     }
 }

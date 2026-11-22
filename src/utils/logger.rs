@@ -227,7 +227,7 @@ impl Drop for RedactedConsoleWriter {
         }
         let decoded = String::from_utf8_lossy(&self.bytes);
         let output = crate::utils::log_privacy::redact_log_text(&decoded);
-        let _ = std::io::stdout().lock().write_all(output.as_bytes());
+        let _ = crate::utils::console_output::write_stdout(&output);
     }
 }
 
@@ -409,10 +409,14 @@ pub fn init_logging(
     // windows_subsystem 没有控制台，重定向后的 stdout 也可能阻塞。UI/GPU owner
     // 线程不应为看不见的控制台承担格式化与管道写入成本。
     let console_enabled = console_output && std::io::stdout().is_terminal();
+    // Being attached to a console does not imply VT support (notably on
+    // older Windows hosts). Probe/enable VT once, without altering code pages.
+    let console_color_enabled =
+        console_enabled && crate::utils::console_output::supports_ansi_stdout();
     let console_layer = tracing_subscriber::fmt::layer()
         .with_writer(RedactedConsoleWriter::default)
         .with_timer(UptimeTimer) // 使用启动时间计时器
-        .with_ansi(console_enabled) // 控制台输出时使用 ANSI 转义字符
+        .with_ansi(console_color_enabled) // 仅在 VT 实际可用时输出 ANSI
         .with_target(true) // 显示目标模块
         .with_filter(tracing_subscriber::filter::filter_fn(move |_| {
             console_enabled

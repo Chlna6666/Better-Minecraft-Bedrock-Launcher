@@ -20,6 +20,22 @@ use std::time::{Duration, Instant};
 use std::{env, process};
 use tracing::{debug, error, info, warn};
 
+// CLI and silent-launch output use the same Unicode-aware writer as the
+// structured logger. stdout/stderr redirection still receives UTF-8 bytes.
+macro_rules! console_println {
+    ($($arg:tt)*) => {{
+        let text = format!($($arg)*);
+        let _ = crate::utils::console_output::write_stdout(&format!("{text}\n"));
+    }};
+}
+macro_rules! console_eprintln {
+    ($($arg:tt)*) => {{
+        let text = format!($($arg)*);
+        let _ = crate::utils::console_output::write_stderr(&format!("{text}\n"));
+    }};
+}
+
+
 #[cfg(windows)]
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Global\\com.bmcbl.app.single_instance";
 
@@ -130,7 +146,7 @@ fn single_instance_guard(launch_mode: &LaunchMode) -> Option<SingleInstanceGuard
         Some(false) => {
             let message = "已有 BMCBL 实例正在运行，无法在 GUI 模式启动新实例。请先关闭现有实例，或使用 --silent 以静默方式启动。";
             error!("{message}");
-            eprintln!("{message}");
+            console_eprintln!("{message}");
             crate::result::show_startup_failure(
                 "启动失败 - 已有实例",
                 "single_instance_guard",
@@ -181,7 +197,7 @@ pub(crate) fn run(invocation: Invocation) -> Result<()> {
     if let Some(working_dir) = launch_working_dir(&launch_mode)
         && let Err(error) = env::set_current_dir(&working_dir)
     {
-        eprintln!(
+        console_eprintln!(
             "Failed to set working directory to {}: {error}",
             working_dir.display()
         );
@@ -212,7 +228,7 @@ pub(crate) fn run(invocation: Invocation) -> Result<()> {
         Ok(config) => config,
         Err(error) => {
             let message = format!("读取配置失败: {error:?}\n程序将退出。");
-            eprintln!("{message}");
+            console_eprintln!("{message}");
             if !is_headless_launch {
                 crate::result::show_startup_failure(
                     "启动失败 - 读取配置",
@@ -410,7 +426,7 @@ fn run_headless_launch(runtime: &AppRuntime, context: &DirectLaunchContext) -> R
     let result = match outcome {
         Ok(Some(pid)) if pid != 0 => {
             if context.json {
-                println!(
+                console_println!(
                     "{}",
                     json!({
                         "ok": true,
@@ -422,13 +438,13 @@ fn run_headless_launch(runtime: &AppRuntime, context: &DirectLaunchContext) -> R
                     })
                 );
             } else {
-                println!("已启动 {}（{}，PID {pid}）", target.name, target.version);
+                console_println!("已启动 {}（{}，PID {pid}）", target.name, target.version);
             }
             Ok(())
         }
         Ok(_) => {
             if context.json {
-                println!(
+                console_println!(
                     "{}",
                     json!({
                         "ok": true,
@@ -440,7 +456,7 @@ fn run_headless_launch(runtime: &AppRuntime, context: &DirectLaunchContext) -> R
                     })
                 );
             } else {
-                println!("启动流程已完成，但未返回游戏进程 PID");
+                console_println!("启动流程已完成，但未返回游戏进程 PID");
             }
             Ok(())
         }
@@ -459,7 +475,7 @@ fn run_headless_launch(runtime: &AppRuntime, context: &DirectLaunchContext) -> R
             );
             let logs = crate::tasks::task_manager::task_logs(&task_id);
             for line in logs.iter().rev().take(8).rev() {
-                eprintln!("  {line}");
+                console_eprintln!("  {line}");
             }
             Err(anyhow::anyhow!(message))
         }
@@ -494,12 +510,12 @@ fn run_list(runtime: &AppRuntime, json_output: bool) -> Result<()> {
                 })
             })
             .collect::<Vec<_>>();
-        println!("{}", serde_json::to_string_pretty(&entries)?);
+        console_println!("{}", serde_json::to_string_pretty(&entries)?);
     } else if versions.is_empty() {
-        println!("未找到已安装的游戏版本");
+        console_println!("未找到已安装的游戏版本");
     } else {
         for version in &versions {
-            println!(
+            console_println!(
                 "{}\t{}\t{}\t{}",
                 version.folder, version.name, version.version, version.kind
             );
@@ -514,7 +530,7 @@ fn run_info(json_output: bool) -> Result<()> {
     let data_dir = crate::utils::file_ops::bmcbl_dir();
     let versions_dir = crate::utils::file_ops::bmcbl_subdir("versions");
     if json_output {
-        println!(
+        console_println!(
             "{}",
             json!({
                 "version": crate::utils::app_info::version(),
@@ -526,13 +542,13 @@ fn run_info(json_output: bool) -> Result<()> {
             })
         );
     } else {
-        println!("BMCBL {}", crate::utils::app_info::version());
-        println!("{}", crate::utils::app_info::build_info());
+        console_println!("BMCBL {}", crate::utils::app_info::version());
+        console_println!("{}", crate::utils::app_info::build_info());
         if let Some(executable) = executable {
-            println!("可执行文件: {}", executable.display());
+            console_println!("可执行文件: {}", executable.display());
         }
-        println!("数据目录: {}", data_dir.display());
-        println!("版本目录: {}", versions_dir.display());
+        console_println!("数据目录: {}", data_dir.display());
+        console_println!("版本目录: {}", versions_dir.display());
     }
     Ok(())
 }
