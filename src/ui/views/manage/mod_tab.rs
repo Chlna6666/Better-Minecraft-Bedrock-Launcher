@@ -1,48 +1,239 @@
 use super::*;
 
-pub(super) fn render_virtual_mods(
+/// Virtual mods rendered inline in the normal Mod list.
+///
+/// Kept as a separate row renderer so plugin-owned entries never enter the
+/// filesystem mod batch-selection/deletion path.
+pub(super) fn virtual_mods_for_list(
+    state: &ManagePageState,
+    cx: &mut Context<ManagePageView>,
+) -> Vec<crate::plugins::game_mods::GameMod> {
+    let query = state
+        .asset_search_query
+        .as_ref()
+        .trim()
+        .to_ascii_lowercase();
+    crate::plugins::runtime::game_mods(cx)
+        .into_iter()
+        .filter(|game_mod| {
+            query.is_empty()
+                || game_mod.declaration.name.to_ascii_lowercase().contains(&query)
+                || game_mod.declaration.id.to_ascii_lowercase().contains(&query)
+                || game_mod.plugin.to_ascii_lowercase().contains(&query)
+        })
+        .collect()
+}
+
+fn support_version(version: &ManagedVersionEntry) -> &str {
+    if version.manifest_version.is_empty() {
+        version.version.as_ref()
+    } else {
+        version.manifest_version.as_ref()
+    }
+}
+
+pub(super) fn render_virtual_mod_row(
     colors: &ThemeColors,
     version: &ManagedVersionEntry,
     state: &ManagePageState,
+    game_mod: &crate::plugins::game_mods::GameMod,
     cx: &mut Context<ManagePageView>,
-) -> Option<AnyElement> {
-    let mods = crate::plugins::runtime::game_mods(cx);
-    if mods.is_empty() {
-        return None;
+) -> Stateful<Div> {
+    let enabled = game_mod.enabled(&state.version_config.virtual_mods);
+    let mod_loading = !state.version_config.disable_mod_loading;
+    let supported = game_mod.supports(support_version(version));
+    let usable = supported && mod_loading;
+
+    let status = if !supported {
+        t!("ManagePage.plugin_game_mod_unavailable")
+    } else if !mod_loading {
+        t!("ManagePage.plugin_game_mod_disabled_by_version")
+    } else if enabled {
+        t!("AssetManager.status_enabled")
+    } else {
+        t!("AssetManager.status_disabled")
+    };
+    let status_color = if usable && enabled {
+        colors.stat_green_text
+    } else {
+        colors.danger
+    };
+    let detail = format!(
+        "{} · {}",
+        game_mod.plugin,
+        t!("ManagePage.plugin_game_mods").as_ref()
+    );
+    let open_dir = game_mod
+        .payload
+        .parent()
+        .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
+
+    // Same 18px leading slot as the filesystem rows, left empty like an
+    // unchecked selection box (plugin mods are not batch-selectable).
+    let marker = div()
+        .w(px(18.))
+        .h(px(18.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.surface);
+
+    let icon = if let Some(icon_path) = game_mod.icon_path.as_ref() {
+        let path = SharedString::from(icon_path.to_string_lossy().into_owned());
+        rounded_manage_thumbnail(
+            colors,
+            &path,
+            lucide_gpui::icon!(layers).into(),
+            colors.surface,
+        )
+    } else {
+        div()
+            .w(px(32.))
+            .h(px(32.))
+            .rounded(px(MANAGE_LIST_THUMBNAIL_RADIUS_PX))
+            .bg(Hsla {
+                a: 0.10,
+                ..colors.surface
+            })
+            .border_1()
+            .border_color(colors.border)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                svg()
+                    .path(lucide_gpui::icon!(layers))
+                    .w(px(16.))
+                    .h(px(16.))
+                    .text_color(colors.text_secondary),
+            )
+            .into_any_element()
+    };
+
+    let title = formatted_single_line(
+        game_mod.declaration.name.clone(),
+        colors,
+        px(13.),
+        colors.text_primary,
+    );
+
+    let mut actions = div().flex().items_center().justify_end().gap(px(6.));
+    if let Some(open_dir) = open_dir {
+        actions = actions.child(
+            compact_icon_button(
+                colors,
+                SharedString::from(format!("manage-virtual-mod-open-{}", game_mod.key)),
+                lucide_gpui::icon!(folder_open),
+            )
+            .on_mouse_down(MouseButton::Left, {
+                cx.listener(move |this, _, _, cx| {
+                    this.open_asset_folder(open_dir.clone(), cx);
+                })
+            }),
+        );
     }
-    let mut rows = div().id("plugin-game-mods").max_h(px(218.)).overflow_y_scroll()
-        .flex().flex_col().gap(px(6.)).p(px(8.))
-        .child(div().text_sm().text_color(colors.text_secondary).child(t!("ManagePage.plugin_game_mods")));
-    for game_mod in mods {
-        let enabled = game_mod.enabled(&state.version_config.virtual_mods);
-        let mod_loading = !state.version_config.disable_mod_loading;
-        let supported = game_mod.supports(&version.version);
-        let label = match (supported, mod_loading, enabled) {
-            (false, _, _) => t!("ManagePage.plugin_game_mod_unavailable"),
-            (_, false, _) => t!("ManagePage.plugin_game_mod_disabled_by_version"),
-            (_, _, true) => t!("ManagePage.plugin_game_mod_disable"),
-            _ => t!("ManagePage.plugin_game_mod_enable"),
-        };
-        let folder = version.folder.clone();
-        let option = div()
-            .id(SharedString::from(format!("virtual-mod-{}", game_mod.key)))
-            .px(px(10.)).py(px(6.)).rounded(px(6.))
-            .bg(colors.surface_hover)
-            .text_sm().text_color(colors.text_primary)
-            .child(label);
-        let option = if supported && mod_loading {
-            option.cursor_pointer().on_click(cx.listener({
-                let game_mod = game_mod.clone();
-                move |_this, _, _, cx| save_virtual_mod(folder.clone(), game_mod.clone(), !enabled, cx)
-            }))
-        } else { option };
-        rows = rows.child(div().flex().justify_between().items_center().gap(px(8.))
-            .child(div().flex().flex_col()
-                .child(game_mod.declaration.name)
-                .child(div().text_xs().text_color(colors.text_muted).child(game_mod.plugin)))
-            .child(option));
-    }
-    Some(rows.into_any_element())
+    let toggle = compact_icon_button(
+        colors,
+        SharedString::from(format!("manage-virtual-mod-toggle-{}", game_mod.key)),
+        if enabled {
+            lucide_gpui::icon!(toggle_right)
+        } else {
+            lucide_gpui::icon!(toggle_left)
+        },
+    );
+    let toggle = if usable {
+        toggle.on_mouse_down(MouseButton::Left, {
+            let folder = version.folder.clone();
+            let game_mod = game_mod.clone();
+            cx.listener(move |_this, _, _, cx| {
+                save_virtual_mod(folder.clone(), game_mod.clone(), !enabled, cx);
+            })
+        })
+    } else {
+        toggle.opacity(0.45)
+    };
+    actions = actions.child(toggle);
+
+    div()
+        .id(SharedString::from(format!(
+            "manage-virtual-mod-row-{}",
+            game_mod.key
+        )))
+        .w_full()
+        .h(px(MANAGE_ASSET_ROW_HEIGHT_PX))
+        .flex_none()
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.16,
+            ..colors.border
+        })
+        .bg(Hsla {
+            a: 0.55,
+            ..colors.surface
+        })
+        .px(px(10.))
+        .py(px(8.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .gap(px(12.))
+                        .items_center()
+                        .child(marker)
+                        .child(icon)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .min_w(px(0.))
+                                        .child(div().flex_1().min_w(px(0.)).child(title))
+                                        .child(
+                                            div()
+                                                .w(px(6.))
+                                                .h(px(6.))
+                                                .rounded_full()
+                                                .bg(status_color),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .overflow_hidden()
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .text_color(colors.text_secondary)
+                                                .child(SharedString::from(detail)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .text_color(status_color)
+                                                .child(status),
+                                        ),
+                                ),
+                        ),
+                )
+                .child(div().flex_shrink_0().child(actions)),
+        )
 }
 
 fn save_virtual_mod(

@@ -701,6 +701,13 @@ pub(super) fn render_asset_list(
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
     let i18n = cx.global::<I18n>().clone();
+    // Plugin-owned native modules are shown as ordinary Mod rows, not as a
+    // separate section with its own enable button.
+    let virtual_mods = if state.tab == ManageTab::Mod {
+        super::mod_tab::virtual_mods_for_list(state, cx)
+    } else {
+        Vec::new()
+    };
     let frame_now = window.animation_time();
     let reduced_motion = crate::core::ui_prefs::reduced_motion();
     let stale_transition = if !state.assets_loaded && !state.assets.is_empty() {
@@ -799,7 +806,7 @@ pub(super) fn render_asset_list(
             .into_any_element();
     }
 
-    if filtered_asset_indices.is_empty() {
+    if filtered_asset_indices.is_empty() && virtual_mods.is_empty() {
         let (title, description) = match state.tab {
             ManageTab::Mod => (
                 t!("AssetManager.empty_mod"),
@@ -867,6 +874,8 @@ pub(super) fn render_asset_list(
     let version = version.clone();
     let state = state.clone();
     let indices = filtered_asset_indices.to_vec();
+    let virtual_count = virtual_mods.len();
+    let total_rows = virtual_count + indices.len();
     let selected_asset_keys = state
         .selected_asset_keys
         .iter()
@@ -879,61 +888,92 @@ pub(super) fn render_asset_list(
     let scroll_handle = asset_scroll_handle.clone();
     let list = uniform_list(
         "manage-asset-list-scroll",
-        indices.len(),
+        total_rows,
         cx.processor(move |_, range: std::ops::Range<usize>, _window, cx| {
             let first_visible = range.start;
+            let animate = |key: String, virtual_index: usize, row: Div| -> AnyElement {
+                let direction = crate::ui::animation::tab_transition_direction(
+                    animation_from,
+                    animation_to,
+                );
+                row.with_visual_animation(
+                    SharedString::from(key),
+                    if animate_rows {
+                        tab_list_item_motion(
+                            animation_from,
+                            animation_to,
+                            virtual_index.saturating_sub(first_visible),
+                        )
+                        .with_property(AnimationProperty::clipped_translation(
+                            point(px(12.0 * direction), px(0.0)),
+                            Point::default(),
+                        ))
+                    } else {
+                        settled_animation().with_property(AnimationProperty::translation(
+                            Point::default(),
+                            Point::default(),
+                        ))
+                    },
+                )
+                .expect("animation declares presentation properties")
+                .into_any_element()
+            };
             range
                 .filter_map(|virtual_index| {
-                    let asset = state.assets.get(*indices.get(virtual_index)?)?;
-                    let row = div()
-                        .w_full()
-                        .h(px(MANAGE_ASSET_ROW_PITCH_PX))
-                        .pb(px(MANAGE_ASSET_ROW_GAP_PX))
-                        .flex_none()
-                        .child(render_asset_row(
-                            &colors,
-                            &state,
-                            &version,
-                            asset,
-                            selected_asset_keys.contains(&asset.key),
-                            true,
-                            &i18n,
-                            cx,
-                        ));
-                    let direction = crate::ui::animation::tab_transition_direction(
-                        animation_from,
-                        animation_to,
-                    );
-                    Some(
-                        row.with_visual_animation(
-                            SharedString::from(format!(
+                    if virtual_index < virtual_count {
+                        let game_mod = virtual_mods.get(virtual_index)?;
+                        let row = div()
+                            .w_full()
+                            .h(px(MANAGE_ASSET_ROW_PITCH_PX))
+                            .pb(px(MANAGE_ASSET_ROW_GAP_PX))
+                            .flex_none()
+                            .child(super::mod_tab::render_virtual_mod_row(
+                                &colors,
+                                &version,
+                                &state,
+                                game_mod,
+                                cx,
+                            ));
+                        Some(animate(
+                            format!(
+                                "manage-virtual-mod-row-{}-{}-{}",
+                                state.tab_anim_seq,
+                                state.pack_subtype_anim_seq,
+                                game_mod.key
+                            ),
+                            virtual_index,
+                            row,
+                        ))
+                    } else {
+                        let asset = state
+                            .assets
+                            .get(*indices.get(virtual_index - virtual_count)?)?;
+                        let row = div()
+                            .w_full()
+                            .h(px(MANAGE_ASSET_ROW_PITCH_PX))
+                            .pb(px(MANAGE_ASSET_ROW_GAP_PX))
+                            .flex_none()
+                            .child(render_asset_row(
+                                &colors,
+                                &state,
+                                &version,
+                                asset,
+                                selected_asset_keys.contains(&asset.key),
+                                true,
+                                &i18n,
+                                cx,
+                            ));
+                        Some(animate(
+                            format!(
                                 "manage-asset-row-{}-{}-{}",
                                 state.tab_anim_seq,
                                 state.pack_subtype_anim_seq,
                                 asset.key.as_ref()
-                            )),
-                            if animate_rows {
-                                tab_list_item_motion(
-                                    animation_from,
-                                    animation_to,
-                                    virtual_index.saturating_sub(first_visible),
-                                )
-                                .with_property(
-                                    AnimationProperty::clipped_translation(
-                                        point(px(12.0 * direction), px(0.0)),
-                                        Point::default(),
-                                    ),
-                                )
-                            } else {
-                                settled_animation().with_property(AnimationProperty::translation(
-                                    Point::default(),
-                                    Point::default(),
-                                ))
-                            },
-                        )
-                        .expect("animation declares presentation properties")
-                        .into_any_element(),
-                    )
+                            ),
+                            virtual_index,
+                            row,
+                        ))
+                    }
                 })
                 .collect()
         }),

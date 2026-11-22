@@ -850,8 +850,10 @@ impl ManagePageView {
         let filtered_servers = self.server_list_cache.filtered_indices();
         let active_count = match state.tab {
             ManageTab::Statistics => 0,
-            ManageTab::Mod
-            | ManageTab::ResourcePack
+            ManageTab::Mod => {
+                filtered_assets.len() + super::mod_tab::virtual_mods_for_list(state, cx).len()
+            }
+            ManageTab::ResourcePack
             | ManageTab::SkinPack
             | ManageTab::Cape
             | ManageTab::Map => filtered_assets.len(),
@@ -949,12 +951,15 @@ impl ManagePageView {
                     now,
                     cx,
                 ),
-                ManageTab::Mod => {
-                    let virtual_mods = super::mod_tab::render_virtual_mods(colors, version, state, cx);
-                    let list = render_asset_list(colors, version, state, filtered_assets, &self.asset_scroll_handle, window, cx);
-                    div().size_full().min_h(px(0.)).flex().flex_col().children(virtual_mods)
-                        .child(div().flex_1().min_h(px(0.)).child(list)).into_any_element()
-                }
+                ManageTab::Mod => render_asset_list(
+                    colors,
+                    version,
+                    state,
+                    filtered_assets,
+                    &self.asset_scroll_handle,
+                    window,
+                    cx,
+                ),
                 ManageTab::ResourcePack | ManageTab::Map => render_asset_list(
                     colors,
                     version,

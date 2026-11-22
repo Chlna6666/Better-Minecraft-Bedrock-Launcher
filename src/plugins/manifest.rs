@@ -859,7 +859,13 @@ fn installed_package_matches(
     Ok(installed.id == package_manifest.id
         && installed.version == package_manifest.version
         && installed.package_hash == package_manifest.package_hash
-        && package_manifest.package_hash.is_some())
+        && package_manifest.package_hash.is_some()
+        // A matching manifest is not enough: an interrupted or older install
+        // may have dropped the declared game-mod payloads.
+        && package_manifest
+            .game_mods
+            .iter()
+            .all(|declaration| install_dir.join(&declaration.path).is_file()))
 }
 
 fn validate_replace_target(install_dir: &Path, plugin_id: &str) -> Result<()> {
@@ -1119,6 +1125,13 @@ fn is_manifest_declared_resource_entry(name: &str, manifest: &PluginManifest) ->
             .lang_dir
             .as_deref()
             .is_some_and(|path| name == path || name.starts_with(&format!("{path}/")))
+        // Plugin-owned native modules declared in `[[game_mods]]` must be
+        // unpacked next to plugin.wasm; they are not regular resources and
+        // were previously dropped during installation.
+        || manifest
+            .game_mods
+            .iter()
+            .any(|declaration| declaration.path == name)
 }
 
 pub fn ensure_user_config(manifest: &PluginManifest) -> Result<()> {
@@ -1759,6 +1772,38 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
         );
     }
 
+    #[test]
+    fn game_mod_payloads_are_unpacked_with_the_plugin() {
+        let root = unique_temp_dir("bmcbl-plugin-game-mod");
+        let plugins_dir = root.join("plugins");
+        std::fs::create_dir_all(&plugins_dir).expect("plugins dir should be created");
+
+        let wasm = b"component bytes";
+        let hash = sha256_hex(wasm);
+        let mut manifest = test_manifest("0.1.0", &hash);
+        manifest.push_str(
+            r#"
+[[game_mods]]
+id = "test-mod"
+name = "Test Mod"
+path = "game-mods/test.dll"
+platform = "windows-x86_64"
+phase = "preload"
+game_versions = ["1.26.60"]
+"#,
+        );
+        let package_path = plugins_dir.join("bmcbl-essentials-0.1.0.bmcblx");
+        write_test_package_with_game_mod(&package_path, &manifest, wasm, b"fake-dll-bytes");
+        let manifest =
+            install_from_package(&package_path, &plugins_dir).expect("package should install");
+
+        assert_eq!(
+            std::fs::read(manifest.root_dir.join("game-mods/test.dll"))
+                .expect("game mod payload should be unpacked"),
+            b"fake-dll-bytes"
+        );
+    }
+
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1848,6 +1893,29 @@ capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast"]
         zip.start_file("config/schema.toml", options)
             .expect("schema entry should start");
         std::io::Write::write_all(&mut zip, b"fields = []\n").expect("schema should be written");
+        zip.finish().expect("package should finish");
+    }
+
+    fn write_test_package_with_game_mod(
+        package_path: &Path,
+        manifest: &str,
+        wasm: &[u8],
+        game_mod: &[u8],
+    ) {
+        let file = std::fs::File::create(package_path).expect("package should be created");
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file(PLUGIN_MANIFEST_FILE, options)
+            .expect("manifest entry should start");
+        std::io::Write::write_all(&mut zip, manifest.as_bytes())
+            .expect("manifest should be written");
+        zip.start_file(DEFAULT_ENTRY, options)
+            .expect("wasm entry should start");
+        std::io::Write::write_all(&mut zip, wasm).expect("wasm should be written");
+        zip.start_file("game-mods/test.dll", options)
+            .expect("game mod entry should start");
+        std::io::Write::write_all(&mut zip, game_mod).expect("game mod should be written");
         zip.finish().expect("package should finish");
     }
 

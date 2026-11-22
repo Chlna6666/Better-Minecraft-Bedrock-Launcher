@@ -67,6 +67,8 @@ pub(crate) struct GameMod {
     pub(crate) declaration: Declaration,
     pub(crate) sha256: String,
     pub(crate) payload: PathBuf,
+    /// Plugin icon shown in the manage-page Mod list, when the package ships one.
+    pub(crate) icon_path: Option<PathBuf>,
 }
 
 impl GameMod {
@@ -105,6 +107,7 @@ pub(super) fn prepare(manifest: &PluginManifest) -> Vec<GameMod> {
                 declaration: declaration.clone(),
                 sha256: bmcbl_plugin_runtime::engine::wasm_sha256_hex(&bytes),
                 payload,
+                icon_path: manifest.icon_path().filter(|path| path.exists()),
             })
         })();
         match result {
