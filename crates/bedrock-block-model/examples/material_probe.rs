@@ -20,6 +20,8 @@ fn main() {
         // A leading `entity:` names a loose entity texture instead of a terrain material.
         let resolved = if let Some(key) = material.strip_prefix("entity:") {
             resolver.entity_texture(key)
+        } else if let Some(key) = material.strip_prefix("key:") {
+            resolver.texture(key)
         } else {
             resolver.texture_for(&material, [0, 1, 0])
         };

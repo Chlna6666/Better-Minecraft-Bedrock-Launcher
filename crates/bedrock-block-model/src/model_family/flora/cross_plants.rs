@@ -2,7 +2,7 @@ use crate::model_family::ModelFamily;
 use crate::model_family::direction::state_string;
 use crate::model_family::direction::state_i64;
 use crate::model_family::shape::{
-    ModelCuboid, ModelPlane, ModelShape, hanging_full_texture_uv, rotate_shape_x,
+    ModelCuboid, ModelPlane, ModelShape, full_texture_uv, hanging_full_texture_uv, rotate_shape_x,
     rotate_shape_y_degrees, upright_full_texture_uv,
 };
 use crate::state::BlockStateQuery;
@@ -85,36 +85,38 @@ fn coral_block_shape() -> ModelShape {
     )
 }
 
-/// The floor coral fan, official `coral_fan` model: four horizontal full-square
-/// quads lying on the cell floor (y = 0), each 16 px wide and centred on the
-/// cell, with two of them overhanging the cell by 8 px — together they read as
-/// one round coral cluster spread across the floor. Every quad binds the
-/// coral's own fan art full-sheet (up, and a V-flipped down face).
-/// The `coral_fan_direction` state rotates the cross, which is symmetric.
+/// A floor coral fan is not four flat quads: the game tessellates a folded fan
+/// (official BedrockSceneCapture ref 358 / dead ref 202). Four quads form a pleated
+/// sheet that spreads along X (x -2.93..22.67 px) with two crests at y 8.8 px and
+/// two rims dipping to y 5.6, and folds out along Z (z -6.13..19.47). Every quad
+/// binds the coral's own art full-sheet. `coral_fan_direction` (0..3) yaw-turns the
+/// whole fan by 90 degrees. The wall fan (`*_coral_wall_fan`) uses the upright
+/// path and is handled elsewhere.
 fn coral_fan_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = state_i64(state, "coral_fan_direction")
         .or_else(|| state_i64(state, "minecraft:coral_fan_direction"))
         .unwrap_or(0)
         .rem_euclid(4);
-    let uv = upright_full_texture_uv();
-    let quad = |x0: f32, z0: f32, x1: f32, z1: f32| {
-        ModelPlane::new(
-            [
-                [x0, 0.0, z0],
-                [x1, 0.0, z0],
-                [x1, 0.0, z1],
-                [x0, 0.0, z1],
-            ],
-            [0, 1, 0],
-        )
-        .with_uv(uv)
+    let uv = full_texture_uv();
+    let at = |x: f32, y: f32, z: f32| [x / 16.0, y / 16.0, z / 16.0];
+    let quad = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], n: [i32; 3], u: [[f32; 2]; 4]| {
+        ModelPlane::new([at(a[0],a[1],a[2]), at(b[0],b[1],b[2]), at(c[0],c[1],c[2]), at(d[0],d[1],d[2])], n)
+            .with_uv(u)
     };
-    // Model units are 1/16 px, so the overhangs become -0.5 and 1.5 here.
+    // Exact captured corners (px) and face UVs from ref 358.
     let shape = ModelShape::default().with_planes([
-        quad(-0.5, 0.0, 0.5, 1.0),  // west arm, overhanging 8 px
-        quad(0.5, 0.0, 1.5, 1.0),   // east arm, overhanging 8 px
-        quad(0.0, -0.5, 1.0, 0.5),  // north arm, overhanging 8 px
-        quad(0.0, 0.5, 1.0, 1.5),   // south arm, overhanging 8 px
+        // Left rim: from the crest (-2.93, 5.6) down to the central valley (9.87, 0).
+        quad([-2.93,5.6,-1.33], [9.87,0.0,-1.33], [9.87,0.0,14.67], [-2.93,5.6,14.67],
+             [0,-1,0], [[1.0,0.0],[1.0,1.0],[0.0,1.0],[0.0,0.0]]),
+        // Upper-middle crest: (1.87,8.8,-6.13) folding down to the valley.
+        quad([1.87,8.8,-6.13], [1.87,0.0,6.67], [17.87,0.0,6.67], [17.87,8.8,-6.13],
+             [0,1,1], [[0.0,0.0],[0.0,1.0],[1.0,1.0],[1.0,0.0]]),
+        // Lower-middle crest: folds down from the far Z edge.
+        quad([1.87,8.8,19.47], [1.87,0.0,6.67], [17.87,0.0,6.67], [17.87,8.8,19.47],
+             [0,-1,1], [[1.0,0.0],[1.0,1.0],[0.0,1.0],[0.0,0.0]]),
+        // Right rim: valley (9.87,0) up to the far crest (22.67,5.6).
+        quad([22.67,5.6,-1.33], [9.87,0.0,-1.33], [9.87,0.0,14.67], [22.67,5.6,14.67],
+             [0,1,0], [[0.0,0.0],[0.0,1.0],[1.0,1.0],[1.0,0.0]]),
     ]);
     rotate_shape_y_degrees(shape, direction as f32 * 90.0)
 }

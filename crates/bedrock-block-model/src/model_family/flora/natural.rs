@@ -129,41 +129,48 @@ pub(crate) fn bubble_column_shape() -> ModelShape {
 /// [0,4,16,6]` rot 90); one 16 px quad with that window is equivalent. The wire only runs
 /// along the axes its state connects, so a wire with no neighbours draws nothing.
 pub(crate) fn tripwire_shape(state: &BlockStateQuery) -> ModelShape {
-    let y = 1.5 / 16.0;
+    // Bedrock stores no per-direction state; the scene injects the four connection
+    // booleans from the neighbours. A connected wire draws one 4 px segment from the
+    // cell edge to the centre per connected side (JE `tripwire_*` multipart): no
+    // connection → no wire at all. Previously the flags defaulted to true, so every
+    // cell drew a full cross even with no neighbouring wire or hook.
+    let connected = |dir: &str| {
+        state_bool(state, &format!("minecraft:{dir}"))
+            .or_else(|| state_bool(state, dir))
+            .unwrap_or(false)
+    };
+    let north = connected("north");
+    let south = connected("south");
+    let east = connected("east");
+    let west = connected("west");
+    // Powered wires sit lower in the cell (the triggering animation); the art band
+    // itself is the same `trip_wire` sheet.
+    let powered = state_bool(state, "powered_bit")
+        .or_else(|| state_bool(state, "powered"))
+        .unwrap_or(false);
+    let y = if powered { 0.5 / 16.0 } else { 1.5 / 16.0 };
     let (lo, hi) = (0.4844_f32, 0.5156_f32);
-    let along_x = state_bool(state, "minecraft:east")
-        .or_else(|| state_bool(state, "east"))
-        .unwrap_or(true)
-        || state_bool(state, "minecraft:west")
-            .or_else(|| state_bool(state, "west"))
-            .unwrap_or(true);
-    let along_z = state_bool(state, "minecraft:north")
-        .or_else(|| state_bool(state, "north"))
-        .unwrap_or(true)
-        || state_bool(state, "minecraft:south")
-            .or_else(|| state_bool(state, "south"))
-            .unwrap_or(true);
-    // Corners run length-first so the quad's U axis is the wire's length, reading the
-    // dotted band along it (the renderer's U mapping takes the first two corners).
+    let mid = 0.5_f32;
+    // Length-first corners so U runs along each segment; the repeating 4 px dotted
+    // band is sampled by a full-tile window (the texture repeats every 4 px).
     let band_uv = [[0.0, 6.0 / 16.0], [1.0, 6.0 / 16.0], [1.0, 4.0 / 16.0], [0.0, 4.0 / 16.0]];
-    let mut planes = Vec::with_capacity(2);
-    if along_z {
-        planes.push(
-            ModelPlane::new(
-                [[lo, y, 0.0], [lo, y, 1.0], [hi, y, 1.0], [hi, y, 0.0]],
-                [0, 1, 0],
-            )
-            .with_uv(band_uv),
-        );
+    let mut planes = Vec::with_capacity(4);
+    let segment = |corners: [[f32; 3]; 4]| {
+        ModelPlane::new(corners, [0, 1, 0]).with_uv(band_uv)
+    };
+    // North edge (z=0) to centre, south edge (z=1) to centre.
+    if north {
+        planes.push(segment([[lo, y, 0.0], [lo, y, mid], [hi, y, mid], [hi, y, 0.0]]));
     }
-    if along_x {
-        planes.push(
-            ModelPlane::new(
-                [[0.0, y, lo], [1.0, y, lo], [1.0, y, hi], [0.0, y, hi]],
-                [0, 1, 0],
-            )
-            .with_uv(band_uv),
-        );
+    if south {
+        planes.push(segment([[lo, y, 1.0], [lo, y, mid], [hi, y, mid], [hi, y, 1.0]]));
+    }
+    // West edge (x=0) to centre, east edge (x=1) to centre.
+    if west {
+        planes.push(segment([[0.0, y, lo], [mid, y, lo], [mid, y, hi], [0.0, y, hi]]));
+    }
+    if east {
+        planes.push(segment([[1.0, y, lo], [mid, y, lo], [mid, y, hi], [1.0, y, hi]]));
     }
     ModelShape::default().with_planes(planes)
 }

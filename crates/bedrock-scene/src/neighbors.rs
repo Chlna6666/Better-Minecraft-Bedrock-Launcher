@@ -5,6 +5,8 @@ impl SceneBuilder {
         // Glass detail faces are transparent; cull when the neighbor cell is opaque OR a solid
         // glass block. JE pane templates mark their end faces `cullface`, so a pane touching a
         // full glass block drops the 2 px rim end instead of drawing a stub against the glass.
+        // A pane neighbour is not a full cube, but two joined panes continue the same wall —
+        // the end caps between them are internal, so they cull too (vanilla merges the run).
         let mut min = [f64::INFINITY; 3];
         for corner in &face.corners {
             for (axis, value) in corner.iter().enumerate() {
@@ -25,7 +27,8 @@ impl SceneBuilder {
         matches!(
             self.block_class_at(neighbor),
             Some(BlockClass::TransparentGlass)
-        ) || self.opaque_neighbor_hides_transparent(neighbor)
+        ) || self.connection_kind_at(neighbor) == Some(ConnectionKind::Pane)
+            || self.opaque_neighbor_hides_transparent(neighbor)
     }
 
     /// Whether a full opaque-classified neighbor really hides a transparent
@@ -205,6 +208,17 @@ impl SceneBuilder {
                     );
                 }
             }
+            NeighborModel::Tripwire => {
+                // A wire joins a neighbouring wire or a hook; the four booleans drive the
+                // multipart geometry (the wire only runs along connected axes).
+                for direction in CardinalDirection::ALL {
+                    let kind = self.connection_kind_at(block.key.cardinal_neighbor(direction));
+                    query = query.with_state(
+                        direction.state_key(),
+                        matches!(kind, Some(ConnectionKind::Tripwire | ConnectionKind::TripwireHook)),
+                    );
+                }
+            }
             NeighborModel::Fence => {
                 for direction in CardinalDirection::ALL {
                     query = query.with_state(
@@ -300,20 +314,10 @@ impl SceneBuilder {
         direction: CardinalDirection,
     ) -> bool {
         let neighbor = block.cardinal_neighbor(direction);
-        let connects = matches!(
+        matches!(
             self.block_class_at(neighbor),
             Some(BlockClass::Opaque | BlockClass::TransparentGlass)
-        ) || self.connection_kind_at(neighbor) == Some(ConnectionKind::Pane);
-        // TEMP DEBUG
-        if block.y == 72 {
-            eprintln!(
-                "pane debug: key={:?} dir={direction:?} neighbor={neighbor:?} class={:?} kind={:?} -> {connects}",
-                block,
-                self.block_class_at(neighbor),
-                self.connection_kind_at(neighbor)
-            );
-        }
-        connects
+        ) || self.connection_kind_at(neighbor) == Some(ConnectionKind::Pane)
     }
 
     pub(super) fn fence_neighbor_connects(

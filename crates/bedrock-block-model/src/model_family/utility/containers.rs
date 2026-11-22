@@ -4,8 +4,8 @@ use crate::model_family::direction::{
     BlockFacing, CardinalDirection, cardinal_direction, state_i64, state_string,
 };
 use crate::model_family::shape::{
-    ModelCuboid, ModelShape, box_unwrap_face_uvs, detail_cuboid_with_local_uv, rect_uv,
-    rotate_cuboid_cardinal,
+    ModelCuboid, ModelShape, box_unwrap_face_uvs, detail_cuboid_with_local_uv, full_texture_uv,
+    rect_uv, rotate_cuboid_cardinal,
 };
 use crate::state::BlockStateQuery;
 
@@ -143,49 +143,50 @@ fn chest_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
     let pair_direction = state_string(state, "pair_direction").and_then(cardinal_from_string);
     let (body_min, body_max) = chest_pair_bounds(pair_direction);
-    // The chest is the classic 14x14x14 entity box on a 64x64 sheet: the lid unwraps from
-    // (0,0) and the body from (0,19). The sheet's own alpha layout proves both origins - the
-    // lid fills rows 0..19 and the body rows 19..43 in 56-pixel-wide strips, and the 6x5 latch
-    // art sits at (0,0). `blocks.json` only carries the flat `chest_front`/`chest_side` icons.
-    ModelShape::from_cuboids([
-        chest_uv_cuboid(
-            ModelCuboid::new(body_min, [body_max[0], px(10.0), body_max[2]]),
-            [0.0, 19.0],
-        ),
-        // The lid overlaps the body's top pixel exactly like the vanilla model, so the seam
-        // stays closed while the lid keeps its own 5-pixel side band.
-        chest_uv_cuboid(
-            ModelCuboid::new(
-                [body_min[0], px(9.0), body_min[2]],
-                [body_max[0], px(14.0), body_max[2]],
-            ),
-            [0.0, 0.0],
-        ),
-        chest_latch(direction),
-    ])
-}
-
-/// The latch is a 2x4x1 box drawn at skin (0,0); it sits on the chest's front face.
-///
-/// It is authored on the north face and then turned with the block, so each face carries the
-/// art of the surface it now points at.
-fn chest_latch(direction: CardinalDirection) -> ModelCuboid {
-    let authored = chest_uv_cuboid(
-        ModelCuboid::new([px(7.0), px(8.0), 0.0], [px(9.0), px(12.0), px(1.0)]),
-        [0.0, 0.0],
-    );
-    rotate_cuboid_cardinal(&authored, direction)
-}
-
-/// Applies the chest sheet's box unwrap, normalised to the 64x64 entity skin.
-fn chest_uv_cuboid(cuboid: ModelCuboid, origin: [f32; 2]) -> ModelCuboid {
-    let min = cuboid.min.map(|value| value * 16.0);
-    let max = cuboid.max.map(|value| value * 16.0);
-    let mut textured = cuboid;
-    for (face, uv) in box_unwrap_face_uvs(min, max, origin, [64.0, 64.0]) {
-        textured = textured.with_face_uv(face, uv);
+    // Bedrock's chest art is six independent 16x16 tiles (`chest_side`/`chest_front`/
+    // `chest_top`), each carrying its own dark metal rim, wood grain and latch — NOT the
+    // Java 64x64 entity skin that needs a box unwrap. Sampling these tiles through a 64x64
+    // unwrap cropped away the rims and left plain wood on the sides (the user's screenshot).
+    // Every face therefore reads its whole tile; the material slots route the front tile
+    // onto the face the block turns toward the player.
+    let full = full_texture_uv();
+    let body = ModelCuboid::new(body_min, [body_max[0], px(10.0), body_max[2]])
+        .with_face_material_slot(BlockFace::Up, "up")
+        .with_face_material_slot(BlockFace::Down, "down")
+        .with_face_material_slot(BlockFace::North, "side")
+        .with_face_material_slot(BlockFace::South, "side")
+        .with_face_material_slot(BlockFace::East, "side")
+        .with_face_material_slot(BlockFace::West, "side");
+    let lid = ModelCuboid::new(
+        [body_min[0], px(9.0), body_min[2]],
+        [body_max[0], px(14.0), body_max[2]],
+    )
+    .with_face_material_slot(BlockFace::Up, "up")
+    .with_face_material_slot(BlockFace::Down, "down")
+    .with_face_material_slot(BlockFace::North, "side")
+    .with_face_material_slot(BlockFace::South, "side")
+    .with_face_material_slot(BlockFace::East, "side")
+    .with_face_material_slot(BlockFace::West, "side");
+    let mut shape = ModelShape::from_cuboids([body, lid]);
+    for cuboid in &mut shape.cuboids {
+        for face in [
+            BlockFace::Up, BlockFace::Down, BlockFace::North, BlockFace::South,
+            BlockFace::East, BlockFace::West,
+        ] {
+            *cuboid = cuboid.clone().with_face_uv(face, full);
+        }
     }
-    textured
+    // The front tile (with its baked-in latch) goes on the face named by `cardinal_direction`.
+    let front_face = match direction {
+        CardinalDirection::North => BlockFace::North,
+        CardinalDirection::South => BlockFace::South,
+        CardinalDirection::East => BlockFace::East,
+        CardinalDirection::West => BlockFace::West,
+    };
+    for cuboid in &mut shape.cuboids {
+        *cuboid = cuboid.clone().with_face_material_slot(front_face, "front");
+    }
+    shape
 }
 
 fn chest_pair_bounds(pair_direction: Option<CardinalDirection>) -> ([f32; 3], [f32; 3]) {
@@ -246,51 +247,41 @@ mod tests {
     }
 
     #[test]
-    fn chest_boxes_unwrap_the_64x64_entity_sheet() {
-        // The sheet's alpha layout is a 56x19 lid strip over a 56x29 body strip, i.e. boxes of
-        // 14x5x14 at (0,0) and 14x10x14 at (0,19) read with the standard unwrap.
+    fn chest_boxes_use_whole_16px_tiles_per_face() {
+        // Bedrock ships six independent 16x16 tiles with the rims/latch baked in; every
+        // face must sample its whole tile, never a 64x64 box-unwrap region.
         let shape = chest_shape(
             &crate::state::BlockStateQuery::new("minecraft:chest")
                 .with_state("minecraft:cardinal_direction", "north"),
         );
-        let region = |cuboid: &ModelCuboid, face: BlockFace| {
-            let uv = cuboid.face_uvs[&face];
-            [
-                (uv[0][0] * 64.0).round(),
-                (uv[0][1] * 64.0).round(),
-                (uv[2][0] * 64.0).round(),
-                (uv[2][1] * 64.0).round(),
-            ]
-        };
-        let body = &shape.cuboids[0];
-        assert_eq!(region(body, BlockFace::Up), [14.0, 19.0, 28.0, 33.0]);
-        assert_eq!(region(body, BlockFace::North), [14.0, 43.0, 28.0, 33.0]);
-        assert_eq!(region(body, BlockFace::West), [0.0, 43.0, 14.0, 33.0]);
-        assert_eq!(region(body, BlockFace::East), [28.0, 43.0, 42.0, 33.0]);
-        assert_eq!(region(body, BlockFace::South), [42.0, 43.0, 56.0, 33.0]);
-        assert_eq!(region(body, BlockFace::Down), [28.0, 19.0, 42.0, 33.0]);
-
-        let lid = &shape.cuboids[1];
-        assert_eq!(region(lid, BlockFace::Up), [14.0, 0.0, 28.0, 14.0]);
-        assert_eq!(region(lid, BlockFace::North), [14.0, 19.0, 28.0, 14.0]);
-
-        let latch = &shape.cuboids[2];
-        assert_eq!(region(latch, BlockFace::North), [1.0, 5.0, 3.0, 1.0]);
+        assert_eq!(shape.cuboids.len(), 2); // body + lid; latch is baked into the front tile
+        let full = rect_uv(0.0, 0.0, 1.0, 1.0);
+        for cuboid in &shape.cuboids {
+            for face in [
+                BlockFace::Up, BlockFace::Down, BlockFace::North, BlockFace::South,
+                BlockFace::East, BlockFace::West,
+            ] {
+                assert_eq!(cuboid.face_uvs[&face], full, "face {face:?} must use the whole tile");
+            }
+        }
     }
 
     #[test]
-    fn chest_latch_follows_the_block_direction() {
-        let shape = |direction: &str| {
-            chest_shape(
+    fn chest_front_tile_follows_the_block_direction() {
+        let front_faces = |direction: &str| {
+            let shape = chest_shape(
                 &crate::state::BlockStateQuery::new("minecraft:chest")
                     .with_state("minecraft:cardinal_direction", direction),
-            )
+            );
+            shape.cuboids[0].face_material_slots.iter()
+                .filter(|(_, slot)| slot.as_str() == "front")
+                .map(|(face, _)| *face)
+                .collect::<Vec<_>>()
         };
-        let latch = |direction: &str| shape(direction).cuboids[2].clone();
-        assert!(latch("north").min[2] == 0.0);
-        assert!(latch("south").max[2] == 1.0);
-        assert!(latch("west").min[0] == 0.0);
-        assert!(latch("east").max[0] == 1.0);
+        assert_eq!(front_faces("north"), vec![BlockFace::North]);
+        assert_eq!(front_faces("south"), vec![BlockFace::South]);
+        assert_eq!(front_faces("east"), vec![BlockFace::East]);
+        assert_eq!(front_faces("west"), vec![BlockFace::West]);
     }
 
     #[test]

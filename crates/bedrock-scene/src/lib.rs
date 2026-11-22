@@ -8,7 +8,7 @@ use bedrock_block_model::model_family;
 use bedrock_block_model::obj;
 use bedrock_block_model::{
     BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, ModelCuboid, ModelFamily,
-    ModelPlane, ModelShape, ModelWarning,
+    ModelPlane, ModelPlaneSidedness, ModelShape, ModelWarning,
 };
 use bedrock_map_render::{RenderPalette, RgbaColor, SurfaceTintKind};
 use bedrock_world::ChunkPos;

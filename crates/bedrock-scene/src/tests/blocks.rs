@@ -436,7 +436,8 @@ fn map_viewer_preview_3d_panes_iron_bars_and_plants_use_cutout_detail_shapes() {
     let iron_bars = test_block_state_with_tag("minecraft:iron_bars", "north", NbtTag::Byte(1));
     let bars_shape = detail_shape(&iron_bars, None)
         .unwrap_or_else(|| panic!("iron bars should have detail shape"));
-    assert_eq!(bars_shape.cuboids.len(), 2);
+    // The post is caps-only planes; the connected arm is the only cuboid and stays 2 px wide.
+    assert_eq!(bars_shape.cuboids.len(), 1);
     assert!(
         bars_shape
             .cuboids
@@ -446,10 +447,10 @@ fn map_viewer_preview_3d_panes_iron_bars_and_plants_use_cutout_detail_shapes() {
 
     let isolated_bars_shape = detail_shape(&test_block_state("minecraft:iron_bars"), None)
         .unwrap_or_else(|| panic!("isolated iron bars should have detail shape"));
-    // The post is the only box; every disconnected side draws its `noside` card as a plane
-    // (a zero-thickness cuboid is skipped by the face emitter and renders as nothing).
-    assert_eq!(isolated_bars_shape.cuboids.len(), 1);
-    assert_eq!(isolated_bars_shape.planes.len(), 4);
+    // The post is two cap planes; every disconnected side draws its `noside` card as a
+    // plane (a zero-thickness cuboid is skipped by the face emitter and renders as nothing).
+    assert_eq!(isolated_bars_shape.cuboids.len(), 0);
+    assert_eq!(isolated_bars_shape.planes.len(), 6);
 
     let plant_shape = detail_shape(&test_block_state("minecraft:poppy"), None)
         .unwrap_or_else(|| panic!("plant should have detail shape"));
@@ -495,28 +496,20 @@ fn map_viewer_preview_3d_redstone_wire_uses_flat_cutout_planes() {
 }
 
 #[test]
-fn map_viewer_preview_3d_chest_faces_unwrap_the_entity_sheet() {
+fn map_viewer_preview_3d_chest_faces_sample_their_own_16px_tiles() {
+    // Bedrock ships chest_side/chest_front/chest_top as independent 16x16 tiles with the
+    // metal rim and latch baked in — each face reads its whole tile (no 64x64 unwrap).
     let shape = detail_shape(&test_block_state("minecraft:chest"), None)
         .unwrap_or_else(|| panic!("chest should have detail shape"));
     let body = shape
         .cuboids
         .first()
         .unwrap_or_else(|| panic!("chest body should exist"));
-    let side_uv = body
-        .face_uvs
-        .get(&BlockFace::North)
-        .copied()
-        .unwrap_or_else(|| panic!("chest side should have explicit uv"));
-
-    // `chest.png` is a 64x64 entity unwrap. Sampling the whole tile on every face showed
-    // the sheet's transparent gutters, so a side face has to stay inside one sub-rect.
-    assert_ne!(side_uv, full_texture_uv());
-    let u: Vec<f32> = side_uv.iter().map(|corner| corner[0]).collect();
-    let v: Vec<f32> = side_uv.iter().map(|corner| corner[1]).collect();
-    let u_span = u.iter().copied().fold(0.0_f32, f32::max) - u.iter().copied().fold(1.0, f32::min);
-    let v_span = v.iter().copied().fold(0.0_f32, f32::max) - v.iter().copied().fold(1.0, f32::min);
-    assert!(u_span > 0.0 && u_span < 0.5, "chest side u span {u_span}");
-    assert!(v_span > 0.0 && v_span < 0.5, "chest side v span {v_span}");
+    for face in [BlockFace::North, BlockFace::South, BlockFace::East, BlockFace::West,
+                 BlockFace::Up, BlockFace::Down] {
+        assert_eq!(body.face_uvs.get(&face).copied(), Some(full_texture_uv()),
+            "chest face {face:?} must sample the whole 16x16 tile");
+    }
 }
 
 #[test]

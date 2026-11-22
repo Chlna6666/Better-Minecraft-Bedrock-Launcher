@@ -40,79 +40,70 @@ pub(crate) fn sign_shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     }
 
     if name.ends_with("_hanging_sign") || name == "hanging_sign" {
-        // Official states (minecraft.wiki/w/Hanging_Sign): `hanging` — whether
-        // the sign hangs from the block above; `attached_bit` — whether the
-        // chains converge to a single point on that block (narrow support ∧)
-        // instead of hanging as two parallel chains (wide support); and
-        // `ground_sign_direction` (0..15, 0 = south) rotates the assembly like
-        // a standing sign. The previous build ignored the rotation entirely
-        // and keyed the chain shapes off `attached_bit` alone.
-        let hanging = crate::model_family::direction::state_bool(state, "hanging")
-            .unwrap_or(false);
-        let attached = crate::model_family::direction::state_bool(state, "attached_bit")
-            .unwrap_or(false);
-        let mut cuboids = vec![hanging_sign_board_uv(ModelCuboid::new(
-            [px(1.0), 0.0, px(7.0)],
-            [px(15.0), px(10.0), px(9.0)],
-        ))];
-        let mut planes = Vec::new();
-        if hanging {
-            if attached {
-                // Narrow support: the two chains rise from the board's top
-                // corners and converge at one point on the block above (the
-                // official ∧ silhouette; entity-sheet rows v6..12 hold the
-                // diagonal chain art).
-                let diagonal = |x_a: f32, x_b: f32| {
-                    ModelPlane::new(
-                        [
-                            [px(x_a), px(10.0), px(7.5)],
-                            [px(x_b), px(10.0), px(7.5)],
-                            [px(7.0), 1.0, px(8.5)],
-                            [px(9.0), 1.0, px(8.5)],
-                        ],
-                        [0, 0, 1],
-                    )
-                    .with_material_slot("chain")
-                    .with_uv(sign_uv(0.0, 6.0, 24.0, 12.0))
-                };
-                planes.push(diagonal(1.0, 4.5));
-                planes.push(diagonal(15.0, 11.5));
-            } else {
-                // Wide support: two parallel chains from the block above.
-                cuboids.push(hanging_sign_chain_uv(ModelCuboid::new(
-                    [px(1.5), px(10.0), px(7.5)],
-                    [px(4.5), 1.0, px(8.5)],
-                )));
-                cuboids.push(hanging_sign_chain_uv(ModelCuboid::new(
-                    [px(11.5), px(10.0), px(7.5)],
-                    [px(14.5), 1.0, px(8.5)],
-                )));
-            }
-        } else {
-            // Self-supporting bracket: the collidable bar across the top with
-            // the two side chains spanning bar -> board.
-            cuboids.push(hanging_sign_bar_uv(ModelCuboid::new(
-                [0.0, px(14.0), px(6.0)],
-                [1.0, 1.0, px(10.0)],
-            )));
-            cuboids.push(hanging_sign_chain_uv(ModelCuboid::new(
-                [px(1.5), px(10.0), px(7.5)],
-                [px(4.5), px(14.0), px(8.5)],
-            )));
-            cuboids.push(hanging_sign_chain_uv(ModelCuboid::new(
-                [px(11.5), px(10.0), px(7.5)],
-                [px(14.5), px(14.0), px(8.5)],
-            )));
-        }
-        // `ground_sign_direction` (0..15): 22.5° per step, 0 = south — the
-        // whole assembly (board, chains, bar) turns together.
-        let degrees = crate::model_family::direction::state_i64(state, "ground_sign_direction")
+        // Official JE `template_hanging_sign_rot_{0..3}` / `template_attached_hanging_sign_rot_0`
+        // (mcmeta@assets), with UVs in the 16x16 hanging-sign sheet (Bedrock's
+        // `textures/ui/hanging_sign.png` is also 16x16, so the JE windows map directly —
+        // the old `sign_uv()` used a 64x32 divisor and shrank every window to a quarter).
+        // `ground_sign_direction` 0..15 maps to rot_N (value % 4) plus a 90-degree step
+        // per group of four, exactly like the blockstate's 4 models x 4 yaw variants.
+        let value = crate::model_family::direction::state_i64(state, "ground_sign_direction")
             .unwrap_or(0)
-            .rem_euclid(16) as f32 * 22.5;
-        return rotate_shape_y_degrees(
-            ModelShape::from_cuboids(cuboids).with_planes(planes),
-            degrees,
-        );
+            .rem_euclid(16);
+        let attached = crate::model_family::direction::state_bool(state, "attached_bit")
+            .or_else(|| crate::model_family::direction::state_bool(state, "attached"))
+            .unwrap_or(false);
+        let uv16 = |u0: f32, v0: f32, u1: f32, v1: f32| {
+            crate::model_family::shape::rect_uv(u0 / 16.0, v1 / 16.0, u1 / 16.0, v0 / 16.0)
+        };
+        // Board: [1,0,7]-[15,10,9], exact per-face windows from the template.
+        let board = ModelCuboid::new([px(1.0), 0.0, px(7.0)], [px(15.0), px(10.0), px(9.0)])
+            .with_face_material_slot(BlockFace::North, "front")
+            .with_face_material_slot(BlockFace::South, "front")
+            .with_face_material_slot(BlockFace::East, "side")
+            .with_face_material_slot(BlockFace::West, "side")
+            .with_face_material_slot(BlockFace::Up, "up")
+            .with_face_material_slot(BlockFace::Down, "down")
+            .with_face_uv(BlockFace::North, uv16(9.0, 8.0, 16.0, 13.0))
+            .with_face_uv(BlockFace::East, uv16(8.0, 8.0, 9.0, 13.0))
+            .with_face_uv(BlockFace::South, uv16(1.0, 8.0, 8.0, 13.0))
+            .with_face_uv(BlockFace::West, uv16(0.0, 8.0, 1.0, 13.0))
+            .with_face_uv(BlockFace::Up, uv16(1.0, 7.0, 8.0, 8.0))
+            .with_face_uv(BlockFace::Down, uv16(1.0, 13.0, 8.0, 14.0));
+        let mut cuboids = vec![board];
+        if attached {
+            // Attached: one zero-thickness crossbar [2,10,8]-[14,16,8], the ∧ chain
+            // folded into a bar. Both faces sample the chain band.
+            let bar = ModelPlane::new(
+                [
+                    [px(2.0), px(10.0), 0.5],
+                    [px(14.0), px(10.0), 0.5],
+                    [px(14.0), 1.0, 0.5],
+                    [px(2.0), 1.0, 0.5],
+                ],
+                [0, 0, 1],
+            )
+            .with_material_slot("chain")
+            .with_uv(uv16(10.0, 0.0, 16.0, 3.0));
+            cuboids.push(hanging_sign_chain_uv(ModelCuboid::new(
+                [px(2.0), px(10.0), px(7.75)],
+                [px(14.0), 1.0, px(8.25)],
+            )));
+            let shape = ModelShape::from_cuboids(cuboids).with_planes([bar]);
+            return rotate_shape_y_degrees(shape, value as f32 * 22.5);
+        }
+        // Hanging: four chains at the board's top corners. The template rotates each
+        // chain element around (8,0,8) by the model's local angle; we emit the same four
+        // narrow quads with the two official chain windows.
+        let long = uv16(11.0, 3.5, 12.5, 6.5);
+        let short = uv16(14.0, 4.0, 15.5, 6.0);
+        for (x, uv) in [(2.96447_f32, short), (10.03553, long)] {
+            cuboids.push(hanging_sign_chain_uv(ModelCuboid::new(
+                [px(x), px(10.0), px(4.46447)],
+                [px(x + 3.0), 1.0, px(4.56447)],
+            )).with_face_uv(BlockFace::North, uv).with_face_uv(BlockFace::South, uv));
+        }
+        let shape = ModelShape::from_cuboids(cuboids);
+        return rotate_shape_y_degrees(shape, value as f32 * 22.5);
     }
 
     // Standing signs have sixteen 22.5 degree orientations. Value 0 faces south and the value

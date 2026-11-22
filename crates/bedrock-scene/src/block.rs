@@ -68,6 +68,10 @@ pub(super) enum NeighborModel {
     /// (the metadata cannot encode a right hinge), so the placement comes from the lower
     /// half below; only the facing direction is read from the upper block itself.
     DoorUpper(CardinalDirection),
+    /// A tripwire's connections are neighbour-driven (JE multipart): the wire only runs
+    /// along the axes that join another wire or a hook. Bedrock stores no per-direction
+    /// state on `trip_wire`, so the four connection booleans come from the neighbours.
+    Tripwire,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +93,9 @@ pub(super) enum ConnectionKind {
     /// encode a right hinge and its `open_bit` is degenerate — so an upper half derives its
     /// placement from the kind stored on the half below it.
     DoorLower { hinge: bool, open: bool },
+    /// A `trip_wire` string; a neighbouring wire connects to it, and a hook anchors it.
+    Tripwire,
+    TripwireHook,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

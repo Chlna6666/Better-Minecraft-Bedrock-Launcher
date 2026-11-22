@@ -639,6 +639,32 @@ impl ObjTextureResolver {
         };
         let lookup_normal = normal_from_block_face(block_face);
 
+        // The 3D map's chest uses the independent 16x16 inventory tiles with the metal
+        // rim/latch baked in. Resolve those before the block-entity skin path (which would
+        // return the 64x64 `entity/chest/normal.png` and read as plain wood when unwrapped).
+        let chest_tile = material_slot.as_deref().and_then(|slot| {
+            let prefix = match lookup_block.as_ref() {
+                "trapped_chest" => "trapped_chest",
+                "ender_chest" => "ender_chest",
+                "chest" => "chest",
+                _ => return None,
+            };
+            match slot {
+                "up" | "down" => Some(format!("{prefix}_top")),
+                "front" => Some(format!("{prefix}_front")),
+                "side" => Some(format!("{prefix}_side")),
+                _ => None,
+            }
+        });
+        if let Some(key) = chest_tile {
+            // 26.60's terrain map omits chest_* keys; bind the file path directly first,
+            // then fall back to the terrain alias in packs that define it.
+            let direct = format!("textures/blocks/{key}");
+            let found = self.texture_path(&direct).or_else(|| self.texture_path(&key));
+            if let Some((pack, source_path)) = found {
+                return Some(pack.resolved_texture(&self.texture_directory_name, source_path));
+            }
+        }
         if let Some(resolved) =
             self.block_entity_texture_for(&lookup_block, material_slot.as_deref())
         {
@@ -2047,6 +2073,21 @@ fn texture_value_keys(normal: [i32; 3]) -> &'static [&'static str] {
     }
 }
 
+/// Frame index of a stained-glass colour in the Bedrock `stained_glass` /
+/// `stained_glass_pane_top` terrain arrays (the legacy data order; silver = light grey).
+#[must_use]
+fn stained_glass_color_frame(color: &str) -> Option<usize> {
+    const ORDER: [&str; 16] = [
+        "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "silver",
+        "cyan", "purple", "blue", "brown", "green", "red", "black",
+    ];
+    let normalized = match color {
+        "light_gray" => "silver",
+        other => other,
+    };
+    ORDER.iter().position(|candidate| *candidate == normalized)
+}
+
 #[must_use]
 /// Terrain material for a model slot whose art lives in a sibling block entry.
 fn shared_slot_texture(block: &str, slot: &str) -> Option<String> {
@@ -2079,6 +2120,20 @@ fn shared_slot_texture(block: &str, slot: &str) -> Option<String> {
             "top" => Some("piston_top".to_owned()),
             "bottom" => Some("piston_bottom".to_owned()),
             "side" => Some("piston_side".to_owned()),
+            _ => None,
+        };
+    }
+    // The stained glass panes have no `blocks.json` entry either. JE binds their parts to
+    // two textures: the wall (`#pane`) = the stained **glass block** texture and the edge
+    // (`#edge`) = the dedicated stained `glass_pane_top`; Bedrock carries both as 16-frame
+    // terrain arrays in the legacy colour order. Without this branch the slot chain landed
+    // on the fully opaque pane-top rim and painted the whole wall with it.
+    if let Some(color) = block.strip_suffix("_stained_glass_pane")
+        && let Some(frame) = stained_glass_color_frame(color)
+    {
+        return match slot {
+            "side" => Some(format!("stained_glass#{frame}")),
+            "east" => Some(format!("stained_glass_pane_top#{frame}")),
             _ => None,
         };
     }
@@ -2165,6 +2220,11 @@ fn shared_slot_texture(block: &str, slot: &str) -> Option<String> {
             _ => None,
         };
     }
+    // The stonecutter's saw blade names the `stonecutter2_saw` sheet, which the block's
+    // face map only exposes through the west/east keys.
+    if block == "stonecutter_block" && slot == "saw" {
+        return Some("stonecutter2_saw".to_owned());
+    }
     // The capture-baked anvil meshes name their faces `flattened_anvil_top` / `_base`. The top
     // art is a four-frame `anvil_top_damaged_x` array indexed by damage, so the pristine alias
     // alone painted every chipped/damaged anvil with the undamaged top.
@@ -2186,9 +2246,28 @@ fn shared_slot_texture(block: &str, slot: &str) -> Option<String> {
         }
         return Some(format!("{plant}"));
     }
-    if slot == "lever_base" && block.ends_with("lever") {
-        // The lever's cobblestone plate; `blocks.json` only exposes it through the east slot.
+    if block.ends_with("lever") && (slot == "lever_base" || slot == "lever_particle") {
+        // The lever's cobblestone plate; `blocks.json` only exposes it through the east slot
+        // (`lever_particle` → cobblestone). The captured mesh names the slot `lever_particle`
+        // directly.
         return Some("lever_particle".to_owned());
+    }
+    // Bedrock chests use independent 16x16 tiles (chest_top/side/front) with the metal rim
+    // and latch baked in — the 64x64 entity skin is only for the in-world block entity model.
+    // `blocks.json` maps chest faces to `chest_inventory_*` terrain keys, but those can fall
+    // through to the entity skin; bind the inventory tiles directly so the 3D map keeps the
+    // correct per-face art.
+    if block == "chest" || block == "trapped_chest" || block.ends_with("_chest") {
+        let suffix = if matches!(block, "ender_chest" | "waxed_ender_chest") { "ender" } else { "" };
+        let prefix = if block == "trapped_chest" { "trapped_chest" }
+            else if suffix == "ender" { "ender_chest" }
+            else { "chest" };
+        return match slot {
+            "up" | "down" => Some(format!("{prefix}_top")),
+            "front" => Some(format!("{prefix}_front")),
+            "side" => Some(format!("{prefix}_side")),
+            _ => None,
+        };
     }
     if block.ends_with("sculk_sensor") {
         // The sensor's art (base faces, tendril sheets, calibrated amethyst cross) has no

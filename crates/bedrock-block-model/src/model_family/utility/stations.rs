@@ -42,23 +42,30 @@ pub(crate) fn anvil_shape(state: &BlockStateQuery) -> ModelShape {
 
 pub(crate) fn stonecutter_shape(state: &BlockStateQuery) -> ModelShape {
     let direction = cardinal_direction(state).unwrap_or(CardinalDirection::North);
-    // Authored facing north; `blocks.json` puts the saw art on the north/south band, so the
-    // blade sheet crosses the cell at z = 0.5 and turns with the block.
-    let shape = ModelShape::from_cuboids([
-        ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.5625, 1.0]),
-        ModelCuboid::new([0.4375, 0.5625, 0.125], [0.5625, 0.9375, 0.875]),
-    ])
-    .with_planes([ModelPlane::new(
+    // Official JE `stonecutter` model: a 9 px base slab and a zero-thickness vertical
+    // saw blade standing in the middle slot (x 1..15, y 9..16, z 8). The blade's south
+    // face samples the saw sheet mirrored. The base faces read the block's own face
+    // map (`stonecutter_block` up/down/north/south/east/west), the blade the
+    // `stonecutter2_saw` sheet.
+    let side_band = uv16(0.0, 7.0, 16.0, 16.0);
+    let base = ModelCuboid::new([0.0, 0.0, 0.0], [1.0, 0.5625, 1.0])
+        .with_face_uv(BlockFace::Up, uv16(0.0, 0.0, 16.0, 16.0))
+        .with_face_uv(BlockFace::Down, uv16(0.0, 0.0, 16.0, 16.0))
+        .with_face_uv(BlockFace::North, side_band)
+        .with_face_uv(BlockFace::South, side_band)
+        .with_face_uv(BlockFace::East, side_band)
+        .with_face_uv(BlockFace::West, side_band);
+    let saw = ModelPlane::new(
         [
-            [0.25, 0.5625, 0.5],
-            [0.75, 0.5625, 0.5],
-            [0.75, 1.0, 0.5],
-            [0.25, 1.0, 0.5],
+            [1.0 / 16.0, 9.0 / 16.0, 0.5],
+            [15.0 / 16.0, 9.0 / 16.0, 0.5],
+            [15.0 / 16.0, 1.0, 0.5],
+            [1.0 / 16.0, 1.0, 0.5],
         ],
         [0, 0, 1],
     )
-    .with_material_slot("saw")]);
-    rotate_shape_cardinal(shape, direction)
+    .with_material_slot("saw");
+    rotate_shape_cardinal(ModelShape::from_cuboids([base]).with_planes([saw]), direction)
 }
 
 pub(crate) fn hopper_shape(state: &BlockStateQuery) -> ModelShape {

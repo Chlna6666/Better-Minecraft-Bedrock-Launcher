@@ -122,6 +122,12 @@ pub(super) fn push_detail_block_faces(
     }
     for plane in &shape.planes {
         push_plane_face(origin, plane, block.color, block.material.clone(), faces);
+        // The reversed copy gives a culled material the plane's back face. Front-only
+        // planes (the glass pane cards) must skip it: on the blended glass passes the
+        // two coplanar quads stack their alpha and turn one vanilla quad nearly opaque.
+        if plane.front_only {
+            continue;
+        }
         push_plane_face(
             origin,
             &Plane {
@@ -134,6 +140,7 @@ pub(super) fn push_detail_block_faces(
                 normal: [-plane.normal[0], -plane.normal[1], -plane.normal[2]],
                 material_slot: plane.material_slot.clone(),
                 uv: plane.uv.map(|[a, b, c, d]| [d, c, b, a]),
+                front_only: plane.front_only,
             },
             block.color,
             block.material.clone(),
@@ -162,36 +169,42 @@ pub(super) fn push_cuboid_faces(
             corners: [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]],
             normal: [0, 1, 0],
             material_slot: cuboid.face_material_slot([0, 1, 0]),
+            front_only: false,
             uv: cuboid.face_uv([0, 1, 0]),
         },
         Plane {
             corners: [[x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0]],
             normal: [0, -1, 0],
             material_slot: cuboid.face_material_slot([0, -1, 0]),
+            front_only: false,
             uv: cuboid.face_uv([0, -1, 0]),
         },
         Plane {
             corners: [[x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0]],
             normal: [1, 0, 0],
             material_slot: cuboid.face_material_slot([1, 0, 0]),
+            front_only: false,
             uv: cuboid.face_uv([1, 0, 0]),
         },
         Plane {
             corners: [[x0, y0, z1], [x0, y0, z0], [x0, y1, z0], [x0, y1, z1]],
             normal: [-1, 0, 0],
             material_slot: cuboid.face_material_slot([-1, 0, 0]),
+            front_only: false,
             uv: cuboid.face_uv([-1, 0, 0]),
         },
         Plane {
             corners: [[x1, y0, z1], [x0, y0, z1], [x0, y1, z1], [x1, y1, z1]],
             normal: [0, 0, 1],
             material_slot: cuboid.face_material_slot([0, 0, 1]),
+            front_only: false,
             uv: cuboid.face_uv([0, 0, 1]),
         },
         Plane {
             corners: [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]],
             normal: [0, 0, -1],
             material_slot: cuboid.face_material_slot([0, 0, -1]),
+            front_only: false,
             uv: cuboid.face_uv([0, 0, -1]),
         },
     ];

@@ -166,6 +166,9 @@ pub(super) fn neighbor_model(state: &BlockState) -> NeighborModel {
                 .clamp(0, 15) as u8,
         },
         ModelFamily::Stairs => NeighborModel::Stairs,
+        // A trip wire runs only along its connected axes; Bedrock stores no direction
+        // states, so the connections come from the neighbouring cells.
+        ModelFamily::Tripwire => NeighborModel::Tripwire,
         // Banners render a fixed official assembly (the standing form reaches 1.83 blocks
         // upward, the wall form dips below the block line) and need no neighbour context.
         _ => NeighborModel::None,
@@ -180,6 +183,7 @@ pub(super) fn connection_kind(state: &BlockState) -> Option<ConnectionKind> {
         ModelFamily::FenceGate => Some(ConnectionKind::FenceGate),
         ModelFamily::Wall => Some(ConnectionKind::Wall),
         ModelFamily::RedstoneWire => Some(ConnectionKind::RedstoneWire),
+        ModelFamily::Tripwire => Some(ConnectionKind::Tripwire),
         ModelFamily::Button | ModelFamily::PressurePlate => Some(ConnectionKind::RedstoneAny),
         ModelFamily::RedstoneDevice => redstone_device_connection_kind(state),
         // The door lower half is the functional half: it stores the hinge and open states
@@ -252,6 +256,10 @@ pub(super) fn redstone_device_connection_kind(state: &BlockState) -> Option<Conn
     // flattened snake_case form; match both.
     if normalized.contains("arm_collision") || normalized.contains("ArmCollision") {
         return Some(ConnectionKind::PistonArm);
+    }
+    // A tripwire hook anchors a wire running into it.
+    if normalized == "tripwire_hook" {
+        return Some(ConnectionKind::TripwireHook);
     }
     Some(ConnectionKind::RedstoneAny)
 }

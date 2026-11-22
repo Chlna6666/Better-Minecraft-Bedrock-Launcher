@@ -79,104 +79,59 @@ pub(crate) fn lever_shape(state: &BlockStateQuery) -> ModelShape {
     shape
 }
 
-/// Vanilla lever: a 6 x 3 x 8 px base plate and a 2 x 10 x 2 px handle leaning off the floor.
-///
-/// Geometry follows the capture (floor lever closed = ref 725, open = 733): the handle is **not**
-/// a rigidly rotated box — Bedrock shears it, so the tip is pushed further sideways than a
-/// 45-degree turn would. The captured cross-section corners (y, z) in pixels are
-/// closed `{(2, 8), (0.72, 9.53), (9.66, 14.43), (8.37, 15.96)}` and open
-/// `{(2, 8), (0.72, 6.47), (9.66, 1.57), (8.37, 0.04)}`; the handle leans south when off and
-/// north when on, off a pivot at the plate's top centre. Every handle face samples the stick
-/// strip `lever[7..9, 6..16]` (the base plate samples cobblestone through the block's own map).
+/// Vanilla lever, transcribed from the game's own captured mesh (BedrockSceneCapture
+/// `1.26.60.5`, floor states ref 725 closed / 733 open). Every corner, normal and UV window
+/// below is the engine's decoded quad — not a JE model port. JE's lever puts the base on the
+/// floor with a rigidly tilted handle; Bedrock shears the handle and binds the base to
+/// `lever_particle` (cobblestone). Crucially, the per-face UV corners differ per quad: the
+/// long handle faces read the stick strip `lever[7..9, 6..16]`, the pivot/tip caps only
+/// `lever[7..9, 6..8]`, and the two side sheets mirror the strip. Sharing one UV quad across
+/// the faces (the previous approach) smeared the art into grey/white stripes.
 fn canonical_lever(open: bool) -> ModelShape {
-    // The plate is cobblestone (`blocks.json` east = lever_particle → cobblestone), sampled
-    // through the capture's own windows: the 6 x 8 top/down patch and the bottom 3 px band on
-    // the sides. The previous map took the band from rows 0..3 and left the plate on the
-    // lever sheet, which is what read as a stretched handle texture.
-    let base = ModelCuboid::new([5.0, 0.0, 4.0].map(px), [11.0, 3.0, 12.0].map(px))
-        .with_face_uv(BlockFace::Up, uv16(5.0, 4.0, 11.0, 12.0))
-        .with_face_uv(BlockFace::Down, uv16(5.0, 4.0, 11.0, 12.0))
-        .with_face_uv(BlockFace::North, uv16(5.0, 13.0, 11.0, 16.0))
-        .with_face_uv(BlockFace::South, uv16(5.0, 13.0, 11.0, 16.0))
-        .with_face_uv(BlockFace::West, uv16(4.0, 13.0, 12.0, 16.0))
-        .with_face_uv(BlockFace::East, uv16(4.0, 13.0, 12.0, 16.0))
-        .with_material_slot("lever_base");
-
-    // Captured cross-section (y, z) in pixels, pivot (2, 8) first, then pivot->tip edges.
-    let section: [[f32; 2]; 4] = if open {
+    let base = "lever_particle";
+    let stick = "lever";
+    // Each row: (slot, face normal, 4 corners in px, 4 uv corners in 0..1). UVs are the
+    // atlas-decoded local coordinates from the capture (v is bottom-up).
+    let q = |slot: &str, n: [i32; 3], c: [[f32; 3]; 4], uv: [[f32; 2]; 4]| {
+        ModelPlane::new(
+            c.map(|p| p.map(px)),
+            n,
+        )
+        .with_material_slot(slot)
+        .with_uv(uv)
+    };
+    // The capture's own four uv corners per quad (atlas-decoded local coordinates).
+    let uv = |a: [f32;2], b: [f32;2], c: [f32;2], d: [f32;2]| [a, b, c, d];
+    // Base plate: x 5..11 px, y 0..3, z 4..12. Exact captured uv corners per quad.
+    let base_planes = [
+        q(base, [-1, 0, 0], [[5.,0.,4.],[5.,0.,12.],[5.,3.,12.],[5.,3.,4.]], uv([0.25,1.],[0.75,1.],[0.75,0.81],[0.25,0.81])),
+        q(base, [0, 0,-1], [[11.,0.,4.],[5.,0.,4.],[5.,3.,4.],[11.,3.,4.]], uv([0.31,1.],[0.69,1.],[0.69,0.81],[0.31,0.81])),
+        q(base, [0,-1, 0], [[5.,0.,12.],[5.,0.,4.],[11.,0.,4.],[11.,0.,12.]], uv([0.31,0.25],[0.31,0.75],[0.69,0.75],[0.69,0.25])),
+        q(base, [0, 0, 1], [[5.,3.,12.],[5.,0.,12.],[11.,0.,12.],[11.,3.,12.]], uv([0.31,0.81],[0.31,1.],[0.69,1.],[0.69,0.81])),
+        q(base, [0, 1, 0], [[5.,3.,4.],[5.,3.,12.],[11.,3.,12.],[11.,3.,4.]], uv([0.31,0.25],[0.31,0.75],[0.69,0.75],[0.69,0.25])),
+        q(base, [1, 0, 0], [[11.,0.,12.],[11.,0.,4.],[11.,3.,4.],[11.,3.,12.]], uv([0.25,1.],[0.75,1.],[0.75,0.81],[0.25,0.81])),
+    ];
+    // Sheared handle: x 7..9 px; pivot (y2,z8) to tip. Closed leans +z, open leans -z.
+    let handle_planes = if open {
         [
-            [2.0, 8.0],
-            [0.7152, 6.4688],
-            [9.6616, 1.5728],
-            [8.3744, 0.04],
+            q(stick, [-1, 0, 0], [[7.,0.71,6.47],[7.,2.,8.],[7.,9.66,1.57],[7.,8.37,0.04]], uv([0.44,1.],[0.56,1.],[0.56,0.38],[0.44,0.38])),
+            q(stick, [0,-1,-1], [[9.,0.71,6.47],[7.,0.71,6.47],[7.,8.37,0.04],[9.,8.37,0.04]], uv([0.44,1.],[0.56,1.],[0.56,0.38],[0.44,0.38])),
+            q(stick, [0,-1, 1], [[7.,0.71,6.47],[9.,0.71,6.47],[9.,2.,8.],[7.,2.,8.]], uv([0.44,0.5],[0.56,0.5],[0.56,0.38],[0.44,0.38])),
+            q(stick, [0, 1, 1], [[7.,2.,8.],[9.,2.,8.],[9.,9.66,1.57],[7.,9.66,1.57]], uv([0.44,1.],[0.56,1.],[0.56,0.38],[0.44,0.38])),
+            q(stick, [0, 1,-1], [[9.,8.37,0.04],[7.,8.37,0.04],[7.,9.66,1.57],[9.,9.66,1.57]], uv([0.56,0.38],[0.44,0.38],[0.44,0.5],[0.56,0.5])),
+            q(stick, [1, 0, 0], [[9.,2.,8.],[9.,0.71,6.47],[9.,8.37,0.04],[9.,9.66,1.57]], uv([0.44,1.],[0.56,1.],[0.56,0.38],[0.44,0.38])),
         ]
     } else {
         [
-            [2.0, 8.0],
-            [0.7152, 9.5312],
-            [9.6616, 14.4272],
-            [8.3744, 15.96],
+            q(stick, [0,-1,-1], [[9.,0.71,9.53],[7.,0.71,9.53],[7.,2.,8.],[9.,2.,8.]], uv([0.56,0.38],[0.44,0.38],[0.44,0.5],[0.56,0.5])),
+            q(stick, [-1,0, 0], [[7.,2.,8.],[7.,0.71,9.53],[7.,8.37,15.96],[7.,9.66,14.43]], uv([0.44,1.],[0.56,1.],[0.56,0.38],[0.44,0.38])),
+            q(stick, [0,-1, 1], [[7.,0.71,9.53],[9.,0.71,9.53],[9.,8.37,15.96],[7.,8.37,15.96]], uv([0.44,1.],[0.56,1.],[0.56,0.38],[0.44,0.38])),
+            q(stick, [0, 1,-1], [[9.,2.,8.],[7.,2.,8.],[7.,9.66,14.43],[9.,9.66,14.43]], uv([0.44,1.],[0.56,1.],[0.56,0.38],[0.44,0.38])),
+            q(stick, [0, 1, 1], [[7.,8.37,15.96],[9.,8.37,15.96],[9.,9.66,14.43],[7.,9.66,14.43]], uv([0.44,0.5],[0.56,0.5],[0.56,0.38],[0.44,0.38])),
+            q(stick, [1, 0, 0], [[9.,0.71,9.53],[9.,2.,8.],[9.,9.66,14.43],[9.,8.37,15.96]], uv([0.44,1.],[0.56,1.],[0.56,0.38],[0.44,0.38])),
         ]
     };
-    // The capture binds the handle's long faces to the stick column's lower 10 px and its two
-    // END faces to just the top 2 px (uv 7..9, 6..8); stretching the full column onto the end
-    // caps smeared the stick art across them.
-    let section_uv = uv16(7.0, 6.0, 9.0, 16.0);
-    let end_uv = uv16(7.0, 6.0, 9.0, 8.0);
-    let (x0, x1) = (px(7.0), px(9.0));
-    let at = |index: usize, x: f32| {
-        [x, section[index][0] / 16.0, section[index][1] / 16.0]
-    };
-    let mut planes = Vec::with_capacity(6);
-    // The two side sheets (x = 7 px and x = 9 px).
-    for (x, normal) in [(x0, [-1_i32, 0, 0]), (x1, [1, 0, 0])] {
-        planes.push(
-            ModelPlane::new(
-                [at(0, x), at(1, x), at(2, x), at(3, x)],
-                normal,
-            )
-            .with_uv(section_uv),
-        );
-    }
-    // The four strips connecting the sheets along the handle's length. Edges (0,1) and (2,3)
-    // are the pivot and tip ends (2 px tall); the other two run the handle's full length.
-    for (a, b) in [(0usize, 1usize), (1, 2), (2, 3), (3, 0)] {
-        let normal = strip_normal(section[a], section[b]);
-        let uv = if matches!((a, b), (0, 1) | (2, 3)) {
-            end_uv
-        } else {
-            section_uv
-        };
-        planes.push(
-            ModelPlane::new([at(a, x0), at(a, x1), at(b, x1), at(b, x0)], normal).with_uv(uv),
-        );
-    }
-    ModelShape::from_cuboids([base]).with_planes(planes)
-}
-
-/// Outward normal of one handle strip, from the direction its section edge runs in (y, z).
-fn strip_normal(a: [f32; 2], b: [f32; 2]) -> [i32; 3] {
-    let edge = [b[0] - a[0], b[1] - a[1]];
-    // The renderer's face order satisfies `cross(c1-c0, c3-c0) == -normal`; for a strip
-    // [a@7px, a@9px, b@9px, b@7px] that resolves to (0, dz, -dy), pointing away from the
-    // handle's lean.
-    [
-        0,
-        if edge[1] > 0.0 {
-            1
-        } else if edge[1] < 0.0 {
-            -1
-        } else {
-            0
-        },
-        if edge[0] > 0.0 {
-            -1
-        } else if edge[0] < 0.0 {
-            1
-        } else {
-            0
-        },
-    ]
+    ModelShape::from_cuboids([]).with_planes(base_planes.into_iter().chain(handle_planes).collect::<Vec<_>>())
 }
 
 /// Turns the floor / north-south authored lever onto its mount.
@@ -481,17 +436,24 @@ mod tests {
     #[test]
     fn lever_handle_matches_the_captured_cross_section() {
         let closed = lever_shape(&BlockStateQuery::new("minecraft:lever"));
-        assert_eq!(closed.planes.len(), 6);
-        let ys: Vec<f32> = closed
-            .planes
-            .iter()
-            .flat_map(|plane| plane.corners.iter().map(|corner| corner[1]))
-            .collect();
-        let zs: Vec<f32> = closed
-            .planes
-            .iter()
-            .flat_map(|plane| plane.corners.iter().map(|corner| corner[2]))
-            .collect();
+        // 12 planes = 6 base faces + 6 handle faces (all from the captured mesh).
+        assert_eq!(closed.planes.len(), 12);
+        let handle = |shape: &ModelShape| {
+            let ys: Vec<f32> = shape
+                .planes
+                .iter()
+                .filter(|p| p.material_slot.as_deref() == Some("lever"))
+                .flat_map(|plane| plane.corners.iter().map(|corner| corner[1]))
+                .collect();
+            let zs: Vec<f32> = shape
+                .planes
+                .iter()
+                .filter(|p| p.material_slot.as_deref() == Some("lever"))
+                .flat_map(|plane| plane.corners.iter().map(|corner| corner[2]))
+                .collect();
+            (ys, zs)
+        };
+        let (ys, zs) = handle(&closed);
         let (y_min, y_max) = (
             ys.iter().cloned().fold(f32::INFINITY, f32::min),
             ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
@@ -510,11 +472,8 @@ mod tests {
         let open = lever_shape(
             &BlockStateQuery::new("minecraft:lever").with_state("open_bit", true),
         );
-        let open_z_max = open
-            .planes
-            .iter()
-            .flat_map(|plane| plane.corners.iter().map(|corner| corner[2]))
-            .fold(f32::NEG_INFINITY, f32::max);
+        let (_, open_zs) = handle(&open);
+        let open_z_max = open_zs.into_iter().fold(f32::NEG_INFINITY, f32::max);
         assert!(
             (open_z_max - 8.0 / 16.0).abs() < 0.001,
             "open handle should stop at the pivot plane, got {open_z_max}"

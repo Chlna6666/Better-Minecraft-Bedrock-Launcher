@@ -10,7 +10,7 @@ use std::borrow::Cow;
 
 use crate::state::{BlockStateQuery, BlockStateValue};
 
-pub use shape::{ModelCuboid, ModelPlane, ModelShape};
+pub use shape::{ModelCuboid, ModelPlane, ModelPlaneSidedness, ModelShape};
 
 /// Bed block geometry from the active resource pack.
 pub mod bed {
@@ -2381,9 +2381,10 @@ mod tests {
         let connected_shape =
             model_shape(&connected).unwrap_or_else(|| panic!("missing connected pane shape"));
 
-        // Vanilla multipart: post + one arm per connected side + one noside quad per open side.
-        assert_eq!(connected_shape.cuboids.len(), 2);
-        assert_eq!(connected_shape.planes.len(), 3);
+        // Vanilla multipart: the post is its two caps (planes); one arm cuboid per
+        // connected side + one noside quad per open side join them.
+        assert_eq!(connected_shape.cuboids.len(), 1);
+        assert_eq!(connected_shape.planes.len(), 5);
         assert_eq!(
             connected_shape.cuboids[0]
                 .face_material_slots
@@ -2391,15 +2392,24 @@ mod tests {
                 .map(String::as_str),
             Some("east")
         );
-        // Exactly one slab spans the full cell; the rest stay inside the 2 px post column.
-        let spanning = connected_shape
-            .cuboids
-            .iter()
-            .filter(|cuboid| {
-                cuboid.max[0] - cuboid.min[0] > 0.25 || cuboid.max[2] - cuboid.min[2] > 0.25
+        // The post caps stay inside the 2 px column; the connected arm is the only part
+        // that spans the full cell.
+        assert!(connected_shape.planes.iter().all(|plane| {
+            plane.corners.iter().all(|corner| {
+                (0.4375..=0.5625).contains(&corner[0]) && (0.4375..=0.5625).contains(&corner[2])
             })
-            .count();
-        assert_eq!(spanning, 1, "only the connected arm leaves the post");
+        }));
+        assert_eq!(
+            connected_shape
+                .cuboids
+                .iter()
+                .filter(|cuboid| {
+                    cuboid.max[0] - cuboid.min[0] > 0.25 || cuboid.max[2] - cuboid.min[2] > 0.25
+                })
+                .count(),
+            1,
+            "only the connected arm leaves the post"
+        );
 
         let string_connected = BlockStateQuery::new("minecraft:glass_pane")
             .with_state("east_connection_type", "short");
@@ -2423,12 +2433,14 @@ mod tests {
         let isolated_shape =
             model_shape(&isolated).unwrap_or_else(|| panic!("missing isolated pane shape"));
 
-        // An isolated pane is the post plus four noside quads, none spans the full cell.
-        assert_eq!(isolated_shape.cuboids.len(), 1, "only the post is a box");
-        assert_eq!(isolated_shape.planes.len(), 4, "one open card per direction");
+        // An isolated pane is the post caps plus four noside quads, none leaves the column.
+        assert_eq!(isolated_shape.cuboids.len(), 0, "the post is caps only");
+        assert_eq!(isolated_shape.planes.len(), 6, "two caps + one card per direction");
         assert!(
-            isolated_shape.cuboids.iter().all(|cuboid| {
-                cuboid.max[0] - cuboid.min[0] <= 0.25 && cuboid.max[2] - cuboid.min[2] <= 0.25
+            isolated_shape.planes.iter().all(|plane| {
+                plane.corners.iter().all(|corner| {
+                    (0.4375..=0.5625).contains(&corner[0]) && (0.4375..=0.5625).contains(&corner[2])
+                })
             }),
             "an isolated pane stays a 2 px card"
         );
@@ -3477,8 +3489,8 @@ mod tests {
         let chest = BlockStateQuery::new("minecraft:chest")
             .with_state("minecraft:cardinal_direction", "north");
         let chest_shape = model_shape(&chest).unwrap_or_else(|| panic!("missing chest shape"));
-        // Body, overlapping lid and the 2x4x1 latch that the 64x64 chest sheet carries at (0,0).
-        assert_eq!(chest_shape.cuboids.len(), 3);
+        // Bedrock chest: body + overlapping lid, latch baked into the 16x16 front tile.
+        assert_eq!(chest_shape.cuboids.len(), 2);
         assert!(
             chest_shape
                 .cuboids
@@ -3490,7 +3502,7 @@ mod tests {
                 .cuboids
                 .iter()
                 .all(|cuboid| cuboid.face_uvs.len() == 6),
-            "chest faces must unwrap the 64x64 entity sheet"
+            "chest faces must sample their whole 16x16 tile"
         );
 
         let shulker = BlockStateQuery::new("minecraft:blue_shulker_box");
@@ -3521,11 +3533,19 @@ mod tests {
             .with_state("minecraft:cardinal_direction", "south");
         let stonecutter_shape =
             model_shape(&stonecutter).unwrap_or_else(|| panic!("missing stonecutter shape"));
-        assert_eq!(stonecutter_shape.cuboids.len(), 2);
+        // The official model: the 9 px base slab plus the zero-thickness vertical saw blade.
+        assert_eq!(stonecutter_shape.cuboids.len(), 1);
         assert_eq!(stonecutter_shape.planes.len(), 1);
         assert_eq!(
             stonecutter_shape.planes[0].material_slot.as_deref(),
             Some("saw")
+        );
+        assert!(
+            stonecutter_shape.planes[0]
+                .corners
+                .iter()
+                .all(|c| (c[0] - 1.0 / 16.0).abs() < 0.001 || (c[0] - 15.0 / 16.0).abs() < 0.001),
+            "the blade spans x 1..15 px"
         );
 
         let hopper = BlockStateQuery::new("minecraft:hopper").with_state("facing_direction", 5);

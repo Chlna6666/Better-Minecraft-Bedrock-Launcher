@@ -27,9 +27,11 @@ pub(super) fn family_for(name: &str) -> Option<ModelFamily> {
 /// plane. A zero-thickness box would be dropped by the face emitter and the card would vanish.
 pub(crate) fn shape(name: &str, state: &BlockStateQuery) -> ModelShape {
     let kind = PaneKind::from_block_name(name);
-    let mut cuboids = Vec::with_capacity(5);
-    let mut planes = Vec::with_capacity(4);
-    cuboids.push(pane_post_cuboid(kind));
+    let mut cuboids = Vec::with_capacity(4);
+    let mut planes = Vec::with_capacity(6);
+    // The post is its two caps only: a cuboid would re-emit the four side strips, which
+    // are invisible in vanilla and read as vertical bars inside every connected run.
+    planes.extend(pane_post_caps(kind));
     for direction in CardinalDirection::ALL {
         if connected(state, direction) {
             cuboids.push(pane_arm_cuboid(direction, kind));
@@ -69,18 +71,37 @@ impl PaneKind {
     }
 }
 
-/// The 2 px post that every pane has at its centre.
-fn pane_post_cuboid(kind: PaneKind) -> ModelCuboid {
-    // Official `template_glass_pane_post`: the post only carries its top/bottom
-    // caps (uv [7,7,9,9] of the edge sheet) — the four side faces are NOT drawn
-    // (the per-direction visuals come from the connection arms and the noside
-    // cards). The previous capture-derived side faces were redundant coplanar
-    // duplicates of the noside cards.
-    ModelCuboid::new([0.4375, 0.0, 0.4375], [0.5625, 1.0, 0.5625])
-        .with_face_uv(BlockFace::Up, uv16(7.0, 7.0, 9.0, 9.0))
-        .with_face_uv(BlockFace::Down, uv16(7.0, 7.0, 9.0, 9.0))
-        .with_face_material_slot(BlockFace::Up, kind.edge_slot())
-        .with_face_material_slot(BlockFace::Down, kind.edge_slot())
+/// The 2 px post that every pane has at its centre: its two caps only.
+///
+/// Official `template_glass_pane_post` draws just the top/bottom caps (uv [7,7,9,9] of
+/// the edge sheet) — the four side strips do not exist, and emitting them (which a
+/// cuboid does for all six faces) paints a vertical bar into every connected run.
+fn pane_post_caps(kind: PaneKind) -> [ModelPlane; 2] {
+    let cap_uv = uv16(7.0, 7.0, 9.0, 9.0);
+    let (x0, x1, z0, z1) = (0.4375, 0.5625, 0.4375, 0.5625);
+    let up = ModelPlane::new(
+        [
+            [x0, 1.0, z0],
+            [x1, 1.0, z0],
+            [x1, 1.0, z1],
+            [x0, 1.0, z1],
+        ],
+        [0, 1, 0],
+    )
+    .with_material_slot(kind.edge_slot())
+    .with_uv(cap_uv);
+    let down = ModelPlane::new(
+        [
+            [x0, 0.0, z1],
+            [x1, 0.0, z1],
+            [x1, 0.0, z0],
+            [x0, 0.0, z0],
+        ],
+        [0, -1, 0],
+    )
+    .with_material_slot(kind.edge_slot())
+    .with_uv(cap_uv);
+    [up, down]
 }
 
 /// The `noside` card: one quad on the post's outward face.

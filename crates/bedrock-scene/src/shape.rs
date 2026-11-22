@@ -110,6 +110,10 @@ pub(super) struct Plane {
     pub(super) normal: [i32; 3],
     pub(super) material_slot: Option<MaterialSlot>,
     pub(super) uv: Option<[[f32; 2]; 4]>,
+    /// Front-only planes (the glass pane cards) must not receive the reversed back
+    /// copy: on the blended glass passes the two coplanar quads stack their alpha and
+    /// turn a single vanilla quad nearly opaque.
+    pub(super) front_only: bool,
 }
 
 pub(super) fn detail_shape_from_model_ref(shape: &ModelShape) -> DetailShape {
@@ -176,5 +180,6 @@ pub(super) fn plane_from_model(plane: ModelPlane) -> Plane {
             .material_slot
             .and_then(|slot| material_slot_from_value(&slot)),
         uv: plane.uv,
+        front_only: matches!(plane.sidedness, ModelPlaneSidedness::FrontOnly),
     }
 }

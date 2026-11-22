@@ -32,7 +32,7 @@ pub use item_icons::ItemEntry;
 pub use material::{
     BlockComponents, BlockFace, BlockTransformation, MaterialInstance, TextureReference, TextureSet,
 };
-pub use model_family::{ModelCuboid, ModelFamily, ModelPlane, ModelShape};
+pub use model_family::{ModelCuboid, ModelFamily, ModelPlane, ModelPlaneSidedness, ModelShape};
 pub use neighbor::{
     DerivedModelVariant, HorizontalDirection, HorizontalMask, NeighborBlockDescriptor,
     NeighborModelKind, RedstoneConnection, StairShape, WallConnection,
@@ -176,9 +176,18 @@ mod native_fallback_tests {
             "minecraft:copper_golem_statue",
         ];
         for name in SAMPLES {
-            let state = BlockStateQuery::new(*name)
+            let mut state = BlockStateQuery::new(*name)
                 .with_state("facing_direction", 3)
                 .with_state("minecraft:cardinal_direction", "south");
+            // A trip wire is empty without neighbours; give it the four connections
+            // so the family is exercised as a non-empty shape.
+            if *name == "minecraft:trip_wire" {
+                state = state
+                    .with_state("north", true)
+                    .with_state("south", true)
+                    .with_state("east", true)
+                    .with_state("west", true);
+            }
             let Some(shape) = model_family::resolve_shape(&state) else {
                 panic!("{name}: no procedural shape");
             };
