@@ -69,17 +69,28 @@ function saveBatch(kind, serial, entries, stats) {
   const structure = world.structureManager.createEmpty(
     id, { x: EDGE, y: 1, z: EDGE }, StructureSaveMode.Memory
   );
+  let placed = 0;
   for (let index = 0; index < entries.length; index++) {
-    structure.setBlockPermutation(
-      { x: index % EDGE, y: 0, z: Math.floor(index / EDGE) },
-      entries[index]
-    );
+    try {
+      structure.setBlockPermutation(
+        { x: index % EDGE, y: 0, z: Math.floor(index / EDGE) },
+        entries[index]
+      );
+      placed++;
+    } catch (error) {
+      // Script API resolution is more permissive than Structure serialization.
+      // Keep the actual saved palette as the authority, not accepted aliases.
+      stats.structureRejected++;
+      if (stats.structureRejected <= 8) {
+        emit("SKIP", { kind, block: entries[index].type.id, error: String(error) });
+      }
+    }
   }
   // Persist without placing blocks into terrain (which recalculates neighbours).
   structure.saveToWorld();
   stats.structures++;
-  stats.placed += entries.length;
-  emit("BATCH", { id, kind, placed: entries.length });
+  stats.placed += placed;
+  emit("BATCH", { id, kind, placed, rejected: entries.length - placed });
 }
 
 function* putStructureVoid() {
@@ -108,7 +119,7 @@ function* collect() {
   const stats = {
     blocks: ids.length, attempted: 0, rejected: 0,
     structures: 0, placed: 0, permutationStructures: 0,
-    defaultStructures: 0
+    defaultStructures: 0, structureRejected: 0
   };
   emit("BEGIN", { blocks: ids.length });
   let serial = 0;
