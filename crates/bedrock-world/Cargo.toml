@@ -59,6 +59,11 @@ xxhash-rust = { version = "0.8.16", features = ["xxh3"] }
 [dev-dependencies]
 criterion = "0.5"
 
+[[bin]]
+name = "bedrock-block-catalog"
+path = "src/bin/bedrock_block_catalog.rs"
+required-features = ["bedrock-leveldb"]
+
 [[bench]]
 name = "world_parse"
 harness = false

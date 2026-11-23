@@ -1,0 +1,84 @@
+name: Bedrock block catalog (Linux BDS)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "31 6 * * 1"
+  push:
+    paths:
+      - '.github/workflows/bedrock-block-catalog.yml'
+      - 'scripts/bedrock-block-catalog/**'
+      - 'crates/bedrock-world/src/bin/bedrock_block_catalog.rs'
+      - 'crates/bedrock-world/Cargo.toml'
+      - 'crates/bedrock-world/src/block/**'
+      - 'crates/bedrock-nbt/**'
+      - 'crates/bedrock-leveldb/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bedrock-block-catalog-master
+  cancel-in-progress: false
+
+jobs:
+  extract:
+    name: Official BDS -> NBT -> deduplicated binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: false
+          key: bedrock-block-catalog
+      - name: Install BDS runtime dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcurl4 unzip
+      - name: Run official latest Linux BDS in a disposable world
+        run: |
+          python3 scripts/bedrock-block-catalog/run_bds.py \
+            --workdir "${{ runner.temp }}/bmcbl-bds" \
+            --metadata "${{ runner.temp }}/bmcbl-capture.json" \
+            --log "${{ runner.temp }}/bmcbl-bds.log" \
+            --timeout 900
+      - name: Compile deduplicated versioned block catalog
+        run: |
+          cargo run --locked --release -p bedrock-world --bin bedrock-block-catalog -- \
+            compile --world "${{ runner.temp }}/bmcbl-bds/worlds/bmcbl_catalog" \
+            --metadata "${{ runner.temp }}/bmcbl-capture.json" \
+            --log "${{ runner.temp }}/bmcbl-bds.log" \
+            --out crates/bedrock-world/data/block-catalog
+      - name: Validate compiler unit tests
+        run: cargo test --locked -p bedrock-world --bin bedrock-block-catalog
+      - name: Upload reproducible catalog assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: bedrock-block-catalog
+          path: crates/bedrock-world/data/block-catalog/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload BDS diagnostic log (failures included)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bedrock-block-catalog-diagnostics
+          path: |
+            ${{ runner.temp }}/bmcbl-bds.log
+            ${{ runner.temp }}/bmcbl-capture.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Commit only validated data to master
+        if: github.ref == 'refs/heads/master'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- crates/bedrock-world/data/block-catalog/
+          if git diff --cached --quiet; then
+            echo "The catalog is already current."
+            exit 0
+          fi
+          git commit -m 'data(bedrock-world): refresh BDS block catalogs'
+          git push origin HEAD:master

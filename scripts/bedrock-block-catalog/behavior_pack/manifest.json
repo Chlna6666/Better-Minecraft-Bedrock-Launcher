@@ -1,0 +1,37 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "BMCBL Block Catalog Exporter",
+    "description": "Generates official Bedrock block-state palettes for offline versioned catalog generation.",
+    "uuid": "eba1036d-209a-4e49-af43-1510862d8ad1",
+    "version": [
+      1,
+      0,
+      0
+    ],
+    "min_engine_version": [
+      1,
+      26,
+      50
+    ]
+  },
+  "modules": [
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "7b2c6aed-ef81-434b-a611-d4c0d4f7abf2",
+      "version": [
+        1,
+        0,
+        0
+      ],
+      "entry": "scripts/main.js"
+    }
+  ],
+  "dependencies": [
+    {
+      "module_name": "@minecraft/server",
+      "version": "2.10.0"
+    }
+  ]
+}
