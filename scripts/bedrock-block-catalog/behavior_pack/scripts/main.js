@@ -103,11 +103,14 @@ function* putStructureVoid() {
     emit("WARNING", { operation: "tickingarea", message: String(error) });
   }
   let block;
-  for (let i = 0; i < 200; i++) {
+  // A single system.runJob yield does not necessarily mean one game tick.
+  // Wait in game-time (up to 60 seconds), not a small number of scheduler yields.
+  const deadline = system.currentTick + 1200;
+  while (system.currentTick < deadline) {
     try {
       block = dimension.getBlock(VOID_POSITION);
       if (block) break;
-    } catch { /* wait until loaded */ }
+    } catch { /* the chunk is not ready yet */ }
     yield;
   }
   if (!block) throw new Error("Structure void chunk could not be loaded");
