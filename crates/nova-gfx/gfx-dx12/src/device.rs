@@ -8928,10 +8928,10 @@ mod platform {
     use super::*;
     use gfx_core::{
         AdapterInfo, Backend, BackendKind, BindGroupDescriptor, BindGroupId,
-        BindGroupLayoutDescriptor, BindGroupLayoutId, BufferDescriptor, BufferId, ClearColor,
-        CommandDevice, CommandEncoderDescriptor, CommandEncoderId, DeviceDescriptor,
-        DiagnosticsDevice, DrawCommand, DrawDescriptor, LoadOp, PipelineDevice,
-        PipelineLayoutDescriptor, PipelineLayoutId, PresentationDevice, RenderPassDescriptor,
+        BindGroupLayoutDescriptor, BindGroupLayoutId, BufferDescriptor, BufferId, CommandDevice,
+        CommandEncoderDescriptor, CommandEncoderId, DeviceDescriptor, DiagnosticsDevice,
+        DrawDescriptor, PipelineDevice, PipelineLayoutDescriptor, PipelineLayoutId,
+        PresentFrameDescriptor, PresentationDevice, RenderPassDescriptor,
         RenderPassId, RenderPipelineDescriptor, RenderPipelineId, ResourceDevice, ResourceStats,
         SamplerDescriptor, SamplerId, ShaderModuleDescriptor, ShaderModuleId, SubmissionDevice,
         SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId,
@@ -8974,7 +8974,7 @@ mod platform {
         const BACKEND_KIND: BackendKind = BackendKind::Dx12;
 
         fn adapter_name(&self) -> &str {
-            &self.adapter_name
+            "Direct3D 12 (unavailable on this platform)"
         }
     }
 
@@ -9007,8 +9007,8 @@ mod platform {
     }
 
     impl ResourceDevice for Dx12Device {
-        fn copy_texture_batch(&mut self, copies: &[gfx_core::TextureCopy]) -> Result<()> {
-            self.copy_texture_regions(copies)
+        fn copy_texture_batch(&mut self, _copies: &[gfx_core::TextureCopy]) -> Result<()> {
+            unavailable()
         }
 
         fn create_buffer(&mut self, _desc: &BufferDescriptor) -> Result<BufferId> {
