@@ -32,6 +32,9 @@ where
     pub(super) batch: StorageBatch,
     pub(super) read_only: bool,
     pub(super) actor_ownership: Option<ActorOwnershipIndex>,
+    /// When set, actor writes are checked against this import's own UID set
+    /// instead of the whole database's `digp` index.
+    pub(super) actor_import: Option<BTreeMap<ActorUid, ChunkPos>>,
     pub(super) preconditions: Vec<StoragePrecondition>,
     pub(super) chunk_preconditions: Vec<ChunkRecordsPrecondition>,
     pub(super) mutation_lock: Arc<Mutex<()>>,
@@ -384,7 +387,23 @@ where
     /// Returns validation errors for malformed actor NBT or digest data.
     pub fn put_actor(&mut self, pos: ChunkPos, uid: ActorUid, value: Bytes) -> Result<()> {
         parse_entities_from_value(&value, &mut ScanReport::default());
-        if self
+        if let Some(imported) = self.actor_import.as_mut() {
+            // Bulk import into a world this process created: every actor in the
+            // world came from this import, so the global index would be a scan
+            // of data we are writing ourselves. Check uniqueness against the
+            // import's own map instead.
+            match imported.get(&uid) {
+                Some(owner) if *owner != pos => {
+                    return Err(BedrockWorldError::Validation(format!(
+                        "actor storage id {uid:?} is already owned by chunk {owner:?}"
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    imported.insert(uid, pos);
+                }
+            }
+        } else if self
             .actor_ownership()?
             .chunks(uid)
             .is_some_and(|chunks| chunks.iter().any(|owner| *owner != pos))

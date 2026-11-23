@@ -325,10 +325,28 @@ where
             batch: StorageBatch::new(),
             read_only: self.options.read_only,
             actor_ownership: None,
+            actor_import: None,
             preconditions: Vec::new(),
             chunk_preconditions: Vec::new(),
             mutation_lock: mutation_lock(&self.path),
         }
+    }
+
+    /// Opens a transaction for a bulk import into a world this process created.
+    ///
+    /// [`Self::transaction`] resolves actor ownership by scanning every `digp`
+    /// record in the database the first time an actor is staged. For an import
+    /// into an empty world that scan reads data the import is still writing, so
+    /// a world with many entities paid it once per commit batch - a cost that
+    /// grew with the world being built. This variant validates uniqueness
+    /// against the import's own actor map instead.
+    ///
+    /// Use it only when the target world starts empty (a fresh conversion
+    /// output); a general edit must keep the global check.
+    pub fn import_transaction(&self) -> WorldTransaction<'_, S> {
+        let mut transaction = self.transaction();
+        transaction.actor_import = Some(BTreeMap::new());
+        transaction
     }
 
     pub(super) fn ensure_writable(&self) -> Result<()> {
