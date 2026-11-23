@@ -62,6 +62,72 @@ impl ChunkRecordQuery {
     }
 }
 
+/// Which optional chunk records a snapshot should fetch.
+///
+/// The always-present records (version, biome model, subchunks) are not
+/// selectable: a chunk without them cannot be converted at all. The optional
+/// categories are the ones a converter can be told to skip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkSnapshotSelection {
+    /// Legacy inline `Entity` record.
+    pub entities: bool,
+    /// `BlockEntity` record.
+    pub block_entities: bool,
+    /// `PendingTicks` record.
+    pub pending_ticks: bool,
+    /// `HardcodedSpawners` record.
+    pub hardcoded_spawn_areas: bool,
+}
+
+impl ChunkSnapshotSelection {
+    /// Everything on.
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            entities: true,
+            block_entities: true,
+            pending_ticks: true,
+            hardcoded_spawn_areas: true,
+        }
+    }
+
+    /// The record tags to fetch for this selection, in a fixed order.
+    #[must_use]
+    pub fn tags(self) -> Vec<crate::chunk::ChunkRecordTag> {
+        use crate::chunk::ChunkRecordTag;
+        let mut tags = vec![
+            ChunkRecordTag::Version,
+            ChunkRecordTag::VersionOld,
+            ChunkRecordTag::Data3D,
+            ChunkRecordTag::Data2D,
+            ChunkRecordTag::Data2DLegacy,
+            ChunkRecordTag::LegacyTerrain,
+            ChunkRecordTag::FinalizedState,
+        ];
+        if self.block_entities {
+            tags.push(ChunkRecordTag::BlockEntity);
+        }
+        if self.entities {
+            tags.push(ChunkRecordTag::Entity);
+        }
+        if self.pending_ticks {
+            tags.push(ChunkRecordTag::PendingTicks);
+        }
+        tags.push(ChunkRecordTag::BlockExtraData);
+        tags.push(ChunkRecordTag::BiomeState);
+        if self.hardcoded_spawn_areas {
+            tags.push(ChunkRecordTag::HardcodedSpawners);
+        }
+        tags
+    }
+}
+
+impl Default for ChunkSnapshotSelection {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
 /// Parsed records for one chunk returned by a batched record query.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChunkRecordQueryResult {
@@ -1739,6 +1805,71 @@ const fn temper(mut value: u32) -> u32 {
     value ^= (value << 15) & 0xefc6_0000;
     value ^= value >> 18;
     value
+}
+
+#[cfg(test)]
+mod snapshot_selection_tests {
+    use super::ChunkSnapshotSelection;
+    use crate::chunk::ChunkRecordTag;
+
+    #[test]
+    fn all_selection_keeps_every_optional_tag() {
+        let tags = ChunkSnapshotSelection::all().tags();
+        assert!(tags.contains(&ChunkRecordTag::BlockEntity));
+        assert!(tags.contains(&ChunkRecordTag::Entity));
+        assert!(tags.contains(&ChunkRecordTag::PendingTicks));
+        assert!(tags.contains(&ChunkRecordTag::HardcodedSpawners));
+    }
+
+    #[test]
+    fn disabled_categories_drop_their_tags() {
+        let tags = ChunkSnapshotSelection {
+            entities: false,
+            block_entities: false,
+            pending_ticks: false,
+            hardcoded_spawn_areas: false,
+        }
+        .tags();
+        assert!(!tags.contains(&ChunkRecordTag::BlockEntity));
+        assert!(!tags.contains(&ChunkRecordTag::Entity));
+        assert!(!tags.contains(&ChunkRecordTag::PendingTicks));
+        assert!(!tags.contains(&ChunkRecordTag::HardcodedSpawners));
+        // The records a chunk cannot be converted without always remain.
+        assert!(tags.contains(&ChunkRecordTag::Version));
+        assert!(tags.contains(&ChunkRecordTag::Data3D));
+    }
+
+    #[test]
+    fn selection_reduces_the_key_count() {
+        let all = ChunkSnapshotSelection::all().tags().len();
+        let minimal = ChunkSnapshotSelection {
+            entities: false,
+            block_entities: false,
+            pending_ticks: false,
+            hardcoded_spawn_areas: false,
+        }
+        .tags()
+        .len();
+        assert_eq!(all, 13);
+        assert_eq!(minimal, 9);
+    }
+
+    #[test]
+    fn tag_order_is_stable_so_slot_indices_line_up() {
+        // The reader maps result slots back to tags by position, so the order
+        // must not depend on which categories are enabled.
+        let full = ChunkSnapshotSelection::all().tags();
+        let minimal = ChunkSnapshotSelection {
+            entities: false,
+            block_entities: false,
+            pending_ticks: false,
+            hardcoded_spawn_areas: false,
+        }
+        .tags();
+        let mut filtered = full.clone();
+        filtered.retain(|tag| minimal.contains(tag));
+        assert_eq!(filtered, minimal);
+    }
 }
 
 #[cfg(test)]

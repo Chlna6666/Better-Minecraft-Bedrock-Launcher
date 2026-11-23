@@ -110,8 +110,8 @@ pub use level::{
 pub use nbt::{NbtReader, NbtTag, NbtWriter};
 pub use player::{PlayerData, PlayerId};
 pub use query::{
-    ExactChunkSelection, SlimeChunkBounds, SlimeChunkWindow, SlimeFarmCandidate,
-    SlimeFarmQueryMode, SlimeWindowSize, WriteGuard, exact_selection_stats,
+    ChunkSnapshotSelection, ExactChunkSelection, SlimeChunkBounds, SlimeChunkWindow,
+    SlimeFarmCandidate, SlimeFarmQueryMode, SlimeWindowSize, WriteGuard, exact_selection_stats,
     slime_farm_candidates, rasterize_chunk_line,
 };
 pub use scan::ChunkEntry;

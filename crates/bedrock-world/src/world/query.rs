@@ -575,6 +575,81 @@ where
         ))
     }
 
+    /// Reads one chunk with an explicit record selection.
+    ///
+    /// A converter that has already been told to skip entities, block entities
+    /// or pending ticks should not pay for those keys: they are a third of the
+    /// fixed tag set, and each is a point lookup the storage layer has to order
+    /// and probe. Categories left out simply do not appear in the returned
+    /// records.
+    pub fn chunk_snapshot_selected(
+        &self,
+        pos: ChunkPos,
+        records: crate::query::ChunkSnapshotSelection,
+    ) -> Result<(LevelChunk, Option<crate::scan::BiomeData>)> {
+        let mut keys: Vec<bytes::Bytes> = Vec::with_capacity(13 + 24);
+        for tag in records.tags() {
+            keys.push(ChunkKey::new(pos, tag).encode());
+        }
+        for offset in 0..24_i8 {
+            keys.push(ChunkKey::subchunk(pos, -4 + offset).encode());
+        }
+        let values = self.storage().get_many(&keys)?;
+        let tags = records.tags();
+        let mut out = Vec::new();
+        let mut biome: Option<crate::scan::BiomeData> = None;
+        let mut biome_tag: Option<ChunkRecordTag> = None;
+        for (slot, value) in values.into_iter().enumerate() {
+            let Some(value) = value else {
+                continue;
+            };
+            let key = if slot < tags.len() {
+                ChunkKey::new(pos, tags[slot])
+            } else {
+                ChunkKey::subchunk(pos, -4 + i8::try_from(slot - tags.len()).unwrap_or(0))
+            };
+            match key.tag {
+                ChunkRecordTag::Data3D
+                | ChunkRecordTag::Data2D
+                | ChunkRecordTag::Data2DLegacy => {
+                    if let Some(existing) = biome_tag {
+                        return Err(BedrockWorldError::CorruptWorld(format!(
+                            "chunk ({}, {}, {:?}) contains mixed biome records {existing:?} and {:?}",
+                            pos.x, pos.z, pos.dimension, key.tag
+                        )));
+                    }
+                    let parsed = match key.tag {
+                        ChunkRecordTag::Data3D => crate::scan::parse_data3d_with_min_y(
+                            &value,
+                            pos.y_range(ChunkVersion::New).0,
+                        ),
+                        ChunkRecordTag::Data2D => crate::scan::parse_legacy_data2d(&value),
+                        _ => crate::scan::parse_data2d_legacy(&value),
+                    }
+                    .map_err(|error| {
+                        BedrockWorldError::CorruptWorld(format!("biome data: {error}"))
+                    })?;
+                    biome = Some(parsed);
+                    biome_tag = Some(key.tag);
+                }
+                _ => {}
+            }
+            out.push(ChunkRecord { key, value });
+        }
+        let version = out
+            .iter()
+            .find(|record| record.key.tag == ChunkRecordTag::Version)
+            .and_then(|record| record.value.first().copied());
+        Ok((
+            LevelChunk {
+                pos,
+                version,
+                records: out,
+            },
+            biome,
+        ))
+    }
+
     /// Reads several chunks' records with one batched key lookup.
     ///
     /// [`Self::chunk_snapshot`] issues one `get_many` per chunk, which repeats
