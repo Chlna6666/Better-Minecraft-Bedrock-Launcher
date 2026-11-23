@@ -373,6 +373,7 @@ DownloadPage.plugins_installed=Installed
 DownloadPage.plugins_incompatible=Incompatible
 DownloadPage.plugins_update=Update
 DownloadPage.plugins_downloads=Downloads {{count}}
+DownloadPage.plugins_stars=Stars {{count}}
 DownloadPage.plugins_install=Install
 DownloadPage.plugins_install_success=Plugin installed
 DownloadPage.tab_resource=Packs

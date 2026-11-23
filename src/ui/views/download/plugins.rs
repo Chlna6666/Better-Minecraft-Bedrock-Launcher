@@ -295,6 +295,7 @@ fn catalog_metadata(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
                 .child(plugin_metadata(plugin)),
         )
         .children(package_downloads(colors, plugin))
+        .children(github_stars(colors, plugin))
         .children(tags.map(|tags| tags.flex_1().flex_nowrap().overflow_hidden()))
 }
 
@@ -320,6 +321,29 @@ fn package_downloads(colors: &ThemeColors, plugin: &registry::Plugin) -> Option<
                 colors.text_muted,
             ))
             .child(t!("DownloadPage.plugins_downloads", count = count)),
+    )
+}
+
+fn github_stars(colors: &ThemeColors, plugin: &registry::Plugin) -> Option<Div> {
+    let count = crate::ui::views::download::common::format_count(
+        plugin.github_star_count? as f64,
+    );
+    Some(
+        div()
+            .debug_selector(|| format!("plugin-stars-{}", plugin.id))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .text_size(px(11.))
+            .text_color(colors.text_secondary)
+            .whitespace_nowrap()
+            .child(crate::ui::components::icon::themed_icon(
+                lucide_gpui::icon!(star),
+                12.0,
+                colors.text_muted,
+            ))
+            .child(t!("DownloadPage.plugins_stars", count = count)),
     )
 }
 
@@ -372,7 +396,14 @@ fn summary(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
             )
         })
         .children(plugin_tags::render(colors, &plugin.tags))
-        .children(package_downloads(colors, plugin))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(14.))
+                .children(package_downloads(colors, plugin))
+                .children(github_stars(colors, plugin)),
+        )
 }
 
 fn install_button(
@@ -674,6 +705,7 @@ mod tests {
             status: "official".into(),
             version: "1.0.0".into(),
             package_download_count: Some(42),
+            github_star_count: Some(15),
             tags: vec!["tools".into(), "networking".into(), "p2p".into()],
             icon: None,
         }
@@ -700,8 +732,10 @@ mod tests {
         visual.simulate_resize(size(px(972.), px(600.)));
         let wide = visual.debug_bounds("catalog-row-first").unwrap();
         let downloads = visual.debug_bounds("plugin-downloads-first").unwrap();
+        let stars = visual.debug_bounds("plugin-stars-first").unwrap();
         let action = visual.debug_bounds("plugin-action-first").unwrap();
-        assert!(downloads.right() <= action.left(), "{downloads:?} overlaps {action:?}");
+        assert!(downloads.right() <= stars.left(), "{downloads:?} overlaps {stars:?}");
+        assert!(stars.right() <= action.left(), "{stars:?} overlaps {action:?}");
         assert!(wide.right() >= px(950.), "{wide:?}");
         assert!(wide.size.height < px(90.), "{wide:?}");
 
@@ -715,8 +749,10 @@ mod tests {
         let first = visual.debug_bounds("catalog-row-first").unwrap();
         let second = visual.debug_bounds("catalog-row-second").unwrap();
         let downloads = visual.debug_bounds("plugin-downloads-first").unwrap();
+        let stars = visual.debug_bounds("plugin-stars-first").unwrap();
         let action = visual.debug_bounds("plugin-action-first").unwrap();
-        assert!(downloads.right() <= action.left(), "{downloads:?} overlaps {action:?}");
+        assert!(downloads.right() <= stars.left(), "{downloads:?} overlaps {stars:?}");
+        assert!(stars.right() <= action.left(), "{stars:?} overlaps {action:?}");
         assert!(first.right() >= px(618.), "{first:?}");
         assert_eq!(first.size.height, wide.size.height);
         assert_eq!(first.left(), second.left());
@@ -728,6 +764,7 @@ mod tests {
             let details = state.plugin_catalog.details.as_ref().unwrap();
             assert_eq!(details.plugin.id, "first");
             assert_eq!(details.plugin.package_download_count, Some(42));
+            assert_eq!(details.plugin.github_star_count, Some(15));
         });
     }
 

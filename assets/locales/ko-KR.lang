@@ -373,6 +373,7 @@ DownloadPage.plugins_installed=설치됨
 DownloadPage.plugins_incompatible=호환되지 않음
 DownloadPage.plugins_update=업데이트
 DownloadPage.plugins_downloads=누적 다운로드 {{count}}
+DownloadPage.plugins_stars=스타 {{count}}
 DownloadPage.plugins_install=설치
 DownloadPage.plugins_install_success=플러그인을 설치했어요
 DownloadPage.tab_resource=리소스

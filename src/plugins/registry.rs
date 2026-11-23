@@ -30,6 +30,9 @@ pub(crate) struct Plugin {
     /// native libraries. Preserve the existing registry JSON field name.
     #[serde(default, rename = "github_download_count")]
     pub(crate) package_download_count: Option<u64>,
+    /// Stargazers on the plugin's own GitHub repository, if available.
+    #[serde(default)]
+    pub(crate) github_star_count: Option<u64>,
     #[serde(default)]
     pub(crate) tags: Vec<String>,
     pub(crate) icon: Option<Icon>,
@@ -283,10 +286,13 @@ mod tests {
         let previous = serde_json::from_value::<Plugin>(summary.clone()).unwrap();
         assert!(previous.tags.is_empty());
         assert_eq!(previous.package_download_count, None);
+        assert_eq!(previous.github_star_count, None);
         summary["tags"] = serde_json::json!(["networking", "p2p"]);
         summary["github_download_count"] = serde_json::json!(0);
+        summary["github_star_count"] = serde_json::json!(17);
         let plugin = serde_json::from_value::<Plugin>(summary).unwrap();
         assert_eq!(plugin.tags, ["networking", "p2p"]);
         assert_eq!(plugin.package_download_count, Some(0));
+        assert_eq!(plugin.github_star_count, Some(17));
     }
 }
