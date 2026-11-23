@@ -1,0 +1,367 @@
+{
+  "schema_version": 1,
+  "purpose": "Raw, unprocessed runtime block-palette dumps for developer viewing. Each state's index is its network runtime ID. Do not edit these files.",
+  "source": "pmmp/bds-mod-mapping -> opencollab-incubator/BedrockBlockPaletteArchive",
+  "format": "concatenated varint-NBT root compounds; network runtime ID = file index",
+  "evidence_boundary": "Runtime dump evidence. Beta build labels are preserved verbatim and are not four-component stable BDS versions. No default state field; states are full permutations.",
+  "version_count": 51,
+  "versions": [
+    {
+      "label": "1.09.0",
+      "file": "palettes/1.09.0.nbt",
+      "size": 309739,
+      "sha256": "473fb86c0f1c00e02e8550fabc75345c8a8af7b073121372597834b1dbcd41b4",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.09.0.nbt"
+    },
+    {
+      "label": "1.10.0",
+      "file": "palettes/1.10.0.nbt",
+      "size": 261797,
+      "sha256": "3b8c2d0592ae07e410f4b6746b0127748039eaf0e285bdd190cd25ab71b0e179",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.10.0.nbt"
+    },
+    {
+      "label": "1.12.0",
+      "file": "palettes/1.12.0.nbt",
+      "size": 280311,
+      "sha256": "5ede6afca61e1088ea0f1bc230cafd026cc435d08d8359ae4ea4788b67090ddc",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.12.0.nbt"
+    },
+    {
+      "label": "1.13.0",
+      "file": "palettes/1.13.0.nbt",
+      "size": 258446,
+      "sha256": "22f7ff77a5368700cb63a8c828ba033026ed24da7845b44851fcdce570f8f792",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.13.0.nbt"
+    },
+    {
+      "label": "1.14.0",
+      "file": "palettes/1.14.0.nbt",
+      "size": 265146,
+      "sha256": "143f786db23882da6d6c2bc25e9b1b7372ddb66b79b362b2ad3dcdc655c46c41",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.14.0.nbt"
+    },
+    {
+      "label": "1.16.0",
+      "file": "palettes/1.16.0.nbt",
+      "size": 983439,
+      "sha256": "a5bdd9696825ab52081ba2d268cf31e943d5bc3ee6a6a99efa7023f51099bc4f",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.16.0.nbt"
+    },
+    {
+      "label": "1.16.0.57_beta",
+      "file": "palettes/1.16.0.57_beta.nbt",
+      "size": 2994272,
+      "sha256": "c08886c316829c04bb8ca87e2b153ab5db2d088058c117865e9d2f16456cc3c3",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.16.0.57_beta.nbt"
+    },
+    {
+      "label": "1.16.0.59_beta",
+      "file": "palettes/1.16.0.59_beta.nbt",
+      "size": 2994041,
+      "sha256": "05cd3563e08437302630f3cbf472cd49640077ec97e4b0cf6ac2a0ee185c85c9",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.16.0.59_beta.nbt"
+    },
+    {
+      "label": "1.16.0.68_beta",
+      "file": "palettes/1.16.0.68_beta.nbt",
+      "size": 983439,
+      "sha256": "807692c921544d89bda83850be1ae82968d5ea5d2191c5fae7a1dfc90395c570",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.16.0.68_beta.nbt"
+    },
+    {
+      "label": "1.16.100",
+      "file": "palettes/1.16.100.nbt",
+      "size": 981311,
+      "sha256": "23ceac32f48fa15b5a8125a4455c84f1687ca93fd87cdf5b7e3ed1c72cc2c224",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.16.100.nbt"
+    },
+    {
+      "label": "1.16.200",
+      "file": "palettes/1.16.200.nbt",
+      "size": 981311,
+      "sha256": "23ceac32f48fa15b5a8125a4455c84f1687ca93fd87cdf5b7e3ed1c72cc2c224",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.16.200.nbt"
+    },
+    {
+      "label": "1.16.210",
+      "file": "palettes/1.16.210.nbt",
+      "size": 977861,
+      "sha256": "86eb850fd053e90c5f56fdb360586af450cdd17f5c1d4220597a67743eb650e4",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.16.210.nbt"
+    },
+    {
+      "label": "1.17.0",
+      "file": "palettes/1.17.0.nbt",
+      "size": 1154321,
+      "sha256": "1ee0a579ec134a28fe3cbccb4b7e1757857302a55fac5eaaa5efd855b9293abf",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.17.0.nbt"
+    },
+    {
+      "label": "1.17.10",
+      "file": "palettes/1.17.10.nbt",
+      "size": 1166071,
+      "sha256": "a7ab025568b441f9f780b3e5f5676b9fd1889d67141f6ac931c568b5cf694dc2",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.17.10.nbt"
+    },
+    {
+      "label": "1.17.30",
+      "file": "palettes/1.17.30.nbt",
+      "size": 1174676,
+      "sha256": "0d3b3148d87918a7ee32a04b973b52d7eab6acfb1447ff958c4604af76ea44ac",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.17.30.nbt"
+    },
+    {
+      "label": "1.17.40",
+      "file": "palettes/1.17.40.nbt",
+      "size": 1174943,
+      "sha256": "cf8e869c38bf0d71371f4090da577595e34f540a40f73447dd7c9ee539111289",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.17.40.nbt"
+    },
+    {
+      "label": "1.18.0",
+      "file": "palettes/1.18.0.nbt",
+      "size": 1174943,
+      "sha256": "cf8e869c38bf0d71371f4090da577595e34f540a40f73447dd7c9ee539111289",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.18.0.nbt"
+    },
+    {
+      "label": "1.18.10",
+      "file": "palettes/1.18.10.nbt",
+      "size": 1174608,
+      "sha256": "95e894c0b2a9e588fb73c2e19e84f03ef38a4029917fb61a4c4307fbd18fe365",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.18.10.nbt"
+    },
+    {
+      "label": "1.18.20.27_beta",
+      "file": "palettes/1.18.20.27_beta.nbt",
+      "size": 1175103,
+      "sha256": "154ec43af6d9a7e32affd5d0118e768ecf488144d13667126fbb0ebd3f25105a",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.18.20.27_beta.nbt"
+    },
+    {
+      "label": "1.18.30",
+      "file": "palettes/1.18.30.nbt",
+      "size": 1218436,
+      "sha256": "b9abdea7e22166bb36d5f97b104867694a8b25fda59befead54e5dbb6d7b9bfc",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.18.30.nbt"
+    },
+    {
+      "label": "1.19.0.34_beta",
+      "file": "palettes/1.19.0.34_beta.nbt",
+      "size": 1224985,
+      "sha256": "8f1c88d0d26f00f96487dfa856fa254927de5c1d05ade9a51c85effe5697cb4e",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.19.0.34_beta.nbt"
+    },
+    {
+      "label": "1.19.20",
+      "file": "palettes/1.19.20.nbt",
+      "size": 1225154,
+      "sha256": "ced925495eba64330d53c34c1c1e31992d17b6cac1b9f2bba2bd572029a55ecb",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.19.20.nbt"
+    },
+    {
+      "label": "1.19.50.23_beta",
+      "file": "palettes/1.19.50.23_beta.nbt",
+      "size": 1755680,
+      "sha256": "7fb6c65ded833b0d413bfb29d93e41dee90b9c159f646bf38691ddd78cab0c68",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.19.50.23_beta.nbt"
+    },
+    {
+      "label": "1.19.60.26_beta",
+      "file": "palettes/1.19.60.26_beta.nbt",
+      "size": 1756833,
+      "sha256": "0f590150e596828950d0b0b0d807c15ab594f7a9c231c53e0aeac0173fb26cea",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.19.60.26_beta.nbt"
+    },
+    {
+      "label": "1.19.70.26_beta",
+      "file": "palettes/1.19.70.26_beta.nbt",
+      "size": 1758270,
+      "sha256": "1ce22c4cb3a7de27232ecce91a5cc96278838cce3a9925693eba3ca8aca39728",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.19.70.26_beta.nbt"
+    },
+    {
+      "label": "1.19.80.24_beta",
+      "file": "palettes/1.19.80.24_beta.nbt",
+      "size": 1824973,
+      "sha256": "61bd17d416b5135244a092a3f52bad32663e4e9c8c48ac8304563a4da991285e",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.19.80.24_beta.nbt"
+    },
+    {
+      "label": "1.20.0.23_beta",
+      "file": "palettes/1.20.0.23_beta.nbt",
+      "size": 1825199,
+      "sha256": "2feee1be7b629614def8f60db4588d1dfdc7e427c15f88aa3eaafbc6c4a439e7",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.20.0.23_beta.nbt"
+    },
+    {
+      "label": "1.20.10.24_beta",
+      "file": "palettes/1.20.10.24_beta.nbt",
+      "size": 1825151,
+      "sha256": "2c1b6db60f40bc75df0795baa7ee85ef871fa9a8adcd6915cad8fefa091934f1",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.20.10.24_beta.nbt"
+    },
+    {
+      "label": "1.20.20.23_beta",
+      "file": "palettes/1.20.20.23_beta.nbt",
+      "size": 1828661,
+      "sha256": "7c66535319226401d59c1b712559a8455b975129278727b06ddfb171381fcf61",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.20.20.23_beta.nbt"
+    },
+    {
+      "label": "1.20.30.22_beta",
+      "file": "palettes/1.20.30.22_beta.nbt",
+      "size": 1832411,
+      "sha256": "fb6b28e23ecfac734a037ccedd449ac292a2bdea083e6720357d2ae45b3f7c82",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.20.30.22_beta.nbt"
+    },
+    {
+      "label": "1.20.40.24_beta",
+      "file": "palettes/1.20.40.24_beta.nbt",
+      "size": 1832095,
+      "sha256": "a82d261b0ac0d96e6ccfac41f38c43cc87ec31c14e87cfecfe89e87c44cdd33a",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.20.40.24_beta.nbt"
+    },
+    {
+      "label": "1.20.50.23_beta",
+      "file": "palettes/1.20.50.23_beta.nbt",
+      "size": 1987422,
+      "sha256": "8290165f6554b9780b5e6951ea3631ee6e3da88d70440f6556671d4915b106fa",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.20.50.23_beta.nbt"
+    },
+    {
+      "label": "1.20.60.26_beta",
+      "file": "palettes/1.20.60.26_beta.nbt",
+      "size": 1987668,
+      "sha256": "d51614be38b03287da2500f64bb6a071cb7502797a64f83cdba1745612dd4840",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.20.60.26_beta.nbt"
+    },
+    {
+      "label": "1.20.70.24_beta",
+      "file": "palettes/1.20.70.24_beta.nbt",
+      "size": 1987768,
+      "sha256": "cd38eb696ce1478faf7b762402bff199213c32d7142665d57e7ff976af424a7d",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.20.70.24_beta.nbt"
+    },
+    {
+      "label": "1.20.80.24_beta",
+      "file": "palettes/1.20.80.24_beta.nbt",
+      "size": 1986233,
+      "sha256": "5bb6b9919659241c460d1f45e07fcd8907e852cb2a84ae468062b9af47ce803b",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.20.80.24_beta.nbt"
+    },
+    {
+      "label": "1.21.0.25_beta",
+      "file": "palettes/1.21.0.25_beta.nbt",
+      "size": 1987586,
+      "sha256": "3948e5758951018564918e6f3b7d61fadb51b400aa49657a76b40f38d9d9a534",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.21.0.25_beta.nbt"
+    },
+    {
+      "label": "1.21.20.24_beta",
+      "file": "palettes/1.21.20.24_beta.nbt",
+      "size": 1981265,
+      "sha256": "590e12b481d0eb70ac26ea3b79c2f0960f72dbdf8168250007217bb75d2ca61d",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.21.20.24_beta.nbt"
+    },
+    {
+      "label": "1.21.30.24_beta",
+      "file": "palettes/1.21.30.24_beta.nbt",
+      "size": 1915257,
+      "sha256": "839e0fd7fdec4cbf6ad1557eeae61a22d0c561cb9dabe641210eb68f549b52ed",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.21.30.24_beta.nbt"
+    },
+    {
+      "label": "1.21.40.25_beta",
+      "file": "palettes/1.21.40.25_beta.nbt",
+      "size": 1918591,
+      "sha256": "4e434d9c40988697f61ed2053586330796bf5216f602cb051aa9061cd67a4ea7",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.21.40.25_beta.nbt"
+    },
+    {
+      "label": "1.21.50.29_beta",
+      "file": "palettes/1.21.50.29_beta.nbt",
+      "size": 2059051,
+      "sha256": "f6aeb01ca776cd142d3b457962b0b5aec951f6c5e48aca9ff0fa6445982015b3",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.21.50.29_beta.nbt"
+    },
+    {
+      "label": "1.21.60.28_beta",
+      "file": "palettes/1.21.60.28_beta.nbt",
+      "size": 2080267,
+      "sha256": "2789f5d054ca191746252a6550828963b7524d02a5c59bbe9387f859eb9e7865",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.21.60.28_beta.nbt"
+    },
+    {
+      "label": "1.21.70.25_beta",
+      "file": "palettes/1.21.70.25_beta.nbt",
+      "size": 2086775,
+      "sha256": "bfac8f1f3d89453ac11af6dfe8d37a1a08f3ec67dcdf7d242a43a7b667b0fb99",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.21.70.25_beta.nbt"
+    },
+    {
+      "label": "1.21.80.27_beta",
+      "file": "palettes/1.21.80.27_beta.nbt",
+      "size": 2088511,
+      "sha256": "844b211112d29cb013cc74d4fd0241d59d3757b7efccdb299348fc65d75a3fa1",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.21.80.27_beta.nbt"
+    },
+    {
+      "label": "1.21.100.23_beta",
+      "file": "palettes/1.21.100.23_beta.nbt",
+      "size": 2091687,
+      "sha256": "7763aaf169ff47a5b8b09733b42e669210f0eb23f1246fa31ee848b4b695c60f",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.21.100.23_beta.nbt"
+    },
+    {
+      "label": "1.21.110.26_beta",
+      "file": "palettes/1.21.110.26_beta.nbt",
+      "size": 2156052,
+      "sha256": "6b9ecc2b7ddd3b9cd59b5e745d2a704b35e44496c67bcde570f3ea9bcfaed068",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.21.110.26_beta.nbt"
+    },
+    {
+      "label": "1.26.10",
+      "file": "palettes/1.26.10.nbt",
+      "size": 2156110,
+      "sha256": "8dc9c9bd61430307ec7b54525d8e2007a0cbff4e87de3272672818d2912c637a",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.26.10.nbt"
+    },
+    {
+      "label": "1.26.20",
+      "file": "palettes/1.26.20.nbt",
+      "size": 2364099,
+      "sha256": "1e8584a0b150d0664981bba9a0c0033b3d0089679fad1b69f2620741daf71226",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.26.20.nbt"
+    },
+    {
+      "label": "1.26.30",
+      "file": "palettes/1.26.30.nbt",
+      "size": 2365370,
+      "sha256": "d10d06a8af1fa062350c6919bc52d8980003ab745bb94920a6b0d9caad49d040",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.26.30.nbt"
+    },
+    {
+      "label": "1.26.40",
+      "file": "palettes/1.26.40.nbt",
+      "size": 2436125,
+      "sha256": "7318422e3a0cf6d8ed86c9db62da793d9fda0a1b3073fdf4612984b40f772718",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.26.40.nbt"
+    },
+    {
+      "label": "1.26.50",
+      "file": "palettes/1.26.50.nbt",
+      "size": 3102889,
+      "sha256": "f0784a6284d6ca7d98cc3472f4ce84241a11e11b18ed16f6591dfd5e6da6fbd6",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.26.50.nbt"
+    },
+    {
+      "label": "1.26.60",
+      "file": "palettes/1.26.60.nbt",
+      "size": 3413601,
+      "sha256": "88b8c903ac75d46247bed5ff785c0c050068d28440190f7412d697b045d2d51f",
+      "source_url": "https://raw.githubusercontent.com/opencollab-incubator/BedrockBlockPaletteArchive/master/1.26.60.nbt"
+    }
+  ]
+}
