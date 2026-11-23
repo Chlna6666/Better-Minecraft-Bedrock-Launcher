@@ -52,6 +52,11 @@ class Profiles(unittest.TestCase):
         self.assertEqual("2.0.0", runner.script_profile("1.21.90.03"))
         self.assertEqual("2.11.0", runner.script_profile("1.26.66.1"))
 
+    def test_historical_discovery_uses_pinned_archive_without_latest_api(self):
+        version, url = runner.discover("1.19.70.02")
+        self.assertEqual(version, "1.19.70.02")
+        self.assertEqual(url, "https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.19.70.02.zip")
+
     def test_pre_stable_not_misidentified(self):
         with self.assertRaises(ValueError):
             runner.script_profile("1.19.60.04")

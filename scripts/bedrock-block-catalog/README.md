@@ -161,3 +161,23 @@ Offline tests:
 ```bash
 python3 -m unittest discover -s scripts/bedrock-block-catalog -p 'test_*.py'
 ```
+
+## Maintenance and PDB data import
+
+The public [BlockState & legacy ID maintenance guide](../../docs/BEDROCK_BLOCK_DATA_MAINTENANCE.md)
+defines the source-of-truth rules for game versions, NBT storage versions,
+legacy `(numeric ID, metadata)`, internal `BlockType` indices and network
+runtime IDs. **They are different namespaces.** Identical block property
+objects can be deduplicated; they are not automatically semantic aliases.
+
+Use the historical backfill workflow to run multiple known BDS builds in one
+serial Linux job. The backfill retains explicit `complete_structure_capture`,
+`partial_probe` and `capture_failed` reports. Only complete validated captures
+enter the binary palette; no unverified historical ID is added automatically.
+
+For PDB extractions, produce JSON in the documented schema and use
+`scripts/bedrock-block-catalog/import_id_registry.py`. The importer checks
+duplicated/conflicting IDs, exact typed states and per-entry symbol evidence,
+then writes a small content-addressed binary index plus compressed evidence.
+Uncatalogued entries require explicit `--stage-unverified` and are never
+considered authoritative. See the maintenance guide for a sample and CLI.

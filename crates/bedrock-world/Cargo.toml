@@ -23,6 +23,7 @@ include = [
     "src/**/*.rs",
     "src/**/*.bin",
     "src/**/*.json",
+    "data/block-catalog/**/*",
     "tests/**/*.rs",
     "tests/fixtures/**/*",
     "scripts/**/*.ps1",

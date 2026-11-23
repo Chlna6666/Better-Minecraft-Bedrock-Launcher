@@ -103,6 +103,14 @@ def script_profile(version: str) -> str:
 
 
 def discover(version: str) -> tuple[str, str]:
+    if version != "latest":
+        version_numbers(version)
+        if version not in HISTORICAL_SHA1:
+            raise ValueError(
+                "Historical BDS not pinned: add its exact version and SHA-1 to "
+                "HISTORICAL_SHA1 before acquisition"
+            )
+        return version, OFFICIAL_SERVER + "bedrock-server-" + version + ".zip"
     request = urllib.request.Request(
         LINKS_API, headers={"User-Agent": "BMCBL-Block-Catalog/1.0", "Accept": "application/json"}
     )
@@ -120,15 +128,7 @@ def discover(version: str) -> tuple[str, str]:
     ):
         raise RuntimeError("Unexpected official BDS download URL: " + url)
     actual = match.group(1)
-    if version == "latest":
-        return actual, url
-    version_numbers(version)
-    if version not in HISTORICAL_SHA1:
-        raise ValueError(
-            "Historical BDS not pinned: add its official exact version and SHA-1 to "
-            "HISTORICAL_SHA1 before enabling automated acquisition"
-        )
-    return version, OFFICIAL_SERVER + "bedrock-server-" + version + ".zip"
+    return actual, url
 
 
 def download(url: str, target: Path, expected_sha1: str | None) -> str:

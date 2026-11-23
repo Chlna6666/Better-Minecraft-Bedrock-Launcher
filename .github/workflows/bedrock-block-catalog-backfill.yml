@@ -1,0 +1,79 @@
+name: Bedrock block catalog historical backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: "Space/comma-separated pinned BDS versions (1-8)"
+        required: true
+        default: "1.19.70.02 1.20.80.05 1.21.20.03 1.21.80.3 1.21.100.7"
+        type: string
+  push:
+    paths:
+      - '.github/workflows/bedrock-block-catalog-backfill.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bedrock-block-catalog-master
+  cancel-in-progress: false
+
+jobs:
+  historical-backfill:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bedrock-block-catalog-history
+      - name: Check Python import and identity rules
+        run: python3 -m unittest discover -s scripts/bedrock-block-catalog -p 'test_*.py'
+      - name: Install official BDS runtime dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcurl4 unzip
+      - name: Build standalone palette compiler once
+        run: cargo build --locked --release -p bedrock-world --bin bedrock-block-catalog
+      - name: Acquire and validate selected BDS builds
+        env:
+          BACKFILL_VERSIONS: ${{ inputs.versions || '1.19.70.02 1.20.80.05 1.21.20.03 1.21.80.3 1.21.100.7' }}
+        run: |
+          python3 scripts/bedrock-block-catalog/backfill.py \
+            --versions "$BACKFILL_VERSIONS" \
+            --work-root "${{ runner.temp }}/bds-history" \
+            --catalog crates/bedrock-world/data/block-catalog \
+            --compiler target/release/bedrock-block-catalog \
+            --timeout 420
+      - name: Verify binary compiler tests
+        run: cargo test --locked -p bedrock-world --bin bedrock-block-catalog
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bedrock-catalog-historical-report
+          path: |
+            crates/bedrock-world/data/block-catalog/historical-capture-report.json
+            crates/bedrock-world/data/block-catalog/probes/
+          if-no-files-found: warn
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bedrock-catalog-historical-diagnostics
+          path: |
+            ${{ runner.temp }}/bds-history/*/server.log
+            ${{ runner.temp }}/bds-history/*/capture.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Commit verified snapshots and explicit partial reports
+        if: github.ref == 'refs/heads/master'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- crates/bedrock-world/data/block-catalog/
+          if git diff --cached --quiet; then
+            echo "No new historical data"
+            exit 0
+          fi
+          git commit -m 'data(bedrock-world): backfill historical BDS catalog snapshots'
+          git push origin HEAD:master
