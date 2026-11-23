@@ -215,11 +215,11 @@ bedrock-scene = { path = "crates/bedrock-scene", features = ["test-support"] }
 bedrock-leveldb = { path = "crates/bedrock-leveldb" }
 gpui = { path = "crates/gpui", default-features = false, features = ["test-support"] }
 gfx-core = { path = "crates/nova-gfx/gfx-core" }
-gfx-dx11 = { path = "crates/nova-gfx/gfx-dx11" }
-gfx-dx12 = { path = "crates/nova-gfx/gfx-dx12" }
 gfx-vulkan = { path = "crates/nova-gfx/gfx-vulkan" }
 
 [target.'cfg(windows)'.dev-dependencies]
+gfx-dx11 = { path = "crates/nova-gfx/gfx-dx11" }
+gfx-dx12 = { path = "crates/nova-gfx/gfx-dx12" }
 gfx-opengl = { path = "crates/nova-gfx/gfx-opengl" }
 raw-window-handle = "0.6"
 

@@ -248,6 +248,14 @@ jobs:
       - name: Check standalone gpui-3d core without GPUI
         run: cargo check -p gpui-3d --no-default-features --lib
 
+      - name: Check foreign-platform graphics backend interfaces
+        run: |
+          # DX11 is Windows-only; DX12 and Metal expose non-native stubs.
+          # Check their Linux type/trait surfaces before the expensive BMCBL
+          # test build, even though production Linux does not depend on them.
+          cargo check -p gfx-dx11 -p gfx-dx12 -p gfx-metal --lib
+          cargo test -p gfx-dx12 -p gfx-metal --lib
+
       - name: Check Bedrock storage crates
         run: cargo check -p bedrock-leveldb -p bedrock-world --all-features
 
@@ -266,6 +274,13 @@ jobs:
 
       - name: Build BMCBL executable
         run: cargo build --bin BMCBL
+
+      - name: Precompile BMCBL Linux library test target
+        run: |
+          # This catches accidental Windows-only imports in cfg(test) before
+          # the separate GPUI 3D regression suite. Later cargo test calls
+          # reuse the compiled test executable rather than rebuilding it.
+          cargo test -p bmcbl --lib --no-run
 
       - name: Test native GPU work graph and standalone 3D submit ABI
         run: |

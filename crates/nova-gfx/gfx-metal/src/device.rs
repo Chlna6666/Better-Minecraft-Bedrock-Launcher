@@ -1551,6 +1551,10 @@ mod platform {
     }
 
     impl ResourceDevice for MetalDevice {
+        fn copy_texture_batch(&mut self, _copies: &[gfx_core::TextureCopy]) -> Result<()> {
+            unavailable()
+        }
+
         fn create_buffer(&mut self, _desc: &BufferDescriptor) -> Result<BufferId> {
             unavailable()
         }
@@ -1711,3 +1715,22 @@ mod platform {
 }
 
 pub use platform::*;
+
+#[cfg(all(test, not(target_vendor = "apple")))]
+mod non_apple_stub_tests {
+    use super::*;
+    use gfx_core::ResourceDevice as _;
+
+    #[test]
+    fn metal_stub_is_unavailable_without_apple_platform() {
+        assert!(matches!(
+            MetalDevice::new(&gfx_core::DeviceDescriptor::default()),
+            Err(Error::Unavailable(_))
+        ));
+        let mut stub = MetalDevice;
+        assert!(matches!(
+            stub.copy_texture_batch(&[]),
+            Err(Error::Unavailable(_))
+        ));
+    }
+}

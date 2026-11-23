@@ -9172,6 +9172,26 @@ mod platform {
 
 pub use platform::*;
 
+#[cfg(all(test, not(windows)))]
+mod non_windows_stub_tests {
+    use super::*;
+    use gfx_core::{Backend as _, ResourceDevice as _};
+
+    #[test]
+    fn dx12_stub_is_unavailable_without_native_windows() {
+        assert!(matches!(
+            Dx12Device::new(&gfx_core::DeviceDescriptor::default()),
+            Err(Error::Unavailable(_))
+        ));
+        let mut stub = Dx12Device;
+        assert_eq!(stub.adapter_name(), "Direct3D 12 (unavailable on this platform)");
+        assert!(matches!(
+            stub.copy_texture_batch(&[]),
+            Err(Error::Unavailable(_))
+        ));
+    }
+}
+
 #[cfg(test)]
 mod conformance_tests {
     use super::*;
