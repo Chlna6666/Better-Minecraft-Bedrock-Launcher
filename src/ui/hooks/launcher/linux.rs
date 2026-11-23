@@ -334,7 +334,7 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
                     }
                 })?;
                 if snapshot.status.as_ref() == "running"
-                    && snapshot.stage.code() == TaskStage::RUNNING_GAME
+                    && snapshot.stage == TaskStage::RUNNING_GAME
                 {
                     Timer::after(Duration::from_millis(900)).await;
                     let now = std::time::Instant::now();

@@ -7,6 +7,7 @@ use super::super::bloader;
 use crate::core::linux_runtime::{
     RunnerKind, resolve_runner, runner_runtime_root, validate_proton_game_runtime,
 };
+use crate::tasks::TaskStage;
 use crate::tasks::task_manager::{
     ProgressUpdate, TaskFinishStatus, TaskOptions, append_task_log, create_task, finish_task,
     register_abort_handle, set_total, update_progress,
