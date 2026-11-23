@@ -1,0 +1,76 @@
+{
+  "documentation": "docs/BEDROCK_BLOCK_DATA_MAINTENANCE.md",
+  "results": [
+    {
+      "archive_sha1_reference": "f56479e8e0eef4157ee1cc1f818f75061e6241c4",
+      "error": "BDS runner exited 1",
+      "error_type": "RuntimeError",
+      "expected_api": "1.0.0",
+      "game_version": "1.19.70.02",
+      "log_tail": [],
+      "status": "capture_failed"
+    },
+    {
+      "archive_sha1_reference": "980fcfac32265d56f2c6ec4362a6fe344cd1b030",
+      "error": "BDS runner exited 1",
+      "error_type": "RuntimeError",
+      "expected_api": "1.10.0",
+      "game_version": "1.20.80.05",
+      "log_tail": [
+        "[2026-11-23 14:01:39:840 INFO] [Scripting] BMCBL-DUMP-WARNING {\"capability\":\"BlockTypes.getAll\",\"message\":\"Unavailable: BDS resource names are only incomplete hints\"}",
+        "[2026-11-23 14:01:39:840 INFO] [Scripting] BMCBL-DUMP-CAPABILITIES {\"BlockTypes\":false,\"BlockStates\":true,\"BlockPermutation\":true,\"createEmpty\":true,\"runJob\":false,\"registrySource\":\"bds_resource_hints\"}",
+        "[2026-11-23 14:01:39:840 INFO] [Scripting] BMCBL-DUMP-FAIL {\"message\":\"Error: No block IDs from Script API or BDS resource hints\",\"stack\":\"    at chooseCapture (main.js:226)\\n    at next (native)\\n    at <anonymous> (main.js:256)\\n    at next (native)\\n    at <anonymous> (main.js:269)\\n\"}"
+      ],
+      "status": "capture_failed"
+    },
+    {
+      "archive_sha1_reference": "06be13f05da2fc05e93ab2d5cac3df5f51490691",
+      "bds_sha256": "bef26b40342fb06147a5a37fa51724c5a8eca77052094fa26562fd771dba53d5",
+      "capture_method": "script_api_probe",
+      "expected_api": "1.13.0",
+      "game_version": "1.21.20.03",
+      "probe_file": "probes/1.21.20.03.json",
+      "statistics": {
+        "blocks": 1189,
+        "mode": "script_api_probe",
+        "placed": 0,
+        "resolved": 1189,
+        "structures": 0
+      },
+      "status": "partial_probe"
+    },
+    {
+      "archive_sha1_reference": "30ec90fbde8054d8b8e3bfbdb3c5edaa8dccbd2b",
+      "bds_sha256": "e06f98c7ac05d926244bc3323df7a40376e059a7d199bcb48064aadf128c8533",
+      "capture_method": "script_api_probe",
+      "expected_api": "1.19.0",
+      "game_version": "1.21.80.3",
+      "probe_file": "probes/1.21.80.3.json",
+      "statistics": {
+        "blocks": 1261,
+        "mode": "script_api_probe",
+        "placed": 0,
+        "resolved": 1261,
+        "structures": 0
+      },
+      "status": "partial_probe"
+    },
+    {
+      "archive_sha1_reference": "c68f38ff0c75110b086f629a30fd95b86fbfc2df",
+      "bds_sha256": "b60563b6853fede0fd5100eaa91ad77d2c46cd501fe8c500aaced392d8bb4f7b",
+      "capture_method": "script_api_probe",
+      "expected_api": "2.1.0",
+      "game_version": "1.21.100.7",
+      "probe_file": "probes/1.21.100.7.json",
+      "statistics": {
+        "blocks": 1269,
+        "mode": "script_api_probe",
+        "placed": 0,
+        "resolved": 1269,
+        "structures": 0
+      },
+      "status": "partial_probe"
+    }
+  ],
+  "schema_version": 1
+}
