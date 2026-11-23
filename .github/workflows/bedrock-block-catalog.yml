@@ -2,6 +2,12 @@ name: Bedrock block catalog (Linux BDS)
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact pinned Linux BDS version (e.g. 1.19.70.02), or latest'
+        required: false
+        type: string
+        default: latest
   schedule:
     - cron: "31 6 * * 1"
   push:
@@ -35,16 +41,21 @@ jobs:
         with:
           cache-on-failure: false
           key: bedrock-block-catalog
+      - name: Validate historical API profiles and diff rules
+        run: python3 -m unittest discover -s scripts/bedrock-block-catalog -p 'test_*.py'
       - name: Install BDS runtime dependencies
         run: sudo apt-get update && sudo apt-get install -y libcurl4 unzip
-      - name: Run official latest Linux BDS in a disposable world
+      - name: Run selected official Linux BDS in a disposable world
+        id: capture
         run: |
           python3 scripts/bedrock-block-catalog/run_bds.py \
+            --version "${{ inputs.version || 'latest' }}" \
             --workdir "${{ runner.temp }}/bmcbl-bds" \
             --metadata "${{ runner.temp }}/bmcbl-capture.json" \
             --log "${{ runner.temp }}/bmcbl-bds.log" \
             --timeout 900
       - name: Compile deduplicated versioned block catalog
+        if: steps.capture.outputs.method == 'script_api_structure'
         run: |
           cargo run --locked --release -p bedrock-world --bin bedrock-block-catalog -- \
             compile --world "${{ runner.temp }}/bmcbl-bds/worlds/bmcbl_catalog" \
@@ -54,6 +65,7 @@ jobs:
       - name: Validate compiler unit tests
         run: cargo test --locked -p bedrock-world --bin bedrock-block-catalog
       - name: Upload reproducible catalog assets
+        if: steps.capture.outputs.method == 'script_api_structure'
         uses: actions/upload-artifact@v4
         with:
           name: bedrock-block-catalog
@@ -68,10 +80,11 @@ jobs:
           path: |
             ${{ runner.temp }}/bmcbl-bds.log
             ${{ runner.temp }}/bmcbl-capture.json
+            ${{ runner.temp }}/bmcbl-api-probe.json
           if-no-files-found: ignore
           retention-days: 7
       - name: Commit only validated data to master
-        if: github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/master' && steps.capture.outputs.method == 'script_api_structure'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'

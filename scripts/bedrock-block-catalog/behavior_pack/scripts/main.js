@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MIT
 // BMCBL standalone Bedrock Script API exporter. No third-party extractor code.
 // BDS, not the Script API's aliases, is the final authority on persisted states.
-import { BlockPermutation, BlockStates, BlockTypes, StructureSaveMode, system, world } from "@minecraft/server";
+// Namespace import avoids import-time failures when old API versions omit a symbol.
+import * as mc from "@minecraft/server";
+import { fallbackBlockIds } from "./block_ids.js";
+const { BlockPermutation, BlockStates, BlockTypes, system, world } = mc;
+const StructureSaveMode = mc.StructureSaveMode;
 
 const EDGE = 32;
 const BATCH_SIZE = EDGE * EDGE;
@@ -26,7 +30,7 @@ function* combinations(names, domains, at, current) {
 }
 
 function valuesFor(name, fallback) {
-  const definition = BlockStates.get(name);
+  const definition = BlockStates?.get?.(name);
   const values = Array.from(definition?.validValues ?? []);
   if (values.length > 0 && typeof values[0] === "number") {
     // Numeric value domains are not always complete for a particular block.
@@ -45,7 +49,8 @@ function* candidates(block, stats) {
   } catch (error) {
     throw new Error("Cannot resolve default for " + block + ": " + String(error));
   }
-  const defaults = initial.getAllStates();
+  const defaults = typeof initial.getAllStates === "function" ? initial.getAllStates()
+    : typeof initial.getAllProperties === "function" ? initial.getAllProperties() : {};
   const keys = Object.keys(defaults).sort();
   const domains = keys.map((key) => valuesFor(key, defaults[key]));
   const attempted = domains.reduce((count, values) => count * values.length, 1);
@@ -67,7 +72,7 @@ function* candidates(block, stats) {
 function saveBatch(kind, serial, entries, stats) {
   const id = "bmcbl:" + kind + serial;
   const structure = world.structureManager.createEmpty(
-    id, { x: EDGE, y: 1, z: EDGE }, StructureSaveMode.Memory
+    id, { x: EDGE, y: 1, z: EDGE }, StructureSaveMode?.Memory
   );
   let placed = 0;
   for (let index = 0; index < entries.length; index++) {
@@ -167,16 +172,121 @@ function* collect() {
     yield;
   }
   yield* putStructureVoid();
-  emit("END", stats);
+  emit("END", { ...stats, mode: "script_api_structure" });
 }
 
-world.afterEvents.worldLoad.subscribe(() => {
-  system.runJob((function* () {
+// Earlier stable @minecraft/server releases can expose block type information
+// before they support structure serialization. Preserve those observations but
+// never assign unknown persisted NBT version/type or numeric IDs.
+function* probe(ids, capabilities) {
+  emit("BEGIN", { blocks: ids.length, mode: "script_api_probe", capabilities });
+  let resolved = 0;
+  for (const id of ids) {
+    let states = null;
     try {
-      yield* collect();
+      const permutation = BlockPermutation?.resolve?.(id);
+      if (permutation) resolved++;
+      if (typeof permutation?.getAllStates === "function") {
+        states = permutation.getAllStates();
+      } else if (typeof permutation?.getAllProperties === "function") {
+        states = permutation.getAllProperties();
+      }
+    } catch (error) {
+      emit("WARNING", { block: id, message: String(error) });
+    }
+    emit("PROBE", { name: id, default_states: states });
+    yield;
+  }
+  if (resolved === 0) throw new Error("No candidate block could be resolved from this API");
+  emit("END", { mode: "script_api_probe", blocks: ids.length, resolved, placed: 0, structures: 0 });
+}
+
+function* chooseCapture() {
+  const capabilities = {
+    BlockTypes: typeof BlockTypes?.getAll === "function",
+    BlockStates: typeof BlockStates?.get === "function",
+    BlockPermutation: typeof BlockPermutation?.resolve === "function",
+    createEmpty: typeof world?.structureManager?.createEmpty === "function",
+    runJob: typeof system?.runJob === "function",
+  };
+  let ids;
+  let registrySource = "script_api";
+  if (capabilities.BlockTypes) {
+    ids = BlockTypes.getAll().map((block) => block.id).sort();
+  } else {
+    ids = fallbackBlockIds;
+    registrySource = "bds_resource_hints";
+    emit("WARNING", {
+      capability: "BlockTypes.getAll",
+      message: "Unavailable: BDS resource names are only incomplete hints"
+    });
+  }
+  emit("CAPABILITIES", { ...capabilities, registrySource });
+  if (!ids || ids.length === 0) {
+    throw new Error("No block IDs from Script API or BDS resource hints");
+  }
+  if (!capabilities.BlockPermutation) {
+    throw new Error("BlockPermutation.resolve unavailable: no Script API sampling possible");
+  }
+  let structuresReady = false;
+  if (capabilities.createEmpty && registrySource === "script_api") {
+    try {
+      const test = world.structureManager.createEmpty(
+        "bmcbl:capability_test", { x: 1, y: 1, z: 1 }, StructureSaveMode?.Memory
+      );
+      structuresReady = typeof test.setBlockPermutation === "function"
+        && typeof test.saveToWorld === "function";
+    } catch (error) {
+      emit("WARNING", { capability: "structure_write", message: String(error) });
+    }
+  }
+  if (structuresReady && capabilities.BlockStates) {
+    if (ids.length < 1000) {
+      throw new Error("Script API registry too small for a trusted full capture");
+    }
+    yield* collect();
+  } else {
+    yield* probe(ids, { ...capabilities, registrySource });
+  }
+}
+
+function start() {
+  const iterator = (function* () {
+    try {
+      yield* chooseCapture();
     } catch (error) {
       emit("FAIL", { message: String(error), stack: String(error?.stack ?? "") });
       throw error;
     }
-  })());
-});
+  })();
+  if (typeof system.runJob === "function") {
+    system.runJob(iterator);
+  } else if (typeof system.runInterval === "function") {
+    // Legacy scheduler: advance a bounded number of iterations every tick.
+    const subscription = system.runInterval(() => {
+      try {
+        for (let i = 0; i < 16; i++) {
+          if (iterator.next().done) {
+            system.clearRun(subscription);
+            break;
+          }
+        }
+      } catch (error) {
+        emit("FAIL", { message: String(error) });
+        system.clearRun(subscription);
+      }
+    }, 1);
+  } else {
+    emit("FAIL", { message: "No supported script scheduler" });
+  }
+}
+
+// 1.21.x Script API v1 uses worldInitialize. Script API v2 uses worldLoad.
+// Neither event name should be required just to import this module.
+const ready = world.afterEvents.worldLoad ?? world.afterEvents.worldInitialize;
+if (ready) {
+  ready.subscribe(start);
+} else {
+  // Explicitly documented fallback for versions lacking both after-events.
+  system.run(start);
+}

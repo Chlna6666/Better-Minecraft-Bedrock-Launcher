@@ -26,6 +26,80 @@ import zipfile
 LINKS_API = "https://net-secondary.web.minecraft-services.net/api/v1.0/download/links"
 PACK_ID = "eba1036d-209a-4e49-af43-1510862d8ad1"
 WORLD_NAME = "bmcbl_catalog"
+# Historical acquisition is capability-based, not PDB-based.
+# SHA-1 references are from Bedrock-OSS/BDS-Versions. We still compute
+# SHA-256 for every downloaded archive. Download bytes ONLY from Mojang.
+# To process a new historical build, add its verified exact archive digest.
+HISTORICAL_SHA1 = {
+    "1.19.70.02": "f56479e8e0eef4157ee1cc1f818f75061e6241c4",
+    "1.19.80.02": "d18271ed0a03818dc0fa12e8ef4eddb6d8eee9cf",
+    "1.20.0.01": "e26c25d0098485bf5691ee026501481ca0f13fae",
+    "1.20.10.01": "c5d3e1f16cfc5adb203fbcdfe6c3aa2e4a6b4234",
+    "1.20.50.03": "6081ffa46c77c73179766374dc7a551eb14abdf3",
+    "1.20.80.05": "980fcfac32265d56f2c6ec4362a6fe344cd1b030",
+    "1.21.0.03": "f74cd64c14bc1d850350626bd26755305cb42e46",
+    "1.21.20.03": "06be13f05da2fc05e93ab2d5cac3df5f51490691",
+    "1.21.30.03": "f49fdd1cf5d1475100ce3038d05dbe4c99229ad6",
+    "1.21.50.10": "e2849cdcfb0172712bfffbe36a23f06b02a838a6",
+    "1.21.60.10": "4b8236e92dc4e2c6ea2d251549c6ca46ad3f7e54",
+    "1.21.70.04": "296aab6abc7c43860dfc20390bd3bcc8efa7239a",
+    "1.21.80.3": "30ec90fbde8054d8b8e3bfbdb3c5edaa8dccbd2b",
+    "1.21.100.7": "c68f38ff0c75110b086f629a30fd95b86fbfc2df",
+    "1.21.130.4": "9f7cdf8bbeabe4b92efb4229f2eb6017e86a4a93",
+}
+# Exact major/minor Script API track by Minecraft release. Each profile is
+# *tested* against BDS at runtime, not assumed fully capable of Structure I/O.
+API_PROFILES = (
+    ((1, 19, 70), "1.0.0"),
+    ((1, 19, 80), "1.1.0"),
+    ((1, 20, 0), "1.2.0"),
+    ((1, 20, 10), "1.3.0"),
+    ((1, 20, 20), "1.4.0"),
+    ((1, 20, 30), "1.5.0"),
+    ((1, 20, 40), "1.6.0"),
+    ((1, 20, 50), "1.7.0"),
+    ((1, 20, 60), "1.8.0"),
+    ((1, 20, 70), "1.9.0"),
+    ((1, 20, 80), "1.10.0"),
+    ((1, 21, 0), "1.11.0"),
+    ((1, 21, 10), "1.12.0"),
+    ((1, 21, 20), "1.13.0"),
+    ((1, 21, 30), "1.14.0"),
+    ((1, 21, 40), "1.15.0"),
+    ((1, 21, 50), "1.16.0"),
+    ((1, 21, 60), "1.17.0"),
+    ((1, 21, 70), "1.18.0"),
+    ((1, 21, 80), "1.19.0"),
+    ((1, 21, 90), "2.0.0"),
+    ((1, 21, 100), "2.1.0"),
+    ((1, 21, 110), "2.2.0"),
+    ((1, 21, 120), "2.3.0"),
+    ((1, 21, 130), "2.4.0"),
+    ((1, 26, 0), "2.5.0"),
+    ((1, 26, 10), "2.6.0"),
+    ((1, 26, 20), "2.7.0"),
+    ((1, 26, 30), "2.8.0"),
+    ((1, 26, 40), "2.9.0"),
+    ((1, 26, 50), "2.10.0"),
+    ((1, 26, 60), "2.11.0"),
+)
+OFFICIAL_SERVER = "https://www.minecraft.net/bedrockdedicatedserver/bin-linux/"
+
+
+def version_numbers(version: str) -> tuple[int, int, int, int]:
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", version):
+        raise ValueError("BDS version must have four numeric components")
+    return tuple(map(int, version.split(".")))
+
+
+def script_profile(version: str) -> str:
+    series = version_numbers(version)[:3]
+    if series < (1, 19, 70):
+        raise ValueError("The stable @minecraft/server API started in 1.19.70; earlier versions require a different collector")
+    match = next((api for minimum, api in reversed(API_PROFILES) if series >= minimum), None)
+    if match is None:
+        raise ValueError("Unsupported BDS Script API version")
+    return match
 
 
 def discover(version: str) -> tuple[str, str]:
@@ -46,13 +120,18 @@ def discover(version: str) -> tuple[str, str]:
     ):
         raise RuntimeError("Unexpected official BDS download URL: " + url)
     actual = match.group(1)
-    if version != "latest" and version != actual:
-        raise RuntimeError("Only the latest official release is available from the discovery API; requested "
-                           + version + ", found " + actual)
-    return actual, url
+    if version == "latest":
+        return actual, url
+    version_numbers(version)
+    if version not in HISTORICAL_SHA1:
+        raise ValueError(
+            "Historical BDS not pinned: add its official exact version and SHA-1 to "
+            "HISTORICAL_SHA1 before enabling automated acquisition"
+        )
+    return version, OFFICIAL_SERVER + "bedrock-server-" + version + ".zip"
 
 
-def download(url: str, target: Path) -> str:
+def download(url: str, target: Path, expected_sha1: str | None) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     # curl handles Mojang's CDN HTTP/2 issues more consistently than urllib.
     subprocess.run([
@@ -63,11 +142,16 @@ def download(url: str, target: Path) -> str:
     ], check=True)
     if target.stat().st_size < 1_000_000:
         raise RuntimeError("Downloaded BDS archive is unexpectedly small")
-    sha = hashlib.sha256()
+    sha256 = hashlib.sha256()
+    sha1 = hashlib.sha1(usedforsecurity=False)
     with target.open("rb") as file:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            sha.update(chunk)
-    return sha.hexdigest()
+            sha256.update(chunk)
+            sha1.update(chunk)
+    if expected_sha1 and sha1.hexdigest().lower() != expected_sha1.lower():
+        target.unlink(missing_ok=True)
+        raise RuntimeError("Historic BDS archive digest differs from pinned metadata")
+    return sha256.hexdigest()
 
 
 def extract(archive: Path, destination: Path) -> None:
@@ -89,9 +173,50 @@ def extract(archive: Path, destination: Path) -> None:
     binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
 
 
-def configure(server: Path, pack: Path) -> None:
+def write_fallback_block_ids(server: Path, pack: Path) -> int:
+    """Provide explicitly *incomplete* block-name hints from shipped BDS JSON.
+
+    This is for old APIs lacking BlockTypes.getAll. It is never a proof of
+    complete block registry enumeration.
+    """
+    candidates: set[str] = set()
+    paths = [server / "definitions" / "blocks.json"]
+    paths += list((server / "behavior_packs").glob("vanilla*/blocks.json"))
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            source = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (ValueError, UnicodeError):
+            continue
+        if not isinstance(source, dict):
+            continue
+        blocks = source.get("blocks", source)
+        if not isinstance(blocks, dict):
+            continue
+        for name in blocks:
+            if isinstance(name, str) and name.startswith("minecraft:"):
+                candidates.add(name)
+    target = pack / "scripts" / "block_ids.js"
+    target.write_text(
+        "// BDS resource-file hints only; NOT an authoritative complete registry.\n"
+        + "export const fallbackBlockIds = "
+        + json.dumps(sorted(candidates), ensure_ascii=False)
+        + ";\n", encoding="utf-8",
+    )
+    return len(candidates)
+
+
+def configure(server: Path, pack: Path, version: str, api_version: str) -> None:
     target = server / "behavior_packs" / "bmcbl-block-catalog"
     shutil.copytree(pack, target)
+    manifest = target / "manifest.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["header"]["min_engine_version"] = list(version_numbers(version)[:3])
+    document["dependencies"] = [{"module_name": "@minecraft/server", "version": api_version}]
+    manifest.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    count = write_fallback_block_ids(server, target)
+    print(f"BDS resource fallback block-name hints: {count}", flush=True)
     properties = server / "server.properties"
     content = properties.read_text(encoding="utf-8") if properties.exists() else ""
     updates = {
@@ -195,21 +320,47 @@ def main() -> None:
         raise RuntimeError("Refusing to reuse a nonempty BDS workdir: " + str(args.workdir))
     args.workdir.mkdir(parents=True, exist_ok=True)
     version, url = discover(args.version)
+    api_version = script_profile(version)
     archive = args.workdir.parent / ("bmcbl-bedrock-" + version + ".zip")
-    digest = download(url, archive)
+    digest = download(url, archive, HISTORICAL_SHA1.get(version))
     extract(archive, args.workdir)
-    configure(args.workdir, Path(__file__).parent / "behavior_pack")
+    configure(args.workdir, Path(__file__).parent / "behavior_pack", version, api_version)
     args.log.parent.mkdir(parents=True, exist_ok=True)
     stats = run_server(args.workdir, args.log, args.timeout)
-    if stats.get("blocks", 0) < 1000 or stats.get("placed", 0) < 10000:
+    method = stats.get("mode", "script_api_structure")
+    if method not in ("script_api_structure", "script_api_probe"):
+        raise RuntimeError("BDS exporter reported an unrecognized capture mode")
+    if stats.get("blocks", 0) < 1 or (method == "script_api_structure" and (
+        stats.get("blocks", 0) < 1000 or stats.get("placed", 0) < 10000
+    )):
         raise RuntimeError("BDS exporter reported an incomplete capture: " + repr(stats))
     args.metadata.parent.mkdir(parents=True, exist_ok=True)
     args.metadata.write_text(
         json.dumps({"game_version": version, "bds_sha256": digest, "source_url": url,
-                    "capture_method": "script_api_structure", "stats": stats},
-                   indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"BMCBL capture completed: BDS {version}, {stats['blocks']} blocks, "
-          f"{stats['placed']} written permutations; SHA256 {digest}")
+                    "capture_method": method, "api_module": api_version,
+                    "stats": stats}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if method == "script_api_probe":
+        probes = []
+        for line in args.log.read_text(encoding="utf-8").splitlines():
+            if "BMCBL-DUMP-PROBE " not in line:
+                continue
+            probes.append(json.loads(line.split("BMCBL-DUMP-PROBE ", 1)[1]))
+        if len(probes) != stats["blocks"]:
+            raise RuntimeError("Partial API probe does not contain every reported block")
+        report = args.metadata.with_name("bmcbl-api-probe.json")
+        report.write_text(json.dumps({
+            "game_version": version, "api_module": api_version,
+            "warning": "API-only observations: no authoritative persisted NBT types, numeric IDs or block-state version",
+            "blocks": probes,
+        }, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        print(f"BMCBL {version}: API-only probe exported {len(probes)} blocks; full binary catalog NOT generated")
+    else:
+        print(f"BMCBL capture completed: BDS {version}, {stats['blocks']} blocks, "
+              f"{stats['placed']} written permutations; SHA256 {digest}")
+    if output := os.environ.get("GITHUB_OUTPUT"):
+        with open(output, "a", encoding="utf-8") as file:
+            file.write("method=" + method + "\n")
+            file.write("game_version=" + version + "\n")
 
 
 if __name__ == "__main__":
