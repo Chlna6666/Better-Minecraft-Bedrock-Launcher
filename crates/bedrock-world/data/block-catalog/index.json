@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "versions": {
+    "1.26.66.1": {
+      "manifest": "131ddd7f58d7c64f1f68fe4c4a935d05",
+      "storage_version": 18168865,
+      "blocks": 1480,
+      "states": 23953,
+      "bds_sha256": "e87bcd95bec5cc34b065ca956825c6abb7a0c356ae79408302845069cecaa6bf",
+      "capture_method": "script_api_structure"
+    }
+  }
+}
