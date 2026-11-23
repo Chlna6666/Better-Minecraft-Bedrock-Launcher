@@ -2443,17 +2443,19 @@ mod linux_tests {
     #[test]
     fn startup_platform_font_uses_loaded_generic_without_desktop_probe() {
         let mut database = cosmic_text::fontdb::Database::new();
+        // Use a checked-in font fixture rather than an untracked local MiSans
+        // asset. CI must be able to compile this test from a clean checkout.
         database.load_font_data(
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../assets/fonts/MiSans/MiSans-Medium.ttf"
+                "/../../vendor/sctk-adwaita/src/title/Cantarell-Regular.ttf"
             ))
             .to_vec(),
         );
-        database.set_sans_serif_family("MiSans");
+        database.set_sans_serif_family("Cantarell");
         let font_system = FontSystem::new_with_locale_and_db("en-US".to_owned(), database);
 
-        assert_eq!(startup_platform_font_name(&font_system), "MiSans");
+        assert_eq!(startup_platform_font_name(&font_system), "Cantarell");
     }
 
     #[test]
