@@ -1,6 +1,7 @@
 //! Minecraft Bedrock blocks, BlockStates, palettes and BlockEntity records.
 
 pub(crate) mod entity;
+pub mod palettes;
 mod query;
 pub(crate) mod state;
 pub mod version;

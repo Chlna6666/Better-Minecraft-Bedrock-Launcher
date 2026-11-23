@@ -740,6 +740,7 @@ dependencies = [
  "tokio",
  "walkdir",
  "xxhash-rust",
+ "zstd 0.14.0",
 ]
 
 [[package]]
