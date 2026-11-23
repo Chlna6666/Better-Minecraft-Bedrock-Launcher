@@ -44,12 +44,10 @@ mod resources;
     reason = "Direct3D 11 native COM/Win32 calls require audited unsafe FFI boundaries"
 )]
 mod surface;
-#[cfg_attr(
-    windows,
-    expect(
-        unsafe_code,
-        reason = "Direct3D 11 texture readback uses native COM and mapped pointers"
-    )
+#[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "Direct3D 11 texture readback uses native COM and mapped pointers"
 )]
 mod transfer;
 
