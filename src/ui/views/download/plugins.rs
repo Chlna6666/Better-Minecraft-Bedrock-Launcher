@@ -302,7 +302,12 @@ fn catalog_metadata(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
 }
 
 fn github_downloads(colors: &ThemeColors, plugin: &registry::Plugin) -> Option<Div> {
-    let count = plugin.github_download_count?.to_string();
+    // The registry reports downloads summed over every release, so this is a
+    // popularity figure rather than one version's count. Large numbers are
+    // abbreviated: "13.4K" reads at a glance where "13421" does not.
+    let count = crate::ui::views::download::common::format_count(
+        plugin.github_download_count? as f64,
+    );
     Some(
         div()
             .text_size(px(11.))
