@@ -26,8 +26,10 @@ pub(crate) struct Plugin {
     pub(crate) publisher: String,
     pub(crate) status: String,
     pub(crate) version: String,
-    #[serde(default)]
-    pub(crate) github_download_count: Option<u64>,
+    /// Downloads of .bmcblx plugin packages, excluding platform-specific
+    /// native libraries. Preserve the existing registry JSON field name.
+    #[serde(default, rename = "github_download_count")]
+    pub(crate) package_download_count: Option<u64>,
     #[serde(default)]
     pub(crate) tags: Vec<String>,
     pub(crate) icon: Option<Icon>,
@@ -269,7 +271,7 @@ mod tests {
     use super::Plugin;
 
     #[test]
-    fn registry_summary_accepts_optional_tags_and_github_downloads() {
+    fn registry_summary_accepts_optional_tags_and_package_downloads() {
         let mut summary = serde_json::json!({
             "id": "test-tools",
             "name": "Test Tools",
@@ -280,11 +282,11 @@ mod tests {
         });
         let previous = serde_json::from_value::<Plugin>(summary.clone()).unwrap();
         assert!(previous.tags.is_empty());
-        assert_eq!(previous.github_download_count, None);
+        assert_eq!(previous.package_download_count, None);
         summary["tags"] = serde_json::json!(["networking", "p2p"]);
         summary["github_download_count"] = serde_json::json!(0);
         let plugin = serde_json::from_value::<Plugin>(summary).unwrap();
         assert_eq!(plugin.tags, ["networking", "p2p"]);
-        assert_eq!(plugin.github_download_count, Some(0));
+        assert_eq!(plugin.package_download_count, Some(0));
     }
 }

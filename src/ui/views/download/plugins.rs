@@ -238,20 +238,16 @@ fn catalog_row(
         .child(catalog_summary(colors, plugin))
         .child(
             div()
+                .debug_selector(|| format!("plugin-action-{}", plugin.id))
                 .flex_none()
-                .max_w(relative(0.36))
                 .flex()
-                .flex_col()
-                .items_end()
-                .gap(px(2.))
+                .items_center()
+                .justify_end()
                 .child(
                     install_button(colors, cx, plugin, busy)
                         .h(px(30.))
-                        .px(px(11.))
+                        .px(px(12.))
                         .py(px(0.)),
-                )
-                .children(
-                    github_downloads(colors, plugin).map(|count| count.max_w_full().truncate()),
                 ),
         )
 }
@@ -298,22 +294,32 @@ fn catalog_metadata(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
                 .truncate()
                 .child(plugin_metadata(plugin)),
         )
+        .children(package_downloads(colors, plugin))
         .children(tags.map(|tags| tags.flex_1().flex_nowrap().overflow_hidden()))
 }
 
-fn github_downloads(colors: &ThemeColors, plugin: &registry::Plugin) -> Option<Div> {
-    // The registry reports downloads summed over every release, so this is a
-    // popularity figure rather than one version's count. Large numbers are
-    // abbreviated: "13.4K" reads at a glance where "13421" does not.
+fn package_downloads(colors: &ThemeColors, plugin: &registry::Plugin) -> Option<Div> {
+    // The registry counts .bmcblx packages across releases, not platform-specific
+    // native DLL/SO/dylib assets. Do not present this as unique installations.
     let count = crate::ui::views::download::common::format_count(
-        plugin.github_download_count? as f64,
+        plugin.package_download_count? as f64,
     );
     Some(
         div()
+            .debug_selector(|| format!("plugin-downloads-{}", plugin.id))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(4.))
             .text_size(px(11.))
             .text_color(colors.text_secondary)
             .whitespace_nowrap()
-            .child(t!("DownloadPage.plugins_github_downloads", count = count)),
+            .child(crate::ui::components::icon::themed_icon(
+                lucide_gpui::icon!(download),
+                12.0,
+                colors.text_muted,
+            ))
+            .child(t!("DownloadPage.plugins_downloads", count = count)),
     )
 }
 
@@ -366,7 +372,7 @@ fn summary(colors: &ThemeColors, plugin: &registry::Plugin) -> Div {
             )
         })
         .children(plugin_tags::render(colors, &plugin.tags))
-        .children(github_downloads(colors, plugin))
+        .children(package_downloads(colors, plugin))
 }
 
 fn install_button(
@@ -667,7 +673,7 @@ mod tests {
             publisher: "BMCBL".into(),
             status: "official".into(),
             version: "1.0.0".into(),
-            github_download_count: Some(42),
+            package_download_count: Some(42),
             tags: vec!["tools".into(), "networking".into(), "p2p".into()],
             icon: None,
         }
@@ -693,6 +699,9 @@ mod tests {
         });
         visual.simulate_resize(size(px(972.), px(600.)));
         let wide = visual.debug_bounds("catalog-row-first").unwrap();
+        let downloads = visual.debug_bounds("plugin-downloads-first").unwrap();
+        let action = visual.debug_bounds("plugin-action-first").unwrap();
+        assert!(downloads.right() <= action.left(), "{downloads:?} overlaps {action:?}");
         assert!(wide.right() >= px(950.), "{wide:?}");
         assert!(wide.size.height < px(90.), "{wide:?}");
 
@@ -705,6 +714,9 @@ mod tests {
         visual.simulate_resize(size(px(640.), px(460.)));
         let first = visual.debug_bounds("catalog-row-first").unwrap();
         let second = visual.debug_bounds("catalog-row-second").unwrap();
+        let downloads = visual.debug_bounds("plugin-downloads-first").unwrap();
+        let action = visual.debug_bounds("plugin-action-first").unwrap();
+        assert!(downloads.right() <= action.left(), "{downloads:?} overlaps {action:?}");
         assert!(first.right() >= px(618.), "{first:?}");
         assert_eq!(first.size.height, wide.size.height);
         assert_eq!(first.left(), second.left());
@@ -715,7 +727,7 @@ mod tests {
             let state = cx.global::<DownloadPageState>();
             let details = state.plugin_catalog.details.as_ref().unwrap();
             assert_eq!(details.plugin.id, "first");
-            assert_eq!(details.plugin.github_download_count, Some(42));
+            assert_eq!(details.plugin.package_download_count, Some(42));
         });
     }
 
