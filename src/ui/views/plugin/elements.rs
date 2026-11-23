@@ -3,6 +3,7 @@ use gpui::{
     ObjectFit, ParentElement, SharedString, Styled, StyledImage, Window, div, img, px,
 };
 
+use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{Input, InputEvent, InputSize, InputState};
 use crate::ui::state::theme::ThemeState;
@@ -59,7 +60,29 @@ fn render_node(
                 .then(|| crate::ui::components::page_shell::glass_card(&colors));
             let mut element = styled_container_on(style, &colors, surface);
             if columns {
-                element = element.items_start();
+                // A two-child full-width row is normally "field + action button".
+                // Aligning to the start left the input's text visibly high next to
+                // a centred button; a control row centres both instead, while a row
+                // of cards keeps its top alignment.
+                let controls_only = children.iter().all(|index| {
+                    matches!(
+                        nodes.get(*index as usize),
+                        Some(
+                            ViewNode::Input(_)
+                                | ViewNode::Button(_)
+                                | ViewNode::Text(_)
+                                | ViewNode::Select(_)
+                                | ViewNode::Toggle(_)
+                                | ViewNode::Checkbox(_)
+                                | ViewNode::Progress(_)
+                        )
+                    )
+                });
+                element = if controls_only {
+                    element.items_center()
+                } else {
+                    element.items_start()
+                };
                 if compact {
                     element = element.flex_col();
                 }
@@ -237,48 +260,66 @@ fn render_node(
             selected,
             style,
         }) => {
+            // A wrapping row of chips was used here, which overflowed as soon as a
+            // plugin offered more than a handful of choices (a list of game
+            // versions, for instance). The shared dropdown keeps the list closed
+            // until it is asked for.
+            if options.is_empty() {
+                return styled_container(style, &colors)
+                    .gap(px(6.0))
+                    .child(styled_text(label.clone(), style, &colors).p_0())
+                    .into_any_element();
+            }
+            let selected_index = selected
+                .as_deref()
+                .and_then(|value| options.iter().position(|option| option.value == value))
+                .unwrap_or(0);
+            let label_text = options
+                .get(selected_index)
+                .map(|option| SharedString::from(option.label.clone()))
+                .unwrap_or_else(|| SharedString::from(label.clone()));
+            let menu_options: Vec<DropdownOption> = options
+                .iter()
+                .map(|option| DropdownOption::from(SharedString::from(option.label.clone())))
+                .collect();
+            let values: Vec<String> = options.iter().map(|option| option.value.clone()).collect();
+            let trigger_label = if label.is_empty() {
+                label_text
+            } else {
+                label_text
+            };
+            let plugin_id = plugin_id.to_string();
+            let page_id = page_id.map(str::to_string);
+            let action_id = action_id.to_string();
             let mut element = styled_container(style, &colors)
                 .gap(px(6.0))
                 .child(styled_text(label.clone(), style, &colors).p_0());
-            let mut row = div().flex().flex_row().flex_wrap().gap(px(6.0));
-            for option in options {
-                let plugin_id = plugin_id.to_string();
-                let page_id = page_id.map(str::to_string);
-                let action_id = action_id.to_string();
-                let option_value = option.value.to_string();
-                let is_selected = selected.as_deref() == Some(option.value.as_str());
-                row = row.child(
-                    div()
-                        .px(px(10.0))
-                        .py(px(6.0))
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(token_color(ThemeToken::Border, &colors))
-                        .bg(if is_selected {
-                            token_color(ThemeToken::Accent, &colors)
-                        } else {
-                            token_color(ThemeToken::Surface, &colors)
-                        })
-                        .text_size(px(12.0))
-                        .text_color(if is_selected {
-                            colors.btn_primary_text
-                        } else {
-                            token_color(ThemeToken::PrimaryText, &colors)
-                        })
-                        .cursor_pointer()
-                        .child(SharedString::from(option.label.clone()))
-                        .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
-                            crate::plugins::runtime::dispatch_plugin_action(
-                                cx,
-                                plugin_id.clone(),
-                                page_id.clone(),
-                                action_id.clone(),
-                                Some(option_value.clone()),
-                            );
-                        }),
-                );
-            }
-            element = element.child(row);
+            element = element.child(Dropdown::new(
+                SharedString::from(format!(
+                    "plugin-select-{}-{}-{}",
+                    plugin_id,
+                    page_id.as_deref().unwrap_or("page"),
+                    action_id
+                )),
+                &colors,
+                px(260.),
+                trigger_label,
+                menu_options,
+                selected_index,
+                true,
+                move |index, _window, cx| {
+                    let Some(value) = values.get(index).cloned() else {
+                        return;
+                    };
+                    crate::plugins::runtime::dispatch_plugin_action(
+                        cx,
+                        plugin_id.clone(),
+                        page_id.clone(),
+                        action_id.clone(),
+                        Some(value),
+                    );
+                },
+            ));
             element.into_any_element()
         }
         ViewNode::Progress(ProgressNode {
