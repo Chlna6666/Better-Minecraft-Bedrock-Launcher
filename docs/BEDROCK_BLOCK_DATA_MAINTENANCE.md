@@ -129,15 +129,19 @@ python3 scripts/bedrock-block-catalog/diff_catalog.py \
 
 **上例中的 `id=1`、SHA 字符串均为格式占位符，不表示 Minecraft 中石头的真实数字 ID。必须替换成实际测得的值。**
 
-`source.platform`、二进制 SHA-256、PDB SHA-256、工具和每条 ID 的符号/RVA 证据均必填。PDB 必须与提取对象严格匹配；仅凭同一游戏发行版本号不等于 PDB 匹配。如果符号不能直接推导所需的值，应标记无法确认并**不要**填入 ID。
+`source.platform`、二进制 SHA-256、PDB SHA-256、工具和每条 ID 的符号/RVA 证据均必填。导入源 JSON 的可机读规范见 [id-registry.schema.json](../scripts/bedrock-block-catalog/id-registry.schema.json)，并由 Python 导入器再次执行语义与重复性检查。PDB 必须与提取对象严格匹配；仅凭同一游戏发行版本号不等于 PDB 匹配。如果符号不能直接推导所需的值，应标记无法确认并**不要**填入 ID。
 
 ### 三个命名空间
 
 | namespace | 导入键 | 必须字段 | 限制 |
 |---|---|---|---|
-| `legacy_numeric_block` | `id + metadata` | `id`、`metadata`、`name`、精确类型化 `states`、`evidence` | 不能用注册表序号替代历史数字 ID |
+| `legacy_numeric_block` | `id + metadata` | `id`、`metadata`、`name`、NBT 存储 `version`、精确类型化 `states`、`evidence` | 不能用注册表序号替代历史数字 ID |
 | `block_type_runtime` | `id` | `id`、`name`、`evidence` | 不得携带 metadata、状态组合；仅对应具体进程/构建 |
-| `network_runtime` | `palette_fingerprint + id` | `id`、`name`、精确类型化 `states`、`evidence` | 必须记录运行时 Palette 指纹；不保证跨连接稳定 |
+| `network_runtime` | `palette_fingerprint + id` | `id`、`name`、NBT 存储 `version`、精确类型化 `states`、`evidence` | 必须记录运行时 Palette 指纹；不保证跨连接稳定 |
+
+如果网络协议/哈希以有符号 32 位整数展示 ID（例如 `-1`），导入器将其规范化为同一 32 位无符号位模式（`4294967295`），不会把不同的有符号表现形式当成两个 ID；原始表示仍保留在压缩证据中。此归一化**仅适用于 `network_runtime`**，不得用于 `legacy_numeric_block`。
+
+完整 BlockState 映射必须额外包含 `"version": 18168865`（仅为示例格式值，真实数据需要从目标 BDS/PDB 对应的 NBT 取得）。缺失版本一律拒绝，不得用游戏版本号推导。类型注册表 `block_type_runtime` 没有 NBT `states` 或 `version`，这两个字段均应省略。
 
 `states` 使用明确的 NBT 类型：
 
@@ -203,3 +207,22 @@ python3 scripts/bedrock-block-catalog/import_id_registry.py \
 - [PocketMine / BedrockBlockUpgradeSchema](https://github.com/opencollab-incubator/BedrockBlockUpgradeSchema)
 - [BedrockBlockPaletteArchive](https://github.com/opencollab-incubator/BedrockBlockPaletteArchive)
 - [Bedrock level format（磁盘 NBT 与运行时 ID 的区别）](https://minecraft.wiki/w/Bedrock_Edition_level_format)
+
+
+## 8. 已实测的历史 Linux BDS（2026-11-23）
+
+在 [历史批量 Actions 运行 #45187970126](https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher/actions/runs/45187970126) 中，以下五个**官方归档版本**经过实际执行。详细机器可读结果见 [historical-capture-report.json](../crates/bedrock-world/data/block-catalog/historical-capture-report.json)。
+
+| 精确 BDS 版本 | API | 已观测方块数 | 结果 | 关键原因 |
+|---|---|---:|---|---|
+| `1.19.70.02` | 1.0.0 | 未取得 | `capture_failed` | 脚本没有成功结束；尚无可用方块记录 |
+| `1.20.80.05` | 1.10.0 | 未取得 | `capture_failed` | 缺少 `BlockTypes.getAll`；该 BDS 的候选文件未产生可用名称 |
+| `1.21.20.03` | 1.13.0 | 1,189 | `partial_probe` | `StructureManager.createEmpty` 在能力探测时报 `EngineError` |
+| `1.21.80.3` | 1.19.0 | 1,261 | `partial_probe` | `StructureManager.createEmpty` 在能力探测时报 `EngineError` |
+| `1.21.100.7` | 2.1.0 | 1,269 | `partial_probe` | `StructureManager.createEmpty` 在能力探测时报 `EngineError` |
+
+这三个 `partial_probe` 结果含对应版本实际通过 Script API 解析出的方块名与默认状态；**不包含权威持久化 NBT `version` 或所有合法组合**。现有正式 `index.json` 仍只有经过 Structure + LevelDB 编译校验的 `1.26.66.1`（1,480 种方块、23,953 个状态）；这些数字不能直接比较为新增/删除状态的总量。
+
+`EngineError` 尚不能证明旧版完全不支持 Structure API：原因可能是 API 调用时序、服务端环境或保存模式。后续可做针对性修复验证，但在真实 NBT 保存成功且通过覆盖率校验前，禁止将 `partial_probe` 改名为 `complete_structure_capture`。
+
+`1.19.70` 的失败在超时/启动阶段没有足够的结构化日志，需要检查原始 CI 诊断，不得反推其方块注册表内容。历史构建的 Script API 能力以**实际运行记录**为准，不以仅存在 API 类型声明作为成功证据。

@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BMCBL Bedrock Block Identity Registry Import v1",
+  "description": "Source JSON for the strict PDB/runtime registry importer. Numeric namespaces never imply cross-version equivalence.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "game_version",
+    "source",
+    "registries"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "game_version": {
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+){3}$"
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "method",
+        "platform",
+        "binary_sha256",
+        "tool"
+      ],
+      "properties": {
+        "method": {
+          "enum": [
+            "pdb_symbol_inspection",
+            "runtime_registry_observation"
+          ]
+        },
+        "platform": {
+          "enum": [
+            "windows-x64",
+            "linux-x64",
+            "windows-arm64",
+            "linux-arm64"
+          ]
+        },
+        "binary_sha256": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        },
+        "pdb_sha256": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        },
+        "tool": {
+          "type": "string",
+          "minLength": 3
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "pdb_symbol_inspection"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "pdb_sha256"
+            ]
+          }
+        }
+      ]
+    },
+    "registries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/legacy"
+          },
+          {
+            "$ref": "#/$defs/type"
+          },
+          {
+            "$ref": "#/$defs/net"
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "u32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "typedTag": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "Byte"
+            },
+            "value": {
+              "type": "integer",
+              "minimum": -128,
+              "maximum": 127
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "Int"
+            },
+            "value": {
+              "type": "integer",
+              "minimum": -2147483648,
+              "maximum": 2147483647
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "String"
+            },
+            "value": {
+              "type": "string",
+              "maxLength": 65536
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "baseEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.-]+:[a-z0-9_./-]+$"
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 8
+        },
+        "metadata": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "states": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": {
+            "$ref": "#/$defs/typedTag"
+          }
+        },
+        "version": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "evidence"
+      ],
+      "additionalProperties": false
+    },
+    "legacy": {
+      "type": "object",
+      "required": [
+        "namespace",
+        "entries"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "legacy_numeric_block"
+        },
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/baseEntry"
+              },
+              {
+                "required": [
+                  "metadata",
+                  "version",
+                  "states"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "type": {
+      "type": "object",
+      "required": [
+        "namespace",
+        "entries"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "block_type_runtime"
+        },
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "evidence"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/u32"
+              },
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z0-9_.-]+:[a-z0-9_./-]+$"
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 8
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "net": {
+      "type": "object",
+      "required": [
+        "namespace",
+        "palette_fingerprint",
+        "entries"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "network_runtime"
+        },
+        "palette_fingerprint": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        },
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "evidence",
+              "version",
+              "states"
+            ],
+            "properties": {
+              "id": {
+                "type": "integer",
+                "minimum": -2147483648,
+                "maximum": 4294967295
+              },
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z0-9_.-]+:[a-z0-9_./-]+$"
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 8
+              },
+              "states": {
+                "type": "object",
+                "maxProperties": 64,
+                "additionalProperties": {
+                  "$ref": "#/$defs/typedTag"
+                }
+              },
+              "version": {
+                "type": "integer",
+                "minimum": -2147483648,
+                "maximum": 2147483647
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

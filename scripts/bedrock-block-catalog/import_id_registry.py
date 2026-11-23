@@ -99,11 +99,21 @@ def parse_registry(obj: dict, names: set[str] | None, allow_unknown: bool) -> tu
     require(isinstance(entries, list) and 0 < len(entries) <= MAX_RECORDS,
             "registry entries missing, empty or too large")
     seen = set()
+    seen_types = set()
+    seen_network_states = set()
     normalized = []
     unknown = False
     for record in entries:
         require(isinstance(record, dict), "each registry entry must be an object")
-        id_num = natural(record.get("id"), "entry id")
+        raw_id = record.get("id")
+        if namespace == "network_runtime":
+            require(type(raw_id) is int and -(2**31) <= raw_id <= 0xffffffff,
+                    "network ID must be signed i32 or unsigned u32")
+            # Network varints and 32-bit FNV hashes may appear signed in dumps.
+            # Keep the exact bit pattern in the binary; original sign in evidence.
+            id_num = raw_id & 0xffffffff
+        else:
+            id_num = natural(raw_id, "entry id")
         name = name_of(record.get("name"))
         evidence = record.get("evidence")
         require(isinstance(evidence, str) and len(evidence.strip()) >= 8,
@@ -122,25 +132,43 @@ def parse_registry(obj: dict, names: set[str] | None, allow_unknown: bool) -> tu
         require(key not in seen, "duplicate/conflicting numeric identity " + repr(key))
         seen.add(key)
         states = record.get("states")
+        storage_version = record.get("version")
         if namespace == "block_type_runtime":
             require(states is None, "BlockType ID maps a block type, not an NBT state")
+            require(storage_version is None, "BlockType ID has no persisted NBT version")
+        else:
+            require(type(storage_version) is int and -(2**31) <= storage_version < 2**31,
+                    "persisted NBT BlockState.version must be explicit signed i32")
         serialized_state = encode_state(states,
                 required=namespace in ("legacy_numeric_block", "network_runtime"))
-        normalized.append((id_num, -1 if meta is None else meta, name, serialized_state))
+        if namespace == "block_type_runtime":
+            require(name not in seen_types,
+                    "one block name has multiple runtime type IDs; resolve explicit aliases first")
+            seen_types.add(name)
+        if namespace == "network_runtime":
+            semantic_key = (name, serialized_state)
+            require(semantic_key not in seen_network_states,
+                    "same network BlockState mapped to multiple runtime IDs")
+            seen_network_states.add(semantic_key)
+        normalized.append((id_num, -1 if meta is None else meta, name,
+                           storage_version, serialized_state))
     normalized.sort(key=lambda row: (row[0], row[1], row[2]))
     dictionary = sorted(set(row[2] for row in normalized))
     names_map = {name: i for i, name in enumerate(dictionary)}
-    binary = bytearray(b"BMCBID01")
+    # Format v2 includes exact persisted NBT BlockState.version per mapping.
+    binary = bytearray(b"BMCBID02")
     binary.append(NAMESPACES[namespace])
     binary.extend(varint(len(dictionary)))
     for name in dictionary:
         binary.extend(text(name))
     binary.extend(varint(len(normalized)))
-    for id_num, metadata, name, state in normalized:
+    for id_num, metadata, name, storage_version, state in normalized:
         binary.extend(varint(id_num))
         if namespace == "legacy_numeric_block":
             binary.extend(varint(metadata))
         binary.extend(varint(names_map[name]))
+        if namespace != "block_type_runtime":
+            binary.extend(struct.pack("<i", storage_version))
         binary.extend(state)
     return namespace, palette, bytes(binary), len(entries), not unknown
 

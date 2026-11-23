@@ -265,11 +265,18 @@ def run_server(server: Path, log_path: Path, timeout: int) -> dict:
 
     thread = threading.Thread(target=reader, daemon=True)
     thread.start()
-    deadline = time.monotonic() + timeout
+    started_at = time.monotonic()
+    deadline = started_at + timeout
+    script_seen = False
     result = None
     try:
         with log_path.open("w", encoding="utf-8") as output:
             while time.monotonic() < deadline:
+                if not script_seen and time.monotonic() - started_at > 75:
+                    raise RuntimeError(
+                        "BDS started but the behavior-pack script emitted no capture markers "
+                        "within 75 seconds; incompatible module/event or failed world startup"
+                    )
                 try:
                     line = events.get(timeout=1)
                 except queue.Empty:
@@ -280,6 +287,8 @@ def run_server(server: Path, log_path: Path, timeout: int) -> dict:
                     break
                 output.write(line)
                 output.flush()
+                if "BMCBL-DUMP-" in line:
+                    script_seen = True
                 # Keep the CI console concise while preserving the full diagnostic log.
                 if "BMCBL-DUMP-" in line or "ERROR" in line.upper():
                     print(line.rstrip(), flush=True)

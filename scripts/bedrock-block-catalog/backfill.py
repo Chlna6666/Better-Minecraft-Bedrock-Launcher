@@ -99,11 +99,37 @@ def run_versions(versions: list[str], catalog: Path, work_root: Path,
         outcomes.append(record)
         print(json.dumps(record, ensure_ascii=False)[:3500], flush=True)
     report_path = catalog / "historical-capture-report.json"
+    by_version = {}
+    if report_path.is_file():
+        previous = json.loads(report_path.read_text(encoding="utf-8"))
+        for item in previous.get("results", []):
+            by_version[item["game_version"]] = item
+    for item in outcomes:
+        # Updates one exact version without discarding unrelated historical runs.
+        if item["status"] != "already_captured" or item["game_version"] not in by_version:
+            by_version[item["game_version"]] = item
+    sorted_results = sorted(
+        by_version.values(),
+        key=lambda item: tuple(int(x) for x in item["game_version"].split("."))
+    )
     report_path.write_text(json.dumps({
         "schema_version": 1,
         "documentation": "docs/BEDROCK_BLOCK_DATA_MAINTENANCE.md",
-        "results": outcomes,
+        "results": sorted_results,
     }, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    # Exact-name and state-delta reports: no inferred aliases, no guessed IDs.
+    index_path = catalog / "index.json"
+    if index_path.is_file():
+        from diff_catalog import compare
+        available = json.loads(index_path.read_text(encoding="utf-8")).get("versions", {})
+        sorted_versions = sorted(available, key=lambda version: tuple(map(int, version.split("."))))
+        differences = []
+        for prior, following in zip(sorted_versions, sorted_versions[1:]):
+            differences.append(compare(catalog, prior, following))
+        (catalog / "historical-differences.json").write_text(
+            json.dumps({"schema_version": 1, "comparisons": differences},
+                       ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
     return outcomes
 
 

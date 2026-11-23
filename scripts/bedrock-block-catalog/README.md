@@ -176,7 +176,9 @@ serial Linux job. The backfill retains explicit `complete_structure_capture`,
 enter the binary palette; no unverified historical ID is added automatically.
 
 For PDB extractions, produce JSON in the documented schema and use
-`scripts/bedrock-block-catalog/import_id_registry.py`. The importer checks
+`scripts/bedrock-block-catalog/import_id_registry.py`. The JSON input is described by
+[`id-registry.schema.json`](id-registry.schema.json) (including per-state NBT `version`).
+The importer checks
 duplicated/conflicting IDs, exact typed states and per-entry symbol evidence,
 then writes a small content-addressed binary index plus compressed evidence.
 Uncatalogued entries require explicit `--stage-unverified` and are never

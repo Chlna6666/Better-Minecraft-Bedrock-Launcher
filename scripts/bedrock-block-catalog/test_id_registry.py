@@ -25,11 +25,11 @@ def registry(namespace, value=1):
     block = {"id": value, "name": "minecraft:stone",
              "evidence": "BlockPalette::mRegistry RVA 0x00012ea0"}
     if namespace == "legacy_numeric_block":
-        block.update({"metadata": 0, "states": {
+        block.update({"metadata": 0, "version": 18168865, "states": {
             "stone_type": {"type": "String", "value": "stone"},
         }})
     elif namespace == "network_runtime":
-        block.update({"states": {
+        block.update({"version": 18168865, "states": {
             "stone_type": {"type": "String", "value": "stone"},
         }})
     obj = {"namespace": namespace, "entries": [block]}
@@ -50,6 +50,18 @@ class IdentityImportTests(unittest.TestCase):
         b = parse_registry(registry("legacy_numeric_block"), {"minecraft:stone"}, False)
         self.assertNotEqual(a[2], b[2])
 
+    def test_persisted_storage_version_is_required_and_distinct(self):
+        first = registry("legacy_numeric_block")
+        second = registry("legacy_numeric_block")
+        second["entries"][0]["version"] = 18168864
+        self.assertNotEqual(
+            parse_registry(first, {"minecraft:stone"}, False)[2],
+            parse_registry(second, {"minecraft:stone"}, False)[2],
+        )
+        del first["entries"][0]["version"]
+        with self.assertRaisesRegex(ValueError, "version must be explicit"):
+            parse_registry(first, {"minecraft:stone"}, False)
+
     def test_typed_state_matters(self):
         a = registry("legacy_numeric_block")
         b = registry("legacy_numeric_block")
@@ -64,6 +76,22 @@ class IdentityImportTests(unittest.TestCase):
             parse_registry(registry("block_type_runtime"), set(), False)
         result = parse_registry(registry("block_type_runtime"), set(), True)
         self.assertFalse(result[4])
+
+    def test_network_negative_signed_id_normalizes_to_u32(self):
+        negative = registry("network_runtime", -1)
+        unsigned = registry("network_runtime", 0xffffffff)
+        self.assertEqual(
+            parse_registry(negative, {"minecraft:stone"}, False)[2],
+            parse_registry(unsigned, {"minecraft:stone"}, False)[2],
+        )
+
+    def test_block_type_one_name_cannot_have_two_ids(self):
+        table = registry("block_type_runtime")
+        entry = dict(table["entries"][0])
+        entry["id"] = 2
+        table["entries"].append(entry)
+        with self.assertRaisesRegex(ValueError, "multiple runtime type IDs"):
+            parse_registry(table, {"minecraft:stone"}, False)
 
     def test_network_runtime_requires_palette_fingerprint(self):
         item = registry("network_runtime")
