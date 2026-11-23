@@ -9192,7 +9192,9 @@ mod non_windows_stub_tests {
     }
 }
 
-#[cfg(test)]
+// These conformance cases create a real D3D12 device and require Windows
+// texture readback support. #[ignore] does not disable type-checking on Linux.
+#[cfg(all(test, windows))]
 mod conformance_tests {
     use super::*;
 
