@@ -1134,6 +1134,58 @@ mod retained_dirty_scope_tests {
         assert!(!invalidator.retained_path_is_dirty(&path(&[0, 1, 2])));
     }
 
+    #[test]
+    fn global_value_changes_do_not_invalidate_existence_only_readers() {
+        let invalidator = WindowInvalidator::new();
+        let global = TypeId::of::<u32>();
+        let value_reader = EntityId::from(1);
+        let present_reader = EntityId::from(2);
+        let absent_reader = EntityId::from(3);
+        let mut dependencies = crate::GlobalReadDependencies::default();
+        dependencies.insert((global, None), Some(smallvec::smallvec![value_reader]));
+        dependencies.insert((global, Some(true)), Some(smallvec::smallvec![present_reader]));
+        dependencies.insert((global, Some(false)), Some(smallvec::smallvec![absent_reader]));
+        invalidator.commit_global_read_dependencies(&mut dependencies, false, |_| true);
+
+        invalidator.set_dirty(false);
+        invalidator.invalidate_global_dependency(TypeId::of::<u64>(), true);
+        assert!(!invalidator.is_dirty());
+
+        invalidator.invalidate_global_dependency(global, true);
+        assert_eq!(invalidator.take_views(), FxHashSet::from_iter([value_reader, absent_reader]));
+        invalidator.set_dirty(false);
+        assert!(invalidator.active_targeted_replay());
+        assert!(!invalidator.active_generic_view_is_dirty(present_reader));
+
+        invalidator.invalidate_global_dependency(global, false);
+        assert_eq!(invalidator.take_views(), FxHashSet::from_iter([value_reader, present_reader]));
+    }
+
+    #[test]
+    fn unknown_global_read_preserves_conservative_replay_fallback() {
+        let invalidator = WindowInvalidator::new();
+        let global = TypeId::of::<u32>();
+        let owner = EntityId::from(1);
+        let mut dependencies = crate::GlobalReadDependencies::default();
+        dependencies.insert((global, None), None);
+        invalidator.commit_global_read_dependencies(&mut dependencies, false, |_| true);
+        dependencies.clear();
+        dependencies.insert((global, None), Some(smallvec::smallvec![owner]));
+        invalidator.commit_global_read_dependencies(&mut dependencies, true, |_| true);
+        invalidator.set_dirty(false);
+        invalidator.invalidate_global_dependency(global, true);
+        invalidator.set_dirty(false);
+        assert!(!invalidator.active_targeted_replay());
+
+        dependencies.clear();
+        dependencies.insert((global, None), Some(smallvec::smallvec![owner]));
+        invalidator.commit_global_read_dependencies(&mut dependencies, false, |_| true);
+        invalidator.invalidate_global_dependency(global, true);
+        invalidator.set_dirty(false);
+        assert!(invalidator.active_targeted_replay());
+        assert!(invalidator.active_generic_view_is_dirty(owner));
+    }
+
     #[gpui::test]
     fn render_dependency_notification_targets_all_readers_but_not_unrelated_views(
         cx: &mut crate::TestAppContext,

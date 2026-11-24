@@ -167,3 +167,56 @@ impl<G: Global> DerefMut for GlobalLease<G> {
         self.global.downcast_mut().unwrap()
     }
 }
+
+#[cfg(test)]
+mod dependency_tests {
+    use super::*;
+    use crate::{AppContext, TestAppContext};
+
+    struct Present;
+    impl Global for Present {}
+    struct Absent;
+    impl Global for Absent {}
+
+    #[gpui::test]
+    fn read_apis_record_value_and_existence_independently(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(Present);
+            let owner = cx.new(|_| ());
+            cx.entities.begin_frame_dependencies();
+            cx.entities.set_render_dependency_owner(Some(owner.entity_id()));
+            assert!(cx.has_global::<Present>());
+            assert!(!cx.has_global::<Absent>());
+            assert!(cx.try_global::<Absent>().is_none());
+            let _ = cx.global::<Present>();
+            assert!(cx.try_global::<Present>().is_some());
+            let dependencies = cx.entities.take_global_read_dependencies();
+            for key in [
+                (TypeId::of::<Present>(), Some(true)),
+                (TypeId::of::<Present>(), None),
+                (TypeId::of::<Absent>(), Some(false)),
+            ] {
+                assert_eq!(
+                    dependencies.get(&key).unwrap().as_ref().unwrap().as_slice(),
+                    &[owner.entity_id()],
+                );
+            }
+            assert_eq!(dependencies.len(), 3);
+            cx.entities.discard_frame_dependencies();
+        });
+    }
+
+    #[gpui::test]
+    fn draw_time_mutable_global_access_does_not_enqueue_automatic_redraw(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(Present);
+            cx.pending_global_read_invalidations.clear();
+            cx.entities.begin_frame_dependencies();
+            let _ = cx.global_mut::<Present>();
+            assert!(cx.pending_global_read_invalidations.is_empty());
+            cx.entities.discard_frame_dependencies();
+            let _ = cx.global_mut::<Present>();
+            assert!(cx.pending_global_read_invalidations.contains(&TypeId::of::<Present>()));
+        });
+    }
+}
