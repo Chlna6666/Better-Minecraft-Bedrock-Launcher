@@ -122,9 +122,9 @@ impl VulkanDevice {
             unsafe {
                 self.device
                     .cmd_reset_query_pool(commands.command_buffer, query, 0, 2);
-                self.device.cmd_write_timestamp(
+                self.device.cmd_write_timestamp2(
                     commands.command_buffer,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags2::TOP_OF_PIPE,
                     query,
                     0,
                 );
@@ -213,9 +213,9 @@ impl VulkanDevice {
         if let Some(query) = commands.timestamp_queries.filter(|_| timed) {
             // SAFETY: The query pool remains owned until the native upload fence completes.
             unsafe {
-                self.device.cmd_write_timestamp(
+                self.device.cmd_write_timestamp2(
                     commands.command_buffer,
-                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
                     query,
                     1,
                 );

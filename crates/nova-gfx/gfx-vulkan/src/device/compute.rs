@@ -307,9 +307,9 @@ impl VulkanDevice {
                     &[],
                 );
                 if let Some(query) = query {
-                    self.device.cmd_write_timestamp(
-                        command,
-                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                    self.device.cmd_write_timestamp2(
+                    command,
+                    vk::PipelineStageFlags2::TOP_OF_PIPE,
                         query,
                         0,
                     );
@@ -321,9 +321,9 @@ impl VulkanDevice {
                     dispatch.workgroups[2],
                 );
                 if let Some(query) = query {
-                    self.device.cmd_write_timestamp(
-                        command,
-                        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    self.device.cmd_write_timestamp2(
+                    command,
+                    vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
                         query,
                         1,
                     );
@@ -579,9 +579,9 @@ impl VulkanDevice {
                     .map_err(VulkanError::from)?;
                 if let Some(query) = query {
                     self.device.cmd_reset_query_pool(command, query, 0, 2);
-                    self.device.cmd_write_timestamp(
-                        command,
-                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                    self.device.cmd_write_timestamp2(
+                    command,
+                    vk::PipelineStageFlags2::TOP_OF_PIPE,
                         query,
                         0,
                     );
@@ -669,9 +669,9 @@ impl VulkanDevice {
                     }
                 }
                 if let Some(query) = query {
-                    self.device.cmd_write_timestamp(
-                        command,
-                        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    self.device.cmd_write_timestamp2(
+                    command,
+                    vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
                         query,
                         1,
                     );

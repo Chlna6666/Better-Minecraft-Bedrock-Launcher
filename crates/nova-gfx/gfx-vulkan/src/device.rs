@@ -4135,9 +4135,9 @@ impl VulkanDevice {
             unsafe {
                 self.device
                     .cmd_reset_query_pool(command_buffer, query_pool, 0, 2);
-                self.device.cmd_write_timestamp(
+                self.device.cmd_write_timestamp2(
                     command_buffer,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags2::TOP_OF_PIPE,
                     query_pool,
                     0,
                 );
@@ -4153,9 +4153,9 @@ impl VulkanDevice {
         if let Some(query_pool) = commands.timestamp_queries {
             // SAFETY: The command buffer is recording and query slot one is valid.
             unsafe {
-                self.device.cmd_write_timestamp(
+                self.device.cmd_write_timestamp2(
                     command_buffer,
-                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
                     query_pool,
                     1,
                 );
@@ -6462,7 +6462,11 @@ fn deferred_resource_ready(device: &ash::Device, resource: &DeferredResource) ->
         | DeferredResource::Upload { fence, .. }
         | DeferredResource::CommandEncoder(VulkanCommandEncoder { fence, .. }) => *fence,
     };
-    fence == vk::Fence::null() || fence_is_complete(device, fence)
+    // Resource retirement publishes logical completion for tracked encoders.
+    // Device loss is not successful execution; leave these records for
+    // teardown instead of rewriting their submission fence to null.
+    fence == vk::Fence::null()
+        || matches!(unsafe { device.get_fence_status(fence) }, Ok(true))
 }
 
 fn fence_is_complete(device: &ash::Device, fence: vk::Fence) -> bool {
@@ -7895,9 +7899,9 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         unsafe {
             info.device
                 .cmd_reset_query_pool(info.command_buffer, query_pool, first_query, 2);
-            info.device.cmd_write_timestamp(
-                info.command_buffer,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
+            info.device.cmd_write_timestamp2(
+                    info.command_buffer,
+                    vk::PipelineStageFlags2::TOP_OF_PIPE,
                 query_pool,
                 first_query,
             );
@@ -8021,9 +8025,9 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             .cmd_set_viewport(info.command_buffer, 0, &[viewport]);
         if let Some((pool, slot)) = info.gpu_indirect_trace {
             // The clear/attachment setup has completed: start at native draw.
-            info.device.cmd_write_timestamp(
-                info.command_buffer,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
+            info.device.cmd_write_timestamp2(
+                    info.command_buffer,
+                    vk::PipelineStageFlags2::TOP_OF_PIPE,
                 pool,
                 slot,
             );
@@ -8164,9 +8168,9 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         if let Some((pool, slot)) = info.gpu_indirect_trace {
             // Ends after the last indirect command, before MSAA resolve,
             // attachment layout changes or GUI composition.
-            info.device.cmd_write_timestamp(
-                info.command_buffer,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            info.device.cmd_write_timestamp2(
+                    info.command_buffer,
+                    vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
                 pool,
                 slot + 1,
             );
@@ -8229,9 +8233,9 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             );
         }
         if let Some((query_pool, first_query)) = info.gpu_trace {
-            info.device.cmd_write_timestamp(
-                info.command_buffer,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            info.device.cmd_write_timestamp2(
+                    info.command_buffer,
+                    vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
                 query_pool,
                 first_query + 1,
             );
