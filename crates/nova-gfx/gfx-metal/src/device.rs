@@ -52,6 +52,7 @@ mod platform {
     mod relocation;
     mod texture;
     mod bindings;
+    mod offscreen;
     use bindings::{NativeBindGroup, PreparedBindings};
     use super::*;
     use crate::registry::ResourceRegistry;
@@ -295,7 +296,7 @@ mod platform {
             let native = self.create_native_bind_group(desc, &layout)?;
             Ok(self.bind_groups.insert(MetalResourceSet {
                 layout: desc.layout,
-                native: std::sync::Arc::new(native),
+                native: std::rc::Rc::new(native),
             }))
         }
 
@@ -576,7 +577,7 @@ mod platform {
                     .ok_or_else(|| {
                         Error::Backend("failed to create Metal render encoder".to_string())
                     })?;
-                encode_draw_steps(&encoder, &render_steps, swapchain.config);
+                encode_draw_steps(&encoder, &render_steps, swapchain.config.size, full_viewport(swapchain.config.size));
                 encoder.endEncoding();
                 let record_elapsed = started.elapsed().saturating_sub(image_acquire);
                 let present_started = Instant::now();
@@ -595,7 +596,7 @@ mod platform {
             let Some((command_buffer, timings)) = frame else {
                 return Ok(None);
             };
-            let submission = self.submissions.insert(MetalSubmission { command_buffer });
+            let submission = self.submissions.insert(MetalSubmission { command_buffer, presented: true });
             self.swapchains.get_mut(swapchain_id)?.last_submission = Some(submission);
             self.submitted_frames = self.submitted_frames.saturating_add(1);
             Ok(Some(PresentedFrame { submission: Some(submission), timings: Some(timings) }))
@@ -1027,7 +1028,7 @@ mod platform {
                     duration_ticks: ns as u64, frequency: 1_000_000_000,
                 })
             } else { None };
-            if sample.is_some() {
+            if record.presented && sample.is_some() {
                 self.last_frame_gpu_timestamps = sample;
             }
             Ok((SubmissionStatus::Complete, sample))
@@ -1098,6 +1099,14 @@ mod platform {
             };
             self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, color, frame.depth_attachment)
         }
+
+        fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
+            self.submit_texture_passes(std::slice::from_ref(pass), false).map(|_| ())
+        }
+
+        fn render_to_textures(&mut self, passes: &[RenderPassCommands<'_>]) -> Result<Option<SubmissionId>> {
+            self.submit_texture_passes(passes, true)
+        }
     }
 
     impl DiagnosticsDevice for MetalDevice {
@@ -1153,7 +1162,7 @@ mod platform {
     #[derive(Clone)]
     struct MetalResourceSet {
         layout: BindGroupLayoutId,
-        native: std::sync::Arc<NativeBindGroup>,
+        native: std::rc::Rc<NativeBindGroup>,
     }
 
     #[derive(Clone)]
@@ -1211,6 +1220,7 @@ mod platform {
 
     struct MetalSubmission {
         command_buffer: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
+        presented: bool,
     }
 
     fn create_or_replace_metal_layer(
@@ -1388,17 +1398,15 @@ mod platform {
     fn encode_draw_steps(
         encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
         steps: &[PreparedMetalRenderStep],
-        config: SurfaceConfig,
+        extent: gfx_core::Extent2d,
+        viewport: MTLViewport,
     ) {
-        encoder.setViewport(MTLViewport {
-            originX: 0.0,
-            originY: 0.0,
-            width: f64::from(config.size.width()),
-            height: f64::from(config.size.height()),
-            znear: 0.0,
-            zfar: 1.0,
-        });
+        encoder.setViewport(viewport);
         for step in steps {
+            let scissor = metal_scissor_rect(step.scissor, extent);
+            if scissor.width == 0 || scissor.height == 0 {
+                continue;
+            }
             let pipeline = &step.pipeline;
             let _ = (pipeline.pipeline_layout,);
             encoder.setRenderPipelineState(&pipeline.pipeline_state);
@@ -1412,7 +1420,7 @@ mod platform {
                 Some(gfx_core::Face::Front) => objc2_metal::MTLCullMode::Front,
                 Some(gfx_core::Face::Back) => objc2_metal::MTLCullMode::Back,
             });
-            encoder.setScissorRect(metal_scissor_rect(step.scissor, config.size));
+            encoder.setScissorRect(scissor);
             step.bindings.encode(encoder);
             let primitive_type = primitive_topology_to_metal(pipeline.primitive_topology);
             match &step.draw {
@@ -1519,11 +1527,22 @@ mod platform {
         }
     }
 
+    fn full_viewport(extent: gfx_core::Extent2d) -> MTLViewport {
+        MTLViewport {
+            originX: 0.0,
+            originY: 0.0,
+            width: f64::from(extent.width()),
+            height: f64::from(extent.height()),
+            znear: 0.0,
+            zfar: 1.0,
+        }
+    }
+
     fn metal_scissor_rect(
         scissor: Option<gfx_core::ScissorRect>,
         extent: gfx_core::Extent2d,
     ) -> MTLScissorRect {
-        let Some(scissor) = scissor.filter(|scissor| !scissor.is_empty()) else {
+        let Some(scissor) = scissor else {
             return MTLScissorRect {
                 x: 0,
                 y: 0,

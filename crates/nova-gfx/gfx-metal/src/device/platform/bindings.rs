@@ -1,11 +1,11 @@
 //! Group-zero Metal resource bindings shared with the MSL compiler ABI.
 use super::*;
 use gfx_core::{BindingType, MetalShaderBindings, ShaderStages, METAL_SIZE_BUFFER_SLOT, metal_binding_slot};
-use std::sync::Arc;
+use std::rc::Rc;
 
 enum NativeResource {
     Buffer(Retained<ProtocolObject<dyn MTLBuffer>>, usize),
-    Texture(Retained<ProtocolObject<dyn MTLTexture>>),
+    Texture(TextureId, Retained<ProtocolObject<dyn MTLTexture>>),
     Sampler(Retained<ProtocolObject<dyn MTLSamplerState>>),
 }
 
@@ -22,7 +22,7 @@ pub(super) struct NativeBindGroup {
 
 #[derive(Default)]
 pub(super) struct PreparedBindings {
-    group: Option<Arc<NativeBindGroup>>,
+    group: Option<Rc<NativeBindGroup>>,
     vertex_sizes: Vec<u32>,
     fragment_sizes: Vec<u32>,
 }
@@ -64,7 +64,7 @@ impl MetalDevice {
                     if !texture.desc.usage.contains(TextureUsage::SAMPLED) {
                         return Err(Error::InvalidInput("Metal sampled texture requires SAMPLED usage".into()));
                     }
-                    NativeResource::Texture(view.resource.clone())
+                    NativeResource::Texture(view.texture, view.resource.clone())
                 }
                 (BindingResource::Sampler(binding), BindingType::Sampler) => {
                     NativeResource::Sampler(self.samplers.get(binding.sampler)?.resource.clone())
@@ -140,6 +140,13 @@ fn size_table(shader: Option<&MetalShaderBindings>, group: &NativeBindGroup) -> 
 }
 
 impl PreparedBindings {
+    pub(super) fn samples_texture(&self, texture: TextureId) -> bool {
+        self.group.as_ref().is_some_and(|group| group.entries.iter().any(|entry| {
+            entry.stages.intersects(ShaderStages::VERTEX | ShaderStages::FRAGMENT)
+                && matches!(&entry.resource, NativeResource::Texture(id, _) if *id == texture)
+        }))
+    }
+
     pub(super) fn encode(&self, encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>) {
         if let Some(group) = &self.group {
             for entry in &group.entries {
@@ -154,7 +161,7 @@ impl PreparedBindings {
                             if vertex { encoder.setVertexBuffer_offset_atIndex(Some(buffer), *offset, slot); }
                             if fragment { encoder.setFragmentBuffer_offset_atIndex(Some(buffer), *offset, slot); }
                         }
-                        NativeResource::Texture(texture) => {
+                        NativeResource::Texture(_, texture) => {
                             if vertex { encoder.setVertexTexture_atIndex(Some(texture), slot); }
                             if fragment { encoder.setFragmentTexture_atIndex(Some(texture), slot); }
                         }
