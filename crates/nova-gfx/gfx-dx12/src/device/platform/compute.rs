@@ -986,12 +986,23 @@ impl Dx12Device {
                 if let Some((tag, queries)) = probe {
                     let command = self.command_encoders.get(encoder)?.command_list.as_ref()
                         .ok_or_else(|| Error::Backend("missing DX12 compute command list".into()))?;
-                    // SAFETY: both query slots and readback remain owned until the submission fence.
+                    // SAFETY: both query slots remain owned until the submission fence.
+                    unsafe { command.EndQuery(&queries.heap, D3D12_QUERY_TYPE_TIMESTAMP, 1); }
+                    self.command_encoders.get_mut(encoder)?.gpu_draw_queries.push((tag, queries));
+                }
+            }
+            if !tags.is_empty() {
+                let record = self.command_encoders.get(encoder)?;
+                let command = record.command_list.as_ref()
+                    .ok_or_else(|| Error::Backend("missing DX12 compute command list".into()))?;
+                // Resolve after all timed intervals; readback copies are not
+                // part of any individual dispatch's measurement.
+                for (_, queries) in &record.gpu_draw_queries {
+                    // SAFETY: private completed query pairs on this same
+                    // recording list, with fence-retained readback resources.
                     unsafe {
-                        command.EndQuery(&queries.heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
                         command.ResolveQueryData(&queries.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, &queries.readback, 0);
                     }
-                    self.command_encoders.get_mut(encoder)?.gpu_draw_queries.push((tag, queries));
                 }
             }
             if let Some((heap, readback)) = &queries {

@@ -616,7 +616,10 @@ impl VulkanDevice {
                     let dispatch = &dispatches[*index];
                     let probe = tagged_pool.zip(tags.get(*index).copied().flatten());
                     if let Some((pool, _)) = probe {
-                        self.device.cmd_write_timestamp2(command, vk::PipelineStageFlags2::TOP_OF_PIPE, pool, slot as u32 * 2);
+                        // A TOP_OF_PIPE marker can run ahead of an earlier
+                        // dispatch. Bound the ordered interval after previous
+                        // GPU work, so another view cannot inflate this sample.
+                        self.device.cmd_write_timestamp2(command, vk::PipelineStageFlags2::ALL_COMMANDS, pool, slot as u32 * 2);
                     }
                     let mut before = Vec::new();
                     let mut after = Vec::new();
@@ -698,7 +701,7 @@ impl VulkanDevice {
             );
                     }
                     if let Some((pool, tag)) = probe {
-                        self.device.cmd_write_timestamp2(command, vk::PipelineStageFlags2::BOTTOM_OF_PIPE, pool, slot as u32 * 2 + 1);
+                        self.device.cmd_write_timestamp2(command, vk::PipelineStageFlags2::ALL_COMMANDS, pool, slot as u32 * 2 + 1);
                         self.command_encoders.get_mut(encoder)?.gpu_draw_tags[slot] = Some(tag);
                         slot += 1;
                     }
