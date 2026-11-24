@@ -591,6 +591,24 @@ impl SceneResources {
         Some(retained)
     }
 
+    #[cfg(test)]
+    pub(in crate::scene_view) fn trace_test_geometry(&self) {
+        eprintln!("NOVA_GEOMETRY draws={} batches={} gpu_cull={}", self.prepared.draws.len(), self.batches.len(), self.culling.is_some());
+        let visible = self.prepared.bounds_visibility();
+        for (batch_index,batch) in self.batches.iter().enumerate() {
+            let address = &self.draw_addresses[batch_index];
+            eprintln!("NOVA_GEOMETRY_BATCH index={batch_index} first={} count={} address_first={} cpu_include={:?}", batch.first_instance,batch.instance_count,address.first_instance,self.command_visibility.get(batch_index));
+            for logical in batch.first_instance..batch.first_instance+batch.instance_count {
+                let draw=&self.prepared.draws[logical];
+                let physical=self.uploaded_slot_map.get(logical*4..logical*4+4)
+                    .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()));
+                eprintln!("NOVA_GEOMETRY_DRAW logical={logical} physical={physical:?} bounds={:?} origin={:?} frustum={} in_range={} procedural={}",
+                    draw.bounds,draw.world.transform_point(crate::Vec3::ZERO),visible(draw.bounds),
+                    self.prepared.is_draw_in_culling_bounds(draw),self.meshes.get(&mesh_key(draw,true)).is_some_and(|m| m.procedural_quads));
+            }
+        }
+    }
+
     pub(super) fn gpu_culling_counts(&self) -> (usize, usize) {
         self.culling.as_ref().map_or((0, 0), CullResources::counts)
     }

@@ -402,7 +402,7 @@ fn fog_volume(direction:vec3<f32>,distance_limit:f32)->vec4<f32>{
 }
 fn display_color(color:vec3<f32>)->vec3<f32>{let c=max(color*frame.options.x,vec3<f32>(0.0));let mapped=clamp((c*(2.51*c+0.03))/(c*(2.43*c+0.59)+0.14),vec3<f32>(0.0),vec3<f32>(1.0));return select(mapped*12.92,1.055*pow(mapped,vec3<f32>(1.0/2.4))-0.055,mapped>vec3<f32>(0.0031308));}
 fn effects_shade(input:ScreenOutput)->vec4<f32>{
-    let uv=input.uv;let at=pixel(uv);let depth=textureLoad(surface_depth,at,0).r;let p=world(select(uv,sampled_uv(at),depth<1.0),min(depth,0.99999));let plane=cross(dpdx(p),dpdy(p));let receiver_normal=select(frame.sun.xyz,plane/max(length(plane),0.000001),length(plane)>0.000001);let footprint=max(length(dpdx(p).xz),length(dpdy(p).xz));let ray=normalize(p-frame.eye.xyz);var color=vec3<f32>(0.0);var distance_limit=4096.0;
+    let uv=input.uv;let at=pixel(uv);let depth=textureLoad(surface_depth,at,0).r;let p=world(select(uv,sampled_uv(at),depth<1.0),min(depth,0.99999));let plane=cross(dpdx(p),dpdy(p));let plane_length=length(plane);let covered=select(0.0,1.0,depth<1.0);let continuous_coverage=abs(dpdx(covered))+abs(dpdy(covered))==0.0;let receiver_normal=plane/max(plane_length,0.000001);let footprint=max(length(dpdx(p).xz),length(dpdy(p).xz));let ray=normalize(p-frame.eye.xyz);var color=vec3<f32>(0.0);var distance_limit=4096.0;
     if(depth>=1.0){color=atmosphere(ray);}
     if(depth<1.0){distance_limit=length(p-frame.eye.xyz);let material=textureLoad(surfaces,at,0);var n=normal(material.xy);var albedo=load_material_albedo(at);let v=-ray;
         if(material.w<0.0){color=textureSampleLevel(scene,linear_sampler,uv,0.0).rgb;}else{
@@ -421,7 +421,11 @@ fn effects_shade(input:ScreenOutput)->vec4<f32>{
                 albedo.rgb,metallic,roughness,n,v,frame.sun.xyz,
                 frame.sun_color.rgb*frame.sun_color.w*3.0
             );
-            visibility=shadow_visibility(p,receiver_normal)*cloud_visibility(p);
+            // A derivative quad can straddle a silhouette. Its background
+            // world position is not part of the receiver plane; use the
+            // captured surface normal rather than an unrelated PCF gradient.
+            let receiver=select(geometric,receiver_normal,continuous_coverage && plane_length>0.000001);
+            visibility=shadow_visibility(p,receiver)*cloud_visibility(p);
         }
         color=textureSampleLevel(scene,linear_sampler,uv,0.0).rgb;
         if(water||glass){

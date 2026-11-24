@@ -229,12 +229,20 @@ pub(super) fn verify_receiver_planes<D: Device + TextureTransferDevice>(
         .max()
         .unwrap();
     if maximum > 5 && let Some(single_depth) = single_depth {
+        renderer.scenes[&tiled_view.id].scene.trace_test_geometry();
         let tiled_depth = device.read_texture(depth.texture).unwrap();
         let tiled_unshadowed = tiled_view.with_voxel_shading(VoxelShading {
             shadow_strength: 0.,
             ..tiled_view.voxel_shading
         }).unwrap();
         let tiled_reference = draw(device, renderer, context, &tiled_unshadowed, target, depth);
+        let no_hiz = draw(device, renderer, context, &tiled_unshadowed.with_culling_disabled(), target, depth);
+        let mut fresh_renderer = EffectsRenderer::new(device, context.clone(), tiled_view.screen_effects.unwrap()).unwrap();
+        let fresh = draw(device, &mut fresh_renderer, context, &tiled_unshadowed, target, depth);
+        let delta_count = |a: &[u8], b: &[u8]| a.chunks_exact(4).zip(b.chunks_exact(4))
+            .filter(|(a,b)| a.iter().zip(*b).any(|(a,b)| a.abs_diff(*b)>5)).count();
+        eprintln!("NOVA_CSM_TILED_ISOLATE no_hiz_changed={} fresh_changed={} fresh_vs_single={}",
+            delta_count(&no_hiz,&tiled_reference),delta_count(&fresh,&tiled_reference),delta_count(&fresh,&reference));
         let read = |image: &TextureReadback, x: usize, y: usize| {
             let offset = y * image.bytes_per_row as usize + x * 4;
             f32::from_le_bytes(image.bytes[offset..offset + 4].try_into().unwrap())

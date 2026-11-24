@@ -22,6 +22,9 @@ fn capture_reuse_respects_visibility_and_fog() {
     assert!(same_capture(&hidden, &same_hidden));
     let fogged = view.with_fog(crate::DistanceFog::new([1.; 3], 1., 5.));
     assert!(!same_capture(&view, &fogged));
+    let uncull = view.with_culling_disabled();
+    assert!(!same_capture(&view, &uncull));
+    assert!(same_capture(&uncull, &uncull.clone()));
 }
 
 fn test_render_pass<D: Device>(device: &mut D) -> RenderPassId {
