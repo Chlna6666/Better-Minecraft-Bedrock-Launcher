@@ -205,8 +205,14 @@ impl PresentationDevice for OpenGlDevice {
                 previous = Some(count.command_index);
                 let (arguments, offset, stride) = match pass.commands.get(count.command_index) {
                     Some(RenderCommand::DrawIndirect(draw)) => (draw.arguments, draw.offset, 16),
-                    Some(RenderCommand::DrawIndexedIndirect(draw)) if draw.index_buffer.offset == 0 =>
-                        (draw.arguments, draw.offset, 20),
+                    Some(RenderCommand::DrawIndexedIndirect(draw)) if draw.index_buffer.offset == 0 => {
+                        let index = self.buffers.get(draw.index_buffer.buffer)?;
+                        let bytes = if draw.index_buffer.format == IndexFormat::Uint16 { 2 } else { 4 };
+                        if !index.desc.usage.contains(BufferUsage::INDEX) || index.desc.size < bytes {
+                            return Err(Error::InvalidInput("invalid OpenGL counted index buffer".into()));
+                        }
+                        (draw.arguments, draw.offset, 20)
+                    }
                     _ => return Err(Error::InvalidInput("OpenGL counted draw requires indirect arguments and zero index binding offset".into())),
                 };
                 let args = self.buffers.get(arguments)?;
@@ -221,6 +227,10 @@ impl PresentationDevice for OpenGlDevice {
             }
         }
         for ((pass, &table), &tag) in passes.iter().zip(counts).zip(tags) {
+            let tag = tag.filter(|tag| tag.stage == GpuTimestampStage::DrawIndirect
+                && !pass.commands.is_empty()
+                && pass.commands.iter().all(|command| matches!(command,
+                    RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_))));
             let targets = pass.color_attachments.iter().copied().map(RenderTarget::TextureView).collect::<Vec<_>>();
             self.render_target_counted(&targets, pass.resolve_target, pass.render_pass,
                 pass.commands, pass.color_load_op, pass.depth_attachment, pass.clear_region,

@@ -223,6 +223,7 @@ struct ViewCompactor {
 pub(super) struct Compactor {
     shader: ShaderModuleId,
     indexed_shader: Option<ShaderModuleId>,
+    zero_index_offset_only: bool,
     argument_stride: u32,
     views: HashMap<SceneViewId, ViewCompactor>,
     probes: HashMap<u64, SceneViewId>,
@@ -254,14 +255,14 @@ impl Compactor {
             .ok().and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d draw compaction".into()), binary,
             }).ok())?;
-        // GL element-array bindings have no byte base; keep indexed compaction
-        // disabled until portable nonzero index offsets are handled by GL.
-        let indexed_shader = (context.backend_kind() != BackendKind::OpenGl).then(||
-            super::resources::embedded_shader(context, ShaderStage::Compute, "cs_compact_indexed_draws")).and_then(|result| result.ok())
-            .and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
+        // GL element-array bindings have no byte base. Only passes with
+        // zero index offsets are eligible for indexed compaction on GL.
+        let zero_index_offset_only = context.backend_kind() == BackendKind::OpenGl;
+        let indexed_shader = super::resources::embedded_shader(context, ShaderStage::Compute, "cs_compact_indexed_draws")
+            .ok().and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d indexed draw compaction".into()), binary,
             }).ok());
-        Some(Self { shader, indexed_shader, argument_stride, views: HashMap::new(), probes: HashMap::new() })
+        Some(Self { shader, indexed_shader, zero_index_offset_only, argument_stride, views: HashMap::new(), probes: HashMap::new() })
     }
 
     pub(super) fn submit_batch(
@@ -278,7 +279,10 @@ impl Compactor {
         let mut decisions = Vec::with_capacity(passes.len());
         let mut special = false;
         for (pass, &(id, _)) in passes.iter().zip(epochs) {
-            if pass.gpu_work_tag.is_some() {
+            if pass.gpu_work_tag.is_some() || (self.zero_index_offset_only
+                && pass.commands.iter().any(|command| matches!(command,
+                    RenderCommand::DrawIndexedIndirect(draw) if draw.index_buffer.offset != 0)))
+            {
                 decisions.push(None);
                 continue;
             }

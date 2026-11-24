@@ -126,6 +126,24 @@ impl ResourceDevice for OpenGlDevice {
             Ok(())
         })
     }
+    fn dispatch_compute_batch_tagged(
+        &mut self, dispatches: &[ComputeDispatch<'_>], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<()> {
+        if dispatches.len() != tags.len() {
+            return Err(Error::InvalidInput("compute tag count mismatch".into()));
+        }
+        // GL has one ordered owner stream, not a submit per dispatch. Reuse
+        // its asynchronous timer queries without splitting any fence batch.
+        for (dispatch, &tag) in dispatches.iter().zip(tags) {
+            if dispatch.workgroups.contains(&0) { continue; }
+            if let Some(tag) = tag {
+                self.profile_gpu_work(tag, |device| device.dispatch_buffers(dispatch))?;
+            } else {
+                self.dispatch_buffers(dispatch)?;
+            }
+        }
+        Ok(())
+    }
     fn write_buffer_batch_profiled<'a>(
         &mut self,
         writes: impl IntoIterator<Item = BufferWrite<'a>>,

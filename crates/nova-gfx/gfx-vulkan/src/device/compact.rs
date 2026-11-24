@@ -99,7 +99,12 @@ impl VulkanDevice {
             // The relocation encoder currently copies 2D subresources. A
             // true 3D image needs an Extent3D transfer and a 3D image view;
             // never misinterpret its Z slices as array layers during compaction.
-            if matches!(old.desc.dimension, TextureDimension::D3 { .. }) {
+            // Transient images have no transfer usage and their contents are
+            // undefined after resolve; do not send them through a copy-based
+            // heap relocation transaction.
+            if old.desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT)
+                || matches!(old.desc.dimension, TextureDimension::D3 { .. }) {
+
                 return Ok(false);
             }
             let Some(texture) =
