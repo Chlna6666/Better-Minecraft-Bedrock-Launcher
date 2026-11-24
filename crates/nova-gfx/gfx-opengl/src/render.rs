@@ -370,6 +370,12 @@ impl OpenGlDevice {
         // A failed draw must not resolve invalid or partially recorded contents.
         // Still execute the common detach/cleanup path below.
         if let Some(resolve_view) = resolve_view.filter(|_| result.is_ok()) {
+            let discard_source = matches!(load, LoadOp::Clear(_)) && clear_region.is_none()
+                && match targets.first() {
+                    Some(RenderTarget::TextureView(view)) => self.views.get(*view)?
+                        .usage.contains(TextureUsage::DISCARD_AFTER_RESOLVE),
+                    _ => false,
+                };
             let resolve = self.views.get(resolve_view)?;
             // SAFETY: A transient resolve FBO is created, bound as DRAW, and deleted
             // after the glBlitFramebuffer blits the MSAA draw FBO into it.
@@ -398,6 +404,11 @@ impl OpenGlDevice {
                     glow::COLOR_BUFFER_BIT,
                     glow::NEAREST,
                 );
+                if discard_source {
+                    // The full resolve has consumed this disposable source.
+                    // Preserve the other MRT colors and sampled depth.
+                    self.gl.invalidate_framebuffer(glow::READ_FRAMEBUFFER, &[glow::COLOR_ATTACHMENT0]);
+                }
                 self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
                 self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
                 self.gl.delete_framebuffer(resolve_fbo);

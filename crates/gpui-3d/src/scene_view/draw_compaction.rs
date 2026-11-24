@@ -279,16 +279,13 @@ impl Compactor {
         let mut decisions = Vec::with_capacity(passes.len());
         let mut special = false;
         for (pass, &(id, _)) in passes.iter().zip(epochs) {
-            if pass.gpu_work_tag.is_some() || (self.zero_index_offset_only
-                && pass.commands.iter().any(|command| matches!(command,
-                    RenderCommand::DrawIndexedIndirect(draw) if draw.index_buffer.offset != 0)))
-            {
+            if pass.gpu_work_tag.is_some() {
                 decisions.push(None);
                 continue;
             }
             let view = self.views.entry(id).or_default();
             let previous_probe = view.pending_id();
-            let decision = view.schedule(device, self.argument_stride, self.indexed_shader.is_some(), pass)?;
+            let decision = view.schedule(device, self.argument_stride, self.indexed_shader.is_some(), self.zero_index_offset_only, pass)?;
             let next_probe = view.pending_id();
             if previous_probe != next_probe {
                 if let Some(old) = previous_probe { self.probes.remove(&old); }
@@ -406,9 +403,14 @@ impl ViewCompactor {
         Ok(buffers)
     }
 
-    fn prepare(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, indexed_supported: bool, pass: &NativeOffscreenPass) -> Result<Option<Prepared>> {
+    fn prepare(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, indexed_supported: bool, zero_index_offset_only: bool, pass: &NativeOffscreenPass) -> Result<Option<Prepared>> {
         // Native DrawIndirect probes measure indirect-only passes.
         if !pass.commands.iter().all(|command| matches!(command, RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_))) {
+            return Ok(None);
+        }
+        // Cache the GL eligibility result together with the immutable plan.
+        if zero_index_offset_only && pass.commands.iter().any(|command| matches!(command,
+            RenderCommand::DrawIndexedIndirect(draw) if draw.index_buffer.offset != 0)) {
             return Ok(None);
         }
         let Some(limit) = device.counted_offscreen_limit() else { return Ok(None); };
@@ -470,12 +472,12 @@ impl ViewCompactor {
         Ok(Some(Prepared { indexed: plan.indexed, commands, counts: bindings, compute, groups: group_count }))
     }
 
-    fn schedule(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, indexed_supported: bool, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
+    fn schedule(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, indexed_supported: bool, zero_index_offset_only: bool, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
         if !self.cached.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.source, &pass.commands)) {
             // Invalidate before preparing: a failed allocation or upload may
             // have replaced scratch storage referenced by the previous plan.
             self.cached = None;
-            let prepared = self.prepare(device, argument_stride, indexed_supported, pass)?;
+            let prepared = self.prepare(device, argument_stride, indexed_supported, zero_index_offset_only, pass)?;
             self.cached = Some(Cached { source: Arc::clone(&pass.commands), prepared, cost: CostModel::default() });
         }
         let Some(cached) = self.cached.as_mut() else { return Ok(None); };
