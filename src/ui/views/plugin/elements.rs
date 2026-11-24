@@ -1,6 +1,6 @@
 use gpui::{
     AnyElement, App, AppContext, FontWeight, Hsla, InteractiveElement, IntoElement, MouseButton,
-    ObjectFit, ParentElement, SharedString, Styled, StyledImage, Window, div, img, px,
+    ObjectFit, ParentElement, SharedString, Styled, StyledImage, Window, div, img, px, relative,
 };
 
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
@@ -332,8 +332,8 @@ fn render_node(
                 .filter(|total| *total > 0)
                 .map(|total| (*value as f64 / total as f64).clamp(0.0, 1.0))
                 .unwrap_or(0.0);
-            let width_percent = (ratio * 100.0) as f32;
             styled_container(style, &colors)
+                .w_full()
                 .gap(px(6.0))
                 .child(styled_text(label.clone(), style, &colors).p_0())
                 .child(
@@ -346,7 +346,7 @@ fn render_node(
                         .child(
                             div()
                                 .h_full()
-                                .w(px(width_percent.max(2.0)))
+                                .w(relative(ratio as f32))
                                 .bg(token_color(ThemeToken::Accent, &colors)),
                         ),
                 )
@@ -419,25 +419,51 @@ fn render_node(
             corner_radius,
             fit,
         }) => {
-            let Some(source) = crate::plugins::runtime::plugin_image(cx, plugin_id, src) else {
-                return image_replacement_element(
+            // Fixed square images are thumbnails rather than full-width banners.
+            let thumbnail = height.is_some()
+                && *aspect_ratio_x == Some(1) && *aspect_ratio_y == Some(1)
+                && !style.full_width && caption.is_empty();
+            let frame_height = image_frame_height(
+                *height, *min_height, *max_height, *aspect_ratio_x, *aspect_ratio_y,
+            );
+            // Inline bytes are decoded once per source change, not once per frame.
+            let source = if src.starts_with("data:") {
+                let key = SharedString::from(format!(
+                    "plugin-inline-image-{plugin_id}-{}-{index}",
+                    page_id.unwrap_or_default()
+                ));
+                let cached = window.use_keyed_state(key, cx, |_, cx| {
+                    InlineImageState {
+                        src: src.clone(),
+                        image: crate::plugins::runtime::plugin_image(cx, plugin_id, src),
+                    }
+                });
+                cached.update(cx, |cached, cx| {
+                    if cached.src != *src {
+                        cached.src.clone_from(src);
+                        cached.image = crate::plugins::runtime::plugin_image(cx, plugin_id, src);
+                    }
+                    cached.image.clone()
+                })
+            } else {
+                crate::plugins::runtime::plugin_image(cx, plugin_id, src)
+            };
+            let Some(source) = source else {
+                let replacement = image_replacement_element(
                     image_state_label(fallback, "Image unavailable"),
                     colors,
-                )
-                .into_any_element();
+                ).h(px(frame_height));
+                return if thumbnail {
+                    replacement.w(px(frame_height)).into_any_element()
+                } else {
+                    replacement.w_full().into_any_element()
+                };
             };
             let radius = px(f32::from(corner_radius.unwrap_or(16)));
             let object_fit = match fit {
                 ImageFit::Cover => ObjectFit::Cover,
                 ImageFit::Contain => ObjectFit::Contain,
             };
-            let frame_height = image_frame_height(
-                *height,
-                *min_height,
-                *max_height,
-                *aspect_ratio_x,
-                *aspect_ratio_y,
-            );
             let loading_label = image_state_label(placeholder, "Loading image...");
             let fallback_label = image_state_label(fallback, "Image unavailable");
             let image_surface = div()
@@ -473,10 +499,10 @@ fn render_node(
                         }),
                 );
             let mut frame = styled_container(style, &colors)
-                .w_full()
                 .rounded(radius)
                 .overflow_hidden()
                 .child(image_surface);
+            frame = if thumbnail { frame.w(px(frame_height)).flex_none() } else { frame.w_full() };
             let caption_text = caption.trim();
             if !caption_text.is_empty() {
                 frame = frame
@@ -499,6 +525,11 @@ fn render_node(
         }
         ViewNode::Spacer(SpacerNode { size }) => div().h(px(f32::from(*size))).into_any_element(),
     }
+}
+
+struct InlineImageState {
+    src: String,
+    image: Option<gpui::EncodedImageBytes>,
 }
 
 struct PluginInput {

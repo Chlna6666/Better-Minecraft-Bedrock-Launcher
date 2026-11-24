@@ -7,6 +7,8 @@ use crate::{ViewNode, ViewTree};
 const MAX_DEPTH: usize = 24;
 const MAX_NODES: usize = 512;
 const MAX_TEXT_BYTES: usize = 256 * 1024;
+const MAX_STRING_BYTES: usize = 8192;
+const MAX_INLINE_IMAGE_BYTES: usize = 128 * 1024;
 
 impl ViewTree {
     /// Validates the root and its descendants, including the cost of repeated references.
@@ -26,7 +28,7 @@ impl ViewTree {
         let mut bytes = size_of::<Self>() + self.nodes.capacity() * size_of::<ViewNode>();
         for node in &self.nodes {
             bytes += child_indices(node).len() * size_of::<u32>();
-            let _ = strings(node, |value| {
+            let _ = strings(node, |value, _| {
                 bytes += value.len();
                 Ok(())
             });
@@ -50,9 +52,9 @@ fn validate(
     let Some(node) = tree.nodes.get(index as usize) else {
         bail!("plugin view references missing node {index}");
     };
-    strings(node, |value| {
+    strings(node, |value, max_len| {
         ensure!(
-            value.len() <= 8192 && value.len() <= *text,
+            value.len() <= max_len && value.len() <= *text,
             "plugin view exceeds its text budget"
         );
         *text -= value.len();
@@ -92,7 +94,7 @@ fn child_indices(node: &ViewNode) -> &[u32] {
     }
 }
 
-fn strings(node: &ViewNode, mut visit: impl FnMut(&str) -> Result<()>) -> Result<()> {
+fn strings(node: &ViewNode, mut visit: impl FnMut(&str, usize) -> Result<()>) -> Result<()> {
     let values: &[&str] = match node {
         ViewNode::Text(n) => &[&n.text],
         ViewNode::Button(n) => &[
@@ -122,8 +124,8 @@ fn strings(node: &ViewNode, mut visit: impl FnMut(&str) -> Result<()>) -> Result
                 "plugin selection has too many options"
             );
             for option in &n.options {
-                visit(&option.label)?;
-                visit(&option.value)?;
+                visit(&option.label, MAX_STRING_BYTES)?;
+                visit(&option.value, MAX_STRING_BYTES)?;
             }
             &[&n.label, &n.action_id, n.selected.as_deref().unwrap_or("")]
         }
@@ -131,11 +133,16 @@ fn strings(node: &ViewNode, mut visit: impl FnMut(&str) -> Result<()>) -> Result
         ViewNode::Link(n) => &[&n.label, &n.url, n.tooltip.as_deref().unwrap_or("")],
         ViewNode::Badge(n) => &[&n.label],
         ViewNode::Icon(n) => &[&n.name],
-        ViewNode::Image(n) => &[&n.src, &n.alt, &n.caption, &n.placeholder, &n.fallback],
+        ViewNode::Image(n) => {
+            let inline = n.src.starts_with("data:image/png;base64,")
+                || n.src.starts_with("data:image/jpeg;base64,");
+            visit(&n.src, if inline { MAX_INLINE_IMAGE_BYTES } else { MAX_STRING_BYTES })?;
+            &[&n.alt, &n.caption, &n.placeholder, &n.fallback]
+        }
         _ => &[],
     };
     for value in values {
-        visit(value)?;
+        visit(value, MAX_STRING_BYTES)?;
     }
     Ok(())
 }

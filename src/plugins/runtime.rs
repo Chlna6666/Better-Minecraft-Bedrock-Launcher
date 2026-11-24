@@ -4214,6 +4214,11 @@ pub fn tool_pages(cx: &App) -> Vec<PluginPage> {
 }
 
 pub(crate) fn plugin_image(cx: &App, id: &str, path: &str) -> Option<gpui::EncodedImageBytes> {
+    let registry = cx.global::<PluginRegistry>();
+    let plugin = registry.plugins.get(id).filter(|plugin| plugin.enabled)?;
+    if path.starts_with("data:") {
+        return decode_inline_plugin_image(path);
+    }
     let format = match Path::new(path).extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => gpui::ImageFormat::Png,
         "jpg" | "jpeg" => gpui::ImageFormat::Jpeg,
@@ -4221,10 +4226,51 @@ pub(crate) fn plugin_image(cx: &App, id: &str, path: &str) -> Option<gpui::Encod
         "gif" => gpui::ImageFormat::Gif,
         _ => return None,
     };
-    let registry = cx.global::<PluginRegistry>();
-    let plugin = registry.plugins.get(id).filter(|plugin| plugin.enabled)?;
     let bytes = registry.resource_cache.read(&plugin.manifest, id, None, path).ok()?;
     Some(gpui::EncodedImageBytes::new(format, bytes))
+}
+
+/// Inline image data is already supplied by the guest. It grants no file or
+/// network access. Keep both encoded size and decoded pixel cost bounded.
+fn decode_inline_plugin_image(src: &str) -> Option<gpui::EncodedImageBytes> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    if src.len() > 128 * 1024 {
+        return None;
+    }
+    let (mime, payload) = src.split_once(',')?;
+    let format = match mime {
+        "data:image/png;base64" => image::ImageFormat::Png,
+        "data:image/jpeg;base64" => image::ImageFormat::Jpeg,
+        _ => return None,
+    };
+    let bytes = STANDARD.decode(payload).ok()?;
+    if image::guess_format(&bytes).ok()? != format {
+        return None;
+    }
+    let (width, height) = image::ImageReader::with_format(
+        std::io::Cursor::new(bytes.as_slice()), format,
+    ).into_dimensions().ok()?;
+    if !(1..=1024).contains(&width) || !(1..=1024).contains(&height) {
+        return None;
+    }
+    Some(gpui::EncodedImageBytes::new(format, bytes))
+}
+
+#[cfg(test)]
+mod inline_plugin_image_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_bounded_png_and_rejects_non_raster_or_malformed_data() {
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR1sAAAAASUVORK5CYII=";
+        assert!(decode_inline_plugin_image(png).is_some());
+        assert!(decode_inline_plugin_image(&png.replace("image/png", "image/jpeg")).is_none());
+        assert!(decode_inline_plugin_image("data:image/svg+xml;base64,PHN2Zy8+").is_none());
+        assert!(decode_inline_plugin_image("data:image/png;base64,invalid!").is_none());
+        assert!(decode_inline_plugin_image(&format!("data:image/png;base64,{}", "A".repeat(128 * 1024))).is_none());
+        assert!(decode_inline_plugin_image("file:///C:/world/world_icon.jpeg").is_none());
+    }
 }
 
 pub fn statuses(cx: &App) -> Vec<PluginStatus> {
