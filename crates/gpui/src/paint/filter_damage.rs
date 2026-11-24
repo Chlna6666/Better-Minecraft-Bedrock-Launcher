@@ -52,12 +52,6 @@ impl BackdropBlurDamagePlan {
             }
             for damage in &entry.source_damage {
                 self.push(entry.order, *damage);
-                if self.entry_mut(entry.order).source_damage.len()
-                    > MAX_ACCUMULATED_BACKDROP_DAMAGE_RECTS
-                {
-                    self.mark_full(entry.order);
-                    break;
-                }
             }
         }
     }
@@ -73,8 +67,25 @@ impl BackdropBlurDamagePlan {
             return;
         }
         let entry = self.entry_mut(order);
-        if !entry.full_refresh {
-            entry.source_damage.push(damage);
+        if entry.full_refresh {
+            return;
+        }
+        // Repeated hover/animation commits often report identical or nested
+        // rectangles before the renderer can present. They do not add damage.
+        if entry.source_damage.iter().any(|old| old.intersect(&damage) == damage) {
+            return;
+        }
+        entry.source_damage.retain(|old| old.intersect(&damage) != *old);
+        entry.source_damage.push(damage);
+        if entry.source_damage.len() > MAX_ACCUMULATED_BACKDROP_DAMAGE_RECTS {
+            // Bound metadata without promoting valid spatial damage to a full
+            // Gaussian refresh. The bounding rectangle covers every source
+            // pixel; the renderer still adds its normal convolution halo.
+            let bounds = entry.source_damage.iter().copied()
+                .reduce(|left, right| left.union(&right))
+                .expect("nonempty backdrop damage");
+            entry.source_damage.clear();
+            entry.source_damage.push(bounds);
         }
     }
 
@@ -348,4 +359,52 @@ pub(crate) fn backdrop_blur_influence_radius(blur: &PaintBackdropBlur) -> Scaled
     // filter support; add half of the source texel footprint for linear filtering and downsampling.
     let linear_footprint = 0.5 * f32::from(blur.downsample.max(1));
     ScaledPixels(radius * 3.0 + linear_footprint)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: f32, width: f32) -> Bounds<ScaledPixels> {
+        Bounds::new(crate::point(ScaledPixels(x), ScaledPixels(10.)),
+            crate::size(ScaledPixels(width), ScaledPixels(4.)))
+    }
+
+    #[test]
+    fn repeated_pending_damage_stays_spatial() {
+        let mut accumulated = BackdropBlurDamagePlan::default();
+        let mut next = BackdropBlurDamagePlan::default();
+        next.push(0, rect(10., 4.));
+        for _ in 0..64 {
+            accumulated.merge_from(&next);
+        }
+        let (full, damage) = accumulated.order_source_damage(0, 0);
+        assert!(!full);
+        assert_eq!(damage.collect::<Vec<_>>(), vec![rect(10., 4.)]);
+    }
+
+    #[test]
+    fn fragmented_source_damage_is_bounded_without_full_refresh() {
+        let mut plan = BackdropBlurDamagePlan::default();
+        for index in 0..=MAX_ACCUMULATED_BACKDROP_DAMAGE_RECTS {
+            plan.push(0, rect(index as f32 * 10., 2.));
+        }
+        let (full, damage) = plan.order_source_damage(0, 0);
+        assert!(!full);
+        assert_eq!(damage.collect::<Vec<_>>(),
+            vec![rect(0., MAX_ACCUMULATED_BACKDROP_DAMAGE_RECTS as f32 * 10. + 2.)]);
+    }
+
+    #[test]
+    fn explicit_full_source_refresh_still_dominates() {
+        let mut plan = BackdropBlurDamagePlan::default();
+        plan.push(0, rect(10., 4.));
+        let mut previous = BackdropBlurDamagePlan::default();
+        previous.mark_full(0);
+        plan.merge_from(&previous);
+        plan.push(0, rect(20., 4.));
+        let (full, mut damage) = plan.order_source_damage(0, 0);
+        assert!(full);
+        assert!(damage.next().is_none());
+    }
 }

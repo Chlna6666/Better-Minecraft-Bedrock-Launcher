@@ -428,7 +428,7 @@ pub(super) fn packet_scissor(
     packet: &PresentationPacket,
     target_size: DrawableSize,
 ) -> Option<ScissorRect> {
-    if packet.partial_present_mode != PartialPresentMode::Partial {
+    if packet.partial_present_mode != PartialPresentMode::Partial || packet.dirty_region.is_full() {
         return None;
     }
     let bounds = packet.dirty_region.union_bounds()?;

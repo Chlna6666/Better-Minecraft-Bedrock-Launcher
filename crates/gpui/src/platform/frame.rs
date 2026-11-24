@@ -446,6 +446,19 @@ mod tests {
     }
 
     #[test]
+    fn superseded_full_present_barrier_survives_local_commit() {
+        let mut previous = geometry_packet_for_merge((400, 300), 7, 1.0);
+        previous.partial_present_mode = PartialPresentMode::FullRedraw;
+        previous.dirty_region.push(rect(0.0, 10.0));
+        let mut latest = geometry_packet_for_merge((400, 300), 8, 1.0);
+        latest.dirty_region.push(rect(20.0, 10.0));
+        latest.merge_pending_damage_from(&previous);
+        assert_eq!(latest.partial_present_mode, PartialPresentMode::FullRedraw);
+        assert_eq!(latest.dirty_region.area(), 200.0);
+        assert!(!latest.dirty_region.is_full(), "native present and retained raster damage stay independent");
+    }
+
+    #[test]
     fn same_pixel_extent_dpi_change_requires_full_pending_refresh() {
         let mut old = geometry_packet_for_merge((400, 300), 7, 1.0);
         old.dirty_region.push(rect(2.0, 5.0));
@@ -1524,6 +1537,11 @@ impl PresentationPacket {
             return;
         }
         self.dirty_region.merge_from(&previous.dirty_region);
+        // Full presentation is a pending obligation, not a property of the
+        // newest UI commit. A later local update must not weaken that barrier.
+        if previous.partial_present_mode == PartialPresentMode::FullRedraw {
+            self.partial_present_mode = PartialPresentMode::FullRedraw;
+        }
         self.backdrop_blur_damage
             .merge_from(&previous.backdrop_blur_damage);
         self.force_full_backdrop_blur_refresh |= previous.force_full_backdrop_blur_refresh;

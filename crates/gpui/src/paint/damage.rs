@@ -111,14 +111,28 @@ fn visit_changed_bounds(
         _ => false,
     };
     if !refined_identity_capture {
-        for operation in previous_changed.iter() {
-            if let Some(bounds) = operation.visual_bounds() {
-                visit(bounds);
+        if current_changed.len() == previous_changed.len() {
+            for (current_operation, previous_operation) in
+                current_changed.iter().zip(previous_changed.iter())
+            {
+                // Equal ordinary fills between changed siblings contribute no
+                // independent damage. Never skip filter/capture barriers here:
+                // their pixels may depend on earlier changed operations.
+                if unchanged_static_quad(current_operation, previous_operation) {
+                    continue;
+                }
+                if let Some(bounds) = previous_operation.visual_bounds() {
+                    visit(bounds);
+                }
+                if let Some(bounds) = current_operation.visual_bounds() {
+                    visit(bounds);
+                }
             }
-        }
-        for operation in current_changed.iter() {
-            if let Some(bounds) = operation.visual_bounds() {
-                visit(bounds);
+        } else {
+            for operation in previous_changed.iter().chain(current_changed.iter()) {
+                if let Some(bounds) = operation.visual_bounds() {
+                    visit(bounds);
+                }
             }
         }
     }
@@ -167,6 +181,18 @@ pub(crate) fn requires_full_redraw_fallback(scene: &Scene) -> bool {
             .any(|blur| crate::paint::requires_full_redraw_fallback(&blur.content))
 }
 
+// Only a static, equal quad is independent of retained animation samples
+// and filter source dependencies. Keep all other middle operations conservative.
+fn unchanged_static_quad(current: &PaintOperation, previous: &PaintOperation) -> bool {
+    matches!(
+        (current, previous),
+        (
+            PaintOperation::Primitive(Primitive::Quad(current)),
+            PaintOperation::Primitive(Primitive::Quad(previous)),
+        ) if current.animation_id.is_none() && previous.animation_id.is_none() && current == previous
+    )
+}
+
 pub(crate) fn collect_paint_operation_damage(
     current: crate::scene::OperationRange<'_>,
     previous: crate::scene::OperationRange<'_>,
@@ -194,6 +220,9 @@ pub(crate) fn collect_paint_operation_damage(
         for (current_operation, previous_operation) in
             current_changed.iter().zip(previous_changed.iter())
         {
+            if unchanged_static_quad(current_operation, previous_operation) {
+                continue;
+            }
             if visit_opaque_solid_quad_move_damage(
                 current_operation,
                 previous_operation,

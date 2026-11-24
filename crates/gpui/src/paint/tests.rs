@@ -447,3 +447,37 @@ fn horizontal_edges_damage_covers_interrupted_long_distance_motion() {
         );
     }
 }
+
+#[test]
+fn aligned_static_quad_between_changed_siblings_does_not_expand_damage() {
+    let rect = |x, width| Bounds::new(
+        crate::point(ScaledPixels(x), ScaledPixels(10.)),
+        crate::size(ScaledPixels(width), ScaledPixels(20.)),
+    );
+    let viewport = rect(0., 1000.);
+    let build = |left, right| {
+        let mut scene = crate::scene::Painter::default();
+        for bounds in [rect(left, 4.), rect(100., 800.), rect(right, 4.)] {
+            scene.insert_primitive(Quad {
+                bounds,
+                content_mask: crate::ContentMask::new(viewport),
+                ..Default::default()
+            });
+        }
+        scene.finish();
+        scene
+    };
+    let previous = build(10., 960.);
+    let current = build(15., 965.);
+    let middle = rect(100., 800.);
+    let mut root_damage = Vec::new();
+    assert!(for_each_changed_bounds(&current, 0..current.len(),
+        &previous, 0..previous.len(), |bounds| root_damage.push(bounds)));
+    assert!(!root_damage.is_empty());
+    assert!(root_damage.iter().all(|bounds| bounds.intersect(&middle).is_empty()));
+    let mut source_damage = Vec::new();
+    collect_paint_operation_damage(current.paint_operations.all(),
+        previous.paint_operations.all(), viewport, |bounds| source_damage.push(bounds));
+    assert!(!source_damage.is_empty());
+    assert!(source_damage.iter().all(|bounds| bounds.intersect(&middle).is_empty()));
+}
