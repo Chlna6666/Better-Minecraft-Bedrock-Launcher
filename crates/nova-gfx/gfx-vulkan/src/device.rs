@@ -5367,13 +5367,19 @@ impl PresentationDevice for VulkanDevice {
 
     fn surface_capabilities(
         &self,
-        _swapchain: gfx_core::SwapchainId,
+        swapchain: gfx_core::SwapchainId,
     ) -> gfx_core::SurfaceCapabilities {
         // The renderer submits a complete frame, but Vulkan swapchain images rotate between
         // presents. Without per-image damage accumulation, VK_KHR_incremental_present can leave
         // unchanged pixels sourced from an uninitialized image, which appears as intermittent
         // black corners or rectangular stale regions on Linux/X11 and Wayland.
-        gfx_core::SurfaceCapabilities::default()
+        gfx_core::SurfaceCapabilities {
+            partial_presentation: false,
+            // GPUI gates native readiness registration on this capability.
+            // GPU-slot wakes work even without present_wait; unsupported
+            // WSI-only waits return false and keep the owner's bounded fallback.
+            frame_ready_notification: self.swapchains.get(swapchain).is_ok(),
+        }
     }
 
     fn render_and_present(
