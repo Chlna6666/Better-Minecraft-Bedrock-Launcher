@@ -383,7 +383,6 @@ impl RenderOwner {
     #[cfg(target_os = "windows")]
     pub(super) fn ui_frame_backpressured(&self) -> bool {
         self.status.submitted.load(Ordering::Acquire)
-            && self.status.pending.load(Ordering::Acquire)
             && self.status.waiting_for_frame_ready.load(Ordering::Acquire)
     }
 

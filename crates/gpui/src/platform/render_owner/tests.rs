@@ -128,6 +128,15 @@ fn competing_windows_have_independent_coalesced_queues() {
 }
 
 #[test]
+fn native_credit_can_hold_new_ui_work_without_a_pending_scene() {
+    let (owner, _jobs) = owner(false);
+    owner.status.waiting_for_frame_ready.store(true, Ordering::Release);
+    assert!(owner.ui_frame_backpressured());
+    owner.status.waiting_for_frame_ready.store(false, Ordering::Release);
+    assert!(!owner.ui_frame_backpressured());
+}
+
+#[test]
 fn blocked_swapchain_suppresses_only_its_own_speculative_ticks() {
     let (blocked, blocked_jobs) = owner(true);
     let (responsive, responsive_jobs) = owner(true);

@@ -164,6 +164,10 @@ pub(super) struct Entry {
     // A resize resource/fence wait cannot be satisfied by a DXGI frame-ready
     // notification. Keep its latest packet alive with bounded GPU-owner polling.
     ready_poll_required: bool,
+    /// A native readiness registration after a successful Present, without
+    /// a scene waiting for submission. It releases producer credit only.
+    #[cfg(target_os = "windows")]
+    producer_credit_only: bool,
     schedule: Schedule,
     job_outcome: GpuOwnerJobOutcome,
     #[cfg(not(target_os = "windows"))]
@@ -201,6 +205,8 @@ impl Entry {
             ready_registration: Arc::new(AtomicU64::new(0)),
             next_ready_registration: 0,
             ready_poll_required: false,
+            #[cfg(target_os = "windows")]
+            producer_credit_only: false,
             schedule: Schedule::default(),
             job_outcome: GpuOwnerJobOutcome::Control,
             #[cfg(not(target_os = "windows"))]
@@ -331,6 +337,11 @@ impl Entry {
                 reply,
                 resize,
             } => {
+                #[cfg(target_os = "windows")]
+                {
+                    // A real scene now owns the registered readiness continuation.
+                    self.producer_credit_only = false;
+                }
                 if let Some(resize) = resize {
                     #[cfg(target_os = "windows")]
                     {
@@ -395,6 +406,17 @@ impl Entry {
             }
             Command::Tick(now, timing) => self.tick(now, timing),
             Command::Continue(now) => {
+                #[cfg(target_os = "windows")]
+                if self.producer_credit_only
+                    && self.ready_registration.load(Ordering::Acquire) == 0
+                    && self.scene.is_none()
+                {
+                    self.producer_credit_only = false;
+                    // An available queue slot is not a display tick. Release
+                    // the producer and let the native cadence select a frame.
+                    self.report(&Ok(false), smallvec::SmallVec::new());
+                    return;
+                }
                 // Physical Root/Filter retirement is not a visual frame.
                 // Once the last animation ends, continue polling only the
                 // exact fences still reading an old target, without drawing
@@ -465,6 +487,10 @@ impl Entry {
             Command::Transparency(transparent) => {
                 self.ready_registration.store(0, Ordering::Release);
                 self.renderer.update_transparency(transparent);
+                #[cfg(target_os = "windows")]
+                if std::mem::take(&mut self.producer_credit_only) {
+                    self.report(&Ok(false), smallvec::SmallVec::new());
+                }
             }
             #[cfg(any(test, not(target_os = "windows")))]
             Command::PresentationInterval(interval) => {
@@ -642,13 +668,18 @@ impl Entry {
         }
         // Count only native pacing preflight rejections, never resize or resource deferrals.
         crate::diagnostics::performance_metrics::record_present_preflight_deferred(self.id);
+        self.arm_native_readiness()?;
+        Ok(false)
+    }
+
+    fn arm_native_readiness(&mut self) -> Result<()> {
         if !self
             .renderer
             .surface_capabilities()
             .frame_ready_notification
         {
             self.ready_poll_required = true;
-            return Ok(false);
+            return Ok(());
         }
         self.ready_poll_required = false;
         if self.ready_registration.load(Ordering::Acquire) == 0 {
@@ -707,7 +738,32 @@ impl Entry {
                 }
             }
         }
-        Ok(false)
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn prime_producer_credit(&mut self) {
+        self.producer_credit_only = false;
+        if !self.renderer.surface_capabilities().frame_ready_notification
+            || self.renderer.has_pending_drawable_size()
+        {
+            return;
+        }
+        match self.renderer.poll_native_frame_credit() {
+            Ok(true) => {}
+            Ok(false) => {
+                if let Err(error) = self.arm_native_readiness() {
+                    log::debug!("could not prime native frame credit: {error:#}");
+                }
+                self.producer_credit_only = self.ready_registration.load(Ordering::Acquire) != 0;
+                // An immediate callback may have already queued Continue.
+                // It is still a credit-only wake, not permission to sample animation.
+                if !self.ready_poll_required {
+                    self.producer_credit_only = true;
+                }
+            }
+            Err(error) => log::debug!("could not query native frame credit: {error:#}"),
+        }
     }
 
     fn report(
@@ -728,6 +784,8 @@ impl Entry {
             self.schedule.reset_submission_retry();
             self.ready_registration.store(0, Ordering::Release);
             self.status.submitted.store(true, Ordering::Release);
+            #[cfg(target_os = "windows")]
+            self.prime_producer_credit();
         }
         let pending = self.scene.is_some()
             || self.renderer.has_active_presentation_animations()
@@ -747,12 +805,10 @@ impl Entry {
         );
         self.status.pending.store(pending, Ordering::Release);
         #[cfg(target_os = "windows")]
-        self.status.waiting_for_frame_ready.store(
-            !submitted
-                && (self.ready_registration.load(Ordering::Acquire) != 0
-                    || self.schedule.is_retrying_submission()),
-            Ordering::Release,
-        );
+        let waiting_for_frame_ready = self.ready_registration.load(Ordering::Acquire) != 0
+            || (!submitted && pending && self.schedule.is_retrying_submission());
+        #[cfg(target_os = "windows")]
+        self.status.waiting_for_frame_ready.store(waiting_for_frame_ready, Ordering::Release);
         #[cfg(any(test, not(target_os = "windows")))]
         self.update_schedule(result.is_ok(), submitted);
         if let Err(error) = result {
@@ -765,9 +821,7 @@ impl Entry {
             submitted,
             pending,
             #[cfg(target_os = "windows")]
-            waiting_for_frame_ready: !submitted
-                && (self.ready_registration.load(Ordering::Acquire) != 0
-                    || self.schedule.is_retrying_submission()),
+            waiting_for_frame_ready,
             #[cfg(not(target_os = "windows"))]
             autonomous: self.schedule.is_enabled() || self.presentation_clock.is_some(),
             failed: result.is_err(),

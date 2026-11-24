@@ -1090,6 +1090,13 @@ impl WindowsWindow {
             return;
         }
         record_redraw_request(self.0.handle.window_id().data().as_ffi());
+        if self.ui_frame_backpressured()
+            && self.0.pending_resize.get().is_none()
+            && self.0.pending_renderer_size.get().is_none()
+            && !self.0.pending_native_size_retry.get()
+        {
+            return;
+        }
         if !self.0.vsync_scheduler.request_frame() {
             self.window().request_redraw();
         }
@@ -2482,7 +2489,10 @@ impl WindowsWindow {
         // A native message loop can dispatch the scheduled redraw reentrantly while the
         // callback above is still running. Re-arm requests left behind by that callback.
         let pending = self.0.state.borrow().pending_frame_request.get();
-        if pending.requires_frame() && !self.0.vsync_scheduler.request_frame() {
+        if pending.requires_frame()
+            && (!self.ui_frame_backpressured() || self.0.pending_renderer_size.get().is_some())
+            && !self.0.vsync_scheduler.request_frame()
+        {
             self.window().request_redraw();
         }
     }

@@ -464,6 +464,12 @@ impl NovaRenderer {
             })
     }
 
+    /// Native credit only; does not recreate a surface or sample a scene.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn poll_native_frame_credit(&mut self) -> Result<bool> {
+        lock_backend(&self.backend).check_present_readiness(self.swapchain)
+    }
+
     /// Checks native pacing before replacing displayed buffers, then resource/geometry readiness.
     /// Native pacing is resumed by a backend notification; resource retirement uses owner retries.
     pub(crate) fn presentation_readiness(

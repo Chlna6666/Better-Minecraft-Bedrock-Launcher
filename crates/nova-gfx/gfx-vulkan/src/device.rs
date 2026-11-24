@@ -5175,6 +5175,18 @@ impl SubmissionDevice for VulkanDevice {
 }
 
 impl PresentationDevice for VulkanDevice {
+    fn poll_present_readiness(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
+        let chain = self.swapchains.get(id)?;
+        if chain.extent.width == 0 || chain.extent.height == 0 {
+            // The acquire path owns suspended-surface recovery.
+            return Ok(true);
+        }
+        let fence = chain.in_flight_fences[chain.frame_index];
+        // SAFETY: this swapchain owns the frame slot's live fence. Querying it
+        // neither consumes an acquire semaphore nor waits for the GPU.
+        Ok(unsafe { self.device.get_fence_status(fence) }.map_err(VulkanError::from)?)
+    }
+
     fn ordered_mixed_graphics_compute_supported(&self) -> bool {
         // Normal offscreen passes and resource-set compute dispatches both
         // submit to graphics_queue. The independent sidecar queue is never

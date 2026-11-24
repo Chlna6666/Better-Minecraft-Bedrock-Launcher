@@ -233,7 +233,9 @@ impl NovaBackend {
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            Self::Vulkan(_) => Ok(true),
+            Self::Vulkan(device) => Ok(gfx_core::PresentationDevice::poll_present_readiness(
+                device, swapchain,
+            )?),
             #[cfg(not(any(
                 all(
                     feature = "nova-gfx-opengl",
