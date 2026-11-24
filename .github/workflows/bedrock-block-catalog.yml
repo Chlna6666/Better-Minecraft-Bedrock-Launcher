@@ -41,8 +41,12 @@ jobs:
         with:
           cache-on-failure: false
           key: bedrock-block-catalog
-      - name: Validate historical API profiles and diff rules
-        run: python3 -m unittest discover -s scripts/bedrock-block-catalog -p 'test_*.py'
+      - name: Validate historical API profiles, diff rules and PDB evidence tools
+        run: |
+          python3 -m unittest discover -s scripts/bedrock-block-catalog -p 'test_*.py'
+          python3 -m unittest discover -s scripts/bedrock-block-catalog/pdb -p 'test_*.py'
+      - name: Validate runtime palette catalog API and decoded data
+        run: cargo test --locked -p bedrock-world --test runtime_palette_catalog
       - name: Install BDS runtime dependencies
         run: sudo apt-get update && sudo apt-get install -y libcurl4 unzip
       - name: Run selected official Linux BDS in a disposable world
