@@ -105,7 +105,7 @@ impl Targets {
                 target.record(&mut cleanup);
                 Ok(target)
             };
-            let msaa_hint = TextureUsage::DISCARD_AFTER_RESOLVE | if backend == BackendKind::Vulkan {
+            let msaa_hint = TextureUsage::DISCARD_AFTER_RESOLVE | if matches!(backend, BackendKind::Vulkan | BackendKind::Metal) {
                 TextureUsage::TRANSIENT_ATTACHMENT
             } else { TextureUsage::empty() };
             Ok(Self {

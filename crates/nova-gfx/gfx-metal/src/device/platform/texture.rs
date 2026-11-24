@@ -159,9 +159,8 @@ impl MetalDevice {
         if desc.sample_count > 1 && desc.memory_location != MemoryLocation::GpuOnly {
             return Err(Error::InvalidInput("Metal multisample textures require private GPU storage".into()));
         }
-        if desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT) {
-            return Err(Error::Unavailable("Metal memoryless attachment storage is not implemented".into()));
-        }
+        let transient = desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT);
+        let memoryless = transient && self.device.supportsFamily(objc2_metal::MTLGPUFamily::Apple2);
         if desc.size.width() > 16_384 || desc.size.height() > 16_384 {
             return Err(Error::InvalidInput("Metal 2D texture exceeds 16384 texels".into()));
         }
@@ -176,7 +175,9 @@ impl MetalDevice {
             native.setMipmapLevelCount(desc.mip_level_count as usize);
             native.setSampleCount(desc.sample_count as usize);
         }
-        native.setStorageMode(if desc.memory_location == MemoryLocation::GpuOnly {
+        native.setStorageMode(if memoryless {
+            MTLStorageMode::Memoryless
+        } else if desc.memory_location == MemoryLocation::GpuOnly {
             MTLStorageMode::Private
         } else if cfg!(target_os = "macos") && !self.device.hasUnifiedMemory() {
             MTLStorageMode::Managed
@@ -194,8 +195,12 @@ impl MetalDevice {
             usage |= MTLTextureUsage::RenderTarget;
         }
         native.setUsage(usage);
-        let resource = self.device.newTextureWithDescriptor(&native)
-            .ok_or_else(|| Error::Backend("failed to allocate Metal texture".into()))?;
+        let resource = self.device.newTextureWithDescriptor(&native).or_else(|| {
+            if !memoryless { return None; }
+            // The attachment-only contract is unchanged on private storage.
+            native.setStorageMode(MTLStorageMode::Private);
+            self.device.newTextureWithDescriptor(&native)
+        }).ok_or_else(|| Error::Backend("failed to allocate Metal texture".into()))?;
         Ok(self.textures.insert(MetalTexture { desc: desc.clone(), resource: Some(resource) }))
     }
 

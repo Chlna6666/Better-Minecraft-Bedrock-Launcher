@@ -22,7 +22,7 @@ impl MetalDevice {
         let mut colors = Vec::with_capacity(pass.color_attachments.len());
         let mut color_ids = Vec::with_capacity(pass.color_attachments.len());
         let mut extent = None;
-        for (&target, &format) in pass.color_attachments.iter().zip(&layout.color_formats) {
+        for (index, (&target, &format)) in pass.color_attachments.iter().zip(&layout.color_formats).enumerate() {
             let view = self.texture_views.get(target)?;
             let texture = self.textures.get(view.texture)?;
             let size = Extent2d::new(
@@ -35,6 +35,12 @@ impl MetalDevice {
                 || extent.is_some_and(|previous| previous != size) || color_ids.contains(&view.texture)
             {
                 return Err(Error::InvalidInput("invalid Metal offscreen color view".into()));
+            }
+            if texture.desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT)
+                && (index != 0 || pass.resolve_target.is_none()
+                    || !matches!(pass.color_load_op, LoadOp::Clear(_)) || pass.clear_region.is_some())
+            {
+                return Err(Error::InvalidInput("Metal transient MSAA requires a full clear and first-attachment resolve".into()));
             }
             extent = Some(size);
             color_ids.push(view.texture);
