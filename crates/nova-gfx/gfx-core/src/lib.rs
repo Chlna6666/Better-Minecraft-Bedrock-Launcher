@@ -2752,6 +2752,26 @@ impl IndirectCountBinding {
     }
 }
 
+#[cfg(test)]
+mod indirect_count_range_tests {
+    use super::*;
+
+    #[test]
+    fn counted_draw_validates_full_capacity_and_overflow() {
+        let count = IndirectCountBinding {
+            command_index: 0, count_buffer: BufferId::from_parts(1, 1),
+            count_offset: 4, max_draw_count: 4,
+        };
+        assert!(count.validate_ranges(16, 80, 8, 16, 4).is_ok());
+        assert!(count.validate_ranges(16, 79, 8, 16, 4).is_err());
+        assert!(count.validate_ranges(16, 80, 7, 16, 4).is_err());
+        assert!(count.validate_ranges(16, 80, 8, 16, 3).is_err());
+        assert!(count.validate_ranges(u64::MAX - 3, u64::MAX, 8, 16, 4).is_err());
+        assert!(IndirectCountBinding { count_offset: 2, ..count }.validate_ranges(16, 80, 8, 16, 4).is_err());
+        assert!(IndirectCountBinding { max_draw_count: 0, ..count }.validate_ranges(16, 80, 8, 16, 4).is_err());
+    }
+}
+
 /// One recorded render command.
 ///
 /// Commands execute in recording order inside their render pass.

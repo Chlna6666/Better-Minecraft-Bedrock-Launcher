@@ -1522,8 +1522,9 @@ impl VulkanDevice {
             }
         }
         // Validate resource handles before consuming pool capacity.
+        let descriptor_demand = descriptors::Demand::from_layout(&layout_desc);
         let (descriptor_set, descriptor_pool) =
-            self.descriptor_pools.allocate(&self.device, layout)?;
+            self.descriptor_pools.allocate(&self.device, layout, descriptor_demand)?;
         let writes = pending_writes
             .iter()
             .map(|write| match *write {
@@ -1565,6 +1566,7 @@ impl VulkanDevice {
             sampled_depth,
             descriptor_set,
             descriptor_pool,
+            descriptor_demand,
             layout: desc.layout,
             desc: desc.clone(),
         }))
@@ -1970,8 +1972,10 @@ impl VulkanDevice {
             }
         }
         let mut draw_steps = Vec::with_capacity(steps.len());
-        let mut descriptor_sets =
-            Vec::with_capacity(steps.iter().map(|step| step.bind_groups().len()).sum());
+        let mut descriptor_sets = Vec::new();
+        // Reuse the resolved native descriptor range for consecutive draws with
+        // identical portable bindings. No repeated registry lookups or copies.
+        let mut previous_sets: Option<(&[BindGroupId], std::ops::Range<usize>)> = None;
         for step in steps.iter() {
             let scissor = match (viewport, step.scissor()) {
                 (Some(viewport), Some(scissor)) => {
@@ -1983,11 +1987,20 @@ impl VulkanDevice {
                 continue;
             }
             let pipeline_record = self.render_pipelines.get(step.pipeline())?;
-            let first_set = descriptor_sets.len();
-            for &bind_group in step.bind_groups() {
-                descriptor_sets.push(self.bind_groups.get(bind_group)?.descriptor_set);
-            }
-            let set_range = first_set..descriptor_sets.len();
+            let groups = step.bind_groups();
+            let set_range = if let Some((previous, range)) = &previous_sets
+                && *previous == groups
+            {
+                range.clone()
+            } else {
+                let first_set = descriptor_sets.len();
+                for &bind_group in groups {
+                    descriptor_sets.push(self.bind_groups.get(bind_group)?.descriptor_set);
+                }
+                let range = first_set..descriptor_sets.len();
+                previous_sets = Some((groups, range.clone()));
+                range
+            };
             let draw = match step {
                 RenderCommand::DrawIndirect(step) => {
                     let buffer = self.buffers.get(step.arguments)?;
@@ -2298,8 +2311,10 @@ impl VulkanDevice {
             }
         }
         let mut draw_steps = Vec::with_capacity(steps.len());
-        let mut descriptor_sets =
-            Vec::with_capacity(steps.iter().map(|step| step.bind_groups().len()).sum());
+        let mut descriptor_sets = Vec::new();
+        // Reuse the resolved native descriptor range for consecutive draws with
+        // identical portable bindings. No repeated registry lookups or copies.
+        let mut previous_sets: Option<(&[BindGroupId], std::ops::Range<usize>)> = None;
         let mut counts = counts.iter().peekable();
         for (command_index, step) in steps.iter().enumerate() {
             let count = if counts.peek().is_some_and(|count| count.command_index == command_index) {
@@ -2315,11 +2330,20 @@ impl VulkanDevice {
                 continue;
             }
             let pipeline_record = self.render_pipelines.get(step.pipeline())?;
-            let first_set = descriptor_sets.len();
-            for &bind_group in step.bind_groups() {
-                descriptor_sets.push(self.bind_groups.get(bind_group)?.descriptor_set);
-            }
-            let set_range = first_set..descriptor_sets.len();
+            let groups = step.bind_groups();
+            let set_range = if let Some((previous, range)) = &previous_sets
+                && *previous == groups
+            {
+                range.clone()
+            } else {
+                let first_set = descriptor_sets.len();
+                for &bind_group in groups {
+                    descriptor_sets.push(self.bind_groups.get(bind_group)?.descriptor_set);
+                }
+                let range = first_set..descriptor_sets.len();
+                previous_sets = Some((groups, range.clone()));
+                range
+            };
             let draw = match step {
                 RenderCommand::DrawIndirect(step) => {
                     let buffer = self.buffers.get(step.arguments)?;
@@ -4485,13 +4509,12 @@ impl VulkanDevice {
         }
     }
 
-    fn destroy_resource_set_now(&self, set: &VulkanResourceSet) {
+    fn destroy_resource_set_now(&mut self, set: &VulkanResourceSet) {
         let _ = set.layout;
-        // SAFETY: The set retains its allocating pool; fence retirement completed before this call.
-        if let Err(error) = unsafe {
-            self.device
-                .free_descriptor_sets(set.descriptor_pool, &[set.descriptor_set])
-        } {
+        // Restore capacity only when native destruction succeeds.
+        if let Err(error) = self.descriptor_pools.free(
+            &self.device, set.descriptor_pool, set.descriptor_set, set.descriptor_demand,
+        ) {
             log::warn!("nova-gfx Vulkan descriptor free failed: {error}");
         }
     }
@@ -6199,6 +6222,7 @@ struct VulkanResourceSet {
     sampled_depth: Vec<TextureId>,
     descriptor_set: vk::DescriptorSet,
     descriptor_pool: vk::DescriptorPool,
+    descriptor_demand: descriptors::Demand,
     layout: BindGroupLayoutId,
     desc: BindGroupDescriptor,
 }
