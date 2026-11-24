@@ -4,7 +4,8 @@ use super::*;
 use gfx_core::{Extent2d, ScissorRect, SignedOrigin2d};
 
 struct PreparedPass {
-    color: Retained<ProtocolObject<dyn MTLTexture>>,
+    colors: Vec<Retained<ProtocolObject<dyn MTLTexture>>>,
+    resolve: Option<(Retained<ProtocolObject<dyn MTLTexture>>, bool)>,
     color_load: LoadOp<ClearColor>,
     depth: Option<(Retained<ProtocolObject<dyn MTLTexture>>, LoadOp<f32>)>,
     extent: Extent2d,
@@ -15,24 +16,49 @@ struct PreparedPass {
 impl MetalDevice {
     fn prepare_texture_pass(&self, pass: &RenderPassCommands<'_>) -> Result<PreparedPass> {
         let layout = self.render_passes.get(pass.render_pass)?;
-        let [target] = pass.color_attachments else {
-            return Err(Error::Unavailable("Metal offscreen supports one color attachment".into()));
-        };
-        if pass.resolve_target.is_some() {
-            return Err(Error::Unavailable("Metal offscreen MSAA resolve is not implemented".into()));
+        if pass.color_attachments.is_empty() || pass.color_attachments.len() != layout.color_formats.len() {
+            return Err(Error::InvalidInput("Metal offscreen attachment count mismatch".into()));
         }
-        let view = self.texture_views.get(*target)?;
-        let texture = self.textures.get(view.texture)?;
-        if !texture.desc.usage.contains(TextureUsage::COLOR_ATTACHMENT)
-            || layout.color_formats.as_slice() != [view.format]
-            || view.resource.mipmapLevelCount() != 1
-        {
-            return Err(Error::InvalidInput("invalid Metal offscreen color view".into()));
+        let mut colors = Vec::with_capacity(pass.color_attachments.len());
+        let mut color_ids = Vec::with_capacity(pass.color_attachments.len());
+        let mut extent = None;
+        for (&target, &format) in pass.color_attachments.iter().zip(&layout.color_formats) {
+            let view = self.texture_views.get(target)?;
+            let texture = self.textures.get(view.texture)?;
+            let size = Extent2d::new(
+                u32::try_from(view.resource.width()).map_err(|_| Error::InvalidInput("Metal texture width overflow".into()))?,
+                u32::try_from(view.resource.height()).map_err(|_| Error::InvalidInput("Metal texture height overflow".into()))?,
+            )?;
+            if !texture.desc.usage.contains(TextureUsage::COLOR_ATTACHMENT)
+                || view.format != format || view.resource.mipmapLevelCount() != 1
+                || texture.desc.sample_count != layout.sample_count
+                || extent.is_some_and(|previous| previous != size) || color_ids.contains(&view.texture)
+            {
+                return Err(Error::InvalidInput("invalid Metal offscreen color view".into()));
+            }
+            extent = Some(size);
+            color_ids.push(view.texture);
+            colors.push(view.resource.clone());
         }
-        let extent = Extent2d::new(
-            u32::try_from(view.resource.width()).map_err(|_| Error::InvalidInput("Metal texture width overflow".into()))?,
-            u32::try_from(view.resource.height()).map_err(|_| Error::InvalidInput("Metal texture height overflow".into()))?,
-        )?;
+        let extent = extent.expect("validated nonempty attachments");
+        let resolve = if let Some(target) = pass.resolve_target {
+            let view = self.texture_views.get(target)?;
+            let texture = self.textures.get(view.texture)?;
+            if layout.sample_count <= 1 || texture.desc.sample_count != 1
+                || view.format != layout.color_formats[0] || color_ids.contains(&view.texture)
+                || !texture.desc.usage.contains(TextureUsage::COLOR_ATTACHMENT)
+                || view.resource.mipmapLevelCount() != 1
+                || view.resource.width() != extent.width() as usize
+                || view.resource.height() != extent.height() as usize
+                || matches!(view.format, Format::R8Uint | Format::Rg8Uint | Format::Rgba8Uint)
+            {
+                return Err(Error::InvalidInput("invalid Metal resolve destination".into()));
+            }
+            let source = self.textures.get(color_ids[0])?;
+            let discard = source.desc.usage.contains(TextureUsage::DISCARD_AFTER_RESOLVE)
+                && matches!(pass.color_load_op, LoadOp::Clear(_)) && pass.clear_region.is_none();
+            Some((view.texture, view.resource.clone(), discard))
+        } else { None };
         let empty_clear = match (pass.viewport, pass.clear_region) {
             (Some(viewport), Some(region)) => viewport.map_scissor(region, extent)?.is_empty(),
             (None, Some(region)) => region.is_empty(),
@@ -48,6 +74,7 @@ impl MetalDevice {
                 let view = self.texture_views.get(attachment.target)?;
                 let texture = self.textures.get(view.texture)?;
                 if view.format != format || !texture.desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT)
+                    || texture.desc.sample_count != layout.sample_count
                     || view.resource.width() != extent.width() as usize
                     || view.resource.height() != extent.height() as usize
                     || view.resource.mipmapLevelCount() != 1
@@ -79,7 +106,8 @@ impl MetalDevice {
         let mut steps = Vec::with_capacity(pass.commands.len());
         for command in pass.commands {
             let mut step = self.prepare_render_step(layout, command)?;
-            if step.bindings.samples_texture(view.texture)
+            if color_ids.iter().any(|&id| step.bindings.samples_texture(id))
+                || resolve.as_ref().is_some_and(|(id, _, _)| step.bindings.samples_texture(*id))
                 || depth_view.as_ref().is_some_and(|(id, _, _)| step.bindings.samples_texture(*id))
             {
                 return Err(Error::InvalidInput("Metal offscreen pass samples its own attachment".into()));
@@ -98,7 +126,8 @@ impl MetalDevice {
             steps.push(step);
         }
         Ok(PreparedPass {
-            color: view.resource.clone(),
+            colors,
+            resolve: resolve.map(|(_, texture, discard)| (texture, discard)),
             color_load,
             depth: depth_view.map(|(_, resource, load)| (resource, load)),
             extent, viewport, steps,
@@ -120,10 +149,16 @@ impl MetalDevice {
                 .ok_or_else(|| Error::Backend("Metal offscreen command buffer unavailable".into()))?;
             for pass in &prepared {
                 let descriptor = MTLRenderPassDescriptor::renderPassDescriptor();
-                // SAFETY: one validated color attachment at index zero.
-                let color = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
-                color.setTexture(Some(&pass.color));
-                color.setStoreAction(MTLStoreAction::Store);
+                for (index, texture) in pass.colors.iter().enumerate() {
+                // SAFETY: all attachments were validated before encoding.
+                let color = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(index) };
+                color.setTexture(Some(texture));
+                if let Some((resolve, discard)) = pass.resolve.as_ref().filter(|_| index == 0) {
+                    color.setResolveTexture(Some(resolve));
+                    color.setStoreAction(if *discard { MTLStoreAction::MultisampleResolve } else { MTLStoreAction::StoreAndMultisampleResolve });
+                } else {
+                    color.setStoreAction(MTLStoreAction::Store);
+                }
                 match pass.color_load {
                     LoadOp::Load => color.setLoadAction(MTLLoadAction::Load),
                     LoadOp::Clear(clear) => {
@@ -133,6 +168,7 @@ impl MetalDevice {
                             blue: f64::from(clear.blue), alpha: f64::from(clear.alpha),
                         });
                     }
+                }
                 }
                 if let Some((texture, load)) = &pass.depth {
                     let depth = descriptor.depthAttachment();

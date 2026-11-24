@@ -328,22 +328,21 @@ mod platform {
         /// Creates a render pass record.
         fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
             desc.validate()?;
-            if desc.color_attachments.len() != 1 {
-                return Err(Error::Unavailable(
-                    "Metal MRT is not implemented; use exactly one color attachment".into(),
-                ));
+            if desc.color_attachments.len() > 8 {
+                return Err(Error::Unavailable("Metal supports at most eight color attachments".into()));
             }
-            if desc.sample_count > 1
+            if !self.device.supportsTextureSampleCount(desc.sample_count as usize)
                 || desc
                     .depth_attachment
                     .as_ref()
                     .is_some_and(|attachment| attachment.stencil_format.is_some())
             {
                 return Err(Error::Unavailable(
-                    "Metal MSAA/stencil is not implemented".into(),
+                    "Metal sample count or stencil attachment is unsupported".into(),
                 ));
             }
             Ok(self.render_passes.insert(MetalRenderPass {
+                sample_count: desc.sample_count,
                 depth_format: desc.depth_attachment.map(|attachment| attachment.format),
                 color_formats: desc
                     .color_attachments
@@ -382,16 +381,10 @@ mod platform {
             self.validate_shader_bindings(group_layout, vertex_shader.bindings.as_ref(), gfx_core::ShaderStages::VERTEX)?;
             self.validate_shader_bindings(group_layout, fragment_shader.bindings.as_ref(), gfx_core::ShaderStages::FRAGMENT)?;
             let render_pass = self.render_passes.get(desc.render_pass)?;
-            let target = desc.color_targets.get(0).ok_or_else(|| {
-                Error::InvalidInput("Metal pipeline requires one color target".to_string())
-            })?;
-            if render_pass.color_formats.get(0) != Some(&target.format) {
-                return Err(Error::InvalidInput(
-                    "pipeline color target must match render pass color attachment".to_string(),
-                ));
-            }
-            if desc.color_targets.len() != 1 {
-                return Err(Error::Unavailable("Metal MRT pipelines are not implemented".into()));
+            if desc.color_targets.len() != render_pass.color_formats.len()
+                || desc.color_targets.iter().zip(&render_pass.color_formats).any(|(target, format)| target.format != *format)
+            {
+                return Err(Error::InvalidInput("Metal pipeline color targets must match render pass".into()));
             }
             if desc.depth_state.is_some() && render_pass.depth_format.is_none() {
                 return Err(Error::InvalidInput("Metal depth state requires a depth attachment".into()));
@@ -415,10 +408,11 @@ mod platform {
                 desc,
                 vertex_shader,
                 fragment_shader,
-                target.format,
+                render_pass.sample_count,
                 depth_format,
             )?;
             Ok(self.render_pipelines.insert(MetalRenderPipeline {
+                sample_count: render_pass.sample_count,
                 depth_format,
                 depth_state,
                 color_formats: desc
@@ -580,7 +574,7 @@ mod platform {
             let swapchain = self.swapchains.get(swapchain_id)?;
             let history = swapchain.color_history.as_ref();
             let render_pass = self.render_passes.get(render_pass)?;
-            if render_pass.color_formats.as_slice() != [swapchain.config.format] {
+            if render_pass.sample_count != 1 || render_pass.color_formats.as_slice() != [swapchain.config.format] {
                 return Err(Error::InvalidInput("Metal swapchain and render pass formats differ".into()));
             }
             let depth = match (render_pass.depth_format, depth_attachment) {
@@ -593,6 +587,7 @@ mod platform {
                     let texture = self.textures.get(view.texture)?;
                     if view.format != format
                         || !texture.desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT)
+                        || texture.desc.sample_count != 1
                         || view.resource.width() != swapchain.config.size.width() as usize
                         || view.resource.height() != swapchain.config.size.height() as usize
                     {
@@ -728,6 +723,7 @@ mod platform {
             let pipeline = self.render_pipelines.get(step.pipeline())?.clone();
             if render_pass.color_formats != pipeline.color_formats
                 || render_pass.depth_format != pipeline.depth_format
+                || render_pass.sample_count != pipeline.sample_count
             {
                 return Err(Error::InvalidInput(
                     "render pass and pipeline color targets do not match".to_string(),
@@ -965,10 +961,17 @@ mod platform {
     }
 
     impl ResourceDevice for MetalDevice {
+        fn max_color_attachments(&self) -> u32 { 8 }
+
         fn multisample_capabilities(&self) -> gfx_core::MultisampleCapabilities {
-            // Metal MSAA is not implemented on this backend yet.
+            // Report a contiguous supported power-of-two range.
+            let mut max_sample_count = 1;
+            for count in [2, 4, 8, 16, 32, 64] {
+                if !self.device.supportsTextureSampleCount(count as usize) { break; }
+                max_sample_count = count;
+            }
             gfx_core::MultisampleCapabilities {
-                max_sample_count: 1,
+                max_sample_count,
                 stencil_supported: false,
             }
         }
@@ -1352,12 +1355,14 @@ mod platform {
 
     #[derive(Clone)]
     struct MetalRenderPass {
+        sample_count: u32,
         color_formats: Vec<Format>,
         depth_format: Option<Format>,
     }
 
     #[derive(Clone)]
     struct MetalRenderPipeline {
+        sample_count: u32,
         depth_format: Option<Format>,
         depth_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
         color_formats: Vec<Format>,
@@ -1508,7 +1513,7 @@ mod platform {
         desc: &RenderPipelineDescriptor,
         vertex_shader: &MetalShaderModule,
         fragment_shader: &MetalShaderModule,
-        color_format: Format,
+        sample_count: u32,
         depth_format: Option<Format>,
     ) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>> {
         if desc.vertex_entry_point != vertex_shader.entry_point || desc.fragment_entry_point != fragment_shader.entry_point {
@@ -1540,20 +1545,16 @@ mod platform {
         }
         pipeline_desc.setVertexFunction(Some(&vertex_function));
         pipeline_desc.setFragmentFunction(Some(&fragment_function));
-        pipeline_desc.setRasterSampleCount(1);
+        pipeline_desc.setRasterSampleCount(sample_count as usize);
         if let Some(format) = depth_format {
             pipeline_desc.setDepthAttachmentPixelFormat(format_to_metal(format));
         }
-        // SAFETY: color attachment index 0 is valid for a single render target pipeline.
+        for (index, target) in desc.color_targets.iter().enumerate() {
+        // SAFETY: validated render pass has at most eight color attachments.
         let color_attachment =
-            unsafe { pipeline_desc.colorAttachments().objectAtIndexedSubscript(0) };
-        color_attachment.setPixelFormat(format_to_metal(color_format));
-        match desc
-            .color_targets
-            .get(0)
-            .map(|target| target.blend)
-            .unwrap_or(BlendMode::Replace)
-        {
+            unsafe { pipeline_desc.colorAttachments().objectAtIndexedSubscript(index) };
+        color_attachment.setPixelFormat(format_to_metal(target.format));
+        match target.blend {
             BlendMode::Replace => color_attachment.setBlendingEnabled(false),
             BlendMode::Alpha => {
                 color_attachment.setBlendingEnabled(true);
@@ -1584,6 +1585,7 @@ mod platform {
                 color_attachment.setSourceAlphaBlendFactor(MTLBlendFactor::One);
                 color_attachment.setDestinationAlphaBlendFactor(MTLBlendFactor::One);
             }
+        }
         }
         device
             .newRenderPipelineStateWithDescriptor_error(&pipeline_desc)

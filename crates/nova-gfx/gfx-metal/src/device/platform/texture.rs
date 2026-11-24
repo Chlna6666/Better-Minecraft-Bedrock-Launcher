@@ -153,16 +153,20 @@ struct PreparedUpload<'a> {
 impl MetalDevice {
     pub(super) fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
         desc.validate()?;
-        if desc.dimension != TextureDimension::D2 || desc.sample_count != 1 {
-            return Err(Error::Unavailable(
-                "Metal currently supports single-sample 2D textures only".into(),
-            ));
+        if desc.dimension != TextureDimension::D2 || !self.device.supportsTextureSampleCount(desc.sample_count as usize) {
+            return Err(Error::Unavailable("Metal texture dimension or sample count unsupported".into()));
+        }
+        if desc.sample_count > 1 && desc.memory_location != MemoryLocation::GpuOnly {
+            return Err(Error::InvalidInput("Metal multisample textures require private GPU storage".into()));
+        }
+        if desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT) {
+            return Err(Error::Unavailable("Metal memoryless attachment storage is not implemented".into()));
         }
         if desc.size.width() > 16_384 || desc.size.height() > 16_384 {
             return Err(Error::InvalidInput("Metal 2D texture exceeds 16384 texels".into()));
         }
         let native = MTLTextureDescriptor::new();
-        native.setTextureType(MTLTextureType::Type2D);
+        native.setTextureType(if desc.sample_count > 1 { MTLTextureType::Type2DMultisample } else { MTLTextureType::Type2D });
         native.setPixelFormat(format_to_metal(desc.format));
         // SAFETY: The portable descriptor validates the complete mip chain,
         // and the dimensions above are bounded for single-sample 2D textures.
@@ -170,6 +174,7 @@ impl MetalDevice {
             native.setWidth(desc.size.width() as usize);
             native.setHeight(desc.size.height() as usize);
             native.setMipmapLevelCount(desc.mip_level_count as usize);
+            native.setSampleCount(desc.sample_count as usize);
         }
         native.setStorageMode(if desc.memory_location == MemoryLocation::GpuOnly {
             MTLStorageMode::Private
