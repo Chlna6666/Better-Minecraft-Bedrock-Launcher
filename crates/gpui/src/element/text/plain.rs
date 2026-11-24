@@ -23,9 +23,7 @@ impl Element for &'static str {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut state = TextLayout::default();
-        let layout_id = state.layout(SharedString::new_static(self), None, window, cx);
-        (layout_id, state)
+        TextLayout::layout_plain(SharedString::new_static(self), window, cx)
     }
 
     fn prepaint(
@@ -89,9 +87,7 @@ impl Element for SharedString {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut state = TextLayout::default();
-        let layout_id = state.layout(self.clone(), None, window, cx);
-        (layout_id, state)
+        TextLayout::layout_plain(self.clone(), window, cx)
     }
 
     fn prepaint(

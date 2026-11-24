@@ -30,12 +30,34 @@ struct TextLayoutInner {
 }
 
 impl TextLayout {
+    /// Plain text owns no external layout handle. Reuse the state of a stable
+    /// mounted element instead of allocating a new Rc and rebuilding its
+    /// shaped lines on every render. The normal input/constraint checks in
+    /// layout() still decide whether the contents can be reused.
+    pub(super) fn layout_plain(
+        text: SharedString,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self) {
+        if let Some(id) = window.current_stable_layout_element_id() {
+            window.with_element_state(&id, |previous: Option<Self>, window| {
+                let state = previous.unwrap_or_default();
+                let layout_id = state.layout(text, None, window, cx);
+                ((layout_id, state.clone()), state)
+            })
+        } else {
+            let state = Self::default();
+            let layout_id = state.layout(text, None, window, cx);
+            (layout_id, state)
+        }
+    }
+
     pub(super) fn layout(
         &self,
         text: SharedString,
         runs: Option<Vec<TextRun>>,
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) -> LayoutId {
         let text_style = window.text_style();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
@@ -75,16 +97,28 @@ impl TextLayout {
             }
         }
 
+        // Without wrapping or truncation the measure function is independent
+        // of all Taffy constraints. Prepare the current paint state first,
+        // then key the pure size leaf by its measured geometry rather than
+        // its text. Changing a label without changing its size need not
+        // invalidate the ancestors' layout.
+        let intrinsic_only = text_style.white_space == WhiteSpace::Nowrap
+            && text_style.text_overflow.is_none()
+            && window.current_stable_layout_element_id().is_some();
+
         let measurement_key = text_layout_measurement_fingerprint(
             cache_key,
             paint_key,
             text_style.text_overflow.is_some() || paint_refresh_failed,
         );
 
-        window.request_default_measured_layout(measurement_key, {
+        let mut measure = {
             let element_state = self.clone();
 
-            move |known_dimensions, available_space, window, cx| {
+            move |known_dimensions: Size<Option<Pixels>>,
+                  available_space: Size<crate::AvailableSpace>,
+                  window: &mut Window,
+                  cx: &mut App| {
                 let wrap_width = if text_style.white_space == WhiteSpace::Normal {
                     known_dimensions.width.or(match available_space.width {
                         crate::AvailableSpace::Definite(x) => Some(x),
@@ -198,7 +232,22 @@ impl TextLayout {
 
                 size
             }
-        })
+        };
+        if intrinsic_only {
+            let measured = measure(
+                Size::default(),
+                crate::size(crate::AvailableSpace::MinContent, crate::AvailableSpace::MinContent),
+                window,
+                cx,
+            );
+            window.request_keyed_size_layout(
+                Default::default(),
+                ("intrinsic_text", measured.width, measured.height),
+                move |_, _, _, _| measured,
+            )
+        } else {
+            window.request_default_measured_layout(measurement_key, measure)
+        }
     }
 
     pub(super) fn prepaint(&self, bounds: Bounds<Pixels>, text: &str) {
