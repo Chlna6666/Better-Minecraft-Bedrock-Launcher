@@ -599,6 +599,11 @@ impl NovaBackend {
             Self::Dx11(device) => Ok(device.request_submission_ready(_submission, _callback)?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             Self::Metal(device) => Ok(device.request_submission_ready(_submission, _callback)?),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(device) => Ok(device.request_submission_ready(_submission, _callback)?),
             #[allow(unreachable_patterns)]
             _ => Ok(false),
         }

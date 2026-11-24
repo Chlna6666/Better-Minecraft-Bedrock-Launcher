@@ -57,6 +57,7 @@ mod descriptors;
 mod presentation;
 mod relocation;
 mod transfer_queue;
+mod submission_wake;
 
 const DEFAULT_FRAME_SLOTS: u32 = 2;
 // A transient WSI stall must not discard a prepared compositor frame after only 1 ms.
@@ -170,6 +171,7 @@ pub struct VulkanDevice {
     command_encoders: ResourceRegistry<VulkanCommandEncoder>,
     free_command_encoders: Vec<VulkanCommandEncoder>,
     submissions: ResourceRegistry<VulkanSubmission>,
+    submission_wakes: submission_wake::SubmissionWakes,
     /// Completed via a native fence on the waiting graphics-family queue.
     /// Binary semaphores must remain alive until that GPU wait executes.
     native_queue_waits: Vec<VulkanQueueWait>,
@@ -511,6 +513,7 @@ impl VulkanDevice {
             command_encoders: ResourceRegistry::new("command encoder"),
             free_command_encoders: Vec::with_capacity(command_encoder_pool_capacity),
             submissions: ResourceRegistry::new("submission"),
+            submission_wakes: submission_wake::SubmissionWakes::default(),
             native_queue_waits: Vec::new(),
             surfaces: ResourceRegistry::new("surface"),
             swapchains: ResourceRegistry::new("swapchain"),
@@ -3006,7 +3009,15 @@ impl VulkanDevice {
     fn poll_submission(&mut self, submission: SubmissionId) -> Result<SubmissionStatus> {
         self.poll_cleanup();
         let submission_resource = self.submissions.get(submission)?;
-        if fence_is_complete(&self.device, submission_resource.fence) {
+        // Unlike resource teardown, a device loss cannot prove successful GPU work.
+        let complete = if submission_resource.fence == vk::Fence::null() {
+            true
+        } else {
+            unsafe { self.device.get_fence_status(submission_resource.fence) }
+                .map_err(VulkanError::from)?
+        };
+        if complete {
+            self.submission_wakes.cancel(submission);
             let completed = self.submissions.take(submission)?;
             if completed.owned_by_submission {
                 // SAFETY: A checkpoint owns its own fence and the GPU has
@@ -3026,6 +3037,7 @@ impl VulkanDevice {
             unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }
                 .map_err(VulkanError::from)?;
         }
+        self.submission_wakes.cancel(submission);
         let completed = self.submissions.take(submission)?;
         if completed.owned_by_submission {
             // SAFETY: wait_for_fences returned success for this owned fence.
@@ -3543,6 +3555,7 @@ impl VulkanDevice {
     /// Polls and releases deferred resources that have aged past their retirement frame.
     pub fn poll_cleanup(&mut self) {
         let device = self.device.clone();
+        self.submission_wakes.collect(&device);
         // The secondary queue's native fence is the only proof that the
         // binary wait semaphore has been consumed. Do not free it when the
         // producing graphics queue signals, or when a host submit returns.
@@ -5316,6 +5329,34 @@ impl SubmissionDevice for VulkanDevice {
         Self::poll_submission(self, submission)
     }
 
+    fn request_submission_ready(
+        &mut self,
+        submission: SubmissionId,
+        callback: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<bool> {
+        self.poll_cleanup();
+        let record = self.submissions.get(submission)?;
+        // SAFETY: owner-side cleanup updated any recycled fence to null.
+        if record.fence == vk::Fence::null() || unsafe { self.device.get_fence_status(record.fence) }
+            .map_err(VulkanError::from)?
+        {
+            self.submission_wakes.cancel(submission);
+            callback();
+            return Ok(true);
+        }
+        let queue_id = record.queue;
+        let queue = if queue_id == gfx_core::GpuQueueId::PRIMARY {
+            self.graphics_queue
+        } else if self.independent_queue(gfx_core::GpuWorkStage::Graphics) == Some(queue_id) {
+            self.sidecar_queue.expect("matched graphics queue")
+        } else if self.dedicated_compute_queue_id() == Some(queue_id) {
+            self.dedicated_compute_queue.expect("matched compute queue")
+        } else {
+            return Ok(false);
+        };
+        self.submission_wakes.register(&self.device, queue, submission, callback)
+    }
+
     fn poll_submission_with_frame_timestamps(&mut self, submission: SubmissionId)
         -> Result<(SubmissionStatus, Option<FrameGpuTimestamps>)> {
         let status = Self::poll_submission(self, submission)?;
@@ -5551,6 +5592,8 @@ impl Drop for VulkanDevice {
     fn drop(&mut self) {
         // SAFETY: Device may still have in-flight work; waiting before destruction is valid.
         let _ = unsafe { self.device.device_wait_idle() };
+        // Drain native wait threads before destroying any private fences or VkDevice.
+        self.submission_wakes.shutdown(&self.device);
         for bridge in self.native_queue_waits.drain(..) {
             // SAFETY: device_wait_idle above returned after all GPU-side waits;
             // neither queue can reference this semaphore or fence again.
