@@ -594,6 +594,8 @@ impl NovaBackend {
             Self::Dx11(device) => Ok(device.poll_submission_with_frame_timestamps(submission)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => Ok(device.poll_submission_with_frame_timestamps(submission)?),
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            Self::Metal(device) => Ok(device.poll_submission_with_frame_timestamps(submission)?),
             #[cfg(all(feature = "nova-gfx-vulkan", any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
             Self::Vulkan(device) => Ok(device.poll_submission_with_frame_timestamps(submission)?),
             #[allow(unreachable_patterns)]

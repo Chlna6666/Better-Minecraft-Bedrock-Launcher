@@ -34,7 +34,7 @@ use gfx_core::{
     AddressMode, Backend, BackendKind, BeginRenderPassDescriptor, BindGroupDescriptor, BindGroupId,
     BindGroupLayoutDescriptor, BindGroupLayoutId, BindingResource, BlendMode, BufferDescriptor,
     BufferId, BufferUsage, ClearColor, CommandDevice, CommandEncoderDescriptor, CommandEncoderId,
-    DepthAttachment, DeviceDescriptor, DiagnosticsDevice, DrawCommand, DrawDescriptor, Error,
+    CompareFunction, DepthAttachment, DeviceDescriptor, DiagnosticsDevice, DrawCommand, DrawDescriptor, Error,
     FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, PipelineDevice,
     PipelineLayoutDescriptor, PipelineLayoutId, PresentFrameDescriptor, PresentationDevice,
     PresentedFrame, PrimitiveTopology, RenderCommand, RenderPassCommands, RenderPassDescriptor,
@@ -55,14 +55,15 @@ mod platform {
     use core::ffi::c_void;
     use core::ptr::NonNull;
     use dispatch2::DispatchData;
-    use gfx_core::SwapchainId;
+    use gfx_core::{FrameGpuTimestamps, PresentTimings};
+    use std::time::Instant;
     use objc2::{ClassType, rc::Retained, runtime::ProtocolObject};
     use objc2_app_kit::NSView;
     use objc2_core_foundation::CGSize;
     use objc2_foundation::{NSError, NSInteger, NSObjectProtocol, NSString};
     use objc2_metal::{
         MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
-        MTLCommandEncoder, MTLCommandQueue, MTLCompileOptions, MTLDevice, MTLDrawable, MTLFunction,
+        MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLCompileOptions, MTLDevice, MTLDrawable, MTLFunction,
         MTLIndexType, MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType,
         MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
         MTLRenderPipelineState, MTLResourceOptions, MTLScissorRect, MTLStoreAction, MTLTexture,
@@ -93,6 +94,8 @@ mod platform {
         command_encoders: ResourceRegistry<MetalCommandEncoder>,
         surfaces: ResourceRegistry<MetalSurface>,
         swapchains: ResourceRegistry<MetalSwapchain>,
+        submissions: ResourceRegistry<MetalSubmission>,
+        last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
         submitted_frames: u64,
     }
 
@@ -124,6 +127,8 @@ mod platform {
                 command_encoders: ResourceRegistry::new("command encoder"),
                 surfaces: ResourceRegistry::new("surface"),
                 swapchains: ResourceRegistry::new("swapchain"),
+                submissions: ResourceRegistry::new("submission"),
+                last_frame_gpu_timestamps: None,
                 submitted_frames: 0,
             })
         }
@@ -179,6 +184,7 @@ mod platform {
                 surface,
                 config,
                 layer,
+                last_submission: None,
             }))
         }
 
@@ -491,8 +497,7 @@ mod platform {
 
         fn submit(&mut self, encoder: CommandEncoderId) -> Result<()> {
             let _encoder = self.command_encoders.get(encoder)?;
-            self.submitted_frames = self.submitted_frames.saturating_add(1);
-            Ok(())
+            Err(Error::Unavailable("Metal generic encoder recording is not implemented".into()))
         }
 
         fn draw_internal(
@@ -501,23 +506,25 @@ mod platform {
             render_pass: RenderPassId,
             steps: &[RenderCommand],
             clear_color: gfx_core::ClearColor,
-        ) -> Result<()> {
-            if steps.is_empty() {
-                return Err(Error::InvalidInput(
-                    "Metal render command list must not be empty".to_string(),
-                ));
+        ) -> Result<Option<PresentedFrame>> {
+            if !self.poll_present_readiness(swapchain)? {
+                return Ok(None);
             }
-            let swapchain = self.swapchains.get(swapchain)?;
+            let started = Instant::now();
+            let swapchain_id = swapchain;
+            let swapchain = self.swapchains.get(swapchain_id)?;
             let render_pass = self.render_passes.get(render_pass)?;
             let render_steps = steps
                 .iter()
                 .map(|step| self.prepare_render_step(render_pass, step))
                 .collect::<Result<Vec<_>>>()?;
 
-            objc2::rc::autoreleasepool(|_| -> Result<()> {
-                let drawable = swapchain.layer.nextDrawable().ok_or_else(|| {
-                    Error::Backend("CAMetalLayer did not provide a drawable".to_string())
-                })?;
+            let frame = objc2::rc::autoreleasepool(|_| -> Result<Option<(Retained<ProtocolObject<dyn MTLCommandBuffer>>, PresentTimings)>> {
+                let acquire_started = Instant::now();
+                let Some(drawable) = swapchain.layer.nextDrawable() else {
+                    return Ok(None);
+                };
+                let image_acquire = acquire_started.elapsed();
                 let texture = drawable.texture();
                 let descriptor = MTLRenderPassDescriptor::renderPassDescriptor();
                 // SAFETY: color attachment index 0 is valid for the descriptor's color array.
@@ -543,12 +550,27 @@ mod platform {
                     })?;
                 encode_draw_steps(&encoder, &render_steps, swapchain.config);
                 encoder.endEncoding();
+                let record_elapsed = started.elapsed().saturating_sub(image_acquire);
+                let present_started = Instant::now();
                 command_buffer.presentDrawable(drawable.as_ref());
+                let queue_present = present_started.elapsed();
+                let submit_started = Instant::now();
                 command_buffer.commit();
-                Ok(())
+                Ok(Some((command_buffer, PresentTimings {
+                    image_acquire,
+                    command_record: record_elapsed,
+                    queue_present,
+                    queue_submit: submit_started.elapsed(),
+                    ..PresentTimings::default()
+                })))
             })?;
+            let Some((command_buffer, timings)) = frame else {
+                return Ok(None);
+            };
+            let submission = self.submissions.insert(MetalSubmission { command_buffer });
+            self.swapchains.get_mut(swapchain_id)?.last_submission = Some(submission);
             self.submitted_frames = self.submitted_frames.saturating_add(1);
-            Ok(())
+            Ok(Some(PresentedFrame { submission: Some(submission), timings: Some(timings) }))
         }
 
         fn prepare_render_step(
@@ -568,6 +590,9 @@ mod platform {
                 .copied()
                 .map(|bind_group| Ok(self.bind_groups.get(bind_group)?.clone()))
                 .collect::<Result<Vec<_>>>()?;
+            if bind_groups.iter().any(|group| !group.bindings.is_empty()) {
+                return Err(Error::Unavailable("Metal native resource binding is not implemented".into()));
+            }
             let draw = match step {
                 RenderCommand::DrawIndirect(_) => {
                     return Err(Error::Unavailable(
@@ -745,7 +770,7 @@ mod platform {
                 render_passes: self.render_passes.live_len(),
                 render_pipelines: self.render_pipelines.live_len(),
                 command_encoders: self.command_encoders.live_len(),
-                submissions: 0,
+                submissions: self.submissions.live_len(),
                 surfaces: self.surfaces.live_len(),
                 swapchains: self.swapchains.live_len(),
                 allocated_bytes,
@@ -951,44 +976,86 @@ mod platform {
         }
 
         fn submit_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
-            self.submit(encoder)?;
-            Ok(SubmissionId::from_parts(0, 0))
+            let _ = self.command_encoders.get(encoder)?;
+            Err(Error::Unavailable("Metal generic encoder recording is not implemented".into()))
         }
 
         fn poll_submission(&mut self, submission: SubmissionId) -> Result<SubmissionStatus> {
-            if submission.raw() == 0 {
-                Ok(SubmissionStatus::Complete)
-            } else {
-                Err(Error::InvalidInput(format!(
-                    "unknown Metal submission {}",
-                    submission.raw()
-                )))
+            self.poll_submission_with_frame_timestamps(submission).map(|(status, _)| status)
+        }
+
+        fn poll_submission_with_frame_timestamps(&mut self, submission: SubmissionId)
+            -> Result<(SubmissionStatus, Option<FrameGpuTimestamps>)> {
+            let record = self.submissions.get(submission)?;
+            let status = record.command_buffer.status();
+            if status != MTLCommandBufferStatus::Completed && status != MTLCommandBufferStatus::Error {
+                return Ok((SubmissionStatus::Pending, None));
             }
+            let record = self.submissions.take(submission)?;
+            if status == MTLCommandBufferStatus::Error {
+                let error = record.command_buffer.error().as_deref().map(nserror_message)
+                    .unwrap_or_else(|| "Metal command buffer failed".into());
+                return Ok((SubmissionStatus::Failed(error), None));
+            }
+            let start = record.command_buffer.GPUStartTime();
+            let end = record.command_buffer.GPUEndTime();
+            let sample = if start.is_finite() && end.is_finite() && start > 0.0 && end > start {
+                let ns = (end - start) * 1_000_000_000.0;
+                (ns < u64::MAX as f64).then_some(FrameGpuTimestamps {
+                    duration_ticks: ns as u64, frequency: 1_000_000_000,
+                })
+            } else { None };
+            if sample.is_some() {
+                self.last_frame_gpu_timestamps = sample;
+            }
+            Ok((SubmissionStatus::Complete, sample))
         }
 
         fn wait_submission(&mut self, submission: SubmissionId) -> Result<()> {
+            self.submissions.get(submission)?.command_buffer.waitUntilCompleted();
             match self.poll_submission(submission)? {
                 SubmissionStatus::Complete => Ok(()),
-                SubmissionStatus::Pending => Err(Error::Unavailable(
-                    "Metal deferred wait is not implemented yet".to_string(),
-                )),
+                SubmissionStatus::Pending => Err(Error::Backend("Metal command buffer did not complete".into())),
                 SubmissionStatus::Failed(error) => Err(Error::Backend(error)),
             }
         }
     }
 
     impl PresentationDevice for MetalDevice {
+        fn poll_present_readiness(&mut self, id: SwapchainId) -> Result<bool> {
+            let chain = self.swapchains.get(id)?;
+            let Some(submission) = chain.last_submission else { return Ok(true); };
+            // GPU completion is not scanout completion. CAMetalLayer owns
+            // drawable availability and native display sync.
+            Ok(self.submissions.get(submission).map_or(true, |record| matches!(
+                record.command_buffer.status(),
+                MTLCommandBufferStatus::Completed | MTLCommandBufferStatus::Error
+            )))
+        }
+
         fn render_and_present(
             &mut self,
-            _frame: &PresentFrameDescriptor<'_>,
+            frame: &PresentFrameDescriptor<'_>,
         ) -> Result<Option<PresentedFrame>> {
-            unavailable()
+            if frame.depth_attachment.is_some() {
+                return Err(Error::Unavailable("Metal native depth attachment is not implemented".into()));
+            }
+            let LoadOp::Clear(color) = frame.color_load_op else {
+                return Err(Error::Unavailable("Metal drawable LoadOp::Load is not implemented".into()));
+            };
+            self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, color)
         }
     }
 
     impl DiagnosticsDevice for MetalDevice {
         fn resource_stats(&self) -> ResourceStats {
             Self::resource_stats(self)
+        }
+
+        fn frame_gpu_timestamps_supported(&self) -> bool { true }
+
+        fn last_frame_gpu_timestamps(&mut self) -> Result<Option<FrameGpuTimestamps>> {
+            Ok(self.last_frame_gpu_timestamps)
         }
 
         fn memory_architecture(&self) -> Result<gfx_core::MemoryArchitecture> {
@@ -1056,7 +1123,7 @@ mod platform {
         library: Retained<ProtocolObject<dyn MTLLibrary>>,
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     struct MetalRenderPass {
         color_formats: Vec<Format>,
     }
@@ -1087,6 +1154,11 @@ mod platform {
         surface: SurfaceId,
         config: SurfaceConfig,
         layer: Retained<CAMetalLayer>,
+        last_submission: Option<SubmissionId>,
+    }
+
+    struct MetalSubmission {
+        command_buffer: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
     }
 
     fn create_or_replace_metal_layer(
@@ -1145,7 +1217,8 @@ mod platform {
             gfx_core::PresentMode::Immediate
         ));
         layer.setPresentsWithTransaction(false);
-        layer.setAllowsNextDrawableTimeout(false);
+        // Bound the native drawable wait if the compositor suspends the layer.
+        layer.setAllowsNextDrawableTimeout(true);
     }
 
     fn create_pipeline_state(
