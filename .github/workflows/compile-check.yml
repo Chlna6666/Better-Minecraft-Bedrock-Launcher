@@ -327,3 +327,33 @@ jobs:
           cargo test -p bmcbl --lib stream_probe_epoch_tests -- --nocapture
           cargo test -p gpui-3d --lib --features gpui/x11 portal_hidden_nodes_do_not_occlude_other_rendered_sections -- --nocapture
           cargo test -p bmcbl --lib gpu_node_visibility_preserves_fused_group_and_original_scene -- --nocapture
+
+  metal-build:
+    name: macOS native Metal compile
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Setup Rust 1.99.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+
+      - name: Check native Metal backend
+        run: cargo check --locked -p gfx-metal --lib
+
+      - name: Test WGSL to MSL resource ABI
+        run: cargo test --locked -p gfx-shader --lib msl
+
+      - name: Verify Metal shader compiler
+        run: |
+          xcodebuild -version
+          xcrun -sdk macosx -find metal
+          xcrun -sdk macosx -find metallib
+
+      - name: Check GPUI with Metal and embedded native shaders
+        run: cargo check --locked -p gpui --lib --no-default-features --features nova-gfx-metal
