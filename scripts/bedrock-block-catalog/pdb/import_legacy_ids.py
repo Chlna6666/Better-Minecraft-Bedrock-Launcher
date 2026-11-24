@@ -22,7 +22,9 @@ import struct
 import sys
 from pathlib import Path
 
-NAME_RE = re.compile(r"[a-z0-9_.-]+:[a-z0-9_./-]+")
+# Historical legacy identifiers preserve their exact case (concretePowder,
+# tripWire, ...); the namespace itself is always lowercase.
+NAME_RE = re.compile(r"[a-z0-9_.-]+:[a-zA-Z0-9_./-]+")
 
 
 def sha256(path: Path) -> str:
@@ -192,13 +194,11 @@ def convert(table: bytes, legacy: dict[str, int], version: str) -> tuple[list[di
             if not ok:
                 stats["skipped_unsupported_nbt"] += 1
                 continue
+            # Historical identifiers keep their EXACT case (concretePowder,
+            # tripWire, seaLantern, ...). Never normalise or drop them: the
+            # importer validates legacy names with a case-preserving rule.
             if not NAME_RE.fullmatch(name):
-                # The dataset contains authoritative legacy camelCase
-                # identifiers (concretePowder, tripWire, ...) that the strict
-                # importer cannot represent. Never silently normalise a name:
-                # skip it and report the count instead.
-                stats["skipped_nonconforming_name"] += 1
-                continue
+                stats["historical_case_names"] = stats.get("historical_case_names", 0) + 1
             entries.append({
                 "id": numeric_id,
                 "metadata": metadata,
@@ -234,10 +234,17 @@ def main() -> int:
         "schema_version": 1,
         "game_version": args.version,
         "source": {
-            "method": "runtime_registry_observation",
-            "platform": "windows-x64",
+            "method": "authoritative_dataset",
+            "platform": "dataset",
+            # This is the DATASET file hash, explicitly not a BDS EXE fingerprint.
             "binary_sha256": sha256(args.table),
-            "tool": "PocketMine BedrockBlockUpgradeSchema authoritative legacy-ID dataset",
+            "dataset": {
+                "name": "PocketMine BedrockBlockUpgradeSchema",
+                "version": args.source_version,
+                "file_sha256": sha256(args.table),
+                "upstream": "https://github.com/pmmp/BedrockBlockUpgradeSchema",
+            },
+            "tool": "BMCBL import_legacy_ids from authoritative PocketMine id_meta_to_nbt dataset",
         },
         "registries": [{"namespace": "legacy_numeric_block", "entries": entries}],
     }

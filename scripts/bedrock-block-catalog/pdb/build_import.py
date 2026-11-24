@@ -52,14 +52,20 @@ def main() -> int:
     vbt = json.loads((recon / f"vbt2-{args.version}.json").read_text(encoding="utf-8"))
     ids = json.loads((recon / f"ids-{args.version}.json").read_text(encoding="utf-8"))
     valid = {r["name"] for r in ids["identifiers"]}
+    # Corroborate ONLY with same-version probes. A name observed in a different
+    # version does not validate this version's symbol-to-name mapping.
     probe_names: set[str] = set()
     if args.probes:
-        for path in sorted(args.probes.glob("*.json")):
-            probe = json.loads(path.read_text(encoding="utf-8"))
+        exact = args.probes / f"{args.version}.json"
+        if exact.is_file():
+            probe = json.loads(exact.read_text(encoding="utf-8"))
             probe_names |= {
                 b["name"] for b in probe.get("blocks", [])
                 if isinstance(b, dict) and "name" in b
             }
+        else:
+            print(f"note: no same-version probe for {args.version}; all entries are pdb_byte_only",
+                  flush=True)
 
     entries = []
     dropped = 0
@@ -76,21 +82,25 @@ def main() -> int:
             dropped += 1
             continue
         seen_names.add(found)
-        tier = "pdb_byte_and_script_probe" if found in probe_names else "pdb_byte_only"
+        tier = "pdb_byte_and_same_version_probe" if found in probe_names else "pdb_byte_only"
         entries.append({
+            # Evidence-only ordinal. NOT a verified runtime type ID: static
+            # variable address order does not prove the runtime registry ID.
             "id": ordinal,
+            "symbol_ordinal": ordinal,
             "name": found,
             "evidence": (
-                f"[evidence_tier={tier}] "
+                f"[evidence_tier={tier}] [NOT_A_VERIFIED_RUNTIME_ID] "
                 f"PDB symbol {sym['symbol']} at segment {sym['segment']} "
-                f"offset {sym['offset']}; registry declaration ordinal {ordinal}; "
+                f"offset {sym['offset']}; symbol declaration/address ordinal {ordinal} "
+                f"(evidence only, not a runtime BlockType ID); "
                 f"identifier literal decoded from ??_C@ symbol and byte-validated in "
                 f"bedrock_server.exe SHA-256 {match['exe_sha256']}; "
                 f"PE/PDB CodeView {match['codeview']['guid']}/{match['codeview']['age']} "
                 f"matched PDB SHA-256 {match['pdb_sha256']}"
                 + (
-                    "; name independently corroborated by a Script API block probe"
-                    if tier == "pdb_byte_and_script_probe" else ""
+                    "; name independently corroborated by a same-version Script API block probe"
+                    if tier == "pdb_byte_and_same_version_probe" else ""
                 )
             ),
         })
@@ -106,7 +116,8 @@ def main() -> int:
             "tool": "BMCBL local PDB extractor (pdbparse + pefile), exact-match only",
         },
         "registries": [{
-            "namespace": "block_type_runtime",
+            # Evidence namespace only: PDB symbol order is not a runtime ID.
+            "namespace": "pdb_symbol_order",
             "entries": entries,
         }],
     }

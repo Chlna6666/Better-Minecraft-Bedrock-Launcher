@@ -93,6 +93,47 @@ class IdentityImportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "multiple runtime type IDs"):
             parse_registry(table, {"minecraft:stone"}, False)
 
+    def test_legacy_names_keep_historical_case(self):
+        obj = registry("legacy_numeric_block")
+        obj["entries"][0]["name"] = "minecraft:concretePowder"
+        namespace, _, binary, _, _ = parse_registry(obj, {"minecraft:concretePowder"}, False)
+        self.assertEqual(namespace, "legacy_numeric_block")
+        self.assertIn(b"concretePowder", binary)
+
+    def test_modern_namespace_rejects_uppercase(self):
+        obj = registry("block_type_runtime")
+        obj["entries"][0]["name"] = "minecraft:Stone"
+        with self.assertRaisesRegex(ValueError, "lowercase"):
+            parse_registry(obj, {"minecraft:Stone"}, False)
+
+    def test_pdb_symbol_order_requires_explicit_ordinal(self):
+        obj = {"namespace": "pdb_symbol_order", "entries": [{
+            "id": 3, "name": "minecraft:stone", "evidence": "symbol at RVA 0x12ab",
+        }]}
+        with self.assertRaisesRegex(ValueError, "symbol_ordinal"):
+            parse_registry(obj, {"minecraft:stone"}, False)
+        obj["entries"][0]["symbol_ordinal"] = 3
+        namespace, _, _, _, _ = parse_registry(obj, {"minecraft:stone"}, False)
+        self.assertEqual(namespace, "pdb_symbol_order")
+
+    def test_dataset_source_is_not_claimed_as_windows_binary(self):
+        from import_id_registry import validate_source
+        dataset_source = {
+            "method": "authoritative_dataset", "platform": "dataset",
+            "binary_sha256": "a" * 64,
+            "dataset": {"name": "PocketMine schema", "version": "1.12.0",
+                        "file_sha256": "a" * 64, "upstream": "https://example.test/dataset"},
+            "tool": "importer v1",
+        }
+        result = validate_source(dataset_source)
+        self.assertEqual(result["method"], "authoritative_dataset")
+        self.assertEqual(result["platform"], "dataset")
+        self.assertEqual(result["dataset"]["file_sha256"], "a" * 64)
+        bad = json.loads(json.dumps(dataset_source))
+        bad["platform"] = "windows-x64"
+        with self.assertRaisesRegex(ValueError, "platform=dataset"):
+            validate_source(bad)
+
     def test_network_runtime_requires_palette_fingerprint(self):
         item = registry("network_runtime")
         del item["palette_fingerprint"]

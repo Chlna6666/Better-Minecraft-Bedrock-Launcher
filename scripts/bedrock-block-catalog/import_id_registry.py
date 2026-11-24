@@ -14,9 +14,17 @@ import re
 import struct
 import zlib
 
-NAMESPACES = {"legacy_numeric_block": 1, "block_type_runtime": 2, "network_runtime": 3}
+# pdb_symbol_order stores only the declaration/address order of static PDB
+# symbols. It is explicitly NOT a verified runtime type ID: use it as evidence
+# only until a live registry or runtime observation proves an ID.
+NAMESPACES = {"legacy_numeric_block": 1, "block_type_runtime": 2,
+              "network_runtime": 3, "pdb_symbol_order": 4}
 TYPES = {"Byte": 1, "Int": 3, "String": 8}
 MAX_RECORDS = 300000
+# Modern identifiers are lowercase. Historical legacy numeric IDs preserve the
+# exact case used by the game (concretePowder, tripWire, seaLantern, ...).
+MODERN_NAME_RE = re.compile(r"[a-z0-9_.-]+:[a-z0-9_./-]+")
+LEGACY_NAME_RE = re.compile(r"[a-z0-9_.-]+:[a-zA-Z0-9_./-]+")
 
 
 def require(condition: bool, reason: str) -> None:
@@ -35,9 +43,11 @@ def natural(value: object, field: str) -> int:
     return value
 
 
-def name_of(value: object) -> str:
-    require(isinstance(value, str) and bool(re.fullmatch("[a-z0-9_.-]+:[a-z0-9_./-]+", value)),
-            "block identifier must be an explicit namespaced lowercase ID")
+def name_of(value: object, namespace: str | None = None) -> str:
+    pattern = LEGACY_NAME_RE if namespace == "legacy_numeric_block" else MODERN_NAME_RE
+    require(isinstance(value, str) and bool(pattern.fullmatch(value)),
+            "block identifier must be an explicit namespaced ID"
+            + (" (lowercase)" if namespace != "legacy_numeric_block" else " (historical case preserved)"))
     return value
 
 
@@ -114,7 +124,7 @@ def parse_registry(obj: dict, names: set[str] | None, allow_unknown: bool) -> tu
             id_num = raw_id & 0xffffffff
         else:
             id_num = natural(raw_id, "entry id")
-        name = name_of(record.get("name"))
+        name = name_of(record.get("name"), namespace)
         evidence = record.get("evidence")
         require(isinstance(evidence, str) and len(evidence.strip()) >= 8,
                 "each ID requires precise per-entry symbol/RVA evidence")
@@ -128,22 +138,29 @@ def parse_registry(obj: dict, names: set[str] | None, allow_unknown: bool) -> tu
             require(meta <= 65535, "legacy metadata exceeds u16")
         else:
             require(meta is None, "metadata is only valid for legacy_numeric_block")
+        if namespace == "pdb_symbol_order":
+            # Require an explicit marker so this evidence namespace can never be
+            # mistaken for a verified runtime ID.
+            require(record.get("symbol_ordinal") == raw_id,
+                    "pdb_symbol_order entries must set symbol_ordinal equal to id (evidence only)")
         key = (id_num, meta) if meta is not None else id_num
         require(key not in seen, "duplicate/conflicting numeric identity " + repr(key))
         seen.add(key)
         states = record.get("states")
         storage_version = record.get("version")
-        if namespace == "block_type_runtime":
-            require(states is None, "BlockType ID maps a block type, not an NBT state")
-            require(storage_version is None, "BlockType ID has no persisted NBT version")
+        if namespace in ("block_type_runtime", "pdb_symbol_order"):
+            require(states is None, namespace + " maps a block type, not an NBT state")
+            require(storage_version is None, namespace + " has no persisted NBT version")
         else:
             require(type(storage_version) is int and -(2**31) <= storage_version < 2**31,
                     "persisted NBT BlockState.version must be explicit signed i32")
         serialized_state = encode_state(states,
                 required=namespace in ("legacy_numeric_block", "network_runtime"))
-        if namespace == "block_type_runtime":
-            require(name not in seen_types,
-                    "one block name has multiple runtime type IDs; resolve explicit aliases first")
+        if namespace in ("block_type_runtime", "pdb_symbol_order"):
+            message = ("one block name has multiple runtime type IDs; resolve explicit aliases first"
+                       if namespace == "block_type_runtime"
+                       else "one block name has multiple PDB symbol ordinals")
+            require(name not in seen_types, message)
             seen_types.add(name)
         if namespace == "network_runtime":
             semantic_key = (name, serialized_state)
@@ -167,7 +184,7 @@ def parse_registry(obj: dict, names: set[str] | None, allow_unknown: bool) -> tu
         if namespace == "legacy_numeric_block":
             binary.extend(varint(metadata))
         binary.extend(varint(names_map[name]))
-        if namespace != "block_type_runtime":
+        if namespace not in ("block_type_runtime", "pdb_symbol_order"):
             binary.extend(struct.pack("<i", storage_version))
         binary.extend(state)
     return namespace, palette, bytes(binary), len(entries), not unknown
@@ -189,22 +206,48 @@ def read_manifest_names(catalog: Path, version: str) -> set[str] | None:
 def validate_source(source: object) -> dict:
     require(isinstance(source, dict), "source must be an object")
     method = source.get("method")
-    require(method in ("pdb_symbol_inspection", "runtime_registry_observation"),
-            "source method must identify real symbol/runtime observation")
+    require(method in ("pdb_symbol_inspection", "runtime_registry_observation", "authoritative_dataset"),
+            "source method must identify real symbol/runtime/dataset observation")
     binary_sha = digest64(source.get("binary_sha256"), "source.binary_sha256")
     pdb_sha = source.get("pdb_sha256")
+    dataset = source.get("dataset")
     if method == "pdb_symbol_inspection":
         pdb_sha = digest64(pdb_sha, "source.pdb_sha256")
+        require(dataset is None, "dataset is only valid for authoritative_dataset")
+    elif method == "authoritative_dataset":
+        # An authoritative dataset file is NOT a BDS executable fingerprint:
+        # record its identity separately and never claim a platform binary.
+        require(isinstance(dataset, dict), "authoritative_dataset requires source.dataset")
+        require(isinstance(dataset.get("name"), str) and len(dataset["name"]) >= 3,
+                "source.dataset.name must identify the dataset")
+        require(isinstance(dataset.get("version"), str) and dataset["version"],
+                "source.dataset.version must be explicit")
+        digest64(dataset.get("file_sha256"), "source.dataset.file_sha256")
+        require(isinstance(dataset.get("upstream"), str) and len(dataset["upstream"]) >= 3,
+                "source.dataset.upstream must be a source URL")
+        dataset = {
+            "name": dataset["name"], "version": dataset["version"],
+            "file_sha256": dataset["file_sha256"].lower(), "upstream": dataset["upstream"],
+        }
+        require(pdb_sha is None, "pdb_sha256 is not valid for authoritative_dataset")
     else:
         require(pdb_sha is None or isinstance(pdb_sha, str), "source.pdb_sha256 invalid")
+        require(dataset is None, "dataset is only valid for authoritative_dataset")
     platform = source.get("platform")
-    require(platform in ("windows-x64", "linux-x64", "windows-arm64", "linux-arm64"),
-            "source.platform must be explicit")
+    allowed = ("windows-x64", "linux-x64", "windows-arm64", "linux-arm64", "dataset")
+    require(platform in allowed, "source.platform must be explicit")
+    if method == "authoritative_dataset":
+        require(platform == "dataset", "authoritative_dataset must use platform=dataset")
+    else:
+        require(platform != "dataset", "platform=dataset is reserved for authoritative_dataset")
     tool = source.get("tool")
     require(isinstance(tool, str) and len(tool.strip()) >= 3,
             "source.tool must identify extraction code and version")
-    return {"method": method, "platform": platform, "binary_sha256": binary_sha,
-            "pdb_sha256": pdb_sha, "tool": tool}
+    validated = {"method": method, "platform": platform, "binary_sha256": binary_sha,
+                 "pdb_sha256": pdb_sha, "tool": tool}
+    if dataset is not None:
+        validated["dataset"] = dataset
+    return validated
 
 
 def import_data(payload: dict, catalog: Path, stage_unverified: bool, replace: bool) -> dict:

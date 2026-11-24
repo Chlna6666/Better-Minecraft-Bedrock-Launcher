@@ -40,10 +40,15 @@ def main() -> int:
         "schema_version": 1,
         "purpose": "Evidence only. No legacy numeric ID or network runtime ID is inferred from PDB symbols.",
         "namespace_policy": {
-            "block_type_runtime": "declaration order of VanillaBlockTypes/Ids static members (symbol evidence only)",
-            "legacy_numeric_block": "NOT extracted; needs verified (id,metadata) dataset or runtime dump",
-            "network_runtime": "NOT extracted; session/palette-specific",
+            "pdb_symbol_order": "declaration/address order of VanillaBlockTypes/Ids static members, stored as evidence only; NOT a verified runtime ID",
+            "legacy_numeric_block": "imported from the authoritative PocketMine dataset, not from PDB addresses",
+            "network_runtime": "NOT extracted here; see block::palettes for runtime dump palette indices (hashed IDs in 1.26.51+)",
         },
+        "legacy_numeric_id_finding": (
+            "PDB static symbols cannot yield legacy numeric IDs: the runtime map is empty in the "
+            "binary and filled at startup. PDB symbol/address ordinals are NOT runtime type IDs "
+            "and are stored only in the pdb_symbol_order evidence namespace."
+        ),
         "versions": [],
     }
 
@@ -70,8 +75,9 @@ def main() -> int:
             "validated_identifiers": {
                 "count": ids.get("count") if ids else None,
                 "rejected_byte_mismatch": ids.get("rejected_byte_mismatch") if ids else None,
+                "rejected_address_mismatch": ids.get("rejected_address_mismatch") if ids else None,
             },
-            "can_import_block_type_runtime": bool(
+            "can_stage_pdb_symbol_order_evidence": bool(
                 match.get("verdict") == "matched" and vbt and vbt.get("count", 0) > 0
             ),
         }

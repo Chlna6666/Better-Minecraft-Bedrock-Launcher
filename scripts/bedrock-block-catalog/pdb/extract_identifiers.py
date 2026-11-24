@@ -70,9 +70,36 @@ def main() -> int:
         return 2
 
     exe_bytes = args.exe.read_bytes()
+
+    # Validate at the symbol's ADDRESS, not merely anywhere in the EXE.
+    # Map (PDB segment, offset) -> file offset via section headers + PE sections.
+    import pefile
+    pe = pefile.PE(str(args.exe), fast_load=True)
+    sections = list(pdb.STREAM_SECT_HDR.sections)
+    section_map = []
+    for section in pe.sections:
+        name = section.Name.rstrip(b"\x00").decode("ascii", "replace")
+        section_map.append((int(section.VirtualAddress),
+                            max(int(section.Misc_VirtualSize), int(section.SizeOfRawData)),
+                            int(section.PointerToRawData), name))
+
+    def literal_at(segment: int, offset: int) -> bytes | None:
+        if not (1 <= segment <= len(sections)):
+            return None
+        rva = int(sections[segment - 1].VirtualAddress) + int(offset)
+        for base, size, pointer, _ in section_map:
+            if base <= rva < base + size:
+                start = pointer + (rva - base)
+                end = exe_bytes.find(b"\x00", start, min(start + 512, len(exe_bytes)))
+                if end < 0:
+                    end = min(start + 512, len(exe_bytes))
+                return exe_bytes[start:end]
+        return None
+
     rows: list[dict] = []
     rejected_decode = 0
     rejected_bytes = 0
+    rejected_address = 0
     seen: set[str] = set()
     for symname, sym in gsym.vars.items():
         decoded = decode_literal(symname)
@@ -81,14 +108,21 @@ def main() -> int:
         if decoded in seen:
             continue
         seen.add(decoded)
-        # Empirical validation: the literal must physically exist in the EXE.
+        segment = int(getattr(sym, "segment", -1))
+        offset = int(getattr(sym, "offset", -1))
+        # Empirical validation: the literal must physically exist in the EXE
+        # AND the PDB symbol's address must point at that literal.
         if decoded.encode("ascii") not in exe_bytes:
             rejected_bytes += 1
             continue
+        at_address = literal_at(segment, offset)
+        if at_address != decoded.encode("ascii"):
+            rejected_address += 1
+            continue
         rows.append({
             "name": decoded,
-            "segment": int(getattr(sym, "segment", -1)),
-            "offset": int(getattr(sym, "offset", -1)),
+            "segment": segment,
+            "offset": offset,
             "symbol": symname,
         })
     rows.sort(key=lambda r: (r["segment"], r["offset"], r["name"]))
@@ -98,9 +132,11 @@ def main() -> int:
         "kind": "pdb_string_literal_identifiers",
         "count": len(rows),
         "rejected_byte_mismatch": rejected_bytes,
+        "rejected_address_mismatch": rejected_address,
         "identifiers": rows,
     }, indent=2) + "\n", encoding="utf-8")
-    print(f"wrote {len(rows)} validated identifiers ({rejected_bytes} rejected) to {args.out}",
+    print(f"wrote {len(rows)} address-validated identifiers "
+          f"({rejected_bytes} byte-rejected, {rejected_address} address-rejected) to {args.out}",
           flush=True)
     return 0
 
