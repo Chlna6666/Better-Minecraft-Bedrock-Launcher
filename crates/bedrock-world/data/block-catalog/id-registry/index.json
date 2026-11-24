@@ -1,0 +1,235 @@
+{
+  "format_version": 1,
+  "versions": {
+    "1.10.0.7": {
+      "registries": {
+        "1.10.0.7|pdb_symbol_order|windows-x64|d92a6bad44fba7b7e5da731143cf19ad919b2b3428c35a76d170c707528dc663": {
+          "entries": 43,
+          "evidence_sha256": "e076adf63f8605e9366c4fdf253cb8cd9cab3e61e242e3e67d4e63837947377a",
+          "object_sha256": "476a688de4010c53b8e6a250521dda877d4c2d018e189073de3a8cb114bcd7f5",
+          "provenance_scope": "1.10.0.7|pdb_symbol_order|windows-x64|d92a6bad44fba7b7e5da731143cf19ad919b2b3428c35a76d170c707528dc663",
+          "source": {
+            "binary_sha256": "d92a6bad44fba7b7e5da731143cf19ad919b2b3428c35a76d170c707528dc663",
+            "method": "pdb_symbol_inspection",
+            "pdb_sha256": "9dd02091e42d90fac51752b563d73520e322037165bba1a7139928b759d7f15a",
+            "platform": "windows-x64",
+            "tool": "BMCBL local PDB extractor (pdbparse + pefile), exact-match only"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        }
+      }
+    },
+    "1.11.4.2": {
+      "registries": {
+        "1.11.4.2|pdb_symbol_order|windows-x64|760fe872c674901e719d6ec4b658a999df4d7fb55a8dd05fe55777b8a1966613": {
+          "entries": 43,
+          "evidence_sha256": "650ccfd35f228bc55ffc4be3b1676ef3b9a1c7085998846ebbd72bc7558268d4",
+          "object_sha256": "476a688de4010c53b8e6a250521dda877d4c2d018e189073de3a8cb114bcd7f5",
+          "provenance_scope": "1.11.4.2|pdb_symbol_order|windows-x64|760fe872c674901e719d6ec4b658a999df4d7fb55a8dd05fe55777b8a1966613",
+          "source": {
+            "binary_sha256": "760fe872c674901e719d6ec4b658a999df4d7fb55a8dd05fe55777b8a1966613",
+            "method": "pdb_symbol_inspection",
+            "pdb_sha256": "05db7057989def51ddb6d0930c6643e2ee0a717e7f8dda2b4c4727a6c4c32ec7",
+            "platform": "windows-x64",
+            "tool": "BMCBL local PDB extractor (pdbparse + pefile), exact-match only"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        }
+      }
+    },
+    "1.12.0.28": {
+      "registries": {
+        "1.12.0.28|legacy_numeric_block|dataset|61d87ae8d63749cd7a7d603eed02d35e5d85eeec284b30fd5b6e8af664cbf170": {
+          "entries": 3311,
+          "evidence_sha256": "4d6c0465b42a396242921bdb8309f23b465da1289afd272f2890e472f887bc71",
+          "object_sha256": "1fbdef13bda4b16aa843295d034d655533c695152b0e65daff991259e9d37872",
+          "provenance_scope": "1.12.0.28|legacy_numeric_block|dataset|61d87ae8d63749cd7a7d603eed02d35e5d85eeec284b30fd5b6e8af664cbf170",
+          "source": {
+            "binary_sha256": "61d87ae8d63749cd7a7d603eed02d35e5d85eeec284b30fd5b6e8af664cbf170",
+            "dataset": {
+              "file_sha256": "61d87ae8d63749cd7a7d603eed02d35e5d85eeec284b30fd5b6e8af664cbf170",
+              "name": "PocketMine BedrockBlockUpgradeSchema",
+              "upstream": "https://github.com/pmmp/BedrockBlockUpgradeSchema",
+              "version": "1.12.0"
+            },
+            "method": "authoritative_dataset",
+            "pdb_sha256": null,
+            "platform": "dataset",
+            "tool": "BMCBL import_legacy_ids from authoritative PocketMine id_meta_to_nbt dataset"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        },
+        "1.12.0.28|pdb_symbol_order|windows-x64|b6e2fab585dea5868cdbbbe7c098af8335b1f61a2880512e665db69422765e8f": {
+          "entries": 43,
+          "evidence_sha256": "d3e9b4a94dc10debe27014bb78c896f0617e860870d3745c517b41138ebc7d22",
+          "object_sha256": "476a688de4010c53b8e6a250521dda877d4c2d018e189073de3a8cb114bcd7f5",
+          "provenance_scope": "1.12.0.28|pdb_symbol_order|windows-x64|b6e2fab585dea5868cdbbbe7c098af8335b1f61a2880512e665db69422765e8f",
+          "source": {
+            "binary_sha256": "b6e2fab585dea5868cdbbbe7c098af8335b1f61a2880512e665db69422765e8f",
+            "method": "pdb_symbol_inspection",
+            "pdb_sha256": "cc617af115d81e4546bbd2184fa5cad6e70b6796cad07f105e4f03c7c07fdddd",
+            "platform": "windows-x64",
+            "tool": "BMCBL local PDB extractor (pdbparse + pefile), exact-match only"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        }
+      }
+    },
+    "1.13.3.0": {
+      "registries": {
+        "1.13.3.0|pdb_symbol_order|windows-x64|3d3128f16617b4071288d87b51c649c7141a0d47345a28865b73b4c56158d3f9": {
+          "entries": 160,
+          "evidence_sha256": "d4a55abd2691e686907275272e2d6231f775fa120006dc4f7a9043aa7b15066e",
+          "object_sha256": "b2527aae08313f7e1bdd436a61db8ccdc34f8c8674d4d390f748ebf1ddf5e211",
+          "provenance_scope": "1.13.3.0|pdb_symbol_order|windows-x64|3d3128f16617b4071288d87b51c649c7141a0d47345a28865b73b4c56158d3f9",
+          "source": {
+            "binary_sha256": "3d3128f16617b4071288d87b51c649c7141a0d47345a28865b73b4c56158d3f9",
+            "method": "pdb_symbol_inspection",
+            "pdb_sha256": "8e53d97cfea2835aabdb6e577fb001d9317847a0214ddea9edafd4cc14dfd240",
+            "platform": "windows-x64",
+            "tool": "BMCBL local PDB extractor (pdbparse + pefile), exact-match only"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        }
+      }
+    },
+    "1.14.60.5": {
+      "registries": {
+        "1.14.60.5|pdb_symbol_order|windows-x64|4190477f0b0ef51fada1b154b11650d4ea2f20f9e72e3037893fe02c6f2e44af": {
+          "entries": 160,
+          "evidence_sha256": "0c2d48cdc82557351eaaf6f804dd9c4b78071cf781fead073b073437adea3096",
+          "object_sha256": "b2527aae08313f7e1bdd436a61db8ccdc34f8c8674d4d390f748ebf1ddf5e211",
+          "provenance_scope": "1.14.60.5|pdb_symbol_order|windows-x64|4190477f0b0ef51fada1b154b11650d4ea2f20f9e72e3037893fe02c6f2e44af",
+          "source": {
+            "binary_sha256": "4190477f0b0ef51fada1b154b11650d4ea2f20f9e72e3037893fe02c6f2e44af",
+            "method": "pdb_symbol_inspection",
+            "pdb_sha256": "064463fbbf429c9173bdf1730a4c9af23796d03c0369364fc905998d63baed10",
+            "platform": "windows-x64",
+            "tool": "BMCBL local PDB extractor (pdbparse + pefile), exact-match only"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        }
+      }
+    },
+    "1.16.221.01": {
+      "registries": {
+        "1.16.221.01|pdb_symbol_order|windows-x64|41045253e671fbb40a7cf6c0ed92ffca998fdc949e92dc198a595ff008ae17bf": {
+          "entries": 201,
+          "evidence_sha256": "1389f56c8fe98ae78ccf73afbae75cf964280dc420cfc6576ad2f4ecc077b880",
+          "object_sha256": "5f8eeb57d66e7125bd3abc39700eabaf233738a254052fac9f2f07fe390a9e95",
+          "provenance_scope": "1.16.221.01|pdb_symbol_order|windows-x64|41045253e671fbb40a7cf6c0ed92ffca998fdc949e92dc198a595ff008ae17bf",
+          "source": {
+            "binary_sha256": "41045253e671fbb40a7cf6c0ed92ffca998fdc949e92dc198a595ff008ae17bf",
+            "method": "pdb_symbol_inspection",
+            "pdb_sha256": "8027c4d395b08a05b743946d36d3b8a522eb9bd9ee81456a55b610f2ca785f78",
+            "platform": "windows-x64",
+            "tool": "BMCBL local PDB extractor (pdbparse + pefile), exact-match only"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        }
+      }
+    },
+    "1.18.33.02": {
+      "registries": {
+        "1.18.33.02|pdb_symbol_order|windows-x64|520357ebc346a66d5fdbdbf3f5602cf9192c684866efb36927dd39ccf54fa5c2": {
+          "entries": 411,
+          "evidence_sha256": "e7524004e76c9d877199633b1e8ea1f25ba663ca04a8b2e33ff6fde0713718d7",
+          "object_sha256": "ad8330dbeebe8bd0188d8eda385f7213b6cf12f377525bcec130537670e8fdde",
+          "provenance_scope": "1.18.33.02|pdb_symbol_order|windows-x64|520357ebc346a66d5fdbdbf3f5602cf9192c684866efb36927dd39ccf54fa5c2",
+          "source": {
+            "binary_sha256": "520357ebc346a66d5fdbdbf3f5602cf9192c684866efb36927dd39ccf54fa5c2",
+            "method": "pdb_symbol_inspection",
+            "pdb_sha256": "a6c307daee4a12ec53ced56d67b51686a8d8d128424606c36e99c72edb1641c8",
+            "platform": "windows-x64",
+            "tool": "BMCBL local PDB extractor (pdbparse + pefile), exact-match only"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        }
+      }
+    },
+    "1.19.83.01": {
+      "registries": {
+        "1.19.83.01|pdb_symbol_order|windows-x64|53320dbbcd53155a2a05d70cd8669ca836a8a62db7efd7ada9515d34b43f892b": {
+          "entries": 582,
+          "evidence_sha256": "e6ba316769c8fa5a63b6c1c3e39cd83e0d7f07fa4d902d4a4473a7729e189f6f",
+          "object_sha256": "e701dc450322bc1a18526b434d8765710d5686c1cca92068807c9c327e15f7d6",
+          "provenance_scope": "1.19.83.01|pdb_symbol_order|windows-x64|53320dbbcd53155a2a05d70cd8669ca836a8a62db7efd7ada9515d34b43f892b",
+          "source": {
+            "binary_sha256": "53320dbbcd53155a2a05d70cd8669ca836a8a62db7efd7ada9515d34b43f892b",
+            "method": "pdb_symbol_inspection",
+            "pdb_sha256": "afea8ae5581aad18d9421181c752fcce41f9d363eee1407445fda5b2c3ff2c7d",
+            "platform": "windows-x64",
+            "tool": "BMCBL local PDB extractor (pdbparse + pefile), exact-match only"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        }
+      }
+    },
+    "1.20.80.05": {
+      "registries": {
+        "1.20.80.05|pdb_symbol_order|windows-x64|93af5be79082648667d16e3ce7713c7d863d8973cfee7e56f293bf8f4e31e883": {
+          "entries": 765,
+          "evidence_sha256": "c2f0d3186da9bfee1c28a83534bdf12915a8487f07bca299d92dc5e72ac4334f",
+          "object_sha256": "0fec012aa9721c5be9eb276c91a49316e629a75aa4d2cd54de3e331a58767089",
+          "provenance_scope": "1.20.80.05|pdb_symbol_order|windows-x64|93af5be79082648667d16e3ce7713c7d863d8973cfee7e56f293bf8f4e31e883",
+          "source": {
+            "binary_sha256": "93af5be79082648667d16e3ce7713c7d863d8973cfee7e56f293bf8f4e31e883",
+            "method": "pdb_symbol_inspection",
+            "pdb_sha256": "068197ae29eaf24a70eaaa03261f9d63c18a6ad3cf67128c1ef98bc8a5b79de8",
+            "platform": "windows-x64",
+            "tool": "BMCBL local PDB extractor (pdbparse + pefile), exact-match only"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        }
+      }
+    },
+    "1.21.3.01": {
+      "registries": {
+        "1.21.3.01|pdb_symbol_order|windows-x64|ccfe036a98d0ec31ede995605c8c5c0df213ff1339c1520dce54b84d719e91d2": {
+          "entries": 786,
+          "evidence_sha256": "9d73fb3e9bef12db18d0d51efc96da2b9cba087e8d7606c57c94598ce4e64b86",
+          "object_sha256": "abeceaf7a54894b9dc08bcb47ad1312988f451a52a48be885817fa7e1a6c71f7",
+          "provenance_scope": "1.21.3.01|pdb_symbol_order|windows-x64|ccfe036a98d0ec31ede995605c8c5c0df213ff1339c1520dce54b84d719e91d2",
+          "source": {
+            "binary_sha256": "ccfe036a98d0ec31ede995605c8c5c0df213ff1339c1520dce54b84d719e91d2",
+            "method": "pdb_symbol_inspection",
+            "pdb_sha256": "2a41b42f252915a48e3e227e030948ef9f6d12c78fe593f55c0455bf6948aca4",
+            "platform": "windows-x64",
+            "tool": "BMCBL local PDB extractor (pdbparse + pefile), exact-match only"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        }
+      }
+    },
+    "1.9.0.15": {
+      "registries": {
+        "1.9.0.15|pdb_symbol_order|windows-x64|59e466b02104731ea8bd096184e1ee5b9d40467f5fb8783a032d6f0d7b622c59": {
+          "entries": 4,
+          "evidence_sha256": "b91b6a4c2114f68edb400c171a421569ee1ab30d4c33db5d23b01a91328a6fc1",
+          "object_sha256": "7dc8c38fc66040713a183ea804e469c60f9ad4e72b0c883671afdbe15965920e",
+          "provenance_scope": "1.9.0.15|pdb_symbol_order|windows-x64|59e466b02104731ea8bd096184e1ee5b9d40467f5fb8783a032d6f0d7b622c59",
+          "source": {
+            "binary_sha256": "59e466b02104731ea8bd096184e1ee5b9d40467f5fb8783a032d6f0d7b622c59",
+            "method": "pdb_symbol_inspection",
+            "pdb_sha256": "be5e777174d03f60adda65a1ae2dc041619d1453d1220fe9cc4152ef363ef20e",
+            "platform": "windows-x64",
+            "tool": "BMCBL local PDB extractor (pdbparse + pefile), exact-match only"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        }
+      }
+    }
+  }
+}
