@@ -272,6 +272,7 @@ fn observed_period(old: PresentationFeedback, new: PresentationFeedback) -> Opti
 }
 
 #[cfg(target_os = "windows")]
+#[expect(unsafe_code, reason = "QueryPerformanceFrequency initializes a valid local output pointer")]
 fn qpc_frequency() -> Option<u64> {
     static FREQUENCY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
     *FREQUENCY.get_or_init(|| {
