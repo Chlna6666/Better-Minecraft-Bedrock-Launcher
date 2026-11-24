@@ -223,7 +223,6 @@ struct ViewCompactor {
 pub(super) struct Compactor {
     shader: ShaderModuleId,
     indexed_shader: Option<ShaderModuleId>,
-    zero_index_offset_only: bool,
     argument_stride: u32,
     views: HashMap<SceneViewId, ViewCompactor>,
     probes: HashMap<u64, SceneViewId>,
@@ -255,14 +254,11 @@ impl Compactor {
             .ok().and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d draw compaction".into()), binary,
             }).ok())?;
-        // GL element-array bindings have no byte base. Only passes with
-        // zero index offsets are eligible for indexed compaction on GL.
-        let zero_index_offset_only = context.backend_kind() == BackendKind::OpenGl;
         let indexed_shader = super::resources::embedded_shader(context, ShaderStage::Compute, "cs_compact_indexed_draws")
             .ok().and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d indexed draw compaction".into()), binary,
             }).ok());
-        Some(Self { shader, indexed_shader, zero_index_offset_only, argument_stride, views: HashMap::new(), probes: HashMap::new() })
+        Some(Self { shader, indexed_shader, argument_stride, views: HashMap::new(), probes: HashMap::new() })
     }
 
     pub(super) fn submit_batch(
@@ -285,7 +281,7 @@ impl Compactor {
             }
             let view = self.views.entry(id).or_default();
             let previous_probe = view.pending_id();
-            let decision = view.schedule(device, self.argument_stride, self.indexed_shader.is_some(), self.zero_index_offset_only, pass)?;
+            let decision = view.schedule(device, self.argument_stride, self.indexed_shader.is_some(), pass)?;
             let next_probe = view.pending_id();
             if previous_probe != next_probe {
                 if let Some(old) = previous_probe { self.probes.remove(&old); }
@@ -403,16 +399,14 @@ impl ViewCompactor {
         Ok(buffers)
     }
 
-    fn prepare(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, indexed_supported: bool, zero_index_offset_only: bool, pass: &NativeOffscreenPass) -> Result<Option<Prepared>> {
+    fn prepare(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, indexed_supported: bool, pass: &NativeOffscreenPass) -> Result<Option<Prepared>> {
         // Native DrawIndirect probes measure indirect-only passes.
         if !pass.commands.iter().all(|command| matches!(command, RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_))) {
             return Ok(None);
         }
-        // Cache the GL eligibility result together with the immutable plan.
-        if zero_index_offset_only && pass.commands.iter().any(|command| matches!(command,
-            RenderCommand::DrawIndexedIndirect(draw) if draw.index_buffer.offset != 0)) {
-            return Ok(None);
-        }
+        // Runs compare the complete IndexBufferBinding (including offset).
+        // GL translates the compacted relative firstIndex on the GPU; its
+        // rebase cost is included in the normal draw probe on both paths.
         let Some(limit) = device.counted_offscreen_limit() else { return Ok(None); };
         let Some(plan) = plan(&pass.commands, limit) else { return Ok(None); };
         if plan.indexed && !indexed_supported { return Ok(None); }
@@ -472,12 +466,12 @@ impl ViewCompactor {
         Ok(Some(Prepared { indexed: plan.indexed, commands, counts: bindings, compute, groups: group_count }))
     }
 
-    fn schedule(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, indexed_supported: bool, zero_index_offset_only: bool, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
+    fn schedule(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, indexed_supported: bool, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
         if !self.cached.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.source, &pass.commands)) {
             // Invalidate before preparing: a failed allocation or upload may
             // have replaced scratch storage referenced by the previous plan.
             self.cached = None;
-            let prepared = self.prepare(device, argument_stride, indexed_supported, zero_index_offset_only, pass)?;
+            let prepared = self.prepare(device, argument_stride, indexed_supported, pass)?;
             self.cached = Some(Cached { source: Arc::clone(&pass.commands), prepared, cost: CostModel::default() });
         }
         let Some(cached) = self.cached.as_mut() else { return Ok(None); };

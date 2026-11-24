@@ -237,9 +237,7 @@ impl PresentationDevice for OpenGlDevice {
             let tag = tag.filter(|tag| tag.stage == GpuTimestampStage::DrawIndirect
                 && !pass.commands.is_empty()
                 && pass.commands.iter().all(|command| matches!(command,
-                    RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_)))
-                && !pass.commands.iter().any(|command| matches!(command,
-                    RenderCommand::DrawIndexedIndirect(draw) if draw.index_buffer.offset != 0)));
+                    RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_))));
             let targets = pass.color_attachments.iter().copied().map(RenderTarget::TextureView).collect::<Vec<_>>();
             self.render_target_counted(&targets, pass.resolve_target, pass.render_pass,
                 pass.commands, pass.color_load_op, pass.depth_attachment, pass.clear_region,
