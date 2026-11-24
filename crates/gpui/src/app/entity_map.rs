@@ -60,6 +60,10 @@ impl Display for EntityId {
     }
 }
 
+/// None means value access; Some(present) records only observed existence.
+pub(crate) type GlobalReadDependencies =
+    FxHashMap<(TypeId, Option<bool>), Option<SmallVec<[EntityId; 2]>>>;
+
 pub(crate) struct EntityMap {
     entities: SecondaryMap<EntityId, Box<dyn Any>>,
     entity_type_names: SecondaryMap<EntityId, &'static str>,
@@ -67,6 +71,7 @@ pub(crate) struct EntityMap {
     // None is an access outside a proven Render scope. It dominates all
     // scoped reads of the same entity for this frame.
     render_dependencies: RefCell<FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>>,
+    global_read_dependencies: RefCell<GlobalReadDependencies>,
     tracking_frame_dependencies: bool,
     render_dependency_owner: Option<EntityId>,
     ref_counts: Arc<RwLock<EntityRefCounts>>,
@@ -112,6 +117,7 @@ impl EntityMap {
             entity_type_names: SecondaryMap::new(),
             accessed_entities: RefCell::new(FxHashSet::default()),
             render_dependencies: RefCell::new(FxHashMap::default()),
+            global_read_dependencies: RefCell::new(FxHashMap::default()),
             tracking_frame_dependencies: false,
             render_dependency_owner: None,
             ref_counts: Arc::new(RwLock::new(EntityRefCounts {
@@ -221,6 +227,37 @@ impl EntityMap {
         }
     }
 
+    #[inline]
+    pub(crate) fn record_global_read(&self, global: TypeId, existence: Option<bool>) {
+        if !self.tracking_frame_dependencies {
+            return;
+        }
+        let mut dependencies = self.global_read_dependencies.borrow_mut();
+        let key = (global, existence);
+        let Some(owner) = self.render_dependency_owner else {
+            dependencies.insert(key, None);
+            return;
+        };
+        if let Some(owners) = dependencies.entry(key).or_insert_with(|| Some(SmallVec::new()))
+            && !owners.contains(&owner)
+        {
+            owners.push(owner);
+        }
+    }
+
+    pub(crate) fn tracking_frame_dependencies(&self) -> bool {
+        self.tracking_frame_dependencies
+    }
+
+    pub(crate) fn take_global_read_dependencies(&mut self) -> GlobalReadDependencies {
+        std::mem::take(self.global_read_dependencies.get_mut())
+    }
+
+    pub(crate) fn recycle_global_read_dependencies(&mut self, mut dependencies: GlobalReadDependencies) {
+        dependencies.clear();
+        *self.global_read_dependencies.get_mut() = dependencies;
+    }
+
     pub fn clear_accessed(&mut self) {
         self.accessed_entities.get_mut().clear();
     }
@@ -228,6 +265,7 @@ impl EntityMap {
     pub(crate) fn begin_frame_dependencies(&mut self) {
         self.clear_accessed();
         self.render_dependencies.get_mut().clear();
+        self.global_read_dependencies.get_mut().clear();
         self.render_dependency_owner = None;
         self.tracking_frame_dependencies = true;
     }
@@ -254,6 +292,7 @@ impl EntityMap {
         self.tracking_frame_dependencies = false;
         self.render_dependency_owner = None;
         self.render_dependencies.get_mut().clear();
+        self.global_read_dependencies.get_mut().clear();
     }
 
     pub fn type_name_for_id(&self, entity_id: EntityId) -> Option<&'static str> {

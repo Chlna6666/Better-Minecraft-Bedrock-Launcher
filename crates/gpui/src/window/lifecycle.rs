@@ -193,6 +193,7 @@ struct WindowInvalidatorInner {
     // Last successfully committed Render read owners. An unknown owner
     // requires the conservative window-wide fallback.
     render_dependencies: FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>,
+    global_read_dependencies: crate::GlobalReadDependencies,
     pub dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
     /// True while the queued frame still has enough provenance to make retained replay decisions
     /// per view. Exact element targets and generic-dirty views may coexist in the same frame.
@@ -232,6 +233,7 @@ impl WindowInvalidator {
                 draw_phase: DrawPhase::None,
                 dirty_views: FxHashSet::default(),
                 render_dependencies: FxHashMap::default(),
+                global_read_dependencies: FxHashMap::default(),
                 dirty_frame_diagnostics: Rc::new(RefCell::new(DirtyFrameDiagnostics::default())),
                 pending_targeted_replay: false,
                 pending_targeted_elements: FxHashMap::default(),
@@ -370,6 +372,68 @@ impl WindowInvalidator {
             }
         }
         mem::swap(&mut inner.render_dependencies, dependencies);
+    }
+
+    pub(in crate::window) fn commit_global_read_dependencies(
+        &self,
+        dependencies: &mut crate::GlobalReadDependencies,
+        replayed: bool,
+        mut has_route: impl FnMut(EntityId) -> bool,
+    ) {
+        let mut inner = self.inner.borrow_mut();
+        if replayed {
+            for (&key, owners) in &inner.global_read_dependencies {
+                if owners.is_none() {
+                    dependencies.insert(key, None);
+                }
+            }
+        }
+        for owners in dependencies.values_mut() {
+            if owners.as_ref().is_some_and(|owners| owners.is_empty() || owners.iter().any(|owner| !has_route(*owner))) {
+                *owners = None;
+            }
+        }
+        mem::swap(&mut inner.global_read_dependencies, dependencies);
+    }
+
+    /// Global notifications are already dispatched by the App effect queue.
+    /// Never synthesize an Entity Notify for the dependent views.
+    pub(crate) fn invalidate_global_dependency(&self, global: TypeId, exists: bool) {
+        let mut inner = self.inner.borrow_mut();
+        let mut owners = SmallVec::<[EntityId; 4]>::new();
+        // A value read always depends on a write. Existence reads depend
+        // only on a change from the observed boolean (including absence).
+        for key in [(global, None), (global, Some(!exists))] {
+            match inner.global_read_dependencies.get(&key) {
+                Some(Some(readers)) => {
+                    for &reader in readers {
+                        if !owners.contains(&reader) {
+                            owners.push(reader);
+                        }
+                    }
+                }
+                Some(None) => {
+                    drop(inner);
+                    self.set_dirty(true);
+                    return;
+                }
+                None => {}
+            }
+        }
+        if owners.is_empty() {
+            return;
+        }
+        inner.dirty_to_present_started_at.get_or_insert_with(Instant::now);
+        inner.dirty_views.extend(owners.iter().copied());
+        if !inner.dirty {
+            inner.pending_targeted_replay = true;
+            inner.pending_targeted_elements.clear();
+            inner.pending_generic_dirty_views.clear();
+        }
+        if inner.pending_targeted_replay {
+            inner.pending_generic_dirty_views.extend(owners);
+        }
+        inner.dirty = true;
     }
 
     /// Only application notifications resolve read dependencies. Direct
@@ -759,6 +823,7 @@ impl WindowInvalidator {
 
         trim_collection!(dirty_views);
         trim_collection!(render_dependencies);
+        trim_collection!(global_read_dependencies);
         trim_collection!(pending_targeted_elements);
         trim_collection!(pending_generic_dirty_views);
         trim_collection!(pending_layout_animation_frames);

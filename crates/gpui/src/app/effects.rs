@@ -229,6 +229,12 @@ impl App {
             return;
         }
 
+        if self.pending_global_read_invalidations.remove(&type_id) {
+            let exists = self.globals_by_type.contains_key(&type_id);
+            for window in self.windows.values().filter_map(|window| window.as_deref()) {
+                window.invalidator.invalidate_global_dependency(type_id, exists);
+            }
+        }
         self.notifying_global_observers.insert(type_id);
         self.global_observers
             .clone()

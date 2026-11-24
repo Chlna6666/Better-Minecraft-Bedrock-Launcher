@@ -13,12 +13,16 @@ use super::{App, Effect};
 impl App {
     /// Check whether a global of the given type has been assigned.
     pub fn has_global<G: Global>(&self) -> bool {
-        self.globals_by_type.contains_key(&TypeId::of::<G>())
+        let global = TypeId::of::<G>();
+        let exists = self.globals_by_type.contains_key(&global);
+        self.entities.record_global_read(global, Some(exists));
+        exists
     }
 
     /// Access the global of the given type. Panics if a global for that type has not been assigned.
     #[track_caller]
     pub fn global<G: Global>(&self) -> &G {
+        self.entities.record_global_read(TypeId::of::<G>(), None);
         self.globals_by_type
             .get(&TypeId::of::<G>())
             .map(|any_state| any_state.downcast_ref::<G>().unwrap())
@@ -28,16 +32,31 @@ impl App {
 
     /// Access the global of the given type if a value has been assigned.
     pub fn try_global<G: Global>(&self) -> Option<&G> {
-        self.globals_by_type
-            .get(&TypeId::of::<G>())
-            .map(|any_state| any_state.downcast_ref::<G>().unwrap())
+        let global = TypeId::of::<G>();
+        let value = self.globals_by_type
+            .get(&global)
+            .map(|any_state| any_state.downcast_ref::<G>().unwrap());
+        self.entities.record_global_read(global, if value.is_none() { Some(false) } else { None });
+        value
+    }
+
+    fn queue_global_change(&mut self, global_type: TypeId) {
+        // Rendering itself can use mutable globals for transient hitboxes
+        // and caches. A mutable borrow is not proof of a value change;
+        // scheduling automatic redraws for those writes creates a feedback
+        // loop. Keep the existing explicit Observer semantics in a draw.
+        if !self.entities.tracking_frame_dependencies() {
+            self.pending_global_read_invalidations.insert(global_type);
+        }
+        self.push_effect(Effect::NotifyGlobalObservers { global_type });
     }
 
     /// Access the global of the given type mutably. Panics if a global for that type has not been assigned.
     #[track_caller]
     pub fn global_mut<G: Global>(&mut self) -> &mut G {
         let global_type = TypeId::of::<G>();
-        self.push_effect(Effect::NotifyGlobalObservers { global_type });
+        self.entities.record_global_read(global_type, None);
+        self.queue_global_change(global_type);
         self.globals_by_type
             .get_mut(&global_type)
             .and_then(|any_state| any_state.downcast_mut::<G>())
@@ -49,7 +68,8 @@ impl App {
     /// yet been assigned.
     pub fn default_global<G: Global + Default>(&mut self) -> &mut G {
         let global_type = TypeId::of::<G>();
-        self.push_effect(Effect::NotifyGlobalObservers { global_type });
+        self.entities.record_global_read(global_type, None);
+        self.queue_global_change(global_type);
         self.globals_by_type
             .entry(global_type)
             .or_insert_with(|| Box::<G>::default())
@@ -60,7 +80,7 @@ impl App {
     /// Sets the value of the global of the given type.
     pub fn set_global<G: Global>(&mut self, global: G) {
         let global_type = TypeId::of::<G>();
-        self.push_effect(Effect::NotifyGlobalObservers { global_type });
+        self.queue_global_change(global_type);
         self.globals_by_type.insert(global_type, Box::new(global));
     }
 
@@ -73,7 +93,7 @@ impl App {
     /// Remove the global of the given type from the app context. Does not notify global observers.
     pub fn remove_global<G: Global>(&mut self) -> G {
         let global_type = TypeId::of::<G>();
-        self.push_effect(Effect::NotifyGlobalObservers { global_type });
+        self.queue_global_change(global_type);
         *self
             .globals_by_type
             .remove(&global_type)
@@ -101,6 +121,7 @@ impl App {
     /// Move the global of the given type to the stack.
     #[track_caller]
     pub(crate) fn lease_global<G: Global>(&mut self) -> GlobalLease<G> {
+        self.entities.record_global_read(TypeId::of::<G>(), None);
         GlobalLease::new(
             self.globals_by_type
                 .remove(&TypeId::of::<G>())
@@ -113,7 +134,7 @@ impl App {
     pub(crate) fn end_global_lease<G: Global>(&mut self, lease: GlobalLease<G>) {
         let global_type = TypeId::of::<G>();
 
-        self.push_effect(Effect::NotifyGlobalObservers { global_type });
+        self.queue_global_change(global_type);
         self.globals_by_type.insert(global_type, lease.global);
     }
 }

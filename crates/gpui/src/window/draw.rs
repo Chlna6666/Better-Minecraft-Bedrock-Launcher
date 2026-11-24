@@ -825,6 +825,13 @@ impl Window {
             |owner| self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_some(),
         );
         cx.entities.recycle_frame_dependencies(dependencies);
+        let mut global_dependencies = cx.entities.take_global_read_dependencies();
+        self.invalidator.commit_global_read_dependencies(
+            &mut global_dependencies,
+            self.replayed_dependency_ranges,
+            |owner| self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_some(),
+        );
+        cx.entities.recycle_global_read_dependencies(global_dependencies);
         let handle = self.handle;
         cx.record_entities_accessed(
             handle,
