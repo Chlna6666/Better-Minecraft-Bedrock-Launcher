@@ -128,6 +128,29 @@ class IdentityImportTests(unittest.TestCase):
         self.assertIn("1.12.0.28", scope_a)
         self.assertIn("legacy_numeric_block", scope_a)
 
+    def test_versionless_legacy_is_allowed_and_encoded_explicitly(self):
+        obj = registry("legacy_numeric_block")
+        obj["entries"][0]["version"] = None
+        namespace, _, binary, _, checked = parse_registry(obj, {"minecraft:stone"}, False)
+        self.assertEqual(namespace, "legacy_numeric_block")
+        self.assertTrue(binary.startswith(b"BMCBID03"))
+        self.assertIn(b"\x00", binary)  # explicit versionless marker
+        # network_runtime still requires a concrete version
+        net = registry("network_runtime")
+        net["entries"][0]["version"] = None
+        with self.assertRaisesRegex(ValueError, "must be explicit signed i32"):
+            parse_registry(net, {"minecraft:stone"}, False)
+
+    def test_duplicate_provenance_scope_in_one_batch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            payload = {
+                "schema_version": 1, "game_version": "1.20.80.05",
+                "source": source(),
+                "registries": [registry("block_type_runtime"), registry("block_type_runtime", value=2)],
+            }
+            with self.assertRaisesRegex(ValueError, "duplicate provenance scope"):
+                import_data(payload, Path(temp), True, False)
+
     def test_dataset_source_is_not_claimed_as_windows_binary(self):
         from import_id_registry import validate_source
         dataset_source = {
@@ -198,6 +221,36 @@ class CommittedStagedRegistryTests(unittest.TestCase):
                 self.assertRegex(record["object_sha256"], r"^[0-9a-f]{64}$")
                 self.assertTrue((self.root / "objects" / (record["object_sha256"] + ".bin")).is_file())
                 self.assertTrue((self.root / "evidence" / (record["evidence_sha256"] + ".json.zlib")).is_file())
+
+    def test_every_object_and_evidence_sha_is_recomputed(self):
+        import hashlib
+        import zlib
+        index = json.loads(self.index_path.read_text(encoding="utf-8"))
+        for version, entry in index["versions"].items():
+            for scope, record in entry["registries"].items():
+                obj = (self.root / "objects" / (record["object_sha256"] + ".bin")).read_bytes()
+                self.assertEqual(hashlib.sha256(obj).hexdigest(), record["object_sha256"], scope)
+                ev = (self.root / "evidence" / (record["evidence_sha256"] + ".json.zlib")).read_bytes()
+                self.assertEqual(hashlib.sha256(ev).hexdigest(), record["evidence_sha256"], scope)
+                audit = json.loads(zlib.decompress(ev).decode("utf-8"))
+                self.assertEqual(audit["game_version"], version)
+                self.assertEqual(audit["registry"]["namespace"], scope.split("|")[1])
+
+    def test_evidence_regenerates_identical_binary(self):
+        import zlib
+        index = json.loads(self.index_path.read_text(encoding="utf-8"))
+        for version, entry in index["versions"].items():
+            for scope, record in entry["registries"].items():
+                ev = (self.root / "evidence" / (record["evidence_sha256"] + ".json.zlib")).read_bytes()
+                audit = json.loads(zlib.decompress(ev).decode("utf-8"))
+                # Re-parse the exact registry captured in evidence and compare
+                # its binary to the committed object.
+                _, _, binary, count, _ = parse_registry(
+                    audit["registry"], set(), True
+                )
+                committed = (self.root / "objects" / (record["object_sha256"] + ".bin")).read_bytes()
+                self.assertEqual(binary, committed, scope)
+                self.assertEqual(count, record["entries"], scope)
 
     def test_staged_evidence_is_not_loaded_by_destructive_conversion(self):
         # No production Rust code may read the staged evidence directory.

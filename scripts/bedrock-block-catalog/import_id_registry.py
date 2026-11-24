@@ -151,9 +151,13 @@ def parse_registry(obj: dict, names: set[str] | None, allow_unknown: bool) -> tu
         if namespace in ("block_type_runtime", "pdb_symbol_order"):
             require(states is None, namespace + " maps a block type, not an NBT state")
             require(storage_version is None, namespace + " has no persisted NBT version")
+        elif namespace == "legacy_numeric_block" and "version" in record and storage_version is None:
+            # Early datasets (1.9.0) carry no NBT version field. Record it
+            # explicitly as absent; never derive one from the game version.
+            pass
         else:
             require(type(storage_version) is int and -(2**31) <= storage_version < 2**31,
-                    "persisted NBT BlockState.version must be explicit signed i32")
+                    "persisted NBT BlockState.version must be explicit signed i32 or null (legacy only)")
         serialized_state = encode_state(states,
                 required=namespace in ("legacy_numeric_block", "network_runtime"))
         if namespace in ("block_type_runtime", "pdb_symbol_order"):
@@ -172,8 +176,9 @@ def parse_registry(obj: dict, names: set[str] | None, allow_unknown: bool) -> tu
     normalized.sort(key=lambda row: (row[0], row[1], row[2]))
     dictionary = sorted(set(row[2] for row in normalized))
     names_map = {name: i for i, name in enumerate(dictionary)}
-    # Format v2 includes exact persisted NBT BlockState.version per mapping.
-    binary = bytearray(b"BMCBID02")
+    # Format v3 encodes the NBT BlockState.version presence explicitly:
+    # 0 = absent (early versionless datasets), 1 = followed by a signed i32.
+    binary = bytearray(b"BMCBID03")
     binary.append(NAMESPACES[namespace])
     binary.extend(varint(len(dictionary)))
     for name in dictionary:
@@ -185,7 +190,11 @@ def parse_registry(obj: dict, names: set[str] | None, allow_unknown: bool) -> tu
             binary.extend(varint(metadata))
         binary.extend(varint(names_map[name]))
         if namespace not in ("block_type_runtime", "pdb_symbol_order"):
-            binary.extend(struct.pack("<i", storage_version))
+            if storage_version is None:
+                binary.append(0)  # explicit versionless marker
+            else:
+                binary.append(1)
+                binary.extend(struct.pack("<i", storage_version))
         binary.extend(state)
     return namespace, palette, bytes(binary), len(entries), not unknown
 
@@ -229,6 +238,9 @@ def validate_source(source: object) -> dict:
             "name": dataset["name"], "version": dataset["version"],
             "file_sha256": dataset["file_sha256"].lower(), "upstream": dataset["upstream"],
         }
+        if "legacy_id_map_sha256" in dataset:
+            digest64(dataset["legacy_id_map_sha256"], "source.dataset.legacy_id_map_sha256")
+            dataset["legacy_id_map_sha256"] = dataset["legacy_id_map_sha256"].lower()
         require(pdb_sha is None, "pdb_sha256 is not valid for authoritative_dataset")
     else:
         require(pdb_sha is None or isinstance(pdb_sha, str), "source.pdb_sha256 invalid")
@@ -304,6 +316,8 @@ def import_data(payload: dict, catalog: Path, stage_unverified: bool, replace: b
         if fingerprint is not None:
             metadata["palette_fingerprint"] = fingerprint
         scope = provenance_scope(version, namespace, source, fingerprint)
+        require(scope not in staged,
+                "duplicate provenance scope in import: " + scope)
         metadata["provenance_scope"] = scope
         prior = version_entry["registries"].get(scope)
         require(prior is None or prior == metadata or replace,
