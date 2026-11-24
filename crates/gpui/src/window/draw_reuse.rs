@@ -566,12 +566,12 @@ impl Window {
             let delta = point(ScaledPixels(delta.x.0 * factor), ScaledPixels(delta.y.0 * factor));
             let operations = self.rendered_frame.scene().paint_operations.range(old_scene_range.clone());
             for operation in operations.iter() {
-                let crate::PaintOperation::Primitive(crate::Primitive::Quad(quad)) = operation else {
+                let crate::PaintOperation::Primitive(primitive) = operation else {
                     unreachable!("translated view paint must be prevalidated");
                 };
-                let mut quad = *quad;
-                quad.bounds.origin += delta;
-                self.next_frame.painter.insert_primitive(quad);
+                let moved = primitive.translated_static(delta)
+                    .expect("translated view primitive must be prevalidated");
+                self.next_frame.painter.insert_primitive(moved);
             }
             // Translated primitives have new absolute geometry and ordering.
             // Never attach the old GPU upload chunk proof to this span.
@@ -812,7 +812,8 @@ impl Window {
         }
         let delta = bounds.origin - retained.bounds.origin;
         if delta != Point::default() {
-            let static_row_proven = static_subtree_proven && retained_id.0.iter().any(|segment| {
+            let static_row_proven = (static_subtree_proven || (plain_text_proven && retained.identity_stable))
+                && retained_id.0.iter().any(|segment| {
                 matches!(segment, ElementId::NamedInteger(name, _)
                     if matches!(name.as_str(), "__gpui_retained_list_item" | "__gpui_retained_uniform_row"))
             });

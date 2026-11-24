@@ -169,7 +169,7 @@ impl Window {
     }
 
     // Translation is deliberately narrower than stationary replay: only
-    // static quads under an unchanged rectangular ancestor clip, with all
+    // static quads and glyphs under an unchanged rectangular ancestor clip, with all
     // pixels inside both slot positions. The paint list must keep its exact
     // cardinality, so a newly clipped or newly visible primitive is a miss.
     pub(super) fn can_translate_static_range(
@@ -200,13 +200,19 @@ impl Window {
             range.paint_range.start.scene_index..range.paint_range.end.scene_index
         ) else { return false; };
         if !operations.iter().all(|operation| {
-            let crate::PaintOperation::Primitive(crate::Primitive::Quad(quad)) = operation else { return false; };
-            let mut moved = quad.bounds;
-            moved.origin += scaled_delta;
-            quad.animation_id.is_none() && quad.content_mask == clip
-                && !quad.bounds.is_empty()
-                && quad.bounds.intersect(&old_slot) == quad.bounds
-                && moved.intersect(&new_slot) == moved
+            let crate::PaintOperation::Primitive(primitive) = operation else { return false; };
+            let Some(translated) = primitive.translated_static(scaled_delta) else { return false; };
+            let original = *primitive.bounds();
+            let moved = *translated.bounds();
+            // Glyph raster bounds can extend slightly outside the text
+            // element (overhang/antialiasing). Require full visibility in
+            // the unchanged clip rather than forcing glyphs inside the slot.
+            let inside_slots = matches!(primitive, crate::Primitive::MonochromeSprite(_) | crate::Primitive::Underline(_))
+                || (original.intersect(&old_slot) == original && moved.intersect(&new_slot) == moved);
+            *primitive.content_mask() == clip
+                && !original.is_empty()
+                && inside_slots
+                && original.intersect(&clip.bounds) == original
                 && moved.intersect(&clip.bounds) == moved
         }) {
             return false;
