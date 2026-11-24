@@ -390,7 +390,13 @@ impl TaffyLayoutEngine {
         self.collect_subtree_nodes_into(id, &mut nodes);
         let mut snapshot = Vec::with_capacity(nodes.len());
         for node_id in &nodes {
-            let metadata = &self.node_layout_metadata[node_id];
+            let Some(metadata) = self.node_layout_metadata.get(node_id) else {
+                // Trace logging can be enabled after the request or a retained
+                // child may not have been requested in this frame.
+                nodes.clear();
+                self.subtree_scratch = nodes;
+                return;
+            };
             let mut hasher = FxHasher::default();
             self.hash_layout_style(
                 &metadata.style,
@@ -653,14 +659,7 @@ impl TaffyLayoutEngine {
         let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
         let layout_id = self.request_persistent_node(owner, taffy_style, children, None, None);
         self.node_fingerprints.insert(layout_id, fingerprint);
-        self.node_layout_metadata.insert(
-            layout_id,
-            NodeLayoutMetadata {
-                style: layout_style,
-                rem_size,
-                scale_factor,
-            },
-        );
+        self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
     }
 
@@ -728,14 +727,7 @@ impl TaffyLayoutEngine {
             fingerprint_seed,
         );
         self.node_fingerprints.insert(layout_id, fingerprint);
-        self.node_layout_metadata.insert(
-            layout_id,
-            NodeLayoutMetadata {
-                style: layout_style,
-                rem_size,
-                scale_factor,
-            },
-        );
+        self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
     }
 
@@ -841,14 +833,7 @@ impl TaffyLayoutEngine {
             Some(fingerprint_seed),
         );
         self.node_fingerprints.insert(layout_id, Some(fingerprint));
-        self.node_layout_metadata.insert(
-            layout_id,
-            NodeLayoutMetadata {
-                style: layout_style,
-                rem_size,
-                scale_factor,
-            },
-        );
+        self.record_layout_metadata(layout_id, layout_style, rem_size, scale_factor);
         layout_id
     }
 
@@ -1059,6 +1044,35 @@ impl TaffyLayoutEngine {
     /// depends on the modal while the modal's percentage depends on the wrapper. For an explicitly
     /// marked passthrough wrapper, forwarding `80%` to the wrapper and making the child `100%` is
     /// layout-equivalent, gives Taffy a definite containing block, and preserves centering.
+    #[inline]
+    fn record_layout_metadata(
+        &mut self,
+        id: LayoutId,
+        style: LayoutStyle,
+        rem_size: Pixels,
+        scale_factor: f32,
+    ) {
+        // The full logical style is not needed to compute a native layout or
+        // fingerprint after the request. Only percentage-passthrough parents
+        // and opt-in root diagnostics consume it. Most text and fixed-size
+        // nodes therefore need no second style copy in a frame-local map.
+        let percentage_axis = |length: Length| {
+            matches!(length, Length::Definite(DefiniteLength::Fraction(fraction))
+                if fraction.is_finite() && fraction >= 0.0)
+        };
+        if log::log_enabled!(log::Level::Trace)
+            || percentage_axis(style.size.width)
+            || percentage_axis(style.size.height)
+        {
+            self.node_layout_metadata.insert(id, NodeLayoutMetadata {
+                style, rem_size, scale_factor,
+            });
+        } else if !self.node_layout_metadata.is_empty() {
+            // A persistent slot can be requested again in the same frame.
+            self.node_layout_metadata.remove(&id);
+        }
+    }
+
     fn normalize_percentage_passthrough(
         &mut self,
         wrapper: &mut LayoutStyle,
@@ -1082,9 +1096,11 @@ impl TaffyLayoutEngine {
         }
 
         let taffy_style = child.style.to_taffy(child.rem_size, child.scale_factor);
-        self.taffy
-            .set_style(child_id.into(), taffy_style)
-            .expect(EXPECT_MESSAGE);
+        if self.taffy.style(child_id.into()).expect(EXPECT_MESSAGE) != &taffy_style {
+            self.taffy
+                .set_style(child_id.into(), taffy_style)
+                .expect(EXPECT_MESSAGE);
+        }
         self.node_layout_metadata.insert(child_id, child);
     }
 
