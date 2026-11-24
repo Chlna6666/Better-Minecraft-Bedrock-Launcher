@@ -1023,11 +1023,32 @@ pub struct PresentedFrame {
     pub timings: Option<PresentTimings>,
 }
 
+/// Native compositor/display statistics. A sample may describe an earlier present,
+/// repeat across queries, or be unavailable after a mode change. QPC is a native
+/// clock domain, not a GPU timestamp or an exact per-frame scanout timestamp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PresentationFeedback {
+    /// Count of frames presented by the compositor.
+    pub present_count: u32,
+    /// Refresh counter associated with the last present.
+    pub present_refresh_count: u32,
+    /// Refresh counter associated with the synchronization sample.
+    pub sync_refresh_count: u32,
+    /// Native synchronization timestamp in QPC ticks.
+    pub sync_qpc_ticks: i64,
+}
+
 /// Provides swapchain presentation and offscreen render helpers.
 ///
 /// These are the normalized frame APIs. Backend-specific acquire/present
 /// synchronization stays inside each backend crate.
 pub trait PresentationDevice {
+    /// Returns the latest native presentation statistics, if supported and available.
+    /// Must not wait for presentation completion; unavailable/disjoint samples return None.
+    fn presentation_feedback(&self, _swapchain: SwapchainId) -> Option<PresentationFeedback> {
+        None
+    }
+
     /// Registers a one-shot notification that this swapchain can accept a frame.
     ///
     /// `Ok(true)` means registration was accepted. The callback may run before this

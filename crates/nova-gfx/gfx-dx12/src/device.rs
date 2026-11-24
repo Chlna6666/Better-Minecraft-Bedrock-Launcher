@@ -6379,6 +6379,19 @@ mod platform {
     }
 
     impl PresentationDevice for Dx12Device {
+        fn presentation_feedback(&self, swapchain: SwapchainId) -> Option<gfx_core::PresentationFeedback> {
+            let chain = self.swapchains.get(swapchain).ok()?;
+            let mut stats = windows::Win32::Graphics::Dxgi::DXGI_FRAME_STATISTICS::default();
+            // SAFETY: the swapchain is live and stats is writable native storage.
+            unsafe { chain.swapchain.GetFrameStatistics(&mut stats) }.ok()?;
+            Some(gfx_core::PresentationFeedback {
+                present_count: stats.PresentCount,
+                present_refresh_count: stats.PresentRefreshCount,
+                sync_refresh_count: stats.SyncRefreshCount,
+                sync_qpc_ticks: stats.SyncQPCTime,
+            })
+        }
+
         fn ordered_mixed_graphics_compute_supported(&self) -> bool {
             // Both normal graphics encoders and resource-set compute dispatch
             // use the owning direct queue and transition native resource states.

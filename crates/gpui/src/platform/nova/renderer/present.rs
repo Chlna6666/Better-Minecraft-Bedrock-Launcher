@@ -2133,6 +2133,17 @@ impl NovaRenderer {
             self.path_mask_residency.invalidate();
             return Ok(false);
         }
+        // Native display statistics are separate from host Present call timings.
+        // Query only when diagnostics are explicitly enabled; never wait for scanout.
+        #[cfg(target_os = "windows")]
+        if self.diagnostics.enabled {
+            if let Some(feedback) = lock_backend(&self.backend).presentation_feedback(self.swapchain) {
+                log::debug!(target: "gpui_present_feedback",
+                    "window={:?} present_count={} present_refresh_count={} sync_refresh_count={} sync_qpc_ticks={}",
+                    packet.window_id, feedback.present_count, feedback.present_refresh_count,
+                    feedback.sync_refresh_count, feedback.sync_qpc_ticks);
+            }
+        }
         // The backend's retained scene target now holds this frame: a later native
         // client growth can re-present it without rendering the Scene again.
         self.retained_frame_valid = true;

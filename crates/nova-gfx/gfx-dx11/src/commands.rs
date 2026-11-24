@@ -682,6 +682,19 @@ impl Dx11Device {
 }
 
 impl PresentationDevice for Dx11Device {
+    fn presentation_feedback(&self, swapchain: SwapchainId) -> Option<PresentationFeedback> {
+        let chain = self.swapchains.get(swapchain).ok()?;
+        let mut stats = windows::Win32::Graphics::Dxgi::DXGI_FRAME_STATISTICS::default();
+        // SAFETY: the swapchain is live and stats is writable native storage.
+        unsafe { chain.native.GetFrameStatistics(&mut stats) }.ok()?;
+        Some(PresentationFeedback {
+            present_count: stats.PresentCount,
+            present_refresh_count: stats.PresentRefreshCount,
+            sync_refresh_count: stats.SyncRefreshCount,
+            sync_qpc_ticks: stats.SyncQPCTime,
+        })
+    }
+
     fn ordered_mixed_graphics_compute_supported(&self) -> bool {
         // D3D11 immediate-context calls are device-ordered; compute dispatch
         // unbinds OM targets and UAV conflicts before the next draw.
