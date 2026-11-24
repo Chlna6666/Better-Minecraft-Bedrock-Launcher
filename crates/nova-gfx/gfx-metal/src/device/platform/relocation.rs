@@ -49,6 +49,7 @@ impl MetalDevice {
         }
         blit.endEncoding();
         commands.commit();
+        self.texture_transfers.submitted(&commands);
         Ok(())
     }
 }

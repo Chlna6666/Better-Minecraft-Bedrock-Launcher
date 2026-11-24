@@ -14,6 +14,64 @@ use objc2_metal::{
 const MAX_UPLOAD_PAGES: usize = 4;
 const MAX_UPLOAD_PAGE_BYTES: usize = 4 * 1024 * 1024;
 const MIN_UPLOAD_PAGE_BYTES: usize = 64 * 1024;
+const MAX_TRANSFER_PROBES: usize = 16;
+
+/// Optional timings retain only a bounded number of existing native blit
+/// command buffers. The latest submitted buffer is always kept for explicit
+/// transfer waits; the ordinary render/upload path never waits.
+#[derive(Default)]
+pub(super) struct TextureTransferTimings {
+    pending: std::collections::VecDeque<Retained<ProtocolObject<dyn MTLCommandBuffer>>>,
+    last: Option<std::time::Duration>,
+    error: Option<String>,
+}
+
+impl TextureTransferTimings {
+    fn duration(command: &ProtocolObject<dyn MTLCommandBuffer>) -> Option<std::time::Duration> {
+        if command.status() != MTLCommandBufferStatus::Completed { return None; }
+        let start = command.GPUStartTime();
+        let end = command.GPUEndTime();
+        if !start.is_finite() || !end.is_finite() || start <= 0.0 || end <= start { return None; }
+        std::time::Duration::try_from_secs_f64(end - start).ok().filter(|time| !time.is_zero())
+    }
+
+    pub(super) fn submitted(&mut self, command: &Retained<ProtocolObject<dyn MTLCommandBuffer>>) {
+        self.poll();
+        if self.pending.len() >= MAX_TRANSFER_PROBES {
+            // The command queue still owns all previously submitted work.
+            // Dropping a profiling reference neither cancels nor waits for it.
+            self.pending.pop_front();
+        }
+        self.pending.push_back(command.clone());
+    }
+
+    pub(super) fn poll(&mut self) {
+        while let Some(command) = self.pending.front() {
+            match command.status() {
+                MTLCommandBufferStatus::Completed => {
+                    if let Some(time) = Self::duration(command) { self.last = Some(time); }
+                }
+                MTLCommandBufferStatus::Error => {
+                    self.error = Some(command.error().as_deref().map(nserror_message)
+                        .unwrap_or_else(|| "Metal texture transfer failed".into()));
+                }
+                _ => break,
+            }
+            self.pending.pop_front();
+        }
+    }
+
+    pub(super) fn latest(&self) -> Option<std::time::Duration> {
+        self.pending.iter().rev().find_map(|command| Self::duration(command)).or(self.last)
+    }
+
+    pub(super) fn wait(&mut self) -> Result<()> {
+        if let Some(command) = self.pending.back() { command.waitUntilCompleted(); }
+        self.poll();
+        if let Some(error) = self.error.take() { return Err(Error::Backend(error)); }
+        Ok(())
+    }
+}
 
 struct UploadPage {
     buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
@@ -342,8 +400,60 @@ impl MetalDevice {
         }
         blit.endEncoding();
         commands.commit();
+        self.texture_transfers.submitted(&commands);
         self.texture_uploads.submitted(page, length, commands);
         Ok(())
+    }
+
+    pub(super) fn read_texture_pixels(&mut self, texture: TextureId) -> Result<gfx_core::TextureReadback> {
+        let record = self.textures.get(texture)?;
+        let desc = record.desc.clone();
+        if !desc.usage.contains(TextureUsage::COPY_SRC) || desc.format.is_depth()
+            || desc.sample_count != 1 || !matches!(desc.dimension, TextureDimension::D2) {
+            return Err(Error::InvalidInput("Metal readback requires a single-sample non-depth 2D COPY_SRC texture".into()));
+        }
+        let source = record.resource.clone().ok_or_else(|| Error::Backend("Metal readback source unavailable".into()))?;
+        let width = desc.size.width() as usize;
+        let height = desc.size.height() as usize;
+        let row_bytes = desc.size.width().checked_mul(desc.format.bytes_per_pixel())
+            .ok_or_else(|| Error::InvalidInput("Metal readback row size overflow".into()))?;
+        let pitch = (row_bytes as usize).checked_add(255).map(|n| n & !255)
+            .ok_or_else(|| Error::InvalidInput("Metal readback pitch overflow".into()))?;
+        let length = pitch.checked_mul(height)
+            .ok_or_else(|| Error::InvalidInput("Metal readback allocation overflow".into()))?;
+        let packed_length = (row_bytes as usize).checked_mul(height)
+            .ok_or_else(|| Error::InvalidInput("Metal packed readback size overflow".into()))?;
+        let destination = TextureUploadArena::allocate(&self.device, length)?;
+        let commands = self.command_queue.commandBuffer()
+            .ok_or_else(|| Error::Backend("Metal readback command buffer unavailable".into()))?;
+        let blit = commands.blitCommandEncoder()
+            .ok_or_else(|| Error::Backend("Metal readback encoder unavailable".into()))?;
+        // The primary queue orders this copy after prior texture writes.
+        // SAFETY: validated mip-zero extent; row pitch and allocation cover
+        // the copy; both native resources remain retained until completion.
+        unsafe {
+            blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
+                &source, 0, 0, MTLOrigin { x: 0, y: 0, z: 0 },
+                MTLSize { width, height, depth: 1 }, &destination, 0, pitch, 0);
+        }
+        blit.endEncoding();
+        commands.commit();
+        self.texture_transfers.submitted(&commands);
+        // This explicit CPU readback API requires completion; regular GPU
+        // transfers do not use this path or introduce a fence wait.
+        self.texture_transfers.wait()?;
+        if commands.status() != MTLCommandBufferStatus::Completed {
+            return Err(Error::Backend("Metal texture readback did not complete".into()));
+        }
+        let mut bytes = Vec::with_capacity(packed_length);
+        // SAFETY: only initialized pixel bytes are read after GPU completion;
+        // native row padding is deliberately excluded.
+        for row in 0..height {
+            let data = unsafe { std::slice::from_raw_parts(
+                destination.contents().as_ptr().cast::<u8>().add(row * pitch), row_bytes as usize) };
+            bytes.extend_from_slice(data);
+        }
+        Ok(gfx_core::TextureReadback { format: desc.format, size: desc.size, bytes_per_row: row_bytes, bytes })
     }
 
     pub(super) fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {

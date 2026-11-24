@@ -90,6 +90,7 @@ mod platform {
         device: Retained<ProtocolObject<dyn MTLDevice>>,
         command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
         texture_uploads: texture::TextureUploadArena,
+        texture_transfers: texture::TextureTransferTimings,
         buffers: ResourceRegistry<MetalBuffer>,
         textures: ResourceRegistry<MetalTexture>,
         texture_views: ResourceRegistry<MetalTextureView>,
@@ -127,6 +128,7 @@ mod platform {
                 device,
                 command_queue,
                 texture_uploads: texture::TextureUploadArena::default(),
+                texture_transfers: texture::TextureTransferTimings::default(),
                 buffers: ResourceRegistry::new("buffer"),
                 textures: ResourceRegistry::new("texture"),
                 texture_views: ResourceRegistry::new("texture view"),
@@ -906,6 +908,7 @@ mod platform {
 
         pub fn poll_cleanup(&mut self) {
             self.texture_uploads.release_completed();
+            self.texture_transfers.poll();
         }
 
         /// Reclaims only staging pages which are no longer referenced by GPU work.
@@ -1393,6 +1396,24 @@ mod platform {
 
         fn render_to_textures_on_queue(&mut self, passes: &[RenderPassCommands<'_>], tags: &[Option<gfx_core::GpuTimestampTag>], _queue: gfx_core::OffscreenQueuePreference) -> Result<Option<SubmissionId>> {
             self.submit_texture_passes_timed(passes, Some(tags), true)
+        }
+    }
+
+    impl gfx_core::TextureTransferDevice for MetalDevice {
+        fn supports_transfer_timestamps(&self) -> bool { true }
+
+        fn wait_texture_transfers(&mut self) -> Result<()> {
+            self.texture_transfers.wait()?;
+            self.texture_uploads.release_completed();
+            Ok(())
+        }
+
+        fn last_texture_transfer_time(&self) -> Option<std::time::Duration> {
+            self.texture_transfers.latest()
+        }
+
+        fn read_texture(&mut self, texture: TextureId) -> Result<gfx_core::TextureReadback> {
+            self.read_texture_pixels(texture)
         }
     }
 
