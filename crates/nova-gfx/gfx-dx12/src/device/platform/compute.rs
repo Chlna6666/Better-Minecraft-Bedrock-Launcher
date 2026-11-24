@@ -1035,11 +1035,19 @@ impl Dx12Device {
         steps: &[RenderCommand],
         counts: &[gfx_core::IndirectCountBinding],
     ) -> Result<Option<usize>> {
-        let portable_steps = || steps.iter().enumerate().filter_map(|(index, step)| {
-            if counts.binary_search_by_key(&index, |count| count.command_index).is_ok() {
-                None
-            } else { Some(step) }
-        });
+        // Each traversal has its own cursor into the validated sorted table.
+        // This remains allocation-free even for thousands of counted runs.
+        let portable_steps = || {
+            let mut remaining = counts;
+            steps.iter().enumerate().filter_map(move |(index, step)| {
+                if remaining.first().is_some_and(|count| count.command_index == index) {
+                    remaining = &remaining[1..];
+                    None
+                } else {
+                    Some(step)
+                }
+            })
+        };
         // A large generated Section scene can have tens of thousands of
         // indirect draws. Count and validate in the SAME pass rather than
         // scanning the entire command table twice before the actual GPU

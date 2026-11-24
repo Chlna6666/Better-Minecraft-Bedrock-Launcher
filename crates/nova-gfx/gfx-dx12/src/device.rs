@@ -4344,10 +4344,18 @@ mod platform {
                 record_started.map_or(0., |start| start.elapsed().as_secs_f64() * 1000.);
             let mut binding_state = bindings::State::default();
             let mut indirect_count = 0;
+            // Count bindings are validated as strictly ordered. Walk them
+            // alongside the commands rather than binary-searching per draw.
+            let mut remaining_counts = counts;
             let mut step_iter = steps.iter().enumerate().peekable();
             while let Some((command_index, step)) = step_iter.next() {
-                let count = counts.binary_search_by_key(&command_index, |count| count.command_index)
-                    .ok().map(|index| counts[index]);
+                let count = if remaining_counts.first().is_some_and(|count| count.command_index == command_index) {
+                    let count = remaining_counts[0];
+                    remaining_counts = &remaining_counts[1..];
+                    Some(count)
+                } else {
+                    None
+                };
                 let indirect_index = indirect_count;
                 if count.is_none() && matches!(step, RenderCommand::DrawIndirect(_)) {
                     indirect_count += 1;
@@ -4446,7 +4454,7 @@ mod platform {
                     // bind groups and scissor can share one ExecuteIndirect call.
                     let mut run_count = 1usize;
                     while let Some(&(next_index, next)) = step_iter.peek() {
-                        if counts.binary_search_by_key(&next_index, |count| count.command_index).is_ok()
+                        if remaining_counts.first().is_some_and(|count| count.command_index == next_index)
                             || !matches!(next, RenderCommand::DrawIndirect(_))
                             || next.pipeline() != step.pipeline()
                             || next.bind_groups() != step.bind_groups()
