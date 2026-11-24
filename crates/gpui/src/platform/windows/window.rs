@@ -940,6 +940,14 @@ impl WindowsWindow {
         }
     }
 
+    pub(crate) fn native_monitor(&self) -> Option<isize> {
+        self.native_hwnd().and_then(super::vsync::monitor_for_window)
+    }
+
+    pub(crate) fn request_native_frame_tick(&self) -> bool {
+        self.0.vsync_scheduler.request_window_frame(self.native_monitor())
+    }
+
     pub(crate) fn native_hwnd(&self) -> Option<HWND> {
         let raw_handle = self.window().window_handle().ok()?.as_raw();
         match raw_handle {
@@ -1028,7 +1036,7 @@ impl WindowsWindow {
                     // A hidden window may have a latched request that did not
                     // arm the native scheduler. Restoration owns this wake.
                     window.0.queue_frame_request(PlatformFrameRequest::presentation());
-                    if !window.0.vsync_scheduler.request_frame() {
+                    if !window.request_native_frame_tick() {
                         window.window().request_redraw();
                     }
                 }
@@ -1115,7 +1123,7 @@ impl WindowsWindow {
         {
             return;
         }
-        if !self.0.vsync_scheduler.request_frame() {
+        if !self.request_native_frame_tick() {
             self.window().request_redraw();
         }
     }
@@ -1146,7 +1154,7 @@ impl WindowsWindow {
         let pending = self.0.state.borrow().pending_frame_request.get();
         if pending.requires_frame()
             && (!self.ui_frame_backpressured() || self.0.pending_renderer_size.get().is_some())
-            && !self.0.vsync_scheduler.request_frame()
+            && !self.request_native_frame_tick()
         {
             self.window().request_redraw();
         }
@@ -1677,7 +1685,7 @@ impl WindowsWindow {
         // scene has no retained animation and therefore no presentation continuation.
         if !frame.waiting_for_frame_ready
             && self.0.state.borrow().pending_frame_request.get().requires_frame()
-            && !self.0.vsync_scheduler.request_frame()
+            && !self.request_native_frame_tick()
         {
             self.window().request_redraw();
         }
@@ -2272,7 +2280,7 @@ impl WindowsWindow {
             // handling still owns the window state. Never discard the new physical extent.
             // Keep a per-window retry bit so global DWM dispatch will not skip this HWND.
             self.0.pending_native_size_retry.set(true);
-            if !self.0.vsync_scheduler.request_frame() {
+            if !self.request_native_frame_tick() {
                 self.window().request_redraw();
             }
             return;
@@ -2356,7 +2364,7 @@ impl WindowsWindow {
             self.0.last_unpaced_frame_at.get(),
         ) {
             if self.has_pending_native_frame() {
-                self.0.vsync_scheduler.request_frame();
+                self.request_native_frame_tick();
             }
             return;
         }
@@ -2516,7 +2524,7 @@ impl WindowsWindow {
         let pending = self.0.state.borrow().pending_frame_request.get();
         if pending.requires_frame()
             && (!self.ui_frame_backpressured() || self.0.pending_renderer_size.get().is_some())
-            && !self.0.vsync_scheduler.request_frame()
+            && !self.request_native_frame_tick()
         {
             self.window().request_redraw();
         }
@@ -2531,7 +2539,7 @@ impl WindowsWindow {
         // Native Win32 messages may be delivered reentrantly while a callback owns
         // the state RefCell. Never dispatch a frame through that outstanding borrow.
         let Ok(state) = self.0.state.try_borrow() else {
-            self.0.vsync_scheduler.request_frame();
+            self.request_native_frame_tick();
             return false;
         };
         self.0.pending_resize.get().is_some()

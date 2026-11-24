@@ -9,6 +9,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{SyncSender, TrySendError, sync_channel},
     },
     thread::Thread,
     time::{Duration, Instant},
@@ -170,10 +171,28 @@ pub(super) struct VSyncScheduler {
     modal_frame: Mutex<Option<ModalFrameTarget>>,
     // Latest timing replaces an unconsumed event instead of growing the UI queue.
     pending_vsync: Mutex<Option<VSyncEventTiming>>,
+    multiple_outputs: AtomicBool,
+    output_generation: AtomicU64,
+    output_clocks: Mutex<HashMap<isize, OutputClock>>,
+    output_proxy: Mutex<Option<winit::event_loop::EventLoopProxy<WindowsUserEvent>>>,
     modal_task_wake_pending: AtomicBool,
     /// Only opt-in windows influence the native background cadence.
     /// Unconfigured windows retain the original background interval.
     background_frame_intervals: Mutex<HashMap<u64, Duration>>,
+}
+
+// One dormant worker per demanded monitor, never per window. The channel
+// bounds queued work; the mailbox bounds unconsumed native UI events.
+struct OutputClock {
+    generation: u64,
+    wake: SyncSender<()>,
+    mailbox: Arc<Mutex<Option<VSyncEventTiming>>>,
+}
+
+pub(super) fn monitor_for_window(hwnd: HWND) -> Option<isize> {
+    // SAFETY: HWND is a live native window; MonitorFromWindow is read-only.
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    (!monitor.0.is_null()).then_some(monitor.0 as isize)
 }
 
 struct ModalFrameTarget {
@@ -198,6 +217,10 @@ impl VSyncScheduler {
             thread: Mutex::new(None),
             modal_frame: Mutex::new(None),
             pending_vsync: Mutex::new(None),
+            multiple_outputs: AtomicBool::new(false),
+            output_generation: AtomicU64::new(0),
+            output_clocks: Mutex::new(HashMap::new()),
+            output_proxy: Mutex::new(None),
             modal_task_wake_pending: AtomicBool::new(false),
             background_frame_intervals: Mutex::new(HashMap::new()),
         }
@@ -270,8 +293,96 @@ impl VSyncScheduler {
         true
     }
 
+    pub(super) fn reset_output_clocks(&self, count: usize) {
+        self.multiple_outputs.store(count > 1, Ordering::Release);
+        self.output_clocks.lock().expect("output clocks poisoned").clear();
+    }
+
+    pub(super) fn request_window_frame(self: &Arc<Self>, monitor: Option<isize>) -> bool {
+        if !self.uses_display_clock()
+            || !self.multiple_outputs.load(Ordering::Acquire)
+            || !process_owns_foreground_window()
+            || self.modal_frame.lock().expect("modal vsync lock poisoned").is_some()
+        {
+            return self.request_frame();
+        }
+        let Some(monitor) = monitor else { return self.request_frame(); };
+        let mut clocks = self.output_clocks.lock().expect("output clocks poisoned");
+        if let Some(clock) = clocks.get(&monitor) {
+            return match clock.wake.try_send(()) {
+                Ok(()) | Err(TrySendError::Full(())) => true,
+                Err(TrySendError::Disconnected(())) => self.request_frame(),
+            };
+        }
+        // Cap native workers even if a driver reports transient monitor handles.
+        if clocks.len() >= 16 {
+            return self.request_frame();
+        }
+        let Some(proxy) = self.output_proxy.lock().expect("output proxy poisoned").clone() else {
+            return self.request_frame();
+        };
+        let generation = self.output_generation.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        let (wake, receiver) = sync_channel(1);
+        let mailbox = Arc::new(Mutex::new(None::<VSyncEventTiming>));
+        let worker_mailbox = mailbox.clone();
+        let scheduler = Arc::downgrade(self);
+        let worker = std::thread::Builder::new().name("GPUI output VBlank".into()).spawn(move || {
+            // Enumerate and use DXGI interfaces only on the native wait worker.
+            let output = NativeDisplayClock::find_output(HMONITOR(monitor as *mut _));
+            while receiver.recv().is_ok() {
+                let Some(scheduler) = scheduler.upgrade() else { break; };
+                if scheduler.shutdown.load(Ordering::Acquire) {
+                    break;
+                }
+                if !scheduler.uses_display_clock() || !process_owns_foreground_window() {
+                    scheduler.request_frame();
+                    continue;
+                }
+                let started = Instant::now();
+                // SAFETY: this thread owns the output interface. This wait
+                // blocks only the monitor worker, never UI or GPU submission.
+                let ok = output.as_ref().is_some_and(|output| unsafe { output.WaitForVBlank() }.is_ok());
+                let tick = Instant::now();
+                if !ok || tick.saturating_duration_since(started) < EARLY_VSYNC_RETURN_THRESHOLD {
+                    // Driver returned no usable native wait. Keep a disconnected
+                    // entry until topology changes, avoiding repeated worker creation.
+                    scheduler.request_frame();
+                    break;
+                }
+                let timing = VSyncEventTiming {
+                    display_tick_at: Some(tick),
+                    pacing_wait: tick.saturating_duration_since(started),
+                    reported_refresh_period: None,
+                    reported_composition_period: None,
+                    enqueued_at: Instant::now(),
+                };
+                let first = worker_mailbox.lock().expect("output mailbox poisoned").replace(timing).is_none();
+                if first && proxy.send_event(WindowsUserEvent::OutputVSync { monitor, generation }).is_err() {
+                    break;
+                }
+            }
+        });
+        if worker.is_err() {
+            return self.request_frame();
+        }
+        let _ = wake.try_send(());
+        clocks.insert(monitor, OutputClock { generation, wake, mailbox });
+        true
+    }
+
+    pub(super) fn take_output_vsync(&self, monitor: isize, generation: u64) -> Option<VSyncEventTiming> {
+        let clocks = self.output_clocks.lock().expect("output clocks poisoned");
+        let clock = clocks.get(&monitor)?;
+        if clock.generation != generation {
+            return None;
+        }
+        let timing = clock.mailbox.lock().expect("output mailbox poisoned").take();
+        timing
+    }
+
     pub(super) fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
+        self.reset_output_clocks(0);
         self.unpark();
     }
 
@@ -394,6 +505,7 @@ pub(super) fn spawn_vsync_thread(
     event_loop_proxy: winit::event_loop::EventLoopProxy<WindowsUserEvent>,
     scheduler: Arc<VSyncScheduler>,
 ) -> std::io::Result<()> {
+    *scheduler.output_proxy.lock().expect("output proxy poisoned") = Some(event_loop_proxy.clone());
     let thread_scheduler = scheduler.clone();
     let join_handle = std::thread::Builder::new()
         .name("GPUI DWM VSync".to_string())

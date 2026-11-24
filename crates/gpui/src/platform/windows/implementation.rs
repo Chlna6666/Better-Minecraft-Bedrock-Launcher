@@ -109,6 +109,7 @@ pub(crate) enum WindowsUserEvent {
     RunMainThreadTasks,
     DisplaysChanged,
     VSync,
+    OutputVSync { monitor: isize, generation: u64 },
     RenderOwnerFrame {
         window_id: winit::window::WindowId,
     },
@@ -1266,7 +1267,7 @@ impl WindowsApplication {
         event_loop.set_control_flow(control_flow);
     }
 
-    fn dispatch_pending_window_updates(&self, timing: super::vsync::VSyncEventTiming) {
+    fn dispatch_pending_window_updates(&self, timing: super::vsync::VSyncEventTiming, monitor: Option<isize>) {
         let event_received_at = Instant::now();
         // A global DWM cadence is not a global redraw. Static companion windows
         // incur no per-tick work. Release the window-map borrow before dispatch:
@@ -1274,6 +1275,7 @@ impl WindowsApplication {
         let windows = self
             .windows
             .values()
+            .filter(|window| monitor.is_none_or(|monitor| window.native_monitor() == Some(monitor)))
             .filter(|window| window.has_pending_native_frame())
             .cloned()
             .collect::<Vec<_>>();
@@ -1302,8 +1304,15 @@ impl WindowsApplication {
         state.displays = displays;
         state.primary_display_id = primary_display_id;
         if changed {
+            let count = state.displays.len();
             let callback = state.callbacks.displays_changed.take();
             drop(state);
+            self.vsync_scheduler.reset_output_clocks(count);
+            for window in self.windows.values() {
+                if window.has_pending_native_frame() {
+                    window.request_native_frame_tick();
+                }
+            }
             if let Some(mut callback) = callback {
                 callback();
                 self.inner
@@ -1427,7 +1436,12 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             WindowsUserEvent::DisplaysChanged => self.refresh_display_cache(event_loop),
             WindowsUserEvent::VSync => {
                 if let Some(timing) = self.vsync_scheduler.take_vsync() {
-                    self.dispatch_pending_window_updates(timing);
+                    self.dispatch_pending_window_updates(timing, None);
+                }
+            }
+            WindowsUserEvent::OutputVSync { monitor, generation } => {
+                if let Some(timing) = self.vsync_scheduler.take_output_vsync(monitor, generation) {
+                    self.dispatch_pending_window_updates(timing, Some(monitor));
                 }
             }
             WindowsUserEvent::RemoveNativeWindow { window_id } => {
@@ -1518,6 +1532,9 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             }
             winit::event::WindowEvent::Moved(_) => {
                 self.refresh_display_cache(event_loop);
+                if window.has_pending_native_frame() {
+                    window.request_native_frame_tick();
+                }
                 let callback = window.0.state.borrow_mut().callbacks.moved.take();
                 if let Some(mut callback) = callback {
                     callback();
