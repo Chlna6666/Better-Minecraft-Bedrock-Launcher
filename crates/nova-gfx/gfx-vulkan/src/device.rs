@@ -2540,6 +2540,9 @@ impl VulkanDevice {
         }) else {
             return Ok(None);
         };
+        // The late-acquire API owns a real image too. Keep it reserved
+        // across encoder allocation/recording failures, just like preflight.
+        self.swapchains.get_mut(swapchain_id)?.reserved_frame = Some(present_frame);
         let mut timings = PresentTimings {
             acquire_fence_wait: present_frame.acquire_fence_wait,
             image_acquire: present_frame.image_acquire,
@@ -2571,7 +2574,10 @@ impl VulkanDevice {
         let command_buffer = self.command_encoders.get(encoder)?.command_buffers[0];
         // SAFETY: The frame fence was waited before acquire and is about to be used by queue_submit.
         let fence_reset_started = Instant::now();
-        unsafe { self.device.reset_fences(&[present_frame.fence]) }.map_err(VulkanError::from)?;
+        if let Err(error) = unsafe { self.device.reset_fences(&[present_frame.fence]) } {
+            let _ = self.destroy_temporary_command_encoder_now(encoder);
+            return Err(VulkanError::from(error).into());
+        }
         timings.fence_reset = fence_reset_started.elapsed();
         let submit_result = self.submit_command_buffer_timed(
             command_buffer,
@@ -3152,7 +3158,7 @@ impl VulkanDevice {
         // An early acquisition needs its own completion proof: an image may
         // have been acquired but never submitted if scene preparation fails.
         // Allocate once per swapchain, not once per frame.
-        let acquire_fence = if preflight {
+        let acquire_fence = {
             let chain = self.swapchains.get_mut(swapchain_id)?;
             if chain.acquire_fence == vk::Fence::null() {
                 chain.acquire_fence = create_fence(&self.device, false)?;
@@ -3168,8 +3174,6 @@ impl VulkanDevice {
                 chain.acquire_pending = false;
             }
             chain.acquire_fence
-        } else {
-            vk::Fence::null()
         };
         // SAFETY: Swapchain and semaphore belong to this device and are valid here.
         let image_acquire_started = Instant::now();
@@ -3181,15 +3185,15 @@ impl VulkanDevice {
                 acquire_fence,
             )
         };
-        if preflight && acquire_result.is_ok() {
+        if acquire_result.is_ok() {
             self.swapchains.get_mut(swapchain_id)?.acquire_pending = true;
         }
         let image_acquire = image_acquire_started.elapsed();
         let image_index = match acquire_result {
             Ok((image_index, false)) => image_index,
-            Ok((image_index, true)) if preflight || self.swapchains.get(swapchain_id)?.native_pixel_scaling => {
-                image_index
-            }
+            // SUBOPTIMAL still returns an acquired image and signals the
+            // semaphore. Consume it normally; present handles recreation.
+            Ok((image_index, true)) => image_index,
             // No image was acquired and the semaphore is unchanged. Keep this frame slot for
             // the next native presentation request; only submission resets its fence.
             Err(vk::Result::NOT_READY | vk::Result::TIMEOUT) => {
@@ -3200,7 +3204,7 @@ impl VulkanDevice {
                 }
                 return Ok(None);
             }
-            Ok((_, true)) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 self.reconfigure_outdated_swapchain(swapchain_id)?;
                 return Err(Error::SurfaceOutdated);
             }
@@ -3365,10 +3369,10 @@ impl VulkanDevice {
     /// Returns [`Error`] when the handle is invalid or memory free fails.
     fn destroy_buffer(&mut self, buffer_id: BufferId) -> Result<()> {
         self.buffers.get(buffer_id)?;
-        let fence = self.signal_cleanup_fence()?;
+        let retirement = self.signal_cleanup_point()?;
         let buffer = self.buffers.take(buffer_id)?;
         self.deferred_destroys
-            .retire(0, DeferredResource::Buffer { fence, buffer });
+            .retire(0, DeferredResource::Buffer { retirement, buffer });
         self.poll_cleanup();
         Ok(())
     }
@@ -3389,13 +3393,13 @@ impl VulkanDevice {
                 ));
             }
         }
-        let fence = self.signal_cleanup_fence()?;
+        let retirement = self.signal_cleanup_point()?;
         let buffers = ids
             .iter()
             .map(|&id| self.buffers.take(id))
             .collect::<Result<Vec<_>>>()?;
         self.deferred_destroys
-            .retire(0, DeferredResource::Buffers { fence, buffers });
+            .retire(0, DeferredResource::Buffers { retirement, buffers });
         self.poll_cleanup();
         Ok(())
     }
@@ -3406,10 +3410,11 @@ impl VulkanDevice {
     ///
     /// Returns [`Error`] when the handle is invalid.
     fn destroy_texture(&mut self, texture_id: TextureId) -> Result<()> {
+        self.textures.get(texture_id)?;
+        let retirement = self.signal_cleanup_point()?;
         let texture = self.textures.take(texture_id)?;
-        let fence = self.signal_cleanup_fence()?;
         self.deferred_destroys
-            .retire(0, DeferredResource::Texture { fence, texture });
+            .retire(0, DeferredResource::Texture { retirement, texture });
         self.poll_cleanup();
         Ok(())
     }
@@ -3425,10 +3430,10 @@ impl VulkanDevice {
     /// Returns [`Error`] when the handle is invalid or the cleanup fence cannot be queued.
     fn destroy_texture_view(&mut self, view_id: TextureViewId) -> Result<()> {
         self.texture_views.get(view_id)?;
-        let fence = self.signal_cleanup_fence()?;
+        let retirement = self.signal_cleanup_point()?;
         let view = self.texture_views.take(view_id)?;
         self.deferred_destroys
-            .retire(0, DeferredResource::TextureView { fence, view });
+            .retire(0, DeferredResource::TextureView { retirement, view });
         self.poll_cleanup();
         Ok(())
     }
@@ -3468,10 +3473,10 @@ impl VulkanDevice {
     /// Returns [`Error`] when the handle is invalid or the cleanup fence cannot be queued.
     fn destroy_bind_group(&mut self, set_id: BindGroupId) -> Result<()> {
         self.bind_groups.get(set_id)?;
-        let fence = self.signal_cleanup_fence()?;
+        let retirement = self.signal_cleanup_point()?;
         let set = self.bind_groups.take(set_id)?;
         self.deferred_destroys
-            .retire(0, DeferredResource::BindGroup { fence, set });
+            .retire(0, DeferredResource::BindGroup { retirement, set });
         self.poll_cleanup();
         Ok(())
     }
@@ -3587,9 +3592,7 @@ impl VulkanDevice {
         for resource in self
             .deferred_destroys
             .collect_ready(|_, resource| {
-                if let DeferredResource::CommandEncoder(encoder) = resource
-                    && let Some(value) = encoder.retire_primary_value
-                {
+                if let Some(value) = resource.primary_retirement_value() {
                     let snapshot = completed.get_or_insert_with(|| {
                         primary.and_then(|timeline| timeline.completed_value().ok())
                     });
@@ -3911,7 +3914,15 @@ impl VulkanDevice {
         );
     }
 
-    fn signal_cleanup_fence(&self) -> Result<vk::Fence> {
+    fn signal_cleanup_point(&self) -> Result<CleanupPoint> {
+        if let Some(timeline) = &self.primary_timeline {
+            // A new checkpoint is required: some transfer paths still
+            // submit without a timeline signal. The primary queue also
+            // contains the consumer joins of independent GPU work.
+            timeline.submit(&self.device, self.graphics_queue, &[], &[], &[],
+                vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
+            return Ok(CleanupPoint::Timeline(timeline.last()));
+        }
         let fence = create_fence(&self.device, false)?;
         if let Err(error) = submit::binary(&self.device, self.graphics_queue, &[], &[], &[],
             vk::PipelineStageFlags2::ALL_COMMANDS, fence) {
@@ -3919,7 +3930,7 @@ impl VulkanDevice {
             unsafe { self.device.destroy_fence(fence, None) };
             return Err(error);
         }
-        Ok(fence)
+        Ok(CleanupPoint::Fence(fence))
     }
 
     fn write_upload_data(&mut self, data: &[u8]) -> Result<UploadAllocation> {
@@ -4266,12 +4277,12 @@ impl VulkanDevice {
                 destroy_upload_commands(&self.device, &commands);
                 self.discard_heap_replacement(&mut replacement)
             }
-            DeferredResource::Buffer { fence, buffer } => {
-                destroy_fence(&self.device, fence);
+            DeferredResource::Buffer { retirement, buffer } => {
+                retirement.destroy(&self.device);
                 self.destroy_buffer_now(buffer)
             }
-            DeferredResource::Buffers { fence, buffers } => {
-                destroy_fence(&self.device, fence);
+            DeferredResource::Buffers { retirement, buffers } => {
+                retirement.destroy(&self.device);
                 let mut result = Ok(());
                 for buffer in buffers {
                     if let Err(error) = self.destroy_buffer_now(buffer) {
@@ -4280,17 +4291,17 @@ impl VulkanDevice {
                 }
                 result
             }
-            DeferredResource::Texture { fence, texture } => {
-                destroy_fence(&self.device, fence);
+            DeferredResource::Texture { retirement, texture } => {
+                retirement.destroy(&self.device);
                 self.destroy_texture_now(texture)
             }
-            DeferredResource::TextureView { fence, view } => {
-                destroy_fence(&self.device, fence);
+            DeferredResource::TextureView { retirement, view } => {
+                retirement.destroy(&self.device);
                 self.destroy_texture_view_now(&view);
                 Ok(())
             }
-            DeferredResource::BindGroup { fence, set } => {
-                destroy_fence(&self.device, fence);
+            DeferredResource::BindGroup { retirement, set } => {
+                retirement.destroy(&self.device);
                 self.destroy_resource_set_now(&set);
                 Ok(())
             }
@@ -6392,6 +6403,20 @@ struct VulkanSwapchain {
     config: SurfaceConfig,
 }
 
+#[derive(Clone, Copy)]
+enum CleanupPoint {
+    Timeline(u64),
+    Fence(vk::Fence),
+}
+
+impl CleanupPoint {
+    fn destroy(self, device: &ash::Device) {
+        if let Self::Fence(fence) = self {
+            destroy_fence(device, fence);
+        }
+    }
+}
+
 enum DeferredResource {
     HeapReplacement {
         fence: vk::Fence,
@@ -6399,23 +6424,23 @@ enum DeferredResource {
         replacement: compact::HeapReplacement,
     },
     Buffer {
-        fence: vk::Fence,
+        retirement: CleanupPoint,
         buffer: VulkanBuffer,
     },
     Buffers {
-        fence: vk::Fence,
+        retirement: CleanupPoint,
         buffers: Vec<VulkanBuffer>,
     },
     Texture {
-        fence: vk::Fence,
+        retirement: CleanupPoint,
         texture: VulkanTexture,
     },
     TextureView {
-        fence: vk::Fence,
+        retirement: CleanupPoint,
         view: VulkanTextureView,
     },
     BindGroup {
-        fence: vk::Fence,
+        retirement: CleanupPoint,
         set: VulkanResourceSet,
     },
     Upload {
@@ -6426,16 +6451,34 @@ enum DeferredResource {
     CommandEncoder(VulkanCommandEncoder),
 }
 
+impl DeferredResource {
+    fn primary_retirement_value(&self) -> Option<u64> {
+        match self {
+            Self::Buffer { retirement: CleanupPoint::Timeline(value), .. }
+            | Self::Buffers { retirement: CleanupPoint::Timeline(value), .. }
+            | Self::Texture { retirement: CleanupPoint::Timeline(value), .. }
+            | Self::TextureView { retirement: CleanupPoint::Timeline(value), .. }
+            | Self::BindGroup { retirement: CleanupPoint::Timeline(value), .. } => Some(*value),
+            Self::CommandEncoder(encoder) => encoder.retire_primary_value,
+            _ => None,
+        }
+    }
+}
+
 fn deferred_resource_ready(device: &ash::Device, resource: &DeferredResource) -> bool {
     let fence = match resource {
         DeferredResource::HeapReplacement { fence, .. }
-        | DeferredResource::Buffer { fence, .. }
-        | DeferredResource::Buffers { fence, .. }
-        | DeferredResource::Texture { fence, .. }
-        | DeferredResource::TextureView { fence, .. }
-        | DeferredResource::BindGroup { fence, .. }
         | DeferredResource::Upload { fence, .. }
         | DeferredResource::CommandEncoder(VulkanCommandEncoder { fence, .. }) => *fence,
+        DeferredResource::Buffer { retirement, .. }
+        | DeferredResource::Buffers { retirement, .. }
+        | DeferredResource::Texture { retirement, .. }
+        | DeferredResource::TextureView { retirement, .. }
+        | DeferredResource::BindGroup { retirement, .. } => match retirement {
+            CleanupPoint::Fence(fence) => *fence,
+            // Only the timeline-aware owner predicate can retire this.
+            CleanupPoint::Timeline(_) => return false,
+        },
     };
     // Resource retirement publishes logical completion for tracked encoders.
     // Device loss is not successful execution; leave these records for
