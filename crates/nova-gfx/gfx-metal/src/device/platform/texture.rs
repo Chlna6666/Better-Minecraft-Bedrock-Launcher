@@ -3,7 +3,7 @@
 use super::*;
 use objc2_foundation::NSRange;
 use objc2_metal::{
-    MTLBlitCommandEncoder, MTLCompareFunction, MTLOrigin, MTLSamplerAddressMode,
+    MTLBlitCommandEncoder, MTLOrigin, MTLSamplerAddressMode,
     MTLSamplerBorderColor, MTLSamplerDescriptor, MTLSamplerMinMagFilter,
     MTLSamplerMipFilter, MTLSize, MTLStorageMode, MTLTextureDescriptor,
     MTLTextureType, MTLTextureUsage,
@@ -155,16 +155,7 @@ impl MetalDevice {
             native.setMaxAnisotropy(16);
         }
         if let Some(compare) = desc.compare {
-            native.setCompareFunction(match compare {
-                CompareFunction::Never => MTLCompareFunction::Never,
-                CompareFunction::Less => MTLCompareFunction::Less,
-                CompareFunction::Equal => MTLCompareFunction::Equal,
-                CompareFunction::LessEqual => MTLCompareFunction::LessEqual,
-                CompareFunction::Greater => MTLCompareFunction::Greater,
-                CompareFunction::NotEqual => MTLCompareFunction::NotEqual,
-                CompareFunction::GreaterEqual => MTLCompareFunction::GreaterEqual,
-                CompareFunction::Always => MTLCompareFunction::Always,
-            });
+            native.setCompareFunction(compare_to_metal(compare));
         }
         if [desc.address_mode_u, desc.address_mode_v, desc.address_mode_w].contains(&AddressMode::ClampToBorder) {
             native.setBorderColor(match desc.border_color.unwrap_or([0.0; 4]) {

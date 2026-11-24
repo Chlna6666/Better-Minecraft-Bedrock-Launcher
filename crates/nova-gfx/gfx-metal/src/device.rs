@@ -62,7 +62,7 @@ mod platform {
     use objc2_app_kit::NSView;
     use objc2_core_foundation::CGSize;
     use objc2_foundation::{NSError, NSInteger, NSObjectProtocol, NSString};
-    use objc2_metal::MTLSamplerState;
+    use objc2_metal::{MTLCompareFunction, MTLDepthStencilDescriptor, MTLDepthStencilState, MTLSamplerState};
     use objc2_metal::{
         MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
         MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLCompileOptions, MTLDevice, MTLDrawable, MTLFunction,
@@ -360,6 +360,7 @@ mod platform {
                 ));
             }
             Ok(self.render_passes.insert(MetalRenderPass {
+                depth_format: desc.depth_attachment.map(|attachment| attachment.format),
                 color_formats: desc
                     .color_attachments
                     .iter()
@@ -396,14 +397,37 @@ mod platform {
                     "pipeline color target must match render pass color attachment".to_string(),
                 ));
             }
+            if desc.color_targets.len() != 1 {
+                return Err(Error::Unavailable("Metal MRT pipelines are not implemented".into()));
+            }
+            if desc.depth_state.is_some() && render_pass.depth_format.is_none() {
+                return Err(Error::InvalidInput("Metal depth state requires a depth attachment".into()));
+            }
+            if desc.depth_state.is_some_and(|state| state.stencil.is_some()) {
+                return Err(Error::Unavailable("Metal stencil state is not implemented".into()));
+            }
+            let depth_format = render_pass.depth_format;
+            let depth_state = if depth_format.is_some() {
+                let native = MTLDepthStencilDescriptor::new();
+                let compare = desc.depth_state.map_or(CompareFunction::Always, |state| state.compare);
+                native.setDepthCompareFunction(compare_to_metal(compare));
+                native.setDepthWriteEnabled(desc.depth_state.is_some_and(|state| state.write_enabled));
+                Some(self.device.newDepthStencilStateWithDescriptor(&native)
+                    .ok_or_else(|| Error::Backend("failed to create Metal depth state".into()))?)
+            } else {
+                None
+            };
             let pipeline_state = create_pipeline_state(
                 &self.device,
                 desc,
                 vertex_shader,
                 fragment_shader,
                 target.format,
+                depth_format,
             )?;
             Ok(self.render_pipelines.insert(MetalRenderPipeline {
+                depth_format,
+                depth_state,
                 color_formats: desc
                     .color_targets
                     .iter()
@@ -461,6 +485,7 @@ mod platform {
             render_pass: RenderPassId,
             steps: &[RenderCommand],
             clear_color: gfx_core::ClearColor,
+            depth_attachment: Option<DepthAttachment>,
         ) -> Result<Option<PresentedFrame>> {
             if !self.poll_present_readiness(swapchain)? {
                 return Ok(None);
@@ -469,6 +494,33 @@ mod platform {
             let swapchain_id = swapchain;
             let swapchain = self.swapchains.get(swapchain_id)?;
             let render_pass = self.render_passes.get(render_pass)?;
+            if render_pass.color_formats.as_slice() != [swapchain.config.format] {
+                return Err(Error::InvalidInput("Metal swapchain and render pass formats differ".into()));
+            }
+            let depth = match (render_pass.depth_format, depth_attachment) {
+                (None, None) => None,
+                (Some(format), Some(attachment)) => {
+                    if attachment.stencil_load_op.is_some() {
+                        return Err(Error::Unavailable("Metal stencil attachments are not implemented".into()));
+                    }
+                    let view = self.texture_views.get(attachment.target)?;
+                    let texture = self.textures.get(view.texture)?;
+                    if view.format != format
+                        || !texture.desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT)
+                        || view.resource.width() != swapchain.config.size.width() as usize
+                        || view.resource.height() != swapchain.config.size.height() as usize
+                    {
+                        return Err(Error::InvalidInput("Metal depth view does not match render target".into()));
+                    }
+                    if let LoadOp::Clear(value) = attachment.depth_load_op {
+                        if !(0.0..=1.0).contains(&value) {
+                            return Err(Error::InvalidInput("Metal clear depth must be in 0..=1".into()));
+                        }
+                    }
+                    Some((view.resource.clone(), attachment.depth_load_op))
+                }
+                _ => return Err(Error::InvalidInput("Metal render pass depth attachment mismatch".into())),
+            };
             let render_steps = steps
                 .iter()
                 .map(|step| self.prepare_render_step(render_pass, step))
@@ -494,6 +546,18 @@ mod platform {
                     blue: f64::from(clear_color.blue),
                     alpha: f64::from(clear_color.alpha),
                 });
+                if let Some((resource, load_op)) = &depth {
+                    let attachment = descriptor.depthAttachment();
+                    attachment.setTexture(Some(resource));
+                    attachment.setStoreAction(MTLStoreAction::Store);
+                    match load_op {
+                        LoadOp::Load => attachment.setLoadAction(MTLLoadAction::Load),
+                        LoadOp::Clear(value) => {
+                            attachment.setLoadAction(MTLLoadAction::Clear);
+                            attachment.setClearDepth(f64::from(*value));
+                        }
+                    }
+                }
 
                 let command_buffer = self.command_queue.commandBuffer().ok_or_else(|| {
                     Error::Backend("failed to create Metal command buffer".to_string())
@@ -534,7 +598,9 @@ mod platform {
             step: &RenderCommand,
         ) -> Result<PreparedMetalRenderStep> {
             let pipeline = self.render_pipelines.get(step.pipeline())?.clone();
-            if render_pass.color_formats != pipeline.color_formats {
+            if render_pass.color_formats != pipeline.color_formats
+                || render_pass.depth_format != pipeline.depth_format
+            {
                 return Err(Error::InvalidInput(
                     "render pass and pipeline color targets do not match".to_string(),
                 ));
@@ -1026,13 +1092,10 @@ mod platform {
             &mut self,
             frame: &PresentFrameDescriptor<'_>,
         ) -> Result<Option<PresentedFrame>> {
-            if frame.depth_attachment.is_some() {
-                return Err(Error::Unavailable("Metal native depth attachment is not implemented".into()));
-            }
             let LoadOp::Clear(color) = frame.color_load_op else {
                 return Err(Error::Unavailable("Metal drawable LoadOp::Load is not implemented".into()));
             };
-            self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, color)
+            self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, color, frame.depth_attachment)
         }
     }
 
@@ -1107,10 +1170,13 @@ mod platform {
     #[derive(Clone)]
     struct MetalRenderPass {
         color_formats: Vec<Format>,
+        depth_format: Option<Format>,
     }
 
     #[derive(Clone)]
     struct MetalRenderPipeline {
+        depth_format: Option<Format>,
+        depth_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
         color_formats: Vec<Format>,
         blend_modes: Vec<BlendMode>,
         primitive_topology: PrimitiveTopology,
@@ -1208,6 +1274,7 @@ mod platform {
         vertex_shader: &MetalShaderModule,
         fragment_shader: &MetalShaderModule,
         color_format: Format,
+        depth_format: Option<Format>,
     ) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>> {
         let vertex_entry = NSString::from_str(&desc.vertex_entry_point);
         let fragment_entry = NSString::from_str(&desc.fragment_entry_point);
@@ -1236,6 +1303,9 @@ mod platform {
         pipeline_desc.setVertexFunction(Some(&vertex_function));
         pipeline_desc.setFragmentFunction(Some(&fragment_function));
         pipeline_desc.setRasterSampleCount(1);
+        if let Some(format) = depth_format {
+            pipeline_desc.setDepthAttachmentPixelFormat(format_to_metal(format));
+        }
         // SAFETY: color attachment index 0 is valid for a single render target pipeline.
         let color_attachment =
             unsafe { pipeline_desc.colorAttachments().objectAtIndexedSubscript(0) };
@@ -1324,6 +1394,7 @@ mod platform {
             let pipeline = &step.pipeline;
             let _ = (pipeline.pipeline_layout,);
             encoder.setRenderPipelineState(&pipeline.pipeline_state);
+            encoder.setDepthStencilState(pipeline.depth_state.as_deref());
             encoder.setFrontFacingWinding(match pipeline.raster.front_face {
                 gfx_core::FrontFace::Ccw => objc2_metal::MTLWinding::CounterClockwise,
                 gfx_core::FrontFace::Cw => objc2_metal::MTLWinding::Clockwise,
@@ -1474,6 +1545,19 @@ mod platform {
         CGSize {
             width: f64::from(config.size.width()),
             height: f64::from(config.size.height()),
+        }
+    }
+
+    fn compare_to_metal(compare: CompareFunction) -> MTLCompareFunction {
+        match compare {
+            CompareFunction::Never => MTLCompareFunction::Never,
+            CompareFunction::Less => MTLCompareFunction::Less,
+            CompareFunction::Equal => MTLCompareFunction::Equal,
+            CompareFunction::LessEqual => MTLCompareFunction::LessEqual,
+            CompareFunction::Greater => MTLCompareFunction::Greater,
+            CompareFunction::NotEqual => MTLCompareFunction::NotEqual,
+            CompareFunction::GreaterEqual => MTLCompareFunction::GreaterEqual,
+            CompareFunction::Always => MTLCompareFunction::Always,
         }
     }
 
