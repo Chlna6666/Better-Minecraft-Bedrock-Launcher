@@ -51,6 +51,8 @@ mod platform {
     mod buffer_upload;
     mod relocation;
     mod texture;
+    mod bindings;
+    use bindings::{NativeBindGroup, PreparedBindings};
     use super::*;
     use crate::registry::ResourceRegistry;
     use core::ffi::c_void;
@@ -261,6 +263,11 @@ mod platform {
             desc: &BindGroupLayoutDescriptor,
         ) -> Result<BindGroupLayoutId> {
             desc.validate()?;
+            for entry in &desc.entries {
+                if gfx_core::metal_binding_slot(0, entry.binding, entry.binding_type).is_none() {
+                    return Err(Error::Unavailable(format!("unsupported Metal layout slot {}", entry.binding)));
+                }
+            }
             Ok(self
                 .bind_group_layouts
                 .insert(MetalResourceSetLayout { desc: desc.clone() }))
@@ -271,6 +278,9 @@ mod platform {
             desc: &PipelineLayoutDescriptor,
         ) -> Result<PipelineLayoutId> {
             desc.validate()?;
+            if desc.bind_group_layouts.len() > 1 {
+                return Err(Error::Unavailable("Metal currently supports one descriptor group".into()));
+            }
             for layout in &desc.bind_group_layouts {
                 let _ = self.bind_group_layouts.get(*layout)?;
             }
@@ -282,24 +292,10 @@ mod platform {
         fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId> {
             let layout = self.bind_group_layouts.get(desc.layout)?.desc.clone();
             desc.validate_against(&layout)?;
-            let mut bindings = Vec::with_capacity(desc.entries.len());
-            for binding in &desc.entries {
-                match binding.resource {
-                    BindingResource::Buffer(buffer_binding) => {
-                        let _ = self.buffers.get(buffer_binding.buffer)?;
-                    }
-                    BindingResource::Texture(texture_binding) => {
-                        let _ = self.texture_views.get(texture_binding.texture_view)?;
-                    }
-                    BindingResource::Sampler(sampler_binding) => {
-                        let _ = self.samplers.get(sampler_binding.sampler)?;
-                    }
-                }
-                bindings.push(*binding);
-            }
+            let native = self.create_native_bind_group(desc, &layout)?;
             Ok(self.bind_groups.insert(MetalResourceSet {
                 layout: desc.layout,
-                bindings,
+                native: std::sync::Arc::new(native),
             }))
         }
 
@@ -337,6 +333,7 @@ mod platform {
             Ok(self.shader_modules.insert(MetalShaderModule {
                 stage: desc.binary.stage,
                 entry_point: desc.binary.entry_point.clone(),
+                bindings: desc.binary.metal.clone(),
                 library,
             }))
         }
@@ -388,6 +385,15 @@ mod platform {
                     "fragment shader module must use ShaderStage::Fragment".to_string(),
                 ));
             }
+            if !desc.vertex_buffers.is_empty() {
+                return Err(Error::Unavailable("Metal vertex-buffer layouts are not supported; use shader storage vertex pulling".into()));
+            }
+            let group_layout = match desc.pipeline_layout {
+                Some(id) => self.pipeline_layouts.get(id)?.bind_group_layouts.first().copied(),
+                None => None,
+            };
+            self.validate_shader_bindings(group_layout, vertex_shader.bindings.as_ref(), gfx_core::ShaderStages::VERTEX)?;
+            self.validate_shader_bindings(group_layout, fragment_shader.bindings.as_ref(), gfx_core::ShaderStages::FRAGMENT)?;
             let render_pass = self.render_passes.get(desc.render_pass)?;
             let target = desc.color_targets.get(0).ok_or_else(|| {
                 Error::InvalidInput("Metal pipeline requires one color target".to_string())
@@ -442,6 +448,9 @@ mod platform {
                 raster: desc.raster,
                 pipeline_state,
                 pipeline_layout: desc.pipeline_layout,
+                group_layout,
+                vertex_bindings: vertex_shader.bindings.clone(),
+                fragment_bindings: fragment_shader.bindings.clone(),
             }))
         }
 
@@ -605,15 +614,7 @@ mod platform {
                     "render pass and pipeline color targets do not match".to_string(),
                 ));
             }
-            let bind_groups = step
-                .bind_groups()
-                .iter()
-                .copied()
-                .map(|bind_group| Ok(self.bind_groups.get(bind_group)?.clone()))
-                .collect::<Result<Vec<_>>>()?;
-            if bind_groups.iter().any(|group| !group.bindings.is_empty()) {
-                return Err(Error::Unavailable("Metal native resource binding is not implemented".into()));
-            }
+            let bindings = self.prepare_bindings(&pipeline, step.bind_groups())?;
             let draw = match step {
                 RenderCommand::DrawIndirect(_) => {
                     return Err(Error::Unavailable(
@@ -667,7 +668,7 @@ mod platform {
             };
             Ok(PreparedMetalRenderStep {
                 pipeline,
-                bind_groups,
+                bindings,
                 draw,
                 scissor: step.scissor(),
             })
@@ -1152,7 +1153,7 @@ mod platform {
     #[derive(Clone)]
     struct MetalResourceSet {
         layout: BindGroupLayoutId,
-        bindings: Vec<gfx_core::BindGroupEntry>,
+        native: std::sync::Arc<NativeBindGroup>,
     }
 
     #[derive(Clone)]
@@ -1164,6 +1165,7 @@ mod platform {
     struct MetalShaderModule {
         stage: ShaderStage,
         entry_point: String,
+        bindings: Option<gfx_core::MetalShaderBindings>,
         library: Retained<ProtocolObject<dyn MTLLibrary>>,
     }
 
@@ -1183,6 +1185,9 @@ mod platform {
         raster: gfx_core::RasterState,
         pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
         pipeline_layout: Option<PipelineLayoutId>,
+        group_layout: Option<BindGroupLayoutId>,
+        vertex_bindings: Option<gfx_core::MetalShaderBindings>,
+        fragment_bindings: Option<gfx_core::MetalShaderBindings>,
     }
 
     #[derive(Clone, Copy)]
@@ -1276,8 +1281,11 @@ mod platform {
         color_format: Format,
         depth_format: Option<Format>,
     ) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>> {
-        let vertex_entry = NSString::from_str(&desc.vertex_entry_point);
-        let fragment_entry = NSString::from_str(&desc.fragment_entry_point);
+        if desc.vertex_entry_point != vertex_shader.entry_point || desc.fragment_entry_point != fragment_shader.entry_point {
+            return Err(Error::InvalidInput("Metal pipeline entry point differs from shader module".into()));
+        }
+        let vertex_entry = NSString::from_str(vertex_shader.bindings.as_ref().map_or(vertex_shader.entry_point.as_str(), |binding| binding.native_entry.as_ref()));
+        let fragment_entry = NSString::from_str(fragment_shader.bindings.as_ref().map_or(fragment_shader.entry_point.as_str(), |binding| binding.native_entry.as_ref()));
         let vertex_function = vertex_shader
             .library
             .newFunctionWithName(&vertex_entry)
@@ -1354,7 +1362,7 @@ mod platform {
 
     struct PreparedMetalRenderStep {
         pipeline: MetalRenderPipeline,
-        bind_groups: Vec<MetalResourceSet>,
+        bindings: PreparedBindings,
         draw: PreparedMetalDraw,
         scissor: Option<gfx_core::ScissorRect>,
     }
@@ -1405,9 +1413,7 @@ mod platform {
                 Some(gfx_core::Face::Back) => objc2_metal::MTLCullMode::Back,
             });
             encoder.setScissorRect(metal_scissor_rect(step.scissor, config.size));
-            for bind_group in &step.bind_groups {
-                let _ = (bind_group.layout, bind_group.bindings.len());
-            }
+            step.bindings.encode(encoder);
             let primitive_type = primitive_topology_to_metal(pipeline.primitive_topology);
             match &step.draw {
                 PreparedMetalDraw::NonIndexed {
