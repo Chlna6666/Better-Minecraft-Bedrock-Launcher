@@ -591,6 +591,17 @@ impl SceneResources {
         Some(retained)
     }
 
+    // The native PBR regression must exercise ordinary indexed meshes on
+    // non-identity physical slots, not accidentally pass on a fresh table.
+    #[cfg(test)]
+    pub(in crate::scene_view) fn test_has_remapped_standard_draw(&self) -> bool {
+        self.prepared.draws.iter().enumerate().any(|(logical, draw)| {
+            !mesh_key(draw, true).1
+                && self.uploaded_slot_map.get(logical * 4..logical * 4 + 4)
+                    .is_some_and(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()) as usize != logical)
+        })
+    }
+
     #[cfg(test)]
     pub(in crate::scene_view) fn trace_test_geometry(&self) {
         eprintln!("NOVA_GEOMETRY draws={} batches={} gpu_cull={}", self.prepared.draws.len(), self.batches.len(), self.culling.is_some());

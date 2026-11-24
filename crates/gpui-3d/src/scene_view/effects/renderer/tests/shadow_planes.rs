@@ -222,6 +222,10 @@ pub(super) fn verify_receiver_planes<D: Device + TextureTransferDevice>(
     }
     let tiled_view = shadowed.with_scene(Arc::new(tiled));
     let tiled = draw(device, renderer, context, &tiled_view, target, depth);
+    if D::BACKEND_KIND == BackendKind::Vulkan {
+        assert!(renderer.scenes[&tiled_view.id].scene.test_has_remapped_standard_draw(),
+            "the retained tiled receiver must exercise non-identity PBR draw slots");
+    }
     let maximum = tiled
         .iter()
         .zip(&pixels)

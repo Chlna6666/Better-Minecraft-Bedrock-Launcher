@@ -96,6 +96,10 @@ const LIGHT_KIND_SPOT: u32 = 3u;
 @group(0) @binding(8) var<storage, read> instances: array<Instance>;
 @group(0) @binding(9) var<uniform> frame: FrameParams;
 @group(0) @binding(10) var metallic_roughness_texture: texture_2d<f32>;
+// Standard and voxel pipelines share the resident draw tables. The map is
+// identity for non-voxel scenes, but mixed scenes can have retired physical
+// holes and reordered logical batches even for ordinary indexed PBR meshes.
+@group(0) @binding(16) var<storage, read> draw_slot_indices: array<u32>;
 
 @vertex
 fn vs_main(
@@ -103,8 +107,9 @@ fn vs_main(
     @builtin(instance_index) instance_index: u32,
 ) -> VertexOutput {
     let vertex = vertices[vertex_index];
-    let draw_params = draws[instance_index];
-    let instance = instances[instance_index];
+    let slot = draw_slot_indices[instance_index];
+    let draw_params = draws[slot];
+    let instance = instances[slot];
     let world_position_homogeneous = instance.model * vec4<f32>(vertex.position, 1.0);
     let clip_position = frame.view_projection * world_position_homogeneous;
     let safe_clip_w = select(
@@ -120,7 +125,7 @@ fn vs_main(
         / max(frame.render_target_size, vec2<f32>(1.0));
 
     var output: VertexOutput;
-    output.draw_index = instance_index;
+    output.draw_index = slot;
     output.position = vec4<f32>(
         (normalized_target_position * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0))
             * clip_position.w,
