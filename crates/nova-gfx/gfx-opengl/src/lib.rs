@@ -56,6 +56,9 @@ mod resources;
     reason = "OpenGL context and glow driver calls require audited unsafe FFI boundaries"
 )]
 mod surface;
+#[cfg(any(windows, target_os = "linux"))]
+#[expect(unsafe_code, reason = "shared GL sync waiting uses native context and fence handles")]
+mod wake;
 
 #[cfg(any(windows, target_os = "linux"))]
 pub use device::OpenGlDevice;

@@ -55,6 +55,27 @@ impl OpenGlDevice {
 }
 
 impl PresentationDevice for OpenGlDevice {
+    fn surface_capabilities(&self, swapchain: SwapchainId) -> SurfaceCapabilities {
+        SurfaceCapabilities {
+            partial_presentation: false,
+            frame_ready_notification: self.swapchains.get(swapchain).is_ok(),
+        }
+    }
+
+    fn request_frame_ready(
+        &mut self, swapchain: SwapchainId, callback: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<bool> {
+        if self.poll_present_readiness(swapchain)? {
+            callback();
+            return Ok(true);
+        }
+        let chain = self.swapchains.get(swapchain)?;
+        let Some(id) = chain.present_history[chain.present_limit - 1] else {
+            return Ok(false);
+        };
+        SubmissionDevice::request_submission_ready(self, id, callback)
+    }
+
     fn ordered_mixed_graphics_compute_supported(&self) -> bool {
         // Render and Compute use the same current GL context; writable
         // resource-set dispatch publishes the corresponding memory barriers.

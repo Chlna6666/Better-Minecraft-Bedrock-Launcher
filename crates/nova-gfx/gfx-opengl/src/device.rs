@@ -75,6 +75,8 @@ pub struct OpenGlDevice {
     pub(crate) surfaces: Registry<RawWindowHandle>,
     pub(crate) swapchains: Registry<Swapchain>,
     pending: VecDeque<(u32, glow::NativeFence)>,
+    // Lazily created shared-context waiter; no additional fences per frame.
+    wakes: crate::wake::Wakes,
     pending_gpu_work: VecDeque<(
         Option<ProbeTarget>,
         glow::NativeQuery,
@@ -278,6 +280,7 @@ impl OpenGlDevice {
             surfaces: Registry::default(),
             swapchains: Registry::default(),
             pending: VecDeque::new(),
+            wakes: crate::wake::Wakes::default(),
             pending_gpu_work: VecDeque::new(),
             reusable_gpu_queries: Vec::new(),
             gpu_work_samples: Vec::new(),
@@ -509,12 +512,15 @@ impl OpenGlDevice {
                 return Err(Error::Backend("OpenGL GPU fence wait failed".into()));
             }
             self.completed = *serial;
-            if let Some((_, fence)) = self.pending.pop_front() {
-                unsafe {
-                    self.gl.delete_sync(fence);
+            if let Some((serial, fence)) = self.pending.pop_front() {
+                // The waiter may still be inside glClientWaitSync. Only
+                // delete the shared handle once its native call has returned.
+                if !self.wakes.retire(serial) {
+                    unsafe { self.gl.delete_sync(fence); }
                 }
             }
         }
+        self.wakes.collect(&self.gl);
         Ok(())
     }
     /// Whether earlier work remains in flight.
@@ -609,6 +615,49 @@ impl SubmissionDevice for OpenGlDevice {
             SubmissionStatus::Pending
         })
     }
+    fn request_submission_ready(
+        &mut self, id: SubmissionId, callback: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<bool> {
+        if SubmissionDevice::poll_submission(self, id)? == SubmissionStatus::Complete {
+            callback();
+            return Ok(true);
+        }
+        if self.wakes.unavailable() {
+            return Ok(false);
+        }
+        if !self.wakes.initialized() {
+            #[cfg(windows)]
+            let window = Some(self._bootstrap.window_handle()?);
+            #[cfg(target_os = "linux")]
+            let window = None;
+            let attributes = ContextAttributesBuilder::new()
+                .with_context_api(ContextApi::OpenGl(Some(Version::new(4, 5))))
+                .with_sharing(&self.context)
+                .build(window);
+            // SAFETY: the same live config/display and a shared context;
+            // the new context and its independent pbuffer are not current.
+            let created = unsafe {
+                self.display.create_context(&self.config, &attributes)
+                    .and_then(|context| {
+                        self.display.create_pbuffer_surface(&self.config,
+                            &SurfaceAttributesBuilder::<PbufferSurface>::new().build(one(), one()))
+                            .map(|surface| (context, surface))
+                    })
+            };
+            match created {
+                Ok((context, surface)) => self.wakes.start(context, surface, self.display.clone()),
+                Err(error) => {
+                    log::debug!("OpenGL shared wait context unavailable: {error}");
+                    self.wakes.disable();
+                }
+            }
+        }
+        let fence = self.pending.iter().find(|(serial, _)| *serial == id.index())
+            .map(|(_, fence)| *fence)
+            .ok_or_else(|| Error::Backend("OpenGL pending wake fence missing".into()))?;
+        Ok(self.wakes.register(id.index(), fence, callback))
+    }
+
     fn poll_submission_with_frame_timestamps(&mut self, id: SubmissionId)
         -> Result<(SubmissionStatus, Option<FrameGpuTimestamps>)> {
         let status = SubmissionDevice::poll_submission(self, id)?;
@@ -711,10 +760,13 @@ impl TextureTransferDevice for OpenGlDevice {
 }
 impl Drop for OpenGlDevice {
     fn drop(&mut self) {
+        // Join before destroying the shared syncs, display or bootstrap HWND.
+        self.wakes.shutdown();
         if let Err(error) = self.park() {
             log::warn!("OpenGL cleanup context failed: {error}");
             return;
         }
+        self.wakes.collect(&self.gl);
         // SAFETY: context is current; release each remaining owned GL object once.
         unsafe {
             self.gl.finish();

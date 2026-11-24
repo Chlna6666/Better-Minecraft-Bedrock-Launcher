@@ -598,6 +598,8 @@ impl NovaBackend {
         _callback: Box<dyn FnOnce() + Send + 'static>,
     ) -> Result<bool> {
         match self {
+            #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
+            Self::OpenGl(device) => Ok(device.request_submission_ready(_submission, _callback)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => Ok(device.request_submission_ready(_submission, _callback)?),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
