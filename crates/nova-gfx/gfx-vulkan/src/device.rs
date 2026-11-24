@@ -5264,7 +5264,18 @@ impl PresentationDevice for VulkanDevice {
                 credit.completed(oldest);
                 Ok(true)
             }
-            Err(vk::Result::TIMEOUT) => Ok(false),
+            Err(vk::Result::TIMEOUT) => {
+                if credit.stalled(Instant::now()) {
+                    // An occluded surface may stop presenting altogether.
+                    // Never strand swapchain recovery behind this optional gate.
+                    // GPU fences and WSI acquire still enforce resource safety.
+                    log::debug!("Vulkan present-wait stalled; restoring acquire/fence pacing");
+                    chain.present_credit = None;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
             Err(vk::Result::ERROR_DEVICE_LOST) => Err(VulkanError::from(vk::Result::ERROR_DEVICE_LOST).into()),
             Err(error) => {
                 // Some WSI implementations cannot report completion for a
@@ -6125,11 +6136,17 @@ struct PresentCredit {
     next: u64,
     limit: usize,
     pending: std::collections::VecDeque<u64>,
+    timeout_since: Option<Instant>,
 }
 
 impl PresentCredit {
     fn new(limit: usize) -> Self {
-        Self { next: 1, limit: limit.max(1), pending: std::collections::VecDeque::with_capacity(limit.max(1)) }
+        Self {
+            next: 1,
+            limit: limit.max(1),
+            pending: std::collections::VecDeque::with_capacity(limit.max(1)),
+            timeout_since: None,
+        }
     }
 
     fn next_id(&mut self) -> u64 {
@@ -6151,7 +6168,13 @@ impl PresentCredit {
         (self.pending.len() >= self.limit).then(|| self.pending.front().copied()).flatten()
     }
 
+    fn stalled(&mut self, now: Instant) -> bool {
+        let first = *self.timeout_since.get_or_insert(now);
+        now.saturating_duration_since(first) >= Duration::from_millis(250)
+    }
+
     fn completed(&mut self, id: u64) {
+        self.timeout_since = None;
         while self.pending.front().is_some_and(|pending| *pending <= id) {
             self.pending.pop_front();
         }
@@ -6160,7 +6183,20 @@ impl PresentCredit {
 
 #[cfg(test)]
 mod present_credit_tests {
-    use super::PresentCredit;
+    use super::{Duration, Instant, PresentCredit};
+
+    #[test]
+    fn completed_present_resets_stall_recovery() {
+        let mut credit = PresentCredit::new(1);
+        let id = credit.next_id();
+        credit.submitted(id);
+        let now = Instant::now();
+        assert!(!credit.stalled(now));
+        assert!(!credit.stalled(now + Duration::from_millis(249)));
+        assert!(credit.stalled(now + Duration::from_millis(250)));
+        credit.completed(id);
+        assert!(!credit.stalled(now + Duration::from_secs(1)));
+    }
 
     #[test]
     fn present_credit_limits_successful_submissions_and_ignores_failed_ids() {
