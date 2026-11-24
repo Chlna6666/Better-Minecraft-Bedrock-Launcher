@@ -346,6 +346,9 @@ jobs:
       - name: Check native Metal backend
         run: cargo check --locked -p gfx-metal --lib
 
+      - name: Test native Metal texture transfer ABI
+        run: cargo test --locked -p gfx-metal --test texture_transfer -- --nocapture
+
       - name: Test WGSL to MSL resource ABI
         run: cargo test --locked -p gfx-shader --lib msl
 
