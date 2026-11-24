@@ -7,7 +7,7 @@ use crate::{Capslock, xcb_flush};
 use anyhow::{Context as _, anyhow};
 use ashpd::WindowIdentifier;
 use calloop::{
-    EventLoop, LoopHandle, RegistrationToken,
+    EventLoop, LoopHandle,
     generic::{FdWrapper, Generic},
 };
 use collections::HashMap;
@@ -97,11 +97,16 @@ fn frame_request_after_expose(
 }
 
 fn next_frame_deadline(deadline: Instant, refresh_rate: Duration, now: Instant) -> Instant {
-    let mut next_deadline = deadline + refresh_rate;
-    while next_deadline <= now {
-        next_deadline += refresh_rate;
+    if refresh_rate.is_zero() {
+        return now + Duration::from_millis(1);
     }
-    next_deadline
+    if deadline > now {
+        return deadline + refresh_rate;
+    }
+    // Skip arbitrarily long idle periods in constant time.
+    let elapsed = now.duration_since(deadline).as_nanos();
+    let remainder = elapsed % refresh_rate.as_nanos();
+    now + refresh_rate - Duration::from_nanos(remainder as u64)
 }
 
 fn insert_x11_foreground_task_idle(
@@ -153,8 +158,8 @@ enum RefreshState {
     },
     PeriodicRefresh {
         refresh_rate: Duration,
-        event_loop_token: RegistrationToken,
         next_frame_deadline: Rc<Cell<Instant>>,
+        request_armed: Rc<Cell<bool>>,
     },
 }
 
@@ -285,13 +290,8 @@ impl X11ClientStatePtr {
         };
         let mut state = client.0.borrow_mut();
 
-        if let Some(window_ref) = state.windows.remove(&x_window)
-            && let Some(RefreshState::PeriodicRefresh {
-                event_loop_token, ..
-            }) = window_ref.refresh_state
-        {
-            state.loop_handle.remove(event_loop_token);
-        }
+        // Outstanding one-shot callbacks validate the window and its generation.
+        state.windows.remove(&x_window);
         if state.mouse_focused_window == Some(x_window) {
             state.mouse_focused_window = None;
         }
@@ -1771,24 +1771,20 @@ impl X11ClientState {
                 false,
                 Some(RefreshState::PeriodicRefresh {
                     refresh_rate,
-                    event_loop_token,
                     ..
                 }),
             ) => {
-                self.loop_handle.remove(event_loop_token);
                 window_ref.refresh_state = Some(RefreshState::Hidden { refresh_rate });
             }
             (true, Some(RefreshState::Hidden { refresh_rate })) => {
                 let next_frame_deadline = Rc::new(Cell::new(Instant::now()));
-                let event_loop_token =
-                    self.start_refresh_loop(x_window, refresh_rate, next_frame_deadline.clone());
                 let Some(window_ref) = self.windows.get_mut(&x_window) else {
                     return;
                 };
                 window_ref.refresh_state = Some(RefreshState::PeriodicRefresh {
                     refresh_rate,
-                    event_loop_token,
                     next_frame_deadline,
+                    request_armed: Rc::new(Cell::new(false)),
                 });
             }
             (true, None) => {
@@ -1829,15 +1825,13 @@ impl X11ClientState {
                 };
 
                 let next_frame_deadline = Rc::new(Cell::new(Instant::now()));
-                let event_loop_token =
-                    self.start_refresh_loop(x_window, refresh_rate, next_frame_deadline.clone());
                 let Some(window_ref) = self.windows.get_mut(&x_window) else {
                     return;
                 };
                 window_ref.refresh_state = Some(RefreshState::PeriodicRefresh {
                     refresh_rate,
-                    event_loop_token,
                     next_frame_deadline,
+                    request_armed: Rc::new(Cell::new(false)),
                 });
             }
         }
@@ -1856,43 +1850,6 @@ impl X11ClientState {
         }
     }
 
-    #[must_use]
-    fn start_refresh_loop(
-        &self,
-        x_window: xproto::Window,
-        refresh_rate: Duration,
-        next_frame_deadline: Rc<Cell<Instant>>,
-    ) -> RegistrationToken {
-        self.loop_handle
-            .insert_source(calloop::timer::Timer::immediate(), {
-                move |mut instant, (), client| {
-                    let (xcb_connection, exposed_window) = {
-                        let mut state = client.0.borrow_mut();
-                        let xcb_connection = state.xcb_connection.clone();
-                        let exposed_window = state.windows.get_mut(&x_window).and_then(|window| {
-                            let expose_event_received =
-                                std::mem::take(&mut window.expose_event_received);
-                            expose_event_received.then(|| window.window.clone())
-                        });
-                        (xcb_connection, exposed_window)
-                    };
-
-                    let now = Instant::now();
-                    while instant < now {
-                        instant += refresh_rate;
-                    }
-
-                    if let Some(window) = exposed_window {
-                        next_frame_deadline.set(instant);
-                        window.refresh(PlatformFrameRequest::presentation());
-                    }
-                    client.drain_x11_events(&xcb_connection).log_err();
-                    calloop::timer::TimeoutAction::ToInstant(instant)
-                }
-            })
-            .expect("Failed to initialize window refresh timer")
-    }
-
     fn schedule_frame_request(&self, x_window: xproto::Window) {
         let Some(window_ref) = self.windows.get(&x_window) else {
             return;
@@ -1907,11 +1864,15 @@ impl X11ClientState {
         let Some(RefreshState::PeriodicRefresh {
             refresh_rate,
             next_frame_deadline,
-            ..
+            request_armed,
         }) = window_ref.refresh_state.as_ref()
         else {
             return;
         };
+        if request_armed.replace(true) {
+            return;
+        }
+        let request_armed = request_armed.clone();
         let refresh_rate = *refresh_rate;
         let next_frame_deadline = next_frame_deadline.clone();
         let delay = next_frame_deadline
@@ -1930,11 +1891,15 @@ impl X11ClientState {
                         )
                     };
                     match outcome {
-                        FrameRequestOutcome::Done => calloop::timer::TimeoutAction::Drop,
+                        FrameRequestOutcome::Done => {
+                            request_armed.set(false);
+                            calloop::timer::TimeoutAction::Drop
+                        }
                         FrameRequestOutcome::WaitUntil(deadline) => {
                             calloop::timer::TimeoutAction::ToInstant(deadline)
                         }
                         FrameRequestOutcome::Refresh(window, frame_request) => {
+                            request_armed.set(false);
                             window.refresh(frame_request);
                             calloop::timer::TimeoutAction::Drop
                         }
@@ -1977,6 +1942,13 @@ impl X11ClientState {
             return FrameRequestOutcome::WaitUntil(deadline);
         }
 
+        // A custom cap is selected on the fallback display phase before
+        // consuming dirty work; keep the same one-shot armed when skipping.
+        if !expose_event_received && !window.claim_ui_frame(deadline, now) {
+            let next = next_frame_deadline(deadline, refresh_rate, now);
+            deadline_cell.set(next);
+            return FrameRequestOutcome::WaitUntil(next);
+        }
         window_ref.expose_event_received = false;
         let frame_request =
             frame_request_after_expose(window.take_pending_frame_request(), expose_event_received);

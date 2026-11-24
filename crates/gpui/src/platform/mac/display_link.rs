@@ -3,7 +3,7 @@ use crate::{
     dispatch_sys::{
         _dispatch_source_type_data_add, dispatch_resume, dispatch_set_context,
         dispatch_source_cancel, dispatch_source_create, dispatch_source_merge_data,
-        dispatch_source_set_event_handler_f, dispatch_source_t, dispatch_suspend,
+        dispatch_source_set_event_handler_f, dispatch_source_t,
     },
 };
 use anyhow::Result;
@@ -14,6 +14,8 @@ use util::ResultExt;
 pub struct DisplayLink {
     display_link: Option<sys::DisplayLink>,
     frame_requests: dispatch_source_t,
+    display_id: CGDirectDisplayID,
+    running: bool,
 }
 
 impl DisplayLink {
@@ -58,29 +60,34 @@ impl DisplayLink {
                 frame_requests as *mut c_void,
             )?;
 
+            dispatch_resume(crate::dispatch_sys::dispatch_object_t {
+                _ds: frame_requests,
+            });
             Ok(Self {
                 display_link: Some(display_link),
                 frame_requests,
+                display_id,
+                running: false,
             })
         }
     }
 
+    pub fn display_id(&self) -> CGDirectDisplayID {
+        self.display_id
+    }
+
     pub fn start(&mut self) -> Result<()> {
-        unsafe {
-            dispatch_resume(crate::dispatch_sys::dispatch_object_t {
-                _ds: self.frame_requests,
-            });
-            self.display_link.as_mut().unwrap().start()?;
+        if !self.running {
+            unsafe { self.display_link.as_mut().unwrap().start()?; }
+            self.running = true;
         }
         Ok(())
     }
 
     pub fn stop(&mut self) -> Result<()> {
-        unsafe {
-            dispatch_suspend(crate::dispatch_sys::dispatch_object_t {
-                _ds: self.frame_requests,
-            });
-            self.display_link.as_mut().unwrap().stop()?;
+        if self.running {
+            unsafe { self.display_link.as_mut().unwrap().stop()?; }
+            self.running = false;
         }
         Ok(())
     }

@@ -54,7 +54,7 @@ use std::{
     ptr::{self, NonNull},
     rc::Rc,
     sync::{Arc, Weak},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use util::ResultExt;
 use winit::raw_window_handle;
@@ -400,6 +400,8 @@ struct MacWindowState {
     blurred_view: Option<id>,
     background_appearance: WindowBackgroundAppearance,
     display_link: Option<DisplayLink>,
+    pending_frame_request: PlatformFrameRequest,
+    ui_frame_cadence: crate::platform::FrameCadence,
     renderer: renderer::Renderer,
     request_frame_callback: Option<crate::platform::frame::PlatformFrameRequestSender>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>>,
@@ -484,27 +486,31 @@ impl MacWindowState {
     }
 
     fn start_display_link(&mut self) {
-        self.stop_display_link();
-        unsafe {
-            if !self
-                .native_window
-                .occlusionState()
-                .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
-            {
-                return;
-            }
+        if !self.pending_frame_request.requires_frame()
+            || mac_window_visibility(self) != WindowVisibility::Visible
+        {
+            self.stop_display_link();
+            return;
         }
         let display_id = unsafe { display_id_for_screen(self.native_window.screen()) };
-        if let Some(mut display_link) =
-            DisplayLink::new(display_id, self.native_view.as_ptr() as *mut c_void, step).log_err()
-        {
-            display_link.start().log_err();
-            self.display_link = Some(display_link);
+        if self.display_link.as_ref().is_some_and(|link| link.display_id() != display_id) {
+            self.display_link = None;
+        }
+        if self.display_link.is_none() {
+            self.display_link =
+                DisplayLink::new(display_id, self.native_view.as_ptr() as *mut c_void, step).log_err();
+        }
+        if let Some(link) = self.display_link.as_mut() {
+            link.start().log_err();
         }
     }
 
     fn stop_display_link(&mut self) {
-        self.display_link = None;
+        // Keep the native registration across idle periods rather than recreating
+        // the legacy CVDisplayLink whose teardown is not reliably synchronous.
+        if let Some(link) = self.display_link.as_mut() {
+            link.stop().log_err();
+        }
     }
 
     fn is_maximized(&self) -> bool {
@@ -701,6 +707,8 @@ impl MacWindow {
                 blurred_view: None,
                 background_appearance: WindowBackgroundAppearance::Opaque,
                 display_link: None,
+                pending_frame_request: PlatformFrameRequest::default(),
+                ui_frame_cadence: crate::platform::FrameCadence::default(),
                 renderer: renderer::new_renderer(
                     renderer_context,
                     native_window as *mut _,
@@ -1442,8 +1450,28 @@ impl PlatformWindow for MacWindow {
         }
     }
 
+    fn request_frame(&self, options: PlatformFrameRequest) {
+        let mut state = self.0.lock();
+        state.pending_frame_request = state.pending_frame_request.merge(options);
+        state.start_display_link();
+    }
+
+    fn frame_request_timed_out(&self, options: PlatformFrameRequest) {
+        self.request_frame(options);
+    }
+
+    fn set_frame_interval(&self, interval: Option<Duration>) {
+        self.0.lock().ui_frame_cadence.set_interval(interval);
+    }
+
+    fn native_frame_clock_interval(&self) -> Option<Duration> {
+        self.0.lock().ui_frame_cadence.interval
+    }
+
     fn set_frame_request_sender(&self, sender: crate::platform::frame::PlatformFrameRequestSender) {
-        self.0.as_ref().lock().request_frame_callback = Some(sender);
+        let mut state = self.0.lock();
+        state.request_frame_callback = Some(sender);
+        state.start_display_link();
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>) {
@@ -2326,9 +2354,20 @@ unsafe extern "C" fn step(view: *mut c_void) {
     let window_state = unsafe { window_state(&*view) };
     let mut lock = window_state.lock();
 
+    if !lock.pending_frame_request.requires_frame() {
+        lock.stop_display_link();
+        return;
+    }
+    let now = Instant::now();
+    if !lock.ui_frame_cadence.is_due(now, Some(now)) {
+        return;
+    }
     if let Some(sender) = lock.request_frame_callback.clone() {
+        lock.ui_frame_cadence = lock.ui_frame_cadence.record(now, Some(now));
+        let request = std::mem::take(&mut lock.pending_frame_request);
+        lock.stop_display_link();
         drop(lock);
-        if !sender.request(Default::default()) {
+        if !sender.request(request) {
             log::trace!("discarding macOS frame request after its UI receiver closed");
         }
     }

@@ -84,12 +84,19 @@ fn scene_matches_committed_drawable(
 }
 
 pub(super) fn backend_present_mode(
-    _backend: RendererBackend,
+    backend: RendererBackend,
     renderer_options: &RendererOptions,
 ) -> gfx_core::PresentMode {
     match renderer_options.present_mode {
-        // Native FIFO is the presentation authority on every backend. The platform
-        // frame callback schedules UI work; swapchain readiness gates submission.
+        // The Windows display clock already selects native refresh slots.
+        // Flip-model DXGI mailbox uses SyncInterval=0 without ALLOW_TEARING;
+        // the latency waitable object still bounds GPU work in flight.
+        PresentModePreference::AutoVsync
+            if cfg!(target_os = "windows")
+                && matches!(backend, RendererBackend::NovaDx11 | RendererBackend::NovaDx12) =>
+        {
+            gfx_core::PresentMode::Mailbox
+        }
         PresentModePreference::AutoVsync => gfx_core::PresentMode::Fifo,
         PresentModePreference::Mailbox => gfx_core::PresentMode::Mailbox,
         PresentModePreference::Immediate => gfx_core::PresentMode::Immediate,

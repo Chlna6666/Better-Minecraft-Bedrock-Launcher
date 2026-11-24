@@ -301,6 +301,7 @@ pub struct X11WindowState {
     decorations: WindowDecorations,
     edge_constraints: Option<EdgeConstraints>,
     pending_frame_request: Cell<PlatformFrameRequest>,
+    ui_frame_cadence: Cell<crate::platform::FrameCadence>,
     pub handle: AnyWindowHandle,
     last_insets: [u32; 4],
 }
@@ -369,6 +370,22 @@ impl X11WindowStatePtr {
         let x_window = self.x_window;
         self.loop_handle
             .insert_idle(move |client| client.schedule_frame_request(x_window));
+    }
+
+    pub(crate) fn claim_ui_frame(&self, display_tick: Instant, now: Instant) -> bool {
+        let state = self.state.borrow();
+        let cadence = state.ui_frame_cadence.get();
+        // A stale timer slot after idle is not a real display event.
+        let tick = if now.saturating_duration_since(display_tick) > Duration::from_millis(50) {
+            now
+        } else {
+            display_tick
+        };
+        if !cadence.is_due(now, Some(tick)) {
+            return false;
+        }
+        state.ui_frame_cadence.set(cadence.record(now, Some(tick)));
+        true
     }
 
     pub fn take_pending_frame_request(&self) -> PlatformFrameRequest {
@@ -839,6 +856,7 @@ impl X11WindowState {
                 last_insets: [0, 0, 0, 0],
                 edge_constraints: None,
                 pending_frame_request: Cell::new(PlatformFrameRequest::default()),
+                ui_frame_cadence: Cell::new(crate::platform::FrameCadence::default()),
                 counter_id: sync_request_counter,
                 last_sync_counter: None,
             })
@@ -1693,11 +1711,15 @@ impl PlatformWindow for X11Window {
     }
 
     fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
-        self.0
-            .state
-            .borrow_mut()
-            .renderer
-            .set_frame_interval(interval);
+        let state = self.0.state.borrow();
+        let mut cadence = state.ui_frame_cadence.get();
+        cadence.set_interval(interval);
+        state.ui_frame_cadence.set(cadence);
+        state.renderer.set_frame_interval(interval);
+    }
+
+    fn native_frame_clock_interval(&self) -> Option<std::time::Duration> {
+        self.0.state.borrow().ui_frame_cadence.get().interval
     }
 
     fn frame_request_timed_out(&self, _options: PlatformFrameRequest) {
