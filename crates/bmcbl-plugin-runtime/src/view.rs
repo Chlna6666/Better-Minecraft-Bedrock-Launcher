@@ -153,6 +153,48 @@ mod tests {
     use crate::{Align, ContainerNode, LayoutDirection, TextSizeToken, ViewStyle};
 
     #[test]
+    fn inline_images_have_a_separate_bounded_field_budget() {
+        let style = ViewStyle {
+            direction: LayoutDirection::Column,
+            gap: 0,
+            padding: 0,
+            align: Align::Start,
+            color: None,
+            background: None,
+            text_size: TextSizeToken::Body,
+            emphasis: false,
+            full_width: false,
+            corner_radius: None,
+        };
+        let mut tree = ViewTree {
+            root: 0,
+            nodes: vec![ViewNode::Image(crate::ImageNode {
+                src: format!("data:image/jpeg;base64,{}", "A".repeat(100 * 1024)),
+                alt: "world".into(),
+                caption: String::new(),
+                placeholder: String::new(),
+                fallback: String::new(),
+                style,
+                height: Some(56),
+                min_height: Some(56),
+                max_height: Some(56),
+                aspect_ratio_x: Some(1),
+                aspect_ratio_y: Some(1),
+                corner_radius: Some(8),
+                fit: crate::ImageFit::Cover,
+            })],
+        };
+        assert!(tree.validate().is_ok());
+        let ViewNode::Image(image) = &mut tree.nodes[0] else { unreachable!() };
+        image.alt = "A".repeat(MAX_STRING_BYTES + 1);
+        assert!(tree.validate().is_err(), "ordinary strings keep the 8 KiB limit");
+        let ViewNode::Image(image) = &mut tree.nodes[0] else { unreachable!() };
+        image.alt.clear();
+        image.src = format!("data:image/jpeg;base64,{}", "A".repeat(MAX_INLINE_IMAGE_BYTES));
+        assert!(tree.validate().is_err(), "image source remains bounded");
+    }
+
+    #[test]
     fn rejects_cyclic_child_indices() {
         let style = ViewStyle {
             direction: LayoutDirection::Column,

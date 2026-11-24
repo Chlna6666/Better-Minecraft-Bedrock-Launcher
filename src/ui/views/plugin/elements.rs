@@ -332,24 +332,25 @@ fn render_node(
                 .filter(|total| *total > 0)
                 .map(|total| (*value as f64 / total as f64).clamp(0.0, 1.0))
                 .unwrap_or(0.0);
+            let track = div()
+                .w_full()
+                .h(px(7.0))
+                .rounded(px(999.0))
+                .bg(token_color(ThemeToken::Border, &colors))
+                .overflow_hidden();
+            let fill = div()
+                .h_full()
+                .w(relative(ratio as f32))
+                .bg(token_color(ThemeToken::Accent, &colors));
+            #[cfg(test)]
+            let track = track.debug_selector(|| format!("plugin-progress-track-{index}"));
+            #[cfg(test)]
+            let fill = fill.debug_selector(|| format!("plugin-progress-fill-{index}"));
             styled_container(style, &colors)
                 .w_full()
                 .gap(px(6.0))
                 .child(styled_text(label.clone(), style, &colors).p_0())
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(7.0))
-                        .rounded(px(999.0))
-                        .bg(token_color(ThemeToken::Border, &colors))
-                        .overflow_hidden()
-                        .child(
-                            div()
-                                .h_full()
-                                .w(relative(ratio as f32))
-                                .bg(token_color(ThemeToken::Accent, &colors)),
-                        ),
-                )
+                .child(track.child(fill))
                 .into_any_element()
         }
         ViewNode::Link(LinkNode {

@@ -120,3 +120,45 @@ fn assert_action_row(cx: &mut TestAppContext, text_size: TextSizeToken, height: 
         previous_width = input.size.width;
     }
 }
+
+struct ProgressFixture(ViewTree);
+
+impl Render for ProgressFixture {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tree = render_validated_view_tree(&self.0, "fixture", Some("progress"), window, cx);
+        div().w(window.bounds().size.width - px(370.)).child(tree)
+    }
+}
+
+#[gpui::test]
+fn plugin_progress_uses_available_width_and_real_fraction(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.set_global(ThemeState::default()));
+    let tree = ViewTree {
+        root: 0,
+        nodes: vec![ViewNode::Progress(ProgressNode {
+            label: "转换区块".into(),
+            value: 37,
+            total: Some(100),
+            style: ViewStyle {
+                direction: LayoutDirection::Column,
+                gap: 0,
+                padding: 0,
+                align: Align::Stretch,
+                color: None,
+                background: None,
+                text_size: TextSizeToken::Body,
+                emphasis: false,
+                full_width: true,
+                corner_radius: None,
+            },
+        })],
+    };
+    let (_probe, window) = cx.add_window_view(move |_, _| ProgressFixture(tree));
+    for width in [760., 972., 1440.] {
+        window.simulate_resize(size(px(width), px(560.)));
+        let track = window.debug_bounds("plugin-progress-track-0").unwrap();
+        let fill = window.debug_bounds("plugin-progress-fill-0").unwrap();
+        assert!((track.size.width - px(width - 370.)).abs() <= px(1.));
+        assert!((fill.size.width - track.size.width * 0.37).abs() <= px(1.));
+    }
+}
