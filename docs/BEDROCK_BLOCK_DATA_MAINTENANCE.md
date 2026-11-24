@@ -176,7 +176,7 @@ python3 scripts/bedrock-block-catalog/import_id_registry.py \
 
 **重要**：`verified_block_names=true` 只表示“该字符串在同版本已采集的目录中找到”，**不代表数字 ID 的 PDB 证据经过独立验证**。因此导入器永远只输出 `identity_evidence_only`，不能自动升级为“authoritative mapping”。
 
-ID 注册表的存储键是 `game_version|namespace|platform|binary_sha256[|palette_fingerprint]` 来源作用域，而不是仅 `version+namespace`。同一游戏版本下不同平台、不同二进制或不同网络调色板的数据可以同时保留、互不覆盖。`pdb_symbol_order` 只保存 PDB 符号声明/地址顺序（`symbol_ordinal`），**不是经过验证的运行时类型 ID**。
+ID 注册表的存储键是 `game_version|namespace|platform|binary_sha256[|palette_fingerprint]` 来源作用域，而不是仅 `version+namespace`。同一游戏版本下不同平台、不同二进制或不同网络调色板的数据可以同时保留、互不覆盖；单批次内相同作用域重复会直接拒绝。二进制格式为 `BMCBID03`：NBT version 以存在标志编码，早期无版本的数据（1.9.0）使用显式 `version: null`（标志 0），禁止从游戏版本推导。`pdb_symbol_order` 只保存 PDB 符号声明/地址顺序（`symbol_ordinal`），**不是经过验证的运行时类型 ID**。权威数据集导入记录两个输入文件（状态表与数字 ID 表）的哈希，便于完整复现。
 
 ## 6. 必须执行的验收与禁止事项
 
