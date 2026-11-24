@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 pub(super) struct Schedule {
     submission_deadline: Option<Instant>,
     submission_retry_delay: Duration,
+    retirement_only: bool,
     #[cfg(any(test, not(target_os = "windows")))]
     interval: Option<Duration>,
     #[cfg(any(test, not(target_os = "windows")))]
@@ -46,8 +47,8 @@ impl Schedule {
         self.native_visible = visible;
         self.deadline = None;
         self.retry_delay = Duration::ZERO;
-        if !visible {
-            self.retry_submission(Instant::now(), false);
+        if !visible && !self.retirement_only {
+            self.reset_submission_retry();
         }
     }
 
@@ -67,24 +68,60 @@ impl Schedule {
 
     /// Poll only an unsubmitted packet whose GPU resources are still in flight. This is
     /// completion bookkeeping, not an animation clock; native presentation pacing stays intact.
+    #[cfg(test)]
     pub(super) fn retry_submission(&mut self, now: Instant, pending: bool) {
+        self.retry_work(now, pending, false, None);
+    }
+
+    /// A fence-only retirement is not a visual deadline. It may finish even
+    /// when a window is hidden; never sample its animation to reclaim memory.
+    /// Native feedback bounds retries when a display period is known.
+    pub(super) fn retry_work(
+        &mut self,
+        now: Instant,
+        presentation: bool,
+        retirement: bool,
+        refresh: Option<Duration>,
+    ) {
         #[cfg(any(test, not(target_os = "windows")))]
-        let pending = pending && (!self.native_callbacks || self.native_visible);
-        if !pending {
+        let presentation = presentation && (!self.native_callbacks || self.native_visible);
+        if !presentation && !retirement {
             self.reset_submission_retry();
             return;
         }
-        // Ordinary Draw/Tick reports must not postpone an outstanding poll, even
-        // after it becomes due. Only the consumer of that retry may advance backoff.
+        let retirement_only = !presentation;
+        let (initial, maximum) = if retirement_only {
+            (Duration::from_millis(4), Duration::from_millis(64))
+        } else if let Some(period) = refresh.filter(|period| !period.is_zero()) {
+            let initial = (period / 8).clamp(Duration::from_micros(500), Duration::from_millis(2));
+            let maximum = (period / 2).clamp(initial, Duration::from_millis(16));
+            (initial, maximum)
+        } else {
+            (Duration::from_millis(1), Duration::from_millis(16))
+        };
+        // A new interactive retry can preempt a slow memory-only deadline.
+        // Repeated reports of the same class cannot postpone an armed poll.
+        let promoted = self.retirement_only && !retirement_only;
+        self.retirement_only = retirement_only;
+        if promoted {
+            self.submission_retry_delay = initial;
+            self.submission_deadline = Some(self.submission_deadline
+                .map_or(now + initial, |deadline| deadline.min(now + initial)));
+            return;
+        }
         if self.submission_deadline.is_some() {
             return;
         }
         self.submission_retry_delay = if self.submission_retry_delay.is_zero() {
-            Duration::from_millis(1)
+            initial
         } else {
-            (self.submission_retry_delay * 2).min(Duration::from_millis(16))
+            (self.submission_retry_delay * 2).clamp(initial, maximum)
         };
         self.submission_deadline = Some(now + self.submission_retry_delay);
+    }
+
+    pub(super) fn retirement_due(&self, now: Instant) -> bool {
+        self.retirement_only && self.submission_deadline.is_some_and(|deadline| deadline <= now)
     }
 
     pub(super) fn begin_submission_retry(&mut self, now: Instant) {
@@ -99,6 +136,7 @@ impl Schedule {
     pub(super) fn reset_submission_retry(&mut self) {
         self.submission_deadline = None;
         self.submission_retry_delay = Duration::ZERO;
+        self.retirement_only = false;
     }
 
     pub(super) fn is_retrying_submission(&self) -> bool {

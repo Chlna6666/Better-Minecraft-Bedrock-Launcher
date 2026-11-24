@@ -421,18 +421,18 @@ impl Entry {
                 // Once the last animation ends, continue polling only the
                 // exact fences still reading an old target, without drawing
                 // the last Scene again or requesting an empty UI frame.
-                if self.scene.is_none()
-                    && !self.renderer.has_active_presentation_animations()
-                    && self.renderer.has_pollable_offscreen_retirements()
+                if self.schedule.retirement_due(now)
+                    || (self.scene.is_none()
+                        && !self.renderer.has_active_presentation_animations()
+                        && self.renderer.has_pollable_offscreen_retirements())
                 {
                     self.schedule.begin_submission_retry(now);
                     match self.renderer.poll_offscreen_retirements() {
-                        Ok(()) => self.schedule.retry_submission(
-                            now,
-                            self.renderer.has_pollable_offscreen_retirements(),
+                        Ok(()) => self.schedule.retry_work(
+                            now, false, self.renderer.has_pollable_offscreen_retirements(), None,
                         ),
                         Err(error) => {
-                            self.schedule.retry_submission(now, false);
+                            self.schedule.retry_work(now, false, false, None);
                             log::warn!(
                                 target: "gpui_gpu_stall",
                                 "offscreen retirement fence poll failed: {error:#}",
@@ -458,7 +458,7 @@ impl Entry {
                     self.resize_awaiting_draw = true;
                     // The producer queues the matching Draw next. A retry of
                     // the old packet must not consume this extent in that gap.
-                    self.schedule.retry_submission(Instant::now(), false);
+                    self.schedule.retry_work(Instant::now(), false, false, None);
                 }
                 #[cfg(target_os = "windows")]
                 if gpu_owner::resize_trace_enabled() {
@@ -592,7 +592,9 @@ impl Entry {
         self.schedule.after_frame(
             Instant::now(),
             pending && retry,
-            self.ready_registration.load(Ordering::Acquire) != 0,
+            self.ready_registration.load(Ordering::Acquire) != 0
+                || (!submitted && self.schedule.is_retrying_submission()
+                    && (self.ready_poll_required || self.renderer.has_submission_retry())),
             self.renderer.presentation_deadline(),
             submitted,
         );
@@ -793,14 +795,14 @@ impl Entry {
         // allocations behind. Keep a bounded GPU-only Fence poll active until
         // the retired generation is safe, independently of animation requests.
         let retirement_poll = result.is_ok() && self.renderer.has_pollable_offscreen_retirements();
-        self.schedule.retry_submission(
-            Instant::now(),
-            retirement_poll
-                || (pending
-                    && result.is_ok()
-                    && !submitted
-                    && (self.renderer.has_submission_retry() || self.ready_poll_required)
-                    && self.ready_registration.load(Ordering::Acquire) == 0),
+        let presentation_retry = pending
+            && result.is_ok()
+            && !submitted
+            && (self.renderer.has_submission_retry() || self.ready_poll_required)
+            && self.ready_registration.load(Ordering::Acquire) == 0;
+        self.schedule.retry_work(
+            Instant::now(), presentation_retry, retirement_poll,
+            self.renderer.native_refresh_period(),
         );
         self.status.pending.store(pending, Ordering::Release);
         #[cfg(target_os = "windows")]

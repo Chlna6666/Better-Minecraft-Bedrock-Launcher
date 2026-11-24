@@ -193,3 +193,37 @@ fn hidden_native_window_cancels_submission_retry_and_resumes_with_fresh_backoff(
     schedule.retry_submission(now, true);
     assert_eq!(schedule.deadline(), Some(now + Duration::from_millis(1)));
 }
+
+#[test]
+fn retirement_survives_hidden_window_and_interactive_work_preempts_it() {
+    let now = Instant::now();
+    let mut schedule = Schedule::default();
+    schedule.set_native_callbacks();
+    schedule.set_native_visible(true);
+    schedule.retry_work(now, false, true, None);
+    schedule.set_native_visible(false);
+    assert!(schedule.retirement_due(now + Duration::from_millis(4)));
+    schedule.set_native_visible(true);
+    schedule.retry_work(now, true, true, Some(Duration::from_millis(4)));
+    assert_eq!(schedule.deadline(), Some(now + Duration::from_micros(500)));
+    assert!(!schedule.retirement_due(now + Duration::from_millis(4)));
+}
+
+#[test]
+fn native_refresh_caps_interactive_retry_but_not_retirement() {
+    let mut now = Instant::now();
+    let mut schedule = Schedule::default();
+    for micros in [500, 1000, 2000, 2000] {
+        schedule.retry_work(now, true, false, Some(Duration::from_millis(4)));
+        assert_eq!(schedule.deadline(), Some(now + Duration::from_micros(micros)));
+        now += Duration::from_micros(micros);
+        schedule.begin_submission_retry(now);
+    }
+    schedule.reset_submission_retry();
+    for millis in [4, 8, 16, 32, 64, 64] {
+        schedule.retry_work(now, false, true, Some(Duration::from_millis(4)));
+        now += Duration::from_millis(millis);
+        assert!(schedule.retirement_due(now));
+        schedule.begin_submission_retry(now);
+    }
+}

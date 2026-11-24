@@ -44,6 +44,18 @@ impl AdaptivePacing {
         self.enabled = enabled;
     }
 
+    /// Only an explicitly reported native period is used. No host Present
+    /// duration or cross-window GPU timestamps masquerade as display cadence.
+    pub(super) fn native_refresh_period(&self) -> Option<Duration> {
+        match self.previous? {
+            PresentationFeedback::Vulkan { refresh_duration_ns, .. }
+            | PresentationFeedback::Wayland { refresh_duration_ns, .. } => {
+                refresh_duration_ns.filter(|ns| *ns != 0).map(Duration::from_nanos)
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn limit(&self) -> usize {
         self.limit
     }

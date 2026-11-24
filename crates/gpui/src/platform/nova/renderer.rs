@@ -483,6 +483,10 @@ impl NovaRenderer {
         lock_backend(&self.backend).check_present_readiness(self.swapchain)
     }
 
+    pub(crate) fn native_refresh_period(&self) -> Option<std::time::Duration> {
+        self.adaptive_pacing.native_refresh_period()
+    }
+
     /// Checks native pacing before replacing displayed buffers, then resource/geometry readiness.
     /// Native pacing is resumed by a backend notification; resource retirement uses owner retries.
     pub(crate) fn presentation_readiness(
