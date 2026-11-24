@@ -98,9 +98,26 @@ async fn download(task: Option<&str>, request: Request) -> Result<PathBuf, Strin
     tokio::fs::create_dir_all(&directory)
         .await
         .map_err(|error| error.to_string())?;
-    let mut last_error = String::new();
+    let mut failures = Vec::new();
+    let mut attempted = std::collections::HashSet::new();
     for source in &request.urls {
-        for url in crate::github::configured_download_urls(source)? {
+        // An invalid GitHub mirror configuration must not discard the
+        // original verified source or prevent other sources from being tried.
+        let candidates = match crate::github::configured_download_urls(source) {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                tracing::warn!(%error, "读取 GitHub 下载配置失败，尝试原始校验下载源");
+                vec![source.clone()]
+            }
+        };
+        for url in candidates {
+            if !attempted.insert(url.clone()) {
+                continue;
+            }
+            let origin = reqwest::Url::parse(&url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .unwrap_or_else(|| "无效来源".to_owned());
             if let Some(task) = task {
                 if is_cancelled(task) {
                     return Err("下载已取消".into());
@@ -127,11 +144,19 @@ async fn download(task: Option<&str>, request: Request) -> Result<PathBuf, Strin
                     }
                     return Ok(path);
                 }
-                Err(error) => last_error = error,
+                Err(error) => {
+                    tracing::warn!(
+                        source = %origin,
+                        filename = %request.filename,
+                        reason = %error,
+                        "校验下载来源失败"
+                    );
+                    failures.push(format!("{origin}: {error}"));
+                }
             }
         }
     }
-    Err(format!("下载来源均不可用：{last_error}"))
+    Err(format!("下载来源均不可用：{}", failures.join("；")))
 }
 
 async fn matches_file(path: &std::path::Path, request: &Request) -> std::io::Result<bool> {
@@ -165,13 +190,13 @@ async fn transfer(
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|error| error.without_url().to_string())?;
+        .map_err(describe_request_error)?;
     let mut received = 0;
     let mut hash = Sha256::new();
     while let Some(chunk) = tokio::time::timeout(Duration::from_secs(20), response.chunk())
         .await
         .map_err(|_| "下载来源停止响应".to_string())?
-        .map_err(|error| error.without_url().to_string())?
+        .map_err(describe_request_error)?
     {
         received += chunk.len() as u64;
         if received > request.size {
@@ -190,4 +215,22 @@ async fn transfer(
         return Err("下载文件的大小或 SHA-256 不匹配".into());
     }
     output.flush().await.map_err(|error| error.to_string())
+}
+
+/// Keep source diagnostics useful without logging signed CDN URLs or credentials.
+fn describe_request_error(error: reqwest::Error) -> String {
+    let category = if error.is_timeout() {
+        "请求超时"
+    } else if error.is_connect() {
+        "连接失败（检查 DNS、TLS 或代理）"
+    } else if error.is_redirect() {
+        "重定向失败"
+    } else if error.is_status() {
+        "HTTP 状态错误"
+    } else if error.is_body() {
+        "响应体读取失败"
+    } else {
+        "HTTP 请求失败"
+    };
+    format!("{category}: {}", error.without_url())
 }
