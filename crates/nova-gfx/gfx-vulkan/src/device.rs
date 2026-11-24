@@ -2628,25 +2628,29 @@ impl VulkanDevice {
         let mut encoder_resource = self.command_encoders.take(encoder)?;
         encoder_resource.fence = present_frame.fence;
         encoder_resource.owns_fence = false;
+        // Publish the encoder's retire record BEFORE WSI present: an outdated
+        // surface may synchronously retire and destroy the old native fences.
+        let submission = self.submissions.insert(VulkanSubmission {
+            fence: present_frame.fence,
+            queue: gfx_core::GpuQueueId::PRIMARY,
+            owned_by_submission: false,
+        });
+        encoder_resource.frame_submission = Some(submission);
+        self.deferred_destroys
+            .retire(0, DeferredResource::CommandEncoder(encoder_resource));
         let present_started = Instant::now();
-        let result = self.present(
+        if let Err(error) = self.present(
             swapchain_id,
             present_frame.image_index,
             present_frame.render_finished,
             damage,
-        );
+        ) {
+            // No submission ID escaped. The deferred encoder still retires.
+            let _ = self.submissions.take(submission);
+            self.completed_frame_probes.retain(|(id, _)| *id != submission);
+            return Err(error);
+        }
         timings.queue_present = present_started.elapsed();
-        // The encoder must retire even when WSI presentation fails. Only
-        // successful presentation exposes a SubmissionId to the caller.
-        let submission = result.as_ref().ok().map(|_| self.submissions.insert(VulkanSubmission {
-            fence: present_frame.fence,
-            queue: gfx_core::GpuQueueId::PRIMARY,
-            owned_by_submission: false,
-        }));
-        encoder_resource.frame_submission = submission;
-        self.deferred_destroys
-            .retire(0, DeferredResource::CommandEncoder(encoder_resource));
-        result?;
         let post_present_cleanup_started = Instant::now();
         let swapchain = self.swapchains.get_mut(swapchain_id)?;
         let frame_slots = swapchain.in_flight_fences.len().max(1);
@@ -2655,7 +2659,7 @@ impl VulkanDevice {
         self.poll_cleanup();
         timings.post_present_cleanup = post_present_cleanup_started.elapsed();
         Ok(Some(PresentedFrame {
-            submission,
+            submission: Some(submission),
             timings: Some(timings),
         }))
     }
@@ -3109,8 +3113,9 @@ impl VulkanDevice {
             }
         }
         let acquire_fence_wait = fence_wait_started.elapsed();
-        self.submissions
-            .remove_where(|submission| submission.fence == fence);
+        // Keep the logical completion handle valid across native fence reuse.
+        // Encoder recycling detaches completed frame IDs from their fence before
+        // create_command_encoder returns and record_and_present resets the slot.
         // An early acquisition needs its own completion proof: an image may
         // have been acquired but never submitted if scene preparation fails.
         // Allocate once per swapchain, not once per frame.
@@ -4443,6 +4448,16 @@ impl VulkanDevice {
     fn recycle_command_encoder(&mut self, mut encoder: VulkanCommandEncoder) -> Result<()> {
         encoder.compute_resources.clear();
         let frame_submission = encoder.frame_submission.take();
+        // The retirement predicate proved this frame complete. Retain its
+        // public ID until the caller consumes it; the WSI fence is reusable.
+        let frame_submission = frame_submission.filter(|id| {
+            if let Ok(record) = self.submissions.get_mut(*id) {
+                record.fence = vk::Fence::null();
+                true
+            } else {
+                false
+            }
+        });
         if let (Some(tag), Some(pool), Some(clock)) = (
             encoder.gpu_work_tag.take(),
             encoder.gpu_trace_query_pool,

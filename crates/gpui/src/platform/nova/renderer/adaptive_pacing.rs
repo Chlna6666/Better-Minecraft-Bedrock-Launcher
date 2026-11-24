@@ -22,6 +22,7 @@ pub(super) struct AdaptivePacing {
     sync_native: bool,
     gpu_cost_ns: Option<u64>,
     gpu_samples: u8,
+    observed_refresh: Option<Duration>,
 }
 
 impl Default for AdaptivePacing {
@@ -39,6 +40,7 @@ impl Default for AdaptivePacing {
             sync_native: false,
             gpu_cost_ns: None,
             gpu_samples: 0,
+            observed_refresh: None,
         }
     }
 }
@@ -48,16 +50,10 @@ impl AdaptivePacing {
         self.enabled = enabled;
     }
 
-    /// Only an explicitly reported native period is used. No host Present
-    /// duration or cross-window GPU timestamps masquerade as display cadence.
+    /// Nominal native period or same-swapchain DXGI synchronization estimate.
+    /// Neither CPU Present duration nor GPU execution time is a display clock.
     pub(super) fn native_refresh_period(&self) -> Option<Duration> {
-        match self.previous? {
-            PresentationFeedback::Vulkan { refresh_duration_ns, .. }
-            | PresentationFeedback::Wayland { refresh_duration_ns, .. } => {
-                refresh_duration_ns.filter(|ns| *ns != 0).map(Duration::from_nanos)
-            }
-            _ => None,
-        }
+        self.observed_refresh
     }
 
     pub(super) fn limit(&self) -> usize {
@@ -89,6 +85,7 @@ impl AdaptivePacing {
     fn reset_evidence(&mut self) {
         self.gpu_cost_ns = None;
         self.gpu_samples = 0;
+        self.observed_refresh = None;
         self.last_frame = None;
         self.previous = None;
         self.frames = 0;
@@ -128,12 +125,31 @@ impl AdaptivePacing {
     pub(super) fn observe(&mut self, feedback: Option<PresentationFeedback>) -> Option<usize> {
         let previous = self.previous;
         self.previous = feedback;
+        let prior_period = self.observed_refresh;
+        self.observed_refresh = feedback.and_then(|new| match new {
+            PresentationFeedback::Vulkan { refresh_duration_ns, .. }
+            | PresentationFeedback::Wayland { refresh_duration_ns, .. } => {
+                refresh_duration_ns.filter(|ns| *ns != 0).map(Duration::from_nanos)
+            }
+            #[cfg(target_os = "windows")]
+            PresentationFeedback::Dxgi { .. } => dxgi_refresh_period(previous?, new, qpc_frequency()?),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        });
+        let period_changed = prior_period.zip(self.observed_refresh)
+            .is_some_and(|(a, b)| a.max(b) - a.min(b) > a.max(b) / 4);
         let pressure = std::mem::take(&mut self.pressure);
         self.frames = 0;
         let previous_limit = self.limit;
         let gpu_heavy = self.gpu_samples >= 4 && self.gpu_cost_ns.zip(self.native_refresh_period())
             .is_some_and(|(cost, period)| u128::from(cost) * 4 >= period.as_nanos() * 3);
-        if previous.zip(feedback).is_some_and(|(old, new)| progressing(old, new)) {
+        if period_changed {
+            self.quiet_windows = 0;
+            self.missing_windows = 0;
+            self.limit = MAX_IN_FLIGHT_SUBMISSIONS;
+            self.gpu_cost_ns = None;
+            self.gpu_samples = 0;
+        } else if previous.zip(feedback).is_some_and(|(old, new)| progressing(old, new)) {
             self.missing_windows = 0;
             if pressure >= PRESSURE_FRAMES || gpu_heavy {
                 self.quiet_windows = 0;
@@ -162,6 +178,29 @@ impl AdaptivePacing {
             None
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn qpc_frequency() -> Option<u64> {
+    static FREQUENCY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *FREQUENCY.get_or_init(|| {
+        let mut frequency = 0i64;
+        // SAFETY: QPC writes only the valid local frequency output.
+        unsafe { windows::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency) }.ok()?;
+        u64::try_from(frequency).ok().filter(|frequency| *frequency != 0)
+    })
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn dxgi_refresh_period(old: PresentationFeedback, new: PresentationFeedback, frequency: u64) -> Option<Duration> {
+    let PresentationFeedback::Dxgi { sync_refresh_count: a, sync_qpc_ticks: t0, .. } = old else { return None; };
+    let PresentationFeedback::Dxgi { sync_refresh_count: b, sync_qpc_ticks: t1, .. } = new else { return None; };
+    let refreshes = b.checked_sub(a).filter(|n| *n > 0)?;
+    let ticks = u64::try_from(t1.checked_sub(t0)?).ok().filter(|n| *n > 0)?;
+    let ns = u128::from(ticks) * 1_000_000_000 / u128::from(frequency.checked_mul(u64::from(refreshes)).filter(|n| *n > 0)?);
+    // Reject idle gaps, counter resets and implausible driver samples.
+    // This remains an observed average, not a claim of fixed-rate scanout.
+    (1_000_000..=100_000_000).contains(&ns).then(|| Duration::from_nanos(ns as u64))
 }
 
 fn progressing(old: PresentationFeedback, new: PresentationFeedback) -> bool {
@@ -293,5 +332,20 @@ mod cost_tests {
         assert_eq!(pacing.gpu_samples, 2);
         pacing.surface_changed();
         assert_eq!(pacing.gpu_cost_ns, None);
+    }
+}
+
+#[cfg(test)]
+mod dxgi_period_tests {
+    use super::*;
+    fn sample(count: u32, qpc: i64) -> PresentationFeedback {
+        PresentationFeedback::Dxgi { present_count: count, present_refresh_count: count, sync_refresh_count: count, sync_qpc_ticks: qpc }
+    }
+    #[test]
+    fn uses_refresh_counter_not_number_of_rendered_frames() {
+        assert_eq!(dxgi_refresh_period(sample(10, 100_000), sample(12, 116_000), 1_000_000), Some(Duration::from_millis(8)));
+        assert_eq!(dxgi_refresh_period(sample(12, 116_000), sample(10, 100_000), 1_000_000), None);
+        assert_eq!(dxgi_refresh_period(sample(10, 100_000), sample(10, 116_000), 1_000_000), None);
+        assert_eq!(dxgi_refresh_period(sample(10, 100_000), sample(12, 116_000), 0), None);
     }
 }
