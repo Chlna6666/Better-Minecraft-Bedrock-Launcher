@@ -464,6 +464,38 @@ mod platform {
             Err(Error::Unavailable("Metal generic encoder recording is not implemented".into()))
         }
 
+        /// Native layer for a host-owned CAMetalDisplayLink.
+        ///
+        /// The host must keep display-link registration on the layer's owner
+        /// thread and invalidate the link before destroying the surface.
+        pub fn presentation_layer(&self, swapchain: SwapchainId) -> Result<&CAMetalLayer> {
+            Ok(&self.swapchains.get(swapchain)?.layer)
+        }
+
+        /// Render directly into the drawable supplied by CAMetalDisplayLink.
+        ///
+        /// This path never calls nextDrawable. A busy GPU or stale extent
+        /// returns None; the host should release this credit and retry on a
+        /// subsequent display update. Pass each drawable only once.
+        ///
+        /// # Errors
+        /// Returns an error for a foreign drawable or unsupported frame.
+        pub fn render_and_present_with_drawable(
+            &mut self,
+            frame: &PresentFrameDescriptor<'_>,
+            drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>,
+        ) -> Result<Option<PresentedFrame>> {
+            let LoadOp::Clear(color) = frame.color_load_op else {
+                return Err(Error::Unavailable("Metal drawable LoadOp::Load is not implemented".into()));
+            };
+            let chain = self.swapchains.get(frame.swapchain)?;
+            if !std::ptr::eq::<CAMetalLayer>(&*drawable.layer(), &*chain.layer) {
+                return Err(Error::InvalidInput("Metal drawable belongs to a different layer".into()));
+            }
+            self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, color,
+                frame.depth_attachment, Some(drawable))
+        }
+
         fn draw_internal(
             &mut self,
             swapchain: SwapchainId,
@@ -471,6 +503,7 @@ mod platform {
             steps: &[RenderCommand],
             clear_color: gfx_core::ClearColor,
             depth_attachment: Option<DepthAttachment>,
+            supplied_drawable: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
         ) -> Result<Option<PresentedFrame>> {
             if !self.poll_present_readiness(swapchain)? {
                 return Ok(None);
@@ -513,11 +546,23 @@ mod platform {
 
             let frame = objc2::rc::autoreleasepool(|_| -> Result<Option<(Retained<ProtocolObject<dyn MTLCommandBuffer>>, PresentTimings)>> {
                 let acquire_started = Instant::now();
-                let Some(drawable) = swapchain.layer.nextDrawable() else {
-                    return Ok(None);
+                let (drawable, image_acquire) = match supplied_drawable {
+                    Some(drawable) => (drawable, std::time::Duration::ZERO),
+                    None => {
+                        let Some(drawable) = swapchain.layer.nextDrawable() else {
+                            return Ok(None);
+                        };
+                        (drawable, acquire_started.elapsed())
+                    }
                 };
-                let image_acquire = acquire_started.elapsed();
                 let texture = drawable.texture();
+                // A resize may overtake a display-link update. Never render
+                // a new-sized scene into an old-sized native drawable.
+                if texture.width() != swapchain.config.size.width() as usize
+                    || texture.height() != swapchain.config.size.height() as usize
+                {
+                    return Ok(None);
+                }
                 let descriptor = MTLRenderPassDescriptor::renderPassDescriptor();
                 // SAFETY: color attachment index 0 is valid for the descriptor's color array.
                 let color_attachment =
@@ -1130,7 +1175,7 @@ mod platform {
             let LoadOp::Clear(color) = frame.color_load_op else {
                 return Err(Error::Unavailable("Metal drawable LoadOp::Load is not implemented".into()));
             };
-            self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, color, frame.depth_attachment)
+            self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, color, frame.depth_attachment, None)
         }
 
         fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
