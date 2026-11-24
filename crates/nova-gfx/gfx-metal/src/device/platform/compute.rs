@@ -45,18 +45,29 @@ impl MetalDevice {
     }
 
     pub(super) fn submit_compute(&mut self, dispatches: &[ComputeDispatch<'_>], tracked: bool) -> Result<Option<SubmissionId>> {
+        self.submit_compute_timed(dispatches, None, None, tracked)
+    }
+
+    pub(super) fn submit_compute_timed(&mut self, dispatches: &[ComputeDispatch<'_>], tags: Option<&[Option<gfx_core::GpuTimestampTag>]>, batch_tag: Option<gfx_core::GpuTimestampTag>, tracked: bool) -> Result<Option<SubmissionId>> {
         let caps = self.compute_capabilities();
         let limits = self.buffer_binding_limits();
         let mut prepared = Vec::with_capacity(dispatches.len());
-        for dispatch in dispatches {
+        let mut ranges = Vec::new();
+        for (index, dispatch) in dispatches.iter().enumerate() {
             if dispatch.workgroups.contains(&0) { continue; }
             dispatch.validate_dispatch(caps, limits)?;
             let shader = self.shader_modules.get(dispatch.shader)?;
             let metadata = shader.bindings.as_ref().ok_or_else(|| Error::Unavailable("Metal compute requires reflected bindings".into()))?;
             let group = Rc::new(self.prepare_compute_buffers(dispatch, metadata)?);
+            if let Some(tag) = tags.and_then(|tags| tags[index]) {
+                ranges.push(timestamps::TaggedRange { first: prepared.len(), last: prepared.len(), tag });
+            }
             prepared.push(self.prepare_compute(dispatch.shader, dispatch.workgroups, group)?);
         }
-        self.commit_compute(&prepared, tracked)
+        if let Some(tag) = batch_tag.filter(|_| !prepared.is_empty()) {
+            ranges.push(timestamps::TaggedRange { first: 0, last: prepared.len() - 1, tag });
+        }
+        self.commit_compute(&prepared, tracked, &ranges)
     }
 
     pub(super) fn submit_compute_set(&mut self, dispatch: &ComputeBindGroupDispatch) -> Result<()> {
@@ -67,27 +78,39 @@ impl MetalDevice {
         self.validate_shader_bindings(Some(group.layout), shader.bindings.as_ref(), ShaderStages::COMPUTE)?;
         let group = group.native.clone();
         let prepared = self.prepare_compute(dispatch.shader, dispatch.workgroups, group)?;
-        self.commit_compute(std::slice::from_ref(&prepared), false).map(|_| ())
+        self.commit_compute(std::slice::from_ref(&prepared), false, &[]).map(|_| ())
     }
 
-    fn commit_compute(&mut self, prepared: &[PreparedCompute], tracked: bool) -> Result<Option<SubmissionId>> {
+    fn commit_compute(&mut self, prepared: &[PreparedCompute], tracked: bool, ranges: &[timestamps::TaggedRange]) -> Result<Option<SubmissionId>> {
         if prepared.is_empty() { return Ok(None); }
+        let probe = self.work_timestamps.acquire(&self.device, ranges);
         let commands = objc2::rc::autoreleasepool(|_| -> Result<_> {
             let commands = self.command_queue.commandBuffer()
                 .ok_or_else(|| Error::Backend("Metal compute command buffer unavailable".into()))?;
-            for dispatch in prepared {
-                let encoder = commands.computeCommandEncoder()
-                    .ok_or_else(|| Error::Backend("Metal compute encoder unavailable".into()))?;
+            for (index, dispatch) in prepared.iter().enumerate() {
+                let encoder = if let Some(probe) = &probe {
+                    probe.compute_encoder(&commands, index)
+                } else {
+                    commands.computeCommandEncoder()
+                }.ok_or_else(|| Error::Backend("Metal compute encoder unavailable".into()))?;
+                if let Some(probe) = &probe { probe.sample_dispatch(&encoder, index, true); }
                 encoder.setComputePipelineState(&dispatch.pipeline);
                 dispatch.group.encode_compute(&encoder, &dispatch.sizes);
                 // SAFETY: both grid and exact baked local dimensions were
                 // validated, and native resources are retained by the command buffer.
                 encoder.dispatchThreadgroups_threadsPerThreadgroup(dispatch.grid, dispatch.local);
+                if let Some(probe) = &probe { probe.sample_dispatch(&encoder, index, false); }
                 encoder.endEncoding();
             }
+            // Resolve after every timed dispatch; never insert the copy in
+            // the timed intervals.
+            if let Some(probe) = &probe { probe.resolve(&commands)?; }
             commands.commit();
             Ok(commands)
         })?;
+        if let Some(probe) = probe {
+            self.work_timestamps.submitted(probe, commands.clone());
+        }
         Ok(if tracked { Some(self.submissions.insert(MetalSubmission::new(commands, false))) } else { None })
     }
 }

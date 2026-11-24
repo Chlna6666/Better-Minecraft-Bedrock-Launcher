@@ -53,6 +53,7 @@ mod platform {
     mod bindings;
     mod offscreen;
     mod compute;
+    mod timestamps;
     use bindings::{NativeBindGroup, PreparedBindings};
     use super::*;
     use crate::registry::ResourceRegistry;
@@ -105,6 +106,7 @@ mod platform {
         swapchains: ResourceRegistry<MetalSwapchain>,
         submissions: ResourceRegistry<MetalSubmission>,
         last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
+        work_timestamps: timestamps::WorkTimestamps,
         submitted_frames: u64,
     }
 
@@ -120,6 +122,7 @@ mod platform {
             let command_queue = device.newCommandQueue().ok_or_else(|| {
                 Error::Unavailable("failed to create Metal command queue".to_string())
             })?;
+            let work_timestamps = timestamps::WorkTimestamps::new(&device);
             Ok(Self {
                 device,
                 command_queue,
@@ -140,6 +143,7 @@ mod platform {
                 swapchains: ResourceRegistry::new("swapchain"),
                 submissions: ResourceRegistry::new("submission"),
                 last_frame_gpu_timestamps: None,
+                work_timestamps,
                 submitted_frames: 0,
             })
         }
@@ -1033,6 +1037,22 @@ mod platform {
         }
         fn dispatch_compute_batch(&mut self, dispatches: &[gfx_core::ComputeDispatch<'_>]) -> Result<()> {
             self.submit_compute(dispatches, false).map(|_| ())
+        }
+        fn gpu_work_timestamps_supported(&self) -> bool {
+            self.work_timestamps.supported()
+        }
+        fn dispatch_compute_batch_profiled(&mut self, dispatches: &[gfx_core::ComputeDispatch<'_>], tag: gfx_core::GpuTimestampTag) -> Result<()> {
+            self.submit_compute_timed(dispatches, None, Some(tag), false).map(|_| ())
+        }
+        fn dispatch_compute_batch_tagged(&mut self, dispatches: &[gfx_core::ComputeDispatch<'_>], tags: &[Option<gfx_core::GpuTimestampTag>]) -> Result<()> {
+            if dispatches.len() != tags.len() {
+                return Err(Error::InvalidInput("Metal compute tag count mismatch".into()));
+            }
+            self.submit_compute_timed(dispatches, Some(tags), None, false).map(|_| ())
+        }
+        fn drain_gpu_work_timestamps(&mut self, output: &mut Vec<gfx_core::GpuTimestampSample>) -> Result<()> {
+            self.work_timestamps.drain(&self.device, output);
+            Ok(())
         }
         fn dispatch_compute_bind_group(&mut self, dispatch: &gfx_core::ComputeBindGroupDispatch) -> Result<()> {
             self.submit_compute_set(dispatch)
