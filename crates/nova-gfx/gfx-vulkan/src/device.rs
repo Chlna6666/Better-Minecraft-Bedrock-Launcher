@@ -5298,7 +5298,7 @@ impl SubmissionDevice for VulkanDevice {
         if let Err(error) = self.submit_command_buffers(&[], &[], &[], fence) {
             // SAFETY: A failed queue_submit did not enqueue this fence.
             unsafe { self.device.destroy_fence(fence, None) };
-            return Err(VulkanError::from(error).into());
+            return Err(error);
         }
         Ok(self.submissions.insert(VulkanSubmission {
             fence,
