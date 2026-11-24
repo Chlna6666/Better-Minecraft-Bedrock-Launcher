@@ -92,7 +92,7 @@ fn test_sprite_bind_group(
 }
 
 #[test]
-fn auto_vsync_uses_native_fifo_on_all_nova_backends() {
+fn auto_vsync_selects_compositor_paced_dxgi_and_fifo_elsewhere() {
     let options = RendererOptions::default();
     for backend in [
         RendererBackend::NovaDx11,
@@ -100,7 +100,14 @@ fn auto_vsync_uses_native_fifo_on_all_nova_backends() {
         RendererBackend::NovaOpenGl,
         RendererBackend::NovaVulkan,
     ] {
-        assert_eq!(backend_present_mode(backend, &options), gfx_core::PresentMode::Fifo);
+        let expected = if cfg!(target_os = "windows")
+            && matches!(backend, RendererBackend::NovaDx11 | RendererBackend::NovaDx12)
+        {
+            gfx_core::PresentMode::Mailbox
+        } else {
+            gfx_core::PresentMode::Fifo
+        };
+        assert_eq!(backend_present_mode(backend, &options), expected);
     }
 }
 

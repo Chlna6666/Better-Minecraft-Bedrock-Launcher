@@ -43,7 +43,7 @@ use std::{
     ptr::NonNull,
     rc::Rc,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use super::{X11Client, X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES};

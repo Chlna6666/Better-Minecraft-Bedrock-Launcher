@@ -7,7 +7,7 @@ use crate::{Capslock, xcb_flush};
 use anyhow::{Context as _, anyhow};
 use ashpd::WindowIdentifier;
 use calloop::{
-    EventLoop, LoopHandle,
+    EventLoop, LoopHandle, RegistrationToken,
     generic::{FdWrapper, Generic},
 };
 use collections::HashMap;
@@ -30,6 +30,7 @@ use x11rb::{
     connection::{Connection, RequestConnection},
     cursor,
     errors::ConnectionError,
+    protocol::present::ConnectionExt as _,
     protocol::randr::ConnectionExt as _,
     protocol::xinput::ConnectionExt,
     protocol::xkb::ConnectionExt as _,
@@ -37,7 +38,7 @@ use x11rb::{
         AtomEnum, ChangeWindowAttributesAux, ClientMessageData, ClientMessageEvent,
         ConnectionExt as _, EventMask, Visibility,
     },
-    protocol::{Event, randr, render, xinput, xkb, xproto},
+    protocol::{Event, present, randr, render, xinput, xkb, xproto},
     resource_manager::Database,
     wrapper::ConnectionExt as _,
     xcb_ffi::XCBConnection,
@@ -133,6 +134,7 @@ fn insert_x11_foreground_task_idle(
 pub(crate) struct WindowRef {
     window: X11WindowStatePtr,
     refresh_state: Option<RefreshState>,
+    native_msc: Option<NativeMsc>,
     expose_event_received: bool,
     last_visibility: Visibility,
     is_mapped: bool,
@@ -149,6 +151,58 @@ impl Deref for WindowRef {
 
     fn deref(&self) -> &Self::Target {
         &self.window
+    }
+}
+
+/// PresentNotifyMSC is a display-clock signal, not a submitted pixmap.
+struct NativeMsc {
+    event_id: u32,
+    enabled: Cell<bool>,
+    serial: Cell<u32>,
+    pending: RefCell<Option<(u32, RegistrationToken)>>,
+    last_sample: Cell<Option<(u64, u64, Instant)>>,
+}
+
+impl NativeMsc {
+    fn register(connection: &XCBConnection, window: xproto::Window) -> Option<Self> {
+        connection.extension_information(present::X11_EXTENSION_NAME).ok()??;
+        connection.present_query_version(1, 0).ok()?.reply().ok()?;
+        let event_id = connection.generate_id().ok()?;
+        connection.present_select_input(event_id, window, present::EventMask::COMPLETE_NOTIFY)
+            .ok()?.check().ok()?;
+        Some(Self {
+            event_id,
+            enabled: Cell::new(true),
+            serial: Cell::new(0),
+            pending: RefCell::new(None),
+            last_sample: Cell::new(None),
+        })
+    }
+
+    fn cancel(&self, handle: &LoopHandle<'static, X11Client>) {
+        if let Some((_, token)) = self.pending.borrow_mut().take() {
+            handle.remove(token);
+        }
+        self.last_sample.set(None);
+    }
+
+    fn tick(&self, ust: u64, msc: u64, now: Instant) -> (Instant, Option<Duration>) {
+        let (tick, interval) = self.last_sample.get().and_then(|(previous_ust, previous_msc, previous_tick)| {
+            let elapsed = ust.checked_sub(previous_ust)?;
+            let frames = msc.checked_sub(previous_msc)?;
+            if elapsed == 0 || elapsed > 1_000_000 || frames == 0 {
+                return None;
+            }
+            let tick = previous_tick.checked_add(Duration::from_micros(elapsed))?;
+            let interval = Duration::from_micros(elapsed / frames);
+            Some((tick, (Duration::from_millis(1)..=Duration::from_millis(100)).contains(&interval).then_some(interval)))
+        }).unwrap_or((now, None));
+        // UST is a different clock domain; re-anchor after discontinuity or large drift.
+        let tick = if now.saturating_duration_since(tick) > Duration::from_millis(50)
+            || tick.saturating_duration_since(now) > Duration::from_millis(10)
+        { now } else { tick };
+        self.last_sample.set(Some((ust, msc, tick)));
+        (tick, interval)
     }
 }
 
@@ -291,7 +345,11 @@ impl X11ClientStatePtr {
         let mut state = client.0.borrow_mut();
 
         // Outstanding one-shot callbacks validate the window and its generation.
-        state.windows.remove(&x_window);
+        if let Some(window) = state.windows.remove(&x_window)
+            && let Some(clock) = window.native_msc
+        {
+            clock.cancel(&state.loop_handle);
+        }
         if state.mouse_focused_window == Some(x_window) {
             state.mouse_focused_window = None;
         }
@@ -799,6 +857,12 @@ impl X11Client {
 
     fn dispatch_x11_event(&self, event: Event) -> Option<()> {
         match event {
+            Event::PresentCompleteNotify(event) if event.kind == present::CompleteKind::NOTIFY_MSC => {
+                let frame = self.0.borrow_mut().complete_native_frame(event);
+                if let Some((window, request)) = frame {
+                    window.refresh(request);
+                }
+            }
             Event::UnmapNotify(event) => {
                 let mut state = self.0.borrow_mut();
                 if let Some(window_ref) = state.windows.get_mut(&event.window) {
@@ -1548,6 +1612,7 @@ impl LinuxClient for X11Client {
         let window_ref = WindowRef {
             window: window.0.clone(),
             refresh_state: None,
+            native_msc: NativeMsc::register(&state.xcb_connection, x_window),
             expose_event_received: false,
             last_visibility: Visibility::UNOBSCURED,
             is_mapped: false,
@@ -1761,6 +1826,9 @@ impl X11ClientState {
         };
         let is_visible = window_ref.is_mapped
             && !matches!(window_ref.last_visibility, Visibility::FULLY_OBSCURED);
+        if !is_visible && let Some(clock) = &window_ref.native_msc {
+            clock.cancel(&self.loop_handle);
+        }
         match (is_visible, window_ref.refresh_state.take()) {
             (false, refresh_state @ Some(RefreshState::Hidden { .. }))
             | (false, refresh_state @ None)
@@ -1861,6 +1929,13 @@ impl X11ClientState {
             return;
         }
 
+        if let Some(clock) = &window_ref.native_msc
+            && clock.enabled.get()
+            && self.arm_native_frame(x_window, clock)
+        {
+            return;
+        }
+
         let Some(RefreshState::PeriodicRefresh {
             refresh_rate,
             next_frame_deadline,
@@ -1907,6 +1982,89 @@ impl X11ClientState {
                 },
             )
             .expect("Failed to schedule X11 frame request");
+    }
+
+    fn arm_native_frame(&self, window: xproto::Window, clock: &NativeMsc) -> bool {
+        if clock.pending.borrow().is_some() {
+            return true;
+        }
+        let serial = clock.serial.get().wrapping_add(1);
+        clock.serial.set(serial);
+        // divisor=1 requests the next MSC even if the window was idle.
+        if self.xcb_connection.present_notify_msc(window, serial, 0, 1, 0).is_err()
+            || self.xcb_connection.flush().is_err()
+        {
+            clock.enabled.set(false);
+            return false;
+        }
+        let event_id = clock.event_id;
+        let watchdog = self.loop_handle.insert_source(
+            calloop::timer::Timer::from_duration(Duration::from_millis(250)),
+            move |_, _, client| {
+                let state = client.0.borrow();
+                if let Some(clock) = state.windows.get(&window).and_then(|w| w.native_msc.as_ref())
+                    && clock.event_id == event_id
+                    && clock.pending.borrow().as_ref().is_some_and(|(current, _)| *current == serial)
+                {
+                    clock.pending.borrow_mut().take();
+                    clock.enabled.set(false);
+                    log::debug!("X11 Present MSC callback timed out; using demand-driven fallback");
+                    state.schedule_frame_request(window);
+                }
+                calloop::timer::TimeoutAction::Drop
+            },
+        );
+        match watchdog {
+            Ok(token) => {
+                *clock.pending.borrow_mut() = Some((serial, token));
+                true
+            }
+            Err(_) => {
+                clock.enabled.set(false);
+                false
+            }
+        }
+    }
+
+    fn complete_native_frame(
+        &mut self,
+        event: present::CompleteNotifyEvent,
+    ) -> Option<(X11WindowStatePtr, PlatformFrameRequest)> {
+        let window_ref = self.windows.get_mut(&event.window)?;
+        let clock = window_ref.native_msc.as_ref()?;
+        if !clock.enabled.get() || event.event != clock.event_id
+            || !clock.pending.borrow().as_ref().is_some_and(|(serial, _)| *serial == event.serial)
+        {
+            return None;
+        }
+        if let Some((_, token)) = clock.pending.borrow_mut().take() {
+            self.loop_handle.remove(token);
+        }
+        if !window_ref.is_mapped || matches!(window_ref.last_visibility, Visibility::FULLY_OBSCURED) {
+            return None;
+        }
+        let now = Instant::now();
+        let (tick, interval) = clock.tick(event.ust, event.msc, now);
+        if let Some(interval) = interval
+            && let Some(RefreshState::PeriodicRefresh { refresh_rate, .. }) = window_ref.refresh_state.as_mut()
+            && (*refresh_rate).max(interval) - (*refresh_rate).min(interval) > *refresh_rate / 20
+        {
+            *refresh_rate = interval;
+            // Also adjust the retained GPU owner's fallback cadence.
+            window_ref.window.set_presentation_interval(Some(interval));
+        }
+        let exposed = window_ref.expose_event_received;
+        let window = window_ref.window.clone();
+        if !exposed && !window.has_pending_frame_request() {
+            return None;
+        }
+        if !exposed && !window.claim_ui_frame(tick, now) {
+            self.schedule_frame_request(event.window);
+            return None;
+        }
+        window_ref.expose_event_received = false;
+        let request = frame_request_after_expose(window.take_pending_frame_request(), exposed);
+        request.requires_frame().then_some((window, request))
     }
 
     fn frame_request_at_deadline(

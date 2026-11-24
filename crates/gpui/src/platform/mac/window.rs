@@ -2365,7 +2365,8 @@ unsafe extern "C" fn step(view: *mut c_void) {
     if let Some(sender) = lock.request_frame_callback.clone() {
         lock.ui_frame_cadence = lock.ui_frame_cadence.record(now, Some(now));
         let request = std::mem::take(&mut lock.pending_frame_request);
-        lock.stop_display_link();
+        // Stop on the next idle callback; continuous animations avoid a CV stop/start
+        // pair on every refresh.
         drop(lock);
         if !sender.request(request) {
             log::trace!("discarding macOS frame request after its UI receiver closed");
