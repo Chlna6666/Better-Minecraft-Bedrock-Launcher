@@ -131,6 +131,11 @@ impl OwnedNovaRenderer {
         self.owner().presentation_metrics_id()
     }
 
+    #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
+    pub(crate) fn presentation_feedback_mailbox(&self) -> Result<Arc<Mutex<Option<gfx_core::PresentationFeedback>>>> {
+        self.owner().presentation_feedback_mailbox()
+    }
+
     pub(crate) fn presentation_tick_sender(&self) -> Arc<dyn Fn() + Send + Sync> {
         self.owner().presentation_tick_sender()
     }

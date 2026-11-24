@@ -136,10 +136,24 @@ fn progressing(old: PresentationFeedback, new: PresentationFeedback) -> bool {
             PresentationFeedback::Dxgi { present_count: b, sync_qpc_ticks: t1, .. },
         ) => b > a && t1 > t0,
         (
-            PresentationFeedback::Vulkan { present_id: a, actual_present_ns: t0, .. },
-            PresentationFeedback::Vulkan { present_id: b, actual_present_ns: t1, .. },
-        ) => b > a && t1 > t0,
+            PresentationFeedback::Vulkan { present_id: a, actual_present_ns: t0, refresh_duration_ns: r0, .. },
+            PresentationFeedback::Vulkan { present_id: b, actual_present_ns: t1, refresh_duration_ns: r1, .. },
+        ) => b > a && t1 > t0 && refresh_compatible(r0, r1),
+        (
+            PresentationFeedback::Wayland { clock_id: c0, actual_present_ns: t0, refresh_duration_ns: r0, .. },
+            PresentationFeedback::Wayland { clock_id: c1, actual_present_ns: t1, refresh_duration_ns: r1, .. },
+        ) => c0 == c1 && t1 > t0 && refresh_compatible(r0, r1),
         // Never compare different native domains or across counter resets.
+        _ => false,
+    }
+}
+
+// Unknown refresh (including VRR) stays unknown. A large nominal-period
+// transition invalidates the old evidence rather than inventing a fixed Hz.
+fn refresh_compatible(old: Option<u64>, new: Option<u64>) -> bool {
+    match (old.filter(|v| *v != 0), new.filter(|v| *v != 0)) {
+        (Some(a), Some(b)) => a.abs_diff(b) <= a.max(b) / 4,
+        (None, None) => true,
         _ => false,
     }
 }
@@ -195,6 +209,22 @@ mod tests {
         assert_eq!(window(&mut pacing, &mut now, None, 0), None);
         assert_eq!(window(&mut pacing, &mut now, None, 0), Some(MAX_IN_FLIGHT_SUBMISSIONS));
         assert_eq!(pacing.limit(), MAX_IN_FLIGHT_SUBMISSIONS);
+    }
+
+    #[test]
+    fn wayland_clock_and_refresh_changes_invalidate_evidence() {
+        let sample = |clock_id, actual_present_ns, refresh_duration_ns| PresentationFeedback::Wayland {
+            clock_id,
+            actual_present_ns,
+            refresh_duration_ns,
+            sequence: 0,
+        };
+        assert!(progressing(sample(1, 100, Some(8_333_333)), sample(1, 200, Some(8_400_000))));
+        assert!(!progressing(sample(1, 100, Some(8_333_333)), sample(1, 200, Some(16_666_666))));
+        assert!(!progressing(sample(1, 100, None), sample(2, 200, None)));
+        assert!(progressing(sample(1, 100, None), sample(1, 200, None)));
+        assert!(!progressing(sample(1, 200, None), sample(1, 100, None)));
+        assert!(!progressing(sample(1, 100, Some(8_333_333)), sample(1, 200, None)));
     }
 
     #[test]

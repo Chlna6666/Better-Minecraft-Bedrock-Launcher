@@ -235,6 +235,8 @@ pub(crate) struct NovaRenderer {
     submission_mode: GpuSubmissionMode,
     pending_submissions: Vec<PendingSubmission>,
     adaptive_pacing: adaptive_pacing::AdaptivePacing,
+    #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
+    external_presentation_feedback: Option<Arc<parking_lot::Mutex<Option<gfx_core::PresentationFeedback>>>>,
     /// Native extension Compute/Transfer producers are NOT UI frame-slot
     /// submissions. Track their fences separately to avoid stalling Present
     /// and to prevent primary-queue completion from retiring async work.
@@ -444,6 +446,15 @@ fn retire_replaced_path_rasterization_resources<D>(
 }
 
 impl NovaRenderer {
+    #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
+    pub(crate) fn set_presentation_feedback_mailbox(
+        &mut self,
+        mailbox: Arc<parking_lot::Mutex<Option<gfx_core::PresentationFeedback>>>,
+    ) {
+        self.external_presentation_feedback = Some(mailbox);
+        self.adaptive_pacing.surface_changed();
+    }
+
     pub(crate) fn set_live_resize_active(&mut self, active: bool) {
         // The pending DrawableSizeRequest is already authoritative, regardless
         // of gesture state. Do not overwrite a newer size/epoch with an old

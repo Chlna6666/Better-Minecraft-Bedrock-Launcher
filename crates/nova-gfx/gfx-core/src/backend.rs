@@ -1043,6 +1043,14 @@ pub enum PresentationFeedback {
         present_margin_ns: u64,
         refresh_duration_ns: Option<u64>,
     },
+    /// Wayland compositor presentation-time feedback for a committed surface.
+    /// The timestamp belongs to clock_id; a zero/unknown refresh is not a fixed rate.
+    Wayland {
+        clock_id: u32,
+        actual_present_ns: u64,
+        refresh_duration_ns: Option<u64>,
+        sequence: u64,
+    },
 }
 
 /// Provides swapchain presentation and offscreen render helpers.

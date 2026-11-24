@@ -114,6 +114,8 @@ impl NovaRenderer {
             submission_mode,
             pending_submissions: Vec::new(),
             adaptive_pacing: adaptive_pacing::AdaptivePacing::default(),
+            #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
+            external_presentation_feedback: None,
             auxiliary_submissions: Vec::new(),
             submission_retry_pending: false,
             metrics_started_at,

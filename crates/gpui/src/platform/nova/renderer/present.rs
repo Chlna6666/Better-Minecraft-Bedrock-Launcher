@@ -2141,7 +2141,23 @@ impl NovaRenderer {
             self.live_resize_active,
         );
         if sample_due || self.diagnostics.enabled {
-            let feedback = lock_backend(&self.backend).presentation_feedback(self.swapchain);
+            // Read the latest compositor sample at most once. A busy event
+            // thread must not block the GPU owner; backend feedback remains a fallback.
+            let external = {
+                #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
+                {
+                    if sample_due {
+                        self.external_presentation_feedback.as_ref()
+                            .and_then(|mailbox| mailbox.try_lock())
+                            .and_then(|mut sample| sample.take())
+                    } else {
+                        None
+                    }
+                }
+                #[cfg(not(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd"))))]
+                { None }
+            };
+            let feedback = external.or_else(|| lock_backend(&self.backend).presentation_feedback(self.swapchain));
             if self.diagnostics.enabled && let Some(feedback) = feedback {
                 log::debug!(target: "gpui_present_feedback",
                     "window={:?} native_feedback={feedback:?}", packet.window_id);

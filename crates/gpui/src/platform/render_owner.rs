@@ -402,6 +402,14 @@ impl RenderOwner {
         }
     }
 
+    #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
+    pub(super) fn presentation_feedback_mailbox(&self) -> Result<Arc<Mutex<Option<gfx_core::PresentationFeedback>>>> {
+        let mailbox = Arc::new(Mutex::new(None));
+        let owner_mailbox = mailbox.clone();
+        self.control(move |renderer| renderer.set_presentation_feedback_mailbox(owner_mailbox))?;
+        Ok(mailbox)
+    }
+
     /// Supplies native display cadence, or pauses autonomous presentation while hidden.
     /// Windows retains DWM-driven ticks; Linux native owners update this on display/visibility changes.
     #[cfg(not(target_os = "windows"))]

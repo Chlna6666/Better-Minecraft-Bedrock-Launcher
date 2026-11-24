@@ -24,6 +24,7 @@ use wayland_client::{
 use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
 
 type Tick = Arc<dyn Fn() + Send + Sync>;
+type FeedbackMailbox = Arc<Mutex<Option<gfx_core::PresentationFeedback>>>;
 
 enum Command {
     Register(u64, Entry, mpsc::SyncSender<()>),
@@ -34,6 +35,7 @@ enum Command {
 #[derive(Default)]
 struct Signal {
     state: Mutex<RequestState>,
+    feedback_mailbox: Option<FeedbackMailbox>,
 }
 
 #[derive(Default)]
@@ -71,18 +73,27 @@ impl Signal {
         state.visible = visible;
         state.generation = state.generation.wrapping_add(1);
         state.requested = false;
+        if let Some(mailbox) = &self.feedback_mailbox {
+            *mailbox.lock() = None;
+        }
         if let Some((_, valid)) = state.feedback_pending.as_mut() {
             *valid = false;
         }
         visible
     }
 
-    fn complete_feedback(&self, generation: u64) -> bool {
+    fn complete_feedback(&self, generation: u64, feedback: Option<gfx_core::PresentationFeedback>) -> bool {
         let mut state = self.state.lock();
         match state.feedback_pending {
             Some((pending, valid)) if pending == generation => {
                 state.feedback_pending = None;
-                valid && state.visible
+                let accepted = valid && state.visible;
+                // Publish under the same visibility gate so hide/close cannot
+                // clear the mailbox and then race with a stale event.
+                if accepted && let Some(sample) = feedback && let Some(mailbox) = &self.feedback_mailbox {
+                    *mailbox.lock() = Some(sample);
+                }
+                accepted
             }
             _ => false,
         }
@@ -141,10 +152,14 @@ impl Clock {
         surface: wl_surface::WlSurface,
         tick: Tick,
         metrics_id: u64,
+        feedback_mailbox: FeedbackMailbox,
     ) -> Result<FrameClock> {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let signal = Arc::new(Signal::default());
+        let signal = Arc::new(Signal {
+            feedback_mailbox: Some(feedback_mailbox),
+            ..Signal::default()
+        });
         let (reply, registered) = mpsc::sync_channel(1);
         self.sender
             .send(Command::Register(
@@ -331,17 +346,23 @@ impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, (u64, u64)> for 
         let Some(entry) = state.entries.get(&id) else { return };
         match event {
             Event::Presented { tv_sec_hi, tv_sec_lo, tv_nsec, refresh, seq_hi, seq_lo, .. } => {
-                if entry.signal.complete_feedback(generation) {
-                    let seconds = (u64::from(tv_sec_hi) << 32) | u64::from(tv_sec_lo);
-                    let timestamp = seconds.checked_mul(1_000_000_000)
-                        .and_then(|value| value.checked_add(u64::from(tv_nsec)));
-                    let sequence = (u64::from(seq_hi) << 32) | u64::from(seq_lo);
+                let seconds = (u64::from(tv_sec_hi) << 32) | u64::from(tv_sec_lo);
+                let timestamp = seconds.checked_mul(1_000_000_000)
+                    .and_then(|value| value.checked_add(u64::from(tv_nsec)));
+                let sequence = (u64::from(seq_hi) << 32) | u64::from(seq_lo);
+                let refresh = (refresh != 0).then_some(refresh);
+                let sample = state.presentation_clock_id.zip(timestamp).map(|(clock_id, actual_present_ns)| {
+                    gfx_core::PresentationFeedback::Wayland {
+                        clock_id, actual_present_ns, refresh_duration_ns: refresh.map(u64::from), sequence,
+                    }
+                });
+                if entry.signal.complete_feedback(generation, sample) {
                     record_wayland_presentation_feedback(entry.metrics_id, state.presentation_clock_id,
-                        true, timestamp, (refresh != 0).then_some(refresh), Some(sequence));
+                        true, timestamp, refresh, Some(sequence));
                 }
             }
             Event::Discarded => {
-                if entry.signal.complete_feedback(generation) {
+                if entry.signal.complete_feedback(generation, None) {
                     record_wayland_presentation_feedback(entry.metrics_id, state.presentation_clock_id,
                         false, None, None, None);
                 }
@@ -382,10 +403,32 @@ mod tests {
         assert!(signal.complete(next));
         signal.set_visible(false);
         signal.set_visible(true);
-        assert!(!signal.complete_feedback(first));
+        assert!(!signal.complete_feedback(first, None));
         let latest = signal.arm(true, |_, feedback| assert!(feedback)).unwrap();
-        assert!(!signal.complete_feedback(first));
-        assert!(signal.complete_feedback(latest));
+        assert!(!signal.complete_feedback(first, None));
+        assert!(signal.complete_feedback(latest, None));
+    }
+
+    #[test]
+    fn feedback_mailbox_is_cleared_on_hide_and_ignores_stale_feedback() {
+        use std::sync::Arc;
+        use parking_lot::Mutex;
+        let mailbox = Arc::new(Mutex::new(None));
+        let signal = Signal { feedback_mailbox: Some(mailbox.clone()), ..Signal::default() };
+        let sample = gfx_core::PresentationFeedback::Wayland {
+            clock_id: 1, actual_present_ns: 100, refresh_duration_ns: None, sequence: 0,
+        };
+        signal.set_visible(true);
+        let first = signal.arm(true, |_, _| {}).unwrap();
+        assert!(signal.complete_feedback(first, Some(sample)));
+        assert_eq!(*mailbox.lock(), Some(sample));
+        assert!(signal.complete(first));
+        let second = signal.arm(true, |_, _| {}).unwrap();
+        signal.set_visible(false);
+        assert_eq!(*mailbox.lock(), None);
+        signal.set_visible(true);
+        assert!(!signal.complete_feedback(second, Some(sample)));
+        assert_eq!(*mailbox.lock(), None);
     }
 
     #[test]
