@@ -41,20 +41,25 @@ impl RuntimePaletteValue {
     }
 }
 
-/// One runtime block state (one network runtime ID in one version).
+/// One runtime block state (one entry in a version's palette dump).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimePaletteState {
-    runtime_id: u32,
+    palette_index: u32,
     name: String,
     version: i32,
     states: BTreeMap<String, RuntimePaletteValue>,
 }
 
 impl RuntimePaletteState {
-    /// Network runtime ID (the state's index in the source dump).
+    /// Index of this state in the source palette dump.
+    ///
+    /// This is a PALETTE INDEX, not necessarily the network runtime ID. Older
+    /// versions use sequential network IDs that match this index, but Bedrock
+    /// 1.26.51+ uses hashed block network IDs. Do not send this value on the
+    /// wire for those versions; use a protocol-aware runtime ID resolver.
     #[must_use]
-    pub const fn runtime_id(&self) -> u32 {
-        self.runtime_id
+    pub const fn palette_index(&self) -> u32 {
+        self.palette_index
     }
 
     /// Fully qualified block identifier.
@@ -102,10 +107,10 @@ impl RuntimePalette {
         self.states.is_empty()
     }
 
-    /// Looks up a state by network runtime ID.
+    /// Looks up a state by its index in the palette dump.
     #[must_use]
-    pub fn state(&self, runtime_id: u32) -> Option<&RuntimePaletteState> {
-        self.states.get(runtime_id as usize)
+    pub fn state(&self, palette_index: u32) -> Option<&RuntimePaletteState> {
+        self.states.get(palette_index as usize)
     }
 
     /// Iterates all states in network runtime ID order.
@@ -164,7 +169,7 @@ fn decode_blob() -> Result<Decoded> {
             return Err(BedrockWorldError::Validation("runtime palette state count too large".to_string()));
         }
         let mut states = Vec::with_capacity(state_count);
-        for runtime_id in 0..state_count {
+        for palette_index in 0..state_count {
             let name = reader.string(&pool)?;
             let version = reader.i32()?;
             let property_count = reader.u32()? as usize;
@@ -190,7 +195,7 @@ fn decode_blob() -> Result<Decoded> {
                 properties.insert(property, value);
             }
             states.push(RuntimePaletteState {
-                runtime_id: runtime_id as u32,
+                palette_index: palette_index as u32,
                 name,
                 version,
                 states: properties,
@@ -220,8 +225,8 @@ pub fn runtime_palette_for(label: &str) -> Option<&'static RuntimePalette> {
 
 /// Looks up one state by version label and network runtime ID.
 #[must_use]
-pub fn runtime_palette_state(label: &str, runtime_id: u32) -> Option<&'static RuntimePaletteState> {
-    runtime_palette_for(label)?.state(runtime_id)
+pub fn runtime_palette_state(label: &str, palette_index: u32) -> Option<&'static RuntimePaletteState> {
+    runtime_palette_for(label)?.state(palette_index)
 }
 
 struct Reader<'a> {
@@ -299,7 +304,7 @@ mod tests {
         assert_eq!(palette.storage_versions(), vec![18108419]);
         let state = palette.state(2).expect("runtime id 2");
         assert_eq!(state.name(), "minecraft:blue_candle");
-        assert_eq!(state.runtime_id(), 2);
+        assert_eq!(state.palette_index(), 2);
         assert_eq!(
             state.states().get("lit"),
             Some(&RuntimePaletteValue::Byte(0))
@@ -315,7 +320,7 @@ mod tests {
         let state = runtime_palette_state("1.26.60", 0).expect("state");
         let palette = runtime_palette_for("1.26.60").expect("palette");
         assert_eq!(state.name(), palette.state(0).expect("state 0").name());
-        assert_eq!(state.runtime_id(), 0);
+        assert_eq!(state.palette_index(), 0);
         // Out-of-range network IDs return None rather than panicking.
         assert!(runtime_palette_state("1.26.60", u32::MAX).is_none());
     }

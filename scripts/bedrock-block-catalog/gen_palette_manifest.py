@@ -52,13 +52,16 @@ def main() -> int:
         "schema_version": 1,
         "purpose": (
             "Raw, unprocessed runtime block-palette dumps for developer viewing. "
-            "Each state's index is its network runtime ID. Do not edit these files."
+            "Each state's file index is a PALETTE INDEX, not necessarily the wire network runtime ID. "
+            "Do not edit these files."
         ),
         "source": "pmmp/bds-mod-mapping -> opencollab-incubator/BedrockBlockPaletteArchive",
-        "format": "concatenated varint-NBT root compounds; network runtime ID = file index",
+        "format": "concatenated varint-NBT root compounds; state file index = palette index",
         "evidence_boundary": (
             "Runtime dump evidence. Beta build labels are preserved verbatim and are not "
-            "four-component stable BDS versions. No default state field; states are full permutations."
+            "four-component stable BDS versions. No default state field; states are full permutations. "
+            "Pre-1.13 dumps are on-disk blockitem palettes, not wire palettes. Bedrock 1.26.51+ uses "
+            "hashed block network IDs, so the palette index must NOT be sent on the wire as a runtime ID."
         ),
         "version_count": len(versions),
         "versions": versions,
