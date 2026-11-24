@@ -186,9 +186,9 @@ pub fn background_executor() -> BackgroundExecutor {
 #[cfg(target_os = "macos")]
 pub(crate) fn current_platform(
     headless: bool,
-    _renderer_options: RendererOptions,
+    renderer_options: RendererOptions,
 ) -> Rc<dyn Platform> {
-    Rc::new(MacPlatform::new(headless))
+    Rc::new(MacPlatform::with_renderer_options(headless, renderer_options))
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]

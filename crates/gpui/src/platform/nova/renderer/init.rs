@@ -372,10 +372,15 @@ impl NovaRenderer {
                 let surface = device
                     .create_surface(window, &SurfaceDescriptor { label: None })
                     .context("creating nova Metal surface")?;
-                let swapchain = device
-                    .create_swapchain(surface, surface_config)
-                    .context("creating nova Metal swapchain")?;
-                let core = shared_renderer_core(
+                let swapchain = match device.create_swapchain(surface, surface_config) {
+                    Ok(swapchain) => swapchain,
+                    Err(error) => {
+                        let _ = device.destroy_surface(surface);
+                        return Err(error).context("creating nova Metal swapchain");
+                    }
+                };
+                let resources = (|| {
+                    let core = shared_renderer_core(
                     DeviceKey {
                         backend: RendererBackend::NovaMetal,
                         adapter_name: renderer_options.adapter_name.clone(),
@@ -393,9 +398,17 @@ impl NovaRenderer {
                         )
                     },
                 )?;
-                let resources =
                     create_renderer_resources(device, surface_config, "gpui nova metal", &core)
-                        .context("creating GPUI nova Metal render resources")?;
+                        .context("creating GPUI nova Metal render resources")
+                })();
+                let resources = match resources {
+                    Ok(resources) => resources,
+                    Err(error) => {
+                        let _ = device.destroy_swapchain(swapchain);
+                        let _ = device.destroy_surface(surface);
+                        return Err(error);
+                    }
+                };
                 let backend_info = backend_guard.info();
                 drop(backend_guard);
                 Self::from_initialized(InitializedRenderer {

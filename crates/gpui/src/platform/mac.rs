@@ -8,12 +8,19 @@ mod events;
 mod keyboard;
 
 #[cfg(not(feature = "macos-blade"))]
+#[cfg(not(feature = "nova-gfx-metal"))]
 mod metal_atlas;
 #[cfg(not(feature = "macos-blade"))]
+#[cfg(not(feature = "nova-gfx-metal"))]
 mod metal_renderer;
 
-#[cfg(not(feature = "macos-blade"))]
+#[cfg(all(not(feature = "macos-blade"), not(feature = "nova-gfx-metal")))]
 use metal_renderer as renderer;
+
+#[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+mod nova_renderer;
+#[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+use nova_renderer as renderer;
 
 #[cfg(feature = "macos-blade")]
 use crate::platform::blade as renderer;

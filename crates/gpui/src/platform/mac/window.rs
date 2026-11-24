@@ -686,7 +686,7 @@ impl MacWindow {
         }: WindowParams,
         executor: ForegroundExecutor,
         renderer_context: renderer::Context,
-    ) -> Self {
+    ) -> crate::Result<Self> {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
 
@@ -783,6 +783,24 @@ impl MacWindow {
             let native_view = NSView::initWithFrame_(native_view, NSView::bounds(content_view));
             assert!(!native_view.is_null());
 
+            #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+            let renderer = match renderer::new_renderer(
+                renderer_context,
+                native_view,
+                Size::<Pixels>::from(NSView::bounds(native_view).size)
+                    .to_device_pixels(scale_factor(native_window)),
+            ) {
+                Ok(renderer) => renderer,
+                Err(error) => {
+                    // Both objects are still owned by their alloc/init references;
+                    // no window state or delegate has been published.
+                    let _: () = msg_send![native_view, release];
+                    let _: () = msg_send![native_window, release];
+                    pool.drain();
+                    return Err(error);
+                }
+            };
+
             let mut window = Self(Arc::new(Mutex::new(MacWindowState {
                 handle,
                 executor,
@@ -797,6 +815,9 @@ impl MacWindow {
                 inline_frame_callback: None,
                 pending_frame_request: PlatformFrameRequest::default(),
                 ui_frame_cadence: crate::platform::FrameCadence::default(),
+                #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+                renderer,
+                #[cfg(any(feature = "macos-blade", not(feature = "nova-gfx-metal")))]
                 renderer: renderer::new_renderer(
                     renderer_context,
                     native_window as *mut _,
@@ -971,7 +992,7 @@ impl MacWindow {
 
             pool.drain();
 
-            window
+            Ok(window)
         }
     }
 
@@ -1044,9 +1065,9 @@ impl Drop for MacWindow {
         let mut this = self.0.lock();
         #[cfg(not(feature = "macos-blade"))]
         {
+            this.renderer.set_display_link_attached(false);
             this.metal_display_link.take();
             this.inline_frame_callback.take();
-            this.renderer.set_display_link_attached(false);
         }
         this.display_link.take();
         this.renderer.destroy();
@@ -1679,7 +1700,11 @@ impl PlatformWindow for MacWindow {
         }
         #[cfg(not(feature = "macos-blade"))]
         {
-            if this.renderer.draw(&packet.paint.scene) {
+            #[cfg(feature = "nova-gfx-metal")]
+            let submitted = this.renderer.draw(packet);
+            #[cfg(not(feature = "nova-gfx-metal"))]
+            let submitted = this.renderer.draw(&packet.paint.scene);
+            if submitted {
                 crate::PlatformFrameResult::Submitted
             } else {
                 this.pending_frame_request = this.pending_frame_request.merge(
@@ -1692,10 +1717,16 @@ impl PlatformWindow for MacWindow {
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+        #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+        return self.0.lock().renderer.sprite_atlas();
+        #[cfg(any(feature = "macos-blade", not(feature = "nova-gfx-metal")))]
         self.0.lock().renderer.sprite_atlas().clone()
     }
 
     fn gpu_specs(&self) -> Option<crate::GpuSpecs> {
+        #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+        return Some(self.0.lock().renderer.gpu_specs());
+        #[cfg(any(feature = "macos-blade", not(feature = "nova-gfx-metal")))]
         None
     }
 
@@ -1821,7 +1852,9 @@ unsafe fn window_state(object: &Object) -> Arc<Mutex<MacWindowState>> {
 unsafe fn drop_window_state(object: &Object) {
     unsafe {
         let raw: *mut c_void = *object.get_ivar(WINDOW_STATE_IVAR);
-        Arc::from_raw(raw as *mut Mutex<MacWindowState>);
+        if !raw.is_null() {
+            drop(Arc::from_raw(raw as *mut Mutex<MacWindowState>));
+        }
     }
 }
 
@@ -2395,12 +2428,20 @@ extern "C" fn close_window(this: &Object, _: Sel) {
 }
 
 extern "C" fn make_backing_layer(this: &Object, _: Sel) -> id {
+    // Nova attaches the layer before publishing the Rust window state. AppKit
+    // may ask for a backing layer during that initialization transaction.
+    if unsafe { (*this.get_ivar::<*mut c_void>(WINDOW_STATE_IVAR)).is_null() } {
+        return unsafe { msg_send![super(this, class!(NSView)), makeBackingLayer] };
+    }
     let window_state = unsafe { window_state(this) };
     let window_state = window_state.as_ref().lock();
     window_state.renderer.layer_ptr() as id
 }
 
 extern "C" fn view_did_change_backing_properties(this: &Object, _: Sel) {
+    if unsafe { (*this.get_ivar::<*mut c_void>(WINDOW_STATE_IVAR)).is_null() } {
+        return;
+    }
     let window_state = unsafe { window_state(this) };
     let mut lock = window_state.as_ref().lock();
 
@@ -2409,7 +2450,7 @@ extern "C" fn view_did_change_backing_properties(this: &Object, _: Sel) {
     let drawable_size = size.to_device_pixels(scale_factor);
     unsafe {
         let _: () = msg_send![
-            lock.renderer.layer(),
+            lock.renderer.layer_ptr() as id,
             setContentsScale: scale_factor as f64
         ];
     }
@@ -2426,6 +2467,10 @@ extern "C" fn view_did_change_backing_properties(this: &Object, _: Sel) {
 }
 
 extern "C" fn set_frame_size(this: &Object, _: Sel, size: NSSize) {
+    if unsafe { (*this.get_ivar::<*mut c_void>(WINDOW_STATE_IVAR)).is_null() } {
+        unsafe { let _: () = msg_send![super(this, class!(NSView)), setFrameSize: size]; }
+        return;
+    }
     let window_state = unsafe { window_state(this) };
     let mut lock = window_state.as_ref().lock();
 

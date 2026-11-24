@@ -281,9 +281,6 @@ impl NovaRenderer {
                 }
                 #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
                 NovaBackend::Metal(device) => {
-                    let swapchain_started_at = Instant::now();
-                    gfx_core::SurfaceDevice::resize_swapchain(device, self.swapchain, target_size)?;
-                    swapchain_resize = swapchain_started_at.elapsed();
                     let attachments = pending_surface::acquire_resize_attachments(
                         device,
                         "Metal",
@@ -296,6 +293,15 @@ impl NovaRenderer {
                     )?;
                     let next_path_mask_target = attachments.path;
                     let (next_depth_texture, next_depth_texture_view) = attachments.depth;
+                    let swapchain_started_at = Instant::now();
+                    if let Err(error) = gfx_core::SurfaceDevice::resize_swapchain(device, self.swapchain, target_size) {
+                        if !reuse_path_mask_target {
+                            destroy_path_mask_target(device, next_path_mask_target, "Metal");
+                        }
+                        destroy_depth_target(device, next_depth_texture, next_depth_texture_view, "Metal");
+                        return Err(error.into());
+                    }
+                    swapchain_resize = swapchain_started_at.elapsed();
                     if !reuse_path_mask_target {
                         destroy_path_mask_target(device, old_path_mask_target, "Metal");
                     }

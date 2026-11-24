@@ -203,6 +203,12 @@ impl Default for MacPlatform {
 
 impl MacPlatform {
     pub(crate) fn new(headless: bool) -> Self {
+        Self::with_renderer_options(headless, crate::RendererOptions::default())
+    }
+
+    pub(crate) fn with_renderer_options(headless: bool, renderer_options: crate::RendererOptions) -> Self {
+        #[cfg(any(feature = "macos-blade", not(feature = "nova-gfx-metal")))]
+        let _ = renderer_options;
         let dispatcher = Arc::new(MacDispatcher::new());
 
         let text_system = Arc::new(crate::platform::CosmicTextSystem::new());
@@ -215,6 +221,9 @@ impl MacPlatform {
             text_system,
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
             foreground_executor: ForegroundExecutor::new(dispatcher),
+            #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+            renderer_context: renderer_options,
+            #[cfg(any(feature = "macos-blade", not(feature = "nova-gfx-metal")))]
             renderer_context: renderer::Context::default(),
             pasteboard: unsafe { NSPasteboard::generalPasteboard(nil) },
             text_hash_pasteboard_type: unsafe { ns_string("zed-text-hash") },
@@ -637,7 +646,7 @@ impl Platform for MacPlatform {
             options,
             self.foreground_executor(),
             renderer_context,
-        )))
+        )?))
     }
 
     fn window_appearance(&self) -> WindowAppearance {
