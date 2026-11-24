@@ -248,7 +248,9 @@ impl NovaBackend {
                 device, swapchain,
             )?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            Self::Metal(_) => Ok(true),
+            Self::Metal(device) => Ok(gfx_core::PresentationDevice::poll_present_readiness(
+                device, swapchain,
+            )?),
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")

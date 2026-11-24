@@ -771,6 +771,42 @@ mod tests {
     }
 
     #[test]
+    fn msl_reflects_stage_local_bindings() {
+        let module = WgslModule::parse(ATLAS_WGSL).expect("atlas WGSL");
+        let vertex = module.compile_msl(ShaderStage::Vertex, "vs_main").expect("vertex MSL");
+        let fragment = module.compile_msl(ShaderStage::Fragment, "fs_main").expect("fragment MSL");
+        let v = vertex.metal.expect("vertex ABI");
+        let f = fragment.metal.expect("fragment ABI");
+        assert_eq!((v.buffers, v.textures, v.samplers), (0, 0, 0));
+        assert_eq!((f.buffers, f.textures, f.samplers), (1, 2, 4));
+        assert!(v.size_slots.is_empty());
+        assert!(f.size_slots.is_empty());
+        let gfx_core::ShaderCode::Msl(source) = fragment.code else { panic!("expected MSL"); };
+        assert!(source.contains(f.native_entry.as_ref()));
+    }
+
+    #[test]
+    fn msl_reflects_runtime_array_sizes() {
+        let module = WgslModule::parse(STORAGE_WGSL).expect("storage WGSL");
+        let vertex = module.compile_msl(ShaderStage::Vertex, "vs_main").expect("vertex MSL");
+        let fragment = module.compile_msl(ShaderStage::Fragment, "fs_main").expect("fragment MSL");
+        let v = vertex.metal.expect("vertex ABI");
+        let f = fragment.metal.expect("fragment ABI");
+        assert_eq!(v.buffers, 1);
+        assert_eq!(v.size_slots.as_ref(), &[0]);
+        assert!(f.size_slots.is_empty());
+        let gfx_core::ShaderCode::Msl(source) = vertex.code else { panic!("expected MSL"); };
+        assert!(source.contains("buffer(30)"), "{source}");
+    }
+
+    #[test]
+    fn msl_rejects_reserved_buffer_slot() {
+        let source = STORAGE_WGSL.replace("@binding(0)", "@binding(30)");
+        let module = WgslModule::parse(&source).expect("storage WGSL");
+        assert!(module.compile_msl(ShaderStage::Vertex, "vs_main").is_err());
+    }
+
+    #[test]
     fn msl_12_supports_instance_index() {
         let source = r"
             @vertex
