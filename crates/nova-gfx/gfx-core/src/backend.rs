@@ -1238,6 +1238,20 @@ pub trait PresentationDevice {
         self.render_to_texture_counted(pass, counts)
     }
 
+    /// Ordered batch with positional count tables and native timing tags.
+    fn render_to_textures_counted_profiled(
+        &mut self, passes: &[RenderPassCommands<'_>], counts: &[&[crate::IndirectCountBinding]],
+        tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if passes.len() != counts.len() || passes.len() != tags.len() {
+            return Err(Error::InvalidInput("counted pass metadata length mismatch".into()));
+        }
+        if counts.iter().any(|table| !table.is_empty()) {
+            return Err(Error::Unavailable("batched counted drawing is unsupported".into()));
+        }
+        self.render_to_textures_on_queue(passes, tags, OffscreenQueuePreference::OrderedGraphics)
+    }
+
     /// Records ordered offscreen render passes.
     ///
     /// The default submits each pass separately and returns `None`. Backends may batch the
@@ -1367,6 +1381,20 @@ pub trait OffscreenSubmissionDevice {
         self.submit_counted_offscreen_pass(pass, counts)
     }
 
+    /// Submit multiple counted passes on the ordered graphics queue.
+    fn submit_counted_offscreen_batch(
+        &mut self, passes: &[RenderPassCommands<'_>], counts: &[&[crate::IndirectCountBinding]],
+        tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if passes.len() != counts.len() || passes.len() != tags.len() {
+            return Err(Error::InvalidInput("counted pass metadata length mismatch".into()));
+        }
+        if counts.iter().any(|table| !table.is_empty()) {
+            return Err(Error::Unavailable("batched counted drawing is unsupported".into()));
+        }
+        self.submit_offscreen_graphics(passes, tags, OffscreenQueuePreference::OrderedGraphics)
+    }
+
     /// Hardware-supported independent native graphics-queue availability.
     fn supports_independent_offscreen_graphics(&self) -> bool;
 }
@@ -1407,6 +1435,13 @@ impl<T: PresentationDevice> OffscreenSubmissionDevice for T {
         tag: Option<GpuTimestampTag>,
     ) -> Result<()> {
         PresentationDevice::render_to_texture_counted_profiled(self, pass, counts, tag)
+    }
+
+    fn submit_counted_offscreen_batch(
+        &mut self, passes: &[RenderPassCommands<'_>], counts: &[&[crate::IndirectCountBinding]],
+        tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        PresentationDevice::render_to_textures_counted_profiled(self, passes, counts, tags)
     }
 
     fn supports_independent_offscreen_graphics(&self) -> bool {

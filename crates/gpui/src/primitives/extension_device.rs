@@ -62,6 +62,14 @@ pub trait ExtensionDevice {
         self.submit_counted_offscreen_pass(pass, counts)
     }
 
+    /// Submit ordered counted offscreen passes as one native batch.
+    fn submit_counted_offscreen_batch(
+        &mut self, _passes: &[gfx_core::RenderPassCommands<'_>],
+        _counts: &[&[gfx_core::IndirectCountBinding]], _tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<gfx_core::SubmissionId>> {
+        Err(gfx_core::Error::Unavailable("batched counted drawing is unsupported".into()))
+    }
+
     /// Generic native queue lookup, with no GPUI-specific scheduling policy.
     /// A physical queue handle alone does not guarantee that the backend can
     /// submit the requested command type or transition its resources safely.
@@ -451,6 +459,13 @@ where
         counts: &[gfx_core::IndirectCountBinding], tag: Option<GpuTimestampTag>,
     ) -> Result<()> {
         OffscreenSubmissionDevice::submit_counted_offscreen_profiled(self, pass, counts, tag)
+    }
+
+    fn submit_counted_offscreen_batch(
+        &mut self, passes: &[gfx_core::RenderPassCommands<'_>],
+        counts: &[&[gfx_core::IndirectCountBinding]], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<gfx_core::SubmissionId>> {
+        OffscreenSubmissionDevice::submit_counted_offscreen_batch(self, passes, counts, tags)
     }
 
     fn independent_graphics_queue_available(&self) -> bool {

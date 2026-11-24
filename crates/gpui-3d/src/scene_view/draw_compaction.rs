@@ -4,7 +4,8 @@
 use gfx_core::*;
 use gpui::{ExtensionDevice, RendererExtensionContext};
 use crate::NativeOffscreenPass;
-use std::{sync::Arc, time::{Duration, Instant}};
+use std::{collections::{HashMap, HashSet}, sync::Arc, time::{Duration, Instant}};
+use super::SceneViewId;
 
 const MAX_RUN: usize = 256;
 const MIN_RUN: usize = 128;
@@ -83,7 +84,7 @@ struct Prepared {
 }
 
 // Strong Arc identity prevents address reuse and avoids hashing/scanning
-// the immutable command list on a camera-only update. One bounded cache
+// the immutable command list on a camera-only update. Each live view cache
 // also retains the negative result for non-compaction-friendly scenes.
 struct Cached {
     source: Arc<[RenderCommand]>,
@@ -195,10 +196,22 @@ impl CostModel {
     }
 }
 
-pub(super) struct Compactor {
-    shader: ShaderModuleId,
+#[derive(Default)]
+struct ViewCompactor {
     scratch: Option<Scratch>,
     cached: Option<Cached>,
+}
+
+pub(super) struct Compactor {
+    shader: ShaderModuleId,
+    views: HashMap<SceneViewId, ViewCompactor>,
+    probes: HashMap<u64, SceneViewId>,
+}
+
+#[derive(Clone, Copy)]
+struct Decision {
+    compact: bool,
+    tag: Option<GpuTimestampTag>,
 }
 
 impl Compactor {
@@ -217,7 +230,93 @@ impl Compactor {
             .ok().and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d draw compaction".into()), binary,
             }).ok())?;
-        Some(Self { shader, scratch: None, cached: None })
+        Some(Self { shader, views: HashMap::new(), probes: HashMap::new() })
+    }
+
+    pub(super) fn submit_batch(
+        &mut self, device: &mut dyn ExtensionDevice, passes: &[NativeOffscreenPass],
+        epochs: &[(SceneViewId, u64)],
+    ) -> Result<Option<SubmissionId>> {
+        let ordinary = |device: &mut dyn ExtensionDevice| crate::submit_native_offscreen_passes(
+            passes, |passes, tags| device.submit_offscreen_graphics(passes, tags, OffscreenQueuePreference::OrderedGraphics),
+        );
+        // Duplicate views could overwrite their own output before the first draw.
+        if passes.len() != epochs.len() || epochs.iter().map(|(id, _)| *id).collect::<HashSet<_>>().len() != epochs.len() {
+            return ordinary(device);
+        }
+        let mut decisions = Vec::with_capacity(passes.len());
+        let mut special = false;
+        for (pass, &(id, _)) in passes.iter().zip(epochs) {
+            if pass.gpu_work_tag.is_some() {
+                decisions.push(None);
+                continue;
+            }
+            let view = self.views.entry(id).or_default();
+            let previous_probe = view.pending_id();
+            let decision = view.schedule(device, self.shader, pass)?;
+            let next_probe = view.pending_id();
+            if previous_probe != next_probe {
+                if let Some(old) = previous_probe { self.probes.remove(&old); }
+                if let Some(new) = next_probe { self.probes.insert(new, id); }
+            }
+            special |= decision.is_some();
+            decisions.push(decision);
+        }
+        if !special { return ordinary(device); }
+        // All compaction producers are on the ordered owner queue; each
+        // view has distinct scratch through the entire graphics batch.
+        let mut native = Vec::with_capacity(passes.len());
+        let mut tags = Vec::with_capacity(passes.len());
+        let mut counts: Vec<&[IndirectCountBinding]> = Vec::with_capacity(passes.len());
+        for ((pass, &(id, _)), decision) in passes.iter().zip(epochs).zip(decisions) {
+            let mut descriptor = pass.commands();
+            let mut table: &[IndirectCountBinding] = &[];
+            if decision.is_some_and(|choice| choice.compact) {
+                let prepared = self.views.get(&id).and_then(|view| view.cached.as_ref())
+                    .and_then(|cache| cache.prepared.as_ref()).expect("scheduled compaction plan");
+                descriptor.commands = &prepared.commands;
+                table = &prepared.counts;
+            }
+            native.push(descriptor);
+            counts.push(table);
+            tags.push(decision.and_then(|choice| choice.tag).or(pass.gpu_work_tag));
+        }
+        device.submit_counted_offscreen_batch(&native, &counts, &tags)
+    }
+
+    pub(super) fn observe(&mut self, sample: GpuTimestampSample) {
+        let Some(&id) = self.probes.get(&sample.tag.batch_id) else { return; };
+        if let Some(view) = self.views.get_mut(&id) {
+            if let Some(cached) = view.cached.as_mut() {
+                cached.cost.observe(sample);
+            }
+            if view.pending_id().is_some() { return; }
+        }
+        self.probes.remove(&sample.tag.batch_id);
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        self.probes.clear();
+        for view in self.views.values_mut() { view.cached = None; }
+    }
+
+    pub(super) fn remove(&mut self, device: &mut dyn ExtensionDevice, id: SceneViewId) -> Result<()> {
+        if let Some(view) = self.views.remove(&id) {
+            if let Some(probe) = view.pending_id() { self.probes.remove(&probe); }
+            view.destroy(device)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> Result<()> {
+        for view in self.views.into_values() { view.destroy(device)?; }
+        device.destroy_shader_module(self.shader)
+    }
+}
+
+impl ViewCompactor {
+    fn pending_id(&self) -> Option<u64> {
+        self.cached.as_ref()?.cost.pending.as_ref().map(|probe| probe.id)
     }
 
     fn reserve(&mut self, device: &mut dyn ExtensionDevice, sizes: [u64; 3]) -> Result<[BufferId; 3]> {
@@ -310,7 +409,7 @@ impl Compactor {
         Ok(Some(Prepared { commands, counts: bindings, compute, groups: group_count }))
     }
 
-    pub(super) fn submit(&mut self, device: &mut dyn ExtensionDevice, pass: &NativeOffscreenPass) -> Result<bool> {
+    fn schedule(&mut self, device: &mut dyn ExtensionDevice, shader: ShaderModuleId, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
         if !self.cached.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.source, &pass.commands)) {
             // Invalidate before preparing: a failed allocation or upload may
             // have replaced scratch storage referenced by the previous plan.
@@ -318,22 +417,18 @@ impl Compactor {
             let prepared = self.prepare(device, pass)?;
             self.cached = Some(Cached { source: Arc::clone(&pass.commands), prepared, cost: CostModel::default() });
         }
-        let Some(cached) = self.cached.as_mut() else { return Ok(false); };
-        let Some(prepared) = cached.prepared.as_ref() else { return Ok(false); };
+        let Some(cached) = self.cached.as_mut() else { return Ok(None); };
+        let Some(prepared) = cached.prepared.as_ref() else { return Ok(None); };
         let now = Instant::now();
         let (path, probe) = cached.cost.choose(now);
         let id = probe.then(|| cached.cost.begin(path, now));
         let draw_tag = id.map(|batch_id| GpuTimestampTag { batch_id, stage: GpuTimestampStage::DrawIndirect });
         if path == Path::Original {
-            if let Some(tag) = draw_tag {
-                device.submit_counted_offscreen_profiled(&pass.commands(), &[], Some(tag))?;
-                return Ok(true);
-            }
-            return Ok(false);
+            return Ok(draw_tag.map(|tag| Decision { compact: false, tag: Some(tag) }));
         }
         // Culling, compaction and counted drawing share the ordered owner queue.
         let dispatch = ComputeDispatch {
-            shader: self.shader, bindings: &prepared.compute, workgroups: [prepared.groups, 1, 1],
+            shader, bindings: &prepared.compute, workgroups: [prepared.groups, 1, 1],
         };
         if let Some(batch_id) = id {
             device.dispatch_compute_batch_profiled(std::slice::from_ref(&dispatch),
@@ -341,27 +436,14 @@ impl Compactor {
         } else {
             device.dispatch_compute(&dispatch)?;
         }
-        let mut native = pass.commands();
-        native.commands = &prepared.commands;
-        device.submit_counted_offscreen_profiled(&native, &prepared.counts, draw_tag)?;
-        Ok(true)
+        Ok(Some(Decision { compact: true, tag: draw_tag }))
     }
 
-    pub(super) fn observe(&mut self, sample: GpuTimestampSample) {
-        if let Some(cached) = self.cached.as_mut() {
-            cached.cost.observe(sample);
-        }
-    }
-
-    pub(super) fn invalidate(&mut self) {
-        self.cached = None;
-    }
-
-    pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> Result<()> {
+    fn destroy(self, device: &mut dyn ExtensionDevice) -> Result<()> {
         if let Some(scratch) = self.scratch {
             for buffer in scratch.buffers { device.destroy_buffer(buffer)?; }
         }
-        device.destroy_shader_module(self.shader)
+        Ok(())
     }
 }
 

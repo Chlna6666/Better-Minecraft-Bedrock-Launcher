@@ -1019,10 +1019,10 @@ impl SidecarGpuBackend {
         device: &mut dyn ExtensionDevice,
         ids: Vec<SceneViewId>,
     ) -> gpui::Result<()> {
-        if !ids.is_empty() {
-            if let Some(compactor) = self.draw_compaction.as_mut() { compactor.invalidate(); }
-        }
         for id in ids {
+            if let Some(compactor) = self.draw_compaction.as_mut() {
+                compactor.remove(device, id)?;
+            }
             self.command_cache.remove(&id);
             self.captured_inputs.remove(&id);
             if let Some(mut scene) = self.scenes.remove(&id) {
@@ -1544,27 +1544,20 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         // semaphore/Fence handshakes or CPU waits. Other standalone engines
         // can request the generic IndependentGraphicsIfAvailable mode through
         // gfx-core when measured concurrency justifies its extra submissions.
-        // Initial measured/opt-in path: one ordered capture, no tagged
-        // timestamp loss or extra submission boundaries for multi-view batches.
-        let native_result = (|| -> gfx_core::Result<Option<gfx_core::SubmissionId>> {
-            if let ([pass], Some(compactor)) =
-                (self.pending_passes.as_slice(), self.draw_compaction.as_mut())
-            {
-                if pass.gpu_work_tag.is_none() && compactor.submit(device, pass)? {
-                    // Vulkan's ordered offscreen path returns no public ID;
-                    // GUI consumer proof seals resident slot retirement.
-                    return Ok(None);
-                }
-            }
+        // Per-view compaction scratch and cost models, one native graphics batch.
+        let native_result = if let Some(compactor) = self.draw_compaction.as_mut() {
+            compactor.submit_batch(device, &self.pending_passes, &self.pending_capture_epochs)
+        } else {
             submit_native_offscreen_passes(&self.pending_passes, |passes, tags| {
                 device.submit_offscreen_graphics(
                     passes, tags, gfx_core::OffscreenQueuePreference::OrderedGraphics,
                 )
             })
-        })();
+        };
         let submitted = match native_result {
             Ok(submitted) => submitted,
             Err(error) => {
+                if let Some(compactor) = self.draw_compaction.as_mut() { compactor.invalidate(); }
                 if let Some(surface) = self.offscreen.as_mut() {
                     surface.render_passes_failed(&self.pending_capture_epochs);
                 }

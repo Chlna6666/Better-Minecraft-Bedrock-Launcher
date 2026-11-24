@@ -2707,8 +2707,11 @@ impl VulkanDevice {
         passes: &[RenderPassCommands<'_>],
         tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
         independent: bool,
-        counts: &[gfx_core::IndirectCountBinding],
+        counts: &[&[gfx_core::IndirectCountBinding]],
     ) -> Result<Option<SubmissionId>> {
+        if !counts.is_empty() && counts.len() != passes.len() {
+            return Err(Error::InvalidInput("offscreen count table length mismatch".into()));
+        }
         if tags.is_some_and(|t| t.len() != passes.len()) {
             return Err(Error::InvalidInput(
                 "offscreen GPU tag count mismatch".into(),
@@ -2778,7 +2781,7 @@ impl VulkanDevice {
                             )
                         })
                 }),
-                counts,
+                counts.get(index).copied().unwrap_or(&[]),
             );
             if let Err(error) = result {
                 self.destroy_temporary_command_encoder_now(encoder)?;
@@ -5674,31 +5677,45 @@ impl PresentationDevice for VulkanDevice {
             return self.record_texture_passes(std::slice::from_ref(pass),
                 Some(std::slice::from_ref(&tag)), false, &[]).map(|_| ());
         }
-        let limit = self.indirect_draw_count_limit().ok_or_else(|| {
-            Error::Unavailable("Vulkan drawIndirectCount is unavailable".into())
-        })?;
-        let mut previous = None;
-        for &count in counts {
-            if previous.is_some_and(|index| index >= count.command_index) {
-                return Err(Error::InvalidInput("indirect count bindings must be strictly ordered".into()));
-            }
-            previous = Some(count.command_index);
-            let (arguments, offset, stride) = match pass.commands.get(count.command_index) {
-                Some(RenderCommand::DrawIndirect(draw)) => (draw.arguments, draw.offset, 16),
-                Some(RenderCommand::DrawIndexedIndirect(draw)) => (draw.arguments, draw.offset, 20),
-                _ => return Err(Error::InvalidInput("count binding requires an indirect draw".into())),
-            };
-            let args = self.buffers.get(arguments)?;
-            let counter = self.buffers.get(count.count_buffer)?;
-            if !args.desc.usage.contains(BufferUsage::INDIRECT)
-                || !counter.desc.usage.contains(BufferUsage::INDIRECT)
-            {
-                return Err(Error::InvalidInput("counted draw buffers require INDIRECT usage".into()));
-            }
-            count.validate_ranges(offset, args.desc.size, counter.desc.size, stride, limit)?;
+        self.render_to_textures_counted_profiled(
+            std::slice::from_ref(pass), std::slice::from_ref(&counts), std::slice::from_ref(&tag),
+        ).map(|_| ())
+    }
+
+    fn render_to_textures_counted_profiled(
+        &mut self, passes: &[RenderPassCommands<'_>], counts: &[&[gfx_core::IndirectCountBinding]],
+        tags: &[Option<gfx_core::GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if passes.len() != counts.len() || passes.len() != tags.len() {
+            return Err(Error::InvalidInput("counted pass metadata length mismatch".into()));
         }
-        self.record_texture_passes(std::slice::from_ref(pass),
-            Some(std::slice::from_ref(&tag)), false, counts).map(|_| ())
+        for (pass, &counts) in passes.iter().zip(counts) {
+            if counts.is_empty() { continue; }
+            let limit = self.indirect_draw_count_limit().ok_or_else(|| {
+                Error::Unavailable("Vulkan drawIndirectCount is unavailable".into())
+            })?;
+            let mut previous = None;
+            for &count in counts {
+                if previous.is_some_and(|index| index >= count.command_index) {
+                    return Err(Error::InvalidInput("indirect count bindings must be strictly ordered".into()));
+                }
+                previous = Some(count.command_index);
+                let (arguments, offset, stride) = match pass.commands.get(count.command_index) {
+                    Some(RenderCommand::DrawIndirect(draw)) => (draw.arguments, draw.offset, 16),
+                    Some(RenderCommand::DrawIndexedIndirect(draw)) => (draw.arguments, draw.offset, 20),
+                    _ => return Err(Error::InvalidInput("count binding requires an indirect draw".into())),
+                };
+                let args = self.buffers.get(arguments)?;
+                let counter = self.buffers.get(count.count_buffer)?;
+                if !args.desc.usage.contains(BufferUsage::INDIRECT)
+                    || !counter.desc.usage.contains(BufferUsage::INDIRECT)
+                {
+                    return Err(Error::InvalidInput("counted draw buffers require INDIRECT usage".into()));
+                }
+                count.validate_ranges(offset, args.desc.size, counter.desc.size, stride, limit)?;
+            }
+        }
+        self.record_texture_passes(passes, Some(tags), false, counts)
     }
 
     fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
