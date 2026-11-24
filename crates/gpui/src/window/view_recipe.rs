@@ -58,6 +58,60 @@ impl Window {
         self.next_view_recipes.insert(key, entry);
     }
 
+    /// The explicit GPUI cached API supplies layout independently of Render.
+    /// Its unchanged stationary subtree may include listeners and state, but
+    /// not nested frame-local cache owners or deferred/tooltip transfers.
+    pub(crate) fn explicit_cached_view_replay(
+        &self,
+        owner: EntityId,
+        key: &GlobalElementId,
+        bounds: Bounds<Pixels>,
+        fingerprint: Option<u64>,
+        cx: &App,
+    ) -> Option<super::frame::RetainedReplayRanges> {
+        if cfg!(gpui_hot_reload)
+            || self.force_view_cache_refresh()
+            || !self.invalidator.active_targeted_replay()
+            || self.view_dirty_scope(owner).is_some()
+            || cx.has_active_drag()
+            || self.is_inspector_picking(cx)
+            || fingerprint.is_none()
+            || self.invalidator.retained_route_path_is_dirty(key, &|_| true)
+            || self.invalidator.requires_reconciliation_for_route(key, &|_| true)
+        {
+            return None;
+        }
+        let range = self.rendered_frame.retained_element_ranges.get(key)?;
+        if !range.explicit_cached_view || !range.identity_stable
+            || range.bounds != bounds
+            || range.layout_fingerprint != fingerprint
+            || range.paint_context != self.current_retained_paint_context()
+            || self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_none()
+            || range.prepaint_range.start.deferred_draws_index != range.prepaint_range.end.deferred_draws_index
+            || range.prepaint_range.start.tooltips_index != range.prepaint_range.end.tooltips_index
+            || !self.can_reuse_prepaint(&range.prepaint_range)
+            || !self.can_reuse_paint(&range.paint_range)
+        {
+            return None;
+        }
+        let (root, descendants) = self.rendered_frame.retained_element_order
+            .get(range.metadata_range.clone())?.split_last()?;
+        if self.rendered_frame.retained_element_ranges.get(root)?.metadata_range != range.metadata_range
+            || !descendants.iter().enumerate().all(|(i, key)| {
+                self.rendered_frame.retained_element_ranges.get(key).is_some_and(|child| {
+                    !child.replay_barrier && child.metadata_range.end == range.metadata_range.start + i + 1
+                })
+            })
+        {
+            return None;
+        }
+        Some(super::frame::RetainedReplayRanges {
+            prepaint_range: range.prepaint_range.clone(),
+            paint_range: range.paint_range.clone(),
+            metadata_range: range.metadata_range.clone(),
+        })
+    }
+
     /// Fixed slots have an independent layout root. Reuse the whole committed
     /// lifecycle only if the slot's actual geometry and inherited paint state
     /// match and all descendants have a known static replay contract.

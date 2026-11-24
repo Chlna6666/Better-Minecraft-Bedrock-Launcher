@@ -891,6 +891,8 @@ impl Window {
         plain_text_key: Option<crate::element::RetainedPlainTextKey>,
         identity_stable: bool,
         subtree_stable: bool,
+        replay_barrier: bool,
+        explicit_cached_view: bool,
     ) {
         debug_assert!(metadata_start <= self.next_frame.retained_element_order.len());
         let paint_context = self.current_retained_paint_context();
@@ -941,6 +943,8 @@ impl Window {
                 plain_text_key,
                 identity_stable,
                 subtree_stable,
+                replay_barrier,
+                explicit_cached_view,
             },
         );
         if !identity_stable {

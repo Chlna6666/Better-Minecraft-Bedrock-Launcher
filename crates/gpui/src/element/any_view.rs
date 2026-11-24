@@ -4,6 +4,7 @@ use crate::{
     Window,
 };
 use anyhow::Result;
+use refineable::Refineable as _;
 use std::{any::TypeId, fmt};
 
 type RenderViewFn = fn(&mut dyn std::any::Any, AnyWeakEntity, &mut Window, &mut App) -> AnyElement;
@@ -28,6 +29,12 @@ impl<V: Render> From<Entity<V>> for AnyView {
 }
 
 impl AnyView {
+    /// Cache this view at a parent-supplied layout style. The caller must provide
+    /// a definite allocation and notify when the view's content changes.
+    pub fn cached(self, style: crate::StyleRefinement) -> ViewElement {
+        ViewElement::new(self).cached(style)
+    }
+
     /// Convert this view to a weak type-erased handle.
     pub fn downgrade(&self) -> AnyWeakView {
         AnyWeakView {
@@ -109,17 +116,27 @@ impl Eq for AnyView {}
 #[doc(hidden)]
 pub struct ViewElement {
     view: AnyView,
+    cached_style: Option<Box<crate::StyleRefinement>>,
 }
 
 impl ViewElement {
     #[inline]
     fn new(view: AnyView) -> Self {
-        Self { view }
+        Self { view, cached_style: None }
     }
 
     #[inline]
     fn from_entity<V: Render>(view: Entity<V>) -> Self {
         Self::new(view.into())
+    }
+
+    fn cached(mut self, style: crate::StyleRefinement) -> Self {
+        self.cached_style = Some(Box::new(style));
+        self
+    }
+
+    pub(crate) fn explicitly_cached_owner(&self) -> Option<EntityId> {
+        self.cached_style.as_ref().map(|_| self.view.entity_id())
     }
 }
 
@@ -136,6 +153,7 @@ impl IntoElement for ViewElement {
 #[doc(hidden)]
 pub enum ViewRequestLayout {
     Element(AnyElement),
+    Cached { element: Option<AnyElement> },
     Fixed {
         recipe: crate::RetainedViewRecipe,
         element: Option<AnyElement>,
@@ -167,8 +185,14 @@ impl Element for ViewElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let entity_id = self.view.entity_id();
+        if let Some(refinement) = &self.cached_style {
+            let mut style = crate::Style::default();
+            style.refine(refinement.as_ref());
+            return (window.request_layout(style, [], cx), ViewRequestLayout::Cached { element: None });
+        }
         let type_name = cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
-        window.with_rendered_view(entity_id, |window| {
+        let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
+        let result = window.with_rendered_view(entity_id, |window| {
             let recipe = if let Some(recipe) = window.reuse_view_recipe(entity_id) {
                 recipe
             } else {
@@ -195,7 +219,9 @@ impl Element for ViewElement {
             // queries the current view, exactly as it did when the view cache owned this boundary.
             let layout_id = element.request_layout(window, cx);
             (layout_id, ViewRequestLayout::Element(element))
-        })
+        });
+        let _ = cx.entities.set_render_dependency_owner(previous);
+        result
     }
 
     fn prepaint(
@@ -209,8 +235,21 @@ impl Element for ViewElement {
     ) {
         let entity_id = self.view.entity_id();
         window.set_view_id(entity_id);
+        let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
         window.with_rendered_view(entity_id, |window| match element {
             ViewRequestLayout::Element(element) => { element.prepaint(window, cx); }
+            ViewRequestLayout::Cached { element } => {
+                let type_name = cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
+                window.record_rendered_view(entity_id, type_name);
+                let mut inner = self.view.render_element(window, cx);
+                window.with_retained_child_scope(|window| {
+                    inner.prepaint_as_root(bounds.origin, crate::size(
+                        crate::AvailableSpace::Definite(bounds.size.width),
+                        crate::AvailableSpace::Definite(bounds.size.height),
+                    ), window, cx);
+                });
+                *element = Some(inner);
+            }
             ViewRequestLayout::Fixed { recipe, element } => {
                 let mut inner = recipe.materialize();
                 window.with_retained_child_scope(|window| {
@@ -227,6 +266,7 @@ impl Element for ViewElement {
                 *element = Some(inner);
             }
         });
+        let _ = cx.entities.set_render_dependency_owner(previous);
     }
 
     fn paint(
@@ -240,12 +280,17 @@ impl Element for ViewElement {
         cx: &mut App,
     ) {
         let entity_id = self.view.entity_id();
+        let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
         window.with_rendered_view(entity_id, |window| match element {
             ViewRequestLayout::Element(element) => element.paint(window, cx),
+            ViewRequestLayout::Cached { element } => {
+                element.as_mut().expect("cached view must prepaint").paint(window, cx);
+            }
             ViewRequestLayout::Fixed { element, .. } => {
                 element.as_mut().expect("fixed recipe must prepaint").paint(window, cx);
             }
         });
+        let _ = cx.entities.set_render_dependency_owner(previous);
     }
 }
 
@@ -264,6 +309,14 @@ fn render_entity<V: Render>(
         .expect("rendered entity type must match its render function");
     let mut view_cx = Context::new_context(cx, weak);
     view.render(window, &mut view_cx).into_any_element()
+}
+
+impl<V: Render> Entity<V> {
+    /// Cache an entity-backed view at a parent-supplied layout style. This is
+    /// compatible with GPUI's cached view API; content does not size the slot.
+    pub fn cached(self, style: crate::StyleRefinement) -> ViewElement {
+        ViewElement::from_entity(self).cached(style)
+    }
 }
 
 impl<V: 'static + Render> IntoElement for Entity<V> {

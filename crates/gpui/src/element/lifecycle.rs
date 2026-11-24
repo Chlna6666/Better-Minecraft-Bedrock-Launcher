@@ -453,6 +453,7 @@ fn record_retained_painted_element(
     plain_text_key: Option<RetainedPlainTextKey>,
     identity_stable: bool,
     outer_replay_safe: bool,
+    explicit_cached_view: bool,
     unstable_identity_start: usize,
     window: &mut Window,
 ) {
@@ -471,6 +472,8 @@ fn record_retained_painted_element(
         plain_text_key,
         identity_stable,
         subtree_stable,
+        !outer_replay_safe,
+        explicit_cached_view,
     );
 
     // Reuse the existing O(1) subtree-stability propagation counter for explicit replay barriers
@@ -636,9 +639,18 @@ impl<E: Element> Drawable<E> {
                     window,
                 );
                 if identity_stable {
-                    if let Some((owner, retained, translation)) = window.fixed_view_replay(
-                        &retained_id, bounds, layout_fingerprint,
-                    ) {
+                    let explicit_owner = (&self.element as &dyn Any)
+                        .downcast_ref::<super::ViewElement>()
+                        .and_then(super::ViewElement::explicitly_cached_owner);
+                    let retained_view = if let Some(owner) = explicit_owner {
+                        window.explicit_cached_view_replay(owner, &retained_id, bounds, layout_fingerprint, cx)
+                            .map(|ranges| (owner, ranges, Point::default()))
+                    } else if (&self.element as &dyn Any).is::<super::ViewElement>() {
+                        window.fixed_view_replay(&retained_id, bounds, layout_fingerprint)
+                    } else {
+                        None
+                    };
+                    if let Some((owner, retained, translation)) = retained_view {
                         let prepaint_start = window.prepaint_index();
                         if window.reuse_prepaint_at(retained.prepaint_range.clone(), translation) {
                             self.phase = ElementDrawPhase::Retained {
@@ -796,6 +808,8 @@ impl<E: Element> Drawable<E> {
                     plain_text_key,
                     identity_stable,
                     E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay(),
+                    (&self.element as &dyn Any).downcast_ref::<super::ViewElement>()
+                        .is_some_and(|view| view.explicitly_cached_owner().is_some()),
                     paint_run.unstable_identity_start,
                     window,
                 );

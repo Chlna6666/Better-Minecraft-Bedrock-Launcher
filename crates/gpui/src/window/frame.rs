@@ -163,6 +163,10 @@ pub(crate) struct RetainedElementRange {
     pub(crate) identity_stable: bool,
     /// Whether this element and every retained descendant have unambiguous identities.
     pub(crate) subtree_stable: bool,
+    /// An element owns frame-local state that outer replay must not bypass.
+    pub(crate) replay_barrier: bool,
+    /// Parent supplied an explicit layout slot through Entity::cached.
+    pub(crate) explicit_cached_view: bool,
 }
 
 /// Minimal replay handle returned after a retained element has passed all semantic, layout and
