@@ -831,6 +831,9 @@ pub(super) fn render_game_panel(
         .track_scroll(&state.game_rows_scroll)
         .child(rows_body);
 
+    // Finish reading the immutable page state before render_pager mutably
+    // borrows the App to synchronize its input entity.
+    let refresh_error = state.error.clone();
     let footer = div()
         .flex()
         .flex_col()
@@ -855,7 +858,7 @@ pub(super) fn render_game_panel(
         );
 
     let panel = panel.child(rows);
-    let panel = if let Some(error) = &state.error {
+    let panel = if let Some(error) = &refresh_error {
         panel.child(super::loading::refresh_error(colors, t!("DownloadPage.load_error", error = error)))
     } else {
         panel

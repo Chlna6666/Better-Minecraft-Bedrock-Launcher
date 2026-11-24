@@ -184,17 +184,6 @@ fn hanging_sign_chain_uv(cuboid: ModelCuboid) -> ModelCuboid {
         .with_face_uv(BlockFace::North, sign_uv(6.0, 6.0, 6.0, 6.0))
 }
 
-fn hanging_sign_bar_uv(cuboid: ModelCuboid) -> ModelCuboid {
-    cuboid
-        .with_material_slot("bar")
-        .with_face_uv(BlockFace::North, sign_uv(4.0, 4.0, 16.0, 2.0))
-        .with_face_uv(BlockFace::South, sign_uv(4.0, 4.0, 16.0, 2.0))
-        .with_face_uv(BlockFace::East, sign_uv(0.0, 4.0, 4.0, 2.0))
-        .with_face_uv(BlockFace::West, sign_uv(0.0, 4.0, 4.0, 2.0))
-        .with_face_uv(BlockFace::Up, sign_uv(4.0, 0.0, 16.0, 4.0))
-        .with_face_uv(BlockFace::Down, sign_uv(20.0, 0.0, 16.0, 4.0))
-}
-
 fn wall_sign_board_cuboid(direction: CardinalDirection) -> ModelCuboid {
     match direction {
         CardinalDirection::North => {

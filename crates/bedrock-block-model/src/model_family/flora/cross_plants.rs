@@ -97,7 +97,6 @@ fn coral_fan_shape(state: &BlockStateQuery) -> ModelShape {
         .or_else(|| state_i64(state, "minecraft:coral_fan_direction"))
         .unwrap_or(0)
         .rem_euclid(4);
-    let uv = full_texture_uv();
     let at = |x: f32, y: f32, z: f32| [x / 16.0, y / 16.0, z / 16.0];
     let quad = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], n: [i32; 3], u: [[f32; 2]; 4]| {
         ModelPlane::new([at(a[0],a[1],a[2]), at(b[0],b[1],b[2]), at(c[0],c[1],c[2]), at(d[0],d[1],d[2])], n)

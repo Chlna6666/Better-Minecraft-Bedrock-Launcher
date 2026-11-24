@@ -166,16 +166,6 @@ impl ObjResourcePack {
         texture_key_from_value(textures, normal)
     }
 
-    /// Returns the terrain-texture path registered for one key in this pack.
-    ///
-    /// This is the documented default variant (the first declared entry); the
-    /// full variant list is available through [`Self::texture_key_paths`].
-    pub(super) fn texture_key_path(&self, texture_key: &str) -> Option<&str> {
-        self.texture_key_paths(texture_key)
-            .and_then(|paths| paths.first())
-            .map(String::as_str)
-    }
-
     /// Returns every terrain-texture path registered for one key, in
     /// declaration order. Arrays in `terrain_texture.json` are variants
     /// selected by legacy data value or block state at runtime.

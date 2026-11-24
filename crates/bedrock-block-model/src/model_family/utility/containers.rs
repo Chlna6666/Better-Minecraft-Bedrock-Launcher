@@ -5,7 +5,7 @@ use crate::model_family::direction::{
 };
 use crate::model_family::shape::{
     ModelCuboid, ModelShape, box_unwrap_face_uvs, detail_cuboid_with_local_uv, full_texture_uv,
-    rect_uv, rotate_cuboid_cardinal,
+    rect_uv,
 };
 use crate::state::BlockStateQuery;
 
