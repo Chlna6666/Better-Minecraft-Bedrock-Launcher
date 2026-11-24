@@ -1,5 +1,5 @@
 use crate::{
-    App, Bounds, DefiniteLength, GlobalElementId, GpuiMemoryTrimLevel, LayoutStyle, Length, Pixels,
+    App, Bounds, DefiniteLength, ElementId, GlobalElementId, GpuiMemoryTrimLevel, LayoutStyle, Length, Pixels,
     Size, Style, Window, point, relative, size,
 };
 use collections::{FxHashMap, FxHashSet, FxHasher};
@@ -67,10 +67,38 @@ struct LayoutInstanceKey {
     ordinal: u32,
 }
 
+// Adapt gpui-fast #169: bound offscreen native layout retention by both age
+// and node count, independently of the currently mounted working set.
+const ROW_NODE_LINGER_FRAMES: usize = 240;
+const ROW_NODE_LINGER_MAX: usize = 8192;
+
 struct PersistentLayoutNode {
     id: LayoutId,
     measure_fingerprint: Option<u64>,
     measured: bool,
+    last_mounted_frame: Option<u64>,
+    offscreen: bool,
+}
+
+fn retained_row_owner(path: &[ElementId]) -> Option<&[ElementId]> {
+    let index = path.iter().rposition(|segment| {
+        matches!(segment, ElementId::NamedInteger(name, _)
+            if matches!(name.as_str(), "__gpui_retained_list_item" | "__gpui_retained_uniform_row"))
+    })?;
+    (index > 0).then_some(&path[..index])
+}
+
+// Keep the youngest complete age buckets. Dropping a whole tied bucket avoids
+// sorting or depending on hash-map iteration order when the budget is exceeded.
+fn row_linger_limit(by_age: &[usize; ROW_NODE_LINGER_FRAMES]) -> usize {
+    let mut count = 0usize;
+    for (age, nodes) in by_age.iter().enumerate().skip(1) {
+        count = count.saturating_add(*nodes);
+        if count > ROW_NODE_LINGER_MAX {
+            return age;
+        }
+    }
+    ROW_NODE_LINGER_FRAMES
 }
 
 pub struct TaffyLayoutEngine {
@@ -82,6 +110,7 @@ pub struct TaffyLayoutEngine {
     finished_request_ordinals: FxHashMap<GlobalElementId, u32>,
     anonymous_nodes: Vec<LayoutId>,
     persistent_layout_reuses: usize,
+    committed_layout_frame: u64,
     default_measured_style: Option<DefaultMeasuredStyle>,
     pub(super) absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
     unrounded_layout_origins: FxHashMap<LayoutId, (f32, f32)>,
@@ -139,6 +168,7 @@ impl TaffyLayoutEngine {
             finished_request_ordinals: FxHashMap::default(),
             anonymous_nodes: Vec::new(),
             persistent_layout_reuses: 0,
+            committed_layout_frame: 0,
             default_measured_style: None,
             absolute_layout_bounds: FxHashMap::default(),
             unrounded_layout_origins: FxHashMap::default(),
@@ -175,23 +205,77 @@ impl TaffyLayoutEngine {
         mut is_mounted: impl FnMut(&GlobalElementId) -> bool,
         frame_committed: bool,
     ) {
+        if frame_committed {
+            self.committed_layout_frame = self.committed_layout_frame.saturating_add(1);
+        }
+        let frame = self.committed_layout_frame;
         let mut removed = Vec::new();
+        let mut by_age = [0usize; ROW_NODE_LINGER_FRAMES];
+        let mut list_mounts = FxHashMap::<Vec<ElementId>, bool>::default();
         let finished_request_ordinals = &self.finished_request_ordinals;
+        let taffy = &mut self.taffy;
         self.persistent_nodes.retain(|key, node| {
-            // Rebuilding an Element may reduce the number of local layout
-            // slots, even if the Element itself stays mounted. Replayed
-            // retained ranges are not present in finished_request_ordinals:
-            // their entire native subtree remains valid.
-            let retained = is_mounted(&key.element)
-                && (!frame_committed
-                    || finished_request_ordinals
-                        .get(&key.element)
-                        .is_none_or(|count| key.ordinal < *count));
-            if !retained {
-                removed.push(node.id);
+            let mounted = is_mounted(&key.element);
+            let requested = finished_request_ordinals.get(&key.element);
+            if mounted {
+                // A replayed range has no new ordinal count. A committed
+                // rebuild, however, may have removed some of its local slots.
+                if frame_committed && requested.is_some_and(|count| key.ordinal >= *count) {
+                    removed.push(node.id);
+                    return false;
+                }
+                if frame_committed {
+                    node.last_mounted_frame = Some(frame);
+                }
+                node.offscreen = false;
+                return true;
             }
-            retained
+
+            // A measurement-only sample or an aborted speculative row is not
+            // a committed row and must never acquire a cache lifetime.
+            let age = node.last_mounted_frame.map(|last| frame.saturating_sub(last));
+            let keep = age.is_some_and(|age| age > 0 && age < ROW_NODE_LINGER_FRAMES as u64)
+                && (frame_committed || (node.offscreen && requested.is_none()))
+                && retained_row_owner(&key.element.0).is_some_and(|owner| {
+                    if let Some(&mounted) = list_mounts.get(owner) {
+                        return mounted;
+                    }
+                    let mounted = is_mounted(&GlobalElementId::from_path(owner));
+                    list_mounts.insert(owner.to_vec(), mounted);
+                    mounted
+                });
+            if !keep {
+                removed.push(node.id);
+                return false;
+            }
+
+            // Never hold an unmounted row's frame-local measurement closure
+            // (text layout state, entity captures, etc.) in the cache. Pure
+            // keyed measurements are explicitly independent of paint state.
+            if node.measured && taffy.get_node_context_mut(node.id.into())
+                .is_some_and(|context| !context.is_pure)
+            {
+                taffy.set_node_context(node.id.into(), None).expect(EXPECT_MESSAGE);
+                taffy.mark_dirty(node.id.into()).expect(EXPECT_MESSAGE);
+                node.measured = false;
+                node.measure_fingerprint = None;
+            }
+            node.offscreen = true;
+            by_age[age.expect("eligible row age") as usize] += 1;
+            true
         });
+        let limit = row_linger_limit(&by_age);
+        if limit < ROW_NODE_LINGER_FRAMES {
+            self.persistent_nodes.retain(|_, node| {
+                if node.offscreen && node.last_mounted_frame
+                    .is_some_and(|last| frame.saturating_sub(last) >= limit as u64)
+                {
+                    removed.push(node.id);
+                    return false;
+                }
+                true
+            });
+        }
         for id in removed {
             self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
             self.root_constraints.remove(&id);
@@ -407,6 +491,19 @@ impl TaffyLayoutEngine {
             self.finished_request_ordinals.shrink_to_fit();
             self.anonymous_nodes.shrink_to_fit();
         }
+        if matches!(level, GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive) {
+            let taffy = &mut self.taffy;
+            let root_constraints = &mut self.root_constraints;
+            self.persistent_nodes.retain(|_, node| {
+                if node.offscreen {
+                    taffy.remove(node.id.into()).expect(EXPECT_MESSAGE);
+                    root_constraints.remove(&node.id);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
         self.root_constraints
             .shrink_to(floor.max(self.root_constraints.len()));
         self.persistent_nodes
@@ -439,6 +536,9 @@ impl TaffyLayoutEngine {
         };
         *ordinal = ordinal.saturating_add(1);
         if let Some(node) = self.persistent_nodes.get_mut(&key) {
+            // The node is being reconstructed; it is no longer eligible for
+            // an idle-memory trim until the next committed lifetime check.
+            node.offscreen = false;
             let id = node.id;
             // Compare the actual native inputs. GPUI interaction/scroll flags
             // can change without changing Taffy's layout style; they must not
@@ -502,6 +602,8 @@ impl TaffyLayoutEngine {
                     id,
                     measure_fingerprint,
                     measured: is_measured,
+                    last_mounted_frame: None,
+                    offscreen: false,
                 },
             );
             id
@@ -1052,6 +1154,78 @@ impl TaffyLayoutEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row_id(index: usize) -> GlobalElementId {
+        GlobalElementId::from_path(&[
+            ElementId::from("list"),
+            ElementId::named_usize("__gpui_retained_uniform_row", index),
+            ElementId::from("leaf"),
+        ])
+    }
+
+    fn list_id() -> GlobalElementId {
+        GlobalElementId::from_path(&[ElementId::from("list")])
+    }
+
+    #[test]
+    fn offscreen_rows_reuse_layout_and_expire_on_unmount_or_trim() {
+        let mut engine = TaffyLayoutEngine::new();
+        let list = list_id();
+        let row = row_id(7);
+        let first = engine.request_layout(Some(row.clone()), Style::default(), crate::px(16.), 1., &[]);
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &list || id == &row, true);
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &list, true);
+        assert_eq!(engine.taffy.total_node_count(), 1);
+        let again = engine.request_layout(Some(row.clone()), Style::default(), crate::px(16.), 1., &[]);
+        assert_eq!(again, first);
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &list || id == &row, true);
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &list, true);
+        engine.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
+        assert_eq!(engine.taffy.total_node_count(), 0);
+
+        engine.request_layout(Some(row.clone()), Style::default(), crate::px(16.), 1., &[]);
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &list || id == &row, true);
+        engine.clear();
+        engine.retain_committed_elements(|_| false, true);
+        assert_eq!(engine.taffy.total_node_count(), 0);
+    }
+
+    #[test]
+    fn offscreen_rows_expire_and_never_cache_speculative_nodes() {
+        let mut engine = TaffyLayoutEngine::new();
+        let list = list_id();
+        let row = row_id(1);
+        engine.request_layout(Some(row.clone()), Style::default(), crate::px(16.), 1., &[]);
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &list || id == &row, true);
+        for _ in 0..ROW_NODE_LINGER_FRAMES {
+            engine.clear();
+            engine.retain_committed_elements(|id| id == &list, true);
+        }
+        assert_eq!(engine.taffy.total_node_count(), 0);
+
+        engine.request_layout(Some(row), Style::default(), crate::px(16.), 1., &[]);
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &list, false);
+        assert_eq!(engine.taffy.total_node_count(), 0);
+    }
+
+    #[test]
+    fn offscreen_budget_keeps_youngest_age_buckets() {
+        let mut by_age = [0; ROW_NODE_LINGER_FRAMES];
+        by_age[1] = 4000;
+        by_age[2] = 4000;
+        assert_eq!(row_linger_limit(&by_age), ROW_NODE_LINGER_FRAMES);
+        by_age[3] = 500;
+        assert_eq!(row_linger_limit(&by_age), 3);
+        by_age[1] = ROW_NODE_LINGER_MAX + 1;
+        assert_eq!(row_linger_limit(&by_age), 1);
+    }
 
     #[test]
     fn frame_clear_releases_excess_layout_working_set_capacity() {
