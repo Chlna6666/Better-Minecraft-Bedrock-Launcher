@@ -4005,6 +4005,16 @@ mod platform {
                         run_count,
                     )?;
                 } else if let RenderCommand::DrawIndexedIndirect(draw) = step {
+                    let mut run_count = 1usize;
+                    while let Some(&next) = step_iter.peek() {
+                        let RenderCommand::DrawIndexedIndirect(next) = next else { break; };
+                        if next.index_buffer != draw.index_buffer || next.pipeline != draw.pipeline
+                            || next.bind_groups != draw.bind_groups || next.scissor != draw.scissor
+                        { break; }
+                        step_iter.next();
+                        indirect_count += 1;
+                        run_count += 1;
+                    }
                     let index_view = self.index_buffer_view(draw.index_buffer, 0, 1)?;
                     // SAFETY: the staging pass validated and transitioned the
                     // index buffer and packed arguments; the pipeline is bound.
@@ -4014,7 +4024,7 @@ mod platform {
                         encoder_id,
                         staged.ok_or_else(|| Error::Backend("indexed indirect arguments were not staged".into()))?,
                         indirect_index,
-                        1,
+                        run_count,
                     )?;
                 } else {
                     self.record_render_step_draw(
@@ -4461,6 +4471,17 @@ mod platform {
                         run_count,
                     )?;
                 } else if let RenderCommand::DrawIndexedIndirect(draw) = step {
+                    let mut run_count = 1usize;
+                    while let Some(&(next_index, next)) = step_iter.peek() {
+                        if remaining_counts.first().is_some_and(|count| count.command_index == next_index) { break; }
+                        let RenderCommand::DrawIndexedIndirect(next) = next else { break; };
+                        if next.index_buffer != draw.index_buffer || next.pipeline != draw.pipeline
+                            || next.bind_groups != draw.bind_groups || next.scissor != draw.scissor
+                        { break; }
+                        step_iter.next();
+                        indirect_count += 1;
+                        run_count += 1;
+                    }
                     let index_view = self.index_buffer_view(draw.index_buffer, 0, 1)?;
                     // SAFETY: the staging pass validated and transitioned the
                     // index buffer and packed arguments; the pipeline is bound.
@@ -4470,7 +4491,7 @@ mod platform {
                         encoder_id,
                         staged.ok_or_else(|| Error::Backend("indexed indirect arguments were not staged".into()))?,
                         indirect_index,
-                        1,
+                        run_count,
                     )?;
                 } else {
                     self.record_render_step_draw(

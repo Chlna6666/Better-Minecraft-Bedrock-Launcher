@@ -509,6 +509,36 @@ mod tests {
         })
     }
 
+    fn indexed_draw(offset: u64, index_offset: u64) -> RenderCommand {
+        RenderCommand::DrawIndexedIndirect(DrawIndexedIndirectCommand {
+            pipeline: RenderPipelineId::from_parts(1, 1),
+            bind_groups: bind_group_list([]),
+            arguments: BufferId::from_parts(1, 1),
+            offset,
+            index_buffer: IndexBufferBinding {
+                buffer: BufferId::from_parts(2, 1),
+                format: IndexFormat::Uint32,
+                offset: index_offset,
+            },
+            scissor: None,
+        })
+    }
+
+    #[test]
+    fn indexed_runs_preserve_gather_order_and_index_binding() {
+        let mut commands: Vec<_> = (0..128).rev().map(|i| indexed_draw(i * 20, 0)).collect();
+        commands.extend((200..328).map(|i| indexed_draw(i * 20, 4)));
+        let plan = plan(&commands, 256).unwrap();
+        assert!(plan.indexed);
+        assert_eq!(plan.runs.len(), 2);
+        assert_eq!(plan.runs[1].command, 128);
+        assert_eq!(plan.records, 256);
+        assert_eq!(plan.source_bytes, 328 * 20);
+        assert_eq!(plan.gather[0], 127);
+        assert_eq!(plan.gather[127], 0);
+        assert_eq!(plan.gather[128], 200);
+    }
+
     #[test]
     fn gathers_noncontiguous_runs_without_reordering() {
         let mut commands: Vec<_> = (0..300).map(|i| draw(i * 16)).collect();
