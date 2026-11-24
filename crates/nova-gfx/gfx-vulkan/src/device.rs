@@ -1603,68 +1603,11 @@ impl VulkanDevice {
             .depth_attachment
             .as_ref()
             .map(|attachment| attachment.format);
-        let color_formats_vk = desc
-            .color_attachments
-            .iter()
-            .map(|attachment| format_to_vk(attachment.format))
-            .collect::<Vec<_>>();
-        let depth_format_vk = depth_format.map(format_to_vk);
-        let mut created = Vec::with_capacity(if depth_format.is_some() { 6 } else { 3 });
-        let sample_count = desc.sample_count;
-        let result = (|| {
-            let mut create = |config| -> Result<vk::RenderPass> {
-                let render_pass = create_native_render_pass(
-                    &self.device,
-                    &color_formats_vk,
-                    depth_format_vk,
-                    sample_count,
-                    config,
-                )?;
-                created.push(render_pass);
-                Ok(render_pass)
-            };
-            let pipeline_render_pass = create(VulkanRenderPassConfig::offscreen(false, false))?;
-            let offscreen_load_render_pass =
-                create(VulkanRenderPassConfig::offscreen(true, false))?;
-            let present_clear_render_pass = create(VulkanRenderPassConfig::swapchain(false))?;
-            let (
-                offscreen_depth_load_render_pass,
-                offscreen_load_depth_load_render_pass,
-                present_depth_load_render_pass,
-            ) = if depth_format.is_some() {
-                (
-                    Some(create(VulkanRenderPassConfig::offscreen(false, true))?),
-                    Some(create(VulkanRenderPassConfig::offscreen(true, true))?),
-                    Some(create(VulkanRenderPassConfig::swapchain(true))?),
-                )
-            } else {
-                (None, None, None)
-            };
-            Ok(VulkanRenderPass {
-                pipeline_render_pass,
-                offscreen_load_render_pass,
-                present_clear_render_pass,
-                offscreen_depth_load_render_pass,
-                offscreen_load_depth_load_render_pass,
-                present_depth_load_render_pass,
-                color_formats: desc
-                    .color_attachments
-                    .iter()
-                    .map(|attachment| attachment.format)
-                    .collect(),
-                depth_format,
-                sample_count,
-            })
-        })();
-        if result.is_err() {
-            // SAFETY: Every handle in `created` was created by this device and was not published.
-            unsafe {
-                for render_pass in created {
-                    self.device.destroy_render_pass(render_pass, None);
-                }
-            }
-        }
-        result.map(|render_pass| self.render_passes.insert(render_pass))
+        Ok(self.render_passes.insert(VulkanRenderPass {
+            color_formats: desc.color_attachments.iter().map(|attachment| attachment.format).collect(),
+            depth_format,
+            sample_count: desc.sample_count,
+        }))
     }
 
     /// Creates a graphics render pipeline.
@@ -1695,7 +1638,6 @@ impl VulkanDevice {
                 "Vulkan pipeline color targets and render pass attachments differ".to_string(),
             ));
         }
-        let render_pass = render_pass_record.pipeline_render_pass;
         let vertex_shader = self.shader_modules.get(desc.vertex_shader)?;
         let fragment_shader = self.shader_modules.get(desc.fragment_shader)?;
         if vertex_shader.stage != ShaderStage::Vertex {
@@ -1717,7 +1659,7 @@ impl VulkanDevice {
         let (pipeline_layout, pipeline) = create_graphics_pipeline(&GraphicsPipelineBuild {
             device: &self.device,
             pipeline_cache: self.pipeline_cache,
-            render_pass,
+            depth_format: render_pass_record.depth_format,
             pipeline_layout,
             vertex_shader,
             vertex_entry_point: &desc.vertex_entry_point,
@@ -1815,7 +1757,6 @@ impl VulkanDevice {
             gpu_work_clock,
             frame_submission: None,
             command_buffers,
-            transient_framebuffers: Vec::new(),
             fence: vk::Fence::null(),
             owns_fence: false,
             cross_queue_semaphores: None,
@@ -1901,7 +1842,7 @@ impl VulkanDevice {
         viewport: Option<Viewport>,
         graph_write_hazard: bool,
     ) -> Result<()> {
-        let mut transient_framebuffer = None;
+        let mut present_image = None;
         let mut render_target_texture = None;
         let mut render_target_transition = None;
         let (gpu_trace, gpu_trace_slot) = {
@@ -1918,8 +1859,9 @@ impl VulkanDevice {
             (trace, traced_slot)
         };
         let render_pass_record = self.render_passes.get(pass.render_pass)?;
-        let color_format_count = u32::try_from(render_pass_record.color_formats.len())
-            .map_err(|error| Error::InvalidInput(error.to_string()))?;
+        if render_pass_record.color_formats.len() != 1 {
+            return Err(Error::InvalidInput("Vulkan single-target render pass requires one color attachment".into()));
+        }
         let render_pass_record = render_pass_record.clone();
         let depth_view =
             self.depth_attachment_view_from_pass(&render_pass_record, depth_attachment)?;
@@ -1950,117 +1892,51 @@ impl VulkanDevice {
                 load_op
             }
         });
-        let color_load = matches!(&color_load_op, LoadOp::Load);
-        let depth_load = depth_load_op
-            .as_ref()
-            .is_some_and(|load_op| matches!(load_op, LoadOp::Load));
-        let (
-            framebuffer,
-            extent,
-            viewport_extent,
-            viewport_origin,
-            scissor_extent,
-            native_render_pass,
-        ) = match pass.target {
-            RenderTarget::Swapchain {
-                swapchain,
-                image_index,
-            } => {
-                let native_render_pass =
-                    render_pass_record.present_render_pass(color_load, depth_load)?;
-                let swapchain_record = self.swapchains.get(swapchain)?;
-                let image_index = usize::try_from(image_index).map_err(|error| {
-                    Error::InvalidInput(format!("image index overflow: {error}"))
+        let (image_view, extent, viewport_extent, viewport_origin, scissor_extent) = match pass.target {
+            RenderTarget::Swapchain { swapchain, image_index } => {
+                if matches!(color_load_op, LoadOp::Load) {
+                    return Err(Error::InvalidInput("Vulkan swapchain render passes require color LoadOp::Clear".into()));
+                }
+                let chain = self.swapchains.get(swapchain)?;
+                let image_index = usize::try_from(image_index)
+                    .map_err(|error| Error::InvalidInput(format!("image index overflow: {error}")))?;
+                if render_pass_record.sample_count != 1
+                    || format_to_vk(render_pass_record.color_formats[0]) != chain.format
+                {
+                    return Err(Error::InvalidInput("Vulkan swapchain and render pass formats or sample counts differ".into()));
+                }
+                let view = *chain.image_views.get(image_index).ok_or_else(|| {
+                    Error::InvalidInput("swapchain image index out of range".into())
                 })?;
-                let image_view =
-                    *swapchain_record
-                        .image_views
-                        .get(image_index)
-                        .ok_or_else(|| {
-                            Error::InvalidInput("swapchain image index out of range".to_string())
-                        })?;
-                let framebuffer = if let Some((depth_view, _)) = depth_view {
-                    let framebuffer = create_framebuffer(
-                        &self.device,
-                        native_render_pass,
-                        std::slice::from_ref(&image_view),
-                        Some(depth_view),
-                        swapchain_record.extent,
-                    )?;
-                    transient_framebuffer = Some(framebuffer);
-                    framebuffer
-                } else {
-                    *swapchain_record
-                        .framebuffers
-                        .get(image_index)
-                        .ok_or_else(|| {
-                            Error::InvalidInput("swapchain image index out of range".to_string())
-                        })?
-                };
-                (
-                    framebuffer,
-                    swapchain_record.extent,
-                    swapchain_record.source_extent,
-                    gfx_core::SignedOrigin2d::ZERO,
-                    swapchain_record.source_extent,
-                    native_render_pass,
-                )
+                present_image = Some(*chain.images.get(image_index).ok_or_else(|| {
+                    Error::InvalidInput("swapchain image index out of range".into())
+                })?);
+                (view, chain.extent, chain.source_extent, gfx_core::SignedOrigin2d::ZERO, chain.source_extent)
             }
             RenderTarget::TextureView(texture_view_id) => {
-                let native_render_pass =
-                    render_pass_record.offscreen_render_pass(color_load, depth_load)?;
                 let texture_view = self.texture_views.get(texture_view_id)?;
                 let texture = self.textures.get(texture_view.texture)?;
-                let framebuffer = create_framebuffer(
-                    &self.device,
-                    native_render_pass,
-                    std::slice::from_ref(&texture_view.view),
-                    depth_view.map(|(view, _)| view),
-                    vk::Extent2D {
-                        width: texture.desc.size.width(),
-                        height: texture.desc.size.height(),
-                    },
-                )?;
-                transient_framebuffer = Some(framebuffer);
+                if texture_view.desc.format != render_pass_record.color_formats[0]
+                    || texture.desc.sample_count != render_pass_record.sample_count
+                {
+                    return Err(Error::InvalidInput("Vulkan texture and render pass formats or sample counts differ".into()));
+                }
                 render_target_texture = Some(texture_view.texture);
                 render_target_transition = Some(CommandRenderTargetTransition {
-                    image: texture.image,
-                    old_layout: texture.layout,
+                    image: texture.image, old_layout: texture.layout,
                 });
-                let extent = vk::Extent2D {
-                    width: texture.desc.size.width(),
-                    height: texture.desc.size.height(),
-                };
-                let viewport_extent = viewport
-                    .map(|viewport| {
-                        viewport
-                            .for_target(texture.desc.size)
-                            .map(|extent| vk::Extent2D {
-                                width: extent.width(),
-                                height: extent.height(),
-                            })
+                let extent = vk::Extent2D { width: texture.desc.size.width(), height: texture.desc.size.height() };
+                let viewport_extent = viewport.map(|viewport| {
+                    viewport.for_target(texture.desc.size).map(|extent| vk::Extent2D {
+                        width: extent.width(), height: extent.height(),
                     })
-                    .transpose()?
-                    .unwrap_or(extent);
-                let viewport_origin = viewport
-                    .map(|viewport| viewport.mapped_origin(texture.desc.size))
-                    .transpose()?
-                    .unwrap_or(gfx_core::SignedOrigin2d::ZERO);
-                let scissor_extent = viewport
-                    .map(|viewport| viewport.mapped_scissor_extent(texture.desc.size))
-                    .transpose()?
-                    .unwrap_or(texture.desc.size);
-                (
-                    framebuffer,
-                    extent,
-                    viewport_extent,
-                    viewport_origin,
-                    vk::Extent2D {
-                        width: scissor_extent.width(),
-                        height: scissor_extent.height(),
-                    },
-                    native_render_pass,
-                )
+                }).transpose()?.unwrap_or(extent);
+                let viewport_origin = viewport.map(|viewport| viewport.mapped_origin(texture.desc.size))
+                    .transpose()?.unwrap_or(gfx_core::SignedOrigin2d::ZERO);
+                let scissor_extent = viewport.map(|viewport| viewport.mapped_scissor_extent(texture.desc.size))
+                    .transpose()?.unwrap_or(texture.desc.size);
+                (texture_view.view, extent, viewport_extent, viewport_origin,
+                    vk::Extent2D { width: scissor_extent.width(), height: scissor_extent.height() })
             }
         };
         let mut draw_steps = Vec::with_capacity(steps.len());
@@ -2186,8 +2062,9 @@ impl VulkanDevice {
             depth_accesses: &depth_accesses,
             device: &self.device,
             command_buffer,
-            render_pass: native_render_pass,
-            framebuffer,
+            color_views: std::slice::from_ref(&image_view),
+            depth_view: depth_view.map(|(view, _)| view),
+            present_image,
             steps: &draw_steps,
             descriptor_sets: &descriptor_sets,
             multi_draw_indirect: self.multi_draw_indirect,
@@ -2198,7 +2075,6 @@ impl VulkanDevice {
             scissor_extent,
             color_load_op,
             depth_load_op,
-            color_attachment_count: color_format_count,
             render_target_transitions: transitions,
             clear_region,
             resolve: None,
@@ -2222,12 +2098,6 @@ impl VulkanDevice {
                 self.textures.get_mut(texture_id)?.layout =
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
             }
-        }
-        if let Some(framebuffer) = transient_framebuffer {
-            self.command_encoders
-                .get_mut(encoder_id)?
-                .transient_framebuffers
-                .push(framebuffer);
         }
         result
     }
@@ -2353,12 +2223,6 @@ impl VulkanDevice {
                 load_op
             }
         });
-        let color_load = matches!(&color_load_op, LoadOp::Load);
-        let depth_load = depth_load_op
-            .as_ref()
-            .is_some_and(|load_op| matches!(load_op, LoadOp::Load));
-        let native_render_pass =
-            render_pass_record.offscreen_render_pass(color_load, depth_load)?;
         let target_size = gfx_core::Extent2d::new(extent.width, extent.height)?;
         let viewport_extent = viewport
             .map(|viewport| {
@@ -2381,14 +2245,6 @@ impl VulkanDevice {
                 height: extent.height(),
             })
             .unwrap_or(extent);
-        let framebuffer = create_framebuffer(
-            &self.device,
-            native_render_pass,
-            &image_views,
-            depth_view.map(|(view, _)| view),
-            extent,
-        )?;
-        let transient_framebuffer = Some(framebuffer);
         let target_size = gfx_core::Extent2d::new(extent.width, extent.height)?;
         let clear_region = match (viewport, clear_region) {
             (Some(viewport), Some(region)) => Some(viewport.map_scissor(region, target_size)?),
@@ -2530,8 +2386,9 @@ impl VulkanDevice {
             depth_accesses: &depth_accesses,
             device: &self.device,
             command_buffer,
-            render_pass: native_render_pass,
-            framebuffer,
+            color_views: &image_views,
+            depth_view: depth_view.map(|(view, _)| view),
+            present_image: None,
             steps: &draw_steps,
             descriptor_sets: &descriptor_sets,
             multi_draw_indirect: self.multi_draw_indirect,
@@ -2542,8 +2399,6 @@ impl VulkanDevice {
             scissor_extent,
             color_load_op,
             depth_load_op,
-            color_attachment_count: u32::try_from(color_views.len())
-                .map_err(|error| Error::InvalidInput(error.to_string()))?,
             render_target_transitions: &transitions,
             clear_region,
             resolve,
@@ -2562,12 +2417,6 @@ impl VulkanDevice {
                 self.textures.get_mut(texture_id)?.layout =
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
             }
-        }
-        if let Some(framebuffer) = transient_framebuffer {
-            self.command_encoders
-                .get_mut(encoder_id)?
-                .transient_framebuffers
-                .push(framebuffer);
         }
         result
     }
@@ -3556,9 +3405,8 @@ impl VulkanDevice {
     ///
     /// Returns [`Error`] when the handle is invalid.
     fn destroy_render_pass(&mut self, render_pass_id: RenderPassId) -> Result<()> {
-        self.wait_for_pending_work()?;
-        let render_pass = self.render_passes.take(render_pass_id)?;
-        self.destroy_render_pass_now(&render_pass);
+        // Dynamic rendering pass IDs hold only immutable CPU metadata.
+        self.render_passes.take(render_pass_id)?;
         Ok(())
     }
 
@@ -3784,26 +3632,6 @@ impl VulkanDevice {
                 )
             })
             .collect::<Result<Vec<_>>>()?;
-        let render_pass = create_native_render_pass(
-            &self.device,
-            std::slice::from_ref(&surface_format.format),
-            None,
-            1,
-            VulkanRenderPassConfig::swapchain(false),
-        )?;
-        let framebuffers = image_views
-            .iter()
-            .copied()
-            .map(|image_view| {
-                create_framebuffer(
-                    &self.device,
-                    render_pass,
-                    std::slice::from_ref(&image_view),
-                    None,
-                    extent,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             create_sync_objects(&self.device, images.len(), frame_slots)?;
         log::debug!(
@@ -3830,8 +3658,6 @@ impl VulkanDevice {
             source_extent: extent,
             images,
             image_views,
-            internal_render_pass: render_pass,
-            framebuffers,
             image_available_semaphores,
             render_finished_semaphores,
             frame_submissions: vec![None; in_flight_fences.len()],
@@ -4461,27 +4287,6 @@ impl VulkanDevice {
         unsafe { self.device.destroy_shader_module(shader.module, None) };
     }
 
-    fn destroy_render_pass_now(&self, render_pass: &VulkanRenderPass) {
-        // SAFETY: Every render-pass variant was created by this device and is destroyed once here.
-        unsafe {
-            self.device
-                .destroy_render_pass(render_pass.pipeline_render_pass, None);
-            self.device
-                .destroy_render_pass(render_pass.offscreen_load_render_pass, None);
-            self.device
-                .destroy_render_pass(render_pass.present_clear_render_pass, None);
-            if let Some(native) = render_pass.offscreen_depth_load_render_pass {
-                self.device.destroy_render_pass(native, None);
-            }
-            if let Some(native) = render_pass.offscreen_load_depth_load_render_pass {
-                self.device.destroy_render_pass(native, None);
-            }
-            if let Some(native) = render_pass.present_depth_load_render_pass {
-                self.device.destroy_render_pass(native, None);
-            }
-        }
-    }
-
     fn destroy_render_pipeline_now(&self, pipeline: &VulkanRenderPipeline) {
         // SAFETY: Pipeline objects were created by this device and are destroyed once here.
         unsafe {
@@ -4607,12 +4412,7 @@ impl VulkanDevice {
                 self.gpu_trace_totals.log_if_due();
             }
         }
-        // Destroy transient render targets before resetting the command pool, then
-        // keep only bounded, fully idle native pools for subsequent frame submissions.
-        for framebuffer in encoder.transient_framebuffers.drain(..) {
-            // SAFETY: owning submission completed and the framebuffer belongs to this device.
-            unsafe { self.device.destroy_framebuffer(framebuffer, None) };
-        }
+        // Keep only bounded, fully idle native pools for subsequent submissions.
         if encoder.owns_fence && encoder.fence != vk::Fence::null() {
             // SAFETY: the completed submission owns this fence and it is destroyed once.
             unsafe { self.device.destroy_fence(encoder.fence, None) };
@@ -4645,10 +4445,6 @@ impl VulkanDevice {
     }
 
     fn destroy_command_encoder_now(&self, encoder: &VulkanCommandEncoder) {
-        for framebuffer in &encoder.transient_framebuffers {
-            // SAFETY: Framebuffer was created for this command encoder and is destroyed once here.
-            unsafe { self.device.destroy_framebuffer(*framebuffer, None) };
-        }
         if let Some(semaphores) = encoder.cross_queue_semaphores {
             // Consumer-side fence completed (or device-wide idle on
             // teardown): both the producer signal and GUI wait are finished.
@@ -4682,11 +4478,6 @@ impl VulkanDevice {
                 self.device.destroy_fence(swapchain.acquire_fence, None);
             }
             swapchain.presentation.destroy(&self.device);
-            for framebuffer in swapchain.framebuffers {
-                self.device.destroy_framebuffer(framebuffer, None);
-            }
-            self.device
-                .destroy_render_pass(swapchain.internal_render_pass, None);
             for image_view in swapchain.image_views {
                 self.device.destroy_image_view(image_view, None);
             }
@@ -5720,9 +5511,7 @@ impl Drop for VulkanDevice {
         for (_, layout) in self.pipeline_layouts.drain_live() {
             self.destroy_pipeline_layout_now(&layout);
         }
-        for (_, render_pass) in self.render_passes.drain_live() {
-            self.destroy_render_pass_now(&render_pass);
-        }
+        drop(self.render_passes.drain_live());
         for (_, layout) in self.bind_group_layouts.drain_live() {
             self.destroy_resource_set_layout_now(&layout);
         }
@@ -6107,101 +5896,17 @@ struct VulkanShaderModule {
 
 #[derive(Clone)]
 struct VulkanRenderPass {
-    pipeline_render_pass: vk::RenderPass,
-    offscreen_load_render_pass: vk::RenderPass,
-    present_clear_render_pass: vk::RenderPass,
-    offscreen_depth_load_render_pass: Option<vk::RenderPass>,
-    offscreen_load_depth_load_render_pass: Option<vk::RenderPass>,
-    present_depth_load_render_pass: Option<vk::RenderPass>,
     color_formats: Vec<Format>,
     depth_format: Option<Format>,
     sample_count: u32,
 }
 
-impl VulkanRenderPass {
-    fn offscreen_render_pass(self, color_load: bool, depth_load: bool) -> Result<vk::RenderPass> {
-        match (color_load, depth_load) {
-            (false, false) => Ok(self.pipeline_render_pass),
-            (true, false) => Ok(self.offscreen_load_render_pass),
-            (false, true) => self.offscreen_depth_load_render_pass.ok_or_else(|| {
-                Error::InvalidInput(
-                    "Vulkan depth LoadOp::Load requires a render pass with a depth attachment"
-                        .to_string(),
-                )
-            }),
-            (true, true) => self.offscreen_load_depth_load_render_pass.ok_or_else(|| {
-                Error::InvalidInput(
-                    "Vulkan depth LoadOp::Load requires a render pass with a depth attachment"
-                        .to_string(),
-                )
-            }),
-        }
-    }
-
-    fn present_render_pass(self, color_load: bool, depth_load: bool) -> Result<vk::RenderPass> {
-        if color_load {
-            return Err(Error::InvalidInput(
-                "Vulkan swapchain render passes require color LoadOp::Clear".to_string(),
-            ));
-        }
-        if depth_load {
-            self.present_depth_load_render_pass.ok_or_else(|| {
-                Error::InvalidInput(
-                    "Vulkan depth LoadOp::Load requires a render pass with a depth attachment"
-                        .to_string(),
-                )
-            })
-        } else {
-            Ok(self.present_clear_render_pass)
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct VulkanRenderPassConfig {
-    color_load_op: vk::AttachmentLoadOp,
-    color_initial_layout: vk::ImageLayout,
-    color_final_layout: vk::ImageLayout,
-    depth_load_op: vk::AttachmentLoadOp,
-    depth_initial_layout: vk::ImageLayout,
-}
-
-impl VulkanRenderPassConfig {
-    fn offscreen(color_load: bool, depth_load: bool) -> Self {
-        Self {
-            color_load_op: attachment_load_op(color_load),
-            color_initial_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            color_final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            depth_load_op: attachment_load_op(depth_load),
-            depth_initial_layout: depth_initial_layout(depth_load),
-        }
-    }
-
-    fn swapchain(depth_load: bool) -> Self {
-        Self {
-            color_load_op: vk::AttachmentLoadOp::CLEAR,
-            color_initial_layout: vk::ImageLayout::UNDEFINED,
-            color_final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-            depth_load_op: attachment_load_op(depth_load),
-            depth_initial_layout: depth_initial_layout(depth_load),
-        }
-    }
-}
-
-fn attachment_load_op(load: bool) -> vk::AttachmentLoadOp {
-    if load {
-        vk::AttachmentLoadOp::LOAD
-    } else {
-        vk::AttachmentLoadOp::CLEAR
-    }
-}
-
-fn depth_initial_layout(load: bool) -> vk::ImageLayout {
-    if load {
-        vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-    } else {
-        vk::ImageLayout::UNDEFINED
-    }
+fn rendering_attachment(
+    view: vk::ImageView, layout: vk::ImageLayout, load: bool, clear: vk::ClearValue,
+) -> vk::RenderingAttachmentInfo<'static> {
+    vk::RenderingAttachmentInfo::default().image_view(view).image_layout(layout)
+        .load_op(if load { vk::AttachmentLoadOp::LOAD } else { vk::AttachmentLoadOp::CLEAR })
+        .store_op(vk::AttachmentStoreOp::STORE).clear_value(clear)
 }
 
 #[derive(Clone, Copy)]
@@ -6217,7 +5922,6 @@ struct VulkanCommandEncoder {
     command_pool: vk::CommandPool,
     queue_family_index: u32,
     command_buffers: Vec<vk::CommandBuffer>,
-    transient_framebuffers: Vec<vk::Framebuffer>,
     fence: vk::Fence,
     owns_fence: bool,
     /// Both binary semaphores belong to this command encoder's native fence.
@@ -6508,8 +6212,6 @@ struct VulkanSwapchain {
     source_extent: vk::Extent2D,
     images: Vec<vk::Image>,
     image_views: Vec<vk::ImageView>,
-    internal_render_pass: vk::RenderPass,
-    framebuffers: Vec<vk::Framebuffer>,
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
@@ -7222,112 +6924,10 @@ fn create_image_view_2d(
         .map_err(|error| VulkanError::from(error).into())
 }
 
-fn color_attachment_description(
-    format: vk::Format,
-    sample_count: u32,
-    config: VulkanRenderPassConfig,
-) -> vk::AttachmentDescription {
-    vk::AttachmentDescription::default()
-        .format(format)
-        .samples(sample_flag_for(sample_count).unwrap_or(vk::SampleCountFlags::TYPE_1))
-        .load_op(config.color_load_op)
-        .store_op(vk::AttachmentStoreOp::STORE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(config.color_initial_layout)
-        .final_layout(config.color_final_layout)
-}
-
-fn depth_attachment_description(
-    format: vk::Format,
-    sample_count: u32,
-    config: VulkanRenderPassConfig,
-) -> vk::AttachmentDescription {
-    vk::AttachmentDescription::default()
-        .format(format)
-        .samples(sample_flag_for(sample_count).unwrap_or(vk::SampleCountFlags::TYPE_1))
-        .load_op(config.depth_load_op)
-        .store_op(vk::AttachmentStoreOp::STORE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(config.depth_initial_layout)
-        .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-}
-
-fn create_native_render_pass(
-    device: &ash::Device,
-    formats: &[vk::Format],
-    depth_format: Option<vk::Format>,
-    sample_count: u32,
-    config: VulkanRenderPassConfig,
-) -> Result<vk::RenderPass> {
-    let mut attachments = formats
-        .iter()
-        .map(|&format| color_attachment_description(format, sample_count, config))
-        .collect::<Vec<_>>();
-    let color_attachment_refs = formats
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            vk::AttachmentReference::default()
-                .attachment(u32::try_from(index).unwrap_or(u32::MAX))
-                .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-        })
-        .collect::<Vec<_>>();
-    let depth_attachment = depth_format
-        .map(|depth_format| depth_attachment_description(depth_format, sample_count, config));
-    let depth_index =
-        u32::try_from(formats.len()).map_err(|error| Error::InvalidInput(error.to_string()))?;
-    let depth_attachment_ref = vk::AttachmentReference::default()
-        .attachment(depth_index)
-        .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-    if let Some(depth_attachment) = depth_attachment {
-        attachments.push(depth_attachment);
-    }
-    let mut subpass = vk::SubpassDescription::default()
-        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-        .color_attachments(&color_attachment_refs);
-    if depth_attachment.is_some() {
-        subpass = subpass.depth_stencil_attachment(&depth_attachment_ref);
-    }
-    let dependency_stage_mask = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-        | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-        | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS;
-    let source_access_mask =
-        vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-    let destination_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_READ
-        | vk::AccessFlags::COLOR_ATTACHMENT_WRITE
-        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-    let dependency = vk::SubpassDependency::default()
-        .src_subpass(vk::SUBPASS_EXTERNAL)
-        .dst_subpass(0)
-        .src_stage_mask(dependency_stage_mask)
-        .dst_stage_mask(dependency_stage_mask)
-        .src_access_mask(source_access_mask)
-        .dst_access_mask(destination_access_mask);
-    let subpasses = [subpass];
-    let dependencies = [dependency];
-    let render_pass_info = vk::RenderPassCreateInfo::default()
-        .attachments(&attachments)
-        .subpasses(&subpasses)
-        .dependencies(&dependencies);
-    // SAFETY: Render pass create info is self-contained and valid.
-    unsafe { device.create_render_pass(&render_pass_info, None) }
-        .map_err(|error| VulkanError::from(error).into())
-}
-
-fn create_empty_pipeline_layout(device: &ash::Device) -> Result<vk::PipelineLayout> {
-    let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
-    // SAFETY: Pipeline layout has no descriptors or push constants and is valid.
-    unsafe { device.create_pipeline_layout(&pipeline_layout_info, None) }
-        .map_err(|error| VulkanError::from(error).into())
-}
-
 struct GraphicsPipelineBuild<'a> {
     device: &'a ash::Device,
     pipeline_cache: vk::PipelineCache,
-    render_pass: vk::RenderPass,
+    depth_format: Option<Format>,
     pipeline_layout: vk::PipelineLayout,
     vertex_shader: &'a VulkanShaderModule,
     vertex_entry_point: &'a str,
@@ -7500,6 +7100,11 @@ fn create_graphics_pipeline(
         .stencil_test_enable(stencil.is_some())
         .front(stencil.map_or(vk::StencilOpState::default(), |s| stencil_op_state(s.front)))
         .back(stencil.map_or(vk::StencilOpState::default(), |s| stencil_op_state(s.back)));
+    let color_formats = build.desc.color_targets.iter().map(|target| format_to_vk(target.format))
+        .collect::<Vec<_>>();
+    let mut rendering = vk::PipelineRenderingCreateInfo::default()
+        .color_attachment_formats(&color_formats)
+        .depth_attachment_format(build.depth_format.map_or(vk::Format::UNDEFINED, format_to_vk));
     let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
         .stages(&shader_stages)
         .vertex_input_state(&vertex_input)
@@ -7511,9 +7116,8 @@ fn create_graphics_pipeline(
         .color_blend_state(&color_blending)
         .dynamic_state(&dynamic_state)
         .layout(build.pipeline_layout)
-        .render_pass(build.render_pass)
-        .subpass(0);
-    // SAFETY: Pipeline create info references valid shader modules and render pass.
+        .push_next(&mut rendering);
+    // SAFETY: dynamic rendering formats and shader modules remain live through creation.
     let pipeline = unsafe {
         build
             .device
@@ -7589,28 +7193,6 @@ fn stencil_op_to_vk(op: gfx_core::StencilOp) -> vk::StencilOp {
         StencilOp::IncrementWrap => vk::StencilOp::INCREMENT_AND_WRAP,
         StencilOp::DecrementWrap => vk::StencilOp::DECREMENT_AND_WRAP,
     }
-}
-
-fn create_framebuffer(
-    device: &ash::Device,
-    render_pass: vk::RenderPass,
-    color_views: &[vk::ImageView],
-    depth_view: Option<vk::ImageView>,
-    extent: vk::Extent2D,
-) -> Result<vk::Framebuffer> {
-    let mut attachments = color_views.to_vec();
-    if let Some(depth_view) = depth_view {
-        attachments.push(depth_view);
-    }
-    let framebuffer_info = vk::FramebufferCreateInfo::default()
-        .render_pass(render_pass)
-        .attachments(&attachments)
-        .width(extent.width)
-        .height(extent.height)
-        .layers(1);
-    // SAFETY: Framebuffer create info references a valid render pass and image view.
-    unsafe { device.create_framebuffer(&framebuffer_info, None) }
-        .map_err(|error| VulkanError::from(error).into())
 }
 
 fn create_command_pool(device: &ash::Device, queue_family_index: u32) -> Result<vk::CommandPool> {
@@ -7737,8 +7319,9 @@ struct CommandRecordInfo<'a> {
     depth_accesses: &'a [depth::DepthAccess],
     device: &'a ash::Device,
     command_buffer: vk::CommandBuffer,
-    render_pass: vk::RenderPass,
-    framebuffer: vk::Framebuffer,
+    color_views: &'a [vk::ImageView],
+    depth_view: Option<vk::ImageView>,
+    present_image: Option<vk::Image>,
     steps: &'a [CommandDrawStepInfo],
     descriptor_sets: &'a [vk::DescriptorSet],
     multi_draw_indirect: bool,
@@ -7749,8 +7332,6 @@ struct CommandRecordInfo<'a> {
     scissor_extent: vk::Extent2D,
     color_load_op: LoadOp<ClearColor>,
     depth_load_op: Option<LoadOp<f32>>,
-    /// Number of color attachments in this render pass. Controls clear values.
-    color_attachment_count: u32,
     render_target_transitions: &'a [CommandRenderTargetTransition],
     clear_region: Option<ScissorRect>,
     /// MSAA color source -> single-sample resolve destination image pair plus the
@@ -7985,6 +7566,30 @@ fn scoped_offscreen_clear_area(
     Some(target)
 }
 
+// Match the WSI acquire wait stage to the first image transition.
+fn record_present_layout(device: &ash::Device, command: vk::CommandBuffer, image: vk::Image, present: bool) {
+    let color = vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
+    let (old, new, src_stage, dst_stage, src_access, dst_access) = if present {
+        (vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR,
+            color, vk::PipelineStageFlags2::NONE, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags2::NONE)
+    } else {
+        (vk::ImageLayout::UNDEFINED, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            color, color, vk::AccessFlags2::NONE,
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+    };
+    let barrier = vk::ImageMemoryBarrier2::default().image(image)
+        .old_layout(old).new_layout(new).src_stage_mask(src_stage).dst_stage_mask(dst_stage)
+        .src_access_mask(src_access).dst_access_mask(dst_access)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED).dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .subresource_range(vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1));
+    // SAFETY: the acquired image belongs to this swapchain; its binary
+    // semaphores order transitions against the presentation engine.
+    unsafe { device.cmd_pipeline_barrier2(command,
+        &vk::DependencyInfo::default().image_memory_barriers(&[barrier])) };
+}
+
 fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
     let begin_info = vk::CommandBufferBeginInfo::default();
     // SAFETY: Command buffer is allocated from this context's command pool and resettable.
@@ -8021,18 +7626,20 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         };
     }
     depth::record_depth_accesses(info.device, info.command_buffer, info.depth_accesses);
-    if info.graph_write_hazard {
-        // WAW on the same physical VkImage. Preserve execution/memory ordering
-        // across independently recorded command buffers submitted to the same
-        // graphics queue. Existing image-layout barriers still handle RAW
-        // render-target -> sampled-image transitions separately.
+    if info.graph_write_hazard || !info.render_target_transitions.is_empty() || info.depth_view.is_some() {
+        // Preserve the legacy external subpass dependency, including
+        // repeated depth writes for an unchanged attachment layout.
+        let mut stages = vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
+        let mut writes = vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
+        let mut accesses = vk::AccessFlags2::COLOR_ATTACHMENT_READ | writes;
+        if info.depth_view.is_some() {
+            stages |= vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
+            writes |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+            accesses |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+        }
         let barrier = vk::MemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-            .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-            .dst_access_mask(
-                vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            );
+            .src_stage_mask(stages).dst_stage_mask(stages)
+            .src_access_mask(writes).dst_access_mask(accesses);
         // SAFETY: Command buffer recording is active; the target image and
         // previous writer belong to this same ordered queue submission.
         unsafe {
@@ -8053,6 +7660,9 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         );
     }
 
+    if let Some(image) = info.present_image {
+        record_present_layout(info.device, info.command_buffer, image, false);
+    }
     let clear_color = match info.color_load_op {
         LoadOp::Clear(color) => color,
         LoadOp::Load => ClearColor::default(),
@@ -8067,22 +7677,25 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             ],
         },
     };
-    let mut clear_values = Vec::with_capacity(
-        usize::try_from(info.color_attachment_count).unwrap_or(1)
-            + usize::from(info.depth_load_op.is_some()),
-    );
-    for _ in 0..info.color_attachment_count {
-        clear_values.push(color_clear);
+    let color_load = matches!(info.color_load_op, LoadOp::Load);
+    let mut attachment_stack = [vk::RenderingAttachmentInfo::default(); 4];
+    let mut attachment_heap;
+    let attachments = if info.color_views.len() <= attachment_stack.len() {
+        &mut attachment_stack[..info.color_views.len()]
+    } else {
+        attachment_heap = vec![vk::RenderingAttachmentInfo::default(); info.color_views.len()];
+        attachment_heap.as_mut_slice()
+    };
+    for (attachment, view) in attachments.iter_mut().zip(info.color_views) {
+        *attachment = rendering_attachment(*view, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            color_load, color_clear);
     }
-    if let Some(depth_load_op) = info.depth_load_op {
-        let depth = match depth_load_op {
-            LoadOp::Clear(depth) => depth,
-            LoadOp::Load => 1.0,
-        };
-        clear_values.push(vk::ClearValue {
-            depth_stencil: vk::ClearDepthStencilValue { depth, stencil: 0 },
-        });
-    }
+    let depth = info.depth_view.zip(info.depth_load_op).map(|(view, load)| {
+        let clear_depth = match load { LoadOp::Clear(depth) => depth, LoadOp::Load => 1.0 };
+        rendering_attachment(view, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            matches!(load, LoadOp::Load),
+            vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: clear_depth, stencil: 0 } })
+    });
     let has_transition = !info.render_target_transitions.is_empty();
     let render_area = scoped_offscreen_clear_area(
         info.extent,
@@ -8101,11 +7714,11 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             info.steps.iter().map(|step| step.scissor),
         )
     });
-    let render_pass_info = vk::RenderPassBeginInfo::default()
-        .render_pass(info.render_pass)
-        .framebuffer(info.framebuffer)
-        .render_area(render_area)
-        .clear_values(&clear_values);
+    let mut rendering_info = vk::RenderingInfo::default()
+        .render_area(render_area).layer_count(1).color_attachments(attachments);
+    if let Some(depth) = depth.as_ref() {
+        rendering_info = rendering_info.depth_attachment(depth);
+    }
     #[expect(
         clippy::cast_precision_loss,
         reason = "Vulkan viewport coordinates and dimensions are f32 by API contract"
@@ -8119,13 +7732,9 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         max_depth: 1.0,
     };
     let full_scissor = full_render_area(info.scissor_extent);
-    // SAFETY: Render pass, framebuffer, pipeline, and command buffer belong to this device.
+    // SAFETY: attachment views, layouts, pipeline formats and command buffer are valid.
     unsafe {
-        info.device.cmd_begin_render_pass(
-            info.command_buffer,
-            &render_pass_info,
-            vk::SubpassContents::INLINE,
-        );
+        info.device.cmd_begin_rendering(info.command_buffer, &rendering_info);
         info.device
             .cmd_set_viewport(info.command_buffer, 0, &[viewport]);
         if let Some((pool, slot)) = info.gpu_indirect_trace {
@@ -8280,7 +7889,10 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                 slot + 1,
             );
         }
-        info.device.cmd_end_render_pass(info.command_buffer);
+        info.device.cmd_end_rendering(info.command_buffer);
+        if let Some(image) = info.present_image {
+            record_present_layout(info.device, info.command_buffer, image, true);
+        }
         if let Some((src, dst, extent)) = info.resolve {
             // MSAA source stays in the render-pass output layout; the resolve
             // destination is a single-sample texture we own for this pass.
@@ -9292,66 +8904,17 @@ mod tests {
     }
 
     #[test]
-    fn offscreen_render_pass_preserves_color_for_load() {
-        let clear = color_attachment_description(
-            vk::Format::R8G8B8A8_UNORM,
-            1,
-            VulkanRenderPassConfig::offscreen(false, false),
-        );
-        let load = color_attachment_description(
-            vk::Format::R8G8B8A8_UNORM,
-            1,
-            VulkanRenderPassConfig::offscreen(true, false),
-        );
-
-        assert_eq!(clear.load_op, vk::AttachmentLoadOp::CLEAR);
-        assert_eq!(load.load_op, vk::AttachmentLoadOp::LOAD);
-        assert_eq!(
-            clear.initial_layout,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-        );
-        assert_eq!(
-            clear.final_layout,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-        );
-        assert_eq!(
-            load.initial_layout,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-        );
-        assert_eq!(load.final_layout, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-    }
-
-    #[test]
-    fn swapchain_render_pass_keeps_present_layout_contract() {
-        let attachment = color_attachment_description(
-            vk::Format::B8G8R8A8_UNORM,
-            1,
-            VulkanRenderPassConfig::swapchain(false),
-        );
-
-        assert_eq!(attachment.load_op, vk::AttachmentLoadOp::CLEAR);
-        assert_eq!(attachment.initial_layout, vk::ImageLayout::UNDEFINED);
-        assert_eq!(attachment.final_layout, vk::ImageLayout::PRESENT_SRC_KHR);
-    }
-
-    #[test]
-    fn depth_load_render_pass_preserves_depth_contents() {
-        let attachment = depth_attachment_description(
-            vk::Format::D32_SFLOAT,
-            1,
-            VulkanRenderPassConfig::offscreen(false, true),
-        );
-
-        assert_eq!(attachment.load_op, vk::AttachmentLoadOp::LOAD);
-        assert_eq!(attachment.store_op, vk::AttachmentStoreOp::STORE);
-        assert_eq!(
-            attachment.initial_layout,
-            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-        );
-        assert_eq!(
-            attachment.final_layout,
-            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-        );
+    fn dynamic_rendering_attachment_preserves_color_and_depth_for_load() {
+        for layout in [vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL] {
+            let clear = rendering_attachment(vk::ImageView::null(), layout, false, vk::ClearValue::default());
+            let load = rendering_attachment(vk::ImageView::null(), layout, true, vk::ClearValue::default());
+            assert_eq!(clear.load_op, vk::AttachmentLoadOp::CLEAR);
+            assert_eq!(load.load_op, vk::AttachmentLoadOp::LOAD);
+            assert_eq!(load.store_op, vk::AttachmentStoreOp::STORE);
+            assert_eq!(clear.image_layout, layout);
+            assert_eq!(load.image_layout, layout);
+        }
     }
 
     #[test]
