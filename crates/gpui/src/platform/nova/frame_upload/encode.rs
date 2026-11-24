@@ -615,6 +615,7 @@ impl FrameUpload {
             );
         }
         if reset {
+            cache.observe_chunk_reuse(summary.retained_chunk_hits != 0, summary.retained_chunk_misses != 0);
             cache.prune_retained_chunks();
             self.refresh_backdrop_blur_configs();
             self.rebuild_backdrop_blur_passes();

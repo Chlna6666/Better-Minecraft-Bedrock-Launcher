@@ -61,6 +61,7 @@ impl FrameUpload {
                 || chunk.sprite_range.end > range.end
                 || chunk.texture_id != texture_id
                 || chunk.sampling != sampling
+                || !cache.should_pack_chunk(chunk.replayed)
             {
                 continue;
             }
@@ -212,6 +213,7 @@ impl FrameUpload {
             if chunk.quad_range.start < cursor
                 || chunk.quad_range.end > range.end
                 || chunk.is_solid != is_solid
+                || !cache.should_pack_chunk(chunk.replayed)
             {
                 continue;
             }
@@ -478,6 +480,21 @@ impl FrameUpload {
 }
 
 impl RetainedChunkCache {
+    // A cache that repeatedly allocates but never reuses is more expensive
+    // than encoding directly into the frame stream. A replayed candidate
+    // always gets another chance to establish a reusable resident span.
+    fn should_pack_chunk(&self, replayed: bool) -> bool {
+        replayed || self.cold_chunk_streak < 3
+    }
+
+    pub(super) fn observe_chunk_reuse(&mut self, hit: bool, miss: bool) {
+        if hit {
+            self.cold_chunk_streak = 0;
+        } else if miss {
+            self.cold_chunk_streak = self.cold_chunk_streak.saturating_add(1);
+        }
+    }
+
     pub(super) fn begin_frame(&mut self) {
         // Zero is reserved as the never-used marker. On wrap, retire all
         // map entries rather than accidentally validating an ancient epoch.
@@ -487,6 +504,7 @@ impl RetainedChunkCache {
             self.retained_monochrome_sprite_chunks.clear();
             self.layer_scene_encodings.clear();
             self.frame_epoch = 1;
+            self.cold_chunk_streak = 0;
         }
     }
 
@@ -505,6 +523,21 @@ impl RetainedChunkCache {
 mod static_dynamic_batch_tests {
 
     use super::*;
+
+    #[test]
+    fn cold_chunk_cache_bypasses_fresh_candidates_until_reuse() {
+        let mut cache = RetainedChunkCache::default();
+        for _ in 0..3 {
+            assert!(cache.should_pack_chunk(false));
+            cache.observe_chunk_reuse(false, true);
+        }
+        assert!(!cache.should_pack_chunk(false));
+        assert!(cache.should_pack_chunk(true));
+        cache.observe_chunk_reuse(false, false);
+        assert!(!cache.should_pack_chunk(false));
+        cache.observe_chunk_reuse(true, false);
+        assert!(cache.should_pack_chunk(false));
+    }
 
     #[test]
     fn long_static_runs_near_one_animation_become_separately_cullable_batches() {

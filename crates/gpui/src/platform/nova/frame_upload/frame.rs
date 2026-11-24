@@ -90,6 +90,8 @@ pub(in crate::platform::nova) struct RetainedChunkCache {
     /// Monotonic successful encode epoch; replaces a second HashSet of copied
     /// GlobalElementIds just to track liveness across one recursive encode.
     pub(in crate::platform::nova) frame_epoch: u64,
+    /// Consecutive encode epochs with allocation misses but no reuse.
+    pub(in crate::platform::nova) cold_chunk_streak: u8,
     pub(in crate::platform::nova) atlas_placement_generation: u64,
 }
 
