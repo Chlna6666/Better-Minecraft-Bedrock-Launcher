@@ -856,6 +856,11 @@ impl WindowTextSystem {
         }
     }
 
+    /// Revision of font inputs shared by retained text measurements.
+    pub(crate) fn font_generation(&self) -> u64 {
+        self.text_system.font_cache_generation.load(Ordering::Acquire)
+    }
+
     pub(crate) fn layout_index(&self) -> LineLayoutIndex {
         self.line_layout_cache.layout_index()
     }

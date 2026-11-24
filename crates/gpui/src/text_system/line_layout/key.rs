@@ -23,6 +23,7 @@ pub(super) struct CacheKey {
     pub(super) font_size: Pixels,
     pub(super) runs: SmallVec<[FontRun; 1]>,
     pub(super) wrap_width: Option<Pixels>,
+    pub(super) max_lines: Option<usize>,
     pub(super) force_width: Option<Pixels>,
 }
 
@@ -32,6 +33,7 @@ pub(super) struct CacheKeyRef<'a> {
     pub(super) font_size: Pixels,
     pub(super) runs: &'a [FontRun],
     pub(super) wrap_width: Option<Pixels>,
+    pub(super) max_lines: Option<usize>,
     pub(super) force_width: Option<Pixels>,
 }
 
@@ -89,6 +91,7 @@ impl PartialEq for CacheKeyRef<'_> {
         self.text == other.text
             && self.font_size == other.font_size
             && self.wrap_width == other.wrap_width
+            && self.max_lines == other.max_lines
             && self.force_width == other.force_width
             && CanonicalFontRuns::new(self.runs).eq(CanonicalFontRuns::new(other.runs))
     }
@@ -101,6 +104,7 @@ impl Hash for CacheKeyRef<'_> {
         self.text.hash(state);
         self.font_size.hash(state);
         self.wrap_width.hash(state);
+        self.max_lines.hash(state);
         self.force_width.hash(state);
         for run in CanonicalFontRuns::new(self.runs) {
             run.hash(state);
@@ -129,6 +133,7 @@ impl AsCacheKeyRef for CacheKey {
             font_size: self.font_size,
             runs: self.runs.as_slice(),
             wrap_width: self.wrap_width,
+            max_lines: self.max_lines,
             force_width: self.force_width,
         }
     }
@@ -191,6 +196,7 @@ mod tests {
             font_size: px(14.0),
             runs: &split,
             wrap_width: None,
+            max_lines: None,
             force_width: None,
         };
         let merged_key = CacheKeyRef {
@@ -223,6 +229,7 @@ mod tests {
             font_size: px(14.0),
             runs: &first,
             wrap_width: None,
+            max_lines: None,
             force_width: None,
         };
         let second_key = CacheKeyRef {
@@ -258,6 +265,7 @@ mod tests {
             font_size: px(14.0),
             runs: &split,
             wrap_width: Some(px(100.0)),
+            max_lines: None,
             force_width: None,
         };
         let merged_key = CacheKeyRef {

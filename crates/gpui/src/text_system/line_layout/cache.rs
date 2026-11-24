@@ -492,6 +492,7 @@ impl LineLayoutCache {
             font_size,
             runs,
             wrap_width,
+            max_lines,
             force_width: None,
         } as &dyn AsCacheKeyRef;
 
@@ -551,6 +552,7 @@ impl LineLayoutCache {
             font_size,
             runs: SmallVec::from(runs),
             wrap_width,
+            max_lines,
             force_width: None,
         });
 
@@ -590,6 +592,7 @@ impl LineLayoutCache {
             font_size,
             runs,
             wrap_width: None,
+            max_lines: None,
             force_width,
         } as &dyn AsCacheKeyRef;
 
@@ -638,6 +641,7 @@ impl LineLayoutCache {
             font_size,
             runs: SmallVec::from(runs),
             wrap_width: None,
+            max_lines: None,
             force_width,
         });
         let platform_identity = platform_text_system_identity(&self.platform_text_system);
@@ -1241,6 +1245,7 @@ mod tests {
                 font_id: FontId(1),
             }]),
             wrap_width: None,
+            max_lines: None,
             force_width: None,
         });
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
@@ -1290,6 +1295,7 @@ mod tests {
                 font_id: FontId(1),
             }]),
             wrap_width: None,
+            max_lines: None,
             force_width: None,
         });
 
@@ -1393,6 +1399,7 @@ mod tests {
                 font_id: FontId(1),
             }]),
             wrap_width: None,
+            max_lines: None,
             force_width: None,
         });
         let wrapped_key = Arc::new(CacheKey {
@@ -1403,6 +1410,7 @@ mod tests {
                 font_id: FontId(1),
             }]),
             wrap_width: Some(px(80.)),
+            max_lines: None,
             force_width: None,
         });
         let line = Arc::new(LineLayout::default());
@@ -1437,6 +1445,7 @@ mod tests {
                 font_id: FontId(1),
             }]),
             wrap_width: None,
+            max_lines: None,
             force_width: None,
         });
         let wrapped_key = Arc::new(CacheKey {
@@ -1447,6 +1456,7 @@ mod tests {
                 font_id: FontId(1),
             }]),
             wrap_width: Some(px(80.)),
+            max_lines: None,
             force_width: None,
         });
         let line = Arc::new(LineLayout::default());
@@ -1621,6 +1631,7 @@ mod tests {
                 font_id: FontId(1),
             }]),
             wrap_width: None,
+            max_lines: None,
             force_width: None,
         });
         let second_key = Arc::new(CacheKey {
@@ -1631,6 +1642,7 @@ mod tests {
                 font_id: FontId(1),
             }]),
             wrap_width: Some(px(80.)),
+            max_lines: None,
             force_width: None,
         });
         let line = Arc::new(LineLayout::default());
@@ -1686,5 +1698,25 @@ mod tests {
         let second = cache.layout_line("hello", px(14.), &runs, None);
 
         assert!(!Arc::ptr_eq(&first, &second));
+    }
+}
+
+#[cfg(test)]
+mod clamp_cache_tests {
+    use super::*;
+    use crate::{FontId, NoopTextSystem, px};
+
+    #[test]
+    fn wrapped_cache_distinguishes_line_clamp() {
+        let text = "one two three four five six";
+        let runs = [FontRun { len: text.len(), font_id: FontId(1) }];
+        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::default());
+        let full = cache.layout_wrapped_line(text, px(14.), &runs, Some(px(50.)), None);
+        let clamped = cache.layout_wrapped_line(text, px(14.), &runs, Some(px(50.)), Some(1));
+        assert!(!Arc::ptr_eq(&full, &clamped));
+        assert!(full.wrap_boundaries.len() > clamped.wrap_boundaries.len());
+        cache.finish_frame();
+        let warm = cache.layout_wrapped_line(text, px(14.), &runs, Some(px(50.)), Some(1));
+        assert!(Arc::ptr_eq(&clamped, &warm));
     }
 }

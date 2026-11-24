@@ -242,13 +242,13 @@ impl PartialOrd for Pixels {
 
 impl Ord for Pixels {
     fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.0.total_cmp(&other.0)
+        self.0.partial_cmp(&other.0).unwrap_or_else(|| self.0.total_cmp(&other.0))
     }
 }
 
 impl std::hash::Hash for Pixels {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.0.to_bits().hash(state);
+        (if self.0 == 0.0 { 0 } else { self.0.to_bits() }).hash(state);
     }
 }
 
@@ -309,5 +309,21 @@ impl From<Pixels> for usize {
 impl From<usize> for Pixels {
     fn from(pixels: usize) -> Self {
         Pixels(pixels as f32)
+    }
+}
+
+#[cfg(test)]
+mod signed_zero_tests {
+    use super::*;
+    use std::hash::{BuildHasher, RandomState};
+
+    #[test]
+    fn signed_zero_has_equal_hash_and_order() {
+        let positive = Pixels(0.0);
+        let negative = Pixels(-0.0);
+        let state = RandomState::new();
+        assert_eq!(positive, negative);
+        assert_eq!(positive.cmp(&negative), cmp::Ordering::Equal);
+        assert_eq!(state.hash_one(positive), state.hash_one(negative));
     }
 }

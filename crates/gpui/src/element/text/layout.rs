@@ -48,7 +48,10 @@ impl TextLayout {
         } else {
             vec![text_style.to_run(text.len())]
         };
-        let cache_key = text_layout_cache_key(&text, &runs, &text_style, font_size, line_height);
+        let geometry_key = text_layout_cache_key(&text, &runs, &text_style, font_size, line_height);
+        // Adding fonts can change fallback, glyph advances and line breaks
+        // even when the string and its requested font are unchanged.
+        let cache_key = text_layout_measurement_key(geometry_key, window.text_system().font_generation());
         let paint_key = text_layout_paint_key(&runs);
 
         // Most UI text never uses truncation. When only paint decorations change, refresh the
