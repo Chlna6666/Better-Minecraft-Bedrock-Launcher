@@ -23,9 +23,13 @@ impl MetalDevice {
         let native = MTLTextureDescriptor::new();
         native.setTextureType(MTLTextureType::Type2D);
         native.setPixelFormat(format_to_metal(desc.format));
-        native.setWidth(desc.size.width() as usize);
-        native.setHeight(desc.size.height() as usize);
-        native.setMipmapLevelCount(desc.mip_level_count as usize);
+        // SAFETY: The portable descriptor validates the complete mip chain,
+        // and the dimensions above are bounded for single-sample 2D textures.
+        unsafe {
+            native.setWidth(desc.size.width() as usize);
+            native.setHeight(desc.size.height() as usize);
+            native.setMipmapLevelCount(desc.mip_level_count as usize);
+        }
         native.setStorageMode(if desc.memory_location == MemoryLocation::GpuOnly {
             MTLStorageMode::Private
         } else if cfg!(target_os = "macos") && !self.device.hasUnifiedMemory() {
