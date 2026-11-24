@@ -461,6 +461,58 @@ impl StaticUploadMask {
     }
 }
 
+/// Optional full-window color retention must repay the extra source pass
+/// and fullscreen composite. Repeated large damage is evidence against it.
+/// Hysteresis avoids reallocating GPU targets on every other scroll frame.
+#[derive(Default)]
+struct RootColorAdmission {
+    last_scene: Option<(u64, DrawableSize)>,
+    high_damage_frames: u8,
+    low_damage_frames: u8,
+    demoted: bool,
+}
+
+impl RootColorAdmission {
+    const DEMOTE_AFTER: u8 = 3;
+    const PROMOTE_AFTER: u8 = 12;
+
+    fn observe(&mut self, revision: u64, size: DrawableSize, damage: &DirtyRegion) -> bool {
+        if revision == 0 || size.width == 0 || size.height == 0 {
+            return !self.demoted;
+        }
+        if self.last_scene == Some((revision, size)) {
+            return !self.demoted;
+        }
+        if self.last_scene.is_some_and(|(_, previous_size)| previous_size != size) {
+            *self = Self::default();
+        }
+        self.last_scene = Some((revision, size));
+        let surface_area = f64::from(size.width) * f64::from(size.height);
+        let fraction = if damage.is_full() {
+            1.0
+        } else {
+            f64::from(damage.area()) / surface_area
+        };
+        if fraction >= 0.60 {
+            self.high_damage_frames = self.high_damage_frames.saturating_add(1);
+            self.low_damage_frames = 0;
+            if self.high_damage_frames >= Self::DEMOTE_AFTER {
+                self.demoted = true;
+            }
+        } else if fraction <= 0.25 {
+            self.low_damage_frames = self.low_damage_frames.saturating_add(1);
+            self.high_damage_frames = 0;
+            if self.low_damage_frames >= Self::PROMOTE_AFTER {
+                self.demoted = false;
+            }
+        } else {
+            self.high_damage_frames = 0;
+            self.low_damage_frames = 0;
+        }
+        !self.demoted
+    }
+}
+
 #[derive(Default)]
 pub(super) struct RetainedUpload {
     /// Sole owner of packed retained Quad payloads across Scene revisions.
@@ -469,6 +521,7 @@ pub(super) struct RetainedUpload {
     /// Do not rescan a Scene that already failed AutoStatic safety admission
     /// on a prior animation sample at the same native client extent.
     auto_static_rejection: Option<AutoStaticRejectionKey>,
+    root_color_admission: RootColorAdmission,
     summary: FrameUploadSummary,
     static_signature: Option<StaticUploadSignature>,
     uploaded_slots: Vec<Option<StaticUploadSignature>>,
@@ -482,6 +535,27 @@ pub(super) struct RetainedUpload {
 #[cfg(test)]
 mod capacity_tests {
     use super::*;
+
+    #[test]
+    fn root_color_admission_demotes_repeated_full_damage_and_recovers_after_stability() {
+        let mut admission = RootColorAdmission::default();
+        let size = DrawableSize { width: 640, height: 480 };
+        let full = DirtyRegion::full(crate::bounds(
+            crate::point(crate::ScaledPixels(0.), crate::ScaledPixels(0.)),
+            crate::size(crate::ScaledPixels(640.), crate::ScaledPixels(480.)),
+        ));
+        let empty = DirtyRegion::empty();
+        assert!(admission.observe(1, size, &full));
+        for _ in 0..20 {
+            assert!(admission.observe(1, size, &full));
+        }
+        assert!(admission.observe(2, size, &full));
+        assert!(!admission.observe(3, size, &full));
+        for revision in 4..15 {
+            assert!(!admission.observe(revision, size, &empty));
+        }
+        assert!(admission.observe(15, size, &empty));
+    }
 
     #[test]
     fn rejected_auto_static_admission_is_not_repeated_on_animation_only_frames() {
@@ -836,7 +910,13 @@ impl NovaRenderer {
             scene.revision != 0 && self.retained_upload.key == Some(key) && !reconsider_color;
         // Once useful static window color is resident, finishing/removing a
         // small animation does not make those cached pixels disposable.
-        let keep_retained_root = self.frame_upload.root_color.is_some()
+        let had_retained_root = self.frame_upload.root_color.is_some();
+        let admit_root_color = self.retained_upload.root_color_admission.observe(
+            scene.revision,
+            render_size,
+            &self.command_scratch.backdrop_blur_damage_region,
+        );
+        let keep_retained_root = had_retained_root
             && self.retained_upload.key.is_some_and(|previous| {
                 previous.size == key.size
                     && previous.target_size == key.target_size
@@ -913,7 +993,8 @@ impl NovaRenderer {
             // Only CPU/GPU-native ordinary primitives can be replayed inside
             // a retained root target. Native surfaces/extensions use the old
             // full-redraw path until they expose their own damage semantics.
-            if !captured_static_prefix
+            if admit_root_color
+                && !captured_static_prefix
                 && !crate::paint::requires_full_redraw_fallback(scene)
                 && self.frame_upload.renderer_extensions.is_empty()
                 && summary.unsupported_batches.total() == 0
@@ -932,6 +1013,11 @@ impl NovaRenderer {
             {
                 self.frame_upload
                     .append_root_color(render_size, self.current_size, &mut summary);
+            }
+            if had_retained_root && self.frame_upload.root_color.is_none() {
+                // Use native submission retirement, not a synchronous wait.
+                // A later promotion must never import the old root pixels.
+                self.retire_root_color();
             }
             log::trace!(
                 target: "gpui::diagnostics",
