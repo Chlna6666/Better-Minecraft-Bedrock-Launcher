@@ -1120,7 +1120,6 @@ impl MainWindowView {
                 s.error = None;
                 if force_refresh {
                     s.loaded = false;
-                    s.versions.clear();
                 }
                 s.force_refresh_next = false;
                 s.versions_request_id = s.versions_request_id.wrapping_add(1);

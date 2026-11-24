@@ -21,6 +21,8 @@ pub struct ManagePageView {
     pub(super) version_scroll_handle: ScrollHandle,
     pub(super) version_list_cache: VersionListRenderCache,
     pub(super) asset_list_cache: AssetListRenderCache,
+    // A read-only presentation lease; never exposed to selected-instance actions.
+    pub(super) pending_asset_preview: Option<(ManageTab, Arc<[ManageAssetEntry]>, Vec<usize>)>,
     pub(super) screenshot_list_cache: ScreenshotListRenderCache,
     pub(super) server_list_cache: ServerListRenderCache,
     pub(super) version_settings_modal: Option<version_settings::VersionSettingsModalState>,
@@ -116,6 +118,7 @@ impl ManagePageView {
             version_scroll_handle: ScrollHandle::new(),
             version_list_cache: VersionListRenderCache::default(),
             asset_list_cache: AssetListRenderCache::default(),
+            pending_asset_preview: None,
             screenshot_list_cache: ScreenshotListRenderCache::default(),
             server_list_cache: ServerListRenderCache::default(),
             version_settings_modal: None,
@@ -144,6 +147,7 @@ impl ManagePageView {
         }
         self.active = active;
         if !active {
+            self.pending_asset_preview = None;
             cx.update_global(|state: &mut ManagePageState, _| {
                 state.tab_anim_from = state.tab;
                 state.tab_anim_started_at = None;
@@ -933,14 +937,16 @@ impl ManagePageView {
             )
             .expect("animation declares presentation properties");
 
-        let content = if state.version_config_loading {
-            empty_state(
-                colors,
-                "images/manage/empty.svg",
-                "正在读取版本配置",
-                "请稍候，BMCBL 正在准备当前实例的管理设置。",
-            )
-            .into_any_element()
+        if state.assets_loaded || state.assets_error.is_some()
+            || state.version_config_error.is_some() || state.gdk_users_error.is_some()
+        {
+            self.pending_asset_preview = None;
+        }
+        let preview = self.pending_asset_preview.as_ref().filter(|(tab, _, _)| *tab == state.tab);
+        let content = if let Some((_, assets, indices)) = preview {
+            render_pending_asset_rows(colors, assets, indices).into_any_element()
+        } else if state.version_config_loading {
+            render_manage_loading_rows(colors, 6).into_any_element()
         } else {
             match state.tab {
                 ManageTab::Statistics => render_statistics_tab(
@@ -1056,7 +1062,9 @@ impl ManagePageView {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(toolbar)
+            .child(div().relative().child(toolbar).when(preview.is_some() || state.version_config_loading, |this| {
+                this.child(div().absolute().inset_0().occlude())
+            }))
             .child(
                 div()
                     .flex_1()

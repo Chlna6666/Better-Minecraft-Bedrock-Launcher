@@ -13,14 +13,13 @@ pub(crate) fn invalidate_results(state: &mut DownloadPageState, _cx: &mut App) {
     state.curseforge_results_error = None;
     state.curseforge_last_query_key = SharedString::from("");
     state.curseforge_results_transition_at = None;
-    state.curseforge_mods.clear();
     state.curseforge_mod_page_open = false;
     state.curseforge_mod_page_loading = false;
     state.curseforge_mod_page_error = None;
     state.curseforge_mod_page_mod_id = None;
     state.curseforge_mod_page_mod = None;
     state.set_mod_page_description(SharedString::from(""));
-    state.curseforge_disable_result_logos = true;
+    state.curseforge_disable_result_logos = state.curseforge_mods.is_empty();
     // 关键：分类切换时不立即重置滚动条，等待新数据加载完成后再重置
     // state.curseforge_results_scroll.set_offset(point(px(0.), px(0.)));
     state.curseforge_pending_scroll_reset_to_top = true;
@@ -40,9 +39,8 @@ pub(crate) fn begin_page_transition(state: &mut DownloadPageState, _cx: &mut App
     }
     state.curseforge_results_epoch = state.curseforge_results_epoch.wrapping_add(1);
     state.curseforge_results_loading = true;
-    state.curseforge_mods.clear();
     state.curseforge_results_error = None;
-    state.curseforge_disable_result_logos = true;
+    state.curseforge_disable_result_logos = state.curseforge_mods.is_empty();
     // 关键：翻页时不立即重置滚动条，等待新数据加载完成后再重置
     // state.curseforge_results_scroll.set_offset(point(px(0.), px(0.)));
     state.curseforge_pending_scroll_reset_to_top = true;
@@ -87,7 +85,7 @@ pub(crate) fn apply_query_change(
     }
 
     // 关键：root/sub/search/sort 变化和翻页统一走同一个静止窗口
-    state.curseforge_disable_result_logos = true;
+    state.curseforge_disable_result_logos = state.curseforge_mods.is_empty();
 
     invalidate_results_now(state, cx);
 }
@@ -279,13 +277,16 @@ fn load(page_index_override: Option<usize>, cx: &mut App) {
                     state.curseforge_results_abort_handle = None;
 
                     state.curseforge_page_index = target_page_index;
+                    // Advance the presentation generation even if the new page has
+                    // exactly the same length and page index as the retained one.
+                    state.curseforge_results_epoch = state.curseforge_results_epoch.wrapping_add(1);
                     state.curseforge_mods = mods;
                     state.curseforge_total_count = total_count;
                     state.curseforge_has_more = has_more;
                     state.curseforge_results_loading = false;
                     state.curseforge_results_error = None;
                     state.curseforge_disable_result_logos = false;
-                    state.curseforge_results_transition_at = Some(std::time::Instant::now());
+                    state.curseforge_results_transition_at = None;
                     state.curseforge_pending_page_index = None;
 
                     if state.curseforge_pending_scroll_reset_to_top {

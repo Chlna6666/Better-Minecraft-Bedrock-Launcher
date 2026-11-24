@@ -815,3 +815,24 @@ pub(super) fn render_loading_placeholder(
         viewport_height,
     }
 }
+
+/// Static placeholders use the final catalog row geometry and do not drive
+/// animation frames while network IO is pending.
+pub(super) fn catalog_skeleton_row(colors: &ThemeColors) -> Div {
+    let block = |width, height| static_block(px(width), px(height), px(5.), colors.text_secondary, 0.10);
+    div().w_full().h(px(74.)).flex_none().px(px(12.)).py(px(8.))
+        .rounded(px(8.)).bg(Hsla { a: 0.35, ..colors.surface })
+        .flex().items_center().gap(px(12.))
+        .child(block(34., 34.))
+        .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap(px(6.))
+            .child(block(132., 13.)).child(block(230., 9.)).child(block(176., 9.)))
+        .child(block(64., 30.))
+}
+
+/// Non-disruptive failure notice outside the retained scrolling list.
+pub(super) fn refresh_error(colors: &ThemeColors, message: SharedString) -> Div {
+    div().w_full().flex_none().px(px(14.)).py(px(7.))
+        .bg(Hsla { a: 0.08, ..colors.danger })
+        .text_color(colors.danger).text_size(px(12.))
+        .overflow_hidden().text_ellipsis().child(message)
+}

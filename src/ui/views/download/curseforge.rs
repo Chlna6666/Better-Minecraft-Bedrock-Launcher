@@ -48,6 +48,8 @@ pub(crate) fn on_api_source_changed(cx: &mut App) {
         state.curseforge_selected_game_version = SharedString::from("");
         state.curseforge_page_index = 0;
         state.curseforge_total_count = None;
+        // A different endpoint is not a refresh of the same data source.
+        state.curseforge_mods.clear();
         state.curseforge_view_epoch = state.curseforge_view_epoch.wrapping_add(1);
         results_state::invalidate_results_now(state, cx);
     });
@@ -63,7 +65,6 @@ pub(crate) use share_actions::handle_clipboard_share_paste;
 const RESULT_CARD_PITCH_PX: f32 = 84.0;
 const PAGE_COMMIT_DELAY_MS: u64 = 180;
 const RESULTS_TRANSITION_MS: u64 = 180;
-const RESULTS_REVEAL_WARMUP_MS: u64 = 16;
 const RESULT_CARD_STAGGER_MS: u64 = 18;
 const RESULT_CARD_ANIMATION_MS: u64 = 120;
 const RESULT_LOGO_RENDER_BUDGET: usize = 12;
@@ -2027,7 +2028,7 @@ fn render_results_list(
         return render_aligned_placeholder(colors, state);
     }
 
-    if let Some(err) = results_error.as_ref() {
+    if let Some(err) = results_error.as_ref().filter(|_| !has_cached_cards) {
         return div().size_full().child(list.child(status_card(
             colors,
             &t!("CurseForge.load_failed", error = err),
@@ -2041,27 +2042,6 @@ fn render_results_list(
             &t!("CurseForge.no_results"),
             None,
         )));
-    }
-
-    let animate_cards = should_animate_result_cards();
-
-    let reveal_warmup_pending = if !animate_cards || results_loading {
-        false
-    } else if let Some(started_at) = results_transition_at {
-        let elapsed_ms = frame_now.saturating_duration_since(started_at).as_millis() as u64;
-        elapsed_ms < RESULTS_REVEAL_WARMUP_MS
-    } else {
-        false
-    };
-
-    if reveal_warmup_pending {
-        let warmup_deadline = results_transition_at
-            .map(|started_at| started_at + Duration::from_millis(RESULTS_REVEAL_WARMUP_MS));
-        if window.is_window_active() {
-            crate::ui::animation::request_layout_frame_until(window, warmup_deadline);
-        }
-        let state = cx.global::<DownloadPageState>();
-        return render_aligned_placeholder(colors, state);
     }
 
     let render_started_at = std::time::Instant::now();
@@ -2101,16 +2081,21 @@ fn render_results_list(
             .child(div().h(virtual_list_plan.render_slice.bottom_spacer)),
     );
 
-    let content = if show_loading_overlay {
-        let state = cx.global::<DownloadPageState>();
-        render_aligned_placeholder(colors, state)
-    } else {
-        div()
-            .size_full()
-            .relative()
-            .overflow_hidden()
-            .child(content)
-    };
+    let mut content = div().size_full().relative().overflow_hidden().child(content);
+    if show_loading_overlay {
+        // Keep old rows mounted (including their decoded images) but prevent
+        // actions until the requested filter/page has committed.
+        content = content.child(div().absolute().inset_0().occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .child(div().absolute().top(px(8.)).right(px(16.))
+                .px(px(10.)).py(px(5.)).rounded(px(6.))
+                .bg(colors.surface).text_color(colors.text_secondary)
+                .text_size(px(12.)).child(t!("common.loading"))));
+    } else if let Some(error) = results_error.as_ref() {
+        content = content.child(div().absolute().bottom_0().left_0().right_0()
+            .child(super::loading::refresh_error(colors, t!("CurseForge.load_failed", error = error))));
+    }
 
     let render_elapsed_ms = render_started_at.elapsed().as_secs_f64() * 1000.0;
     if render_elapsed_ms >= 8.0 {

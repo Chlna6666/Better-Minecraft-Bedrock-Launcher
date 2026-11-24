@@ -178,15 +178,33 @@ impl ManagePageView {
     }
 
     pub(super) fn select_version(&mut self, folder: SharedString, cx: &mut Context<Self>) {
+        let state = cx.global::<ManagePageState>();
+        if state.selected_folder.as_ref() == Some(&folder) {
+            return;
+        }
+        if is_asset_tab(state.tab) && state.assets_loaded && state.assets_error.is_none() && !state.assets.is_empty() {
+            self.asset_list_cache.refresh(state);
+            let first = ((-self.asset_scroll_handle.offset().y / px(MANAGE_ASSET_ROW_PITCH_PX)).max(0.0)) as usize;
+            let visible = self.asset_list_cache.filtered_indices().iter().copied().skip(first).take(16).collect();
+            self.pending_asset_preview = Some((state.tab, state.assets.clone(), visible));
+        }
         cx.update_global(|state: &mut ManagePageState, _cx| {
             state.selected_folder = Some(folder);
+            state.tab_anim_from = state.tab;
             state.tab_anim_started_at = None;
+            state.pack_subtype_anim_from = state.pack_subtype;
             state.pack_subtype_anim_started_at = None;
         });
+        // Invalidate request ownership immediately, not in a later paint.
+        self.sync_selected_version(cx);
+        self.sync_data_requests(cx);
         cx.notify();
     }
 
     pub(super) fn set_tab(&mut self, tab: ManageTab, cx: &mut Context<Self>) {
+        if cx.global::<ManagePageState>().tab != tab {
+            self.pending_asset_preview = None;
+        }
         let started_at = Instant::now();
         let previous_tab = cx.update_global(|state: &mut ManagePageState, _cx| {
             if state.tab == tab {

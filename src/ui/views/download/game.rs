@@ -654,7 +654,7 @@ pub(super) fn render_game_panel(
         return panel.child(render_loading_placeholder(colors, state));
     }
 
-    if let Some(err) = state.error.clone() {
+    if let Some(err) = state.error.clone().filter(|_| state.versions.is_empty()) {
         return panel.child(div().p(px(18.)).child(status_card(
             colors,
             &t!("DownloadPage.load_error", error = &err.to_string()),
@@ -854,7 +854,13 @@ pub(super) fn render_game_panel(
                 )),
         );
 
-    panel.child(rows).child(footer)
+    let panel = panel.child(rows);
+    let panel = if let Some(error) = &state.error {
+        panel.child(super::loading::refresh_error(colors, t!("DownloadPage.load_error", error = error)))
+    } else {
+        panel
+    };
+    panel.child(footer)
 }
 
 fn render_pager(

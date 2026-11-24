@@ -489,7 +489,11 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
         div().into_any_element()
     };
 
-    let refresh = IconButton::new("download-refresh", lucide_gpui::icon!(refresh_cw))
+    let refresh = IconButton::new("download-refresh", if refresh_disabled {
+        lucide_gpui::icon!(loader_circle)
+    } else {
+        lucide_gpui::icon!(refresh_cw)
+    })
         .icon_color(colors.text_secondary)
         .w(px(CONTROL_HEIGHT))
         .h(px(CONTROL_HEIGHT))
@@ -523,7 +527,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                     s.loaded = false;
                     s.loading = false;
                     s.error = None;
-                    s.versions.clear();
+                    // Retain the committed list until a new catalog succeeds.
                 }
                 DownloadTab::ResourcePack => {
                     crate::ui::views::download::curseforge::schedule_invalidation(
@@ -532,16 +536,12 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                     s.curseforge_loaded = false;
                     s.curseforge_loading = false;
                     s.curseforge_error = None;
-                    s.curseforge_categories.clear();
-                    s.curseforge_versions.clear();
+                    // Metadata is replaced only on a successful refresh.
                     s.curseforge_page_index = 0;
                     s.curseforge_last_query_key = SharedString::from("");
                     s.curseforge_results_error = None;
                     s.curseforge_results_loading = true;
-                    s.curseforge_results_scroll
-                        .set_offset(point(px(0.), px(0.)));
-                    s.curseforge_sidebar_scroll
-                        .set_offset(point(px(0.), px(0.)));
+                    // The results commit owns the scroll reset.
                 }
                 DownloadTab::Mod => {
                     if s.levilauncher_selected_loader == "native" {

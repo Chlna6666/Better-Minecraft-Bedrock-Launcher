@@ -145,20 +145,22 @@ pub(super) fn render(
         .flex_col()
         .gap(px(8.))
         .p(px(12.));
-    if let Some(error) = &registry.error {
-        list = list.child(div().text_color(colors.danger).child(error.clone()));
-    }
-    if registry.loading {
-        list = list.child(
-            div()
-                .text_color(colors.text_secondary)
-                .child(t!("DownloadPage.plugins_loading")),
+    if registry.catalog.is_none() && registry.loading {
+        list = list.children((0..5).map(|_| super::loading::catalog_skeleton_row(colors)));
+    } else if entries.is_empty() {
+        let message = registry.error.as_ref().map_or_else(
+            || t!("DownloadPage.plugins_empty"),
+            |error| t!("DownloadPage.load_error", error = error),
         );
-    } else if entries.is_empty() && registry.error.is_none() {
         list = list.child(
-            div()
-                .text_color(colors.text_secondary)
-                .child(t!("DownloadPage.plugins_empty")),
+            div().flex_1().min_h(px(120.)).flex().flex_col()
+                .items_center().justify_center().gap(px(10.))
+                .child(svg().path(lucide_gpui::icon!(plug)).size(px(28.)).text_color(colors.text_muted))
+                .child(div().text_size(px(13.)).text_color(colors.text_secondary).child(message))
+                .when(registry.error.is_some(), |this| this.child(
+                    secondary_button(colors, "plugins-retry", t!("common.retry"))
+                        .on_click(|_, _, cx| load(cx, true))
+                )),
         );
     }
     let first = page * PAGE_SIZE;
@@ -177,6 +179,9 @@ pub(super) fn render(
         .flex()
         .flex_col()
         .child(list);
+    if !entries.is_empty() && let Some(error) = &registry.error {
+        panel = panel.child(super::loading::refresh_error(colors, t!("DownloadPage.load_error", error = error)));
+    }
     if pages > 1 {
         panel = panel.child(
             div()

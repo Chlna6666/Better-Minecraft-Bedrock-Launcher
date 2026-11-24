@@ -1371,3 +1371,38 @@ pub(super) fn render_asset_row(
                 .child(div().flex_shrink_0().child(actions)),
         )
 }
+
+/// Previous instance's visible metadata while the selected instance is being
+/// resolved. These rows deliberately have no event handlers or mutable keys.
+pub(super) fn render_pending_asset_rows(colors: &ThemeColors, assets: &[ManageAssetEntry], indices: &[usize]) -> Div {
+    let rows = indices.iter().filter_map(|index| assets.get(*index)).map(|asset| {
+        let icon = match asset.kind {
+            state::ManageAssetKind::Mod => lucide_gpui::icon!(layers),
+            state::ManageAssetKind::ResourcePack => lucide_gpui::icon!(package),
+            state::ManageAssetKind::SkinPack => lucide_gpui::icon!(user),
+            state::ManageAssetKind::Cape => lucide_gpui::icon!(wind),
+            state::ManageAssetKind::Map => lucide_gpui::icon!(map),
+        };
+        let leading = asset.icon_path.as_ref().map_or_else(
+            || div().size(px(32.)).flex_none().rounded(px(5.)).bg(colors.surface)
+                .flex().items_center().justify_center()
+                .child(svg().path(icon).size(px(16.)).text_color(colors.text_secondary)).into_any_element(),
+            |path| rounded_manage_thumbnail(colors, path, icon.into(), colors.surface),
+        );
+        div().w_full().h(px(MANAGE_ASSET_ROW_PITCH_PX)).pb(px(MANAGE_ASSET_ROW_GAP_PX)).flex_none()
+            .child(div().w_full().h(px(MANAGE_ASSET_ROW_HEIGHT_PX)).px(px(10.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                .bg(Hsla { a: 0.55, ..colors.surface }).border_1()
+                .border_color(Hsla { a: 0.16, ..colors.border })
+                .flex().items_center().gap(px(12.))
+                .child(div().size(px(18.)).flex_none().rounded(px(9.)).border_1().border_color(colors.border))
+                .child(leading)
+                .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap(px(3.))
+                    .child(div().text_size(px(13.)).text_ellipsis().child(asset.display_name.clone()))
+                    .child(div().text_size(px(11.)).text_color(colors.text_secondary).text_ellipsis()
+                        .child(asset.detail.clone().unwrap_or_default()))))
+    });
+    div().relative().size_full().overflow_hidden().child(div().size_full().flex().flex_col().children(rows))
+        .child(div().absolute().top_0().right_0().px(px(10.)).py(px(5.)).rounded(px(6.))
+            .bg(colors.surface).text_color(colors.text_secondary).text_size(px(12.)).child(t!("common.loading")))
+}
