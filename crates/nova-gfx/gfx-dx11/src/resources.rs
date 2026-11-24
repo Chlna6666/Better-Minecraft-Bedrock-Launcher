@@ -97,16 +97,20 @@ impl ResourceDevice for Dx11Device {
     }
 
     fn multisample_capabilities(&self) -> gfx_core::MultisampleCapabilities {
-        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
+        // The common MSAA path samples both HDR color and D32 depth.
         let mut max_sample_count = 1;
-        for count in [1, 2, 4, 8, 16, 32, 64] {
-            // SAFETY: device is live; the binding returns the supported quality level.
-            let quality = unsafe {
-                self.native
-                    .CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, count)
-            }
-            .unwrap_or_default();
-            if quality > 0 {
+        for count in [2, 4, 8, 16, 32] {
+            let supported = [
+                DXGI_FORMAT_R8G8B8A8_UNORM,
+                DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_D32_FLOAT,
+            ].into_iter().all(|format| {
+                // SAFETY: The device is live; the API queries the format's
+                // supported multisampling quality levels without GPU work.
+                unsafe { self.native.CheckMultisampleQualityLevels(format, count) }
+                    .is_ok_and(|levels| levels > 0)
+            });
+            if supported {
                 max_sample_count = count;
             } else {
                 break;
@@ -115,6 +119,16 @@ impl ResourceDevice for Dx11Device {
         gfx_core::MultisampleCapabilities {
             max_sample_count,
             stencil_supported: true,
+        }
+    }
+
+    fn sample_zero_position(&self, sample_count: u32) -> Option<[f32; 2]> {
+        match sample_count {
+            1 => Some([0.5, 0.5]),
+            // FL11_0 supports the explicit standard 4x pattern. Texture
+            // allocation below selects it rather than vendor-defined quality 0.
+            4 => Some([0.375, 0.125]),
+            _ => None,
         }
     }
 
@@ -471,7 +485,9 @@ impl ResourceDevice for Dx11Device {
                     },
                     SampleDesc: DXGI_SAMPLE_DESC {
                         Count: desc.sample_count,
-                        Quality: 0,
+                        Quality: if desc.sample_count == 4 {
+                            DXGI_STANDARD_MULTISAMPLE_QUALITY_PATTERN
+                        } else { 0 },
                     },
                     Usage: D3D11_USAGE_DEFAULT,
                     BindFlags: bind,

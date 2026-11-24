@@ -5452,7 +5452,7 @@ mod platform {
             });
         desc.SampleDesc = DXGI_SAMPLE_DESC {
             Count: sample_count,
-            Quality: 0,
+            Quality: dx12_msaa_quality(sample_count),
         };
         desc.InputLayout = D3D12_INPUT_LAYOUT_DESC {
             pInputElementDescs: ptr::null(),
@@ -5976,6 +5976,16 @@ mod platform {
 
         fn multisample_capabilities(&self) -> gfx_core::MultisampleCapabilities {
             dx12_multisample_capabilities(&self.device)
+        }
+
+        fn sample_zero_position(&self, sample_count: u32) -> Option<[f32; 2]> {
+            match sample_count {
+                1 => Some([0.5, 0.5]),
+                // Both the resource and its PSO use the explicit standard
+                // 4x pattern, so a depth load at sample zero has a fixed UV.
+                4 => Some([0.375, 0.125]),
+                _ => None,
+            }
         }
 
         fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
@@ -7241,7 +7251,7 @@ mod platform {
             },
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: desc.sample_count,
-                Quality: 0,
+                Quality: dx12_msaa_quality(desc.sample_count),
             },
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
             Flags: resource_flags,
@@ -7262,6 +7272,16 @@ mod platform {
         resource.ok_or_else(|| {
             Error::Backend("CreateCommittedResource returned no texture".to_string())
         })
+    }
+
+    // D3D12 requires the resource and the graphics PSO to agree on both
+    // sample count and quality. Keep the policy in one native helper.
+    fn dx12_msaa_quality(sample_count: u32) -> u32 {
+        if sample_count == 4 {
+            windows::Win32::Graphics::Dxgi::Common::DXGI_STANDARD_MULTISAMPLE_QUALITY_PATTERN
+        } else {
+            0
+        }
     }
 
     fn dx12_multisample_capabilities(device: &ID3D12Device) -> gfx_core::MultisampleCapabilities {
