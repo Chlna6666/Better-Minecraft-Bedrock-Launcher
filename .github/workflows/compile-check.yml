@@ -455,6 +455,9 @@ jobs:
 
       - name: Verify Metal GPU-generated draws and array sampling
         if: ${{ !cancelled() && steps.metal_tests.outcome == 'success' }}
+        env:
+          MTL_DEBUG_LAYER: "1"
+          MTL_SHADER_VALIDATION: "1"
         run: cargo test --locked -p gfx-metal --test gpu_driven -- --nocapture
 
       - name: Test WGSL to MSL resource ABI

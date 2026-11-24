@@ -193,6 +193,9 @@ pub(super) fn verify_receiver_planes<D: Device + TextureTransferDevice>(
         pixels, repeated,
         "static shadows must not accumulate darkness"
     );
+    // Compare the complete image as before, but retain the legal resolved
+    // opaque depth so a failure can distinguish coverage from CSM visibility.
+    let single_depth = device.read_texture(depth.texture).unwrap();
     let mut tiled = Scene::new();
     let mesh = Arc::new(Mesh::plane(20., 20.).unwrap());
     for x in 0..4 {
@@ -211,20 +214,55 @@ pub(super) fn verify_receiver_planes<D: Device + TextureTransferDevice>(
                 .unwrap();
         }
     }
-    let tiled = draw(
-        device,
-        renderer,
-        context,
-        &shadowed.with_scene(Arc::new(tiled)),
-        target,
-        depth,
-    );
+    let tiled_view = shadowed.with_scene(Arc::new(tiled));
+    let tiled = draw(device, renderer, context, &tiled_view, target, depth);
     let maximum = tiled
         .iter()
         .zip(&pixels)
         .map(|(a, b)| a.abs_diff(*b))
         .max()
         .unwrap();
+    if maximum > 5 {
+        let tiled_depth = device.read_texture(depth.texture).unwrap();
+        let tiled_unshadowed = tiled_view.with_voxel_shading(VoxelShading {
+            shadow_strength: 0.,
+            ..tiled_view.voxel_shading
+        }).unwrap();
+        let tiled_reference = draw(device, renderer, context, &tiled_unshadowed, target, depth);
+        let read = |image: &TextureReadback, x: usize, y: usize| {
+            let offset = y * image.bytes_per_row as usize + x * 4;
+            f32::from_le_bytes(image.bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let mut changed = 0usize;
+        let mut coverage_changed = 0usize;
+        let mut baseline_changed = 0usize;
+        let mut tiled_self_shadow = 0usize;
+        let mut largest = Vec::new();
+        for y in 0..64 {
+            for x in 0..64 {
+                let at = (y * 64 + x) * 4;
+                let rgba = &pixels[at..at+4];
+                let split = &tiled[at..at+4];
+                let original = &reference[at..at+4];
+                let unshadowed = &tiled_reference[at..at+4];
+                let delta = rgba.iter().zip(split).map(|(a,b)| a.abs_diff(*b)).max().unwrap();
+                let a = read(&single_depth, x, y);
+                let b = read(&tiled_depth, x, y);
+                coverage_changed += usize::from((a >= 1.) != (b >= 1.));
+                baseline_changed += usize::from(original.iter().zip(unshadowed).any(|(a,b)| a.abs_diff(*b) > 5));
+                tiled_self_shadow += usize::from(unshadowed[0].saturating_sub(split[0]) > 5);
+                if delta > 5 {
+                    changed += 1;
+                    largest.push((delta,x,y,a,b,rgba,split,original,unshadowed));
+                }
+            }
+        }
+        largest.sort_unstable_by_key(|p| std::cmp::Reverse(p.0));
+        eprintln!("NOVA_CSM_TILED changed={changed} coverage_changed={coverage_changed} baseline_changed={baseline_changed} tiled_self_shadow={tiled_self_shadow}");
+        for (delta,x,y,a,b,single,split,original,unshadowed) in largest.into_iter().take(12) {
+            eprintln!("NOVA_CSM_TILED_PIXEL ({x},{y}) delta={delta} single_depth={a} tiled_depth={b} single={single:?} tiled={split:?} single_unshadowed={original:?} tiled_unshadowed={unshadowed:?}");
+        }
+    }
     assert!(
         maximum <= 5,
         "splitting a receiver into tiles must not introduce shadow seams: max_delta={maximum}"

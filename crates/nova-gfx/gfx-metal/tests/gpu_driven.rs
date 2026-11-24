@@ -38,7 +38,10 @@ const GENERATE: &str = r#"
 fn shader(device: &mut MetalDevice, source: &str, stage: ShaderStage, entry: &str) -> ShaderModuleId {
     let binary = WgslModule::parse(source).expect("WGSL")
         .compile_msl_versioned(stage, entry, MslVersion::V2_0).expect("reflected MSL");
-    device.create_shader_module(&ShaderModuleDescriptor { label: None, binary })
+    if let ShaderCode::Msl(source) = &binary.code {
+        eprintln!("NOVA_GFX_METAL_MSL entry={entry}\n{source}");
+    }
+    device.create_shader_module(&ShaderModuleDescriptor { label: Some(entry.into()), binary })
         .expect("native Metal shader")
 }
 
@@ -118,15 +121,7 @@ fn gpu_generated_indirect_draws_select_array_layers_without_cpu_readback() {
     }).unwrap();
     let index_bytes: Vec<u8> = [99u32, 0, 1, 2].into_iter().flat_map(u32::to_le_bytes).collect();
     device.write_buffer(indices, 0, &index_bytes).expect("private index upload");
-    let compute = shader(&mut device, GENERATE, ShaderStage::Compute, "generate");
-    device.dispatch_compute(&ComputeDispatch {
-        shader: compute,
-        bindings: &[ComputeBufferBinding {
-            binding: 0, access: ComputeBufferAccess::ReadWrite,
-            buffer: BufferBinding { buffer: args, offset: 0, size: 36, stride: None },
-        }],
-        workgroups: [1, 1, 1],
-    }).expect("GPU writes native indirect arguments");
+    // First isolate direct array reads without any compute producer in flight.
     // Isolate attachment store, texture layer upload / shader binding, and
     // indirect command generation. The original GPU-only draw remains tested.
     let clear = LoadOp::Clear(ClearColor { red: 0.0, green: 0.0, blue: 1.0, alpha: 1.0 });
@@ -136,10 +131,11 @@ fn gpu_generated_indirect_draws_select_array_layers_without_cpu_readback() {
             color_load_op: clear, clear_region: None, depth_attachment: None,
             viewport: None, resolve_target: None,
         }]).expect("record native render").expect("tracked Metal render submission");
-        let pixels = device.read_texture(target).expect("read rendered pixels");
-        // Pixel readback has already waited for the ordered queue. Observe the
-        // render's actual error status, without inserting a producer/consumer wait.
+        // Check the draw's own command buffer before issuing a readback; on a
+        // GPU fault the latter can otherwise hide the producer's native error.
+        // This is a test-only wait after the entire producer/consumer sequence.
         device.wait_submission(submission).unwrap_or_else(|error| panic!("{label}: {error}"));
+        let pixels = device.read_texture(target).expect("read rendered pixels");
         assert_eq!(&pixels.bytes[(4 * 8 + 4) * 4..(4 * 8 + 4) * 4 + 4], &expected, "{label}");
     };
     verify(&mut device, "clear/store", &[], [0, 0, 255, 255]);
@@ -149,6 +145,16 @@ fn gpu_generated_indirect_draws_select_array_layers_without_cpu_readback() {
             first_vertex: 0, instance_count: 1, first_instance: layer, scissor: None,
         })], expected);
     }
+    eprintln!("NOVA_GFX_METAL_DIRECT_ARRAY_DRAW=pass");
+    let compute = shader(&mut device, GENERATE, ShaderStage::Compute, "generate");
+    device.dispatch_compute(&ComputeDispatch {
+        shader: compute,
+        bindings: &[ComputeBufferBinding {
+            binding: 0, access: ComputeBufferAccess::ReadWrite,
+            buffer: BufferBinding { buffer: args, offset: 0, size: 36, stride: None },
+        }],
+        workgroups: [1, 1, 1],
+    }).expect("GPU writes native indirect arguments");
     // Deliberately bypass conservative capability advertisement. Never read
     // the GPU-generated argument buffer back to the CPU.
     for (draw, expected) in [
