@@ -110,6 +110,7 @@ fn shader(
             binary: ShaderBinary {
                 stage,
                 entry_point: entry.into(),
+                metal: None,
                 code: ShaderCode::DxBytecode(bytes),
             },
         })

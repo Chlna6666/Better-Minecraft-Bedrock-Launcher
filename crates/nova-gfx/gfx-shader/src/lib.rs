@@ -293,19 +293,109 @@ impl WgslModule {
         entry_point: &str,
         version: MslVersion,
     ) -> Result<ShaderBinary> {
-        let options = msl::Options {
+        use gfx_core::{BindingType, METAL_SIZE_BUFFER_SLOT, MetalShaderBindings, metal_binding_slot};
+        let entry_index = self.module.entry_points.iter().position(|ep| {
+            ep.stage == shader_stage_to_naga(stage) && ep.name == entry_point
+        }).ok_or_else(|| ShaderError::Msl(format!("missing WGSL entry point {entry_point}")))?;
+        let usage = self.info.get_entry_point(entry_index);
+        let mut resources = msl::EntryPointResources {
+            sizes_buffer: Some(METAL_SIZE_BUFFER_SLOT),
+            ..Default::default()
+        };
+        let mut metadata = MetalShaderBindings {
+            native_entry: std::borrow::Cow::Borrowed(""),
+            buffers: 0, textures: 0, samplers: 0,
+            size_slots: std::borrow::Cow::Borrowed(&[]),
+        };
+        let mut sizes = Vec::new();
+        let mut uses_sizes = false;
+        // Naga emits one uint per runtime-sized global in declaration order,
+        // including globals not used by this particular entry point.
+        for (handle, variable) in self.module.global_variables.iter() {
+            let used = !usage[handle].is_empty();
+            let dynamic_array = match &self.module.types[variable.ty].inner {
+                naga::TypeInner::Array { size: naga::ArraySize::Dynamic, .. } => true,
+                naga::TypeInner::Struct { members, .. } => members.last().is_some_and(|member| {
+                    matches!(self.module.types[member.ty].inner,
+                        naga::TypeInner::Array { size: naga::ArraySize::Dynamic, .. })
+                }),
+                _ => false,
+            };
+            if dynamic_array {
+                if used {
+                    uses_sizes = true;
+                    let binding = variable.binding.ok_or_else(|| ShaderError::Msl("unbound runtime array".into()))?;
+                    sizes.push(metal_binding_slot(binding.group, binding.binding, BindingType::StorageBuffer)
+                        .ok_or_else(|| ShaderError::Msl(format!("unsupported Metal runtime array {binding:?}")))?);
+                } else {
+                    sizes.push(u8::MAX);
+                }
+            }
+            if !used { continue; }
+            let Some(binding) = variable.binding else { continue; };
+            let kind = match variable.space {
+                naga::AddressSpace::Uniform => BindingType::UniformBuffer,
+                naga::AddressSpace::Storage { access } if access.contains(naga::StorageAccess::STORE) => BindingType::StorageBufferReadWrite,
+                naga::AddressSpace::Storage { .. } => BindingType::StorageBuffer,
+                naga::AddressSpace::Handle => match self.module.types[variable.ty].inner {
+                    naga::TypeInner::Sampler { .. } => BindingType::Sampler,
+                    naga::TypeInner::Image { class: naga::ImageClass::Sampled { .. } | naga::ImageClass::Depth { .. }, .. } => BindingType::SampledTexture,
+                    _ => return Err(ShaderError::Msl(format!("unsupported Metal image or binding array {binding:?}"))),
+                },
+                _ => return Err(ShaderError::Msl(format!("unsupported Metal resource {binding:?}"))),
+            };
+            let slot = metal_binding_slot(binding.group, binding.binding, kind)
+                .ok_or_else(|| ShaderError::Msl(format!("unsupported Metal resource binding {binding:?}")))?;
+            let mut target = msl::BindTarget::default();
+            match kind {
+                BindingType::UniformBuffer | BindingType::StorageBuffer | BindingType::StorageBufferReadWrite => {
+                    target.buffer = Some(slot);
+                    target.mutable = kind == BindingType::StorageBufferReadWrite;
+                    metadata.buffers |= 1u32 << slot;
+                }
+                BindingType::SampledTexture => {
+                    target.texture = Some(slot);
+                    metadata.textures |= 1u32 << slot;
+                }
+                BindingType::Sampler => {
+                    target.sampler = Some(msl::BindSamplerTarget::Resource(slot));
+                    metadata.samplers |= 1u16 << slot;
+                }
+                BindingType::StorageTexture { .. } => unreachable!("storage texture translation rejected above"),
+            }
+            resources.resources.insert(binding, target);
+        }
+        if uses_sizes {
+            if sizes.len() > 1024 {
+                return Err(ShaderError::Msl("Metal runtime-array size table exceeds setBytes capacity".into()));
+            }
+            metadata.size_slots = std::borrow::Cow::Owned(sizes);
+        }
+        let mut options = msl::Options {
             lang_version: version.language_version(),
+            fake_missing_bindings: false,
             ..msl::Options::default()
         };
+        options.per_entry_point_map.insert(entry_point.to_owned(), resources);
         let pipeline_options = msl::PipelineOptions {
             entry_point: Some((shader_stage_to_naga(stage), entry_point.to_string())),
             ..msl::PipelineOptions::default()
         };
-        let (source, _info) =
+        let (source, reflection) =
             msl::write_string(&self.module, &self.info, &options, &pipeline_options)
                 .map_err(|error| ShaderError::Msl(error.to_string()))?;
-
-        Ok(ShaderBinary::msl(stage, entry_point, source))
+        let reflected = if reflection.entry_point_names.len() == 1 {
+            reflection.entry_point_names.first()
+        } else if reflection.entry_point_names.len() == self.module.entry_points.len() {
+            reflection.entry_point_names.get(entry_index)
+        } else {
+            None
+        }.ok_or_else(|| ShaderError::Msl(format!("missing Metal reflection for {entry_point}")))?;
+        metadata.native_entry = std::borrow::Cow::Owned(reflected.as_ref()
+            .map_err(|error| ShaderError::Msl(error.to_string()))?.clone());
+        let mut binary = ShaderBinary::msl(stage, entry_point, source);
+        binary.metal = Some(metadata);
+        Ok(binary)
     }
 
     /// Compiles one entry point to backend-specific code.

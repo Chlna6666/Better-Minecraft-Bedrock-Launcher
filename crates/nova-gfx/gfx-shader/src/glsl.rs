@@ -169,6 +169,7 @@ impl WgslModule {
         Ok(ShaderBinary {
             stage,
             entry_point: entry_point.into(),
+            metal: None,
             code: ShaderCode::Glsl(GlslShader {
                 source: source.into(),
                 buffers,

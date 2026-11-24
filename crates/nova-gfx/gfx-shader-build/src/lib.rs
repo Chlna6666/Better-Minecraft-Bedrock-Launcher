@@ -312,7 +312,7 @@ impl ShaderSet {
         for prepared in shaders {
             let shader = prepared.shader;
             for (entry_point, stage) in &shader.entry_points {
-                let (extension, include_macro, constructor, payload, glsl) =
+                let (extension, include_macro, constructor, payload, glsl, metal) =
                     self.compile_entry(out_dir, backend, prepared, entry_point, *stage)?;
 
                 let relative = format!(
@@ -327,6 +327,11 @@ impl ShaderSet {
                     let textures = glsl.textures.iter().map(|texture| format!("::gfx_core::GlslTextureBinding {{ name: ::std::borrow::Cow::Borrowed({:?}), texture: {}, sampler: {:?} }}", texture.name, texture.texture, texture.sampler)).collect::<Vec<_>>().join(",");
                     let images = glsl.images.iter().map(|image| format!("::gfx_core::GlslImageBinding {{ name: ::std::borrow::Cow::Borrowed({:?}), binding: {}, format: ::gfx_core::Format::{:?}, read_only: {} }}", image.name, image.binding, image.format, image.read_only)).collect::<Vec<_>>().join(",");
                     generated.push_str(&format!("const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::Glsl {{ source: include_str!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")), buffers: &[{buffers}], textures: &[{textures}], images: &[{images}] }};\n"));
+                } else if let Some(metal) = metal {
+                    generated.push_str(&format!(
+                        "const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::MetallibMapped {{ library: include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")), native_entry: {:?}, buffers: {}, textures: {}, samplers: {}, size_slots: &{:?} }};\n",
+                        metal.native_entry, metal.buffers, metal.textures, metal.samplers, metal.size_slots.as_ref()
+                    ));
                 } else {
                     generated.push_str(&format!(
                     "const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::{constructor}({include_macro}!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")));\n"
@@ -359,6 +364,7 @@ impl ShaderSet {
             &'static str,
             Vec<u8>,
             Option<gfx_core::GlslShader>,
+            Option<gfx_core::MetalShaderBindings>,
         ),
         Error,
     > {
@@ -384,6 +390,7 @@ impl ShaderSet {
                     "Glsl",
                     glsl.source.as_bytes().to_vec(),
                     Some(glsl),
+                    None,
                 ))
             }
             Backend::Dx11 => {
@@ -411,7 +418,7 @@ impl ShaderSet {
                             "DX11 requires build-time D3DCompile on a Windows host".into(),
                         )
                     })?;
-                Ok(("dxbc", "include_bytes", "DxBytecode", bytecode, None))
+                Ok(("dxbc", "include_bytes", "DxBytecode", bytecode, None, None))
             }
             Backend::Dx12 => {
                 let binary = prepared
@@ -435,14 +442,14 @@ impl ShaderSet {
                         message,
                     },
                 )? {
-                    Some(bytecode) => Ok(("dxbc", "include_bytes", "DxBytecode", bytecode, None)),
+                    Some(bytecode) => Ok(("dxbc", "include_bytes", "DxBytecode", bytecode, None, None)),
                     None => match self.dx12_artifact_policy {
                         Dx12ArtifactPolicy::AllowRuntimeCompilation => {
                             println!(
                                 "cargo::warning=DX12 shader `{}` entry point `{entry_point}` is embedded as HLSL because the build host cannot run D3DCompile; renderer startup requires an explicitly compiler-enabled DX12 backend",
                                 shader.name
                             );
-                            Ok(("hlsl", "include_str", "Hlsl", hlsl.into_bytes(), None))
+                            Ok(("hlsl", "include_str", "Hlsl", hlsl.into_bytes(), None, None))
                         }
                         Dx12ArtifactPolicy::RequireBytecode => Err(Error::Dx12BytecodeRequired {
                             shader: shader.name.clone(),
@@ -453,10 +460,10 @@ impl ShaderSet {
             }
             Backend::Vulkan => {
                 let spirv = translate_vulkan(&prepared.module, entry_point, stage, shader)?;
-                Ok(("spv", "include_bytes", "SpirvBytes", spirv, None))
+                Ok(("spv", "include_bytes", "SpirvBytes", spirv, None, None))
             }
             Backend::Metal => {
-                let msl = translate_metal(&prepared.module, entry_point, stage, shader)?;
+                let (msl, metadata) = translate_metal(&prepared.module, entry_point, stage, shader)?;
                 let metallib =
                     compile_msl_to_metallib(out_dir, entry_point, &msl).map_err(|message| {
                         Error::Compile {
@@ -465,7 +472,7 @@ impl ShaderSet {
                             message,
                         }
                     })?;
-                Ok(("metallib", "include_bytes", "Metallib", metallib, None))
+                Ok(("metallib", "include_bytes", "Metallib", metallib, None, Some(metadata)))
             }
         }
     }
@@ -600,7 +607,7 @@ fn translate_metal(
     entry_point: &str,
     stage: ShaderStage,
     shader: &Shader,
-) -> Result<String, Error> {
+) -> Result<(String, gfx_core::MetalShaderBindings), Error> {
     let binary = module
         .compile_msl_versioned(stage, entry_point, shader.msl_version)
         .map_err(|error| Error::Translate {
@@ -610,7 +617,7 @@ fn translate_metal(
         })?;
 
     match binary.code {
-        gfx_core::ShaderCode::Msl(msl) => Ok(msl),
+        gfx_core::ShaderCode::Msl(msl) => Ok((msl, binary.metal.ok_or_else(|| Error::Invalid("missing MSL resource reflection".into()))?)),
         _ => Err(Error::Translate {
             shader: shader.name.clone(),
             entry_point: entry_point.to_string(),
