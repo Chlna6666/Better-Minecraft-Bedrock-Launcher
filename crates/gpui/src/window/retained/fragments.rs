@@ -103,7 +103,7 @@ impl Window {
         if parent.bounds != bounds || &self_scene.style != current_style {
             return None;
         }
-        if parent.paint_context != self.current_retained_paint_context() {
+        if parent.paint_context.as_ref() != &self.current_retained_paint_context() {
             return None;
         }
 

@@ -39,6 +39,7 @@ impl RetainedPaint {
                     .start
                     .cmp(&right.scene_range.start)
                     .then_with(|| right.scene_range.end.cmp(&left.scene_range.end))
+                    .then_with(|| left.id.identity.0.len().cmp(&right.id.identity.0.len()))
             });
         // Validate the once-per-finish ordering contract here, not on every
         // retained replay. A debug-build full candidate scan per fragment

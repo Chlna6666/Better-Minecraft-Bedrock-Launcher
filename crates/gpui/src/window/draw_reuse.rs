@@ -6,8 +6,6 @@ use super::frame::{
 use super::state::ElementVisualTransform;
 use super::*;
 
-const RETAINED_REPLAY_SCRATCH_MIN_CAPACITY: usize = 32;
-const RETAINED_REPLAY_SCRATCH_TRIM_MULTIPLIER: usize = 4;
 
 impl Window {
     pub(super) fn prepaint_deferred_draws(&mut self, cx: &mut App) {
@@ -656,10 +654,10 @@ impl Window {
         };
 
         let previous = self.rendered_frame.retained_element_ranges.get(retained_id);
-        let generation = if previous
+        let matching_descriptor = previous
             .and_then(|range| range.semantic_descriptor.as_ref())
-            .is_some_and(|previous_descriptor| previous_descriptor == &descriptor)
-        {
+            .filter(|old| old.as_ref() == &descriptor);
+        let generation = if matching_descriptor.is_some() {
             previous
                 .and_then(|range| range.semantic_generation)
                 .unwrap_or(1)
@@ -677,7 +675,7 @@ impl Window {
         self.next_frame.retained_layout_semantics.insert(
             layout_id,
             RetainedSemanticEntry {
-                descriptor: Some(descriptor),
+                descriptor: Some(matching_descriptor.cloned().unwrap_or_else(|| Rc::new(descriptor))),
                 stamp: RetainedSemanticStamp {
                     segment: retained_segment.clone(),
                     generation,
@@ -699,7 +697,7 @@ impl Window {
             return false;
         };
         current.identity_is_stable()
-            && matches!(descriptor, RetainedSemanticDescriptor::Div { .. })
+            && matches!(descriptor.as_ref(), RetainedSemanticDescriptor::Div { .. })
             && retained.semantic_descriptor.as_ref() == Some(descriptor)
             && retained.semantic_generation == Some(current.stamp.generation)
     }
@@ -783,7 +781,7 @@ impl Window {
             }
         }
 
-        if retained.paint_context != self.current_retained_paint_context() {
+        if retained.paint_context.as_ref() != &self.current_retained_paint_context() {
             return None;
         }
         if targeted_replay {
@@ -852,7 +850,15 @@ impl Window {
         explicit_cached_view: bool,
     ) {
         debug_assert!(metadata_start <= self.next_frame.retained_element_order.len());
-        let paint_context = self.current_retained_paint_context();
+        let context = self.current_retained_paint_context();
+        let paint_context = match self.next_frame.last_retained_paint_context.as_ref() {
+            Some(previous) if previous.as_ref() == &context => Rc::clone(previous),
+            _ => {
+                let context = Rc::new(context);
+                self.next_frame.last_retained_paint_context = Some(Rc::clone(&context));
+                context
+            }
+        };
         // Keep the hash-map slot/bucket alive as a frame-local arena, but transfer the expensive
         // descriptor payload into retained metadata instead of cloning TextStyle/child stamps.
         let semantic_proof = self
@@ -954,7 +960,10 @@ impl Window {
             if self.next_frame.retained_element_ranges.contains_key(key) {
                 return false;
             }
-            if source_range.metadata_range.start < source_metadata.start
+            // Every post-order record ends at its own index + 1. This also
+            // proves that no duplicate identity exists within the source span.
+            if source_range.metadata_range.end != source_index + 1
+                || source_range.metadata_range.start < source_metadata.start
                 || source_range.metadata_range.end > source_metadata.end
                 || rebase_prepaint_range(
                     &source_range.prepaint_range,
@@ -1000,39 +1009,17 @@ impl Window {
             }
         }
 
-        let replayed_count = source_metadata.end - source_metadata.start;
-        let mut moved = std::mem::take(&mut self.next_frame.retained_replay_scratch);
-        moved.clear();
-        if moved.capacity() < replayed_count {
-            moved.reserve(replayed_count);
-        }
-
-        // An abortable generation cannot consume committed reconciliation
-        // metadata. Its layout liveness and retry admission still depend on
-        // the original ranges, whose indices must remain in the old frame.
-        // Non-abortable frames retain the allocation-free move path.
+        // The entire span, unique identities and all index arithmetic were
+        // validated above. Transfer directly to the candidate frame; no
+        // second full-sized staging vector or third traversal is needed.
         let preserve_committed = self.frame_can_degrade;
         for source_index in source_metadata.clone() {
             let key = self.rendered_frame.retained_element_order[source_index].clone();
-            let range = if preserve_committed {
+            let mut range = if preserve_committed {
                 self.rendered_frame.retained_element_ranges.get(&key).cloned()
             } else {
                 self.rendered_frame.retained_element_ranges.remove(&key)
-            };
-            let Some(range) = range else {
-                if !preserve_committed {
-                    for (key, range) in moved.drain(..) {
-                        self.rendered_frame.retained_element_ranges.insert(key, range);
-                    }
-                }
-                moved.clear();
-                self.next_frame.retained_replay_scratch = moved;
-                return false;
-            };
-            moved.push((key, range));
-        }
-
-        for (key, mut range) in moved.drain(..) {
+            }.expect("validated unique retained source record");
             range.prepaint_range =
                 rebase_prepaint_range(&range.prepaint_range, source_prepaint, target_prepaint)
                     .expect("retained metadata prepaint range was validated before transfer");
@@ -1061,13 +1048,6 @@ impl Window {
             self.next_frame.retained_element_ranges.insert(key, range);
         }
 
-        // Keep a stable replay subtree allocation hot, but let a much smaller later replay retire a
-        // pathological high-water mark. Normal frame swapping must not use len()==0 to shrink this.
-        let target = RETAINED_REPLAY_SCRATCH_MIN_CAPACITY.max(replayed_count);
-        if moved.capacity() > target.saturating_mul(RETAINED_REPLAY_SCRATCH_TRIM_MULTIPLIER) {
-            moved.shrink_to(target);
-        }
-        self.next_frame.retained_replay_scratch = moved;
         true
     }
 

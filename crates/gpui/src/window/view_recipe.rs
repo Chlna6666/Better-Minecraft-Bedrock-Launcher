@@ -85,7 +85,7 @@ impl Window {
         if !range.explicit_cached_view || !range.identity_stable
             || range.bounds != bounds
             || range.layout_fingerprint != fingerprint
-            || range.paint_context != self.current_retained_paint_context()
+            || range.paint_context.as_ref() != &self.current_retained_paint_context()
             || self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_none()
             || range.prepaint_range.start.deferred_draws_index != range.prepaint_range.end.deferred_draws_index
             || range.prepaint_range.start.tooltips_index != range.prepaint_range.end.tooltips_index
@@ -132,7 +132,7 @@ impl Window {
         if !range.identity_stable
             || range.bounds.size != bounds.size
             || range.layout_fingerprint != fingerprint
-            || range.paint_context != self.current_retained_paint_context()
+            || range.paint_context.as_ref() != &self.current_retained_paint_context()
             || range.prepaint_range.start.deferred_draws_index != range.prepaint_range.end.deferred_draws_index
             || range.prepaint_range.start.tooltips_index != range.prepaint_range.end.tooltips_index
             || range.prepaint_range.start.accessed_element_states_index != range.prepaint_range.end.accessed_element_states_index
@@ -178,7 +178,7 @@ impl Window {
         bounds: Bounds<Pixels>,
         delta: Point<Pixels>,
     ) -> bool {
-        let context = &range.paint_context;
+        let context = range.paint_context.as_ref();
         let scale = context.device_scale_factor;
         let dx = delta.x.0 * scale;
         let dy = delta.y.0 * scale;
@@ -230,7 +230,7 @@ impl Window {
         // coordinate spaces. Keep the initial translation implementation flat.
         self.rendered_frame.retained_element_order[range.metadata_range.clone()].iter().all(|key| {
             self.rendered_frame.retained_element_ranges.get(key).is_some_and(|child| {
-                child.paint_context == *context
+                child.paint_context.as_ref() == context
                     && child.bounds.intersect(&range.bounds) == child.bounds
             })
         })
