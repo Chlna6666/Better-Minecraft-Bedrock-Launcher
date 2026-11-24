@@ -2535,7 +2535,12 @@ impl VulkanDevice {
     ) -> Result<Option<PresentedFrame>> {
         let reserved = self.swapchains.get(swapchain_id)?.reserved_frame;
         let Some(present_frame) = (match reserved {
-            Some(frame) => Some(frame),
+            Some(frame) => {
+                if !self.reserved_frame_ready(frame)? {
+                    return Ok(None);
+                }
+                Some(frame)
+            },
             None => self.acquire_present_frame(swapchain_id, false)?,
         }) else {
             return Ok(None);
@@ -2588,9 +2593,14 @@ impl VulkanDevice {
         timings.queue_submit = match submit_result {
             Ok(elapsed) => elapsed,
             Err(error) => {
-                let _signal_result =
-                    self.signal_frame_fence_after_submit_failure(present_frame.fence);
+                // Keep the acquired image, but do not reset the same fence
+                // again until the recovery submit has actually completed.
+                if let Some(frame) = self.swapchains.get_mut(swapchain_id)?.reserved_frame.as_mut() {
+                    frame.recovery_pending = true;
+                }
+                let recovery = self.signal_frame_fence_after_submit_failure(present_frame.fence);
                 let _destroy_result = self.destroy_temporary_command_encoder_now(encoder);
+                recovery?;
                 return Err(error);
             }
         };
@@ -3082,8 +3092,8 @@ impl VulkanDevice {
     /// # Errors
     /// Returns an error if WSI or the device rejects the acquisition.
     pub fn reserve_present_frame(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
-        if self.swapchains.get(id)?.reserved_frame.is_some() {
-            return Ok(true);
+        if let Some(frame) = self.swapchains.get(id)?.reserved_frame {
+            return self.reserved_frame_ready(frame);
         }
         // Enforce the current native WSI credit even when callers bypass
         // the renderer's earlier readiness probe.
@@ -3095,6 +3105,15 @@ impl VulkanDevice {
         };
         self.swapchains.get_mut(id)?.reserved_frame = Some(frame);
         Ok(true)
+    }
+
+    fn reserved_frame_ready(&self, frame: VulkanPresentFrame) -> Result<bool> {
+        if !frame.recovery_pending {
+            return Ok(true);
+        }
+        // SAFETY: the swapchain owns the fence; no reset occurs here.
+        unsafe { self.device.get_fence_status(frame.fence) }
+            .map_err(|error| VulkanError::from(error).into())
     }
 
     fn acquire_present_frame(
@@ -3223,6 +3242,7 @@ impl VulkanDevice {
             image_available,
             render_finished,
             fence,
+            recovery_pending: false,
             acquire_fence_wait,
             image_acquire,
         }))
@@ -6232,6 +6252,8 @@ struct VulkanPresentFrame {
     image_available: vk::Semaphore,
     render_finished: vk::Semaphore,
     fence: vk::Fence,
+    /// A failed queue submit can leave an empty fence-recovery submit pending.
+    recovery_pending: bool,
     acquire_fence_wait: Duration,
     image_acquire: Duration,
 }
