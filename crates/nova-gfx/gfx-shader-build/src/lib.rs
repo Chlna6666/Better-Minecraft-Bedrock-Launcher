@@ -329,8 +329,8 @@ impl ShaderSet {
                     generated.push_str(&format!("const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::Glsl {{ source: include_str!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")), buffers: &[{buffers}], textures: &[{textures}], images: &[{images}] }};\n"));
                 } else if let Some(metal) = metal {
                     generated.push_str(&format!(
-                        "const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::MetallibMapped {{ library: include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")), native_entry: {:?}, buffers: {}, textures: {}, samplers: {}, size_slots: &{:?} }};\n",
-                        metal.native_entry, metal.buffers, metal.textures, metal.samplers, metal.size_slots.as_ref()
+                        "const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::MetallibMapped {{ library: include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")), native_entry: {:?}, buffers: {}, textures: {}, samplers: {}, size_slots: &{:?}, workgroup_size: {:?}, writable_buffers: {} }};\n",
+                        metal.native_entry, metal.buffers, metal.textures, metal.samplers, metal.size_slots.as_ref(), metal.workgroup_size, metal.writable_buffers
                     ));
                 } else {
                     generated.push_str(&format!(

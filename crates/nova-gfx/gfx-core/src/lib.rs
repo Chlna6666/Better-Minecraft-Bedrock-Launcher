@@ -1691,6 +1691,10 @@ pub struct MetalShaderBindings {
     pub samplers: u16,
     /// Naga size-table member order; u8::MAX marks an unused member.
     pub size_slots: Cow<'static, [u8]>,
+    /// Baked WGSL local dimensions; zero for non-compute entry points.
+    pub workgroup_size: [u32; 3],
+    /// Storage-buffer slots that require writable bindings.
+    pub writable_buffers: u32,
 }
 
 /// Compiled shader bytes and entry point metadata.
@@ -1884,6 +1888,10 @@ pub enum EmbeddedShader {
         samplers: u16,
         /// Runtime-array size table in compiler member order.
         size_slots: &'static [u8],
+        /// Baked local compute dimensions.
+        workgroup_size: [u32; 3],
+        /// Required writable storage slots.
+        writable_buffers: u32,
     },
 }
 
@@ -1927,7 +1935,7 @@ impl EmbeddedShader {
             ),
             Self::Msl(source) => ShaderBinary::msl(stage, entry_point, source.to_string()),
             Self::Metallib(library) => ShaderBinary::metallib_static(stage, entry_point, library),
-            Self::MetallibMapped { library, native_entry, buffers, textures, samplers, size_slots } => {
+            Self::MetallibMapped { library, native_entry, buffers, textures, samplers, size_slots, workgroup_size, writable_buffers } => {
                 let mut binary = ShaderBinary::metallib_static(stage, entry_point, library);
                 binary.metal = Some(MetalShaderBindings {
                     native_entry: Cow::Borrowed(native_entry),
@@ -1935,6 +1943,8 @@ impl EmbeddedShader {
                     textures,
                     samplers,
                     size_slots: Cow::Borrowed(size_slots),
+                    workgroup_size,
+                    writable_buffers,
                 });
                 binary
             }

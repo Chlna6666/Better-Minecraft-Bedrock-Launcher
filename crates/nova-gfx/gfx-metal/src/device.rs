@@ -52,6 +52,7 @@ mod platform {
     mod texture;
     mod bindings;
     mod offscreen;
+    mod compute;
     use bindings::{NativeBindGroup, PreparedBindings};
     use super::*;
     use crate::registry::ResourceRegistry;
@@ -96,6 +97,7 @@ mod platform {
         bind_groups: ResourceRegistry<MetalResourceSet>,
         pipeline_layouts: ResourceRegistry<MetalPipelineLayout>,
         shader_modules: ResourceRegistry<MetalShaderModule>,
+        compute_pipelines: std::collections::HashMap<ShaderModuleId, Retained<ProtocolObject<dyn objc2_metal::MTLComputePipelineState>>>,
         render_passes: ResourceRegistry<MetalRenderPass>,
         render_pipelines: ResourceRegistry<MetalRenderPipeline>,
         command_encoders: ResourceRegistry<MetalCommandEncoder>,
@@ -130,6 +132,7 @@ mod platform {
                 bind_groups: ResourceRegistry::new("bind group"),
                 pipeline_layouts: ResourceRegistry::new("pipeline layout"),
                 shader_modules: ResourceRegistry::new("shader module"),
+                compute_pipelines: std::collections::HashMap::new(),
                 render_passes: ResourceRegistry::new("render pass"),
                 render_pipelines: ResourceRegistry::new("render pipeline"),
                 command_encoders: ResourceRegistry::new("command encoder"),
@@ -863,6 +866,7 @@ mod platform {
 
         fn destroy_shader_module(&mut self, shader: ShaderModuleId) -> Result<()> {
             let _shader = self.shader_modules.take(shader)?;
+            self.compute_pipelines.remove(&shader);
             Ok(())
         }
 
@@ -981,6 +985,41 @@ mod platform {
     }
 
     impl ResourceDevice for MetalDevice {
+        fn buffer_binding_limits(&self) -> gfx_core::BufferBindingLimits {
+            gfx_core::BufferBindingLimits {
+                storage_offset_alignment: 4,
+                uniform_offset_alignment: 256,
+                max_storage_binding_bytes: (self.device.maxBufferLength() as u64).min(u64::from(u32::MAX)),
+                max_uniform_binding_bytes: (self.device.maxBufferLength() as u64).min(64 * 1024),
+            }
+        }
+        fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
+            let size = self.device.maxThreadsPerThreadgroup();
+            // The per-pipeline maximum is checked again before encoding.
+            let convert = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
+            gfx_core::ComputeCapabilities {
+                max_workgroups: [65535; 3],
+                max_invocations_per_workgroup: convert(size.width),
+                max_workgroup_size: [convert(size.width), convert(size.height), convert(size.depth)],
+                max_workgroup_shared_memory_bytes: convert(self.device.maxThreadgroupMemoryLength()),
+                // Keep GPU-driven geometry disabled until the private-buffer
+                // upload path and native shader ABI are verified on macOS.
+                indirect_draw: false,
+            }
+        }
+        fn compute_bind_group_capabilities(&self) -> gfx_core::ComputeBindGroupCapabilities {
+            gfx_core::ComputeBindGroupCapabilities { buffers: true, sampled_textures: true, samplers: true, storage_textures: false }
+        }
+        fn dispatch_compute(&mut self, dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
+            self.submit_compute(std::slice::from_ref(dispatch), false).map(|_| ())
+        }
+        fn dispatch_compute_batch(&mut self, dispatches: &[gfx_core::ComputeDispatch<'_>]) -> Result<()> {
+            self.submit_compute(dispatches, false).map(|_| ())
+        }
+        fn dispatch_compute_bind_group(&mut self, dispatch: &gfx_core::ComputeBindGroupDispatch) -> Result<()> {
+            self.submit_compute_set(dispatch)
+        }
+
         fn max_color_attachments(&self) -> u32 { 8 }
 
         fn multisample_capabilities(&self) -> gfx_core::MultisampleCapabilities {
@@ -1154,6 +1193,10 @@ mod platform {
             }
         }
 
+        fn dispatch_compute_batch_tracked(&mut self, dispatches: &[gfx_core::ComputeDispatch<'_>]) -> Result<SubmissionId> {
+            self.submit_compute(dispatches, true)?.ok_or_else(|| Error::InvalidInput("tracked Metal compute batch has no executable dispatches".into()))
+        }
+
         fn checkpoint_ordered_queue(&mut self, _stage: gfx_core::GpuWorkStage) -> Result<SubmissionId> {
             let commands = self.command_queue.commandBuffer()
                 .ok_or_else(|| Error::Backend("Metal queue checkpoint unavailable".into()))?;
@@ -1295,6 +1338,8 @@ mod platform {
         ) -> Result<Option<PresentedFrame>> {
             self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, frame.color_load_op, frame.depth_attachment, None)
         }
+
+        fn ordered_mixed_graphics_compute_supported(&self) -> bool { true }
 
         fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
             self.submit_texture_passes(std::slice::from_ref(pass), false).map(|_| ())

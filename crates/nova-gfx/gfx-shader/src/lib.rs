@@ -306,6 +306,8 @@ impl WgslModule {
             native_entry: std::borrow::Cow::Borrowed(""),
             buffers: 0, textures: 0, samplers: 0,
             size_slots: std::borrow::Cow::Borrowed(&[]),
+            workgroup_size: if stage == ShaderStage::Compute { self.module.entry_points[entry_index].workgroup_size } else { [0; 3] },
+            writable_buffers: 0,
         };
         let mut sizes = Vec::new();
         let mut uses_sizes = false;
@@ -352,6 +354,7 @@ impl WgslModule {
                     target.buffer = Some(slot);
                     target.mutable = kind == BindingType::StorageBufferReadWrite;
                     metadata.buffers |= 1u32 << slot;
+                    if target.mutable { metadata.writable_buffers |= 1u32 << slot; }
                 }
                 BindingType::SampledTexture => {
                     target.texture = Some(slot);

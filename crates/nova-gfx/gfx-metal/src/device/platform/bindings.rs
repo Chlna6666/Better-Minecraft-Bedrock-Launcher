@@ -84,20 +84,23 @@ impl MetalDevice {
     ) -> Result<()> {
         let Some(shader) = shader else { return Ok(()); };
         let (mut buffers, mut textures, mut samplers) = (0u32, 0u32, 0u16);
+        let mut writable_buffers = 0u32;
         if let Some(layout) = layout {
             for entry in &self.bind_group_layouts.get(layout)?.desc.entries {
                 if !entry.stages.contains(stage) { continue; }
                 let slot = metal_binding_slot(0, entry.binding, entry.binding_type)
                     .ok_or_else(|| Error::Unavailable("unsupported Metal shader layout slot".into()))?;
                 match entry.binding_type {
-                    BindingType::UniformBuffer | BindingType::StorageBuffer | BindingType::StorageBufferReadWrite => buffers |= 1 << slot,
+                    BindingType::UniformBuffer | BindingType::StorageBuffer => buffers |= 1 << slot,
+                    BindingType::StorageBufferReadWrite => { buffers |= 1 << slot; writable_buffers |= 1 << slot; }
                     BindingType::SampledTexture => textures |= 1 << slot,
                     BindingType::Sampler => samplers |= 1 << slot,
                     BindingType::StorageTexture { .. } => {}
                 }
             }
         }
-        if shader.buffers & !buffers != 0 || shader.textures & !textures != 0 || shader.samplers & !samplers != 0 {
+        if shader.buffers & !buffers != 0 || shader.writable_buffers & !writable_buffers != 0
+            || shader.textures & !textures != 0 || shader.samplers & !samplers != 0 {
             return Err(Error::InvalidInput("Metal pipeline layout omits a reflected shader binding".into()));
         }
         Ok(())
@@ -125,7 +128,7 @@ impl MetalDevice {
     }
 }
 
-fn size_table(shader: Option<&MetalShaderBindings>, group: &NativeBindGroup) -> Result<Vec<u32>> {
+pub(super) fn size_table(shader: Option<&MetalShaderBindings>, group: &NativeBindGroup) -> Result<Vec<u32>> {
     let Some(shader) = shader else { return Ok(Vec::new()); };
     if shader.size_slots.len() > 1024 {
         return Err(Error::InvalidInput("Metal runtime-array size table exceeds setBytes capacity".into()));
@@ -186,5 +189,56 @@ impl PreparedBindings {
                 encoder.setFragmentBytes_length_atIndex(bytes, self.fragment_sizes.len() * 4, usize::from(METAL_SIZE_BUFFER_SLOT));
             }
         }
+    }
+}
+
+impl NativeBindGroup {
+    pub(super) fn encode_compute(&self, encoder: &ProtocolObject<dyn objc2_metal::MTLComputeCommandEncoder>, sizes: &[u32]) {
+        for entry in &self.entries {
+            if !entry.stages.contains(ShaderStages::COMPUTE) { continue; }
+            let slot = usize::from(entry.slot);
+            // SAFETY: the prepared group retains the validated native resources.
+            unsafe {
+                match &entry.resource {
+                    NativeResource::Buffer(buffer, offset) => encoder.setBuffer_offset_atIndex(Some(buffer), *offset, slot),
+                    NativeResource::Texture(_, texture) => encoder.setTexture_atIndex(Some(texture), slot),
+                    NativeResource::Sampler(sampler) => encoder.setSamplerState_atIndex(Some(sampler), slot),
+                }
+            }
+        }
+        if !sizes.is_empty() {
+            // SAFETY: Metal copies the validated size table before returning.
+            unsafe { encoder.setBytes_length_atIndex(NonNull::from(sizes).cast::<c_void>(), sizes.len() * 4, usize::from(METAL_SIZE_BUFFER_SLOT)); }
+        }
+    }
+}
+
+impl MetalDevice {
+    pub(super) fn prepare_compute_buffers(&self, dispatch: &gfx_core::ComputeDispatch<'_>, shader: &MetalShaderBindings) -> Result<NativeBindGroup> {
+        let mut entries = Vec::with_capacity(dispatch.bindings.len());
+        let mut buffer_sizes = [0; 30];
+        let (mut slots, mut writable) = (0u32, 0u32);
+        for binding in dispatch.bindings {
+            let (kind, usage) = match binding.access {
+                gfx_core::ComputeBufferAccess::Uniform => (BindingType::UniformBuffer, BufferUsage::UNIFORM),
+                gfx_core::ComputeBufferAccess::ReadOnly => (BindingType::StorageBuffer, BufferUsage::STORAGE),
+                gfx_core::ComputeBufferAccess::ReadWrite => (BindingType::StorageBufferReadWrite, BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE),
+            };
+            let slot = metal_binding_slot(0, binding.binding, kind)
+                .ok_or_else(|| Error::InvalidInput("invalid Metal compute binding slot".into()))?;
+            let buffer = self.buffers.get(binding.buffer.buffer)?;
+            binding.buffer.validate_against(buffer.desc.size)?;
+            if !buffer.desc.usage.contains(usage) { return Err(Error::InvalidInput("invalid Metal compute buffer usage".into())); }
+            slots |= 1u32 << slot;
+            if kind == BindingType::StorageBufferReadWrite { writable |= 1u32 << slot; }
+            buffer_sizes[usize::from(slot)] = binding.buffer.size;
+            entries.push(NativeBinding { slot, stages: ShaderStages::COMPUTE,
+                resource: NativeResource::Buffer(buffer.resource.clone().ok_or_else(|| Error::Backend("missing Metal compute buffer".into()))?,
+                    usize::try_from(binding.buffer.offset).map_err(|_| Error::InvalidInput("Metal compute offset overflow".into()))?) });
+        }
+        if shader.buffers & !slots != 0 || shader.writable_buffers & !writable != 0 || shader.textures != 0 || shader.samplers != 0 {
+            return Err(Error::InvalidInput("Metal compute buffers do not match reflected shader resources".into()));
+        }
+        Ok(NativeBindGroup { entries, buffer_sizes })
     }
 }
