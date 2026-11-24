@@ -127,8 +127,30 @@ fn gpu_generated_indirect_draws_select_array_layers_without_cpu_readback() {
         }],
         workgroups: [1, 1, 1],
     }).expect("GPU writes native indirect arguments");
-    // Deliberately bypass the conservative capability advertisement in this
-    // test. Only read pixels after rendering; never read the argument buffer.
+    // Isolate attachment store, texture layer upload / shader binding, and
+    // indirect command generation. The original GPU-only draw remains tested.
+    let clear = LoadOp::Clear(ClearColor { red: 0.0, green: 0.0, blue: 1.0, alpha: 1.0 });
+    let verify = |device: &mut MetalDevice, label: &str, draws: &[RenderCommand], expected: [u8; 4]| {
+        let submission = device.render_to_textures(&[RenderPassCommands {
+            color_attachments: &[target_view], render_pass, commands: draws,
+            color_load_op: clear, clear_region: None, depth_attachment: None,
+            viewport: None, resolve_target: None,
+        }]).expect("record native render").expect("tracked Metal render submission");
+        let pixels = device.read_texture(target).expect("read rendered pixels");
+        // Pixel readback has already waited for the ordered queue. Observe the
+        // render's actual error status, without inserting a producer/consumer wait.
+        device.wait_submission(submission).unwrap_or_else(|error| panic!("{label}: {error}"));
+        assert_eq!(&pixels.bytes[(4 * 8 + 4) * 4..(4 * 8 + 4) * 4 + 4], &expected, "{label}");
+    };
+    verify(&mut device, "clear/store", &[], [0, 0, 255, 255]);
+    for (layer, expected) in [(0, [255, 0, 0, 255]), (1, [0, 255, 0, 255])] {
+        verify(&mut device, "direct array layer", &[RenderCommand::Draw(DrawCommand {
+            pipeline, bind_groups: bind_group_list([group]), vertex_count: 3,
+            first_vertex: 0, instance_count: 1, first_instance: layer, scissor: None,
+        })], expected);
+    }
+    // Deliberately bypass conservative capability advertisement. Never read
+    // the GPU-generated argument buffer back to the CPU.
     for (draw, expected) in [
         (RenderCommand::DrawIndirect(DrawIndirectCommand {
             pipeline, bind_groups: bind_group_list([group]), arguments: args, offset: 0, scissor: None,
@@ -139,13 +161,11 @@ fn gpu_generated_indirect_draws_select_array_layers_without_cpu_readback() {
             scissor: None,
         }), [255u8, 0, 0, 255]),
     ] {
-        device.render_to_texture(&RenderPassCommands {
-            color_attachments: &[target_view], render_pass, commands: &[draw],
-            color_load_op: LoadOp::Clear(ClearColor { red: 0.0, green: 0.0, blue: 1.0, alpha: 1.0 }),
-            clear_region: None, depth_attachment: None, viewport: None, resolve_target: None,
-        }).expect("indirect draw");
-        let pixels = device.read_texture(target).expect("read rendered pixels");
-        assert_eq!(&pixels.bytes[(4 * 8 + 4) * 4..(4 * 8 + 4) * 4 + 4], &expected);
+        let label = match &draw {
+            RenderCommand::DrawIndirect(_) => "GPU non-indexed indirect",
+            _ => "GPU indexed indirect with nonzero offset",
+        };
+        verify(&mut device, label, &[draw], expected);
     }
     eprintln!("NOVA_GFX_METAL_GPU_DRIVEN_ARRAY_DRAW=pass");
 }

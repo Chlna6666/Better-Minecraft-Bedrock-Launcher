@@ -1183,7 +1183,7 @@ mod tests {
             assert_eq!(layout.child_layout_ids, child_ids);
             let entry = &window.next_frame.retained_layout_semantics[&layout_id];
             let Some(super::RetainedSemanticDescriptor::Div { style, children }) =
-                entry.descriptor.as_ref()
+                entry.descriptor.as_deref()
             else {
                 panic!("div semantics must be registered");
             };

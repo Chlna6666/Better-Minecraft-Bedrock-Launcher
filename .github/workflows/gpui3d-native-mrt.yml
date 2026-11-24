@@ -83,10 +83,14 @@ jobs:
                   raise SystemExit(f"Vulkan 1.4 required for {label}; check the native CI environment")
           PY
       - name: Compile native backend test suite
+        id: native_compile
         run: cargo test -p gpui-3d --lib --features gpui/x11 --no-run
       - name: Verify true nearest-depth Hi-Z SSR hierarchy on Vulkan
+        if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         run: cargo test -p gpui-3d --lib --features gpui/x11 ssr_hiz_vulkan -- --ignored --nocapture
       - name: Compare MRT output against legacy Surface and Albedo captures
+        if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         run: cargo test -p gpui-3d --lib --features gpui/x11 effects_vulkan -- --ignored --nocapture
       - name: Validate 2D Greedy and uniform-light fallback GPU counts
+        if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         run: cargo test -p gpui-3d --lib --features gpui/x11 gpu_mesher_vulkan -- --ignored --nocapture

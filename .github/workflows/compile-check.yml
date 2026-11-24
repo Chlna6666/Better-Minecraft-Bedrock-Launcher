@@ -64,12 +64,34 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
           Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmBin"
 
-      - name: Restore Rust dependency and compiler cache
+      - name: Probe complete Rust cache
+        id: complete_cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target/ci-check"
+          key: compile-check-v2-complete
+          lookup-only: "true"
+          cache-bin: "false"
+          save-if: "false"
+
+      # Seed the new namespace from already published dependency artifacts.
+      # Never restore the older snapshot over an exact complete cache.
+      - name: Restore previous Rust dependency cache (migration fallback)
+        if: steps.complete_cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> target/ci-check"
           key: compile-check-v1
-          cache-on-failure: "true"
+          cache-bin: "false"
+          save-if: "false"
+
+      - name: Restore and save complete Rust dependency cache
+        id: rust_cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target/ci-check"
+          key: compile-check-v2-complete
+          cache-on-failure: "false"
           cache-bin: "false"
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
@@ -228,12 +250,34 @@ jobs:
           rustc -Vv
           cargo -V
 
-      - name: Restore Rust dependency and compiler cache
+      - name: Probe complete Rust cache
+        id: complete_cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target/ci-check"
+          key: compile-check-v2-complete
+          lookup-only: "true"
+          cache-bin: "false"
+          save-if: "false"
+
+      # Seed the new namespace from already published dependency artifacts.
+      # Never restore the older snapshot over an exact complete cache.
+      - name: Restore previous Rust dependency cache (migration fallback)
+        if: steps.complete_cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> target/ci-check"
           key: compile-check-v1
-          cache-on-failure: "true"
+          cache-bin: "false"
+          save-if: "false"
+
+      - name: Restore and save complete Rust dependency cache
+        id: rust_cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target/ci-check"
+          key: compile-check-v2-complete
+          cache-on-failure: "false"
           cache-bin: "false"
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
@@ -339,32 +383,60 @@ jobs:
           toolchain: 1.99.1
           components: rustfmt
 
-      - name: Restore Rust dependency and compiler cache
+      - name: Probe complete Rust cache
+        id: complete_cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target/ci-check"
+          key: compile-check-v2-complete
+          lookup-only: "true"
+          cache-bin: "false"
+          save-if: "false"
+
+      # Seed the new namespace from already published dependency artifacts.
+      # Never restore the older snapshot over an exact complete cache.
+      - name: Restore previous Rust dependency cache (migration fallback)
+        if: steps.complete_cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> target/ci-check"
           key: compile-check-v1
-          cache-on-failure: "true"
+          cache-bin: "false"
+          save-if: "false"
+
+      - name: Restore and save complete Rust dependency cache
+        id: rust_cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target/ci-check"
+          key: compile-check-v2-complete
+          cache-on-failure: "false"
           cache-bin: "false"
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Check native Metal backend
+        id: metal_backend
         run: cargo check --locked -p gfx-metal --lib
 
       - name: Test native Metal texture transfer ABI
+        if: ${{ !cancelled() && steps.metal_backend.outcome == 'success' }}
         run: cargo test --locked -p gfx-metal --test texture_transfer -- --nocapture
 
       - name: Verify Metal GPU-generated draws and array sampling
+        if: ${{ !cancelled() && steps.metal_backend.outcome == 'success' }}
         run: cargo test --locked -p gfx-metal --test gpu_driven -- --nocapture
 
       - name: Test WGSL to MSL resource ABI
+        if: ${{ !cancelled() && steps.metal_backend.outcome == 'success' }}
         run: cargo test --locked -p gfx-shader --lib msl
 
       - name: Verify Metal shader compiler
+        if: ${{ !cancelled() && steps.metal_backend.outcome == 'success' }}
         run: |
           xcodebuild -version
           xcrun -sdk macosx -find metal
           xcrun -sdk macosx -find metallib
 
       - name: Check GPUI with Metal and embedded native shaders
+        if: ${{ !cancelled() && steps.metal_backend.outcome == 'success' }}
         run: cargo check --locked -p gpui --lib --example nova_window_smoke --no-default-features --features nova-gfx-metal
