@@ -286,6 +286,14 @@ pub trait ResourceDevice {
         crate::MultisampleCapabilities::default()
     }
 
+    /// Position of sample zero in top-left-origin pixel coordinates, when known.
+    /// A multisampled depth value must be unprojected at this position, not at
+    /// the pixel center. Unknown native patterns must not be reported as standard.
+    #[must_use]
+    fn sample_zero_position(&self, sample_count: u32) -> Option<[f32; 2]> {
+        (sample_count == 1).then_some([0.5, 0.5])
+    }
+
     /// Queues buffer compute in device order without waiting or reading results to the CPU.
     /// Writes must be visible to subsequent device operations, including indirect draws.
     ///

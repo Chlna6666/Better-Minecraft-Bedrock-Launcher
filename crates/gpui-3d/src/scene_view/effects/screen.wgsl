@@ -40,6 +40,12 @@ struct Resolved {@location(0) color:vec4<f32>,@builtin(frag_depth) depth:f32};
 }
 fn pixel(uv:vec2<f32>)->vec2<i32>{return vec2<i32>(clamp(uv,vec2<f32>(0.0),vec2<f32>(0.999999))*vec2<f32>(textureDimensions(scene)));}
 fn world(uv:vec2<f32>,depth:f32)->vec3<f32>{let p=frame.inverse_view_projection*vec4<f32>(uv*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0),depth,1.0);return p.xyz/p.w;}
+// Depth comes from an integer texel at sample zero. Unproject the actual
+// sample location, not the interpolated screen-quad UV (the pixel center).
+fn sampled_uv(at:vec2<i32>)->vec2<f32>{
+    return (vec2<f32>(at)+frame.depth_sample_position.xy)/vec2<f32>(textureDimensions(surface_depth));
+}
+fn sampled_world(at:vec2<i32>,depth:f32)->vec3<f32>{return world(sampled_uv(at),depth);}
 fn project(p:vec3<f32>)->vec3<f32>{let c=frame.view_projection*vec4<f32>(p,1.0);if(c.w<=0.0){return vec3<f32>(-1.0);}return vec3<f32>(c.xy/c.w*vec2<f32>(0.5,-0.5)+0.5,c.z/c.w);}
 fn normal(p:vec2<f32>)->vec3<f32>{var n=vec3<f32>(p,1.0-abs(p.x)-abs(p.y));if(n.z<0.0){n=vec3<f32>((1.0-abs(n.yx))*select(vec2<f32>(-1.0),vec2<f32>(1.0),n.xy>=vec2<f32>(0.0)),n.z);}return normalize(n);}
 fn strip_uv(uv:vec2<f32>,size:vec2<u32>,rows:f32,seconds:f32)->vec2<f32>{
@@ -78,7 +84,7 @@ fn water_normal(p:vec3<f32>,n:vec3<f32>,footprint:f32)->vec3<f32>{
 fn refraction_uv(uv:vec2<f32>,p:vec3<f32>,ray:vec3<f32>,n:vec3<f32>,depth:f32,water:bool)->vec2<f32>{
     let opaque=textureLoad(opaque_depth,pixel(uv),0).r;
     if(opaque>=1.0 || opaque<=depth){return uv;}
-    let distance=min(length(world(uv,opaque)-p),8.0);
+    let distance=min(length(sampled_world(pixel(uv),opaque)-p),8.0);
     let ratio=select(1.0/1.5,select(1.0/1.333,1.333,frame.options.w>0.5),water);let transmitted=refract(ray,n,ratio);
     if(dot(transmitted,transmitted)<0.000001){return uv;}
     // Perturb the underwater path, then project it. A fixed UV offset grows in world units
@@ -318,7 +324,7 @@ fn trace_reflection(origin:vec3<f32>,direction:vec3<f32>)->vec4<f32>{
         }
         let depth=textureLoad(opaque_depth,pixel(q.xy),0).r;
         if(i>2u && depth<1.0 && q.z>=depth){
-            let hit=world(q.xy,depth);
+            let hit=sampled_world(pixel(q.xy),depth);
             if(length(hit-p)<max(0.2,length(p-previous)*1.5)){
                 var a=previous;var b=p;
                 for(var j=0u;j<5u;j++){
@@ -341,7 +347,7 @@ fn local_visibility(p:vec3<f32>,light:vec3<f32>,radius:f32)->f32{
         let q=project(sample_position);
         if(any(q.xy<=vec2<f32>(0.0)) || any(q.xy>=vec2<f32>(1.0))){continue;}
         let depth=textureLoad(opaque_depth,pixel(q.xy),0).r;
-        if(depth<1.0 && q.z>depth && length(world(q.xy,depth)-sample_position)<0.6){return 0.0;}
+        if(depth<1.0 && q.z>depth && length(sampled_world(pixel(q.xy),depth)-sample_position)<0.6){return 0.0;}
     }
     return 1.0;
 }
@@ -396,7 +402,7 @@ fn fog_volume(direction:vec3<f32>,distance_limit:f32)->vec4<f32>{
 }
 fn display_color(color:vec3<f32>)->vec3<f32>{let c=max(color*frame.options.x,vec3<f32>(0.0));let mapped=clamp((c*(2.51*c+0.03))/(c*(2.43*c+0.59)+0.14),vec3<f32>(0.0),vec3<f32>(1.0));return select(mapped*12.92,1.055*pow(mapped,vec3<f32>(1.0/2.4))-0.055,mapped>vec3<f32>(0.0031308));}
 fn effects_shade(input:ScreenOutput)->vec4<f32>{
-    let uv=input.uv;let at=pixel(uv);let depth=textureLoad(surface_depth,at,0).r;let p=world(uv,min(depth,0.99999));let plane=cross(dpdx(p),dpdy(p));let receiver_normal=select(frame.sun.xyz,plane/max(length(plane),0.000001),length(plane)>0.000001);let footprint=max(length(dpdx(p).xz),length(dpdy(p).xz));let ray=normalize(p-frame.eye.xyz);var color=vec3<f32>(0.0);var distance_limit=4096.0;
+    let uv=input.uv;let at=pixel(uv);let depth=textureLoad(surface_depth,at,0).r;let p=world(select(uv,sampled_uv(at),depth<1.0),min(depth,0.99999));let plane=cross(dpdx(p),dpdy(p));let receiver_normal=select(frame.sun.xyz,plane/max(length(plane),0.000001),length(plane)>0.000001);let footprint=max(length(dpdx(p).xz),length(dpdy(p).xz));let ray=normalize(p-frame.eye.xyz);var color=vec3<f32>(0.0);var distance_limit=4096.0;
     if(depth>=1.0){color=atmosphere(ray);}
     if(depth<1.0){distance_limit=length(p-frame.eye.xyz);let material=textureLoad(surfaces,at,0);var n=normal(material.xy);var albedo=load_material_albedo(at);let v=-ray;
         if(material.w<0.0){color=textureSampleLevel(scene,linear_sampler,uv,0.0).rgb;}else{
@@ -424,7 +430,7 @@ fn effects_shade(input:ScreenOutput)->vec4<f32>{
             if(miss){behind=atmosphere(normalize(world(refracted,0.99999)-frame.eye.xyz));}
             // A water ray that leaves the scene has no bottom: treat it as deep water
             // (full absorption) instead of leaking the bright sky through the surface.
-            let thickness=select(min(length(world(refracted,behind_depth)-p),32.0),select(0.0,512.0,water),miss);
+            let thickness=select(min(length(sampled_world(pixel(refracted),behind_depth)-p),32.0),select(0.0,512.0,water),miss);
             let absorption=select(-log(max(albedo.rgb,vec3<f32>(0.02)))*0.3,frame.water_absorption.xyz,water);let transmittance=exp(-absorption*thickness);
             color=behind*transmittance+albedo.rgb*(1.0-transmittance)*0.15+direct*visibility;
         }else{

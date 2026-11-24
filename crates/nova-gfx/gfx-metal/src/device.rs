@@ -1169,6 +1169,15 @@ mod platform {
             }
         }
 
+        fn sample_zero_position(&self, sample_count: u32) -> Option<[f32; 2]> {
+            match sample_count {
+                1 => Some([0.5, 0.5]),
+                // Nova uses Metal's default sample positions, never a custom pattern.
+                4 if self.device.supportsTextureSampleCount(4) => Some([0.375, 0.125]),
+                _ => None,
+            }
+        }
+
         fn copy_texture_batch(&mut self, copies: &[gfx_core::TextureCopy]) -> Result<()> {
             self.copy_texture_regions(copies)
         }

@@ -207,6 +207,7 @@ pub(super) struct EffectScene {
     pub(super) scene: SceneResources,
     pub(super) targets: Targets,
     pub(super) msaa_sample_count: u32,
+    depth_sample_position: [f32; 2],
     resource_epoch: u64,
     cached_graph: Option<(EffectGraphKey, usize)>,
     pub(super) frame: BufferId,
@@ -618,6 +619,9 @@ impl EffectScene {
                 scene,
                 targets,
                 msaa_sample_count,
+                // Preserve the legacy center convention on backends whose native
+                // sample pattern is not exposed yet. Vulkan gates unknown patterns.
+                depth_sample_position: device.sample_zero_position(msaa_sample_count).unwrap_or([0.5, 0.5]),
                 resource_epoch: 0,
                 cached_graph: None,
                 frame,
@@ -884,6 +888,9 @@ impl EffectScene {
                 }
             }
             for value in shadow_split_uniform() {
+                bytes.extend(value.to_le_bytes());
+            }
+            for value in [self.depth_sample_position[0], self.depth_sample_position[1], 0., 0.] {
                 bytes.extend(value.to_le_bytes());
             }
             debug_assert_eq!(bytes.len(), super::FRAME_BYTES as usize);

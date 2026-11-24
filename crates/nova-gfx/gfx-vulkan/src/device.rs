@@ -162,6 +162,7 @@ pub struct VulkanDevice {
     max_sampler_anisotropy: f32,
     max_color_attachment_count: Option<u32>,
     max_sample_count: u32,
+    standard_sample_locations: bool,
     stencil_supported: bool,
     multi_draw_indirect: bool,
     max_draw_indirect_count: u32,
@@ -536,6 +537,7 @@ impl VulkanDevice {
             max_sampler_anisotropy,
             max_color_attachment_count,
             max_sample_count,
+            standard_sample_locations: adapter_properties.limits.standard_sample_locations == vk::TRUE,
             stencil_supported,
             multi_draw_indirect: native_features.multi_draw_indirect == vk::TRUE,
             max_draw_indirect_count: native_limits.max_draw_indirect_count.max(1),
@@ -1220,6 +1222,11 @@ impl VulkanDevice {
     }
 
     fn read_texture_pixels(&mut self, texture_id: TextureId) -> Result<TextureReadback> {
+        if self.textures.get(texture_id)?.desc.sample_count != 1 {
+            return Err(Error::InvalidInput(
+                "Vulkan texture readback requires a single-sampled image; resolve or sample it first".into(),
+            ));
+        }
         self.wait_for_pending_work()?;
         let (image, desc, layout) = {
             let texture = self.textures.get(texture_id)?;
@@ -5052,6 +5059,17 @@ impl ResourceDevice for VulkanDevice {
         gfx_core::MultisampleCapabilities {
             max_sample_count: self.max_sample_count,
             stencil_supported: self.stencil_supported,
+        }
+    }
+
+    fn sample_zero_position(&self, sample_count: u32) -> Option<[f32; 2]> {
+        match sample_count {
+            1 => Some([0.5, 0.5]),
+            // Vulkan standard sample locations, in framebuffer pixel coordinates.
+            4 if self.standard_sample_locations && self.max_sample_count >= 4 => {
+                Some([0.375, 0.125])
+            }
+            _ => None,
         }
     }
 

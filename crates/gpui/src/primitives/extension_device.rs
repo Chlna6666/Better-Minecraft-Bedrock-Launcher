@@ -157,6 +157,11 @@ pub trait ExtensionDevice {
         gfx_core::MultisampleCapabilities::default()
     }
 
+    /// Known native sample-zero location within a top-left-origin pixel.
+    fn sample_zero_position(&self, sample_count: u32) -> Option<[f32; 2]> {
+        (sample_count == 1).then_some([0.5, 0.5])
+    }
+
     /// Returns the device's optional ordered compute/indirect capabilities.
     fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {
         gfx_core::ComputeCapabilities::default()
@@ -544,6 +549,10 @@ where
 
     fn multisample_capabilities(&self) -> gfx_core::MultisampleCapabilities {
         ResourceDevice::multisample_capabilities(self)
+    }
+
+    fn sample_zero_position(&self, sample_count: u32) -> Option<[f32; 2]> {
+        ResourceDevice::sample_zero_position(self, sample_count)
     }
 
     fn compute_capabilities(&self) -> gfx_core::ComputeCapabilities {

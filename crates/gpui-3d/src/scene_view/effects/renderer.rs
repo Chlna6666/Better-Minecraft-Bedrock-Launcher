@@ -60,8 +60,14 @@ impl EffectsRenderer {
             // multisampled depth. Both decide the geometry sample count; the kernel of
             // 4x MSAA is that every attachment of the pass shares it.
             let compositor_resources = Compositor::new(device, &context)?;
+            // Vulkan only guarantees fixed sample positions when the physical
+            // device advertises standardSampleLocations. Do not reconstruct depth
+            // from an unknown MSAA location on that backend.
+            let known_vulkan_pattern = context.backend_kind() != BackendKind::Vulkan
+                || device.sample_zero_position(4).is_some();
             let msaa_sample_count = if device.multisample_capabilities().max_sample_count >= 4
                 && compositor_resources.supports_multisampled_depth()
+                && known_vulkan_pattern
             {
                 4
             } else {

@@ -153,6 +153,34 @@ fn texture_write_round_trips_offset_and_row_padding() {
 }
 
 #[test]
+fn multisampled_texture_readback_requires_explicit_resolve() {
+    let mut device = match VulkanDevice::new(&DeviceDescriptor::default()) {
+        Ok(device) => device,
+        Err(Error::Unavailable(reason)) => {
+            eprintln!("NOVA_GFX_SKIP=vulkan unavailable: {reason}");
+            return;
+        }
+        Err(error) => panic!("Vulkan initialization failed: {error}"),
+    };
+    if device.multisample_capabilities().max_sample_count < 4 {
+        eprintln!("NOVA_GFX_SKIP=Vulkan 4x MSAA unavailable");
+        return;
+    }
+    let texture = device.create_texture(&TextureDescriptor {
+        label: Some("Vulkan MSAA readback contract".into()),
+        size: Extent2d::new(4, 4).unwrap(),
+        mip_level_count: 1,
+        format: Format::Rgba8Unorm,
+        usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
+        memory_location: MemoryLocation::GpuOnly,
+        dimension: TextureDimension::D2,
+        sample_count: 4,
+    }).unwrap();
+    assert!(matches!(device.read_texture(texture), Err(Error::InvalidInput(_))));
+    device.destroy_texture(texture).unwrap();
+}
+
+#[test]
 fn managed_texture_memory_reports_live_and_reserved_bytes() {
     let mut device = match VulkanDevice::new(&DeviceDescriptor::default()) {
         Ok(device) => device,
