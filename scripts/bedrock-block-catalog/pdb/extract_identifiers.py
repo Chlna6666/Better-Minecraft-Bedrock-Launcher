@@ -15,7 +15,10 @@ import re
 import sys
 from pathlib import Path
 
-import pdbparse
+try:
+    import pdbparse
+except ImportError:  # optional reverse-engineering dependency
+    pdbparse = None
 
 # MSVC escapes in the string-literal symbol text. The full table is large;
 # these are the ones that occur in Bedrock identifier literals. We validate
@@ -96,6 +99,10 @@ def main() -> int:
     ap.add_argument("--exe", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
+    if pdbparse is None:
+        print("pdbparse is required to run the extractor (install requirements.txt under Python 3.11)",
+              file=sys.stderr)
+        return 2
 
     try:
         pdb = pdbparse.parse(str(args.pdb))

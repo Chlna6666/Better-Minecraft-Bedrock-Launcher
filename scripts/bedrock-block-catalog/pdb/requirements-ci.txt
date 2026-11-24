@@ -1,0 +1,5 @@
+# Dependencies needed by the COMMITTED DATA verification tests in CI.
+# The PDB extract_* tools are optional and not run in CI; their legacy deps
+# (pdbparse/pefile/construct) require Python 3.11 and are kept in
+# requirements.txt for local reverse-engineering only.
+zstandard==0.25.0

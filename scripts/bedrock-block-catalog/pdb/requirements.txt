@@ -1,6 +1,8 @@
 # Optional reverse-engineering dependencies for the local PDB evidence tools.
-# The unit tests import only dependency-free helpers and skip gracefully when
-# these are absent; install this file to run the full extract_* pipeline.
+# These require Python 3.11 (construct 2.9.x uses the `imp` module removed in
+# Python 3.12). CI does NOT install this file; it uses requirements-ci.txt with
+# only zstandard for committed-data verification. Install this file locally
+# under Python 3.11 to run the full extract_* pipeline.
 pdbparse==1.5
 pefile==2024.8.26
 construct==2.9.52
