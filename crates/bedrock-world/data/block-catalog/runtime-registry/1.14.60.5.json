@@ -1,0 +1,1430 @@
+{
+  "schema_version": 1,
+  "method": "live_frida_block_type_registry_dump",
+  "pid": 6336,
+  "module_base": "0x7ff61e9d0000",
+  "map_rva": "0x1475a60",
+  "declared_map_size": 469,
+  "nodes_visited": 469,
+  "named_blocks": 469,
+  "layout": {
+    "node_left": 0,
+    "node_parent": 8,
+    "node_right": 16,
+    "hashed_string_hash": 32,
+    "key_string": 40,
+    "key_size": 56,
+    "shared_ptr_counter": 80,
+    "block_legacy_name": "0xA0"
+  },
+  "evidence_boundary": "Live runtime observation of the initialized block registry. Names are read from the game's own objects. No legacy numeric ID or network runtime ID is inferred from symbol ordinals.",
+  "blocks": [
+    {
+      "name": "tripwire_hook"
+    },
+    {
+      "name": "air"
+    },
+    {
+      "name": "noteblock"
+    },
+    {
+      "name": "gravel"
+    },
+    {
+      "name": "lit_redstone_lamp"
+    },
+    {
+      "name": "stone"
+    },
+    {
+      "name": "golden_rail"
+    },
+    {
+      "name": "gold_block"
+    },
+    {
+      "name": "bedrock"
+    },
+    {
+      "name": "turtle_egg"
+    },
+    {
+      "name": "element_72"
+    },
+    {
+      "name": "oak_stairs"
+    },
+    {
+      "name": "element_7"
+    },
+    {
+      "name": "grass"
+    },
+    {
+      "name": "detector_rail"
+    },
+    {
+      "name": "planks"
+    },
+    {
+      "name": "dark_oak_pressure_plate"
+    },
+    {
+      "name": "dirt"
+    },
+    {
+      "name": "coal_ore"
+    },
+    {
+      "name": "diamond_block"
+    },
+    {
+      "name": "cobblestone"
+    },
+    {
+      "name": "element_12"
+    },
+    {
+      "name": "lava"
+    },
+    {
+      "name": "dark_oak_trapdoor"
+    },
+    {
+      "name": "element_63"
+    },
+    {
+      "name": "double_stone_slab2"
+    },
+    {
+      "name": "slime"
+    },
+    {
+      "name": "stonebrick"
+    },
+    {
+      "name": "sapling"
+    },
+    {
+      "name": "cauldron"
+    },
+    {
+      "name": "flowing_water"
+    },
+    {
+      "name": "spruce_pressure_plate"
+    },
+    {
+      "name": "piston"
+    },
+    {
+      "name": "stained_glass"
+    },
+    {
+      "name": "water"
+    },
+    {
+      "name": "flowing_lava"
+    },
+    {
+      "name": "furnace"
+    },
+    {
+      "name": "element_81"
+    },
+    {
+      "name": "sand"
+    },
+    {
+      "name": "gold_ore"
+    },
+    {
+      "name": "wooden_door"
+    },
+    {
+      "name": "tallgrass"
+    },
+    {
+      "name": "iron_ore"
+    },
+    {
+      "name": "underwater_torch"
+    },
+    {
+      "name": "web"
+    },
+    {
+      "name": "log"
+    },
+    {
+      "name": "element_47"
+    },
+    {
+      "name": "stripped_oak_log"
+    },
+    {
+      "name": "leaves"
+    },
+    {
+      "name": "ladder"
+    },
+    {
+      "name": "yellow_flower"
+    },
+    {
+      "name": "element_113"
+    },
+    {
+      "name": "sponge"
+    },
+    {
+      "name": "sweet_berry_bush"
+    },
+    {
+      "name": "birch_fence_gate"
+    },
+    {
+      "name": "standing_sign"
+    },
+    {
+      "name": "monster_egg"
+    },
+    {
+      "name": "glass"
+    },
+    {
+      "name": "conduit"
+    },
+    {
+      "name": "element_43"
+    },
+    {
+      "name": "lapis_ore"
+    },
+    {
+      "name": "spruce_button"
+    },
+    {
+      "name": "bookshelf"
+    },
+    {
+      "name": "bed"
+    },
+    {
+      "name": "element_79"
+    },
+    {
+      "name": "powered_comparator"
+    },
+    {
+      "name": "wooden_pressure_plate"
+    },
+    {
+      "name": "lapis_block"
+    },
+    {
+      "name": "element_116"
+    },
+    {
+      "name": "stripped_acacia_log"
+    },
+    {
+      "name": "spruce_door"
+    },
+    {
+      "name": "dispenser"
+    },
+    {
+      "name": "wheat"
+    },
+    {
+      "name": "diamond_ore"
+    },
+    {
+      "name": "sandstone"
+    },
+    {
+      "name": "obsidian"
+    },
+    {
+      "name": "wool"
+    },
+    {
+      "name": "brick_block"
+    },
+    {
+      "name": "reeds"
+    },
+    {
+      "name": "sticky_piston"
+    },
+    {
+      "name": "deadbush"
+    },
+    {
+      "name": "dried_kelp_block"
+    },
+    {
+      "name": "pistonarmcollision"
+    },
+    {
+      "name": "red_flower"
+    },
+    {
+      "name": "green_glazed_terracotta"
+    },
+    {
+      "name": "brown_mushroom"
+    },
+    {
+      "name": "red_mushroom"
+    },
+    {
+      "name": "spruce_fence_gate"
+    },
+    {
+      "name": "iron_block"
+    },
+    {
+      "name": "stone_slab"
+    },
+    {
+      "name": "double_stone_slab"
+    },
+    {
+      "name": "beehive"
+    },
+    {
+      "name": "rail"
+    },
+    {
+      "name": "tnt"
+    },
+    {
+      "name": "mossy_cobblestone"
+    },
+    {
+      "name": "quartz_stairs"
+    },
+    {
+      "name": "torch"
+    },
+    {
+      "name": "mob_spawner"
+    },
+    {
+      "name": "lava_cauldron"
+    },
+    {
+      "name": "element_82"
+    },
+    {
+      "name": "chest"
+    },
+    {
+      "name": "jungle_standing_sign"
+    },
+    {
+      "name": "element_41"
+    },
+    {
+      "name": "redstone_wire"
+    },
+    {
+      "name": "crafting_table"
+    },
+    {
+      "name": "element_39"
+    },
+    {
+      "name": "dark_oak_door"
+    },
+    {
+      "name": "farmland"
+    },
+    {
+      "name": "lit_furnace"
+    },
+    {
+      "name": "stone_stairs"
+    },
+    {
+      "name": "wall_sign"
+    },
+    {
+      "name": "lever"
+    },
+    {
+      "name": "stone_pressure_plate"
+    },
+    {
+      "name": "element_48"
+    },
+    {
+      "name": "iron_door"
+    },
+    {
+      "name": "redstone_ore"
+    },
+    {
+      "name": "lectern"
+    },
+    {
+      "name": "lit_redstone_ore"
+    },
+    {
+      "name": "unlit_redstone_torch"
+    },
+    {
+      "name": "red_nether_brick_stairs"
+    },
+    {
+      "name": "redstone_torch"
+    },
+    {
+      "name": "stone_button"
+    },
+    {
+      "name": "snow_layer"
+    },
+    {
+      "name": "brown_mushroom_block"
+    },
+    {
+      "name": "ice"
+    },
+    {
+      "name": "snow"
+    },
+    {
+      "name": "cactus"
+    },
+    {
+      "name": "element_88"
+    },
+    {
+      "name": "command_block"
+    },
+    {
+      "name": "clay"
+    },
+    {
+      "name": "jukebox"
+    },
+    {
+      "name": "fence"
+    },
+    {
+      "name": "pumpkin"
+    },
+    {
+      "name": "acacia_door"
+    },
+    {
+      "name": "nether_brick_stairs"
+    },
+    {
+      "name": "netherrack"
+    },
+    {
+      "name": "log2"
+    },
+    {
+      "name": "soul_sand"
+    },
+    {
+      "name": "glowstone"
+    },
+    {
+      "name": "portal"
+    },
+    {
+      "name": "lit_pumpkin"
+    },
+    {
+      "name": "beetroot"
+    },
+    {
+      "name": "cake"
+    },
+    {
+      "name": "unpowered_repeater"
+    },
+    {
+      "name": "powered_repeater"
+    },
+    {
+      "name": "invisiblebedrock"
+    },
+    {
+      "name": "coral_fan_hang3"
+    },
+    {
+      "name": "acacia_stairs"
+    },
+    {
+      "name": "trapdoor"
+    },
+    {
+      "name": "jungle_door"
+    },
+    {
+      "name": "red_mushroom_block"
+    },
+    {
+      "name": "iron_bars"
+    },
+    {
+      "name": "coral"
+    },
+    {
+      "name": "chain_command_block"
+    },
+    {
+      "name": "glass_pane"
+    },
+    {
+      "name": "element_114"
+    },
+    {
+      "name": "melon_block"
+    },
+    {
+      "name": "coral_fan_hang2"
+    },
+    {
+      "name": "emerald_block"
+    },
+    {
+      "name": "pumpkin_stem"
+    },
+    {
+      "name": "chemical_heat"
+    },
+    {
+      "name": "melon_stem"
+    },
+    {
+      "name": "vine"
+    },
+    {
+      "name": "element_84"
+    },
+    {
+      "name": "standing_banner"
+    },
+    {
+      "name": "fence_gate"
+    },
+    {
+      "name": "element_106"
+    },
+    {
+      "name": "brick_stairs"
+    },
+    {
+      "name": "stone_brick_stairs"
+    },
+    {
+      "name": "mycelium"
+    },
+    {
+      "name": "waterlily"
+    },
+    {
+      "name": "smooth_stone"
+    },
+    {
+      "name": "nether_brick"
+    },
+    {
+      "name": "sandstone_stairs"
+    },
+    {
+      "name": "nether_brick_fence"
+    },
+    {
+      "name": "element_107"
+    },
+    {
+      "name": "nether_wart"
+    },
+    {
+      "name": "element_94"
+    },
+    {
+      "name": "enchanting_table"
+    },
+    {
+      "name": "brewing_stand"
+    },
+    {
+      "name": "purpur_block"
+    },
+    {
+      "name": "end_portal"
+    },
+    {
+      "name": "end_portal_frame"
+    },
+    {
+      "name": "element_4"
+    },
+    {
+      "name": "end_stone"
+    },
+    {
+      "name": "fletching_table"
+    },
+    {
+      "name": "element_13"
+    },
+    {
+      "name": "dragon_egg"
+    },
+    {
+      "name": "loom"
+    },
+    {
+      "name": "granite_stairs"
+    },
+    {
+      "name": "redstone_lamp"
+    },
+    {
+      "name": "dropper"
+    },
+    {
+      "name": "activator_rail"
+    },
+    {
+      "name": "coral_block"
+    },
+    {
+      "name": "cocoa"
+    },
+    {
+      "name": "wood"
+    },
+    {
+      "name": "emerald_ore"
+    },
+    {
+      "name": "hard_stained_glass_pane"
+    },
+    {
+      "name": "observer"
+    },
+    {
+      "name": "ender_chest"
+    },
+    {
+      "name": "info_update"
+    },
+    {
+      "name": "unpowered_comparator"
+    },
+    {
+      "name": "tripwire"
+    },
+    {
+      "name": "spruce_stairs"
+    },
+    {
+      "name": "birch_stairs"
+    },
+    {
+      "name": "stonecutter_block"
+    },
+    {
+      "name": "jungle_stairs"
+    },
+    {
+      "name": "coral_fan_hang"
+    },
+    {
+      "name": "element_90"
+    },
+    {
+      "name": "beacon"
+    },
+    {
+      "name": "cobblestone_wall"
+    },
+    {
+      "name": "flower_pot"
+    },
+    {
+      "name": "carrots"
+    },
+    {
+      "name": "potatoes"
+    },
+    {
+      "name": "wooden_button"
+    },
+    {
+      "name": "grindstone"
+    },
+    {
+      "name": "skull"
+    },
+    {
+      "name": "anvil"
+    },
+    {
+      "name": "stone_slab4"
+    },
+    {
+      "name": "element_21"
+    },
+    {
+      "name": "trapped_chest"
+    },
+    {
+      "name": "light_weighted_pressure_plate"
+    },
+    {
+      "name": "element_25"
+    },
+    {
+      "name": "purple_glazed_terracotta"
+    },
+    {
+      "name": "heavy_weighted_pressure_plate"
+    },
+    {
+      "name": "daylight_detector"
+    },
+    {
+      "name": "stripped_jungle_log"
+    },
+    {
+      "name": "redstone_block"
+    },
+    {
+      "name": "quartz_ore"
+    },
+    {
+      "name": "hopper"
+    },
+    {
+      "name": "element_97"
+    },
+    {
+      "name": "quartz_block"
+    },
+    {
+      "name": "wooden_slab"
+    },
+    {
+      "name": "element_53"
+    },
+    {
+      "name": "double_wooden_slab"
+    },
+    {
+      "name": "leaves2"
+    },
+    {
+      "name": "stained_hardened_clay"
+    },
+    {
+      "name": "carved_pumpkin"
+    },
+    {
+      "name": "stained_glass_pane"
+    },
+    {
+      "name": "dark_oak_stairs"
+    },
+    {
+      "name": "iron_trapdoor"
+    },
+    {
+      "name": "prismarine"
+    },
+    {
+      "name": "sealantern"
+    },
+    {
+      "name": "element_96"
+    },
+    {
+      "name": "hay_block"
+    },
+    {
+      "name": "element_37"
+    },
+    {
+      "name": "carpet"
+    },
+    {
+      "name": "hardened_clay"
+    },
+    {
+      "name": "element_44"
+    },
+    {
+      "name": "coal_block"
+    },
+    {
+      "name": "packed_ice"
+    },
+    {
+      "name": "element_118"
+    },
+    {
+      "name": "chemistry_table"
+    },
+    {
+      "name": "black_glazed_terracotta"
+    },
+    {
+      "name": "purpur_stairs"
+    },
+    {
+      "name": "double_plant"
+    },
+    {
+      "name": "wall_banner"
+    },
+    {
+      "name": "daylight_detector_inverted"
+    },
+    {
+      "name": "red_sandstone"
+    },
+    {
+      "name": "red_sandstone_stairs"
+    },
+    {
+      "name": "spruce_trapdoor"
+    },
+    {
+      "name": "element_27"
+    },
+    {
+      "name": "stone_slab2"
+    },
+    {
+      "name": "jungle_fence_gate"
+    },
+    {
+      "name": "dark_oak_fence_gate"
+    },
+    {
+      "name": "acacia_fence_gate"
+    },
+    {
+      "name": "repeating_command_block"
+    },
+    {
+      "name": "birch_door"
+    },
+    {
+      "name": "grass_path"
+    },
+    {
+      "name": "frame"
+    },
+    {
+      "name": "normal_stone_stairs"
+    },
+    {
+      "name": "element_1"
+    },
+    {
+      "name": "chorus_flower"
+    },
+    {
+      "name": "jungle_pressure_plate"
+    },
+    {
+      "name": "undyed_shulker_box"
+    },
+    {
+      "name": "element_10"
+    },
+    {
+      "name": "end_bricks"
+    },
+    {
+      "name": "smoker"
+    },
+    {
+      "name": "frosted_ice"
+    },
+    {
+      "name": "diorite_stairs"
+    },
+    {
+      "name": "structure_block"
+    },
+    {
+      "name": "end_rod"
+    },
+    {
+      "name": "element_16"
+    },
+    {
+      "name": "blue_glazed_terracotta"
+    },
+    {
+      "name": "end_gateway"
+    },
+    {
+      "name": "magma"
+    },
+    {
+      "name": "bell"
+    },
+    {
+      "name": "stone_slab3"
+    },
+    {
+      "name": "element_26"
+    },
+    {
+      "name": "movingblock"
+    },
+    {
+      "name": "nether_wart_block"
+    },
+    {
+      "name": "red_nether_brick"
+    },
+    {
+      "name": "bone_block"
+    },
+    {
+      "name": "structure_void"
+    },
+    {
+      "name": "shulker_box"
+    },
+    {
+      "name": "white_glazed_terracotta"
+    },
+    {
+      "name": "orange_glazed_terracotta"
+    },
+    {
+      "name": "magenta_glazed_terracotta"
+    },
+    {
+      "name": "light_blue_glazed_terracotta"
+    },
+    {
+      "name": "colored_torch_bp"
+    },
+    {
+      "name": "yellow_glazed_terracotta"
+    },
+    {
+      "name": "element_59"
+    },
+    {
+      "name": "lime_glazed_terracotta"
+    },
+    {
+      "name": "pink_glazed_terracotta"
+    },
+    {
+      "name": "barrier"
+    },
+    {
+      "name": "gray_glazed_terracotta"
+    },
+    {
+      "name": "silver_glazed_terracotta"
+    },
+    {
+      "name": "cyan_glazed_terracotta"
+    },
+    {
+      "name": "glowingobsidian"
+    },
+    {
+      "name": "brown_glazed_terracotta"
+    },
+    {
+      "name": "red_glazed_terracotta"
+    },
+    {
+      "name": "concrete"
+    },
+    {
+      "name": "acacia_trapdoor"
+    },
+    {
+      "name": "concretepowder"
+    },
+    {
+      "name": "scaffolding"
+    },
+    {
+      "name": "element_54"
+    },
+    {
+      "name": "chorus_plant"
+    },
+    {
+      "name": "smooth_sandstone_stairs"
+    },
+    {
+      "name": "camera"
+    },
+    {
+      "name": "podzol"
+    },
+    {
+      "name": "stonecutter"
+    },
+    {
+      "name": "netherreactor"
+    },
+    {
+      "name": "element_34"
+    },
+    {
+      "name": "info_update2"
+    },
+    {
+      "name": "element_3"
+    },
+    {
+      "name": "reserved6"
+    },
+    {
+      "name": "element_31"
+    },
+    {
+      "name": "prismarine_stairs"
+    },
+    {
+      "name": "bamboo"
+    },
+    {
+      "name": "element_76"
+    },
+    {
+      "name": "dark_prismarine_stairs"
+    },
+    {
+      "name": "prismarine_bricks_stairs"
+    },
+    {
+      "name": "stripped_spruce_log"
+    },
+    {
+      "name": "stripped_birch_log"
+    },
+    {
+      "name": "cartography_table"
+    },
+    {
+      "name": "stripped_dark_oak_log"
+    },
+    {
+      "name": "blue_ice"
+    },
+    {
+      "name": "fire"
+    },
+    {
+      "name": "hard_glass"
+    },
+    {
+      "name": "acacia_standing_sign"
+    },
+    {
+      "name": "hard_stained_glass"
+    },
+    {
+      "name": "hard_glass_pane"
+    },
+    {
+      "name": "colored_torch_rg"
+    },
+    {
+      "name": "element_0"
+    },
+    {
+      "name": "element_2"
+    },
+    {
+      "name": "element_5"
+    },
+    {
+      "name": "blast_furnace"
+    },
+    {
+      "name": "element_6"
+    },
+    {
+      "name": "element_8"
+    },
+    {
+      "name": "element_9"
+    },
+    {
+      "name": "mossy_cobblestone_stairs"
+    },
+    {
+      "name": "element_11"
+    },
+    {
+      "name": "andesite_stairs"
+    },
+    {
+      "name": "element_14"
+    },
+    {
+      "name": "element_15"
+    },
+    {
+      "name": "element_17"
+    },
+    {
+      "name": "element_18"
+    },
+    {
+      "name": "element_19"
+    },
+    {
+      "name": "element_20"
+    },
+    {
+      "name": "acacia_button"
+    },
+    {
+      "name": "element_22"
+    },
+    {
+      "name": "element_23"
+    },
+    {
+      "name": "element_24"
+    },
+    {
+      "name": "element_28"
+    },
+    {
+      "name": "element_29"
+    },
+    {
+      "name": "element_30"
+    },
+    {
+      "name": "element_32"
+    },
+    {
+      "name": "element_33"
+    },
+    {
+      "name": "element_35"
+    },
+    {
+      "name": "element_36"
+    },
+    {
+      "name": "element_38"
+    },
+    {
+      "name": "element_40"
+    },
+    {
+      "name": "element_42"
+    },
+    {
+      "name": "element_45"
+    },
+    {
+      "name": "smooth_red_sandstone_stairs"
+    },
+    {
+      "name": "seagrass"
+    },
+    {
+      "name": "element_46"
+    },
+    {
+      "name": "element_49"
+    },
+    {
+      "name": "element_50"
+    },
+    {
+      "name": "element_51"
+    },
+    {
+      "name": "sea_pickle"
+    },
+    {
+      "name": "element_52"
+    },
+    {
+      "name": "element_55"
+    },
+    {
+      "name": "element_56"
+    },
+    {
+      "name": "element_57"
+    },
+    {
+      "name": "element_58"
+    },
+    {
+      "name": "element_60"
+    },
+    {
+      "name": "element_61"
+    },
+    {
+      "name": "double_stone_slab3"
+    },
+    {
+      "name": "element_62"
+    },
+    {
+      "name": "element_64"
+    },
+    {
+      "name": "double_stone_slab4"
+    },
+    {
+      "name": "element_65"
+    },
+    {
+      "name": "element_66"
+    },
+    {
+      "name": "element_67"
+    },
+    {
+      "name": "element_68"
+    },
+    {
+      "name": "element_69"
+    },
+    {
+      "name": "element_70"
+    },
+    {
+      "name": "element_71"
+    },
+    {
+      "name": "element_73"
+    },
+    {
+      "name": "element_74"
+    },
+    {
+      "name": "element_75"
+    },
+    {
+      "name": "bamboo_sapling"
+    },
+    {
+      "name": "element_77"
+    },
+    {
+      "name": "element_78"
+    },
+    {
+      "name": "element_80"
+    },
+    {
+      "name": "element_83"
+    },
+    {
+      "name": "element_85"
+    },
+    {
+      "name": "element_86"
+    },
+    {
+      "name": "jungle_button"
+    },
+    {
+      "name": "element_87"
+    },
+    {
+      "name": "element_89"
+    },
+    {
+      "name": "birch_pressure_plate"
+    },
+    {
+      "name": "element_91"
+    },
+    {
+      "name": "element_92"
+    },
+    {
+      "name": "element_93"
+    },
+    {
+      "name": "birch_wall_sign"
+    },
+    {
+      "name": "element_95"
+    },
+    {
+      "name": "element_98"
+    },
+    {
+      "name": "element_99"
+    },
+    {
+      "name": "element_100"
+    },
+    {
+      "name": "element_101"
+    },
+    {
+      "name": "element_102"
+    },
+    {
+      "name": "element_103"
+    },
+    {
+      "name": "element_104"
+    },
+    {
+      "name": "element_105"
+    },
+    {
+      "name": "element_108"
+    },
+    {
+      "name": "element_109"
+    },
+    {
+      "name": "jungle_trapdoor"
+    },
+    {
+      "name": "element_110"
+    },
+    {
+      "name": "element_111"
+    },
+    {
+      "name": "element_112"
+    },
+    {
+      "name": "element_115"
+    },
+    {
+      "name": "element_117"
+    },
+    {
+      "name": "coral_fan"
+    },
+    {
+      "name": "coral_fan_dead"
+    },
+    {
+      "name": "kelp"
+    },
+    {
+      "name": "birch_button"
+    },
+    {
+      "name": "dark_oak_button"
+    },
+    {
+      "name": "stickypistonarmcollision"
+    },
+    {
+      "name": "birch_trapdoor"
+    },
+    {
+      "name": "acacia_pressure_plate"
+    },
+    {
+      "name": "bubble_column"
+    },
+    {
+      "name": "polished_granite_stairs"
+    },
+    {
+      "name": "polished_diorite_stairs"
+    },
+    {
+      "name": "polished_andesite_stairs"
+    },
+    {
+      "name": "mossy_stone_brick_stairs"
+    },
+    {
+      "name": "end_brick_stairs"
+    },
+    {
+      "name": "smooth_quartz_stairs"
+    },
+    {
+      "name": "spruce_standing_sign"
+    },
+    {
+      "name": "spruce_wall_sign"
+    },
+    {
+      "name": "birch_standing_sign"
+    },
+    {
+      "name": "smithing_table"
+    },
+    {
+      "name": "jungle_wall_sign"
+    },
+    {
+      "name": "acacia_wall_sign"
+    },
+    {
+      "name": "darkoak_standing_sign"
+    },
+    {
+      "name": "darkoak_wall_sign"
+    },
+    {
+      "name": "lit_smoker"
+    },
+    {
+      "name": "barrel"
+    },
+    {
+      "name": "lantern"
+    },
+    {
+      "name": "campfire"
+    },
+    {
+      "name": "jigsaw"
+    },
+    {
+      "name": "composter"
+    },
+    {
+      "name": "lit_blast_furnace"
+    },
+    {
+      "name": "light_block"
+    },
+    {
+      "name": "wither_rose"
+    },
+    {
+      "name": "bee_nest"
+    },
+    {
+      "name": "honey_block"
+    },
+    {
+      "name": "honeycomb_block"
+    }
+  ]
+}

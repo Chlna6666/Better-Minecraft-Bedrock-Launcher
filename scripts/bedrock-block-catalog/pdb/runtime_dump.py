@@ -49,10 +49,28 @@ try{
   var base=Process.getModuleByName('bedrock_server.exe').base;
   var cfg=JSON.parse('__CONFIG__');
   var map=base.add(cfg.map_rva);
+  var visited={}, rows=[];
+  if(cfg.layout==='unordered_map'){
+    // MSVC unordered_map: list sentinel at +8; walk _Next until back to head.
+    // Node: next@+0, prev@+8, key std::string@key_off (SSO inline by size).
+    var headPtr=ptr(pv(map.add(8)));
+    var node=ptr(pv(headPtr));
+    var guard=0;
+    while(!node.isNull() && node.toString()!==headPtr.toString() && guard<cfg.max_rows*2){
+      guard++;
+      var nm=readStdString(node.add(cfg.unordered_key_off),cfg.unordered_key_size_off-cfg.unordered_key_off);
+      if(nm) rows.push({name:nm,node:node.toString(),counter:'0x0',object:'0x0'});
+      try{node=ptr(pv(node));}catch(e){break;}
+    }
+    send({type:'dump',base:base.toString(),declared_size:u32(map.add(16)),visited:guard,rows:rows});
+  } else {
+  // std::map: node left@+0 parent@+8 right@+16. Key is either a HashedString
+  // (std_map: hash@+32, std::string@+40) or a plain std::string
+  // (std_map_string: string@+32). Offsets come from --key-string-off.
   var size=u32(map.add(8));
   var head=ptr(pv(map.add(0)));
   var root=ptr(pv(head.add(8)));
-  var visited={}, rows=[], stack=[root];
+  var stack=[root];
   while(stack.length && rows.length<cfg.max_rows){
     var node=stack.pop();
     if(node.isNull())continue;
@@ -69,6 +87,7 @@ try{
     try{stack.push(ptr(pv(node)));stack.push(ptr(pv(node.add(16))));}catch(e){}
   }
   send({type:'dump',base:base.toString(),declared_size:size,visited:Object.keys(visited).length,rows:rows});
+  }
 }catch(e){send({type:'err',msg:String(e),stack:e.stack});}
 """
 
@@ -82,6 +101,9 @@ def main() -> int:
     ap.add_argument("--key-string-off", type=int, default=40)
     ap.add_argument("--key-size-off", type=int, default=56)
     ap.add_argument("--value-off", type=int, default=80)
+    ap.add_argument("--layout", choices=["std_map", "std_map_string", "unordered_map"], default="std_map")
+    ap.add_argument("--unordered-key-off", type=int, default=16)
+    ap.add_argument("--unordered-key-size-off", type=int, default=32)
     ap.add_argument("--names-only", action="store_true",
                     help="omit machine-specific heap addresses (portable evidence)")
     args = ap.parse_args()
@@ -102,12 +124,24 @@ def main() -> int:
             return 2
         pid = pids[0]
 
+    # std_map_string (1.16-era): plain std::string key at +32, SharedPtr at +64.
+    if args.layout == "std_map_string":
+        if args.key_string_off == 40:  # default unchanged by caller
+            args.key_string_off = 32
+        if args.key_size_off == 56:
+            args.key_size_off = 48
+        if args.value_off == 80:
+            args.value_off = 64
+
     config = {
         "map_rva": int(args.map_rva, 0),
         "key_string_off": args.key_string_off,
         "key_size_off": args.key_size_off,
         "value_off": args.value_off,
         "max_rows": args.max_rows,
+        "layout": args.layout,
+        "unordered_key_off": args.unordered_key_off,
+        "unordered_key_size_off": args.unordered_key_size_off,
     }
     print(f"attaching to BDS pid={pid} map_rva={hex(config['map_rva'])}", flush=True)
 
