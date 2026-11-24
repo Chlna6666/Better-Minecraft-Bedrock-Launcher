@@ -124,6 +124,12 @@ pub(crate) fn compute_backdrop_blur_damage(
         return plan;
     }
 
+    // Each successive filter compares a longer prefix of the same two paint
+    // streams. Verify the common prefix once instead of re-comparing static
+    // chrome for every filter. Once a mismatch is found the existing
+    // conservative per-barrier middle/suffix diff takes over.
+    let mut verified_prefix = 0;
+    let mut prefix_diverged = false;
     for ((current_index, current_blur), (previous_index, previous_blur)) in
         current_blurs.zip(previous_blurs)
     {
@@ -135,12 +141,25 @@ pub(crate) fn compute_backdrop_blur_damage(
         if source_region.is_empty() {
             continue;
         }
-        collect_paint_operation_damage(
-            scene.paint_operations.range(0..current_index),
-            previous.paint_operations.range(0..previous_index),
-            source_region,
-            |damage| plan.push(current_blur.order, damage),
-        );
+        let common_end = current_index.min(previous_index);
+        if !prefix_diverged {
+            let matched = scene.paint_operations.range(verified_prefix..common_end)
+                .iter()
+                .zip(previous.paint_operations.range(verified_prefix..common_end).iter())
+                .take_while(|(current, old)| current.visually_eq(old))
+                .count();
+            verified_prefix += matched;
+            prefix_diverged = verified_prefix < common_end;
+        }
+        let start = verified_prefix.min(common_end);
+        if start != current_index || start != previous_index {
+            collect_paint_operation_damage(
+                scene.paint_operations.range(start..current_index),
+                previous.paint_operations.range(start..previous_index),
+                source_region,
+                |damage| plan.push(current_blur.order, damage),
+            );
+        }
     }
 
     crate::paint::collect_backdrop_blur_animation_damage(

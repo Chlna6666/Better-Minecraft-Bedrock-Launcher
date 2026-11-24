@@ -39,7 +39,12 @@ impl TextLayout {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self) {
-        if let Some(id) = window.current_stable_layout_element_id() {
+        if let Some(id) = window.current_stable_layout_element_id()
+            && !window.has_current_element_state::<Self>(&id)
+        {
+            // Even an explicitly identified element can issue multiple layout
+            // requests. Never hand two live requests the same mutable text
+            // state in a single frame.
             window.with_element_state(&id, |previous: Option<Self>, window| {
                 let state = previous.unwrap_or_default();
                 let layout_id = state.layout(text, None, window, cx);
@@ -922,4 +927,36 @@ mod tests {
             window.draw(cx).clear();
         });
     }
+
+    #[gpui::test]
+    fn intrinsic_text_same_size_updates_paint_state(cx: &mut TestAppContext) {
+        struct Label {
+            text: SharedString,
+            layout: TextLayout,
+        }
+        impl Render for Label {
+            fn render(&mut self, _: &mut Window, _: &mut crate::Context<Self>) -> impl IntoElement {
+                let mut text = StyledText::new(self.text.clone());
+                text.layout = self.layout.clone();
+                div().id("intrinsic-label").whitespace_nowrap().child(text)
+            }
+        }
+        let layout = TextLayout::default();
+        let (view, visual) = cx.add_window_view(|_, _| Label {
+            text: "ABBA".into(),
+            layout: layout.clone(),
+        });
+        visual.update(|window, cx| window.draw(cx).clear());
+        let first = layout.0.borrow().as_ref().unwrap().size;
+        visual.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.text = "BAAB".into();
+                cx.notify();
+            });
+            window.draw(cx).clear();
+        });
+        assert_eq!(layout.text(), "BAAB");
+        assert_eq!(layout.0.borrow().as_ref().unwrap().size, first);
+    }
+
 }

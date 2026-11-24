@@ -217,6 +217,12 @@ impl Window {
         }
     }
     #[inline(never)]
+    /// Whether this element state was already claimed in the current draw.
+    /// Multiple same-frame layout requests must not alias mutable leaf state.
+    pub(crate) fn has_current_element_state<S: 'static>(&self, id: &GlobalElementId) -> bool {
+        self.next_frame.element_states.contains_key(&(id.clone(), TypeId::of::<S>()))
+    }
+
     fn take_element_state(
         &mut self,
         global_id: &GlobalElementId,
