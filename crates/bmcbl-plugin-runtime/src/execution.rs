@@ -98,10 +98,10 @@ impl PluginState {
             message: message.clone(),
         });
         match level {
-            LogLevel::Debug => tracing::debug!(plugin_id = %plugin_id, message = %message, "plugin log"),
-            LogLevel::Info => tracing::info!(plugin_id = %plugin_id, message = %message, "plugin log"),
-            LogLevel::Warn => tracing::warn!(plugin_id = %plugin_id, message = %message, "plugin log"),
-            LogLevel::Error => tracing::error!(plugin_id = %plugin_id, message = %message, "plugin log"),
+            LogLevel::Debug => tracing::debug!(plugin_id = %plugin_id, "{message}"),
+            LogLevel::Info => tracing::info!(plugin_id = %plugin_id, "{message}"),
+            LogLevel::Warn => tracing::warn!(plugin_id = %plugin_id, "{message}"),
+            LogLevel::Error => tracing::error!(plugin_id = %plugin_id, "{message}"),
         }
     }
 }

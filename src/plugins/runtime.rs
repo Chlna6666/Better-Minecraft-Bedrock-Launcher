@@ -787,6 +787,7 @@ pub struct PluginModalState {
 
 #[derive(Clone, Debug)]
 pub struct PluginLogEntry {
+    pub timestamp: chrono::DateTime<chrono::Utc>,
     pub level: abi::LogLevel,
     pub message: SharedString,
 }
@@ -1123,15 +1124,25 @@ impl PluginRegistry {
         output.push_str(&format!("Root: {}\n", plugin.manifest.root_dir.display()));
         output.push_str("Logs:\n");
         for entry in logs {
-            output.push_str(&format!("- {:?}: {}\n", entry.level, entry.message));
+            output.push_str(&format!("- {} {:?}: {}\n", entry.timestamp.to_rfc3339(), entry.level, entry.message));
         }
         Ok(output)
     }
 
-    fn push_log(&mut self, plugin_id: String, level: abi::LogLevel, message: String) {
+    fn push_log(&mut self, plugin_id: String, level: abi::LogLevel, mut message: String) {
         const MAX_PLUGIN_LOGS: usize = 200;
+        const MAX_LOG_BYTES: usize = 8192;
+        if message.len() > MAX_LOG_BYTES {
+            let mut end = MAX_LOG_BYTES - '…'.len_utf8();
+            while !message.is_char_boundary(end) {
+                end -= 1;
+            }
+            message.truncate(end);
+            message.push('…');
+        }
         let logs = self.logs.entry(plugin_id.clone()).or_default();
         logs.push_back(PluginLogEntry {
+            timestamp: chrono::Utc::now(),
             level,
             message: SharedString::from(message),
         });

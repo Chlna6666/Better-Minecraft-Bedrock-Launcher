@@ -1658,9 +1658,29 @@ fn plugin_logs_panel(
                     a: 0.52,
                     ..colors.settings_field_bg
                 })
+                .flex()
+                .flex_col()
+                .gap(px(4.))
                 .text_size(px(11.))
-                .text_color(log_level_color(colors, entry.level))
-                .child(entry.message)
+                .child(div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div()
+                        .text_color(colors.text_muted)
+                        .child(SharedString::from(entry.timestamp.with_timezone(&chrono::Local)
+                            .format("%H:%M:%S%.3f").to_string())))
+                    .child(div()
+                        .text_color(log_level_color(colors, entry.level))
+                        .child(match entry.level {
+                            LogLevel::Debug => "DEBUG",
+                            LogLevel::Info => "INFO",
+                            LogLevel::Warn => "WARN",
+                            LogLevel::Error => "ERROR",
+                        })))
+                .child(div()
+                    .text_color(log_level_color(colors, entry.level))
+                    .child(entry.message))
                 .into_any_element()
         }))
         .into_any_element()

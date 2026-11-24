@@ -1,7 +1,9 @@
 use super::*;
 use std::time::{Duration, Instant};
 
-const DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS: u128 = 50;
+// Match the GPU owner's slow-job threshold so 16–49 ms stalls also include
+// native record/present/signal stage details rather than an opaque backend total.
+const DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS: u128 = 16;
 const DEFAULT_SLOW_FRAME_WARN_INTERVAL: Duration = Duration::from_secs(5);
 
 pub(super) struct NovaRenderDiagnostics {

@@ -145,6 +145,8 @@ pub(super) struct Entry {
     window_id: Option<u64>,
     #[cfg(target_os = "windows")]
     last_logged_swapchain_extent: Option<(u32, u32)>,
+    last_slow_job_warning: Option<Instant>,
+    suppressed_slow_jobs: u64,
     #[cfg(target_os = "windows")]
     requested_swapchain_extent: Option<(u32, u32)>,
     #[cfg(target_os = "windows")]
@@ -183,6 +185,8 @@ impl Entry {
             window_id: None,
             #[cfg(target_os = "windows")]
             last_logged_swapchain_extent: None,
+            last_slow_job_warning: None,
+            suppressed_slow_jobs: 0,
             #[cfg(target_os = "windows")]
             requested_swapchain_extent: None,
             #[cfg(target_os = "windows")]
@@ -258,14 +262,24 @@ impl Entry {
         let phases = gpu_owner::phases::finish(completed_at);
         if let Some(phases) = phases.as_ref() {
             if completed_at.duration_since(started_at) >= std::time::Duration::from_millis(16) {
-                // This summary's own sink cost is excluded; existing in-job logs are timed.
-                log::warn!(
-                    target: "gpui_gpu_owner",
-                    "slow_owner_job owner_id={} kind={:?} queue_wait_us={:?} total_us={} phases={:?}",
-                    self.id, kind,
-                    queued.map(|(time, _, _)| gpu_owner::micros(started_at.saturating_duration_since(time))),
-                    gpu_owner::micros(completed_at.duration_since(started_at)), phases,
-                );
+                // Preserve every job sample below, but don't turn repeated stalls
+                // into synchronous log I/O on the shared render owner.
+                if self.last_slow_job_warning.is_none_or(|last|
+                    completed_at.saturating_duration_since(last) >= std::time::Duration::from_secs(5))
+                {
+                    log::warn!(
+                        target: "gpui_gpu_owner",
+                        "slow_owner_job owner_id={} window_id={:?} kind={:?} queue_wait_us={:?} total_us={} suppressed_since_last={} phases={:?}",
+                        self.id, self.window_id, kind,
+                        queued.map(|(time, _, _)| gpu_owner::micros(started_at.saturating_duration_since(time))),
+                        gpu_owner::micros(completed_at.duration_since(started_at)),
+                        self.suppressed_slow_jobs, phases,
+                    );
+                    self.last_slow_job_warning = Some(completed_at);
+                    self.suppressed_slow_jobs = 0;
+                } else {
+                    self.suppressed_slow_jobs = self.suppressed_slow_jobs.saturating_add(1);
+                }
             }
         }
         let completed_at = Instant::now(); // Include the outlier summary's sink in job metrics.
