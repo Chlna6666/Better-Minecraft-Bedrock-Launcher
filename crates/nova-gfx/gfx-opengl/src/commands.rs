@@ -169,6 +169,66 @@ impl PresentationDevice for OpenGlDevice {
         Ok(None)
     }
 
+    fn indirect_draw_count_limit(&self) -> Option<u32> {
+        self.indirect_count.map(|_| i32::MAX as u32)
+    }
+
+    fn render_to_texture_counted(
+        &mut self, pass: &RenderPassCommands<'_>, counts: &[IndirectCountBinding],
+    ) -> Result<()> {
+        self.render_to_texture_counted_profiled(pass, counts, None)
+    }
+
+    fn render_to_texture_counted_profiled(
+        &mut self, pass: &RenderPassCommands<'_>, counts: &[IndirectCountBinding],
+        tag: Option<GpuTimestampTag>,
+    ) -> Result<()> {
+        self.render_to_textures_counted_profiled(std::slice::from_ref(pass), &[counts], &[tag]).map(|_| ())
+    }
+
+    fn render_to_textures_counted_profiled(
+        &mut self, passes: &[RenderPassCommands<'_>], counts: &[&[IndirectCountBinding]],
+        tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if passes.len() != counts.len() || passes.len() != tags.len() {
+            return Err(Error::InvalidInput("counted pass metadata length mismatch".into()));
+        }
+        // Validate every count table before any rendering starts.
+        for (pass, &table) in passes.iter().zip(counts) {
+            if table.is_empty() { continue; }
+            let limit = self.indirect_draw_count_limit().ok_or_else(|| Error::Unavailable("OpenGL indirect count unavailable".into()))?;
+            let mut previous = None;
+            for &count in table {
+                if previous.is_some_and(|index| index >= count.command_index) {
+                    return Err(Error::InvalidInput("indirect count bindings must be strictly ordered".into()));
+                }
+                previous = Some(count.command_index);
+                let (arguments, offset, stride) = match pass.commands.get(count.command_index) {
+                    Some(RenderCommand::DrawIndirect(draw)) => (draw.arguments, draw.offset, 16),
+                    Some(RenderCommand::DrawIndexedIndirect(draw)) if draw.index_buffer.offset == 0 =>
+                        (draw.arguments, draw.offset, 20),
+                    _ => return Err(Error::InvalidInput("OpenGL counted draw requires indirect arguments and zero index binding offset".into())),
+                };
+                let args = self.buffers.get(arguments)?;
+                let counter = self.buffers.get(count.count_buffer)?;
+                if !args.desc.usage.contains(BufferUsage::INDIRECT)
+                    || !counter.desc.usage.contains(BufferUsage::INDIRECT)
+                    || i32::try_from(offset).is_err() || isize::try_from(count.count_offset).is_err()
+                {
+                    return Err(Error::InvalidInput("invalid OpenGL counted buffer usage or offset".into()));
+                }
+                count.validate_ranges(offset, args.desc.size, counter.desc.size, stride, limit)?;
+            }
+        }
+        for ((pass, &table), &tag) in passes.iter().zip(counts).zip(tags) {
+            let targets = pass.color_attachments.iter().copied().map(RenderTarget::TextureView).collect::<Vec<_>>();
+            self.render_target_counted(&targets, pass.resolve_target, pass.render_pass,
+                pass.commands, pass.color_load_op, pass.depth_attachment, pass.clear_region,
+                pass.viewport, tag, table)?;
+        }
+        Ok(None)
+    }
+
     fn render_to_textures_on_queue(
         &mut self,
         passes: &[RenderPassCommands<'_>],

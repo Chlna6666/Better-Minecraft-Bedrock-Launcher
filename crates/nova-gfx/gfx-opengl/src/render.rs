@@ -14,6 +14,7 @@ struct GlPassState {
     /// GL_ELEMENT_ARRAY_BUFFER is VAO state; one indexed mesh batch often
     /// shares the same index table for hundreds of successive draws.
     element_buffer: Option<glow::NativeBuffer>,
+    parameter_buffer: Option<glow::NativeBuffer>,
 }
 
 impl OpenGlDevice {
@@ -49,6 +50,22 @@ impl OpenGlDevice {
         clear_region: Option<ScissorRect>,
         viewport: Option<Viewport>,
         gpu_tag: Option<GpuTimestampTag>,
+    ) -> Result<()> {
+        self.render_target_counted(targets, resolve_view, pass, steps, load, depth, clear_region, viewport, gpu_tag, &[])
+    }
+
+    pub(crate) fn render_target_counted(
+        &mut self,
+        targets: &[RenderTarget],
+        resolve_view: Option<TextureViewId>,
+        pass: RenderPassId,
+        steps: &[RenderCommand],
+        load: LoadOp<ClearColor>,
+        depth: Option<DepthAttachment>,
+        clear_region: Option<ScissorRect>,
+        viewport: Option<Viewport>,
+        gpu_tag: Option<GpuTimestampTag>,
+        counts: &[IndirectCountBinding],
     ) -> Result<()> {
         self.park()?;
         let pass = self.passes.get(pass)?;
@@ -295,7 +312,13 @@ impl OpenGlDevice {
         let result = (|| {
             let mut bindings = self.binding_cache.borrow_mut();
             bindings.reset();
-            for step in steps.iter() {
+            let mut remaining = counts;
+            for (index, step) in steps.iter().enumerate() {
+                let count = if remaining.first().is_some_and(|entry| entry.command_index == index) {
+                    let entry = remaining[0];
+                    remaining = &remaining[1..];
+                    Some(entry)
+                } else { None };
                 let scissor = match (viewport, step.scissor()) {
                     (Some(viewport), Some(scissor)) => Some(viewport.map_scissor(scissor, size)?),
                     (_, scissor) => scissor,
@@ -315,6 +338,7 @@ impl OpenGlDevice {
                     has_depth,
                     &mut state,
                     &mut bindings,
+                    count,
                 )?;
             }
             // A blur frame executes many short offscreen passes. glGetError after each
@@ -338,6 +362,10 @@ impl OpenGlDevice {
             unsafe {
                 self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, None);
             }
+        }
+        if state.parameter_buffer.is_some() {
+            // SAFETY: the owner context is still current, including on errors.
+            unsafe { self.gl.bind_buffer(crate::device::PARAMETER_BUFFER, None); }
         }
         // A failed draw must not resolve invalid or partially recorded contents.
         // Still execute the common detach/cleanup path below.
@@ -419,6 +447,7 @@ impl OpenGlDevice {
         depth: bool,
         state: &mut GlPassState,
         bindings: &mut crate::bindings::Cache,
+        count: Option<IndirectCountBinding>,
     ) -> Result<()> {
         let pipeline = self.pipelines.get(step.pipeline())?;
         // The old per-Draw Vec allocation was O(attachments) heap work for
@@ -593,6 +622,13 @@ impl OpenGlDevice {
             } else {
                 glow::TRIANGLE_STRIP
             };
+            if let Some(count) = count {
+                let counter = self.buffers.get(count.count_buffer)?;
+                if state.parameter_buffer != Some(counter.native) {
+                    self.gl.bind_buffer(crate::device::PARAMETER_BUFFER, Some(counter.native));
+                    state.parameter_buffer = Some(counter.native);
+                }
+            }
             match step {
                 RenderCommand::DrawIndirect(draw) => {
                     if !self.compute.capabilities.indirect_draw {
@@ -617,7 +653,13 @@ impl OpenGlDevice {
                         self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(buffer.native));
                         state.indirect_buffer = Some(buffer.native);
                     }
-                    self.gl.draw_arrays_indirect_offset(topology, offset);
+                    if let Some(count) = count {
+                        let fns = self.indirect_count.ok_or_else(|| Error::Unavailable("OpenGL indirect count unavailable".into()))?;
+                        (fns.arrays)(topology, offset as usize as *const std::ffi::c_void,
+                            count.count_offset as isize, count.max_draw_count as i32, 16);
+                    } else {
+                        self.gl.draw_arrays_indirect_offset(topology, offset);
+                    }
                 }
                 RenderCommand::DrawIndexedIndirect(draw) => {
                     if !self.compute.capabilities.indirect_draw {
@@ -664,7 +706,13 @@ impl OpenGlDevice {
                         self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(arguments.native));
                         state.indirect_buffer = Some(arguments.native);
                     }
-                    self.gl.draw_elements_indirect_offset(topology, kind, offset);
+                    if let Some(count) = count {
+                        let fns = self.indirect_count.ok_or_else(|| Error::Unavailable("OpenGL indirect count unavailable".into()))?;
+                        (fns.elements)(topology, kind, offset as usize as *const std::ffi::c_void,
+                            count.count_offset as isize, count.max_draw_count as i32, 20);
+                    } else {
+                        self.gl.draw_elements_indirect_offset(topology, kind, offset);
+                    }
                 }
                 RenderCommand::Draw(draw) => {
                     self.gl

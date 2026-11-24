@@ -58,6 +58,7 @@ pub struct OpenGlDevice {
     pub(crate) display: Display,
     pub(crate) config: Config,
     pub(crate) view_texture: unsafe extern "system" fn(u32, u32, u32, u32, u32, u32, u32, u32),
+    pub(crate) indirect_count: Option<IndirectCountFns>,
     adapter: AdapterInfo,
     pub(crate) vao: glow::NativeVertexArray,
     pub(crate) framebuffer: glow::NativeFramebuffer,
@@ -100,6 +101,15 @@ pub struct OpenGlDevice {
     // Last field: the config's native DC must outlive every GL/glutin object.
     #[cfg(target_os = "windows")]
     _bootstrap: crate::bootstrap::Bootstrap,
+}
+
+// GL_PARAMETER_BUFFER_ARB is core in GL 4.6, but the extension uses
+// identical enums and function signatures on GL 4.5.
+pub(crate) const PARAMETER_BUFFER: u32 = 0x80EE;
+#[derive(Clone, Copy)]
+pub(crate) struct IndirectCountFns {
+    pub arrays: unsafe extern "system" fn(u32, *const std::ffi::c_void, isize, i32, i32),
+    pub elements: unsafe extern "system" fn(u32, u32, *const std::ffi::c_void, isize, i32, i32),
 }
 
 impl OpenGlDevice {
@@ -237,6 +247,26 @@ impl OpenGlDevice {
             }
         };
         let compute = crate::compute::State::new(&gl);
+        let core_count = unsafe {
+            gl.get_parameter_i32(glow::MAJOR_VERSION) * 10 + gl.get_parameter_i32(glow::MINOR_VERSION) >= 46
+        };
+        let extension_count = gl.supported_extensions().contains("GL_ARB_indirect_parameters");
+        let indirect_count = if compute.capabilities.indirect_draw && (core_count || extension_count) {
+            let (arrays, elements) = if core_count {
+                (display.get_proc_address(c"glMultiDrawArraysIndirectCount"),
+                 display.get_proc_address(c"glMultiDrawElementsIndirectCount"))
+            } else {
+                (display.get_proc_address(c"glMultiDrawArraysIndirectCountARB"),
+                 display.get_proc_address(c"glMultiDrawElementsIndirectCountARB"))
+            };
+            if arrays.is_null() || elements.is_null() { None } else {
+                // SAFETY: both entry points are supported by the current context.
+                Some(IndirectCountFns {
+                    arrays: unsafe { std::mem::transmute::<*const std::ffi::c_void, unsafe extern "system" fn(u32, *const std::ffi::c_void, isize, i32, i32)>(arrays) },
+                    elements: unsafe { std::mem::transmute::<*const std::ffi::c_void, unsafe extern "system" fn(u32, u32, *const std::ffi::c_void, isize, i32, i32)>(elements) },
+                })
+            }
+        } else { None };
         let max_color_attachments_cap = unsafe {
             let attachments = gl.get_parameter_i32(glow::MAX_COLOR_ATTACHMENTS).max(1) as u32;
             let draw_buffers = gl.get_parameter_i32(glow::MAX_DRAW_BUFFERS).max(1) as u32;
@@ -253,6 +283,7 @@ impl OpenGlDevice {
             display,
             config,
             view_texture,
+            indirect_count,
             adapter: AdapterInfo {
                 backend: BackendKind::OpenGl,
                 name,

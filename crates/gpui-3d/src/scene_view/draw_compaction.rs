@@ -238,7 +238,7 @@ impl Compactor {
     pub(super) fn new(device: &mut dyn ExtensionDevice, context: &RendererExtensionContext) -> Option<Self> {
         // Unvalidated driver cost: preserve default behavior until benchmarked.
         let argument_stride = match context.backend_kind() {
-            BackendKind::Vulkan => 16,
+            BackendKind::Vulkan | BackendKind::OpenGl => 16,
             BackendKind::Dx12 => 32,
             _ => return None,
         };
@@ -254,8 +254,11 @@ impl Compactor {
             .ok().and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d draw compaction".into()), binary,
             }).ok())?;
-        let indexed_shader = super::resources::embedded_shader(context, ShaderStage::Compute, "cs_compact_indexed_draws")
-            .ok().and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
+        // GL element-array bindings have no byte base; keep indexed compaction
+        // disabled until portable nonzero index offsets are handled by GL.
+        let indexed_shader = (context.backend_kind() != BackendKind::OpenGl).then(||
+            super::resources::embedded_shader(context, ShaderStage::Compute, "cs_compact_indexed_draws")).and_then(|result| result.ok())
+            .and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d indexed draw compaction".into()), binary,
             }).ok());
         Some(Self { shader, indexed_shader, argument_stride, views: HashMap::new(), probes: HashMap::new() })
