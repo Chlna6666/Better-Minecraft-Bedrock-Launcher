@@ -76,12 +76,11 @@ impl Window {
             )
     }
 
-    pub(crate) fn request_fingerprinted_layout<
+    pub(crate) fn request_default_measured_layout<
         F: FnMut(Size<Option<Pixels>>, Size<AvailableSpace>, &mut Window, &mut App) -> Size<Pixels>
             + 'static,
     >(
         &mut self,
-        style: Style,
         fingerprint_seed: u64,
         mut measure: F,
     ) -> LayoutId {
@@ -93,9 +92,8 @@ impl Window {
         self.layout_engine
             .as_mut()
             .unwrap()
-            .request_impure_measured_layout(
+            .request_default_measured_layout(
                 owner,
-                style,
                 rem_size,
                 scale_factor,
                 fingerprint_seed,

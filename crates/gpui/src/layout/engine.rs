@@ -36,6 +36,16 @@ struct NodeLayoutMetadata {
     scale_factor: f32,
 }
 
+// The common text leaf always requests the default layout style. Its
+// native style and fingerprint depend only on rem size and device scale.
+struct DefaultMeasuredStyle {
+    rem_size: Pixels,
+    scale_bits: u32,
+    layout: LayoutStyle,
+    native: taffy::Style,
+    fingerprint: u64,
+}
+
 struct LayoutRootDiagnosticNode {
     style_fingerprint: u64,
     subtree_fingerprint: Option<u64>,
@@ -72,6 +82,7 @@ pub struct TaffyLayoutEngine {
     finished_request_ordinals: FxHashMap<GlobalElementId, u32>,
     anonymous_nodes: Vec<LayoutId>,
     persistent_layout_reuses: usize,
+    default_measured_style: Option<DefaultMeasuredStyle>,
     pub(super) absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
     unrounded_layout_origins: FxHashMap<LayoutId, (f32, f32)>,
     pub(super) computed_layouts: FxHashSet<LayoutId>,
@@ -128,6 +139,7 @@ impl TaffyLayoutEngine {
             finished_request_ordinals: FxHashMap::default(),
             anonymous_nodes: Vec::new(),
             persistent_layout_reuses: 0,
+            default_measured_style: None,
             absolute_layout_bounds: FxHashMap::default(),
             unrounded_layout_origins: FxHashMap::default(),
             computed_layouts: FxHashSet::default(),
@@ -639,21 +651,78 @@ impl TaffyLayoutEngine {
         ) -> Size<Pixels>
         + 'static,
     ) -> LayoutId {
+        let layout_style = LayoutStyle::from(&style);
+        let mut style_hasher = FxHasher::default();
+        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
+        let style_fingerprint = style_hasher.finish();
+        let native = layout_style.to_taffy(rem_size, scale_factor);
+        self.request_impure_measured_node(
+            owner, layout_style, native, style_fingerprint, rem_size,
+            scale_factor, fingerprint_seed, measure,
+        )
+    }
+
+    pub(crate) fn request_default_measured_layout(
+        &mut self,
+        owner: Option<GlobalElementId>,
+        rem_size: Pixels,
+        scale_factor: f32,
+        fingerprint_seed: u64,
+        measure: impl FnMut(
+            Size<Option<Pixels>>,
+            Size<AvailableSpace>,
+            &mut Window,
+            &mut App,
+        ) -> Size<Pixels> + 'static,
+    ) -> LayoutId {
+        if self.default_measured_style.as_ref().is_none_or(|cached| {
+            cached.rem_size.0.to_bits() != rem_size.0.to_bits()
+                || cached.scale_bits != scale_factor.to_bits()
+        }) {
+            let layout = LayoutStyle::from(&Style::default());
+            let mut hasher = FxHasher::default();
+            self.hash_layout_style(&layout, rem_size, scale_factor, &mut hasher);
+            self.default_measured_style = Some(DefaultMeasuredStyle {
+                rem_size,
+                scale_bits: scale_factor.to_bits(),
+                native: layout.to_taffy(rem_size, scale_factor),
+                layout,
+                fingerprint: hasher.finish(),
+            });
+        }
+        let cached = self.default_measured_style.as_ref().expect("default measured style");
+        self.request_impure_measured_node(
+            owner, cached.layout.clone(), cached.native.clone(), cached.fingerprint,
+            rem_size, scale_factor, fingerprint_seed, measure,
+        )
+    }
+
+    fn request_impure_measured_node(
+        &mut self,
+        owner: Option<GlobalElementId>,
+        layout_style: LayoutStyle,
+        taffy_style: taffy::Style,
+        style_fingerprint: u64,
+        rem_size: Pixels,
+        scale_factor: f32,
+        fingerprint_seed: u64,
+        measure: impl FnMut(
+            Size<Option<Pixels>>,
+            Size<AvailableSpace>,
+            &mut Window,
+            &mut App,
+        ) -> Size<Pixels> + 'static,
+    ) -> LayoutId {
         let _work = crate::window::element_work::begin_named(
             "layout_impure_node_request",
             crate::window::element_work::ElementWorkPhase::Layout,
         );
         self.nodes_requested = self.nodes_requested.saturating_add(1);
         self.measured_nodes_requested = self.measured_nodes_requested.saturating_add(1);
-        let layout_style = LayoutStyle::from(&style);
-        let mut style_hasher = FxHasher::default();
-        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
-        let style_fingerprint = style_hasher.finish();
         let mut hasher = FxHasher::default();
         style_fingerprint.hash(&mut hasher);
         fingerprint_seed.hash(&mut hasher);
         let fingerprint = hasher.finish();
-        let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
         let measure = Box::new(measure) as Box<MeasureFn>;
         #[cfg(feature = "stacker")]
         let measure = StackSafe::new(measure);

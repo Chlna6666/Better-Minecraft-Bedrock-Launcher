@@ -78,7 +78,7 @@ impl TextLayout {
             text_style.text_overflow.is_some() || paint_refresh_failed,
         );
 
-        window.request_fingerprinted_layout(Default::default(), measurement_key, {
+        window.request_default_measured_layout(measurement_key, {
             let element_state = self.clone();
 
             move |known_dimensions, available_space, window, cx| {
