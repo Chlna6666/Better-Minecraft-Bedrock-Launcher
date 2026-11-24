@@ -51,7 +51,7 @@ pub(super) fn with_timeline(
             .semaphore(semaphore).value(value).stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS);
     }
     for (info, buffer) in buffer_infos.iter_mut().zip(buffers) {
-        *info = vk::CommandBufferSubmitInfo::default().command_buffer(*buffer).device_mask(0);
+        *info = vk::CommandBufferSubmitInfo::default().command_buffer(*buffer).device_mask(1);
     }
     let submit = vk::SubmitInfo2::default()
         .wait_semaphore_infos(wait_infos).signal_semaphore_infos(signal_infos)

@@ -1939,6 +1939,13 @@ impl VulkanDevice {
                     vk::Extent2D { width: scissor_extent.width(), height: scissor_extent.height() })
             }
         };
+        if let Some(attachment) = depth_attachment {
+            let view = self.texture_views.get(attachment.target)?;
+            let depth = self.textures.get(view.texture)?;
+            if depth.desc.size.width() < extent.width || depth.desc.size.height() < extent.height {
+                return Err(Error::InvalidInput("Vulkan depth attachment is smaller than the rendering area".into()));
+            }
+        }
         let mut draw_steps = Vec::with_capacity(steps.len());
         let mut descriptor_sets =
             Vec::with_capacity(steps.iter().map(|step| step.bind_groups().len()).sum());
@@ -2255,6 +2262,13 @@ impl VulkanDevice {
         } else {
             color_load_op
         };
+        if let Some(attachment) = depth_attachment {
+            let view = self.texture_views.get(attachment.target)?;
+            let depth = self.textures.get(view.texture)?;
+            if depth.desc.size.width() < extent.width || depth.desc.size.height() < extent.height {
+                return Err(Error::InvalidInput("Vulkan depth attachment is smaller than the rendering area".into()));
+            }
+        }
         let mut draw_steps = Vec::with_capacity(steps.len());
         let mut descriptor_sets =
             Vec::with_capacity(steps.iter().map(|step| step.bind_groups().len()).sum());
@@ -2448,9 +2462,9 @@ impl VulkanDevice {
         };
         let texture_view = self.texture_views.get(depth_attachment.target)?;
         let texture = self.textures.get(texture_view.texture)?;
-        if texture.desc.format != depth_format {
+        if texture.desc.format != depth_format || texture.desc.sample_count != render_pass.sample_count {
             return Err(Error::InvalidInput(
-                "Vulkan depth attachment format does not match render pass".to_string(),
+                "Vulkan depth attachment format or sample count does not match render pass".to_string(),
             ));
         }
         if !texture.desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
