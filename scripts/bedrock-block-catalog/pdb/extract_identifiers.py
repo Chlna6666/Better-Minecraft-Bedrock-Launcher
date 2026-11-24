@@ -53,6 +53,43 @@ def decode_literal(name: str) -> str | None:
     return "".join(out)
 
 
+def collect_candidates(symbols: dict, exe_bytes: bytes, literal_at) -> dict:
+    """Select address-validated identifier candidates from PDB symbol records.
+
+    Every validated candidate is kept even if another symbol with the SAME
+    name was rejected; dedup is by exact (name, segment, offset) AFTER address
+    validation, so a bad early symbol cannot suppress a good later one.
+    """
+    rows = []
+    rejected_bytes = 0
+    rejected_address = 0
+    seen = set()
+    for symname, sym in symbols.items():
+        decoded = decode_literal(symname)
+        if not decoded or not IDENT.match(decoded):
+            continue
+        segment = int(getattr(sym, "segment", -1))
+        offset = int(getattr(sym, "offset", -1))
+        if decoded.encode("ascii") not in exe_bytes:
+            rejected_bytes += 1
+            continue
+        if literal_at(segment, offset) != decoded.encode("ascii"):
+            rejected_address += 1
+            continue
+        identity = (decoded, segment, offset)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        rows.append({"name": decoded, "segment": segment, "offset": offset, "symbol": symname})
+    rows.sort(key=lambda r: (r["name"], r["segment"], r["offset"]))
+    return {
+        "rows": rows,
+        "unique_name_count": len({r["name"] for r in rows}),
+        "rejected_byte_mismatch": rejected_bytes,
+        "rejected_address_mismatch": rejected_address,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pdb", type=Path, required=True)
@@ -96,47 +133,20 @@ def main() -> int:
                 return exe_bytes[start:end]
         return None
 
-    rows: list[dict] = []
-    rejected_decode = 0
-    rejected_bytes = 0
-    rejected_address = 0
-    seen: set[str] = set()
-    for symname, sym in gsym.vars.items():
-        decoded = decode_literal(symname)
-        if not decoded or not IDENT.match(decoded):
-            continue
-        if decoded in seen:
-            continue
-        seen.add(decoded)
-        segment = int(getattr(sym, "segment", -1))
-        offset = int(getattr(sym, "offset", -1))
-        # Empirical validation: the literal must physically exist in the EXE
-        # AND the PDB symbol's address must point at that literal.
-        if decoded.encode("ascii") not in exe_bytes:
-            rejected_bytes += 1
-            continue
-        at_address = literal_at(segment, offset)
-        if at_address != decoded.encode("ascii"):
-            rejected_address += 1
-            continue
-        rows.append({
-            "name": decoded,
-            "segment": segment,
-            "offset": offset,
-            "symbol": symname,
-        })
-    rows.sort(key=lambda r: (r["segment"], r["offset"], r["name"]))
-
+    result = collect_candidates(gsym.vars, exe_bytes, literal_at)
+    rows = result["rows"]
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps({
         "kind": "pdb_string_literal_identifiers",
         "count": len(rows),
-        "rejected_byte_mismatch": rejected_bytes,
-        "rejected_address_mismatch": rejected_address,
+        "unique_name_count": result["unique_name_count"],
+        "rejected_byte_mismatch": result["rejected_byte_mismatch"],
+        "rejected_address_mismatch": result["rejected_address_mismatch"],
+        "note": "All address-validated symbol candidates retained; multiple symbols per name are separate evidence.",
         "identifiers": rows,
     }, indent=2) + "\n", encoding="utf-8")
-    print(f"wrote {len(rows)} address-validated identifiers "
-          f"({rejected_bytes} byte-rejected, {rejected_address} address-rejected) to {args.out}",
+    print(f"wrote {len(rows)} address-validated identifiers ({result['unique_name_count']} unique names) "
+          f"({result['rejected_byte_mismatch']} byte-rejected, {result['rejected_address_mismatch']} address-rejected) to {args.out}",
           flush=True)
     return 0
 

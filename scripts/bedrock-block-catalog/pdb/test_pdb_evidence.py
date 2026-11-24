@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_import import snake_candidates
-from extract_identifiers import decode_literal
+from extract_identifiers import collect_candidates, decode_literal
 from import_legacy_ids import NBT, varint
 from integrity_check import PINNED, git_blob
 
@@ -32,6 +32,37 @@ class DecodeLiteralTests(unittest.TestCase):
 
     def test_non_literal_symbol(self):
         self.assertIsNone(decode_literal("?mStone@VanillaBlockTypes@@3V?$WeakPtr@VBlockLegacy@@@@A"))
+
+    def test_bad_early_symbol_does_not_suppress_valid_later_same_name(self):
+        # Two symbols decode to the same name; the first fails address
+        # validation. The later valid symbol must still be retained.
+        good = "??_C@_0BA@X@minecraft?3stone@"
+        bad = "??_C@_0BA@Y@minecraft?3stone@"
+        syms = {
+            bad: type("S", (), {"segment": 2, "offset": 10})(),
+            good: type("S", (), {"segment": 2, "offset": 20})(),
+        }
+        result = collect_candidates(
+            syms, b"minecraft:stone",
+            lambda seg, off: b"minecraft:stone" if off == 20 else b"truncated",
+        )
+        self.assertEqual(result["unique_name_count"], 1)
+        self.assertEqual(len(result["rows"]), 1)
+        self.assertEqual(result["rows"][0]["symbol"], good)
+        self.assertEqual(result["rejected_address_mismatch"], 1)
+
+    def test_all_valid_candidates_of_same_name_are_kept(self):
+        good = "??_C@_0BA@X@minecraft?3stone@"
+        other = "??_C@_0BA@Y@minecraft?3stone@"
+        syms = {
+            good: type("S", (), {"segment": 2, "offset": 20})(),
+            other: type("S", (), {"segment": 2, "offset": 40})(),
+        }
+        result = collect_candidates(
+            syms, b"minecraft:stone", lambda seg, off: b"minecraft:stone",
+        )
+        self.assertEqual(len(result["rows"]), 2)  # separate evidence
+        self.assertEqual(result["unique_name_count"], 1)
 
 
 class LegacyIdTests(unittest.TestCase):
