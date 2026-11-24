@@ -9,6 +9,9 @@ on:
       - 'crates/gpui-3d/src/scene_view/mesher.wgsl'
       - 'crates/gpui-3d/src/scene_view/voxel.wgsl'
       - 'crates/gpui-3d/src/scene_view/draw_compaction.wgsl'
+      - 'crates/gpui/src/diagnostics/performance_metrics/window/native_vsync.rs'
+      - 'crates/gpui/src/platform/traits.rs'
+      - 'crates/nova-gfx/gfx-vulkan/src/**'
       - 'crates/gpui-3d/src/scene_view/effects/**'
       - 'crates/gpui-3d/src/scene_view/generated_tests.rs'
 

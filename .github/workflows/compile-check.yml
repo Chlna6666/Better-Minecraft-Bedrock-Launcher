@@ -349,6 +349,9 @@ jobs:
       - name: Test native Metal texture transfer ABI
         run: cargo test --locked -p gfx-metal --test texture_transfer -- --nocapture
 
+      - name: Verify Metal GPU-generated draws and array sampling
+        run: cargo test --locked -p gfx-metal --test gpu_driven -- --nocapture
+
       - name: Test WGSL to MSL resource ABI
         run: cargo test --locked -p gfx-shader --lib msl
 

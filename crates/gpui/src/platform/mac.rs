@@ -1,5 +1,6 @@
 //! Macos screen have a y axis that goings up from the bottom of the screen and
 //! an origin at the bottom left of the main display.
+#![expect(unsafe_code, reason = "AppKit, CoreVideo and libdispatch native FFI require unsafe operations; scope this exception to the macOS platform boundary")]
 mod dispatcher;
 mod display;
 mod display_link;

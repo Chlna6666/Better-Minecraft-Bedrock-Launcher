@@ -3441,6 +3441,7 @@ dependencies = [
  "dispatch2",
  "gfx-core",
  "gfx-memory",
+ "gfx-shader",
  "objc2 0.6.3",
  "objc2-app-kit 0.3.1",
  "objc2-core-foundation",
