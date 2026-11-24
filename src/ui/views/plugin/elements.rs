@@ -574,6 +574,10 @@ fn render_input(
             .appearance(false)
             .h(px(32.))
             .px(px(8.));
+    } else {
+        // Medium inputs also contain a full-height text element. A minimum
+        // height alone does not establish its percentage-height containing box.
+        control = control.with_size(InputSize::Medium).h(px(38.));
     }
     if node.style.full_width {
         control.w_full().into_any_element()

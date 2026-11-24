@@ -25,6 +25,15 @@ impl Render for JoinRow {
 
 #[gpui::test]
 fn plugin_action_row_gives_remaining_width_to_input(cx: &mut TestAppContext) {
+    assert_action_row(cx, TextSizeToken::Small, px(32.));
+}
+
+#[gpui::test]
+fn plugin_medium_input_text_is_vertically_centered(cx: &mut TestAppContext) {
+    assert_action_row(cx, TextSizeToken::Body, px(38.));
+}
+
+fn assert_action_row(cx: &mut TestAppContext, text_size: TextSizeToken, height: gpui::Pixels) {
     cx.update(|cx| cx.set_global(ThemeState::default()));
     let control = ViewStyle {
         direction: LayoutDirection::Column,
@@ -70,7 +79,7 @@ fn plugin_action_row_gives_remaining_width_to_input(cx: &mut TestAppContext) {
                 action_value: None,
                 style: ViewStyle {
                     full_width: true,
-                    text_size: TextSizeToken::Small,
+                    text_size,
                     ..control.clone()
                 },
             }),
@@ -95,7 +104,7 @@ fn plugin_action_row_gives_remaining_width_to_input(cx: &mut TestAppContext) {
         assert!((input.center().y - paste.center().y).abs() <= px(1.));
         assert!((paste.center().y - join.center().y).abs() <= px(1.));
         assert_eq!(join.right(), px(width - 370.));
-        assert_eq!(input.size.height, px(32.));
+        assert_eq!(input.size.height, height);
         let text = window.update(|_, cx| {
             probe
                 .read(cx)
