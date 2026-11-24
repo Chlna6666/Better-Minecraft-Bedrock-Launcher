@@ -10,9 +10,9 @@ frame_rate_mode = "vsync"
 frame_rate_limit = 120
 ```
 
-- `vsync` (default): use native FIFO/VSync presentation without a software FPS cap. The actual cadence depends on display, backend and compositor.
+- `vsync` (default): use native display-driven presentation without a software FPS cap. The actual cadence depends on display, backend and compositor.
 - `auto`: legacy alias for `vsync`; existing settings no longer impose a 120 FPS cap.
-- `custom`: request an explicit **1–1000 FPS** upper bound while keeping native FIFO/VSync. On a fixed-refresh display the effective visible rate cannot exceed the native cadence; non-integer ratios select alternating refresh slots.
+- `custom`: request an explicit **1–1000 FPS** upper bound while keeping native display-driven presentation. On a fixed-refresh display the effective visible rate cannot exceed the native cadence; non-integer ratios select alternating refresh slots.
 - `unlimited`: opt out of the software FPS cap and VSync. Rendering remains event-driven and may be constrained by platform/driver/compositor throughput; on Windows the native frame-request worker uses a 1 ms unpaced ceiling, not a busy loop.
 
 Custom cap examples:
@@ -39,8 +39,8 @@ Changing a numerical cap updates the clocks of existing windows. **Switching to 
 
 ## Engine behavior and caveats
 
-- Windows and Wayland UI commits select eligible native display/compositor ticks before layout. The Windows GPU-owner readiness report releases latched dirty work; geometry and first-frame progress remain separate. Pending GPU scenes merge damage and supersede older queued scenes.
-- X11 still uses its existing XRandR-derived timer fallback. Wayland GPU-owner resource/deadline retries remain separate from UI tick selection. Windows uses the native compositor clock on Windows 11, then DXGI output VBlank on older systems; DWM phase/timer waiting is a compatibility fallback. Callback wake timestamps are not hardware present timestamps.
+- Windows, Wayland, X11 and macOS UI commits select eligible native display/compositor ticks before layout. The Windows GPU-owner readiness report releases latched dirty work; geometry and first-frame progress remain separate. Pending GPU scenes merge damage and supersede older queued scenes.
+- X11 uses Present NotifyMSC when supported and an on-demand XRandR timer fallback. macOS 14+ uses CAMetalDisplayLink with the default Metal renderer, with CVDisplayLink fallback on older systems and the optional Blade renderer. Windows DX11/DX12 use non-tearing mailbox presentation; other synchronized backends retain FIFO/VSync. Wayland GPU-owner resource/deadline retries remain separate from UI tick selection. Windows uses the native compositor clock on Windows 11, then DXGI output VBlank on older systems; DWM phase/timer waiting is a compatibility fallback. Callback wake timestamps, MSC clock samples and drawable availability are not exact hardware present timestamps.
 - On Windows, Immediate mode uses independent native scheduling instead of DWM VBlank and retains the lower background-window cadence. Native resize reconciliation remains immediate.
 - DX11/DX12/Vulkan/OpenGL may implement Immediate differently. Drivers, DXGI composition, Wayland surface frame callbacks, and compositor policies may cap actual **displayed** frames at the monitor refresh rate even when additional frames are **rendered/submitted**.
 - Do not equate the configured maximum with delivered FPS. Confirm with GPU trace, presented frames, frame-start timing, and live-resize tests. Test secondary window lifetime on DX12 and X11/Wayland separately.

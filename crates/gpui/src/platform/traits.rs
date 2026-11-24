@@ -287,8 +287,9 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         None
     }
     fn set_frame_request_sender(&self, sender: PlatformFrameRequestSender);
-    /// Registers an opportunistic UI-owner callback during native live resizing.
-    /// Returning false retains delivery through the coalesced frame-request sender.
+    /// Registers an opportunistic inline UI-owner callback for native frame transactions:
+    /// live resize on Windows or a drawable-bearing display-link update on macOS.
+    /// Returning false retains pending work for the platform's normal retry path.
     fn on_live_resize_frame(&self, _callback: Box<dyn FnMut(PlatformFrameRequest) -> bool>) {}
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>);
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>);

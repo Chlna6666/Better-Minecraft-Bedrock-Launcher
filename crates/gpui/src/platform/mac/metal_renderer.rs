@@ -100,6 +100,8 @@ pub(crate) struct MetalRenderer {
     device: metal::Device,
     layer: metal::MetalLayer,
     presents_with_transaction: bool,
+    display_link_attached: bool,
+    frame_drawable: Option<metal::MetalDrawable>,
     command_queue: CommandQueue,
     paths_rasterization_pipeline_state: metal::RenderPipelineState,
     path_sprites_pipeline_state: metal::RenderPipelineState,
@@ -145,7 +147,7 @@ impl MetalRenderer {
         layer.set_opaque(false);
         layer.set_maximum_drawable_count(2);
         unsafe {
-            let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: NO];
+            let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: YES];
             let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: YES];
             let _: () = msg_send![
                 &*layer,
@@ -258,6 +260,8 @@ impl MetalRenderer {
             device,
             layer,
             presents_with_transaction: false,
+            display_link_attached: false,
+            frame_drawable: None,
             command_queue,
             paths_rasterization_pipeline_state,
             path_sprites_pipeline_state,
@@ -361,22 +365,34 @@ impl MetalRenderer {
         // nothing to do
     }
 
-    pub fn draw(&mut self, scene: &Scene) {
+    pub fn set_display_link_attached(&mut self, attached: bool) {
+        self.display_link_attached = attached;
+        self.frame_drawable = None;
+    }
+
+    pub fn set_frame_drawable(&mut self, drawable: Option<metal::MetalDrawable>) {
+        self.frame_drawable = drawable;
+    }
+
+    pub fn draw(&mut self, scene: &Scene) -> bool {
         let layer = self.layer.clone();
-        let viewport_size = layer.drawable_size();
-        let viewport_size: Size<DevicePixels> = size(
-            (viewport_size.width.ceil() as i32).into(),
-            (viewport_size.height.ceil() as i32).into(),
-        );
-        let drawable = if let Some(drawable) = layer.next_drawable() {
+        let supplied = self.frame_drawable.take();
+        let drawable = if self.display_link_attached {
+            let Some(drawable) = supplied.as_deref() else {
+                return false;
+            };
+            drawable
+        } else if let Some(drawable) = layer.next_drawable() {
             drawable
         } else {
-            log::error!(
-                "failed to retrieve next drawable, drawable size: {:?}",
-                viewport_size
-            );
-            return;
+            log::debug!("no Metal drawable available");
+            return false;
         };
+        let texture = drawable.texture();
+        let viewport_size: Size<DevicePixels> = size(
+            (texture.width() as i32).into(),
+            (texture.height() as i32).into(),
+        );
 
         loop {
             let mut instance_buffer = self.instance_buffer_pool.lock().acquire(&self.device);
@@ -404,7 +420,7 @@ impl MetalRenderer {
                         command_buffer.present_drawable(drawable);
                         command_buffer.commit();
                     }
-                    return;
+                    return true;
                 }
                 Err(err) => {
                     log::error!(
@@ -425,6 +441,7 @@ impl MetalRenderer {
                 }
             }
         }
+        false
     }
 
     fn draw_primitives(

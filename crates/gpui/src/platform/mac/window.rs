@@ -200,6 +200,16 @@ unsafe fn build_classes() {
                     display_layer as extern "C" fn(&Object, Sel, id),
                 );
 
+                #[cfg(not(feature = "macos-blade"))]
+                {
+                    if let Some(protocol) = Protocol::get("CAMetalDisplayLinkDelegate") {
+                        decl.add_protocol(protocol);
+                    }
+                    decl.add_method(
+                        sel!(metalDisplayLink:needsUpdate:),
+                        metal_display_link_update as extern "C" fn(&Object, Sel, id, id),
+                    );
+                }
                 decl.add_protocol(Protocol::get("NSTextInputClient").unwrap());
                 decl.add_method(
                     sel!(validAttributesForMarkedText),
@@ -392,6 +402,53 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
     }
 }
 
+// Runtime lookup keeps the CVDisplayLink fallback on macOS versions before 14.
+#[cfg(not(feature = "macos-blade"))]
+struct MetalDisplayLink(id);
+
+#[cfg(not(feature = "macos-blade"))]
+#[link(name = "Foundation", kind = "framework")]
+unsafe extern "C" {
+    static NSRunLoopCommonModes: id;
+}
+
+#[cfg(not(feature = "macos-blade"))]
+impl MetalDisplayLink {
+    fn new(layer: id, view: id) -> Option<Self> {
+        let class = Class::get("CAMetalDisplayLink")?;
+        unsafe {
+            let allocated: id = msg_send![class, alloc];
+            let link: id = msg_send![allocated, initWithMetalLayer: layer];
+            if link == nil {
+                return None;
+            }
+            let _: () = msg_send![link, setDelegate: view];
+            let _: () = msg_send![link, setPaused: YES];
+            let run_loop: id = msg_send![class!(NSRunLoop), mainRunLoop];
+            let _: () = msg_send![link, addToRunLoop: run_loop forMode: NSRunLoopCommonModes];
+            Some(Self(link))
+        }
+    }
+
+    fn set_paused(&self, paused: bool) {
+        let value = if paused { YES } else { NO };
+        unsafe {
+            let _: () = msg_send![self.0, setPaused: value];
+        }
+    }
+}
+
+#[cfg(not(feature = "macos-blade"))]
+impl Drop for MetalDisplayLink {
+    fn drop(&mut self) {
+        unsafe {
+            let _: () = msg_send![self.0, invalidate];
+            let _: () = msg_send![self.0, setDelegate: nil];
+            let _: () = msg_send![self.0, release];
+        }
+    }
+}
+
 struct MacWindowState {
     handle: AnyWindowHandle,
     executor: ForegroundExecutor,
@@ -400,6 +457,10 @@ struct MacWindowState {
     blurred_view: Option<id>,
     background_appearance: WindowBackgroundAppearance,
     display_link: Option<DisplayLink>,
+    #[cfg(not(feature = "macos-blade"))]
+    metal_display_link: Option<MetalDisplayLink>,
+    #[cfg(not(feature = "macos-blade"))]
+    inline_frame_callback: Option<Box<dyn FnMut(PlatformFrameRequest) -> bool>>,
     pending_frame_request: PlatformFrameRequest,
     ui_frame_cadence: crate::platform::FrameCadence,
     renderer: renderer::Renderer,
@@ -492,6 +553,23 @@ impl MacWindowState {
             self.stop_display_link();
             return;
         }
+        #[cfg(not(feature = "macos-blade"))]
+        {
+            if self.metal_display_link.is_none() && self.inline_frame_callback.is_some() {
+                self.metal_display_link = MetalDisplayLink::new(
+                    self.renderer.layer_ptr() as id,
+                    self.native_view.as_ptr() as id,
+                );
+                if self.metal_display_link.is_some() {
+                    self.display_link = None;
+                    self.renderer.set_display_link_attached(true);
+                }
+            }
+            if let Some(link) = &self.metal_display_link {
+                link.set_paused(false);
+                return;
+            }
+        }
         let display_id = unsafe { display_id_for_screen(self.native_window.screen()) };
         if self.display_link.as_ref().is_some_and(|link| link.display_id() != display_id) {
             self.display_link = None;
@@ -506,6 +584,10 @@ impl MacWindowState {
     }
 
     fn stop_display_link(&mut self) {
+        #[cfg(not(feature = "macos-blade"))]
+        if let Some(link) = &self.metal_display_link {
+            link.set_paused(true);
+        }
         // Keep the native registration across idle periods rather than recreating
         // the legacy CVDisplayLink whose teardown is not reliably synchronous.
         if let Some(link) = self.display_link.as_mut() {
@@ -707,6 +789,10 @@ impl MacWindow {
                 blurred_view: None,
                 background_appearance: WindowBackgroundAppearance::Opaque,
                 display_link: None,
+                #[cfg(not(feature = "macos-blade"))]
+                metal_display_link: None,
+                #[cfg(not(feature = "macos-blade"))]
+                inline_frame_callback: None,
                 pending_frame_request: PlatformFrameRequest::default(),
                 ui_frame_cadence: crate::platform::FrameCadence::default(),
                 renderer: renderer::new_renderer(
@@ -954,9 +1040,15 @@ impl MacWindow {
 impl Drop for MacWindow {
     fn drop(&mut self) {
         let mut this = self.0.lock();
+        #[cfg(not(feature = "macos-blade"))]
+        {
+            this.metal_display_link.take();
+            this.inline_frame_callback.take();
+            this.renderer.set_display_link_attached(false);
+        }
+        this.display_link.take();
         this.renderer.destroy();
         let window = this.native_window;
-        this.display_link.take();
         unsafe {
             this.native_window.setDelegate_(nil);
         }
@@ -1474,6 +1566,13 @@ impl PlatformWindow for MacWindow {
         state.start_display_link();
     }
 
+    #[cfg(not(feature = "macos-blade"))]
+    fn on_live_resize_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest) -> bool>) {
+        let mut state = self.0.lock();
+        state.inline_frame_callback = Some(callback);
+        state.start_display_link();
+    }
+
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>) {
         self.0.as_ref().lock().event_callback = Some(callback);
     }
@@ -1571,8 +1670,23 @@ impl PlatformWindow for MacWindow {
 
     fn draw(&self, packet: crate::PresentationPacket) -> crate::PlatformFrameResult {
         let mut this = self.0.lock();
-        this.renderer.draw(&packet.paint.scene);
-        crate::PlatformFrameResult::Submitted
+        #[cfg(feature = "macos-blade")]
+        {
+            this.renderer.draw(&packet.paint.scene);
+            crate::PlatformFrameResult::Submitted
+        }
+        #[cfg(not(feature = "macos-blade"))]
+        {
+            if this.renderer.draw(&packet.paint.scene) {
+                crate::PlatformFrameResult::Submitted
+            } else {
+                this.pending_frame_request = this.pending_frame_request.merge(
+                    PlatformFrameRequest::ui_commit_and_presentation(),
+                );
+                this.start_display_link();
+                crate::PlatformFrameResult::Deferred
+            }
+        }
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -2204,7 +2318,18 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
         let mut lock = window_state.lock();
 
         if lock.activated_least_once {
-            if let Some(sender) = lock.request_frame_callback.clone() {
+            #[cfg(not(feature = "macos-blade"))]
+            if lock.metal_display_link.is_some() {
+                lock.pending_frame_request = lock.pending_frame_request.merge(
+                    PlatformFrameRequest::ui_commit_and_presentation(),
+                );
+                lock.start_display_link();
+            }
+            #[cfg(not(feature = "macos-blade"))]
+            let use_legacy = lock.metal_display_link.is_none();
+            #[cfg(feature = "macos-blade")]
+            let use_legacy = true;
+            if let Some(sender) = lock.request_frame_callback.clone().filter(|_| use_legacy) {
                 #[cfg(not(feature = "macos-blade"))]
                 lock.renderer.set_presents_with_transaction(true);
                 lock.stop_display_link();
@@ -2333,6 +2458,14 @@ extern "C" fn set_frame_size(this: &Object, _: Sel, size: NSSize) {
 extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { window_state(this) };
     let mut lock = window_state.lock();
+    #[cfg(not(feature = "macos-blade"))]
+    if lock.metal_display_link.is_some() {
+        lock.pending_frame_request = lock.pending_frame_request.merge(
+            PlatformFrameRequest::ui_commit_and_presentation(),
+        );
+        lock.start_display_link();
+        return;
+    }
     if let Some(sender) = lock.request_frame_callback.clone() {
         #[cfg(not(feature = "macos-blade"))]
         lock.renderer.set_presents_with_transaction(true);
@@ -2349,10 +2482,68 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
     }
 }
 
+// The drawable is a native presentation credit. Consume it on this run-loop
+// turn without posting a second UI wake or calling nextDrawable.
+#[cfg(not(feature = "macos-blade"))]
+extern "C" fn metal_display_link_update(this: &Object, _: Sel, link: id, update: id) {
+    use foreign_types::ForeignTypeRef;
+    let state = unsafe { window_state(this) };
+    let Some(mut lock) = state.try_lock() else {
+        return;
+    };
+    if !lock.metal_display_link.as_ref().is_some_and(|source| source.0 == link) {
+        return;
+    }
+    if !lock.pending_frame_request.requires_frame()
+        || mac_window_visibility(&lock) != WindowVisibility::Visible
+    {
+        lock.stop_display_link();
+        return;
+    }
+    let now = Instant::now();
+    if !lock.ui_frame_cadence.is_due(now, Some(now)) {
+        return;
+    }
+    let drawable: id = unsafe { msg_send![update, drawable] };
+    if drawable == nil {
+        return;
+    }
+    let Some(mut callback) = lock.inline_frame_callback.take() else {
+        return;
+    };
+    let drawable = unsafe { metal::MetalDrawableRef::from_ptr(drawable.cast()) }.to_owned();
+    lock.renderer.set_frame_drawable(Some(drawable));
+    let previous_cadence = lock.ui_frame_cadence;
+    lock.ui_frame_cadence = previous_cadence.record(now, Some(now));
+    let request = std::mem::take(&mut lock.pending_frame_request);
+    drop(lock);
+
+    let handled = callback(request);
+
+    let mut lock = state.lock();
+    // The window may have closed while the UI callback was executing.
+    if !lock.metal_display_link.as_ref().is_some_and(|source| source.0 == link) {
+        return;
+    }
+    lock.renderer.set_frame_drawable(None);
+    lock.inline_frame_callback = Some(callback);
+    if !handled {
+        lock.pending_frame_request = lock.pending_frame_request.merge(request);
+        if lock.ui_frame_cadence.interval == previous_cadence.interval {
+            lock.ui_frame_cadence = previous_cadence;
+        }
+    }
+    lock.start_display_link();
+}
+
 unsafe extern "C" fn step(view: *mut c_void) {
     let view = view as id;
     let window_state = unsafe { window_state(&*view) };
     let mut lock = window_state.lock();
+    #[cfg(not(feature = "macos-blade"))]
+    if lock.metal_display_link.is_some() {
+        return;
+    }
 
     if !lock.pending_frame_request.requires_frame() {
         lock.stop_display_link();
