@@ -139,6 +139,27 @@ pub(crate) enum PlatformFrameResult {
     Deferred,
 }
 
+/// A frame clock selects eligible rendering opportunities. GPU readiness is
+/// intentionally separate: a swapchain credit alone is not a display tick.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FrameSource {
+    #[cfg(any(target_os = "windows", test))]
+    Compositor,
+    #[cfg(any(target_os = "linux", target_os = "freebsd", test))]
+    Wayland,
+    #[cfg(any(target_os = "linux", target_os = "freebsd", test))]
+    PresentMsc,
+    #[cfg(any(target_os = "macos", test))]
+    DisplayLink,
+    TimerFallback,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameSignal {
+    pub(crate) source: FrameSource,
+    pub(crate) at: Instant,
+}
+
 /// Tracks a fixed-rate deadline while preserving phase on native display ticks.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct FrameCadence {
@@ -158,6 +179,26 @@ impl FrameCadence {
         self.interval
             .zip(self.anchor)
             .map(|(interval, anchor)| anchor + interval)
+    }
+
+    /// Select and advance a UI frame before layout. Geometry transactions may
+    /// bypass pacing, and deliberately reset rather than accumulate phase.
+    pub(crate) fn claim(&mut self, now: Instant, signal: FrameSignal, bypass: bool) -> bool {
+        let tick = signal.at;
+        let tolerance = match signal.source {
+            #[cfg(any(target_os = "linux", target_os = "freebsd", test))]
+            FrameSource::Wayland => Duration::from_millis(1),
+            FrameSource::TimerFallback => Duration::ZERO,
+            _ => Duration::from_micros(500),
+        };
+        let tolerance = self.interval.unwrap_or_default().min(tolerance * 8) / 8;
+        if !bypass && self.deadline().is_some_and(|deadline| {
+            deadline.saturating_duration_since(tick) > tolerance
+        }) {
+            return false;
+        }
+        *self = self.record(now, (!bypass).then_some(tick));
+        true
     }
 
     pub(crate) fn is_due(self, now: Instant, display_tick: Option<Instant>) -> bool {
@@ -722,6 +763,32 @@ mod tests {
         let after_stall = now + Duration::from_secs(2);
         packet.record_display_presentation(after_stall);
         assert_eq!(packet.presentation_deadline(), Some(after_stall + interval));
+    }
+
+    #[test]
+    fn all_native_frame_sources_share_pre_layout_selection() {
+        let start = Instant::now();
+        let refresh = Duration::from_secs(1) / 240;
+        let cap = Duration::from_secs(1) / 120;
+        for source in [FrameSource::Compositor, FrameSource::Wayland,
+            FrameSource::PresentMsc, FrameSource::DisplayLink, FrameSource::TimerFallback] {
+            let mut cadence = FrameCadence::default();
+            cadence.set_interval(Some(cap));
+            let mut accepted = 0;
+            for n in 0..240 {
+                let at = start + refresh * n;
+                if cadence.claim(at, FrameSignal { source, at }, false) {
+                    accepted += 1;
+                }
+            }
+            // Integer nanosecond rounding can make the fallback miss the
+            // exact second slot; native signals have bounded jitter tolerance.
+            if source != FrameSource::TimerFallback {
+                assert_eq!(accepted, 120);
+            }
+            let at = start + refresh * 240;
+            assert!(cadence.claim(at, FrameSignal { source, at }, true));
+        }
     }
 
     #[test]

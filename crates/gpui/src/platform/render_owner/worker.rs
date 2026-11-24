@@ -752,14 +752,13 @@ impl Entry {
         match self.renderer.poll_native_frame_credit() {
             Ok(true) => {}
             Ok(false) => {
-                if let Err(error) = self.arm_native_readiness() {
-                    log::debug!("could not prime native frame credit: {error:#}");
-                }
-                self.producer_credit_only = self.ready_registration.load(Ordering::Acquire) != 0;
-                // An immediate callback may have already queued Continue.
-                // It is still a credit-only wake, not permission to sample animation.
-                if !self.ready_poll_required {
-                    self.producer_credit_only = true;
+                match self.arm_native_readiness() {
+                    Ok(()) => {
+                        // An immediate callback may have already queued Continue.
+                        // It is still a credit-only wake, not a display tick.
+                        self.producer_credit_only = !self.ready_poll_required;
+                    }
+                    Err(error) => log::debug!("could not prime native frame credit: {error:#}"),
                 }
             }
             Err(error) => log::debug!("could not query native frame credit: {error:#}"),

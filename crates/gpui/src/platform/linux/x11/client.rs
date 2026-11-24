@@ -2058,7 +2058,7 @@ impl X11ClientState {
         if !exposed && !window.has_pending_frame_request() {
             return None;
         }
-        if !exposed && !window.claim_ui_frame(tick, now) {
+        if !exposed && !window.claim_ui_frame(tick, now, crate::platform::FrameSource::PresentMsc) {
             self.schedule_frame_request(event.window);
             return None;
         }
@@ -2102,7 +2102,7 @@ impl X11ClientState {
 
         // A custom cap is selected on the fallback display phase before
         // consuming dirty work; keep the same one-shot armed when skipping.
-        if !expose_event_received && !window.claim_ui_frame(deadline, now) {
+        if !expose_event_received && !window.claim_ui_frame(deadline, now, crate::platform::FrameSource::TimerFallback) {
             let next = next_frame_deadline(deadline, refresh_rate, now);
             deadline_cell.set(next);
             return FrameRequestOutcome::WaitUntil(next);

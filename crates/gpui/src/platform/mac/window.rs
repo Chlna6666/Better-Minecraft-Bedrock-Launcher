@@ -2501,7 +2501,12 @@ extern "C" fn metal_display_link_update(this: &Object, _: Sel, link: id, update:
         return;
     }
     let now = Instant::now();
-    if !lock.ui_frame_cadence.is_due(now, Some(now)) {
+    let previous_cadence = lock.ui_frame_cadence;
+    let mut cadence = previous_cadence;
+    if !cadence.claim(now, crate::platform::FrameSignal {
+        source: crate::platform::FrameSource::DisplayLink,
+        at: now,
+    }, false) {
         return;
     }
     let drawable: id = unsafe { msg_send![update, drawable] };
@@ -2513,8 +2518,7 @@ extern "C" fn metal_display_link_update(this: &Object, _: Sel, link: id, update:
     };
     let drawable = unsafe { metal::MetalDrawableRef::from_ptr(drawable.cast()) }.to_owned();
     lock.renderer.set_frame_drawable(Some(drawable));
-    let previous_cadence = lock.ui_frame_cadence;
-    lock.ui_frame_cadence = previous_cadence.record(now, Some(now));
+    lock.ui_frame_cadence = cadence;
     let request = std::mem::take(&mut lock.pending_frame_request);
     drop(lock);
 
@@ -2550,11 +2554,13 @@ unsafe extern "C" fn step(view: *mut c_void) {
         return;
     }
     let now = Instant::now();
-    if !lock.ui_frame_cadence.is_due(now, Some(now)) {
-        return;
-    }
     if let Some(sender) = lock.request_frame_callback.clone() {
-        lock.ui_frame_cadence = lock.ui_frame_cadence.record(now, Some(now));
+        if !lock.ui_frame_cadence.claim(now, crate::platform::FrameSignal {
+            source: crate::platform::FrameSource::DisplayLink,
+            at: now,
+        }, false) {
+            return;
+        }
         let request = std::mem::take(&mut lock.pending_frame_request);
         // Stop on the next idle callback; continuous animations avoid a CV stop/start
         // pair on every refresh.

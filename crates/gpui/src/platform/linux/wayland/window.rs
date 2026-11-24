@@ -833,16 +833,14 @@ impl WaylandWindowStatePtr {
             })
             .unwrap_or(now);
         state.callback_timestamp = Some((callback_data, tick));
-        // The protocol only has millisecond precision. Accept rounding within
-        // one millisecond, but carry the original deadline phase on acceptance.
-        if state.ui_frame_cadence.deadline().is_some_and(|deadline| {
-            deadline.saturating_duration_since(tick) > Duration::from_millis(1)
-        }) {
+        if !state.ui_frame_cadence.claim(now, crate::platform::FrameSignal {
+            source: crate::platform::FrameSource::Wayland,
+            at: tick,
+        }, false) {
             arm_frame_callback(&mut state);
             state.surface.commit();
             return;
         }
-        state.ui_frame_cadence = state.ui_frame_cadence.record(now, Some(tick));
         let request = std::mem::take(&mut state.pending_frame_request);
         state.frame_in_progress = true;
         drop(state);

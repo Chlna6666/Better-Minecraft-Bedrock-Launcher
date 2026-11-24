@@ -7,7 +7,7 @@ use crate::{
 use anyhow::Result;
 use block::ConcreteBlock;
 use cocoa::{
-    base::{NO, YES},
+    base::YES,
     foundation::{NSSize, NSUInteger},
     quartzcore::AutoresizingMask,
 };

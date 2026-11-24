@@ -1611,15 +1611,19 @@ impl WindowsWindow {
             return true;
         }
         let now = Instant::now();
-        let cadence = self.0.ui_frame_cadence.get();
-        if !geometry_pending && !cadence.is_due(now, display_tick) {
+        let mut cadence = self.0.ui_frame_cadence.get();
+        let signal = crate::platform::FrameSignal {
+            source: if display_tick.is_some() {
+                crate::platform::FrameSource::Compositor
+            } else {
+                crate::platform::FrameSource::TimerFallback
+            },
+            at: display_tick.unwrap_or(now),
+        };
+        if !cadence.claim(now, signal, geometry_pending) {
             return false;
         }
-        // A geometry transaction may bypass the limit and start a new phase.
-        let display_tick = if geometry_pending { None } else { display_tick };
-        self.0
-            .ui_frame_cadence
-            .set(cadence.record(now, display_tick));
+        self.0.ui_frame_cadence.set(cadence);
         true
     }
 

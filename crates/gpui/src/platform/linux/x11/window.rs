@@ -372,19 +372,19 @@ impl X11WindowStatePtr {
             .insert_idle(move |client| client.schedule_frame_request(x_window));
     }
 
-    pub(crate) fn claim_ui_frame(&self, display_tick: Instant, now: Instant) -> bool {
+    pub(crate) fn claim_ui_frame(&self, display_tick: Instant, now: Instant, source: crate::platform::FrameSource) -> bool {
         let state = self.state.borrow();
-        let cadence = state.ui_frame_cadence.get();
+        let mut cadence = state.ui_frame_cadence.get();
         // A stale timer slot after idle is not a real display event.
         let tick = if now.saturating_duration_since(display_tick) > Duration::from_millis(50) {
             now
         } else {
             display_tick
         };
-        if !cadence.is_due(now, Some(tick)) {
+        if !cadence.claim(now, crate::platform::FrameSignal { source, at: tick }, false) {
             return false;
         }
-        state.ui_frame_cadence.set(cadence.record(now, Some(tick)));
+        state.ui_frame_cadence.set(cadence);
         true
     }
 
