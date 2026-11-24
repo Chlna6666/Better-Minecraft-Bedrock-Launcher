@@ -59,6 +59,7 @@
             "name": {"type": "string", "minLength": 3},
             "version": {"type": "string", "minLength": 1},
             "file_sha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+            "legacy_id_map_sha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
             "upstream": {"type": "string", "minLength": 3}
           },
           "required": ["name", "version", "file_sha256", "upstream"],
@@ -218,7 +219,8 @@
           }
         },
         "version": {
-          "type": "integer",
+          "description": "Persisted NBT BlockState version. null is allowed only for early datasets whose NBT carries no version field (e.g. 1.9.0); never derive it from the game version.",
+          "type": ["integer", "null"],
           "minimum": -2147483648,
           "maximum": 2147483647
         }

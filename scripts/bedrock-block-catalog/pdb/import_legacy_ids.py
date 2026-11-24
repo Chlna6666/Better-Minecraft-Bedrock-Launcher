@@ -176,9 +176,14 @@ def convert(table: bytes, legacy: dict[str, int], version: str) -> tuple[list[di
                 continue
             tag_version = root.get("version")
             states_raw = root.get("states")
-            if not tag_version or tag_version[0] != 3:
+            # Early datasets (1.9.0) carry no NBT version field. Keep them with
+            # an explicit null version rather than dropping or inventing one.
+            if tag_version is not None and tag_version[0] != 3:
                 stats["skipped_unsupported_nbt"] += 1
                 continue
+            versionless = tag_version is None
+            if versionless:
+                stats["versionless"] = stats.get("versionless", 0) + 1
             states: dict[str, dict] = {}
             ok = True
             if states_raw is not None:
@@ -203,13 +208,15 @@ def convert(table: bytes, legacy: dict[str, int], version: str) -> tuple[list[di
                 "id": numeric_id,
                 "metadata": metadata,
                 "name": name,
-                "version": tag_version[1],
+                "version": None if versionless else tag_version[1],
                 "states": states,
                 "evidence": (
                     f"pmmp/BedrockBlockUpgradeSchema id_meta_to_nbt/{version}.bin "
                     f"for {name} metadata {metadata}: authoritative (numeric_id, metadata) "
-                    f"-> BlockState NBT with exact typed states and persisted version; "
-                    f"numeric id from block_legacy_id_map.json"
+                    f"-> BlockState NBT with exact typed states and "
+                    + ("NO persisted version field (explicit null; not derived)"
+                       if versionless else "persisted version")
+                    + "; numeric id from block_legacy_id_map.json"
                 ),
             })
             stats["mappings"] += 1
@@ -242,6 +249,9 @@ def main() -> int:
                 "name": "PocketMine BedrockBlockUpgradeSchema",
                 "version": args.source_version,
                 "file_sha256": sha256(args.table),
+                # The legacy numeric id table is a SECOND authoritative input;
+                # record its hash too so a change to either file is visible.
+                "legacy_id_map_sha256": sha256(args.id_map),
                 "upstream": "https://github.com/pmmp/BedrockBlockUpgradeSchema",
             },
             "tool": "BMCBL import_legacy_ids from authoritative PocketMine id_meta_to_nbt dataset",
