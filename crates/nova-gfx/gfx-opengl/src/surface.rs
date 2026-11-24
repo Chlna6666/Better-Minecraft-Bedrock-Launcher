@@ -38,6 +38,7 @@ pub(crate) struct Swapchain {
     pub(crate) framebuffer: glow::NativeFramebuffer,
     pub(crate) config: SurfaceConfig,
     pub(crate) source_extent: Extent2d,
+    pub(crate) last_present: Option<SubmissionId>,
     source: SurfaceId,
 }
 impl SurfaceDevice for OpenGlDevice {
@@ -115,6 +116,7 @@ impl SurfaceDevice for OpenGlDevice {
             framebuffer,
             config,
             source_extent,
+            last_present: None,
             source,
         }))
     }
@@ -417,6 +419,7 @@ impl OpenGlDevice {
         let post_present_cleanup = cleanup_started.elapsed();
         let signal_started = std::time::Instant::now();
         let submission = self.signal()?;
+        self.swapchains.get_mut(id)?.last_present = Some(submission);
         Ok((
             submission,
             PresentTimings {
@@ -452,6 +455,8 @@ impl OpenGlDevice {
         self.blit_previous_frame(chain, (target.width() as i32, target.height() as i32), None)?;
         chain.window.swap_buffers(&self.context).map_err(native)?;
         self.park()?;
+        let submission = self.signal()?;
+        self.swapchains.get_mut(id)?.last_present = Some(submission);
         Ok(())
     }
 }

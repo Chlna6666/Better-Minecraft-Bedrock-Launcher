@@ -236,7 +236,9 @@ impl NovaBackend {
                 feature = "nova-gfx-opengl",
                 any(target_os = "windows", target_os = "linux")
             ))]
-            Self::OpenGl(_) => Ok(true),
+            Self::OpenGl(device) => Ok(gfx_core::PresentationDevice::poll_present_readiness(
+                device, swapchain,
+            )?),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
             Self::Dx11(device) => Ok(gfx_core::PresentationDevice::poll_present_readiness(
                 device, swapchain,

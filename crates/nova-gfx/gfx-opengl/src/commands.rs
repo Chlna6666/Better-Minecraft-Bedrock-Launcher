@@ -61,10 +61,34 @@ impl PresentationDevice for OpenGlDevice {
         true
     }
 
+    // GLsync completion is GPU backpressure, not compositor presentation feedback.
+    // FIFO keeps one submitted window frame outstanding; immediate/mailbox keep
+    // their existing policy. The owner retries without a blocking GL wait.
+    fn poll_present_readiness(&mut self, swapchain: SwapchainId) -> Result<bool> {
+        let chain = self.swapchains.get(swapchain)?;
+        if chain.config.present_mode != PresentMode::Fifo {
+            return Ok(true);
+        }
+        let Some(submission) = chain.last_present else {
+            return Ok(true);
+        };
+        match self.poll_submission(submission)? {
+            SubmissionStatus::Complete => {
+                self.swapchains.get_mut(swapchain)?.last_present = None;
+                Ok(true)
+            }
+            SubmissionStatus::Pending => Ok(false),
+            SubmissionStatus::Failed(error) => Err(Error::Backend(error)),
+        }
+    }
+
     fn render_and_present(
         &mut self,
         frame: &PresentFrameDescriptor<'_>,
     ) -> Result<Option<PresentedFrame>> {
+        if !self.poll_present_readiness(frame.swapchain)? {
+            return Ok(None);
+        }
         let (submission, timings) = self.present(
             frame.swapchain,
             frame.render_pass,
