@@ -12,6 +12,11 @@ use crate::element::list::{
 
 const RETAINED_LIST_ITEM_KEY: &str = "__gpui_retained_list_item";
 
+// gpui-fast #170 limits speculative work rather than paying for every
+// overscan row after a content change. Here only unknown sizes require a
+// render/layout; the ordinary List has no raster layer to rebuild.
+const MAX_OVERSCAN_MEASUREMENTS_PER_SIDE: usize = 32;
+
 fn with_item_retained_key<R>(
     window: &mut Window,
     item_index: usize,
@@ -100,6 +105,14 @@ impl StateInner {
 
         let mut cursor = old_items.cursor::<Count>(());
 
+        // Explicit measure_all retains its eager measurement semantics.
+        let overscan_budget = if matches!(self.measuring_behavior, ListMeasuringBehavior::Visible) {
+            MAX_OVERSCAN_MEASUREMENTS_PER_SIDE
+        } else {
+            usize::MAX
+        };
+        let mut trailing_budget = overscan_budget;
+
         // Render items after the scroll top, including those in the trailing overdraw.
         cursor.seek(&Count(scroll_top.item_ix), Bias::Right);
         for (ix, item) in cursor.by_ref().enumerate() {
@@ -109,6 +122,12 @@ impl StateInner {
             }
 
             let mut item_size = item.size();
+            if visible_height >= available_height && item_size.is_none() {
+                if trailing_budget == 0 {
+                    break;
+                }
+                trailing_budget -= 1;
+            }
 
             // Bind retained identity to the logical item index, not to materialization order. This
             // prevents measurement-only overdraw items or later `push_front` work from shifting the
@@ -203,6 +222,10 @@ impl StateInner {
         }
 
         let mut leading_overdraw = scroll_top.offset_in_item;
+        let mut leading_budget = overscan_budget;
+        // Track the first actually included item, not the cursor: stopping
+        // before an unmeasured row must not replace that row in the SumTree.
+        let mut measured_start = scroll_top.item_ix;
         while leading_overdraw < self.overdraw {
             cursor.prev();
             if let Some(item) = cursor.item() {
@@ -210,6 +233,10 @@ impl StateInner {
                 let item_size = if let ListItem::Measured { size, .. } = item {
                     *size
                 } else {
+                    if leading_budget == 0 {
+                        break;
+                    }
+                    leading_budget -= 1;
                     with_item_retained_key(window, item_index, |window| {
                         let mut element = render_item(item_index, window, cx);
                         measured_item_count += 1;
@@ -217,6 +244,7 @@ impl StateInner {
                     })
                 };
 
+                measured_start = item_index;
                 leading_overdraw += item_size.height;
                 measured_items.push_front(ListItem::Measured {
                     size: item_size,
@@ -227,7 +255,7 @@ impl StateInner {
             }
         }
 
-        let measured_range = cursor.start().0..(cursor.start().0 + measured_items.len());
+        let measured_range = measured_start..(measured_start + measured_items.len());
         let mut cursor = old_items.cursor::<Count>(());
         let mut new_items = cursor.slice(&Count(measured_range.start), Bias::Right);
         new_items.extend(measured_items.drain(..), ());

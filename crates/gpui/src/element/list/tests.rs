@@ -149,3 +149,41 @@ fn test_scroll_handler_receives_updated_visible_range(cx: &mut TestAppContext) {
 
     assert_eq!(*visible_range.borrow(), Some(2..4));
 }
+
+#[gpui::test]
+fn large_overdraw_bounds_speculative_measurements_and_keeps_row_indices(cx: &mut TestAppContext) {
+    use crate::{
+        AppContext, Context, Element, IntoElement, ListOffset, ListState, Render, Styled, Window,
+        div, list, point, px, size,
+    };
+
+    struct TestView(ListState, Rc<RefCell<Vec<usize>>>);
+    impl Render for TestView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let measured = self.1.clone();
+            list(self.0.clone(), move |index, _, _| {
+                measured.borrow_mut().push(index);
+                div().h(px(10.)).w_full().into_any()
+            })
+            .w_full()
+            .h_full()
+        }
+    }
+
+    let cx = cx.add_empty_window();
+    let state = ListState::new(1000, crate::ListAlignment::Top, px(10_000.));
+    state.scroll_to(ListOffset { item_ix: 500, offset_in_item: px(0.) });
+    let measured = Rc::new(RefCell::new(Vec::new()));
+    cx.draw(point(px(0.), px(0.)), size(px(100.), px(20.)), |_, cx| {
+        cx.new(|_| TestView(state.clone(), measured.clone())).into_element()
+    });
+
+    let mut indices = measured.borrow().clone();
+    indices.sort_unstable();
+    assert_eq!(indices, (468..534).collect::<Vec<_>>());
+    assert_eq!(state.item_count(), 1000);
+    assert_eq!(state.logical_scroll_top().item_ix, 500);
+    assert_eq!(state.bounds_for_item(500).unwrap().origin.y, px(0.));
+    assert_eq!(state.bounds_for_item(501).unwrap().origin.y, px(10.));
+    assert!(state.bounds_for_item(534).is_none());
+}

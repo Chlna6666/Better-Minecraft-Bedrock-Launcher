@@ -44,9 +44,10 @@ impl ListState {
     /// Construct a new list state, for storage on a view.
     ///
     /// The overdraw parameter controls how much extra space is rendered
-    /// above and below the visible area. Elements within this area will
-    /// be measured even though they are not visible. This can help ensure
-    /// that the list doesn't flicker or pop in when scrolling.
+    /// above and below the visible area. Unknown offscreen sizes are measured
+    /// incrementally with a bounded budget per layout pass, while visible rows
+    /// are always measured. This reduces scroll-time spikes without changing
+    /// the eager behavior of [Self::measure_all].
     pub fn new(item_count: usize, alignment: ListAlignment, overdraw: Pixels) -> Self {
         let this = Self(Rc::new(RefCell::new(StateInner {
             last_layout_bounds: None,
