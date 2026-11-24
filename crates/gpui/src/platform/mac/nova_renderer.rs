@@ -117,6 +117,34 @@ impl Renderer {
         }
     }
 
+    pub(crate) fn has_active_presentation(&self) -> bool {
+        self.nova.has_active_presentation_animations()
+    }
+
+    pub(crate) fn set_frame_interval(&mut self, interval: Option<std::time::Duration>) {
+        self.nova.set_frame_interval(interval);
+    }
+
+    pub(crate) fn present_active_frame(
+        &mut self,
+        now: std::time::Instant,
+    ) -> smallvec::SmallVec<[crate::SceneAnimationCompletion; 4]> {
+        let mut timing = crate::platform::frame::ActivePresentationTiming::from_frame_start(now);
+        timing.display_tick_at = Some(now);
+        match self.nova.present_active_frame(now, Some(timing)) {
+            Ok(Some(frame)) => frame.completed_animations,
+            Ok(None) => smallvec::SmallVec::new(),
+            Err(error) => {
+                log::error!("Nova Metal active presentation: {error:#}");
+                smallvec::SmallVec::new()
+            }
+        }
+    }
+
+    pub(crate) fn take_animation_completions(&mut self) -> smallvec::SmallVec<[crate::SceneAnimationCompletion; 4]> {
+        self.nova.take_animation_completions()
+    }
+
     pub(crate) fn trim_gpui_memory(&mut self, level: crate::GpuiMemoryTrimLevel) {
         self.nova.trim_gpui_memory(level);
     }

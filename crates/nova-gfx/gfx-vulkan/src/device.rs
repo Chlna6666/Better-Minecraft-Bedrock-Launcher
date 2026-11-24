@@ -8855,6 +8855,11 @@ fn transition_image_layout_levels(
     layers: u32,
     aspect: vk::ImageAspectFlags,
 ) {
+    // SHADER_READ_ONLY_OPTIMAL is a sampled-image layout, not a fragment-
+    // only contract. Vertex and compute consumers (including Froxel) must
+    // observe writes, and subsequent attachments/copies must wait for their
+    // reads. ALL_COMMANDS is queue-valid even on a transfer-only family;
+    // the access mask remains restricted to shader sampled reads.
     let color_attachment_access =
         vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
     let (source_stage, destination_stage, source_access_mask, destination_access_mask) =
@@ -8873,18 +8878,18 @@ fn transition_image_layout_levels(
             ) => (
                 vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
                     | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
                 vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                vk::AccessFlags2::SHADER_READ,
+                vk::AccessFlags2::SHADER_SAMPLED_READ,
             ),
             (
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             ) => (
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
                 vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
                     | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
-                vk::AccessFlags2::SHADER_READ,
+                vk::AccessFlags2::SHADER_SAMPLED_READ,
                 vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
                     | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
             ),
@@ -8916,28 +8921,28 @@ fn transition_image_layout_levels(
                 vk::AccessFlags2::TRANSFER_WRITE,
             ),
             (vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
                 vk::PipelineStageFlags2::TRANSFER,
-                vk::AccessFlags2::SHADER_READ,
+                vk::AccessFlags2::SHADER_SAMPLED_READ,
                 vk::AccessFlags2::TRANSFER_WRITE,
             ),
             (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
                 vk::PipelineStageFlags2::TRANSFER,
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
                 vk::AccessFlags2::TRANSFER_WRITE,
-                vk::AccessFlags2::SHADER_READ,
+                vk::AccessFlags2::SHADER_SAMPLED_READ,
             ),
             (vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL) => (
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
                 vk::PipelineStageFlags2::TRANSFER,
-                vk::AccessFlags2::SHADER_READ,
+                vk::AccessFlags2::SHADER_SAMPLED_READ,
                 vk::AccessFlags2::TRANSFER_READ,
             ),
             (vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
                 vk::PipelineStageFlags2::TRANSFER,
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
                 vk::AccessFlags2::TRANSFER_READ,
-                vk::AccessFlags2::SHADER_READ,
+                vk::AccessFlags2::SHADER_SAMPLED_READ,
             ),
             (vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL) => (
                 vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
@@ -8961,9 +8966,9 @@ fn transition_image_layout_levels(
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             ) => (
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
                 vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                vk::AccessFlags2::SHADER_READ,
+                vk::AccessFlags2::SHADER_SAMPLED_READ,
                 color_attachment_access,
             ),
             (
@@ -8971,9 +8976,9 @@ fn transition_image_layout_levels(
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             ) => (
                 vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
                 color_attachment_access,
-                vk::AccessFlags2::SHADER_READ,
+                vk::AccessFlags2::SHADER_SAMPLED_READ,
             ),
             // Storage images may stay in GENERAL between compute dispatches.
             // Transfers, attachments and future sampled consumers must observe

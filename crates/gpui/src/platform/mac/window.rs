@@ -465,6 +465,8 @@ struct MacWindowState {
     ui_frame_cadence: crate::platform::FrameCadence,
     renderer: renderer::Renderer,
     request_frame_callback: Option<crate::platform::frame::PlatformFrameRequestSender>,
+    #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+    animation_completion_sender: Option<crate::platform::frame::SceneAnimationCompletionSender>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>>,
     activate_callback: Option<Box<dyn FnMut(bool)>>,
     visibility_callback: Option<Box<dyn FnMut(WindowVisibility)>>,
@@ -546,8 +548,33 @@ impl MacWindowState {
         }
     }
 
+    fn needs_display_tick(&self) -> bool {
+        if self.pending_frame_request.requires_frame() {
+            return true;
+        }
+        #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+        {
+            self.renderer.has_active_presentation()
+        }
+        #[cfg(any(feature = "macos-blade", not(feature = "nova-gfx-metal")))]
+        {
+            false
+        }
+    }
+
+    #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+    fn publish_animation_completions(&self, completions: smallvec::SmallVec<[crate::SceneAnimationCompletion; 4]>) {
+        if let Some(sender) = &self.animation_completion_sender {
+            for completion in completions {
+                if sender.unbounded_send(completion).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
     fn start_display_link(&mut self) {
-        if !self.pending_frame_request.requires_frame()
+        if !self.needs_display_tick()
             || mac_window_visibility(self) != WindowVisibility::Visible
         {
             self.stop_display_link();
@@ -826,6 +853,8 @@ impl MacWindow {
                     false,
                 ),
                 request_frame_callback: None,
+                #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+                animation_completion_sender: None,
                 event_callback: None,
                 activate_callback: None,
                 visibility_callback: None,
@@ -1098,8 +1127,17 @@ impl Drop for MacWindow {
 
 impl PlatformWindow for MacWindow {
     fn owns_scene_animations(&self) -> bool {
-        // Native Metal currently receives UI-sampled animation values with each draw.
-        false
+        cfg!(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))
+    }
+
+    #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+    fn has_active_presentation_animations(&self) -> bool {
+        self.0.lock().renderer.has_active_presentation()
+    }
+
+    #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+    fn set_animation_completion_sender(&self, sender: crate::platform::frame::SceneAnimationCompletionSender) {
+        self.0.lock().animation_completion_sender = Some(sender);
     }
 
     fn bounds(&self) -> Bounds<Pixels> {
@@ -1584,7 +1622,10 @@ impl PlatformWindow for MacWindow {
     }
 
     fn set_frame_interval(&self, interval: Option<Duration>) {
-        self.0.lock().ui_frame_cadence.set_interval(interval);
+        let mut state = self.0.lock();
+        state.ui_frame_cadence.set_interval(interval);
+        #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+        state.renderer.set_frame_interval(interval);
     }
 
     fn native_frame_clock_interval(&self) -> Option<Duration> {
@@ -1713,6 +1754,12 @@ impl PlatformWindow for MacWindow {
             #[cfg(not(feature = "nova-gfx-metal"))]
             let submitted = this.renderer.draw(&packet.paint.scene);
             if submitted {
+                #[cfg(feature = "nova-gfx-metal")]
+                {
+                    let completions = this.renderer.take_animation_completions();
+                    this.publish_animation_completions(completions);
+                    this.start_display_link();
+                }
                 crate::PlatformFrameResult::Submitted
             } else {
                 this.pending_frame_request = this.pending_frame_request.merge(
@@ -2556,7 +2603,7 @@ extern "C" fn metal_display_link_update(this: &Object, _: Sel, link: id, update:
     if !lock.metal_display_link.as_ref().is_some_and(|source| source.0 == link) {
         return;
     }
-    if !lock.pending_frame_request.requires_frame()
+    if !lock.needs_display_tick()
         || mac_window_visibility(&lock) != WindowVisibility::Visible
     {
         lock.stop_display_link();
@@ -2575,10 +2622,23 @@ extern "C" fn metal_display_link_update(this: &Object, _: Sel, link: id, update:
     if drawable == nil {
         return;
     }
+    let drawable = unsafe { metal::MetalDrawableRef::from_ptr(drawable.cast()) }.to_owned();
+    #[cfg(feature = "nova-gfx-metal")]
+    if !lock.pending_frame_request.requires_frame() {
+        // A compositor-owned continuation does not need a Window/App borrow,
+        // layout, Scene rebuild or a second native frame request. UI-requested
+        // frames still use the normal callback and watchdog acknowledgements.
+        lock.renderer.set_frame_drawable(Some(drawable));
+        lock.ui_frame_cadence = cadence;
+        let completions = lock.renderer.present_active_frame(now);
+        lock.renderer.set_frame_drawable(None);
+        lock.publish_animation_completions(completions);
+        lock.start_display_link();
+        return;
+    }
     let Some(mut callback) = lock.inline_frame_callback.take() else {
         return;
     };
-    let drawable = unsafe { metal::MetalDrawableRef::from_ptr(drawable.cast()) }.to_owned();
     lock.renderer.set_frame_drawable(Some(drawable));
     lock.ui_frame_cadence = cadence;
     let request = std::mem::take(&mut lock.pending_frame_request);
@@ -2611,7 +2671,7 @@ unsafe extern "C" fn step(view: *mut c_void) {
         return;
     }
 
-    if !lock.pending_frame_request.requires_frame() {
+    if !lock.needs_display_tick() {
         lock.stop_display_link();
         return;
     }
@@ -2624,6 +2684,14 @@ unsafe extern "C" fn step(view: *mut c_void) {
             return;
         }
         let request = std::mem::take(&mut lock.pending_frame_request);
+        // CVDisplayLink can run away from AppKit's owner thread. Only wake
+        // the UI owner here, never call Nova or CoreAnimation presentation.
+        #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+        let request = if !request.requires_frame() {
+            PlatformFrameRequest::presentation()
+        } else {
+            request
+        };
         // Stop on the next idle callback; continuous animations avoid a CV stop/start
         // pair on every refresh.
         drop(lock);
