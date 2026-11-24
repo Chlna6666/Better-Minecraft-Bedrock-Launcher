@@ -44,22 +44,22 @@ fn cs_compact_indexed_draws(@builtin(workgroup_id) group: vec3<u32>,
     for (var i = 0u; i < local_count; i += 1u) {
         let argument = records[i];
         if (run.w == 2u) {
-            let target = (destination + i) * 8u;
-            output[target] = argument.base_vertex;
-            output[target + 1u] = argument.first_instance;
-            output[target + 2u] = argument.index_count;
-            output[target + 3u] = argument.instance_count;
-            output[target + 4u] = argument.first_index;
-            output[target + 5u] = 0u;
-            output[target + 6u] = 0u;
-            output[target + 7u] = 0u;
+            let output_slot = (destination + i) * 8u;
+            output[output_slot] = argument.base_vertex;
+            output[output_slot + 1u] = argument.first_instance;
+            output[output_slot + 2u] = argument.index_count;
+            output[output_slot + 3u] = argument.instance_count;
+            output[output_slot + 4u] = argument.first_index;
+            output[output_slot + 5u] = 0u;
+            output[output_slot + 6u] = 0u;
+            output[output_slot + 7u] = 0u;
         } else {
-            let target = (destination + i) * 5u;
-            output[target] = argument.index_count;
-            output[target + 1u] = argument.instance_count;
-            output[target + 2u] = argument.first_index;
-            output[target + 3u] = argument.base_vertex;
-            output[target + 4u] = argument.first_instance;
+            let output_slot = (destination + i) * 5u;
+            output[output_slot] = argument.index_count;
+            output[output_slot + 1u] = argument.instance_count;
+            output[output_slot + 2u] = argument.first_index;
+            output[output_slot + 3u] = argument.base_vertex;
+            output[output_slot + 4u] = argument.first_instance;
         }
     }
     if (lane == 63u) { counts[group.x] = prefix[lane]; }
