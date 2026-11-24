@@ -2718,6 +2718,40 @@ pub struct DrawIndexedIndirectCommand {
     pub scissor: Option<ScissorRect>,
 }
 
+/// GPU-written draw count for one indirect command in an offscreen pass.
+/// The argument buffer contains tightly packed 16-byte or 20-byte records.
+/// The GPU count is clamped to the supplied capacity without CPU readback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IndirectCountBinding {
+    /// Position of the indirect command within the pass.
+    pub command_index: usize,
+    /// Buffer with INDIRECT usage containing a GPU-written u32 count.
+    pub count_buffer: BufferId,
+    /// Four-byte aligned offset of the count.
+    pub count_offset: u64,
+    /// Maximum number of tightly packed argument records.
+    pub max_draw_count: u32,
+}
+
+impl IndirectCountBinding {
+    /// Validates the entire possible GPU-read range, not only its first record.
+    pub fn validate_ranges(
+        self, argument_offset: u64, argument_size: u64, count_size: u64,
+        record_size: u64, device_limit: u32,
+    ) -> Result<()> {
+        if self.max_draw_count == 0 || self.max_draw_count > device_limit
+            || self.count_offset % 4 != 0 || argument_offset % 4 != 0
+            || !matches!(record_size, 16 | 20)
+            || self.count_offset.checked_add(4).is_none_or(|end| end > count_size)
+            || argument_offset.checked_add(u64::from(self.max_draw_count) * record_size)
+                .is_none_or(|end| end > argument_size)
+        {
+            return Err(Error::InvalidInput("invalid counted indirect draw range or capacity".into()));
+        }
+        Ok(())
+    }
+}
+
 /// One recorded render command.
 ///
 /// Commands execute in recording order inside their render pass.

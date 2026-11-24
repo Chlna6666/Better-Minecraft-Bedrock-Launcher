@@ -1210,6 +1210,25 @@ pub trait PresentationDevice {
         ))
     }
 
+    /// Native GPU count-buffer draws without CPU count readback.
+    fn indirect_draw_count_limit(&self) -> Option<u32> {
+        None
+    }
+
+    /// Submit one ordered offscreen pass with GPU count bindings. Bindings
+    /// must be strictly ordered by command index and refer to indirect commands.
+    /// The producer must publish a dense argument array and count before this
+    /// pass; existing queue dependency and INDIRECT access rules still apply.
+    /// Unsupported devices fail closed rather than drawing an incorrect count.
+    fn render_to_texture_counted(
+        &mut self, pass: &RenderPassCommands<'_>, counts: &[crate::IndirectCountBinding],
+    ) -> Result<()> {
+        if counts.is_empty() {
+            return self.render_to_texture(pass);
+        }
+        Err(Error::Unavailable("GPU indirect count is unsupported by this backend".into()))
+    }
+
     /// Records ordered offscreen render passes.
     ///
     /// The default submits each pass separately and returns `None`. Backends may batch the

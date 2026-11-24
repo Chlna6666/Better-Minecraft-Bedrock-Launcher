@@ -150,6 +150,7 @@ pub struct VulkanDevice {
     native_pixel_presentation: Option<khr::get_surface_capabilities2::Instance>,
     memory_budget_supported: bool,
     host_query_reset: bool,
+    draw_indirect_count: bool,
     entry: Entry,
     instance: Instance,
     surface_loader: khr::surface::Instance,
@@ -404,6 +405,7 @@ impl VulkanDevice {
             display_timing_supported,
             present_wait_supported,
             host_query_reset,
+            draw_indirect_count,
         ) = match create_device(&instance, physical_device, queue_families, &entry) {
             Ok(result) => result,
             Err(error) => {
@@ -517,6 +519,7 @@ impl VulkanDevice {
             native_pixel_presentation,
             memory_budget_supported,
             host_query_reset,
+            draw_indirect_count,
             entry,
             instance,
             surface_loader,
@@ -2073,6 +2076,7 @@ impl VulkanDevice {
                 }
             };
             draw_steps.push(CommandDrawStepInfo {
+                count: None,
                 pipeline: pipeline_record.pipeline,
                 pipeline_layout: pipeline_record.pipeline_layout,
                 descriptor_sets: set_range,
@@ -2148,6 +2152,7 @@ impl VulkanDevice {
         viewport: Option<Viewport>,
         graph_write_hazard: bool,
         gpu_draw_tag: Option<gfx_core::GpuTimestampTag>,
+        counts: &[gfx_core::IndirectCountBinding],
     ) -> Result<()> {
         if color_views.is_empty() {
             return Err(Error::InvalidInput(
@@ -2295,7 +2300,11 @@ impl VulkanDevice {
         let mut draw_steps = Vec::with_capacity(steps.len());
         let mut descriptor_sets =
             Vec::with_capacity(steps.iter().map(|step| step.bind_groups().len()).sum());
-        for step in steps.iter() {
+        let mut counts = counts.iter().peekable();
+        for (command_index, step) in steps.iter().enumerate() {
+            let count = if counts.peek().is_some_and(|count| count.command_index == command_index) {
+                counts.next().copied()
+            } else { None };
             let scissor = match (viewport, step.scissor()) {
                 (Some(viewport), Some(scissor)) => {
                     Some(viewport.map_scissor(scissor, target_size)?)
@@ -2398,7 +2407,12 @@ impl VulkanDevice {
                     }
                 }
             };
+            let count = if let Some(count) = count {
+                let buffer = self.buffers.get(count.count_buffer)?;
+                Some((buffer.buffer, count.count_offset, count.max_draw_count))
+            } else { None };
             draw_steps.push(CommandDrawStepInfo {
+                count,
                 pipeline: pipeline_record.pipeline,
                 pipeline_layout: pipeline_record.pipeline_layout,
                 descriptor_sets: set_range,
@@ -2669,6 +2683,7 @@ impl VulkanDevice {
         passes: &[RenderPassCommands<'_>],
         tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
         independent: bool,
+        counts: &[gfx_core::IndirectCountBinding],
     ) -> Result<Option<SubmissionId>> {
         if tags.is_some_and(|t| t.len() != passes.len()) {
             return Err(Error::InvalidInput(
@@ -2739,6 +2754,7 @@ impl VulkanDevice {
                             )
                         })
                 }),
+                counts,
             );
             if let Err(error) = result {
                 self.destroy_temporary_command_encoder_now(encoder)?;
@@ -5617,8 +5633,44 @@ impl PresentationDevice for VulkanDevice {
         )
     }
 
+    fn indirect_draw_count_limit(&self) -> Option<u32> {
+        self.draw_indirect_count.then_some(self.max_draw_indirect_count)
+    }
+
+    fn render_to_texture_counted(
+        &mut self, pass: &RenderPassCommands<'_>, counts: &[gfx_core::IndirectCountBinding],
+    ) -> Result<()> {
+        if counts.is_empty() {
+            return self.render_to_texture(pass);
+        }
+        let limit = self.indirect_draw_count_limit().ok_or_else(|| {
+            Error::Unavailable("Vulkan drawIndirectCount is unavailable".into())
+        })?;
+        let mut previous = None;
+        for &count in counts {
+            if previous.is_some_and(|index| index >= count.command_index) {
+                return Err(Error::InvalidInput("indirect count bindings must be strictly ordered".into()));
+            }
+            previous = Some(count.command_index);
+            let (arguments, offset, stride) = match pass.commands.get(count.command_index) {
+                Some(RenderCommand::DrawIndirect(draw)) => (draw.arguments, draw.offset, 16),
+                Some(RenderCommand::DrawIndexedIndirect(draw)) => (draw.arguments, draw.offset, 20),
+                _ => return Err(Error::InvalidInput("count binding requires an indirect draw".into())),
+            };
+            let args = self.buffers.get(arguments)?;
+            let counter = self.buffers.get(count.count_buffer)?;
+            if !args.desc.usage.contains(BufferUsage::INDIRECT)
+                || !counter.desc.usage.contains(BufferUsage::INDIRECT)
+            {
+                return Err(Error::InvalidInput("counted draw buffers require INDIRECT usage".into()));
+            }
+            count.validate_ranges(offset, args.desc.size, counter.desc.size, stride, limit)?;
+        }
+        self.record_texture_passes(std::slice::from_ref(pass), None, false, counts).map(|_| ())
+    }
+
     fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
-        self.record_texture_passes(std::slice::from_ref(pass), None, false)
+        self.record_texture_passes(std::slice::from_ref(pass), None, false, &[])
             .map(|_| ())
     }
 
@@ -5626,7 +5678,7 @@ impl PresentationDevice for VulkanDevice {
         &mut self,
         passes: &[RenderPassCommands<'_>],
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes, None, false)?;
+        self.record_texture_passes(passes, None, false, &[])?;
         Ok(None)
     }
 
@@ -5636,7 +5688,7 @@ impl PresentationDevice for VulkanDevice {
         tags: &[Option<gfx_core::GpuTimestampTag>],
         _queue: gfx_core::OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes, Some(tags), false)
+        self.record_texture_passes(passes, Some(tags), false, &[])
     }
 
     fn independent_graphics_queue_available(&self) -> bool {
@@ -5649,7 +5701,7 @@ impl PresentationDevice for VulkanDevice {
         tags: &[Option<gfx_core::GpuTimestampTag>],
         _queue: gfx_core::OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>> {
-        self.record_texture_passes(passes, Some(tags), self.sidecar_queue.is_some())
+        self.record_texture_passes(passes, Some(tags), self.sidecar_queue.is_some(), &[])
     }
 }
 
@@ -6959,6 +7011,7 @@ fn create_device(
     bool,
     bool,
     bool,
+    bool,
 )> {
     let priorities = [1.0_f32, 0.75_f32];
     let single_priority = [1.0_f32];
@@ -7076,8 +7129,12 @@ fn create_device(
     // SAFETY: Vulkan 1.2 is core on the selected physical device.
     unsafe { instance.get_physical_device_features2(physical_device, &mut available) };
     let host_query_reset = available12.host_query_reset == vk::TRUE;
+    let draw_indirect_count = available12.draw_indirect_count == vk::TRUE
+        && supported_features.multi_draw_indirect == vk::TRUE
+        && supported_features.draw_indirect_first_instance == vk::TRUE;
     let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
-        .timeline_semaphore(true).host_query_reset(host_query_reset);
+        .timeline_semaphore(true).host_query_reset(host_query_reset)
+        .draw_indirect_count(draw_indirect_count);
     let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
         .synchronization2(true).dynamic_rendering(true);
     let mut present_id_features = vk::PhysicalDevicePresentIdFeaturesKHR::default();
@@ -7148,6 +7205,7 @@ fn create_device(
         display_timing_supported,
         present_wait_supported,
         host_query_reset,
+        draw_indirect_count,
     ))
 }
 
@@ -7782,6 +7840,7 @@ struct CommandRenderTargetTransition {
 }
 
 struct CommandDrawStepInfo {
+    count: Option<(vk::Buffer, u64, u32)>,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     descriptor_sets: std::ops::Range<usize>,
@@ -8199,6 +8258,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         let mut previous_pipeline = None;
         let mut previous_scissor = None;
         let mut previous_bindings = None;
+        let mut previous_index = None;
         let mut step_iter = info.steps.iter().peekable();
         while let Some(step) = step_iter.next() {
             let scissor = step
@@ -8232,6 +8292,13 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             previous_bindings = Some((step.pipeline_layout, sets));
             match step.draw {
                 CommandDrawStepKind::Indirect { buffer, offset } => {
+                    if let Some((count_buffer, count_offset, max_count)) = step.count {
+                        info.device.cmd_draw_indirect_count(
+                            info.command_buffer, buffer, offset, count_buffer, count_offset,
+                            max_count, 16,
+                        );
+                        continue;
+                    }
                     let mut draw_count = 1u32;
                     if info.multi_draw_indirect {
                         while draw_count < info.max_draw_indirect_count {
@@ -8243,7 +8310,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                             else {
                                 break;
                             };
-                            if next_buffer != buffer
+                            if next.count.is_some() || next_buffer != buffer
                                 || next.pipeline != step.pipeline
                                 || next.pipeline_layout != step.pipeline_layout
                                 || next.scissor != step.scissor
@@ -8291,12 +8358,10 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                     instance_count,
                     first_instance,
                 } => {
-                    info.device.cmd_bind_index_buffer(
-                        info.command_buffer,
-                        buffer,
-                        offset,
-                        index_type,
-                    );
+                    if previous_index != Some((buffer, offset, index_type)) {
+                        info.device.cmd_bind_index_buffer(info.command_buffer, buffer, offset, index_type);
+                        previous_index = Some((buffer, offset, index_type));
+                    }
                     info.device.cmd_draw_indexed(
                         info.command_buffer,
                         index_count,
@@ -8313,18 +8378,39 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                     index_offset,
                     index_type,
                 } => {
-                    info.device.cmd_bind_index_buffer(
-                        info.command_buffer,
-                        index_buffer,
-                        index_offset,
-                        index_type,
-                    );
+                    if previous_index != Some((index_buffer, index_offset, index_type)) {
+                        info.device.cmd_bind_index_buffer(info.command_buffer, index_buffer, index_offset, index_type);
+                        previous_index = Some((index_buffer, index_offset, index_type));
+                    }
+                    if let Some((count_buffer, count_offset, max_count)) = step.count {
+                        info.device.cmd_draw_indexed_indirect_count(
+                            info.command_buffer, buffer, offset, count_buffer, count_offset,
+                            max_count, 20,
+                        );
+                        continue;
+                    }
+                    let mut draw_count = 1u32;
+                    if info.multi_draw_indirect {
+                        while draw_count < info.max_draw_indirect_count {
+                            let Some(&next) = step_iter.peek() else { break };
+                            let CommandDrawStepKind::IndexedIndirect {
+                                buffer: next_buffer, offset: next_offset,
+                                index_buffer: next_index, index_offset: next_index_offset,
+                                index_type: next_index_type,
+                            } = next.draw else { break };
+                            if next.count.is_some() || next_buffer != buffer
+                                || next_index != index_buffer || next_index_offset != index_offset
+                                || next_index_type != index_type || next.pipeline != step.pipeline
+                                || next.pipeline_layout != step.pipeline_layout || next.scissor != step.scissor
+                                || &info.descriptor_sets[next.descriptor_sets.clone()] != sets
+                                || offset.checked_add(u64::from(draw_count) * 20) != Some(next_offset)
+                            { break; }
+                            step_iter.next();
+                            draw_count += 1;
+                        }
+                    }
                     info.device.cmd_draw_indexed_indirect(
-                        info.command_buffer,
-                        buffer,
-                        offset,
-                        1,
-                        20,
+                        info.command_buffer, buffer, offset, draw_count, 20,
                     );
                 }
             }
