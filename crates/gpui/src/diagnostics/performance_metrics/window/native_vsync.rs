@@ -9,14 +9,19 @@ pub struct VSyncMetricsSnapshot {
     /// Actual Wayland presentation feedback; independent of frame callback cadence.
     #[serde(default)]
     pub wayland_presented_count: u64,
+    /// Number of compositor-discarded Wayland presentation feedback objects.
     #[serde(default)]
     pub wayland_discarded_count: u64,
+    /// Clock ID announced by wp_presentation for the latest presented frame.
     #[serde(default)]
     pub wayland_clock_id: Option<u32>,
+    /// Latest compositor presentation timestamp in nanoseconds on that clock.
     #[serde(default)]
     pub wayland_last_presentation_ns: Option<u64>,
+    /// Latest reported refresh interval in nanoseconds; unavailable when unknown.
     #[serde(default)]
     pub wayland_last_refresh_ns: Option<u32>,
+    /// Latest compositor-reported presentation sequence.
     #[serde(default)]
     pub wayland_last_sequence: Option<u64>,
     /// VSync events delivered to this window, including events with no pending frame request.

@@ -67,6 +67,7 @@ pub enum WindowActivity {
 }
 
 impl WindowActivity {
+    /// Classifies native window state, with minimization and visibility taking precedence over focus.
     pub const fn from_native(active: bool, visibility: WindowVisibility, minimized: bool) -> Self {
         if minimized { Self::Minimized }
         else if !visibility.is_visible() { Self::Hidden }
