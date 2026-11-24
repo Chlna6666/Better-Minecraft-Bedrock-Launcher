@@ -6,6 +6,19 @@ use super::super::store::{WindowMetrics, shared_metrics};
 /// Native VSync cadence and active-presentation outcomes for one window.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VSyncMetricsSnapshot {
+    /// Actual Wayland presentation feedback; independent of frame callback cadence.
+    #[serde(default)]
+    pub wayland_presented_count: u64,
+    #[serde(default)]
+    pub wayland_discarded_count: u64,
+    #[serde(default)]
+    pub wayland_clock_id: Option<u32>,
+    #[serde(default)]
+    pub wayland_last_presentation_ns: Option<u64>,
+    #[serde(default)]
+    pub wayland_last_refresh_ns: Option<u32>,
+    #[serde(default)]
+    pub wayland_last_sequence: Option<u64>,
     /// VSync events delivered to this window, including events with no pending frame request.
     pub wake_count: usize,
     /// Delivered events without a valid DWM QPC refresh-period sample, including background cadence.
@@ -54,6 +67,12 @@ pub(super) fn snapshot(metrics: &WindowMetrics) -> VSyncMetricsSnapshot {
     let composition_period = metrics.dwm_composition_period_samples.percentiles();
 
     VSyncMetricsSnapshot {
+        wayland_presented_count: metrics.wayland_presented_count,
+        wayland_discarded_count: metrics.wayland_discarded_count,
+        wayland_clock_id: metrics.wayland_clock_id,
+        wayland_last_presentation_ns: metrics.wayland_last_presentation_ns,
+        wayland_last_refresh_ns: metrics.wayland_last_refresh_ns,
+        wayland_last_sequence: metrics.wayland_last_sequence,
         wake_count: metrics.native_vsync_wake_count as usize,
         fallback_wake_count: metrics.native_vsync_fallback_wake_count as usize,
         wake_interval_p50_micros: wake_interval.p50_micros as usize,
@@ -102,6 +121,29 @@ pub(crate) fn record_native_vsync_wake(
         }
         if let Some(period) = reported_composition_period {
             metrics.dwm_composition_period_samples.record(period);
+        }
+    }
+}
+
+#[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
+pub(crate) fn record_wayland_presentation_feedback(
+    window_id: u64,
+    clock_id: Option<u32>,
+    presented: bool,
+    timestamp_ns: Option<u64>,
+    refresh_ns: Option<u32>,
+    sequence: Option<u64>,
+) {
+    if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
+        let metrics = window_metrics.entry(window_id).or_default();
+        if presented {
+            metrics.wayland_presented_count = metrics.wayland_presented_count.saturating_add(1);
+            metrics.wayland_clock_id = clock_id;
+            metrics.wayland_last_presentation_ns = timestamp_ns;
+            metrics.wayland_last_refresh_ns = refresh_ns;
+            metrics.wayland_last_sequence = sequence;
+        } else {
+            metrics.wayland_discarded_count = metrics.wayland_discarded_count.saturating_add(1);
         }
     }
 }

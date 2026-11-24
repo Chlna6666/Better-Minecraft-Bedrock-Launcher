@@ -263,6 +263,11 @@ impl RenderOwner {
         })
     }
 
+    #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
+    pub(super) fn presentation_metrics_id(&self) -> u64 {
+        self.id
+    }
+
     fn enqueue(&self, command: Command) -> Result<()> {
         let id = self.id;
         let sender = self.sender.clone();

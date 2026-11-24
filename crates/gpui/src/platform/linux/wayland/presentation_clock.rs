@@ -17,9 +17,11 @@ use std::{
     thread::{self, JoinHandle},
 };
 use wayland_client::{
-    Connection, Dispatch, QueueHandle,
+    Connection, Dispatch, QueueHandle, globals::GlobalList,
     protocol::{wl_callback, wl_surface},
 };
+
+use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
 
 type Tick = Arc<dyn Fn() + Send + Sync>;
 
@@ -39,19 +41,25 @@ struct RequestState {
     visible: bool,
     requested: bool,
     generation: u64,
+    // Keep at most one outstanding feedback object per surface, independently of frame callbacks.
+    feedback_pending: Option<(u64, bool)>,
 }
 
 impl Signal {
     /// Issue the native request while holding the visibility/lifetime gate.
     /// close() cannot destroy the surface concurrently with this operation.
-    fn arm(&self, request: impl FnOnce(u64)) -> Option<u64> {
+    fn arm(&self, feedback_available: bool, request: impl FnOnce(u64, bool)) -> Option<u64> {
         let mut state = self.state.lock();
         if !state.visible || state.requested {
             return None;
         }
         state.generation = state.generation.wrapping_add(1);
         state.requested = true;
-        request(state.generation);
+        let feedback = feedback_available && state.feedback_pending.is_none();
+        if feedback {
+            state.feedback_pending = Some((state.generation, true));
+        }
+        request(state.generation, feedback);
         Some(state.generation)
     }
 
@@ -63,7 +71,21 @@ impl Signal {
         state.visible = visible;
         state.generation = state.generation.wrapping_add(1);
         state.requested = false;
+        if let Some((_, valid)) = state.feedback_pending.as_mut() {
+            *valid = false;
+        }
         visible
+    }
+
+    fn complete_feedback(&self, generation: u64) -> bool {
+        let mut state = self.state.lock();
+        match state.feedback_pending {
+            Some((pending, valid)) if pending == generation => {
+                state.feedback_pending = None;
+                valid && state.visible
+            }
+            _ => false,
+        }
     }
 
     #[cfg(test)]
@@ -85,11 +107,12 @@ impl Signal {
 pub(super) struct Clock {
     sender: channel::Sender<Command>,
     qh: QueueHandle<State>,
+    presentation: Option<wp_presentation::WpPresentation>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Clock {
-    pub(super) fn new(connection: Connection) -> Result<Arc<Self>> {
+    pub(super) fn new(connection: Connection, globals: &GlobalList) -> Result<Arc<Self>> {
         let (sender, receiver) = channel::channel();
         let (ready, initialized) = mpsc::sync_channel(1);
         let thread = thread::Builder::new()
@@ -103,9 +126,12 @@ impl Clock {
         let qh = initialized
             .recv()
             .context("Wayland presentation clock initialization stopped")??;
+        // Reuse the UI's existing registry; no additional roundtrip or event thread.
+        let presentation = globals.bind(&qh, 1..=1, ()).ok();
         Ok(Arc::new(Self {
             sender,
             qh,
+            presentation,
             thread: Mutex::new(Some(thread)),
         }))
     }
@@ -114,6 +140,7 @@ impl Clock {
         self: &Arc<Self>,
         surface: wl_surface::WlSurface,
         tick: Tick,
+        metrics_id: u64,
     ) -> Result<FrameClock> {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -125,6 +152,7 @@ impl Clock {
                 Entry {
                     signal: signal.clone(),
                     tick: tick.clone(),
+                    metrics_id,
                 },
                 reply,
             ))
@@ -145,6 +173,9 @@ impl Clock {
 
 impl Drop for Clock {
     fn drop(&mut self) {
+        if let Some(presentation) = self.presentation.take() {
+            presentation.destroy();
+        }
         if self.sender.send(Command::Shutdown).is_err() {
             log::trace!("Wayland presentation clock already stopped");
         }
@@ -171,12 +202,16 @@ impl FrameClock {
         let surface = self.surface.clone();
         let id = self.id;
         let signal = self.signal.clone();
+        let presentation = self.clock.presentation.clone();
         Arc::new(move || {
             // QueueHandle is thread-safe: the callback is still dispatched on
             // the dedicated event queue, but its request is sent by the GPU
             // owner itself, in order before the corresponding WSI commit.
-            let _ = signal.arm(|generation| {
+            let _ = signal.arm(presentation.is_some(), |generation, feedback| {
                 surface.frame(&qh, (id, generation));
+                if feedback && let Some(presentation) = &presentation {
+                    presentation.feedback(&surface, &qh, (id, generation));
+                }
             });
         })
     }
@@ -217,11 +252,13 @@ impl Drop for FrameClock {
 struct Entry {
     signal: Arc<Signal>,
     tick: Tick,
+    metrics_id: u64,
 }
 
 struct State {
     qh: QueueHandle<Self>,
     entries: HashMap<u64, Entry>,
+    presentation_clock_id: Option<u32>,
     closing: bool,
 }
 
@@ -265,6 +302,56 @@ impl Dispatch<wl_callback::WlCallback, (u64, u64)> for State {
     }
 }
 
+impl Dispatch<wp_presentation::WpPresentation, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &wp_presentation::WpPresentation,
+        event: wp_presentation::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wp_presentation::Event::ClockId { clk_id } = event {
+            state.presentation_clock_id = Some(clk_id);
+        }
+    }
+}
+
+impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, (u64, u64)> for State {
+    fn event(
+        state: &mut Self,
+        _: &wp_presentation_feedback::WpPresentationFeedback,
+        event: wp_presentation_feedback::Event,
+        &(id, generation): &(u64, u64),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use crate::diagnostics::performance_metrics::window::record_wayland_presentation_feedback;
+        use wp_presentation_feedback::Event;
+        let Some(entry) = state.entries.get(&id) else { return };
+        match event {
+            Event::Presented { tv_sec_hi, tv_sec_lo, tv_nsec, refresh, seq_hi, seq_lo, .. } => {
+                if entry.signal.complete_feedback(generation) {
+                    let seconds = (u64::from(tv_sec_hi) << 32) | u64::from(tv_sec_lo);
+                    let timestamp = seconds.checked_mul(1_000_000_000)
+                        .and_then(|value| value.checked_add(u64::from(tv_nsec)));
+                    let sequence = (u64::from(seq_hi) << 32) | u64::from(seq_lo);
+                    record_wayland_presentation_feedback(entry.metrics_id, state.presentation_clock_id,
+                        true, timestamp, (refresh != 0).then_some(refresh), Some(sequence));
+                }
+            }
+            Event::Discarded => {
+                if entry.signal.complete_feedback(generation) {
+                    record_wayland_presentation_feedback(entry.metrics_id, state.presentation_clock_id,
+                        false, None, None, None);
+                }
+            }
+            // SyncOutput is informational and must not consume the one-shot feedback.
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Signal;
@@ -272,32 +359,48 @@ mod tests {
     #[test]
     fn requests_coalesce_until_callback_completes() {
         let signal = Signal::default();
-        assert_eq!(signal.arm(|_| {}), None);
+        assert_eq!(signal.arm(false, |_, _| {}), None);
         assert!(signal.set_visible(true));
-        let generation = signal.arm(|_| {}).expect("visible request");
-        assert_eq!(signal.arm(|_| {}), None);
+        let generation = signal.arm(false, |_, _| {}).expect("visible request");
+        assert_eq!(signal.arm(false, |_, _| {}), None);
         assert!(signal.is_current(generation));
         assert!(signal.complete(generation));
         assert!(!signal.complete(generation));
-        let next = signal.arm(|_| {}).expect("next request");
+        let next = signal.arm(false, |_, _| {}).expect("next request");
         assert_ne!(next, generation);
         assert!(!signal.complete(generation));
         assert!(signal.complete(next));
     }
 
     #[test]
+    fn feedback_does_not_gate_frame_callbacks_or_survive_visibility_epoch() {
+        let signal = Signal::default();
+        signal.set_visible(true);
+        let first = signal.arm(true, |_, feedback| assert!(feedback)).unwrap();
+        assert!(signal.complete(first));
+        let next = signal.arm(true, |_, feedback| assert!(!feedback)).unwrap();
+        assert!(signal.complete(next));
+        signal.set_visible(false);
+        signal.set_visible(true);
+        assert!(!signal.complete_feedback(first));
+        let latest = signal.arm(true, |_, feedback| assert!(feedback)).unwrap();
+        assert!(!signal.complete_feedback(first));
+        assert!(signal.complete_feedback(latest));
+    }
+
+    #[test]
     fn restored_window_rejects_callback_from_before_hiding() {
         let signal = Signal::default();
         signal.set_visible(true);
-        let old = signal.arm(|_| {}).expect("initial request");
+        let old = signal.arm(false, |_, _| {}).expect("initial request");
         signal.set_visible(false);
         assert!(!signal.is_current(old));
-        assert_eq!(signal.arm(|_| {}), None);
+        assert_eq!(signal.arm(false, |_, _| {}), None);
         signal.set_visible(true);
-        let current = signal.arm(|_| {}).expect("restored request");
+        let current = signal.arm(false, |_, _| {}).expect("restored request");
         assert_ne!(old, current);
         assert!(!signal.complete(old));
-        assert_eq!(signal.arm(|_| {}), None);
+        assert_eq!(signal.arm(false, |_, _| {}), None);
         assert!(signal.complete(current));
     }
 }
@@ -329,6 +432,7 @@ fn run(
             State {
                 qh,
                 entries: HashMap::new(),
+                presentation_clock_id: None,
                 closing: false,
             },
         ))

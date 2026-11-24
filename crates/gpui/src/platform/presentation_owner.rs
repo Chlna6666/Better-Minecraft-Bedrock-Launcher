@@ -126,6 +126,11 @@ impl OwnedNovaRenderer {
         }
     }
 
+    #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
+    pub(crate) fn presentation_metrics_id(&self) -> u64 {
+        self.owner().presentation_metrics_id()
+    }
+
     pub(crate) fn presentation_tick_sender(&self) -> Arc<dyn Fn() + Send + Sync> {
         self.owner().presentation_tick_sender()
     }

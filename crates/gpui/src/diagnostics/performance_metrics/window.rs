@@ -13,6 +13,8 @@ pub(super) mod path_mask;
 pub use backend_ready::BackendReadyMetricsSnapshot;
 pub(crate) use backend_ready::record_backend_ready_wake;
 pub use native_vsync::VSyncMetricsSnapshot;
+#[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
+pub(crate) use native_vsync::record_wayland_presentation_feedback;
 pub(crate) use native_vsync::{
     record_present_attempt, record_present_preflight_deferred,
     record_active_presentation_retry, record_native_vsync_wake,

@@ -198,6 +198,7 @@ fn set_ime_cursor_rectangle_after_done(
 #[derive(Clone)]
 pub struct Globals {
     connection: Connection,
+    registry: Arc<GlobalList>,
     presentation_clock: Arc<OnceLock<Result<Arc<super::presentation_clock::Clock>, String>>>,
     pub qh: QueueHandle<WaylandClientStatePtr>,
     pub activation: Option<xdg_activation_v1::XdgActivationV1>,
@@ -270,6 +271,7 @@ impl Globals {
             text_input_manager: globals.bind(&qh, 1..=1, ()).ok(),
             executor,
             qh,
+            registry: Arc::new(globals),
         }
     }
 
@@ -278,7 +280,7 @@ impl Globals {
     ) -> anyhow::Result<Arc<super::presentation_clock::Clock>> {
         self.presentation_clock
             .get_or_init(|| {
-                super::presentation_clock::Clock::new(self.connection.clone())
+                super::presentation_clock::Clock::new(self.connection.clone(), &self.registry)
                     .map_err(|error| format!("{error:#}"))
             })
             .as_ref()

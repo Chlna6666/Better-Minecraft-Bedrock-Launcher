@@ -223,7 +223,7 @@ impl WaylandWindowState {
             .unwrap_or_default();
         let presentation_clock = globals
             .presentation_clock()?
-            .register(surface.clone(), renderer.presentation_tick_sender())?;
+            .register(surface.clone(), renderer.presentation_tick_sender(), renderer.presentation_metrics_id())?;
         renderer.set_presentation_clock(presentation_clock.request_callback());
         let client_frame = match (
             options.titlebar.as_ref(),
