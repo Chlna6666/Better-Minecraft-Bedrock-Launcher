@@ -191,8 +191,8 @@ fn build_index() -> Result<BlobIndex> {
                 let _prop = reader.u32()?;
                 let kind = reader.byte()?;
                 match kind {
-                    0 | 1 | 2 | 3 => { reader.take(4)?; }
-                    8 => { reader.u32()?; }
+                    0 | 1 | 2 | 8 => { reader.take(4)?; }  // Byte/Short/Int i32, String pool id
+                    3 => { reader.take(8)?; }             // Long is i64
                     other => return Err(BedrockWorldError::Validation(format!(
                         "runtime palette has unknown property type {other}"
                     ))),

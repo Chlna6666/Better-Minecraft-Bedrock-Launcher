@@ -68,6 +68,10 @@ def decode_baked_blob(path: Path) -> dict[str, list[tuple]]:
                 pos += 1
                 if kind == 8:
                     properties[prop] = ("String", pool[read_u32()])
+                elif kind == 3:  # NBT Long is i64
+                    value = struct.unpack_from("<q", body, pos)[0]
+                    pos += 8
+                    properties[prop] = ("Long", value)
                 else:
                     properties[prop] = (KIND_NAME[kind], read_i32())
             states.append((index, name, version, properties))
@@ -88,6 +92,28 @@ class NetworkNbtTests(unittest.TestCase):
         reader = VarintNBT(b"\x01\x00", 0)
         self.assertEqual(reader.payload(2), 1)
         self.assertEqual(reader.pos, 2)
+
+    def test_baked_blob_long_is_eight_bytes(self):
+        # Encoder writes Long as <q>; decoder must consume 8 bytes, not 4.
+        blob = bytearray()
+        blob += struct.pack("<I", 2)  # pool: "", "lit"
+        blob += struct.pack("<I", 0) + b""
+        blob += struct.pack("<I", 3) + b"lit"
+        blob += struct.pack("<I", 1)  # one version
+        blob += struct.pack("<I", 1)  # version id -> "lit"
+        blob += struct.pack("<I", 1)  # one state
+        blob += struct.pack("<I", 1) + struct.pack("<i", 123)  # name "lit", version
+        blob += struct.pack("<I", 1)  # one property
+        blob += struct.pack("<I", 1) + bytes([3]) + struct.pack("<q", -5)  # Long -5
+        path = Path(__file__).parent / "_tmp_long_test.bin.zst"
+        import zstandard
+        path.write_bytes(b"BMCBRP01" + struct.pack("<I", 0) + zstandard.ZstdCompressor().compress(bytes(blob)))
+        try:
+            decoded = decode_baked_blob(path)
+            states = decoded["lit"]
+            self.assertEqual(states[0][3], {"lit": ("Long", -5)})
+        finally:
+            path.unlink(missing_ok=True)
 
     def test_int_is_zigzag(self):
         self.assertEqual(zigzag(2), 1)
