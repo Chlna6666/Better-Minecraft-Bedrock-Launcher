@@ -790,6 +790,23 @@ impl PresentationDevice for Dx11Device {
         Ok(None)
     }
 
+    fn set_frame_latency_limit(&mut self, swapchain: SwapchainId, requested: u32) -> Result<Option<u32>> {
+        let chain = self.swapchains.get(swapchain)?;
+        let native = &chain.native;
+        // Use the actual native buffer count, not a requested configuration.
+        // The readiness handle remains owned by this unchanged swapchain.
+        let desc = unsafe { native.GetDesc1() }
+            .map_err(|error| Error::Backend(error.to_string()))?;
+        let limit = requested.clamp(1, desc.BufferCount.saturating_sub(1).max(1));
+        let current = unsafe { native.GetMaximumFrameLatency() }
+            .map_err(|error| Error::Backend(error.to_string()))?;
+        if current != limit {
+            unsafe { native.SetMaximumFrameLatency(limit) }
+                .map_err(|error| Error::Backend(error.to_string()))?;
+        }
+        Ok(Some(limit))
+    }
+
     fn request_frame_ready(
         &mut self,
         chain: SwapchainId,

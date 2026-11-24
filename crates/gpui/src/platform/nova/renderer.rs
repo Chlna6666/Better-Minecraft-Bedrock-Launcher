@@ -3,6 +3,7 @@ use crate::diagnostics::gpu_owner;
 use crate::platform::frame::ActivePresentationFrame;
 use smallvec::SmallVec;
 
+mod adaptive_pacing;
 mod buffer_capacity;
 mod buffer_upload;
 mod chunk_upload;
@@ -233,6 +234,7 @@ pub(crate) struct NovaRenderer {
     diagnostics: NovaRenderDiagnostics,
     submission_mode: GpuSubmissionMode,
     pending_submissions: Vec<PendingSubmission>,
+    adaptive_pacing: adaptive_pacing::AdaptivePacing,
     /// Native extension Compute/Transfer producers are NOT UI frame-slot
     /// submissions. Track their fences separately to avoid stalling Present
     /// and to prevent primary-queue completion from retiring async work.

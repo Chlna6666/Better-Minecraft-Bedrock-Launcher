@@ -315,6 +315,21 @@ impl NovaBackend {
         }
     }
 
+    pub(super) fn set_frame_latency_limit(
+        &mut self,
+        _swapchain: SwapchainId,
+        _limit: u32,
+    ) -> Result<Option<u32>> {
+        match self {
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => Ok(device.set_frame_latency_limit(_swapchain, _limit)?),
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(device) => Ok(device.set_frame_latency_limit(_swapchain, _limit)?),
+            #[allow(unreachable_patterns)]
+            _ => Ok(None),
+        }
+    }
+
     pub(super) fn presentation_feedback(
         &self,
         _swapchain: SwapchainId,

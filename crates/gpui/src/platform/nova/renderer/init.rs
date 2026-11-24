@@ -71,6 +71,10 @@ impl NovaRenderer {
         }
         initialization.map(|mut renderer| {
             renderer.diagnostics = NovaRenderDiagnostics::new(renderer_options.frame_metrics);
+            renderer.adaptive_pacing.set_enabled(
+                matches!(renderer_options.present_mode, PresentModePreference::AutoVsync)
+                    && submission_mode != GpuSubmissionMode::Synchronous,
+            );
             renderer
         })
     }

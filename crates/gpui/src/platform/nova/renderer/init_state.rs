@@ -113,6 +113,7 @@ impl NovaRenderer {
             diagnostics: NovaRenderDiagnostics::new(false),
             submission_mode,
             pending_submissions: Vec::new(),
+            adaptive_pacing: adaptive_pacing::AdaptivePacing::default(),
             auxiliary_submissions: Vec::new(),
             submission_retry_pending: false,
             metrics_started_at,

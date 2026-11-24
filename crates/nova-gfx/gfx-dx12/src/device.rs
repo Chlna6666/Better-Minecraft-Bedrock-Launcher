@@ -6399,6 +6399,22 @@ mod platform {
             true
         }
 
+        fn set_frame_latency_limit(&mut self, swapchain: SwapchainId, requested: u32) -> Result<Option<u32>> {
+            let chain = self.swapchains.get(swapchain)?;
+            if chain.frame_latency_waitable.is_none() {
+                return Ok(None);
+            }
+            let limit = requested.clamp(1, chain.image_count.saturating_sub(1).max(1));
+            let native = &chain.swapchain;
+            let current = unsafe { native.GetMaximumFrameLatency() }
+                .map_err(|error| Error::Backend(error.to_string()))?;
+            if current != limit {
+                unsafe { native.SetMaximumFrameLatency(limit) }
+                    .map_err(|error| Error::Backend(error.to_string()))?;
+            }
+            Ok(Some(limit))
+        }
+
         fn request_frame_ready(
             &mut self,
             swapchain: SwapchainId,

@@ -2133,12 +2133,28 @@ impl NovaRenderer {
             self.path_mask_residency.invalidate();
             return Ok(false);
         }
-        // Native display statistics are separate from host Present call timings.
-        // Query only when diagnostics are explicitly enabled; never wait for scanout.
-        if self.diagnostics.enabled {
-            if let Some(feedback) = lock_backend(&self.backend).presentation_feedback(self.swapchain) {
+        // Sample native feedback at a bounded cadence even without diagnostics.
+        // CPU Present duration is never substituted for GPU or compositor completion.
+        let sample_due = self.adaptive_pacing.presented(
+            Instant::now(),
+            pending_submission_count_before != 0,
+            self.live_resize_active,
+        );
+        if sample_due || self.diagnostics.enabled {
+            let feedback = lock_backend(&self.backend).presentation_feedback(self.swapchain);
+            if self.diagnostics.enabled && let Some(feedback) = feedback {
                 log::debug!(target: "gpui_present_feedback",
                     "window={:?} native_feedback={feedback:?}", packet.window_id);
+            }
+            if sample_due && let Some(limit) = self.adaptive_pacing.observe(feedback) {
+                // Native latency is a separate, optional actuator. GPU admission remains
+                // fence-safe even if a platform cannot adjust its display queue.
+                match lock_backend(&self.backend).set_frame_latency_limit(self.swapchain, limit as u32) {
+                    Ok(native_limit) => log::debug!(target: "gpui_present_feedback",
+                        "window={:?} gpu_frame_limit={} native_frame_limit={native_limit:?}", packet.window_id, limit),
+                    Err(error) => log::debug!(target: "gpui_present_feedback",
+                        "native frame latency adjustment failed: {error:#}"),
+                }
             }
         }
         // The backend's retained scene target now holds this frame: a later native

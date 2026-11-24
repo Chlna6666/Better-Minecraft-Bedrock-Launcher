@@ -1056,6 +1056,15 @@ pub trait PresentationDevice {
         None
     }
 
+    /// Adjusts the native presentation queue limit without recreating the swapchain.
+    /// Returns the applied limit, or None if unsupported. Distinct from GPU resource slots.
+    /// Call on the device owner between frames. Never replace the native readiness handle.
+    /// # Errors
+    /// Returns a native error or an invalid swapchain error.
+    fn set_frame_latency_limit(&mut self, _swapchain: SwapchainId, _requested: u32) -> Result<Option<u32>> {
+        Ok(None)
+    }
+
     /// Registers a one-shot notification that this swapchain can accept a frame.
     ///
     /// `Ok(true)` means registration was accepted. The callback may run before this

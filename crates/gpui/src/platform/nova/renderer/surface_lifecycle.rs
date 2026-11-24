@@ -420,6 +420,7 @@ impl NovaRenderer {
         self.invalidate_backdrop_blur_cache();
         self.activate_frame_resources(self.current_frame_resource_index)?;
         self.surface_config = surface_config;
+        self.adaptive_pacing.surface_changed();
         self.current_size = next_size;
         self.surface_extent = next_size;
         // The scene target was reallocated for this resize: no retained frame may be
@@ -842,6 +843,7 @@ impl NovaRenderer {
         self.swapchain_warmup_frames = SWAPCHAIN_WARMUP_FRAME_COUNT;
         self.activate_frame_resources(self.current_frame_resource_index)?;
         self.surface_alpha = alpha;
+        self.adaptive_pacing.surface_changed();
         Ok(())
     }
 

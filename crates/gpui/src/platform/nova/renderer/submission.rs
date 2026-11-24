@@ -29,8 +29,8 @@ fn extension_ranges_can_be_reclaimed(pending_before: usize, pending_after: usize
     pending_before > 0 && pending_after == 0
 }
 
-fn should_poll_full_queue_before_pack(mode: GpuSubmissionMode, pending: usize) -> bool {
-    mode != GpuSubmissionMode::Synchronous && pending >= MAX_IN_FLIGHT_SUBMISSIONS
+fn should_poll_full_queue_before_pack(mode: GpuSubmissionMode, pending: usize, limit: usize) -> bool {
+    mode != GpuSubmissionMode::Synchronous && pending >= limit
 }
 
 fn submit_presentation_buffers(
@@ -98,11 +98,15 @@ impl NovaRenderer {
         if !should_poll_full_queue_before_pack(
             self.presentation_submission_mode(),
             self.pending_submissions.len(),
+            self.adaptive_pacing.limit(),
         ) {
             return Ok(false);
         }
         self.poll_pending_submissions()?;
-        self.submission_retry_pending = self.pending_submissions.len() >= MAX_IN_FLIGHT_SUBMISSIONS;
+        self.submission_retry_pending = self.pending_submissions.len() >= self.adaptive_pacing.limit();
+        if self.submission_retry_pending {
+            self.adaptive_pacing.mark_gpu_pressure();
+        }
         Ok(self.submission_retry_pending)
     }
 
@@ -134,7 +138,11 @@ impl NovaRenderer {
             } else {
                 false
             };
-        self.submission_retry_pending = self.pending_submissions.len() >= MAX_IN_FLIGHT_SUBMISSIONS
+        let queue_full = self.pending_submissions.len() >= self.adaptive_pacing.limit();
+        if queue_full {
+            self.adaptive_pacing.mark_gpu_pressure();
+        }
+        self.submission_retry_pending = queue_full
             || self.next_available_frame_resource_index().is_err()
             || atlas_retirement
             // Filter topology changes use fresh Texture/View/BindGroup IDs
@@ -186,7 +194,7 @@ impl NovaRenderer {
             return Ok(());
         }
         self.poll_pending_submissions()?;
-        if self.pending_submissions.len() >= MAX_IN_FLIGHT_SUBMISSIONS {
+        if self.pending_submissions.len() >= self.adaptive_pacing.limit() {
             anyhow::bail!("nova submission preflight must reserve a fence-safe frame slot");
         }
         let frame_resource_index = self.next_available_frame_resource_index()?;
@@ -639,13 +647,16 @@ mod resource_fence_recovery_tests {
         assert!(!should_poll_full_queue_before_pack(
             GpuSubmissionMode::Deferred,
             MAX_IN_FLIGHT_SUBMISSIONS - 1,
+            MAX_IN_FLIGHT_SUBMISSIONS,
         ));
         assert!(should_poll_full_queue_before_pack(
             GpuSubmissionMode::Deferred,
             MAX_IN_FLIGHT_SUBMISSIONS,
+            MAX_IN_FLIGHT_SUBMISSIONS,
         ));
         assert!(!should_poll_full_queue_before_pack(
             GpuSubmissionMode::Synchronous,
+            MAX_IN_FLIGHT_SUBMISSIONS,
             MAX_IN_FLIGHT_SUBMISSIONS,
         ));
     }
