@@ -37,7 +37,16 @@ fn cs_compact_draws(@builtin(workgroup_id) group: vec3<u32>,
     }
     let destination = run.z + prefix[lane] - local_count;
     for (var i = 0u; i < local_count; i += 1u) {
-        output[destination + i] = records[i];
+        let argument = records[i];
+        if (run.w == 2u) {
+            // Naga DX12 root constants followed by DRAW_ARGUMENTS and padding.
+            // Match native_indirect_pack.wgsl without another dispatch.
+            let target = (destination + i) * 2u;
+            output[target] = vec4<u32>(argument.z, argument.w, argument.x, argument.y);
+            output[target + 1u] = vec4<u32>(0u);
+        } else {
+            output[destination + i] = argument;
+        }
     }
     if (lane == 63u) { counts[group.x] = prefix[lane]; }
 }

@@ -2679,7 +2679,11 @@ mod platform {
             passes: &[RenderPassCommands<'_>],
             tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
             independent: bool,
+            counts: &[&[gfx_core::IndirectCountBinding]],
         ) -> Result<Option<SubmissionId>> {
+            if !counts.is_empty() && counts.len() != passes.len() {
+                return Err(Error::InvalidInput("DX12 count table length mismatch".into()));
+            }
             if tags.is_some_and(|t| t.len() != passes.len()) {
                 return Err(Error::InvalidInput(
                     "offscreen GPU tag count mismatch".into(),
@@ -2733,6 +2737,7 @@ mod platform {
                                         )
                                     })
                             }),
+                            counts.get(index).copied().unwrap_or(&[]),
                         )?;
                     }
                     Ok(())
@@ -3883,7 +3888,7 @@ mod platform {
                 command_list.IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
             }
             let record_started = recording::start();
-            let staged = self.stage_indirect(encoder_id, &command_list, steps)?;
+            let staged = self.stage_indirect(encoder_id, &command_list, steps, &[])?;
             let staging_ms =
                 record_started.map_or(0., |start| start.elapsed().as_secs_f64() * 1000.);
             let mut binding_state = bindings::State::default();
@@ -4097,6 +4102,7 @@ mod platform {
             clear_region: Option<ScissorRect>,
             viewport: Option<gfx_core::Viewport>,
             gpu_draw_tag: Option<gfx_core::GpuTimestampTag>,
+            counts: &[gfx_core::IndirectCountBinding],
         ) -> Result<()> {
             self.command_encoders.get_mut(encoder_id)?.swapchain = None;
             // Empty render-step lists are valid for attachment clears. Do not
@@ -4302,7 +4308,22 @@ mod platform {
                 }
             }
             let record_started = recording::start();
-            let staged = self.stage_indirect(encoder_id, &command_list, steps)?;
+            let staged = self.stage_indirect(encoder_id, &command_list, steps, counts)?;
+            // Transition native packed arguments and GPU count words before the
+            // draw loop. The encoder records original states for failure rollback.
+            for count in counts {
+                let RenderCommand::DrawIndirect(draw) = &steps[count.command_index] else { unreachable!() };
+                for id in [draw.arguments, count.count_buffer] {
+                    let buffer = self.buffers.get(id)?;
+                    let state = buffer.state;
+                    if state != D3D12_RESOURCE_STATE_GENERIC_READ {
+                        let resource = buffer.resource.as_ref().ok_or_else(|| Error::Backend("missing counted argument resource".into()))?.clone();
+                        self.command_encoders.get_mut(encoder_id)?.buffer_states.entry(id).or_insert(state);
+                        record_transition_barrier(&command_list, &resource, state, D3D12_RESOURCE_STATE_GENERIC_READ);
+                        self.buffers.get_mut(id)?.state = D3D12_RESOURCE_STATE_GENERIC_READ;
+                    }
+                }
+            }
             // GPU argument packing and color/depth clears are outside the query window.
             let gpu_draw_query =
                 if let (Some(tag), Some(_)) = (gpu_draw_tag, self.timestamp_frequency) {
@@ -4323,10 +4344,12 @@ mod platform {
                 record_started.map_or(0., |start| start.elapsed().as_secs_f64() * 1000.);
             let mut binding_state = bindings::State::default();
             let mut indirect_count = 0;
-            let mut step_iter = steps.iter().peekable();
-            while let Some(step) = step_iter.next() {
+            let mut step_iter = steps.iter().enumerate().peekable();
+            while let Some((command_index, step)) = step_iter.next() {
+                let count = counts.binary_search_by_key(&command_index, |count| count.command_index)
+                    .ok().map(|index| counts[index]);
                 let indirect_index = indirect_count;
-                if matches!(step, RenderCommand::DrawIndirect(_)) {
+                if count.is_none() && matches!(step, RenderCommand::DrawIndirect(_)) {
                     indirect_count += 1;
                 }
 
@@ -4403,13 +4426,28 @@ mod platform {
                     step.bind_groups(),
                     &mut binding_state,
                 )?;
-                if matches!(step, RenderCommand::DrawIndirect(_)) {
+                if let Some(count) = count {
+                    let RenderCommand::DrawIndirect(draw) = step else { unreachable!() };
+                    let signature = self.render_pipelines.get(draw.pipeline)?.indirect_signature.as_ref()
+                        .ok_or_else(|| Error::Backend("missing DX12 native count signature".into()))?;
+                    let arguments = self.buffers.get(draw.arguments)?.resource.as_ref()
+                        .ok_or_else(|| Error::Backend("missing DX12 counted arguments".into()))?;
+                    let counter = self.buffers.get(count.count_buffer)?.resource.as_ref()
+                        .ok_or_else(|| Error::Backend("missing DX12 count buffer".into()))?;
+                    // SAFETY: Full native 32-byte range and count word were
+                    // validated before recording; resources are in GENERIC_READ.
+                    unsafe {
+                        command_list.ExecuteIndirect(signature, count.max_draw_count,
+                            arguments, draw.offset, Some(counter), count.count_offset);
+                    }
+                } else if matches!(step, RenderCommand::DrawIndirect(_)) {
                     // All indirect records were staged into adjacent native 32-byte
                     // arguments. Only consecutive draws with identical pipeline,
                     // bind groups and scissor can share one ExecuteIndirect call.
                     let mut run_count = 1usize;
-                    while let Some(&next) = step_iter.peek() {
-                        if !matches!(next, RenderCommand::DrawIndirect(_))
+                    while let Some(&(next_index, next)) = step_iter.peek() {
+                        if counts.binary_search_by_key(&next_index, |count| count.command_index).is_ok()
+                            || !matches!(next, RenderCommand::DrawIndirect(_))
                             || next.pipeline() != step.pipeline()
                             || next.bind_groups() != step.bind_groups()
                             || next.scissor() != step.scissor()
@@ -6553,8 +6591,55 @@ mod platform {
             }))
         }
 
+        fn indirect_draw_count_limit(&self) -> Option<u32> {
+            Some(u32::MAX)
+        }
+
+        fn render_to_texture_counted(
+            &mut self, pass: &RenderPassCommands<'_>, counts: &[gfx_core::IndirectCountBinding],
+        ) -> Result<()> {
+            self.render_to_texture_counted_profiled(pass, counts, None)
+        }
+
+        fn render_to_texture_counted_profiled(
+            &mut self, pass: &RenderPassCommands<'_>, counts: &[gfx_core::IndirectCountBinding],
+            tag: Option<gfx_core::GpuTimestampTag>,
+        ) -> Result<()> {
+            self.render_to_textures_counted_profiled(
+                std::slice::from_ref(pass), std::slice::from_ref(&counts), std::slice::from_ref(&tag),
+            ).map(|_| ())
+        }
+
+        fn render_to_textures_counted_profiled(
+            &mut self, passes: &[RenderPassCommands<'_>], counts: &[&[gfx_core::IndirectCountBinding]],
+            tags: &[Option<gfx_core::GpuTimestampTag>],
+        ) -> Result<Option<SubmissionId>> {
+            if passes.len() != counts.len() || passes.len() != tags.len() {
+                return Err(Error::InvalidInput("DX12 counted pass metadata length mismatch".into()));
+            }
+            for (pass, &table) in passes.iter().zip(counts) {
+                let mut previous = None;
+                for &count in table {
+                    if previous.is_some_and(|index| index >= count.command_index) {
+                        return Err(Error::InvalidInput("DX12 count bindings must be strictly ordered".into()));
+                    }
+                    previous = Some(count.command_index);
+                    let Some(RenderCommand::DrawIndirect(draw)) = pass.commands.get(count.command_index) else {
+                        return Err(Error::Unavailable("DX12 counted drawing requires native non-indexed arguments".into()));
+                    };
+                    let args = self.buffers.get(draw.arguments)?;
+                    let counter = self.buffers.get(count.count_buffer)?;
+                    if !args.desc.usage.contains(BufferUsage::INDIRECT) || !counter.desc.usage.contains(BufferUsage::INDIRECT) {
+                        return Err(Error::InvalidInput("DX12 counted buffers require INDIRECT usage".into()));
+                    }
+                    count.validate_ranges(draw.offset, args.desc.size, counter.desc.size, 32, u32::MAX)?;
+                }
+            }
+            self.record_texture_passes(passes, Some(tags), false, counts)
+        }
+
         fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
-            self.record_texture_passes(std::slice::from_ref(pass), None, false)
+            self.record_texture_passes(std::slice::from_ref(pass), None, false, &[])
                 .map(|_| ())
         }
 
@@ -6562,7 +6647,7 @@ mod platform {
             &mut self,
             passes: &[RenderPassCommands<'_>],
         ) -> Result<Option<SubmissionId>> {
-            self.record_texture_passes(passes, None, false)
+            self.record_texture_passes(passes, None, false, &[])
         }
 
         fn render_to_textures_on_queue(
@@ -6571,7 +6656,7 @@ mod platform {
             tags: &[Option<gfx_core::GpuTimestampTag>],
             _queue: gfx_core::OffscreenQueuePreference,
         ) -> Result<Option<SubmissionId>> {
-            self.record_texture_passes(passes, Some(tags), false)
+            self.record_texture_passes(passes, Some(tags), false, &[])
         }
 
         fn independent_graphics_queue_available(&self) -> bool {
@@ -6588,6 +6673,7 @@ mod platform {
                 passes,
                 Some(tags),
                 self.independent_graphics_queue_available(),
+                &[],
             )
         }
     }

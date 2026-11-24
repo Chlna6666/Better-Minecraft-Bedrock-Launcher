@@ -204,6 +204,7 @@ struct ViewCompactor {
 
 pub(super) struct Compactor {
     shader: ShaderModuleId,
+    argument_stride: u32,
     views: HashMap<SceneViewId, ViewCompactor>,
     probes: HashMap<u64, SceneViewId>,
 }
@@ -217,8 +218,12 @@ struct Decision {
 impl Compactor {
     pub(super) fn new(device: &mut dyn ExtensionDevice, context: &RendererExtensionContext) -> Option<Self> {
         // Unvalidated driver cost: preserve default behavior until benchmarked.
-        if context.backend_kind() != BackendKind::Vulkan
-            || std::env::var_os("GPUI_3D_DRAW_COMPACTION").as_deref() != Some(std::ffi::OsStr::new("1"))
+        let argument_stride = match context.backend_kind() {
+            BackendKind::Vulkan => 16,
+            BackendKind::Dx12 => 32,
+            _ => return None,
+        };
+        if std::env::var_os("GPUI_3D_DRAW_COMPACTION").as_deref() != Some(std::ffi::OsStr::new("1"))
             || device.counted_offscreen_limit().is_none()
             || !device.gpu_work_timestamps_supported()
         { return None; }
@@ -230,7 +235,7 @@ impl Compactor {
             .ok().and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d draw compaction".into()), binary,
             }).ok())?;
-        Some(Self { shader, views: HashMap::new(), probes: HashMap::new() })
+        Some(Self { shader, argument_stride, views: HashMap::new(), probes: HashMap::new() })
     }
 
     pub(super) fn submit_batch(
@@ -253,7 +258,7 @@ impl Compactor {
             }
             let view = self.views.entry(id).or_default();
             let previous_probe = view.pending_id();
-            let decision = view.schedule(device, self.shader, pass)?;
+            let decision = view.schedule(device, self.shader, self.argument_stride, pass)?;
             let next_probe = view.pending_id();
             if previous_probe != next_probe {
                 if let Some(old) = previous_probe { self.probes.remove(&old); }
@@ -352,9 +357,10 @@ impl ViewCompactor {
         Ok(buffers)
     }
 
-    fn prepare(&mut self, device: &mut dyn ExtensionDevice, pass: &NativeOffscreenPass) -> Result<Option<Prepared>> {
+    fn prepare(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, pass: &NativeOffscreenPass) -> Result<Option<Prepared>> {
         // Vulkan's native DrawIndirect query currently measures indirect-only passes.
-        if !pass.commands.iter().all(|command| matches!(command, RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_))) {
+        if !pass.commands.iter().all(|command| matches!(command, RenderCommand::DrawIndirect(_))
+            || (argument_stride == 16 && matches!(command, RenderCommand::DrawIndexedIndirect(_)))) {
             return Ok(None);
         }
         let Some(limit) = device.counted_offscreen_limit() else { return Ok(None); };
@@ -365,7 +371,7 @@ impl ViewCompactor {
             .ok_or_else(|| Error::InvalidInput("compaction metadata header overflow".into()))?;
         let total_words = header_words.checked_add(plan.records)
             .ok_or_else(|| Error::InvalidInput("compaction metadata size overflow".into()))?;
-        let sizes = [u64::from(total_words) * 4, u64::from(plan.records) * 16, u64::from(group_count) * 4];
+        let sizes = [u64::from(total_words) * 4, u64::from(plan.records) * u64::from(argument_stride), u64::from(group_count) * 4];
         let limits = device.buffer_binding_limits();
         if limits.validate_range(0, plan.source_bytes, false).is_err()
             || sizes.iter().any(|&size| limits.validate_range(0, size, false).is_err())
@@ -373,7 +379,7 @@ impl ViewCompactor {
         let [metadata, output, counts] = self.reserve(device, sizes)?;
         let mut bytes = Vec::with_capacity(total_words as usize * 4);
         for run in &plan.runs {
-            for word in [header_words + run.source, run.count, run.destination, 0] {
+            for word in [header_words + run.source, run.count, run.destination, argument_stride / 16] {
                 bytes.extend_from_slice(&word.to_le_bytes());
             }
         }
@@ -397,10 +403,10 @@ impl ViewCompactor {
             commands.extend_from_slice(&pass.commands[cursor..run.command]);
             let RenderCommand::DrawIndirect(mut draw) = pass.commands[run.command].clone() else { unreachable!() };
             draw.arguments = output;
-            draw.offset = u64::from(run.destination) * 16;
+            draw.offset = u64::from(run.destination) * u64::from(argument_stride);
             bindings.push(IndirectCountBinding {
                 command_index: commands.len(), count_buffer: counts,
-                count_offset: index as u64 * 4, max_draw_count: run.count,
+                count_offset: index as u64 * 4, max_draw_count: run.count, argument_stride,
             });
             commands.push(RenderCommand::DrawIndirect(draw));
             cursor = run.command + run.count as usize;
@@ -409,12 +415,12 @@ impl ViewCompactor {
         Ok(Some(Prepared { commands, counts: bindings, compute, groups: group_count }))
     }
 
-    fn schedule(&mut self, device: &mut dyn ExtensionDevice, shader: ShaderModuleId, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
+    fn schedule(&mut self, device: &mut dyn ExtensionDevice, shader: ShaderModuleId, argument_stride: u32, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
         if !self.cached.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.source, &pass.commands)) {
             // Invalidate before preparing: a failed allocation or upload may
             // have replaced scratch storage referenced by the previous plan.
             self.cached = None;
-            let prepared = self.prepare(device, pass)?;
+            let prepared = self.prepare(device, argument_stride, pass)?;
             self.cached = Some(Cached { source: Arc::clone(&pass.commands), prepared, cost: CostModel::default() });
         }
         let Some(cached) = self.cached.as_mut() else { return Ok(None); };

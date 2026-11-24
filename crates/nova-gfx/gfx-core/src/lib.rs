@@ -2719,7 +2719,9 @@ pub struct DrawIndexedIndirectCommand {
 }
 
 /// GPU-written draw count for one indirect command in an offscreen pass.
-/// The argument buffer contains tightly packed 16-byte or 20-byte records.
+/// The argument buffer uses the explicitly declared record stride: portable
+/// 16-byte draws, 20-byte indexed draws, or DX12's native 32-byte root-constant
+/// draw records. Backends reject formats they do not implement.
 /// The GPU count is clamped to the supplied capacity without CPU readback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IndirectCountBinding {
@@ -2731,6 +2733,9 @@ pub struct IndirectCountBinding {
     pub count_offset: u64,
     /// Maximum number of tightly packed argument records.
     pub max_draw_count: u32,
+    /// Bytes per argument record. 32 denotes DX12 native non-indexed
+    /// [first_vertex, first_instance, vertex_count, instance_count, 0, 0, 0, 0].
+    pub argument_stride: u32,
 }
 
 impl IndirectCountBinding {
@@ -2741,7 +2746,8 @@ impl IndirectCountBinding {
     ) -> Result<()> {
         if self.max_draw_count == 0 || self.max_draw_count > device_limit
             || self.count_offset % 4 != 0 || argument_offset % 4 != 0
-            || !matches!(record_size, 16 | 20)
+            || u64::from(self.argument_stride) != record_size
+            || !matches!(record_size, 16 | 20 | 32)
             || self.count_offset.checked_add(4).is_none_or(|end| end > count_size)
             || argument_offset.checked_add(u64::from(self.max_draw_count) * record_size)
                 .is_none_or(|end| end > argument_size)
@@ -2760,9 +2766,13 @@ mod indirect_count_range_tests {
     fn counted_draw_validates_full_capacity_and_overflow() {
         let count = IndirectCountBinding {
             command_index: 0, count_buffer: BufferId::from_parts(1, 1),
-            count_offset: 4, max_draw_count: 4,
+            count_offset: 4, max_draw_count: 4, argument_stride: 16,
         };
         assert!(count.validate_ranges(16, 80, 8, 16, 4).is_ok());
+        assert!(count.validate_ranges(16, 144, 8, 32, 4).is_err());
+        let native = IndirectCountBinding { argument_stride: 32, ..count };
+        assert!(native.validate_ranges(16, 144, 8, 32, 4).is_ok());
+        assert!(native.validate_ranges(16, 143, 8, 32, 4).is_err());
         assert!(count.validate_ranges(16, 79, 8, 16, 4).is_err());
         assert!(count.validate_ranges(16, 80, 7, 16, 4).is_err());
         assert!(count.validate_ranges(16, 80, 8, 16, 3).is_err());

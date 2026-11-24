@@ -1033,13 +1033,19 @@ impl Dx12Device {
         encoder: CommandEncoderId,
         command: &ID3D12GraphicsCommandList,
         steps: &[RenderCommand],
+        counts: &[gfx_core::IndirectCountBinding],
     ) -> Result<Option<usize>> {
+        let portable_steps = || steps.iter().enumerate().filter_map(|(index, step)| {
+            if counts.binary_search_by_key(&index, |count| count.command_index).is_ok() {
+                None
+            } else { Some(step) }
+        });
         // A large generated Section scene can have tens of thousands of
         // indirect draws. Count and validate in the SAME pass rather than
         // scanning the entire command table twice before the actual GPU
         // packing pass. Keep validation before acquiring transient storage.
         let mut count = 0usize;
-        for step in steps {
+        for step in portable_steps() {
             if let RenderCommand::DrawIndirect(draw) = step {
                 let buffer = self.buffers.get(draw.arguments)?;
                 if !buffer.desc.usage.contains(BufferUsage::INDIRECT)
@@ -1082,7 +1088,7 @@ impl Dx12Device {
         // One compute dispatch per contiguous source span, not three
         // CopyBufferRegion commands per DrawIndirect.
         let mut pending: Option<(BufferId, ID3D12Resource, u64, usize, u32)> = None;
-        for step in steps {
+        for step in portable_steps() {
             let RenderCommand::DrawIndirect(draw) = step else {
                 continue;
             };
