@@ -702,7 +702,7 @@ impl SubmissionDevice for Dx11Device {
         if status != SubmissionStatus::Complete {
             return Ok((status, None));
         }
-        let sample = self.completed_frame_probes.iter().position(|(id, _)| *id == id.index())
+        let sample = self.completed_frame_probes.iter().position(|(serial, _)| *serial == id.index())
             .and_then(|index| self.completed_frame_probes.remove(index)).map(|(_, sample)| sample);
         Ok((status, sample))
     }

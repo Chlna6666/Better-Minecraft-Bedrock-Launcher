@@ -1,5 +1,88 @@
 //! Optional retained-capacity one-to-one presentation; unsupported surfaces keep exact-size swapchains.
 use super::*;
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{Mutex, PoisonError, mpsc},
+    thread::{self, JoinHandle},
+};
+
+type PresentCallback = Box<dyn FnOnce() + Send + 'static>;
+type PendingPresent = Arc<Mutex<Option<(u64, PresentCallback)>>>;
+
+// A finite native wait keeps shutdown/recreation bounded by the driver's
+// timeout granularity even if a hidden surface stops delivering presents.
+const PRESENT_WAKE_TIMEOUT_NS: u64 = 32_000_000;
+
+/// One sleeping worker per swapchain, started only when WSI backpressure
+/// actually needs a wake. It never submits GPU work or changes present credit.
+pub(super) struct PresentWake {
+    sender: Option<mpsc::Sender<u64>>,
+    thread: Option<JoinHandle<()>>,
+    pending: PendingPresent,
+}
+
+impl PresentWake {
+    pub(super) fn new(
+        loader: khr::present_wait::Device,
+        swapchain: vk::SwapchainKHR,
+    ) -> Result<Self> {
+        let (sender, receiver) = mpsc::channel::<u64>();
+        let pending: PendingPresent = Arc::new(Mutex::new(None));
+        let worker_pending = pending.clone();
+        let thread = thread::Builder::new()
+            .name("nova-vulkan-present".into())
+            .spawn(move || {
+                while let Ok(target) = receiver.recv() {
+                    // SAFETY: VK_KHR_present_wait permits concurrent use
+                    // except destruction. The owner joins this worker before
+                    // retiring (oldSwapchain) or destroying the swapchain.
+                    let _ = unsafe {
+                        loader.wait_for_present(swapchain, target, PRESENT_WAKE_TIMEOUT_NS)
+                    };
+                    let callback = {
+                        let mut pending = worker_pending.lock().unwrap_or_else(PoisonError::into_inner);
+                        pending.take().map(|(_, callback)| callback)
+                    };
+                    // A timeout/error is only a hint; the owner polls the
+                    // real status and handles suspension or device loss.
+                    if let Some(callback) = callback {
+                        let _ = catch_unwind(AssertUnwindSafe(callback));
+                    }
+                }
+            })
+            .map_err(|error| Error::Backend(format!("Vulkan present wake worker: {error}")))?;
+        Ok(Self { sender: Some(sender), thread: Some(thread), pending })
+    }
+
+    pub(super) fn request(&self, target: u64, callback: PresentCallback) -> bool {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, previous)) = pending.as_mut() {
+            // An earlier wait is still a useful owner wake even if the
+            // adaptive limit changed. Keep at most one native wait in flight.
+            *previous = callback;
+            return true;
+        }
+        *pending = Some((target, callback));
+        if self.sender.as_ref().is_some_and(|sender| sender.send(target).is_ok()) {
+            true
+        } else {
+            *pending = None;
+            false
+        }
+    }
+}
+
+impl Drop for PresentWake {
+    fn drop(&mut self) {
+        // Clear the callback before closing the channel. Join before native
+        // retirement; no new registration can occur on this owner-only object.
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner).take();
+        drop(self.sender.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
 
 /// Native presentation references outlive the graphics submit fence. Reuse only signaled
 /// present fences and keep every unretired operation attached to its own swapchain.
@@ -107,6 +190,9 @@ impl Retirement {
 impl VulkanDevice {
     pub(super) fn retire_swapchain(&mut self, id: gfx_core::SwapchainId) -> Result<()> {
         let chain = self.swapchains.get_mut(id)?;
+        // vkWaitForPresentKHR requires a non-retired swapchain. Stop the
+        // worker before any replacement can pass this handle as oldSwapchain.
+        drop(chain.present_wake.take());
         if chain.acquire_pending {
             // A reserved image may never have reached queue_submit. WSI's
             // acquire fence, not the graphics queue fence, proves its signal

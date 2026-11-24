@@ -1656,7 +1656,7 @@ impl VulkanDevice {
             } else {
                 (create_empty_pipeline_layout(&self.device)?, true)
             };
-        let (pipeline_layout, pipeline) = create_graphics_pipeline(&GraphicsPipelineBuild {
+        let pipeline_result = create_graphics_pipeline(&GraphicsPipelineBuild {
             device: &self.device,
             pipeline_cache: self.pipeline_cache,
             depth_format: render_pass_record.depth_format,
@@ -1667,7 +1667,17 @@ impl VulkanDevice {
             fragment_entry_point: &desc.fragment_entry_point,
             sample_count: render_pass_record.sample_count,
             desc,
-        })?;
+        });
+        let (pipeline_layout, pipeline) = match pipeline_result {
+            Ok(result) => result,
+            Err(error) => {
+                if owns_pipeline_layout {
+                    // SAFETY: the failed pipeline did not retain this private layout.
+                    unsafe { self.device.destroy_pipeline_layout(pipeline_layout, None) };
+                }
+                return Err(error);
+            }
+        };
         Ok(self.render_pipelines.insert(VulkanRenderPipeline {
             pipeline,
             pipeline_layout,
@@ -3685,6 +3695,7 @@ impl VulkanDevice {
             frame_submissions: vec![None; in_flight_fences.len()],
             in_flight_fences,
             presentation: presentation::Retirement::default(),
+            present_wake: None,
             next_present_id: 1,
             display_timing_enabled: self.display_timing.is_some()
                 && present_mode == vk::PresentModeKHR::FIFO,
@@ -4486,7 +4497,9 @@ impl VulkanDevice {
         unsafe { self.device.destroy_command_pool(encoder.command_pool, None) };
     }
 
-    fn destroy_swapchain_now(&self, swapchain: VulkanSwapchain) {
+    fn destroy_swapchain_now(&self, mut swapchain: VulkanSwapchain) {
+        // Join the host present wait before destroying its native swapchain.
+        drop(swapchain.present_wake.take());
         let _ = (swapchain.format, swapchain.images.len());
         // SAFETY: Swapchain resources were created by this device and are destroyed once here.
         unsafe {
@@ -5253,9 +5266,8 @@ impl PresentationDevice for VulkanDevice {
     fn request_frame_ready(
         &mut self, id: gfx_core::SwapchainId, callback: Box<dyn FnOnce() + Send + 'static>,
     ) -> Result<bool> {
-        // A blocked GPU slot has a stable logical submission; a WSI
-        // display credit alone does not. Never wait on a reusable WSI fence
-        // from a second thread, and never equate GPU completion with scanout.
+        // GPU and WSI readiness have independent completion identities.
+        // Never wait on a reusable GPU frame fence from a second thread.
         if PresentationDevice::poll_present_readiness(self, id)? {
             callback();
             return Ok(true);
@@ -5268,9 +5280,23 @@ impl PresentationDevice for VulkanDevice {
         let fence = chain.in_flight_fences[slot];
         // SAFETY: swapchain owns this fence and this call does not reset it.
         if unsafe { self.device.get_fence_status(fence) }.map_err(VulkanError::from)? {
-            // Only the presentation engine is backpressured. The display
-            // clock or bounded owner retry remains responsible for this case.
-            return Ok(false);
+            // GPU slot is ready; wait for the actual WSI present ID on a
+            // sleeping worker. The owner still verifies readiness on wake.
+            let Some(loader) = self.present_wait.as_ref() else {
+                return Ok(false);
+            };
+            let chain = self.swapchains.get_mut(id)?;
+            let Some(target) = chain.present_credit.as_ref().and_then(PresentCredit::wait_target)
+            else {
+                return Ok(false);
+            };
+            if chain.present_wake.is_none() {
+                chain.present_wake = Some(presentation::PresentWake::new(
+                    loader.clone(), chain.swapchain,
+                )?);
+            }
+            return Ok(chain.present_wake.as_ref().expect("present wake initialized")
+                .request(target, callback));
         }
         let Some(submission) = chain.frame_submissions[slot] else { return Ok(false); };
         if self.submissions.get(submission).is_err() {
@@ -6129,8 +6155,11 @@ impl PresentCredit {
     fn set_limit(&mut self, limit: usize) {
         // Reducing latency never fabricates completion or drops the already
         // submitted credits. Drain them through native present feedback.
-        self.limit = limit.max(1);
-        self.timeout_since = None;
+        let limit = limit.max(1);
+        if self.limit != limit {
+            self.limit = limit;
+            self.timeout_since = None;
+        }
     }
 
     fn submitted(&mut self, id: u64) {
@@ -6181,6 +6210,17 @@ mod present_credit_tests {
     }
 
     #[test]
+    fn unchanged_present_limit_does_not_restart_stall_deadline() {
+        let mut credit = PresentCredit::new(1);
+        let id = credit.next_id();
+        credit.submitted(id);
+        let now = Instant::now();
+        assert!(!credit.stalled(now));
+        credit.set_limit(1);
+        assert!(credit.stalled(now + Duration::from_millis(250)));
+    }
+
+    #[test]
     fn shrinking_present_limit_preserves_outstanding_native_credits() {
         let mut credit = PresentCredit::new(2);
         let first = credit.next_id();
@@ -6222,6 +6262,7 @@ mod present_credit_tests {
 
 struct VulkanSwapchain {
     presentation: presentation::Retirement,
+    present_wake: Option<presentation::PresentWake>,
     next_present_id: u32,
     display_timing_enabled: bool,
     present_credit: Option<PresentCredit>,
@@ -6946,6 +6987,13 @@ fn create_image_view_2d(
         .map_err(|error| VulkanError::from(error).into())
 }
 
+fn create_empty_pipeline_layout(device: &ash::Device) -> Result<vk::PipelineLayout> {
+    let info = vk::PipelineLayoutCreateInfo::default();
+    // SAFETY: an empty layout has no descriptor sets or push constant ranges.
+    unsafe { device.create_pipeline_layout(&info, None) }
+        .map_err(|error| VulkanError::from(error).into())
+}
+
 struct GraphicsPipelineBuild<'a> {
     device: &'a ash::Device,
     pipeline_cache: vk::PipelineCache,
@@ -7145,7 +7193,15 @@ fn create_graphics_pipeline(
             .device
             .create_graphics_pipelines(build.pipeline_cache, &[pipeline_info], None)
     }
-    .map_err(|(_, error)| VulkanError::from(error))?[0];
+    .map_err(|(pipelines, error)| {
+        for pipeline in pipelines {
+            if pipeline != vk::Pipeline::null() {
+                // SAFETY: partial results of the failed creation belong to this call.
+                unsafe { build.device.destroy_pipeline(pipeline, None) };
+            }
+        }
+        VulkanError::from(error)
+    })?[0];
     Ok((build.pipeline_layout, pipeline))
 }
 
