@@ -65,3 +65,42 @@ fn item_positions_far_down_long_list_remain_uniform(cx: &mut TestAppContext) {
         .collect::<Vec<_>>();
     assert_eq!(item_tops, expected_tops);
 }
+
+struct FixedRows {
+    calls: Rc<RefCell<Vec<std::ops::Range<usize>>>>,
+    scroll_handle: UniformListScrollHandle,
+}
+
+impl Render for FixedRows {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let calls = self.calls.clone();
+        uniform_list("fixed-rows", 100, move |range, _, _| {
+            calls.borrow_mut().push(range.clone());
+            range.map(|_| crate::div().w_full().h(px(24.))).collect()
+        })
+        .with_sizing_behavior(crate::ListSizingBehavior::Auto)
+        .with_item_height(px(24.))
+        .track_scroll(self.scroll_handle.clone())
+        .w(px(240.))
+        .h(px(120.))
+    }
+}
+
+#[gpui::test]
+fn fixed_rows_do_not_render_a_measurement_sample(cx: &mut TestAppContext) {
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let (view, cx) = cx.add_window_view(|_, _| FixedRows {
+        calls: calls.clone(),
+        scroll_handle: UniformListScrollHandle::new(),
+    });
+    cx.run_until_parked();
+    calls.borrow_mut().clear();
+    view.update(cx, |view, cx| {
+        view.scroll_handle.0.borrow().base_handle.set_offset(point(px(0.), px(-240.)));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let calls = calls.borrow();
+    assert!(!calls.is_empty());
+    assert!(calls.iter().all(|range| range.start >= 10 && !range.is_empty()), "{calls:?}");
+}

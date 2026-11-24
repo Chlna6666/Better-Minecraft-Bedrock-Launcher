@@ -487,6 +487,8 @@ pub fn render_overlay(window: &mut Window, state: &DropdownOverlayState) -> AnyE
                 .collect::<Vec<_>>()
         },
     )
+    .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
+    .with_item_height(px(MENU_ROW_PITCH))
     .track_scroll(menu_scroll_handle)
     .h_full();
     // The reveal is a retained subtree composite: it captures the content

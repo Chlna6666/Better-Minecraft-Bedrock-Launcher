@@ -980,6 +980,7 @@ pub(super) fn render_asset_list(
         }),
     )
     .with_sizing_behavior(ListSizingBehavior::Auto)
+    .with_item_height(px(MANAGE_ASSET_ROW_PITCH_PX))
     .track_scroll(handle)
     .w_full()
     .h_full()

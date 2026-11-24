@@ -51,6 +51,7 @@ where
     UniformList {
         item_count,
         item_to_measure_index: 0,
+        fixed_item_height: None,
         render_items: Box::new(render_range),
         decorations: Vec::new(),
         interactivity: Interactivity {
@@ -68,6 +69,7 @@ where
 pub struct UniformList {
     item_count: usize,
     item_to_measure_index: usize,
+    fixed_item_height: Option<Pixels>,
     render_items: Box<
         dyn for<'a> Fn(Range<usize>, &'a mut Window, &'a mut App) -> SmallVec<[AnyElement; 64]>,
     >,
@@ -111,7 +113,18 @@ impl Element for UniformList {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let max_items = self.item_count;
-        let item_size = self.measure_item(None, window, cx);
+        let item_size = if max_items == 0 {
+            Size::default()
+        } else if let Some(height) = self.fixed_item_height.filter(|_| {
+            matches!(self.sizing_behavior, ListSizingBehavior::Auto)
+                && matches!(self.horizontal_sizing_behavior, ListHorizontalSizingBehavior::FitList)
+        }) {
+            // The containing viewport supplies the width; no sample row needs
+            // to be constructed, measured, or dropped before visible rows.
+            size(Pixels::ZERO, height)
+        } else {
+            self.measure_item(None, window, cx)
+        };
         let layout_id = self.interactivity.request_layout(
             global_id,
             inspector_id,

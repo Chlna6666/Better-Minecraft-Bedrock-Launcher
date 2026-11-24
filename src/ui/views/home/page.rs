@@ -281,6 +281,8 @@ impl HomePageView {
                     .collect()
             }),
         )
+        .with_sizing_behavior(ListSizingBehavior::Auto)
+        .with_item_height(px(item_height_px))
         .h_full();
         let from = self.dropdown_motion_from;
         let target = if self.dropdown_open { 1.0 } else { 0.0 };

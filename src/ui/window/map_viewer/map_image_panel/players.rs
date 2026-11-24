@@ -115,6 +115,8 @@ impl View {
                 })
                 .collect::<Vec<_>>()
         })
+        .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
+        .with_item_height(px(44.0))
         .track_scroll(self.map_image.player_scroll.clone())
         .size_full();
         div()

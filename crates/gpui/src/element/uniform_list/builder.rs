@@ -5,6 +5,17 @@ use crate::{
 use super::{UniformList, UniformListDecoration, UniformListScrollHandle};
 
 impl UniformList {
+    /// Uses an explicitly known row height (including its vertical spacing).
+    ///
+    /// For an Auto-sized, FitList viewport this avoids rendering a sample row
+    /// solely to measure it. Infer sizing and horizontal scrolling still need
+    /// intrinsic width, so they retain normal measurement. Nonpositive or
+    /// nonfinite heights also fall back to measurement.
+    pub fn with_item_height(mut self, height: Pixels) -> Self {
+        self.fixed_item_height = (height.0.is_finite() && height.0 > 0.0).then_some(height);
+        self
+    }
+
     /// Selects a specific list item for measurement.
     pub fn with_width_from_item(mut self, item_index: Option<usize>) -> Self {
         self.item_to_measure_index = item_index.unwrap_or(0);

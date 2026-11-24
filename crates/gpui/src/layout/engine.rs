@@ -77,7 +77,6 @@ pub struct TaffyLayoutEngine {
     pub(super) computed_layouts: FxHashSet<LayoutId>,
     pub(super) node_fingerprints: FxHashMap<LayoutId, Option<u64>>,
     node_layout_metadata: FxHashMap<LayoutId, NodeLayoutMetadata>,
-    pub(super) measured_subtrees: FxHashSet<LayoutId>,
     // Taffy stores device-pixel geometry; equal logical constraints at a new
     // DPI must not reuse the previous physical layout.
     root_constraints: FxHashMap<LayoutId, (Size<AvailableSpaceKey>, u32)>,
@@ -134,7 +133,6 @@ impl TaffyLayoutEngine {
             computed_layouts: FxHashSet::default(),
             node_fingerprints: FxHashMap::default(),
             node_layout_metadata: FxHashMap::default(),
-            measured_subtrees: FxHashSet::default(),
             root_constraints: FxHashMap::default(),
             subtree_scratch: Vec::new(),
             layout_bounds_scratch_space: Vec::new(),
@@ -204,7 +202,6 @@ impl TaffyLayoutEngine {
         let computed_layout_count = self.computed_layouts.len();
         let fingerprint_count = self.node_fingerprints.len();
         let metadata_count = self.node_layout_metadata.len();
-        let measured_subtree_count = self.measured_subtrees.len();
         let node_working_set = self.nodes_requested;
 
         if log::log_enabled!(log::Level::Trace) {
@@ -253,7 +250,6 @@ impl TaffyLayoutEngine {
         self.computed_layouts.clear();
         self.node_fingerprints.clear();
         self.node_layout_metadata.clear();
-        self.measured_subtrees.clear();
 
         macro_rules! trim_to_working_set {
             ($collection:expr, $count:expr) => {{
@@ -269,7 +265,6 @@ impl TaffyLayoutEngine {
         trim_to_working_set!(self.computed_layouts, computed_layout_count);
         trim_to_working_set!(self.node_fingerprints, fingerprint_count);
         trim_to_working_set!(self.node_layout_metadata, metadata_count);
-        trim_to_working_set!(self.measured_subtrees, measured_subtree_count);
         trim_to_working_set!(self.subtree_scratch, node_working_set);
         trim_to_working_set!(self.layout_bounds_scratch_space, node_working_set);
 
@@ -381,8 +376,6 @@ impl TaffyLayoutEngine {
             .shrink_to(floor.max(self.node_fingerprints.len()));
         self.node_layout_metadata
             .shrink_to(floor.max(self.node_layout_metadata.len()));
-        self.measured_subtrees
-            .shrink_to(floor.max(self.measured_subtrees.len()));
         self.subtree_scratch
             .shrink_to(floor.max(self.subtree_scratch.len()));
         self.layout_bounds_scratch_space
@@ -553,12 +546,6 @@ impl TaffyLayoutEngine {
                 scale_factor,
             },
         );
-        if children
-            .iter()
-            .any(|child| self.measured_subtrees.contains(child))
-        {
-            self.measured_subtrees.insert(layout_id);
-        }
         layout_id
     }
 
@@ -634,7 +621,6 @@ impl TaffyLayoutEngine {
                 scale_factor,
             },
         );
-        self.measured_subtrees.insert(layout_id);
         layout_id
     }
 
@@ -691,7 +677,6 @@ impl TaffyLayoutEngine {
                 scale_factor,
             },
         );
-        self.measured_subtrees.insert(layout_id);
         layout_id
     }
 
