@@ -4349,7 +4349,7 @@ pub(crate) fn plugin_image(cx: &App, id: &str, path: &str) -> Option<gpui::Encod
 fn decode_inline_plugin_image(src: &str) -> Option<gpui::EncodedImageBytes> {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-     let (mime, payload) = src.split_once(',')?;
+    let (mime, payload) = src.split_once(',')?;
     let format = match mime {
         "data:image/png;base64" => image::ImageFormat::Png,
         "data:image/jpeg;base64" => image::ImageFormat::Jpeg,
@@ -4366,6 +4366,7 @@ fn decode_inline_plugin_image(src: &str) -> Option<gpui::EncodedImageBytes> {
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 64 * 1024 * 1024 {
         return None;
     }
+    let format = gpui::ImageFormat::from_image_format(format)?;
     Some(gpui::EncodedImageBytes::new(format, bytes))
 }
 
