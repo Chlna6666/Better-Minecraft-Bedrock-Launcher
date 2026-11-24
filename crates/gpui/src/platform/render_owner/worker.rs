@@ -503,10 +503,21 @@ impl Entry {
                 self.presentation_clock = Some(callback);
                 self.schedule.set_native_callbacks();
             }
-            #[cfg(not(target_os = "windows"))]
             Command::PresentationVisibility(visible) => {
                 self.ready_registration.store(0, Ordering::Release);
+                self.ready_poll_required = false;
                 self.schedule.set_native_visible(visible);
+                self.renderer.reset_pacing_evidence();
+                if !visible {
+                    #[cfg(target_os = "windows")]
+                    {
+                        self.producer_credit_only = false;
+                        self.status.waiting_for_frame_ready.store(false, Ordering::Release);
+                    }
+                    self.schedule.retry_work(
+                        Instant::now(), false, self.renderer.has_pollable_offscreen_retirements(), None,
+                    );
+                }
             }
             Command::Shutdown(_) => unreachable!("shutdown is handled by the worker"),
         }
@@ -517,6 +528,9 @@ impl Entry {
         now: Instant,
         timing: Option<crate::platform::frame::ActivePresentationTiming>,
     ) {
+        if self.schedule.is_hidden() {
+            return;
+        }
         #[cfg(target_os = "windows")]
         if self.resize_awaiting_draw {
             return;
@@ -604,6 +618,9 @@ impl Entry {
         // Queue compaction already selects the newest unstarted Scene. Once a Draw
         // reaches the owner, let it make progress: continuous native resize commits
         // can otherwise cancel every ready frame without ever presenting one.
+        if self.schedule.is_hidden() {
+            return Ok(false);
+        }
         let scene_epoch = self
             .scene
             .as_ref()
@@ -746,7 +763,8 @@ impl Entry {
     #[cfg(target_os = "windows")]
     fn prime_producer_credit(&mut self) {
         self.producer_credit_only = false;
-        if !self.renderer.surface_capabilities().frame_ready_notification
+        if self.schedule.is_hidden()
+            || !self.renderer.surface_capabilities().frame_ready_notification
             || self.renderer.has_pending_drawable_size()
         {
             return;
@@ -824,7 +842,7 @@ impl Entry {
             #[cfg(target_os = "windows")]
             waiting_for_frame_ready,
             #[cfg(not(target_os = "windows"))]
-            autonomous: self.schedule.is_enabled()
+            autonomous: self.schedule.is_hidden() || self.schedule.is_enabled()
                 || self.presentation_clock.is_some()
                 || (!submitted && pending
                     && (self.ready_registration.load(Ordering::Acquire) != 0

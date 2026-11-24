@@ -448,7 +448,6 @@ impl RenderOwner {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
     pub(super) fn set_presentation_visibility(&self, visible: bool) {
         if let Err(error) = self.enqueue(Command::PresentationVisibility(visible)) {
             log::error!("failed to queue native presentation visibility: {error:#}");

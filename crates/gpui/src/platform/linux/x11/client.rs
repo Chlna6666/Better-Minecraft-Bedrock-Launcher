@@ -1937,6 +1937,9 @@ impl X11ClientState {
         }
 
         // Both retained and UI frames now use the same MSC/one-shot fallback.
+        if let Some(window_ref) = self.windows.get(&x_window) {
+            window_ref.window.set_native_presentation_visible(is_visible);
+        }
         if is_visible {
             self.schedule_frame_request(x_window);
         }

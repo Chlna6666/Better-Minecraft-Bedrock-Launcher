@@ -1048,6 +1048,17 @@ impl X11Window {
 }
 
 impl X11WindowStatePtr {
+    pub(crate) fn set_native_presentation_visible(&self, visible: bool) {
+        let pending = {
+            let state = self.state.borrow();
+            state.renderer.set_presentation_visibility(visible);
+            visible && state.renderer.has_active_presentation_animations()
+        };
+        if pending {
+            self.request_frame(PlatformFrameRequest::presentation());
+        }
+    }
+
     pub(crate) fn set_native_presentation_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         self.state.borrow().renderer.set_native_presentation_wake(wake);
     }

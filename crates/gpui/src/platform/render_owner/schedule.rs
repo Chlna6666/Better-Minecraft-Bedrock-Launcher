@@ -7,6 +7,7 @@ pub(super) struct Schedule {
     submission_deadline: Option<Instant>,
     submission_retry_delay: Duration,
     retirement_only: bool,
+    hidden: bool,
     #[cfg(any(test, not(target_os = "windows")))]
     interval: Option<Duration>,
     #[cfg(any(test, not(target_os = "windows")))]
@@ -27,6 +28,9 @@ impl Schedule {
     }
 
     pub(super) fn is_enabled(&self) -> bool {
+        if self.hidden {
+            return false;
+        }
         #[cfg(any(test, not(target_os = "windows")))]
         {
             self.interval.is_some() || (self.native_callbacks && self.native_visible)
@@ -42,14 +46,21 @@ impl Schedule {
         self.native_callbacks = true;
     }
 
-    #[cfg(any(test, not(target_os = "windows")))]
     pub(super) fn set_native_visible(&mut self, visible: bool) {
-        self.native_visible = visible;
-        self.deadline = None;
-        self.retry_delay = Duration::ZERO;
+        self.hidden = !visible;
+        #[cfg(any(test, not(target_os = "windows")))]
+        {
+            self.native_visible = visible;
+            self.deadline = None;
+            self.retry_delay = Duration::ZERO;
+        }
         if !visible && !self.retirement_only {
             self.reset_submission_retry();
         }
+    }
+
+    pub(super) fn is_hidden(&self) -> bool {
+        self.hidden
     }
 
     pub(super) fn deadline(&self) -> Option<Instant> {
@@ -83,6 +94,7 @@ impl Schedule {
         retirement: bool,
         refresh: Option<Duration>,
     ) {
+        let presentation = presentation && !self.hidden;
         #[cfg(any(test, not(target_os = "windows")))]
         let presentation = presentation && (!self.native_callbacks || self.native_visible);
         if !presentation && !retirement {

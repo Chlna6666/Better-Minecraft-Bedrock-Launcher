@@ -1011,12 +1011,27 @@ impl WindowsWindow {
                     return;
                 }
                 state.last_visibility.set(Some(visibility));
-                let Some(mut callback) = state.callbacks.visibility_change.take() else {
-                    return;
-                };
+                let callback = state.callbacks.visibility_change.take();
                 drop(state);
-                callback(visibility);
-                window.0.state.borrow_mut().callbacks.visibility_change = Some(callback);
+                let visible = matches!(visibility, WindowVisibility::Visible);
+                // A startup-hidden HWND must still submit its first frame.
+                if (visible || window.is_content_ready())
+                    && let WindowsRendererState::Ready(owner) = &*window.0.renderer.borrow()
+                {
+                    owner.set_presentation_visibility(visible);
+                }
+                if let Some(mut callback) = callback {
+                    callback(visibility);
+                    window.0.state.borrow_mut().callbacks.visibility_change = Some(callback);
+                }
+                if visible {
+                    // A hidden window may have a latched request that did not
+                    // arm the native scheduler. Restoration owns this wake.
+                    window.0.queue_frame_request(PlatformFrameRequest::presentation());
+                    if !window.0.vsync_scheduler.request_frame() {
+                        window.window().request_redraw();
+                    }
+                }
             })
             .detach();
     }
@@ -1090,6 +1105,9 @@ impl WindowsWindow {
             return;
         }
         record_redraw_request(self.0.handle.window_id().data().as_ffi());
+        if self.is_content_ready() && self.current_visibility() != WindowVisibility::Visible {
+            return;
+        }
         if self.ui_frame_backpressured()
             && self.0.pending_resize.get().is_none()
             && self.0.pending_renderer_size.get().is_none()
@@ -1651,6 +1669,9 @@ impl WindowsWindow {
         }
         for completion in frame.completed_animations {
             self.invoke_presentation_animation_completed(completion);
+        }
+        if self.is_content_ready() && self.current_visibility() != WindowVisibility::Visible {
+            return;
         }
         // Readiness reports release latched producer work even when the submitted
         // scene has no retained animation and therefore no presentation continuation.
@@ -2504,6 +2525,9 @@ impl WindowsWindow {
     /// Whether a native cadence event has any work for this particular window.
     /// This avoids O(windows × refresh_rate) empty callbacks and per-window telemetry.
     pub(crate) fn has_pending_native_frame(&self) -> bool {
+        if self.is_content_ready() && self.current_visibility() != WindowVisibility::Visible {
+            return false;
+        }
         // Native Win32 messages may be delivered reentrantly while a callback owns
         // the state RefCell. Never dispatch a frame through that outstanding borrow.
         let Ok(state) = self.0.state.try_borrow() else {

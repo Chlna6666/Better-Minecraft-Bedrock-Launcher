@@ -38,7 +38,6 @@ pub(super) enum Command {
     PresentationInterval(Option<Duration>),
     #[cfg(not(target_os = "windows"))]
     PresentationClock(std::sync::Arc<dyn Fn() + Send + Sync>),
-    #[cfg(not(target_os = "windows"))]
     PresentationVisibility(bool),
     Call(Box<dyn FnOnce(&mut NovaRenderer) + Send>),
     Shutdown(SyncSender<()>),
@@ -89,7 +88,8 @@ impl Command {
             #[cfg(any(test, not(target_os = "windows")))]
             Self::PresentationInterval(_) => true,
             #[cfg(not(target_os = "windows"))]
-            Self::PresentationClock(_) | Self::PresentationVisibility(_) => true,
+            Self::PresentationClock(_) => true,
+            Self::PresentationVisibility(_) => true,
             _ => false,
         }
     }
@@ -108,7 +108,6 @@ impl Command {
             Self::PresentationInterval(_) => true,
             #[cfg(not(target_os = "windows"))]
             Self::PresentationClock(_) => true,
-            #[cfg(not(target_os = "windows"))]
             Self::PresentationVisibility(_) => true,
             _ => false,
         }

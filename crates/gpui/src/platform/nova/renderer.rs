@@ -483,6 +483,10 @@ impl NovaRenderer {
         lock_backend(&self.backend).check_present_readiness(self.swapchain)
     }
 
+    pub(crate) fn reset_pacing_evidence(&mut self) {
+        self.adaptive_pacing.surface_changed();
+    }
+
     pub(crate) fn native_refresh_period(&self) -> Option<std::time::Duration> {
         self.adaptive_pacing.native_refresh_period()
     }
