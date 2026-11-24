@@ -20,7 +20,7 @@ use crate::{
     SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, SceneFrameMetrics, Shadow, SharedString,
     SingleSubscriberSet, Size, StrikethroughStyle, Style, Subscription, TaffyLayoutEngine, Task,
     TextStyle, TextStyleRefinement, TransformationMatrix, Underline, UnderlineStyle,
-    FrameDisposition, WindowTab, WindowTabRegistry, WindowTextSystem, WindowVisibility,
+    FrameDisposition, WindowTab, WindowTabRegistry, WindowTextSystem, WindowActivity, WindowVisibility,
     animation::{
         AnimationDriver, AnimationEngine, AnimationGroupId, AnimationGroupSample,
         AnimationParallel, AnimationSequence, AnimationStagger, merge_requested_drivers,

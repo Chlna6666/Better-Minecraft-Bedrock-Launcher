@@ -367,8 +367,7 @@ impl Window {
 
     pub(crate) fn should_defer_dirty_frame(&self) -> bool {
         self.invalidator.is_dirty()
-            && !self.active.get()
-            && (!self.inactive_dirty_redraw_enabled || !self.visibility.is_visible())
+            && !self.activity().allows_updates(self.inactive_dirty_redraw_enabled)
             && !self.needs_present.get()
             && self.last_input_timestamp.get() <= self.animation_time()
             && self.next_frame_callbacks.borrow().is_empty()
@@ -395,13 +394,11 @@ impl Window {
     }
 
     fn progressive_frame_retry_delay(&self) -> Duration {
-        if !self.visibility.is_visible() {
-            MINIMIZED_PROGRESSIVE_FRAME_RETRY
-        } else if !self.active.get() {
-            self.inactive_dirty_frame_retry_interval
-                .unwrap_or(BACKGROUND_PROGRESSIVE_FRAME_RETRY)
-        } else {
-            self.frame_throttle.retry_delay()
+        match self.activity() {
+            WindowActivity::Hidden | WindowActivity::Minimized => MINIMIZED_PROGRESSIVE_FRAME_RETRY,
+            WindowActivity::Background => self.inactive_dirty_frame_retry_interval
+                .unwrap_or(BACKGROUND_PROGRESSIVE_FRAME_RETRY),
+            WindowActivity::Foreground => self.frame_throttle.retry_delay(),
         }
     }
 
@@ -757,9 +754,7 @@ impl Window {
         let frame_request = watchdog.platform_request;
         let inactive_updates_enabled =
             self.inactive_animation_engine_enabled || self.inactive_dirty_redraw_enabled;
-        if ((!self.active.get() && !inactive_updates_enabled)
-            || !self.visibility.is_visible()
-            || self.platform_window.is_minimized())
+        if !self.activity().allows_updates(inactive_updates_enabled)
             && self.has_completed_rendered_frame
         {
             self.clear_platform_frame_watchdog();
@@ -810,9 +805,7 @@ impl Window {
         let watchdog = self.frame_watchdog.get();
         let inactive_updates_enabled =
             self.inactive_animation_engine_enabled || self.inactive_dirty_redraw_enabled;
-        if self.visibility.is_visible()
-            && !self.platform_window.is_minimized()
-            && (self.active.get() || inactive_updates_enabled)
+        if self.activity().allows_updates(inactive_updates_enabled)
             && self.has_pending_platform_frame_work()
             && !watchdog.platform_pending
             && watchdog.platform_request.requires_frame()
@@ -929,8 +922,8 @@ impl Window {
             self.viewport_size.width / px(1.0),
             self.viewport_size.height / px(1.0),
             self.scale_factor,
-            activity.active,
-            activity.minimized,
+            activity.window.is_foreground(),
+            activity.window.is_minimized(),
             self.visibility.is_visible(),
         );
         record_frame_disposition(
@@ -1034,8 +1027,7 @@ impl Window {
         let activity = FrameActivity {
             dirty: self.invalidator.is_dirty(),
             pending_present: self.needs_present.get(),
-            active: self.active.get(),
-            minimized: self.platform_window.is_minimized(),
+            window: self.activity(),
         };
         let decision = self.evaluate_frame_work(
             activity,
@@ -1064,9 +1056,7 @@ impl Window {
         let Some(driver) = self.animation_engine_frame_driver.take() else {
             return false;
         };
-        if !self.visibility.is_visible()
-            || (!self.active.get() && !self.inactive_animation_engine_enabled)
-        {
+        if !self.activity().allows_updates(self.inactive_animation_engine_enabled) {
             self.animation_engine_frame_driver.set(Some(driver));
             return false;
         }
@@ -1151,8 +1141,7 @@ impl Window {
         );
         if tick.ui_active_visual_count > 0
             && tick.has_gpu_or_paint
-            && self.visibility.is_visible()
-            && (self.active.get() || self.inactive_animation_engine_enabled)
+            && self.activity().allows_updates(self.inactive_animation_engine_enabled)
         {
             let interval = self
                 .animation_engine
@@ -1228,8 +1217,8 @@ impl Window {
                 frame_request.ui_commit_required(),
                 frame_request.presentation_required(),
                 decision.activity.pending_present,
-                decision.activity.active,
-                decision.activity.minimized,
+                decision.activity.window.is_foreground(),
+                decision.activity.window.is_minimized(),
                 decision.drew_frame(),
                 decision.submit_visible_frame,
                 decision.skip_frame,
@@ -1287,7 +1276,7 @@ impl Window {
             self.draw_visible_frame(frame_request.presentation_required(), frame_budget, cx)
         } else if decision.present_frame {
             self.present_framebuffer_only().is_accepted()
-        } else if decision.activity.active {
+        } else if decision.activity.window.is_foreground() {
             record_retained_frame_skip();
             false
         } else {
@@ -1452,11 +1441,11 @@ impl Window {
             && options.ui_commit_required()
             && !options.presentation_required()
             && !load.pending_present
-            && !load.active
-            && (!self.inactive_dirty_redraw_enabled || load.minimized)
+            && !load.window.is_foreground()
+            && (!self.inactive_dirty_redraw_enabled || !load.window.is_drawable())
             && !had_frame_callbacks
             && !self.recently_received_input(now)
-            && (self.rendered_frame.scene().len() != 0 || load.minimized)
+            && (self.rendered_frame.scene().len() != 0 || !load.window.is_drawable())
     }
 
     fn should_present_retained_scene(&self, options: PlatformFrameRequest, now: Instant) -> bool {

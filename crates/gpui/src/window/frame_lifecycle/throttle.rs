@@ -33,8 +33,7 @@ pub(in crate::window) struct WindowFrameThrottle {
 pub(super) struct FrameActivity {
     pub(super) dirty: bool,
     pub(super) pending_present: bool,
-    pub(super) active: bool,
-    pub(super) minimized: bool,
+    pub(super) window: crate::WindowActivity,
 }
 
 impl WindowFrameThrottle {

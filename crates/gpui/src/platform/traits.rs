@@ -51,6 +51,42 @@ impl WindowVisibility {
     }
 }
 
+/// Platform-neutral presentation activity. Focus and visibility are
+/// independent: a visible inactive window is not an occluded window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowActivity {
+    /// Visible and focused.
+    Foreground,
+    /// Visible but unfocused; optional background redraw policy applies.
+    #[default]
+    Background,
+    /// Not presented (hidden or occluded).
+    Hidden,
+    /// Explicit native minimization.
+    Minimized,
+}
+
+impl WindowActivity {
+    pub const fn from_native(active: bool, visibility: WindowVisibility, minimized: bool) -> Self {
+        if minimized { Self::Minimized }
+        else if !visibility.is_visible() { Self::Hidden }
+        else if active { Self::Foreground }
+        else { Self::Background }
+    }
+    /// A presentation target is currently visible.
+    pub const fn is_drawable(self) -> bool {
+        matches!(self, Self::Foreground | Self::Background)
+    }
+    /// Foreground scheduling policy applies.
+    pub const fn is_foreground(self) -> bool { matches!(self, Self::Foreground) }
+    /// Native minimization, distinct from other visibility loss.
+    pub const fn is_minimized(self) -> bool { matches!(self, Self::Minimized) }
+    /// Background updates are opt-in and never override suspension.
+    pub const fn allows_updates(self, background_enabled: bool) -> bool {
+        self.is_foreground() || (matches!(self, Self::Background) && background_enabled)
+    }
+}
+
 pub(crate) trait Platform: 'static {
     fn background_executor(&self) -> BackgroundExecutor;
     fn foreground_executor(&self) -> ForegroundExecutor;

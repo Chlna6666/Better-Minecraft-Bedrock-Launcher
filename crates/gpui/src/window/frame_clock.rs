@@ -87,7 +87,7 @@ fn combined_frame_interval(
 impl Window {
     pub(super) fn effective_frame_clock_interval(&self) -> Option<Duration> {
         let active = self.frame_clock.interval();
-        if self.active.get() {
+        if self.activity().is_foreground() {
             return window_frame_clock_interval(
                 active,
                 self.platform_window.native_frame_clock_interval(),

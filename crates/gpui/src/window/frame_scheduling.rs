@@ -260,12 +260,19 @@ impl Window {
         self.inactive_dirty_redraw_enabled = enabled;
     }
 
+    /// Current platform-neutral presentation activity. Native visibility
+    /// callbacks update the cached visibility; native minimization takes priority.
+    pub fn activity(&self) -> WindowActivity {
+        WindowActivity::from_native(self.active.get(), self.visibility, self.platform_window.is_minimized())
+    }
+
     /// Re-arms deferred dirty or retained animation work after the window becomes visible.
     ///
     /// Hidden windows intentionally stop presentation work. When visibility is restored, this hook
     /// clears any stale throttle delay and schedules the pending work without rebuilding the view.
     pub(super) fn presentation_visibility_changed(&mut self) {
-        if !self.visibility.is_visible() {
+        let activity = self.activity();
+        if !activity.is_drawable() {
             return;
         }
 
@@ -274,7 +281,7 @@ impl Window {
         self.frame_throttle.clear_delay();
         self.rearm_platform_frame_watchdog();
         if self.animation_engine_frame_driver.get().is_some()
-            && (self.active.get() || self.inactive_animation_engine_enabled)
+            && activity.allows_updates(self.inactive_animation_engine_enabled)
         {
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
             self.request_platform_frame(PlatformFrameRequest::animation_tick());
@@ -299,8 +306,7 @@ impl Window {
         // Enabling the policy resumes that pending retained timeline without notifying or rebuilding
         // the owning view.
         if enabled
-            && !self.active.get()
-            && self.visibility.is_visible()
+            && self.activity() == WindowActivity::Background
             && self.animation_engine_frame_driver.get().is_some()
         {
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
@@ -345,9 +351,7 @@ impl Window {
             record_coalesced_refresh();
             return;
         }
-        if !self.visibility.is_visible()
-            || (!self.active.get() && !self.inactive_animation_engine_enabled)
-        {
+        if !self.activity().allows_updates(self.inactive_animation_engine_enabled) {
             return;
         }
         self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
