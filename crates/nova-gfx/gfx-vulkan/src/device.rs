@@ -60,6 +60,8 @@ mod transfer_queue;
 mod submission_wake;
 mod timeline;
 
+// Older Vulkan implementations use the application's alternative renderer instead.
+const REQUIRED_API_VERSION: u32 = vk::API_VERSION_1_3;
 const DEFAULT_FRAME_SLOTS: u32 = 2;
 // A transient WSI stall must not discard a prepared compositor frame after only 1 ms.
 // Bound the wait so a hidden/occluded window cannot block the GPU owner indefinitely.
@@ -94,11 +96,23 @@ pub struct BaselineMetrics {
 pub fn enumerate_adapter_info() -> Result<Vec<AdapterInfo>> {
     let entry = load_entry()?;
     let instance = create_instance(&entry, "nova-gfx adapter enumeration")?;
-    let devices = unsafe { instance.enumerate_physical_devices() }.map_err(VulkanError::from)?;
+    let devices = match unsafe { instance.enumerate_physical_devices() } {
+        Ok(devices) => devices,
+        Err(error) => {
+            // SAFETY: no device resources exist yet.
+            unsafe { instance.destroy_instance(None) };
+            return Err(VulkanError::from(error).into());
+        }
+    };
     let mut adapters = Vec::with_capacity(devices.len());
     for physical_device in devices {
         // SAFETY: Physical device belongs to this instance.
         let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+        if !supports_modern_device(&instance, physical_device, &properties)
+            || queue_family_indices_without_surface(&instance, physical_device).is_err()
+        {
+            continue;
+        }
         // SAFETY: Vulkan guarantees device_name is a null-terminated C string.
         let name = unsafe { CStr::from_ptr(properties.device_name.as_ptr()) }
             .to_string_lossy()
@@ -126,7 +140,7 @@ pub fn enumerate_adapter_info() -> Result<Vec<AdapterInfo>> {
 pub struct VulkanDevice {
     swapchain_maintenance: bool,
     native_pixel_presentation: Option<khr::get_surface_capabilities2::Instance>,
-    memory_properties_loader: Option<khr::get_physical_device_properties2::Instance>,
+    memory_budget_supported: bool,
     entry: Entry,
     instance: Instance,
     surface_loader: khr::surface::Instance,
@@ -304,13 +318,21 @@ impl VulkanDevice {
     pub fn new(desc: &DeviceDescriptor) -> Result<Self> {
         let entry = load_entry()?;
         let instance = create_instance(&entry, &desc.application_name)?;
-        let properties2_supported = supports_memory_properties2(&entry)?;
+        let physical_device = match pick_physical_device_without_surface(&instance, desc) {
+            Ok(device) => device,
+            Err(error) => {
+                // SAFETY: the failed candidate owns no logical device or surface.
+                unsafe { instance.destroy_instance(None) };
+                return Err(error);
+            }
+        };
         let surface_loader = khr::surface::Instance::new(&entry, &instance);
-        let physical_device = pick_physical_device_without_surface(&instance, desc)?;
         // SAFETY: The selected physical device belongs to this live instance.
         let adapter_properties =
             unsafe { instance.get_physical_device_properties(physical_device) };
         let adapter_name = physical_device_name(&adapter_properties);
+        log::info!("nova-gfx Vulkan API target=1.3 adapter={} driver_api={}",
+            adapter_name, api_version_string(adapter_properties.api_version));
         let native_limits = adapter_properties.limits;
         let binding_limits = gfx_core::BufferBindingLimits {
             storage_offset_alignment: native_limits.min_storage_buffer_offset_alignment.max(1),
@@ -369,14 +391,14 @@ impl VulkanDevice {
             native_pixel_presentation,
             display_timing_supported,
             present_wait_supported,
-            timeline_supported,
-        ) = create_device(
-            &instance,
-            physical_device,
-            queue_families,
-            properties2_supported,
-            &entry,
-        )?;
+        ) = match create_device(&instance, physical_device, queue_families, &entry) {
+            Ok(result) => result,
+            Err(error) => {
+                // SAFETY: logical device creation failed; no child device exists.
+                unsafe { instance.destroy_instance(None) };
+                return Err(error);
+            }
+        };
         let dedicated_compute_timestamp_clock = if dedicated_compute_queue.is_some() {
             queue_families
                 .compute
@@ -392,8 +414,6 @@ impl VulkanDevice {
         let swapchain_maintenance = native_pixel_presentation;
         let native_pixel_presentation = native_pixel_presentation
             .then(|| khr::get_surface_capabilities2::Instance::new(&entry, &instance));
-        let memory_properties_loader = memory_budget_supported
-            .then(|| khr::get_physical_device_properties2::Instance::new(&entry, &instance));
         let max_sampler_anisotropy = if supports_sampler_anisotropy {
             adapter_properties.limits.max_sampler_anisotropy.max(1.0)
         } else {
@@ -466,16 +486,17 @@ impl VulkanDevice {
             pipeline_cache_path.as_deref(),
         )?;
 
-        let primary_timeline = if timeline_supported {
-            match timeline::PrimaryTimeline::new(&instance, &device) {
-                Ok(value) => Some(value),
-                Err(error) => { log::warn!("Vulkan timeline unavailable: {error}"); None }
-            }
-        } else { None };
+        // Timeline is a required enabled core feature, not an extension
+        // negotiation. Keep the private fence wake only for allocation failure
+        // and submissions not yet migrated to timeline signaling.
+        let primary_timeline = match timeline::PrimaryTimeline::new(&device) {
+            Ok(value) => Some(value),
+            Err(error) => { log::warn!("Vulkan timeline allocation failed: {error}"); None }
+        };
         Ok(Self {
             swapchain_maintenance,
             native_pixel_presentation,
-            memory_properties_loader,
+            memory_budget_supported,
             entry,
             instance,
             surface_loader,
@@ -5533,14 +5554,15 @@ impl DiagnosticsDevice for VulkanDevice {
     }
 
     fn memory_budget(&self) -> Result<Option<DeviceMemoryBudget>> {
-        let Some(loader) = &self.memory_properties_loader else {
+        if !self.memory_budget_supported {
             return Ok(None);
-        };
+        }
         let mut budget = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
         let mut properties = vk::PhysicalDeviceMemoryProperties2::default().push_next(&mut budget);
-        // SAFETY: both extensions were enabled, the physical device and output chain are live.
+        // SAFETY: the instance targets Vulkan 1.3, the optional budget
+        // extension is enabled, and the physical device/output chain are live.
         unsafe {
-            loader.get_physical_device_memory_properties2(self.physical_device, &mut properties)
+            self.instance.get_physical_device_memory_properties2(self.physical_device, &mut properties)
         };
         let heaps = properties.memory_properties;
         let mut result = DeviceMemoryBudget::default();
@@ -6494,7 +6516,26 @@ fn load_entry() -> Result<Entry> {
     unsafe { Entry::load() }.map_err(|error| VulkanError::Loader(error.to_string()).into())
 }
 
+fn supports_api_version(version: u32) -> bool {
+    vk::api_version_variant(version) == 0
+        && (vk::api_version_major(version), vk::api_version_minor(version)) >= (1, 3)
+}
+
+fn api_version_string(version: u32) -> String {
+    format!("{}.{}.{}", vk::api_version_major(version),
+        vk::api_version_minor(version), vk::api_version_patch(version))
+}
+
 fn create_instance(entry: &Entry, application_name: &str) -> Result<Instance> {
+    // SAFETY: the loaded entry remains alive and this query needs no instance.
+    let loader_version = unsafe { entry.try_enumerate_instance_version() }
+        .map_err(VulkanError::from)?.unwrap_or(vk::API_VERSION_1_0);
+    if !supports_api_version(loader_version) {
+        return Err(VulkanError::Unavailable(format!(
+            "nova-gfx requires Vulkan 1.3 or newer; loader reports {}",
+            api_version_string(loader_version)
+        )).into());
+    }
     let app_name =
         CString::new(application_name).map_err(|error| Error::InvalidInput(error.to_string()))?;
     let engine_name =
@@ -6504,11 +6545,8 @@ fn create_instance(entry: &Entry, application_name: &str) -> Result<Instance> {
         .application_version(vk::make_api_version(0, 0, 1, 0))
         .engine_name(&engine_name)
         .engine_version(vk::make_api_version(0, 0, 1, 0))
-        .api_version(vk::API_VERSION_1_0);
+        .api_version(REQUIRED_API_VERSION);
     let mut extension_names = instance_extension_names();
-    if supports_memory_properties2(entry)? {
-        extension_names.push(khr::get_physical_device_properties2::NAME.as_ptr());
-    }
     if let Some(maintenance) = presentation::instance_extension(entry)? {
         extension_names.push(khr::get_surface_capabilities2::NAME.as_ptr());
         extension_names.push(maintenance.as_ptr());
@@ -6521,15 +6559,22 @@ fn create_instance(entry: &Entry, application_name: &str) -> Result<Instance> {
         .map_err(|error| VulkanError::from(error).into())
 }
 
-fn supports_memory_properties2(entry: &Entry) -> Result<bool> {
-    // SAFETY: querying loader extension properties needs no instance or GPU commands.
-    let extensions = unsafe { entry.enumerate_instance_extension_properties(None) }
-        .map_err(VulkanError::from)?;
-    Ok(extensions.iter().any(|extension| {
-        // SAFETY: Vulkan extension names are null-terminated within this fixed array.
-        (unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) })
-            == khr::get_physical_device_properties2::NAME
-    }))
+/// Required core features are queried, not inferred solely from apiVersion.
+fn supports_modern_device(
+    instance: &Instance, device: vk::PhysicalDevice, properties: &vk::PhysicalDeviceProperties,
+) -> bool {
+    if !supports_api_version(properties.api_version) {
+        return false;
+    }
+    let mut features12 = vk::PhysicalDeviceVulkan12Features::default();
+    let mut features13 = vk::PhysicalDeviceVulkan13Features::default();
+    let mut features = vk::PhysicalDeviceFeatures2::default()
+        .push_next(&mut features12).push_next(&mut features13);
+    // SAFETY: this is a Vulkan 1.3 physical device on a live 1.3 instance.
+    unsafe { instance.get_physical_device_features2(device, &mut features) };
+    features12.timeline_semaphore == vk::TRUE
+        && features13.synchronization2 == vk::TRUE
+        && features13.dynamic_rendering == vk::TRUE
 }
 
 fn instance_extension_names() -> Vec<*const i8> {
@@ -6563,13 +6608,15 @@ fn pick_physical_device_without_surface(
     let mut candidates = devices
         .into_iter()
         .filter_map(|device| {
-            queue_family_indices_without_surface(instance, device)
-                .is_ok()
-                .then(|| {
-                    // SAFETY: Physical device belongs to this instance.
-                    let properties = unsafe { instance.get_physical_device_properties(device) };
-                    (device, properties)
-                })
+            // SAFETY: physical device belongs to this instance.
+            let properties = unsafe { instance.get_physical_device_properties(device) };
+            if !supports_modern_device(instance, device, &properties) {
+                log::debug!("skipping Vulkan adapter {} (API {}, missing 1.3 baseline or required features)",
+                    physical_device_name(&properties), api_version_string(properties.api_version));
+                return None;
+            }
+            queue_family_indices_without_surface(instance, device).is_ok()
+                .then_some((device, properties))
         })
         .collect::<Vec<_>>();
 
@@ -6583,7 +6630,7 @@ fn pick_physical_device_without_surface(
             })
             .ok_or_else(|| {
                 VulkanError::Unavailable(format!(
-                    "requested Vulkan adapter is unavailable: {requested_name}"
+                    "requested Vulkan adapter is unavailable or lacks the Vulkan 1.3 baseline: {requested_name}"
                 ))
                 .into()
             });
@@ -6597,7 +6644,7 @@ fn pick_physical_device_without_surface(
         .next()
         .map(|(device, _)| device)
         .ok_or_else(|| {
-            VulkanError::Unavailable("no suitable Vulkan physical device".to_string()).into()
+            VulkanError::Unavailable("no suitable Vulkan 1.3 physical device with timeline semaphore, synchronization2 and dynamic rendering".into()).into()
         })
 }
 
@@ -6699,7 +6746,6 @@ fn create_device(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     indices: QueueFamilyIndices,
-    properties2_supported: bool,
     entry: &Entry,
 ) -> Result<(
     ash::Device,
@@ -6707,7 +6753,6 @@ fn create_device(
     Option<vk::Queue>,
     Option<vk::Queue>,
     vk::Queue,
-    bool,
     bool,
     bool,
     bool,
@@ -6773,8 +6818,7 @@ fn create_device(
     if display_timing_supported {
         device_extensions.push(ash::google::display_timing::NAME.as_ptr());
     }
-    let memory_budget_supported = properties2_supported
-        && available_extensions.iter().any(|extension| {
+    let memory_budget_supported = available_extensions.iter().any(|extension| {
             // SAFETY: Vulkan extension names are null-terminated within this fixed array.
             (unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) })
                 == ash::ext::memory_budget::NAME
@@ -6809,11 +6853,10 @@ fn create_device(
     );
     let mut maintenance_features = vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default();
     if maintenance.is_some() {
-        let loader = khr::get_physical_device_properties2::Instance::new(entry, instance);
         let mut features =
             vk::PhysicalDeviceFeatures2::default().push_next(&mut maintenance_features);
-        // SAFETY: properties2 was enabled and the selected physical device belongs to this instance.
-        unsafe { loader.get_physical_device_features2(physical_device, &mut features) };
+        // SAFETY: the Vulkan 1.3 core query accepts this advertised extension feature.
+        unsafe { instance.get_physical_device_features2(physical_device, &mut features) };
     }
     let native_pixel_presentation = maintenance_features.swapchain_maintenance1 == vk::TRUE;
     if native_pixel_presentation {
@@ -6826,29 +6869,21 @@ fn create_device(
     let has_extension = |name: &CStr| available_extensions.iter().any(|extension| {
         (unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) }) == name
     });
-    let mut timeline_features = vk::PhysicalDeviceTimelineSemaphoreFeatures::default();
-    if properties2_supported && has_extension(khr::timeline_semaphore::NAME) {
-        let loader = khr::get_physical_device_properties2::Instance::new(entry, instance);
-        let mut features = vk::PhysicalDeviceFeatures2::default().push_next(&mut timeline_features);
-        // SAFETY: the instance has properties2 and the physical device advertises the extension.
-        unsafe { loader.get_physical_device_features2(physical_device, &mut features) };
-    }
-    let timeline_supported = timeline_features.timeline_semaphore == vk::TRUE;
-    if timeline_supported {
-        device_extensions.push(khr::timeline_semaphore::NAME.as_ptr());
-    }
+    // The adapter filter verified these promoted core features. Enable them
+    // explicitly; no KHR timeline extension name or suffixed command is needed.
+    let mut features12 = vk::PhysicalDeviceVulkan12Features::default().timeline_semaphore(true);
+    let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
+        .synchronization2(true).dynamic_rendering(true);
     let mut present_id_features = vk::PhysicalDevicePresentIdFeaturesKHR::default();
     let mut present_wait_features = vk::PhysicalDevicePresentWaitFeaturesKHR::default();
-    if properties2_supported
-        && has_extension(khr::present_id::NAME)
+    if has_extension(khr::present_id::NAME)
         && has_extension(khr::present_wait::NAME)
     {
-        let loader = khr::get_physical_device_properties2::Instance::new(entry, instance);
         let mut features = vk::PhysicalDeviceFeatures2::default()
             .push_next(&mut present_id_features)
             .push_next(&mut present_wait_features);
         // SAFETY: both feature structures correspond to advertised extensions.
-        unsafe { loader.get_physical_device_features2(physical_device, &mut features) };
+        unsafe { instance.get_physical_device_features2(physical_device, &mut features) };
     }
     let present_wait_supported = present_id_features.present_id == vk::TRUE
         && present_wait_features.present_wait == vk::TRUE;
@@ -6867,9 +6902,7 @@ fn create_device(
         create_info = create_info.push_next(&mut present_id_features)
             .push_next(&mut present_wait_features);
     }
-    if timeline_supported {
-        create_info = create_info.push_next(&mut timeline_features);
-    }
+    create_info = create_info.push_next(&mut features12).push_next(&mut features13);
     // SAFETY: Physical device and queue info were selected from this instance.
     let device = unsafe { instance.create_device(physical_device, &create_info, None) }
         .map_err(VulkanError::from)?;
@@ -6908,7 +6941,6 @@ fn create_device(
         native_pixel_presentation,
         display_timing_supported,
         present_wait_supported,
-        timeline_supported,
     ))
 }
 

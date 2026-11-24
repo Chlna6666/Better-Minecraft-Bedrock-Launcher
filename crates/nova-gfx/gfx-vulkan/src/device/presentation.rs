@@ -206,9 +206,8 @@ pub(super) fn instance_extension(entry: &Entry) -> Result<Option<&'static CStr>>
             unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) == name }
         })
     };
-    if !has(khr::get_surface_capabilities2::NAME)
-        || !has(khr::get_physical_device_properties2::NAME)
-    {
+    // Properties2 is a core facility of our required Vulkan 1.3 instance.
+    if !has(khr::get_surface_capabilities2::NAME) {
         return Ok(None);
     }
     Ok([

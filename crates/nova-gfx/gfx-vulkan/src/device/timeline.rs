@@ -1,16 +1,16 @@
 //! Primary queue timeline signals are attached to existing submissions.
 //! Binary WSI semaphores keep their existing synchronization contract.
-use super::{Error, Result, VulkanError, Instance, khr, vk};
+use super::{Error, Result, VulkanError, vk};
 use std::cell::Cell;
 
 pub(super) struct PrimaryTimeline {
-    loader: khr::timeline_semaphore::Device,
+    device: ash::Device,
     semaphore: vk::Semaphore,
     last: Cell<u64>,
 }
 
 pub(super) struct TimelinePoint {
-    loader: khr::timeline_semaphore::Device,
+    device: ash::Device,
     semaphore: vk::Semaphore,
     value: u64,
 }
@@ -21,19 +21,19 @@ impl TimelinePoint {
         let values = [self.value];
         let info = vk::SemaphoreWaitInfo::default().semaphores(&semaphores).values(&values);
         // SAFETY: device teardown joins every worker before destroying the semaphore.
-        unsafe { self.loader.wait_semaphores(&info, u64::MAX) }
+        unsafe { self.device.wait_semaphores(&info, u64::MAX) }
     }
 }
 
 impl PrimaryTimeline {
-    pub(super) fn new(instance: &Instance, device: &ash::Device) -> Result<Self> {
+    pub(super) fn new(device: &ash::Device) -> Result<Self> {
         let mut kind = vk::SemaphoreTypeCreateInfo::default()
             .semaphore_type(vk::SemaphoreType::TIMELINE).initial_value(0);
         let info = vk::SemaphoreCreateInfo::default().push_next(&mut kind);
-        // SAFETY: the extension and feature were enabled on this device.
+        // SAFETY: Vulkan 1.2 core timelineSemaphore is enabled on this 1.3 device.
         let semaphore = unsafe { device.create_semaphore(&info, None) }.map_err(VulkanError::from)?;
         Ok(Self {
-            loader: khr::timeline_semaphore::Device::new(instance, device),
+            device: device.clone(),
             semaphore, last: Cell::new(0),
         })
     }
@@ -41,7 +41,7 @@ impl PrimaryTimeline {
     pub(super) fn last(&self) -> u64 { self.last.get() }
 
     pub(super) fn wait_point(&self, value: u64) -> TimelinePoint {
-        TimelinePoint { loader: self.loader.clone(), semaphore: self.semaphore, value }
+        TimelinePoint { device: self.device.clone(), semaphore: self.semaphore, value }
     }
 
     pub(super) fn submit(
