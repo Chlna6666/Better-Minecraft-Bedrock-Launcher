@@ -236,6 +236,11 @@ pub(crate) fn collect_backdrop_blur_animation_damage(
         return;
     }
 
+    // A later barrier includes the preceding barrier's prefix. Scan each
+    // operation at most once and reuse only changed swept bounds, rather
+    // than re-evaluating every static primitive and animation per filter.
+    let mut scanned_until = 0;
+    let mut changed_bounds = SmallVec::<[Bounds<ScaledPixels>; 16]>::new();
     for (blur_index, blur) in backdrop_blur_operations(scene.paint_operations.all()) {
         if animation_value_changed(
             scene,
@@ -272,7 +277,7 @@ pub(crate) fn collect_backdrop_blur_animation_damage(
         if source_region.is_empty() {
             continue;
         }
-        for operation in scene.paint_operations.range(0..blur_index).iter() {
+        for operation in scene.paint_operations.range(scanned_until..blur_index).iter() {
             let damage = match operation {
                 PaintOperation::Primitive(primitive)
                     if animation_value_changed(
@@ -315,8 +320,14 @@ pub(crate) fn collect_backdrop_blur_animation_damage(
                 | PaintOperation::EndBlur => None,
             };
             if let Some(damage) = damage
-                && damage.intersects(&source_region)
+                && !damage.is_empty()
             {
+                changed_bounds.push(damage);
+            }
+        }
+        scanned_until = blur_index;
+        for damage in &changed_bounds {
+            if damage.intersects(&source_region) {
                 plan.push(blur.order, damage.intersect(&source_region));
             }
         }
