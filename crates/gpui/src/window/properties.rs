@@ -236,3 +236,43 @@ impl Window {
         self.modifiers = modifiers;
     }
 }
+
+#[cfg(test)]
+mod input_dependency_tests {
+    use super::*;
+
+    #[test]
+    fn input_masks_distinguish_pointer_modifiers_capslock_and_keyboard() {
+        let baseline = InputReadSnapshot {
+            pointer: point(px(0.), px(0.)),
+            modifiers: Modifiers::default(),
+            capslock: Capslock::default(),
+            keyboard: false,
+        };
+        assert_eq!(baseline.changed(baseline), 0);
+        let mut moved = baseline;
+        moved.pointer = point(px(10.), px(20.));
+        assert_eq!(baseline.changed(moved), INPUT_POINTER);
+        moved.modifiers.shift = true;
+        assert_eq!(baseline.changed(moved), INPUT_POINTER | INPUT_MODIFIERS);
+        moved.capslock.on = true;
+        moved.keyboard = true;
+        assert_eq!(baseline.changed(moved), INPUT_POINTER | INPUT_MODIFIERS | INPUT_CAPSLOCK | INPUT_KEYBOARD_MODALITY);
+    }
+
+    #[test]
+    fn only_readers_of_changed_input_are_selected() {
+        let pointer = EntityId::from(1);
+        let keyboard = EntityId::from(2);
+        let both = EntityId::from(3);
+        let readers = FxHashMap::from_iter([
+            (pointer, INPUT_POINTER),
+            (keyboard, INPUT_KEYBOARD_MODALITY),
+            (both, INPUT_POINTER | INPUT_MODIFIERS),
+        ]);
+        assert_eq!(matching_input_readers(&readers, INPUT_POINTER).collect::<FxHashSet<_>>(),
+            FxHashSet::from_iter([pointer, both]));
+        assert_eq!(matching_input_readers(&readers, INPUT_MODIFIERS).collect::<Vec<_>>(), vec![both]);
+        assert_eq!(matching_input_readers(&readers, INPUT_CAPSLOCK).count(), 0);
+    }
+}

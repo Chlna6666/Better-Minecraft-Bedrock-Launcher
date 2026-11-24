@@ -356,13 +356,32 @@ impl WindowInvalidator {
     ) {
         let mut inner = self.inner.borrow_mut();
         if replayed {
-            // Render always executes today, but replay can skip arbitrary
-            // prepaint/paint reads. Carry unknown dependencies until a full
-            // traversal replaces them, never narrow them to a Render owner.
+            // Deferred replay can skip Render as well as prepaint/paint.
+            // Preserve unknown reads and still-mounted readers until a full
+            // traversal replaces them. Over-invalidation is preferable to
+            // dropping a dependency whose lifecycle was not executed.
             for (&entity, owners) in &inner.render_dependencies {
-                if owners.is_none() && is_live(entity) {
-                    dependencies.insert(entity, None);
-                    entities.insert(entity);
+                if !is_live(entity) {
+                    continue;
+                }
+                match owners {
+                    None => {
+                        dependencies.insert(entity, None);
+                        entities.insert(entity);
+                    }
+                    Some(owners) => {
+                        for &owner in owners {
+                            if has_route(owner) {
+                                entities.insert(entity);
+                                if let Some(readers) = dependencies.entry(entity)
+                                    .or_insert_with(|| Some(SmallVec::new()))
+                                    && !readers.contains(&owner)
+                                {
+                                    readers.push(owner);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -383,8 +402,19 @@ impl WindowInvalidator {
         let mut inner = self.inner.borrow_mut();
         if replayed {
             for (&key, owners) in &inner.global_read_dependencies {
-                if owners.is_none() {
-                    dependencies.insert(key, None);
+                match owners {
+                    None => { dependencies.insert(key, None); }
+                    Some(owners) => {
+                        for &owner in owners {
+                            if has_route(owner)
+                                && let Some(readers) = dependencies.entry(key)
+                                    .or_insert_with(|| Some(SmallVec::new()))
+                                && !readers.contains(&owner)
+                            {
+                                readers.push(owner);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1162,6 +1192,32 @@ mod retained_dirty_scope_tests {
         assert!(invalidator.active_targeted_replay());
         assert!(!invalidator.retained_path_is_dirty(&path(&[0])));
         assert!(!invalidator.retained_path_is_dirty(&path(&[0, 1, 2])));
+    }
+
+    #[test]
+    fn deferred_replay_keeps_mounted_dependency_owners_and_drops_removed_ones() {
+        let invalidator = WindowInvalidator::new();
+        let model = EntityId::from(11);
+        let mounted = EntityId::from(12);
+        let removed = EntityId::from(13);
+        let global = TypeId::of::<u32>();
+        let mut entities = FxHashSet::default();
+        let mut reads = FxHashMap::default();
+        reads.insert(model, Some(smallvec::smallvec![mounted, removed]));
+        invalidator.commit_render_dependencies(&mut reads, &mut entities, false, |_| true, |_| true);
+        let mut globals = crate::GlobalReadDependencies::default();
+        globals.insert((global, None), Some(smallvec::smallvec![mounted, removed]));
+        invalidator.commit_global_read_dependencies(&mut globals, false, |_| true);
+
+        reads.clear();
+        globals.clear();
+        entities.clear();
+        invalidator.commit_render_dependencies(&mut reads, &mut entities, true, |_| true, |owner| owner == mounted);
+        invalidator.commit_global_read_dependencies(&mut globals, true, |owner| owner == mounted);
+        assert!(entities.contains(&model));
+        let inner = invalidator.inner.borrow();
+        assert_eq!(inner.render_dependencies.get(&model).unwrap().as_ref().unwrap().as_slice(), &[mounted]);
+        assert_eq!(inner.global_read_dependencies.get(&(global, None)).unwrap().as_ref().unwrap().as_slice(), &[mounted]);
     }
 
     #[test]
