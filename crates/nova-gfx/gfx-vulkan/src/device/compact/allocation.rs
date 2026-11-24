@@ -117,6 +117,8 @@ pub(super) fn allocate_texture(
         image,
         allocation,
         desc: desc.clone(),
+        // Relocation uses the ordinary transfer allocation, not host transfer.
+        host_copy: false,
         layout: vk::ImageLayout::UNDEFINED,
     }))
 }

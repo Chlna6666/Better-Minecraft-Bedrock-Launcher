@@ -60,10 +60,12 @@ mod transfer_queue;
 mod submission_wake;
 mod timeline;
 mod submit;
+mod host_image_copy;
 
 // Desktop has alternate renderers; Android 15 does not guarantee Vulkan 1.4.
 // ash 0.38 lacks the named 1.4 constant, but the API version encoding is stable.
-// Use only bound core 1.3 commands until the whole ash dependency graph is updated.
+// Core 1.4 host-copy commands use the ABI-compatible extension structures
+// and explicitly loaded function pointers until Ash exposes core 1.4.
 const PREFERRED_API_VERSION: u32 = vk::make_api_version(0, 1, 4, 0);
 const REQUIRED_API_VERSION: u32 = if cfg!(target_os = "android") {
     vk::API_VERSION_1_3
@@ -150,6 +152,7 @@ pub struct VulkanDevice {
     native_pixel_presentation: Option<khr::get_surface_capabilities2::Instance>,
     memory_budget_supported: bool,
     host_query_reset: bool,
+    host_image_copy: Option<host_image_copy::HostImageCopy>,
     draw_indirect_count: bool,
     entry: Entry,
     instance: Instance,
@@ -406,7 +409,8 @@ impl VulkanDevice {
             present_wait_supported,
             host_query_reset,
             draw_indirect_count,
-        ) = match create_device(&instance, physical_device, queue_families, &entry) {
+            host_image_copy_enabled,
+        ) = match create_device(&instance, physical_device, queue_families, &entry, instance_api) {
             Ok(result) => result,
             Err(error) => {
                 // SAFETY: logical device creation failed; no child device exists.
@@ -414,6 +418,9 @@ impl VulkanDevice {
                 return Err(error);
             }
         };
+        let host_image_copy = host_image_copy_enabled.then(|| host_image_copy::HostImageCopy::load(
+            &instance, physical_device, &device, instance_api.min(adapter_properties.api_version),
+        )).flatten();
         let dedicated_compute_timestamp_clock = if dedicated_compute_queue.is_some() {
             queue_families
                 .compute
@@ -519,6 +526,7 @@ impl VulkanDevice {
             native_pixel_presentation,
             memory_budget_supported,
             host_query_reset,
+            host_image_copy,
             draw_indirect_count,
             entry,
             instance,
@@ -990,7 +998,7 @@ impl VulkanDevice {
             )?;
         }
         let transient = desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT);
-        let create_info = vk::ImageCreateInfo::default()
+        let mut create_info = vk::ImageCreateInfo::default()
             .image_type(if matches!(desc.dimension, TextureDimension::D3 { .. }) {
                 vk::ImageType::TYPE_3D
             } else {
@@ -1015,9 +1023,21 @@ impl VulkanDevice {
             })
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
+        let mut host_copy = self.host_image_copy.as_ref().is_some_and(|copy|
+            copy.supports_image(&self.instance, self.physical_device, desc, &create_info));
+        if host_copy {
+            create_info.usage |= vk::ImageUsageFlags::HOST_TRANSFER_EXT;
+        }
         // SAFETY: Device is valid and image create info is self-contained.
-        let image =
-            unsafe { self.device.create_image(&create_info, None) }.map_err(VulkanError::from)?;
+        let image = match unsafe { self.device.create_image(&create_info, None) } {
+            Ok(image) => image,
+            Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED) if host_copy => {
+                host_copy = false;
+                create_info.usage &= !vk::ImageUsageFlags::HOST_TRANSFER_EXT;
+                unsafe { self.device.create_image(&create_info, None) }.map_err(VulkanError::from)?
+            }
+            Err(error) => return Err(VulkanError::from(error).into()),
+        };
         // SAFETY: Image was created from this device and is valid here.
         let requirements = unsafe { self.device.get_image_memory_requirements(image) };
         let name = desc.label.as_deref().unwrap_or("nova-gfx-texture");
@@ -1072,6 +1092,7 @@ impl VulkanDevice {
             image,
             allocation,
             desc: desc.clone(),
+            host_copy,
             // VkImageCreateInfo starts in UNDEFINED. A storage image must be
             // transitioned to GENERAL by a GPU image barrier before its first
             // shader write; reporting GENERAL here without a barrier was invalid.
@@ -1096,6 +1117,7 @@ impl VulkanDevice {
             (texture.image, texture.layout, texture.desc.mip_level_count)
         };
         validate_texture_staging_layout(desc, self.textures.get(desc.texture)?.desc.format)?;
+        if self.try_host_texture_write(desc, data)? { return Ok(()); }
         let upload = self.write_upload_data(data)?;
         let staging_buffer = self.upload_page_buffer(upload.page_index)?;
         self.copy_buffer_to_texture(
@@ -1145,6 +1167,22 @@ impl VulkanDevice {
         }
         if plans.is_empty() {
             return Ok(());
+        }
+        // Host copies run before GPU submissions and only initialize fresh
+        // images. Do not overtake a prior staged write to the same image.
+        if self.host_image_copy.is_some() {
+            let mut seen = std::collections::HashSet::new();
+            let mut staged = Vec::with_capacity(plans.len());
+            for mut plan in plans {
+                let descriptor = plan.write.descriptor;
+                if seen.insert(descriptor.texture) && self.try_host_texture_write(descriptor, plan.write.data)? {
+                    continue;
+                }
+                plan.old_layout = self.textures.get(descriptor.texture)?.layout;
+                staged.push(plan);
+            }
+            plans = staged;
+            if plans.is_empty() { return Ok(()); }
         }
         let upload_sizes = plans
             .iter()
@@ -6231,6 +6269,7 @@ struct VulkanTexture {
     image: vk::Image,
     allocation: MemoryAllocation,
     desc: TextureDescriptor,
+    host_copy: bool,
     layout: vk::ImageLayout,
 }
 
@@ -7165,12 +7204,14 @@ fn create_device(
     physical_device: vk::PhysicalDevice,
     indices: QueueFamilyIndices,
     entry: &Entry,
+    instance_api: u32,
 ) -> Result<(
     ash::Device,
     vk::Queue,
     Option<vk::Queue>,
     Option<vk::Queue>,
     vk::Queue,
+    bool,
     bool,
     bool,
     bool,
@@ -7304,6 +7345,16 @@ fn create_device(
         .draw_indirect_count(draw_indirect_count);
     let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
         .synchronization2(true).dynamic_rendering(true);
+    // The promoted structure retains its EXT sType and ABI. Do not combine
+    // it with VkPhysicalDeviceVulkan14Features, which would duplicate it.
+    let api = instance_api.min(unsafe { instance.get_physical_device_properties(physical_device) }.api_version);
+    let core_host_copy = api >= PREFERRED_API_VERSION;
+    let mut host_copy_features = vk::PhysicalDeviceHostImageCopyFeaturesEXT::default();
+    if core_host_copy {
+        let mut available = vk::PhysicalDeviceFeatures2::default().push_next(&mut host_copy_features);
+        unsafe { instance.get_physical_device_features2(physical_device, &mut available) };
+    }
+    let host_image_copy_enabled = host_copy_features.host_image_copy == vk::TRUE;
     let mut present_id_features = vk::PhysicalDevicePresentIdFeaturesKHR::default();
     let mut present_wait_features = vk::PhysicalDevicePresentWaitFeaturesKHR::default();
     if has_extension(khr::present_id::NAME)
@@ -7333,6 +7384,9 @@ fn create_device(
             .push_next(&mut present_wait_features);
     }
     create_info = create_info.push_next(&mut features12).push_next(&mut features13);
+    if host_image_copy_enabled {
+        create_info = create_info.push_next(&mut host_copy_features);
+    }
     // SAFETY: Physical device and queue info were selected from this instance.
     let device = unsafe { instance.create_device(physical_device, &create_info, None) }
         .map_err(VulkanError::from)?;
@@ -7373,6 +7427,7 @@ fn create_device(
         present_wait_supported,
         host_query_reset,
         draw_indirect_count,
+        host_image_copy_enabled,
     ))
 }
 
