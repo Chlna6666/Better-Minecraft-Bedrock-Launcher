@@ -8,6 +8,7 @@ on:
       - '.github/workflows/gpui3d-native-mrt.yml'
       - 'crates/gpui-3d/src/scene_view/mesher.wgsl'
       - 'crates/gpui-3d/src/scene_view/voxel.wgsl'
+      - 'crates/gpui-3d/src/scene_view/draw_compaction.wgsl'
       - 'crates/gpui-3d/src/scene_view/effects/**'
       - 'crates/gpui-3d/src/scene_view/generated_tests.rs'
 
@@ -16,7 +17,7 @@ permissions:
 
 concurrency:
   group: gpui3d-native-mrt-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   vulkan-software:
@@ -25,6 +26,7 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: target/ci-native
       CARGO_TERM_COLOR: always
       CARGO_PROFILE_DEV_OPT_LEVEL: "1"
       RUST_MIN_STACK: "67108864"
@@ -44,6 +46,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1
+      - name: Restore Rust dependency and compiler cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target/ci-native"
+          key: native-mrt-v1
+          cache-on-failure: "true"
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
       - name: Select the software Vulkan driver
         shell: bash
         run: |

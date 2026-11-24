@@ -30,6 +30,16 @@ pub(crate) type DrawOrder = u32;
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub(crate) struct SceneAnimationId(pub(crate) u32);
 
+// The legacy macOS Metal shader ABI treats this CPU-only optional field as
+// two opaque 32-bit words, never reading the discriminant or payload. If the
+// compiler changes the layout, fail compilation rather than misalign the
+// remaining fields in the native instance buffer.
+#[cfg(all(target_os = "macos", not(feature = "macos-blade")))]
+const _: () = {
+    assert!(std::mem::size_of::<Option<SceneAnimationId>>() == 8);
+    assert!(std::mem::align_of::<Option<SceneAnimationId>>() == 4);
+};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SceneAnimationValue {
     pub(crate) animation_id: SceneAnimationId,

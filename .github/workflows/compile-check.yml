@@ -14,7 +14,9 @@ permissions:
 
 concurrency:
   group: compile-check-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Keep one running master build alive so it can publish its dependency cache.
+  # GitHub still replaces obsolete pending runs in the same group.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -63,24 +65,14 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
           Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmBin"
 
-      - name: Restore Cargo source cache
-        uses: actions/cache@v5
+      - name: Restore Rust dependency and compiler cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/registry/src
-            ~/.cargo/git
-          key: windows-cargo-sources-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-v8
-          restore-keys: |
-            windows-cargo-sources-${{ runner.arch }}-
-
-      - name: Remove stale compiler outputs
-        shell: pwsh
-        run: |
-          if (Test-Path $env:CARGO_TARGET_DIR) {
-            Remove-Item -Recurse -Force $env:CARGO_TARGET_DIR
-          }
+          workspaces: ". -> target/ci-check"
+          key: compile-check-v1
+          cache-on-failure: "true"
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Guard BMCBL native 3D editor and GPUI sidecar integration
         shell: pwsh
@@ -140,7 +132,9 @@ jobs:
         shell: pwsh
         run: |
           cargo test -p gpui-3d --lib upload_feedback::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gpui-3d --lib structural_light_delta_tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gpui-3d --lib voxel_mesh::fusion_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p gpui-3d --lib scene_view::sidecar::tests -- --nocapture
@@ -172,11 +166,13 @@ jobs:
           cargo test -p bmcbl --lib lazy_mesh_only_defers_distant_rear_columns_and_recovers_on_turn -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib dirty_mesh_priority_uses_near_first_then_forward_within_radial_band -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib rear_dirty_rebuilds_wait_for_camera_without_losing_dirty_state -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib palette_collect_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib portal_face_pruning_tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib streaming_fluid_level_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p bmcbl --lib hidden_portal_bands_never_allocate_gpu_voxel_grids_or_instances -- --nocapture
@@ -230,20 +226,14 @@ jobs:
           rustc -Vv
           cargo -V
 
-      - name: Restore Cargo source cache
-        uses: actions/cache@v5
+      - name: Restore Rust dependency and compiler cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/registry/src
-            ~/.cargo/git
-          key: linux-cargo-sources-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-v8
-          restore-keys: |
-            linux-cargo-sources-${{ runner.arch }}-
-
-      - name: Remove stale compiler outputs
-        run: rm -rf "$CARGO_TARGET_DIR"
+          workspaces: ". -> target/ci-check"
+          key: compile-check-v1
+          cache-on-failure: "true"
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Check standalone gpui-3d core without GPUI
         run: cargo check -p gpui-3d --no-default-features --lib
@@ -343,6 +333,15 @@ jobs:
         with:
           toolchain: 1.99.1
           components: rustfmt
+
+      - name: Restore Rust dependency and compiler cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ". -> target/ci-check"
+          key: compile-check-v1
+          cache-on-failure: "true"
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Check native Metal backend
         run: cargo check --locked -p gfx-metal --lib

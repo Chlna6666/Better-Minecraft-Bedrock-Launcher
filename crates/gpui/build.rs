@@ -362,6 +362,10 @@ mod macos {
             include_guard: Some("SCENE_H".into()),
             language: cbindgen::Language::C,
             no_includes: true,
+            // Legacy Metal copies repr(C) primitives directly. cbindgen cannot
+            // express Rust's Option<SceneAnimationId>; the shaders never read
+            // this CPU-only field. Preserve its checked size and alignment.
+            header: Some("struct Option_SceneAnimationId { unsigned int opaque_words[2]; };".into()),
             ..Default::default()
         };
         config.export.include.extend([
@@ -509,6 +513,7 @@ mod macos {
 }
 
 mod windows {
+    #[cfg(feature = "windows-manifest")]
     use std::path::Path;
 
     pub(super) fn build() {
