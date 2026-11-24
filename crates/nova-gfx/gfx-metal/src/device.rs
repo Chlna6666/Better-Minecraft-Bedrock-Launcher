@@ -64,7 +64,9 @@ mod platform {
     use objc2_app_kit::NSView;
     use objc2_core_foundation::CGSize;
     use objc2_foundation::{NSError, NSInteger, NSObjectProtocol, NSString};
-    use objc2_metal::{MTLCompareFunction, MTLDepthStencilDescriptor, MTLDepthStencilState, MTLSamplerState};
+    use objc2_metal::{MTLCompareFunction, MTLDepthStencilDescriptor, MTLDepthStencilState, MTLSamplerState,
+        MTLBlitCommandEncoder, MTLOrigin, MTLSize, MTLStorageMode, MTLTextureDescriptor,
+        MTLTextureType, MTLTextureUsage};
     use objc2_metal::{
         MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
         MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLCompileOptions, MTLDevice,
@@ -191,6 +193,9 @@ mod platform {
                 config,
                 layer,
                 last_submission: None,
+                retained_color: false,
+                color_history: None,
+                history_submission: None,
             }))
         }
 
@@ -205,7 +210,13 @@ mod platform {
                 return Ok(());
             }
             let swapchain = self.swapchains.get_mut(swapchain)?;
-            swapchain.config.size = gfx_core::Extent2d::new(width, height)?;
+            let size = gfx_core::Extent2d::new(width, height)?;
+            if swapchain.config.size != size {
+                // Command buffers retain the old history until completion.
+                swapchain.color_history = None;
+                swapchain.history_submission = None;
+            }
+            swapchain.config.size = size;
             swapchain
                 .layer
                 .setDrawableSize(drawable_size(swapchain.config));
@@ -464,6 +475,64 @@ mod platform {
             Err(Error::Unavailable("Metal generic encoder recording is not implemented".into()))
         }
 
+        /// Opt in to a persistent color attachment for LoadOp::Load.
+        /// Call before acquiring a drawable; the next frame must clear.
+        /// Direct presentation remains the default, with framebufferOnly
+        /// enabled and no persistent texture or full-surface blit.
+        ///
+        /// Returns false when the previous frame is still in flight.
+        pub fn set_retained_drawable_contents(
+            &mut self, swapchain: SwapchainId, enabled: bool,
+        ) -> Result<bool> {
+            if !self.poll_present_readiness(swapchain)? {
+                return Ok(false);
+            }
+            let chain = self.swapchains.get_mut(swapchain)?;
+            if chain.retained_color != enabled {
+                chain.retained_color = enabled;
+                chain.color_history = None;
+                chain.history_submission = None;
+                chain.layer.setFramebufferOnly(!enabled);
+            }
+            Ok(true)
+        }
+
+        fn prepare_color_history(
+            &mut self, id: SwapchainId, load: LoadOp<ClearColor>,
+        ) -> Result<()> {
+            let chain = self.swapchains.get_mut(id)?;
+            if !chain.retained_color {
+                if matches!(load, LoadOp::Load) {
+                    return Err(Error::Unavailable("Metal retained drawable contents must be enabled before the initial clear".into()));
+                }
+                return Ok(());
+            }
+            if matches!(load, LoadOp::Load)
+                && (chain.color_history.is_none()
+                    || !chain.history_submission.as_ref().is_some_and(|commands| {
+                        commands.status() == MTLCommandBufferStatus::Completed
+                    }))
+            {
+                return Err(Error::InvalidInput("Metal retained color is uninitialized; clear after resize or GPU failure".into()));
+            }
+            if chain.color_history.is_none() {
+                let native = MTLTextureDescriptor::new();
+                native.setTextureType(MTLTextureType::Type2D);
+                native.setPixelFormat(format_to_metal(chain.config.format));
+                // SAFETY: the nonzero extent is the current swapchain extent.
+                unsafe {
+                    native.setWidth(chain.config.size.width() as usize);
+                    native.setHeight(chain.config.size.height() as usize);
+                    native.setMipmapLevelCount(1);
+                }
+                native.setStorageMode(MTLStorageMode::Private);
+                native.setUsage(MTLTextureUsage::RenderTarget);
+                chain.color_history = Some(self.device.newTextureWithDescriptor(&native)
+                    .ok_or_else(|| Error::Backend("Metal retained color allocation failed".into()))?);
+            }
+            Ok(())
+        }
+
         /// Native layer for a host-owned CAMetalDisplayLink.
         ///
         /// The host must keep display-link registration on the layer's owner
@@ -485,14 +554,11 @@ mod platform {
             frame: &PresentFrameDescriptor<'_>,
             drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>,
         ) -> Result<Option<PresentedFrame>> {
-            let LoadOp::Clear(color) = frame.color_load_op else {
-                return Err(Error::Unavailable("Metal drawable LoadOp::Load is not implemented".into()));
-            };
             let chain = self.swapchains.get(frame.swapchain)?;
             if !std::ptr::eq::<CAMetalLayer>(&*drawable.layer(), &*chain.layer) {
                 return Err(Error::InvalidInput("Metal drawable belongs to a different layer".into()));
             }
-            self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, color,
+            self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, frame.color_load_op,
                 frame.depth_attachment, Some(drawable))
         }
 
@@ -501,7 +567,7 @@ mod platform {
             swapchain: SwapchainId,
             render_pass: RenderPassId,
             steps: &[RenderCommand],
-            clear_color: gfx_core::ClearColor,
+            color_load: LoadOp<ClearColor>,
             depth_attachment: Option<DepthAttachment>,
             supplied_drawable: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
         ) -> Result<Option<PresentedFrame>> {
@@ -510,7 +576,9 @@ mod platform {
             }
             let started = Instant::now();
             let swapchain_id = swapchain;
+            self.prepare_color_history(swapchain_id, color_load)?;
             let swapchain = self.swapchains.get(swapchain_id)?;
+            let history = swapchain.color_history.as_ref();
             let render_pass = self.render_passes.get(render_pass)?;
             if render_pass.color_formats.as_slice() != [swapchain.config.format] {
                 return Err(Error::InvalidInput("Metal swapchain and render pass formats differ".into()));
@@ -567,15 +635,25 @@ mod platform {
                 // SAFETY: color attachment index 0 is valid for the descriptor's color array.
                 let color_attachment =
                     unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
-                color_attachment.setTexture(Some(&texture));
-                color_attachment.setLoadAction(MTLLoadAction::Clear);
+                if history.is_some() && texture.isFramebufferOnly() {
+                    // A display-link credit acquired before a mode change
+                    // may still carry an old framebuffer-only texture.
+                    return Ok(None);
+                }
+                color_attachment.setTexture(Some(history.map_or(texture.as_ref(), |history| history.as_ref())));
                 color_attachment.setStoreAction(MTLStoreAction::Store);
-                color_attachment.setClearColor(MTLClearColor {
-                    red: f64::from(clear_color.red),
-                    green: f64::from(clear_color.green),
-                    blue: f64::from(clear_color.blue),
-                    alpha: f64::from(clear_color.alpha),
-                });
+                match color_load {
+                    LoadOp::Load => color_attachment.setLoadAction(MTLLoadAction::Load),
+                    LoadOp::Clear(clear_color) => {
+                        color_attachment.setLoadAction(MTLLoadAction::Clear);
+                        color_attachment.setClearColor(MTLClearColor {
+                            red: f64::from(clear_color.red),
+                            green: f64::from(clear_color.green),
+                            blue: f64::from(clear_color.blue),
+                            alpha: f64::from(clear_color.alpha),
+                        });
+                    }
+                }
                 if let Some((resource, load_op)) = &depth {
                     let attachment = descriptor.depthAttachment();
                     attachment.setTexture(Some(resource));
@@ -599,6 +677,21 @@ mod platform {
                     })?;
                 encode_draw_steps(&encoder, &render_steps, swapchain.config.size, full_viewport(swapchain.config.size));
                 encoder.endEncoding();
+                if let Some(history) = history {
+                    let blit = command_buffer.blitCommandEncoder()
+                        .ok_or_else(|| Error::Backend("Metal retained color blit unavailable".into()))?;
+                    let origin = MTLOrigin { x: 0, y: 0, z: 0 };
+                    // SAFETY: matching single-sample color textures, equal extents,
+                    // retained by this command buffer until execution completes.
+                    unsafe {
+                        blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+                            history, 0, 0, origin,
+                            MTLSize { width: texture.width(), height: texture.height(), depth: 1 },
+                            &texture, 0, 0, origin,
+                        );
+                    }
+                    blit.endEncoding();
+                }
                 let record_elapsed = started.elapsed().saturating_sub(image_acquire);
                 let present_started = Instant::now();
                 command_buffer.presentDrawable(drawable.as_ref());
@@ -616,8 +709,13 @@ mod platform {
             let Some((command_buffer, timings)) = frame else {
                 return Ok(None);
             };
+            let chain = self.swapchains.get_mut(swapchain_id)?;
+            if chain.retained_color {
+                // Keep completion proof independently of public SubmissionId consumption.
+                chain.history_submission = Some(command_buffer.clone());
+            }
             let submission = self.submissions.insert(MetalSubmission::new(command_buffer, true));
-            self.swapchains.get_mut(swapchain_id)?.last_submission = Some(submission);
+            chain.last_submission = Some(submission);
             self.submitted_frames = self.submitted_frames.saturating_add(1);
             Ok(Some(PresentedFrame { submission: Some(submission), timings: Some(timings) }))
         }
@@ -1172,10 +1270,7 @@ mod platform {
             &mut self,
             frame: &PresentFrameDescriptor<'_>,
         ) -> Result<Option<PresentedFrame>> {
-            let LoadOp::Clear(color) = frame.color_load_op else {
-                return Err(Error::Unavailable("Metal drawable LoadOp::Load is not implemented".into()));
-            };
-            self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, color, frame.depth_attachment, None)
+            self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, frame.color_load_op, frame.depth_attachment, None)
         }
 
         fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
@@ -1293,6 +1388,9 @@ mod platform {
         config: SurfaceConfig,
         layer: Retained<CAMetalLayer>,
         last_submission: Option<SubmissionId>,
+        retained_color: bool,
+        color_history: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
+        history_submission: Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>>,
     }
 
     type ReadyCallback = Box<dyn FnOnce() + Send + 'static>;
