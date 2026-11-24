@@ -47,7 +47,7 @@ pub struct Dx11Device {
     // only registers that were populated instead of clearing all 128 on each blur pass.
     pub(crate) vs_srv_slots: Cell<u128>,
     pub(crate) ps_srv_slots: Cell<u128>,
-    pending: VecDeque<(u32, ID3D11Query)>,
+    pending: VecDeque<(u32, Option<ID3D11Query>)>,
     queries: Vec<ID3D11Query>,
     native_fence: Option<NativeFence>,
     submission_wakes: std::collections::BTreeMap<u32, std::sync::Arc<crate::frame_pacing::SubmissionWake>>,
@@ -413,31 +413,22 @@ impl Dx11Device {
             .submitted
             .checked_add(1)
             .ok_or_else(|| Error::Unavailable("D3D11 submission IDs exhausted".into()))?;
-        let query = if let Some(query) = self.queries.pop() {
-            query
-        } else {
-            let mut query = None;
-            // SAFETY: valid device, event-query descriptor and output pointer.
-            unsafe {
-                self.native.CreateQuery(
-                    &D3D11_QUERY_DESC {
-                        Query: D3D11_QUERY_EVENT,
-                        MiscFlags: 0,
-                    },
-                    Some(&mut query),
-                )
-            }
-            .map_err(backend)?;
-            required(query)?
-        };
-        // SAFETY: event queries require End only, on this device's immediate context.
-        unsafe { self.context.End(&query); }
-        if let Some(native) = &self.native_fence {
-            // SAFETY: signal is ordered after the event query and all earlier
-            // immediate-context work, on the same owner thread.
+        let query = if let Some(native) = &self.native_fence {
+            // SAFETY: the fence belongs to this immediate context. Signal
+            // follows all preceding GPU work and replaces the legacy event query.
             unsafe { native.context.Signal(&native.fence, u64::from(serial)) }
                 .map_err(|error| backend_error(&self.native, "Signal", error))?;
-        }
+            None
+        } else {
+            let query = if let Some(query) = self.queries.pop() {
+                query
+            } else {
+                create_dx11_query(&self.native, D3D11_QUERY_EVENT)?
+            };
+            // SAFETY: event queries require End only, on this live owner context.
+            unsafe { self.context.End(&query); }
+            Some(query)
+        };
         // SAFETY: the context is live and owned by this device.
         unsafe { self.context.Flush(); }
         self.submitted = serial;
@@ -448,27 +439,45 @@ impl Dx11Device {
         Ok(SubmissionId::from_parts(serial, self.submission_generation))
     }
     pub(crate) fn retire(&mut self) -> Result<()> {
-        while let Some((serial, query)) = self.pending.front() {
-            let mut done = 0u32;
-            // SAFETY: event result is a BOOL (4 bytes); query and writable result are live.
-            unsafe {
-                self.context.GetData(
-                    query,
-                    Some((&raw mut done).cast()),
-                    4,
-                    D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
-                )
+        let previous_completed = self.completed;
+        if let Some(native) = &self.native_fence {
+            // SAFETY: the fence is live. Reading the completed value is
+            // nonblocking and covers every earlier serial on this context.
+            let completed = unsafe { native.fence.GetCompletedValue() };
+            if completed == u64::MAX {
+                return Err(Error::DeviceLost("D3D11 native fence reports device removal".into()));
             }
-            .map_err(|error| backend_error(&self.native, "GetData", error))?;
-            if done == 0 {
-                break;
+            let completed = completed.min(u64::from(self.submitted)) as u32;
+            while self.pending.front().is_some_and(|(serial, _)| *serial <= completed) {
+                self.pending.pop_front();
             }
-            self.completed = *serial;
-            if let Some((_, query)) = self.pending.pop_front() {
-                self.queries.push(query);
+            self.completed = self.completed.max(completed);
+        } else {
+            while let Some((serial, query)) = self.pending.front() {
+                let query = query.as_ref().ok_or_else(|| Error::Backend("D3D11 submission has no event query".into()))?;
+                let mut done = 0u32;
+                // SAFETY: event result is a BOOL (4 bytes); query and result are live.
+                unsafe {
+                    self.context.GetData(
+                        query,
+                        Some((&raw mut done).cast()),
+                        4,
+                        D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
+                    )
+                }
+                .map_err(|error| backend_error(&self.native, "GetData", error))?;
+                if done == 0 {
+                    break;
+                }
+                self.completed = *serial;
+                if let Some((_, Some(query))) = self.pending.pop_front() {
+                    self.queries.push(query);
+                }
             }
         }
-        self.submission_wakes.retain(|serial, _| *serial > self.completed);
+        if self.completed != previous_completed {
+            self.submission_wakes.retain(|serial, _| *serial > self.completed);
+        }
         self.read_completed_frame_timestamps();
         self.read_completed_gpu_work_timestamps();
         Ok(())
