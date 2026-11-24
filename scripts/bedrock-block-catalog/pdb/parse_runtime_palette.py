@@ -151,7 +151,9 @@ def parse_states(path: Path) -> tuple[list[dict], dict]:
             raise ValueError(f"state {len(states)} has no int version")
         versions.add(version_tag[1])
         states.append({
-            "network_runtime_id": len(states),
+            # Palette index, NOT necessarily the wire network runtime ID
+            # (1.26.51+ uses hashed block network IDs).
+            "palette_index": len(states),
             "name": name_tag[1],
             "states": state_props,
             "version": version_tag[1],
