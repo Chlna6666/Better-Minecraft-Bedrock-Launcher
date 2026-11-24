@@ -23,15 +23,15 @@ impl VulkanDevice {
             destroy_upload_commands(&self.device, &commands);
             return Err(error);
         }
-        let fence =
-            match end_submit_deferred(&self.device, self.graphics_queue, commands.command_buffer) {
-                Ok(fence) => fence,
+        let retirement =
+            match self.end_submit_upload(commands.command_buffer) {
+                Ok(retirement) => retirement,
                 Err(error) => {
                     destroy_upload_commands(&self.device, &commands);
                     return Err(error);
                 }
             };
-        self.retire_deferred_upload(commands, fence);
+        self.retire_deferred_upload(commands, retirement);
         for copy in copies {
             let texture = self.textures.get_mut(copy.destination)?;
             texture.layout = copy_destination_layout(texture);
@@ -171,15 +171,15 @@ impl VulkanDevice {
             destroy_upload_commands(&self.device, &commands);
             return Err(error);
         }
-        let fence =
-            match end_submit_deferred(&self.device, self.graphics_queue, commands.command_buffer) {
-                Ok(fence) => fence,
+        let retirement =
+            match self.end_submit_upload(commands.command_buffer) {
+                Ok(retirement) => retirement,
                 Err(error) => {
                     destroy_upload_commands(&self.device, &commands);
                     return Err(error);
                 }
             };
-        self.retire_deferred_upload(commands, fence);
+        self.retire_deferred_upload(commands, retirement);
         for copy in copies {
             let texture = self.textures.get_mut(copy.texture)?;
             texture.layout = copy_destination_layout(texture);

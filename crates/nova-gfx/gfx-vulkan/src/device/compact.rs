@@ -229,7 +229,7 @@ impl VulkanDevice {
                     .memory_barriers(&[barrier]).buffer_memory_barriers(&[]).image_memory_barriers(&[]),
             );
         }
-        let fence = match end_submit_deferred(&self.device, self.graphics_queue, commands) {
+        let fence = match end_submit_deferred(&self.device, self.graphics_queue, commands, self.primary_timeline.as_ref()) {
             Ok(fence) => fence,
             Err(error) => {
                 destroy_upload_commands(&self.device, &upload);

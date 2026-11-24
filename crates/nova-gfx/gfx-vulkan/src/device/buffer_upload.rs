@@ -54,14 +54,14 @@ impl VulkanDevice {
                 return Err(error);
             }
         };
-        let (commands, fence) = match self.submit_buffer_copies(&staged, tag) {
+        let (commands, retirement) = match self.submit_buffer_copies(&staged, tag) {
             Ok(submission) => submission,
             Err(error) => {
                 self.upload_ring.discard_unsubmitted();
                 return Err(error);
             }
         };
-        self.enqueue_deferred_upload(commands, fence);
+        self.enqueue_deferred_upload(commands, retirement);
         self.poll_cleanup();
         Ok(stats)
     }
@@ -92,7 +92,7 @@ impl VulkanDevice {
         &mut self,
         staged: &[StagedBufferCopy<'_>],
         tag: Option<gfx_core::GpuTimestampTag>,
-    ) -> Result<(VulkanUploadCommands, vk::Fence)> {
+    ) -> Result<(VulkanUploadCommands, CleanupPoint)> {
         let timed = tag.is_some() && self.timestamp_clock.is_some();
         let mut commands = if let Some(index) = self
             .upload_command_pool
@@ -120,8 +120,11 @@ impl VulkanDevice {
         if let Some(query) = commands.timestamp_queries.filter(|_| timed) {
             // SAFETY: An idle, fence-complete upload pool owns two writable query slots.
             unsafe {
-                self.device
-                    .cmd_reset_query_pool(commands.command_buffer, query, 0, 2);
+                if self.host_query_reset {
+                    self.device.reset_query_pool(query, 0, 2);
+                } else {
+                    self.device.cmd_reset_query_pool(commands.command_buffer, query, 0, 2);
+                }
                 self.device.cmd_write_timestamp2(
                     commands.command_buffer,
                     vk::PipelineStageFlags2::TOP_OF_PIPE,
@@ -221,15 +224,15 @@ impl VulkanDevice {
                 );
             }
         }
-        let fence =
-            match end_submit_deferred(&self.device, self.graphics_queue, commands.command_buffer) {
-                Ok(fence) => fence,
+        let retirement =
+            match self.end_submit_upload(commands.command_buffer) {
+                Ok(retirement) => retirement,
                 Err(error) => {
                     destroy_upload_commands(&self.device, &commands);
                     return Err(error);
                 }
             };
-        Ok((commands, fence))
+        Ok((commands, retirement))
     }
 }
 

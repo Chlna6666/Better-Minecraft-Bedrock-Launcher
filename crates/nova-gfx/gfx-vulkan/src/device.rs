@@ -1254,6 +1254,7 @@ impl VulkanDevice {
             self.graphics_queue,
             command_pool,
             command_buffer,
+            self.primary_timeline.as_ref(),
         )
     }
 
@@ -2876,10 +2877,12 @@ impl VulkanDevice {
         }
         if let (Some(primary), Some(secondary)) = (&self.primary_timeline, &self.secondary_timeline) {
             let result = (|| -> Result<(u64, u64)> {
-                // Explicit release covers even earlier submissions that did
-                // not signal the primary timeline (e.g. upload commands).
-                primary.submit(&self.device, self.graphics_queue, &[], &[], &[],
-                    vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
+                // The last resource-bearing primary submission already
+                // signals ALL_COMMANDS. Bootstrap only the first handoff.
+                if primary.last() == 0 {
+                    primary.submit(&self.device, self.graphics_queue, &[], &[], &[],
+                        vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
+                }
                 let buffers = &self.command_encoders.get(encoder)?.command_buffers;
                 let produced = secondary.submit_after(
                     &self.device, queue, buffers, primary, primary.last(),
@@ -2969,8 +2972,13 @@ impl VulkanDevice {
             // queue until all sidecar writes and layout transitions finish.
             // The fence is on the consumer queue so it protects resource
             // retirement after both queues' GPU work completes.
-            submit::binary(&self.device, self.graphics_queue, &[], &[second], &[],
-                vk::PipelineStageFlags2::ALL_COMMANDS, fence)?;
+            if let Some(timeline) = &self.primary_timeline {
+                timeline.submit(&self.device, self.graphics_queue, &[], &[second], &[],
+                    vk::PipelineStageFlags2::ALL_COMMANDS, fence)?;
+            } else {
+                submit::binary(&self.device, self.graphics_queue, &[], &[second], &[],
+                    vk::PipelineStageFlags2::ALL_COMMANDS, fence)?;
+            }
             Ok(())
         })();
         if let Err(error) = result {
@@ -3915,32 +3923,45 @@ impl VulkanDevice {
         Ok(())
     }
 
-    fn retire_deferred_upload(&mut self, commands: VulkanUploadCommands, fence: vk::Fence) {
-        self.enqueue_deferred_upload(commands, fence);
+    fn retire_deferred_upload(&mut self, commands: VulkanUploadCommands, retirement: CleanupPoint) {
+        self.enqueue_deferred_upload(commands, retirement);
         self.poll_cleanup();
     }
 
-    fn enqueue_deferred_upload(&mut self, commands: VulkanUploadCommands, fence: vk::Fence) {
+    fn enqueue_deferred_upload(&mut self, commands: VulkanUploadCommands, retirement: CleanupPoint) {
         let fence_value = self.next_upload_fence_value;
         self.next_upload_fence_value = self.next_upload_fence_value.saturating_add(1);
         self.upload_ring.retire_used_pages(fence_value);
         self.deferred_destroys.retire(
             0,
             DeferredResource::Upload {
-                fence,
+                retirement,
                 fence_value,
                 commands,
             },
         );
     }
 
+    // Uploads and relocation copies are resource-bearing graphics work.
+    // Their submission itself signals the queue timeline, not a later checkpoint.
+    fn end_submit_upload(&self, command_buffer: vk::CommandBuffer) -> Result<CleanupPoint> {
+        if let Some(timeline) = &self.primary_timeline {
+            // SAFETY: this owner holds the recording command buffer.
+            unsafe { self.device.end_command_buffer(command_buffer) }.map_err(VulkanError::from)?;
+            timeline.submit(&self.device, self.graphics_queue, &[command_buffer], &[], &[],
+                vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
+            return Ok(CleanupPoint::Timeline(timeline.last()));
+        }
+        end_submit_deferred(&self.device, self.graphics_queue, command_buffer, None)
+            .map(CleanupPoint::Fence)
+    }
+
     fn signal_cleanup_point(&self) -> Result<CleanupPoint> {
         if let Some(timeline) = &self.primary_timeline {
-            // A new checkpoint is required: some transfer paths still
-            // submit without a timeline signal. The primary queue also
-            // contains the consumer joins of independent GPU work.
-            timeline.submit(&self.device, self.graphics_queue, &[], &[], &[],
-                vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
+            // Every resource-bearing primary submit (including uploads,
+            // readback, relocation and secondary consumer joins) now signals
+            // this timeline. No new empty submit is needed for each resource.
+            // Zero is the initial completed epoch before any GPU work.
             return Ok(CleanupPoint::Timeline(timeline.last()));
         }
         let fence = create_fence(&self.device, false)?;
@@ -4085,6 +4106,7 @@ impl VulkanDevice {
             self.graphics_queue,
             command_pool,
             command_buffer,
+            self.primary_timeline.as_ref(),
         )
     }
 
@@ -4173,14 +4195,14 @@ impl VulkanDevice {
                 );
             }
         }
-        let fence = match end_submit_deferred(&self.device, self.graphics_queue, command_buffer) {
-            Ok(fence) => fence,
+        let retirement = match self.end_submit_upload(command_buffer) {
+            Ok(retirement) => retirement,
             Err(error) => {
                 destroy_upload_commands(&self.device, &commands);
                 return Err(error);
             }
         };
-        self.retire_deferred_upload(commands, fence);
+        self.retire_deferred_upload(commands, retirement);
         Ok(())
     }
 
@@ -4326,7 +4348,7 @@ impl VulkanDevice {
                 Ok(())
             }
             DeferredResource::Upload {
-                fence,
+                retirement,
                 fence_value,
                 commands,
             } => {
@@ -4360,7 +4382,7 @@ impl VulkanDevice {
                         }
                     }
                 }
-                destroy_fence(&self.device, fence);
+                retirement.destroy(&self.device);
                 let mut commands = commands;
                 commands.gpu_work_tag = None;
                 if self.upload_command_pool.len() < self.upload_command_pool_capacity {
@@ -5242,7 +5264,11 @@ impl SubmissionDevice for VulkanDevice {
         // Exact producer value: no extra producer submit, transient semaphore,
         // or wait-fence allocation. The device owns the timeline until idle.
         if let Some((value, timeline)) = source.timeline_value.zip(self.timeline_for_queue(source.queue)) {
-            timeline.enqueue_wait(&self.device, target, value)?;
+            if let Some(target_timeline) = self.timeline_for_queue(target_queue) {
+                target_timeline.submit_after(&self.device, target, &[], timeline, value)?;
+            } else {
+                timeline.enqueue_wait(&self.device, target, value)?;
+            }
             // SAFETY: a native timeline wait covering the producer is enqueued.
             return Ok(unsafe { gfx_core::GpuNativeWaitProof::after_native_wait(producer, target_queue) });
         }
@@ -5262,8 +5288,13 @@ impl SubmissionDevice for VulkanDevice {
         let result = (|| -> Result<()> {
             submit::binary(&self.device, source_queue, &[], &[], &[semaphore],
                 vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
-            submit::binary(&self.device, target, &[], &[semaphore], &[],
-                vk::PipelineStageFlags2::ALL_COMMANDS, fence)?;
+            if let Some(timeline) = self.timeline_for_queue(target_queue) {
+                timeline.submit(&self.device, target, &[], &[semaphore], &[],
+                    vk::PipelineStageFlags2::ALL_COMMANDS, fence)?;
+            } else {
+                submit::binary(&self.device, target, &[], &[semaphore], &[],
+                    vk::PipelineStageFlags2::ALL_COMMANDS, fence)?;
+            }
             Ok(())
         })();
         if let Err(error) = result {
@@ -6466,7 +6497,7 @@ enum DeferredResource {
         set: VulkanResourceSet,
     },
     Upload {
-        fence: vk::Fence,
+        retirement: CleanupPoint,
         fence_value: u64,
         commands: VulkanUploadCommands,
     },
@@ -6480,7 +6511,8 @@ impl DeferredResource {
             | Self::Buffers { retirement: CleanupPoint::Timeline(value), .. }
             | Self::Texture { retirement: CleanupPoint::Timeline(value), .. }
             | Self::TextureView { retirement: CleanupPoint::Timeline(value), .. }
-            | Self::BindGroup { retirement: CleanupPoint::Timeline(value), .. } => Some(*value),
+            | Self::BindGroup { retirement: CleanupPoint::Timeline(value), .. }
+            | Self::Upload { retirement: CleanupPoint::Timeline(value), .. } => Some(*value),
             Self::CommandEncoder(encoder) => encoder.retire_primary_value,
             _ => None,
         }
@@ -6490,13 +6522,13 @@ impl DeferredResource {
 fn deferred_resource_ready(device: &ash::Device, resource: &DeferredResource) -> bool {
     let fence = match resource {
         DeferredResource::HeapReplacement { fence, .. }
-        | DeferredResource::Upload { fence, .. }
         | DeferredResource::CommandEncoder(VulkanCommandEncoder { fence, .. }) => *fence,
         DeferredResource::Buffer { retirement, .. }
         | DeferredResource::Buffers { retirement, .. }
         | DeferredResource::Texture { retirement, .. }
         | DeferredResource::TextureView { retirement, .. }
-        | DeferredResource::BindGroup { retirement, .. } => match retirement {
+        | DeferredResource::BindGroup { retirement, .. }
+        | DeferredResource::Upload { retirement, .. } => match retirement {
             CleanupPoint::Fence(fence) => *fence,
             // Only the timeline-aware owner predicate can retire this.
             CleanupPoint::Timeline(_) => return false,
@@ -8302,13 +8334,20 @@ fn end_submit_wait_destroy(
     queue: vk::Queue,
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
+    timeline: Option<&timeline::QueueTimeline>,
 ) -> Result<()> {
     // SAFETY: Command buffer is recording and can be ended.
     unsafe { device.end_command_buffer(command_buffer) }.map_err(VulkanError::from)?;
-    submit::binary(device, queue, &[command_buffer], &[], &[],
-        vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
-    // SAFETY: Queue belongs to this device; waiting before destroying temporary resources is valid.
-    unsafe { device.queue_wait_idle(queue) }.map_err(VulkanError::from)?;
+    if let Some(timeline) = timeline {
+        timeline.submit(device, queue, &[command_buffer], &[], &[],
+            vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
+        timeline.wait_point(timeline.last()).wait().map_err(VulkanError::from)?;
+    } else {
+        submit::binary(device, queue, &[command_buffer], &[], &[],
+            vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
+        // SAFETY: this queue owns the temporary commands.
+        unsafe { device.queue_wait_idle(queue) }.map_err(VulkanError::from)?;
+    }
     // SAFETY: Command pool belongs to this device and owns command_buffer.
     unsafe { device.destroy_command_pool(command_pool, None) };
     Ok(())
@@ -8318,12 +8357,18 @@ fn end_submit_deferred(
     device: &ash::Device,
     queue: vk::Queue,
     command_buffer: vk::CommandBuffer,
+    timeline: Option<&timeline::QueueTimeline>,
 ) -> Result<vk::Fence> {
     // SAFETY: Command buffer is recording and can be ended.
     unsafe { device.end_command_buffer(command_buffer) }.map_err(VulkanError::from)?;
     let fence = create_fence(device, false)?;
-    if let Err(error) = submit::binary(device, queue, &[command_buffer], &[], &[],
-        vk::PipelineStageFlags2::ALL_COMMANDS, fence) {
+    let submitted = match timeline {
+        Some(timeline) => timeline.submit(device, queue, &[command_buffer], &[], &[],
+            vk::PipelineStageFlags2::ALL_COMMANDS, fence),
+        None => submit::binary(device, queue, &[command_buffer], &[], &[],
+            vk::PipelineStageFlags2::ALL_COMMANDS, fence),
+    };
+    if let Err(error) = submitted {
         destroy_fence(device, fence);
         return Err(error);
     }
