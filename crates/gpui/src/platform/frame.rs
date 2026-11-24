@@ -162,9 +162,14 @@ impl FrameCadence {
 
     pub(crate) fn is_due(self, now: Instant, display_tick: Option<Instant>) -> bool {
         self.deadline().is_none_or(|deadline| match display_tick {
-            // DWM refresh periods and Instant use different rounding. Preserve
-            // the deadline phase if a vblank is only a few microseconds early.
-            Some(tick) => deadline.saturating_duration_since(tick) <= Duration::from_micros(10),
+            // Native callbacks are timestamped on wake, not at scanout. Permit
+            // small dispatch jitter while retaining the deadline phase. Bound
+            // tolerance relative to the requested cap to avoid accumulating lead.
+            Some(tick) => {
+                let tolerance = self.interval.unwrap_or_default() / 8;
+                deadline.saturating_duration_since(tick)
+                    <= tolerance.min(Duration::from_micros(500))
+            }
             None => now >= deadline,
         })
     }

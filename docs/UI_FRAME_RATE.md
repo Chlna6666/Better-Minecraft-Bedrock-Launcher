@@ -40,7 +40,7 @@ Changing a numerical cap updates the clocks of existing windows. **Switching to 
 ## Engine behavior and caveats
 
 - Windows and Wayland UI commits select eligible native display/compositor ticks before layout. The Windows GPU-owner readiness report releases latched dirty work; geometry and first-frame progress remain separate. Pending GPU scenes merge damage and supersede older queued scenes.
-- X11 still uses its existing XRandR-derived timer fallback. Wayland GPU-owner resource/deadline retries and Windows DWM phase waiting remain separate from UI tick selection; they are not hardware present timestamps.
+- X11 still uses its existing XRandR-derived timer fallback. Wayland GPU-owner resource/deadline retries remain separate from UI tick selection. Windows uses the native compositor clock on Windows 11, then DXGI output VBlank on older systems; DWM phase/timer waiting is a compatibility fallback. Callback wake timestamps are not hardware present timestamps.
 - On Windows, Immediate mode uses independent native scheduling instead of DWM VBlank and retains the lower background-window cadence. Native resize reconciliation remains immediate.
 - DX11/DX12/Vulkan/OpenGL may implement Immediate differently. Drivers, DXGI composition, Wayland surface frame callbacks, and compositor policies may cap actual **displayed** frames at the monitor refresh rate even when additional frames are **rendered/submitted**.
 - Do not equate the configured maximum with delivered FPS. Confirm with GPU trace, presented frames, frame-start timing, and live-resize tests. Test secondary window lifetime on DX12 and X11/Wayland separately.

@@ -15,9 +15,16 @@ use std::{
 };
 
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, WPARAM},
-    Graphics::Dwm::{DWM_TIMING_INFO, DwmFlush, DwmGetCompositionTimingInfo},
-    System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
+    Foundation::{FreeLibrary, HANDLE, HMODULE, HWND, LPARAM, WPARAM},
+    Graphics::{
+        Dwm::{DWM_TIMING_INFO, DwmFlush, DwmGetCompositionTimingInfo},
+        Dxgi::{CreateDXGIFactory1, IDXGIFactory1, IDXGIOutput},
+        Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
+    },
+    System::{
+        LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW},
+        Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
+    },
     UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowThreadProcessId, PostMessageW, WM_APP,
     },
@@ -28,6 +35,103 @@ use super::WindowsUserEvent;
 const DEFAULT_VSYNC_INTERVAL: Duration = Duration::from_micros(16_667);
 const BACKGROUND_FRAME_INTERVAL: Duration = Duration::from_micros(66_667);
 const EARLY_VSYNC_RETURN_THRESHOLD: Duration = Duration::from_millis(1);
+const COMPOSITOR_CLOCK_TIMEOUT_MS: u32 = 100;
+
+type WaitForCompositorClock = unsafe extern "system" fn(u32, *const HANDLE, u32) -> u32;
+
+/// Runtime-load the Windows 11 compositor heartbeat so older Windows releases
+/// do not fail process startup on the missing dcomp export.
+struct CompositorClock {
+    module: HMODULE,
+    wait: WaitForCompositorClock,
+}
+
+impl CompositorClock {
+    fn load() -> Option<Self> {
+        // SAFETY: Only load the OS DLL from System32, and resolve its documented ABI.
+        let module = unsafe {
+            LoadLibraryExW(windows::core::w!("dcomp.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32)
+        }.ok()?;
+        let Some(proc) = (unsafe {
+            GetProcAddress(module, windows::core::s!("DCompositionWaitForCompositorClock"))
+        }) else {
+            // SAFETY: This handle was acquired by LoadLibraryExW above.
+            let _ = unsafe { FreeLibrary(module) };
+            return None;
+        };
+        // SAFETY: The symbol signature is DWORD(UINT, const HANDLE*, DWORD).
+        let wait: WaitForCompositorClock = unsafe { mem::transmute(proc) };
+        Some(Self { module, wait })
+    }
+
+    fn wait(&self) -> bool {
+        // SAFETY: With zero extra handles, a null array is valid. The bounded
+        // wait avoids blocking shutdown when displays are powered off.
+        unsafe { (self.wait)(0, std::ptr::null(), COMPOSITOR_CLOCK_TIMEOUT_MS) == 0 }
+    }
+}
+
+impl Drop for CompositorClock {
+    fn drop(&mut self) {
+        // SAFETY: The clock owns one module reference and no call outlives self.
+        let _ = unsafe { FreeLibrary(self.module) };
+    }
+}
+
+/// Pre-Windows-11 native fallback. Cache the foreground monitor's DXGI output
+/// on the scheduler thread; do not enumerate graphics adapters on every tick.
+struct NativeDisplayClock {
+    compositor: Option<CompositorClock>,
+    output: Option<(HMONITOR, IDXGIOutput)>,
+}
+
+impl NativeDisplayClock {
+    fn new() -> Self {
+        Self { compositor: CompositorClock::load(), output: None }
+    }
+
+    fn wait(&mut self) -> bool {
+        if self.compositor.as_ref().is_some_and(CompositorClock::wait) {
+            return true;
+        }
+        // SAFETY: Read-only queries of the current foreground monitor.
+        let monitor = unsafe { MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTONEAREST) };
+        if monitor.0.is_null() {
+            return false;
+        }
+        if self.output.as_ref().is_none_or(|(current, _)| *current != monitor) {
+            self.output = Self::find_output(monitor).map(|output| (monitor, output));
+        }
+        if let Some((_, output)) = &self.output {
+            // SAFETY: The DXGI output is owned by this scheduler thread.
+            if unsafe { output.WaitForVBlank() }.is_ok() {
+                return true;
+            }
+        }
+        self.output = None;
+        false
+    }
+
+    fn find_output(monitor: HMONITOR) -> Option<IDXGIOutput> {
+        // SAFETY: Enumerate DXGI interfaces and copy the native output descriptor.
+        // The factory, adapters and outputs are released through their COM wrappers.
+        unsafe {
+            let factory = CreateDXGIFactory1::<IDXGIFactory1>().ok()?;
+            for adapter_index in 0.. {
+                let Ok(adapter) = factory.EnumAdapters1(adapter_index) else { break };
+                for output_index in 0.. {
+                    let Ok(output) = adapter.EnumOutputs(output_index) else { break };
+                    if output.GetDesc().is_ok_and(|desc| {
+                        desc.AttachedToDesktop.as_bool() && desc.Monitor == monitor
+                    }) {
+                        return Some(output);
+                    }
+                }
+            }
+        }
+        None
+    }
+}
 /// Only the final fraction of an Immediate frame is actively aligned to its
 /// deadline. Parking across that last fraction produces quantized 1ms wake
 /// times on some Windows timer configurations; spinning the whole interval
@@ -291,6 +395,7 @@ pub(super) fn spawn_vsync_thread(
             log::info!(
                 "GPUI Windows DWM frame pacing enabled: refresh_rate_hz={refresh_rate_hz:.3} interval={interval:?} background_interval={BACKGROUND_FRAME_INTERVAL:?}"
             );
+            let mut display_clock = NativeDisplayClock::new();
             let mut last_foreground_tick = None;
             let mut last_unpaced_tick = None;
             let mut last_background_tick = None;
@@ -316,7 +421,7 @@ pub(super) fn spawn_vsync_thread(
                         let interval = Duration::from_nanos(
                             thread_scheduler.refresh_interval_ns.load(Ordering::Acquire),
                         );
-                        wait_for_vsync(interval, &mut last_foreground_tick)
+                        wait_for_vsync(&mut display_clock, interval, &mut last_foreground_tick)
                     }
                 } else {
                     last_unpaced_tick = None;
@@ -472,8 +577,31 @@ fn process_owns_foreground_window() -> bool {
     }
 }
 
-fn wait_for_vsync(interval: Duration, last_tick: &mut Option<Instant>) -> VSyncPacing {
+fn wait_for_vsync(
+    clock: &mut NativeDisplayClock,
+    interval: Duration,
+    last_tick: &mut Option<Instant>,
+) -> VSyncPacing {
     let started_at = Instant::now();
+    if clock.wait() {
+        let tick = Instant::now();
+        // A driver may return immediately while its display is unavailable.
+        // Do not let repeated early success turn the native worker into a spin loop.
+        if last_tick.is_none_or(|previous| {
+            tick.saturating_duration_since(previous) >= EARLY_VSYNC_RETURN_THRESHOLD
+        }) {
+            *last_tick = Some(tick);
+            let timing = dwm_next_refresh_wait();
+            return VSyncPacing {
+                display_tick_at: Some(tick),
+                elapsed: tick.saturating_duration_since(started_at),
+                reported_refresh_period: timing.map(|timing| timing.refresh_period),
+                reported_composition_period: timing.and_then(|timing| timing.composition_period),
+            };
+        }
+    }
+    // Compatibility/recovery only: unavailable native clocks must not strand
+    // the frame request. No software delay is applied after a valid native wake.
     if let Some(timing) = dwm_next_refresh_wait() {
         // DwmFlush drains this process's pending DirectX updates. Used after DXGI presentation,
         // that completion barrier can consume another refresh instead of pacing the next sample.
