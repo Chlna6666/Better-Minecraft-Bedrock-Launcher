@@ -3,14 +3,15 @@
 use std::{
     ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError},
 };
 
 use gfx_core::{Error, Result};
 use windows::Win32::{
-    Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+    Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+    Graphics::Direct3D11::ID3D11Fence,
     System::Threading::{
-        CloseThreadpoolWait, CreateThreadpoolWait, PTP_CALLBACK_INSTANCE, PTP_WAIT,
+        CloseThreadpoolWait, CreateEventW, CreateThreadpoolWait, PTP_CALLBACK_INSTANCE, PTP_WAIT,
         SetThreadpoolWait, WaitForSingleObject, WaitForThreadpoolWaitCallbacks,
     },
 };
@@ -154,6 +155,107 @@ unsafe extern "system" fn on_ready(
             log::error!("D3D11 frame-ready notification panicked");
         }
     }
+}
+
+/// A submission can be re-armed by a newer window generation without
+/// registering another native wait. Completion is not a reusable frame credit.
+#[derive(Default)]
+pub(crate) struct SubmissionWake {
+    state: Mutex<ReadyState>,
+}
+
+impl SubmissionWake {
+    pub(crate) fn register(
+        fence: ID3D11Fence, value: u64, callback: ReadyCallback,
+    ) -> Result<Arc<Self>> {
+        let signal = Arc::new(Self::default());
+        signal.arm(callback);
+        // SAFETY: A private auto-reset event, retained in the callback context
+        // until the GPU signals it, even if the renderer is destroyed meanwhile.
+        let event = unsafe { CreateEventW(None, false, false, None) }
+            .map_err(|error| Error::Backend(error.to_string()))?;
+        let context = Box::new(SubmissionWaitContext {
+            signal: signal.clone(), event, _fence: fence.clone(),
+        });
+        let ptr = Box::into_raw(context);
+        // SAFETY: ptr owns a stable context. No callback can run until armed.
+        let wait = match unsafe { CreateThreadpoolWait(Some(on_submission_ready), Some(ptr.cast()), None) } {
+            Ok(wait) => wait,
+            Err(error) => {
+                // SAFETY: No wait exists and ownership is still ours.
+                drop(unsafe { Box::from_raw(ptr) });
+                return Err(Error::Backend(error.to_string()));
+            }
+        };
+        // SAFETY: The event and fence remain live in the context. The wait
+        // has not yet been armed, so failure can clean both up synchronously.
+        if let Err(error) = unsafe { fence.SetEventOnCompletion(value, event) } {
+            unsafe {
+                CloseThreadpoolWait(wait);
+                drop(Box::from_raw(ptr));
+            }
+            return Err(Error::Backend(error.to_string()));
+        }
+        // SAFETY: A successful registration transfers the context to the
+        // one-shot wait callback. Never access ptr or wait after arming.
+        unsafe { SetThreadpoolWait(wait, Some(event), None) };
+        Ok(signal)
+    }
+
+    pub(crate) fn arm(&self, callback: ReadyCallback) {
+        let callback = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.ready { Some(callback) } else {
+                state.callback = Some(callback);
+                None
+            }
+        };
+        if let Some(callback) = callback { callback(); }
+    }
+
+    fn complete(&self) {
+        let callback = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.ready = true;
+            state.callback.take()
+        };
+        if let Some(callback) = callback {
+            if catch_unwind(AssertUnwindSafe(callback)).is_err() {
+                log::error!("DX11 submission-ready notification panicked");
+            }
+        }
+    }
+}
+
+struct SubmissionWaitContext {
+    signal: Arc<SubmissionWake>,
+    event: HANDLE,
+    _fence: ID3D11Fence,
+}
+
+impl Drop for SubmissionWaitContext {
+    fn drop(&mut self) {
+        // SAFETY: unique private event, no further GPU signal is pending
+        // after successful completion (or registration was never accepted).
+        let _ = unsafe { CloseHandle(self.event) };
+    }
+}
+
+unsafe extern "system" fn on_submission_ready(
+    _instance: PTP_CALLBACK_INSTANCE,
+    context: *mut c_void,
+    wait: PTP_WAIT,
+    _result: u32,
+) {
+    // SAFETY: Only one native callback can run: no timeout and no re-arm.
+    // Closing a wait with an outstanding callback defers its destruction
+    // until the callback returns. Do not wait for this callback from itself.
+    let context = unsafe { Box::from_raw(context.cast::<SubmissionWaitContext>()) };
+    unsafe {
+        SetThreadpoolWait(wait, None, None);
+        CloseThreadpoolWait(wait);
+    }
+    context.signal.complete();
 }
 
 #[cfg(test)]

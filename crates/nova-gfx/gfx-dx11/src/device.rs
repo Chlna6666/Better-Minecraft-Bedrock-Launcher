@@ -49,6 +49,8 @@ pub struct Dx11Device {
     pub(crate) ps_srv_slots: Cell<u128>,
     pending: VecDeque<(u32, ID3D11Query)>,
     queries: Vec<ID3D11Query>,
+    native_fence: Option<NativeFence>,
+    submission_wakes: std::collections::BTreeMap<u32, std::sync::Arc<crate::frame_pacing::SubmissionWake>>,
     frame_timestamp_queries: Vec<Dx11TimestampQueries>,
     pending_frame_timestamps: Vec<(u32, Dx11TimestampQueries)>,
     pending_gpu_work_timestamps: Vec<(u32, Option<GpuTimestampTag>, Dx11TimestampQueries)>,
@@ -62,6 +64,22 @@ pub struct Dx11Device {
     submission_generation: u32,
     submitted: u32,
     completed: u32,
+}
+
+struct NativeFence {
+    context: ID3D11DeviceContext4,
+    fence: ID3D11Fence,
+}
+
+impl NativeFence {
+    fn new(device: &ID3D11Device, context: &ID3D11DeviceContext1) -> Option<Self> {
+        let device = device.cast::<ID3D11Device5>().ok()?;
+        let context = context.cast::<ID3D11DeviceContext4>().ok()?;
+        let mut fence = None;
+        // SAFETY: live D3D11.5 device and initialized output slot.
+        unsafe { device.CreateFence(0, D3D11_FENCE_FLAG_NONE, &mut fence) }.ok()?;
+        Some(Self { context, fence: fence? })
+    }
 }
 
 struct Dx11TimestampQueries {
@@ -207,6 +225,7 @@ impl Dx11Device {
                     (Vec::new(), false)
                 }
             };
+        let native_fence = NativeFence::new(&native, &context);
         Ok(Self {
             native,
             context,
@@ -231,6 +250,8 @@ impl Dx11Device {
             ps_srv_slots: Cell::new(0),
             pending: VecDeque::new(),
             queries: Vec::new(),
+            native_fence,
+            submission_wakes: std::collections::BTreeMap::new(),
             frame_timestamp_queries,
             pending_frame_timestamps: Vec::new(),
             pending_gpu_work_timestamps: Vec::new(),
@@ -410,10 +431,15 @@ impl Dx11Device {
             required(query)?
         };
         // SAFETY: event queries require End only, on this device's immediate context.
-        unsafe {
-            self.context.End(&query);
-            self.context.Flush();
+        unsafe { self.context.End(&query); }
+        if let Some(native) = &self.native_fence {
+            // SAFETY: signal is ordered after the event query and all earlier
+            // immediate-context work, on the same owner thread.
+            unsafe { native.context.Signal(&native.fence, u64::from(serial)) }
+                .map_err(|error| backend_error(&self.native, "Signal", error))?;
         }
+        // SAFETY: the context is live and owned by this device.
+        unsafe { self.context.Flush(); }
         self.submitted = serial;
         self.pending.push_back((serial, query));
         if let Some(timestamps) = self.next_frame_timestamps.take() {
@@ -442,6 +468,7 @@ impl Dx11Device {
                 self.queries.push(query);
             }
         }
+        self.submission_wakes.retain(|serial, _| *serial > self.completed);
         self.read_completed_frame_timestamps();
         self.read_completed_gpu_work_timestamps();
         Ok(())
@@ -670,6 +697,27 @@ impl SubmissionDevice for Dx11Device {
             .and_then(|index| self.completed_frame_probes.remove(index)).map(|(_, sample)| sample);
         Ok((status, sample))
     }
+    fn request_submission_ready(
+        &mut self,
+        id: SubmissionId,
+        callback: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<bool> {
+        if SubmissionDevice::poll_submission(self, id)? == SubmissionStatus::Complete {
+            callback();
+            return Ok(true);
+        }
+        let Some(native) = &self.native_fence else { return Ok(false); };
+        if let Some(wake) = self.submission_wakes.get(&id.index()) {
+            wake.arm(callback);
+            return Ok(true);
+        }
+        let wake = crate::frame_pacing::SubmissionWake::register(
+            native.fence.clone(), u64::from(id.index()), callback,
+        )?;
+        self.submission_wakes.insert(id.index(), wake);
+        Ok(true)
+    }
+
     fn wait_submission(&mut self, id: SubmissionId) -> Result<()> {
         while SubmissionDevice::poll_submission(self, id)? == SubmissionStatus::Pending {
             std::thread::yield_now();

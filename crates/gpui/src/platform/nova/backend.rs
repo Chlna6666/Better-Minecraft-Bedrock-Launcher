@@ -595,6 +595,8 @@ impl NovaBackend {
         match self {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => Ok(device.request_submission_ready(_submission, _callback)?),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => Ok(device.request_submission_ready(_submission, _callback)?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             Self::Metal(device) => Ok(device.request_submission_ready(_submission, _callback)?),
             #[allow(unreachable_patterns)]
