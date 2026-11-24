@@ -3086,9 +3086,18 @@ impl VulkanDevice {
     // those submissions finish before the caller may reuse or overwrite their buffers.
     // This slow path is only used after bounded acquisition timeouts.
     fn drain_unpresented_graphics_work(&mut self) -> Result<()> {
-        // SAFETY: the queue belongs to this live device; all earlier offscreen submissions
-        // are ordered on this graphics queue and must finish before frame slot reuse.
-        unsafe { self.device.queue_wait_idle(self.graphics_queue) }.map_err(VulkanError::from)?;
+        // The legacy caller has already issued offscreen work but has no
+        // presented frame ID to retain its buffers. Wait for the latest
+        // resource-bearing epoch, not WSI scanout or unrelated queue work.
+        if let Some(timeline) = &self.primary_timeline {
+            let value = timeline.last();
+            if !timeline.is_complete(value)? {
+                timeline.wait_point(value).wait().map_err(VulkanError::from)?;
+            }
+        } else {
+            // SAFETY: compatibility path without the primary timeline.
+            unsafe { self.device.queue_wait_idle(self.graphics_queue) }.map_err(VulkanError::from)?;
+        }
         self.poll_cleanup();
         Ok(())
     }
@@ -3145,6 +3154,9 @@ impl VulkanDevice {
                 .map_err(VulkanError::from)?;
                 let extent =
                     choose_extent(&capabilities, config.size.width(), config.size.height());
+                if !preflight {
+                    self.drain_unpresented_graphics_work()?;
+                }
                 if extent.width != 0 && extent.height != 0 {
                     self.reconfigure_swapchain(swapchain_id, config)?;
                 }
@@ -3194,6 +3206,9 @@ impl VulkanDevice {
                 if !unsafe { self.device.get_fence_status(chain.acquire_fence) }
                     .map_err(VulkanError::from)?
                 {
+                    if !preflight {
+                        self.drain_unpresented_graphics_work()?;
+                    }
                     return Ok(None);
                 }
                 unsafe { self.device.reset_fences(&[chain.acquire_fence]) }
@@ -3232,6 +3247,9 @@ impl VulkanDevice {
                 return Ok(None);
             }
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                if !preflight {
+                    self.drain_unpresented_graphics_work()?;
+                }
                 self.reconfigure_outdated_swapchain(swapchain_id)?;
                 return Err(Error::SurfaceOutdated);
             }
@@ -5324,7 +5342,11 @@ impl SubmissionDevice for VulkanDevice {
     }
 
     fn wait_queue_idle(&mut self) -> Result<()> {
-        self.drain_unpresented_graphics_work()
+        // Preserve the public queue-idle contract, including native
+        // operations that are not represented by a resource epoch.
+        unsafe { self.device.queue_wait_idle(self.graphics_queue) }.map_err(VulkanError::from)?;
+        self.poll_cleanup();
+        Ok(())
     }
 
     fn async_capabilities(&self) -> gfx_core::AsyncCapabilities {
@@ -5432,6 +5454,11 @@ impl PresentationDevice for VulkanDevice {
             return Ok(true);
         }
         let chain = self.swapchains.get(id)?;
+        if chain.reserved_frame.is_some() {
+            // A recovery-only fence has no public submission ID. Never
+            // arm a stale slot or WSI wait for an already acquired image.
+            return Ok(false);
+        }
         if chain.extent.width == 0 || chain.extent.height == 0 {
             return Ok(false);
         }
@@ -5466,6 +5493,11 @@ impl PresentationDevice for VulkanDevice {
 
     fn poll_present_readiness(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
         let chain = self.swapchains.get(id)?;
+        if let Some(frame) = chain.reserved_frame {
+            // This frame already owns an acquired WSI image and its credit.
+            // Reapplying a reduced present limit could strand the reservation.
+            return self.reserved_frame_ready(frame);
+        }
         if chain.extent.width == 0 || chain.extent.height == 0 {
             // The acquire path owns suspended-surface recovery.
             return Ok(true);

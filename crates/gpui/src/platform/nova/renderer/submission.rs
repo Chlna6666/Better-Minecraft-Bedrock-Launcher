@@ -29,8 +29,10 @@ fn extension_ranges_can_be_reclaimed(pending_before: usize, pending_after: usize
     pending_before > 0 && pending_after == 0
 }
 
-fn should_poll_full_queue_before_pack(mode: GpuSubmissionMode, pending: usize, limit: usize) -> bool {
-    mode != GpuSubmissionMode::Synchronous && pending >= limit
+fn should_poll_full_queue_before_pack(
+    mode: GpuSubmissionMode, pending: usize, limit: usize, has_free_slot: bool,
+) -> bool {
+    mode != GpuSubmissionMode::Synchronous && (pending >= limit || !has_free_slot)
 }
 
 fn submit_presentation_buffers(
@@ -93,17 +95,20 @@ fn mark_failed_submission_for_retry(
 impl NovaRenderer {
     /// Skip Scene packing when every deferred frame slot still has a GPU reader.
     /// The full preflight remains after packing because path and atlas barriers
-    /// depend on the newly packed frame.
+    /// depend on the newly packed frame. Physical slots can be exhausted
+    /// even while the adaptive logical limit has room.
     pub(super) fn defer_full_queue_before_pack(&mut self) -> Result<bool> {
         if !should_poll_full_queue_before_pack(
             self.presentation_submission_mode(),
             self.pending_submissions.len(),
             self.adaptive_pacing.limit(),
+            self.next_available_frame_resource_index().is_ok(),
         ) {
             return Ok(false);
         }
         self.poll_pending_submissions()?;
-        self.submission_retry_pending = self.pending_submissions.len() >= self.adaptive_pacing.limit();
+        self.submission_retry_pending = self.pending_submissions.len() >= self.adaptive_pacing.limit()
+            || self.next_available_frame_resource_index().is_err();
         if self.submission_retry_pending {
             self.adaptive_pacing.mark_gpu_pressure();
         }
@@ -665,17 +670,26 @@ mod resource_fence_recovery_tests {
             GpuSubmissionMode::Deferred,
             MAX_IN_FLIGHT_SUBMISSIONS - 1,
             MAX_IN_FLIGHT_SUBMISSIONS,
+            true,
         ));
         assert!(should_poll_full_queue_before_pack(
             GpuSubmissionMode::Deferred,
             MAX_IN_FLIGHT_SUBMISSIONS,
             MAX_IN_FLIGHT_SUBMISSIONS,
+            true,
         ));
         assert!(!should_poll_full_queue_before_pack(
             GpuSubmissionMode::Synchronous,
             MAX_IN_FLIGHT_SUBMISSIONS,
             MAX_IN_FLIGHT_SUBMISSIONS,
+            true,
         ));
+    }
+
+    #[test]
+    fn physical_slot_exhaustion_is_polled_before_scene_pack() {
+        assert!(should_poll_full_queue_before_pack(GpuSubmissionMode::Deferred, 1, 2, false));
+        assert!(!should_poll_full_queue_before_pack(GpuSubmissionMode::Synchronous, 1, 2, false));
     }
 
     #[test]
