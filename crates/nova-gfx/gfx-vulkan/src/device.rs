@@ -2563,7 +2563,11 @@ impl VulkanDevice {
         depth_attachment: Option<DepthAttachment>,
         damage: Option<ScissorRect>,
     ) -> Result<Option<PresentedFrame>> {
-        let Some(present_frame) = self.acquire_present_frame(swapchain_id)? else {
+        let reserved = self.swapchains.get(swapchain_id)?.reserved_frame;
+        let Some(present_frame) = (match reserved {
+            Some(frame) => Some(frame),
+            None => self.acquire_present_frame(swapchain_id, false)?,
+        }) else {
             return Ok(None);
         };
         let mut timings = PresentTimings {
@@ -2615,6 +2619,9 @@ impl VulkanDevice {
             }
         };
 
+        // Successful submission consumed the acquire semaphore. Do not
+        // reuse the reservation even if later WSI presentation fails.
+        self.swapchains.get_mut(swapchain_id)?.reserved_frame = None;
         let mut encoder_resource = self.command_encoders.take(encoder)?;
         encoder_resource.fence = present_frame.fence;
         encoder_resource.owns_fence = false;
@@ -3024,9 +3031,27 @@ impl VulkanDevice {
         Ok(())
     }
 
+    /// Reserve one drawable before the caller packs or submits offscreen work.
+    /// False never drains the graphics queue. The successful reservation is
+    /// consumed by render_and_present, or retired with this swapchain.
+    ///
+    /// # Errors
+    /// Returns an error if WSI or the device rejects the acquisition.
+    pub fn reserve_present_frame(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
+        if self.swapchains.get(id)?.reserved_frame.is_some() {
+            return Ok(true);
+        }
+        let Some(frame) = self.acquire_present_frame(id, true)? else {
+            return Ok(false);
+        };
+        self.swapchains.get_mut(id)?.reserved_frame = Some(frame);
+        Ok(true)
+    }
+
     fn acquire_present_frame(
         &mut self,
         swapchain_id: gfx_core::SwapchainId,
+        preflight: bool,
     ) -> Result<Option<VulkanPresentFrame>> {
         let (swapchain, frame_index, image_available, fence) = {
             let swapchain = self.swapchains.get(swapchain_id)?;
@@ -3060,6 +3085,9 @@ impl VulkanDevice {
         // SAFETY: Fence belongs to this device and is not destroyed until swapchain destroy.
         let fence_wait_started = Instant::now();
         if !unsafe { self.device.get_fence_status(fence) }.map_err(VulkanError::from)? {
+            if preflight {
+                return Ok(None);
+            }
             // Do not discard a complete compositor frame on a transient frame-slot
             // fence miss. A bounded wait absorbs a normal display refresh interval.
             match unsafe {
@@ -3077,27 +3105,55 @@ impl VulkanDevice {
         let acquire_fence_wait = fence_wait_started.elapsed();
         self.submissions
             .remove_where(|submission| submission.fence == fence);
+        // An early acquisition needs its own completion proof: an image may
+        // have been acquired but never submitted if scene preparation fails.
+        // Allocate once per swapchain, not once per frame.
+        let acquire_fence = if preflight {
+            let chain = self.swapchains.get_mut(swapchain_id)?;
+            if chain.acquire_fence == vk::Fence::null() {
+                chain.acquire_fence = create_fence(&self.device, false)?;
+            }
+            if chain.acquire_pending {
+                if !unsafe { self.device.get_fence_status(chain.acquire_fence) }
+                    .map_err(VulkanError::from)?
+                {
+                    return Ok(None);
+                }
+                unsafe { self.device.reset_fences(&[chain.acquire_fence]) }
+                    .map_err(VulkanError::from)?;
+                chain.acquire_pending = false;
+            }
+            chain.acquire_fence
+        } else {
+            vk::Fence::null()
+        };
         // SAFETY: Swapchain and semaphore belong to this device and are valid here.
         let image_acquire_started = Instant::now();
         let acquire_result = unsafe {
             self.swapchain_loader.acquire_next_image(
                 swapchain,
-                self.present_timeout_ns,
+                if preflight { 0 } else { self.present_timeout_ns },
                 image_available,
-                vk::Fence::null(),
+                acquire_fence,
             )
         };
+        if preflight && acquire_result.is_ok() {
+            self.swapchains.get_mut(swapchain_id)?.acquire_pending = true;
+        }
         let image_acquire = image_acquire_started.elapsed();
         let image_index = match acquire_result {
             Ok((image_index, false)) => image_index,
-            Ok((image_index, true)) if self.swapchains.get(swapchain_id)?.native_pixel_scaling => {
+            Ok((image_index, true)) if preflight || self.swapchains.get(swapchain_id)?.native_pixel_scaling => {
                 image_index
             }
             // No image was acquired and the semaphore is unchanged. Keep this frame slot for
             // the next native presentation request; only submission resets its fence.
             Err(vk::Result::NOT_READY | vk::Result::TIMEOUT) => {
-                // No present fence will guard the already-queued offscreen draws.
-                self.drain_unpresented_graphics_work()?;
+                // Only the legacy late-acquire contract can have untracked
+                // offscreen work at this point. Preflight has not submitted it.
+                if !preflight {
+                    self.drain_unpresented_graphics_work()?;
+                }
                 return Ok(None);
             }
             Ok((_, true)) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
@@ -3699,6 +3755,9 @@ impl VulkanDevice {
             present_credit: (self.present_wait.is_some() && present_mode == vk::PresentModeKHR::FIFO)
                 .then(|| PresentCredit::new(frame_slots)),
             frame_index: 0,
+            reserved_frame: None,
+            acquire_fence: vk::Fence::null(),
+            acquire_pending: false,
             config,
         })
     }
@@ -4536,6 +4595,15 @@ impl VulkanDevice {
         let _ = (swapchain.format, swapchain.images.len());
         // SAFETY: Swapchain resources were created by this device and are destroyed once here.
         unsafe {
+            // Acquisition can outlive a CPU-side failed/abandoned frame.
+            // The ordinary resize path already waits this fence; device drop
+            // also needs the explicit proof before destroying the semaphore.
+            if swapchain.acquire_pending {
+                let _ = self.device.wait_for_fences(&[swapchain.acquire_fence], true, u64::MAX);
+            }
+            if swapchain.acquire_fence != vk::Fence::null() {
+                self.device.destroy_fence(swapchain.acquire_fence, None);
+            }
             swapchain.presentation.destroy(&self.device);
             for framebuffer in swapchain.framebuffers {
                 self.device.destroy_framebuffer(framebuffer, None);
@@ -4582,6 +4650,11 @@ impl SurfaceDevice for VulkanDevice {
             return Ok(true);
         }
         let chain = self.swapchains.get_mut(swapchain)?;
+        if chain.acquire_pending
+            && !unsafe { self.device.get_fence_status(chain.acquire_fence) }.map_err(VulkanError::from)?
+        {
+            return Ok(false);
+        }
         if !chain.presentation.poll(&self.device)? {
             return Ok(false);
         }
@@ -6239,6 +6312,9 @@ struct VulkanSwapchain {
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
     frame_index: usize,
+    reserved_frame: Option<VulkanPresentFrame>,
+    acquire_fence: vk::Fence,
+    acquire_pending: bool,
     config: SurfaceConfig,
 }
 

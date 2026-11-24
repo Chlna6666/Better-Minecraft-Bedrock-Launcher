@@ -211,6 +211,24 @@ impl NovaBackend {
         }
     }
 
+    /// Acquire a drawable on backends that support an explicit early reservation.
+    /// Other backends keep their existing readiness/Present contract.
+    pub(super) fn reserve_present_frame(&mut self, _swapchain: SwapchainId) -> Result<bool> {
+        match self {
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(device) => match device.reserve_present_frame(_swapchain) {
+                Ok(ready) => Ok(ready),
+                Err(gfx_core::Error::SurfaceOutdated) => Ok(false),
+                Err(error) => Err(error.into()),
+            },
+            #[allow(unreachable_patterns)]
+            _ => Ok(true),
+        }
+    }
+
     /// Returns whether the current swapchain can accept a presentation without blocking GPUI.
     pub(super) fn check_present_readiness(&mut self, swapchain: SwapchainId) -> Result<bool> {
         match self {

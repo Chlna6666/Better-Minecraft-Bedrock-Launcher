@@ -107,6 +107,13 @@ impl Retirement {
 impl VulkanDevice {
     pub(super) fn retire_swapchain(&mut self, id: gfx_core::SwapchainId) -> Result<()> {
         let chain = self.swapchains.get_mut(id)?;
+        if chain.acquire_pending {
+            // A reserved image may never have reached queue_submit. WSI's
+            // acquire fence, not the graphics queue fence, proves its signal
+            // operation has completed before swapchain resource destruction.
+            unsafe { self.device.wait_for_fences(&[chain.acquire_fence], true, u64::MAX) }
+                .map_err(VulkanError::from)?;
+        }
         if !self.swapchain_maintenance || chain.presentation.idle_required() {
             // SAFETY: unsupported/indeterminate native presentation has no finer proof.
             unsafe { self.device.device_wait_idle() }.map_err(VulkanError::from)?;
