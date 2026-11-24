@@ -84,6 +84,14 @@ impl Drop for PresentWake {
     }
 }
 
+/// Native acquisition completion belongs to the physical slot that owns
+/// its acquire semaphore. An abandoned reservation still retains this proof.
+#[derive(Clone, Copy, Default)]
+pub(super) struct AcquireSlot {
+    pub(super) fence: vk::Fence,
+    pub(super) pending: bool,
+}
+
 /// Native presentation references outlive the graphics submit fence. Reuse only signaled
 /// present fences and keep every unretired operation attached to its own swapchain.
 #[derive(Default)]
@@ -193,12 +201,13 @@ impl VulkanDevice {
         // vkWaitForPresentKHR requires a non-retired swapchain. Stop the
         // worker before any replacement can pass this handle as oldSwapchain.
         drop(chain.present_wake.take());
-        if chain.acquire_pending {
-            // A reserved image may never have reached queue_submit. WSI's
-            // acquire fence, not the graphics queue fence, proves its signal
-            // operation has completed before swapchain resource destruction.
-            unsafe { self.device.wait_for_fences(&[chain.acquire_fence], true, u64::MAX) }
-                .map_err(VulkanError::from)?;
+        // A reserved image may never have reached queue_submit. WSI's
+        // own acquisition fences prove completion before destruction.
+        for slot in &chain.acquire_slots {
+            if slot.pending {
+                unsafe { self.device.wait_for_fences(&[slot.fence], true, u64::MAX) }
+                    .map_err(VulkanError::from)?;
+            }
         }
         if !self.swapchain_maintenance || chain.presentation.idle_required() {
             // SAFETY: unsupported/indeterminate native presentation has no finer proof.

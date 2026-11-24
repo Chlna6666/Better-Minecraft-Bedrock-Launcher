@@ -3316,11 +3316,14 @@ impl VulkanDevice {
         // Allocate once per swapchain, not once per frame.
         let acquire_fence = {
             let chain = self.swapchains.get_mut(swapchain_id)?;
-            if chain.acquire_fence == vk::Fence::null() {
-                chain.acquire_fence = create_fence(&self.device, false)?;
+            // An acquisition belongs to the physical frame slot whose
+            // binary semaphore it signals, not to the entire swapchain.
+            let slot = &mut chain.acquire_slots[frame_index];
+            if slot.fence == vk::Fence::null() {
+                slot.fence = create_fence(&self.device, false)?;
             }
-            if chain.acquire_pending {
-                if !unsafe { self.device.get_fence_status(chain.acquire_fence) }
+            if slot.pending {
+                if !unsafe { self.device.get_fence_status(slot.fence) }
                     .map_err(VulkanError::from)?
                 {
                     if !preflight {
@@ -3328,11 +3331,11 @@ impl VulkanDevice {
                     }
                     return Ok(None);
                 }
-                unsafe { self.device.reset_fences(&[chain.acquire_fence]) }
+                unsafe { self.device.reset_fences(&[slot.fence]) }
                     .map_err(VulkanError::from)?;
-                chain.acquire_pending = false;
+                slot.pending = false;
             }
-            chain.acquire_fence
+            slot.fence
         };
         // SAFETY: Swapchain and semaphore belong to this device and are valid here.
         let image_acquire_started = Instant::now();
@@ -3345,7 +3348,7 @@ impl VulkanDevice {
             )
         };
         if acquire_result.is_ok() {
-            self.swapchains.get_mut(swapchain_id)?.acquire_pending = true;
+            self.swapchains.get_mut(swapchain_id)?.acquire_slots[frame_index].pending = true;
         }
         let image_acquire = image_acquire_started.elapsed();
         let image_index = match acquire_result {
@@ -3943,6 +3946,7 @@ impl VulkanDevice {
             image_available_semaphores,
             render_finished_semaphores,
             frame_submissions: vec![None; in_flight_fences.len()],
+            acquire_slots: vec![presentation::AcquireSlot::default(); in_flight_fences.len()],
             frame_probe: FrameProbeCadence::default(),
             in_flight_fences,
             presentation: presentation::Retirement::default(),
@@ -3954,8 +3958,6 @@ impl VulkanDevice {
                 .then(|| PresentCredit::new(frame_slots)),
             frame_index: 0,
             reserved_frame: None,
-            acquire_fence: vk::Fence::null(),
-            acquire_pending: false,
             config,
         })
     }
@@ -4802,11 +4804,13 @@ impl VulkanDevice {
             // Acquisition can outlive a CPU-side failed/abandoned frame.
             // The ordinary resize path already waits this fence; device drop
             // also needs the explicit proof before destroying the semaphore.
-            if swapchain.acquire_pending {
-                let _ = self.device.wait_for_fences(&[swapchain.acquire_fence], true, u64::MAX);
-            }
-            if swapchain.acquire_fence != vk::Fence::null() {
-                self.device.destroy_fence(swapchain.acquire_fence, None);
+            for slot in swapchain.acquire_slots {
+                if slot.pending {
+                    let _ = self.device.wait_for_fences(&[slot.fence], true, u64::MAX);
+                }
+                if slot.fence != vk::Fence::null() {
+                    self.device.destroy_fence(slot.fence, None);
+                }
             }
             swapchain.presentation.destroy(&self.device);
             for image_view in swapchain.image_views {
@@ -4849,10 +4853,12 @@ impl SurfaceDevice for VulkanDevice {
             return Ok(true);
         }
         let chain = self.swapchains.get_mut(swapchain)?;
-        if chain.acquire_pending
-            && !unsafe { self.device.get_fence_status(chain.acquire_fence) }.map_err(VulkanError::from)?
-        {
-            return Ok(false);
+        for slot in &chain.acquire_slots {
+            if slot.pending
+                && !unsafe { self.device.get_fence_status(slot.fence) }.map_err(VulkanError::from)?
+            {
+                return Ok(false);
+            }
         }
         if !chain.presentation.poll(&self.device)? {
             return Ok(false);
@@ -5646,6 +5652,10 @@ impl PresentationDevice for VulkanDevice {
         // SAFETY: this swapchain owns the frame slot's live fence. Querying it
         // neither consumes an acquire semaphore nor waits for the GPU.
         if !unsafe { self.device.get_fence_status(fence) }.map_err(VulkanError::from)? {
+            return Ok(false);
+        }
+        let acquire = &chain.acquire_slots[chain.frame_index];
+        if acquire.pending && !unsafe { self.device.get_fence_status(acquire.fence) }.map_err(VulkanError::from)? {
             return Ok(false);
         }
         let Some(loader) = self.present_wait.as_ref() else {
@@ -6758,8 +6768,7 @@ struct VulkanSwapchain {
     frame_probe: FrameProbeCadence,
     frame_index: usize,
     reserved_frame: Option<VulkanPresentFrame>,
-    acquire_fence: vk::Fence,
-    acquire_pending: bool,
+    acquire_slots: Vec<presentation::AcquireSlot>,
     config: SurfaceConfig,
 }
 
