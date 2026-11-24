@@ -137,6 +137,19 @@ impl TextureUploadArena {
     }
 }
 
+struct PreparedUpload<'a> {
+    desc: TextureWriteDescriptor,
+    destination: Retained<ProtocolObject<dyn MTLTexture>>,
+    data: &'a [u8],
+    width: usize,
+    height: usize,
+    row_bytes: usize,
+    pitch: usize,
+    length: usize,
+    source_offset: usize,
+    source_pitch: usize,
+}
+
 impl MetalDevice {
     pub(super) fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
         desc.validate()?;
@@ -203,8 +216,13 @@ impl MetalDevice {
     }
 
     pub(super) fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
+        self.upload_texture_batch(std::iter::once(gfx_core::TextureWrite { descriptor: desc, data }))
+    }
+
+    fn prepare_upload<'a>(&self, write: gfx_core::TextureWrite<'a>) -> Result<PreparedUpload<'a>> {
+        let desc = write.descriptor;
         let texture = self.textures.get(desc.texture)?;
-        desc.validate_against(&texture.desc, data.len())?;
+        desc.validate_against(&texture.desc, write.data.len())?;
         if !texture.desc.usage.contains(TextureUsage::COPY_DST) || texture.desc.format.is_depth() {
             return Err(Error::InvalidInput("Metal texture upload requires a non-depth COPY_DST texture".into()));
         }
@@ -214,40 +232,69 @@ impl MetalDevice {
         let height = desc.size.height() as usize;
         let row_bytes = width.checked_mul(texture.desc.format.bytes_per_pixel() as usize)
             .ok_or_else(|| Error::InvalidInput("Metal upload row size overflow".into()))?;
-        // A dedicated shared staging buffer avoids CPU writes to textures
-        // still sampled by an earlier GPU submission.
         let pitch = row_bytes.checked_add(255).map(|n| n & !255)
             .ok_or_else(|| Error::InvalidInput("Metal upload pitch overflow".into()))?;
         let length = pitch.checked_mul(height)
             .ok_or_else(|| Error::InvalidInput("Metal upload size overflow".into()))?;
-        let offset = usize::try_from(desc.layout.offset)
+        let source_offset = usize::try_from(desc.layout.offset)
             .map_err(|_| Error::InvalidInput("Metal upload offset overflow".into()))?;
-        let source_pitch = desc.layout.bytes_per_row.get() as usize;
-        let (staging, page) = self.texture_uploads.acquire(&self.device, length)?;
-        // SAFETY: validate_against covers every source row. The staging allocation
-        // is CPU-visible, has at least pitch * height bytes, and is not in flight.
-        unsafe {
-            let ptr = staging.contents().as_ptr().cast::<u8>();
-            for row in 0..height {
-                std::ptr::copy_nonoverlapping(
-                    data.as_ptr().add(offset + row * source_pitch), ptr.add(row * pitch), row_bytes,
-                );
+        Ok(PreparedUpload { desc, destination, data: write.data, width, height, row_bytes,
+            pitch, length, source_offset, source_pitch: desc.layout.bytes_per_row.get() as usize })
+    }
+
+    pub(super) fn upload_texture_batch<'a>(
+        &mut self, writes: impl IntoIterator<Item = gfx_core::TextureWrite<'a>>,
+    ) -> Result<()> {
+        let mut batch = Vec::new();
+        let mut bytes = 0usize;
+        for write in writes {
+            let upload = self.prepare_upload(write)?;
+            // Each pitch is 256-byte aligned, so concatenated image offsets
+            // satisfy the native buffer-to-texture alignment too.
+            if !batch.is_empty() && (bytes.saturating_add(upload.length) > MAX_UPLOAD_PAGE_BYTES
+                || batch.len() >= 256)
+            {
+                self.submit_upload_batch(&batch, bytes)?;
+                batch.clear();
+                bytes = 0;
             }
+            bytes = bytes.checked_add(upload.length)
+                .ok_or_else(|| Error::InvalidInput("Metal batch size overflow".into()))?;
+            batch.push(upload);
         }
+        if !batch.is_empty() {
+            self.submit_upload_batch(&batch, bytes)?;
+        }
+        Ok(())
+    }
+
+    fn submit_upload_batch(&mut self, batch: &[PreparedUpload<'_>], length: usize) -> Result<()> {
+        let (staging, page) = self.texture_uploads.acquire(&self.device, length)?;
         let commands = self.command_queue.commandBuffer()
             .ok_or_else(|| Error::Backend("Metal upload command buffer unavailable".into()))?;
         let blit = commands.blitCommandEncoder()
             .ok_or_else(|| Error::Backend("Metal upload blit encoder unavailable".into()))?;
-        // SAFETY: All source and destination ranges were checked. The default
-        // commandBuffer retains referenced resources until it completes; the
-        // same ordered queue serializes earlier sampling and subsequent draws.
-        unsafe {
-            blit.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
-                &staging, 0, pitch, 0,
-                MTLSize { width, height, depth: 1 },
-                &destination, 0, desc.mip_level as usize,
-                MTLOrigin { x: desc.origin.x as usize, y: desc.origin.y as usize, z: 0 },
-            );
+        let mut base = 0usize;
+        let ptr = staging.contents().as_ptr().cast::<u8>();
+        for upload in batch {
+            // SAFETY: each validated upload occupies a disjoint range in an
+            // idle shared staging page. The page is not submitted until every
+            // CPU copy and every blit has been encoded.
+            unsafe {
+                for row in 0..upload.height {
+                    std::ptr::copy_nonoverlapping(
+                        upload.data.as_ptr().add(upload.source_offset + row * upload.source_pitch),
+                        ptr.add(base + row * upload.pitch), upload.row_bytes,
+                    );
+                }
+                blit.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+                    &staging, base, upload.pitch, 0,
+                    MTLSize { width: upload.width, height: upload.height, depth: 1 },
+                    &upload.destination, 0, upload.desc.mip_level as usize,
+                    MTLOrigin { x: upload.desc.origin.x as usize, y: upload.desc.origin.y as usize, z: 0 },
+                );
+            }
+            base += upload.length;
         }
         blit.endEncoding();
         commands.commit();

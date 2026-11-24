@@ -857,6 +857,12 @@ mod platform {
             Self::write_texture(self, desc, data)
         }
 
+        fn write_texture_batch<'a>(
+            &mut self, writes: impl IntoIterator<Item = gfx_core::TextureWrite<'a>>,
+        ) -> Result<()> {
+            self.upload_texture_batch(writes)
+        }
+
         fn create_texture_view(&mut self, desc: &TextureViewDescriptor) -> Result<TextureViewId> {
             Self::create_texture_view(self, desc)
         }
