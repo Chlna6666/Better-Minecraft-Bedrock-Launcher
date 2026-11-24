@@ -418,25 +418,45 @@ jobs:
         id: metal_backend
         run: cargo check --locked -p gfx-metal --lib
 
-      - name: Test native Metal texture transfer ABI
+      - name: Compile native Metal regression tests
+        id: metal_tests
         if: ${{ !cancelled() && steps.metal_backend.outcome == 'success' }}
-        run: cargo test --locked -p gfx-metal --test texture_transfer -- --nocapture
+        run: cargo test --locked -p gfx-metal --test texture_transfer --test gpu_driven --no-run
 
-      - name: Verify Metal GPU-generated draws and array sampling
-        if: ${{ !cancelled() && steps.metal_backend.outcome == 'success' }}
-        run: cargo test --locked -p gfx-metal --test gpu_driven -- --nocapture
-
-      - name: Test WGSL to MSL resource ABI
-        if: ${{ !cancelled() && steps.metal_backend.outcome == 'success' }}
-        run: cargo test --locked -p gfx-shader --lib msl
+      - name: Compile WGSL to MSL resource ABI tests
+        id: shader_tests
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p gfx-shader --lib --no-run
 
       - name: Verify Metal shader compiler
-        if: ${{ !cancelled() && steps.metal_backend.outcome == 'success' }}
+        id: metal_toolchain
+        if: ${{ !cancelled() }}
         run: |
           xcodebuild -version
           xcrun -sdk macosx -find metal
           xcrun -sdk macosx -find metallib
 
       - name: Check GPUI with Metal and embedded native shaders
-        if: ${{ !cancelled() && steps.metal_backend.outcome == 'success' }}
+        id: gpui_metal
+        if: ${{ !cancelled() && steps.metal_toolchain.outcome == 'success' }}
         run: cargo check --locked -p gpui --lib --example nova_window_smoke --no-default-features --features nova-gfx-metal
+
+      # rust-cache v2.9.2 evaluates its post-if with CACHE_ON_FAILURE.
+      # Only permit a save after every required compile target succeeded.
+      # A GPU pixel regression must still fail CI, but cannot make the
+      # already complete dependency snapshot disappear.
+      - name: Mark complete Metal compilation cache eligible
+        if: ${{ !cancelled() && steps.metal_backend.outcome == 'success' && steps.metal_tests.outcome == 'success' && steps.shader_tests.outcome == 'success' && steps.gpui_metal.outcome == 'success' }}
+        run: echo "CACHE_ON_FAILURE=true" >> "$GITHUB_ENV"
+
+      - name: Test native Metal texture transfer ABI
+        if: ${{ !cancelled() && steps.metal_tests.outcome == 'success' }}
+        run: cargo test --locked -p gfx-metal --test texture_transfer -- --nocapture
+
+      - name: Verify Metal GPU-generated draws and array sampling
+        if: ${{ !cancelled() && steps.metal_tests.outcome == 'success' }}
+        run: cargo test --locked -p gfx-metal --test gpu_driven -- --nocapture
+
+      - name: Test WGSL to MSL resource ABI
+        if: ${{ !cancelled() && steps.shader_tests.outcome == 'success' }}
+        run: cargo test --locked -p gfx-shader --lib msl
