@@ -105,6 +105,7 @@ mod platform_actions;
 mod platform_events;
 mod prompts;
 mod properties;
+pub(crate) mod scroll_dependencies;
 pub(crate) mod retained;
 mod state;
 mod tab_stop;

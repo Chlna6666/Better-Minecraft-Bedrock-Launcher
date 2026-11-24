@@ -3,6 +3,7 @@ use crate::{
     Window, px, size,
 };
 use std::{cell::RefCell, cmp::Ordering, mem, rc::Rc};
+use crate::window::scroll_dependencies::{ScrollReadKind, observe};
 
 use super::interactivity::Interactivity;
 use super::state::InteractiveElementState;
@@ -113,12 +114,15 @@ impl ScrollHandle {
 
     /// Get the current scroll offset.
     pub fn offset(&self) -> Point<Pixels> {
-        *self.0.borrow().offset.borrow()
+        let state = self.0.borrow();
+        let value = *state.offset.borrow();
+        observe(&state.offset, ScrollReadKind::Offset, 0, value, |offset| *offset)
     }
 
     /// Get the maximum scroll offset.
     pub fn max_offset(&self) -> Size<Pixels> {
-        self.0.borrow().max_offset
+        let value = self.0.borrow().max_offset;
+        observe(&self.0, ScrollReadKind::MaxOffset, 0, value, |state| state.max_offset)
     }
 
     /// Get the top child that's scrolled into view.
@@ -135,12 +139,14 @@ impl ScrollHandle {
 
     /// Return the bounds into which this child is painted.
     pub fn bounds(&self) -> Bounds<Pixels> {
-        self.0.borrow().bounds
+        let value = self.0.borrow().bounds;
+        observe(&self.0, ScrollReadKind::Bounds, 0, value, |state| state.bounds)
     }
 
     /// Get the bounds for a specific child.
     pub fn bounds_for_item(&self, ix: usize) -> Option<Bounds<Pixels>> {
-        self.0.borrow().child_bounds.get(ix).cloned()
+        let value = self.0.borrow().child_bounds.get(ix).copied();
+        observe(&self.0, ScrollReadKind::ItemBounds, ix, value, move |state| state.child_bounds.get(ix).copied())
     }
 
     /// Update the active item for scrolling to during prepaint.
@@ -218,7 +224,8 @@ impl ScrollHandle {
 
     /// Get the number of tracked scrollable children.
     pub fn children_count(&self) -> usize {
-        self.0.borrow().child_bounds.len()
+        let value = self.0.borrow().child_bounds.len();
+        observe(&self.0, ScrollReadKind::ChildCount, 0, value, |state| state.child_bounds.len())
     }
 }
 

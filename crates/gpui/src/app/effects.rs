@@ -119,6 +119,9 @@ impl App {
     }
 
     fn request_dirty_window_frames(&mut self) {
+        for window in self.windows.values_mut().filter_map(|window| window.as_deref_mut()) {
+            window.invalidate_scroll_reads();
+        }
         for window in self
             .windows
             .values()

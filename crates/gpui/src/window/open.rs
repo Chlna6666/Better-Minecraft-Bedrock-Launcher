@@ -520,6 +520,8 @@ impl Window {
             input_dependency_owner: None,
             input_readers: FxHashMap::default(),
             next_input_readers: RefCell::new(FxHashMap::default()),
+            scroll_reads: FxHashMap::default(),
+            next_scroll_reads: FxHashMap::default(),
             viewport_dependent_views: RefCell::new(FxHashSet::default()),
             view_bounds_stack: Vec::new(),
             element_offset_stack: Vec::new(),

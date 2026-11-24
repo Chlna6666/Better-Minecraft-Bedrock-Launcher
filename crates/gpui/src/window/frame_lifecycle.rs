@@ -1030,6 +1030,7 @@ impl Window {
             callback(self, cx);
         }
 
+        self.invalidate_scroll_reads();
         let activity = FrameActivity {
             dirty: self.invalidator.is_dirty(),
             pending_present: self.needs_present.get(),

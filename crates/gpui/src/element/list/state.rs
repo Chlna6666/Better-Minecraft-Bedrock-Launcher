@@ -3,6 +3,7 @@ mod layout;
 
 use crate::{App, Bounds, Edges, EntityId, FocusHandle, Pixels, Point, Size, Window, point, px};
 use collections::VecDeque;
+use crate::window::scroll_dependencies::{ScrollReadKind, observe};
 use std::{cell::RefCell, ops::Range, rc::Rc};
 use sum_tree::{Bias, Dimensions, SumTree};
 
@@ -93,7 +94,8 @@ impl ListState {
 
     /// The number of items in this list.
     pub fn item_count(&self) -> usize {
-        self.0.borrow().items.summary().count
+        let value = self.0.borrow().items.summary().count;
+        observe(&self.0, ScrollReadKind::ListCount, 0, value, |state| state.items.summary().count)
     }
 
     /// Inform the list state that the items in `old_range` have been replaced
@@ -153,7 +155,12 @@ impl ListState {
 
     /// Get the current scroll offset, in terms of the list's items.
     pub fn logical_scroll_top(&self) -> ListOffset {
-        self.0.borrow().logical_scroll_top()
+        let top = self.0.borrow().logical_scroll_top();
+        observe(&self.0, ScrollReadKind::ListTop, 0, (top.item_ix, top.offset_in_item), |state| {
+            let top = state.logical_scroll_top();
+            (top.item_ix, top.offset_in_item)
+        });
+        top
     }
 
     /// Scroll the list by the given offset
@@ -308,7 +315,8 @@ impl ListState {
 
     /// Return the bounds of the viewport in pixels.
     pub fn viewport_bounds(&self) -> Bounds<Pixels> {
-        self.0.borrow().last_layout_bounds.unwrap_or_default()
+        let value = self.0.borrow().last_layout_bounds.unwrap_or_default();
+        observe(&self.0, ScrollReadKind::ListViewport, 0, value, |state| state.last_layout_bounds.unwrap_or_default())
     }
 }
 

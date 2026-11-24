@@ -1,5 +1,6 @@
 use crate::{Pixels, ScrollHandle, Size};
 use std::{cell::RefCell, rc::Rc};
+use crate::window::scroll_dependencies::{ScrollReadKind, observe};
 
 /// A handle for controlling the scroll position of a uniform list.
 /// This should be stored in your view and passed to the uniform list on each frame.
@@ -132,7 +133,8 @@ impl UniformListScrollHandle {
 
     /// Check if the list is flipped vertically.
     pub fn y_flipped(&self) -> bool {
-        self.0.borrow().y_flipped
+        let value = self.0.borrow().y_flipped;
+        observe(&self.0, ScrollReadKind::UniformFlipped, 0, value, |state| state.y_flipped)
     }
 
     /// Get the index of the topmost visible child.
@@ -147,10 +149,8 @@ impl UniformListScrollHandle {
 
     /// Checks if the list can be scrolled vertically.
     pub fn is_scrollable(&self) -> bool {
-        if let Some(size) = self.0.borrow().last_item_size {
-            size.contents.height > size.item.height
-        } else {
-            false
-        }
+        let read = |state: &UniformListScroll| state.last_item_size.is_some_and(|size| size.contents.height > size.item.height);
+        let value = read(&self.0.borrow());
+        observe(&self.0, ScrollReadKind::UniformScrollable, 0, value, read)
     }
 }

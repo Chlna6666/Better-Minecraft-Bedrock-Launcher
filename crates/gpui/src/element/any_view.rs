@@ -74,6 +74,7 @@ impl AnyView {
         let render = self.render;
         let previous_owner = cx.entities.set_render_dependency_owner(Some(self.entity_id()));
         let previous_input_owner = window.input_dependency_owner.replace(self.entity_id());
+        let scroll_scope = crate::window::scroll_dependencies::ScrollReadScope::begin();
         cx.update_entity_erased(&self.entity, &mut |entity, cx| {
             let weak = weak
                 .take()
@@ -84,6 +85,7 @@ impl AnyView {
             let rendered = render(entity, weak, window, cx);
             element = Some(rendered);
         });
+        window.record_scroll_reads(self.entity_id(), scroll_scope.finish());
         window.input_dependency_owner = previous_input_owner;
         cx.entities.set_render_dependency_owner(previous_owner);
         element.expect("rendered entity callback must produce an element")
