@@ -150,6 +150,7 @@ pub(crate) fn compute_backdrop_blur_damage(
         previous_presentation_values,
         &mut plan,
     );
+    propagate_backdrop_output_damage(scene, &mut plan);
     plan
 }
 
@@ -167,7 +168,61 @@ pub(crate) fn compute_backdrop_blur_animation_damage(
         previous_presentation_values,
         &mut plan,
     );
+    propagate_backdrop_output_damage(scene, &mut plan);
     plan
+}
+
+// A later backdrop samples the composited output of preceding barriers,
+// not just the original primitives. A Gaussian can spread a changed source
+// beyond the next filter's direct source footprint. Follow painter order so
+// the expanded output of every affected barrier becomes downstream input.
+// Same-order members may share a source snapshot; never feed them back into
+// each other. Animated geometry without a proven output mapping retains a
+// conservative downstream refresh.
+fn propagate_backdrop_output_damage(scene: &Scene, plan: &mut BackdropBlurDamagePlan) {
+    if plan.is_empty() {
+        return;
+    }
+    let mut outputs = SmallVec::<[(DrawOrder, Bounds<ScaledPixels>); 16]>::new();
+    let mut uncertain_order: Option<DrawOrder> = None;
+    for (_, blur) in backdrop_blur_operations(scene.paint_operations.all()) {
+        let source_region = backdrop_blur_source_region(blur);
+        if source_region.is_empty() {
+            continue;
+        }
+        if uncertain_order.is_some_and(|order| order < blur.order) {
+            plan.mark_full(blur.order);
+        } else {
+            for (order, bounds) in &outputs {
+                if *order < blur.order {
+                    plan.push(blur.order, bounds.intersect(&source_region));
+                }
+            }
+        }
+        let (full, damage) = plan.order_source_damage(blur.order, blur.order);
+        let mut damage = damage.peekable();
+        if !full && damage.peek().is_none() {
+            continue;
+        }
+        if blur.animation_id.is_some() {
+            uncertain_order = Some(uncertain_order.map_or(blur.order, |order| order.min(blur.order)));
+            continue;
+        }
+        let output = blur.bounds.intersect(&blur.content_mask.bounds);
+        if full {
+            if !output.is_empty() {
+                outputs.push((blur.order, output));
+            }
+            continue;
+        }
+        let radius = backdrop_blur_influence_radius(blur);
+        for source in damage {
+            let affected = source.dilate(radius).intersect(&output);
+            if !affected.is_empty() {
+                outputs.push((blur.order, affected));
+            }
+        }
+    }
 }
 
 pub(crate) fn collect_backdrop_blur_animation_damage(

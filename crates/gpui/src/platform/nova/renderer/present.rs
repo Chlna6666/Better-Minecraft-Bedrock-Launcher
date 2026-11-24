@@ -971,6 +971,12 @@ impl NovaRenderer {
                 SmallVec::new()
             };
         let atlas_source_dirty = backdrop_source_atlas_dirty || !atlas_dirty_layers.is_empty();
+        if atlas_source_dirty {
+            // Atlas-space writes can change pixels outside the UI dirty rect.
+            // Until their output footprint has been proven in window space,
+            // native presentation must not publish only that UI rectangle.
+            packet.partial_present_mode = PartialPresentMode::FullRedraw;
+        }
         // Atlas coordinates are independent of window damage. Repaint the
         // selected sources in full, including ancestors and later backdrops,
         // without invalidating unrelated retained filter textures.

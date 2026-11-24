@@ -1636,3 +1636,40 @@ fn identical_filter_scene_and_samples_skip_nested_source_revalidation() {
         "the same Scene pointer does not allow a changed nested GPU animation sample"
     );
 }
+
+#[test]
+fn backdrop_source_damage_propagates_through_overlapping_filter_chain() {
+    let rect = |x, width| bounds(
+        point(ScaledPixels(x), ScaledPixels(0.)),
+        size(ScaledPixels(width), ScaledPixels(100.)),
+    );
+    let viewport = rect(0., 1000.);
+    let build = |color| {
+        let mut scene = crate::scene::Painter::default();
+        scene.insert_primitive(crate::Quad {
+            bounds: rect(10., 2.),
+            content_mask: ContentMask::new(viewport),
+            background: crate::rgb(color).into(),
+            ..Default::default()
+        });
+        for (x, width, radius) in [(0., 80., 20.), (55., 80., 8.), (115., 80., 8.), (500., 80., 8.)] {
+            let mut blur = backdrop_blur(0);
+            blur.bounds = rect(x, width);
+            blur.content_mask = ContentMask::new(blur.bounds);
+            blur.radius = ScaledPixels(radius);
+            // Sequential barriers sample the preceding composited output.
+            blur.recompute_overlap = true;
+            scene.insert_primitive(blur);
+        }
+        scene.finish();
+        scene
+    };
+    let previous = build(0x112233);
+    let current = build(0x445566);
+    let plan = crate::paint::compute_backdrop_blur_damage(&current, &previous, &[], &[]);
+    for (index, blur) in current.backdrop_blurs.iter().enumerate() {
+        let (full, mut damage) = plan.order_source_damage(blur.order, blur.order);
+        assert!(!full);
+        assert_eq!(damage.next().is_some(), index < 3, "filter {index}");
+    }
+}
