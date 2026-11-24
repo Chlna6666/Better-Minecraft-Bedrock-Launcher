@@ -17,9 +17,9 @@
       "expected_api": "1.10.0",
       "game_version": "1.20.80.05",
       "log_tail": [
-        "[2026-11-23 14:01:39:840 INFO] [Scripting] BMCBL-DUMP-WARNING {\"capability\":\"BlockTypes.getAll\",\"message\":\"Unavailable: BDS resource names are only incomplete hints\"}",
-        "[2026-11-23 14:01:39:840 INFO] [Scripting] BMCBL-DUMP-CAPABILITIES {\"BlockTypes\":false,\"BlockStates\":true,\"BlockPermutation\":true,\"createEmpty\":true,\"runJob\":false,\"registrySource\":\"bds_resource_hints\"}",
-        "[2026-11-23 14:01:39:840 INFO] [Scripting] BMCBL-DUMP-FAIL {\"message\":\"Error: No block IDs from Script API or BDS resource hints\",\"stack\":\"    at chooseCapture (main.js:226)\\n    at next (native)\\n    at <anonymous> (main.js:256)\\n    at next (native)\\n    at <anonymous> (main.js:269)\\n\"}"
+        "[2026-11-24 05:21:16:917 INFO] [Scripting] BMCBL-DUMP-WARNING {\"capability\":\"BlockTypes.getAll\",\"message\":\"Unavailable: BDS resource names are only incomplete hints\"}",
+        "[2026-11-24 05:21:16:917 INFO] [Scripting] BMCBL-DUMP-CAPABILITIES {\"BlockTypes\":false,\"BlockStates\":true,\"BlockPermutation\":true,\"createEmpty\":true,\"runJob\":false,\"registrySource\":\"bds_resource_hints\"}",
+        "[2026-11-24 05:21:16:917 INFO] [Scripting] BMCBL-DUMP-FAIL {\"message\":\"Error: No block IDs from Script API or BDS resource hints\",\"stack\":\"    at chooseCapture (main.js:226)\\n    at next (native)\\n    at <anonymous> (main.js:256)\\n    at next (native)\\n    at <anonymous> (main.js:269)\\n\"}"
       ],
       "status": "capture_failed"
     },
