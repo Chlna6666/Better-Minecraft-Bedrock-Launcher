@@ -226,6 +226,7 @@ impl Window {
     #[profiling::function]
     pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
         let event_started_at = Instant::now();
+        let previous_input = self.input_read_snapshot();
         let event_name = platform_input_name(&event);
         #[cfg(feature = "profiler")]
         let _profile = crate::diagnostics::foreground_profiler::ForegroundWorkSpan::input(
@@ -405,6 +406,7 @@ impl Window {
             };
         }
 
+        self.invalidate_input_reads(previous_input);
         let binding_handled = if let Some(any_mouse_event) = event.mouse_event() {
             self.dispatch_mouse_event(any_mouse_event, cx);
             false
@@ -538,14 +540,17 @@ impl Window {
     }
 
     fn dispatch_recognized_touch_gesture(&mut self, gesture: RecognizedTouchGesture, cx: &mut App) {
+        let previous_input = self.input_read_snapshot();
         match gesture {
             RecognizedTouchGesture::Scroll(scroll) => {
                 self.mouse_position = scroll.position;
+                self.invalidate_input_reads(previous_input);
                 cx.propagate_event = true;
                 self.dispatch_mouse_event(&scroll, cx);
             }
             RecognizedTouchGesture::Tap { down, up } => {
                 self.mouse_position = up.position;
+                self.invalidate_input_reads(previous_input);
                 cx.propagate_event = true;
                 self.dispatch_mouse_event(&down, cx);
                 cx.propagate_event = true;
@@ -553,6 +558,7 @@ impl Window {
             }
             RecognizedTouchGesture::TouchDrag(touch_drag) => {
                 self.mouse_position = touch_drag.start_position;
+                self.invalidate_input_reads(previous_input);
                 cx.propagate_event = true;
                 self.default_prevented = false;
                 let started = touch_drag.phase == TouchPhase::Started;
@@ -564,6 +570,7 @@ impl Window {
             }
             RecognizedTouchGesture::LongPress(long_press) => {
                 self.mouse_position = long_press.start_position;
+                self.invalidate_input_reads(previous_input);
                 cx.propagate_event = true;
                 self.default_prevented = false;
                 let started = long_press.phase == TouchPhase::Started;

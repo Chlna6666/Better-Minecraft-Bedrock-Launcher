@@ -487,6 +487,9 @@ pub struct Window {
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     /// A retained lifecycle replay may omit unscoped reads of committed pixels.
     pub(super) replayed_dependency_ranges: bool,
+    pub(crate) input_dependency_owner: Option<EntityId>,
+    pub(super) input_readers: FxHashMap<EntityId, u8>,
+    pub(super) next_input_readers: RefCell<FxHashMap<EntityId, u8>>,
     /// Views whose rendered output has read [`Window::viewport_size`]. A content resize dirties
     /// only these views; cached siblings whose bounds and dependencies stay unchanged remain
     /// eligible for retained replay.

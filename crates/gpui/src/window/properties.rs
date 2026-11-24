@@ -1,6 +1,78 @@
 use super::*;
 
+pub(super) const INPUT_POINTER: u8 = 1;
+pub(super) const INPUT_MODIFIERS: u8 = 2;
+pub(super) const INPUT_CAPSLOCK: u8 = 4;
+pub(super) const INPUT_KEYBOARD_MODALITY: u8 = 8;
+
+#[derive(Clone, Copy)]
+pub(super) struct InputReadSnapshot {
+    pointer: Point<Pixels>,
+    modifiers: Modifiers,
+    capslock: Capslock,
+    keyboard: bool,
+}
+
+impl InputReadSnapshot {
+    fn changed(self, next: Self) -> u8 {
+        u8::from(self.pointer != next.pointer) * INPUT_POINTER
+            | u8::from(self.modifiers != next.modifiers) * INPUT_MODIFIERS
+            | u8::from(self.capslock != next.capslock) * INPUT_CAPSLOCK
+            | u8::from(self.keyboard != next.keyboard) * INPUT_KEYBOARD_MODALITY
+    }
+}
+
+fn matching_input_readers(
+    readers: &FxHashMap<EntityId, u8>,
+    changed: u8,
+) -> impl Iterator<Item = EntityId> + '_ {
+    readers.iter().filter_map(move |(&owner, &mask)| (mask & changed != 0).then_some(owner))
+}
+
 impl Window {
+    #[inline]
+    fn record_input_read(&self, mask: u8) {
+        if let Some(owner) = self.input_dependency_owner {
+            *self.next_input_readers.borrow_mut().entry(owner).or_default() |= mask;
+        }
+    }
+
+    pub(super) fn input_read_snapshot(&self) -> InputReadSnapshot {
+        InputReadSnapshot {
+            pointer: self.mouse_position,
+            modifiers: self.modifiers,
+            capslock: self.capslock,
+            keyboard: self.last_input_modality == super::state::InputModality::Keyboard,
+        }
+    }
+
+    pub(super) fn invalidate_input_reads(&mut self, before: InputReadSnapshot) {
+        let changed = before.changed(self.input_read_snapshot());
+        if changed == 0 || self.input_readers.is_empty() {
+            return;
+        }
+        if self.invalidator.invalidate_dependent_views(matching_input_readers(&self.input_readers, changed)) {
+            self.schedule_dirty_frame();
+        }
+    }
+
+    pub(super) fn commit_input_reads(&mut self) {
+        let next = self.next_input_readers.get_mut();
+        if self.replayed_dependency_ranges {
+            // Some deferred lifecycles can be replayed without executing
+            // their Render. Never drop a still-mounted reader in that case.
+            for (&owner, &mask) in &self.input_readers {
+                if self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_some() {
+                    *next.entry(owner).or_default() |= mask;
+                }
+            }
+        }
+        // A reader without a committed dispatch route must not be silently
+        // dropped: mark_view_dirty will conservatively refresh that window.
+        mem::swap(&mut self.input_readers, next);
+        next.clear();
+    }
+
     /// Accessor for this window's foreground-thread text layout system.
     pub fn text_system(&self) -> &Rc<WindowTextSystem> {
         &self.text_system
@@ -136,20 +208,24 @@ impl Window {
 
     /// The position of the mouse relative to the window.
     pub fn mouse_position(&self) -> Point<Pixels> {
+        self.record_input_read(INPUT_POINTER);
         self.mouse_position
     }
     /// Returns true when keyboard input is the current input modality.
     pub fn last_input_was_keyboard(&self) -> bool {
+        self.record_input_read(INPUT_KEYBOARD_MODALITY);
         self.last_input_modality == super::state::InputModality::Keyboard
     }
 
     /// The current state of the keyboard's modifiers
     pub fn modifiers(&self) -> Modifiers {
+        self.record_input_read(INPUT_MODIFIERS);
         self.modifiers
     }
 
     /// The current state of the keyboard's capslock
     pub fn capslock(&self) -> Capslock {
+        self.record_input_read(INPUT_CAPSLOCK);
         self.capslock
     }
 

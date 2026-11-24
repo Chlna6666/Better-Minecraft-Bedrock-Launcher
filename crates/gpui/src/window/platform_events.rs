@@ -102,7 +102,9 @@ impl Window {
         // previous generation stay valid for what is already on screen, but they
         // must never be rebound to the new drawable extent.
         self.viewport_epoch = self.platform_window.content_epoch();
+        let previous_input = self.input_read_snapshot();
         self.mouse_position = self.platform_window.mouse_position();
+        self.invalidate_input_reads(previous_input);
         if text_rasterization_changed {
             self.invalidate_text_rasterization();
         }

@@ -436,6 +436,36 @@ impl WindowInvalidator {
         inner.dirty = true;
     }
 
+    /// Window-owned dependencies do not emit application-level Entity Notify.
+    pub(in crate::window) fn invalidate_dependent_views(
+        &self,
+        owners: impl IntoIterator<Item = EntityId>,
+    ) -> bool {
+        let mut owners = owners.into_iter().peekable();
+        if owners.peek().is_none() {
+            return false;
+        }
+        let mut inner = self.inner.borrow_mut();
+        inner.dirty_to_present_started_at.get_or_insert_with(Instant::now);
+        if inner.draw_phase != DrawPhase::None {
+            inner.dirty_views.extend(owners);
+            return false;
+        }
+        if !inner.dirty {
+            inner.pending_targeted_replay = true;
+            inner.pending_targeted_elements.clear();
+            inner.pending_generic_dirty_views.clear();
+        }
+        for owner in owners {
+            inner.dirty_views.insert(owner);
+            if inner.pending_targeted_replay {
+                inner.pending_generic_dirty_views.insert(owner);
+            }
+        }
+        inner.dirty = true;
+        true
+    }
+
     /// Only application notifications resolve read dependencies. Direct
     /// window invalidations still name the actual view to invalidate.
     #[track_caller]
