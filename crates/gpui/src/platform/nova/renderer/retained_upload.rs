@@ -887,7 +887,7 @@ impl NovaRenderer {
                 .retained_chunks
                 .set_atlas_placement_generation(self.atlas.placement_generation());
             self.atlas
-                .copy_placements_into(&mut self.frame_upload.atlas_placements);
+                .copy_relocations_into(&mut self.frame_upload.atlas_placements);
             summary = self.frame_upload.encode(
                 &mut self.retained_upload.retained_chunks,
                 scene,

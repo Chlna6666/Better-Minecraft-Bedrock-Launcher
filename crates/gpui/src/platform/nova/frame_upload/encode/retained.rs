@@ -43,35 +43,6 @@ fn monochrome_sprite_chunks_overlapping(
     &chunks[start..end]
 }
 
-fn monochrome_sprite_bounds(
-    sprites: &[crate::MonochromeSprite],
-    atlas_placements: &collections::FxHashMap<crate::TileId, crate::AtlasTile>,
-) -> Option<crate::Bounds<crate::ScaledPixels>> {
-    let mut visual_bounds = None;
-    let mut has_visible_sprite = false;
-    for source in sprites {
-        if clip_is_degenerate(&source.content_mask) {
-            continue;
-        }
-        let mut sprite = *source;
-        if let Some(tile) = atlas_placements.get(&sprite.tile.tile_id) {
-            sprite.tile = *tile;
-        }
-        let next = static_raster_visual_bounds(
-            sprite.bounds,
-            sprite.content_mask.bounds,
-            sprite.animation_id,
-            sprite.transformation != crate::TransformationMatrix::unit(),
-        );
-        if has_visible_sprite {
-            merge_batch_bounds(&mut visual_bounds, next);
-        } else {
-            visual_bounds = next;
-            has_visible_sprite = true;
-        }
-    }
-    visual_bounds
-}
 
 impl FrameUpload {
     pub(super) fn encode_retained_monochrome_sprites(
@@ -126,7 +97,7 @@ impl FrameUpload {
         }
         let byte_start = self.mono_sprites.len();
         let atlas_start = self.mono_atlas_tiles.len();
-        let visual_bounds = monochrome_sprite_bounds(sprites, &self.atlas_placements);
+        let mut visual_bounds = None;
         let mut packed_bytes = Vec::with_capacity(visible_count * PACKED_MONO_SPRITE_BYTES);
         let first_sprite = (byte_start / PACKED_MONO_SPRITE_BYTES) as u32;
         let mut sprite_count = 0_u32;
@@ -134,6 +105,11 @@ impl FrameUpload {
             let Some((sprite, sprite_bounds)) = self.prepare_monochrome_sprite(source) else {
                 continue;
             };
+            if sprite_count == 0 {
+                visual_bounds = sprite_bounds;
+            } else {
+                merge_batch_bounds(&mut visual_bounds, sprite_bounds);
+            }
             let primitive_index = first_sprite + sprite_count;
             write_monochrome_sprite(&mut packed_bytes, &sprite);
             self.record_monochrome_sprite(&sprite, primitive_index, sprite_bounds, summary);

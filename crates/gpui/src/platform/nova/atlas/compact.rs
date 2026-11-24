@@ -14,6 +14,7 @@ impl NovaAtlas {
         self.placement_generation.load(AtomicOrdering::Acquire)
     }
 
+    #[cfg(test)]
     pub(in crate::platform::nova) fn copy_placements_into(
         &self,
         placements: &mut FxHashMap<crate::TileId, AtlasTile>,
@@ -21,6 +22,20 @@ impl NovaAtlas {
         let state = self.state.lock().expect("nova atlas lock poisoned");
         placements.clear();
         placements.extend(state.placements.iter().map(|(id, (tile, _))| (*id, *tile)));
+    }
+
+    /// An immutable Scene already carries the original physical coordinates.
+    /// Only compacted tiles need overriding; new and unmoved glyphs do not
+    /// need a second copy of the complete atlas allocation table.
+    pub(in crate::platform::nova) fn copy_relocations_into(
+        &self,
+        placements: &mut FxHashMap<crate::TileId, AtlasTile>,
+    ) {
+        let state = self.state.lock().expect("nova atlas lock poisoned");
+        placements.clear();
+        placements.extend(state.relocated_tiles.iter().filter_map(|id| {
+            state.placements.get(id).map(|(tile, _)| (*id, *tile))
+        }));
     }
 
     /// Repack at most one sparse page. The callback must queue every copy before returning
@@ -146,6 +161,7 @@ impl NovaAtlasState {
         list.textures[plan.source.id.index as usize] = None;
         list.free_list.push(plan.source.id.index as usize);
         for ((_, tile), allocation) in plan.tiles.into_iter().zip(plan.allocations) {
+            self.relocated_tiles.insert(tile.tile_id);
             self.placements.insert(tile.tile_id, (tile, allocation));
         }
         // Cache hits and same-size refreshes also consume physical coordinates. Rewrite those
@@ -226,6 +242,21 @@ mod tests {
         atlas.copy_placements_into(&mut placements);
         assert!(!placements.contains_key(&old_tile.tile_id));
         assert!(atlas.texture_infos().is_empty());
+    }
+
+    #[test]
+    fn relocation_snapshot_contains_only_moved_live_tiles() {
+        let (atlas, old_tile) = sparse_atlas();
+        let mut overrides = FxHashMap::default();
+        atlas.copy_relocations_into(&mut overrides);
+        assert!(overrides.is_empty());
+        atlas.compact_page(|_| Ok(())).expect("compact");
+        atlas.copy_relocations_into(&mut overrides);
+        assert_eq!(overrides.len(), 1);
+        assert_ne!(overrides[&old_tile.tile_id], old_tile);
+        atlas.state.lock().expect("atlas").deallocate_tile(old_tile);
+        atlas.copy_relocations_into(&mut overrides);
+        assert!(overrides.is_empty());
     }
 
     #[test]

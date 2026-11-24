@@ -64,6 +64,8 @@ pub(super) struct NovaAtlasState {
     pub(super) next_tile_id: u32,
     // Nova tile IDs are logical identities; etagere IDs belong to physical pages.
     placements: FxHashMap<crate::TileId, (AtlasTile, AllocId)>,
+    // Only tiles that moved after publication need a Scene coordinate override.
+    relocated_tiles: FxHashSet<crate::TileId>,
     placement_generation: u64,
     pub(super) texture_lists: [NovaAtlasTextureList; NOVA_ATLAS_KIND_COUNT],
     tiles: FxHashMap<AtlasKey, AtlasTile>,
@@ -85,6 +87,7 @@ impl Default for NovaAtlasState {
         Self {
             next_tile_id: 0,
             placements: FxHashMap::default(),
+            relocated_tiles: FxHashSet::default(),
             placement_generation: 0,
             texture_lists: std::array::from_fn(|_| NovaAtlasTextureList::default()),
             tiles: FxHashMap::default(),
@@ -868,6 +871,7 @@ impl NovaAtlasState {
         if self.is_fallback_tile(tile) {
             return;
         }
+        self.relocated_tiles.remove(&tile.tile_id);
         if let Some((placement, allocation)) = self.placements.remove(&tile.tile_id) {
             self.deallocate_texture_allocation(placement.texture_id, allocation);
         }

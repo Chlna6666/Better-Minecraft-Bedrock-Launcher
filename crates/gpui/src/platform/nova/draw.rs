@@ -18,26 +18,14 @@ pub(super) enum DrawMode {
 }
 
 impl DrawMode {
-    fn is_past_end(self, batch_index: usize) -> bool {
+    fn batch_range(self, len: usize) -> std::ops::Range<usize> {
         match self {
-            Self::Present => false,
-            Self::BackdropSegment { batch_end, .. } | Self::BlurContent { batch_end, .. } => {
-                batch_index >= batch_end
+            Self::Present => 0..len,
+            Self::BackdropSegment { batch_start, batch_end }
+            | Self::BlurContent { batch_start, batch_end } => {
+                let end = batch_end.min(len);
+                batch_start.min(end)..end
             }
-        }
-    }
-
-    fn includes_batch(self, batch_index: usize) -> bool {
-        match self {
-            Self::Present => true,
-            Self::BackdropSegment {
-                batch_start,
-                batch_end,
-            }
-            | Self::BlurContent {
-                batch_start,
-                batch_end,
-            } => batch_index >= batch_start && batch_index < batch_end,
         }
     }
 }
@@ -127,15 +115,12 @@ pub(super) fn encode_clipped_draw_commands(
         },
         _ => mode,
     };
-    steps.reserve(upload.batches.len().saturating_add(1));
+    let range = mode.batch_range(upload.batches.len());
+    steps.reserve(range.len().saturating_add(1));
+    let first = range.start;
     let mut blur_depth = 0usize;
-    for (batch_index, batch) in upload.batches.iter().enumerate() {
-        if mode.is_past_end(batch_index) {
-            break;
-        }
-        if !mode.includes_batch(batch_index) {
-            continue;
-        }
+    for (local_index, batch) in upload.batches[range].iter().enumerate() {
+        let batch_index = first + local_index;
         if source_scissor.is_some_and(|scissor| {
             upload
                 .batch_visual_bounds
