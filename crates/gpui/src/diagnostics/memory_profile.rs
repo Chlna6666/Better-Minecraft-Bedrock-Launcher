@@ -82,8 +82,14 @@ pub struct RendererMemoryProfile {
     pub depth_bytes: u64,
     /// Path mask target logical texel bytes.
     pub path_target_bytes: u64,
-    /// Blur sources, isolated sources and filter/composite targets' logical texel bytes.
+    /// Active blur sources, isolated sources and filter/composite targets.
     pub blur_target_bytes: u64,
+    /// Active full-window Root Color allocation, independent of filters.
+    #[serde(default)]
+    pub root_color_bytes: u64,
+    /// Prepared resize generations and old offscreen allocations waiting for GPU fences.
+    #[serde(default)]
+    pub pending_offscreen_bytes: u64,
 }
 
 impl RendererMemoryProfile {
@@ -105,6 +111,8 @@ impl RendererMemoryProfile {
             .saturating_add(self.depth_bytes)
             .saturating_add(self.path_target_bytes)
             .saturating_add(self.blur_target_bytes)
+            .saturating_add(self.root_color_bytes)
+            .saturating_add(self.pending_offscreen_bytes)
     }
 }
 

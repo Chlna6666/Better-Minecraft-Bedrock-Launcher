@@ -240,6 +240,11 @@ impl NovaRenderer {
                 .targets
                 .as_ref()
                 .map_or(0, BackdropBlurTargets::byte_size),
+            root_color_bytes: self.root_color.target.as_ref().map_or(0, |root| root.target.byte_size),
+            pending_offscreen_bytes: self.pending_offscreen_targets.as_ref()
+                .map_or(0, |targets| targets.byte_size())
+                .saturating_add(self.retired_offscreen_targets.iter()
+                    .map(|entry| entry.targets.byte_size()).sum::<u64>()),
             ..RendererMemoryProfile::default()
         };
         for (id, texture) in &self.gpu_atlas_textures {

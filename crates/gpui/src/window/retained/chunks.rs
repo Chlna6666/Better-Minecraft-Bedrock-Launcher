@@ -1,5 +1,5 @@
 use super::{RetainedChunkId, RetainedPaint};
-use crate::paint::retention::{RetainedChunkPlanner, RetainedChunkProof};
+use crate::paint::retention::{MIN_RETAINED_OPERATIONS, RetainedChunkPlanner, RetainedChunkProof};
 use crate::{GlobalElementId, Scene};
 use std::ops::Range;
 
@@ -158,7 +158,7 @@ impl RetainedPaint {
         generation: u64,
         scene_range: Range<usize>,
     ) {
-        if scene_range.is_empty() {
+        if scene_range.len() < MIN_RETAINED_OPERATIONS {
             return;
         }
         self.finished = false;
@@ -174,17 +174,28 @@ impl RetainedPaint {
         quads.clear();
         let mut sprites = std::mem::take(&mut self.prepared_retained_monochrome_sprite_chunks);
         sprites.clear();
+        // Candidates below the minimum are rejected before recording. A
+        // single qualified enclosing run owns its exclusive primitive-order
+        // interval, so nested candidates cannot improve the final selection.
+        let mut qualified_until = 0usize;
         let mut planner = RetainedChunkPlanner::new(scene, self.retained_chunk_candidates.len());
         for candidate in &self.retained_chunk_candidates {
+            if candidate.scene_range.end <= qualified_until {
+                continue;
+            }
             match planner.prove(candidate.scene_range.clone()) {
-                Some(RetainedChunkProof::Quad(proof)) => quads.push(PreparedRetainedQuadChunk {
+                Some(RetainedChunkProof::Quad(proof)) => {
+                    qualified_until = candidate.scene_range.end;
+                    quads.push(PreparedRetainedQuadChunk {
                     id: candidate.id.clone(),
                     quad_range: proof.range,
                     paint_range: candidate.scene_range.clone(),
                     replayed: candidate.replayed,
                     is_solid: proof.is_solid,
-                }),
+                    });
+                }
                 Some(RetainedChunkProof::MonochromeSprite(proof)) => {
+                    qualified_until = candidate.scene_range.end;
                     sprites.push(PreparedRetainedMonochromeSpriteChunk {
                         id: candidate.id.clone(),
                         sprite_range: proof.range,

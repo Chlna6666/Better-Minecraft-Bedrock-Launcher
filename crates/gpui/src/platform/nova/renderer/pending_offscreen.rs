@@ -93,6 +93,11 @@ pub(super) struct PendingOffscreenTargets {
 }
 
 impl PendingOffscreenTargets {
+    pub(super) fn byte_size(&self) -> u64 {
+        self.root.as_ref().map_or(0, |root| root.target.byte_size)
+            .saturating_add(self.filters.as_ref().map_or(0, BackdropBlurTargets::byte_size))
+    }
+
     pub(super) fn matches(&self, size: DrawableSize) -> bool {
         self.size == size
     }

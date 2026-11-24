@@ -6,6 +6,14 @@ use std::ops::Range;
 const MIN_RETAINED_QUADS: usize = 32;
 const MIN_RETAINED_MONOCHROME_SPRITES: usize = 8;
 
+/// The lower bound across all supported GPU chunk formats. Reject smaller
+/// candidates at recording time, not after allocating and sorting metadata.
+pub(crate) const MIN_RETAINED_OPERATIONS: usize = if MIN_RETAINED_QUADS < MIN_RETAINED_MONOCHROME_SPRITES {
+    MIN_RETAINED_QUADS
+} else {
+    MIN_RETAINED_MONOCHROME_SPRITES
+};
+
 /// A static, exclusive Quad run proven against one sorted Paint generation.
 pub(crate) struct QuadChunkProof {
     pub(crate) range: Range<usize>,
