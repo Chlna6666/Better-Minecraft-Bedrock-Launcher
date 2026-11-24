@@ -629,6 +629,30 @@ impl NovaRenderer {
     }
 
     fn reconfigure_surface_alpha(&mut self, alpha: SurfaceAlphaState) -> Result<()> {
+        #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+        {
+            // CoreAnimation alpha is a composition policy, not a drawable
+            // format change. Preserve all GPU allocations and fence ownership.
+            let changed = {
+                let mut backend = lock_backend(&self.backend);
+                if let NovaBackend::Metal(device) = &mut *backend {
+                    device.set_swapchain_alpha_mode(self.swapchain, alpha.swapchain_mode)?;
+                    true
+                } else {
+                    false
+                }
+            };
+            if changed {
+                self.surface_config.alpha_mode = alpha.swapchain_mode;
+                self.surface_alpha = alpha;
+                self.root_color.invalidate();
+                self.invalidate_backdrop_blur_cache();
+                self.retained_frame_valid = false;
+                self.swapchain_warmup_frames = SWAPCHAIN_WARMUP_FRAME_COUNT;
+                self.adaptive_pacing.surface_changed();
+                return Ok(());
+            }
+        }
         if self.surface_alpha.swapchain_mode == alpha.swapchain_mode {
             log::debug!(
                 concat!(

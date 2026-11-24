@@ -6,7 +6,6 @@ use crate::{
 };
 use cocoa::base::id;
 use foreign_types::ForeignType;
-use objc::{msg_send, sel, sel_impl};
 use std::{ffi::c_void, ptr::NonNull, sync::Arc};
 use winit::raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, DisplayHandle, HandleError, HasDisplayHandle,
@@ -84,9 +83,6 @@ impl Renderer {
 
     pub(crate) fn update_transparency(&mut self, transparent: bool) {
         self.nova.update_transparency(transparent);
-        unsafe {
-            let _: () = msg_send![self.layer_ptr() as id, setOpaque: !transparent];
-        }
     }
 
     pub(crate) fn set_presents_with_transaction(&mut self, enabled: bool) {
@@ -119,6 +115,10 @@ impl Renderer {
                 false
             }
         }
+    }
+
+    pub(crate) fn trim_gpui_memory(&mut self, level: crate::GpuiMemoryTrimLevel) {
+        self.nova.trim_gpui_memory(level);
     }
 
     pub(crate) fn destroy(&mut self) {

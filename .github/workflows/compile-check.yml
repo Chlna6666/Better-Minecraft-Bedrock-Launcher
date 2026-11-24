@@ -12,11 +12,7 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: compile-check-${{ github.workflow }}-${{ github.ref }}
-  # Keep one running master build alive so it can publish its dependency cache.
-  # GitHub still replaces obsolete pending runs in the same group.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+# Serialize cache writers per platform, not the entire cross-platform workflow.
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,6 +25,9 @@ env:
 
 jobs:
   windows-build:
+    concurrency:
+      group: compile-check-windows-build-${{ github.ref }}
+      cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
     name: Windows build
     runs-on: windows-latest
     timeout-minutes: 90
@@ -191,6 +190,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   linux-build:
+    concurrency:
+      group: compile-check-linux-build-${{ github.ref }}
+      cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
     name: Linux build
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -319,6 +321,9 @@ jobs:
           cargo test -p bmcbl --lib gpu_node_visibility_preserves_fused_group_and_original_scene -- --nocapture
 
   metal-build:
+    concurrency:
+      group: compile-check-metal-build-${{ github.ref }}
+      cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
     name: macOS native Metal compile
     runs-on: macos-15
     timeout-minutes: 60
@@ -362,4 +367,4 @@ jobs:
           xcrun -sdk macosx -find metallib
 
       - name: Check GPUI with Metal and embedded native shaders
-        run: cargo check --locked -p gpui --lib --no-default-features --features nova-gfx-metal
+        run: cargo check --locked -p gpui --lib --example nova_window_smoke --no-default-features --features nova-gfx-metal

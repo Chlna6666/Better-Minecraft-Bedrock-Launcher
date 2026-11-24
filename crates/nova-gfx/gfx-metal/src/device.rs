@@ -210,6 +210,30 @@ mod platform {
             }))
         }
 
+        /// Changes CoreAnimation composition without reallocating drawable or
+        /// depth resources. Metal uses the same BGRA8 drawable for both modes.
+        ///
+        /// # Errors
+        /// Returns an error for an unknown swapchain or unsupported alpha mode.
+        pub fn set_swapchain_alpha_mode(
+            &mut self, id: SwapchainId, mode: gfx_core::CompositeAlphaMode,
+        ) -> Result<()> {
+            let opaque = match mode {
+                gfx_core::CompositeAlphaMode::Opaque => true,
+                gfx_core::CompositeAlphaMode::Premultiplied => false,
+                _ => return Err(Error::Unavailable("Metal supports opaque and premultiplied surfaces".into())),
+            };
+            let chain = self.swapchains.get_mut(id)?;
+            if chain.config.alpha_mode != mode {
+                chain.layer.setOpaque(opaque);
+                chain.config.alpha_mode = mode;
+                chain.display_link_drawable = None;
+                chain.color_history = None;
+                chain.history_submission = None;
+            }
+            Ok(())
+        }
+
         /// Recreates an existing swapchain.
         pub fn resize_swapchain(
             &mut self,
@@ -1703,6 +1727,7 @@ mod platform {
         layer.setDevice(Some(device));
         layer.setPixelFormat(format_to_metal(config.format));
         layer.setFramebufferOnly(true);
+        layer.setOpaque(matches!(config.alpha_mode, gfx_core::CompositeAlphaMode::Opaque));
         layer.setMaximumDrawableCount(2);
         layer.setDrawableSize(drawable_size(config));
         layer.setDisplaySyncEnabled(!matches!(

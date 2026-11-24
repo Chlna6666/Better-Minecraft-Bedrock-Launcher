@@ -898,6 +898,14 @@ impl MacWindow {
             // on we explicitly make the view layer-backed up front so that AppKit doesn't do it
             // itself and break the association with its context.
             native_view.setWantsLayer(YES);
+            #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+            {
+                let mut state = window.0.lock();
+                let scale = state.scale_factor();
+                let drawable_size = state.content_size().to_device_pixels(scale);
+                let _: () = msg_send![state.renderer.layer_ptr() as id, setContentsScale: scale as f64];
+                state.renderer.update_drawable_size(drawable_size);
+            }
             let _: () = msg_send![
             native_view,
             setLayerContentsRedrawPolicy: NSViewLayerContentsRedrawDuringViewResize
@@ -1723,6 +1731,11 @@ impl PlatformWindow for MacWindow {
         self.0.lock().renderer.sprite_atlas().clone()
     }
 
+    #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
+    fn trim_gpui_memory(&self, level: crate::GpuiMemoryTrimLevel) {
+        self.0.lock().renderer.trim_gpui_memory(level);
+    }
+
     fn gpu_specs(&self) -> Option<crate::GpuSpecs> {
         #[cfg(all(not(feature = "macos-blade"), feature = "nova-gfx-metal"))]
         return Some(self.0.lock().renderer.gpu_specs());
@@ -2502,6 +2515,9 @@ extern "C" fn set_frame_size(this: &Object, _: Sel, size: NSSize) {
 }
 
 extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
+    if unsafe { (*this.get_ivar::<*mut c_void>(WINDOW_STATE_IVAR)).is_null() } {
+        return;
+    }
     let window_state = unsafe { window_state(this) };
     let mut lock = window_state.lock();
     #[cfg(not(feature = "macos-blade"))]
