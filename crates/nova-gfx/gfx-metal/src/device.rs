@@ -715,6 +715,16 @@ mod platform {
             Ok(Some(PresentedFrame { submission: Some(submission), timings: Some(timings) }))
         }
 
+        fn indirect_arguments(&self, id: BufferId, offset: u64, stride: u64) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>> {
+            let buffer = self.buffers.get(id)?;
+            if !buffer.desc.usage.contains(BufferUsage::INDIRECT) || offset % 4 != 0
+                || offset.checked_add(stride).is_none_or(|end| end > buffer.desc.size)
+            {
+                return Err(Error::InvalidInput("invalid Metal indirect argument range or usage".into()));
+            }
+            buffer.resource.clone().ok_or_else(|| Error::Backend("Metal indirect arguments have no native resource".into()))
+        }
+
         fn prepare_render_step(
             &self,
             render_pass: &MetalRenderPass,
@@ -731,10 +741,20 @@ mod platform {
             }
             let bindings = self.prepare_bindings(&pipeline, step.bind_groups())?;
             let draw = match step {
-                RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_) => {
-                    return Err(Error::Unavailable(
-                        "indirect draws are not implemented by this backend".into(),
-                    ));
+                RenderCommand::DrawIndirect(draw) => PreparedMetalDraw::Indirect {
+                    arguments: self.indirect_arguments(draw.arguments, draw.offset, 16)?,
+                    offset: usize::try_from(draw.offset).map_err(|_| Error::InvalidInput("Metal indirect offset overflow".into()))?,
+                },
+                RenderCommand::DrawIndexedIndirect(draw) => {
+                    let index = self.buffers.get(draw.index_buffer.buffer)?;
+                    validate_index_buffer_range(index.desc.usage, index.desc.size, draw.index_buffer, 0, 1)?;
+                    PreparedMetalDraw::IndexedIndirect {
+                        arguments: self.indirect_arguments(draw.arguments, draw.offset, 20)?,
+                        offset: usize::try_from(draw.offset).map_err(|_| Error::InvalidInput("Metal indirect offset overflow".into()))?,
+                        index_buffer: index.resource.clone().ok_or_else(|| Error::Backend("Metal index buffer has no native resource".into()))?,
+                        index_buffer_offset: usize::try_from(draw.index_buffer.offset).map_err(|_| Error::InvalidInput("Metal index offset overflow".into()))?,
+                        index_type: index_format_to_metal(draw.index_buffer.format),
+                    }
                 }
                 RenderCommand::Draw(step) => PreparedMetalDraw::NonIndexed {
                     vertex_start: step.first_vertex,
@@ -1600,6 +1620,17 @@ mod platform {
     }
 
     enum PreparedMetalDraw {
+        Indirect {
+            arguments: Retained<ProtocolObject<dyn MTLBuffer>>,
+            offset: usize,
+        },
+        IndexedIndirect {
+            arguments: Retained<ProtocolObject<dyn MTLBuffer>>,
+            offset: usize,
+            index_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+            index_buffer_offset: usize,
+            index_type: MTLIndexType,
+        },
         NonIndexed {
             vertex_start: u32,
             vertex_count: u32,
@@ -1646,6 +1677,20 @@ mod platform {
             step.bindings.encode(encoder);
             let primitive_type = primitive_topology_to_metal(pipeline.primitive_topology);
             match &step.draw {
+                PreparedMetalDraw::Indirect { arguments, offset } => {
+                    // SAFETY: the portable 16-byte argument record is validated and retained.
+                    unsafe { encoder.drawPrimitives_indirectBuffer_indirectBufferOffset(
+                        primitive_type, arguments.as_ref(), *offset,
+                    ); }
+                }
+                PreparedMetalDraw::IndexedIndirect { arguments, offset, index_buffer, index_buffer_offset, index_type } => {
+                    // SAFETY: the argument and index buffers are validated and retained.
+                    // The GPU producer owns the index range encoded by the argument record.
+                    unsafe { encoder.drawIndexedPrimitives_indexType_indexBuffer_indexBufferOffset_indirectBuffer_indirectBufferOffset(
+                        primitive_type, *index_type, index_buffer.as_ref(), *index_buffer_offset,
+                        arguments.as_ref(), *offset,
+                    ); }
+                }
                 PreparedMetalDraw::NonIndexed {
                     vertex_start,
                     vertex_count,

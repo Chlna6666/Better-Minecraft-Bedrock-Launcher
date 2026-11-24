@@ -4572,6 +4572,14 @@ mod platform {
                 );
                 self.textures.get_mut(resolve_texture_id)?.state =
                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                if self.textures.get(*msaa_texture_id)?.desc.usage.contains(TextureUsage::DISCARD_AFTER_RESOLVE)
+                    && matches!(color_load_op, LoadOp::Clear(_)) && clear_region.is_none()
+                {
+                    // SAFETY: Resolve has consumed the source, which is again
+                    // in RENDER_TARGET state. Only the explicitly disposable
+                    // source is discarded; the other MRT/depth targets survive.
+                    unsafe { command_list.DiscardResource(msaa_resource, None); }
+                }
             }
             for (texture_id, resource, _, _) in &attachments {
                 record_transition_barrier(

@@ -696,6 +696,12 @@ impl OpenGlDevice {
                     } else {
                         (4, glow::UNSIGNED_INT)
                     };
+                    // GL_ELEMENT_ARRAY_BUFFER has no binding base. Without
+                    // GPU argument rebasing a nonzero offset would silently
+                    // select the wrong indices even for an uncounted draw.
+                    if draw.index_buffer.offset != 0 {
+                        return Err(Error::Unavailable("OpenGL indirect indexed draws require zero index binding offset".into()));
+                    }
                     if !index.desc.usage.contains(BufferUsage::INDEX)
                         || draw.index_buffer.offset % bytes != 0
                         || draw
