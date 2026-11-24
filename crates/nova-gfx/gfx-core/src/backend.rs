@@ -899,6 +899,18 @@ pub trait SubmissionDevice {
         ))
     }
 
+    /// Poll a specific submission and return its completed frame GPU probe, if any.
+    /// Never wait or substitute a different submission's sample. Offscreen and
+    /// unsupported submissions return None. A completed probe is consumed once.
+    /// # Errors
+    /// Returns an error when submission polling fails.
+    fn poll_submission_with_frame_timestamps(
+        &mut self,
+        submission: SubmissionId,
+    ) -> Result<(SubmissionStatus, Option<FrameGpuTimestamps>)> {
+        Ok((self.poll_submission(submission)?, None))
+    }
+
     /// Blocks until a submission has completed.
     ///
     /// # Errors

@@ -263,7 +263,11 @@ impl NovaRenderer {
                 continue;
             }
             let submission = self.pending_submissions[index].submission;
-            let status = lock_backend(&self.backend).poll_submission(submission)?;
+            let (status, frame_cost) = lock_backend(&self.backend)
+                .poll_submission_with_frame_timestamps(submission)?;
+            if let Some(cost) = frame_cost {
+                self.adaptive_pacing.record_gpu_cost(cost);
+            }
             match status {
                 SubmissionStatus::Pending => index += 1,
                 SubmissionStatus::Complete => {

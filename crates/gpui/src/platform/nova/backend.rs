@@ -585,6 +585,20 @@ impl NovaBackend {
         }
     }
 
+    pub(super) fn poll_submission_with_frame_timestamps(&mut self, submission: SubmissionId)
+        -> Result<(SubmissionStatus, Option<gfx_core::FrameGpuTimestamps>)> {
+        match self {
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => Ok(device.poll_submission_with_frame_timestamps(submission)?),
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(device) => Ok(device.poll_submission_with_frame_timestamps(submission)?),
+            #[cfg(all(feature = "nova-gfx-vulkan", any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
+            Self::Vulkan(device) => Ok(device.poll_submission_with_frame_timestamps(submission)?),
+            #[allow(unreachable_patterns)]
+            _ => Ok((self.poll_submission(submission)?, None)),
+        }
+    }
+
     pub(super) fn wait_submission(&mut self, submission: SubmissionId) -> Result<()> {
         match self {
             #[cfg(all(

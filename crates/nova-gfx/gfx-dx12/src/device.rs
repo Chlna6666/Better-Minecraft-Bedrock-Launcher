@@ -260,6 +260,7 @@ mod platform {
         timestamp_frequency: Option<u64>,
         last_texture_transfer_time: Option<Duration>,
         last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
+        completed_frame_probes: std::collections::VecDeque<(u64, FrameGpuTimestamps)>,
         gpu_work_samples: Vec<gfx_core::GpuTimestampSample>,
         gpu_draw_query_pool: Vec<Dx12TimestampQueries>,
         deferred_releases: DeferredFreeQueue<DeferredDx12Release>,
@@ -484,6 +485,7 @@ mod platform {
                 timestamp_frequency,
                 last_texture_transfer_time: None,
                 last_frame_gpu_timestamps: None,
+                completed_frame_probes: std::collections::VecDeque::new(),
                 gpu_work_samples: Vec::new(),
                 gpu_draw_query_pool: Vec::new(),
                 deferred_releases: DeferredFreeQueue::new(),
@@ -3226,6 +3228,7 @@ mod platform {
             let command_encoder_pool_capacity = self.command_encoder_pool_capacity;
             let timestamp_frequency = self.timestamp_frequency;
             let last_frame_gpu_timestamps = &mut self.last_frame_gpu_timestamps;
+            let completed_frame_probes = &mut self.completed_frame_probes;
             let gpu_work_samples = &mut self.gpu_work_samples;
             let gpu_draw_query_pool = &mut self.gpu_draw_query_pool;
             self.deferred_command_encoders.retain_mut(|pending| {
@@ -3237,10 +3240,15 @@ mod platform {
                         (pending._encoder.timestamps.as_ref(), timestamp_frequency)
                     && let Ok((start, end)) = read_dx12_timestamp_ticks(&queries.readback)
                 {
-                    *last_frame_gpu_timestamps = Some(FrameGpuTimestamps {
+                    let sample = FrameGpuTimestamps {
                         duration_ticks: end.saturating_sub(start),
                         frequency,
-                    });
+                    };
+                    *last_frame_gpu_timestamps = Some(sample);
+                    if completed_frame_probes.len() >= 128 {
+                        completed_frame_probes.pop_front();
+                    }
+                    completed_frame_probes.push_back((pending.fence_value, sample));
                 }
                 if let (Some(tag), Some(queries), Some(frequency)) = (
                     pending._encoder.gpu_work_tag.take(),
@@ -6371,6 +6379,20 @@ mod platform {
 
         fn poll_submission(&mut self, submission: SubmissionId) -> Result<SubmissionStatus> {
             Self::poll_submission(self, submission)
+        }
+
+        fn poll_submission_with_frame_timestamps(&mut self, submission: SubmissionId)
+            -> Result<(SubmissionStatus, Option<FrameGpuTimestamps>)> {
+            let native = self.submissions.get(submission)?;
+            let key = (native.queue == Dx12SubmissionQueue::Primary).then_some(native.fence_value);
+            let status = Self::poll_submission(self, submission)?;
+            if status != SubmissionStatus::Complete {
+                return Ok((status, None));
+            }
+            let Some(key) = key else { return Ok((status, None)); };
+            let sample = self.completed_frame_probes.iter().position(|(id, _)| *id == key)
+                .and_then(|index| self.completed_frame_probes.remove(index)).map(|(_, sample)| sample);
+            Ok((status, sample))
         }
 
         fn wait_submission(&mut self, submission: SubmissionId) -> Result<()> {

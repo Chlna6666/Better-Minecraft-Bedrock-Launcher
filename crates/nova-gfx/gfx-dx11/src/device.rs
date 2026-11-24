@@ -57,6 +57,7 @@ pub struct Dx11Device {
     /// Probes opened by `present_steps` and consumed by the next `signal`.
     next_frame_timestamps: Option<Dx11TimestampQueries>,
     last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
+    completed_frame_probes: std::collections::VecDeque<(u32, FrameGpuTimestamps)>,
     pub(crate) timestamp_queries_supported: bool,
     submission_generation: u32,
     submitted: u32,
@@ -237,6 +238,7 @@ impl Dx11Device {
             gpu_work_samples: Vec::new(),
             next_frame_timestamps: None,
             last_frame_gpu_timestamps: None,
+            completed_frame_probes: std::collections::VecDeque::new(),
             timestamp_queries_supported,
             submission_generation: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),
             submitted: 0,
@@ -472,9 +474,13 @@ impl Dx11Device {
         let mut index = 0;
         while index < self.pending_frame_timestamps.len() {
             if self.pending_frame_timestamps[index].0 <= completed {
-                let (_, queries) = self.pending_frame_timestamps.remove(index);
+                let (serial, queries) = self.pending_frame_timestamps.remove(index);
                 if let Some(sample) = read_dx11_frame_timestamps(&self.context, &queries) {
                     self.last_frame_gpu_timestamps = Some(sample);
+                    if self.completed_frame_probes.len() >= 128 {
+                        self.completed_frame_probes.pop_front();
+                    }
+                    self.completed_frame_probes.push_back((serial, sample));
                 }
                 self.frame_timestamp_queries.push(queries);
             } else {
@@ -653,6 +659,16 @@ impl SubmissionDevice for Dx11Device {
         } else {
             SubmissionStatus::Pending
         })
+    }
+    fn poll_submission_with_frame_timestamps(&mut self, id: SubmissionId)
+        -> Result<(SubmissionStatus, Option<FrameGpuTimestamps>)> {
+        let status = SubmissionDevice::poll_submission(self, id)?;
+        if status != SubmissionStatus::Complete {
+            return Ok((status, None));
+        }
+        let sample = self.completed_frame_probes.iter().position(|(id, _)| *id == id.index())
+            .and_then(|index| self.completed_frame_probes.remove(index)).map(|(_, sample)| sample);
+        Ok((status, sample))
     }
     fn wait_submission(&mut self, id: SubmissionId) -> Result<()> {
         while SubmissionDevice::poll_submission(self, id)? == SubmissionStatus::Pending {

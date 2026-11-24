@@ -20,6 +20,8 @@ pub(super) struct AdaptivePacing {
     quiet_windows: u8,
     missing_windows: u8,
     sync_native: bool,
+    gpu_cost_ns: Option<u64>,
+    gpu_samples: u8,
 }
 
 impl Default for AdaptivePacing {
@@ -35,6 +37,8 @@ impl Default for AdaptivePacing {
             quiet_windows: 0,
             missing_windows: 0,
             sync_native: false,
+            gpu_cost_ns: None,
+            gpu_samples: 0,
         }
     }
 }
@@ -67,7 +71,24 @@ impl AdaptivePacing {
         }
     }
 
+    pub(super) fn record_gpu_cost(&mut self, sample: gfx_core::FrameGpuTimestamps) {
+        if !self.enabled || sample.frequency == 0 || sample.duration_ticks == 0 {
+            return;
+        }
+        let ns = u128::from(sample.duration_ticks) * 1_000_000_000 / u128::from(sample.frequency);
+        let Ok(ns) = u64::try_from(ns) else { return; };
+        if ns == 0 || ns > 1_000_000_000 {
+            return;
+        }
+        // Per-renderer EWMA, measured GPU main-pass duration only. This
+        // is a lower bound, not total 3D/offscreen/queue or scanout latency.
+        self.gpu_cost_ns = Some(self.gpu_cost_ns.map_or(ns, |old| (old * 7 + ns) / 8));
+        self.gpu_samples = self.gpu_samples.saturating_add(1);
+    }
+
     fn reset_evidence(&mut self) {
+        self.gpu_cost_ns = None;
+        self.gpu_samples = 0;
         self.last_frame = None;
         self.previous = None;
         self.frames = 0;
@@ -110,9 +131,11 @@ impl AdaptivePacing {
         let pressure = std::mem::take(&mut self.pressure);
         self.frames = 0;
         let previous_limit = self.limit;
+        let gpu_heavy = self.gpu_samples >= 4 && self.gpu_cost_ns.zip(self.native_refresh_period())
+            .is_some_and(|(cost, period)| u128::from(cost) * 4 >= period.as_nanos() * 3);
         if previous.zip(feedback).is_some_and(|(old, new)| progressing(old, new)) {
             self.missing_windows = 0;
-            if pressure >= PRESSURE_FRAMES {
+            if pressure >= PRESSURE_FRAMES || gpu_heavy {
                 self.quiet_windows = 0;
                 self.limit = MAX_IN_FLIGHT_SUBMISSIONS;
             } else if pressure == 0 {
@@ -252,5 +275,23 @@ mod tests {
             assert!(!pacing.presented(now, false, false));
         }
         assert_eq!(pacing.limit(), MAX_IN_FLIGHT_SUBMISSIONS);
+    }
+}
+
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+    #[test]
+    fn gpu_cost_is_converted_and_reset_on_surface_change() {
+        let mut pacing = AdaptivePacing::default();
+        pacing.set_enabled(true);
+        pacing.record_gpu_cost(gfx_core::FrameGpuTimestamps { duration_ticks: 8, frequency: 1_000 });
+        assert_eq!(pacing.gpu_cost_ns, Some(8_000_000));
+        pacing.record_gpu_cost(gfx_core::FrameGpuTimestamps { duration_ticks: 16, frequency: 1_000 });
+        assert_eq!(pacing.gpu_cost_ns, Some(9_000_000));
+        pacing.record_gpu_cost(gfx_core::FrameGpuTimestamps { duration_ticks: 10, frequency: 0 });
+        assert_eq!(pacing.gpu_samples, 2);
+        pacing.surface_changed();
+        assert_eq!(pacing.gpu_cost_ns, None);
     }
 }

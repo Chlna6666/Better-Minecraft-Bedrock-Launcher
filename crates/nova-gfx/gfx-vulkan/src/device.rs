@@ -189,6 +189,7 @@ pub struct VulkanDevice {
     gpu_trace_enabled: bool,
     gpu_trace_totals: VulkanGpuTraceTotals,
     last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
+    completed_frame_probes: std::collections::VecDeque<(SubmissionId, FrameGpuTimestamps)>,
     gpu_work_samples: Vec<gfx_core::GpuTimestampSample>,
     last_texture_transfer_time: Option<Duration>,
     deferred_destroys: DeferredFreeQueue<DeferredResource>,
@@ -525,6 +526,7 @@ impl VulkanDevice {
                 && log::log_enabled!(target: "gfx_vulkan::gpu", log::Level::Trace),
             gpu_trace_totals: VulkanGpuTraceTotals::default(),
             last_frame_gpu_timestamps: None,
+            completed_frame_probes: std::collections::VecDeque::new(),
             gpu_work_samples: Vec::new(),
             last_texture_transfer_time: None,
             deferred_destroys: DeferredFreeQueue::new(),
@@ -1750,6 +1752,7 @@ impl VulkanDevice {
             gpu_draw_tags: vec![None; command_buffers.len()],
             gpu_work_tag: None,
             gpu_work_clock,
+            frame_submission: None,
             command_buffers,
             transient_framebuffers: Vec::new(),
             fence: vk::Fence::null(),
@@ -2625,31 +2628,34 @@ impl VulkanDevice {
         let mut encoder_resource = self.command_encoders.take(encoder)?;
         encoder_resource.fence = present_frame.fence;
         encoder_resource.owns_fence = false;
-        self.deferred_destroys
-            .retire(0, DeferredResource::CommandEncoder(encoder_resource));
-
         let present_started = Instant::now();
-        self.present(
+        let result = self.present(
             swapchain_id,
             present_frame.image_index,
             present_frame.render_finished,
             damage,
-        )?;
+        );
         timings.queue_present = present_started.elapsed();
+        // The encoder must retire even when WSI presentation fails. Only
+        // successful presentation exposes a SubmissionId to the caller.
+        let submission = result.as_ref().ok().map(|_| self.submissions.insert(VulkanSubmission {
+            fence: present_frame.fence,
+            queue: gfx_core::GpuQueueId::PRIMARY,
+            owned_by_submission: false,
+        }));
+        encoder_resource.frame_submission = submission;
+        self.deferred_destroys
+            .retire(0, DeferredResource::CommandEncoder(encoder_resource));
+        result?;
         let post_present_cleanup_started = Instant::now();
         let swapchain = self.swapchains.get_mut(swapchain_id)?;
         let frame_slots = swapchain.in_flight_fences.len().max(1);
         swapchain.frame_index = (present_frame.frame_index + 1) % frame_slots;
         self.submitted_frames = self.submitted_frames.saturating_add(1);
-        let submission = self.submissions.insert(VulkanSubmission {
-            fence: present_frame.fence,
-            queue: gfx_core::GpuQueueId::PRIMARY,
-            owned_by_submission: false,
-        });
         self.poll_cleanup();
         timings.post_present_cleanup = post_present_cleanup_started.elapsed();
         Ok(Some(PresentedFrame {
-            submission: Some(submission),
+            submission,
             timings: Some(timings),
         }))
     }
@@ -4436,6 +4442,7 @@ impl VulkanDevice {
 
     fn recycle_command_encoder(&mut self, mut encoder: VulkanCommandEncoder) -> Result<()> {
         encoder.compute_resources.clear();
+        let frame_submission = encoder.frame_submission.take();
         if let (Some(tag), Some(pool), Some(clock)) = (
             encoder.gpu_work_tag.take(),
             encoder.gpu_trace_query_pool,
@@ -4514,10 +4521,17 @@ impl VulkanDevice {
                 };
                 if result.is_ok() {
                     if *pass == VulkanGpuPass::Main {
-                        self.last_frame_gpu_timestamps = Some(FrameGpuTimestamps {
+                        let sample = FrameGpuTimestamps {
                             duration_ticks: clock.duration_ticks(ticks[0], ticks[1]),
                             frequency: clock.frequency_hz(),
-                        });
+                        };
+                        self.last_frame_gpu_timestamps = Some(sample);
+                        if let Some(id) = frame_submission {
+                            if self.completed_frame_probes.len() >= 128 {
+                                self.completed_frame_probes.pop_front();
+                            }
+                            self.completed_frame_probes.push_back((id, sample));
+                        }
                     }
                     if self.gpu_trace_enabled {
                         let gpu_us = clock.elapsed_nanoseconds(ticks[0], ticks[1]) / 1000.0;
@@ -5279,6 +5293,17 @@ impl SubmissionDevice for VulkanDevice {
 
     fn poll_submission(&mut self, submission: SubmissionId) -> Result<SubmissionStatus> {
         Self::poll_submission(self, submission)
+    }
+
+    fn poll_submission_with_frame_timestamps(&mut self, submission: SubmissionId)
+        -> Result<(SubmissionStatus, Option<FrameGpuTimestamps>)> {
+        let status = Self::poll_submission(self, submission)?;
+        if status != SubmissionStatus::Complete {
+            return Ok((status, None));
+        }
+        let sample = self.completed_frame_probes.iter().position(|(id, _)| *id == submission)
+            .and_then(|index| self.completed_frame_probes.remove(index)).map(|(_, sample)| sample);
+        Ok((status, sample))
     }
 
     fn wait_submission(&mut self, submission: SubmissionId) -> Result<()> {
@@ -6064,6 +6089,7 @@ struct VulkanCommandEncoder {
     gpu_draw_tags: Vec<Option<gfx_core::GpuTimestampTag>>,
     gpu_work_tag: Option<gfx_core::GpuTimestampTag>,
     gpu_work_clock: Option<VulkanTimestampClock>,
+    frame_submission: Option<SubmissionId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
