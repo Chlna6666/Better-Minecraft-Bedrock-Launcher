@@ -258,7 +258,7 @@ impl Compactor {
             }
             let view = self.views.entry(id).or_default();
             let previous_probe = view.pending_id();
-            let decision = view.schedule(device, self.shader, self.argument_stride, pass)?;
+            let decision = view.schedule(device, self.argument_stride, pass)?;
             let next_probe = view.pending_id();
             if previous_probe != next_probe {
                 if let Some(old) = previous_probe { self.probes.remove(&old); }
@@ -268,8 +268,32 @@ impl Compactor {
             decisions.push(decision);
         }
         if !special { return ordinary(device); }
-        // All compaction producers are on the ordered owner queue; each
-        // view has distinct scratch through the entire graphics batch.
+        // Each view owns distinct scratch, and all producers precede the
+        // ordered graphics batch. Coalesce adjacent unprofiled dispatches
+        // into one native submission, retaining exact per-view probe tags.
+        let mut dispatches = Vec::new();
+        for (&(id, _), decision) in epochs.iter().zip(&decisions) {
+            let Some(choice) = (*decision).filter(|choice| choice.compact) else { continue; };
+            let prepared = self.views[&id].cached.as_ref()
+                .and_then(|cache| cache.prepared.as_ref()).expect("scheduled compaction plan");
+            let dispatch = ComputeDispatch {
+                shader: self.shader, bindings: &prepared.compute, workgroups: [prepared.groups, 1, 1],
+            };
+            if let Some(tag) = choice.tag {
+                if !dispatches.is_empty() {
+                    device.dispatch_compute_batch(&dispatches)?;
+                    dispatches.clear();
+                }
+                device.dispatch_compute_batch_profiled(std::slice::from_ref(&dispatch),
+                    GpuTimestampTag { batch_id: tag.batch_id, stage: GpuTimestampStage::DrawCompaction })?;
+            } else {
+                dispatches.push(dispatch);
+            }
+        }
+        if !dispatches.is_empty() {
+            device.dispatch_compute_batch(&dispatches)?;
+        }
+
         let mut native = Vec::with_capacity(passes.len());
         let mut tags = Vec::with_capacity(passes.len());
         let mut counts: Vec<&[IndirectCountBinding]> = Vec::with_capacity(passes.len());
@@ -415,7 +439,7 @@ impl ViewCompactor {
         Ok(Some(Prepared { commands, counts: bindings, compute, groups: group_count }))
     }
 
-    fn schedule(&mut self, device: &mut dyn ExtensionDevice, shader: ShaderModuleId, argument_stride: u32, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
+    fn schedule(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
         if !self.cached.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.source, &pass.commands)) {
             // Invalidate before preparing: a failed allocation or upload may
             // have replaced scratch storage referenced by the previous plan.
@@ -424,23 +448,13 @@ impl ViewCompactor {
             self.cached = Some(Cached { source: Arc::clone(&pass.commands), prepared, cost: CostModel::default() });
         }
         let Some(cached) = self.cached.as_mut() else { return Ok(None); };
-        let Some(prepared) = cached.prepared.as_ref() else { return Ok(None); };
+        if cached.prepared.is_none() { return Ok(None); }
         let now = Instant::now();
         let (path, probe) = cached.cost.choose(now);
         let id = probe.then(|| cached.cost.begin(path, now));
         let draw_tag = id.map(|batch_id| GpuTimestampTag { batch_id, stage: GpuTimestampStage::DrawIndirect });
         if path == Path::Original {
             return Ok(draw_tag.map(|tag| Decision { compact: false, tag: Some(tag) }));
-        }
-        // Culling, compaction and counted drawing share the ordered owner queue.
-        let dispatch = ComputeDispatch {
-            shader, bindings: &prepared.compute, workgroups: [prepared.groups, 1, 1],
-        };
-        if let Some(batch_id) = id {
-            device.dispatch_compute_batch_profiled(std::slice::from_ref(&dispatch),
-                GpuTimestampTag { batch_id, stage: GpuTimestampStage::DrawCompaction })?;
-        } else {
-            device.dispatch_compute(&dispatch)?;
         }
         Ok(Some(Decision { compact: true, tag: draw_tag }))
     }
