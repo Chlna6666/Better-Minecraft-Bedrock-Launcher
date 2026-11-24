@@ -53,13 +53,12 @@ impl Target {
             size: extent,
             mip_level_count: 1,
             format,
-            usage: hint | TextureUsage::SAMPLED
-                | TextureUsage::COPY_SRC
-                | if depth {
-                    TextureUsage::DEPTH_ATTACHMENT
-                } else {
-                    TextureUsage::COLOR_ATTACHMENT
-                },
+            usage: if hint.contains(TextureUsage::TRANSIENT_ATTACHMENT) {
+                hint | TextureUsage::COLOR_ATTACHMENT
+            } else {
+                hint | TextureUsage::SAMPLED | TextureUsage::COPY_SRC
+                    | if depth { TextureUsage::DEPTH_ATTACHMENT } else { TextureUsage::COLOR_ATTACHMENT }
+            },
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
             sample_count,
@@ -90,6 +89,7 @@ impl Targets {
         device: &mut dyn ExtensionDevice,
         extent: Extent2d,
         msaa_sample_count: u32,
+        backend: BackendKind,
     ) -> gpui::Result<Self> {
         let mut cleanup = super::construction::Construction::default();
         let result = (|| {
@@ -105,6 +105,9 @@ impl Targets {
                 target.record(&mut cleanup);
                 Ok(target)
             };
+            let msaa_hint = TextureUsage::DISCARD_AFTER_RESOLVE | if backend == BackendKind::Vulkan {
+                TextureUsage::TRANSIENT_ATTACHMENT
+            } else { TextureUsage::empty() };
             Ok(Self {
                 extent,
                 color: create(Format::Rgba16Float, 1, TextureUsage::empty())?,
@@ -117,8 +120,8 @@ impl Targets {
                     Some(MsaaTargets {
                         // Only these two sources are resolved and never sampled.
                         // Depth and albedo remain live at their original sample count.
-                        color: create(Format::Rgba16Float, msaa_sample_count, TextureUsage::DISCARD_AFTER_RESOLVE)?,
-                        surface: create(Format::Rgba16Float, msaa_sample_count, TextureUsage::DISCARD_AFTER_RESOLVE)?,
+                        color: create(Format::Rgba16Float, msaa_sample_count, msaa_hint)?,
+                        surface: create(Format::Rgba16Float, msaa_sample_count, msaa_hint)?,
                     })
                 } else {
                     None

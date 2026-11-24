@@ -802,6 +802,10 @@ bitflags! {
         /// until it has been completely initialized again. Backends may ignore
         /// this hint and preserve the source, including for explicit resolves.
         const DISCARD_AFTER_RESOLVE = 1 << 6;
+        /// Attachment-only MSAA storage. Every pass must fully clear and
+        /// resolve this source before ending; sampling, copying and loading
+        /// it are invalid. Backends may use ordinary physical storage.
+        const TRANSIENT_ATTACHMENT = 1 << 7;
     }
 }
 
@@ -1336,6 +1340,15 @@ impl TextureDescriptor {
         {
             return Err(Error::InvalidInput(
                 "discard after resolve requires a multisampled color attachment".into(),
+            ));
+        }
+        if self.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT)
+            && (self.usage != (TextureUsage::TRANSIENT_ATTACHMENT
+                | TextureUsage::DISCARD_AFTER_RESOLVE | TextureUsage::COLOR_ATTACHMENT)
+                || self.memory_location != MemoryLocation::GpuOnly)
+        {
+            return Err(Error::InvalidInput(
+                "transient MSAA storage must be GPU-only, attachment-only and discard after resolve".into(),
             ));
         }
         // D3D11/D3D12, Vulkan and OpenGL all require a multisampled

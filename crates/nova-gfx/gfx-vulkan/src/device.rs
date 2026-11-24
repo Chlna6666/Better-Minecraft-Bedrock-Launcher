@@ -989,6 +989,7 @@ impl VulkanDevice {
                 desc.format,
             )?;
         }
+        let transient = desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT);
         let create_info = vk::ImageCreateInfo::default()
             .image_type(if matches!(desc.dimension, TextureDimension::D3 { .. }) {
                 vk::ImageType::TYPE_3D
@@ -1005,11 +1006,13 @@ impl VulkanDevice {
             .array_layers(layers)
             .samples(sample_flag_for(desc.sample_count).unwrap_or(vk::SampleCountFlags::TYPE_1))
             .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(
+            .usage(if transient {
+                vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT
+            } else {
                 texture_usage_to_vk(desc.usage)
                     | vk::ImageUsageFlags::TRANSFER_SRC
-                    | vk::ImageUsageFlags::TRANSFER_DST,
-            )
+                    | vk::ImageUsageFlags::TRANSFER_DST
+            })
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
         // SAFETY: Device is valid and image create info is self-contained.
@@ -1018,16 +1021,52 @@ impl VulkanDevice {
         // SAFETY: Image was created from this device and is valid here.
         let requirements = unsafe { self.device.get_image_memory_requirements(image) };
         let name = desc.label.as_deref().unwrap_or("nova-gfx-texture");
-        let allocation = self.allocator.allocate_vulkan_image(
-            name,
-            requirements,
-            desc.memory_location,
-            image,
-        )?;
-        let (memory, offset) = vulkan_memory(&allocation)?;
-        // SAFETY: Allocation was created from this image's memory requirements and outlives it.
-        unsafe { self.device.bind_image_memory(image, memory, offset) }
-            .map_err(VulkanError::from)?;
+        let allocate = |allocator: &mut gfx_memory::MemoryAllocator, requirements| {
+            allocator.allocate_vulkan_image(name, requirements, desc.memory_location, image)
+        };
+        let allocation = if transient {
+            // Lazy heaps are optional (typically tile-based GPUs). Mask the
+            // actual VkImage requirements rather than guessing a heap index.
+            let properties = unsafe { self.instance.get_physical_device_memory_properties(self.physical_device) };
+            let mut lazy_bits = 0u32;
+            for (index, memory_type) in properties.memory_types[..properties.memory_type_count as usize].iter().enumerate() {
+                if memory_type.property_flags.contains(vk::MemoryPropertyFlags::LAZILY_ALLOCATED | vk::MemoryPropertyFlags::DEVICE_LOCAL) {
+                    lazy_bits |= 1u32 << index;
+                }
+            }
+            let lazy = requirements.memory_type_bits & lazy_bits;
+            let ordinary = requirements.memory_type_bits & !lazy_bits;
+            let mut preferred = requirements;
+            preferred.memory_type_bits = lazy;
+            let mut fallback = requirements;
+            fallback.memory_type_bits = ordinary;
+            if lazy != 0 {
+                allocate(&mut self.allocator, preferred).or_else(|error| {
+                    if ordinary != 0 { allocate(&mut self.allocator, fallback) } else { Err(error) }
+                })
+            } else {
+                allocate(&mut self.allocator, requirements)
+            }
+        } else {
+            allocate(&mut self.allocator, requirements)
+        };
+        let allocation = match allocation {
+            Ok(allocation) => allocation,
+            Err(error) => {
+                unsafe { self.device.destroy_image(image, None); }
+                return Err(error);
+            }
+        };
+        let binding = vulkan_memory(&allocation).and_then(|(memory, offset)| {
+            // SAFETY: image and allocation are live and compatible.
+            unsafe { self.device.bind_image_memory(image, memory, offset) }
+                .map_err(|error| VulkanError::from(error).into())
+        });
+        if let Err(error) = binding {
+            unsafe { self.device.destroy_image(image, None); }
+            let _ = self.allocator.free(allocation);
+            return Err(error);
+        }
 
         Ok(self.textures.insert(VulkanTexture {
             image,
@@ -1951,9 +1990,12 @@ impl VulkanDevice {
                 {
                     return Err(Error::InvalidInput("Vulkan texture and render pass formats or sample counts differ".into()));
                 }
+                if texture.desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT) {
+                    return Err(Error::InvalidInput("transient MSAA attachment requires a resolving offscreen pass".into()));
+                }
                 render_target_texture = Some(texture_view.texture);
                 render_target_transition = Some(CommandRenderTargetTransition {
-                    image: texture.image, old_layout: texture.layout,
+                    image: texture.image, old_layout: texture.layout, transient: false,
                 });
                 let extent = vk::Extent2D { width: texture.desc.size.width(), height: texture.desc.size.height() };
                 let viewport_extent = viewport.map(|viewport| {
@@ -2262,9 +2304,16 @@ impl VulkanDevice {
                     "Vulkan color attachments must not repeat a texture".into(),
                 ));
             }
+            let transient = texture.desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT);
+            if transient && (index != 0 || resolve_view.is_none()
+                || !matches!(color_load_op, LoadOp::Clear(_)) || clear_region.is_some())
+            {
+                return Err(Error::InvalidInput("transient MSAA requires a full clear and first-attachment resolve".into()));
+            }
             transitions.push(CommandRenderTargetTransition {
                 image: texture.image,
                 old_layout: texture.layout,
+                transient,
             });
             image_views.push(texture_view.view);
             render_target_textures.push(texture_view.texture);
@@ -2475,6 +2524,9 @@ impl VulkanDevice {
                     && src_view.desc.format == dst_texture_view.desc.format
                     && !matches!(src_view.desc.format, Format::R8Uint | Format::Rg8Uint | Format::Rgba8Uint))
                     .then_some(dst_texture_view.view);
+                if source.desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT) && native_view.is_none() {
+                    return Err(Error::InvalidInput("transient MSAA requires native attachment resolve".into()));
+                }
                 Some(CommandResolve {
                     source: source.image,
                     destination: destination.image,
@@ -2518,9 +2570,12 @@ impl VulkanDevice {
             for access in depth_accesses {
                 self.textures.get_mut(access.texture)?.layout = access.new_layout;
             }
-            for texture_id in render_target_textures {
-                self.textures.get_mut(texture_id)?.layout =
-                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+            for (texture_id, transition) in render_target_textures.into_iter().zip(&transitions) {
+                self.textures.get_mut(texture_id)?.layout = if transition.transient {
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+                } else {
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                };
             }
             if let Some(view) = resolve_view {
                 let texture = self.texture_views.get(view)?.texture;
@@ -7906,6 +7961,7 @@ struct CommandResolve {
 struct CommandRenderTargetTransition {
     image: vk::Image,
     old_layout: vk::ImageLayout,
+    transient: bool,
 }
 
 struct CommandDrawStepInfo {
@@ -8261,7 +8317,9 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: clear_depth, stencil: 0 } })
     });
     let has_transition = !info.render_target_transitions.is_empty();
-    let render_area = scoped_offscreen_clear_area(
+    let render_area = if info.render_target_transitions.iter().any(|transition| transition.transient) {
+        full_render_area(info.extent)
+    } else { scoped_offscreen_clear_area(
         info.extent,
         has_transition,
         info.color_load_op,
@@ -8277,7 +8335,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             info.depth_load_op,
             info.steps.iter().map(|step| step.scissor),
         )
-    });
+    }) };
     let native_resolve = info.resolve.and_then(|resolve| {
         (render_area == full_render_area(resolve.extent))
             .then_some(resolve.native_view).flatten()
@@ -8565,6 +8623,8 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             }
         }
         for transition in info.render_target_transitions {
+            // Attachment-only images must never enter a shader-read or transfer layout.
+            if transition.transient { continue; }
             let old_layout = if native_resolve.is_none()
                 && info.resolve.is_some_and(|resolve| resolve.source == transition.image) {
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL

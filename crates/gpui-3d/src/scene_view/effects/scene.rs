@@ -563,7 +563,7 @@ impl EffectScene {
     ) -> gpui::Result<Self> {
         let mut cleanup = super::construction::Construction::default();
         let result = (|| {
-            let targets = Targets::create(device, extent, msaa_sample_count)?;
+            let targets = Targets::create(device, extent, msaa_sample_count, backend)?;
             targets.record(&mut cleanup);
             let frame = cleanup.record(uniform(device, backend)?, |d, id| {
                 let _ = d.destroy_buffer(id);
@@ -650,7 +650,7 @@ impl EffectScene {
             return Ok(());
         }
         self.targets_valid = false;
-        let targets = Targets::create(device, extent, self.msaa_sample_count)?;
+        let targets = Targets::create(device, extent, self.msaa_sample_count, backend)?;
         let tiles = match LightTiles::new(device, backend, extent) {
             Ok(tiles) => tiles,
             Err(error) => {
