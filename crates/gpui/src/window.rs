@@ -108,7 +108,7 @@ mod properties;
 pub(crate) mod scroll_dependencies;
 pub(crate) mod retained;
 mod state;
-mod view_recipe;
+mod view_cache;
 mod tab_stop;
 #[cfg(test)]
 mod tests;

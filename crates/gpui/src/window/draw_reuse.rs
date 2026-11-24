@@ -1083,7 +1083,7 @@ fn retained_range_has_frame_interactivity(retained: &RetainedElementRange) -> bo
 
 // Dispatch nodes and inert hitboxes alone do not capture old coordinates.
 // All other stateful/interactive side effects are a translation barrier.
-fn retained_range_has_stateful_effects(retained: &RetainedElementRange) -> bool {
+pub(super) fn retained_range_has_stateful_effects(retained: &RetainedElementRange) -> bool {
     let prepaint = &retained.prepaint_range;
     let paint = &retained.paint_range;
 

@@ -674,14 +674,10 @@ impl<E: Element> Drawable<E> {
                     let explicit_owner = (&self.element as &dyn Any)
                         .downcast_ref::<super::ViewElement>()
                         .and_then(super::ViewElement::explicitly_cached_owner);
-                    let retained_view = if let Some(owner) = explicit_owner {
+                    let retained_view = explicit_owner.and_then(|owner| {
                         window.explicit_cached_view_replay(owner, &retained_id, bounds, layout_fingerprint, cx)
-                            .map(|ranges| (owner, ranges, Point::default()))
-                    } else if (&self.element as &dyn Any).is::<super::ViewElement>() {
-                        window.fixed_view_replay(&retained_id, bounds, layout_fingerprint)
-                    } else {
-                        None
-                    };
+                            .map(|(ranges, delta)| (owner, ranges, delta))
+                    });
                     if let Some((owner, retained, translation)) = retained_view {
                         let prepaint_start = window.prepaint_index();
                         if window.reuse_prepaint_at(retained.prepaint_range.clone(), translation) {

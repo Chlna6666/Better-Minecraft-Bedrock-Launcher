@@ -1,63 +1,6 @@
 use super::*;
-use crate::{RetainedViewRecipe, window::frame::RetainedPaintContext};
-
-#[derive(Clone)]
-pub(super) struct CommittedViewRecipe {
-    owner: EntityId,
-    recipe: RetainedViewRecipe,
-    context: RetainedPaintContext,
-    viewport: Size<Pixels>,
-    reused: bool,
-}
 
 impl Window {
-    /// Admission happens before layout. Only explicit repeatable recipes are
-    /// retained; a miss executes the original Render and normal lifecycle.
-    pub(crate) fn reuse_view_recipe(&mut self, owner: EntityId) -> Option<RetainedViewRecipe> {
-        if self.view_recipes.is_empty()
-            || cfg!(gpui_hot_reload)
-            || self.force_view_cache_refresh()
-            || self.view_dirty_scope(owner).is_some()
-            || !self.retained_replay_is_targeted()
-        {
-            return None;
-        }
-        let key = self.current_stable_layout_element_id()?;
-        if self.invalidator.retained_route_path_is_dirty(&key, &|_| true)
-            || self.invalidator.requires_reconciliation_for_route(&key, &|_| true)
-        {
-            return None;
-        }
-        let previous = self.view_recipes.get(&key)?;
-        if previous.owner != owner
-            || previous.viewport != self.viewport_size
-            || previous.context != self.current_retained_paint_context()
-            || self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_none()
-        {
-            return None;
-        }
-        let mut previous = previous.clone();
-        previous.reused = true;
-        let recipe = previous.recipe.clone();
-        self.next_view_recipes.insert(key, previous);
-        // Render did not repeat its dependency reads. The existing committed
-        // replay preservation path must retain those still-mounted edges.
-        self.replayed_dependency_ranges = true;
-        Some(recipe)
-    }
-
-    pub(crate) fn record_view_recipe(&mut self, owner: EntityId, recipe: RetainedViewRecipe) {
-        let Some(key) = self.current_stable_layout_element_id() else { return; };
-        let entry = CommittedViewRecipe {
-            owner,
-            recipe,
-            context: self.current_retained_paint_context(),
-            viewport: self.viewport_size,
-            reused: false,
-        };
-        self.next_view_recipes.insert(key, entry);
-    }
-
     /// The explicit GPUI cached API supplies layout independently of Render.
     /// Its unchanged stationary subtree may include listeners and state, but
     /// not nested frame-local cache owners or deferred/tooltip transfers.
@@ -68,7 +11,7 @@ impl Window {
         bounds: Bounds<Pixels>,
         fingerprint: Option<u64>,
         cx: &App,
-    ) -> Option<super::frame::RetainedReplayRanges> {
+    ) -> Option<(super::frame::RetainedReplayRanges, Point<Pixels>)> {
         if cfg!(gpui_hot_reload)
             || self.force_view_cache_refresh()
             || !self.invalidator.active_targeted_replay()
@@ -83,7 +26,7 @@ impl Window {
         }
         let range = self.rendered_frame.retained_element_ranges.get(key)?;
         if !range.explicit_cached_view || !range.identity_stable
-            || range.bounds != bounds
+            || range.bounds.size != bounds.size
             || range.layout_fingerprint != fingerprint
             || range.paint_context.as_ref() != &self.current_retained_paint_context()
             || self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_none()
@@ -105,63 +48,14 @@ impl Window {
         {
             return None;
         }
-        Some(super::frame::RetainedReplayRanges {
-            prepaint_range: range.prepaint_range.clone(),
-            paint_range: range.paint_range.clone(),
-            metadata_range: range.metadata_range.clone(),
-        })
-    }
-
-    /// Fixed slots have an independent layout root. Reuse the whole committed
-    /// lifecycle only if the slot's actual geometry and inherited paint state
-    /// match and all descendants have a known static replay contract.
-    pub(crate) fn fixed_view_replay(
-        &self,
-        key: &GlobalElementId,
-        bounds: Bounds<Pixels>,
-        fingerprint: Option<u64>,
-    ) -> Option<(EntityId, super::frame::RetainedReplayRanges, Point<Pixels>)> {
-        let entry = self.next_view_recipes.get(key)?;
-        if !entry.reused || entry.recipe.fixed_size().is_none()
-            || self.force_view_cache_refresh()
-            || fingerprint.is_none()
-        {
-            return None;
-        }
-        let range = self.rendered_frame.retained_element_ranges.get(key)?;
-        if !range.identity_stable
-            || range.bounds.size != bounds.size
-            || range.layout_fingerprint != fingerprint
-            || range.paint_context.as_ref() != &self.current_retained_paint_context()
-            || range.prepaint_range.start.deferred_draws_index != range.prepaint_range.end.deferred_draws_index
-            || range.prepaint_range.start.tooltips_index != range.prepaint_range.end.tooltips_index
-            || range.prepaint_range.start.accessed_element_states_index != range.prepaint_range.end.accessed_element_states_index
-            || range.paint_range.start.accessed_element_states_index != range.paint_range.end.accessed_element_states_index
-            || range.paint_range.start.mouse_listeners_index != range.paint_range.end.mouse_listeners_index
-            || range.paint_range.start.input_handlers_index != range.paint_range.end.input_handlers_index
-            || range.paint_range.start.tab_handle_index != range.paint_range.end.tab_handle_index
-            || range.paint_range.start.cursor_styles_index != range.paint_range.end.cursor_styles_index
-            || range.paint_range.start.window_control_hitboxes_index != range.paint_range.end.window_control_hitboxes_index
-        {
-            return None;
-        }
-        let descendants = self.rendered_frame.retained_element_order.get(range.metadata_range.clone())?;
-        let (root, descendants) = descendants.split_last()?;
-        if self.rendered_frame.retained_element_ranges.get(root)?.metadata_range != range.metadata_range
-            || descendants.is_empty()
-            || !descendants.iter().all(|key| self.rendered_frame.retained_element_ranges.get(key).is_some_and(|child| {
-                child.identity_stable && child.subtree_stable && child.semantic_descriptor.is_some()
-            }))
-            || !self.can_reuse_prepaint(&range.prepaint_range)
-            || !self.can_reuse_paint(&range.paint_range)
-        {
-            return None;
-        }
         let delta = bounds.origin - range.bounds.origin;
-        if delta != Point::default() && !self.can_translate_static_range(range, bounds, delta) {
+        if delta != Point::default()
+            && (super::draw_reuse::retained_range_has_stateful_effects(range)
+                || !self.can_translate_static_range(range, bounds, delta))
+        {
             return None;
         }
-        Some((entry.owner, super::frame::RetainedReplayRanges {
+        Some((super::frame::RetainedReplayRanges {
             prepaint_range: range.prepaint_range.clone(),
             paint_range: range.paint_range.clone(),
             metadata_range: range.metadata_range.clone(),
@@ -253,15 +147,4 @@ impl Window {
         true
     }
 
-    pub(super) fn commit_view_recipes(&mut self) {
-        // Remove unmounted entries and entries with ambiguous/uncommitted
-        // lifecycle metadata. The candidate table is bounded by this frame.
-        self.next_view_recipes.retain(|key, entry| {
-            self.rendered_frame.retained_element_ranges.get(key)
-                .is_some_and(|range| range.identity_stable)
-                && self.rendered_frame.dispatch_tree.view_path_reversed(entry.owner).next().is_some()
-        });
-        mem::swap(&mut self.view_recipes, &mut self.next_view_recipes);
-        self.next_view_recipes.clear();
-    }
 }

@@ -56,7 +56,6 @@ mod text;
 mod text_animation;
 mod traits;
 mod uniform_list;
-mod view_recipe;
 
 #[cfg(test)]
 mod retained_sibling_tests;
@@ -86,7 +85,6 @@ pub use text::*;
 pub use text_animation::*;
 pub use traits::*;
 pub use uniform_list::*;
-pub use view_recipe::RetainedViewRecipe;
 
 pub(crate) use div::{
     DivPrepaint, RetainedDivSelfScene, RetainedDivSelfSceneStyle, RetainedDivSemanticKey,

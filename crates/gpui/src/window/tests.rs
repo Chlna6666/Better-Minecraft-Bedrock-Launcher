@@ -3719,105 +3719,6 @@ fn element_blur_unmount_clears_nested_filters(cx: &mut TestAppContext) {
     });
 }
 
-struct RecipeTestView {
-    model: Entity<u32>,
-    renders: Rc<Cell<usize>>,
-}
-
-impl Render for RecipeTestView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.renders.set(self.renders.get() + 1);
-        let value = *self.model.read(cx);
-        crate::RetainedViewRecipe::new(move || crate::div().child(format!("value {value}")))
-    }
-}
-
-#[gpui::test]
-fn retained_recipe_skips_render_but_rebuilds_after_model_notify(cx: &mut TestAppContext) {
-    let renders = Rc::new(Cell::new(0));
-    let (model, window) = cx.update(|cx| {
-        let model = cx.new(|_| 1u32);
-        let window = cx.open_window(WindowOptions::default(), |_, cx| {
-            cx.new(|_| RecipeTestView {
-                model: model.clone(),
-                renders: renders.clone(),
-            })
-        }).unwrap();
-        (model, AnyWindowHandle::from(window))
-    });
-
-    cx.update_window(window, |_, window, cx| {
-        window.draw(cx).clear();
-        let baseline = renders.get();
-        assert!(!window.view_recipes.is_empty());
-        window.redraw_without_view_cache_refresh();
-        window.draw(cx).clear();
-        assert_eq!(renders.get(), baseline, "unchanged recipe should skip Render");
-
-        // Repeat the hit to prove the original model read survives a recipe-only frame.
-        window.redraw_without_view_cache_refresh();
-        window.draw(cx).clear();
-        assert_eq!(renders.get(), baseline);
-
-        model.update(cx, |model, cx| {
-            *model = 2;
-            cx.notify();
-        });
-        window.draw(cx).clear();
-        assert_eq!(renders.get(), baseline + 1, "model notification must rebuild Render");
-    }).unwrap();
-}
-
-struct FixedRecipeTestView {
-    renders: Rc<Cell<usize>>,
-    factories: Rc<Cell<usize>>,
-}
-
-impl Render for FixedRecipeTestView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        self.renders.set(self.renders.get() + 1);
-        let factories = self.factories.clone();
-        crate::RetainedViewRecipe::fixed(size(px(32.), px(24.)), move || {
-            factories.set(factories.get() + 1);
-            crate::div().w(px(32.)).h(px(24.)).bg(crate::rgb(0x123456))
-        })
-    }
-}
-
-#[gpui::test]
-fn fixed_recipe_replays_without_materializing_the_element_tree(cx: &mut TestAppContext) {
-    let renders = Rc::new(Cell::new(0));
-    let factories = Rc::new(Cell::new(0));
-    let window = cx.update(|cx| {
-        let window = cx.open_window(WindowOptions::default(), |_, cx| {
-            cx.new(|_| FixedRecipeTestView {
-                renders: renders.clone(),
-                factories: factories.clone(),
-            })
-        }).unwrap();
-        AnyWindowHandle::from(window)
-    });
-
-    cx.update_window(window, |_, window, cx| {
-        window.draw(cx).clear();
-        let rendered = renders.get();
-        let materialized = factories.get();
-        assert!(materialized > 0);
-        assert!(!window.rendered_frame.scene().quads.is_empty());
-        let quad = window.rendered_frame.scene().quads[0];
-        window.redraw_without_view_cache_refresh();
-        window.draw(cx).clear();
-        assert_eq!(renders.get(), rendered);
-        assert_eq!(factories.get(), materialized);
-        assert_eq!(window.rendered_frame.scene().quads[0], quad);
-
-        window.refresh();
-        window.draw(cx).clear();
-        assert_eq!(renders.get(), rendered + 1);
-        assert_eq!(factories.get(), materialized + 1);
-    }).unwrap();
-}
-
 struct ExplicitCachedTestView {
     model: Entity<u32>,
     renders: Rc<Cell<usize>>,
@@ -3862,6 +3763,9 @@ fn explicit_cached_view_reuses_lifecycle_and_rebuilds_on_dependency_notify(cx: &
         root.update(cx, |_, cx| cx.notify());
         window.draw(cx).clear();
         assert_eq!(renders.get(), baseline);
+        root.update(cx, |_, cx| cx.notify());
+        window.draw(cx).clear();
+        assert_eq!(renders.get(), baseline, "dependency must survive repeated cached replay");
         model.update(cx, |value, cx| { *value = 2; cx.notify(); });
         window.draw(cx).clear();
         assert_eq!(renders.get(), baseline + 1);

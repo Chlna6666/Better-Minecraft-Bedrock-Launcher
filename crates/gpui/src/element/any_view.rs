@@ -109,10 +109,9 @@ impl Eq for AnyView {}
 
 /// Shared non-generic lifecycle proxy for ordinary rendered entities.
 ///
-/// The view renders into an ordinary element subtree during its own lifecycle. There is no
-/// separate cache boundary: callers that need to avoid re-rendering a view must rely on the
-/// window's dirty scopes, and unchanged subtrees reconcile through the regular element retained
-/// replay proofs.
+/// A normal view renders an ordinary element subtree. The explicit cached
+/// form uses a caller-supplied layout slot and the same window-owned retained
+/// lifecycle metadata; no separate recipe or factory is retained.
 #[doc(hidden)]
 pub struct ViewElement {
     view: AnyView,
@@ -149,15 +148,11 @@ impl IntoElement for ViewElement {
     }
 }
 
-/// Frame-local state for an ordinary view or an independently sized recipe.
+/// Frame-local state for an ordinary or explicitly cached view.
 #[doc(hidden)]
 pub enum ViewRequestLayout {
     Element(AnyElement),
     Cached { element: Option<AnyElement> },
-    Fixed {
-        recipe: crate::RetainedViewRecipe,
-        element: Option<AnyElement>,
-    },
 }
 
 impl Element for ViewElement {
@@ -193,30 +188,8 @@ impl Element for ViewElement {
         let type_name = cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
         let result = window.with_rendered_view(entity_id, |window| {
-            let recipe = if let Some(recipe) = window.reuse_view_recipe(entity_id) {
-                recipe
-            } else {
-                window.record_rendered_view(entity_id, type_name);
-                let mut rendered = self.view.render_element(window, cx);
-                if let Some(recipe) = rendered.downcast_mut::<crate::RetainedViewRecipe>() {
-                    window.record_view_recipe(entity_id, recipe.clone());
-                    recipe.clone()
-                } else {
-                    let layout_id = rendered.request_layout(window, cx);
-                    return (layout_id, ViewRequestLayout::Element(rendered));
-                }
-            };
-            if let Some(size) = recipe.fixed_size() {
-                let mut style = crate::Style::default();
-                style.size.width = size.width.into();
-                style.size.height = size.height.into();
-                style.flex_shrink = 0.;
-                let layout_id = window.request_layout(style, [], cx);
-                return (layout_id, ViewRequestLayout::Fixed { recipe, element: None });
-            }
-            let mut element = recipe.materialize();
-            // Lay out the rendered tree inside the same view scope. Element request-layout code
-            // queries the current view, exactly as it did when the view cache owned this boundary.
+            window.record_rendered_view(entity_id, type_name);
+            let mut element = self.view.render_element(window, cx);
             let layout_id = element.request_layout(window, cx);
             (layout_id, ViewRequestLayout::Element(element))
         });
@@ -250,21 +223,7 @@ impl Element for ViewElement {
                 });
                 *element = Some(inner);
             }
-            ViewRequestLayout::Fixed { recipe, element } => {
-                let mut inner = recipe.materialize();
-                window.with_retained_child_scope(|window| {
-                    inner.prepaint_as_root(
-                        bounds.origin,
-                        crate::size(
-                            crate::AvailableSpace::Definite(bounds.size.width),
-                            crate::AvailableSpace::Definite(bounds.size.height),
-                        ),
-                        window,
-                        cx,
-                    );
-                });
-                *element = Some(inner);
-            }
+
         });
         let _ = cx.entities.set_render_dependency_owner(previous);
     }
@@ -285,9 +244,6 @@ impl Element for ViewElement {
             ViewRequestLayout::Element(element) => element.paint(window, cx),
             ViewRequestLayout::Cached { element } => {
                 element.as_mut().expect("cached view must prepaint").paint(window, cx);
-            }
-            ViewRequestLayout::Fixed { element, .. } => {
-                element.as_mut().expect("fixed recipe must prepaint").paint(window, cx);
             }
         });
         let _ = cx.entities.set_render_dependency_owner(previous);
