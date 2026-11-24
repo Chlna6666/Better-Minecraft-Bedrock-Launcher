@@ -4,76 +4,61 @@ use anyhow::{Result, bail, ensure};
 
 use crate::{ViewNode, ViewTree};
 
-const MAX_DEPTH: usize = 24;
-const MAX_NODES: usize = 512;
-const MAX_TEXT_BYTES: usize = 256 * 1024;
-const MAX_STRING_BYTES: usize = 8192;
-const MAX_INLINE_IMAGE_BYTES: usize = 128 * 1024;
-const MAX_VIEW_INLINE_IMAGE_BYTES: usize = 512 * 1024;
+// These are ingress safety guards, not UI quotas. Normal retained views
+// are managed by the application's shared cache, not by per-field limits.
+// The recursive GPUI projection still needs a stack-depth guard.
+const MAX_DEPTH: usize = 128;
+const MAX_HOST_VIEW_BYTES: usize = crate::sandbox::DEFAULT_HARD_LIMIT_BYTES;
 
 impl ViewTree {
-    /// Validates the root and its descendants, including the cost of repeated references.
+    /// Validate the contract and bound its expanded host projection cost.
+    /// Text, images, select options and node counts have no separate quotas.
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.nodes.len() <= MAX_NODES,
-            "plugin view has too many nodes"
-        );
-        let mut remaining = MAX_NODES;
-        let mut text_remaining = MAX_TEXT_BYTES;
-        let mut image_remaining = MAX_VIEW_INLINE_IMAGE_BYTES;
-        validate(self, self.root, 1, &mut remaining, &mut text_remaining, &mut image_remaining)
+        let mut remaining = MAX_HOST_VIEW_BYTES;
+        let retained = self.estimated_retained_bytes();
+        ensure!(retained <= remaining,
+            "plugin view exceeds host ingress safety ceiling: {retained} bytes (limit {remaining})");
+        // Validate all retained fields once; account repeated references during
+        // traversal so a small DAG cannot amplify into an unbounded UI tree.
+        let costs: Vec<_> = self.nodes.iter().map(node_bytes).collect();
+        validate(self, self.root, 1, &costs, &mut remaining)
     }
 
-    /// Size of the retained WIT view and its immediate dynamic fields.
+    /// Estimated owned WIT allocations (not decoded image or GPU memory).
     #[must_use]
     pub fn estimated_retained_bytes(&self) -> usize {
-        let mut bytes = size_of::<Self>() + self.nodes.capacity() * size_of::<ViewNode>();
-        for node in &self.nodes {
-            bytes += child_indices(node).len() * size_of::<u32>();
-            let _ = strings(node, |value, _| {
-                bytes += value.len();
-                Ok(())
-            });
-        }
-        bytes
+        self.nodes.iter().fold(
+            size_of::<Self>() + self.nodes.capacity().saturating_mul(size_of::<ViewNode>()),
+            |bytes, node| bytes.saturating_add(node_bytes(node).saturating_sub(size_of::<ViewNode>())),
+        )
     }
+}
+
+fn node_bytes(node: &ViewNode) -> usize {
+    let mut bytes = size_of::<ViewNode>()
+        .saturating_add(child_indices(node).len().saturating_mul(size_of::<u32>()));
+    if let ViewNode::Select(node) = node {
+        // Each option also owns two strings.
+        bytes = bytes.saturating_add(node.options.capacity().saturating_mul(size_of::<crate::SelectOption>()));
+    }
+    strings(node, |value| { bytes = bytes.saturating_add(value.len()); });
+    bytes
 }
 
 fn validate(
     tree: &ViewTree,
     index: u32,
     depth: usize,
+    costs: &[usize],
     remaining: &mut usize,
-    text: &mut usize,
-    images: &mut usize,
 ) -> Result<()> {
-    ensure!(
-        depth <= MAX_DEPTH && *remaining != 0,
-        "plugin view exceeds its tree budget"
-    );
-    *remaining -= 1;
+    ensure!(depth <= MAX_DEPTH, "plugin view nesting exceeds host stack safety limit");
     let Some(node) = tree.nodes.get(index as usize) else {
         bail!("plugin view references missing node {index}");
     };
-    strings(node, |value, max_len| {
-        let (remaining, kind) = if max_len == MAX_INLINE_IMAGE_BYTES {
-            (&mut *images, "inline image")
-        } else {
-            (&mut *text, "text")
-        };
-        ensure!(
-            value.len() <= max_len,
-            "plugin view node {index}: {kind} field is {} bytes (limit {max_len})",
-            value.len()
-        );
-        ensure!(
-            value.len() <= *remaining,
-            "plugin view node {index}: {kind} budget exhausted ({} bytes requested, {} remaining)",
-            value.len(), *remaining
-        );
-        *remaining -= value.len();
-        Ok(())
-    })?;
+    let cost = costs[index as usize];
+    ensure!(cost <= *remaining, "plugin view expanded host allocation exceeds safety ceiling at node {index}");
+    *remaining -= cost;
     let action = match node {
         ViewNode::Button(node) => Some(node.action_id.as_str()),
         ViewNode::Input(node) => Some(node.action_id.as_str()),
@@ -95,7 +80,7 @@ fn validate(
         );
     }
     for child in child_indices(node) {
-        validate(tree, *child, depth + 1, remaining, text, images)?;
+        validate(tree, *child, depth + 1, costs, remaining)?;
     }
     Ok(())
 }
@@ -108,7 +93,7 @@ fn child_indices(node: &ViewNode) -> &[u32] {
     }
 }
 
-fn strings(node: &ViewNode, mut visit: impl FnMut(&str, usize) -> Result<()>) -> Result<()> {
+fn strings(node: &ViewNode, mut visit: impl FnMut(&str)) {
     let values: &[&str] = match node {
         ViewNode::Text(n) => &[&n.text],
         ViewNode::Button(n) => &[
@@ -133,13 +118,9 @@ fn strings(node: &ViewNode, mut visit: impl FnMut(&str, usize) -> Result<()>) ->
             n.action_value.as_deref().unwrap_or(""),
         ],
         ViewNode::Select(n) => {
-            ensure!(
-                n.options.len() <= 128,
-                "plugin selection has too many options"
-            );
             for option in &n.options {
-                visit(&option.label, MAX_STRING_BYTES)?;
-                visit(&option.value, MAX_STRING_BYTES)?;
+                visit(&option.label);
+                visit(&option.value);
             }
             &[&n.label, &n.action_id, n.selected.as_deref().unwrap_or("")]
         }
@@ -148,17 +129,14 @@ fn strings(node: &ViewNode, mut visit: impl FnMut(&str, usize) -> Result<()>) ->
         ViewNode::Badge(n) => &[&n.label],
         ViewNode::Icon(n) => &[&n.name],
         ViewNode::Image(n) => {
-            let inline = n.src.starts_with("data:image/png;base64,")
-                || n.src.starts_with("data:image/jpeg;base64,");
-            visit(&n.src, if inline { MAX_INLINE_IMAGE_BYTES } else { MAX_STRING_BYTES })?;
+            visit(&n.src);
             &[&n.alt, &n.caption, &n.placeholder, &n.fallback]
         }
         _ => &[],
     };
     for value in values {
-        visit(value, MAX_STRING_BYTES)?;
+        visit(value);
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -167,7 +145,7 @@ mod tests {
     use crate::{Align, ContainerNode, LayoutDirection, TextSizeToken, ViewStyle};
 
     #[test]
-    fn inline_images_have_a_separate_bounded_field_budget() {
+    fn large_text_and_images_share_host_ingress_safety_ceiling() {
         let style = ViewStyle {
             direction: LayoutDirection::Column,
             gap: 0,
@@ -200,12 +178,12 @@ mod tests {
         };
         assert!(tree.validate().is_ok());
         let ViewNode::Image(image) = &mut tree.nodes[0] else { unreachable!() };
-        image.alt = "A".repeat(MAX_STRING_BYTES + 1);
-        assert!(tree.validate().is_err(), "ordinary strings keep the 8 KiB limit");
+        image.alt = "A".repeat(256 * 1024);
+        assert!(tree.validate().is_ok(), "ordinary text is not capped at 8 KiB");
         let ViewNode::Image(image) = &mut tree.nodes[0] else { unreachable!() };
         image.alt.clear();
-        image.src = format!("data:image/jpeg;base64,{}", "A".repeat(MAX_INLINE_IMAGE_BYTES));
-        assert!(tree.validate().is_err(), "image source remains bounded");
+        image.src = format!("data:image/jpeg;base64,{}", "A".repeat(1024 * 1024));
+        assert!(tree.validate().is_ok(), "inline image has no independent small quota");
 
         let ViewNode::Image(image) = &mut tree.nodes[0] else { unreachable!() };
         image.src = format!("data:image/jpeg;base64,{}", "A".repeat(100 * 1024));
@@ -217,8 +195,28 @@ mod tests {
         tree.root = 1;
         assert!(tree.validate().is_ok(), "image bytes do not consume text budget");
         let ViewNode::Container(container) = &mut tree.nodes[1] else { unreachable!() };
-        container.children = vec![0; 6];
-        assert!(tree.validate().is_err(), "repeated images consume the aggregate image budget");
+        container.children = vec![0; 12];
+        assert!(tree.validate().is_ok(), "ordinary multi-image views exceed the former budget");
+        let ViewNode::Container(container) = &mut tree.nodes[1] else { unreachable!() };
+        container.children = vec![0; 512];
+        assert!(tree.validate().is_err(), "expanded references cannot amplify host memory without bound");
+    }
+
+    #[test]
+    fn accepts_large_native_style_node_lists() {
+        let style = ViewStyle {
+            direction: LayoutDirection::Column, gap: 0, padding: 0,
+            align: Align::Start, color: None, background: None,
+            text_size: TextSizeToken::Body, emphasis: false, full_width: false,
+            corner_radius: None,
+        };
+        let mut nodes = vec![ViewNode::Container(ContainerNode {
+            style: style.clone(), children: (1..=2048).collect(),
+        })];
+        nodes.extend((0..2048).map(|_| ViewNode::Text(crate::TextNode {
+            text: "native UI row".into(), style: style.clone(),
+        })));
+        assert!(ViewTree { root: 0, nodes }.validate().is_ok());
     }
 
     #[test]

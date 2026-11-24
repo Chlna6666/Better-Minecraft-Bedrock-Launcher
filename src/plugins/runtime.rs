@@ -525,11 +525,33 @@ struct InjectionRenderCacheKey {
     page: Option<String>,
 }
 
+// A single host-owned working set, with no per-plugin or per-page soft quota.
+// Live pages hold Arc leases; recent injection results are protected by recency.
+const VIEW_CACHE_SOFT_BYTES: usize = 64 * 1024 * 1024;
+const VIEW_CACHE_HOT_AGE: Duration = Duration::from_secs(30);
+
+#[derive(Debug)]
+struct CachedView<T> {
+    value: T,
+    last_used: std::cell::Cell<Instant>,
+}
+
+impl<T> CachedView<T> {
+    fn new(value: T) -> Self {
+        Self { value, last_used: std::cell::Cell::new(Instant::now()) }
+    }
+
+    fn get(&self) -> &T {
+        self.last_used.set(Instant::now());
+        &self.value
+    }
+}
+
 #[derive(Debug, Default)]
 struct RenderCache {
-    pages: BTreeMap<PageRenderCacheKey, Arc<ViewTree>>,
+    pages: BTreeMap<PageRenderCacheKey, CachedView<Arc<ViewTree>>>,
     page_errors: BTreeMap<PageRenderCacheKey, Arc<str>>,
-    injections: BTreeMap<InjectionRenderCacheKey, Vec<RenderedInjection>>,
+    injections: BTreeMap<InjectionRenderCacheKey, CachedView<Vec<RenderedInjection>>>,
     pending_pages: BTreeMap<PageRenderCacheKey, u64>,
     pending_injections: BTreeMap<InjectionRenderCacheKey, u64>,
     ticket: u64,
@@ -1289,7 +1311,7 @@ impl PluginRegistry {
                 plugin_id: plugin_id.to_string(),
                 page_id: page_id.to_string(),
             })
-            .cloned()
+            .map(|entry| entry.get().clone())
     }
 
     pub fn cached_page_error(&self, plugin_id: &str, page_id: &str) -> Option<Arc<str>> {
@@ -1320,7 +1342,7 @@ impl PluginRegistry {
             .injections
             .iter()
             .find(|(key, _)| key.slot == slot && key.page.as_deref() == page)
-            .map(|(_, trees)| trees.clone())
+            .map(|(_, trees)| trees.get().clone())
     }
 
     /// 渲染路径专用：该 slot 还没有缓存结果，但确实需要（重新）渲染注入。
@@ -1678,33 +1700,10 @@ impl PluginRegistry {
         self.render_cache.invalidate_plugin(plugin_id);
     }
 
-    /// 评估所有插件归属内存，执行 8 MiB 软预算自适应回收策略（清理冷缓存或安全休眠）
+    /// Trim the shared cold view cache under memory pressure. A large active UI
+    /// must never cause its plugin Store to be hibernated or its page invalidated.
     pub fn enforce_memory_budgets(&mut self, system_memory_pressure: bool) {
-        let report = self.memory_report();
-        for snapshot in report.plugins {
-            if !snapshot.loaded {
-                continue;
-            }
-            let is_idle = !self
-                .active_modal
-                .as_ref()
-                .is_some_and(|m| m.plugin_id == snapshot.plugin_id);
-            let evaluation = abi::sandbox::evaluate_plugin_budget(
-                abi::DEFAULT_SOFT_BUDGET_BYTES,
-                snapshot.total_estimated_bytes,
-                is_idle,
-                system_memory_pressure,
-            );
-            match evaluation {
-                abi::BudgetEvaluation::Normal => {}
-                abi::BudgetEvaluation::TrimCaches => {
-                    self.trim_plugin_caches(&snapshot.plugin_id);
-                }
-                abi::BudgetEvaluation::Hibernate => {
-                    let _ = self.hibernate_plugin(&snapshot.plugin_id);
-                }
-            }
-        }
+        self.render_cache.trim_cold(if system_memory_pressure { 0 } else { VIEW_CACHE_SOFT_BYTES });
     }
 
     /// 调用跨插件服务，自动唤醒目标插件并防环/防重入
@@ -1772,7 +1771,7 @@ impl PluginRegistry {
             page_id: page_id.to_string(),
         };
         if let Some(tree) = self.render_cache.pages.get(&cache_key) {
-            return Ok(tree.clone());
+            return Ok(tree.get().clone());
         }
         if let Some(error) = self.render_cache.page_errors.get(&cache_key) {
             return Err(anyhow!("{}", error));
@@ -1817,7 +1816,7 @@ impl PluginRegistry {
         match tree {
             Ok(tree) => {
                 let tree = Arc::new(tree);
-                self.render_cache.pages.insert(cache_key, tree.clone());
+                self.render_cache.insert_page(cache_key, tree.clone());
                 Ok(tree)
             }
             Err(error) => {
@@ -1843,7 +1842,7 @@ impl PluginRegistry {
             page: page.map(str::to_string),
         };
         if let Some(trees) = self.render_cache.injections.get(&cache_key) {
-            return trees.clone();
+            return trees.get().clone();
         }
 
         let registrations = self.injections.clone();
@@ -1867,9 +1866,7 @@ impl PluginRegistry {
                     .ok()
             })
             .collect::<Vec<_>>();
-        self.render_cache
-            .injections
-            .insert(cache_key, trees.clone());
+        self.render_cache.insert_injections(cache_key, trees.clone());
         trees
     }
 
@@ -2672,6 +2669,68 @@ fn sanitize_storage_segment(value: &str) -> String {
 }
 
 impl RenderCache {
+    fn insert_page(&mut self, key: PageRenderCacheKey, tree: Arc<ViewTree>) {
+        self.pages.insert(key, CachedView::new(tree));
+        self.trim_cold(VIEW_CACHE_SOFT_BYTES);
+    }
+
+    fn insert_injections(&mut self, key: InjectionRenderCacheKey, trees: Vec<RenderedInjection>) {
+        self.injections.insert(key, CachedView::new(trees));
+        self.trim_cold(VIEW_CACHE_SOFT_BYTES);
+    }
+
+    fn trim_cold(&mut self, target: usize) {
+        // Only drop host cache ownership. Never revoke an active view or a GPUI
+        // asset lease. Active working sets may exceed the soft target.
+        enum Key {
+            Page(PageRenderCacheKey),
+            Injection(InjectionRenderCacheKey),
+        }
+        let now = Instant::now();
+        let mut bytes = 0_usize;
+        let mut candidates = Vec::new();
+        for (key, entry) in &self.pages {
+            let cost = entry.value.estimated_retained_bytes();
+            bytes = bytes.saturating_add(cost);
+            let last = entry.last_used.get();
+            if Arc::strong_count(&entry.value) == 1
+                && now.saturating_duration_since(last) >= VIEW_CACHE_HOT_AGE
+            {
+                candidates.push((last, cost, Key::Page(key.clone())));
+            }
+        }
+        for (key, entry) in &self.injections {
+            let cost = entry.value.iter().fold(0_usize, |bytes, tree|
+                bytes.saturating_add(tree.tree.estimated_retained_bytes()));
+            bytes = bytes.saturating_add(cost);
+            let last = entry.last_used.get();
+            if now.saturating_duration_since(last) >= VIEW_CACHE_HOT_AGE
+                && entry.value.iter().all(|tree| Arc::strong_count(&tree.tree) == 1)
+            {
+                candidates.push((last, cost, Key::Injection(key.clone())));
+            }
+        }
+        if bytes <= target {
+            return;
+        }
+        candidates.sort_unstable_by_key(|(last, _, _)| *last);
+        let mut evicted = 0;
+        for (_, cost, key) in candidates {
+            if bytes <= target {
+                break;
+            }
+            match key {
+                Key::Page(key) => { self.pages.remove(&key); }
+                Key::Injection(key) => { self.injections.remove(&key); }
+            }
+            bytes = bytes.saturating_sub(cost);
+            evicted += 1;
+        }
+        if evicted != 0 {
+            debug!(evicted, retained_bytes = bytes, target_bytes = target, "trimmed cold plugin views");
+        }
+    }
+
     fn next_ticket(&mut self) -> u64 {
         self.ticket = self.ticket.wrapping_add(1);
         self.ticket
@@ -2686,9 +2745,9 @@ impl RenderCache {
         self.pending_pages
             .retain(|key, _| key.plugin_id.as_str() != plugin_id);
         for trees in self.injections.values_mut() {
-            trees.retain(|tree| tree.plugin_id.as_str() != plugin_id);
+            trees.value.retain(|tree| tree.plugin_id.as_str() != plugin_id);
         }
-        self.injections.retain(|_key, trees| !trees.is_empty());
+        self.injections.retain(|_key, trees| !trees.value.is_empty());
     }
 
     fn invalidate_page(&mut self, plugin_id: &str, page_id: Option<&str>) {
@@ -2735,9 +2794,9 @@ impl RenderCache {
     fn invalidate_plugin_injections(&mut self, plugin_id: &str) {
         self.pending_injections.clear();
         for trees in self.injections.values_mut() {
-            trees.retain(|tree| tree.plugin_id.as_str() != plugin_id);
+            trees.value.retain(|tree| tree.plugin_id.as_str() != plugin_id);
         }
-        self.injections.retain(|_key, trees| !trees.is_empty());
+        self.injections.retain(|_key, trees| !trees.value.is_empty());
     }
 
     fn invalidate_plugin_injection(
@@ -2754,8 +2813,8 @@ impl RenderCache {
             if key.page.as_deref() != page {
                 return true;
             }
-            trees.retain(|tree| tree.plugin_id.as_str() != plugin_id);
-            !trees.is_empty()
+            trees.value.retain(|tree| tree.plugin_id.as_str() != plugin_id);
+            !trees.value.is_empty()
         });
     }
 
@@ -2766,7 +2825,7 @@ impl RenderCache {
                 memory.entries = memory.entries.saturating_add(1);
                 memory.estimated_bytes = memory
                     .estimated_bytes
-                    .saturating_add(tree.estimated_retained_bytes());
+                    .saturating_add(tree.value.estimated_retained_bytes());
             }
         }
         for (key, error) in &self.page_errors {
@@ -2779,7 +2838,7 @@ impl RenderCache {
             }
         }
         for trees in self.injections.values() {
-            for tree in trees {
+            for tree in &trees.value {
                 if tree.plugin_id == plugin_id {
                     memory.entries = memory.entries.saturating_add(1);
                     memory.estimated_bytes = memory
@@ -4095,7 +4154,7 @@ fn request_page_render_now(cx: &mut App, plugin_id: &str, page_id: &str) {
                 };
                 registry.record_passive_effects(effects);
                 match rendered {
-                    Ok(tree) => { registry.render_cache.pages.insert(key, Arc::new(tree)); }
+                    Ok(tree) => { registry.render_cache.insert_page(key, Arc::new(tree)); }
                     Err(error) => {
                         let message = format!("{error:#}");
                         registry.record_page_error(&key, &message);
@@ -4207,7 +4266,7 @@ fn render_injections_now(cx: &mut App, slot: InjectionSlot, page: Option<&str>) 
                                 }
                             }
                         }
-                        registry.render_cache.injections.insert(key, trees);
+                        registry.render_cache.insert_injections(key, trees);
                     }
                     Err(error) => {
                         warn!(slot = ?key.slot, error = %error, "plugin injection worker failed");
@@ -4285,14 +4344,12 @@ pub(crate) fn plugin_image(cx: &App, id: &str, path: &str) -> Option<gpui::Encod
 }
 
 /// Inline image data is already supplied by the guest. It grants no file or
-/// network access. Keep both encoded size and decoded pixel cost bounded.
+/// network access. Encoded bytes are already accounted for by the host view;
+/// keep only a decoder safety guard against decompression bombs.
 fn decode_inline_plugin_image(src: &str) -> Option<gpui::EncodedImageBytes> {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-    if src.len() > 128 * 1024 {
-        return None;
-    }
-    let (mime, payload) = src.split_once(',')?;
+     let (mime, payload) = src.split_once(',')?;
     let format = match mime {
         "data:image/png;base64" => image::ImageFormat::Png,
         "data:image/jpeg;base64" => image::ImageFormat::Jpeg,
@@ -4305,7 +4362,8 @@ fn decode_inline_plugin_image(src: &str) -> Option<gpui::EncodedImageBytes> {
     let (width, height) = image::ImageReader::with_format(
         std::io::Cursor::new(bytes.as_slice()), format,
     ).into_dimensions().ok()?;
-    if !(1..=1024).contains(&width) || !(1..=1024).contains(&height) {
+    // Hard decoder guard, not a thumbnail or UI resource budget.
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 64 * 1024 * 1024 {
         return None;
     }
     Some(gpui::EncodedImageBytes::new(format, bytes))
