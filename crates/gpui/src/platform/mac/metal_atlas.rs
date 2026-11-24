@@ -19,6 +19,7 @@ impl MetalAtlas {
             monochrome_textures: Default::default(),
             polychrome_textures: Default::default(),
             rgba_textures: Default::default(),
+            subpixel_textures: Default::default(),
             tiles_by_key: Default::default(),
         }))
     }
@@ -33,6 +34,7 @@ struct MetalAtlasState {
     monochrome_textures: AtlasTextureList<MetalAtlasTexture>,
     polychrome_textures: AtlasTextureList<MetalAtlasTexture>,
     rgba_textures: AtlasTextureList<MetalAtlasTexture>,
+    subpixel_textures: AtlasTextureList<MetalAtlasTexture>,
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
 }
 
@@ -121,25 +123,17 @@ impl PlatformAtlas for MetalAtlas {
             AtlasTextureKind::Monochrome => &mut lock.monochrome_textures,
             AtlasTextureKind::Bgra => &mut lock.polychrome_textures,
             AtlasTextureKind::Rgba => &mut lock.rgba_textures,
+            AtlasTextureKind::Subpixel => &mut lock.subpixel_textures,
         };
 
-        let Some(texture_slot) = textures
-            .textures
-            .iter_mut()
-            .find(|texture| texture.as_ref().is_some_and(|v| v.id == id))
-        else {
+        let index = id.index as usize;
+        let Some(texture) = textures.get_mut(index).filter(|texture| texture.id == id) else {
             return;
         };
-
-        if let Some(mut texture) = texture_slot.take() {
-            texture.deallocate(tile.tile_id);
-            texture.decrement_ref_count();
-
-            if texture.is_unreferenced() {
-                textures.free_list.push(id.index as usize);
-            } else {
-                *texture_slot = Some(texture);
-            }
+        texture.deallocate(tile.tile_id);
+        texture.decrement_ref_count();
+        if texture.is_unreferenced() {
+            textures.remove_at(index);
         }
     }
 }
@@ -155,6 +149,7 @@ impl MetalAtlasState {
                 AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
                 AtlasTextureKind::Bgra => &mut self.polychrome_textures,
                 AtlasTextureKind::Rgba => &mut self.rgba_textures,
+                AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
             };
 
             if let Some(tile) = textures
@@ -199,7 +194,7 @@ impl MetalAtlasState {
                 pixel_format = metal::MTLPixelFormat::BGRA8Unorm;
                 usage = metal::MTLTextureUsage::ShaderRead;
             }
-            AtlasTextureKind::Rgba => {
+            AtlasTextureKind::Rgba | AtlasTextureKind::Subpixel => {
                 pixel_format = metal::MTLPixelFormat::RGBA8Unorm;
                 usage = metal::MTLTextureUsage::ShaderRead;
             }
@@ -212,30 +207,15 @@ impl MetalAtlasState {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Bgra => &mut self.polychrome_textures,
             AtlasTextureKind::Rgba => &mut self.rgba_textures,
+            AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
         };
 
-        let index = texture_list.free_list.pop();
-
-        let atlas_texture = MetalAtlasTexture {
-            id: AtlasTextureId {
-                index: index.unwrap_or(texture_list.textures.len()) as u32,
-                kind,
-            },
+        texture_list.insert_with(|index| MetalAtlasTexture {
+            id: AtlasTextureId { index: index as u32, kind },
             allocator: etagere::BucketedAtlasAllocator::new(size.into()),
             metal_texture: AssertSend(metal_texture),
             live_atlas_keys: 0,
-        };
-
-        if let Some(ix) = index {
-            texture_list.textures[ix] = Some(atlas_texture);
-            texture_list.textures.get_mut(ix)
-        } else {
-            texture_list.textures.push(Some(atlas_texture));
-            texture_list.textures.last_mut()
-        }
-        .unwrap()
-        .as_mut()
-        .unwrap()
+        })
     }
 
     fn texture(&self, id: AtlasTextureId) -> &MetalAtlasTexture {
@@ -243,6 +223,7 @@ impl MetalAtlasState {
             crate::AtlasTextureKind::Monochrome => &self.monochrome_textures,
             crate::AtlasTextureKind::Bgra => &self.polychrome_textures,
             crate::AtlasTextureKind::Rgba => &self.rgba_textures,
+            crate::AtlasTextureKind::Subpixel => &self.subpixel_textures,
         };
         textures[id.index as usize].as_ref().unwrap()
     }

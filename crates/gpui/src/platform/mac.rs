@@ -19,9 +19,8 @@ use crate::platform::blade as renderer;
 
 mod attributed_string;
 
-mod open_type;
-
-mod text_system;
+// Text shaping/rasterization is provided by the shared CosmicTextSystem.
+// The legacy font-kit implementation is not part of the active dependency graph.
 
 mod implementation;
 mod window;
@@ -44,7 +43,6 @@ pub(crate) use display::*;
 pub(crate) use display_link::*;
 pub(crate) use keyboard::*;
 pub(crate) use implementation::*;
-pub(crate) use text_system::*;
 pub(crate) use window::*;
 
 trait BoolExt {

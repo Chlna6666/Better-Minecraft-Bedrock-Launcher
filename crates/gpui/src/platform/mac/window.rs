@@ -681,6 +681,8 @@ impl MacWindow {
             window_background: _window_background,
             window_min_size,
             tabbing_identifier,
+            window_icon: _,
+            window_corner_preference: _,
         }: WindowParams,
         executor: ForegroundExecutor,
         renderer_context: renderer::Context,
@@ -2314,7 +2316,6 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
     // path is properly established. Without this guard, the focus state would remain unset until
     // the first mouse click, causing keybindings to be non-functional.
     if selector == sel!(windowDidBecomeKey:) && is_active {
-        let window_state = unsafe { window_state(this) };
         let mut lock = window_state.lock();
 
         if lock.activated_least_once {

@@ -2,7 +2,7 @@ mod app_menu;
 mod atlas;
 mod bootstrap;
 mod clipboard;
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 mod cosmic_text_system;
 mod display;
 mod foreground_tasks;
@@ -102,7 +102,7 @@ pub use bootstrap::guess_compositor;
 pub use bootstrap::windows_manifest_path;
 pub use bootstrap::{background_executor, enumerate_gpu_adapters};
 pub use clipboard::*;
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 pub(crate) use cosmic_text_system::*;
 pub use display::*;
 pub(crate) use foreground_tasks::*;

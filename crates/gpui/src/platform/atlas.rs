@@ -156,6 +156,30 @@ impl<T> ops::Index<usize> for AtlasTextureList<T> {
 }
 
 impl<T> AtlasTextureList<T> {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn insert_with(&mut self, create: impl FnOnce(usize) -> T) -> &mut T {
+        let index = self.free_list.pop().unwrap_or(self.textures.len());
+        let texture = create(index);
+        if index == self.textures.len() {
+            self.textures.push(Some(texture));
+        } else {
+            self.textures[index] = Some(texture);
+        }
+        self.textures[index].as_mut().expect("inserted atlas texture")
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        self.textures.get_mut(index)?.as_mut()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn remove_at(&mut self, index: usize) -> Option<T> {
+        let texture = self.textures.get_mut(index)?.take()?;
+        self.free_list.push(index);
+        Some(texture)
+    }
+
     #[allow(unused)]
     pub(crate) fn drain(&mut self) -> std::vec::Drain<'_, Option<T>> {
         self.free_list.clear();

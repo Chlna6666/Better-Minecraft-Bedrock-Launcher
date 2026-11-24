@@ -47,7 +47,6 @@ use objc::{
 };
 use parking_lot::Mutex;
 use ptr::null_mut;
-use std::sync::Arc;
 use std::{
     cell::Cell,
     convert::TryInto,
@@ -204,9 +203,9 @@ impl Default for MacPlatform {
 
 impl MacPlatform {
     pub(crate) fn new(headless: bool) -> Self {
-        let dispatcher = Arc::new(MacDispatcher);
+        let dispatcher = Arc::new(MacDispatcher::new());
 
-        let text_system = Arc::new(crate::MacTextSystem::new());
+        let text_system = Arc::new(crate::platform::CosmicTextSystem::new());
 
         let keyboard_layout = MacKeyboardLayout::new();
         let keyboard_mapper = Arc::new(MacKeyboardMapper::new(keyboard_layout.id()));
@@ -1444,13 +1443,14 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
             object: nil
         ];
 
+        let observer = this as id;
         let platform = mac_platform(this);
         {
             let mut state = platform.0.lock();
             if (state.on_system_sleep.is_some() || state.on_system_wake.is_some())
                 && !state.system_power_observers_registered
             {
-                register_system_power_observers(this as id);
+                register_system_power_observers(observer);
                 state.system_power_observers_registered = true;
             }
         }
