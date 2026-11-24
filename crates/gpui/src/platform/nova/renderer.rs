@@ -446,6 +446,39 @@ fn retire_replaced_path_rasterization_resources<D>(
 }
 
 impl NovaRenderer {
+    #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+    pub(crate) fn metal_presentation_layer(&self) -> Result<*mut std::ffi::c_void> {
+        let backend = lock_backend(&self.backend);
+        let NovaBackend::Metal(device) = &*backend else {
+            anyhow::bail!("Nova renderer does not own a Metal swapchain");
+        };
+        let layer = device.presentation_layer(self.swapchain)?;
+        Ok(std::ptr::from_ref(layer).cast_mut().cast())
+    }
+
+    #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+    pub(crate) fn set_metal_display_link_attached(&mut self, attached: bool) -> Result<()> {
+        let mut backend = lock_backend(&self.backend);
+        let NovaBackend::Metal(device) = &mut *backend else {
+            anyhow::bail!("Nova renderer does not own a Metal swapchain");
+        };
+        Ok(device.set_display_link_attached(self.swapchain, attached)?)
+    }
+
+    #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+    #[expect(unsafe_code, reason = "AppKit supplies a live drawable for this synchronous callback")]
+    pub(crate) unsafe fn set_metal_display_link_drawable(
+        &mut self, drawable: Option<std::ptr::NonNull<std::ffi::c_void>>,
+    ) -> Result<()> {
+        let mut backend = lock_backend(&self.backend);
+        let NovaBackend::Metal(device) = &mut *backend else {
+            anyhow::bail!("Nova renderer does not own a Metal swapchain");
+        };
+        // SAFETY: the host passes the current native callback's live object,
+        // or None to release any unused credit before the callback returns.
+        Ok(unsafe { device.set_display_link_drawable(self.swapchain, drawable) }?)
+    }
+
     #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd")))]
     pub(crate) fn set_presentation_feedback_mailbox(
         &mut self,

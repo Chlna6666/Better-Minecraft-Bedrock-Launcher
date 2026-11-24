@@ -202,6 +202,8 @@ mod platform {
                 config,
                 layer,
                 last_submission: None,
+                display_link_attached: false,
+                display_link_drawable: None,
                 retained_color: false,
                 color_history: None,
                 history_submission: None,
@@ -224,6 +226,8 @@ mod platform {
                 // Command buffers retain the old history until completion.
                 swapchain.color_history = None;
                 swapchain.history_submission = None;
+                // Never keep a drawable from the previous physical extent.
+                swapchain.display_link_drawable = None;
             }
             swapchain.config.size = size;
             swapchain
@@ -549,6 +553,68 @@ mod platform {
             Ok(&self.swapchains.get(swapchain)?.layer)
         }
 
+        /// Selects host-owned drawable delivery for this swapchain. No implicit
+        /// nextDrawable call is permitted while attached.
+        /// The host must detach before invalidating its display link.
+        ///
+        /// # Errors
+        /// Returns an error for a stale swapchain handle.
+        pub fn set_display_link_attached(&mut self, id: SwapchainId, attached: bool) -> Result<()> {
+            let chain = self.swapchains.get_mut(id)?;
+            chain.display_link_drawable = None;
+            chain.display_link_attached = attached;
+            Ok(())
+        }
+
+        /// Retains the current callback's drawable for one ordinary present.
+        /// Pass None after the callback, including on deferred or failed frames.
+        /// A stale-sized drawable is discarded without acquiring another image.
+        ///
+        /// # Safety
+        /// A non-null pointer must be a live Objective-C CAMetalDrawable from
+        /// the current display-link update on the layer's owner thread.
+        ///
+        /// # Errors
+        /// Returns an error for an invalid swapchain, foreign layer or unattached link.
+        pub unsafe fn set_display_link_drawable(
+            &mut self, id: SwapchainId, drawable: Option<NonNull<c_void>>,
+        ) -> Result<()> {
+            let chain = self.swapchains.get_mut(id)?;
+            chain.display_link_drawable = None;
+            let Some(drawable) = drawable else { return Ok(()); };
+            if !chain.display_link_attached {
+                return Err(Error::InvalidInput("Metal display link is not attached".into()));
+            }
+            // SAFETY: The caller guarantees the live CAMetalDrawable protocol
+            // object. Retain it independently of the native callback lifetime.
+            let drawable = unsafe {
+                Retained::retain(drawable.as_ptr().cast::<ProtocolObject<dyn CAMetalDrawable>>())
+            }.ok_or_else(|| Error::InvalidInput("Metal drawable is not retainable".into()))?;
+            if !std::ptr::eq::<CAMetalLayer>(&*drawable.layer(), &*chain.layer) {
+                return Err(Error::InvalidInput("Metal drawable belongs to a different layer".into()));
+            }
+            chain.display_link_drawable = Some(drawable);
+            Ok(())
+        }
+
+        /// Tests the drawable credit before scene packing or offscreen work.
+        /// Does not obtain a drawable or block the owner thread.
+        ///
+        /// # Errors
+        /// Returns an error for an invalid swapchain handle.
+        pub fn reserve_present_frame(&mut self, id: SwapchainId) -> Result<bool> {
+            if !self.poll_present_readiness(id)? { return Ok(false); }
+            let chain = self.swapchains.get_mut(id)?;
+            if !chain.display_link_attached { return Ok(true); }
+            let ready = chain.display_link_drawable.as_ref().is_some_and(|drawable| {
+                let texture = drawable.texture();
+                texture.width() == chain.config.size.width() as usize
+                    && texture.height() == chain.config.size.height() as usize
+            });
+            if !ready { chain.display_link_drawable = None; }
+            Ok(ready)
+        }
+
         /// Render directly into the drawable supplied by CAMetalDisplayLink.
         ///
         /// This path never calls nextDrawable. A busy GPU or stale extent
@@ -825,6 +891,9 @@ mod platform {
 
         fn present(&mut self, swapchain: SwapchainId, _image_index: u32) -> Result<()> {
             let swapchain = self.swapchains.get(swapchain)?;
+            if swapchain.display_link_attached {
+                return Err(Error::Unavailable("Metal direct present requires the display-link render path".into()));
+            }
             objc2::rc::autoreleasepool(|_| -> Result<()> {
                 let drawable = swapchain.layer.nextDrawable().ok_or_else(|| {
                     Error::Backend("CAMetalLayer did not provide a drawable".to_string())
@@ -1381,7 +1450,10 @@ mod platform {
             &mut self,
             frame: &PresentFrameDescriptor<'_>,
         ) -> Result<Option<PresentedFrame>> {
-            self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, frame.color_load_op, frame.depth_attachment, None)
+            let chain = self.swapchains.get_mut(frame.swapchain)?;
+            let drawable = chain.display_link_drawable.take();
+            if chain.display_link_attached && drawable.is_none() { return Ok(None); }
+            self.draw_internal(frame.swapchain, frame.render_pass, frame.commands, frame.color_load_op, frame.depth_attachment, drawable)
         }
 
         fn ordered_mixed_graphics_compute_supported(&self) -> bool { true }
@@ -1525,6 +1597,8 @@ mod platform {
         config: SurfaceConfig,
         layer: Retained<CAMetalLayer>,
         last_submission: Option<SubmissionId>,
+        display_link_attached: bool,
+        display_link_drawable: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
         retained_color: bool,
         color_history: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
         history_submission: Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>>,

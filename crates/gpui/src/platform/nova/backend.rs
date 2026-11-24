@@ -224,6 +224,8 @@ impl NovaBackend {
                 Err(gfx_core::Error::SurfaceOutdated) => Ok(false),
                 Err(error) => Err(error.into()),
             },
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            Self::Metal(device) => Ok(device.reserve_present_frame(_swapchain)?),
             #[allow(unreachable_patterns)]
             _ => Ok(true),
         }
