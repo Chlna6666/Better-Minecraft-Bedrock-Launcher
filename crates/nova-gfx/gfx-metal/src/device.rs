@@ -231,9 +231,14 @@ mod platform {
             desc.validate()?;
             let length = usize::try_from(desc.size)
                 .map_err(|error| Error::InvalidInput(format!("buffer size overflow: {error}")))?;
+            let options = if desc.memory_location == MemoryLocation::GpuOnly {
+                MTLResourceOptions::StorageModePrivate
+            } else {
+                MTLResourceOptions::StorageModeShared
+            };
             let resource = self
                 .device
-                .newBufferWithLength_options(length, MTLResourceOptions::StorageModeShared)
+                .newBufferWithLength_options(length, options)
                 .ok_or_else(|| Error::Backend("failed to create Metal buffer".to_string()))?;
             Ok(self.buffers.insert(MetalBuffer {
                 desc: desc.clone(),

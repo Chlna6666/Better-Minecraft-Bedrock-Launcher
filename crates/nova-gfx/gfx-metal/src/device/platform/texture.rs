@@ -28,7 +28,7 @@ pub(super) struct TextureUploadArena {
 }
 
 impl TextureUploadArena {
-    fn acquire(
+    pub(super) fn acquire(
         &mut self,
         device: &ProtocolObject<dyn MTLDevice>,
         size: usize,
@@ -87,7 +87,7 @@ impl TextureUploadArena {
             .ok_or_else(|| Error::Backend("failed to allocate Metal texture staging buffer".into()))
     }
 
-    fn submitted(
+    pub(super) fn submitted(
         &mut self, index: Option<usize>, size: usize,
         commands: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
     ) {
