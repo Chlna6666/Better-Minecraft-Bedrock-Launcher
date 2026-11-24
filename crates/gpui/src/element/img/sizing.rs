@@ -21,8 +21,10 @@ pub(super) fn render_sized_image(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<(Arc<RenderImage>, AnimatedFrame)> {
-    let ImageSource::Asset(resource) = source else {
-        return None;
+    let resource = match source {
+        ImageSource::Asset(resource) => resource,
+        ImageSource::Encoded(bytes) => crate::AssetLocation::Encoded(bytes),
+        _ => return None,
     };
     let decode_visible = cx.image_pipeline_config().bounds_policy != ImageBoundsPolicy::Visible
         || !bounds

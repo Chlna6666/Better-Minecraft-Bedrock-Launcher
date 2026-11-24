@@ -138,9 +138,14 @@ impl Img {
     }
 
     fn should_render_to_bounds(&self, bounds_policy: ImageBoundsPolicy) -> bool {
-        matches!(self.source, ImageSource::Asset(_))
-            && (self.style.render_to_bounds
-                || (self.image_cache.is_none() && bounds_policy == ImageBoundsPolicy::Visible))
+        match &self.source {
+            ImageSource::Asset(_) => self.style.render_to_bounds
+                || (self.image_cache.is_none() && bounds_policy == ImageBoundsPolicy::Visible),
+            // Preserve intrinsic-size behavior for existing encoded-image callers.
+            // Explicitly sized plugin thumbnails use the native sized residency path.
+            ImageSource::Encoded(_) => self.style.render_to_bounds,
+            _ => false,
+        }
     }
 }
 

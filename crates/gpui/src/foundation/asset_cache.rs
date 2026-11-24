@@ -26,6 +26,8 @@ pub enum AssetLocation {
     Path(Arc<Path>),
     /// This resource is embedded in the application binary
     Embedded(SharedString),
+    /// Encoded raster bytes from memory, using the same sized image cache as file assets.
+    Encoded(crate::EncodedImageBytes),
 }
 
 impl From<SharedUri> for AssetLocation {

@@ -183,6 +183,7 @@ fn resource_diagnostic_label(resource: &AssetLocation) -> SharedString {
         AssetLocation::Path(path) => path.to_string_lossy().into_owned().into(),
         AssetLocation::Uri(uri) => uri.to_string().into(),
         AssetLocation::Embedded(path) => path.clone(),
+        AssetLocation::Encoded(bytes) => format!("inline-image:{:016x}", hash(bytes)).into(),
     }
 }
 
@@ -484,6 +485,7 @@ async fn load_image_resource_data(
     asset_source: Arc<dyn crate::AssetSource>,
 ) -> Result<ResourceImageBytes, ImageCacheError> {
     Ok(match resource {
+        AssetLocation::Encoded(bytes) => ResourceImageBytes::Shared(bytes.compressed_bytes()),
         AssetLocation::Path(uri) => ResourceImageBytes::Owned(fs::read(uri.as_ref())?),
         AssetLocation::Uri(uri) => {
             let mut response = client

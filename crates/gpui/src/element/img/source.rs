@@ -16,6 +16,7 @@ use std::{
 pub(super) enum ResourceImageBytes {
     Static(&'static [u8]),
     Owned(Vec<u8>),
+    Shared(CompressedImageBytes),
 }
 
 impl ResourceImageBytes {
@@ -23,6 +24,7 @@ impl ResourceImageBytes {
         match self {
             Self::Static(bytes) => CompressedImageBytes::Static(bytes),
             Self::Owned(bytes) => CompressedImageBytes::from(bytes),
+            Self::Shared(bytes) => bytes,
         }
     }
 }
@@ -214,15 +216,29 @@ impl ImageSource {
 }
 
 /// Encoded image bytes that can be loaded through GPUI's image asset system.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct EncodedImageBytes {
     format: crate::ImageFormat,
     bytes: CompressedImageBytes,
+    content_hash: u64,
+}
+
+impl std::fmt::Debug for EncodedImageBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EncodedImageBytes")
+            .field("format", &self.format)
+            .field("len", &self.bytes.len())
+            .field("content_hash", &self.content_hash)
+            .finish()
+    }
 }
 
 impl PartialEq for EncodedImageBytes {
     fn eq(&self, other: &Self) -> bool {
-        self.format == other.format && self.bytes.as_bytes() == other.bytes.as_bytes()
+        self.format == other.format
+            && self.content_hash == other.content_hash
+            && (std::ptr::eq(self.bytes.as_bytes(), other.bytes.as_bytes())
+                || self.bytes.as_bytes() == other.bytes.as_bytes())
     }
 }
 
@@ -230,8 +246,7 @@ impl Eq for EncodedImageBytes {}
 
 impl std::hash::Hash for EncodedImageBytes {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&self.format, state);
-        std::hash::Hash::hash(self.bytes.as_bytes(), state);
+        std::hash::Hash::hash(&self.content_hash, state);
     }
 }
 
@@ -242,10 +257,13 @@ impl EncodedImageBytes {
     /// equality and asset-cache hashing compare format and contents regardless of storage type.
     /// Non-static borrowed input must first be copied into an owned vector or shared slice.
     pub fn new(format: crate::ImageFormat, bytes: impl Into<CompressedImageBytes>) -> Self {
-        Self {
-            format,
-            bytes: bytes.into(),
-        }
+        let bytes = bytes.into();
+        let content_hash = hash(&(format, bytes.as_bytes()));
+        Self { format, bytes, content_hash }
+    }
+
+    pub(super) fn compressed_bytes(&self) -> CompressedImageBytes {
+        self.bytes.clone()
     }
 
     fn render(

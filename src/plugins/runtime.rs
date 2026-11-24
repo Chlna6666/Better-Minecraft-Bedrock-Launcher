@@ -5234,6 +5234,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shared_view_cache_evicts_cold_views_but_not_live_page_leases() {
+        let mut cache = RenderCache::default();
+        let key = |id: &str| PageRenderCacheKey {
+            plugin_id: id.into(), page_id: "main".into(),
+        };
+        let tree = Arc::new(ViewTree { root: 0, nodes: vec![abi::ViewNode::Separator] });
+        let active = tree.clone();
+        cache.insert_page(key("active"), tree);
+        cache.insert_page(key("cold"), Arc::new(ViewTree {
+            root: 0, nodes: vec![abi::ViewNode::Separator],
+        }));
+        for entry in cache.pages.values() {
+            entry.last_used.set(Instant::now() - VIEW_CACHE_HOT_AGE - Duration::from_secs(1));
+        }
+        cache.trim_cold(0);
+        assert!(cache.pages.contains_key(&key("active")));
+        assert!(!cache.pages.contains_key(&key("cold")));
+        drop(active);
+        cache.trim_cold(0);
+        assert!(cache.pages.is_empty());
+    }
+
+    #[test]
     fn storage_file_name_roundtrips_through_key_parsing() {
         for key in ["tasks.sync", "a", "with_underscore:colon-dash"] {
             let file_name = storage_file_name(key);
