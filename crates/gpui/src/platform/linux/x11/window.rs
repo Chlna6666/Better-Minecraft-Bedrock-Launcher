@@ -1048,11 +1048,8 @@ impl X11Window {
 }
 
 impl X11WindowStatePtr {
-    pub(crate) fn set_presentation_interval(&self, interval: Option<std::time::Duration>) {
-        self.state
-            .borrow()
-            .renderer
-            .set_presentation_interval(interval);
+    pub(crate) fn set_native_presentation_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.state.borrow().renderer.set_native_presentation_wake(wake);
     }
 
     pub fn should_close(&self) -> bool {

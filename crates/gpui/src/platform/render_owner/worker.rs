@@ -822,7 +822,12 @@ impl Entry {
             #[cfg(target_os = "windows")]
             waiting_for_frame_ready,
             #[cfg(not(target_os = "windows"))]
-            autonomous: self.schedule.is_enabled() || self.presentation_clock.is_some(),
+            autonomous: self.schedule.is_enabled()
+                || self.presentation_clock.is_some()
+                || (!submitted && pending
+                    && (self.ready_registration.load(Ordering::Acquire) != 0
+                        || (self.schedule.is_retrying_submission()
+                            && (self.renderer.has_submission_retry() || self.ready_poll_required)))),
             failed: result.is_err(),
             ready_enqueued_at: None,
             completed_animations,

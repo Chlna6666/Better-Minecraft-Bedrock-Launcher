@@ -21,7 +21,7 @@ use std::{
     ops::Deref,
     path::PathBuf,
     rc::{Rc, Weak},
-    sync::Arc,
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
     time::{Duration, Instant},
 };
 use util::ResultExt;
@@ -135,6 +135,7 @@ pub(crate) struct WindowRef {
     window: X11WindowStatePtr,
     refresh_state: Option<RefreshState>,
     native_msc: Option<NativeMsc>,
+    native_frame_wake: Arc<AtomicBool>,
     expose_event_received: bool,
     last_visibility: Visibility,
     is_mapped: bool,
@@ -287,6 +288,7 @@ struct ScrollAxisState {
 pub struct X11ClientState {
     pub(crate) loop_handle: LoopHandle<'static, X11Client>,
     pub(crate) event_loop: Option<calloop::EventLoop<'static, X11Client>>,
+    native_frame_sender: calloop::channel::Sender<(xproto::Window, Arc<AtomicBool>)>,
 
     pub(crate) last_click: Instant,
     pub(crate) last_mouse_button: Option<MouseButton>,
@@ -426,6 +428,21 @@ impl X11Client {
         let foreground_task_queue = common.foreground_task_queue.clone();
 
         let handle = event_loop.handle();
+        // GPU reports arm a single native MSC demand through the existing
+        // X11 event loop. No independent animation timer or UI scene rebuild.
+        let (native_frame_sender, native_frame_receiver) =
+            calloop::channel::channel::<(xproto::Window, Arc<AtomicBool>)>();
+        handle.insert_source(native_frame_receiver, |event, _, client: &mut X11Client| {
+            if let calloop::channel::Event::Msg((id, wake)) = event {
+                wake.store(false, Ordering::Release);
+                let state = client.0.borrow();
+                if let Some(window) = state.windows.get(&id)
+                    && Arc::ptr_eq(&window.native_frame_wake, &wake)
+                {
+                    window.request_frame(PlatformFrameRequest::presentation());
+                }
+            }
+        }).map_err(|err| anyhow!("Failed to initialize X11 native frame wake: {err:?}"))?;
 
         handle
             .insert_source(main_receiver, {
@@ -594,6 +611,7 @@ impl X11Client {
             last_capslock_changed_event: Capslock::default(),
             event_loop: Some(event_loop),
             loop_handle: handle,
+            native_frame_sender,
             common,
             last_click: Instant::now(),
             last_mouse_button: None,
@@ -1612,8 +1630,19 @@ impl LinuxClient for X11Client {
         .log_err();
         xcb_flush(&state.xcb_connection);
 
+        let native_frame_wake = Arc::new(AtomicBool::new(false));
+        let wake = native_frame_wake.clone();
+        let sender = parking_lot::Mutex::new(state.native_frame_sender.clone());
+        window.0.set_native_presentation_wake(Arc::new(move || {
+            if !wake.swap(true, Ordering::AcqRel)
+                && sender.lock().send((x_window, wake.clone())).is_err()
+            {
+                wake.store(false, Ordering::Release);
+            }
+        }));
         let window_ref = WindowRef {
             window: window.0.clone(),
+            native_frame_wake,
             refresh_state: None,
             native_msc: NativeMsc::register(&state.xcb_connection, x_window),
             expose_event_received: false,
@@ -1907,15 +1936,7 @@ impl X11ClientState {
             }
         }
 
-        if let Some(window_ref) = self.windows.get(&x_window) {
-            let interval = match &window_ref.refresh_state {
-                Some(RefreshState::PeriodicRefresh { refresh_rate, .. }) => Some(*refresh_rate),
-                _ => None,
-            };
-            window_ref
-                .window
-                .set_presentation_interval(interval.filter(|_| is_visible));
-        }
+        // Both retained and UI frames now use the same MSC/one-shot fallback.
         if is_visible {
             self.schedule_frame_request(x_window);
         }
@@ -2053,8 +2074,7 @@ impl X11ClientState {
             && (*refresh_rate).max(interval) - (*refresh_rate).min(interval) > *refresh_rate / 20
         {
             *refresh_rate = interval;
-            // Also adjust the retained GPU owner's fallback cadence.
-            window_ref.window.set_presentation_interval(Some(interval));
+            // The native event loop also owns the retained-animation fallback.
         }
         let exposed = window_ref.expose_event_received;
         let window = window_ref.window.clone();

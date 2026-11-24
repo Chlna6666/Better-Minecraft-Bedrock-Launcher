@@ -17,10 +17,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(all(feature = "x11", any(target_os = "linux", target_os = "freebsd")))]
+type NativePresentationWake = Arc<dyn Fn() + Send + Sync>;
+
 pub(crate) struct OwnedNovaRenderer {
     owner: Option<RenderOwner>,
     frame_requests: Arc<Mutex<Option<PlatformFrameRequestSender>>>,
     animation_completions: Arc<Mutex<Option<SceneAnimationCompletionSender>>>,
+    #[cfg(all(feature = "x11", any(target_os = "linux", target_os = "freebsd")))]
+    native_presentation_wake: Arc<Mutex<Option<NativePresentationWake>>>,
     presentation_interval: Cell<Option<Duration>>,
     presentation_visible: Cell<bool>,
 }
@@ -33,6 +38,10 @@ impl OwnedNovaRenderer {
         let animation_completions = Arc::new(Mutex::new(None::<SceneAnimationCompletionSender>));
         let requests = frame_requests.clone();
         let completions = animation_completions.clone();
+        #[cfg(all(feature = "x11", any(target_os = "linux", target_os = "freebsd")))]
+        let native_presentation_wake = Arc::new(Mutex::new(None::<NativePresentationWake>));
+        #[cfg(all(feature = "x11", any(target_os = "linux", target_os = "freebsd")))]
+        let native_wake = native_presentation_wake.clone();
         let report = Arc::new(move |frame: RenderOwnerFrame| {
             if frame.submitted {
                 if let Some(sender) = completions.lock().clone() {
@@ -42,6 +51,13 @@ impl OwnedNovaRenderer {
                             break;
                         }
                     }
+                }
+            }
+            #[cfg(all(feature = "x11", any(target_os = "linux", target_os = "freebsd")))]
+            if frame.pending && !frame.autonomous && !frame.failed {
+                if let Some(wake) = native_wake.lock().clone() {
+                    wake();
+                    return;
                 }
             }
             if (frame.pending && !frame.autonomous) || frame.failed {
@@ -61,6 +77,8 @@ impl OwnedNovaRenderer {
             owner: Some(owner),
             frame_requests,
             animation_completions,
+            #[cfg(all(feature = "x11", any(target_os = "linux", target_os = "freebsd")))]
+            native_presentation_wake,
             presentation_interval: Cell::new(None),
             presentation_visible: Cell::new(false),
         })
@@ -105,6 +123,11 @@ impl OwnedNovaRenderer {
 
     pub(crate) fn has_active_presentation_animations(&self) -> bool {
         self.owner().has_active_presentation_animations()
+    }
+
+    #[cfg(all(feature = "x11", any(target_os = "linux", target_os = "freebsd")))]
+    pub(crate) fn set_native_presentation_wake(&self, wake: NativePresentationWake) {
+        *self.native_presentation_wake.lock() = Some(wake);
     }
 
     pub(crate) fn set_frame_request_sender(&self, sender: PlatformFrameRequestSender) {
