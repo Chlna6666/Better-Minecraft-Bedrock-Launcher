@@ -1766,6 +1766,8 @@ impl VulkanDevice {
             command_pool,
             queue_family_index: family,
             gpu_trace_passes: vec![VulkanGpuPass::Unused; command_buffers.len()],
+            sample_main_pass: true,
+            frame_probe_surface: None,
             gpu_draw_tags: vec![None; command_buffers.len()],
             gpu_work_tag: None,
             gpu_work_clock,
@@ -1862,16 +1864,19 @@ impl VulkanDevice {
         let mut render_target_transition = None;
         let (gpu_trace, gpu_trace_slot) = {
             let encoder = self.command_encoders.get(encoder_id)?;
+            let probe = match pass.target {
+                RenderTarget::Swapchain { .. } => encoder.sample_main_pass,
+                RenderTarget::TextureView(_) => self.gpu_trace_enabled,
+            };
             let slot = encoder
                 .command_buffers
                 .iter()
                 .position(|&buffer| buffer == command_buffer);
-            let trace = encoder.gpu_trace_query_pool.and_then(|pool| {
+            let trace = encoder.gpu_trace_query_pool.filter(|_| probe).and_then(|pool| {
                 let index = u32::try_from(slot?).ok()?;
                 Some((pool, index.checked_mul(2)?))
             });
-            let traced_slot = if trace.is_some() { slot } else { None };
-            (trace, traced_slot)
+            (trace, slot)
         };
         let render_pass_record = self.render_passes.get(pass.render_pass)?;
         if render_pass_record.color_formats.len() != 1 {
@@ -2111,7 +2116,9 @@ impl VulkanDevice {
             }
             if let Some(slot) = gpu_trace_slot {
                 self.command_encoders.get_mut(encoder_id)?.gpu_trace_passes[slot] =
-                    if render_target_transition.is_some() {
+                    if gpu_trace.is_none() {
+                        VulkanGpuPass::Unused
+                    } else if render_target_transition.is_some() {
                         VulkanGpuPass::Offscreen
                     } else {
                         VulkanGpuPass::Main
@@ -2556,6 +2563,12 @@ impl VulkanDevice {
         };
         let encoder_create_started = Instant::now();
         let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
+        let chain = self.swapchains.get_mut(swapchain_id)?;
+        let sample = chain.frame_probe.should_sample(Instant::now(), self.gpu_trace_enabled);
+        let native_chain = chain.swapchain;
+        let encoder_record = self.command_encoders.get_mut(encoder)?;
+        encoder_record.sample_main_pass = sample;
+        encoder_record.frame_probe_surface = sample.then_some((swapchain_id, native_chain));
         timings.command_encoder_create = encoder_create_started.elapsed();
         let command_record_started = Instant::now();
         let record_result = self.record_render_step_list_desc(
@@ -3826,6 +3839,7 @@ impl VulkanDevice {
             image_available_semaphores,
             render_finished_semaphores,
             frame_submissions: vec![None; in_flight_fences.len()],
+            frame_probe: FrameProbeCadence::default(),
             in_flight_fences,
             presentation: presentation::Retirement::default(),
             present_wake: None,
@@ -4492,6 +4506,8 @@ impl VulkanDevice {
 
     fn recycle_command_encoder(&mut self, mut encoder: VulkanCommandEncoder) -> Result<()> {
         encoder.compute_resources.clear();
+        let frame_probe_surface = encoder.frame_probe_surface.take();
+        encoder.sample_main_pass = true;
         encoder.retire_primary_value = None;
         // The consumer retirement predicate covers both binary operations.
         // Do not retain or overwrite old semaphore handles in the pool.
@@ -4595,6 +4611,15 @@ impl VulkanDevice {
                             frequency: clock.frequency_hz(),
                         };
                         self.last_frame_gpu_timestamps = Some(sample);
+                        if let Some((id, native)) = frame_probe_surface {
+                            if let Ok(chain) = self.swapchains.get_mut(id) {
+                                // Resize recreates the native chain; never train its
+                                // cadence on completed probes from the previous extent.
+                                if chain.swapchain == native {
+                                    chain.frame_probe.observe(sample.duration_ticks);
+                                }
+                            }
+                        }
                         if let Some(id) = frame_submission {
                             if self.completed_frame_probes.len() >= 128 {
                                 self.completed_frame_probes.pop_front();
@@ -6177,6 +6202,8 @@ struct VulkanCommandEncoder {
     /// One timestamp pair per command buffer; retained until its fence completes.
     gpu_trace_query_pool: Option<vk::QueryPool>,
     gpu_trace_passes: Vec<VulkanGpuPass>,
+    sample_main_pass: bool,
+    frame_probe_surface: Option<(gfx_core::SwapchainId, vk::SwapchainKHR)>,
     /// Pure indirect-only GPU draw windows recorded in the offscreen pair
     /// formerly unused by frame tracing. One tag per native command buffer.
     gpu_draw_tags: Vec<Option<gfx_core::GpuTimestampTag>>,
@@ -6190,6 +6217,78 @@ enum VulkanGpuPass {
     Unused,
     Main,
     Offscreen,
+}
+
+/// Per-swapchain bounded sampling. Always probe new/unstable surfaces,
+/// then keep at least four real samples per sixteen presented frames.
+#[derive(Default)]
+struct FrameProbeCadence {
+    previous_ticks: Option<u64>,
+    stable_samples: u8,
+    skipped: u8,
+    last_attempt: Option<Instant>,
+}
+
+impl FrameProbeCadence {
+    fn should_sample(&mut self, now: Instant, trace: bool) -> bool {
+        if self.last_attempt.is_some_and(|last| now.saturating_duration_since(last) > Duration::from_millis(250)) {
+            *self = Self::default();
+        }
+        self.last_attempt = Some(now);
+        if trace || self.stable_samples < 8 || self.skipped >= 3 {
+            self.skipped = 0;
+            true
+        } else {
+            self.skipped += 1;
+            false
+        }
+    }
+
+    fn observe(&mut self, ticks: u64) {
+        if ticks == 0 {
+            self.stable_samples = 0;
+            self.previous_ticks = None;
+            return;
+        }
+        let stable = self.previous_ticks.is_some_and(|old| {
+            old.abs_diff(ticks) <= old.max(ticks) / 8
+        });
+        self.stable_samples = if stable { self.stable_samples.saturating_add(1) } else { 0 };
+        self.previous_ticks = Some(ticks);
+    }
+}
+
+#[cfg(test)]
+mod frame_probe_cadence_tests {
+    use super::*;
+
+    #[test]
+    fn stable_sampling_is_bounded_and_cost_change_restores_full_rate() {
+        let mut cadence = FrameProbeCadence::default();
+        let now = Instant::now();
+        for _ in 0..9 {
+            assert!(cadence.should_sample(now, false));
+            cadence.observe(1000);
+        }
+        for _ in 0..3 {
+            assert!(!cadence.should_sample(now, false));
+        }
+        assert!(cadence.should_sample(now, false));
+        cadence.observe(2000);
+        assert!(cadence.should_sample(now, false));
+        assert!(cadence.should_sample(now + Duration::from_secs(1), false));
+        assert_eq!(cadence.stable_samples, 0);
+    }
+
+    #[test]
+    fn trace_mode_never_skips_a_probe() {
+        let mut cadence = FrameProbeCadence::default();
+        let now = Instant::now();
+        for _ in 0..32 {
+            assert!(cadence.should_sample(now, true));
+            cadence.observe(1000);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -6481,6 +6580,7 @@ struct VulkanSwapchain {
     in_flight_fences: Vec<vk::Fence>,
     // Logical completion identity of the last GPU reader of each slot.
     frame_submissions: Vec<Option<SubmissionId>>,
+    frame_probe: FrameProbeCadence,
     frame_index: usize,
     reserved_frame: Option<VulkanPresentFrame>,
     acquire_fence: vk::Fence,

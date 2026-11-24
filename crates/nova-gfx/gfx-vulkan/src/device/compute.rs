@@ -215,7 +215,11 @@ impl VulkanDevice {
                     )
                     .map_err(VulkanError::from)?;
                 if let Some(query) = query {
-                    self.device.cmd_reset_query_pool(command, query, 0, 2);
+                    if self.host_query_reset {
+                        self.device.reset_query_pool(query, 0, 2);
+                    } else {
+                        self.device.cmd_reset_query_pool(command, query, 0, 2);
+                    }
                 }
             }
             let mut pre_images = Vec::with_capacity(images.len());
@@ -578,7 +582,11 @@ impl VulkanDevice {
                     )
                     .map_err(VulkanError::from)?;
                 if let Some(query) = query {
-                    self.device.cmd_reset_query_pool(command, query, 0, 2);
+                    if self.host_query_reset {
+                        self.device.reset_query_pool(query, 0, 2);
+                    } else {
+                        self.device.cmd_reset_query_pool(command, query, 0, 2);
+                    }
                     self.device.cmd_write_timestamp2(
                     command,
                     vk::PipelineStageFlags2::TOP_OF_PIPE,
