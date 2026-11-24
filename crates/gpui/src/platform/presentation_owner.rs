@@ -86,8 +86,9 @@ impl OwnedNovaRenderer {
     fn submitted(&self, result: Result<bool>) -> PlatformFrameResult {
         match result {
             Ok(true) => PlatformFrameResult::Submitted,
-            Ok(false) if self.owner().has_submitted_frame() => PlatformFrameResult::Queued,
-            Ok(false) => PlatformFrameResult::Deferred,
+            // enqueue success transfers the packet even before the first
+            // native present. Deferred means ownership was not transferred.
+            Ok(false) => PlatformFrameResult::Queued,
             Err(error) => {
                 log::error!("failed to submit GPU presentation: {error:#}");
                 PlatformFrameResult::Deferred

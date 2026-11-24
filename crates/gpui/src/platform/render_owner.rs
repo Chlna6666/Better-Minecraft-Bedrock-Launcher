@@ -283,54 +283,24 @@ impl RenderOwner {
         framebuffer_only: bool,
         resize: Option<DrawableResize>,
     ) -> Result<bool> {
-        // On Windows the HWND and GPUI App share the same foreground thread. Waiting for
-        // the GPU to present even a first frame would block ALL windows and input while
-        // another window initializes, resizes or waits on its swapchain.
-        // The completion event is the only authority for first-frame visibility.
-        #[cfg(target_os = "windows")]
-        {
-            self.status.pending.store(true, Ordering::Release);
-
-            if let Err(error) = self.enqueue(Command::Draw {
-                packet,
-                framebuffer_only,
-                reply: None,
-                resize,
-            }) {
-                self.status.pending.store(false, Ordering::Release);
-                if let Some(resize) = resize {
-                    *self.pending_drawable_size.lock() = Some(resize);
-                }
-
-                return Err(error);
+        // Every native window shares its UI event thread with other windows.
+        // Even the first immutable packet transfers ownership immediately;
+        // the GPU owner's report/WSI commit, not a UI-thread recv, determines
+        // successful presentation. Error reports schedule a fresh UI commit.
+        self.status.pending.store(true, Ordering::Release);
+        if let Err(error) = self.enqueue(Command::Draw {
+            packet,
+            framebuffer_only,
+            reply: None,
+            resize,
+        }) {
+            self.status.pending.store(false, Ordering::Release);
+            if let Some(resize) = resize {
+                *self.pending_drawable_size.lock() = Some(resize);
             }
-            return Ok(false);
+            return Err(error);
         }
-
-        // Non-Windows producers retain their existing initial visibility handshake.
-        #[cfg(not(target_os = "windows"))]
-        {
-            let first = !self.status.submitted.load(Ordering::Acquire);
-            let handshake = first.then(|| mpsc::sync_channel(1));
-            let (reply, receiver) = match handshake {
-                Some((reply, receiver)) => (Some(reply), Some(receiver)),
-                None => (None, None),
-            };
-            self.status.pending.store(true, Ordering::Release);
-            self.enqueue(Command::Draw {
-                packet,
-                framebuffer_only,
-                reply,
-                resize,
-            })?;
-            if let Some(receiver) = receiver {
-                receiver
-                    .recv()
-                    .map_err(|_| anyhow!("GPU owner stopped before first frame"))?
-            } else {
-                Ok(false)
-            }
-        }
+        Ok(false)
     }
 
     /// Covers a native client area that grew ahead of the committed drawable with the
@@ -498,6 +468,7 @@ impl RenderOwner {
         self.viewport_size
     }
 
+    #[cfg(target_os = "windows")]
     pub(super) fn has_submitted_frame(&self) -> bool {
         self.status.submitted.load(Ordering::Acquire)
     }

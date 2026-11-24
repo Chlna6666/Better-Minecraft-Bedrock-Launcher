@@ -617,9 +617,14 @@ impl NovaRenderer {
             // rectangles; the first successful frame must repaint the new extent.
             force_full_drawable_damage(packet, self.active_size);
         }
-        if self.defer_full_queue_before_pack()?
-            || !lock_backend(&self.backend).reserve_present_frame(self.swapchain)?
-        {
+        if self.defer_full_queue_before_pack()? {
+            return Ok(false);
+        }
+        if !lock_backend(&self.backend).reserve_present_frame(self.swapchain)? {
+            // The native callback may be committed only with a submitted
+            // buffer. A WSI miss therefore needs an owner-side retry even if
+            // the retained scene has no animation and no callback can fire.
+            self.submission_retry_pending = true;
             return Ok(false);
         }
         let backdrop_blur_quality = self.backdrop_blur_quality(packet);
@@ -1130,9 +1135,11 @@ impl NovaRenderer {
             if self.swapchain_warmup_frames != 0 {
                 force_full_drawable_damage(&mut packet, self.active_size);
             }
-            if self.defer_full_queue_before_pack()?
-                || !lock_backend(&self.backend).reserve_present_frame(self.swapchain)?
-            {
+            if self.defer_full_queue_before_pack()? {
+                return Ok(false);
+            }
+            if !lock_backend(&self.backend).reserve_present_frame(self.swapchain)? {
+                self.submission_retry_pending = true;
                 return Ok(false);
             }
             let backdrop_blur_quality = self.backdrop_blur_quality(&packet);

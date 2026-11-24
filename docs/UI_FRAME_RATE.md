@@ -46,3 +46,6 @@ Changing a numerical cap updates the clocks of existing windows. **Switching to 
 - On Windows, Immediate mode uses independent native scheduling instead of DWM VBlank and retains the lower background-window cadence. Native resize reconciliation remains immediate.
 - DX11/DX12/Vulkan/OpenGL may implement Immediate differently. Drivers, DXGI composition, Wayland surface frame callbacks, and compositor policies may cap actual **displayed** frames at the monitor refresh rate even when additional frames are **rendered/submitted**.
 - Do not equate the configured maximum with delivered FPS. Confirm with GPU trace, presented frames, frame-start timing, and live-resize tests. Test secondary window lifetime on DX12 and X11/Wayland separately.
+
+- Nova's Vulkan renderer reserves the swapchain image with a zero-timeout acquire before scene packing/offscreen submission. A missed acquisition is retried on the GPU owner without draining the graphics queue. Legacy standalone callers that acquire after offscreen work retain their conservative synchronization contract. A reserved image has separate WSI acquisition-fence ownership through submit, resize and teardown.
+- X11 and Wayland transfer immutable first-frame packets to the GPU owner asynchronously, like Windows. A successful queue transfer is not a successful native Present; the GPU report owns failure recovery.
