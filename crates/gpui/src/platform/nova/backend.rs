@@ -295,16 +295,20 @@ impl NovaBackend {
         }
     }
 
-    #[cfg(target_os = "windows")]
     pub(super) fn presentation_feedback(
         &self,
         _swapchain: SwapchainId,
     ) -> Option<gfx_core::PresentationFeedback> {
         match self {
-            #[cfg(feature = "nova-gfx-dx11")]
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
             Self::Dx11(device) => device.presentation_feedback(_swapchain),
-            #[cfg(feature = "nova-gfx-dx12")]
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => device.presentation_feedback(_swapchain),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(device) => gfx_core::PresentationDevice::presentation_feedback(device, _swapchain),
             #[allow(unreachable_patterns)]
             _ => None,
         }

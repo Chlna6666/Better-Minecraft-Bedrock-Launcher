@@ -188,7 +188,7 @@ impl FrameCadence {
         let tolerance = match signal.source {
             #[cfg(any(target_os = "linux", target_os = "freebsd", test))]
             FrameSource::Wayland => Duration::from_millis(1),
-            FrameSource::TimerFallback => Duration::ZERO,
+            FrameSource::TimerFallback => Duration::from_micros(1),
             _ => Duration::from_micros(500),
         };
         let tolerance = self.interval.unwrap_or_default().min(tolerance * 8) / 8;
@@ -781,11 +781,8 @@ mod tests {
                     accepted += 1;
                 }
             }
-            // Integer nanosecond rounding can make the fallback miss the
-            // exact second slot; native signals have bounded jitter tolerance.
-            if source != FrameSource::TimerFallback {
-                assert_eq!(accepted, 120);
-            }
+            // Timer slots also need a tiny tolerance for integer-ns rounding.
+            assert_eq!(accepted, 120, "{source:?}");
             let at = start + refresh * 240;
             assert!(cadence.claim(at, FrameSignal { source, at }, true));
         }

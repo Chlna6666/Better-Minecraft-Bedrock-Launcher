@@ -1023,19 +1023,26 @@ pub struct PresentedFrame {
     pub timings: Option<PresentTimings>,
 }
 
-/// Native compositor/display statistics. A sample may describe an earlier present,
-/// repeat across queries, or be unavailable after a mode change. QPC is a native
-/// clock domain, not a GPU timestamp or an exact per-frame scanout timestamp.
+/// Native display statistics, separate from GPU execution and CPU submission.
+/// A sample can describe an earlier present; clock domains must not be mixed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PresentationFeedback {
-    /// Count of frames presented by the compositor.
-    pub present_count: u32,
-    /// Refresh counter associated with the last present.
-    pub present_refresh_count: u32,
-    /// Refresh counter associated with the synchronization sample.
-    pub sync_refresh_count: u32,
-    /// Native synchronization timestamp in QPC ticks.
-    pub sync_qpc_ticks: i64,
+pub enum PresentationFeedback {
+    /// DXGI compositor synchronization statistics (not exact scanout time).
+    Dxgi {
+        present_count: u32,
+        present_refresh_count: u32,
+        sync_refresh_count: u32,
+        sync_qpc_ticks: i64,
+    },
+    /// VK_GOOGLE_display_timing reports previously displayed FIFO images.
+    /// All times are nanoseconds in the WSI monotonic clock domain.
+    Vulkan {
+        present_id: u32,
+        actual_present_ns: u64,
+        earliest_present_ns: u64,
+        present_margin_ns: u64,
+        refresh_duration_ns: Option<u64>,
+    },
 }
 
 /// Provides swapchain presentation and offscreen render helpers.

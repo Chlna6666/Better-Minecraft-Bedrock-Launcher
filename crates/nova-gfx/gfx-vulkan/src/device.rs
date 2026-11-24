@@ -153,6 +153,7 @@ pub struct VulkanDevice {
     graphics_queue_family_index: u32,
     present_queue_family_index: u32,
     swapchain_loader: khr::swapchain::Device,
+    display_timing: Option<ash::google::display_timing::Device>,
     allocator: ManuallyDrop<MemoryAllocator>,
     buffers: ResourceRegistry<VulkanBuffer>,
     textures: ResourceRegistry<VulkanTexture>,
@@ -360,6 +361,7 @@ impl VulkanDevice {
             supports_sampler_anisotropy,
             memory_budget_supported,
             native_pixel_presentation,
+            display_timing_supported,
         ) = create_device(
             &instance,
             physical_device,
@@ -401,6 +403,8 @@ impl VulkanDevice {
         let stencil_supported = true;
         let device = Arc::new(device);
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
+        let display_timing = display_timing_supported
+            .then(|| ash::google::display_timing::Device::new(&instance, &device));
         let allocator = MemoryAllocator::new_vulkan(VulkanMemoryAllocatorDesc {
             instance: instance.clone(),
             device: (*device).clone(),
@@ -485,6 +489,7 @@ impl VulkanDevice {
             graphics_queue_family_index: queue_families.graphics,
             present_queue_family_index: queue_families.present,
             swapchain_loader,
+            display_timing,
             allocator: ManuallyDrop::new(allocator),
             buffers: ResourceRegistry::new("buffer"),
             textures: ResourceRegistry::new("texture"),
@@ -3152,6 +3157,18 @@ impl VulkanDevice {
             .wait_semaphores(&wait_semaphores)
             .swapchains(&swapchains)
             .image_indices(&image_indices);
+        // Identify actual display samples without requesting a second pacing deadline.
+        let chain = self.swapchains.get_mut(swapchain_id)?;
+        let present_times = chain.display_timing_enabled.then(|| {
+            let id = chain.next_present_id;
+            chain.next_present_id = id.wrapping_add(1).max(1);
+            [vk::PresentTimeGOOGLE::default().present_id(id).desired_present_time(0)]
+        });
+        let mut present_timing = present_times.as_ref()
+            .map(|times| vk::PresentTimesInfoGOOGLE::default().times(times));
+        if let Some(timing) = present_timing.as_mut() {
+            present_info = present_info.push_next(timing);
+        }
         let rectangles = if let Some(damage) = damage.filter(|_| self.incremental_presentation) {
             Some([Self::damage_to_present_rect(damage)?])
         } else {
@@ -3659,6 +3676,9 @@ impl VulkanDevice {
             render_finished_semaphores,
             in_flight_fences,
             presentation: presentation::Retirement::default(),
+            next_present_id: 1,
+            display_timing_enabled: self.display_timing.is_some()
+                && present_mode == vk::PresentModeKHR::FIFO,
             frame_index: 0,
             config,
         })
@@ -5175,6 +5195,27 @@ impl SubmissionDevice for VulkanDevice {
 }
 
 impl PresentationDevice for VulkanDevice {
+    fn presentation_feedback(&self, id: gfx_core::SwapchainId) -> Option<gfx_core::PresentationFeedback> {
+        let chain = self.swapchains.get(id).ok()?;
+        let loader = self.display_timing.as_ref()?;
+        if !chain.display_timing_enabled {
+            return None;
+        }
+        // SAFETY: extension enabled at device creation; this swapchain is live.
+        // These queries return past presentation records, not a wait for scanout.
+        let samples = unsafe { loader.get_past_presentation_timing(chain.swapchain) }.ok()?;
+        let sample = samples.iter().filter(|s| s.actual_present_time != 0)
+            .max_by_key(|s| s.actual_present_time)?;
+        let refresh = unsafe { loader.get_refresh_cycle_duration(chain.swapchain) }.ok();
+        Some(gfx_core::PresentationFeedback::Vulkan {
+            present_id: sample.present_id,
+            actual_present_ns: sample.actual_present_time,
+            earliest_present_ns: sample.earliest_present_time,
+            present_margin_ns: sample.present_margin,
+            refresh_duration_ns: refresh.map(|r| r.refresh_duration).filter(|ns| *ns != 0),
+        })
+    }
+
     fn poll_present_readiness(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
         let chain = self.swapchains.get(id)?;
         if chain.extent.width == 0 || chain.extent.height == 0 {
@@ -6031,6 +6072,8 @@ struct VulkanSurface {
 
 struct VulkanSwapchain {
     presentation: presentation::Retirement,
+    next_present_id: u32,
+    display_timing_enabled: bool,
     native_pixel_scaling: bool,
     scaled_image_extent_range: Option<(vk::Extent2D, vk::Extent2D)>,
     surface: vk::SurfaceKHR,
@@ -6345,6 +6388,7 @@ fn create_device(
     bool,
     bool,
     bool,
+    bool,
 )> {
     let priorities = [1.0_f32, 0.75_f32];
     let single_priority = [1.0_f32];
@@ -6396,6 +6440,14 @@ fn create_device(
         name == khr::incremental_present::NAME
     });
     let mut device_extensions = vec![khr::swapchain::NAME.as_ptr()];
+    let display_timing_supported = available_extensions.iter().any(|extension| {
+        // SAFETY: Vulkan extension names are null-terminated within the fixed array.
+        unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) }
+            == ash::google::display_timing::NAME
+    });
+    if display_timing_supported {
+        device_extensions.push(ash::google::display_timing::NAME.as_ptr());
+    }
     let memory_budget_supported = properties2_supported
         && available_extensions.iter().any(|extension| {
             // SAFETY: Vulkan extension names are null-terminated within this fixed array.
@@ -6489,6 +6541,7 @@ fn create_device(
         supports_sampler_anisotropy,
         memory_budget_supported,
         native_pixel_presentation,
+        display_timing_supported,
     ))
 }
 
