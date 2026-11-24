@@ -571,7 +571,7 @@ mod platform {
             let Some((command_buffer, timings)) = frame else {
                 return Ok(None);
             };
-            let submission = self.submissions.insert(MetalSubmission { command_buffer, presented: true });
+            let submission = self.submissions.insert(MetalSubmission::new(command_buffer, true));
             self.swapchains.get_mut(swapchain_id)?.last_submission = Some(submission);
             self.submitted_frames = self.submitted_frames.saturating_add(1);
             Ok(Some(PresentedFrame { submission: Some(submission), timings: Some(timings) }))
@@ -732,7 +732,15 @@ mod platform {
             Ok(())
         }
 
-        pub fn poll_cleanup(&mut self) {}
+        pub fn poll_cleanup(&mut self) {
+            self.texture_uploads.release_completed();
+        }
+
+        /// Reclaims only staging pages which are no longer referenced by GPU work.
+        pub fn trim_memory(&mut self, level: gfx_core::MemoryTrimLevel) -> Result<()> {
+            self.texture_uploads.trim(level);
+            Ok(())
+        }
 
         #[must_use]
         fn resource_stats(&self) -> ResourceStats {
@@ -966,10 +974,31 @@ mod platform {
         fn async_capabilities(&self) -> gfx_core::AsyncCapabilities {
             gfx_core::AsyncCapabilities {
                 threading_mode: ThreadingMode::OwnerThreadOnly,
+                // The specialized present/offscreen path returns a real
+                // command-buffer completion handle. Generic encoders do not.
                 async_submission: false,
-                async_wait: false,
-                async_presentation: false,
+                async_wait: true,
+                async_presentation: true,
             }
+        }
+
+        fn checkpoint_ordered_queue(&mut self, _stage: gfx_core::GpuWorkStage) -> Result<SubmissionId> {
+            let commands = self.command_queue.commandBuffer()
+                .ok_or_else(|| Error::Backend("Metal queue checkpoint unavailable".into()))?;
+            commands.commit();
+            Ok(self.submissions.insert(MetalSubmission::new(commands, false)))
+        }
+
+        fn wait_queue_idle(&mut self) -> Result<()> {
+            let commands = self.command_queue.commandBuffer()
+                .ok_or_else(|| Error::Backend("Metal queue checkpoint unavailable".into()))?;
+            commands.commit();
+            commands.waitUntilCompleted();
+            if commands.status() != MTLCommandBufferStatus::Completed {
+                return Err(Error::Backend(commands.error().as_deref().map(nserror_message)
+                    .unwrap_or_else(|| "Metal queue checkpoint failed".into())));
+            }
+            Ok(())
         }
 
         fn submit_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
@@ -996,7 +1025,8 @@ mod platform {
             }
             let start = record.command_buffer.GPUStartTime();
             let end = record.command_buffer.GPUEndTime();
-            let sample = if start.is_finite() && end.is_finite() && start > 0.0 && end > start {
+            // The public frame probe is not an offscreen or queue checkpoint cost.
+            let sample = if record.presented && start.is_finite() && end.is_finite() && start > 0.0 && end > start {
                 let ns = (end - start) * 1_000_000_000.0;
                 (ns < u64::MAX as f64).then_some(FrameGpuTimestamps {
                     duration_ticks: ns as u64, frequency: 1_000_000_000,
@@ -1021,24 +1051,25 @@ mod platform {
                 callback();
                 return Ok(true);
             }
-            // Metal invokes completion handlers on its own threads. Only the
-            // Send callback crosses threads; no owner-thread Metal state does.
-            let callback = std::sync::Mutex::new(Some(callback));
+            let record = self.submissions.get_mut(submission)?;
+            if let Some(wake) = &record.wake {
+                wake.arm(callback);
+                return Ok(true);
+            }
+            let wake = std::sync::Arc::new(SubmissionWake::default());
+            wake.arm(callback);
+            let handler_wake = wake.clone();
             let handler = block2::RcBlock::new(
                 move |_: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
-                    let wake = callback.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-                    if let Some(wake) = wake {
-                        // Never unwind through the Objective-C block ABI.
-                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(wake));
-                    }
+                    handler_wake.complete();
                 },
             );
-            // SAFETY: Metal copies the block and calls it when the command buffer
-            // completes (including failure). The mutex makes its FnOnce payload
-            // safe to consume from a Metal callback thread.
+            // SAFETY: Metal copies the block; the only cross-thread capture is
+            // a Send + Sync one-shot wake. It never touches owner-thread state.
             unsafe {
                 record.command_buffer.addCompletedHandler(block2::RcBlock::as_ptr(&handler));
             }
+            record.wake = Some(wake);
             Ok(true)
         }
 
@@ -1053,6 +1084,21 @@ mod platform {
     }
 
     impl PresentationDevice for MetalDevice {
+        fn request_frame_ready(
+            &mut self, id: SwapchainId, callback: ReadyCallback,
+        ) -> Result<bool> {
+            let last = self.swapchains.get(id)?.last_submission;
+            if let Some(submission) = last {
+                if self.submissions.get(submission).is_ok() && !self.poll_present_readiness(id)? {
+                    // GPU credit only: wake to retry, never claim scanout completed.
+                    return self.request_submission_ready(submission, callback);
+                }
+            }
+            // CAMetalLayer provides no general nonblocking drawable-ready event.
+            // Let the display clock or bounded retry handle that case.
+            Ok(false)
+        }
+
         fn poll_present_readiness(&mut self, id: SwapchainId) -> Result<bool> {
             let chain = self.swapchains.get(id)?;
             let Some(submission) = chain.last_submission else { return Ok(true); };
@@ -1191,9 +1237,54 @@ mod platform {
         last_submission: Option<SubmissionId>,
     }
 
+    type ReadyCallback = Box<dyn FnOnce() + Send + 'static>;
+
+    #[derive(Default)]
+    struct WakeState {
+        completed: bool,
+        callback: Option<ReadyCallback>,
+    }
+
+    #[derive(Default)]
+    struct SubmissionWake {
+        state: std::sync::Mutex<WakeState>,
+    }
+
+    impl SubmissionWake {
+        fn arm(&self, callback: ReadyCallback) {
+            let callback = {
+                let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.completed { Some(callback) } else {
+                    state.callback = Some(callback);
+                    None
+                }
+            };
+            if let Some(callback) = callback { callback(); }
+        }
+
+        fn complete(&self) {
+            let callback = {
+                let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.completed = true;
+                state.callback.take()
+            };
+            if let Some(callback) = callback {
+                // Never unwind across the Objective-C block ABI.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback));
+            }
+        }
+    }
+
     struct MetalSubmission {
         command_buffer: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
         presented: bool,
+        wake: Option<std::sync::Arc<SubmissionWake>>,
+    }
+
+    impl MetalSubmission {
+        fn new(command_buffer: Retained<ProtocolObject<dyn MTLCommandBuffer>>, presented: bool) -> Self {
+            Self { command_buffer, presented, wake: None }
+        }
     }
 
     fn create_or_replace_metal_layer(

@@ -157,7 +157,7 @@ impl MetalDevice {
             Ok(command_buffer)
         })?;
         Ok(if tracked {
-            Some(self.submissions.insert(MetalSubmission { command_buffer, presented: false }))
+            Some(self.submissions.insert(MetalSubmission::new(command_buffer, false)))
         } else {
             None
         })

@@ -97,6 +97,31 @@ impl TextureUploadArena {
         }
     }
 
+    pub(super) fn release_completed(&mut self) {
+        for page in &mut self.pages {
+            // Preserve failed commands until acquire can report the native error.
+            if page.pending.as_ref().is_some_and(|pending| pending.status() == MTLCommandBufferStatus::Completed) {
+                page.pending = None;
+                page.used = 0;
+            }
+        }
+    }
+
+    pub(super) fn trim(&mut self, level: gfx_core::MemoryTrimLevel) {
+        self.release_completed();
+        let mut retain_idle = match level {
+            gfx_core::MemoryTrimLevel::Light => return,
+            gfx_core::MemoryTrimLevel::Moderate => 1,
+            gfx_core::MemoryTrimLevel::Aggressive => 0,
+        };
+        self.pages.retain(|page| {
+            if page.pending.is_some() { return true; }
+            if retain_idle == 0 { return false; }
+            retain_idle -= 1;
+            true
+        });
+    }
+
     pub(super) fn stats(&self) -> (u64, u64) {
         let mut used = 0u64;
         let mut capacity = 0u64;
