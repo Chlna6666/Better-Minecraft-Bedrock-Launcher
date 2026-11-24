@@ -2773,23 +2773,21 @@ impl VulkanDevice {
     }
 
     fn submit_command_encoder_deferred(&mut self, encoder: CommandEncoderId) -> Result<()> {
-        self.submit_command_encoder_deferred_to_fence(encoder)
-            .map(|_| ())
+        self.submit_command_encoder_tracked(encoder, false).map(|_| ())
     }
 
     fn submit_encoder(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
-        let fence = self.submit_command_encoder_deferred_to_fence(encoder)?;
-        Ok(self.submissions.insert(VulkanSubmission {
-            fence,
-            queue: gfx_core::GpuQueueId::PRIMARY,
-            owned_by_submission: false,
-        }))
+        self.submit_command_encoder_tracked(encoder, true)?
+            .ok_or_else(|| Error::Backend("Vulkan tracked encoder has no submission".into()))
     }
 
-    fn submit_command_encoder_deferred_to_fence(
+    fn submit_command_encoder_tracked(
         &mut self,
         encoder: CommandEncoderId,
-    ) -> Result<vk::Fence> {
+        tracked: bool,
+    ) -> Result<Option<SubmissionId>> {
+        // Validate the handle before allocating its fence.
+        let _ = self.command_encoders.get(encoder)?;
         let fence = create_fence(&self.device, false)?;
         if let Err(error) = self.submit_command_buffers(
             &self.command_encoders.get(encoder)?.command_buffers,
@@ -2804,10 +2802,18 @@ impl VulkanDevice {
         let mut encoder_resource = self.command_encoders.take(encoder)?;
         encoder_resource.fence = fence;
         encoder_resource.owns_fence = true;
+        let submission = tracked.then(|| self.submissions.insert(VulkanSubmission {
+            fence,
+            queue: gfx_core::GpuQueueId::PRIMARY,
+            owned_by_submission: false,
+        }));
+        // Publish the association before the encoder can be recycled.
+        // recycle_command_encoder records completion before destroying the fence.
+        encoder_resource.frame_submission = submission;
         self.deferred_destroys
             .retire(0, DeferredResource::CommandEncoder(encoder_resource));
         self.submitted_frames = self.submitted_frames.saturating_add(1);
-        Ok(fence)
+        Ok(submission)
     }
 
     /// True second Graphics queue submission. Both queues share one family,

@@ -672,7 +672,7 @@ impl SubmissionDevice for Dx11Device {
         AsyncCapabilities {
             threading_mode: ThreadingMode::OwnerThreadOnly,
             async_submission: true,
-            async_wait: false,
+            async_wait: self.native_fence.is_some(),
             async_presentation: true,
         }
     }
@@ -728,8 +728,28 @@ impl SubmissionDevice for Dx11Device {
     }
 
     fn wait_submission(&mut self, id: SubmissionId) -> Result<()> {
+        if SubmissionDevice::poll_submission(self, id)? == SubmissionStatus::Complete {
+            return Ok(());
+        }
+        if let Some(native) = &self.native_fence {
+            // A null event is the D3D11 fence's native blocking wait. Only
+            // explicit synchronous callers reach this path; normal frames
+            // use request_submission_ready instead of parking their owner.
+            // SAFETY: The fence belongs to this device and the serial was validated.
+            unsafe {
+                native.fence.SetEventOnCompletion(
+                    u64::from(id.index()), windows::Win32::Foundation::HANDLE::default(),
+                )
+            }.map_err(|error| backend_error(&self.native, "SetEventOnCompletion", error))?;
+            if SubmissionDevice::poll_submission(self, id)? != SubmissionStatus::Complete {
+                return Err(Error::Backend("D3D11 fence wait returned before completion".into()));
+            }
+            return Ok(());
+        }
+        // Older devices lack a native fence event. Avoid a hot yield loop
+        // in this explicitly blocking compatibility operation.
         while SubmissionDevice::poll_submission(self, id)? == SubmissionStatus::Pending {
-            std::thread::yield_now();
+            std::thread::sleep(Duration::from_micros(100));
         }
         Ok(())
     }
