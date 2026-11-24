@@ -112,7 +112,6 @@ fn load(page_index_override: Option<usize>, cx: &mut App) {
         sort_order,
         page_size,
         curseforge_view_epoch,
-        curseforge_results_epoch,
     ) = cx.read_global(|state: &DownloadPageState, _cx| {
         let trimmed_search_query = state.search_query.trim();
         let trimmed_game_version = state.curseforge_selected_game_version.trim();
@@ -141,7 +140,6 @@ fn load(page_index_override: Option<usize>, cx: &mut App) {
             state.curseforge_sort_order.to_string(),
             state.curseforge_page_size,
             state.curseforge_view_epoch,
-            state.curseforge_results_epoch,
         )
     });
 
@@ -160,10 +158,12 @@ fn load(page_index_override: Option<usize>, cx: &mut App) {
         });
     }
 
-    let _ = cx.update_global(|state: &mut DownloadPageState, _cx| {
+    // Capture the request generation after any invalidation.
+    let curseforge_results_epoch = cx.update_global(|state: &mut DownloadPageState, _cx| {
         state.curseforge_results_loading = true;
         state.curseforge_results_error = None;
         state.curseforge_last_query_key = SharedString::from(key.clone());
+        state.curseforge_results_epoch
     });
 
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -244,6 +244,8 @@ fn load(page_index_override: Option<usize>, cx: &mut App) {
         Err(error) => {
             let _ = cx.update_global(|state: &mut DownloadPageState, _cx| {
                 state.curseforge_results_loading = false;
+                state.curseforge_pending_page_index = None;
+                state.curseforge_disable_result_logos = false;
                 state.curseforge_results_error = Some(t!(
                     "CurseForge.schedule_search_failed",
                     error = error.to_string()

@@ -185,8 +185,8 @@ impl ManagePageView {
         if is_asset_tab(state.tab) && state.assets_loaded && state.assets_error.is_none() && !state.assets.is_empty() {
             self.asset_list_cache.refresh(state);
             let first = ((-self.asset_scroll_handle.offset().y / px(MANAGE_ASSET_ROW_PITCH_PX)).max(0.0)) as usize;
-            let visible = self.asset_list_cache.filtered_indices().iter().copied().skip(first).take(16).collect();
-            self.pending_asset_preview = Some((state.tab, state.assets.clone(), visible));
+            let visible: Vec<_> = self.asset_list_cache.filtered_indices().iter().copied().skip(first).take(16).collect();
+            self.pending_asset_preview = (!visible.is_empty()).then(|| (state.tab, state.assets.clone(), visible));
         }
         cx.update_global(|state: &mut ManagePageState, _cx| {
             state.selected_folder = Some(folder);

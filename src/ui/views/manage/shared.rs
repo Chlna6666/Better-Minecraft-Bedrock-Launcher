@@ -866,3 +866,18 @@ pub(super) fn mod_type_label(raw: &str, i18n: &crate::ui::state::i18n::I18n) -> 
         _ => SharedString::from("Unknown"),
     }
 }
+
+/// Initial discovery placeholder aligned to installed-version row geometry.
+pub(super) fn render_version_loading_rows(colors: &ThemeColors, count: usize) -> Div {
+    let block = Hsla { a: 0.10, ..colors.text_secondary };
+    div().w_full().flex().flex_col().children((0..count).map(|_| {
+        div().w_full().h(px(MANAGE_VERSION_ROW_PITCH_PX)).pb(px(MANAGE_VERSION_ROW_GAP_PX)).flex_none()
+            .child(div().w_full().h(px(MANAGE_VERSION_ROW_HEIGHT_PX)).px(px(10.)).py(px(9.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                .flex().items_center().gap(px(10.))
+                .child(div().size(px(46.)).flex_none().rounded(px(5.)).bg(block))
+                .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap(px(7.))
+                    .child(div().w(px(76.)).h(px(12.)).rounded(px(5.)).bg(block))
+                    .child(div().w(px(58.)).h(px(9.)).rounded(px(4.)).bg(block))))
+    }))
+}

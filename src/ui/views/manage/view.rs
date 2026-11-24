@@ -282,7 +282,8 @@ impl ManagePageView {
             ),
             usize::MAX,
         );
-        let no_versions = filtered_version_indices.is_empty();
+        let no_versions = filtered_version_indices.is_empty()
+            && !state.loading && state.error.is_none();
         let visible_version_indices =
             &filtered_version_indices[virtual_list_plan.render_slice.start_index
                 ..virtual_list_plan
@@ -375,7 +376,7 @@ impl ManagePageView {
                     .flex()
                     .flex_col()
                     .when(state.loading && state.versions.is_empty(), |this| {
-                        this.child(subtle_badge(colors, t!("ManagePage.loading_versions")))
+                        this.child(render_version_loading_rows(colors, 6))
                     })
                     .when_some(state.error.clone(), |this, error| {
                         this.child(
@@ -626,6 +627,10 @@ impl ManagePageView {
                                                     ),
                                             ),
                                     )
+                                    .hover({
+                                        let hover = colors.surface_hover;
+                                        move |style| if selected { style } else { style.bg(hover) }
+                                    })
                                     .on_mouse_down(MouseButton::Left, {
                                         let folder = folder.clone();
                                         cx.listener(move |this, _, _, cx| {
@@ -681,6 +686,11 @@ impl ManagePageView {
         }
 
         let Some(version) = self.selected_version(state) else {
+            if state.loading && state.versions.is_empty() {
+                return crate::ui::components::page_shell::split_content_panel(colors)
+                    .child(div().p(px(14.)).size_full().child(render_manage_loading_rows(colors, 6)))
+                    .into_any_element();
+            }
             let drop_tab = state.tab;
             return crate::ui::components::page_shell::split_content_panel(colors)
                 .on_drag_move::<ExternalPaths>(cx.listener(
@@ -864,7 +874,9 @@ impl ManagePageView {
             ManageTab::Screenshot => filtered_screenshots.len(),
             ManageTab::Server => filtered_servers.len(),
         };
-        let active_count_string = active_count.to_string();
+        let active_count_string = self.pending_asset_preview.as_ref()
+            .filter(|(tab, _, _)| *tab == state.tab && !state.assets_loaded && state.assets_error.is_none())
+            .map_or_else(|| active_count.to_string(), |(_, assets, _)| assets.len().to_string());
 
         let toolbar = div()
             .flex()

@@ -524,7 +524,6 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                 DownloadTab::Plugin => {}
                 DownloadTab::Game => {
                     s.force_refresh_next = true;
-                    s.loaded = false;
                     s.loading = false;
                     s.error = None;
                     // Retain the committed list until a new catalog succeeds.
@@ -617,7 +616,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                 .child(refresh);
         }
         DownloadTab::ResourcePack => {
-            let enabled = state.curseforge_loaded;
+            let enabled = state.curseforge_loaded || !state.curseforge_versions.is_empty();
 
             let mut version_options: Vec<DropdownOption> =
                 Vec::with_capacity(1 + state.curseforge_versions.len());
@@ -675,8 +674,6 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                                 }
                                 s.curseforge_selected_game_version = version;
                                 s.curseforge_page_index = 0;
-                                s.curseforge_results_scroll
-                                    .set_offset(point(px(0.), px(0.)));
                                 true
                             },
                         );
@@ -734,8 +731,6 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState, _i18
                                 }
                                 s.curseforge_sort_field = sort_field;
                                 s.curseforge_page_index = 0;
-                                s.curseforge_results_scroll
-                                    .set_offset(point(px(0.), px(0.)));
                                 true
                             },
                         );

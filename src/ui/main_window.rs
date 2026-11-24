@@ -1095,10 +1095,10 @@ impl MainWindowView {
     fn ensure_download_page_loaded(&mut self, force_refresh: bool, cx: &mut Context<Self>) {
         self.ensure_downloads_index(cx);
 
-        let (loaded, loading) = {
+        let (loaded, loading, has_error) = {
             let s: &crate::ui::views::download::state::DownloadPageState =
                 cx.global::<crate::ui::views::download::state::DownloadPageState>();
-            (s.loaded, s.loading)
+            (s.loaded, s.loading, s.error.is_some())
         };
         if loading {
             if force_refresh {
@@ -1110,7 +1110,7 @@ impl MainWindowView {
             }
             return;
         }
-        if loaded && !force_refresh {
+        if (loaded || has_error) && !force_refresh {
             return;
         }
 
@@ -1118,9 +1118,6 @@ impl MainWindowView {
             |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
                 s.loading = true;
                 s.error = None;
-                if force_refresh {
-                    s.loaded = false;
-                }
                 s.force_refresh_next = false;
                 s.versions_request_id = s.versions_request_id.wrapping_add(1);
                 s.versions_request_id
