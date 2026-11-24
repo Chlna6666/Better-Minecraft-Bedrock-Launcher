@@ -340,21 +340,44 @@ impl FilterRegistry {
                 &[],
                 &[],
             );
-        if !same_paint {
-            return None;
-        }
         let bounds = current.bounds.intersect(&current.content_mask.bounds);
         let mut damage = crate::DirtyRegion::empty();
-        for region in
-            crate::paint::gpu_sample_damage(&current.content, previous_values, animation_values)
-        {
-            damage.push(region.intersect(&bounds));
+        if !same_paint {
+            // A changed static quad-only capture has no sampling dependency,
+            // animation transform, or nested filter to expand its damage.
+            // Compare the actual last resident Scene, not the window's dirty
+            // region. More complex source changes still require full capture.
+            let static_quads = |scene: &crate::Scene| {
+                scene.paint_operations.iter().all(|operation| {
+                    matches!(operation,
+                        crate::PaintOperation::Primitive(crate::Primitive::Quad(quad))
+                            if quad.animation_id.is_none())
+                })
+            };
+            if !static_quads(&current.content) || !static_quads(&old.content) {
+                return None;
+            }
+            if !crate::paint::for_each_changed_bounds(
+                &current.content,
+                0..current.content.len(),
+                &old.content,
+                0..old.content.len(),
+                |region| damage.push(region.intersect(&bounds)),
+            ) {
+                return None;
+            }
+        } else {
+            for region in
+                crate::paint::gpu_sample_damage(&current.content, previous_values, animation_values)
+            {
+                damage.push(region.intersect(&bounds));
+            }
         }
         let result = (!damage.is_empty()).then_some(damage);
         if result.is_some() && !std::sync::Arc::ptr_eq(&current.content, &old.content) {
             log::trace!(
                 target: "gpui::diagnostics",
-                "GPUI isolated source partial damage reused across equivalent Scene revisions: index={} changed_rects={}",
+                "GPUI isolated source partial damage reused across Scene revisions: index={} changed_rects={}",
                 index,
                 result.as_ref().map_or(0, crate::DirtyRegion::rect_count),
             );
@@ -1163,6 +1186,44 @@ mod tests {
                 .union_bounds(),
             Some(bounds)
         );
+    }
+
+    #[test]
+    fn static_quad_capture_diffs_against_last_resident_source() {
+        let rect = |x, y, w, h| crate::bounds(
+            crate::point(crate::ScaledPixels(x), crate::ScaledPixels(y)),
+            crate::size(crate::ScaledPixels(w), crate::ScaledPixels(h)),
+        );
+        let area = rect(0., 0., 200., 200.);
+        let make_scene = |x| {
+            let mut painter = crate::scene::Painter::default();
+            let bounds = rect(x, 20., 10., 10.);
+            painter.insert_primitive(crate::Quad {
+                bounds,
+                content_mask: crate::ContentMask::new(area),
+                ..Default::default()
+            });
+            std::sync::Arc::new(painter.into_scene())
+        };
+        let mut source = crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            layer_id: None,
+            bounds: area,
+            content_mask: crate::ContentMask::new(area),
+            radius: crate::ScaledPixels(0.),
+            opacity: 1.,
+            content: make_scene(10.),
+        };
+        let mut registry = FilterRegistry::new(None);
+        registry.record_element_blur_inputs(&[(1, FilterSource::Element(source.clone()))], &[], [1]);
+        source.content = make_scene(80.);
+        let damage = registry.local_source_damage(1, &FilterSource::Element(source.clone()), &[])
+            .expect("static quad movement has exact local damage");
+        assert_eq!(damage.rect_count(), 2);
+        assert_eq!(damage.union_bounds(), Some(rect(10., 20., 80., 10.)));
+        source.radius = crate::ScaledPixels(4.);
+        assert!(registry.local_source_damage(1, &FilterSource::Element(source), &[]).is_none());
     }
 
     #[test]

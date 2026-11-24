@@ -496,7 +496,7 @@ impl NovaRenderer {
                 is_retained_root,
                 force_full
                     || auto_static_rebuild
-                    || source_changed
+                    || (source_changed && local_source_damage.is_none())
                     || capture_uninitialized
                     || (is_retained_root && self.root_color.content_version().is_none()),
                 config,

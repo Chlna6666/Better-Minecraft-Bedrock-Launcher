@@ -2,6 +2,20 @@
 use super::*;
 use smallvec::SmallVec;
 
+type UploadPageIndex<'a> = FxHashMap<AtlasTextureId, SmallVec<[&'a PendingAtlasUpload; 8]>>;
+
+// Small batches are cheaper to scan directly. Large multi-layer frames
+// index the immutable upload snapshot once, without copying pixel data.
+const INDEX_UPLOAD_THRESHOLD: usize = 16;
+
+fn index_upload_pages(uploads: &[PendingAtlasUpload]) -> UploadPageIndex<'_> {
+    let mut pages = UploadPageIndex::default();
+    for upload in uploads {
+        pages.entry(upload.texture_id).or_default().push(upload);
+    }
+    pages
+}
+
 impl AtlasUpload<'_> {
     /// Checks the cached prefix dependencies of the shared backdrop source.
     /// Missing tile bookkeeping conservatively invalidates that source.
@@ -38,15 +52,17 @@ impl AtlasUpload<'_> {
         if uploads.is_empty() {
             return SmallVec::new();
         }
-        frame
-            .blur_content_ranges()
+        let ranges = frame.blur_content_ranges();
+        let pages = (uploads.len() >= INDEX_UPLOAD_THRESHOLD && ranges.len() > 1)
+            .then(|| index_upload_pages(uploads));
+        ranges
             .iter()
             .filter_map(|range| {
                 let batches = frame.batches.get(range.content_start..range.content_end);
                 let touched = batches.is_none_or(|batches| {
                     batches
                         .iter()
-                        .any(|batch| batch_uploads_overlap(frame, batch, uploads))
+                        .any(|batch| batch_uploads_overlap(frame, batch, uploads, pages.as_ref()))
                 });
                 touched.then_some(range.index)
             })
@@ -58,6 +74,7 @@ fn batch_uploads_overlap(
     frame: &FrameUpload,
     batch: &UploadedBatch,
     uploads: &[PendingAtlasUpload],
+    pages: Option<&UploadPageIndex<'_>>,
 ) -> bool {
     let (texture_id, first, count, tiles) = match *batch {
         UploadedBatch::MonoSprites {
@@ -74,16 +91,22 @@ fn batch_uploads_overlap(
         _ => return false,
     };
     let tiles = tiles.get(first as usize..(first as usize).saturating_add(count as usize));
+    let overlaps = |upload: &PendingAtlasUpload| {
+        tiles.is_none_or(|tiles| {
+            tiles.iter().any(|tile| {
+                tile.texture_id != texture_id || atlas_upload_touches_tile(upload, tile)
+            })
+        })
+    };
+    if let Some(pages) = pages {
+        return pages
+            .get(&texture_id)
+            .is_some_and(|writes| writes.iter().any(|upload| overlaps(upload)));
+    }
     uploads
         .iter()
         .filter(|upload| upload.texture_id == texture_id)
-        .any(|upload| {
-            tiles.is_none_or(|tiles| {
-                tiles.iter().any(|tile| {
-                    tile.texture_id != texture_id || atlas_upload_touches_tile(upload, tile)
-                })
-            })
-        })
+        .any(overlaps)
 }
 
 /// Texture-coordinate overlap, including padding read by bilinear sampling.
@@ -170,6 +193,22 @@ mod tests {
                 });
             }
             assert_eq!(batch.touches_layers(&frame).as_slice(), &[0]);
+            // The indexed path must agree with the linear oracle, including
+            // unrelated atlas pages and multiple writes on the sampled page.
+            let mut uploads = batch.batch().uploads.clone();
+            for index in 0..32 {
+                let mut unrelated = uploads[0];
+                unrelated.texture_id.index = 100 + index;
+                uploads.push(unrelated);
+            }
+            uploads.push(uploads[0]);
+            let pages = index_upload_pages(&uploads);
+            for draw in &frame.batches {
+                assert_eq!(
+                    batch_uploads_overlap(&frame, draw, &uploads, None),
+                    batch_uploads_overlap(&frame, draw, &uploads, Some(&pages)),
+                );
+            }
             frame.mono_atlas_tiles.clear();
             frame.poly_atlas_tiles.clear();
             assert_eq!(
