@@ -793,6 +793,16 @@ impl Dx12Device {
         tag: Option<gfx_core::GpuTimestampTag>,
         native_queue: Option<gfx_core::GpuQueueId>,
     ) -> Result<Option<gfx_core::SubmissionId>> {
+        self.dispatch_buffer_batch_impl(dispatches, tag, native_queue, &[])
+    }
+
+    pub(super) fn dispatch_buffer_batch_impl(
+        &mut self,
+        dispatches: &[ComputeDispatch<'_>],
+        tag: Option<gfx_core::GpuTimestampTag>,
+        native_queue: Option<gfx_core::GpuQueueId>,
+        tags: &[Option<gfx_core::GpuTimestampTag>],
+    ) -> Result<Option<gfx_core::SubmissionId>> {
         let mut prepared: Vec<Resources> = Vec::new();
         let mut indices: Vec<usize> = Vec::new();
         let mut descriptors = HashMap::<ViewKey, DescriptorSlot>::new();
@@ -949,6 +959,19 @@ impl Dx12Device {
                 unsafe { command.EndQuery(heap, D3D12_QUERY_TYPE_TIMESTAMP, 0) };
             }
             for (call_index, &index) in indices.iter().enumerate() {
+                let probe = if self.timestamp_frequency.is_some() {
+                    tags.get(index).copied().flatten().and_then(|tag| {
+                        self.gpu_draw_query_pool.pop().or_else(|| {
+                            create_dx12_timestamp_queries(&self.device, "nova-gfx compute dispatch timestamps").ok()
+                        }).map(|queries| (tag, queries))
+                    })
+                } else { None };
+                if let Some((_, queries)) = &probe {
+                    let command = self.command_encoders.get(encoder)?.command_list.as_ref()
+                        .ok_or_else(|| Error::Backend("missing DX12 compute command list".into()))?;
+                    // SAFETY: private query slots, recorded on the primary DIRECT list.
+                    unsafe { command.EndQuery(&queries.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0); }
+                }
                 self.record_dispatch(
                     encoder,
                     call_index,
@@ -960,6 +983,16 @@ impl Dx12Device {
                             index: 2,
                         }),
                 )?;
+                if let Some((tag, queries)) = probe {
+                    let command = self.command_encoders.get(encoder)?.command_list.as_ref()
+                        .ok_or_else(|| Error::Backend("missing DX12 compute command list".into()))?;
+                    // SAFETY: both query slots and readback remain owned until the submission fence.
+                    unsafe {
+                        command.EndQuery(&queries.heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+                        command.ResolveQueryData(&queries.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, &queries.readback, 0);
+                    }
+                    self.command_encoders.get_mut(encoder)?.gpu_draw_queries.push((tag, queries));
+                }
             }
             if let Some((heap, readback)) = &queries {
                 let command = self

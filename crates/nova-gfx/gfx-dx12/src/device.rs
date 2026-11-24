@@ -6018,6 +6018,18 @@ mod platform {
         ) -> Result<()> {
             self.dispatch_buffer_batch_profiled(dispatches, Some(tag))
         }
+        fn dispatch_compute_batch_tagged(
+            &mut self, dispatches: &[gfx_core::ComputeDispatch<'_>],
+            tags: &[Option<gfx_core::GpuTimestampTag>],
+        ) -> Result<()> {
+            if dispatches.len() != tags.len() {
+                return Err(Error::InvalidInput("compute tag count mismatch".into()));
+            }
+            if tags.iter().all(Option::is_none) {
+                return self.dispatch_buffer_batch(dispatches);
+            }
+            self.dispatch_buffer_batch_impl(dispatches, None, None, tags).map(|_| ())
+        }
         fn write_buffer_batch_profiled<'a>(
             &mut self,
             writes: impl IntoIterator<Item = BufferWrite<'a>>,

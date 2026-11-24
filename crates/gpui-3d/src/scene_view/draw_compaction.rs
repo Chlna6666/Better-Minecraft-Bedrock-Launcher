@@ -291,31 +291,24 @@ impl Compactor {
             decisions.push(decision);
         }
         if !special { return ordinary(device); }
-        // Each view owns distinct scratch, and all producers precede the
-        // ordered graphics batch. Coalesce adjacent unprofiled dispatches
-        // into one native submission, retaining exact per-view probe tags.
+        // All producers execute on the ordered primary queue. Keep an
+        // independent timestamp tag per dispatch without splitting the batch.
         let mut dispatches = Vec::new();
+        let mut compute_tags = Vec::new();
         for (&(id, _), decision) in epochs.iter().zip(&decisions) {
             let Some(choice) = (*decision).filter(|choice| choice.compact) else { continue; };
             let prepared = self.views[&id].cached.as_ref()
                 .and_then(|cache| cache.prepared.as_ref()).expect("scheduled compaction plan");
-            let dispatch = ComputeDispatch {
+            dispatches.push(ComputeDispatch {
                 shader: if prepared.indexed { self.indexed_shader.expect("indexed compaction shader") } else { self.shader },
                 bindings: &prepared.compute, workgroups: [prepared.groups, 1, 1],
-            };
-            if let Some(tag) = choice.tag {
-                if !dispatches.is_empty() {
-                    device.dispatch_compute_batch(&dispatches)?;
-                    dispatches.clear();
-                }
-                device.dispatch_compute_batch_profiled(std::slice::from_ref(&dispatch),
-                    GpuTimestampTag { batch_id: tag.batch_id, stage: GpuTimestampStage::DrawCompaction })?;
-            } else {
-                dispatches.push(dispatch);
-            }
+            });
+            compute_tags.push(choice.tag.map(|tag| GpuTimestampTag {
+                batch_id: tag.batch_id, stage: GpuTimestampStage::DrawCompaction,
+            }));
         }
         if !dispatches.is_empty() {
-            device.dispatch_compute_batch(&dispatches)?;
+            device.dispatch_compute_batch_tagged(&dispatches, &compute_tags)?;
         }
 
         let mut native = Vec::with_capacity(passes.len());

@@ -216,6 +216,31 @@ pub trait ExtensionDevice {
         self.dispatch_compute_batch(dispatches)
     }
 
+    /// Submit ordered dispatches with optional independent per-dispatch GPU timing.
+    /// Backends may combine submissions; untagged dispatches retain their order.
+    fn dispatch_compute_batch_tagged(
+        &mut self,
+        dispatches: &[gfx_core::ComputeDispatch<'_>],
+        tags: &[Option<GpuTimestampTag>],
+    ) -> Result<()> {
+        if dispatches.len() != tags.len() {
+            return Err(gfx_core::Error::InvalidInput("compute tag count mismatch".into()));
+        }
+        if tags.iter().all(Option::is_none) {
+            return self.dispatch_compute_batch(dispatches);
+        }
+        let mut start = 0;
+        for (index, &tag) in tags.iter().enumerate() {
+            if let Some(tag) = tag {
+                if start < index { self.dispatch_compute_batch(&dispatches[start..index])?; }
+                self.dispatch_compute_batch_profiled(&dispatches[index..index + 1], tag)?;
+                start = index + 1;
+            }
+        }
+        if start < dispatches.len() { self.dispatch_compute_batch(&dispatches[start..])?; }
+        Ok(())
+    }
+
     /// Tags an upload batch for hardware time measurement when supported.
     fn write_buffer_batch_profiled(
         &mut self,
@@ -553,6 +578,12 @@ where
         tag: GpuTimestampTag,
     ) -> Result<()> {
         ResourceDevice::dispatch_compute_batch_profiled(self, dispatches, tag)
+    }
+    fn dispatch_compute_batch_tagged(
+        &mut self, dispatches: &[gfx_core::ComputeDispatch<'_>],
+        tags: &[Option<GpuTimestampTag>],
+    ) -> Result<()> {
+        ResourceDevice::dispatch_compute_batch_tagged(self, dispatches, tags)
     }
     fn write_buffer_batch_profiled(
         &mut self,

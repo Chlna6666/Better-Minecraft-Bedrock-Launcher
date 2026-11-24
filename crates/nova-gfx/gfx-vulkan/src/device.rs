@@ -1709,6 +1709,13 @@ impl VulkanDevice {
     /// Command pools are queue-family typed. A buffer allocated from the
     /// graphics family CANNOT be submitted on a dedicated Compute family.
     fn create_encoder(&mut self, buffer_count: usize, family: u32) -> Result<CommandEncoderId> {
+        self.create_encoder_with_queries(buffer_count, family, buffer_count)
+    }
+
+    fn create_encoder_with_queries(&mut self, buffer_count: usize, family: u32, query_pairs: usize) -> Result<CommandEncoderId> {
+        let query_pairs = query_pairs.max(buffer_count);
+        let query_count = u32::try_from(query_pairs).ok().and_then(|pairs| pairs.checked_mul(2))
+            .ok_or_else(|| Error::InvalidInput("Vulkan GPU trace query count overflow".into()))?;
         let buffer_count = u32::try_from(buffer_count).map_err(|error| {
             Error::InvalidInput(format!("command buffer count overflow: {error}"))
         })?;
@@ -1723,6 +1730,7 @@ impl VulkanDevice {
         if let Some(index) = self.free_command_encoders.iter().position(|encoder| {
             encoder.command_buffers.len() == buffer_count as usize
                 && encoder.queue_family_index == family
+                && encoder.gpu_draw_tags.len() >= query_pairs
         }) {
             return Ok(self
                 .command_encoders
@@ -1749,9 +1757,6 @@ impl VulkanDevice {
             None
         };
         let gpu_trace_query_pool = if gpu_work_clock.is_some() {
-            let query_count = buffer_count.checked_mul(2).ok_or_else(|| {
-                Error::InvalidInput("Vulkan GPU trace query count overflow".into())
-            })?;
             let info = vk::QueryPoolCreateInfo::default()
                 .query_type(vk::QueryType::TIMESTAMP)
                 .query_count(query_count);
@@ -1773,7 +1778,7 @@ impl VulkanDevice {
             gpu_trace_passes: vec![VulkanGpuPass::Unused; command_buffers.len()],
             sample_main_pass: true,
             frame_probe_surface: None,
-            gpu_draw_tags: vec![None; command_buffers.len()],
+            gpu_draw_tags: vec![None; query_pairs],
             gpu_work_tag: None,
             gpu_work_clock,
             frame_submission: None,
@@ -4967,6 +4972,18 @@ impl ResourceDevice for VulkanDevice {
         tag: gfx_core::GpuTimestampTag,
     ) -> Result<()> {
         self.dispatch_buffer_batch_profiled(dispatches, Some(tag))
+    }
+    fn dispatch_compute_batch_tagged(
+        &mut self, dispatches: &[gfx_core::ComputeDispatch<'_>],
+        tags: &[Option<gfx_core::GpuTimestampTag>],
+    ) -> Result<()> {
+        if dispatches.len() != tags.len() {
+            return Err(Error::InvalidInput("compute tag count mismatch".into()));
+        }
+        if tags.iter().all(Option::is_none) {
+            return self.dispatch_buffer_batch(dispatches);
+        }
+        self.dispatch_buffer_batch_impl(dispatches, None, None, tags).map(|_| ())
     }
     fn write_buffer_batch_profiled<'a>(
         &mut self,

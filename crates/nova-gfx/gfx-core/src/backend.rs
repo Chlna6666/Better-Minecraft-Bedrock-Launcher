@@ -351,6 +351,31 @@ pub trait ResourceDevice {
         self.dispatch_compute_batch(dispatches)
     }
 
+    /// Submit ordered dispatches with optional independent per-dispatch GPU timing.
+    /// Backends may combine submissions; untagged dispatches retain their order.
+    fn dispatch_compute_batch_tagged(
+        &mut self,
+        dispatches: &[crate::ComputeDispatch<'_>],
+        tags: &[Option<GpuTimestampTag>],
+    ) -> Result<()> {
+        if dispatches.len() != tags.len() {
+            return Err(crate::Error::InvalidInput("compute tag count mismatch".into()));
+        }
+        if tags.iter().all(Option::is_none) {
+            return self.dispatch_compute_batch(dispatches);
+        }
+        let mut start = 0;
+        for (index, &tag) in tags.iter().enumerate() {
+            if let Some(tag) = tag {
+                if start < index { self.dispatch_compute_batch(&dispatches[start..index])?; }
+                self.dispatch_compute_batch_profiled(&dispatches[index..index + 1], tag)?;
+                start = index + 1;
+            }
+        }
+        if start < dispatches.len() { self.dispatch_compute_batch(&dispatches[start..])?; }
+        Ok(())
+    }
+
     /// Copies a tagged buffer batch. Hardware-capable backends attach
     /// timestamp probes to their existing native upload command list.
     ///

@@ -497,6 +497,16 @@ impl VulkanDevice {
         tag: Option<gfx_core::GpuTimestampTag>,
         native_queue: Option<gfx_core::GpuQueueId>,
     ) -> Result<Option<gfx_core::SubmissionId>> {
+        self.dispatch_buffer_batch_impl(dispatches, tag, native_queue, &[])
+    }
+
+    pub(super) fn dispatch_buffer_batch_impl(
+        &mut self,
+        dispatches: &[ComputeDispatch<'_>],
+        tag: Option<gfx_core::GpuTimestampTag>,
+        native_queue: Option<gfx_core::GpuQueueId>,
+        tags: &[Option<gfx_core::GpuTimestampTag>],
+    ) -> Result<Option<gfx_core::SubmissionId>> {
         let mut calls: Vec<(usize, Arc<Call>)> = Vec::new();
         let mut descriptors = HashMap::<Vec<(u32, BufferId, u64, u64, u8)>, usize>::new();
         for (index, dispatch) in dispatches.iter().enumerate() {
@@ -559,8 +569,10 @@ impl VulkanDevice {
         } else {
             self.graphics_queue_family_index
         };
-        let encoder = self.create_encoder(1, family)?;
+        let tagged_count = calls.iter().filter(|(index, _)| tags.get(*index).is_some_and(Option::is_some)).count();
+        let encoder = self.create_encoder_with_queries(1, family, tagged_count)?;
         let command = self.command_encoders.get(encoder)?.command_buffers[0];
+        let tagged_pool = self.command_encoders.get(encoder)?.gpu_trace_query_pool.filter(|_| tagged_count != 0);
         let query = self
             .command_encoders
             .get(encoder)?
@@ -594,8 +606,18 @@ impl VulkanDevice {
                         0,
                     );
                 }
+                if let Some(pool) = tagged_pool {
+                    let count = (tagged_count as u32) * 2;
+                    if self.host_query_reset { self.device.reset_query_pool(pool, 0, count); }
+                    else { self.device.cmd_reset_query_pool(command, pool, 0, count); }
+                }
+                let mut slot = 0usize;
                 for (index, call) in &calls {
                     let dispatch = &dispatches[*index];
+                    let probe = tagged_pool.zip(tags.get(*index).copied().flatten());
+                    if let Some((pool, _)) = probe {
+                        self.device.cmd_write_timestamp2(command, vk::PipelineStageFlags2::TOP_OF_PIPE, pool, slot as u32 * 2);
+                    }
                     let mut before = Vec::new();
                     let mut after = Vec::new();
                     for binding in dispatch.bindings {
@@ -674,6 +696,11 @@ impl VulkanDevice {
                 &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
                     .memory_barriers(&[]).buffer_memory_barriers(&after).image_memory_barriers(&[]),
             );
+                    }
+                    if let Some((pool, tag)) = probe {
+                        self.device.cmd_write_timestamp2(command, vk::PipelineStageFlags2::BOTTOM_OF_PIPE, pool, slot as u32 * 2 + 1);
+                        self.command_encoders.get_mut(encoder)?.gpu_draw_tags[slot] = Some(tag);
+                        slot += 1;
                     }
                 }
                 if let Some(query) = query {
