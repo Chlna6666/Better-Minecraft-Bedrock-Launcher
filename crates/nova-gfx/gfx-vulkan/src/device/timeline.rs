@@ -40,6 +40,13 @@ impl QueueTimeline {
 
     pub(super) fn last(&self) -> u64 { self.last.get() }
 
+    pub(super) fn is_complete(&self, value: u64) -> Result<bool> {
+        // SAFETY: this device owns the persistent semaphore until teardown.
+        let completed = unsafe { self.device.get_semaphore_counter_value(self.semaphore) }
+            .map_err(VulkanError::from)?;
+        Ok(completed >= value)
+    }
+
     pub(super) fn wait_point(&self, value: u64) -> TimelinePoint {
         TimelinePoint { device: self.device.clone(), semaphore: self.semaphore, value }
     }

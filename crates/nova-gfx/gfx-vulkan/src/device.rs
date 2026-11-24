@@ -747,9 +747,18 @@ impl VulkanDevice {
     /// Returns [`Error`] when a swapchain handle is invalid.
     pub fn poll_gpu_work(&self) -> Result<bool> {
         let mut pending = false;
+        let mut failure = None;
         self.submissions.for_each_live(|submission| {
-            pending |= !fence_is_complete(&self.device, submission.fence);
+            if failure.is_none() {
+                match self.submission_is_complete(submission) {
+                    Ok(complete) => pending |= !complete,
+                    Err(error) => failure = Some(error),
+                }
+            }
         });
+        if let Some(error) = failure {
+            return Err(error);
+        }
         if !pending {
             self.swapchains.for_each_live(|swapchain| {
                 for &fence in &swapchain.in_flight_fences {
@@ -3039,16 +3048,27 @@ impl VulkanDevice {
         self.submit_encoder(encoder)
     }
 
+    fn submission_is_complete(&self, record: &VulkanSubmission) -> Result<bool> {
+        if record.fence != vk::Fence::null() {
+            // SAFETY: the owner holds the live fence, including any WSI slot.
+            return unsafe { self.device.get_fence_status(record.fence) }
+                .map_err(|error| VulkanError::from(error).into());
+        }
+        if let Some(value) = record.timeline_value {
+            let timeline = self.timeline_for_queue(record.queue).ok_or_else(|| {
+                Error::Backend("Vulkan submission lost its queue timeline".into())
+            })?;
+            return timeline.is_complete(value);
+        }
+        // A recycled, successful encoder has neither a fence nor a pending
+        // timeline point. Device-loss retirement never creates this state.
+        Ok(true)
+    }
+
     fn poll_submission(&mut self, submission: SubmissionId) -> Result<SubmissionStatus> {
         self.poll_cleanup();
         let submission_resource = self.submissions.get(submission)?;
-        // Unlike resource teardown, a device loss cannot prove successful GPU work.
-        let complete = if submission_resource.fence == vk::Fence::null() {
-            true
-        } else {
-            unsafe { self.device.get_fence_status(submission_resource.fence) }
-                .map_err(VulkanError::from)?
-        };
+        let complete = self.submission_is_complete(submission_resource)?;
         if complete {
             self.submission_wakes.cancel(submission);
             let completed = self.submissions.take(submission)?;
@@ -3064,11 +3084,17 @@ impl VulkanDevice {
     }
 
     fn wait_submission(&mut self, submission: SubmissionId) -> Result<()> {
-        let fence = self.submissions.get(submission)?.fence;
+        let record = self.submissions.get(submission)?;
+        let fence = record.fence;
         // SAFETY: Fence belongs to this device and remains live until its owning resource is destroyed.
         if fence != vk::Fence::null() {
             unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }
                 .map_err(VulkanError::from)?;
+        } else if let Some(value) = record.timeline_value {
+            let timeline = self.timeline_for_queue(record.queue).ok_or_else(|| {
+                Error::Backend("Vulkan submission lost its queue timeline".into())
+            })?;
+            timeline.wait_point(value).wait().map_err(VulkanError::from)?;
         }
         self.submission_wakes.cancel(submission);
         let completed = self.submissions.take(submission)?;
@@ -5096,6 +5122,37 @@ impl VulkanDevice {
     /// GpuQueueId::PRIMARY reserves (0,0) even when the real Vulkan graphics
     /// family isn't zero. Namespace dedicated-family IDs by adding one to
     /// the physical family index, avoiding accidental alias with PRIMARY.
+    fn checkpoint_native_queue(
+        &mut self, native: vk::Queue, queue: gfx_core::GpuQueueId,
+    ) -> Result<SubmissionId> {
+        // A checkpoint needs no command-pool or WSI retirement proof. The
+        // device-owned timeline is sufficient for the public completion ID.
+        if let Some(timeline) = self.timeline_for_queue(queue) {
+            timeline.submit(&self.device, native, &[], &[], &[],
+                vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
+            let value = timeline.last();
+            return Ok(self.submissions.insert(VulkanSubmission {
+                fence: vk::Fence::null(),
+                queue,
+                owned_by_submission: false,
+                timeline_value: Some(value),
+            }));
+        }
+        let fence = create_fence(&self.device, false)?;
+        if let Err(error) = submit::binary(&self.device, native, &[], &[], &[],
+            vk::PipelineStageFlags2::ALL_COMMANDS, fence) {
+            // SAFETY: submission failed and no queued operation owns the fence.
+            unsafe { self.device.destroy_fence(fence, None) };
+            return Err(error);
+        }
+        Ok(self.submissions.insert(VulkanSubmission {
+            fence,
+            queue,
+            owned_by_submission: true,
+            timeline_value: None,
+        }))
+    }
+
     fn timeline_for_queue(&self, queue: gfx_core::GpuQueueId) -> Option<&timeline::QueueTimeline> {
         if queue == gfx_core::GpuQueueId::PRIMARY {
             self.primary_timeline.as_ref()
@@ -5150,25 +5207,7 @@ impl SubmissionDevice for VulkanDevice {
                 "Vulkan checkpoint target is not an active native queue".into(),
             ));
         };
-        let fence = create_fence(&self.device, false)?;
-        let result = if let Some(timeline) = &self.secondary_timeline {
-            timeline.submit(&self.device, secondary, &[], &[], &[],
-                vk::PipelineStageFlags2::ALL_COMMANDS, fence)
-        } else {
-            submit::binary(&self.device, secondary, &[], &[], &[],
-                vk::PipelineStageFlags2::ALL_COMMANDS, fence)
-        };
-        if let Err(error) = result {
-            // SAFETY: a failed native submission does not own the fence.
-            unsafe { self.device.destroy_fence(fence, None) };
-            return Err(error);
-        }
-        Ok(self.submissions.insert(VulkanSubmission {
-            fence,
-            queue,
-            owned_by_submission: true,
-            timeline_value: self.secondary_timeline.as_ref().map(|timeline| timeline.last()),
-        }))
+        self.checkpoint_native_queue(secondary, queue)
     }
 
     fn submit_compute(&mut self, submit: gfx_core::ComputeSubmit<'_>) -> Result<SubmissionId> {
@@ -5296,22 +5335,7 @@ impl SubmissionDevice for VulkanDevice {
     }
 
     fn checkpoint_ordered_queue(&mut self, _stage: gfx_core::GpuWorkStage) -> Result<SubmissionId> {
-        // A fence-only submission on the PRIMARY graphics queue follows all
-        // preceding Compute, Copy and Graphics work. No host wait, command
-        // encoder, second queue, semaphore or frame-slot allocation is needed.
-        let fence = create_fence(&self.device, false)?;
-        // Reuse the normal primary submission path, including timeline signal.
-        if let Err(error) = self.submit_command_buffers(&[], &[], &[], fence) {
-            // SAFETY: A failed queue_submit did not enqueue this fence.
-            unsafe { self.device.destroy_fence(fence, None) };
-            return Err(error);
-        }
-        Ok(self.submissions.insert(VulkanSubmission {
-            fence,
-            queue: gfx_core::GpuQueueId::PRIMARY,
-            owned_by_submission: true,
-            timeline_value: self.primary_timeline.as_ref().map(|timeline| timeline.last()),
-        }))
+        self.checkpoint_native_queue(self.graphics_queue, gfx_core::GpuQueueId::PRIMARY)
     }
 
     fn wait_queue_idle(&mut self) -> Result<()> {
@@ -5342,10 +5366,7 @@ impl SubmissionDevice for VulkanDevice {
     ) -> Result<bool> {
         self.poll_cleanup();
         let record = self.submissions.get(submission)?;
-        // SAFETY: owner-side cleanup updated any recycled fence to null.
-        if record.fence == vk::Fence::null() || unsafe { self.device.get_fence_status(record.fence) }
-            .map_err(VulkanError::from)?
-        {
+        if self.submission_is_complete(record)? {
             self.submission_wakes.cancel(submission);
             callback();
             return Ok(true);
