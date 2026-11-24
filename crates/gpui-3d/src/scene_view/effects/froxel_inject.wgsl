@@ -21,12 +21,7 @@ fn shadow_matrix(cascade:u32)->mat4x4<f32> {
     if (cascade == 1u) { return frame.light_matrix_middle; }
     return frame.light_matrix_far;
 }
-fn shadow_visibility(p:vec3<f32>, distance:f32)->f32 {
-    if (frame.display_target.z <= 0.0 || frame.sun_color.w <= 0.0) {
-        return 1.0;
-    }
-    let cascade = select(select(2u,1u,distance < frame.cascade_splits.y),
-                         0u,distance < frame.cascade_splits.x);
+fn shadow_cascade_visibility(p:vec3<f32>, cascade:u32)->f32 {
     let light = shadow_matrix(cascade);
     let clip = light * vec4<f32>(p,1.0);
     if (clip.w <= 0.0) { return 1.0; }
@@ -45,7 +40,35 @@ fn shadow_visibility(p:vec3<f32>, distance:f32)->f32 {
             visible += select(0.0,1.0,q.z-bias <= shadow_depth(cascade,sample_at));
         }
     }
-    return visible / 9.0;
+    let edge = min(min(uv.x,1.0-uv.x),min(uv.y,1.0-uv.y));
+    let coverage = smoothstep(0.0,0.055,edge)*smoothstep(0.0,0.025,min(q.z,1.0-q.z));
+    return mix(1.0,visible/9.0,coverage);
+}
+fn shadow_visibility(p:vec3<f32>, distance:f32)->f32 {
+    if (frame.display_target.z <= 0.0 || frame.sun_color.w <= 0.0) { return 1.0; }
+    let splits = frame.cascade_splits;
+    let fade = splits.w;
+    if (distance >= splits.z + fade*2.0) { return 1.0; }
+    // Match the surface CSM selection, overlap, edge fade and strength.
+    // Only overlap froxels pay for a second cascade's PCF.
+    var value = 1.0;
+    if (distance < splits.x-fade) {
+        value = shadow_cascade_visibility(p,0u);
+    } else if (distance < splits.x+fade) {
+        value = mix(shadow_cascade_visibility(p,0u),shadow_cascade_visibility(p,1u),
+            smoothstep(splits.x-fade,splits.x+fade,distance));
+    } else if (distance < splits.y-fade) {
+        value = shadow_cascade_visibility(p,1u);
+    } else if (distance < splits.y+fade) {
+        value = mix(shadow_cascade_visibility(p,1u),shadow_cascade_visibility(p,2u),
+            smoothstep(splits.y-fade,splits.y+fade,distance));
+    } else if (distance < splits.z) {
+        value = shadow_cascade_visibility(p,2u);
+    } else {
+        value = mix(shadow_cascade_visibility(p,2u),1.0,
+            smoothstep(splits.z,splits.z+fade*2.0,distance));
+    }
+    return mix(1.0,value,frame.display_target.z);
 }
 fn local_scattering(p:vec3<f32>, screen_uv:vec2<f32>)->vec3<f32> {
     if (frame.light_meta.x == 0u) { return vec3<f32>(0.0); }

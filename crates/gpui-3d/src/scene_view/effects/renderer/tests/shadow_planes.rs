@@ -5,16 +5,22 @@ pub(super) fn verify_shadow_coverage<D: Device + TextureTransferDevice>(
     device: &mut D,
     renderer: &mut EffectsRenderer,
     context: &RendererExtensionContext,
-    target: &Target,
-    depth: &Target,
 ) {
+    // The last CSM receiver split is 296 world units, with a 16-unit
+    // fade-out. A 240-unit viewport cannot reach that boundary at all.
+    // Cover both sides and resolve the fade with enough native pixels.
+    let extent = Extent2d::new(256, 256).unwrap();
+    let target = Target::create(device, extent, Format::Rgba8Unorm, false, 1).unwrap();
+    let depth = Target::create(device, extent, Format::Depth32Float, true, 1).unwrap();
+    let context = RendererExtensionContext::for_target(
+        D::BACKEND_KIND, context.render_pass(), Format::Rgba8Unorm, extent);
     let mut scene = Scene::new();
     let mut material = Material::new();
     material.base_color = [0.18, 0.18, 0.18, 1.];
     material.roughness = 1.;
     material.double_sided = true;
     let material = Arc::new(material);
-    let mesh = Arc::new(Mesh::plane(512., 512.).unwrap());
+    let mesh = Arc::new(Mesh::plane(1024., 1024.).unwrap());
     for height in [0., 20.] {
         scene
             .insert(
@@ -32,7 +38,7 @@ pub(super) fn verify_shadow_coverage<D: Device + TextureTransferDevice>(
     // The canopy is behind the main camera but covers the entire shadow map.
     let view = SceneView::new(
         Arc::new(scene),
-        Camera::orthographic(Vec3::new(0., 4., 0.), Vec3::ZERO, Vec3::Z, 240., 0.1, 1000.),
+        Camera::orthographic(Vec3::new(0., 4., 0.), Vec3::ZERO, Vec3::Z, 680., 0.1, 1000.),
     )
     .with_voxel_shader()
     .with_voxel_shading(VoxelShading {
@@ -52,12 +58,15 @@ pub(super) fn verify_shadow_coverage<D: Device + TextureTransferDevice>(
         ..ScreenEffects::default()
     }))
     .unwrap();
-    let pixels = draw(device, renderer, context, &view, target, depth);
-    let row = (0..32)
-        .map(|x| pixels[(32 * 64 + x) * 4])
+    let pixels = draw(device, renderer, &context, &view, &target, &depth);
+    let row = (0..128)
+        .map(|x| pixels[(128 * 256 + x) * 4])
         .collect::<Vec<_>>();
     let outside = row[0];
-    let inside = row[31];
+    let inside = row[127];
+    eprintln!("NOVA_CSM_COVERAGE outside={outside} inside={inside} row={row:?}");
+    target.destroy(device).unwrap();
+    depth.destroy(device).unwrap();
     assert!(
         outside > inside + 30,
         "coverage fixture needs a shadow: {row:?}"

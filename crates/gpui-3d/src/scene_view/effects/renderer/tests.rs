@@ -226,7 +226,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
     assert!(dark_center[0].abs_diff(dark_center[1]) < 10,
         "removed red emitter must not leak through retained frame: {dark_center:?}");
     shadow_planes::verify_receiver_planes(&mut device, &mut renderer, &context, &target, &depth);
-    shadow_planes::verify_shadow_coverage(&mut device, &mut renderer, &context, &target, &depth);
+    shadow_planes::verify_shadow_coverage(&mut device, &mut renderer, &context);
     verify_shadows(&mut device, &mut renderer, &context, &target, &depth);
     verify_shadow_retry(&mut device, &mut renderer, &context, &view);
     verify_sky_transmission(&mut device, &mut renderer, &context, &view, &target, &depth);
