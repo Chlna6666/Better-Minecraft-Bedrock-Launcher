@@ -104,7 +104,7 @@ impl Window {
             return None;
         }
         let delta = bounds.origin - range.bounds.origin;
-        if delta != Point::default() && !self.can_translate_fixed_view(range, bounds, delta) {
+        if delta != Point::default() && !self.can_translate_static_range(range, bounds, delta) {
             return None;
         }
         Some((entry.owner, super::frame::RetainedReplayRanges {
@@ -118,7 +118,7 @@ impl Window {
     // static quads under an unchanged rectangular ancestor clip, with all
     // pixels inside both slot positions. The paint list must keep its exact
     // cardinality, so a newly clipped or newly visible primitive is a miss.
-    fn can_translate_fixed_view(
+    pub(super) fn can_translate_static_range(
         &self,
         range: &super::frame::RetainedElementRange,
         bounds: Bounds<Pixels>,
@@ -176,7 +176,7 @@ impl Window {
         })
     }
 
-    pub(crate) fn reuse_fixed_view_prepaint(
+    pub(crate) fn reuse_prepaint_at(
         &mut self,
         range: Range<PrepaintStateIndex>,
         delta: Point<Pixels>,

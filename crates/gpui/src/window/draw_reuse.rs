@@ -743,9 +743,9 @@ impl Window {
 
     /// Returns a previously retained element range that is safe to replay in the current frame.
     ///
-    /// Targeted retained frames keep the existing structural-identity rules. Generic dirty frames
-    /// are accepted only for side-effect-free plain text whose exact output key matches the previous
-    /// frame; this never broadens anonymous replay to interactive elements.
+    /// Generic dirty frames require exact plain-text output or a static row
+    /// with matching layout and semantic proofs. Row translation never reuses
+    /// geometry-capturing callbacks, clips or GPU chunk ordering.
     pub(crate) fn reusable_retained_element(
         &self,
         retained_id: &GlobalElementId,
@@ -753,7 +753,7 @@ impl Window {
         layout_id: LayoutId,
         layout_fingerprint: Option<u64>,
         plain_text_key: Option<&crate::element::RetainedPlainTextKey>,
-    ) -> Option<RetainedReplayRanges> {
+    ) -> Option<(RetainedReplayRanges, Point<Pixels>)> {
         if self.force_view_cache_refresh() {
             return None;
         }
@@ -802,6 +802,15 @@ impl Window {
                 current == previous && plain_text_range_is_side_effect_free(retained)
             });
         let div_semantics_proven = self.retained_div_semantics_match(retained, layout_id);
+        let static_row_proven = retained_id.0.iter().any(|segment| {
+            matches!(segment, ElementId::NamedInteger(name, _)
+                if matches!(name.as_str(), "__gpui_retained_list_item" | "__gpui_retained_uniform_row"))
+        }) && retained.identity_stable
+            && retained.subtree_stable
+            && div_semantics_proven
+            && layout_fingerprint.is_some()
+            && retained.layout_fingerprint == layout_fingerprint
+            && !retained_range_has_stateful_effects(retained);
 
         // ReconcileSubtree means descendants may have changed even when this element's own bounds
         // are stable. Replay is admitted only by two independent proofs: recursive layout identity
@@ -835,11 +844,11 @@ impl Window {
             {
                 return None;
             }
-        } else if !plain_text_proven {
+        } else if !plain_text_proven && !static_row_proven {
             return None;
         }
 
-        if retained.bounds != bounds
+        if retained.bounds.size != bounds.size
             || !self.can_reuse_prepaint(&retained.prepaint_range)
             || !self.can_reuse_paint(&retained.paint_range)
             || !retained_metadata_range_is_valid(
@@ -849,11 +858,17 @@ impl Window {
         {
             return None;
         }
-        Some(RetainedReplayRanges {
+        let delta = bounds.origin - retained.bounds.origin;
+        if (delta != Point::default() || (!targeted_replay && !plain_text_proven))
+            && (!static_row_proven || !self.can_translate_static_range(retained, bounds, delta))
+        {
+            return None;
+        }
+        Some((RetainedReplayRanges {
             prepaint_range: retained.prepaint_range.clone(),
             paint_range: retained.paint_range.clone(),
             metadata_range: retained.metadata_range.clone(),
-        })
+        }, delta))
     }
 
     /// Number of post-order reconciliation metadata records emitted into the current frame.
@@ -1120,13 +1135,19 @@ fn plain_text_range_is_side_effect_free(retained: &RetainedElementRange) -> bool
 }
 
 fn retained_range_has_frame_interactivity(retained: &RetainedElementRange) -> bool {
+    retained.prepaint_range.start.dispatch_tree_index != retained.prepaint_range.end.dispatch_tree_index
+        || retained.prepaint_range.start.hitboxes_index != retained.prepaint_range.end.hitboxes_index
+        || retained_range_has_stateful_effects(retained)
+}
+
+// Dispatch nodes and inert hitboxes alone do not capture old coordinates.
+// All other stateful/interactive side effects are a translation barrier.
+fn retained_range_has_stateful_effects(retained: &RetainedElementRange) -> bool {
     let prepaint = &retained.prepaint_range;
     let paint = &retained.paint_range;
 
-    prepaint.start.hitboxes_index != prepaint.end.hitboxes_index
-        || prepaint.start.tooltips_index != prepaint.end.tooltips_index
+    prepaint.start.tooltips_index != prepaint.end.tooltips_index
         || prepaint.start.deferred_draws_index != prepaint.end.deferred_draws_index
-        || prepaint.start.dispatch_tree_index != prepaint.end.dispatch_tree_index
         || prepaint.start.accessed_element_states_index
             != prepaint.end.accessed_element_states_index
         || paint.start.mouse_listeners_index != paint.end.mouse_listeners_index

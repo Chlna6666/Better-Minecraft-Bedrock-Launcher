@@ -319,12 +319,13 @@ fn try_reuse_retained_element(
     Range<PaintIndex>,
     Range<usize>,
     Range<PrepaintStateIndex>,
+    Point<Pixels>,
 )> {
     if !outer_replay_safe || (!identity_stable && plain_text_key.is_none()) {
         return None;
     }
 
-    let retained = window.with_retained_element_segment(retained_segment, |window| {
+    let (retained, translation) = window.with_retained_element_segment(retained_segment, |window| {
         window.reusable_retained_element(
             retained_id,
             bounds,
@@ -336,7 +337,7 @@ fn try_reuse_retained_element(
 
     let source_prepaint_range = retained.prepaint_range.clone();
     let prepaint_start = window.prepaint_index();
-    if !window.reuse_prepaint(source_prepaint_range.clone()) {
+    if !window.reuse_prepaint_at(source_prepaint_range.clone(), translation) {
         return None;
     }
     let prepaint_end = window.prepaint_index();
@@ -346,6 +347,7 @@ fn try_reuse_retained_element(
         retained.paint_range,
         retained.metadata_range,
         prepaint_start..prepaint_end,
+        translation,
     ))
 }
 
@@ -638,7 +640,7 @@ impl<E: Element> Drawable<E> {
                         &retained_id, bounds, layout_fingerprint,
                     ) {
                         let prepaint_start = window.prepaint_index();
-                        if window.reuse_fixed_view_prepaint(retained.prepaint_range.clone(), translation) {
+                        if window.reuse_prepaint_at(retained.prepaint_range.clone(), translation) {
                             self.phase = ElementDrawPhase::Retained {
                                 view_owner: Some(owner),
                                 translation,
@@ -657,6 +659,7 @@ impl<E: Element> Drawable<E> {
                     source_paint_range,
                     source_metadata_range,
                     prepaint_range,
+                    translation,
                 )) = try_reuse_retained_element(
                     E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay(),
                     identity_stable,
@@ -670,7 +673,7 @@ impl<E: Element> Drawable<E> {
                 ) {
                     self.phase = ElementDrawPhase::Retained {
                         view_owner: None,
-                        translation: Point::default(),
+                        translation,
                         bounds,
                         source_prepaint_range,
                         source_paint_range,
