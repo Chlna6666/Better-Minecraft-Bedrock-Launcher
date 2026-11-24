@@ -215,6 +215,16 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
         renderer.scenes[&view.id].retired.is_empty(),
         "submitted attachments retire without an idle notification"
     );
+    // Fixed camera, same draw count, replacement of the last light. A
+    // Scene publication must update the frame light count even without
+    // camera or shading changes.
+    let mut without_light = view.scene.fork();
+    without_light.remove(light_id).unwrap();
+    let no_light = draw(&mut device, &mut renderer, &context,
+        &view.with_scene(Arc::new(without_light)), &target, &depth);
+    let dark_center = &no_light[(32 * 64 + 32) * 4..][..4];
+    assert!(dark_center[0].abs_diff(dark_center[1]) < 10,
+        "removed red emitter must not leak through retained frame: {dark_center:?}");
     shadow_planes::verify_receiver_planes(&mut device, &mut renderer, &context, &target, &depth);
     shadow_planes::verify_shadow_coverage(&mut device, &mut renderer, &context, &target, &depth);
     verify_shadows(&mut device, &mut renderer, &context, &target, &depth);

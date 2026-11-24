@@ -1272,7 +1272,10 @@ impl SceneResources {
         let wire_changed = self
             .frame_state
             .is_some_and(|previous| previous.projection.voxel_shading().display != shading.display);
-        if frame_changed {
+        // FrameParams also contains scene-dependent light count and shadow
+        // data, even when the camera/projection did not move. The byte cache
+        // inside sync_frame_params still suppresses identical uploads.
+        if frame_changed || draw_state_changed || shadow_created || node_mask_changed || culling_bounds_changed {
             self.sync_frame_params(device, projection, scene_view.camera)?;
             self.frame_state = Some(FrameState {
                 camera: scene_view.camera,
@@ -2682,7 +2685,11 @@ impl SceneResources {
                 || replace_slot_map,
             voxel_shader,
             defer_binding_cleanup,
-            true,
+            // Equal draw/batch counts are not proof of equal source bindings.
+            // This is the full draw-table update, not a texture-only update:
+            // validate the per-batch identities, retaining positional/cache
+            // hits without reusing stale mesh or generated part metadata.
+            false,
         ) {
             self.draw_buffer = old_draw;
             self.draw_capacity = old_draw_capacity;
