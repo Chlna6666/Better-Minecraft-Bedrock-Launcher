@@ -68,6 +68,14 @@ impl ResourceDevice for OpenGlDevice {
         }
     }
 
+    fn sample_zero_position(&self, sample_count: u32) -> Option<[f32; 2]> {
+        match sample_count {
+            1 => Some([0.5, 0.5]),
+            4 => self.sample_zero_4x,
+            _ => None,
+        }
+    }
+
     fn texture_array_capabilities(&self) -> TextureArrayCapabilities {
         TextureArrayCapabilities {
             array_resources: true,

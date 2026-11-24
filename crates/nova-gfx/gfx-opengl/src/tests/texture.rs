@@ -2,6 +2,22 @@ use super::*;
 
 #[test]
 #[ignore = "requires Windows native OpenGL 4.5 driver"]
+fn fixed_msaa_sample_zero_is_cached_and_finite() {
+    let device = open_device();
+    assert_eq!(device.sample_zero_position(1), Some([0.5, 0.5]));
+    if let Some(position) = device.sample_zero_position(4) {
+        assert!(device.multisample_capabilities().max_sample_count >= 4);
+        assert!(position.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)));
+        assert_eq!(device.sample_zero_position(4), Some(position));
+        eprintln!("NOVA_GL_SAMPLE_ZERO_4X={position:?}");
+    } else {
+        eprintln!("NOVA_GL_SAMPLE_ZERO_4X=unavailable");
+    }
+    assert_eq!(device.sample_zero_position(3), None);
+}
+
+#[test]
+#[ignore = "requires Windows native OpenGL 4.5 driver"]
 fn sampled_mip_upload_and_fixed_sampler_reach_native_pixels() {
     let mut device = open_device();
     let (target, view) = texture(

@@ -97,6 +97,7 @@ pub struct OpenGlDevice {
     pub(crate) texture_array_limits: TextureArrayCapabilities,
     pub(crate) max_color_attachments_cap: u32,
     pub(crate) max_samples_cap: u32,
+    pub(crate) sample_zero_4x: Option<[f32; 2]>,
     pub(crate) compute: crate::compute::State,
     pub(crate) binding_cache: RefCell<crate::bindings::Cache>,
     // Last field: the config's native DC must outlive every GL/glutin object.
@@ -111,6 +112,69 @@ pub(crate) const PARAMETER_BUFFER: u32 = 0x80EE;
 pub(crate) struct IndirectCountFns {
     pub arrays: unsafe extern "system" fn(u32, *const std::ffi::c_void, isize, i32, i32),
     pub elements: unsafe extern "system" fn(u32, u32, *const std::ffi::c_void, isize, i32, i32),
+}
+
+// A fixed-location multisample texture is required for a device-wide
+// sample-position contract. GL_SAMPLES and glGetMultisamplefv refer to the
+// currently bound draw framebuffer, not to the device's maximum sample count.
+// Probe the exact HDR/depth formats used by GPUI 3D, once on the owner context
+// at device creation. No rendering, readback or per-frame query is involved.
+fn probe_sample_zero_4x(
+    gl: &glow::Context,
+    display: &Display,
+    framebuffer: glow::NativeFramebuffer,
+) -> Option<[f32; 2]> {
+    let proc = display.get_proc_address(c"glGetMultisamplefv");
+    if proc.is_null() { return None; }
+    // SAFETY: OpenGL 4.5 core context is current; this is the GL API signature.
+    let get_sample: unsafe extern "system" fn(u32, u32, *mut f32) =
+        unsafe { std::mem::transmute(proc) };
+    // SAFETY: the newly allocated owner FBO is empty; all resources here are
+    // temporary and deleted even when this format combination is unavailable.
+    unsafe {
+        let color = gl.create_texture().ok()?;
+        let depth = match gl.create_texture() {
+            Ok(texture) => texture,
+            Err(_) => { gl.delete_texture(color); return None; }
+        };
+        gl.bind_texture(glow::TEXTURE_2D_MULTISAMPLE, Some(color));
+        gl.tex_storage_2d_multisample(glow::TEXTURE_2D_MULTISAMPLE, 4, glow::RGBA16F, 1, 1, true);
+        gl.bind_texture(glow::TEXTURE_2D_MULTISAMPLE, Some(depth));
+        gl.tex_storage_2d_multisample(glow::TEXTURE_2D_MULTISAMPLE, 4, glow::DEPTH_COMPONENT32F, 1, 1, true);
+        gl.bind_texture(glow::TEXTURE_2D_MULTISAMPLE, None);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
+        gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D_MULTISAMPLE, Some(color), 0);
+        gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT,
+            glow::TEXTURE_2D_MULTISAMPLE, Some(depth), 0);
+        let mut sample = [f32::NAN; 2];
+        if gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE
+            && gl.get_parameter_i32(glow::SAMPLES) == 4
+        {
+            get_sample(glow::SAMPLE_POSITION, 0, sample.as_mut_ptr());
+        }
+        gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D_MULTISAMPLE, None, 0);
+        gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT,
+            glow::TEXTURE_2D_MULTISAMPLE, None, 0);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        gl.delete_texture(color);
+        gl.delete_texture(depth);
+        // Unsupported native format combinations must not poison later GL
+        // commands. This is the only error drain in this startup probe.
+        let mut failed = false;
+        loop {
+            let error = gl.get_error();
+            if error == glow::NO_ERROR { break; }
+            failed = true;
+            if error == glow::CONTEXT_LOST { break; }
+        }
+        // ClipControl(UPPER_LEFT, ZERO_TO_ONE) maps logical top row to GL
+        // framebuffer row zero. The sample offset is in that same row space;
+        // do not flip Y a second time.
+        (!failed && sample.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)))
+            .then_some(sample)
+    }
 }
 
 impl OpenGlDevice {
@@ -274,6 +338,9 @@ impl OpenGlDevice {
             attachments.min(draw_buffers)
         };
         let max_samples_cap = unsafe { gl.get_parameter_i32(glow::MAX_SAMPLES).max(1) as u32 };
+        let sample_zero_4x = if max_samples_cap >= 4 {
+            probe_sample_zero_4x(&gl, &display, framebuffer)
+        } else { None };
         log::info!("created native OpenGL 4.5 device: renderer={name}");
         Ok(Self {
             binding_cache: RefCell::new(crate::bindings::Cache::default()),
@@ -328,6 +395,7 @@ impl OpenGlDevice {
             texture_array_limits,
             max_color_attachments_cap,
             max_samples_cap,
+            sample_zero_4x,
             compute,
             #[cfg(target_os = "windows")]
             _bootstrap: bootstrap,
