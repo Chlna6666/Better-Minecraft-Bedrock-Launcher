@@ -400,11 +400,25 @@ mod macos {
         let mut builder = cbindgen::Builder::new();
 
         let src_paths = [
-            crate_dir.join("src/scene.rs"),
-            crate_dir.join("src/geometry.rs"),
-            crate_dir.join("src/color.rs"),
-            crate_dir.join("src/window.rs"),
-            crate_dir.join("src/platform.rs"),
+            // The Metal ABI types now live in the split foundation,
+            // geometry, primitive and platform modules. Feed the defining
+            // files directly instead of stale pre-split module paths.
+            crate_dir.join("src/geometry/bounds/value.rs"),
+            crate_dir.join("src/geometry/corner.rs"),
+            crate_dir.join("src/geometry/edge.rs"),
+            crate_dir.join("src/geometry/size.rs"),
+            crate_dir.join("src/geometry/point.rs"),
+            crate_dir.join("src/geometry/pixels.rs"),
+            crate_dir.join("src/geometry/scaled_pixels.rs"),
+            crate_dir.join("src/geometry/device_pixels.rs"),
+            crate_dir.join("src/foundation/color/hsla.rs"),
+            crate_dir.join("src/foundation/color/rgba.rs"),
+            crate_dir.join("src/foundation/color/background.rs"),
+            crate_dir.join("src/primitives.rs"),
+            crate_dir.join("src/primitives/path.rs"),
+            crate_dir.join("src/primitives/transform.rs"),
+            crate_dir.join("src/window/content_mask.rs"),
+            crate_dir.join("src/platform/atlas.rs"),
             crate_dir.join("src/platform/mac/metal_renderer.rs"),
         ];
         for src_path in src_paths {

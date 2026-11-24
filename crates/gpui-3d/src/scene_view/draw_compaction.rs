@@ -4,6 +4,7 @@
 use gfx_core::*;
 use gpui::{ExtensionDevice, RendererExtensionContext};
 use crate::NativeOffscreenPass;
+use std::sync::Arc;
 
 const MAX_RUN: usize = 256;
 const MIN_RUN: usize = 128;
@@ -11,6 +12,7 @@ const MIN_RUN: usize = 128;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Run {
     command: usize,
+    // Index into the immutable gather list, not into the argument buffer.
     source: u32,
     count: u32,
     destination: u32,
@@ -21,6 +23,7 @@ struct Plan {
     source_bytes: u64,
     records: u32,
     runs: Vec<Run>,
+    gather: Vec<u32>,
 }
 
 fn plan(commands: &[RenderCommand], limit: u32) -> Option<Plan> {
@@ -30,6 +33,7 @@ fn plan(commands: &[RenderCommand], limit: u32) -> Option<Plan> {
     let mut source_bytes = 0;
     let mut records = 0u32;
     let mut runs = Vec::new();
+    let mut gather = Vec::new();
     let mut index = 0;
     while index < commands.len() {
         let RenderCommand::DrawIndirect(first) = &commands[index] else {
@@ -45,22 +49,25 @@ fn plan(commands: &[RenderCommand], limit: u32) -> Option<Plan> {
             let Some(RenderCommand::DrawIndirect(next)) = commands.get(index + len) else { break; };
             if next.arguments != first.arguments || next.pipeline != first.pipeline
                 || next.bind_groups != first.bind_groups || next.scissor != first.scissor
-                || first.offset.checked_add(len as u64 * 16) != Some(next.offset)
+                || next.offset % 16 != 0
             { break; }
             len += 1;
         }
         if len >= MIN_RUN {
-            let start = u32::try_from(first.offset / 16).ok()?;
-            let end = start.checked_add(len as u32)?;
-            let dest = records;
+            let start = records;
             records = records.checked_add(len as u32)?;
             source = Some(first.arguments);
-            source_bytes = source_bytes.max(u64::from(end) * 16);
-            runs.push(Run { command: index, source: start, count: len as u32, destination: dest });
+            for command in &commands[index..index + len] {
+                let RenderCommand::DrawIndirect(draw) = command else { unreachable!() };
+                let slot = u32::try_from(draw.offset / 16).ok()?;
+                source_bytes = source_bytes.max((u64::from(slot) + 1) * 16);
+                gather.push(slot);
+            }
+            runs.push(Run { command: index, source: start, count: len as u32, destination: start });
         }
         index += len;
     }
-    Some(Plan { source: source?, source_bytes, records, runs })
+    Some(Plan { source: source?, source_bytes, records, runs, gather })
 }
 
 struct Scratch {
@@ -68,9 +75,25 @@ struct Scratch {
     sizes: [u64; 3],
 }
 
+struct Prepared {
+    commands: Vec<RenderCommand>,
+    counts: Vec<IndirectCountBinding>,
+    compute: [ComputeBufferBinding; 4],
+    groups: u32,
+}
+
+// Strong Arc identity prevents address reuse and avoids hashing/scanning
+// the immutable command list on a camera-only update. One bounded cache
+// also retains the negative result for non-compaction-friendly scenes.
+struct Cached {
+    source: Arc<[RenderCommand]>,
+    prepared: Option<Prepared>,
+}
+
 pub(super) struct Compactor {
     shader: ShaderModuleId,
     scratch: Option<Scratch>,
+    cached: Option<Cached>,
 }
 
 impl Compactor {
@@ -88,7 +111,7 @@ impl Compactor {
             .ok().and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d draw compaction".into()), binary,
             }).ok())?;
-        Some(Self { shader, scratch: None })
+        Some(Self { shader, scratch: None, cached: None })
     }
 
     fn reserve(&mut self, device: &mut dyn ExtensionDevice, sizes: [u64; 3]) -> Result<[BufferId; 3]> {
@@ -124,38 +147,40 @@ impl Compactor {
         Ok(buffers)
     }
 
-    pub(super) fn submit(&mut self, device: &mut dyn ExtensionDevice, pass: &NativeOffscreenPass) -> Result<bool> {
-        let Some(limit) = device.counted_offscreen_limit() else { return Ok(false); };
-        let Some(plan) = plan(&pass.commands, limit) else { return Ok(false); };
+    fn prepare(&mut self, device: &mut dyn ExtensionDevice, pass: &NativeOffscreenPass) -> Result<Option<Prepared>> {
+        let Some(limit) = device.counted_offscreen_limit() else { return Ok(None); };
+        let Some(plan) = plan(&pass.commands, limit) else { return Ok(None); };
         let group_count = u32::try_from(plan.runs.len()).map_err(|_| Error::InvalidInput("compaction group count overflow".into()))?;
-        if group_count > device.compute_capabilities().max_workgroups[0] { return Ok(false); }
-        let sizes = [u64::from(group_count) * 16, u64::from(plan.records) * 16, u64::from(group_count) * 4];
+        if group_count > device.compute_capabilities().max_workgroups[0] { return Ok(None); }
+        let header_words = group_count.checked_mul(4)
+            .ok_or_else(|| Error::InvalidInput("compaction metadata header overflow".into()))?;
+        let total_words = header_words.checked_add(plan.records)
+            .ok_or_else(|| Error::InvalidInput("compaction metadata size overflow".into()))?;
+        let sizes = [u64::from(total_words) * 4, u64::from(plan.records) * 16, u64::from(group_count) * 4];
         let limits = device.buffer_binding_limits();
         if limits.validate_range(0, plan.source_bytes, false).is_err()
             || sizes.iter().any(|&size| limits.validate_range(0, size, false).is_err())
-        { return Ok(false); }
+        { return Ok(None); }
         let [metadata, output, counts] = self.reserve(device, sizes)?;
-        let mut bytes = Vec::with_capacity(plan.runs.len() * 16);
+        let mut bytes = Vec::with_capacity(total_words as usize * 4);
         for run in &plan.runs {
-            for word in [run.source, run.count, run.destination, 0] {
+            for word in [header_words + run.source, run.count, run.destination, 0] {
                 bytes.extend_from_slice(&word.to_le_bytes());
             }
+        }
+        for slot in plan.gather {
+            bytes.extend_from_slice(&slot.to_le_bytes());
         }
         device.write_buffer(metadata, 0, &bytes)?;
         let binding = |binding, buffer, size, access| ComputeBufferBinding {
             binding, buffer: BufferBinding { buffer, offset: 0, size, stride: None }, access,
         };
-        let bindings = [
+        let compute = [
             binding(0, plan.source, plan.source_bytes, ComputeBufferAccess::ReadOnly),
             binding(1, metadata, sizes[0], ComputeBufferAccess::ReadOnly),
             binding(2, output, sizes[1], ComputeBufferAccess::ReadWrite),
             binding(3, counts, sizes[2], ComputeBufferAccess::ReadWrite),
         ];
-        // This is the same ordered owner queue as the culling producer and
-        // counted draw consumer. Compute backend supplies buffer hazards.
-        device.dispatch_compute(&ComputeDispatch {
-            shader: self.shader, bindings: &bindings, workgroups: [group_count, 1, 1],
-        })?;
         let mut commands = Vec::with_capacity(pass.commands.len() - plan.records as usize + plan.runs.len());
         let mut bindings = Vec::with_capacity(plan.runs.len());
         let mut cursor = 0;
@@ -172,9 +197,28 @@ impl Compactor {
             cursor = run.command + run.count as usize;
         }
         commands.extend_from_slice(&pass.commands[cursor..]);
+        Ok(Some(Prepared { commands, counts: bindings, compute, groups: group_count }))
+    }
+
+    pub(super) fn submit(&mut self, device: &mut dyn ExtensionDevice, pass: &NativeOffscreenPass) -> Result<bool> {
+        if !self.cached.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.source, &pass.commands)) {
+            // Invalidate before preparing: a failed allocation or upload may
+            // have replaced scratch storage referenced by the previous plan.
+            self.cached = None;
+            let prepared = self.prepare(device, pass)?;
+            self.cached = Some(Cached { source: Arc::clone(&pass.commands), prepared });
+        }
+        let Some(prepared) = self.cached.as_ref().and_then(|cached| cached.prepared.as_ref()) else {
+            return Ok(false);
+        };
+        // Culling, compaction and counted drawing share the ordered owner queue.
+        // The metadata is immutable until the next command snapshot.
+        device.dispatch_compute(&ComputeDispatch {
+            shader: self.shader, bindings: &prepared.compute, workgroups: [prepared.groups, 1, 1],
+        })?;
         let mut native = pass.commands();
-        native.commands = &commands;
-        device.submit_counted_offscreen_pass(&native, &bindings)?;
+        native.commands = &prepared.commands;
+        device.submit_counted_offscreen_pass(&native, &prepared.counts)?;
         Ok(true)
     }
 
@@ -198,22 +242,36 @@ mod tests {
     }
 
     #[test]
-    fn plans_only_long_contiguous_runs_without_reordering() {
+    fn gathers_noncontiguous_runs_without_reordering() {
         let mut commands: Vec<_> = (0..300).map(|i| draw(i * 16)).collect();
         commands.extend((400..560).map(|i| draw(i * 16)));
         let plan = plan(&commands, 256).unwrap();
         assert_eq!(plan.runs, [
             Run { command: 0, source: 0, count: 256, destination: 0 },
-            Run { command: 300, source: 400, count: 160, destination: 256 },
+            Run { command: 256, source: 256, count: 204, destination: 256 },
         ]);
-        assert_eq!(plan.records, 416);
+        assert_eq!(plan.records, 460);
+        assert_eq!(&plan.gather[298..303], &[298, 299, 400, 401, 402]);
         assert_eq!(plan.source_bytes, 560 * 16);
     }
 
     #[test]
-    fn never_compacts_short_or_reverse_ordered_runs() {
+    fn preserves_reverse_order_and_rejects_small_runs() {
         let commands: Vec<_> = (0..128).rev().map(|i| draw(i * 16)).collect();
-        assert!(plan(&commands, 256).is_none());
+        let gathered = plan(&commands, 256).unwrap();
+        assert_eq!(gathered.gather, (0..128).rev().collect::<Vec<u32>>());
+        assert!(plan(&commands[..127], 256).is_none());
         assert!(plan(&commands, 64).is_none());
+    }
+
+    #[test]
+    fn never_merges_distinct_scissors() {
+        let mut commands: Vec<_> = (0..256).map(|i| draw(i * 16)).collect();
+        for command in &mut commands[128..] {
+            command.set_scissor(Some(ScissorRect { x: 1, y: 2, width: 3, height: 4 }));
+        }
+        let gathered = plan(&commands, 256).unwrap();
+        assert_eq!(gathered.runs.len(), 2);
+        assert_eq!(gathered.runs[1].command, 128);
     }
 }

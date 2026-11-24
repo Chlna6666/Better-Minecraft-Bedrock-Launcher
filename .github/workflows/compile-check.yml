@@ -342,6 +342,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1
+          components: rustfmt
 
       - name: Check native Metal backend
         run: cargo check --locked -p gfx-metal --lib
