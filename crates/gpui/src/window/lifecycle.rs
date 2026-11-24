@@ -1069,6 +1069,75 @@ mod retained_dirty_scope_tests {
         assert!(!invalidator.retained_path_is_dirty(&path(&[0, 1, 2])));
     }
 
+    #[gpui::test]
+    fn render_dependency_notification_targets_all_readers_but_not_unrelated_views(
+        cx: &mut crate::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let invalidator = WindowInvalidator::new();
+            let model = EntityId::from(101);
+            let first = EntityId::from(102);
+            let second = EntityId::from(103);
+            let unrelated = EntityId::from(104);
+            let mut dependencies = FxHashMap::default();
+            dependencies.insert(model, Some(smallvec::smallvec![first, second]));
+            let mut entities = FxHashSet::default();
+            entities.insert(model);
+            invalidator.commit_render_dependencies(
+                &mut dependencies, &mut entities, false, |_| true, |_| true,
+            );
+            invalidator.set_dirty(false);
+            assert!(invalidator.invalidate_dependency(model, cx));
+            assert_eq!(invalidator.take_views(), FxHashSet::from_iter([first, second]));
+            invalidator.set_dirty(false);
+            assert!(invalidator.active_targeted_replay());
+            assert!(invalidator.active_generic_view_is_dirty(first));
+            assert!(invalidator.active_generic_view_is_dirty(second));
+            assert!(!invalidator.active_generic_view_is_dirty(unrelated));
+            assert!(!invalidator.active_generic_view_is_dirty(model));
+        });
+    }
+
+    #[gpui::test]
+    fn unknown_dependency_survives_replay_until_a_full_traversal(
+        cx: &mut crate::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let invalidator = WindowInvalidator::new();
+            let model = EntityId::from(101);
+            let owner = EntityId::from(102);
+            let mut dependencies = FxHashMap::default();
+            let mut entities = FxHashSet::default();
+            dependencies.insert(model, None);
+            entities.insert(model);
+            invalidator.commit_render_dependencies(
+                &mut dependencies, &mut entities, false, |_| true, |_| true,
+            );
+            dependencies.clear();
+            entities.clear();
+            dependencies.insert(model, Some(smallvec::smallvec![owner]));
+            invalidator.commit_render_dependencies(
+                &mut dependencies, &mut entities, true, |_| true, |_| true,
+            );
+            assert!(entities.contains(&model));
+            invalidator.set_dirty(false);
+            invalidator.invalidate_dependency(model, cx);
+            invalidator.set_dirty(false);
+            assert!(!invalidator.active_targeted_replay());
+
+            dependencies.clear();
+            dependencies.insert(model, Some(smallvec::smallvec![owner]));
+            invalidator.commit_render_dependencies(
+                &mut dependencies, &mut entities, false, |_| true, |_| true,
+            );
+            invalidator.take_views();
+            invalidator.invalidate_dependency(model, cx);
+            invalidator.set_dirty(false);
+            assert!(invalidator.active_targeted_replay());
+            assert!(invalidator.active_generic_view_is_dirty(owner));
+        });
+    }
+
     #[test]
     fn generic_view_invalidation_preserves_unrelated_targeted_replay() {
         let invalidator = WindowInvalidator::new();

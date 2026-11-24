@@ -226,6 +226,31 @@ mod tests {
     use crate::{AppContext, TestAppContext};
 
     #[gpui::test]
+    fn render_read_owners_are_deduplicated_and_unscoped_reads_dominate(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let model = cx.new(|_| 1);
+            let other = cx.new(|_| 2);
+            let first = cx.new(|_| ());
+            let second = cx.new(|_| ());
+            cx.entities.begin_frame_dependencies();
+            cx.entities.set_render_dependency_owner(Some(first.entity_id()));
+            let _ = model.read(cx);
+            let _ = model.read(cx);
+            let _ = other.read(cx);
+            cx.entities.set_render_dependency_owner(Some(second.entity_id()));
+            let _ = model.read(cx);
+            cx.entities.set_render_dependency_owner(None);
+            let _ = other.read(cx);
+            let dependencies = cx.entities.finish_frame_dependencies();
+            assert_eq!(
+                dependencies.get(&model.entity_id()).unwrap().as_ref().unwrap().as_slice(),
+                &[first.entity_id(), second.entity_id()],
+            );
+            assert_eq!(dependencies.get(&other.entity_id()), Some(&None));
+        });
+    }
+
+    #[gpui::test]
     fn entity_reads_are_tracked_for_the_current_frame(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let first = cx.new(|_| 1);

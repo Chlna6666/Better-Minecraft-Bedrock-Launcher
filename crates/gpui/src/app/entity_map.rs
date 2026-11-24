@@ -232,7 +232,10 @@ impl EntityMap {
         self.tracking_frame_dependencies = true;
     }
 
-    pub(crate) fn set_render_dependency_owner(&mut self, owner: Option<EntityId>) -> Option<EntityId> {
+    pub(crate) fn set_render_dependency_owner(
+        &mut self,
+        owner: Option<EntityId>,
+    ) -> Option<EntityId> {
         std::mem::replace(&mut self.render_dependency_owner, owner)
     }
 
