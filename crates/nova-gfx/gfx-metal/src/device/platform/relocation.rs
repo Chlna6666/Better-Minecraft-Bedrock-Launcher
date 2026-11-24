@@ -7,8 +7,7 @@ impl MetalDevice {
         if copies.is_empty() {
             return Ok(());
         }
-        // Validate every native resource before creating/committing a command buffer. The current
-        // texture-creation skeleton has no native resource; preserve Unavailable for that case.
+        // Validate every native resource before creating/committing a command buffer.
         for copy in copies {
             let source = self.textures.get(copy.source)?;
             let destination = self.textures.get(copy.destination)?;

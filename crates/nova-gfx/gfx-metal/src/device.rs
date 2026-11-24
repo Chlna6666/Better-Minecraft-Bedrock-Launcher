@@ -50,6 +50,7 @@ use gfx_core::{
 mod platform {
     mod buffer_upload;
     mod relocation;
+    mod texture;
     use super::*;
     use crate::registry::ResourceRegistry;
     use core::ffi::c_void;
@@ -61,6 +62,7 @@ mod platform {
     use objc2_app_kit::NSView;
     use objc2_core_foundation::CGSize;
     use objc2_foundation::{NSError, NSInteger, NSObjectProtocol, NSString};
+    use objc2_metal::MTLSamplerState;
     use objc2_metal::{
         MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
         MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLCompileOptions, MTLDevice, MTLDrawable, MTLFunction,
@@ -252,53 +254,6 @@ mod platform {
                 }
             }
             Ok(())
-        }
-
-        /// Creates a 2D texture record.
-        fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
-            desc.validate()?;
-            if desc.dimension != TextureDimension::D2 {
-                return Err(Error::InvalidInput(
-                    "only 2D textures are supported".to_string(),
-                ));
-            }
-            Ok(self.textures.insert(MetalTexture {
-                desc: desc.clone(),
-                resource: None,
-            }))
-        }
-
-        /// Writes data into a texture.
-        fn write_texture(&mut self, _desc: TextureWriteDescriptor, _data: &[u8]) -> Result<()> {
-            Err(Error::Unavailable(
-                "Metal texture upload is not enabled in this build".to_string(),
-            ))
-        }
-
-        /// Creates a texture view record.
-        fn create_texture_view(&mut self, desc: &TextureViewDescriptor) -> Result<TextureViewId> {
-            let _texture = self.textures.get(desc.texture)?;
-            Ok(self.texture_views.insert(MetalTextureView {
-                texture: desc.texture,
-                format: desc.format,
-            }))
-        }
-
-        /// Creates a sampler record.
-        fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
-            desc.validate()?;
-            Ok(self.samplers.insert(MetalSampler {
-                mag_filter: desc.mag_filter,
-                min_filter: desc.min_filter,
-                address_mode_u: desc.address_mode_u,
-                address_mode_v: desc.address_mode_v,
-                address_mode_w: desc.address_mode_w,
-                compare: desc.compare,
-                border_color: desc.border_color,
-                lod_min_clamp: desc.lod_min_clamp,
-                lod_max_clamp: desc.lod_max_clamp,
-                lod_bias: desc.lod_bias,
-            }))
         }
 
         fn create_bind_group_layout(
@@ -1011,6 +966,40 @@ mod platform {
             Ok((SubmissionStatus::Complete, sample))
         }
 
+        fn request_submission_ready(
+            &mut self,
+            submission: SubmissionId,
+            callback: Box<dyn FnOnce() + Send + 'static>,
+        ) -> Result<bool> {
+            let record = self.submissions.get(submission)?;
+            if matches!(
+                record.command_buffer.status(),
+                MTLCommandBufferStatus::Completed | MTLCommandBufferStatus::Error
+            ) {
+                callback();
+                return Ok(true);
+            }
+            // Metal invokes completion handlers on its own threads. Only the
+            // Send callback crosses threads; no owner-thread Metal state does.
+            let callback = std::sync::Mutex::new(Some(callback));
+            let handler = block2::RcBlock::new(
+                move |_: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                    let wake = callback.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                    if let Some(wake) = wake {
+                        // Never unwind through the Objective-C block ABI.
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(wake));
+                    }
+                },
+            );
+            // SAFETY: Metal copies the block and calls it when the command buffer
+            // completes (including failure). The mutex makes its FnOnce payload
+            // safe to consume from a Metal callback thread.
+            unsafe {
+                record.command_buffer.addCompletedHandler(block2::RcBlock::as_ptr(&handler));
+            }
+            Ok(true)
+        }
+
         fn wait_submission(&mut self, submission: SubmissionId) -> Result<()> {
             self.submissions.get(submission)?.command_buffer.waitUntilCompleted();
             match self.poll_submission(submission)? {
@@ -1080,24 +1069,16 @@ mod platform {
         resource: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     struct MetalTextureView {
         texture: TextureId,
         format: Format,
+        resource: Retained<ProtocolObject<dyn MTLTexture>>,
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     struct MetalSampler {
-        mag_filter: FilterMode,
-        min_filter: FilterMode,
-        address_mode_u: AddressMode,
-        address_mode_v: AddressMode,
-        address_mode_w: AddressMode,
-        compare: Option<CompareFunction>,
-        border_color: Option<[f32; 4]>,
-        lod_min_clamp: f32,
-        lod_max_clamp: f32,
-        lod_bias: f32,
+        resource: Retained<ProtocolObject<dyn MTLSamplerState>>,
     }
 
     #[derive(Clone)]

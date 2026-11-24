@@ -1,0 +1,193 @@
+//! Native 2D texture allocation, views, ordered staging uploads and samplers.
+
+use super::*;
+use objc2_foundation::NSRange;
+use objc2_metal::{
+    MTLBlitCommandEncoder, MTLCompareFunction, MTLOrigin, MTLSamplerAddressMode,
+    MTLSamplerBorderColor, MTLSamplerDescriptor, MTLSamplerMinMagFilter,
+    MTLSamplerMipFilter, MTLSize, MTLStorageMode, MTLTextureDescriptor,
+    MTLTextureType, MTLTextureUsage,
+};
+
+impl MetalDevice {
+    pub(super) fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
+        desc.validate()?;
+        if desc.dimension != TextureDimension::D2 || desc.sample_count != 1 {
+            return Err(Error::Unavailable(
+                "Metal currently supports single-sample 2D textures only".into(),
+            ));
+        }
+        if desc.size.width() > 16_384 || desc.size.height() > 16_384 {
+            return Err(Error::InvalidInput("Metal 2D texture exceeds 16384 texels".into()));
+        }
+        let native = MTLTextureDescriptor::new();
+        native.setTextureType(MTLTextureType::Type2D);
+        native.setPixelFormat(format_to_metal(desc.format));
+        native.setWidth(desc.size.width() as usize);
+        native.setHeight(desc.size.height() as usize);
+        native.setMipmapLevelCount(desc.mip_level_count as usize);
+        native.setStorageMode(if desc.memory_location == MemoryLocation::GpuOnly {
+            MTLStorageMode::Private
+        } else if cfg!(target_os = "macos") && !self.device.hasUnifiedMemory() {
+            MTLStorageMode::Managed
+        } else {
+            MTLStorageMode::Shared
+        });
+        let mut usage = MTLTextureUsage::empty();
+        if desc.usage.contains(TextureUsage::SAMPLED) {
+            usage |= MTLTextureUsage::ShaderRead;
+        }
+        if desc.usage.contains(TextureUsage::STORAGE) {
+            usage |= MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite;
+        }
+        if desc.usage.intersects(TextureUsage::COLOR_ATTACHMENT | TextureUsage::DEPTH_ATTACHMENT) {
+            usage |= MTLTextureUsage::RenderTarget;
+        }
+        native.setUsage(usage);
+        let resource = self.device.newTextureWithDescriptor(&native)
+            .ok_or_else(|| Error::Backend("failed to allocate Metal texture".into()))?;
+        Ok(self.textures.insert(MetalTexture { desc: desc.clone(), resource: Some(resource) }))
+    }
+
+    pub(super) fn create_texture_view(&mut self, desc: &TextureViewDescriptor) -> Result<TextureViewId> {
+        let texture = self.textures.get(desc.texture)?;
+        desc.validate_against(&texture.desc)?;
+        let parent = texture.resource.as_ref()
+            .ok_or_else(|| Error::Unavailable("Metal texture has no native resource".into()))?;
+        let resource = if desc.base_mip_level == 0 && desc.mip_level_count == texture.desc.mip_level_count {
+            parent.clone()
+        } else {
+            // SAFETY: The descriptor validates the mip range and the texture
+            // is single-sample 2D, with exactly one array slice.
+            unsafe {
+                parent.newTextureViewWithPixelFormat_textureType_levels_slices(
+                    format_to_metal(desc.format), MTLTextureType::Type2D,
+                    NSRange { location: desc.base_mip_level as usize, length: desc.mip_level_count as usize },
+                    NSRange { location: 0, length: 1 },
+                )
+            }.ok_or_else(|| Error::Backend("failed to create Metal texture mip view".into()))?
+        };
+        Ok(self.texture_views.insert(MetalTextureView { texture: desc.texture, format: desc.format, resource }))
+    }
+
+    pub(super) fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
+        let texture = self.textures.get(desc.texture)?;
+        desc.validate_against(&texture.desc, data.len())?;
+        if !texture.desc.usage.contains(TextureUsage::COPY_DST) || texture.desc.format.is_depth() {
+            return Err(Error::InvalidInput("Metal texture upload requires a non-depth COPY_DST texture".into()));
+        }
+        let destination = texture.resource.as_ref()
+            .ok_or_else(|| Error::Unavailable("Metal texture has no native resource".into()))?;
+        let width = desc.size.width() as usize;
+        let height = desc.size.height() as usize;
+        let row_bytes = width.checked_mul(texture.desc.format.bytes_per_pixel() as usize)
+            .ok_or_else(|| Error::InvalidInput("Metal upload row size overflow".into()))?;
+        // A dedicated shared staging buffer avoids CPU writes to textures
+        // still sampled by an earlier GPU submission.
+        let pitch = row_bytes.checked_add(255).map(|n| n & !255)
+            .ok_or_else(|| Error::InvalidInput("Metal upload pitch overflow".into()))?;
+        let length = pitch.checked_mul(height)
+            .ok_or_else(|| Error::InvalidInput("Metal upload size overflow".into()))?;
+        let offset = usize::try_from(desc.layout.offset)
+            .map_err(|_| Error::InvalidInput("Metal upload offset overflow".into()))?;
+        let source_pitch = desc.layout.bytes_per_row.get() as usize;
+        let staging = self.device.newBufferWithLength_options(length, MTLResourceOptions::StorageModeShared)
+            .ok_or_else(|| Error::Backend("failed to allocate Metal texture staging buffer".into()))?;
+        // SAFETY: validate_against covers every source row. The staging allocation
+        // is fresh, CPU-visible, and has pitch * height bytes. It has not been submitted.
+        unsafe {
+            let ptr = staging.contents().as_ptr().cast::<u8>();
+            for row in 0..height {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr().add(offset + row * source_pitch), ptr.add(row * pitch), row_bytes,
+                );
+            }
+        }
+        let commands = self.command_queue.commandBuffer()
+            .ok_or_else(|| Error::Backend("Metal upload command buffer unavailable".into()))?;
+        let blit = commands.blitCommandEncoder()
+            .ok_or_else(|| Error::Backend("Metal upload blit encoder unavailable".into()))?;
+        // SAFETY: All source and destination ranges were checked. The default
+        // commandBuffer retains referenced resources until it completes; the
+        // same ordered queue serializes earlier sampling and subsequent draws.
+        unsafe {
+            blit.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+                &staging, 0, pitch, 0,
+                MTLSize { width, height, depth: 1 },
+                destination, 0, desc.mip_level as usize,
+                MTLOrigin { x: desc.origin.x as usize, y: desc.origin.y as usize, z: 0 },
+            );
+        }
+        blit.endEncoding();
+        commands.commit();
+        Ok(())
+    }
+
+    pub(super) fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
+        desc.validate()?;
+        if !desc.lod_min_clamp.is_finite() || !desc.lod_max_clamp.is_finite() || desc.lod_min_clamp < 0.0 {
+            return Err(Error::InvalidInput("Metal sampler requires finite non-negative LOD clamps".into()));
+        }
+        // Native sampler LOD bias is not available on all supported OS versions.
+        if desc.lod_bias != 0.0 {
+            return Err(Error::Unavailable("Metal portable sampler LOD bias is unsupported".into()));
+        }
+        let native = MTLSamplerDescriptor::new();
+        if let Some(label) = &desc.label {
+            native.setLabel(Some(&NSString::from_str(label)));
+        }
+        native.setMinFilter(filter(desc.min_filter));
+        native.setMagFilter(filter(desc.mag_filter));
+        native.setMipFilter(match desc.mipmap_filter {
+            FilterMode::Nearest => MTLSamplerMipFilter::Nearest,
+            FilterMode::Linear => MTLSamplerMipFilter::Linear,
+        });
+        native.setSAddressMode(address(desc.address_mode_u));
+        native.setTAddressMode(address(desc.address_mode_v));
+        native.setRAddressMode(address(desc.address_mode_w));
+        native.setLodMinClamp(desc.lod_min_clamp);
+        native.setLodMaxClamp(desc.lod_max_clamp);
+        if desc.anisotropic && desc.min_filter == FilterMode::Linear && desc.mag_filter == FilterMode::Linear {
+            native.setMaxAnisotropy(16);
+        }
+        if let Some(compare) = desc.compare {
+            native.setCompareFunction(match compare {
+                CompareFunction::Never => MTLCompareFunction::Never,
+                CompareFunction::Less => MTLCompareFunction::Less,
+                CompareFunction::Equal => MTLCompareFunction::Equal,
+                CompareFunction::LessEqual => MTLCompareFunction::LessEqual,
+                CompareFunction::Greater => MTLCompareFunction::Greater,
+                CompareFunction::NotEqual => MTLCompareFunction::NotEqual,
+                CompareFunction::GreaterEqual => MTLCompareFunction::GreaterEqual,
+                CompareFunction::Always => MTLCompareFunction::Always,
+            });
+        }
+        if [desc.address_mode_u, desc.address_mode_v, desc.address_mode_w].contains(&AddressMode::ClampToBorder) {
+            native.setBorderColor(match desc.border_color.unwrap_or([0.0; 4]) {
+                [0.0, 0.0, 0.0, 0.0] => MTLSamplerBorderColor::TransparentBlack,
+                [0.0, 0.0, 0.0, 1.0] => MTLSamplerBorderColor::OpaqueBlack,
+                [1.0, 1.0, 1.0, 1.0] => MTLSamplerBorderColor::OpaqueWhite,
+                _ => return Err(Error::Unavailable("Metal supports only three native sampler border colors".into())),
+            });
+        }
+        let resource = self.device.newSamplerStateWithDescriptor(&native)
+            .ok_or_else(|| Error::Backend("failed to create Metal sampler".into()))?;
+        Ok(self.samplers.insert(MetalSampler { resource }))
+    }
+}
+
+fn filter(mode: FilterMode) -> MTLSamplerMinMagFilter {
+    match mode {
+        FilterMode::Nearest => MTLSamplerMinMagFilter::Nearest,
+        FilterMode::Linear => MTLSamplerMinMagFilter::Linear,
+    }
+}
+
+fn address(mode: AddressMode) -> MTLSamplerAddressMode {
+    match mode {
+        AddressMode::ClampToEdge => MTLSamplerAddressMode::ClampToEdge,
+        AddressMode::Repeat => MTLSamplerAddressMode::Repeat,
+        AddressMode::MirrorRepeat => MTLSamplerAddressMode::MirrorRepeat,
+        AddressMode::ClampToBorder => MTLSamplerAddressMode::ClampToBorderColor,
+    }
+}

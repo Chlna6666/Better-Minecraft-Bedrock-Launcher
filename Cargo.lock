@@ -3437,6 +3437,7 @@ dependencies = [
 name = "gfx-metal"
 version = "0.1.0"
 dependencies = [
+ "block2 0.6.2",
  "dispatch2",
  "gfx-core",
  "gfx-memory",
