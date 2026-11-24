@@ -149,6 +149,7 @@ pub struct VulkanDevice {
     swapchain_maintenance: bool,
     native_pixel_presentation: Option<khr::get_surface_capabilities2::Instance>,
     memory_budget_supported: bool,
+    host_query_reset: bool,
     entry: Entry,
     instance: Instance,
     surface_loader: khr::surface::Instance,
@@ -402,6 +403,7 @@ impl VulkanDevice {
             native_pixel_presentation,
             display_timing_supported,
             present_wait_supported,
+            host_query_reset,
         ) = match create_device(&instance, physical_device, queue_families, &entry) {
             Ok(result) => result,
             Err(error) => {
@@ -514,6 +516,7 @@ impl VulkanDevice {
             swapchain_maintenance,
             native_pixel_presentation,
             memory_budget_supported,
+            host_query_reset,
             entry,
             instance,
             surface_loader,
@@ -2098,6 +2101,7 @@ impl VulkanDevice {
             resolve: None,
             gpu_trace,
             gpu_indirect_trace: None,
+            host_query_reset: self.host_query_reset,
             graph_write_hazard,
         });
         if result.is_ok() {
@@ -2406,7 +2410,27 @@ impl VulkanDevice {
                 {
                     return Err(Error::InvalidInput("Vulkan resolve target must be a distinct texture of the source format and extent".into()));
                 }
-                Some((source.image, destination.image, extent, destination.layout))
+                // Dynamic rendering resolves only the render area, whereas the
+                // explicit legacy resolve covers the complete mip-zero image.
+                // Restrict the native fast path to matching simple 2D views.
+                let src_view = self.texture_views.get(color_views[0])?;
+                let native_view = (destination.desc.usage.contains(TextureUsage::COLOR_ATTACHMENT)
+                    && source.desc.dimension == TextureDimension::D2
+                    && destination.desc.dimension == TextureDimension::D2
+                    && src_view.desc.base_mip_level == 0
+                    && src_view.desc.mip_level_count == 1
+                    && dst_texture_view.desc.base_mip_level == 0
+                    && dst_texture_view.desc.mip_level_count == 1
+                    && src_view.desc.format == dst_texture_view.desc.format
+                    && !matches!(src_view.desc.format, Format::R8Uint | Format::Rg8Uint | Format::Rgba8Uint))
+                    .then_some(dst_texture_view.view);
+                Some(CommandResolve {
+                    source: source.image,
+                    destination: destination.image,
+                    extent,
+                    old_layout: destination.layout,
+                    native_view,
+                })
             }
             None => None,
         };
@@ -2432,6 +2456,7 @@ impl VulkanDevice {
             resolve,
             gpu_trace: None,
             gpu_indirect_trace: gpu_query.map(|(pool, first, _)| (pool, first)),
+            host_query_reset: self.host_query_reset,
             graph_write_hazard,
         });
         if result.is_ok() {
@@ -4085,8 +4110,12 @@ impl VulkanDevice {
         if let Some(query_pool) = commands.timestamp_queries {
             // SAFETY: The command buffer is recording and the query pool has exactly two slots.
             unsafe {
-                self.device
-                    .cmd_reset_query_pool(command_buffer, query_pool, 0, 2);
+                if self.host_query_reset {
+                    // Upload pools are new or retired before being reused.
+                    self.device.reset_query_pool(query_pool, 0, 2);
+                } else {
+                    self.device.cmd_reset_query_pool(command_buffer, query_pool, 0, 2);
+                }
                 self.device.cmd_write_timestamp2(
                     command_buffer,
                     vk::PipelineStageFlags2::TOP_OF_PIPE,
@@ -6700,6 +6729,7 @@ fn create_device(
     bool,
     bool,
     bool,
+    bool,
 )> {
     let priorities = [1.0_f32, 0.75_f32];
     let single_priority = [1.0_f32];
@@ -6812,7 +6842,13 @@ fn create_device(
     });
     // The adapter filter verified these promoted core features. Enable them
     // explicitly; no KHR timeline extension name or suffixed command is needed.
-    let mut features12 = vk::PhysicalDeviceVulkan12Features::default().timeline_semaphore(true);
+    let mut available12 = vk::PhysicalDeviceVulkan12Features::default();
+    let mut available = vk::PhysicalDeviceFeatures2::default().push_next(&mut available12);
+    // SAFETY: Vulkan 1.2 is core on the selected physical device.
+    unsafe { instance.get_physical_device_features2(physical_device, &mut available) };
+    let host_query_reset = available12.host_query_reset == vk::TRUE;
+    let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
+        .timeline_semaphore(true).host_query_reset(host_query_reset);
     let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
         .synchronization2(true).dynamic_rendering(true);
     let mut present_id_features = vk::PhysicalDevicePresentIdFeaturesKHR::default();
@@ -6882,6 +6918,7 @@ fn create_device(
         native_pixel_presentation,
         display_timing_supported,
         present_wait_supported,
+        host_query_reset,
     ))
 }
 
@@ -7488,16 +7525,25 @@ struct CommandRecordInfo<'a> {
     depth_load_op: Option<LoadOp<f32>>,
     render_target_transitions: &'a [CommandRenderTargetTransition],
     clear_region: Option<ScissorRect>,
-    /// MSAA color source -> single-sample resolve destination image pair plus the
-    /// shared extent. `Some` triggers `vkCmdResolveImage` after the pass.
-    resolve: Option<(vk::Image, vk::Image, vk::Extent2D, vk::ImageLayout)>,
+    /// Prefer attachment resolve when it preserves the full-image contract.
+    resolve: Option<CommandResolve>,
     /// Vulkan timestamps enclose all command-buffer GPU work including layout transitions.
     gpu_trace: Option<(vk::QueryPool, u32)>,
     /// Timestamp pair reserved for the native indirect draw loop ONLY.
     gpu_indirect_trace: Option<(vk::QueryPool, u32)>,
+    host_query_reset: bool,
     /// A later native attachment write reuses physical texture storage that
     /// appeared earlier in this ordered Render Graph batch.
     graph_write_hazard: bool,
+}
+
+#[derive(Clone, Copy)]
+struct CommandResolve {
+    source: vk::Image,
+    destination: vk::Image,
+    extent: vk::Extent2D,
+    old_layout: vk::ImageLayout,
+    native_view: Option<vk::ImageView>,
 }
 
 #[derive(Clone, Copy)]
@@ -7761,8 +7807,12 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
     if let Some((query_pool, first_query)) = info.gpu_trace {
         // SAFETY: This command buffer is recording and owns this unique timestamp pair.
         unsafe {
-            info.device
-                .cmd_reset_query_pool(info.command_buffer, query_pool, first_query, 2);
+            if info.host_query_reset {
+                // Encoders are exclusively owner-recorded and recycled only after retirement.
+                info.device.reset_query_pool(query_pool, first_query, 2);
+            } else {
+                info.device.cmd_reset_query_pool(info.command_buffer, query_pool, first_query, 2);
+            }
             info.device.cmd_write_timestamp2(
                     info.command_buffer,
                     vk::PipelineStageFlags2::TOP_OF_PIPE,
@@ -7775,8 +7825,11 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         // SAFETY: This dedicated command buffer owns this probe pair and is
         // reset only before entering its render pass.
         unsafe {
-            info.device
-                .cmd_reset_query_pool(info.command_buffer, pool, slot, 2)
+            if info.host_query_reset {
+                info.device.reset_query_pool(pool, slot, 2);
+            } else {
+                info.device.cmd_reset_query_pool(info.command_buffer, pool, slot, 2);
+            }
         };
     }
     depth::record_depth_accesses(info.device, info.command_buffer, info.depth_accesses);
@@ -7868,6 +7921,20 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             info.steps.iter().map(|step| step.scissor),
         )
     });
+    let native_resolve = info.resolve.and_then(|resolve| {
+        (render_area == full_render_area(resolve.extent))
+            .then_some(resolve.native_view).flatten()
+    });
+    if let (Some(resolve), Some(view)) = (info.resolve, native_resolve) {
+        transition_image_layout(
+            info.device, info.command_buffer, resolve.destination,
+            resolve.old_layout, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        );
+        attachments[0] = attachments[0]
+            .resolve_mode(vk::ResolveModeFlags::AVERAGE)
+            .resolve_image_view(view)
+            .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+    }
     let mut rendering_info = vk::RenderingInfo::default()
         .render_area(render_area).layer_count(1).color_attachments(attachments);
     if let Some(depth) = depth.as_ref() {
@@ -8047,7 +8114,15 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         if let Some(image) = info.present_image {
             record_present_layout(info.device, info.command_buffer, image, true);
         }
-        if let Some((src, dst, extent, dst_old_layout)) = info.resolve {
+        if let Some(resolve) = info.resolve {
+            let CommandResolve { source: src, destination: dst, extent, old_layout: dst_old_layout, .. } = resolve;
+            if native_resolve.is_some() {
+                transition_image_layout(
+                    info.device, info.command_buffer, dst,
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                );
+            } else {
             // Explicit resolve preserves the existing full-image contract.
             // Both layout transitions must participate in the tracked state.
             transition_image_layout(
@@ -8098,9 +8173,11 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             );
+            }
         }
         for transition in info.render_target_transitions {
-            let old_layout = if info.resolve.is_some_and(|(src, _, _, _)| src == transition.image) {
+            let old_layout = if native_resolve.is_none()
+                && info.resolve.is_some_and(|resolve| resolve.source == transition.image) {
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL
             } else {
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
