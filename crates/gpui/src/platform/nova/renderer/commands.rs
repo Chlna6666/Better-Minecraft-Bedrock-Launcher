@@ -910,9 +910,9 @@ fn can_split_retained_source_damage(
         })
 }
 
-/// Preserve exact disjoint dirty rectangles instead of submitting the
-/// bounding box as one large GPU raster region. Cap the number of passes:
-/// command overhead can outweigh saved fill when a layer is fragmented.
+/// Preserve disconnected damage through native offscreen Load/clear/repaint
+/// passes. Split by the largest actual bounding-area saving, not by equal
+/// counts along the viewport's longest axis (which misses uneven clusters).
 fn retained_source_damage_patches(damage: &DirtyRegion, can_split: bool) -> Vec<DirtyRegion> {
     const MAX_SOURCE_PASSES: usize = 8;
     if !can_split || damage.is_full() || damage.rect_count() < 2 {
@@ -921,52 +921,105 @@ fn retained_source_damage_patches(damage: &DirtyRegion, can_split: bool) -> Vec<
     let Some(union) = damage.union_bounds() else {
         return vec![damage.clone()];
     };
-    let union_area = union.size.width.0 * union.size.height.0;
+    let union_area = patch_area(union);
     if !union_area.is_finite() || union_area <= 0.0 {
         return vec![damage.clone()];
     }
-
-    // The input union retains at most 128 disjoint rectangles. When it has
-    // more than eight, group nearby rectangles into no more than eight
-    // painter-order independent source passes instead of redrawing the entire
-    // bounding box. Sorting along the wider axis is bounded and deterministic.
-    let mut rects = damage
-        .rects()
-        .iter()
-        .map(|rect| rect.bounds)
-        .collect::<Vec<_>>();
-    if rects.len() > MAX_SOURCE_PASSES {
-        let sort_horizontal = union.size.width >= union.size.height;
-        rects.sort_unstable_by(|left, right| {
-            let (first, second) = if sort_horizontal {
-                (left.origin.x.0, right.origin.x.0)
-            } else {
-                (left.origin.y.0, right.origin.y.0)
-            };
-            first.total_cmp(&second)
-        });
+    // Preserve the existing coarse half-area profitability gate. The smaller
+    // per-pass penalty prevents splitting a large cluster for a negligible gap.
+    // These are spatial heuristics, not a claim of measured GPU execution cost.
+    let pass_penalty = union_area / (2.0 * MAX_SOURCE_PASSES as f32);
+    let rects: Vec<_> = damage.rects().iter().map(|rect| rect.bounds).collect();
+    let mut clusters = vec![DamageCluster::new(rects)];
+    while clusters.len() < MAX_SOURCE_PASSES {
+        let Some((index, split)) = clusters.iter().enumerate()
+            .filter_map(|(index, cluster)| cluster.split.map(|split| (index, split)))
+            .max_by(|(_, a), (_, b)| a.saving.total_cmp(&b.saving))
+        else {
+            break;
+        };
+        if split.saving <= pass_penalty {
+            break;
+        }
+        let mut rects = clusters.swap_remove(index).rects;
+        sort_patch_rects(&mut rects, split.horizontal);
+        let right = rects.split_off(split.at);
+        clusters.push(DamageCluster::new(rects));
+        clusters.push(DamageCluster::new(right));
     }
-    let group_size = rects.len().div_ceil(MAX_SOURCE_PASSES);
-    let mut patches = Vec::with_capacity(rects.len().div_ceil(group_size));
-    let mut source_pixels = 0.0f32;
-    for group in rects.chunks(group_size) {
-        let bounds = group
-            .iter()
-            .copied()
-            .reduce(|left, right| left.union(&right))
-            .expect("a damage patch must contain a rectangle");
-        source_pixels += bounds.size.width.0 * bounds.size.height.0;
+    let source_pixels: f32 = clusters.iter().map(|cluster| patch_area(cluster.bounds)).sum();
+    if clusters.len() == 1 || !source_pixels.is_finite() || source_pixels * 2.0 >= union_area {
+        return vec![damage.clone()];
+    }
+    clusters.into_iter().map(|cluster| {
         let mut patch = DirtyRegion::empty();
-        patch.push(bounds);
-        patches.push(patch);
+        patch.push(cluster.bounds);
+        patch
+    }).collect()
+}
+
+type DamageBounds = crate::Bounds<crate::ScaledPixels>;
+
+fn patch_area(bounds: DamageBounds) -> f32 {
+    bounds.size.width.0 * bounds.size.height.0
+}
+
+#[derive(Clone, Copy)]
+struct DamageSplit {
+    horizontal: bool,
+    at: usize,
+    saving: f32,
+}
+
+struct DamageCluster {
+    rects: Vec<DamageBounds>,
+    bounds: DamageBounds,
+    split: Option<DamageSplit>,
+}
+
+impl DamageCluster {
+    fn new(mut rects: Vec<DamageBounds>) -> Self {
+        let bounds = rects.iter().copied().reduce(|a, b| a.union(&b))
+            .expect("nonempty damage cluster");
+        let mut split: Option<DamageSplit> = None;
+        if rects.len() > 1 {
+            // One prefix/suffix scan on each axis. Reuse the suffix allocation
+            // for both scans and bound work by the DirtyRegion rectangle limit.
+            let mut suffix = vec![bounds; rects.len()];
+            for horizontal in [true, false] {
+                sort_patch_rects(&mut rects, horizontal);
+                let last = rects.len() - 1;
+                suffix[last] = rects[last];
+                for i in (0..last).rev() {
+                    suffix[i] = rects[i].union(&suffix[i + 1]);
+                }
+                let mut prefix = rects[0];
+                for at in 1..rects.len() {
+                    let saving = patch_area(bounds) - patch_area(prefix) - patch_area(suffix[at]);
+                    if saving.is_finite() && saving > 0.0
+                        && split.is_none_or(|best| saving > best.saving)
+                    {
+                        split = Some(DamageSplit { horizontal, at, saving });
+                    }
+                    prefix = prefix.union(&rects[at]);
+                }
+            }
+        }
+        Self { rects, bounds, split }
     }
-    // Avoid paying for additional GPU passes when clustering loses most of
-    // its advantage. A single large source scissor remains the fallback.
-    if !source_pixels.is_finite() || source_pixels * 2.0 >= union_area {
-        vec![damage.clone()]
-    } else {
-        patches
-    }
+}
+
+fn sort_patch_rects(rects: &mut [DamageBounds], horizontal: bool) {
+    rects.sort_unstable_by(|a, b| {
+        let (a0, a1, b0, b1) = if horizontal {
+            (a.origin.x.0, a.origin.y.0, b.origin.x.0, b.origin.y.0)
+        } else {
+            (a.origin.y.0, a.origin.x.0, b.origin.y.0, b.origin.x.0)
+        };
+        a0.total_cmp(&b0).then_with(|| a1.total_cmp(&b1))
+            .then_with(|| a.size.width.0.total_cmp(&b.size.width.0))
+            .then_with(|| a.size.height.0.total_cmp(&b.size.height.0))
+    });
 }
 
 /// Independent source changes can be invisible to the *window's* dirty-region
@@ -1314,6 +1367,30 @@ mod tests {
         let patched_area: f32 = patches.iter().map(DirtyRegion::area).sum();
         assert!(patched_area * 2.0 < full_area);
         assert_eq!(retained_source_damage_patches(&damage, false).len(), 1);
+    }
+
+    #[test]
+    fn uneven_damage_clusters_split_at_spatial_gap_not_equal_counts() {
+        let mut damage = DirtyRegion::empty();
+        for x in 0..15 {
+            damage.push(crate::bounds(
+                crate::point(crate::ScaledPixels(x as f32 * 3.), crate::ScaledPixels(0.)),
+                crate::size(crate::ScaledPixels(2.), crate::ScaledPixels(10.)),
+            ));
+        }
+        let distant = crate::bounds(
+            crate::point(crate::ScaledPixels(900.), crate::ScaledPixels(0.)),
+            crate::size(crate::ScaledPixels(2.), crate::ScaledPixels(10.)),
+        );
+        damage.push(distant);
+        let patches = retained_source_damage_patches(&damage, true);
+        assert_eq!(patches.len(), 2);
+        assert!(patches.iter().any(|patch| patch.union_bounds() == Some(distant)));
+        for rect in damage.rects() {
+            assert!(patches.iter().any(|patch|
+                patch.union_bounds().is_some_and(|bounds| bounds.intersect(&rect.bounds) == rect.bounds)));
+        }
+        assert!(patches.iter().map(DirtyRegion::area).sum::<f32>() < 500.);
     }
 
     #[test]
