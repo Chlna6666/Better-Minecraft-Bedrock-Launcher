@@ -162,6 +162,7 @@ pub struct VulkanDevice {
     max_sampler_anisotropy: f32,
     max_color_attachment_count: Option<u32>,
     max_sample_count: u32,
+    sampled_attachment_counts: vk::SampleCountFlags,
     standard_sample_locations: bool,
     stencil_supported: bool,
     multi_draw_indirect: bool,
@@ -447,8 +448,15 @@ impl VulkanDevice {
             .max_color_attachments
             .gt(&0)
             .then_some(adapter_properties.limits.max_color_attachments);
-        let max_sample_count =
-            sample_count_of(adapter_properties.limits.framebuffer_color_sample_counts);
+        let limits = &adapter_properties.limits;
+        let max_sample_count = sample_count_of(limits.framebuffer_color_sample_counts);
+        // The portable effects capability describes a pass with both color
+        // and depth attachments that can subsequently be sampled. Color-only
+        // framebuffer limits do not establish that contract.
+        let sampled_attachment_counts = limits.framebuffer_color_sample_counts
+            & limits.framebuffer_depth_sample_counts
+            & limits.sampled_image_color_sample_counts
+            & limits.sampled_image_depth_sample_counts;
         // Stencil is a core Vulkan feature; support is determined by the
         // depth-stencil format chosen later.
         let stencil_supported = true;
@@ -537,6 +545,7 @@ impl VulkanDevice {
             max_sampler_anisotropy,
             max_color_attachment_count,
             max_sample_count,
+            sampled_attachment_counts,
             standard_sample_locations: adapter_properties.limits.standard_sample_locations == vk::TRUE,
             stencil_supported,
             multi_draw_indirect: native_features.multi_draw_indirect == vk::TRUE,
@@ -5057,7 +5066,7 @@ impl ResourceDevice for VulkanDevice {
 
     fn multisample_capabilities(&self) -> gfx_core::MultisampleCapabilities {
         gfx_core::MultisampleCapabilities {
-            max_sample_count: self.max_sample_count,
+            max_sample_count: sample_count_of(self.sampled_attachment_counts),
             stencil_supported: self.stencil_supported,
         }
     }
@@ -5066,7 +5075,9 @@ impl ResourceDevice for VulkanDevice {
         match sample_count {
             1 => Some([0.5, 0.5]),
             // Vulkan standard sample locations, in framebuffer pixel coordinates.
-            4 if self.standard_sample_locations && self.max_sample_count >= 4 => {
+            4 if self.standard_sample_locations
+                && self.sampled_attachment_counts.contains(vk::SampleCountFlags::TYPE_4) =>
+            {
                 Some([0.375, 0.125])
             }
             _ => None,

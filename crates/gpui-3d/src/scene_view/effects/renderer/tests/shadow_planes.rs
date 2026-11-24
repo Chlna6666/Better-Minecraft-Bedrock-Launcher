@@ -195,7 +195,13 @@ pub(super) fn verify_receiver_planes<D: Device + TextureTransferDevice>(
     );
     // Compare the complete image as before, but retain the legal resolved
     // opaque depth so a failure can distinguish coverage from CSM visibility.
-    let single_depth = device.read_texture(depth.texture).unwrap();
+    // Other backends do not necessarily expose depth readback (Metal rejects
+    // it explicitly). The existing image assertion is backend-independent.
+    let single_depth = if D::BACKEND_KIND == BackendKind::Vulkan {
+        Some(device.read_texture(depth.texture).unwrap())
+    } else {
+        None
+    };
     let mut tiled = Scene::new();
     let mesh = Arc::new(Mesh::plane(20., 20.).unwrap());
     for x in 0..4 {
@@ -222,7 +228,7 @@ pub(super) fn verify_receiver_planes<D: Device + TextureTransferDevice>(
         .map(|(a, b)| a.abs_diff(*b))
         .max()
         .unwrap();
-    if maximum > 5 {
+    if maximum > 5 && let Some(single_depth) = single_depth {
         let tiled_depth = device.read_texture(depth.texture).unwrap();
         let tiled_unshadowed = tiled_view.with_voxel_shading(VoxelShading {
             shadow_strength: 0.,

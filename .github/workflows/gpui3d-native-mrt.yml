@@ -102,13 +102,13 @@ jobs:
           set -euo pipefail
           cargo test -p gpui-3d --lib --features gpui/x11 gpu_mesher_vulkan -- --ignored --list | tee "$RUNNER_TEMP/greedy-tests.txt"
           grep -Fx 'scene_view::generated::tests::gpu_mesher_vulkan: test' "$RUNNER_TEMP/greedy-tests.txt"
-          cargo test -p gpui-3d --lib --features gpui/x11 gpu_mesher_vulkan -- --ignored --nocapture | tee "$RUNNER_TEMP/greedy-results.txt"
+          cargo test -p gpui-3d --lib --features gpui/x11 gpu_mesher_vulkan -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/greedy-results.txt"
           grep -Fq 'running 1 test' "$RUNNER_TEMP/greedy-results.txt"
       - name: Reject illegal direct MSAA texture readback
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p gfx-vulkan --test texture_transfer multisampled_texture_readback_requires_explicit_resolve -- --exact --nocapture | tee "$RUNNER_TEMP/msaa-readback.txt"
+          cargo test -p gfx-vulkan --test texture_transfer multisampled_texture_readback_requires_explicit_resolve -- --exact --nocapture 2>&1 | tee "$RUNNER_TEMP/msaa-readback.txt"
           grep -Fq 'running 1 test' "$RUNNER_TEMP/msaa-readback.txt"
           if grep -Fq 'NOVA_GFX_SKIP=' "$RUNNER_TEMP/msaa-readback.txt"; then exit 1; fi
