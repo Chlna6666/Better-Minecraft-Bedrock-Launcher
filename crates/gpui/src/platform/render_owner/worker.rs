@@ -683,8 +683,7 @@ impl Entry {
             // never fire again, especially across a Vulkan swapchain recreation.
             self.ready_registration.store(0, Ordering::Release);
             self.ready_poll_required = true;
-            // report() arms the exact resource notification after publishing
-            // the deferred scene state.
+            self.arm_resource_readiness();
             return Ok(false);
         }
         // Count only native pacing preflight rejections, never resize or resource deferrals.

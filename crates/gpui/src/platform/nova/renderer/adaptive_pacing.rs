@@ -22,7 +22,10 @@ pub(super) struct AdaptivePacing {
     sync_native: bool,
     gpu_cost_ns: Option<u64>,
     gpu_samples: u8,
+    new_gpu_samples: u8,
+    empty_gpu_windows: u8,
     observed_refresh: Option<Duration>,
+    nominal_refresh: Option<Duration>,
 }
 
 impl Default for AdaptivePacing {
@@ -40,7 +43,10 @@ impl Default for AdaptivePacing {
             sync_native: false,
             gpu_cost_ns: None,
             gpu_samples: 0,
+            new_gpu_samples: 0,
+            empty_gpu_windows: 0,
             observed_refresh: None,
+            nominal_refresh: None,
         }
     }
 }
@@ -80,12 +86,16 @@ impl AdaptivePacing {
         // is a lower bound, not total 3D/offscreen/queue or scanout latency.
         self.gpu_cost_ns = Some(self.gpu_cost_ns.map_or(ns, |old| (old * 7 + ns) / 8));
         self.gpu_samples = self.gpu_samples.saturating_add(1);
+        self.new_gpu_samples = self.new_gpu_samples.saturating_add(1);
     }
 
     fn reset_evidence(&mut self) {
         self.gpu_cost_ns = None;
         self.gpu_samples = 0;
+        self.new_gpu_samples = 0;
+        self.empty_gpu_windows = 0;
         self.observed_refresh = None;
+        self.nominal_refresh = None;
         self.last_frame = None;
         self.previous = None;
         self.frames = 0;
@@ -93,6 +103,12 @@ impl AdaptivePacing {
         self.pressure_pending = false;
         self.quiet_windows = 0;
         self.missing_windows = 0;
+    }
+
+    /// Retry a failed optional native actuator on the next valid sample,
+    /// rather than permanently diverging from the software admission limit.
+    pub(super) fn native_limit_failed(&mut self) {
+        self.sync_native = self.enabled;
     }
 
     pub(super) fn surface_changed(&mut self) {
@@ -126,18 +142,37 @@ impl AdaptivePacing {
         let previous = self.previous;
         self.previous = feedback;
         let prior_period = self.observed_refresh;
-        self.observed_refresh = feedback.and_then(|new| match new {
-            PresentationFeedback::Vulkan { refresh_duration_ns, .. }
-            | PresentationFeedback::Wayland { refresh_duration_ns, .. } => {
-                refresh_duration_ns.filter(|ns| *ns != 0).map(Duration::from_nanos)
-            }
-            #[cfg(target_os = "windows")]
-            PresentationFeedback::Dxgi { .. } => dxgi_refresh_period(previous?, new, qpc_frequency()?),
-            #[allow(unreachable_patterns)]
-            _ => None,
-        });
-        let period_changed = prior_period.zip(self.observed_refresh)
+        let prior_nominal = self.nominal_refresh;
+        self.nominal_refresh = feedback.and_then(nominal_refresh);
+        // Unknown nominal period is valid (e.g. VRR). A same-domain timestamp
+        // delta divided by the native progress counter is only an observed
+        // cadence estimate. Never turn it into an independent display clock.
+        let measured = previous.zip(feedback).and_then(|(old, new)| observed_period(old, new));
+        let progressing_sample = previous.zip(feedback).is_some_and(|(old, new)| progressing(old, new));
+        self.observed_refresh = if progressing_sample || previous.is_none() {
+            self.nominal_refresh.or(measured)
+        } else {
+            None
+        };
+        let nominal_changed = previous.is_some() && feedback.is_some() && match (prior_nominal, self.nominal_refresh) {
+            (Some(a), Some(b)) => a.max(b) - a.min(b) > a.max(b) / 4,
+            (None, None) => false,
+            _ => true,
+        };
+        let observed_variation = prior_period.zip(self.observed_refresh)
             .is_some_and(|(a, b)| a.max(b) - a.min(b) > a.max(b) / 4);
+        // A VRR period change does not invalidate the hardware GPU duration.
+        // It does invalidate a quiet-window decision to shrink admission.
+        let period_changed = nominal_changed;
+        if std::mem::take(&mut self.new_gpu_samples) == 0 {
+            self.empty_gpu_windows = self.empty_gpu_windows.saturating_add(1);
+            if self.empty_gpu_windows >= 2 {
+                self.gpu_cost_ns = None;
+                self.gpu_samples = 0;
+            }
+        } else {
+            self.empty_gpu_windows = 0;
+        }
         let pressure = std::mem::take(&mut self.pressure);
         self.frames = 0;
         let previous_limit = self.limit;
@@ -149,9 +184,9 @@ impl AdaptivePacing {
             self.limit = MAX_IN_FLIGHT_SUBMISSIONS;
             self.gpu_cost_ns = None;
             self.gpu_samples = 0;
-        } else if previous.zip(feedback).is_some_and(|(old, new)| progressing(old, new)) {
+        } else if progressing_sample {
             self.missing_windows = 0;
-            if pressure >= PRESSURE_FRAMES || gpu_heavy {
+            if pressure >= PRESSURE_FRAMES || gpu_heavy || observed_variation {
                 self.quiet_windows = 0;
                 self.limit = MAX_IN_FLIGHT_SUBMISSIONS;
             } else if pressure == 0 {
@@ -177,6 +212,38 @@ impl AdaptivePacing {
         } else {
             None
         }
+    }
+}
+
+fn nominal_refresh(sample: PresentationFeedback) -> Option<Duration> {
+    match sample {
+        PresentationFeedback::Vulkan { refresh_duration_ns, .. }
+        | PresentationFeedback::Wayland { refresh_duration_ns, .. } =>
+            refresh_duration_ns.filter(|ns| (1_000_000..=100_000_000).contains(ns)).map(Duration::from_nanos),
+        _ => None,
+    }
+}
+
+fn period_from_delta(old_ns: u64, new_ns: u64, old_sequence: u64, new_sequence: u64) -> Option<Duration> {
+    let intervals = new_sequence.checked_sub(old_sequence).filter(|count| *count > 0)?;
+    let ns = new_ns.checked_sub(old_ns)?.checked_div(intervals)?;
+    (1_000_000..=100_000_000).contains(&ns).then(|| Duration::from_nanos(ns))
+}
+
+fn observed_period(old: PresentationFeedback, new: PresentationFeedback) -> Option<Duration> {
+    match (old, new) {
+        (
+            PresentationFeedback::Vulkan { present_id: a, actual_present_ns: t0, .. },
+            PresentationFeedback::Vulkan { present_id: b, actual_present_ns: t1, .. },
+        ) => period_from_delta(t0, t1, u64::from(a), u64::from(b)),
+        (
+            PresentationFeedback::Wayland { clock_id: c0, actual_present_ns: t0, sequence: a, .. },
+            PresentationFeedback::Wayland { clock_id: c1, actual_present_ns: t1, sequence: b, .. },
+        ) if c0 == c1 => period_from_delta(t0, t1, a, b),
+        #[cfg(target_os = "windows")]
+        (old @ PresentationFeedback::Dxgi { .. }, new @ PresentationFeedback::Dxgi { .. }) =>
+            dxgi_refresh_period(old, new, qpc_frequency()?),
+        _ => None,
     }
 }
 
@@ -347,5 +414,44 @@ mod dxgi_period_tests {
         assert_eq!(dxgi_refresh_period(sample(12, 116_000), sample(10, 100_000), 1_000_000), None);
         assert_eq!(dxgi_refresh_period(sample(10, 100_000), sample(10, 116_000), 1_000_000), None);
         assert_eq!(dxgi_refresh_period(sample(10, 100_000), sample(12, 116_000), 0), None);
+    }
+}
+
+#[cfg(test)]
+mod variable_period_tests {
+    use super::*;
+    fn sample(clock_id: u32, seq: u64, ns: u64) -> PresentationFeedback {
+        PresentationFeedback::Wayland { clock_id, actual_present_ns: ns, sequence: seq, refresh_duration_ns: None }
+    }
+    #[test]
+    fn estimates_variable_cadence_without_inventing_nominal_refresh() {
+        let a = sample(1, 5, 100_000_000);
+        let b = sample(1, 7, 116_000_000);
+        let c = sample(1, 9, 148_000_000);
+        assert_eq!(nominal_refresh(b), None);
+        assert_eq!(observed_period(a, b), Some(Duration::from_millis(8)));
+        assert_eq!(observed_period(b, c), Some(Duration::from_millis(16)));
+        assert_eq!(observed_period(a, sample(2, 7, 116_000_000)), None);
+        assert_eq!(observed_period(b, a), None);
+        assert_eq!(observed_period(a, sample(1, 5, 116_000_000)), None);
+        let mut pacing = AdaptivePacing::default();
+        pacing.set_enabled(true);
+        pacing.observe(Some(a));
+        pacing.observe(Some(b));
+        assert_eq!(pacing.native_refresh_period(), Some(Duration::from_millis(8)));
+        pacing.observe(Some(c));
+        assert_eq!(pacing.native_refresh_period(), Some(Duration::from_millis(16)));
+        assert_eq!(pacing.limit(), MAX_IN_FLIGHT_SUBMISSIONS);
+    }
+    #[test]
+    fn stale_gpu_evidence_expires_without_new_samples() {
+        let mut pacing = AdaptivePacing::default();
+        pacing.set_enabled(true);
+        pacing.record_gpu_cost(gfx_core::FrameGpuTimestamps { duration_ticks: 10, frequency: 1_000 });
+        pacing.observe(None);
+        pacing.observe(None);
+        assert!(pacing.gpu_cost_ns.is_some());
+        pacing.observe(None);
+        assert_eq!(pacing.gpu_cost_ns, None);
     }
 }

@@ -2165,11 +2165,15 @@ impl NovaRenderer {
             if sample_due && let Some(limit) = self.adaptive_pacing.observe(feedback) {
                 // Native latency is a separate, optional actuator. GPU admission remains
                 // fence-safe even if a platform cannot adjust its display queue.
-                match lock_backend(&self.backend).set_frame_latency_limit(self.swapchain, limit as u32) {
+                let native_result = lock_backend(&self.backend).set_frame_latency_limit(self.swapchain, limit as u32);
+                match native_result {
                     Ok(native_limit) => log::debug!(target: "gpui_present_feedback",
                         "window={:?} gpu_frame_limit={} native_frame_limit={native_limit:?}", packet.window_id, limit),
-                    Err(error) => log::debug!(target: "gpui_present_feedback",
-                        "native frame latency adjustment failed: {error:#}"),
+                    Err(error) => {
+                        self.adaptive_pacing.native_limit_failed();
+                        log::debug!(target: "gpui_present_feedback",
+                            "native frame latency adjustment failed: {error:#}");
+                    }
                 }
             }
         }
