@@ -230,14 +230,27 @@ function* chooseCapture() {
   }
   let structuresReady = false;
   if (capabilities.createEmpty && registrySource === "script_api") {
-    try {
-      const test = world.structureManager.createEmpty(
-        "bmcbl:capability_test", { x: 1, y: 1, z: 1 }, StructureSaveMode?.Memory
-      );
-      structuresReady = typeof test.setBlockPermutation === "function"
-        && typeof test.saveToWorld === "function";
-    } catch (error) {
-      emit("WARNING", { capability: "structure_write", message: String(error) });
+    // Old BDS builds reject Structure creation during early startup/WorldLoad
+    // with EngineError. Retry across several game ticks before giving up, so a
+    // timing failure is not mistaken for an unsupported API.
+    const deadline = system.currentTick + 100;
+    let attempt = 0;
+    let lastError = null;
+    while (!structuresReady && system.currentTick < deadline) {
+      try {
+        const test = world.structureManager.createEmpty(
+          "bmcbl:capability_test_" + attempt, { x: 1, y: 1, z: 1 }, StructureSaveMode?.Memory
+        );
+        structuresReady = typeof test.setBlockPermutation === "function"
+          && typeof test.saveToWorld === "function";
+      } catch (error) {
+        lastError = String(error);
+      }
+      attempt++;
+      if (!structuresReady) yield;
+    }
+    if (!structuresReady && lastError) {
+      emit("WARNING", { capability: "structure_write", attempts: attempt, message: lastError });
     }
   }
   if (structuresReady && capabilities.BlockStates) {

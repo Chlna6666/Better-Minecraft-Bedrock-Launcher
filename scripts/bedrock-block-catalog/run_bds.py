@@ -173,7 +173,20 @@ def extract(archive: Path, destination: Path) -> None:
     binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
 
 
-def write_fallback_block_ids(server: Path, pack: Path) -> int:
+def _nearest_palette_label(version: str) -> str | None:
+    """Pick the committed runtime-palette label at or below `version`."""
+    palette = Path(__file__).resolve().parents[2] / "crates/bedrock-world/data/block-catalog/palettes"
+    if not palette.is_dir():
+        return None
+    def key(label: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in re.findall(r"\d+", label))
+    wanted = key(version)
+    labels = sorted((p.stem for p in palette.glob("*.nbt")), key=key)
+    eligible = [label for label in labels if key(label) <= wanted]
+    return eligible[-1] if eligible else None
+
+
+def write_fallback_block_ids(server: Path, pack: Path, version: str) -> int:
     """Provide explicitly *incomplete* block-name hints from shipped BDS JSON.
 
     This is for old APIs lacking BlockTypes.getAll. It is never a proof of
@@ -197,9 +210,29 @@ def write_fallback_block_ids(server: Path, pack: Path) -> int:
         for name in blocks:
             if isinstance(name, str) and name.startswith("minecraft:"):
                 candidates.add(name)
+
+    # Best available name set for APIs lacking BlockTypes.getAll (e.g. 1.20.80):
+    # the committed bds-mod-mapping runtime palette for the SAME game version.
+    # It supplies candidate NAMES only; BDS Script API still validates each one
+    # and the persisted Structure NBT remains the authority on states/version.
+    palette_source = "bds_resource_hints"
+    palette = Path(__file__).resolve().parents[2] / "crates/bedrock-world/data/block-catalog/palettes"
+    label = _nearest_palette_label(version)
+    if label and (palette / f"{label}.nbt").is_file():
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent / "pdb"))
+            from parse_runtime_palette import parse_states
+            states, _ = parse_states(palette / f"{label}.nbt")
+            palette_names = {state["name"] for state in states}
+            if len(palette_names) > len(candidates):
+                candidates = palette_names
+                palette_source = "runtime_palette_names"
+        except (ImportError, ValueError, KeyError) as error:
+            print(f"palette name hints unavailable: {error}", flush=True)
+
     target = pack / "scripts" / "block_ids.js"
     target.write_text(
-        "// BDS resource-file hints only; NOT an authoritative complete registry.\n"
+        f"// Block-name candidates from {palette_source}; NOT authoritative for states.\n"
         + "export const fallbackBlockIds = "
         + json.dumps(sorted(candidates), ensure_ascii=False)
         + ";\n", encoding="utf-8",
@@ -215,7 +248,7 @@ def configure(server: Path, pack: Path, version: str, api_version: str) -> None:
     document["header"]["min_engine_version"] = list(version_numbers(version)[:3])
     document["dependencies"] = [{"module_name": "@minecraft/server", "version": api_version}]
     manifest.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-    count = write_fallback_block_ids(server, target)
+    count = write_fallback_block_ids(server, target, version)
     print(f"BDS resource fallback block-name hints: {count}", flush=True)
     properties = server / "server.properties"
     content = properties.read_text(encoding="utf-8") if properties.exists() else ""
