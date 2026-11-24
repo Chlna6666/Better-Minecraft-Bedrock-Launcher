@@ -3718,3 +3718,52 @@ fn element_blur_unmount_clears_nested_filters(cx: &mut TestAppContext) {
         assert_eq!(window.rendered_frame.scene().quads.len(), 1);
     });
 }
+
+struct RecipeTestView {
+    model: Entity<u32>,
+    renders: Rc<Cell<usize>>,
+}
+
+impl Render for RecipeTestView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get() + 1);
+        let value = *self.model.read(cx);
+        crate::RetainedViewRecipe::new(move || crate::div().child(format!("value {value}")))
+    }
+}
+
+#[gpui::test]
+fn retained_recipe_skips_render_but_rebuilds_after_model_notify(cx: &mut TestAppContext) {
+    let renders = Rc::new(Cell::new(0));
+    let (model, window) = cx.update(|cx| {
+        let model = cx.new(|_| 1u32);
+        let window = cx.open_window(WindowOptions::default(), |_, cx| {
+            cx.new(|_| RecipeTestView {
+                model: model.clone(),
+                renders: renders.clone(),
+            })
+        }).unwrap();
+        (model, AnyWindowHandle::from(window))
+    });
+
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear();
+        let baseline = renders.get();
+        assert!(!window.view_recipes.is_empty());
+        window.redraw_without_view_cache_refresh();
+        window.draw(cx).clear();
+        assert_eq!(renders.get(), baseline, "unchanged recipe should skip Render");
+
+        // Repeat the hit to prove the original model read survives a recipe-only frame.
+        window.redraw_without_view_cache_refresh();
+        window.draw(cx).clear();
+        assert_eq!(renders.get(), baseline);
+
+        model.update(cx, |model, cx| {
+            *model = 2;
+            cx.notify();
+        });
+        window.draw(cx).clear();
+        assert_eq!(renders.get(), baseline + 1, "model notification must rebuild Render");
+    }).unwrap();
+}

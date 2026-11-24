@@ -13,7 +13,8 @@ impl Window {
     /// Admission happens before layout. Only explicit repeatable recipes are
     /// retained; a miss executes the original Render and normal lifecycle.
     pub(crate) fn reuse_view_recipe(&mut self, owner: EntityId) -> Option<RetainedViewRecipe> {
-        if cfg!(gpui_hot_reload)
+        if self.view_recipes.is_empty()
+            || cfg!(gpui_hot_reload)
             || self.force_view_cache_refresh()
             || self.view_dirty_scope(owner).is_some()
             || !self.retained_replay_is_targeted()

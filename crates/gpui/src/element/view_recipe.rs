@@ -20,7 +20,7 @@ pub struct RetainedViewRecipe {
 
 impl RetainedViewRecipe {
     /// Create a repeatable factory from the View's computed render output.
-    pub fn new<E: IntoElement, F: Fn() -> E + 'static>(factory: F) -> Self {
+    pub fn new<E: IntoElement + 'static, F: Fn() -> E + 'static>(factory: F) -> Self {
         Self {
             factory: Rc::new(move || factory().into_any_element()),
         }
