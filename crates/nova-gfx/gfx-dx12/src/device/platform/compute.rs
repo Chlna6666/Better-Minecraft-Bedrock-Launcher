@@ -1054,13 +1054,20 @@ impl Dx12Device {
         // packing pass. Keep validation before acquiring transient storage.
         let mut count = 0usize;
         for step in portable_steps() {
-            if let RenderCommand::DrawIndirect(draw) = step {
-                let buffer = self.buffers.get(draw.arguments)?;
+            let (arguments, offset, stride) = match step {
+                RenderCommand::DrawIndirect(draw) => (draw.arguments, draw.offset, 16),
+                RenderCommand::DrawIndexedIndirect(draw) => {
+                    self.index_buffer_view(draw.index_buffer, 0, 1)?;
+                    (draw.arguments, draw.offset, 20)
+                }
+                _ => continue,
+            };
+            {
+                let buffer = self.buffers.get(arguments)?;
                 if !buffer.desc.usage.contains(BufferUsage::INDIRECT)
-                    || draw.offset % 4 != 0
-                    || draw
-                        .offset
-                        .checked_add(16)
+                    || offset % 4 != 0
+                    || offset
+                        .checked_add(stride)
                         .is_none_or(|end| end > buffer.desc.size)
                 {
                     return Err(Error::InvalidInput(
@@ -1092,19 +1099,32 @@ impl Dx12Device {
         // reference clone and redundant state tracking. Changing either ID
         // still goes through the full validation and transition path.
         let mut last_source: Option<(BufferId, ID3D12Resource)> = None;
-        let mut last_signature: Option<(RenderPipelineId, ID3D12CommandSignature)> = None;
+        let mut last_signature: Option<(RenderPipelineId, bool, ID3D12CommandSignature)> = None;
         // One compute dispatch per contiguous source span, not three
         // CopyBufferRegion commands per DrawIndirect.
-        let mut pending: Option<(BufferId, ID3D12Resource, u64, usize, u32)> = None;
+        let mut pending: Option<(BufferId, ID3D12Resource, u64, usize, u32, bool)> = None;
         for step in portable_steps() {
-            let RenderCommand::DrawIndirect(draw) = step else {
-                continue;
+            let (arguments, offset, pipeline_id, indexed) = match step {
+                RenderCommand::DrawIndirect(draw) => (draw.arguments, draw.offset, draw.pipeline, false),
+                RenderCommand::DrawIndexedIndirect(draw) => {
+                    let id = draw.index_buffer.buffer;
+                    let buffer = self.buffers.get(id)?;
+                    if buffer.state != D3D12_RESOURCE_STATE_GENERIC_READ {
+                        let resource = buffer.resource.as_ref().ok_or_else(|| Error::Backend("missing index resource".into()))?.clone();
+                        let state = buffer.state;
+                        self.command_encoders.get_mut(encoder)?.buffer_states.entry(id).or_insert(state);
+                        record_transition_barrier(command, &resource, state, D3D12_RESOURCE_STATE_GENERIC_READ);
+                        self.buffers.get_mut(id)?.state = D3D12_RESOURCE_STATE_GENERIC_READ;
+                    }
+                    (draw.arguments, draw.offset, draw.pipeline, true)
+                }
+                _ => continue,
             };
             if last_source
                 .as_ref()
-                .is_none_or(|(id, _)| *id != draw.arguments)
+                .is_none_or(|(id, _)| *id != arguments)
             {
-                let buffer = self.buffers.get(draw.arguments)?;
+                let buffer = self.buffers.get(arguments)?;
                 let source = buffer
                     .resource
                     .as_ref()
@@ -1114,7 +1134,7 @@ impl Dx12Device {
                     self.command_encoders
                         .get_mut(encoder)?
                         .buffer_states
-                        .entry(draw.arguments)
+                        .entry(arguments)
                         .or_insert(buffer.state);
                     record_transition_barrier(
                         command,
@@ -1122,39 +1142,38 @@ impl Dx12Device {
                         buffer.state,
                         D3D12_RESOURCE_STATE_GENERIC_READ,
                     );
-                    self.buffers.get_mut(draw.arguments)?.state = D3D12_RESOURCE_STATE_GENERIC_READ;
+                    self.buffers.get_mut(arguments)?.state = D3D12_RESOURCE_STATE_GENERIC_READ;
                 }
-                last_source = Some((draw.arguments, source));
+                last_source = Some((arguments, source));
             }
             let source = &last_source
                 .as_ref()
                 .expect("validated indirect source must be cached")
                 .1;
-            let signature = if let Some((id, signature)) = &last_signature
-                && *id == draw.pipeline
+            let signature = if let Some((id, was_indexed, signature)) = &last_signature
+                && *id == pipeline_id && *was_indexed == indexed
             {
                 signature.clone()
             } else {
-                let pipeline = self.render_pipelines.get(draw.pipeline)?;
-                let signature = pipeline
-                    .indirect_signature
+                let pipeline = self.render_pipelines.get(pipeline_id)?;
+                let signature = if indexed { &pipeline.indirect_signature_indexed } else { &pipeline.indirect_signature }
                     .as_ref()
                     .ok_or_else(|| Error::Backend("missing indirect command signature".into()))?
                     .clone();
-                last_signature = Some((draw.pipeline, signature.clone()));
+                last_signature = Some((pipeline_id, indexed, signature.clone()));
                 signature
             };
             let contiguous =
                 pending
                     .as_ref()
-                    .is_some_and(|(buffer, _, source_offset, _, length)| {
-                        *buffer == draw.arguments
-                    && source_offset.checked_add(u64::from(*length) * 16) == Some(draw.offset)
+                    .is_some_and(|(buffer, _, source_offset, _, length, was_indexed)| {
+                        *buffer == arguments && *was_indexed == indexed
+                    && source_offset.checked_add(u64::from(*length) * if indexed { 20 } else { 16 }) == Some(offset)
                     // The compiled 64-thread kernel uses one dispatch grid.
                     && *length < 65535 * 64
                     });
             if !contiguous {
-                if let Some((_, resource, source_offset, target, length)) = pending.take() {
+                if let Some((_, resource, source_offset, target, length, was_indexed)) = pending.take() {
                     self.pack_native_indirect_run(
                         command,
                         &resource,
@@ -1162,22 +1181,24 @@ impl Dx12Device {
                         source_offset,
                         target,
                         length,
+                        was_indexed,
                     )?;
                 }
                 pending = Some((
-                    draw.arguments,
+                    arguments,
                     source.clone(),
-                    draw.offset,
+                    offset,
                     index as usize,
                     1,
+                    indexed,
                 ));
-            } else if let Some((_, _, _, _, length)) = pending.as_mut() {
+            } else if let Some((_, _, _, _, length, _)) = pending.as_mut() {
                 *length += 1;
             }
             indirect.signatures.push(signature);
             index += 1;
         }
-        if let Some((_, resource, source_offset, target, length)) = pending.take() {
+        if let Some((_, resource, source_offset, target, length, was_indexed)) = pending.take() {
             self.pack_native_indirect_run(
                 command,
                 &resource,
@@ -1185,6 +1206,7 @@ impl Dx12Device {
                 source_offset,
                 target,
                 length,
+                was_indexed,
             )?;
         }
         record_transition_barrier(
@@ -1207,6 +1229,7 @@ impl Dx12Device {
         source_offset: u64,
         first_target: usize,
         count: u32,
+        indexed: bool,
     ) -> Result<()> {
         let first_word = u32::try_from(source_offset / 4).map_err(|_| {
             Error::InvalidInput("DX12 indirect input offset exceeds shader address range".into())
@@ -1220,7 +1243,7 @@ impl Dx12Device {
                 )
             })?;
         let input_end = count
-            .checked_mul(4)
+            .checked_mul(if indexed { 5 } else { 4 })
             .and_then(|len| first_word.checked_add(len))
             .ok_or_else(|| {
                 Error::InvalidInput("DX12 indirect input span exceeds shader address range".into())
@@ -1232,7 +1255,7 @@ impl Dx12Device {
                 Error::InvalidInput("DX12 indirect output span exceeds shader address range".into())
             })?;
         debug_assert!(input_end > first_word && output_end > target_word);
-        let words = [first_word, target_word, count, 0u32];
+        let words = [first_word, target_word, count, u32::from(indexed)];
         // SAFETY: command list is recording on its graphics queue; source is
         // transitioned to GENERIC_READ, target is UAV, and all writes target
         // disjoint 32-byte records. The UAV->INDIRECT transition follows the
@@ -1462,38 +1485,6 @@ pub(super) fn create_indirect_signature(
     }
     .map_err(dx_error)?;
     signature.ok_or_else(|| Error::Backend("DX12 returned no indirect signature".into()))
-}
-
-/// Signature for `D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED` argument records.
-///
-/// Indexed records are 20 bytes, so this is a separate signature from the packed
-/// non-indexed one; the constant root parameter keeps Naga's draw constants usable.
-pub(super) fn create_indexed_indirect_signature(
-    device: &ID3D12Device,
-) -> Result<ID3D12CommandSignature> {
-    // Standard 20-byte DRAW_INDEXED records. The signature consumes no root parameters, so it
-    // is created without a root signature and the arguments stay portable across backends.
-    let arguments = [D3D12_INDIRECT_ARGUMENT_DESC {
-        Type: D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED,
-        ..Default::default()
-    }];
-    // SAFETY: The signature consumes initialized 20-byte DRAW_INDEXED records and needs no
-    // root signature because it references no root parameters.
-    let mut signature = None;
-    unsafe {
-        device.CreateCommandSignature(
-            &D3D12_COMMAND_SIGNATURE_DESC {
-                ByteStride: 20,
-                NumArgumentDescs: arguments.len() as u32,
-                pArgumentDescs: arguments.as_ptr(),
-                NodeMask: 0,
-            },
-            None::<&ID3D12RootSignature>,
-            &mut signature,
-        )
-    }
-    .map_err(dx_error)?;
-    signature.ok_or_else(|| Error::Backend("DX12 returned no indexed indirect signature".into()))
 }
 
 fn raw_buffer_srv_desc(first: u64, count: u32) -> D3D12_SHADER_RESOURCE_VIEW_DESC {

@@ -1972,14 +1972,12 @@ mod platform {
                 draw_step_constants_root_index,
                 false,
             )?);
-            let indirect_signature_indexed_counted = Some(compute::create_indirect_signature(
+            let indirect_signature_indexed = Some(compute::create_indirect_signature(
                 &self.device,
                 &root_signature,
                 draw_step_constants_root_index,
                 true,
             )?);
-            let indirect_signature_indexed =
-                Some(compute::create_indexed_indirect_signature(&self.device)?);
             Ok(self.render_pipelines.insert(Dx12RenderPipeline {
                 color_targets: desc.color_targets.clone(),
                 primitive_topology: desc.primitive_topology,
@@ -1989,7 +1987,6 @@ mod platform {
                 draw_step_constants_root_index,
                 indirect_signature,
                 indirect_signature_indexed,
-                indirect_signature_indexed_counted,
             }))
         }
 
@@ -3904,7 +3901,7 @@ mod platform {
             let mut step_iter = steps.iter().peekable();
             while let Some(step) = step_iter.next() {
                 let indirect_index = indirect_count;
-                if matches!(step, RenderCommand::DrawIndirect(_)) {
+                if matches!(step, RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_)) {
                     indirect_count += 1;
                 }
 
@@ -4008,55 +4005,17 @@ mod platform {
                         run_count,
                     )?;
                 } else if let RenderCommand::DrawIndexedIndirect(draw) = step {
-                    let buffer = self.buffers.get(draw.arguments)?;
-                    if !buffer.desc.usage.contains(BufferUsage::INDIRECT)
-                        || draw.offset % 4 != 0
-                        || draw
-                            .offset
-                            .checked_add(20)
-                            .is_none_or(|end| end > buffer.desc.size)
-                    {
-                        return Err(Error::InvalidInput(
-                            "invalid DX12 indexed indirect argument range or usage".into(),
-                        ));
-                    }
-                    // The index range comes from the argument record, so the view covers the
-                    // whole remaining buffer and the generated record selects the indices.
                     let index_view = self.index_buffer_view(draw.index_buffer, 0, 1)?;
-                    let signature = self
-                        .render_pipelines
-                        .get(step.pipeline())?
-                        .indirect_signature_indexed
-                        .clone()
-                        .ok_or_else(|| {
-                            Error::Backend("DX12 pipeline has no indexed indirect signature".into())
-                        })?;
-                    let arguments = buffer.resource.as_ref().cloned().ok_or_else(|| {
-                        Error::Backend("indexed indirect arguments have no resource".into())
-                    })?;
-                    if buffer.state != D3D12_RESOURCE_STATE_GENERIC_READ {
-                        record_transition_barrier(
-                            &command_list,
-                            &arguments,
-                            buffer.state,
-                            D3D12_RESOURCE_STATE_GENERIC_READ,
-                        );
-                        self.buffers.get_mut(draw.arguments)?.state =
-                            D3D12_RESOURCE_STATE_GENERIC_READ;
-                    }
-                    // SAFETY: Signature, argument buffer and index buffer are live; the
-                    // pipeline and root signature are already bound for this step.
-                    unsafe {
-                        command_list.IASetIndexBuffer(Some(&index_view));
-                        command_list.ExecuteIndirect(
-                            &signature,
-                            1,
-                            &arguments,
-                            draw.offset,
-                            None,
-                            0,
-                        );
-                    }
+                    // SAFETY: the staging pass validated and transitioned the
+                    // index buffer and packed arguments; the pipeline is bound.
+                    unsafe { command_list.IASetIndexBuffer(Some(&index_view)); }
+                    self.execute_indirect(
+                        &command_list,
+                        encoder_id,
+                        staged.ok_or_else(|| Error::Backend("indexed indirect arguments were not staged".into()))?,
+                        indirect_index,
+                        1,
+                    )?;
                 } else {
                     self.record_render_step_draw(
                         &command_list,
@@ -4369,7 +4328,7 @@ mod platform {
                     None
                 };
                 let indirect_index = indirect_count;
-                if count.is_none() && matches!(step, RenderCommand::DrawIndirect(_)) {
+                if count.is_none() && matches!(step, RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_)) {
                     indirect_count += 1;
                 }
 
@@ -4453,7 +4412,7 @@ mod platform {
                             pipeline.indirect_signature.as_ref(), draw.arguments, draw.offset, None,
                         ),
                         RenderCommand::DrawIndexedIndirect(draw) => (
-                            pipeline.indirect_signature_indexed_counted.as_ref(), draw.arguments,
+                            pipeline.indirect_signature_indexed.as_ref(), draw.arguments,
                             draw.offset, Some(self.index_buffer_view(draw.index_buffer, 0, 1)?),
                         ),
                         _ => unreachable!("validated counted command"),
@@ -4500,6 +4459,18 @@ mod platform {
                         })?,
                         indirect_index,
                         run_count,
+                    )?;
+                } else if let RenderCommand::DrawIndexedIndirect(draw) = step {
+                    let index_view = self.index_buffer_view(draw.index_buffer, 0, 1)?;
+                    // SAFETY: the staging pass validated and transitioned the
+                    // index buffer and packed arguments; the pipeline is bound.
+                    unsafe { command_list.IASetIndexBuffer(Some(&index_view)); }
+                    self.execute_indirect(
+                        &command_list,
+                        encoder_id,
+                        staged.ok_or_else(|| Error::Backend("indexed indirect arguments were not staged".into()))?,
+                        indirect_index,
+                        1,
                     )?;
                 } else {
                     self.record_render_step_draw(
@@ -8474,11 +8445,8 @@ mod platform {
     #[derive(Clone)]
     struct Dx12RenderPipeline {
         indirect_signature: Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandSignature>,
-        /// 20-byte portable indexed argument records.
-        indirect_signature_indexed:
-            Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandSignature>,
         /// 32-byte native indexed records including the shader draw offsets.
-        indirect_signature_indexed_counted:
+        indirect_signature_indexed:
             Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandSignature>,
         color_targets: Vec<ColorTargetState>,
         primitive_topology: PrimitiveTopology,
