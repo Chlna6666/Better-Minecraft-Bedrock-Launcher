@@ -128,11 +128,21 @@ impl RuntimePalette {
     }
 }
 
-struct Decoded {
-    palettes: BTreeMap<String, RuntimePalette>,
+// Decompression happens once. The lightweight index maps a version label to
+// its byte range in the decompressed body; per-version states are decoded only
+// when a caller asks for that version and then cached.
+struct BlobIndex {
+    body: Vec<u8>,
+    pool: Vec<String>,
+    ranges: BTreeMap<String, (usize, usize)>,
 }
 
-fn decode_blob() -> Result<Decoded> {
+fn blob_index() -> &'static BlobIndex {
+    static INDEX: OnceLock<BlobIndex> = OnceLock::new();
+    INDEX.get_or_init(|| build_index().expect("embedded runtime palette catalog must decode"))
+}
+
+fn build_index() -> Result<BlobIndex> {
     if BLOB.len() < 12 || &BLOB[..8] != MAGIC {
         return Err(BedrockWorldError::Validation(
             "runtime palette blob has an invalid header".to_string(),
@@ -161,69 +171,115 @@ fn decode_blob() -> Result<Decoded> {
     }
 
     let version_count = reader.u32()? as usize;
-    let mut palettes = BTreeMap::new();
+    let mut ranges = BTreeMap::new();
     for _ in 0..version_count {
         let label = reader.string(&pool)?;
         let state_count = reader.u32()? as usize;
         if state_count > 1_000_000 {
             return Err(BedrockWorldError::Validation("runtime palette state count too large".to_string()));
         }
-        let mut states = Vec::with_capacity(state_count);
-        for palette_index in 0..state_count {
-            let name = reader.string(&pool)?;
-            let version = reader.i32()?;
+        let start = reader.position;
+        // Walk past this version's states without materializing them.
+        for _ in 0..state_count {
+            let _name = reader.u32()?;
+            let _version = reader.i32()?;
             let property_count = reader.u32()? as usize;
             if property_count > 128 {
                 return Err(BedrockWorldError::Validation("runtime palette property count too large".to_string()));
             }
-            let mut properties = BTreeMap::new();
             for _ in 0..property_count {
-                let property = reader.string(&pool)?;
+                let _prop = reader.u32()?;
                 let kind = reader.byte()?;
-                let value = match kind {
-                    0 => RuntimePaletteValue::Byte(reader.i32()?),
-                    1 => RuntimePaletteValue::Short(reader.i32()?),
-                    2 => RuntimePaletteValue::Int(reader.i32()?),
-                    3 => RuntimePaletteValue::Long(reader.i64()?),
-                    8 => RuntimePaletteValue::String(reader.string(&pool)?),
-                    other => {
-                        return Err(BedrockWorldError::Validation(format!(
-                            "runtime palette has unknown property type {other}"
-                        )))
-                    }
-                };
-                properties.insert(property, value);
+                match kind {
+                    0 | 1 | 2 | 3 => { reader.take(4)?; }
+                    8 => { reader.u32()?; }
+                    other => return Err(BedrockWorldError::Validation(format!(
+                        "runtime palette has unknown property type {other}"
+                    ))),
+                }
             }
-            states.push(RuntimePaletteState {
-                palette_index: palette_index as u32,
-                name,
-                version,
-                states: properties,
-            });
         }
-        palettes.insert(label.clone(), RuntimePalette { label, states });
+        ranges.insert(label, (start, reader.position));
     }
-    Ok(Decoded { palettes })
+    Ok(BlobIndex { body, pool, ranges })
 }
 
-fn decoded() -> &'static Decoded {
-    static DECODED: OnceLock<Decoded> = OnceLock::new();
-    DECODED.get_or_init(|| decode_blob().expect("embedded runtime palette catalog must decode"))
+fn decode_version(index: &BlobIndex, label: &str, start: usize, end: usize) -> Result<RuntimePalette> {
+    let mut reader = Reader::at(&index.body, start);
+    let mut states = Vec::new();
+    while reader.position < end {
+        let name = reader.string(&index.pool)?;
+        let version = reader.i32()?;
+        let property_count = reader.u32()? as usize;
+        let mut properties = BTreeMap::new();
+        for _ in 0..property_count {
+            let property = reader.string(&index.pool)?;
+            let kind = reader.byte()?;
+            let value = match kind {
+                0 => RuntimePaletteValue::Byte(reader.i32()?),
+                1 => RuntimePaletteValue::Short(reader.i32()?),
+                2 => RuntimePaletteValue::Int(reader.i32()?),
+                3 => RuntimePaletteValue::Long(reader.i64()?),
+                8 => RuntimePaletteValue::String(reader.string(&index.pool)?),
+                other => {
+                    return Err(BedrockWorldError::Validation(format!(
+                        "runtime palette has unknown property type {other}"
+                    )))
+                }
+            };
+            properties.insert(property, value);
+        }
+        let palette_index = states.len() as u32;
+        states.push(RuntimePaletteState {
+            palette_index,
+            name,
+            version,
+            states: properties,
+        });
+    }
+    Ok(RuntimePalette { label: label.to_string(), states })
+}
+
+// Per-version cache: the index is built cheaply on first access, then each
+// version's states are decoded only when requested and cached separately.
+fn version_slot(label: &str) -> Option<(&'static OnceLock<RuntimePalette>, (usize, usize))> {
+    static SLOTS: OnceLock<Vec<OnceLock<RuntimePalette>>> = OnceLock::new();
+    let index = blob_index();
+    let (position, (start, end)) = index.ranges.get_key_value(label)?;
+    // Build one slot per bundled version the first time any version is asked
+    // for. `get_or_init` is safe because the version set is fixed in the blob.
+    let slots = SLOTS.get_or_init(|| (0..index.ranges.len()).map(|_| OnceLock::new()).collect());
+    let ordinal = index.ranges.keys().position(|key| key == position)?;
+    Some((&slots[ordinal], (*start, *end)))
+}
+
+fn decode_cached(
+    slot: &'static OnceLock<RuntimePalette>,
+    index: &'static BlobIndex,
+    label: &str,
+    start: usize,
+    end: usize,
+) -> &'static RuntimePalette {
+    slot.get_or_init(|| decode_version(index, label, start, end).expect("embedded runtime palette version must decode"))
 }
 
 /// All exact bundled version labels.
 #[must_use]
 pub fn runtime_palette_versions() -> Vec<&'static str> {
-    decoded().palettes.keys().map(String::as_str).collect()
+    blob_index().ranges.keys().map(String::as_str).collect()
 }
 
 /// Returns the runtime palette for one verbatim version label.
+///
+/// The version's states are decoded on first access and cached; other versions
+/// remain untouched until requested.
 #[must_use]
 pub fn runtime_palette_for(label: &str) -> Option<&'static RuntimePalette> {
-    decoded().palettes.get(label)
+    let (slot, (start, end)) = version_slot(label)?;
+    Some(decode_cached(slot, blob_index(), label, start, end))
 }
 
-/// Looks up one state by version label and network runtime ID.
+/// Looks up one state by version label and palette index.
 #[must_use]
 pub fn runtime_palette_state(label: &str, palette_index: u32) -> Option<&'static RuntimePaletteState> {
     runtime_palette_for(label)?.state(palette_index)
@@ -237,6 +293,10 @@ struct Reader<'a> {
 impl<'a> Reader<'a> {
     fn new(data: &'a [u8]) -> Self {
         Self { data, position: 0 }
+    }
+
+    fn at(data: &'a [u8], position: usize) -> Self {
+        Self { data, position }
     }
 
     fn take(&mut self, len: usize) -> Result<&'a [u8]> {
