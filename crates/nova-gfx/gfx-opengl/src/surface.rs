@@ -387,7 +387,8 @@ impl OpenGlDevice {
         depth: Option<DepthAttachment>,
     ) -> Result<(SubmissionId, PresentTimings)> {
         let record_started = std::time::Instant::now();
-        self.render_target(
+        let probe = self.begin_frame_probe()?;
+        let rendered = self.render_target(
             RenderTarget::Swapchain {
                 swapchain: id,
                 image_index: 0,
@@ -396,44 +397,51 @@ impl OpenGlDevice {
             commands,
             load,
             depth,
-        )?;
-        let chain = self.swapchains.get(id)?;
-        self.make_window_current(&chain.window)?;
-        let width = chain.config.size.width() as i32;
-        let height = chain.config.size.height() as i32;
-        #[cfg(target_os = "windows")]
-        let native_size = (
-            i32::try_from(chain.window.width().unwrap_or(width as u32)).map_err(native)?,
-            i32::try_from(chain.window.height().unwrap_or(height as u32)).map_err(native)?,
         );
-        #[cfg(not(target_os = "windows"))]
-        let native_size = (width, height);
-        let clear = match load {
-            LoadOp::Clear(color) => Some(color),
-            LoadOp::Load => None,
-        };
-        self.blit_previous_frame(chain, native_size, clear)?;
-        let command_record = record_started.elapsed();
-        let present_started = std::time::Instant::now();
-        chain.window.swap_buffers(&self.context).map_err(native)?;
-        let queue_present = present_started.elapsed();
-        let cleanup_started = std::time::Instant::now();
-        self.park()?;
-        let post_present_cleanup = cleanup_started.elapsed();
-        let signal_started = std::time::Instant::now();
-        let submission = self.signal()?;
-        let history = &mut self.swapchains.get_mut(id)?.present_history;
-        *history = [Some(submission), history[0]];
-        Ok((
-            submission,
-            PresentTimings {
-                command_record,
-                queue_present,
-                queue_submit: signal_started.elapsed(),
-                post_present_cleanup,
-                ..PresentTimings::default()
-            },
-        ))
+        // Measure the main GPU render pass, not swap interval / driver wait.
+        self.end_frame_probe(probe);
+        let result = (|| {
+            rendered?;
+            let chain = self.swapchains.get(id)?;
+            self.make_window_current(&chain.window)?;
+            let width = chain.config.size.width() as i32;
+            let height = chain.config.size.height() as i32;
+            #[cfg(target_os = "windows")]
+            let native_size = (
+                i32::try_from(chain.window.width().unwrap_or(width as u32)).map_err(native)?,
+                i32::try_from(chain.window.height().unwrap_or(height as u32)).map_err(native)?,
+            );
+            #[cfg(not(target_os = "windows"))]
+            let native_size = (width, height);
+            let clear = match load {
+                LoadOp::Clear(color) => Some(color),
+                LoadOp::Load => None,
+            };
+            self.blit_previous_frame(chain, native_size, clear)?;
+            let command_record = record_started.elapsed();
+            let present_started = std::time::Instant::now();
+            chain.window.swap_buffers(&self.context).map_err(native)?;
+            let queue_present = present_started.elapsed();
+            let cleanup_started = std::time::Instant::now();
+            self.park()?;
+            let post_present_cleanup = cleanup_started.elapsed();
+            let signal_started = std::time::Instant::now();
+            let submission = self.signal()?;
+            let history = &mut self.swapchains.get_mut(id)?.present_history;
+            *history = [Some(submission), history[0]];
+            Ok((
+                submission,
+                PresentTimings {
+                    command_record,
+                    queue_present,
+                    queue_submit: signal_started.elapsed(),
+                    post_present_cleanup,
+                    ..PresentTimings::default()
+                },
+            ))
+        })();
+        self.finish_frame_probe(probe, result.as_ref().ok().map(|(id, _)| *id));
+        result
     }
 
     /// Presents the previously submitted frame over a native client extent that grew ahead

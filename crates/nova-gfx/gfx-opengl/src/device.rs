@@ -23,6 +23,12 @@ use std::{
     time::Duration,
 };
 
+#[derive(Clone, Copy)]
+enum ProbeTarget {
+    Work(GpuTimestampTag),
+    Frame(SubmissionId),
+}
+
 static NEXT_DEVICE: AtomicU32 = AtomicU32::new(1);
 pub(crate) fn native(error: impl std::fmt::Display) -> Error {
     Error::Backend(format!("OpenGL: {error}"))
@@ -70,12 +76,14 @@ pub struct OpenGlDevice {
     pub(crate) swapchains: Registry<Swapchain>,
     pending: VecDeque<(u32, glow::NativeFence)>,
     pending_gpu_work: VecDeque<(
-        Option<GpuTimestampTag>,
+        Option<ProbeTarget>,
         glow::NativeQuery,
         glow::NativeQuery,
     )>,
     reusable_gpu_queries: Vec<(glow::NativeQuery, glow::NativeQuery)>,
     gpu_work_samples: Vec<GpuTimestampSample>,
+    completed_frame_probes: VecDeque<(SubmissionId, FrameGpuTimestamps)>,
+    last_frame_gpu_timestamps: Option<FrameGpuTimestamps>,
     submitted: u32,
     completed: u32,
     generation: u32,
@@ -273,6 +281,8 @@ impl OpenGlDevice {
             pending_gpu_work: VecDeque::new(),
             reusable_gpu_queries: Vec::new(),
             gpu_work_samples: Vec::new(),
+            completed_frame_probes: VecDeque::new(),
+            last_frame_gpu_timestamps: None,
             submitted: 0,
             completed: 0,
             generation: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),
@@ -326,6 +336,11 @@ impl OpenGlDevice {
         &mut self,
         tag: GpuTimestampTag,
     ) -> Result<Option<(GpuTimestampTag, glow::NativeQuery, glow::NativeQuery)>> {
+        Ok(self.begin_frame_probe()?.map(|(start, end)| (tag, start, end)))
+    }
+
+    // Share the existing bounded timer-query pool with native offscreen probes.
+    pub(crate) fn begin_frame_probe(&mut self) -> Result<Option<(glow::NativeQuery, glow::NativeQuery)>> {
         self.park()?;
         self.retire_gpu_work();
         if self.pending_gpu_work.len() >= 64 {
@@ -350,7 +365,7 @@ impl OpenGlDevice {
         };
         // SAFETY: These slots have no outstanding GPU users.
         unsafe { self.gl.query_counter(start, glow::TIMESTAMP) };
-        Ok(Some((tag, start, end)))
+        Ok(Some((start, end)))
     }
 
     /// Finish a GPU work window. The result remains pending until nonblocking
@@ -364,7 +379,23 @@ impl OpenGlDevice {
             // SAFETY: The current context recorded the matching start probe.
             unsafe { self.gl.query_counter(end, glow::TIMESTAMP) };
             self.pending_gpu_work
-                .push_back((succeeded.then_some(tag), start, end));
+                .push_back((succeeded.then_some(ProbeTarget::Work(tag)), start, end));
+        }
+    }
+
+    pub(crate) fn end_frame_probe(&self, probe: Option<(glow::NativeQuery, glow::NativeQuery)>) {
+        if let Some((_, end)) = probe {
+            // SAFETY: The start and end belong to the same current GL context.
+            unsafe { self.gl.query_counter(end, glow::TIMESTAMP) };
+        }
+    }
+
+    pub(crate) fn finish_frame_probe(
+        &mut self, probe: Option<(glow::NativeQuery, glow::NativeQuery)>,
+        submission: Option<SubmissionId>,
+    ) {
+        if let Some((start, end)) = probe {
+            self.pending_gpu_work.push_back((submission.map(ProbeTarget::Frame), start, end));
         }
     }
 
@@ -427,12 +458,24 @@ impl OpenGlDevice {
                     (&raw mut last) as usize,
                 );
             }
-            if let Some(tag) = tag {
-                self.gpu_work_samples.push(GpuTimestampSample {
+            match tag {
+                Some(ProbeTarget::Work(tag)) => self.gpu_work_samples.push(GpuTimestampSample {
                     tag,
                     duration_ticks: last.wrapping_sub(first),
-                    frequency_hz: 1_000_000_000, // GL_TIMESTAMP is in nanoseconds.
-                });
+                    frequency_hz: 1_000_000_000,
+                }),
+                Some(ProbeTarget::Frame(id)) if last >= first => {
+                    let sample = FrameGpuTimestamps {
+                        duration_ticks: last - first,
+                        frequency: 1_000_000_000,
+                    };
+                    self.last_frame_gpu_timestamps = Some(sample);
+                    if self.completed_frame_probes.len() >= 128 {
+                        self.completed_frame_probes.pop_front();
+                    }
+                    self.completed_frame_probes.push_back((id, sample));
+                }
+                _ => {}
             }
             self.reusable_gpu_queries.push((start, end));
         }
@@ -566,6 +609,18 @@ impl SubmissionDevice for OpenGlDevice {
             SubmissionStatus::Pending
         })
     }
+    fn poll_submission_with_frame_timestamps(&mut self, id: SubmissionId)
+        -> Result<(SubmissionStatus, Option<FrameGpuTimestamps>)> {
+        let status = SubmissionDevice::poll_submission(self, id)?;
+        if status != SubmissionStatus::Complete {
+            return Ok((status, None));
+        }
+        self.retire_gpu_work();
+        let sample = self.completed_frame_probes.iter().position(|(key, _)| *key == id)
+            .and_then(|index| self.completed_frame_probes.remove(index)).map(|(_, sample)| sample);
+        Ok((status, sample))
+    }
+
     fn wait_submission(&mut self, id: SubmissionId) -> Result<()> {
         if id.generation() != self.generation || id.index() == 0 || id.index() > self.submitted {
             return Err(Error::InvalidInput(
@@ -591,6 +646,17 @@ impl SubmissionDevice for OpenGlDevice {
     }
 }
 impl DiagnosticsDevice for OpenGlDevice {
+    fn frame_gpu_timestamps_supported(&self) -> bool {
+        // This backend requires desktop GL 4.5; timestamp queries are core.
+        true
+    }
+
+    fn last_frame_gpu_timestamps(&mut self) -> Result<Option<FrameGpuTimestamps>> {
+        self.park()?;
+        self.retire_gpu_work();
+        Ok(self.last_frame_gpu_timestamps)
+    }
+
     fn resource_stats(&self) -> ResourceStats {
         let binding_mirror_bytes = self
             .sets

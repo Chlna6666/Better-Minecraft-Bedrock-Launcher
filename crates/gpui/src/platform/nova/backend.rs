@@ -588,6 +588,8 @@ impl NovaBackend {
     pub(super) fn poll_submission_with_frame_timestamps(&mut self, submission: SubmissionId)
         -> Result<(SubmissionStatus, Option<gfx_core::FrameGpuTimestamps>)> {
         match self {
+            #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
+            Self::OpenGl(device) => Ok(device.poll_submission_with_frame_timestamps(submission)?),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
             Self::Dx11(device) => Ok(device.poll_submission_with_frame_timestamps(submission)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
