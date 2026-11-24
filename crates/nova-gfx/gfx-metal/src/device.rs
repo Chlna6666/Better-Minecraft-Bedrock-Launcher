@@ -1092,6 +1092,10 @@ mod platform {
             self.upload_buffer_batch(writes)
         }
 
+        fn write_buffer_batch_profiled<'a>(&mut self, writes: impl IntoIterator<Item = gfx_core::BufferWrite<'a>>, tag: gfx_core::GpuTimestampTag) -> Result<gfx_core::BufferUploadStats> {
+            self.upload_buffer_batch_timed(writes, Some(tag))
+        }
+
         fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
             Self::create_texture(self, desc)
         }

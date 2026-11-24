@@ -16,6 +16,15 @@ impl MetalDevice {
         &mut self,
         writes: impl IntoIterator<Item = BufferWrite<'a>>,
     ) -> Result<BufferUploadStats> {
+        self.upload_buffer_batch_timed(writes, None)
+    }
+
+    pub(super) fn upload_buffer_batch_timed<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = BufferWrite<'a>>,
+        tag: Option<gfx_core::GpuTimestampTag>,
+    ) -> Result<BufferUploadStats> {
+        let mut capture = tag.and_then(|_| self.work_timestamps.capture_upload());
         let mut stats = BufferUploadStats::default();
         let mut private = Vec::new();
         let mut private_bytes = 0usize;
@@ -33,8 +42,11 @@ impl MetalDevice {
                 .ok_or_else(|| Error::Backend("Metal buffer has no native resource".into()))?.clone();
             match buffer.desc.memory_location {
                 MemoryLocation::CpuToGpu => {
+                    // Shared writes have no GPU copy interval. A mixed batch
+                    // must not train the throughput model with partial bytes.
+                    capture = None;
                     if !private.is_empty() {
-                        self.flush_private_writes(&private, private_bytes)?;
+                        self.flush_private_writes(&private, private_bytes, &mut capture)?;
                         private.clear();
                         private_bytes = 0;
                     }
@@ -49,7 +61,7 @@ impl MetalDevice {
                     }
                     if !private.is_empty() && (private_bytes.saturating_add(write.data.len()) > MAX_BATCH_BYTES
                         || private.len() >= MAX_BATCH_WRITES) {
-                        self.flush_private_writes(&private, private_bytes)?;
+                        self.flush_private_writes(&private, private_bytes, &mut capture)?;
                         private.clear();
                         private_bytes = 0;
                     }
@@ -62,11 +74,14 @@ impl MetalDevice {
             stats.calls = stats.calls.saturating_add(1);
             stats.bytes = stats.bytes.saturating_add(write.data.len() as u64);
         }
-        if !private.is_empty() { self.flush_private_writes(&private, private_bytes)?; }
+        if !private.is_empty() { self.flush_private_writes(&private, private_bytes, &mut capture)?; }
+        if let (Some(tag), Some(commands)) = (tag, capture) {
+            self.work_timestamps.submitted_upload(tag, commands);
+        }
         Ok(stats)
     }
 
-    fn flush_private_writes(&mut self, writes: &[PrivateWrite<'_>], bytes: usize) -> Result<()> {
+    fn flush_private_writes(&mut self, writes: &[PrivateWrite<'_>], bytes: usize, capture: &mut Option<timestamps::UploadCommands>) -> Result<()> {
         // Reuse the same bounded staging pages as texture uploads. In-flight
         // pages are never overwritten, and overflow uses retained temporary
         // allocations instead of waiting on the GPU.
@@ -90,6 +105,7 @@ impl MetalDevice {
         }
         blit.endEncoding();
         commands.commit();
+        timestamps::WorkTimestamps::record_upload(capture, &commands);
         self.texture_uploads.submitted(page, bytes, commands);
         Ok(())
     }

@@ -9,6 +9,9 @@ use objc2_metal::{MTLCommonCounterSetTimestamp, MTLCounterSet, MTLCounterSampleB
 
 const MAX_PENDING: usize = 8;
 const MAX_RANGES: usize = 128;
+const MAX_UPLOAD_COMMANDS: usize = 128;
+
+pub(super) type UploadCommands = Vec<Retained<ProtocolObject<dyn MTLCommandBuffer>>>;
 
 #[derive(Clone, Copy)]
 pub(super) struct TaggedRange {
@@ -37,6 +40,7 @@ pub(super) struct WorkTimestamps {
     draw_boundary: bool,
     pending: Vec<(Probe, Retained<ProtocolObject<dyn MTLCommandBuffer>>)>,
     free: Vec<QueryStorage>,
+    uploads: Vec<(GpuTimestampTag, UploadCommands)>,
 }
 
 #[repr(C)]
@@ -76,7 +80,7 @@ impl WorkTimestamps {
                 })
             })
         } else { None };
-        Self { counter_set, stage_boundary, dispatch_boundary, draw_boundary, pending: Vec::new(), free: Vec::new() }
+        Self { counter_set, stage_boundary, dispatch_boundary, draw_boundary, pending: Vec::new(), free: Vec::new(), uploads: Vec::new() }
     }
     pub(super) fn supported(&self) -> bool { self.counter_set.is_some() }
 
@@ -117,7 +121,55 @@ impl WorkTimestamps {
         self.pending.push((probe, commands));
     }
 
+    pub(super) fn capture_upload(&self) -> Option<UploadCommands> {
+        (self.uploads.len() < MAX_PENDING).then(Vec::new)
+    }
+
+    pub(super) fn record_upload(commands: &mut Option<UploadCommands>, command: &Retained<ProtocolObject<dyn MTLCommandBuffer>>) {
+        if let Some(batch) = commands {
+            if batch.len() < MAX_UPLOAD_COMMANDS {
+                batch.push(command.clone());
+            } else {
+                // Never publish a partial logical upload sample.
+                *commands = None;
+            }
+        }
+    }
+
+    pub(super) fn submitted_upload(&mut self, tag: GpuTimestampTag, commands: UploadCommands) {
+        if !commands.is_empty() { self.uploads.push((tag, commands)); }
+    }
+
+    fn drain_uploads(&mut self, output: &mut Vec<GpuTimestampSample>) {
+        let mut index = 0;
+        while index < self.uploads.len() {
+            let commands = &self.uploads[index].1;
+            if commands.iter().any(|command| command.status() == MTLCommandBufferStatus::Error) {
+                self.uploads.swap_remove(index);
+                continue;
+            }
+            if !commands.iter().all(|command| command.status() == MTLCommandBufferStatus::Completed) {
+                index += 1;
+                continue;
+            }
+            let (tag, commands) = self.uploads.swap_remove(index);
+            // Each command buffer contains only private upload blits. Sum
+            // completed native GPU execution intervals, not CPU time or gaps
+            // between submissions. Emit exactly one sample per logical batch.
+            let nanos = commands.iter().try_fold(0.0f64, |total, command| {
+                let start = command.GPUStartTime();
+                let end = command.GPUEndTime();
+                let elapsed = (end - start) * 1_000_000_000.0;
+                (start > 0.0 && elapsed.is_finite() && elapsed > 0.0).then_some(total + elapsed)
+            });
+            if let Some(nanos) = nanos.filter(|nanos| *nanos >= 1.0 && *nanos < u64::MAX as f64) {
+                output.push(GpuTimestampSample { tag, duration_ticks: nanos as u64, frequency_hz: 1_000_000_000 });
+            }
+        }
+    }
+
     pub(super) fn drain(&mut self, device: &ProtocolObject<dyn MTLDevice>, output: &mut Vec<GpuTimestampSample>) {
+        self.drain_uploads(output);
         let mut index = 0;
         while index < self.pending.len() {
             let status = self.pending[index].1.status();
