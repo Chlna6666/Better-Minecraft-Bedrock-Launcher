@@ -6,7 +6,7 @@
         "1.10.0.7|pdb_symbol_order|windows-x64|d92a6bad44fba7b7e5da731143cf19ad919b2b3428c35a76d170c707528dc663": {
           "entries": 43,
           "evidence_sha256": "e076adf63f8605e9366c4fdf253cb8cd9cab3e61e242e3e67d4e63837947377a",
-          "object_sha256": "476a688de4010c53b8e6a250521dda877d4c2d018e189073de3a8cb114bcd7f5",
+          "object_sha256": "5ea41c565c778c29c683363218097a6c89fb6fc92c4e7279837a83be449752d0",
           "provenance_scope": "1.10.0.7|pdb_symbol_order|windows-x64|d92a6bad44fba7b7e5da731143cf19ad919b2b3428c35a76d170c707528dc663",
           "source": {
             "binary_sha256": "d92a6bad44fba7b7e5da731143cf19ad919b2b3428c35a76d170c707528dc663",
@@ -25,7 +25,7 @@
         "1.11.4.2|pdb_symbol_order|windows-x64|760fe872c674901e719d6ec4b658a999df4d7fb55a8dd05fe55777b8a1966613": {
           "entries": 43,
           "evidence_sha256": "650ccfd35f228bc55ffc4be3b1676ef3b9a1c7085998846ebbd72bc7558268d4",
-          "object_sha256": "476a688de4010c53b8e6a250521dda877d4c2d018e189073de3a8cb114bcd7f5",
+          "object_sha256": "5ea41c565c778c29c683363218097a6c89fb6fc92c4e7279837a83be449752d0",
           "provenance_scope": "1.11.4.2|pdb_symbol_order|windows-x64|760fe872c674901e719d6ec4b658a999df4d7fb55a8dd05fe55777b8a1966613",
           "source": {
             "binary_sha256": "760fe872c674901e719d6ec4b658a999df4d7fb55a8dd05fe55777b8a1966613",
@@ -44,7 +44,7 @@
         "1.12.0.28|legacy_numeric_block|dataset|61d87ae8d63749cd7a7d603eed02d35e5d85eeec284b30fd5b6e8af664cbf170": {
           "entries": 3311,
           "evidence_sha256": "4d6c0465b42a396242921bdb8309f23b465da1289afd272f2890e472f887bc71",
-          "object_sha256": "1fbdef13bda4b16aa843295d034d655533c695152b0e65daff991259e9d37872",
+          "object_sha256": "247ad2e1d1204ebac2282c7e8aafb2d2052f2f0c80ffd57681ad1266b7abd090",
           "provenance_scope": "1.12.0.28|legacy_numeric_block|dataset|61d87ae8d63749cd7a7d603eed02d35e5d85eeec284b30fd5b6e8af664cbf170",
           "source": {
             "binary_sha256": "61d87ae8d63749cd7a7d603eed02d35e5d85eeec284b30fd5b6e8af664cbf170",
@@ -65,7 +65,7 @@
         "1.12.0.28|pdb_symbol_order|windows-x64|b6e2fab585dea5868cdbbbe7c098af8335b1f61a2880512e665db69422765e8f": {
           "entries": 43,
           "evidence_sha256": "d3e9b4a94dc10debe27014bb78c896f0617e860870d3745c517b41138ebc7d22",
-          "object_sha256": "476a688de4010c53b8e6a250521dda877d4c2d018e189073de3a8cb114bcd7f5",
+          "object_sha256": "5ea41c565c778c29c683363218097a6c89fb6fc92c4e7279837a83be449752d0",
           "provenance_scope": "1.12.0.28|pdb_symbol_order|windows-x64|b6e2fab585dea5868cdbbbe7c098af8335b1f61a2880512e665db69422765e8f",
           "source": {
             "binary_sha256": "b6e2fab585dea5868cdbbbe7c098af8335b1f61a2880512e665db69422765e8f",
@@ -84,7 +84,7 @@
         "1.13.3.0|pdb_symbol_order|windows-x64|3d3128f16617b4071288d87b51c649c7141a0d47345a28865b73b4c56158d3f9": {
           "entries": 160,
           "evidence_sha256": "d4a55abd2691e686907275272e2d6231f775fa120006dc4f7a9043aa7b15066e",
-          "object_sha256": "b2527aae08313f7e1bdd436a61db8ccdc34f8c8674d4d390f748ebf1ddf5e211",
+          "object_sha256": "d45127908c8cfd3426c3dc72854ed482b7ad54fecc96f2fa6f3284bb943bb362",
           "provenance_scope": "1.13.3.0|pdb_symbol_order|windows-x64|3d3128f16617b4071288d87b51c649c7141a0d47345a28865b73b4c56158d3f9",
           "source": {
             "binary_sha256": "3d3128f16617b4071288d87b51c649c7141a0d47345a28865b73b4c56158d3f9",
@@ -103,7 +103,7 @@
         "1.14.60.5|pdb_symbol_order|windows-x64|4190477f0b0ef51fada1b154b11650d4ea2f20f9e72e3037893fe02c6f2e44af": {
           "entries": 160,
           "evidence_sha256": "0c2d48cdc82557351eaaf6f804dd9c4b78071cf781fead073b073437adea3096",
-          "object_sha256": "b2527aae08313f7e1bdd436a61db8ccdc34f8c8674d4d390f748ebf1ddf5e211",
+          "object_sha256": "d45127908c8cfd3426c3dc72854ed482b7ad54fecc96f2fa6f3284bb943bb362",
           "provenance_scope": "1.14.60.5|pdb_symbol_order|windows-x64|4190477f0b0ef51fada1b154b11650d4ea2f20f9e72e3037893fe02c6f2e44af",
           "source": {
             "binary_sha256": "4190477f0b0ef51fada1b154b11650d4ea2f20f9e72e3037893fe02c6f2e44af",
@@ -122,7 +122,7 @@
         "1.16.221.01|pdb_symbol_order|windows-x64|41045253e671fbb40a7cf6c0ed92ffca998fdc949e92dc198a595ff008ae17bf": {
           "entries": 201,
           "evidence_sha256": "1389f56c8fe98ae78ccf73afbae75cf964280dc420cfc6576ad2f4ecc077b880",
-          "object_sha256": "5f8eeb57d66e7125bd3abc39700eabaf233738a254052fac9f2f07fe390a9e95",
+          "object_sha256": "2c6b42a8aa3c4aab6f24e5f63325700e9dd1fa6e0109e3ce785b21952a15002d",
           "provenance_scope": "1.16.221.01|pdb_symbol_order|windows-x64|41045253e671fbb40a7cf6c0ed92ffca998fdc949e92dc198a595ff008ae17bf",
           "source": {
             "binary_sha256": "41045253e671fbb40a7cf6c0ed92ffca998fdc949e92dc198a595ff008ae17bf",
@@ -141,7 +141,7 @@
         "1.18.33.02|pdb_symbol_order|windows-x64|520357ebc346a66d5fdbdbf3f5602cf9192c684866efb36927dd39ccf54fa5c2": {
           "entries": 411,
           "evidence_sha256": "e7524004e76c9d877199633b1e8ea1f25ba663ca04a8b2e33ff6fde0713718d7",
-          "object_sha256": "ad8330dbeebe8bd0188d8eda385f7213b6cf12f377525bcec130537670e8fdde",
+          "object_sha256": "f90155ad74f4a81d3c8abc75449a1d4970fa41d9849e43d51357ac6078564e61",
           "provenance_scope": "1.18.33.02|pdb_symbol_order|windows-x64|520357ebc346a66d5fdbdbf3f5602cf9192c684866efb36927dd39ccf54fa5c2",
           "source": {
             "binary_sha256": "520357ebc346a66d5fdbdbf3f5602cf9192c684866efb36927dd39ccf54fa5c2",
@@ -160,7 +160,7 @@
         "1.19.83.01|pdb_symbol_order|windows-x64|53320dbbcd53155a2a05d70cd8669ca836a8a62db7efd7ada9515d34b43f892b": {
           "entries": 582,
           "evidence_sha256": "e6ba316769c8fa5a63b6c1c3e39cd83e0d7f07fa4d902d4a4473a7729e189f6f",
-          "object_sha256": "e701dc450322bc1a18526b434d8765710d5686c1cca92068807c9c327e15f7d6",
+          "object_sha256": "c27070e1a4a4bf46a8c97947575ef87e79dd2ccd395655d802ba0671983fb297",
           "provenance_scope": "1.19.83.01|pdb_symbol_order|windows-x64|53320dbbcd53155a2a05d70cd8669ca836a8a62db7efd7ada9515d34b43f892b",
           "source": {
             "binary_sha256": "53320dbbcd53155a2a05d70cd8669ca836a8a62db7efd7ada9515d34b43f892b",
@@ -179,7 +179,7 @@
         "1.20.80.05|pdb_symbol_order|windows-x64|93af5be79082648667d16e3ce7713c7d863d8973cfee7e56f293bf8f4e31e883": {
           "entries": 765,
           "evidence_sha256": "c2f0d3186da9bfee1c28a83534bdf12915a8487f07bca299d92dc5e72ac4334f",
-          "object_sha256": "0fec012aa9721c5be9eb276c91a49316e629a75aa4d2cd54de3e331a58767089",
+          "object_sha256": "218a37900e146cadcbdcdc803e270e49b8bb6fe15a637814eb52581c73600300",
           "provenance_scope": "1.20.80.05|pdb_symbol_order|windows-x64|93af5be79082648667d16e3ce7713c7d863d8973cfee7e56f293bf8f4e31e883",
           "source": {
             "binary_sha256": "93af5be79082648667d16e3ce7713c7d863d8973cfee7e56f293bf8f4e31e883",
@@ -198,7 +198,7 @@
         "1.21.3.01|pdb_symbol_order|windows-x64|ccfe036a98d0ec31ede995605c8c5c0df213ff1339c1520dce54b84d719e91d2": {
           "entries": 786,
           "evidence_sha256": "9d73fb3e9bef12db18d0d51efc96da2b9cba087e8d7606c57c94598ce4e64b86",
-          "object_sha256": "abeceaf7a54894b9dc08bcb47ad1312988f451a52a48be885817fa7e1a6c71f7",
+          "object_sha256": "5db897c2aa2704bb96445e5185b01fa719644c025bee91d036d3e2ad76b02813",
           "provenance_scope": "1.21.3.01|pdb_symbol_order|windows-x64|ccfe036a98d0ec31ede995605c8c5c0df213ff1339c1520dce54b84d719e91d2",
           "source": {
             "binary_sha256": "ccfe036a98d0ec31ede995605c8c5c0df213ff1339c1520dce54b84d719e91d2",
@@ -214,10 +214,31 @@
     },
     "1.9.0.15": {
       "registries": {
+        "1.9.0.15|legacy_numeric_block|dataset|471ad7f9584fb062b13656bae897b64de16f0e9ec2c07d65ca3146f828e2a4a3": {
+          "entries": 4889,
+          "evidence_sha256": "9821fca8f724f56230114dd509c8d7f983ed854df8dd30fa170ba4c93ef1d515",
+          "object_sha256": "c48f8c32e3fe96cd7f6540cbcce932cbaf22882af32a1ac52a44543bf5b9bc34",
+          "provenance_scope": "1.9.0.15|legacy_numeric_block|dataset|471ad7f9584fb062b13656bae897b64de16f0e9ec2c07d65ca3146f828e2a4a3",
+          "source": {
+            "binary_sha256": "471ad7f9584fb062b13656bae897b64de16f0e9ec2c07d65ca3146f828e2a4a3",
+            "dataset": {
+              "file_sha256": "471ad7f9584fb062b13656bae897b64de16f0e9ec2c07d65ca3146f828e2a4a3",
+              "name": "PocketMine BedrockBlockUpgradeSchema",
+              "upstream": "https://github.com/pmmp/BedrockBlockUpgradeSchema",
+              "version": "1.9.0"
+            },
+            "method": "authoritative_dataset",
+            "pdb_sha256": null,
+            "platform": "dataset",
+            "tool": "BMCBL import_legacy_ids from authoritative PocketMine id_meta_to_nbt dataset"
+          },
+          "status": "unverified_names",
+          "verified_block_names": false
+        },
         "1.9.0.15|pdb_symbol_order|windows-x64|59e466b02104731ea8bd096184e1ee5b9d40467f5fb8783a032d6f0d7b622c59": {
           "entries": 4,
           "evidence_sha256": "b91b6a4c2114f68edb400c171a421569ee1ab30d4c33db5d23b01a91328a6fc1",
-          "object_sha256": "7dc8c38fc66040713a183ea804e469c60f9ad4e72b0c883671afdbe15965920e",
+          "object_sha256": "0c40b508204ace974025a43769af3e9fdaaf072d789410449b53e61b31df6f4e",
           "provenance_scope": "1.9.0.15|pdb_symbol_order|windows-x64|59e466b02104731ea8bd096184e1ee5b9d40467f5fb8783a032d6f0d7b622c59",
           "source": {
             "binary_sha256": "59e466b02104731ea8bd096184e1ee5b9d40467f5fb8783a032d6f0d7b622c59",

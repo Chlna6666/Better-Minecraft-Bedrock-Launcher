@@ -10,7 +10,10 @@ Every record in `index.json` has `status = unverified_names` and
   (`symbol_ordinal`) which is **evidence only**, not a verified runtime type ID.
 - `legacy_numeric_block` entries come from the authoritative PocketMine
   `BedrockBlockUpgradeSchema` dataset, recorded with its own dataset version and
-  file hash — not a BDS executable fingerprint.
+  the hashes of BOTH input files (`id_meta_to_nbt/*.bin` and
+  `block_legacy_id_map.json`) — not a BDS executable fingerprint. Early 1.9.0
+  NBT has no persisted version field; those entries use explicit `version: null`
+  (BMCBID03 presence flag 0) and never derive one from the game version.
 - Each record is keyed by a provenance scope
   `game_version|namespace|platform|binary_sha256[|palette_fingerprint]` so data
   from different platforms/builds/palettes can coexist without overwriting.
