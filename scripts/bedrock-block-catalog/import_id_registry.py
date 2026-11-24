@@ -250,6 +250,20 @@ def validate_source(source: object) -> dict:
     return validated
 
 
+def provenance_scope(version: str, namespace: str, source: dict, fingerprint: str | None) -> str:
+    """Stable key identifying one registry's exact source.
+
+    Same version + namespace can legitimately hold data from different
+    platforms, binary builds or network palettes; those must not overwrite
+    each other. game_version is already the index's outer key and is included
+    here so the scope is unambiguous on its own.
+    """
+    parts = [version, namespace, source["platform"], source["binary_sha256"]]
+    if fingerprint is not None:
+        parts.append(fingerprint)
+    return "|".join(parts)
+
+
 def import_data(payload: dict, catalog: Path, stage_unverified: bool, replace: bool) -> dict:
     require(isinstance(payload, dict) and payload.get("schema_version") == 1,
             "unsupported input schema_version")
@@ -273,7 +287,6 @@ def import_data(payload: dict, catalog: Path, stage_unverified: bool, replace: b
     staged: dict[str, dict] = {}
     for item in registries:
         namespace, fingerprint, binary, count, checked = parse_registry(item, known, stage_unverified)
-        require(namespace not in staged, "same namespace supplied twice in one import")
         object_hash = hashlib.sha256(binary).hexdigest()
         audit = json.dumps(
             {"game_version": version, "source": source,
@@ -290,11 +303,13 @@ def import_data(payload: dict, catalog: Path, stage_unverified: bool, replace: b
         }
         if fingerprint is not None:
             metadata["palette_fingerprint"] = fingerprint
-        prior = version_entry["registries"].get(namespace)
+        scope = provenance_scope(version, namespace, source, fingerprint)
+        metadata["provenance_scope"] = scope
+        prior = version_entry["registries"].get(scope)
         require(prior is None or prior == metadata or replace,
                 "registry already exists with different ID data/provenance: "
-                + namespace + " (require explicit --replace)")
-        staged[namespace] = metadata
+                + scope + " (require explicit --replace)")
+        staged[scope] = metadata
         outputs[object_hash] = binary
         evidence_objects[audit_hash] = audit_bytes
     output_folder = catalog / "id-registry" / "objects"
