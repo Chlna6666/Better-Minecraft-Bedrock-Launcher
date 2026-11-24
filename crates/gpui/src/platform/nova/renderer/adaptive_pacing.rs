@@ -135,7 +135,11 @@ impl AdaptivePacing {
         }
         self.pressure_pending = false;
         self.frames = self.frames.saturating_add(1);
+        // Shrinking admission needs sustained native presentation evidence.
+        // Expanding it under real fence pressure must not wait an entire
+        // sampling window while a one-slot renderer repeatedly stalls.
         self.frames >= SAMPLE_FRAMES
+            || (self.limit < MAX_IN_FLIGHT_SUBMISSIONS && self.pressure >= PRESSURE_FRAMES)
     }
 
     pub(super) fn observe(&mut self, feedback: Option<PresentationFeedback>) -> Option<usize> {
@@ -174,6 +178,7 @@ impl AdaptivePacing {
             self.empty_gpu_windows = 0;
         }
         let pressure = std::mem::take(&mut self.pressure);
+        let full_window = self.frames >= SAMPLE_FRAMES;
         self.frames = 0;
         let previous_limit = self.limit;
         let gpu_heavy = self.gpu_samples >= 4 && self.gpu_cost_ns.zip(self.native_refresh_period())
@@ -184,12 +189,18 @@ impl AdaptivePacing {
             self.limit = MAX_IN_FLIGHT_SUBMISSIONS;
             self.gpu_cost_ns = None;
             self.gpu_samples = 0;
+        } else if pressure >= PRESSURE_FRAMES {
+            // Exact GPU fence pressure is sufficient to restore capacity,
+            // even if compositor feedback is delayed, disjoint or unavailable.
+            self.quiet_windows = 0;
+            self.missing_windows = 0;
+            self.limit = MAX_IN_FLIGHT_SUBMISSIONS;
         } else if progressing_sample {
             self.missing_windows = 0;
-            if pressure >= PRESSURE_FRAMES || gpu_heavy || observed_variation {
+            if gpu_heavy || observed_variation {
                 self.quiet_windows = 0;
                 self.limit = MAX_IN_FLIGHT_SUBMISSIONS;
-            } else if pressure == 0 {
+            } else if pressure == 0 && full_window {
                 self.quiet_windows = self.quiet_windows.saturating_add(1);
                 if self.quiet_windows >= QUIET_WINDOWS {
                     self.limit = 1;
@@ -319,9 +330,11 @@ mod tests {
                 pacing.mark_gpu_pressure();
                 pacing.mark_gpu_pressure();
             }
-            assert_eq!(pacing.presented(*now, false, false), i == SAMPLE_FRAMES - 1);
+            if pacing.presented(*now, false, false) {
+                return pacing.observe(n.map(sample));
+            }
         }
-        pacing.observe(n.map(sample))
+        panic!("adaptive pacing did not sample a complete window");
     }
 
     #[test]
@@ -335,6 +348,25 @@ mod tests {
         }
         assert_eq!(window(&mut pacing, &mut now, Some(5), 0), Some(1));
         assert_eq!(window(&mut pacing, &mut now, Some(6), PRESSURE_FRAMES), Some(MAX_IN_FLIGHT_SUBMISSIONS));
+    }
+
+    #[test]
+    fn restores_two_slots_without_waiting_for_native_feedback() {
+        let mut pacing = AdaptivePacing::default();
+        pacing.set_enabled(true);
+        let mut now = Instant::now();
+        for n in 1..=5 {
+            window(&mut pacing, &mut now, Some(n), 0);
+        }
+        assert_eq!(pacing.limit(), 1);
+        for i in 0..PRESSURE_FRAMES {
+            now += Duration::from_millis(8);
+            pacing.mark_gpu_pressure();
+            pacing.mark_gpu_pressure(); // Retries of the same frame count once.
+            assert_eq!(pacing.presented(now, false, false), i + 1 == PRESSURE_FRAMES);
+        }
+        assert_eq!(pacing.observe(None), Some(MAX_IN_FLIGHT_SUBMISSIONS));
+        assert_eq!(pacing.limit(), MAX_IN_FLIGHT_SUBMISSIONS);
     }
 
     #[test]
