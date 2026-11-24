@@ -60,8 +60,15 @@ mod transfer_queue;
 mod submission_wake;
 mod timeline;
 
-// Older Vulkan implementations use the application's alternative renderer instead.
-const REQUIRED_API_VERSION: u32 = vk::API_VERSION_1_3;
+// Desktop has alternate renderers; Android 15 does not guarantee Vulkan 1.4.
+// ash 0.38 lacks the named 1.4 constant, but the API version encoding is stable.
+// Use only bound core 1.3 commands until the whole ash dependency graph is updated.
+const PREFERRED_API_VERSION: u32 = vk::make_api_version(0, 1, 4, 0);
+const REQUIRED_API_VERSION: u32 = if cfg!(target_os = "android") {
+    vk::API_VERSION_1_3
+} else {
+    PREFERRED_API_VERSION
+};
 const DEFAULT_FRAME_SLOTS: u32 = 2;
 // A transient WSI stall must not discard a prepared compositor frame after only 1 ms.
 // Bound the wait so a hidden/occluded window cannot block the GPU owner indefinitely.
@@ -95,7 +102,7 @@ pub struct BaselineMetrics {
 /// device enumeration fails.
 pub fn enumerate_adapter_info() -> Result<Vec<AdapterInfo>> {
     let entry = load_entry()?;
-    let instance = create_instance(&entry, "nova-gfx adapter enumeration")?;
+    let (instance, _) = create_instance(&entry, "nova-gfx adapter enumeration")?;
     let devices = match unsafe { instance.enumerate_physical_devices() } {
         Ok(devices) => devices,
         Err(error) => {
@@ -317,7 +324,7 @@ impl VulkanDevice {
     /// Returns [`Error`] if Vulkan initialization fails.
     pub fn new(desc: &DeviceDescriptor) -> Result<Self> {
         let entry = load_entry()?;
-        let instance = create_instance(&entry, &desc.application_name)?;
+        let (instance, instance_api) = create_instance(&entry, &desc.application_name)?;
         let physical_device = match pick_physical_device_without_surface(&instance, desc) {
             Ok(device) => device,
             Err(error) => {
@@ -331,8 +338,10 @@ impl VulkanDevice {
         let adapter_properties =
             unsafe { instance.get_physical_device_properties(physical_device) };
         let adapter_name = physical_device_name(&adapter_properties);
-        log::info!("nova-gfx Vulkan API target=1.3 adapter={} driver_api={}",
-            adapter_name, api_version_string(adapter_properties.api_version));
+        log::info!("nova-gfx Vulkan API instance={} adapter={} driver_api={} effective_api={}",
+            api_version_string(instance_api), adapter_name,
+            api_version_string(adapter_properties.api_version),
+            api_version_string(instance_api.min(adapter_properties.api_version)));
         let native_limits = adapter_properties.limits;
         let binding_limits = gfx_core::BufferBindingLimits {
             storage_offset_alignment: native_limits.min_storage_buffer_offset_alignment.max(1),
@@ -6518,7 +6527,12 @@ fn load_entry() -> Result<Entry> {
 
 fn supports_api_version(version: u32) -> bool {
     vk::api_version_variant(version) == 0
-        && (vk::api_version_major(version), vk::api_version_minor(version)) >= (1, 3)
+        && version >= REQUIRED_API_VERSION
+}
+
+fn negotiate_instance_api(loader_version: u32) -> Option<u32> {
+    supports_api_version(loader_version)
+        .then(|| loader_version.min(PREFERRED_API_VERSION))
 }
 
 fn api_version_string(version: u32) -> String {
@@ -6526,16 +6540,16 @@ fn api_version_string(version: u32) -> String {
         vk::api_version_minor(version), vk::api_version_patch(version))
 }
 
-fn create_instance(entry: &Entry, application_name: &str) -> Result<Instance> {
+fn create_instance(entry: &Entry, application_name: &str) -> Result<(Instance, u32)> {
     // SAFETY: the loaded entry remains alive and this query needs no instance.
     let loader_version = unsafe { entry.try_enumerate_instance_version() }
         .map_err(VulkanError::from)?.unwrap_or(vk::API_VERSION_1_0);
-    if !supports_api_version(loader_version) {
-        return Err(VulkanError::Unavailable(format!(
-            "nova-gfx requires Vulkan 1.3 or newer; loader reports {}",
-            api_version_string(loader_version)
-        )).into());
-    }
+    let instance_api = negotiate_instance_api(loader_version).ok_or_else(|| {
+        VulkanError::Unavailable(format!(
+            "nova-gfx requires Vulkan {} or newer; loader reports {}",
+            api_version_string(REQUIRED_API_VERSION), api_version_string(loader_version)
+        ))
+    })?;
     let app_name =
         CString::new(application_name).map_err(|error| Error::InvalidInput(error.to_string()))?;
     let engine_name =
@@ -6545,7 +6559,7 @@ fn create_instance(entry: &Entry, application_name: &str) -> Result<Instance> {
         .application_version(vk::make_api_version(0, 0, 1, 0))
         .engine_name(&engine_name)
         .engine_version(vk::make_api_version(0, 0, 1, 0))
-        .api_version(REQUIRED_API_VERSION);
+        .api_version(instance_api);
     let mut extension_names = instance_extension_names();
     if let Some(maintenance) = presentation::instance_extension(entry)? {
         extension_names.push(khr::get_surface_capabilities2::NAME.as_ptr());
@@ -6555,8 +6569,9 @@ fn create_instance(entry: &Entry, application_name: &str) -> Result<Instance> {
         .application_info(&app_info)
         .enabled_extension_names(&extension_names);
     // SAFETY: Create info references live CStrings and static extension names.
-    unsafe { entry.create_instance(&create_info, None) }
-        .map_err(|error| VulkanError::from(error).into())
+    let instance = unsafe { entry.create_instance(&create_info, None) }
+        .map_err(VulkanError::from)?;
+    Ok((instance, instance_api))
 }
 
 /// Required core features are queried, not inferred solely from apiVersion.
@@ -6570,7 +6585,7 @@ fn supports_modern_device(
     let mut features13 = vk::PhysicalDeviceVulkan13Features::default();
     let mut features = vk::PhysicalDeviceFeatures2::default()
         .push_next(&mut features12).push_next(&mut features13);
-    // SAFETY: this is a Vulkan 1.3 physical device on a live 1.3 instance.
+    // SAFETY: both the physical device and live instance support at least Vulkan 1.3.
     unsafe { instance.get_physical_device_features2(device, &mut features) };
     features12.timeline_semaphore == vk::TRUE
         && features13.synchronization2 == vk::TRUE
@@ -6611,8 +6626,9 @@ fn pick_physical_device_without_surface(
             // SAFETY: physical device belongs to this instance.
             let properties = unsafe { instance.get_physical_device_properties(device) };
             if !supports_modern_device(instance, device, &properties) {
-                log::debug!("skipping Vulkan adapter {} (API {}, missing 1.3 baseline or required features)",
-                    physical_device_name(&properties), api_version_string(properties.api_version));
+                log::debug!("skipping Vulkan adapter {} (API {}, requires {} and core features)",
+                    physical_device_name(&properties), api_version_string(properties.api_version),
+                    api_version_string(REQUIRED_API_VERSION));
                 return None;
             }
             queue_family_indices_without_surface(instance, device).is_ok()
@@ -6630,7 +6646,8 @@ fn pick_physical_device_without_surface(
             })
             .ok_or_else(|| {
                 VulkanError::Unavailable(format!(
-                    "requested Vulkan adapter is unavailable or lacks the Vulkan 1.3 baseline: {requested_name}"
+                    "requested Vulkan adapter is unavailable or lacks the Vulkan {} baseline: {requested_name}",
+                    api_version_string(REQUIRED_API_VERSION)
                 ))
                 .into()
             });
@@ -6644,7 +6661,10 @@ fn pick_physical_device_without_surface(
         .next()
         .map(|(device, _)| device)
         .ok_or_else(|| {
-            VulkanError::Unavailable("no suitable Vulkan 1.3 physical device with timeline semaphore, synchronization2 and dynamic rendering".into()).into()
+            VulkanError::Unavailable(format!(
+                "no suitable Vulkan {} physical device with timeline semaphore, synchronization2 and dynamic rendering",
+                api_version_string(REQUIRED_API_VERSION)
+            )).into()
         })
 }
 
