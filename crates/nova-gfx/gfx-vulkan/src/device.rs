@@ -2640,6 +2640,13 @@ impl VulkanDevice {
         depth_attachment: Option<DepthAttachment>,
         damage: Option<ScissorRect>,
     ) -> Result<Option<PresentedFrame>> {
+        if self.swapchains.get(swapchain_id)?.rebuild_pending {
+            // The legacy caller may already have issued producer work and
+            // cannot return a skipped frame without retaining its resources.
+            self.drain_unpresented_graphics_work()?;
+            self.reconfigure_outdated_swapchain(swapchain_id)?;
+            return Err(Error::SurfaceOutdated);
+        }
         let reserved = self.swapchains.get(swapchain_id)?.reserved_frame;
         let Some(present_frame) = (match reserved {
             Some(frame) => {
@@ -3226,6 +3233,14 @@ impl VulkanDevice {
     /// # Errors
     /// Returns an error if WSI or the device rejects the acquisition.
     pub fn reserve_present_frame(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
+        if self.swapchains.get(id)?.rebuild_pending {
+            // On maintenance-capable WSI, retire old frame and present
+            // references by polling before entering the recreation boundary.
+            if !SurfaceDevice::prepare_swapchain_resize(self, id)? {
+                return Ok(false);
+            }
+            self.reconfigure_outdated_swapchain(id)?;
+        }
         if let Some(frame) = self.swapchains.get(id)?.reserved_frame {
             return self.reserved_frame_ready(frame);
         }
@@ -3275,7 +3290,11 @@ impl VulkanDevice {
                     self.drain_unpresented_graphics_work()?;
                 }
                 if extent.width != 0 && extent.height != 0 {
-                    self.reconfigure_swapchain(swapchain_id, config)?;
+                    if preflight && self.swapchain_maintenance {
+                        self.swapchains.get_mut(swapchain_id)?.rebuild_pending = true;
+                    } else {
+                        self.reconfigure_swapchain(swapchain_id, config)?;
+                    }
                 }
                 return Ok(None);
             }
@@ -3367,6 +3386,12 @@ impl VulkanDevice {
                 return Ok(None);
             }
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                if preflight && self.swapchain_maintenance {
+                    // No offscreen producer has been submitted for this
+                    // reservation. Retry after old WSI references retire.
+                    self.swapchains.get_mut(swapchain_id)?.rebuild_pending = true;
+                    return Ok(None);
+                }
                 if !preflight {
                     self.drain_unpresented_graphics_work()?;
                 }
@@ -3958,6 +3983,7 @@ impl VulkanDevice {
                 .then(|| PresentCredit::new(frame_slots)),
             frame_index: 0,
             reserved_frame: None,
+            rebuild_pending: false,
             config,
         })
     }
@@ -5600,6 +5626,11 @@ impl PresentationDevice for VulkanDevice {
             return Ok(true);
         }
         let chain = self.swapchains.get(id)?;
+        if chain.rebuild_pending {
+            // Rebuild readiness covers multiple frame/present fences. The
+            // owner retry path polls this composite condition, not a stale ID.
+            return Ok(false);
+        }
         if chain.reserved_frame.is_some() {
             // A recovery-only fence has no public submission ID. Never
             // arm a stale slot or WSI wait for an already acquired image.
@@ -5639,6 +5670,9 @@ impl PresentationDevice for VulkanDevice {
 
     fn poll_present_readiness(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
         let chain = self.swapchains.get(id)?;
+        if chain.rebuild_pending {
+            return SurfaceDevice::prepare_swapchain_resize(self, id);
+        }
         if let Some(frame) = chain.reserved_frame {
             // This frame already owns an acquired WSI image and its credit.
             // Reapplying a reduced present limit could strand the reservation.
@@ -6768,6 +6802,7 @@ struct VulkanSwapchain {
     frame_probe: FrameProbeCadence,
     frame_index: usize,
     reserved_frame: Option<VulkanPresentFrame>,
+    rebuild_pending: bool,
     acquire_slots: Vec<presentation::AcquireSlot>,
     config: SurfaceConfig,
 }
