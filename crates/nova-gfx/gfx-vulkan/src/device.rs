@@ -2476,6 +2476,7 @@ impl VulkanDevice {
                     extent,
                     old_layout: destination.layout,
                     native_view,
+                    discard_source: source.desc.usage.contains(TextureUsage::DISCARD_AFTER_RESOLVE),
                 })
             }
             None => None,
@@ -7881,6 +7882,7 @@ struct CommandResolve {
     extent: vk::Extent2D,
     old_layout: vk::ImageLayout,
     native_view: Option<vk::ImageView>,
+    discard_source: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -8272,6 +8274,11 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             .resolve_mode(vk::ResolveModeFlags::AVERAGE)
             .resolve_image_view(view)
             .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        // Only the resolved source is disposable. Other MRT attachments and
+        // depth may still be sampled; the explicit resolve fallback needs STORE.
+        if resolve.discard_source && !color_load {
+            attachments[0] = attachments[0].store_op(vk::AttachmentStoreOp::DONT_CARE);
+        }
     }
     let mut rendering_info = vk::RenderingInfo::default()
         .render_area(render_area).layer_count(1).color_attachments(attachments);

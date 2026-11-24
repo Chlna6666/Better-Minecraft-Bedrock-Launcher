@@ -797,6 +797,11 @@ bitflags! {
         const DEPTH_ATTACHMENT = 1 << 4;
         /// Shader storage image: read or written by a shader through a UAV / image unit.
         const STORAGE = 1 << 5;
+        /// Multisampled color contents need not survive a full attachment resolve.
+        /// The caller must not read or load the source after such a resolve
+        /// until it has been completely initialized again. Backends may ignore
+        /// this hint and preserve the source, including for explicit resolves.
+        const DISCARD_AFTER_RESOLVE = 1 << 6;
     }
 }
 
@@ -1323,6 +1328,15 @@ impl TextureDescriptor {
                 "texture sample_count {} must be a power of two in 1..=64",
                 self.sample_count
             )));
+        }
+        if self.usage.contains(TextureUsage::DISCARD_AFTER_RESOLVE)
+            && (self.sample_count <= 1 || self.is_format_depth()
+                || !self.usage.contains(TextureUsage::COLOR_ATTACHMENT)
+                || self.usage.contains(TextureUsage::DEPTH_ATTACHMENT))
+        {
+            return Err(Error::InvalidInput(
+                "discard after resolve requires a multisampled color attachment".into(),
+            ));
         }
         // D3D11/D3D12, Vulkan and OpenGL all require a multisampled
         // 2D texture to have a single mip level and no array layers in

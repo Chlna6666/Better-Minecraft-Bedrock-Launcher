@@ -37,12 +37,23 @@ impl Target {
         depth: bool,
         sample_count: u32,
     ) -> gpui::Result<Self> {
+        Self::create_with_hint(device, extent, format, depth, sample_count, TextureUsage::empty())
+    }
+
+    fn create_with_hint(
+        device: &mut dyn ExtensionDevice,
+        extent: Extent2d,
+        format: Format,
+        depth: bool,
+        sample_count: u32,
+        hint: TextureUsage,
+    ) -> gpui::Result<Self> {
         let texture = device.create_texture(&TextureDescriptor {
             label: Some("gpui-3d effect target".into()),
             size: extent,
             mip_level_count: 1,
             format,
-            usage: TextureUsage::SAMPLED
+            usage: hint | TextureUsage::SAMPLED
                 | TextureUsage::COPY_SRC
                 | if depth {
                     TextureUsage::DEPTH_ATTACHMENT
@@ -82,29 +93,32 @@ impl Targets {
     ) -> gpui::Result<Self> {
         let mut cleanup = super::construction::Construction::default();
         let result = (|| {
-            let mut create = |format, samples| -> gpui::Result<Target> {
-                let target = Target::create(
+            let mut create = |format, samples, hint| -> gpui::Result<Target> {
+                let target = Target::create_with_hint(
                     device,
                     extent,
                     format,
                     format == Format::Depth32Float,
                     samples,
+                    hint,
                 )?;
                 target.record(&mut cleanup);
                 Ok(target)
             };
             Ok(Self {
                 extent,
-                color: create(Format::Rgba16Float, 1)?,
-                depth: create(Format::Depth32Float, msaa_sample_count)?,
-                surface: create(Format::Rgba16Float, 1)?,
-                surface_depth: create(Format::Depth32Float, msaa_sample_count)?,
-                albedo: create(Format::Rgba16Float, msaa_sample_count)?,
-                resolved: create(Format::Rgba8Unorm, 1)?,
+                color: create(Format::Rgba16Float, 1, TextureUsage::empty())?,
+                depth: create(Format::Depth32Float, msaa_sample_count, TextureUsage::empty())?,
+                surface: create(Format::Rgba16Float, 1, TextureUsage::empty())?,
+                surface_depth: create(Format::Depth32Float, msaa_sample_count, TextureUsage::empty())?,
+                albedo: create(Format::Rgba16Float, msaa_sample_count, TextureUsage::empty())?,
+                resolved: create(Format::Rgba8Unorm, 1, TextureUsage::empty())?,
                 msaa: if msaa_sample_count > 1 {
                     Some(MsaaTargets {
-                        color: create(Format::Rgba16Float, msaa_sample_count)?,
-                        surface: create(Format::Rgba16Float, msaa_sample_count)?,
+                        // Only these two sources are resolved and never sampled.
+                        // Depth and albedo remain live at their original sample count.
+                        color: create(Format::Rgba16Float, msaa_sample_count, TextureUsage::DISCARD_AFTER_RESOLVE)?,
+                        surface: create(Format::Rgba16Float, msaa_sample_count, TextureUsage::DISCARD_AFTER_RESOLVE)?,
                     })
                 } else {
                     None
