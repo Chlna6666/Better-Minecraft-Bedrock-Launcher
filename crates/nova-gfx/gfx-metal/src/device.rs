@@ -85,6 +85,7 @@ mod platform {
     pub struct MetalDevice {
         device: Retained<ProtocolObject<dyn MTLDevice>>,
         command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+        texture_uploads: texture::TextureUploadArena,
         buffers: ResourceRegistry<MetalBuffer>,
         textures: ResourceRegistry<MetalTexture>,
         texture_views: ResourceRegistry<MetalTextureView>,
@@ -118,6 +119,7 @@ mod platform {
             Ok(Self {
                 device,
                 command_queue,
+                texture_uploads: texture::TextureUploadArena::default(),
                 buffers: ResourceRegistry::new("buffer"),
                 textures: ResourceRegistry::new("texture"),
                 texture_views: ResourceRegistry::new("texture view"),
@@ -734,6 +736,7 @@ mod platform {
 
         #[must_use]
         fn resource_stats(&self) -> ResourceStats {
+            let (upload_used_bytes, upload_capacity_bytes) = self.texture_uploads.stats();
             let allocated_bytes = self
                 .buffers
                 .values()
@@ -746,10 +749,13 @@ mod platform {
                         .filter(|texture| texture.resource.is_some())
                         .map(|texture| texture.desc.byte_size())
                         .sum::<u64>(),
-                );
+                )
+                .saturating_add(upload_capacity_bytes);
             ResourceStats {
                 memory_accounting: gfx_core::MemoryAccounting::ResourceSizes,
                 cpu_shadow_bytes: 0,
+                upload_used_bytes,
+                upload_capacity_bytes,
                 buffers: self.buffers.live_len(),
                 textures: self.textures.live_len(),
                 texture_views: self.texture_views.live_len(),

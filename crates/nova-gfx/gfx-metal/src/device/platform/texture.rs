@@ -1,4 +1,4 @@
-//! Native 2D texture allocation, views, ordered staging uploads and samplers.
+//! Native 2D texture allocation, views, bounded reusable staging uploads and samplers.
 
 use super::*;
 use objc2_foundation::NSRange;
@@ -8,6 +8,109 @@ use objc2_metal::{
     MTLSamplerMipFilter, MTLSize, MTLStorageMode, MTLTextureDescriptor,
     MTLTextureType, MTLTextureUsage,
 };
+
+// Small atlas uploads normally reuse one of these pages. Never grow a
+// permanent pool in response to a burst or block the GPU owner for a page.
+const MAX_UPLOAD_PAGES: usize = 4;
+const MAX_UPLOAD_PAGE_BYTES: usize = 4 * 1024 * 1024;
+const MIN_UPLOAD_PAGE_BYTES: usize = 64 * 1024;
+
+struct UploadPage {
+    buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    capacity: usize,
+    used: usize,
+    pending: Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>>,
+}
+
+#[derive(Default)]
+pub(super) struct TextureUploadArena {
+    pages: Vec<UploadPage>,
+}
+
+impl TextureUploadArena {
+    fn acquire(
+        &mut self,
+        device: &ProtocolObject<dyn MTLDevice>,
+        size: usize,
+    ) -> Result<(Retained<ProtocolObject<dyn MTLBuffer>>, Option<usize>)> {
+        for page in &mut self.pages {
+            if let Some(pending) = &page.pending {
+                match pending.status() {
+                    MTLCommandBufferStatus::Completed => {
+                        page.pending = None;
+                        page.used = 0;
+                    }
+                    MTLCommandBufferStatus::Error => {
+                        let error = pending.error().as_deref().map(nserror_message)
+                            .unwrap_or_else(|| "Metal texture upload failed".into());
+                        page.pending = None;
+                        page.used = 0;
+                        return Err(Error::Backend(error));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if size <= MAX_UPLOAD_PAGE_BYTES {
+            if let Some((index, page)) = self.pages.iter().enumerate()
+                .filter(|(_, page)| page.pending.is_none() && page.capacity >= size)
+                .min_by_key(|(_, page)| page.capacity)
+            {
+                return Ok((page.buffer.clone(), Some(index)));
+            }
+            let replace = self.pages.iter().position(|page| page.pending.is_none());
+            if replace.is_some() || self.pages.len() < MAX_UPLOAD_PAGES {
+                let capacity = size.max(MIN_UPLOAD_PAGE_BYTES).next_power_of_two();
+                let buffer = Self::allocate(device, capacity)?;
+                let page = UploadPage { buffer: buffer.clone(), capacity, used: 0, pending: None };
+                let index = if let Some(index) = replace {
+                    self.pages[index] = page;
+                    index
+                } else {
+                    let index = self.pages.len();
+                    self.pages.push(page);
+                    index
+                };
+                return Ok((buffer, Some(index)));
+            }
+        }
+        // Oversized transfers or a fully occupied pool use a transient buffer.
+        // The native command buffer retains it until the GPU finishes.
+        Ok((Self::allocate(device, size)?, None))
+    }
+
+    fn allocate(
+        device: &ProtocolObject<dyn MTLDevice>,
+        size: usize,
+    ) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>> {
+        device.newBufferWithLength_options(size, MTLResourceOptions::StorageModeShared)
+            .ok_or_else(|| Error::Backend("failed to allocate Metal texture staging buffer".into()))
+    }
+
+    fn submitted(
+        &mut self, index: Option<usize>, size: usize,
+        commands: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
+    ) {
+        if let Some(index) = index {
+            self.pages[index].used = size;
+            self.pages[index].pending = Some(commands);
+        }
+    }
+
+    pub(super) fn stats(&self) -> (u64, u64) {
+        let mut used = 0u64;
+        let mut capacity = 0u64;
+        for page in &self.pages {
+            capacity += page.capacity as u64;
+            if page.pending.as_ref().is_some_and(|pending| !matches!(
+                pending.status(), MTLCommandBufferStatus::Completed | MTLCommandBufferStatus::Error
+            )) {
+                used += page.used as u64;
+            }
+        }
+        (used, capacity)
+    }
+}
 
 impl MetalDevice {
     pub(super) fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
@@ -80,7 +183,7 @@ impl MetalDevice {
         if !texture.desc.usage.contains(TextureUsage::COPY_DST) || texture.desc.format.is_depth() {
             return Err(Error::InvalidInput("Metal texture upload requires a non-depth COPY_DST texture".into()));
         }
-        let destination = texture.resource.as_ref()
+        let destination = texture.resource.clone()
             .ok_or_else(|| Error::Unavailable("Metal texture has no native resource".into()))?;
         let width = desc.size.width() as usize;
         let height = desc.size.height() as usize;
@@ -95,10 +198,9 @@ impl MetalDevice {
         let offset = usize::try_from(desc.layout.offset)
             .map_err(|_| Error::InvalidInput("Metal upload offset overflow".into()))?;
         let source_pitch = desc.layout.bytes_per_row.get() as usize;
-        let staging = self.device.newBufferWithLength_options(length, MTLResourceOptions::StorageModeShared)
-            .ok_or_else(|| Error::Backend("failed to allocate Metal texture staging buffer".into()))?;
+        let (staging, page) = self.texture_uploads.acquire(&self.device, length)?;
         // SAFETY: validate_against covers every source row. The staging allocation
-        // is fresh, CPU-visible, and has pitch * height bytes. It has not been submitted.
+        // is CPU-visible, has at least pitch * height bytes, and is not in flight.
         unsafe {
             let ptr = staging.contents().as_ptr().cast::<u8>();
             for row in 0..height {
@@ -118,12 +220,13 @@ impl MetalDevice {
             blit.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
                 &staging, 0, pitch, 0,
                 MTLSize { width, height, depth: 1 },
-                destination, 0, desc.mip_level as usize,
+                &destination, 0, desc.mip_level as usize,
                 MTLOrigin { x: desc.origin.x as usize, y: desc.origin.y as usize, z: 0 },
             );
         }
         blit.endEncoding();
         commands.commit();
+        self.texture_uploads.submitted(page, length, commands);
         Ok(())
     }
 
