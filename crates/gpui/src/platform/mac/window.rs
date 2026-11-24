@@ -9,7 +9,7 @@ use crate::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformAtlas, PlatformDisplay,
     PlatformFrameRequest, PlatformInput, PlatformWindow, Point, PromptButton, PromptLevel,
     SharedString, Size, Timer, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowControlArea, WindowKind, WindowParams, WindowTab, dispatch_get_main_queue,
+    WindowControlArea, WindowKind, WindowParams, WindowTab, WindowVisibility, dispatch_get_main_queue,
     dispatch_sys::dispatch_async_f, platform::PlatformInputHandler, point, px, size,
 };
 use block::ConcreteBlock;

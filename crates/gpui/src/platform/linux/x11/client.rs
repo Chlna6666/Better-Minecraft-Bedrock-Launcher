@@ -184,6 +184,9 @@ impl NativeMsc {
             handle.remove(token);
         }
         self.last_sample.set(None);
+        // A timeout while the output was suspended is not a permanent lack
+        // of protocol support. Retry once when the window becomes visible.
+        self.enabled.set(true);
     }
 
     fn tick(&self, ust: u64, msc: u64, now: Instant) -> (Instant, Option<Duration>) {

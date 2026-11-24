@@ -832,6 +832,16 @@ impl WaylandWindowStatePtr {
                     .then(|| instant + Duration::from_millis(u64::from(elapsed)))
             })
             .unwrap_or(now);
+        // A compositor clock can jump on resume, output migration or
+        // server-side throttling. Preserve relative phase only while it remains
+        // near the local delivery clock; never carry a stale/future anchor.
+        let tick = if now.saturating_duration_since(tick) > Duration::from_millis(50)
+            || tick.saturating_duration_since(now) > Duration::from_millis(10)
+        {
+            now
+        } else {
+            tick
+        };
         state.callback_timestamp = Some((callback_data, tick));
         if !state.ui_frame_cadence.claim(now, crate::platform::FrameSignal {
             source: crate::platform::FrameSource::Wayland,

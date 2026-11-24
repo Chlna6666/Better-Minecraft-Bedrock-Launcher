@@ -154,6 +154,7 @@ pub struct VulkanDevice {
     present_queue_family_index: u32,
     swapchain_loader: khr::swapchain::Device,
     display_timing: Option<ash::google::display_timing::Device>,
+    present_wait: Option<khr::present_wait::Device>,
     allocator: ManuallyDrop<MemoryAllocator>,
     buffers: ResourceRegistry<VulkanBuffer>,
     textures: ResourceRegistry<VulkanTexture>,
@@ -362,6 +363,7 @@ impl VulkanDevice {
             memory_budget_supported,
             native_pixel_presentation,
             display_timing_supported,
+            present_wait_supported,
         ) = create_device(
             &instance,
             physical_device,
@@ -405,6 +407,8 @@ impl VulkanDevice {
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
         let display_timing = display_timing_supported
             .then(|| ash::google::display_timing::Device::new(&instance, &device));
+        let present_wait = present_wait_supported
+            .then(|| khr::present_wait::Device::new(&instance, &device));
         let allocator = MemoryAllocator::new_vulkan(VulkanMemoryAllocatorDesc {
             instance: instance.clone(),
             device: (*device).clone(),
@@ -490,6 +494,7 @@ impl VulkanDevice {
             present_queue_family_index: queue_families.present,
             swapchain_loader,
             display_timing,
+            present_wait,
             allocator: ManuallyDrop::new(allocator),
             buffers: ResourceRegistry::new("buffer"),
             textures: ResourceRegistry::new("texture"),
@@ -3159,6 +3164,12 @@ impl VulkanDevice {
             .image_indices(&image_indices);
         // Identify actual display samples without requesting a second pacing deadline.
         let chain = self.swapchains.get_mut(swapchain_id)?;
+        let present_id = chain.present_credit.as_mut().map(PresentCredit::next_id);
+        let ids = [present_id.unwrap_or(0)];
+        let mut present_id_info = vk::PresentIdKHR::default().present_ids(&ids);
+        if present_id.is_some() {
+            present_info = present_info.push_next(&mut present_id_info);
+        }
         let present_times = chain.display_timing_enabled.then(|| {
             let id = chain.next_present_id;
             chain.next_present_id = id.wrapping_add(1).max(1);
@@ -3208,6 +3219,12 @@ impl VulkanDevice {
                 .get_mut(swapchain_id)?
                 .presentation
                 .record(fence, present_result);
+        }
+        if present_result.is_ok()
+            && let Some(id) = present_id
+            && let Some(credit) = self.swapchains.get_mut(swapchain_id)?.present_credit.as_mut()
+        {
+            credit.submitted(id);
         }
         match present_result {
             Ok(false) => Ok(()),
@@ -3679,6 +3696,8 @@ impl VulkanDevice {
             next_present_id: 1,
             display_timing_enabled: self.display_timing.is_some()
                 && present_mode == vk::PresentModeKHR::FIFO,
+            present_credit: (self.present_wait.is_some() && present_mode == vk::PresentModeKHR::FIFO)
+                .then(|| PresentCredit::new(frame_slots)),
             frame_index: 0,
             config,
         })
@@ -5225,7 +5244,37 @@ impl PresentationDevice for VulkanDevice {
         let fence = chain.in_flight_fences[chain.frame_index];
         // SAFETY: this swapchain owns the frame slot's live fence. Querying it
         // neither consumes an acquire semaphore nor waits for the GPU.
-        Ok(unsafe { self.device.get_fence_status(fence) }.map_err(VulkanError::from)?)
+        if !unsafe { self.device.get_fence_status(fence) }.map_err(VulkanError::from)? {
+            return Ok(false);
+        }
+        let Some(loader) = self.present_wait.as_ref() else {
+            return Ok(true);
+        };
+        let chain = self.swapchains.get_mut(id)?;
+        let Some(credit) = chain.present_credit.as_mut() else {
+            return Ok(true);
+        };
+        let Some(oldest) = credit.wait_target() else {
+            return Ok(true);
+        };
+        // The queue owner serializes this zero-timeout WSI query with present
+        // and swapchain recreation. It never waits on a display interval.
+        match unsafe { loader.wait_for_present(chain.swapchain, oldest, 0) } {
+            Ok(()) => {
+                credit.completed(oldest);
+                Ok(true)
+            }
+            Err(vk::Result::TIMEOUT) => Ok(false),
+            Err(vk::Result::ERROR_DEVICE_LOST) => Err(VulkanError::from(vk::Result::ERROR_DEVICE_LOST).into()),
+            Err(error) => {
+                // Some WSI implementations cannot report completion for a
+                // particular surface. Fall back to acquire/fence pacing and
+                // let the existing acquire path handle outdated surfaces.
+                log::debug!("Vulkan present-wait unavailable for swapchain: {error:?}");
+                chain.present_credit = None;
+                Ok(true)
+            }
+        }
     }
 
     fn ordered_mixed_graphics_compute_supported(&self) -> bool {
@@ -6070,10 +6119,75 @@ struct VulkanSurface {
     surface: vk::SurfaceKHR,
 }
 
+/// A bounded history of successful WSI submissions. IDs are generated
+/// independently of GPU fence slots; a graphics fence is not a present credit.
+struct PresentCredit {
+    next: u64,
+    limit: usize,
+    pending: std::collections::VecDeque<u64>,
+}
+
+impl PresentCredit {
+    fn new(limit: usize) -> Self {
+        Self { next: 1, limit: limit.max(1), pending: std::collections::VecDeque::with_capacity(limit.max(1)) }
+    }
+
+    fn next_id(&mut self) -> u64 {
+        let id = self.next;
+        self.next = self.next.checked_add(1).expect("Vulkan present ID exhausted");
+        id
+    }
+
+    fn submitted(&mut self, id: u64) {
+        // Direct gfx users can submit without GPUI's preflight; retain only
+        // the newest latency window rather than growing a history forever.
+        if self.pending.len() >= self.limit {
+            self.pending.pop_front();
+        }
+        self.pending.push_back(id);
+    }
+
+    fn wait_target(&self) -> Option<u64> {
+        (self.pending.len() >= self.limit).then(|| self.pending.front().copied()).flatten()
+    }
+
+    fn completed(&mut self, id: u64) {
+        while self.pending.front().is_some_and(|pending| *pending <= id) {
+            self.pending.pop_front();
+        }
+    }
+}
+
+#[cfg(test)]
+mod present_credit_tests {
+    use super::PresentCredit;
+
+    #[test]
+    fn present_credit_limits_successful_submissions_and_ignores_failed_ids() {
+        let mut credit = PresentCredit::new(2);
+        let first = credit.next_id();
+        credit.submitted(first);
+        assert_eq!(credit.wait_target(), None);
+        let _failed = credit.next_id();
+        let third = credit.next_id();
+        credit.submitted(third);
+        assert_eq!(credit.wait_target(), Some(first));
+        credit.completed(first);
+        assert_eq!(credit.wait_target(), None);
+        let fourth = credit.next_id();
+        credit.submitted(fourth);
+        assert_eq!(credit.wait_target(), Some(third));
+        let fifth = credit.next_id();
+        credit.submitted(fifth);
+        assert_eq!(credit.wait_target(), Some(fourth));
+    }
+}
+
 struct VulkanSwapchain {
     presentation: presentation::Retirement,
     next_present_id: u32,
     display_timing_enabled: bool,
+    present_credit: Option<PresentCredit>,
     native_pixel_scaling: bool,
     scaled_image_extent_range: Option<(vk::Extent2D, vk::Extent2D)>,
     surface: vk::SurfaceKHR,
@@ -6389,6 +6503,7 @@ fn create_device(
     bool,
     bool,
     bool,
+    bool,
 )> {
     let priorities = [1.0_f32, 0.75_f32];
     let single_priority = [1.0_f32];
@@ -6442,7 +6557,7 @@ fn create_device(
     let mut device_extensions = vec![khr::swapchain::NAME.as_ptr()];
     let display_timing_supported = available_extensions.iter().any(|extension| {
         // SAFETY: Vulkan extension names are null-terminated within the fixed array.
-        unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) }
+        (unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) })
             == ash::google::display_timing::NAME
     });
     if display_timing_supported {
@@ -6498,12 +6613,38 @@ fn create_device(
                 .as_ptr(),
         );
     }
+    let has_extension = |name: &CStr| available_extensions.iter().any(|extension| {
+        (unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) }) == name
+    });
+    let mut present_id_features = vk::PhysicalDevicePresentIdFeaturesKHR::default();
+    let mut present_wait_features = vk::PhysicalDevicePresentWaitFeaturesKHR::default();
+    if properties2_supported
+        && has_extension(khr::present_id::NAME)
+        && has_extension(khr::present_wait::NAME)
+    {
+        let loader = khr::get_physical_device_properties2::Instance::new(entry, instance);
+        let mut features = vk::PhysicalDeviceFeatures2::default()
+            .push_next(&mut present_id_features)
+            .push_next(&mut present_wait_features);
+        // SAFETY: both feature structures correspond to advertised extensions.
+        unsafe { loader.get_physical_device_features2(physical_device, &mut features) };
+    }
+    let present_wait_supported = present_id_features.present_id == vk::TRUE
+        && present_wait_features.present_wait == vk::TRUE;
+    if present_wait_supported {
+        device_extensions.push(khr::present_id::NAME.as_ptr());
+        device_extensions.push(khr::present_wait::NAME.as_ptr());
+    }
     let mut create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_infos)
         .enabled_extension_names(&device_extensions)
         .enabled_features(&enabled_features);
     if native_pixel_presentation {
         create_info = create_info.push_next(&mut maintenance_features);
+    }
+    if present_wait_supported {
+        create_info = create_info.push_next(&mut present_id_features)
+            .push_next(&mut present_wait_features);
     }
     // SAFETY: Physical device and queue info were selected from this instance.
     let device = unsafe { instance.create_device(physical_device, &create_info, None) }
@@ -6542,6 +6683,7 @@ fn create_device(
         memory_budget_supported,
         native_pixel_presentation,
         display_timing_supported,
+        present_wait_supported,
     ))
 }
 
