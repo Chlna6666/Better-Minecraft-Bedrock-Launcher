@@ -82,29 +82,21 @@ fn visible_item_index(state: &ScrollHandleState, target: Pixels) -> usize {
     }
 }
 
+fn logical_scroll_position(state: &ScrollHandleState, use_bottom_edge: bool) -> (usize, Pixels) {
+    let offset = state.offset.borrow().y;
+    let viewport_edge = if use_bottom_edge { state.bounds.bottom() } else { state.bounds.top() };
+    let index = visible_item_index(state, viewport_edge - offset);
+    if let Some(child_bounds) = state.child_bounds.get(index) {
+        let child_edge = if use_bottom_edge { child_bounds.bottom() } else { child_bounds.top() };
+        (index, child_edge + offset - viewport_edge)
+    } else {
+        (index, px(0.))
+    }
+}
+
 impl ScrollHandle {
     fn set_active_item(&self, index: usize, strategy: ScrollStrategy) {
         self.0.borrow_mut().active_item = Some(ScrollActiveItem { index, strategy });
-    }
-
-    fn logical_scroll_position(&self, index: usize, use_bottom_edge: bool) -> (usize, Pixels) {
-        let state = self.0.borrow();
-
-        if let Some(child_bounds) = state.child_bounds.get(index) {
-            let child_edge = if use_bottom_edge {
-                child_bounds.bottom()
-            } else {
-                child_bounds.top()
-            };
-            let viewport_edge = if use_bottom_edge {
-                state.bounds.bottom()
-            } else {
-                state.bounds.top()
-            };
-            (index, child_edge + state.offset.borrow().y - viewport_edge)
-        } else {
-            (index, px(0.))
-        }
     }
 
     /// Construct a new scroll handle.
@@ -127,14 +119,20 @@ impl ScrollHandle {
 
     /// Get the top child that's scrolled into view.
     pub fn top_item(&self) -> usize {
-        let state = self.0.borrow();
-        visible_item_index(&state, state.bounds.top() - state.offset.borrow().y)
+        let read = |state: &ScrollHandleState| {
+            visible_item_index(state, state.bounds.top() - state.offset.borrow().y)
+        };
+        let value = read(&self.0.borrow());
+        observe(&self.0, ScrollReadKind::TopItem, 0, value, read)
     }
 
     /// Get the bottom child that's scrolled into view.
     pub fn bottom_item(&self) -> usize {
-        let state = self.0.borrow();
-        visible_item_index(&state, state.bounds.bottom() - state.offset.borrow().y)
+        let read = |state: &ScrollHandleState| {
+            visible_item_index(state, state.bounds.bottom() - state.offset.borrow().y)
+        };
+        let value = read(&self.0.borrow());
+        observe(&self.0, ScrollReadKind::BottomItem, 0, value, read)
     }
 
     /// Return the bounds into which this child is painted.
@@ -214,12 +212,16 @@ impl ScrollHandle {
 
     /// Get the logical scroll top, based on a child index and a pixel offset.
     pub fn logical_scroll_top(&self) -> (usize, Pixels) {
-        self.logical_scroll_position(self.top_item(), false)
+        let read = |state: &ScrollHandleState| logical_scroll_position(state, false);
+        let value = read(&self.0.borrow());
+        observe(&self.0, ScrollReadKind::LogicalTop, 0, value, read)
     }
 
     /// Get the logical scroll bottom, based on a child index and a pixel offset.
     pub fn logical_scroll_bottom(&self) -> (usize, Pixels) {
-        self.logical_scroll_position(self.bottom_item(), true)
+        let read = |state: &ScrollHandleState| logical_scroll_position(state, true);
+        let value = read(&self.0.borrow());
+        observe(&self.0, ScrollReadKind::LogicalBottom, 0, value, read)
     }
 
     /// Get the number of tracked scrollable children.

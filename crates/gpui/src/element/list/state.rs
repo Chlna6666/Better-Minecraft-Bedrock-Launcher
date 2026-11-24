@@ -235,31 +235,8 @@ impl ListState {
     /// Get the bounds for the given item in window coordinates, if it's
     /// been rendered.
     pub fn bounds_for_item(&self, ix: usize) -> Option<Bounds<Pixels>> {
-        let state = &*self.0.borrow();
-
-        let bounds = state.last_layout_bounds.unwrap_or_default();
-        let scroll_top = state.logical_scroll_top();
-        if ix < scroll_top.item_ix {
-            return None;
-        }
-
-        let mut cursor = state.items.cursor::<Dimensions<Count, Height>>(());
-        cursor.seek(&Count(scroll_top.item_ix), Bias::Right);
-
-        let scroll_top = cursor.start().1.0 + scroll_top.offset_in_item;
-
-        cursor.seek_forward(&Count(ix), Bias::Right);
-        if let Some(&ListItem::Measured { size, .. }) = cursor.item() {
-            let &Dimensions(Count(count), Height(top), _) = cursor.start();
-            if count == ix {
-                let top = bounds.top() + top - scroll_top;
-                return Some(Bounds::from_corners(
-                    point(bounds.left(), top),
-                    point(bounds.right(), top + size.height),
-                ));
-            }
-        }
-        None
+        let value = self.0.borrow().bounds_for_item(ix);
+        observe(&self.0, ScrollReadKind::ListItemBounds, ix, value, move |state| state.bounds_for_item(ix))
     }
 
     /// Call this method when the user starts dragging the scrollbar.
@@ -286,19 +263,26 @@ impl ListState {
     /// Returns the maximum scroll offset according to the items we have measured.
     /// This value remains constant while dragging to prevent the scrollbar from moving away unexpectedly.
     pub fn scrollbar_max_offset(&self) -> Size<Pixels> {
-        let state = self.0.borrow();
-        let bounds = state.last_layout_bounds.unwrap_or_default();
-
-        let height = state
-            .scrollbar_drag_start_height
-            .unwrap_or_else(|| state.items.summary().height);
-
-        Size::new(Pixels::ZERO, Pixels::ZERO.max(height - bounds.size.height))
+        let value = self.0.borrow().scrollbar_max_offset();
+        observe(&self.0, ScrollReadKind::ListScrollbarMaxOffset, 0, value, |state| state.scrollbar_max_offset())
     }
 
     /// Returns the current scroll offset adjusted for the scrollbar
     pub fn scrollbar_offset(&self) -> Point<Pixels> {
-        let state = &self.0.borrow();
+        let value = self.0.borrow().scrollbar_offset();
+        observe(&self.0, ScrollReadKind::ListScrollbarOffset, 0, value, |state| state.scrollbar_offset())
+    }
+
+    /// Return the bounds of the viewport in pixels.
+    pub fn viewport_bounds(&self) -> Bounds<Pixels> {
+        let value = self.0.borrow().last_layout_bounds.unwrap_or_default();
+        observe(&self.0, ScrollReadKind::ListViewport, 0, value, |state| state.last_layout_bounds.unwrap_or_default())
+    }
+}
+
+impl StateInner {
+    fn scrollbar_offset(&self) -> Point<Pixels> {
+        let state = self;
         let logical_scroll_top = state.logical_scroll_top();
 
         let mut cursor = state.items.cursor::<ListItemSummary>(());
@@ -313,14 +297,45 @@ impl ListState {
         Point::new(px(0.), -offset)
     }
 
-    /// Return the bounds of the viewport in pixels.
-    pub fn viewport_bounds(&self) -> Bounds<Pixels> {
-        let value = self.0.borrow().last_layout_bounds.unwrap_or_default();
-        observe(&self.0, ScrollReadKind::ListViewport, 0, value, |state| state.last_layout_bounds.unwrap_or_default())
-    }
-}
+    fn scrollbar_max_offset(&self) -> Size<Pixels> {
+        let state = self;
+        let bounds = state.last_layout_bounds.unwrap_or_default();
 
-impl StateInner {
+        let height = state
+            .scrollbar_drag_start_height
+            .unwrap_or_else(|| state.items.summary().height);
+
+        Size::new(Pixels::ZERO, Pixels::ZERO.max(height - bounds.size.height))
+    }
+
+    fn bounds_for_item(&self, ix: usize) -> Option<Bounds<Pixels>> {
+        let state = self;
+
+        let bounds = state.last_layout_bounds.unwrap_or_default();
+        let scroll_top = state.logical_scroll_top();
+        if ix < scroll_top.item_ix {
+            return None;
+        }
+
+        let mut cursor = state.items.cursor::<Dimensions<Count, Height>>(());
+        cursor.seek(&Count(scroll_top.item_ix), Bias::Right);
+
+        let scroll_top = cursor.start().1.0 + scroll_top.offset_in_item;
+
+        cursor.seek_forward(&Count(ix), Bias::Right);
+        if let Some(&ListItem::Measured { size, .. }) = cursor.item() {
+            let &Dimensions(Count(count), Height(top), _) = cursor.start();
+            if count == ix {
+                let top = bounds.top() + top - scroll_top;
+                return Some(Bounds::from_corners(
+                    point(bounds.left(), top),
+                    point(bounds.right(), top + size.height),
+                ));
+            }
+        }
+        None
+    }
+
     pub(super) fn recycle_item_layouts(&mut self, mut item_layouts: VecDeque<ItemLayout>) {
         item_layouts.clear();
         self.item_layouts_scratch = item_layouts;
