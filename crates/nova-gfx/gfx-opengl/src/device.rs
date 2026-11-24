@@ -59,6 +59,7 @@ pub struct OpenGlDevice {
     pub(crate) config: Config,
     pub(crate) view_texture: unsafe extern "system" fn(u32, u32, u32, u32, u32, u32, u32, u32),
     pub(crate) indirect_count: Option<IndirectCountFns>,
+    pub(crate) index_rebase: RefCell<crate::indirect::IndexRebase>,
     adapter: AdapterInfo,
     pub(crate) vao: glow::NativeVertexArray,
     pub(crate) framebuffer: glow::NativeFramebuffer,
@@ -276,6 +277,7 @@ impl OpenGlDevice {
         log::info!("created native OpenGL 4.5 device: renderer={name}");
         Ok(Self {
             binding_cache: RefCell::new(crate::bindings::Cache::default()),
+            index_rebase: RefCell::new(crate::indirect::IndexRebase::default()),
             gl,
             context,
             parking,
@@ -802,6 +804,7 @@ impl Drop for OpenGlDevice {
         unsafe {
             self.gl.finish();
             self.compute.clear(&self.gl);
+            self.index_rebase.get_mut().destroy(&self.gl);
             for (_, fence) in &self.pending {
                 self.gl.delete_sync(*fence);
             }

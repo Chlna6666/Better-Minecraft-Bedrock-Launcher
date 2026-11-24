@@ -205,15 +205,22 @@ impl PresentationDevice for OpenGlDevice {
                 previous = Some(count.command_index);
                 let (arguments, offset, stride) = match pass.commands.get(count.command_index) {
                     Some(RenderCommand::DrawIndirect(draw)) => (draw.arguments, draw.offset, 16),
-                    Some(RenderCommand::DrawIndexedIndirect(draw)) if draw.index_buffer.offset == 0 => {
+                    Some(RenderCommand::DrawIndexedIndirect(draw)) => {
                         let index = self.buffers.get(draw.index_buffer.buffer)?;
                         let bytes = if draw.index_buffer.format == IndexFormat::Uint16 { 2 } else { 4 };
-                        if !index.desc.usage.contains(BufferUsage::INDEX) || index.desc.size < bytes {
+                        if !index.desc.usage.contains(BufferUsage::INDEX)
+                            || draw.index_buffer.offset % bytes != 0
+                            || draw.index_buffer.offset.checked_add(bytes).is_none_or(|end| end > index.desc.size) {
                             return Err(Error::InvalidInput("invalid OpenGL counted index buffer".into()));
+                        }
+                        if draw.index_buffer.offset != 0 {
+                            let args = self.buffers.get(draw.arguments)?;
+                            self.index_rebase_plan(draw.offset, args.desc.size, draw.index_buffer.offset,
+                                index.desc.size, bytes, count.max_draw_count)?;
                         }
                         (draw.arguments, draw.offset, 20)
                     }
-                    _ => return Err(Error::InvalidInput("OpenGL counted draw requires indirect arguments and zero index binding offset".into())),
+                    _ => return Err(Error::InvalidInput("OpenGL counted draw requires indirect arguments".into())),
                 };
                 let args = self.buffers.get(arguments)?;
                 let counter = self.buffers.get(count.count_buffer)?;
@@ -230,7 +237,9 @@ impl PresentationDevice for OpenGlDevice {
             let tag = tag.filter(|tag| tag.stage == GpuTimestampStage::DrawIndirect
                 && !pass.commands.is_empty()
                 && pass.commands.iter().all(|command| matches!(command,
-                    RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_))));
+                    RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_)))
+                && !pass.commands.iter().any(|command| matches!(command,
+                    RenderCommand::DrawIndexedIndirect(draw) if draw.index_buffer.offset != 0)));
             let targets = pass.color_attachments.iter().copied().map(RenderTarget::TextureView).collect::<Vec<_>>();
             self.render_target_counted(&targets, pass.resolve_target, pass.render_pass,
                 pass.commands, pass.color_load_op, pass.depth_attachment, pass.clear_region,

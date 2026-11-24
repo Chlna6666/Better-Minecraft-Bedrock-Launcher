@@ -696,13 +696,7 @@ impl OpenGlDevice {
                     } else {
                         (4, glow::UNSIGNED_INT)
                     };
-                    // GL_ELEMENT_ARRAY_BUFFER has no binding base. Without
-                    // GPU argument rebasing a nonzero offset would silently
-                    // select the wrong indices even for an uncounted draw.
-                    if draw.index_buffer.offset != 0 {
-                        return Err(Error::Unavailable("OpenGL indirect indexed draws require zero index binding offset".into()));
-                    }
-                    if !index.desc.usage.contains(BufferUsage::INDEX)
+                     if !index.desc.usage.contains(BufferUsage::INDEX)
                         || draw.index_buffer.offset % bytes != 0
                         || draw
                             .index_buffer
@@ -714,14 +708,27 @@ impl OpenGlDevice {
                             "OpenGL index range/usage mismatch".into(),
                         ));
                     }
-                    let offset = i32::try_from(draw.offset).map_err(native)?;
+                    let (argument_buffer, offset) = if draw.index_buffer.offset == 0 {
+                        (arguments.native, i32::try_from(draw.offset).map_err(native)?)
+                    } else {
+                        let plan = self.index_rebase_plan(draw.offset, arguments.desc.size,
+                            draw.index_buffer.offset, index.desc.size, bytes,
+                            count.map_or(1, |count| count.max_draw_count))?;
+                        let scratch = self.index_rebase.borrow_mut().encode(&self.gl, arguments.native, plan)?;
+                        // Compute uses SSBO slots zero and one. Restore the
+                        // graphics program and invalidate the native bind cache.
+                        self.gl.use_program(Some(pipeline.native));
+                        bindings.reset();
+                        self.bind_resources(pipeline, set, bindings)?;
+                        (scratch, 0)
+                    };
                     if state.element_buffer != Some(index.native) {
                         self.gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(index.native));
                         state.element_buffer = Some(index.native);
                     }
-                    if state.indirect_buffer != Some(arguments.native) {
-                        self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(arguments.native));
-                        state.indirect_buffer = Some(arguments.native);
+                    if state.indirect_buffer != Some(argument_buffer) {
+                        self.gl.bind_buffer(glow::DRAW_INDIRECT_BUFFER, Some(argument_buffer));
+                        state.indirect_buffer = Some(argument_buffer);
                     }
                     if let Some(count) = count {
                         let fns = self.indirect_count.ok_or_else(|| Error::Unavailable("OpenGL indirect count unavailable".into()))?;

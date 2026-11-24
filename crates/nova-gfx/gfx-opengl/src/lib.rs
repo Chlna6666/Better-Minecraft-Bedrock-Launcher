@@ -25,6 +25,9 @@ mod commands;
 )]
 mod compute;
 #[cfg(any(windows, target_os = "linux"))]
+#[expect(unsafe_code, reason = "native indirect argument rebasing uses owner-context FFI")]
+mod indirect;
+#[cfg(any(windows, target_os = "linux"))]
 #[expect(
     unsafe_code,
     reason = "OpenGL context and glow driver calls require audited unsafe FFI boundaries"
