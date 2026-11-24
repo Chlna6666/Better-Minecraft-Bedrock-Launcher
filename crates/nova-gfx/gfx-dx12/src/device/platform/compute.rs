@@ -1423,6 +1423,7 @@ pub(super) fn create_indirect_signature(
     device: &ID3D12Device,
     root: &ID3D12RootSignature,
     constants: u32,
+    indexed: bool,
 ) -> Result<ID3D12CommandSignature> {
     let arguments = [
         D3D12_INDIRECT_ARGUMENT_DESC {
@@ -1436,11 +1437,16 @@ pub(super) fn create_indirect_signature(
             },
         },
         D3D12_INDIRECT_ARGUMENT_DESC {
-            Type: D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
+            Type: if indexed {
+                D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED
+            } else {
+                D3D12_INDIRECT_ARGUMENT_TYPE_DRAW
+            },
             ..Default::default()
         },
     ];
-    // SAFETY: signature consumes 24 initialized bytes per 32B record; root constants match Naga.
+    // SAFETY: signature consumes 24 (draw) or 28 (indexed) initialized bytes
+    // per 32B record; the first two words are Naga draw-offset root constants.
     let mut signature = None;
     unsafe {
         device.CreateCommandSignature(

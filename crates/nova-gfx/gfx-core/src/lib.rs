@@ -2747,8 +2747,11 @@ pub struct IndirectCountBinding {
     pub count_offset: u64,
     /// Maximum number of tightly packed argument records.
     pub max_draw_count: u32,
-    /// Bytes per argument record. 32 denotes DX12 native non-indexed
-    /// [first_vertex, first_instance, vertex_count, instance_count, 0, 0, 0, 0].
+    /// Bytes per argument record. DX12 uses 32 bytes for both command kinds:
+    /// non-indexed [first_vertex, first_instance, vertex_count, instance_count, 0, 0, 0, 0];
+    /// indexed [base_vertex, first_instance, index_count, instance_count, first_index, 0, 0, 0].
+    /// The indexed producer must supply a nonnegative base vertex, matching
+    /// the DX12 direct-draw shader-offset contract. The last three words are zero.
     pub argument_stride: u32,
 }
 

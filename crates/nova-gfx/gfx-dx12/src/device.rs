@@ -1970,6 +1970,13 @@ mod platform {
                 &self.device,
                 &root_signature,
                 draw_step_constants_root_index,
+                false,
+            )?);
+            let indirect_signature_indexed_counted = Some(compute::create_indirect_signature(
+                &self.device,
+                &root_signature,
+                draw_step_constants_root_index,
+                true,
             )?);
             let indirect_signature_indexed =
                 Some(compute::create_indexed_indirect_signature(&self.device)?);
@@ -1982,6 +1989,7 @@ mod platform {
                 draw_step_constants_root_index,
                 indirect_signature,
                 indirect_signature_indexed,
+                indirect_signature_indexed_counted,
             }))
         }
 
@@ -4312,8 +4320,12 @@ mod platform {
             // Transition native packed arguments and GPU count words before the
             // draw loop. The encoder records original states for failure rollback.
             for count in counts {
-                let RenderCommand::DrawIndirect(draw) = &steps[count.command_index] else { unreachable!() };
-                for id in [draw.arguments, count.count_buffer] {
+                let (arguments, index_buffer) = match &steps[count.command_index] {
+                    RenderCommand::DrawIndirect(draw) => (draw.arguments, None),
+                    RenderCommand::DrawIndexedIndirect(draw) => (draw.arguments, Some(draw.index_buffer.buffer)),
+                    _ => unreachable!("validated counted command"),
+                };
+                for id in [arguments, count.count_buffer].into_iter().chain(index_buffer) {
                     let buffer = self.buffers.get(id)?;
                     let state = buffer.state;
                     if state != D3D12_RESOURCE_STATE_GENERIC_READ {
@@ -4435,18 +4447,32 @@ mod platform {
                     &mut binding_state,
                 )?;
                 if let Some(count) = count {
-                    let RenderCommand::DrawIndirect(draw) = step else { unreachable!() };
-                    let signature = self.render_pipelines.get(draw.pipeline)?.indirect_signature.as_ref()
+                    let pipeline = self.render_pipelines.get(step.pipeline())?;
+                    let (signature, arguments, offset, index_view) = match step {
+                        RenderCommand::DrawIndirect(draw) => (
+                            pipeline.indirect_signature.as_ref(), draw.arguments, draw.offset, None,
+                        ),
+                        RenderCommand::DrawIndexedIndirect(draw) => (
+                            pipeline.indirect_signature_indexed_counted.as_ref(), draw.arguments,
+                            draw.offset, Some(self.index_buffer_view(draw.index_buffer, 0, 1)?),
+                        ),
+                        _ => unreachable!("validated counted command"),
+                    };
+                    let signature = signature
                         .ok_or_else(|| Error::Backend("missing DX12 native count signature".into()))?;
-                    let arguments = self.buffers.get(draw.arguments)?.resource.as_ref()
+                    let arguments = self.buffers.get(arguments)?.resource.as_ref()
                         .ok_or_else(|| Error::Backend("missing DX12 counted arguments".into()))?;
                     let counter = self.buffers.get(count.count_buffer)?.resource.as_ref()
                         .ok_or_else(|| Error::Backend("missing DX12 count buffer".into()))?;
                     // SAFETY: Full native 32-byte range and count word were
-                    // validated before recording; resources are in GENERIC_READ.
+                    // validated before recording; arguments and index resources
+                    // are in GENERIC_READ. The producer owns the GPU index range.
                     unsafe {
+                        if let Some(view) = index_view.as_ref() {
+                            command_list.IASetIndexBuffer(Some(view));
+                        }
                         command_list.ExecuteIndirect(signature, count.max_draw_count,
-                            arguments, draw.offset, Some(counter), count.count_offset);
+                            arguments, offset, Some(counter), count.count_offset);
                     }
                 } else if matches!(step, RenderCommand::DrawIndirect(_)) {
                     // All indirect records were staged into adjacent native 32-byte
@@ -6632,15 +6658,20 @@ mod platform {
                         return Err(Error::InvalidInput("DX12 count bindings must be strictly ordered".into()));
                     }
                     previous = Some(count.command_index);
-                    let Some(RenderCommand::DrawIndirect(draw)) = pass.commands.get(count.command_index) else {
-                        return Err(Error::Unavailable("DX12 counted drawing requires native non-indexed arguments".into()));
+                    let (arguments, offset) = match pass.commands.get(count.command_index) {
+                        Some(RenderCommand::DrawIndirect(draw)) => (draw.arguments, draw.offset),
+                        Some(RenderCommand::DrawIndexedIndirect(draw)) => {
+                            self.index_buffer_view(draw.index_buffer, 0, 1)?;
+                            (draw.arguments, draw.offset)
+                        }
+                        _ => return Err(Error::InvalidInput("DX12 count binding requires an indirect draw".into())),
                     };
-                    let args = self.buffers.get(draw.arguments)?;
+                    let args = self.buffers.get(arguments)?;
                     let counter = self.buffers.get(count.count_buffer)?;
                     if !args.desc.usage.contains(BufferUsage::INDIRECT) || !counter.desc.usage.contains(BufferUsage::INDIRECT) {
                         return Err(Error::InvalidInput("DX12 counted buffers require INDIRECT usage".into()));
                     }
-                    count.validate_ranges(draw.offset, args.desc.size, counter.desc.size, 32, u32::MAX)?;
+                    count.validate_ranges(offset, args.desc.size, counter.desc.size, 32, u32::MAX)?;
                 }
             }
             self.record_texture_passes(passes, Some(tags), false, counts)
@@ -8443,8 +8474,11 @@ mod platform {
     #[derive(Clone)]
     struct Dx12RenderPipeline {
         indirect_signature: Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandSignature>,
-        /// 20-byte indexed argument records for `DrawIndexedIndirect`.
+        /// 20-byte portable indexed argument records.
         indirect_signature_indexed:
+            Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandSignature>,
+        /// 32-byte native indexed records including the shader draw offsets.
+        indirect_signature_indexed_counted:
             Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandSignature>,
         color_targets: Vec<ColorTargetState>,
         primitive_topology: PrimitiveTopology,
