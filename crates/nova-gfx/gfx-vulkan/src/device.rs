@@ -2372,13 +2372,16 @@ impl VulkanDevice {
         let depth_accesses = self.depth_accesses(steps, depth_attachment)?;
         let resolve = match resolve_view {
             Some(resolve_view_id) => {
-                let src_image = {
-                    let texture = self.textures.get(render_target_textures[0])?;
-                    texture.image
-                };
+                let source = self.textures.get(render_target_textures[0])?;
                 let dst_texture_view = self.texture_views.get(resolve_view_id)?;
-                let dst_image = self.textures.get(dst_texture_view.texture)?.image;
-                Some((src_image, dst_image, extent))
+                let destination = self.textures.get(dst_texture_view.texture)?;
+                if render_target_textures.contains(&dst_texture_view.texture)
+                    || destination.desc.size != source.desc.size
+                    || destination.desc.format != source.desc.format
+                {
+                    return Err(Error::InvalidInput("Vulkan resolve target must be a distinct texture of the source format and extent".into()));
+                }
+                Some((source.image, destination.image, extent, destination.layout))
             }
             None => None,
         };
@@ -2416,6 +2419,10 @@ impl VulkanDevice {
             for texture_id in render_target_textures {
                 self.textures.get_mut(texture_id)?.layout =
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+            }
+            if let Some(view) = resolve_view {
+                let texture = self.texture_views.get(view)?.texture;
+                self.textures.get_mut(texture)?.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
             }
         }
         result
@@ -2598,6 +2605,7 @@ impl VulkanDevice {
             let color_ids = pass
                 .color_attachments
                 .iter()
+                .chain(pass.resolve_target.iter())
                 .map(|view| self.texture_views.get(*view).map(|v| v.texture))
                 .collect::<Result<Vec<_>>>()?;
             for texture_id in color_ids
@@ -7336,7 +7344,7 @@ struct CommandRecordInfo<'a> {
     clear_region: Option<ScissorRect>,
     /// MSAA color source -> single-sample resolve destination image pair plus the
     /// shared extent. `Some` triggers `vkCmdResolveImage` after the pass.
-    resolve: Option<(vk::Image, vk::Image, vk::Extent2D)>,
+    resolve: Option<(vk::Image, vk::Image, vk::Extent2D, vk::ImageLayout)>,
     /// Vulkan timestamps enclose all command-buffer GPU work including layout transitions.
     gpu_trace: Option<(vk::QueryPool, u32)>,
     /// Timestamp pair reserved for the native indirect draw loop ONLY.
@@ -7893,9 +7901,9 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         if let Some(image) = info.present_image {
             record_present_layout(info.device, info.command_buffer, image, true);
         }
-        if let Some((src, dst, extent)) = info.resolve {
-            // MSAA source stays in the render-pass output layout; the resolve
-            // destination is a single-sample texture we own for this pass.
+        if let Some((src, dst, extent, dst_old_layout)) = info.resolve {
+            // Explicit resolve preserves the existing full-image contract.
+            // Both layout transitions must participate in the tracked state.
             transition_image_layout(
                 info.device,
                 info.command_buffer,
@@ -7907,7 +7915,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                 info.device,
                 info.command_buffer,
                 dst,
-                vk::ImageLayout::UNDEFINED,
+                dst_old_layout,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             );
             let region = vk::ImageResolve::default()
@@ -7939,14 +7947,21 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[region],
             );
+            transition_image_layout(
+                info.device, info.command_buffer, dst,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            );
         }
         for transition in info.render_target_transitions {
+            let old_layout = if info.resolve.is_some_and(|(src, _, _, _)| src == transition.image) {
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL
+            } else {
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+            };
             transition_image_layout(
-                info.device,
-                info.command_buffer,
-                transition.image,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                info.device, info.command_buffer, transition.image,
+                old_layout, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             );
         }
         if let Some((query_pool, first_query)) = info.gpu_trace {
