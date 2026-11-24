@@ -68,9 +68,11 @@ struct LayoutInstanceKey {
 }
 
 // Adapt gpui-fast #169: bound offscreen native layout retention by both age
-// and node count, independently of the currently mounted working set.
+// and node count. Bound spare nodes relative to the current mounted
+// working set as well, so small lists do not accumulate thousands of nodes.
 const ROW_NODE_LINGER_FRAMES: usize = 240;
 const ROW_NODE_LINGER_MAX: usize = 8192;
+const ROW_NODE_LINGER_MIN: usize = 256;
 
 struct PersistentLayoutNode {
     id: LayoutId,
@@ -90,11 +92,15 @@ fn retained_row_owner(path: &[ElementId]) -> Option<&[ElementId]> {
 
 // Keep the youngest complete age buckets. Dropping a whole tied bucket avoids
 // sorting or depending on hash-map iteration order when the budget is exceeded.
-fn row_linger_limit(by_age: &[usize; ROW_NODE_LINGER_FRAMES]) -> usize {
+fn row_linger_budget(mounted: usize) -> usize {
+    mounted.clamp(ROW_NODE_LINGER_MIN, ROW_NODE_LINGER_MAX)
+}
+
+fn row_linger_limit(by_age: &[usize; ROW_NODE_LINGER_FRAMES], budget: usize) -> usize {
     let mut count = 0usize;
     for (age, nodes) in by_age.iter().enumerate().skip(1) {
         count = count.saturating_add(*nodes);
-        if count > ROW_NODE_LINGER_MAX {
+        if count > budget {
             return age;
         }
     }
@@ -211,6 +217,7 @@ impl TaffyLayoutEngine {
         let frame = self.committed_layout_frame;
         let mut removed = Vec::new();
         let mut by_age = [0usize; ROW_NODE_LINGER_FRAMES];
+        let mut mounted_count = 0usize;
         let mut list_mounts = FxHashMap::<Vec<ElementId>, bool>::default();
         let finished_request_ordinals = &self.finished_request_ordinals;
         let taffy = &mut self.taffy;
@@ -228,6 +235,7 @@ impl TaffyLayoutEngine {
                     node.last_mounted_frame = Some(frame);
                 }
                 node.offscreen = false;
+                mounted_count += 1;
                 return true;
             }
 
@@ -264,7 +272,7 @@ impl TaffyLayoutEngine {
             by_age[age.expect("eligible row age") as usize] += 1;
             true
         });
-        let limit = row_linger_limit(&by_age);
+        let limit = row_linger_limit(&by_age, row_linger_budget(mounted_count));
         if limit < ROW_NODE_LINGER_FRAMES {
             self.persistent_nodes.retain(|_, node| {
                 if node.offscreen && node.last_mounted_frame
@@ -1236,11 +1244,24 @@ mod tests {
         let mut by_age = [0; ROW_NODE_LINGER_FRAMES];
         by_age[1] = 4000;
         by_age[2] = 4000;
-        assert_eq!(row_linger_limit(&by_age), ROW_NODE_LINGER_FRAMES);
+        assert_eq!(row_linger_limit(&by_age, ROW_NODE_LINGER_MAX), ROW_NODE_LINGER_FRAMES);
         by_age[3] = 500;
-        assert_eq!(row_linger_limit(&by_age), 3);
+        assert_eq!(row_linger_limit(&by_age, ROW_NODE_LINGER_MAX), 3);
         by_age[1] = ROW_NODE_LINGER_MAX + 1;
-        assert_eq!(row_linger_limit(&by_age), 1);
+        assert_eq!(row_linger_limit(&by_age, ROW_NODE_LINGER_MAX), 1);
+    }
+
+    #[test]
+    fn row_linger_budget_scales_with_mounted_working_set() {
+        assert_eq!(row_linger_budget(0), ROW_NODE_LINGER_MIN);
+        assert_eq!(row_linger_budget(64), ROW_NODE_LINGER_MIN);
+        assert_eq!(row_linger_budget(1024), 1024);
+        assert_eq!(row_linger_budget(100_000), ROW_NODE_LINGER_MAX);
+        let mut by_age = [0usize; ROW_NODE_LINGER_FRAMES];
+        by_age[1] = 128;
+        by_age[2] = 128;
+        by_age[3] = 1;
+        assert_eq!(row_linger_limit(&by_age, row_linger_budget(32)), 3);
     }
 
     #[test]

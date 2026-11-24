@@ -10,6 +10,7 @@ use std::{
     any::{Any, TypeId},
     cell::Cell,
     fmt::{self, Display},
+    hash::{Hash, Hasher},
     mem,
     ops::Range,
     rc::Rc,
@@ -19,13 +20,44 @@ use std::{
 use super::{DivPrepaint, Element};
 
 /// A globally unique identifier for an element, used to track state across frames.
-#[derive(Clone, Deref, Default, Debug, Eq, PartialEq, Hash)]
-pub struct GlobalElementId(pub(crate) Arc<[ElementId]>);
+#[derive(Clone, Deref, Debug)]
+pub struct GlobalElementId(
+    #[deref] pub(crate) Arc<[ElementId]>,
+    u64,
+);
 
 impl GlobalElementId {
     #[inline]
     pub(crate) fn from_path(path: &[ElementId]) -> Self {
-        Self(Arc::from(path))
+        let mut hasher = collections::FxHasher::default();
+        path.hash(&mut hasher);
+        Self(Arc::from(path), hasher.finish())
+    }
+}
+
+impl Default for GlobalElementId {
+    fn default() -> Self {
+        Self::from_path(&[])
+    }
+}
+
+impl PartialEq for GlobalElementId {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.1 == other.1 && (Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0)
+    }
+}
+
+impl Eq for GlobalElementId {}
+
+impl Hash for GlobalElementId {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Retained identity participates in several frame and layout maps.
+        // Hash the path once per construction, not once per lookup. Equality
+        // still checks every segment when allocations differ, including on
+        // a hash collision.
+        state.write_u64(self.1);
     }
 }
 
@@ -978,5 +1010,30 @@ where
         cx: &mut App,
     ) -> Size<Pixels> {
         Drawable::layout_as_root(self, available_space, window, cx)
+    }
+}
+
+#[cfg(test)]
+mod global_element_id_hash_tests {
+    use super::*;
+
+    #[test]
+    fn equal_paths_from_distinct_allocations_are_interchangeable() {
+        let path = [ElementId::from("root"), ElementId::from(42u64)];
+        let first = GlobalElementId::from_path(&path);
+        let second = GlobalElementId::from_path(&path);
+        assert!(!Arc::ptr_eq(&first.0, &second.0));
+        let mut map = collections::FxHashMap::default();
+        map.insert(first, 7);
+        assert_eq!(map.get(&second), Some(&7));
+        assert_eq!(GlobalElementId::default(), GlobalElementId::from_path(&[]));
+    }
+
+    #[test]
+    fn cached_hash_does_not_replace_structural_equality() {
+        let first = GlobalElementId::from_path(&[ElementId::from("first")]);
+        let mut second = GlobalElementId::from_path(&[ElementId::from("second")]);
+        second.1 = first.1;
+        assert_ne!(first, second);
     }
 }
