@@ -1,4 +1,4 @@
-//! Shared-storage buffer batches preserve CPU shadows without repeated contents queries.
+//! Direct writes into CPU-visible native shared buffers, without CPU mirrors.
 
 use super::*;
 use gfx_core::{BufferUploadStats, BufferWrite};
@@ -12,45 +12,38 @@ impl MetalDevice {
         let mut mapped_id = None;
         let mut pointer = None;
         for write in writes {
+            let id = write.descriptor.buffer;
+            let buffer = self.buffers.get(id)?;
+            if buffer.desc.memory_location != MemoryLocation::CpuToGpu {
+                return Err(Error::Unavailable(
+                    "Metal GPU-only staging upload is not enabled in this build".into(),
+                ));
+            }
+            let offset = usize::try_from(write.descriptor.offset)
+                .map_err(|error| Error::InvalidInput(format!("offset overflow: {error}")))?;
+            let end = offset.checked_add(write.data.len())
+                .ok_or_else(|| Error::InvalidInput("buffer write range overflow".into()))?;
+            if end as u64 > buffer.desc.size {
+                return Err(Error::InvalidInput("buffer write range is out of bounds".into()));
+            }
             if write.data.is_empty() {
                 continue;
             }
-            let id = write.descriptor.buffer;
-            let buffer = self.buffers.get_mut(id)?;
-            let storage = buffer.data.as_mut().ok_or_else(|| {
-                Error::Unavailable(
-                    "Metal GPU-only staging upload is not enabled in this build".into(),
-                )
-            })?;
-            let offset = usize::try_from(write.descriptor.offset)
-                .map_err(|error| Error::InvalidInput(format!("offset overflow: {error}")))?;
-            let end = offset
-                .checked_add(write.data.len())
-                .ok_or_else(|| Error::InvalidInput("buffer write range overflow".into()))?;
-            let target = storage
-                .get_mut(offset..end)
-                .ok_or_else(|| Error::InvalidInput("buffer write range is out of bounds".into()))?;
-            target.copy_from_slice(write.data);
             if mapped_id != Some(id) {
-                pointer = buffer
-                    .resource
-                    .as_ref()
-                    .map(|resource| resource.contents().as_ptr().cast::<u8>());
+                let resource = buffer.resource.as_ref()
+                    .ok_or_else(|| Error::Backend("Metal buffer has no native resource".into()))?;
+                pointer = Some(resource.contents().as_ptr().cast::<u8>());
                 mapped_id = Some(id);
             }
-            if let Some(pointer) = pointer {
-                // SAFETY: Shared storage stays live throughout this owner-thread call; the shadow
-                // range check covers the identically sized native buffer, with no in-flight reuse.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        write.data.as_ptr(),
-                        pointer.add(offset),
-                        write.data.len(),
-                    );
-                }
-                stats.calls = stats.calls.saturating_add(1);
-                stats.bytes = stats.bytes.saturating_add(write.data.len() as u64);
+            let pointer = pointer.expect("validated shared buffer");
+            // SAFETY: The live native shared allocation has the validated size.
+            // The caller must not reuse bytes with outstanding GPU readers;
+            // the owner and frame-slot retirement contract are unchanged.
+            unsafe {
+                std::ptr::copy_nonoverlapping(write.data.as_ptr(), pointer.add(offset), write.data.len());
             }
+            stats.calls = stats.calls.saturating_add(1);
+            stats.bytes = stats.bytes.saturating_add(write.data.len() as u64);
         }
         Ok(stats)
     }

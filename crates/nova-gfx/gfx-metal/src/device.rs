@@ -29,19 +29,18 @@
     )
 )]
 
-use crate::error::MetalError;
 use gfx_core::{
-    AddressMode, Backend, BackendKind, BeginRenderPassDescriptor, BindGroupDescriptor, BindGroupId,
+    AddressMode, Backend, BackendKind, BindGroupDescriptor, BindGroupId,
     BindGroupLayoutDescriptor, BindGroupLayoutId, BindingResource, BlendMode, BufferDescriptor,
     BufferId, BufferUsage, ClearColor, CommandDevice, CommandEncoderDescriptor, CommandEncoderId,
-    CompareFunction, DepthAttachment, DeviceDescriptor, DiagnosticsDevice, DrawCommand, DrawDescriptor, Error,
+    CompareFunction, DepthAttachment, DeviceDescriptor, DiagnosticsDevice, DrawDescriptor, Error,
     FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, PipelineDevice,
     PipelineLayoutDescriptor, PipelineLayoutId, PresentFrameDescriptor, PresentationDevice,
     PresentedFrame, PrimitiveTopology, RenderCommand, RenderPassCommands, RenderPassDescriptor,
     RenderPassId, RenderPipelineDescriptor, RenderPipelineId, RenderTarget, ResourceDevice,
     ResourceStats, Result, SamplerDescriptor, SamplerId, ShaderCode, ShaderModuleDescriptor,
     ShaderModuleId, ShaderStage, SubmissionDevice, SubmissionId, SubmissionStatus,
-    SurfaceCapabilities, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId,
+    SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId,
     TextureDescriptor, TextureDimension, TextureId, TextureUsage, TextureViewDescriptor,
     TextureViewId, TextureWriteDescriptor, ThreadingMode,
 };
@@ -68,13 +67,13 @@ mod platform {
     use objc2_metal::{MTLCompareFunction, MTLDepthStencilDescriptor, MTLDepthStencilState, MTLSamplerState};
     use objc2_metal::{
         MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
-        MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLCompileOptions, MTLDevice, MTLDrawable, MTLFunction,
+        MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLCompileOptions, MTLDevice,
         MTLIndexType, MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType,
         MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
         MTLRenderPipelineState, MTLResourceOptions, MTLScissorRect, MTLStoreAction, MTLTexture,
         MTLViewport,
     };
-    use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer};
+    use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 
     /// Native presentation target accepted by the Metal backend.
@@ -223,39 +222,13 @@ mod platform {
             Ok(self.buffers.insert(MetalBuffer {
                 desc: desc.clone(),
                 resource: Some(resource),
-                data: if desc.memory_location == MemoryLocation::CpuToGpu {
-                    Some(vec![0; length])
-                } else {
-                    None
-                },
             }))
         }
 
         /// Writes data into a CPU-visible buffer record.
         fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]) -> Result<()> {
-            let buffer = self.buffers.get_mut(buffer)?;
-            let storage = buffer.data.as_mut().ok_or_else(|| {
-                Error::Unavailable(
-                    "Metal GPU-only staging upload is not enabled in this build".to_string(),
-                )
-            })?;
-            let offset = usize::try_from(offset)
-                .map_err(|error| Error::InvalidInput(format!("offset overflow: {error}")))?;
-            let end = offset
-                .checked_add(data.len())
-                .ok_or_else(|| Error::InvalidInput("buffer write range overflow".to_string()))?;
-            let target = storage.get_mut(offset..end).ok_or_else(|| {
-                Error::InvalidInput("buffer write range is out of bounds".to_string())
-            })?;
-            target.copy_from_slice(data);
-            if let Some(resource) = &buffer.resource {
-                // SAFETY: The Metal buffer was allocated with shared storage and is at least
-                // `buffer.desc.size` bytes; the checked range above is within that allocation.
-                unsafe {
-                    let destination = resource.contents().as_ptr().cast::<u8>().add(offset);
-                    std::ptr::copy_nonoverlapping(data.as_ptr(), destination, data.len());
-                }
-            }
+            let descriptor = gfx_core::BufferWriteDescriptor { buffer, offset };
+            self.upload_buffer_batch(std::iter::once(gfx_core::BufferWrite { descriptor, data }))?;
             Ok(())
         }
 
@@ -617,7 +590,7 @@ mod platform {
             }
             let bindings = self.prepare_bindings(&pipeline, step.bind_groups())?;
             let draw = match step {
-                RenderCommand::DrawIndirect(_) => {
+                RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_) => {
                     return Err(Error::Unavailable(
                         "indirect draws are not implemented by this backend".into(),
                     ));
@@ -776,12 +749,7 @@ mod platform {
                 );
             ResourceStats {
                 memory_accounting: gfx_core::MemoryAccounting::ResourceSizes,
-                cpu_shadow_bytes: self
-                    .buffers
-                    .values()
-                    .filter_map(|buffer| buffer.data.as_ref())
-                    .map(|bytes| bytes.capacity() as u64)
-                    .sum(),
+                cpu_shadow_bytes: 0,
                 buffers: self.buffers.live_len(),
                 textures: self.textures.live_len(),
                 texture_views: self.texture_views.live_len(),
@@ -1133,7 +1101,6 @@ mod platform {
     struct MetalBuffer {
         desc: BufferDescriptor,
         resource: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
-        data: Option<Vec<u8>>,
     }
 
     #[derive(Clone)]
@@ -1625,7 +1592,6 @@ mod platform {
                     memory_location: MemoryLocation::CpuToGpu,
                 },
                 resource: None,
-                data: Some(vec![0]),
             });
 
             let _removed = registry.take(id).expect("handle should be live");
