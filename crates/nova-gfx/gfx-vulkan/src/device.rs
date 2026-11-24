@@ -3272,8 +3272,8 @@ impl VulkanDevice {
     /// Returns an error if WSI or the device rejects the acquisition.
     pub fn reserve_present_frame(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
         if self.swapchains.get(id)?.rebuild_pending {
-            // On maintenance-capable WSI, retire old frame and present
-            // references by polling before entering the recreation boundary.
+            // Poll old acquisition and rendering references before recreation
+            // on every WSI. Maintenance-capable devices also poll present fences.
             if !SurfaceDevice::prepare_swapchain_resize(self, id)? {
                 return Ok(false);
             }
@@ -3328,7 +3328,7 @@ impl VulkanDevice {
                     self.drain_unpresented_graphics_work()?;
                 }
                 if extent.width != 0 && extent.height != 0 {
-                    if preflight && self.swapchain_maintenance {
+                    if preflight {
                         self.swapchains.get_mut(swapchain_id)?.rebuild_pending = true;
                     } else {
                         self.reconfigure_swapchain(swapchain_id, config)?;
@@ -3424,9 +3424,10 @@ impl VulkanDevice {
                 return Ok(None);
             }
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                if preflight && self.swapchain_maintenance {
+                if preflight {
                     // No offscreen producer has been submitted for this
-                    // reservation. Retry after old WSI references retire.
+                    // reservation. Defer recreation to the next readiness poll,
+                    // including WSI without maintenance present fences.
                     self.swapchains.get_mut(swapchain_id)?.rebuild_pending = true;
                     return Ok(None);
                 }
@@ -4912,10 +4913,6 @@ impl SurfaceDevice for VulkanDevice {
     type SurfaceTarget = dyn VulkanSurfaceTarget;
 
     fn prepare_swapchain_resize(&mut self, swapchain: gfx_core::SwapchainId) -> Result<bool> {
-        if !self.swapchain_maintenance {
-            // The native fallback still establishes the presentation-engine boundary.
-            return Ok(true);
-        }
         let chain = self.swapchains.get_mut(swapchain)?;
         for slot in &chain.acquire_slots {
             if slot.pending
@@ -4924,7 +4921,10 @@ impl SurfaceDevice for VulkanDevice {
                 return Ok(false);
             }
         }
-        if !chain.presentation.poll(&self.device)? {
+        // Without maintenance fences the final recreation still requires
+        // its native idle barrier, but never enter it with known outstanding
+        // acquire or rendering fences on this swapchain.
+        if self.swapchain_maintenance && !chain.presentation.poll(&self.device)? {
             return Ok(false);
         }
         for &fence in &chain.in_flight_fences {
