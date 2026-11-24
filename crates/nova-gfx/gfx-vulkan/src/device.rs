@@ -54,6 +54,7 @@ mod compact;
 mod compute;
 mod depth;
 mod descriptors;
+pub use descriptors::DescriptorIndexingCapabilities;
 mod presentation;
 mod relocation;
 mod transfer_queue;
@@ -153,6 +154,7 @@ pub struct VulkanDevice {
     memory_budget_supported: bool,
     host_query_reset: bool,
     host_image_copy: Option<host_image_copy::HostImageCopy>,
+    descriptor_indexing: DescriptorIndexingCapabilities,
     draw_indirect_count: bool,
     entry: Entry,
     instance: Instance,
@@ -412,6 +414,7 @@ impl VulkanDevice {
             host_query_reset,
             draw_indirect_count,
             host_image_copy_enabled,
+            descriptor_indexing,
         ) = match create_device(&instance, physical_device, queue_families, &entry, instance_api) {
             Ok(result) => result,
             Err(error) => {
@@ -536,6 +539,7 @@ impl VulkanDevice {
             memory_budget_supported,
             host_query_reset,
             host_image_copy,
+            descriptor_indexing,
             draw_indirect_count,
             entry,
             instance,
@@ -1034,7 +1038,7 @@ impl VulkanDevice {
             })
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
-        let mut host_copy = self.host_image_copy.as_ref().is_some_and(|copy|
+        let mut host_copy = self.host_image_copy.as_mut().is_some_and(|copy|
             copy.supports_image(&self.instance, self.physical_device, desc, &create_info));
         if host_copy {
             create_info.usage |= vk::ImageUsageFlags::HOST_TRANSFER_EXT;
@@ -1183,10 +1187,16 @@ impl VulkanDevice {
         // images. Do not overtake a prior staged write to the same image.
         if self.host_image_copy.is_some() {
             let mut seen = std::collections::HashSet::new();
+            let mut budget = host_image_copy::HostCopyBudget::default();
             let mut staged = Vec::with_capacity(plans.len());
             for mut plan in plans {
                 let descriptor = plan.write.descriptor;
-                if seen.insert(descriptor.texture) && self.try_host_texture_write(descriptor, plan.write.data)? {
+                // Bound cumulative synchronous owner work, not just one image.
+                if seen.insert(descriptor.texture)
+                    && budget.allows(plan.write.data.len())
+                    && self.try_host_texture_write(descriptor, plan.write.data)?
+                {
+                    budget.consume(plan.write.data.len());
                     continue;
                 }
                 plan.old_layout = self.textures.get(descriptor.texture)?.layout;
@@ -7249,6 +7259,7 @@ fn create_device(
     bool,
     bool,
     bool,
+    DescriptorIndexingCapabilities,
 )> {
     let priorities = [1.0_f32, 0.75_f32];
     let single_priority = [1.0_f32];
@@ -7372,6 +7383,15 @@ fn create_device(
     let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
         .timeline_semaphore(true).host_query_reset(host_query_reset)
         .draw_indirect_count(draw_indirect_count);
+    // Enable only queried descriptor indexing features. Update-after-bind
+    // remains disabled until descriptor lifetime/retirement is implemented.
+    let descriptor_indexing = DescriptorIndexingCapabilities::enable(
+        &available12,
+        &unsafe { instance.get_physical_device_properties(physical_device) }.limits,
+        &mut features12,
+    );
+    enabled_features.shader_sampled_image_array_dynamic_indexing =
+        supported_features.shader_sampled_image_array_dynamic_indexing;
     let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
         .synchronization2(true).dynamic_rendering(true);
     // The promoted structure retains its EXT sType and ABI. Do not combine
@@ -7457,6 +7477,7 @@ fn create_device(
         host_query_reset,
         draw_indirect_count,
         host_image_copy_enabled,
+        descriptor_indexing,
     ))
 }
 

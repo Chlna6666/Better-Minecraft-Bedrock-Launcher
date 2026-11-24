@@ -12,7 +12,7 @@ mod error;
 mod registry;
 
 pub use device::{
-    BaselineMetrics, VulkanDevice, VulkanSurfaceTarget, VulkanTriangle, VulkanTriangleConfig,
+    BaselineMetrics, DescriptorIndexingCapabilities, VulkanDevice, VulkanSurfaceTarget, VulkanTriangle, VulkanTriangleConfig,
     enumerate_adapter_info,
 };
 pub use error::VulkanError;

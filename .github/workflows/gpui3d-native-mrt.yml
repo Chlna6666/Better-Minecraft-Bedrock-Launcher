@@ -6,6 +6,9 @@ on:
     branches: [master]
     paths:
       - '.github/workflows/gpui3d-native-mrt.yml'
+      - 'crates/gpui-3d/src/scene_view.wgsl'
+      - 'crates/gpui-3d/src/scene_view/scene/**'
+      - 'crates/gpui-3d/src/scene_view/scene.rs'
       - 'crates/gpui-3d/src/scene_view/mesher.wgsl'
       - 'crates/gpui-3d/src/scene_view/voxel.wgsl'
       - 'crates/gpui-3d/src/scene_view/draw_compaction.wgsl'
@@ -112,3 +115,16 @@ jobs:
           cargo test -p gfx-vulkan --test texture_transfer multisampled_texture_readback_requires_explicit_resolve -- --exact --nocapture 2>&1 | tee "$RUNNER_TEMP/msaa-readback.txt"
           grep -Fq 'running 1 test' "$RUNNER_TEMP/msaa-readback.txt"
           if grep -Fq 'NOVA_GFX_SKIP=' "$RUNNER_TEMP/msaa-readback.txt"; then exit 1; fi
+      - name: Verify optional Vulkan descriptor indexing and host image copy
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p gfx-vulkan --lib descriptor_indexing_plan_never_enables_unqueried_or_update_after_bind_features
+          cargo test -p gfx-vulkan --lib host_copy_budget_caps_whole_batch
+          cargo test -p gfx-vulkan --lib native_sparse_descriptor_indexing_allocation -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/indexing.txt"
+          grep -Fq 'running 1 test' "$RUNNER_TEMP/indexing.txt"
+          grep -Fq 'NOVA_VULKAN_DESCRIPTOR_INDEXING_SPARSE=' "$RUNNER_TEMP/indexing.txt"
+          cargo test -p gfx-vulkan --lib native_host_copy_first_write_then_staging -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/host-copy.txt"
+          grep -Fq 'running 1 test' "$RUNNER_TEMP/host-copy.txt"
+          grep -Fq 'NOVA_VULKAN_HOST_IMAGE_COPY=' "$RUNNER_TEMP/host-copy.txt"

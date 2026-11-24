@@ -1,6 +1,60 @@
 //! Device-owned pool pages. Live and fence-retired sets keep their original pool.
 use super::*;
 
+/// Enabled native descriptor-indexing subset, not a portable bindless API.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DescriptorIndexingCapabilities {
+    /// Sampled image indices may vary between shader invocations.
+    pub sampled_image_non_uniform: bool,
+    /// Runtime-sized descriptor arrays.
+    pub runtime_arrays: bool,
+    /// Unused descriptors need not be populated.
+    pub partially_bound: bool,
+    /// Last binding can have a variable allocation count.
+    pub variable_count: bool,
+    /// Ordinary sampled-image descriptor limit per stage.
+    pub max_sampled_images_per_stage: u32,
+    /// Ordinary sampled-image descriptor limit per pipeline layout.
+    pub max_sampled_images_per_set: u32,
+}
+impl DescriptorIndexingCapabilities {
+    pub(super) fn enable(
+        supported: &vk::PhysicalDeviceVulkan12Features<'_>,
+        limits: &vk::PhysicalDeviceLimits,
+        enabled: &mut vk::PhysicalDeviceVulkan12Features<'_>,
+    ) -> Self {
+        let core = supported.descriptor_indexing == vk::TRUE;
+        let result = Self {
+            sampled_image_non_uniform: core && supported.shader_sampled_image_array_non_uniform_indexing == vk::TRUE,
+            runtime_arrays: core && supported.runtime_descriptor_array == vk::TRUE,
+            partially_bound: core && supported.descriptor_binding_partially_bound == vk::TRUE,
+            variable_count: core && supported.descriptor_binding_variable_descriptor_count == vk::TRUE,
+            max_sampled_images_per_stage: limits.max_per_stage_descriptor_sampled_images,
+            max_sampled_images_per_set: limits.max_descriptor_set_sampled_images,
+        };
+        enabled.descriptor_indexing = u32::from(core);
+        enabled.shader_sampled_image_array_non_uniform_indexing = u32::from(result.sampled_image_non_uniform);
+        enabled.runtime_descriptor_array = u32::from(result.runtime_arrays);
+        enabled.descriptor_binding_partially_bound = u32::from(result.partially_bound);
+        enabled.descriptor_binding_variable_descriptor_count = u32::from(result.variable_count);
+        result
+    }
+
+    /// Upper bound for an ordinary sparse variable-size sampled-image table,
+    /// before accounting for other descriptors in its pipeline layout.
+    pub fn sparse_sampled_image_capacity(self) -> u32 {
+        if self.sampled_image_non_uniform && self.runtime_arrays && self.partially_bound && self.variable_count {
+            self.max_sampled_images_per_stage.min(self.max_sampled_images_per_set)
+        } else { 0 }
+    }
+}
+impl VulkanDevice {
+    /// Enabled native features, without promising a bindless resource API.
+    pub fn descriptor_indexing_capabilities(&self) -> DescriptorIndexingCapabilities {
+        self.descriptor_indexing
+    }
+}
+
 const PAGE_CAPACITY: u32 = 256;
 const TYPES: [vk::DescriptorType; 5] = [
     vk::DescriptorType::UNIFORM_BUFFER,
@@ -139,6 +193,66 @@ fn create_pool(device: &ash::Device, capacity: [u32; 5]) -> Result<vk::Descripto
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn descriptor_indexing_plan_never_enables_unqueried_or_update_after_bind_features() {
+        let mut supported = vk::PhysicalDeviceVulkan12Features::default()
+            .descriptor_indexing(true).shader_sampled_image_array_non_uniform_indexing(true)
+            .runtime_descriptor_array(true).descriptor_binding_partially_bound(true)
+            .descriptor_binding_sampled_image_update_after_bind(true);
+        let limits = vk::PhysicalDeviceLimits {
+            max_per_stage_descriptor_sampled_images: 128,
+            max_descriptor_set_sampled_images: 256,
+            ..Default::default()
+        };
+        let mut enabled = vk::PhysicalDeviceVulkan12Features::default();
+        let partial = DescriptorIndexingCapabilities::enable(&supported, &limits, &mut enabled);
+        assert_eq!(partial.sparse_sampled_image_capacity(), 0);
+        assert_eq!(enabled.descriptor_binding_variable_descriptor_count, vk::FALSE);
+        assert_eq!(enabled.descriptor_binding_sampled_image_update_after_bind, vk::FALSE);
+        supported.descriptor_binding_variable_descriptor_count = vk::TRUE;
+        let full = DescriptorIndexingCapabilities::enable(&supported, &limits, &mut enabled);
+        assert_eq!(full.sparse_sampled_image_capacity(), 128);
+        supported.descriptor_indexing = vk::FALSE;
+        let disabled = DescriptorIndexingCapabilities::enable(&supported, &limits, &mut enabled);
+        assert_eq!(disabled.sparse_sampled_image_capacity(), 0);
+        assert_eq!(enabled.runtime_descriptor_array, vk::FALSE);
+    }
+
+    #[test]
+    #[ignore = "requires native Vulkan device"]
+    fn native_sparse_descriptor_indexing_allocation() {
+        let device = VulkanDevice::new(&DeviceDescriptor::default()).expect("Vulkan device");
+        let caps = device.descriptor_indexing_capabilities();
+        eprintln!("NOVA_VULKAN_DESCRIPTOR_INDEXING={caps:?}");
+        if caps.sparse_sampled_image_capacity() < 4 {
+            eprintln!("NOVA_VULKAN_DESCRIPTOR_INDEXING_SPARSE=unsupported");
+            return;
+        }
+        let bindings = [vk::DescriptorSetLayoutBinding::default().binding(0)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .descriptor_count(4).stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        let flags = [vk::DescriptorBindingFlags::PARTIALLY_BOUND
+            | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT];
+        let mut flag_info = vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&flags);
+        let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings).push_next(&mut flag_info);
+        // Native layout and allocation proof; no descriptor is submitted or read.
+        unsafe {
+            let layout = device.device.create_descriptor_set_layout(&info, None).expect("sparse layout");
+            let sizes = [vk::DescriptorPoolSize { ty: vk::DescriptorType::SAMPLED_IMAGE, descriptor_count: 2 }];
+            let pool = device.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default()
+                .max_sets(1).pool_sizes(&sizes), None).expect("sparse pool");
+            let layouts = [layout];
+            let counts = [2u32];
+            let mut variable = vk::DescriptorSetVariableDescriptorCountAllocateInfo::default().descriptor_counts(&counts);
+            let sets = device.device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(pool).set_layouts(&layouts).push_next(&mut variable)).expect("variable count allocation");
+            assert_eq!(sets.len(), 1);
+            device.device.destroy_descriptor_pool(pool, None);
+            device.device.destroy_descriptor_set_layout(layout, None);
+        }
+        eprintln!("NOVA_VULKAN_DESCRIPTOR_INDEXING_SPARSE=pass");
+    }
 
     #[test]
     fn descriptor_capacity_accounts_for_each_type_and_set() {

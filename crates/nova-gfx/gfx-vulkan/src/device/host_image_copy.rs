@@ -5,9 +5,21 @@ use super::*;
 // Bound synchronous CPU work and keep large transfers on the GPU upload ring.
 const MAX_HOST_BYTES: u64 = 256 * 1024;
 
+pub(super) struct HostCopyBudget { remaining: u64 }
+impl Default for HostCopyBudget {
+    fn default() -> Self { Self { remaining: MAX_HOST_BYTES } }
+}
+impl HostCopyBudget {
+    pub(super) fn allows(&self, bytes: usize) -> bool { bytes as u64 <= self.remaining }
+    pub(super) fn consume(&mut self, bytes: usize) { self.remaining = self.remaining.saturating_sub(bytes as u64); }
+}
+
+type ImageFormatKey = (i32, i32, i32, u32, u32);
+
 pub(super) struct HostImageCopy {
     transition: vk::PFN_vkTransitionImageLayoutEXT,
     copy: vk::PFN_vkCopyMemoryToImageEXT,
+    formats: std::collections::HashMap<ImageFormatKey, Option<vk::ImageFormatProperties>>,
 }
 
 impl HostImageCopy {
@@ -31,26 +43,39 @@ impl HostImageCopy {
         Some(Self {
             transition: unsafe { std::mem::transmute::<unsafe extern "system" fn(), vk::PFN_vkTransitionImageLayoutEXT>(transition) },
             copy: unsafe { std::mem::transmute::<unsafe extern "system" fn(), vk::PFN_vkCopyMemoryToImageEXT>(copy) },
+            formats: Default::default(),
         })
     }
 
-    pub(super) fn supports_image(&self, instance: &Instance, physical: vk::PhysicalDevice,
+    pub(super) fn supports_image(&mut self, instance: &Instance, physical: vk::PhysicalDevice,
         desc: &TextureDescriptor, create: &vk::ImageCreateInfo<'_>) -> bool {
         if desc.dimension != TextureDimension::D2 || desc.sample_count != 1 || desc.mip_level_count != 1
             || desc.format.is_depth() || desc.byte_size() > MAX_HOST_BYTES
             || !desc.usage.contains(TextureUsage::SAMPLED | TextureUsage::COPY_DST)
             || desc.usage.intersects(TextureUsage::COLOR_ATTACHMENT | TextureUsage::DEPTH_ATTACHMENT | TextureUsage::STORAGE)
         { return false; }
-        let mut perf = vk::HostImageCopyDevicePerformanceQueryEXT::default();
-        let info = vk::PhysicalDeviceImageFormatInfo2::default()
-            .format(create.format).ty(create.image_type).tiling(create.tiling)
-            .usage(create.usage | vk::ImageUsageFlags::HOST_TRANSFER_EXT).flags(create.flags);
-        let mut props = vk::ImageFormatProperties2::default().push_next(&mut perf);
-        // SAFETY: valid image creation parameters, feature enabled.
-        let supported = unsafe { instance.get_physical_device_image_format_properties2(physical, &info, &mut props) }.is_ok();
-        supported && props.image_format_properties.max_extent.width >= create.extent.width
-            && props.image_format_properties.max_extent.height >= create.extent.height
-            && perf.optimal_device_access == vk::TRUE
+        let usage = create.usage | vk::ImageUsageFlags::HOST_TRANSFER_EXT;
+        let key = (create.format.as_raw(), create.image_type.as_raw(), create.tiling.as_raw(),
+            usage.as_raw(), create.flags.as_raw());
+        // Both supported and unsupported format/usage combinations are cached.
+        let cached = self.formats.entry(key).or_insert_with(|| {
+            let mut perf = vk::HostImageCopyDevicePerformanceQueryEXT::default();
+            let info = vk::PhysicalDeviceImageFormatInfo2::default()
+                .format(create.format).ty(create.image_type).tiling(create.tiling)
+                .usage(usage).flags(create.flags);
+            let mut props = vk::ImageFormatProperties2::default().push_next(&mut perf);
+            // SAFETY: valid image creation parameters, feature enabled.
+            let supported = unsafe { instance.get_physical_device_image_format_properties2(physical, &info, &mut props) }.is_ok();
+            let limits = props.image_format_properties;
+            (supported && perf.optimal_device_access == vk::TRUE).then_some(limits)
+        });
+        cached.as_ref().is_some_and(|limits|
+            limits.max_extent.width >= create.extent.width
+            && limits.max_extent.height >= create.extent.height
+            && limits.max_extent.depth >= create.extent.depth
+            && limits.max_array_layers >= create.array_layers
+            && limits.max_mip_levels >= create.mip_levels
+            && limits.sample_counts.contains(create.samples))
     }
 }
 
@@ -90,5 +115,49 @@ impl VulkanDevice {
         let status = unsafe { (copy.copy)(self.device.handle(), &info) };
         if status != vk::Result::SUCCESS { return Err(VulkanError::from(status).into()); }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_copy_budget_caps_whole_batch() {
+        let mut budget = HostCopyBudget::default();
+        assert!(budget.allows(128 * 1024));
+        budget.consume(128 * 1024);
+        assert!(!budget.allows(128 * 1024 + 1));
+        budget.consume(128 * 1024);
+        assert!(!budget.allows(1));
+    }
+
+    #[test]
+    #[ignore = "requires native Vulkan device"]
+    fn native_host_copy_first_write_then_staging() {
+        let mut device = VulkanDevice::new(&DeviceDescriptor::default()).expect("Vulkan device");
+        let extent = gfx_core::Extent2d::new(2, 2).unwrap();
+        let desc = TextureDescriptor {
+            label: Some("host image copy regression".into()),
+            size: extent, mip_level_count: 1, format: Format::Rgba8Unorm,
+            usage: TextureUsage::SAMPLED | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            memory_location: MemoryLocation::GpuOnly, dimension: TextureDimension::D2, sample_count: 1,
+        };
+        let texture = device.create_texture(&desc).unwrap();
+        let eligible = device.textures.get(texture).unwrap().host_copy;
+        let write = TextureWriteDescriptor { texture, mip_level: 0, origin: gfx_core::Origin2d::ZERO,
+            size: extent, layout: gfx_core::TextureDataLayout::new(4, 12, 2).unwrap() };
+        let pixels = [99,99,99,99, 1,2,3,4,5,6,7,8, 99,99,99,99, 9,10,11,12,13,14,15,16];
+        let copied = device.try_host_texture_write(write, &pixels).unwrap();
+        assert_eq!(copied, eligible);
+        if !copied { device.write_texture(write, &pixels).unwrap(); }
+        assert_eq!(device.read_texture_pixels(texture).unwrap().bytes, (1u8..=16).collect::<Vec<_>>());
+        let patch = TextureWriteDescriptor { texture, mip_level: 0, origin: gfx_core::Origin2d::ZERO,
+            size: extent, layout: gfx_core::TextureDataLayout::new(0, 8, 2).unwrap() };
+        assert!(!device.try_host_texture_write(patch, &[42;16]).unwrap(), "initialized image must use staging");
+        device.write_texture(patch, &[42;16]).unwrap();
+        assert_eq!(device.read_texture_pixels(texture).unwrap().bytes, vec![42;16]);
+        ResourceDevice::destroy_texture(&mut device, texture).unwrap();
+        eprintln!("NOVA_VULKAN_HOST_IMAGE_COPY={}", if copied { "pass" } else { "unsupported_staging_pass" });
     }
 }
