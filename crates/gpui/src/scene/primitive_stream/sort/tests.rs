@@ -32,7 +32,7 @@ fn indirect_sort_preserves_every_payload_and_equal_order_insertion() {
 }
 
 #[test]
-fn repeated_and_nearly_sorted_orders_keep_the_original_sort() {
+fn repeated_and_nearly_sorted_orders_keep_stable_insertion() {
     for count in [0, 1, 32, 1024, 10_000] {
         for order_limit in [1, 8, 32, 64, 128, 256] {
             let mut actual = quads(count, order_limit);
@@ -43,7 +43,7 @@ fn repeated_and_nearly_sorted_orders_keep_the_original_sort() {
                 );
             }
             let mut expected = actual.clone();
-            expected.sort_unstable_by_key(Quad::order);
+            expected.sort_by_key(Quad::order);
             pending(&mut actual);
             assert_eq!(actual, expected);
         }
@@ -53,7 +53,7 @@ fn repeated_and_nearly_sorted_orders_keep_the_original_sort() {
     actual.rotate_right(1);
     assert!(!favors_indirect(&actual));
     let mut expected = actual.clone();
-    expected.sort_unstable_by_key(Quad::order);
+    expected.sort_by_key(Quad::order);
     pending(&mut actual);
     assert_eq!(actual, expected);
 }
@@ -78,7 +78,7 @@ fn rare_distinct_sample_outliers_cannot_disguise_repeated_orders() {
     assert!(favors_indirect(&actual));
     assert!(indirect_keys(&actual).is_none());
     let mut expected = actual.clone();
-    expected.sort_unstable_by_key(Quad::order);
+    expected.sort_by_key(Quad::order);
     pending(&mut actual);
     assert_eq!(actual, expected);
 }
@@ -131,7 +131,7 @@ fn profile<T: Ordered>(input: &[T], order_limit: u32) {
             if candidate {
                 pending(black_box(items));
             } else {
-                items.sort_unstable_by_key(T::order);
+                items.sort_by_key(T::order);
             }
             let nanos = start.elapsed().as_nanos();
             if trial > 0 {

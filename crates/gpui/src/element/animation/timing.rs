@@ -19,10 +19,14 @@ pub(super) fn sample_element_animation(
     animations: &[Animation],
     now: Instant,
 ) -> (usize, Option<f32>, bool) {
+    if animations.is_empty() {
+        return (0, None, true);
+    }
+    // A render can replace the animation chain after the timeline advanced.
+    // Keep the current segment's elapsed time, but never sample a missing index.
+    timeline.animation_index = timeline.animation_index.min(animations.len() - 1);
     loop {
-        let Some(animation) = animations.get(timeline.animation_index) else {
-            return (timeline.animation_index.saturating_sub(1), None, true);
-        };
+        let animation = &animations[timeline.animation_index];
         let elapsed = now.saturating_duration_since(timeline.started_at);
         if let Some(spring) = animation.spring {
             let index = timeline.animation_index;
@@ -220,6 +224,25 @@ mod tests {
             sample_element_animation(&mut timeline, &repeated, start + Duration::from_millis(250)),
             (0, Some(0.5), false)
         );
+    }
+
+    #[test]
+    fn element_animation_chain_can_shrink_after_handoff() {
+        let start = Instant::now();
+        let animations = [
+            Animation::new(Duration::from_millis(100)),
+            Animation::new(Duration::from_millis(100)),
+        ];
+        let mut timeline = ElementAnimationTimeline::new(start);
+        assert_eq!(
+            sample_element_animation(&mut timeline, &animations, start + Duration::from_millis(150)),
+            (1, Some(0.5), false)
+        );
+        assert_eq!(
+            sample_element_animation(&mut timeline, &animations[..1], start + Duration::from_millis(175)),
+            (0, Some(0.75), false)
+        );
+        assert_eq!(sample_element_animation(&mut timeline, &[], start), (0, None, true));
     }
 
     #[test]

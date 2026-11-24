@@ -25,6 +25,8 @@ pub use scroll::{
 
 use super::ListHorizontalSizingBehavior;
 
+const RETAINED_UNIFORM_ROW_KEY: &str = "__gpui_retained_uniform_row";
+
 /// uniform_list provides lazy rendering for a set of items that are of uniform height.
 /// When rendered into a container with overflow-y: hidden and a fixed (or max) height,
 /// uniform_list will only render the visible subset of items.
@@ -83,7 +85,7 @@ pub struct UniformList {
 /// Frame state used by the [UniformList].
 pub struct UniformListLayout {
     item_size: Size<Pixels>,
-    items: SmallVec<[AnyElement; 32]>,
+    items: SmallVec<[(usize, AnyElement); 32]>,
     decorations: SmallVec<[AnyElement; 2]>,
 }
 
@@ -371,9 +373,21 @@ impl Element for UniformList {
                                     AvailableSpace::Definite(available_width),
                                     AvailableSpace::Definite(item_height),
                                 );
-                                item.layout_as_root(available_space, window, cx);
-                                item.prepaint_at(item_origin, window, cx);
-                                frame_state.items.push(item);
+                                // Materialization order changes as the viewport scrolls. Keep the
+                                // retained identity tied to the logical row, including flipped lists.
+                                let row_index = if y_flipped {
+                                    self.item_count - 1 - ix
+                                } else {
+                                    ix
+                                };
+                                window.with_retained_child_key(
+                                    ElementId::named_usize(RETAINED_UNIFORM_ROW_KEY, row_index),
+                                    |window| {
+                                        item.layout_as_root(available_space, window, cx);
+                                        item.prepaint_at(item_origin, window, cx);
+                                    },
+                                );
+                                frame_state.items.push((row_index, item));
                             }
 
                             let bounds = Bounds::new(
@@ -433,8 +447,11 @@ impl Element for UniformList {
             window,
             cx,
             |_, window, cx| {
-                for item in &mut request_layout.items {
-                    item.paint(window, cx);
+                for (row_index, item) in &mut request_layout.items {
+                    window.with_retained_child_key(
+                        ElementId::named_usize(RETAINED_UNIFORM_ROW_KEY, *row_index),
+                        |window| item.paint(window, cx),
+                    );
                 }
                 for decoration in &mut request_layout.decorations {
                     decoration.paint(window, cx);

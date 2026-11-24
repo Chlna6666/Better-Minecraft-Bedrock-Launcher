@@ -4,12 +4,17 @@ use super::{Ordered, Quad};
 mod tests;
 
 pub(super) fn pending<T: Ordered>(items: &mut [T]) {
-    // Small runs and repeated orders benefit from the existing allocation-free sort.
+    // Already ordered runs need no moves or scratch allocation. Keep equal-order
+    // insertion stable on every path, including fresh payloads that are later shared.
+    if items.is_sorted_by_key(T::order) {
+        return;
+    }
+    // Small runs and repeated orders use the standard stable sort.
     if std::mem::size_of::<T>() < std::mem::size_of::<Quad>()
         || items.len() < 1024
         || std::mem::size_of_val(items) < 128 * 1024
     {
-        items.sort_unstable_by_key(T::order);
+        items.sort_by_key(T::order);
         return;
     }
     let first = items[0].order();
@@ -22,15 +27,15 @@ pub(super) fn pending<T: Ordered>(items: &mut [T]) {
         || first == last
         || u64::from(span) < items.len() as u64 / 4
     {
-        items.sort_unstable_by_key(T::order);
+        items.sort_by_key(T::order);
         return;
     }
     if !favors_indirect(items) {
-        items.sort_unstable_by_key(T::order);
+        items.sort_by_key(T::order);
         return;
     }
     let Some(mut keys) = indirect_keys(items) else {
-        items.sort_unstable_by_key(T::order);
+        items.sort_by_key(T::order);
         return;
     };
     keys.sort_unstable();

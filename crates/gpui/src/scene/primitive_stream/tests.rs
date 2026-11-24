@@ -52,6 +52,29 @@ fn immutable_runs_merge_with_new_orders_without_copying_shared_payload() {
 }
 
 #[test]
+fn interleaved_runs_preserve_earlier_source_on_equal_order() {
+    let mut previous = PrimitiveStream::default();
+    let mut first = quad(2);
+    first.bounds.origin.x = ScaledPixels(10.);
+    previous.push(first);
+    previous.finish();
+
+    let mut current = PrimitiveStream::default();
+    current.share(&previous, 0..1);
+    current.push(quad(1));
+    let mut later = quad(2);
+    later.bounds.origin.x = ScaledPixels(20.);
+    current.push(later);
+    current.finish();
+
+    assert_eq!(
+        current.iter().map(|quad| quad.bounds.origin.x.0).collect::<Vec<_>>(),
+        vec![0., 10., 20.]
+    );
+    assert!(std::ptr::eq(&current[1], &previous[0]));
+}
+
+#[test]
 fn every_segmented_range_matches_a_flat_sorted_reference() {
     for count in 0..=12 {
         let mut previous = PrimitiveStream::default();

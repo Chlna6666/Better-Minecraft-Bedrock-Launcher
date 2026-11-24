@@ -239,10 +239,16 @@ impl<T: Ordered> PrimitiveStream<T> {
             let segment = &mut sources[index];
             let count = heads
                 .peek()
-                .map_or(segment.range.len(), |Reverse((order, _))| {
+                .map_or(segment.range.len(), |Reverse((order, next_index))| {
+                    // Equal orders belong to the earlier source first. A later
+                    // source can start below the next head but must stop before
+                    // reaching its equal-order primitives.
                     segment
                         .slice()
-                        .partition_point(|quad| quad.order() <= *order)
+                        .partition_point(|primitive| {
+                            primitive.order() < *order
+                                || (primitive.order() == *order && index < *next_index)
+                        })
                         .max(1)
                 });
             let first = segment.range.start;
