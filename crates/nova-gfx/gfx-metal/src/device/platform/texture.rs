@@ -153,11 +153,14 @@ struct PreparedUpload<'a> {
 impl MetalDevice {
     pub(super) fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
         desc.validate()?;
-        if desc.dimension != TextureDimension::D2 || !self.device.supportsTextureSampleCount(desc.sample_count as usize) {
+        if matches!(desc.dimension, TextureDimension::D2Array { .. }) || !self.device.supportsTextureSampleCount(desc.sample_count as usize) {
             return Err(Error::Unavailable("Metal texture dimension or sample count unsupported".into()));
         }
         if desc.sample_count > 1 && desc.memory_location != MemoryLocation::GpuOnly {
             return Err(Error::InvalidInput("Metal multisample textures require private GPU storage".into()));
+        }
+        if matches!(desc.dimension, TextureDimension::D3 { .. }) {
+            self.texture_volume_capabilities().validate(desc)?;
         }
         let transient = desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT);
         let memoryless = transient && self.device.supportsFamily(objc2_metal::MTLGPUFamily::Apple2);
@@ -165,13 +168,18 @@ impl MetalDevice {
             return Err(Error::InvalidInput("Metal 2D texture exceeds 16384 texels".into()));
         }
         let native = MTLTextureDescriptor::new();
-        native.setTextureType(if desc.sample_count > 1 { MTLTextureType::Type2DMultisample } else { MTLTextureType::Type2D });
+        native.setTextureType(match desc.dimension {
+            TextureDimension::D3 { .. } => MTLTextureType::Type3D,
+            _ if desc.sample_count > 1 => MTLTextureType::Type2DMultisample,
+            _ => MTLTextureType::Type2D,
+        });
         native.setPixelFormat(format_to_metal(desc.format));
         // SAFETY: The portable descriptor validates the complete mip chain,
         // and the dimensions above are bounded for single-sample 2D textures.
         unsafe {
             native.setWidth(desc.size.width() as usize);
             native.setHeight(desc.size.height() as usize);
+            native.setDepth(desc.dimension.mip_depth(0) as usize);
             native.setMipmapLevelCount(desc.mip_level_count as usize);
             native.setSampleCount(desc.sample_count as usize);
         }
@@ -213,10 +221,10 @@ impl MetalDevice {
             parent.clone()
         } else {
             // SAFETY: The descriptor validates the mip range and the texture
-            // is single-sample 2D, with exactly one array slice.
+            // is single-sample 2D or 3D, with exactly one array slice.
             unsafe {
                 parent.newTextureViewWithPixelFormat_textureType_levels_slices(
-                    format_to_metal(desc.format), MTLTextureType::Type2D,
+                    format_to_metal(desc.format), if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) { MTLTextureType::Type3D } else { MTLTextureType::Type2D },
                     NSRange { location: desc.base_mip_level as usize, length: desc.mip_level_count as usize },
                     NSRange { location: 0, length: 1 },
                 )

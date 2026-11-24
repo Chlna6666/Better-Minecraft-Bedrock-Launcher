@@ -118,7 +118,7 @@ fn main() {
                 .entry("fs_effects_froxel_ms", ShaderStage::Fragment),
         )
         .shader(
-            Shader::new("froxel_inject")
+            Shader::new("froxel_inject").msl_version(MslVersion::V2_0)
                 .wgsl(concat!(
                     include_str!("src/scene_view/effects/frame.wgsl"),
                     "\n",
@@ -127,7 +127,7 @@ fn main() {
                 .entry("cs_froxel_inject", ShaderStage::Compute),
         )
         .shader(
-            Shader::new("froxel_integrate")
+            Shader::new("froxel_integrate").msl_version(MslVersion::V2_0)
                 .wgsl_file("src/scene_view/effects/froxel_integrate.wgsl")
                 .entry("cs_froxel_integrate", ShaderStage::Compute),
         )

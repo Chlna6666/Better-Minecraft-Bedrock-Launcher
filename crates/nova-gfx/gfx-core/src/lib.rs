@@ -1695,6 +1695,8 @@ pub struct MetalShaderBindings {
     pub workgroup_size: [u32; 3],
     /// Storage-buffer slots that require writable bindings.
     pub writable_buffers: u32,
+    /// Storage texture slots, portable formats and read-only access.
+    pub storage_textures: Cow<'static, [(u8, Format, bool)]>,
 }
 
 /// Compiled shader bytes and entry point metadata.
@@ -1892,6 +1894,8 @@ pub enum EmbeddedShader {
         workgroup_size: [u32; 3],
         /// Required writable storage slots.
         writable_buffers: u32,
+        /// Storage texture slots, formats and read-only access.
+        storage_textures: &'static [(u8, Format, bool)],
     },
 }
 
@@ -1935,7 +1939,7 @@ impl EmbeddedShader {
             ),
             Self::Msl(source) => ShaderBinary::msl(stage, entry_point, source.to_string()),
             Self::Metallib(library) => ShaderBinary::metallib_static(stage, entry_point, library),
-            Self::MetallibMapped { library, native_entry, buffers, textures, samplers, size_slots, workgroup_size, writable_buffers } => {
+            Self::MetallibMapped { library, native_entry, buffers, textures, samplers, size_slots, workgroup_size, writable_buffers, storage_textures } => {
                 let mut binary = ShaderBinary::metallib_static(stage, entry_point, library);
                 binary.metal = Some(MetalShaderBindings {
                     native_entry: Cow::Borrowed(native_entry),
@@ -1945,6 +1949,7 @@ impl EmbeddedShader {
                     size_slots: Cow::Borrowed(size_slots),
                     workgroup_size,
                     writable_buffers,
+                    storage_textures: Cow::Borrowed(storage_textures),
                 });
                 binary
             }

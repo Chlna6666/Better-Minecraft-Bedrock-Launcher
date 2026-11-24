@@ -66,6 +66,15 @@ impl MetalDevice {
                     }
                     NativeResource::Texture(view.texture, view.resource.clone())
                 }
+                (BindingResource::Texture(binding), BindingType::StorageTexture { format, .. }) => {
+                    let view = self.texture_views.get(binding.texture_view)?;
+                    let texture = self.textures.get(view.texture)?;
+                    if !texture.desc.usage.contains(TextureUsage::STORAGE) || format != view.format
+                        || texture.desc.sample_count != 1 || view.resource.mipmapLevelCount() != 1 {
+                        return Err(Error::InvalidInput("Metal storage texture usage, format or view mismatch".into()));
+                    }
+                    NativeResource::Texture(view.texture, view.resource.clone())
+                }
                 (BindingResource::Sampler(binding), BindingType::Sampler) => {
                     NativeResource::Sampler(self.samplers.get(binding.sampler)?.resource.clone())
                 }
@@ -85,6 +94,8 @@ impl MetalDevice {
         let Some(shader) = shader else { return Ok(()); };
         let (mut buffers, mut textures, mut samplers) = (0u32, 0u32, 0u16);
         let mut writable_buffers = 0u32;
+        let mut sampled_slots = 0u32;
+        let mut storage = Vec::new();
         if let Some(layout) = layout {
             for entry in &self.bind_group_layouts.get(layout)?.desc.entries {
                 if !entry.stages.contains(stage) { continue; }
@@ -93,14 +104,20 @@ impl MetalDevice {
                 match entry.binding_type {
                     BindingType::UniformBuffer | BindingType::StorageBuffer => buffers |= 1 << slot,
                     BindingType::StorageBufferReadWrite => { buffers |= 1 << slot; writable_buffers |= 1 << slot; }
-                    BindingType::SampledTexture => textures |= 1 << slot,
+                    BindingType::SampledTexture => { textures |= 1 << slot; sampled_slots |= 1 << slot; }
                     BindingType::Sampler => samplers |= 1 << slot,
-                    BindingType::StorageTexture { .. } => {}
+                    BindingType::StorageTexture { format, read_only } => { textures |= 1 << slot; storage.push((slot, format, read_only)); }
                 }
             }
         }
+        let storage_slots = shader.storage_textures.iter().fold(0u32, |mask, (slot, _, _)| mask | (1u32 << *slot));
         if shader.buffers & !buffers != 0 || shader.writable_buffers & !writable_buffers != 0
-            || shader.textures & !textures != 0 || shader.samplers & !samplers != 0 {
+            || shader.textures & !textures != 0 || shader.samplers & !samplers != 0
+            || (shader.textures & !storage_slots) & !sampled_slots != 0
+            || shader.storage_textures.iter().any(|&(slot, format, read_only)|
+                !storage.iter().any(|&(native_slot, native_format, native_read_only)|
+                    native_slot == slot && native_format == format && (read_only || !native_read_only)))
+        {
             return Err(Error::InvalidInput("Metal pipeline layout omits a reflected shader binding".into()));
         }
         Ok(())

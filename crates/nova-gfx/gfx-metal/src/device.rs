@@ -1013,7 +1013,11 @@ mod platform {
             }
         }
         fn compute_bind_group_capabilities(&self) -> gfx_core::ComputeBindGroupCapabilities {
-            gfx_core::ComputeBindGroupCapabilities { buffers: true, sampled_textures: true, samplers: true, storage_textures: false }
+            gfx_core::ComputeBindGroupCapabilities { buffers: true, sampled_textures: true, samplers: true, storage_textures: true }
+        }
+        fn texture_volume_capabilities(&self) -> gfx_core::TextureVolumeCapabilities {
+            // Conservative portable Metal 3D limit, independent of 2D extent.
+            gfx_core::TextureVolumeCapabilities { max_dimension_3d: 2048, sampled: true, storage: true }
         }
         fn dispatch_compute(&mut self, dispatch: &gfx_core::ComputeDispatch<'_>) -> Result<()> {
             self.submit_compute(std::slice::from_ref(dispatch), false).map(|_| ())

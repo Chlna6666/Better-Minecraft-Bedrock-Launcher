@@ -28,6 +28,8 @@ pub enum MslVersion {
     V1_1,
     /// Metal Shading Language 1.2, including the `instance_id` attribute.
     V1_2,
+    /// Metal Shading Language 2.0, including read/write storage images.
+    V2_0,
 }
 
 impl MslVersion {
@@ -36,6 +38,7 @@ impl MslVersion {
             Self::V1_0 => (1, 0),
             Self::V1_1 => (1, 1),
             Self::V1_2 => (1, 2),
+            Self::V2_0 => (2, 0),
         }
     }
 }
@@ -308,7 +311,9 @@ impl WgslModule {
             size_slots: std::borrow::Cow::Borrowed(&[]),
             workgroup_size: if stage == ShaderStage::Compute { self.module.entry_points[entry_index].workgroup_size } else { [0; 3] },
             writable_buffers: 0,
+            storage_textures: std::borrow::Cow::Borrowed(&[]),
         };
+        let mut storage_textures = Vec::new();
         let mut sizes = Vec::new();
         let mut uses_sizes = false;
         // Naga emits one uint per runtime-sized global in declaration order,
@@ -342,6 +347,10 @@ impl WgslModule {
                 naga::AddressSpace::Handle => match self.module.types[variable.ty].inner {
                     naga::TypeInner::Sampler { .. } => BindingType::Sampler,
                     naga::TypeInner::Image { class: naga::ImageClass::Sampled { .. } | naga::ImageClass::Depth { .. }, .. } => BindingType::SampledTexture,
+                    naga::TypeInner::Image { class: naga::ImageClass::Storage { format, access }, .. } => BindingType::StorageTexture {
+                        format: glsl::core_format_from_storage(format).map_err(|error| ShaderError::Msl(error.to_string()))?,
+                        read_only: !access.contains(naga::StorageAccess::STORE),
+                    },
                     _ => return Err(ShaderError::Msl(format!("unsupported Metal image or binding array {binding:?}"))),
                 },
                 _ => return Err(ShaderError::Msl(format!("unsupported Metal resource {binding:?}"))),
@@ -364,10 +373,16 @@ impl WgslModule {
                     target.sampler = Some(msl::BindSamplerTarget::Resource(slot));
                     metadata.samplers |= 1u16 << slot;
                 }
-                BindingType::StorageTexture { .. } => unreachable!("storage texture translation rejected above"),
+                BindingType::StorageTexture { format, read_only } => {
+                    target.texture = Some(slot);
+                    target.mutable = !read_only;
+                    metadata.textures |= 1u32 << slot;
+                    storage_textures.push((slot, format, read_only));
+                }
             }
             resources.resources.insert(binding, target);
         }
+        metadata.storage_textures = std::borrow::Cow::Owned(storage_textures);
         if uses_sizes {
             if sizes.len() > 1024 {
                 return Err(ShaderError::Msl("Metal runtime-array size table exceeds setBytes capacity".into()));

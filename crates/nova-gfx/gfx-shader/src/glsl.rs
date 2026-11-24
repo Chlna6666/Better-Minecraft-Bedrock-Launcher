@@ -181,7 +181,7 @@ impl WgslModule {
 }
 
 /// Maps one WGSL storage-image format onto a core [`gfx_core::Format`].
-fn core_format_from_storage(format: naga::StorageFormat) -> Result<gfx_core::Format> {
+pub(super) fn core_format_from_storage(format: naga::StorageFormat) -> Result<gfx_core::Format> {
     use naga::StorageFormat;
     Ok(match format {
         StorageFormat::R8Unorm => gfx_core::Format::R8Unorm,

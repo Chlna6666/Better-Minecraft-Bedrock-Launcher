@@ -328,8 +328,10 @@ impl ShaderSet {
                     let images = glsl.images.iter().map(|image| format!("::gfx_core::GlslImageBinding {{ name: ::std::borrow::Cow::Borrowed({:?}), binding: {}, format: ::gfx_core::Format::{:?}, read_only: {} }}", image.name, image.binding, image.format, image.read_only)).collect::<Vec<_>>().join(",");
                     generated.push_str(&format!("const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::Glsl {{ source: include_str!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")), buffers: &[{buffers}], textures: &[{textures}], images: &[{images}] }};\n"));
                 } else if let Some(metal) = metal {
+                    let storage_textures = metal.storage_textures.iter().map(|(slot, format, read_only)|
+                        format!("({slot}, ::gfx_core::Format::{format:?}, {read_only})")).collect::<Vec<_>>().join(",");
                     generated.push_str(&format!(
-                        "const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::MetallibMapped {{ library: include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")), native_entry: {:?}, buffers: {}, textures: {}, samplers: {}, size_slots: &{:?}, workgroup_size: {:?}, writable_buffers: {} }};\n",
+                        "const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::MetallibMapped {{ library: include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")), native_entry: {:?}, buffers: {}, textures: {}, samplers: {}, size_slots: &{:?}, workgroup_size: {:?}, writable_buffers: {}, storage_textures: &[{storage_textures}] }};\n",
                         metal.native_entry, metal.buffers, metal.textures, metal.samplers, metal.size_slots.as_ref(), metal.workgroup_size, metal.writable_buffers
                     ));
                 } else {
