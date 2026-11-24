@@ -36,6 +36,7 @@ pub use voxel_style::{VoxelDisplay, VoxelIllumination, VoxelShading, VoxelShadin
 mod artifacts;
 mod batching;
 mod culling;
+mod draw_compaction;
 mod effects;
 mod generated;
 pub(crate) mod gpu;

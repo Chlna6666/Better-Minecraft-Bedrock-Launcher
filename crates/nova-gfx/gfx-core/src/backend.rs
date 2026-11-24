@@ -1340,6 +1340,16 @@ pub trait OffscreenSubmissionDevice {
         queue: OffscreenQueuePreference,
     ) -> Result<Option<SubmissionId>>;
 
+    /// Maximum native GPU-generated draw count for ordered offscreen passes.
+    fn counted_offscreen_limit(&self) -> Option<u32> { None }
+
+    /// Submit an ordered pass consuming a GPU-generated dense count table.
+    fn submit_counted_offscreen_pass(
+        &mut self, _pass: &RenderPassCommands<'_>, _counts: &[crate::IndirectCountBinding],
+    ) -> Result<()> {
+        Err(Error::Unavailable("counted offscreen graphics is unsupported".into()))
+    }
+
     /// Hardware-supported independent native graphics-queue availability.
     fn supports_independent_offscreen_graphics(&self) -> bool;
 }
@@ -1363,6 +1373,16 @@ impl<T: PresentationDevice> OffscreenSubmissionDevice for T {
         } else {
             PresentationDevice::render_to_textures_on_queue(self, passes, tags, queue)
         }
+    }
+
+    fn counted_offscreen_limit(&self) -> Option<u32> {
+        PresentationDevice::indirect_draw_count_limit(self)
+    }
+
+    fn submit_counted_offscreen_pass(
+        &mut self, pass: &RenderPassCommands<'_>, counts: &[crate::IndirectCountBinding],
+    ) -> Result<()> {
+        PresentationDevice::render_to_texture_counted(self, pass, counts)
     }
 
     fn supports_independent_offscreen_graphics(&self) -> bool {

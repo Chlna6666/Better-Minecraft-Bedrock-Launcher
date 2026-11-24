@@ -801,6 +801,7 @@ struct SidecarGpuBackend {
     /// Device calls remain on this native owner for DX11/GL correctness.
     offscreen: Option<SidecarSurface>,
     pending_passes: Vec<NativeOffscreenPass>,
+    draw_compaction: Option<super::draw_compaction::Compactor>,
     /// Capture epochs enter this list when their producer passes are encoded;
     /// they are moved to submitted candidates only when GPUI drains those
     /// passes, and published only after the host accepts the GPU submission.
@@ -914,6 +915,7 @@ impl SidecarGpuBackend {
             captured_inputs: HashMap::new(),
             offscreen,
             pending_passes: Vec::new(),
+            draw_compaction: super::draw_compaction::Compactor::new(device, &render_context),
             pending_capture_epochs: Vec::new(),
             submitted_capture_epochs: Vec::new(),
             offscreen_trace: OffscreenTrace::default(),
@@ -1538,13 +1540,24 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         // semaphore/Fence handshakes or CPU waits. Other standalone engines
         // can request the generic IndependentGraphicsIfAvailable mode through
         // gfx-core when measured concurrency justifies its extra submissions.
-        let native_result = submit_native_offscreen_passes(&self.pending_passes, |passes, tags| {
-            device.submit_offscreen_graphics(
-                passes,
-                tags,
-                gfx_core::OffscreenQueuePreference::OrderedGraphics,
-            )
-        });
+        // Initial measured/opt-in path: one ordered capture, no tagged
+        // timestamp loss or extra submission boundaries for multi-view batches.
+        let native_result = (|| -> gfx_core::Result<Option<gfx_core::SubmissionId>> {
+            if let ([pass], Some(compactor)) =
+                (self.pending_passes.as_slice(), self.draw_compaction.as_mut())
+            {
+                if pass.gpu_work_tag.is_none() && compactor.submit(device, pass)? {
+                    // Vulkan's ordered offscreen path returns no public ID;
+                    // GUI consumer proof seals resident slot retirement.
+                    return Ok(None);
+                }
+            }
+            submit_native_offscreen_passes(&self.pending_passes, |passes, tags| {
+                device.submit_offscreen_graphics(
+                    passes, tags, gfx_core::OffscreenQueuePreference::OrderedGraphics,
+                )
+            })
+        })();
         let submitted = match native_result {
             Ok(submitted) => submitted,
             Err(error) => {
@@ -2006,6 +2019,9 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
     fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         let scenes = self.scenes.keys().copied().collect();
         self.destroy_scenes(device, scenes)?;
+        if let Some(compactor) = self.draw_compaction.take() {
+            compactor.destroy(device)?;
+        }
         self.resources.destroy(device)?;
         if let Some(surface) = self.offscreen.take() {
             surface.destroy(device)?;
