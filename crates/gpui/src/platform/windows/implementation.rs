@@ -108,7 +108,7 @@ fn with_active_context<R>(
 pub(crate) enum WindowsUserEvent {
     RunMainThreadTasks,
     DisplaysChanged,
-    VSync(super::vsync::VSyncEventTiming),
+    VSync,
     RenderOwnerFrame {
         window_id: winit::window::WindowId,
     },
@@ -1425,7 +1425,11 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         match event {
             WindowsUserEvent::RunMainThreadTasks => self.run_foreground_tasks(event_loop),
             WindowsUserEvent::DisplaysChanged => self.refresh_display_cache(event_loop),
-            WindowsUserEvent::VSync(timing) => self.dispatch_pending_window_updates(timing),
+            WindowsUserEvent::VSync => {
+                if let Some(timing) = self.vsync_scheduler.take_vsync() {
+                    self.dispatch_pending_window_updates(timing);
+                }
+            }
             WindowsUserEvent::RemoveNativeWindow { window_id } => {
                 // GPUI already acknowledged this close; never invoke its
                 // close callback a second time from the native event loop.

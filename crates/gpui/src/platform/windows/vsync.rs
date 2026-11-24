@@ -132,11 +132,6 @@ impl NativeDisplayClock {
         None
     }
 }
-/// Only the final fraction of an Immediate frame is actively aligned to its
-/// deadline. Parking across that last fraction produces quantized 1ms wake
-/// times on some Windows timer configurations; spinning the whole interval
-/// would waste a core, so keep this margin small.
-const UNPACED_FINE_WAIT_MARGIN: Duration = Duration::from_micros(125);
 const MAX_REASONABLE_VSYNC_INTERVAL: Duration = Duration::from_secs(1);
 pub(super) const WM_MODAL_VSYNC: u32 = WM_APP + 0x475;
 pub(super) const WM_MODAL_UI_TASKS: u32 = WM_APP + 0x476;
@@ -173,6 +168,8 @@ pub(super) struct VSyncScheduler {
     shutdown: AtomicBool,
     thread: Mutex<Option<Thread>>,
     modal_frame: Mutex<Option<ModalFrameTarget>>,
+    // Latest timing replaces an unconsumed event instead of growing the UI queue.
+    pending_vsync: Mutex<Option<VSyncEventTiming>>,
     modal_task_wake_pending: AtomicBool,
     /// Only opt-in windows influence the native background cadence.
     /// Unconfigured windows retain the original background interval.
@@ -200,6 +197,7 @@ impl VSyncScheduler {
             shutdown: AtomicBool::new(false),
             thread: Mutex::new(None),
             modal_frame: Mutex::new(None),
+            pending_vsync: Mutex::new(None),
             modal_task_wake_pending: AtomicBool::new(false),
             background_frame_intervals: Mutex::new(HashMap::new()),
         }
@@ -265,8 +263,10 @@ impl VSyncScheduler {
         if !self.is_active() {
             return false;
         }
-        self.frame_pending.store(true, Ordering::Release);
-        self.unpark();
+        // Only the false -> true transition needs a scheduler wake.
+        if !self.frame_pending.swap(true, Ordering::AcqRel) {
+            self.unpark();
+        }
         true
     }
 
@@ -342,6 +342,15 @@ impl VSyncScheduler {
             return false;
         }
         true
+    }
+
+    fn publish_vsync(&self, timing: VSyncEventTiming) -> bool {
+        self.pending_vsync.lock().expect("vsync mailbox poisoned")
+            .replace(timing).is_none()
+    }
+
+    pub(super) fn take_vsync(&self) -> Option<VSyncEventTiming> {
+        self.pending_vsync.lock().expect("vsync mailbox poisoned").take()
     }
 
     fn post_modal_frame(&self, timing: VSyncEventTiming) -> bool {
@@ -455,9 +464,8 @@ pub(super) fn spawn_vsync_thread(
                 if thread_scheduler.post_modal_frame(timing) {
                     continue;
                 }
-                if event_loop_proxy
-                    .send_event(WindowsUserEvent::VSync(timing))
-                    .is_err()
+                if thread_scheduler.publish_vsync(timing)
+                    && event_loop_proxy.send_event(WindowsUserEvent::VSync).is_err()
                 {
                     break;
                 }
@@ -524,12 +532,9 @@ fn wait_for_unpaced_tick(
             *last_tick = Some(deadline);
             break;
         }
-        let remaining = deadline - now;
-        if remaining > UNPACED_FINE_WAIT_MARGIN {
-            std::thread::park_timeout(remaining - UNPACED_FINE_WAIT_MARGIN);
-        } else {
-            std::hint::spin_loop();
-        }
+        // Explicit Immediate + FixedFps has no display-clock authority.
+        // Park for the entire remainder; do not trade CPU cycles for precision.
+        std::thread::park_timeout(deadline - now);
     }
     VSyncPacing {
         display_tick_at: None,
@@ -766,6 +771,25 @@ mod tests {
         assert_eq!(refresh_interval(0, 1), None);
         assert_eq!(refresh_interval(60, 0), None);
         assert_eq!(refresh_interval(1, 2), None);
+    }
+
+    #[test]
+    fn normal_vsync_mailbox_coalesces_until_consumed() {
+        let scheduler = VSyncScheduler::new();
+        let now = Instant::now();
+        let sample = VSyncEventTiming {
+            display_tick_at: Some(now),
+            pacing_wait: Duration::ZERO,
+            reported_refresh_period: None,
+            reported_composition_period: None,
+            enqueued_at: now,
+        };
+        assert!(scheduler.publish_vsync(sample));
+        let latest = VSyncEventTiming { enqueued_at: now + Duration::from_millis(1), ..sample };
+        assert!(!scheduler.publish_vsync(latest));
+        assert_eq!(scheduler.take_vsync().unwrap().enqueued_at, latest.enqueued_at);
+        assert!(scheduler.take_vsync().is_none());
+        assert!(scheduler.publish_vsync(sample));
     }
 
     #[test]
