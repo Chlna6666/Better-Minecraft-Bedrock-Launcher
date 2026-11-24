@@ -159,8 +159,18 @@ impl Element for ViewElement {
         let entity_id = self.view.entity_id();
         let type_name = cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
         window.with_rendered_view(entity_id, |window| {
-            window.record_rendered_view(entity_id, type_name);
-            let mut element = self.view.render_element(window, cx);
+            let mut element = if let Some(recipe) = window.reuse_view_recipe(entity_id) {
+                recipe.materialize()
+            } else {
+                window.record_rendered_view(entity_id, type_name);
+                let mut rendered = self.view.render_element(window, cx);
+                if let Some(recipe) = rendered.downcast_mut::<crate::RetainedViewRecipe>() {
+                    window.record_view_recipe(entity_id, recipe.clone());
+                    recipe.materialize()
+                } else {
+                    rendered
+                }
+            };
             // Lay out the rendered tree inside the same view scope. Element request-layout code
             // queries the current view, exactly as it did when the view cache owned this boundary.
             let layout_id = element.request_layout(window, cx);

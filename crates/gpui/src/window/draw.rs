@@ -173,6 +173,7 @@ impl Window {
         self.input_dependency_owner = None;
         self.next_input_readers.get_mut().clear();
         self.next_scroll_reads.clear();
+        self.next_view_recipes.clear();
         debug_assert!(self.rendered_entity_stack.is_empty());
         debug_assert!(self.view_bounds_stack.is_empty());
         // Defensive: an unwound draw could leave stale frames behind.
@@ -438,6 +439,7 @@ impl Window {
         self.record_entities_accessed(cx);
         self.commit_input_reads();
         self.commit_scroll_reads();
+        self.commit_view_recipes();
         self.reset_cursor_style(cx);
         self.refreshing = false;
         self.invalidator.set_phase(DrawPhase::None);

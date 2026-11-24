@@ -492,6 +492,8 @@ pub struct Window {
     pub(super) next_input_readers: RefCell<FxHashMap<EntityId, u8>>,
     pub(super) scroll_reads: super::scroll_dependencies::ScrollReads,
     pub(super) next_scroll_reads: super::scroll_dependencies::ScrollReads,
+    pub(super) view_recipes: FxHashMap<GlobalElementId, super::view_recipe::CommittedViewRecipe>,
+    pub(super) next_view_recipes: FxHashMap<GlobalElementId, super::view_recipe::CommittedViewRecipe>,
     /// Views whose rendered output has read [`Window::viewport_size`]. A content resize dirties
     /// only these views; cached siblings whose bounds and dependencies stay unchanged remain
     /// eligible for retained replay.
