@@ -94,8 +94,9 @@ impl Element for List {
                     let total_height = summary.height;
                     state.recycle_item_layouts(layout_response.item_layouts);
 
-                    window.request_measured_layout(
+                    window.request_keyed_size_layout(
                         style,
+                        ("list", max_element_width, total_height),
                         move |known_dimensions, available_space, _window, _cx| {
                             let width =
                                 known_dimensions

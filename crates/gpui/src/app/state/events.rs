@@ -24,21 +24,26 @@ impl App {
     ) {
         let mut tracked_entities =
             std::mem::take(self.tracked_entities.entry(window_handle.id).or_default());
-        for entity in tracked_entities.iter() {
-            self.window_invalidators_by_entity
-                .entry(*entity)
-                .and_modify(|windows| {
-                    windows.remove(&window_handle.id);
-                });
+        // Stable frames keep the same entity dependencies. Reconcile only
+        // added/removed edges instead of tearing down every reverse index
+        // entry and cloning its WindowInvalidator again.
+        tracked_entities.retain(|entity| {
+            if entities.contains(entity) {
+                return true;
+            }
+            if let Some(windows) = self.window_invalidators_by_entity.get_mut(entity) {
+                windows.remove(&window_handle.id);
+            }
+            false
+        });
+        for entity in entities.iter().copied() {
+            if tracked_entities.insert(entity) {
+                self.window_invalidators_by_entity
+                    .entry(entity)
+                    .or_default()
+                    .insert(window_handle.id, invalidator.clone());
+            }
         }
-        for entity in entities.iter() {
-            self.window_invalidators_by_entity
-                .entry(*entity)
-                .or_default()
-                .insert(window_handle.id, invalidator.clone());
-        }
-        tracked_entities.clear();
-        tracked_entities.extend(entities.iter().copied());
         self.tracked_entities
             .insert(window_handle.id, tracked_entities);
     }

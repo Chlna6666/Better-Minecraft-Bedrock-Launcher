@@ -76,6 +76,44 @@ impl Window {
             )
     }
 
+    /// Requests a side-effect-free measured leaf whose result depends solely
+    /// on its explicit measurement inputs and Taffy's constraints.
+    /// Keep this internal: callers must not hide mutable app state or paint
+    /// preparation in the callback. The fingerprint includes rem and DPI.
+    pub(crate) fn request_keyed_size_layout<K: std::hash::Hash, F>(
+        &mut self,
+        style: Style,
+        key: K,
+        mut measure: F,
+    ) -> LayoutId
+    where
+        F: FnMut(Size<Option<Pixels>>, Size<AvailableSpace>, &mut Window, &mut App) -> Size<Pixels> + 'static,
+    {
+        use std::hash::{Hash, Hasher};
+        self.invalidator.debug_assert_prepaint();
+        let rem_size = self.rem_size();
+        let scale_factor = self.scale_factor();
+        let owner = self.current_stable_layout_element_id();
+        let mut hasher = collections::FxHasher::default();
+        std::any::type_name::<K>().hash(&mut hasher);
+        key.hash(&mut hasher);
+        rem_size.0.to_bits().hash(&mut hasher);
+        scale_factor.to_bits().hash(&mut hasher);
+        self.layout_engine.as_mut().unwrap().request_fingerprinted_layout(
+            owner,
+            style,
+            rem_size,
+            scale_factor,
+            Some(hasher.finish()),
+            move |known, available, window, cx| {
+                snap_measured_size_to_device_pixels(
+                    measure(known, available, window, cx),
+                    scale_factor,
+                )
+            },
+        )
+    }
+
     pub(crate) fn request_default_measured_layout<
         F: FnMut(Size<Option<Pixels>>, Size<AvailableSpace>, &mut Window, &mut App) -> Size<Pixels>
             + 'static,

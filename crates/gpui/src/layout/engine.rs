@@ -474,6 +474,7 @@ impl TaffyLayoutEngine {
                     && context.is_pure
                     && node.measure_fingerprint == measure_fingerprint;
                 if let Some(old_context) = self.taffy.get_node_context_mut(id.into()) {
+                    let unchanged_pure = unchanged_pure && old_context.is_pure;
                     if unchanged_pure {
                         context.last_measure_input = old_context.last_measure_input;
                     }

@@ -133,8 +133,9 @@ impl Element for UniformList {
             |style, window, cx| match self.sizing_behavior {
                 ListSizingBehavior::Infer => {
                     window.with_text_style(style.text_style().cloned(), |window| {
-                        window.request_measured_layout(
+                        window.request_keyed_size_layout(
                             style,
+                            ("uniform_list", item_size.width, item_size.height, max_items),
                             move |known_dimensions, available_space, _window, _cx| {
                                 let desired_height = item_size.height * max_items;
                                 let width = known_dimensions.width.unwrap_or(match available_space
