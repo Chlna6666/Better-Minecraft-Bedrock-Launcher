@@ -3,7 +3,7 @@
 
 // TODO: deprecate "runtime-shaders" and "macos-blade".
 
-use gfx_shader_build::{Dx12ArtifactPolicy, Shader, ShaderSet, ShaderStage};
+use gfx_shader_build::{Dx12ArtifactPolicy, MslVersion, Shader, ShaderSet, ShaderStage};
 use std::env;
 
 fn main() {
@@ -537,6 +537,7 @@ fn generate_nova_shader_bytes() {
         .dx12_artifact_policy(Dx12ArtifactPolicy::RequireBytecode)
         .shader(
             Shader::new("solid_quad")
+                .msl_version(MslVersion::V1_2)
                 .wgsl_file(NOVA_CORE_WGSL)
                 .wgsl_file(NOVA_ANIMATION_WGSL)
                 .wgsl_file("./src/platform/nova/shaders/solid_quad.wgsl")
@@ -545,6 +546,7 @@ fn generate_nova_shader_bytes() {
         )
         .shader(
             Shader::new("mono_sprite")
+                .msl_version(MslVersion::V1_2)
                 .wgsl_file(NOVA_CORE_WGSL)
                 .wgsl_file(NOVA_ANIMATION_WGSL)
                 .wgsl_file(NOVA_TEXT_WGSL)
@@ -579,6 +581,7 @@ fn generate_nova_shader_bytes() {
         )
         .shader(
             Shader::new("quad")
+                .msl_version(MslVersion::V1_2)
                 .wgsl_file(NOVA_CORE_WGSL)
                 .wgsl_file(NOVA_ANIMATION_WGSL)
                 .wgsl_file(NOVA_SHAPE_WGSL)
@@ -589,6 +592,7 @@ fn generate_nova_shader_bytes() {
         )
         .shader(
             Shader::new("shadow")
+                .msl_version(MslVersion::V1_2)
                 .wgsl_file(NOVA_CORE_WGSL)
                 .wgsl_file(NOVA_ANIMATION_WGSL)
                 .wgsl_file(NOVA_SHAPE_WGSL)
@@ -598,6 +602,7 @@ fn generate_nova_shader_bytes() {
         )
         .shader(
             Shader::new("path")
+                .msl_version(MslVersion::V1_2)
                 .wgsl_file(NOVA_CORE_WGSL)
                 .wgsl_file(NOVA_QUAD_COMMON_WGSL)
                 .wgsl_file("./src/platform/nova/shaders/path.wgsl")
@@ -608,6 +613,7 @@ fn generate_nova_shader_bytes() {
         )
         .shader(
             Shader::new("poly_sprite")
+                .msl_version(MslVersion::V1_2)
                 .wgsl_file(NOVA_CORE_WGSL)
                 .wgsl_file(NOVA_ANIMATION_WGSL)
                 .wgsl_file(NOVA_SHAPE_WGSL)
@@ -617,6 +623,7 @@ fn generate_nova_shader_bytes() {
         )
         .shader(
             Shader::new("poly_sprite_color")
+                .msl_version(MslVersion::V1_2)
                 .wgsl_file(NOVA_CORE_WGSL)
                 .wgsl_file(NOVA_ANIMATION_WGSL)
                 .wgsl_file(NOVA_SHAPE_WGSL)
@@ -626,6 +633,7 @@ fn generate_nova_shader_bytes() {
         )
         .shader(
             Shader::new("underline")
+                .msl_version(MslVersion::V1_2)
                 .wgsl_file(NOVA_CORE_WGSL)
                 .wgsl_file("./src/platform/nova/shaders/underline.wgsl")
                 .entry("vs_underline", ShaderStage::Vertex)
@@ -633,6 +641,7 @@ fn generate_nova_shader_bytes() {
         )
         .shader(
             Shader::new("backdrop_blur")
+                .msl_version(MslVersion::V1_2)
                 .wgsl_file(NOVA_CORE_WGSL)
                 .wgsl_file(NOVA_SHAPE_WGSL)
                 .wgsl_file(NOVA_ANIMATION_WGSL)
