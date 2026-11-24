@@ -505,7 +505,9 @@ async fn load_image_resource_data(
             ResourceImageBytes::Owned(body)
         }
         AssetLocation::Embedded(path) => {
-            let data = asset_source.load(&path).ok().flatten();
+            let data = asset_source.load(&path).map_err(|error| {
+                ImageCacheError::Asset(format!("loading embedded resource {path}: {error:#}").into())
+            })?;
             if let Some(data) = data {
                 match data {
                     Cow::Borrowed(bytes) => ResourceImageBytes::Static(bytes),

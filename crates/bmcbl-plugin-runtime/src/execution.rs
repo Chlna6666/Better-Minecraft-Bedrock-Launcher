@@ -93,15 +93,15 @@ impl PluginState {
     fn push_log(&mut self, level: LogLevel, message: String) {
         let plugin_id = self.policy.plugin_id.clone();
         self.effects.push(PluginEffect::Log {
-            plugin_id,
+            plugin_id: plugin_id.clone(),
             level,
             message: message.clone(),
         });
         match level {
-            LogLevel::Debug => tracing::debug!(message),
-            LogLevel::Info => tracing::info!(message),
-            LogLevel::Warn => tracing::warn!(message),
-            LogLevel::Error => tracing::error!(message),
+            LogLevel::Debug => tracing::debug!(plugin_id = %plugin_id, message = %message, "plugin log"),
+            LogLevel::Info => tracing::info!(plugin_id = %plugin_id, message = %message, "plugin log"),
+            LogLevel::Warn => tracing::warn!(plugin_id = %plugin_id, message = %message, "plugin log"),
+            LogLevel::Error => tracing::error!(plugin_id = %plugin_id, message = %message, "plugin log"),
         }
     }
 }
@@ -577,7 +577,8 @@ impl PluginExecution {
             }
             Err(error) => {
                 self.poisoned = true;
-                self.store.data_mut().effects.clear();
+                self.discard_non_log_effects();
+                self.drain_stderr_into_log();
                 self.store.data().context.revoke_services();
                 Err(Self::map_trap(error))
             }
@@ -647,6 +648,14 @@ impl PluginExecution {
     /// 取走本次入口调用期间累积的宿主副作用。
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
+    }
+
+    /// Keep diagnostic effects even when other effects cannot be applied.
+    pub fn discard_non_log_effects(&mut self) -> usize {
+        let effects = &mut self.store.data_mut().effects;
+        let before = effects.len();
+        effects.retain(|effect| matches!(effect, PluginEffect::Log { .. }));
+        before - effects.len()
     }
 
     pub fn take_effects(&mut self) -> Vec<PluginEffect> {

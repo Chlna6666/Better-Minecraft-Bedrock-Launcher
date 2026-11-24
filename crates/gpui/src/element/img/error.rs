@@ -10,7 +10,7 @@ pub enum ImageCacheError {
     #[error("image loading was cancelled")]
     Cancelled,
     /// Some other kind of error occurred
-    #[error("error: {0}")]
+    #[error("error: {0:#}")]
     Other(#[from] Arc<anyhow::Error>),
     /// An error that occurred while reading the image from disk.
     #[error("IO error: {0}")]

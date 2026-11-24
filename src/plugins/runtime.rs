@@ -663,11 +663,11 @@ impl PluginActivation {
         };
         let registrations: Vec<abi::Registration> =
             execution.init(context).map_err(plugin_error_to_anyhow)?;
-        let effects = execution.take_effects();
-        if !effects.is_empty() {
+        let discarded = execution.discard_non_log_effects();
+        if discarded != 0 {
             warn!(
                 plugin_id = manifest.id,
-                count = effects.len(),
+                count = discarded,
                 "plugin init emitted plugin effects; effects are ignored during init"
             );
         }
@@ -1144,6 +1144,26 @@ impl PluginRegistry {
         );
     }
 
+    // Rendering and initialization may emit logs, but must not apply UI,
+    // navigation or other active effects through this path.
+    fn record_passive_effects(&mut self, effects: Vec<abi::PluginEffect>) {
+        for effect in effects {
+            if let abi::PluginEffect::Log { plugin_id, level, message } = effect {
+                self.push_log(plugin_id, level, message);
+            }
+        }
+    }
+
+    fn record_page_error(&mut self, key: &PageRenderCacheKey, message: &str) {
+        warn!(plugin_id = %key.plugin_id, page_id = %key.page_id, error = %message, "plugin page render failed");
+        self.push_log(
+            key.plugin_id.clone(),
+            abi::LogLevel::Error,
+            format!("Page {}: {message}", key.page_id),
+        );
+        self.render_cache.page_errors.insert(key.clone(), Arc::from(message));
+    }
+
     pub fn pages(&self) -> Vec<PluginPage> {
         self.pages.values().cloned().collect()
     }
@@ -1517,6 +1537,7 @@ impl PluginRegistry {
                     pages = instance.pages.len(),
                     injections = instance.injections.len(),
                     subscriptions = instance.subscriptions.len(),
+                    generation = instance.generation,
                     "plugin loaded"
                 );
                 self.push_log(
@@ -1524,6 +1545,10 @@ impl PluginRegistry {
                     abi::LogLevel::Info,
                     plugin_loaded_log_message(&instance.manifest),
                 );
+                if let Some(runtime) = &instance.runtime {
+                    let effects = runtime.lock().unwrap_or_else(|error| error.into_inner()).take_effects();
+                    self.record_passive_effects(effects);
+                }
 
                 self.pages
                     .retain(|(page_plugin_id, _page_id), _page| page_plugin_id != plugin_id);
@@ -1750,31 +1775,23 @@ impl PluginRegistry {
             plugin_id: plugin_id.to_string(),
             page_id: page_id.to_string(),
         };
-        let tree = {
+        let (tree, effects, poisoned) = {
             let mut runtime = runtime
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            let tree = runtime
-                .render_page(request)
-                .map_err(plugin_error_to_anyhow)?;
-            let effects = runtime.take_effects();
-            if !effects.is_empty() {
-                warn!(
-                    plugin_id,
-                    page_id,
-                    count = effects.len(),
-                    "plugin render emitted plugin effects; effects are ignored during render"
-                );
-            }
-            view_tree_from_abi(tree)
+            let tree = runtime.render_page(request)
+                .map_err(plugin_error_to_anyhow)
+                .and_then(view_tree_from_abi);
+            (tree, runtime.take_effects(), runtime.is_poisoned())
         };
+        self.record_passive_effects(effects);
         let elapsed = started.elapsed();
         if elapsed > RENDER_TIMEOUT {
             let error = format!("plugin render exceeded {RENDER_TIMEOUT:?}");
-            self.render_cache
-                .page_errors
-                .insert(cache_key, Arc::<str>::from(error.clone()));
-            self.mark_unhealthy(plugin_id, error);
+            self.record_page_error(&cache_key, &error);
+            if poisoned {
+                self.mark_unhealthy(plugin_id, error);
+            }
             return Err(anyhow!("plugin render exceeded {:?}", RENDER_TIMEOUT));
         }
         if elapsed > RENDER_WARN_THRESHOLD {
@@ -1793,11 +1810,11 @@ impl PluginRegistry {
                 Ok(tree)
             }
             Err(error) => {
-                let error_message = error.to_string();
-                self.render_cache
-                    .page_errors
-                    .insert(cache_key, Arc::<str>::from(error_message.clone()));
-                self.mark_unhealthy(plugin_id, error_message);
+                let error_message = format!("{error:#}");
+                self.record_page_error(&cache_key, &error_message);
+                if poisoned {
+                    self.mark_unhealthy(plugin_id, error_message);
+                }
                 Err(error)
             }
         }
@@ -1884,19 +1901,10 @@ impl PluginRegistry {
         let mut runtime = runtime
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let tree: Option<abi::ViewTree> = runtime
-            .render_injection(request)
-            .map_err(plugin_error_to_anyhow)?;
-        let effects = runtime.take_effects();
-        if !effects.is_empty() {
-            warn!(
-                plugin_id,
-                count = effects.len(),
-                "plugin injection render emitted plugin effects; effects are ignored during render"
-            );
-        }
+        let tree = runtime.render_injection(request).map_err(plugin_error_to_anyhow);
+        self.record_passive_effects(runtime.take_effects());
 
-        tree.map(view_tree_from_abi)
+        tree?.map(view_tree_from_abi)
             .transpose()?
             .ok_or_else(|| anyhow!("plugin did not render injection for requested slot"))
     }
@@ -1962,6 +1970,7 @@ impl PluginRegistry {
             if let Err(error) = result {
                 let error = error.to_string();
                 warn!(plugin_id, error = %error, "plugin event failed");
+                self.push_log(plugin_id.clone(), abi::LogLevel::Error, format!("Event: {error}"));
                 self.mark_unhealthy(&plugin_id, error);
             }
         }
@@ -2063,6 +2072,7 @@ impl PluginRegistry {
     }
 
     fn mark_unhealthy(&mut self, plugin_id: &str, error: String) {
+        warn!(plugin_id, error = %error, "plugin runtime marked unhealthy");
         if let Some(instance) = self.plugins.get_mut(plugin_id) {
             instance.state = PluginLoadState::Failed {
                 generation: instance.generation,
@@ -4057,26 +4067,34 @@ fn request_page_render_now(cx: &mut App, plugin_id: &str, page_id: &str) {
         let result = crate::tasks::runtime::blocking::run_io(move || {
             let mut runtime = runtime.lock().unwrap_or_else(|error| error.into_inner());
             runtime.set_theme(theme);
-            let rendered = runtime.render_page(request);
-            runtime.take_effects();
-            view_tree_from_abi(rendered.map_err(plugin_error_to_anyhow)?)
-        }).await.map_err(|error| anyhow!("{error}")).and_then(|result| result);
+            let rendered = runtime.render_page(request)
+                .map_err(plugin_error_to_anyhow)
+                .and_then(view_tree_from_abi);
+            (rendered, runtime.take_effects(), runtime.is_poisoned())
+        }).await;
         let _ = cx.update(|cx| {
             cx.update_global(|registry: &mut PluginRegistry, _| {
-                let cache = &mut registry.render_cache;
-                if cache.pending_pages.get(&key) != Some(&ticket) {
+                if registry.render_cache.pending_pages.get(&key) != Some(&ticket) {
                     return;
                 }
-                cache.pending_pages.remove(&key);
-                match result {
-                    Ok(tree) => { cache.pages.insert(key, Arc::new(tree)); }
+                registry.render_cache.pending_pages.remove(&key);
+                let (rendered, effects, poisoned) = match result {
+                    Ok(output) => output,
+                    Err(error) => (Err(anyhow!("{error}")), Vec::new(), false),
+                };
+                registry.record_passive_effects(effects);
+                match rendered {
+                    Ok(tree) => { registry.render_cache.pages.insert(key, Arc::new(tree)); }
                     Err(error) => {
                         let message = format!("{error:#}");
-                        cache.page_errors.insert(key.clone(), Arc::from(message.clone()));
-                        registry.mark_unhealthy(&key.plugin_id, message);
+                        registry.record_page_error(&key, &message);
+                        if poisoned {
+                            registry.mark_unhealthy(&key.plugin_id, message);
+                        }
                     }
                 }
             });
+            cx.refresh_windows();
         });
     }).detach();
 }
@@ -4141,22 +4159,47 @@ fn render_injections_now(cx: &mut App, slot: InjectionSlot, page: Option<&str>) 
     let request = abi::InjectionRequest { slot: injection_slot_to_abi(slot), page: key.page.clone() };
     cx.spawn(async move |cx| {
         let result = crate::tasks::runtime::blocking::run_io(move || {
-            work.into_iter().filter_map(|(item, runtime)| {
+            work.into_iter().map(|(item, runtime)| {
                 let mut runtime = runtime.lock().unwrap_or_else(|error| error.into_inner());
                 runtime.set_theme(theme);
-                let tree = runtime.render_injection(request.clone());
-                runtime.take_effects();
-                let tree = view_tree_from_abi(tree.ok()??).ok()?;
-                Some(RenderedInjection { plugin_id: item.plugin_id, tree: Arc::new(tree), layout: item.layout })
+                let tree = runtime.render_injection(request.clone())
+                    .map_err(plugin_error_to_anyhow)
+                    .and_then(|tree| tree.map(view_tree_from_abi).transpose());
+                (item, tree, runtime.take_effects(), runtime.is_poisoned())
             }).collect::<Vec<_>>()
         }).await;
         let _ = cx.update(|cx| {
             cx.update_global(|registry: &mut PluginRegistry, _| {
-                let cache = &mut registry.render_cache;
-                if cache.pending_injections.get(&key) == Some(&ticket) {
-                    cache.pending_injections.remove(&key);
-                    if let Ok(trees) = result {
-                        cache.injections.insert(key, trees);
+                if registry.render_cache.pending_injections.get(&key) != Some(&ticket) {
+                    return;
+                }
+                registry.render_cache.pending_injections.remove(&key);
+                match result {
+                    Ok(outputs) => {
+                        let mut trees = Vec::new();
+                        for (item, tree, effects, poisoned) in outputs {
+                            registry.record_passive_effects(effects);
+                            match tree {
+                                Ok(Some(tree)) => trees.push(RenderedInjection {
+                                    plugin_id: item.plugin_id,
+                                    tree: Arc::new(tree),
+                                    layout: item.layout,
+                                }),
+                                Ok(None) => {}
+                                Err(error) => {
+                                    let message = format!("{error:#}");
+                                    warn!(plugin_id = %item.plugin_id, slot = ?key.slot, error = %message, "plugin injection render failed");
+                                    registry.push_log(item.plugin_id.clone(), abi::LogLevel::Error, format!("Injection: {message}"));
+                                    if poisoned {
+                                        registry.mark_unhealthy(&item.plugin_id, message);
+                                    }
+                                }
+                            }
+                        }
+                        registry.render_cache.injections.insert(key, trees);
+                    }
+                    Err(error) => {
+                        warn!(slot = ?key.slot, error = %error, "plugin injection worker failed");
                     }
                 }
             });
@@ -4818,6 +4861,7 @@ fn run_app_events(cx: &mut App) {
                     }
                     if let Err(error) = result {
                         let text = format!("plugin event failed: {}", error.message);
+                        warn!(plugin_id = %id, error = %text, "plugin event failed");
                         registry.push_log(id.clone(), abi::LogLevel::Error, text.clone());
                         if poisoned {
                             registry.mark_unhealthy(&id, text);

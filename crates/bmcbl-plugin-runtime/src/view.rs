@@ -9,6 +9,7 @@ const MAX_NODES: usize = 512;
 const MAX_TEXT_BYTES: usize = 256 * 1024;
 const MAX_STRING_BYTES: usize = 8192;
 const MAX_INLINE_IMAGE_BYTES: usize = 128 * 1024;
+const MAX_VIEW_INLINE_IMAGE_BYTES: usize = 512 * 1024;
 
 impl ViewTree {
     /// Validates the root and its descendants, including the cost of repeated references.
@@ -19,7 +20,8 @@ impl ViewTree {
         );
         let mut remaining = MAX_NODES;
         let mut text_remaining = MAX_TEXT_BYTES;
-        validate(self, self.root, 1, &mut remaining, &mut text_remaining)
+        let mut image_remaining = MAX_VIEW_INLINE_IMAGE_BYTES;
+        validate(self, self.root, 1, &mut remaining, &mut text_remaining, &mut image_remaining)
     }
 
     /// Size of the retained WIT view and its immediate dynamic fields.
@@ -43,6 +45,7 @@ fn validate(
     depth: usize,
     remaining: &mut usize,
     text: &mut usize,
+    images: &mut usize,
 ) -> Result<()> {
     ensure!(
         depth <= MAX_DEPTH && *remaining != 0,
@@ -53,11 +56,22 @@ fn validate(
         bail!("plugin view references missing node {index}");
     };
     strings(node, |value, max_len| {
+        let (remaining, kind) = if max_len == MAX_INLINE_IMAGE_BYTES {
+            (&mut *images, "inline image")
+        } else {
+            (&mut *text, "text")
+        };
         ensure!(
-            value.len() <= max_len && value.len() <= *text,
-            "plugin view exceeds its text budget"
+            value.len() <= max_len,
+            "plugin view node {index}: {kind} field is {} bytes (limit {max_len})",
+            value.len()
         );
-        *text -= value.len();
+        ensure!(
+            value.len() <= *remaining,
+            "plugin view node {index}: {kind} budget exhausted ({} bytes requested, {} remaining)",
+            value.len(), *remaining
+        );
+        *remaining -= value.len();
         Ok(())
     })?;
     let action = match node {
@@ -81,7 +95,7 @@ fn validate(
         );
     }
     for child in child_indices(node) {
-        validate(tree, *child, depth + 1, remaining, text)?;
+        validate(tree, *child, depth + 1, remaining, text, images)?;
     }
     Ok(())
 }
@@ -192,6 +206,19 @@ mod tests {
         image.alt.clear();
         image.src = format!("data:image/jpeg;base64,{}", "A".repeat(MAX_INLINE_IMAGE_BYTES));
         assert!(tree.validate().is_err(), "image source remains bounded");
+
+        let ViewNode::Image(image) = &mut tree.nodes[0] else { unreachable!() };
+        image.src = format!("data:image/jpeg;base64,{}", "A".repeat(100 * 1024));
+        let style = image.style.clone();
+        tree.nodes.push(ViewNode::Container(ContainerNode {
+            style,
+            children: vec![0, 0, 0],
+        }));
+        tree.root = 1;
+        assert!(tree.validate().is_ok(), "image bytes do not consume text budget");
+        let ViewNode::Container(container) = &mut tree.nodes[1] else { unreachable!() };
+        container.children = vec![0; 6];
+        assert!(tree.validate().is_err(), "repeated images consume the aggregate image budget");
     }
 
     #[test]
