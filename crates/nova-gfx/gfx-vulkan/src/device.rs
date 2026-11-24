@@ -58,6 +58,7 @@ mod presentation;
 mod relocation;
 mod transfer_queue;
 mod submission_wake;
+mod timeline;
 
 const DEFAULT_FRAME_SLOTS: u32 = 2;
 // A transient WSI stall must not discard a prepared compositor frame after only 1 ms.
@@ -172,6 +173,7 @@ pub struct VulkanDevice {
     free_command_encoders: Vec<VulkanCommandEncoder>,
     submissions: ResourceRegistry<VulkanSubmission>,
     submission_wakes: submission_wake::SubmissionWakes,
+    primary_timeline: Option<timeline::PrimaryTimeline>,
     /// Completed via a native fence on the waiting graphics-family queue.
     /// Binary semaphores must remain alive until that GPU wait executes.
     native_queue_waits: Vec<VulkanQueueWait>,
@@ -367,6 +369,7 @@ impl VulkanDevice {
             native_pixel_presentation,
             display_timing_supported,
             present_wait_supported,
+            timeline_supported,
         ) = create_device(
             &instance,
             physical_device,
@@ -463,6 +466,12 @@ impl VulkanDevice {
             pipeline_cache_path.as_deref(),
         )?;
 
+        let primary_timeline = if timeline_supported {
+            match timeline::PrimaryTimeline::new(&instance, &device) {
+                Ok(value) => Some(value),
+                Err(error) => { log::warn!("Vulkan timeline unavailable: {error}"); None }
+            }
+        } else { None };
         Ok(Self {
             swapchain_maintenance,
             native_pixel_presentation,
@@ -514,6 +523,7 @@ impl VulkanDevice {
             free_command_encoders: Vec::with_capacity(command_encoder_pool_capacity),
             submissions: ResourceRegistry::new("submission"),
             submission_wakes: submission_wake::SubmissionWakes::default(),
+            primary_timeline,
             native_queue_waits: Vec::new(),
             surfaces: ResourceRegistry::new("surface"),
             swapchains: ResourceRegistry::new("swapchain"),
@@ -2637,6 +2647,7 @@ impl VulkanDevice {
             fence: present_frame.fence,
             queue: gfx_core::GpuQueueId::PRIMARY,
             owned_by_submission: false,
+            timeline_value: self.primary_timeline.as_ref().map(|timeline| timeline.last()),
         });
         encoder_resource.frame_submission = Some(submission);
         self.deferred_destroys
@@ -2809,6 +2820,7 @@ impl VulkanDevice {
             fence,
             queue: gfx_core::GpuQueueId::PRIMARY,
             owned_by_submission: false,
+            timeline_value: self.primary_timeline.as_ref().map(|timeline| timeline.last()),
         }));
         // Publish the association before the encoder can be recycled.
         // recycle_command_encoder records completion before destroying the fence.
@@ -2998,6 +3010,7 @@ impl VulkanDevice {
                 fence: native_fence,
                 queue: queue_id,
                 owned_by_submission: true,
+                timeline_value: None,
             })
         }))
     }
@@ -3810,6 +3823,10 @@ impl VulkanDevice {
         signal_semaphores: &[vk::Semaphore],
         fence: vk::Fence,
     ) -> Result<()> {
+        if let Some(timeline) = &self.primary_timeline {
+            return timeline.submit(&self.device, self.graphics_queue, command_buffers,
+                wait_semaphores, signal_semaphores, fence);
+        }
         let wait_stages =
             vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT; wait_semaphores.len()];
         let submit_info = vk::SubmitInfo::default()
@@ -3833,21 +3850,8 @@ impl VulkanDevice {
         signal_semaphores: &[vk::Semaphore],
         fence: vk::Fence,
     ) -> Result<Duration> {
-        let wait_stages =
-            vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT; wait_semaphores.len()];
-        let command_buffers = [command_buffer];
-        let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(wait_semaphores)
-            .wait_dst_stage_mask(&wait_stages)
-            .command_buffers(&command_buffers)
-            .signal_semaphores(signal_semaphores);
-        // SAFETY: Queue, command buffer, semaphores, and fence are owned by this device.
         let submit_started = Instant::now();
-        unsafe {
-            self.device
-                .queue_submit(self.graphics_queue, &[submit_info], fence)
-        }
-        .map_err(VulkanError::from)?;
+        self.submit_command_buffers(&[command_buffer], wait_semaphores, signal_semaphores, fence)?;
         Ok(submit_started.elapsed())
     }
 
@@ -5149,6 +5153,7 @@ impl SubmissionDevice for VulkanDevice {
             fence,
             queue,
             owned_by_submission: true,
+            timeline_value: None,
         }))
     }
 
@@ -5289,14 +5294,8 @@ impl SubmissionDevice for VulkanDevice {
         // preceding Compute, Copy and Graphics work. No host wait, command
         // encoder, second queue, semaphore or frame-slot allocation is needed.
         let fence = create_fence(&self.device, false)?;
-        let submits = [vk::SubmitInfo::default()];
-        // SAFETY: The graphics queue belongs to this live device and the
-        // unsignaled fence is exclusively owned by this checkpoint. An empty
-        // submission still follows all prior commands in queue order.
-        if let Err(error) = unsafe {
-            self.device
-                .queue_submit(self.graphics_queue, &submits, fence)
-        } {
+        // Reuse the normal primary submission path, including timeline signal.
+        if let Err(error) = self.submit_command_buffers(&[], &[], &[], fence) {
             // SAFETY: A failed queue_submit did not enqueue this fence.
             unsafe { self.device.destroy_fence(fence, None) };
             return Err(VulkanError::from(error).into());
@@ -5305,6 +5304,7 @@ impl SubmissionDevice for VulkanDevice {
             fence,
             queue: gfx_core::GpuQueueId::PRIMARY,
             owned_by_submission: true,
+            timeline_value: self.primary_timeline.as_ref().map(|timeline| timeline.last()),
         }))
     }
 
@@ -5354,7 +5354,9 @@ impl SubmissionDevice for VulkanDevice {
         } else {
             return Ok(false);
         };
-        self.submission_wakes.register(&self.device, queue, submission, callback)
+        let timeline = record.timeline_value.zip(self.primary_timeline.as_ref())
+            .map(|(value, timeline)| timeline.wait_point(value));
+        self.submission_wakes.register(&self.device, queue, submission, timeline, callback)
     }
 
     fn poll_submission_with_frame_timestamps(&mut self, submission: SubmissionId)
@@ -5594,6 +5596,9 @@ impl Drop for VulkanDevice {
         let _ = unsafe { self.device.device_wait_idle() };
         // Drain native wait threads before destroying any private fences or VkDevice.
         self.submission_wakes.shutdown(&self.device);
+        if let Some(timeline) = self.primary_timeline.take() {
+            timeline.destroy(&self.device);
+        }
         for bridge in self.native_queue_waits.drain(..) {
             // SAFETY: device_wait_idle above returned after all GPU-side waits;
             // neither queue can reference this semaphore or fence again.
@@ -6275,6 +6280,8 @@ struct VulkanSubmission {
     /// A pure queue checkpoint owns its fence directly; command encoders and
     /// swapchains retire their own fences through existing GPU owners.
     owned_by_submission: bool,
+    /// Stable primary timeline signal, independent of reusable fences.
+    timeline_value: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -6706,6 +6713,7 @@ fn create_device(
     bool,
     bool,
     bool,
+    bool,
 )> {
     let priorities = [1.0_f32, 0.75_f32];
     let single_priority = [1.0_f32];
@@ -6818,6 +6826,17 @@ fn create_device(
     let has_extension = |name: &CStr| available_extensions.iter().any(|extension| {
         (unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) }) == name
     });
+    let mut timeline_features = vk::PhysicalDeviceTimelineSemaphoreFeatures::default();
+    if properties2_supported && has_extension(khr::timeline_semaphore::NAME) {
+        let loader = khr::get_physical_device_properties2::Instance::new(entry, instance);
+        let mut features = vk::PhysicalDeviceFeatures2::default().push_next(&mut timeline_features);
+        // SAFETY: the instance has properties2 and the physical device advertises the extension.
+        unsafe { loader.get_physical_device_features2(physical_device, &mut features) };
+    }
+    let timeline_supported = timeline_features.timeline_semaphore == vk::TRUE;
+    if timeline_supported {
+        device_extensions.push(khr::timeline_semaphore::NAME.as_ptr());
+    }
     let mut present_id_features = vk::PhysicalDevicePresentIdFeaturesKHR::default();
     let mut present_wait_features = vk::PhysicalDevicePresentWaitFeaturesKHR::default();
     if properties2_supported
@@ -6847,6 +6866,9 @@ fn create_device(
     if present_wait_supported {
         create_info = create_info.push_next(&mut present_id_features)
             .push_next(&mut present_wait_features);
+    }
+    if timeline_supported {
+        create_info = create_info.push_next(&mut timeline_features);
     }
     // SAFETY: Physical device and queue info were selected from this instance.
     let device = unsafe { instance.create_device(physical_device, &create_info, None) }
@@ -6886,6 +6908,7 @@ fn create_device(
         native_pixel_presentation,
         display_timing_supported,
         present_wait_supported,
+        timeline_supported,
     ))
 }
 

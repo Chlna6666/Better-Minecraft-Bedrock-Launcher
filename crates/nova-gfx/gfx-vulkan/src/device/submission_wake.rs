@@ -2,6 +2,7 @@
 //! completion callback: one sleeping worker per active queue waits in the
 //! driver. Never wait on a reusable WSI or command-pool fence off-owner.
 use super::{Arc, Error, Result, SubmissionId, VulkanError, create_fence, fence_is_complete, vk};
+use super::timeline::TimelinePoint;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Mutex, PoisonError, mpsc},
@@ -54,8 +55,12 @@ impl Wake {
     }
 }
 
+enum WaitTarget {
+    Fence(vk::Fence),
+    Timeline(TimelinePoint),
+}
 struct Task {
-    fence: vk::Fence,
+    target: WaitTarget,
     wake: Arc<Wake>,
 }
 
@@ -72,7 +77,10 @@ impl Worker {
             while let Ok(task) = receiver.recv() {
                 // SAFETY: The owner retains this dedicated fence until this
                 // wait has returned. It is never reset or reused.
-                let result = unsafe { device.wait_for_fences(&[task.fence], true, u64::MAX) };
+                let result = match task.target {
+                    WaitTarget::Fence(fence) => unsafe { device.wait_for_fences(&[fence], true, u64::MAX) },
+                    WaitTarget::Timeline(point) => point.wait(),
+                };
                 if let Err(error) = result {
                     log::warn!("Vulkan submission wake wait failed: {error:?}");
                 }
@@ -106,7 +114,7 @@ pub(super) struct SubmissionWakes {
 impl SubmissionWakes {
     pub(super) fn register(
         &mut self, device: &Arc<ash::Device>, queue: vk::Queue,
-        submission: SubmissionId, callback: Callback,
+        submission: SubmissionId, timeline: Option<TimelinePoint>, callback: Callback,
     ) -> Result<bool> {
         if let Some(record) = self.pending.iter().find(|record| record.submission == submission) {
             record.wake.arm(callback);
@@ -121,18 +129,22 @@ impl SubmissionWakes {
             self.workers.push(Worker::new(device.clone(), queue)?);
             self.workers.len() - 1
         };
-        let fence = create_fence(device, false)?;
-        // SAFETY: only the graphics owner submits to this queue. A private,
-        // empty checkpoint after the requested submission provides an
-        // ordered wake hint without sharing the original fence's lifetime.
-        if let Err(error) = unsafe { device.queue_submit(queue, &[vk::SubmitInfo::default()], fence) } {
-            unsafe { device.destroy_fence(fence, None) };
-            return Err(VulkanError::from(error).into());
-        }
+        let (fence, target) = if let Some(point) = timeline {
+            (vk::Fence::null(), WaitTarget::Timeline(point))
+        } else {
+            let fence = create_fence(device, false)?;
+            // SAFETY: only the owner submits to this queue. The private fence
+            // is never reset or reused, even if the original ID is retired.
+            if let Err(error) = unsafe { device.queue_submit(queue, &[vk::SubmitInfo::default()], fence) } {
+                unsafe { device.destroy_fence(fence, None) };
+                return Err(VulkanError::from(error).into());
+            }
+            (fence, WaitTarget::Fence(fence))
+        };
         let wake = Arc::new(Wake::default());
         wake.arm(callback);
         self.pending.push(Registration { submission, queue, fence, wake: wake.clone() });
-        if self.workers[worker].sender.send(Task { fence, wake: wake.clone() }).is_err() {
+        if self.workers[worker].sender.send(Task { target, wake: wake.clone() }).is_err() {
             // The checkpoint was submitted; keep its fence alive until the
             // GPU really completes. No callback on failed registration.
             wake.cancel();
@@ -152,7 +164,9 @@ impl SubmissionWakes {
         self.pending.retain(|record| {
             if record.wake.done() && fence_is_complete(device, record.fence) {
                 // SAFETY: GPU and native host wait are both finished.
-                unsafe { device.destroy_fence(record.fence, None) };
+                if record.fence != vk::Fence::null() {
+                    unsafe { device.destroy_fence(record.fence, None) };
+                }
                 false
             } else { true }
         });
@@ -163,7 +177,9 @@ impl SubmissionWakes {
         for worker in self.workers.drain(..) { worker.join(); }
         // Caller already drained the device, and all host waits are joined.
         for record in self.pending.drain(..) {
-            unsafe { device.destroy_fence(record.fence, None) };
+            if record.fence != vk::Fence::null() {
+                unsafe { device.destroy_fence(record.fence, None) };
+            }
         }
     }
 }
