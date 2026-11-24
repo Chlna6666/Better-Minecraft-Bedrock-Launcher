@@ -775,14 +775,32 @@ impl Frame {
         {
             self.retained_element_ranges.shrink_to(ranges_target);
         }
-        let semantics_target =
-            FRAME_MIN_RETAINED_CAPACITY.max(current.retained_layout_semantics.len());
-        if self.retained_layout_semantics.capacity()
-            > semantics_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
-        {
-            self.retained_layout_semantics.shrink_to(semantics_target);
-        }
         self.tab_stops.trim_for_reuse(&current.tab_stops);
+    }
+
+    /// Layout semantic entries are scratch, never consumed from the committed
+    /// frame. Return the entire map allocation to the next builder instead
+    /// of maintaining two alternating maps (and their ambiguity references).
+    pub(super) fn recycle_layout_semantics(&mut self, committed: &mut Self) {
+        let mut entries = std::mem::take(&mut committed.retained_layout_semantics);
+        let target = FRAME_MIN_RETAINED_CAPACITY.max(entries.len());
+        entries.clear();
+        if entries.capacity() > target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
+            entries.shrink_to(target);
+        }
+        self.retained_layout_semantics = entries;
+        committed.last_retained_paint_context = None;
+    }
+
+    /// Lower bound on retained metadata backing storage; excludes hash control
+    /// bytes, Arc/Rc allocations, and allocator overhead. This is not RSS.
+    pub(super) fn retained_metadata_inline_bytes(&self) -> usize {
+        self.retained_element_ranges.capacity()
+            .saturating_mul(std::mem::size_of::<(ReconcileKey, RetainedElementRange)>())
+            .saturating_add(self.retained_element_order.capacity()
+                .saturating_mul(std::mem::size_of::<ReconcileKey>()))
+            .saturating_add(self.retained_layout_semantics.capacity()
+                .saturating_mul(std::mem::size_of::<(LayoutId, RetainedSemanticEntry)>()))
     }
 
     pub(super) fn trim_retained_capacity_for_level(&mut self, level: GpuiMemoryTrimLevel) {

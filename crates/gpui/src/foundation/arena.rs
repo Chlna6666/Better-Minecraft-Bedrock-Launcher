@@ -93,6 +93,7 @@ pub struct Arena {
     chunk_size: NonZeroUsize,
     /// Number of active draw scopes using allocations from this arena.
     scope_depth: usize,
+    low_usage_clears: u8,
 }
 
 impl Drop for Arena {
@@ -111,6 +112,7 @@ impl Arena {
             current_chunk_index: 0,
             chunk_size,
             scope_depth: 0,
+            low_usage_clears: 0,
         }
     }
 
@@ -154,11 +156,30 @@ impl Arena {
     fn force_clear(&mut self) {
         self.valid.set(false);
         self.valid = Rc::new(Cell::new(true));
+        let used_chunks = self.current_chunk_index + 1;
+        let used_elements = self.elements.len();
         self.elements.clear();
         for chunk_index in 0..=self.current_chunk_index {
             self.chunks[chunk_index].reset();
         }
         self.current_chunk_index = 0;
+        // Reclaim pathological high-water marks after sustained smaller
+        // frames, but keep a stable allocation for normal animated workloads.
+        let chunks_target = used_chunks.saturating_mul(2).max(1);
+        let elements_target = used_elements.saturating_mul(2).max(64);
+        let excessive = self.chunks.len() > chunks_target.saturating_mul(2)
+            || self.elements.capacity() > elements_target.saturating_mul(2);
+        if excessive {
+            self.low_usage_clears = self.low_usage_clears.saturating_add(1);
+            if self.low_usage_clears >= 16 {
+                self.chunks.truncate(chunks_target);
+                self.chunks.shrink_to(chunks_target);
+                self.elements.shrink_to(elements_target);
+                self.low_usage_clears = 0;
+            }
+        } else {
+            self.low_usage_clears = 0;
+        }
     }
 
     /// Release capacity retained by a completed frame after an explicit memory trim.
@@ -172,6 +193,7 @@ impl Arena {
         self.elements.shrink_to_fit();
         self.chunks[0].reset();
         self.current_chunk_index = 0;
+        self.low_usage_clears = 0;
     }
 
     #[inline(always)]
@@ -210,33 +232,28 @@ impl Arena {
     #[inline(never)]
     fn allocate_next_chunk(&mut self, layout: alloc::Layout) -> *mut u8 {
         self.current_chunk_index += 1;
-        if self.current_chunk_index >= self.chunks.len() {
-            let chunk_size = self.chunk_size.max(
-                NonZeroUsize::new(layout.size().max(1))
-                    .expect("layout size or alignment should be non-zero"),
-            );
-            self.chunks.push(Chunk::new(
-                chunk_size,
-                layout.align().max(DEFAULT_CHUNK_ALIGNMENT),
-            ));
-            record_arena_chunk_expansion(1);
-            assert_eq!(self.current_chunk_index, self.chunks.len() - 1);
-            log::trace!(
-                "increased element arena capacity to {}kb",
-                self.capacity() / 1024,
-            );
+        if let Some(chunk) = self.chunks.get_mut(self.current_chunk_index)
+            && let Some(ptr) = chunk.allocate(layout)
+        {
+            return ptr.as_ptr();
         }
 
-        let current_chunk = &mut self.chunks[self.current_chunk_index];
-        if let Some(ptr) = current_chunk.allocate(layout) {
-            ptr.as_ptr()
+        let chunk_size = self.chunk_size.max(
+            NonZeroUsize::new(layout.size().max(1))
+                .expect("layout size or alignment should be non-zero"),
+        );
+        let mut chunk = Chunk::new(chunk_size, layout.align().max(DEFAULT_CHUNK_ALIGNMENT));
+        let ptr = chunk.allocate(layout).expect("new arena chunk fits requested layout");
+        if self.current_chunk_index == self.chunks.len() {
+            self.chunks.push(chunk);
         } else {
-            panic!(
-                "Arena chunk_size of {} is too small to allocate {} bytes",
-                self.chunk_size,
-                layout.size()
-            );
+            // The old chunk was unused in this scope but too small or
+            // insufficiently aligned for this frame's next allocation.
+            self.chunks[self.current_chunk_index] = chunk;
         }
+        record_arena_chunk_expansion(1);
+        log::trace!("increased element arena capacity to {}kb", self.capacity() / 1024);
+        ptr.as_ptr()
     }
 }
 
@@ -334,6 +351,30 @@ mod tests {
         arena.alloc(|| 4u32);
 
         assert_eq!(arena.capacity(), 24);
+    }
+
+    #[test]
+    fn arena_reclaims_sustained_unused_high_water_mark() {
+        let mut arena = Arena::new(64);
+        for _ in 0..32 {
+            arena.alloc(|| [0u8; 64]);
+        }
+        arena.clear();
+        for _ in 0..16 {
+            arena.alloc(|| 1u64);
+            arena.clear();
+        }
+        assert!(arena.capacity() <= 128);
+    }
+
+    #[test]
+    fn arena_replaces_an_old_chunk_that_cannot_fit_the_new_element() {
+        let mut arena = Arena::new(8);
+        arena.alloc(|| 1u64);
+        arena.alloc(|| 2u64);
+        arena.clear();
+        arena.alloc(|| 3u64);
+        assert_eq!(*arena.alloc(|| [4u8; 32]), [4u8; 32]);
     }
 
     #[test]
