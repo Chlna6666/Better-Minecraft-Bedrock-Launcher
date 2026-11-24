@@ -329,6 +329,7 @@ impl VSyncScheduler {
         let worker = std::thread::Builder::new().name("GPUI output VBlank".into()).spawn(move || {
             // Enumerate and use DXGI interfaces only on the native wait worker.
             let output = NativeDisplayClock::find_output(HMONITOR(monitor as *mut _));
+            let mut last_tick: Option<Instant> = None;
             while receiver.recv().is_ok() {
                 let Some(scheduler) = scheduler.upgrade() else { break; };
                 if scheduler.shutdown.load(Ordering::Acquire) {
@@ -343,12 +344,16 @@ impl VSyncScheduler {
                 // blocks only the monitor worker, never UI or GPU submission.
                 let ok = output.as_ref().is_some_and(|output| unsafe { output.WaitForVBlank() }.is_ok());
                 let tick = Instant::now();
-                if !ok || tick.saturating_duration_since(started) < EARLY_VSYNC_RETURN_THRESHOLD {
+                // The first wait may legitimately start just before vblank.
+                // Reject consecutive near-identical native ticks, not a short
+                // wait at an arbitrary phase of the monitor's refresh cycle.
+                if !ok || last_tick.is_some_and(|last| tick.saturating_duration_since(last) < EARLY_VSYNC_RETURN_THRESHOLD) {
                     // Driver returned no usable native wait. Keep a disconnected
                     // entry until topology changes, avoiding repeated worker creation.
                     scheduler.request_frame();
                     break;
                 }
+                last_tick = Some(tick);
                 let timing = VSyncEventTiming {
                     display_tick_at: Some(tick),
                     pacing_wait: tick.saturating_duration_since(started),

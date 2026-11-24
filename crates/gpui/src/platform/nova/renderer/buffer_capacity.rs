@@ -31,6 +31,12 @@ pub(super) fn validate_growth_slot(
     Ok(())
 }
 
+// Fourfold hysteresis keeps small allocations warm and avoids repeated
+// shrink/grow at the adaptive latency boundary.
+fn dormant_animation_capacity(current: usize) -> Option<usize> {
+    (current >= INITIAL_ANIMATION_VALUES.saturating_mul(4)).then_some(INITIAL_ANIMATION_VALUES)
+}
+
 fn capacities(buffers: FrameResourceBuffers) -> [usize; 5] {
     [
         buffers.shadow_capacity,
@@ -159,6 +165,35 @@ impl NovaRenderer {
         if sizes == old {
             return Ok(());
         }
+        self.resize_current_stream_buffers(current, sizes)
+    }
+
+    /// When stable native feedback has reduced admission to one frame, slot
+    /// zero suffices. Static buffers already coalesce with the active slot;
+    /// release oversized private animation storage of the dormant second slot.
+    /// Keep slot indices/descriptors stable and grow on demand if pressure rises.
+    pub(super) fn trim_dormant_frame_capacity(&mut self) -> Result<()> {
+        if self.adaptive_pacing.limit() != 1
+            || self.current_frame_resource_index != 0
+            || self.frame_resources.len() < 2
+            || self.pending_submissions.iter().any(|pending| pending.frame_resource_index == 1)
+        {
+            return Ok(());
+        }
+        let current = self.frame_resources[1].buffers;
+        let Some(target) = dormant_animation_capacity(current.animation_value_capacity) else {
+            return Ok(());
+        };
+        let mut sizes = capacities(current);
+        sizes[4] = target;
+        self.activate_frame_resources(1)?;
+        let result = self.resize_current_stream_buffers(current, sizes);
+        // Restore the active slot even on allocation/rebind failure.
+        self.activate_frame_resources(0)?;
+        result
+    }
+
+    fn resize_current_stream_buffers(&mut self, current: FrameResourceBuffers, sizes: [usize; 5]) -> Result<()> {
         validate_growth_slot(
             self.current_frame_resource_index,
             self.pending_submissions
@@ -169,27 +204,27 @@ impl NovaRenderer {
         let backend = Arc::clone(&self.backend);
         match &mut *lock_backend(&backend) {
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) => self.grow_stream_buffers(device, current, sizes),
+            NovaBackend::Dx11(device) => self.resize_stream_buffers(device, current, sizes),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => self.grow_stream_buffers(device, current, sizes),
+            NovaBackend::Dx12(device) => self.resize_stream_buffers(device, current, sizes),
             #[cfg(all(
                 feature = "nova-gfx-opengl",
                 any(target_os = "windows", target_os = "linux")
             ))]
-            NovaBackend::OpenGl(device) => self.grow_stream_buffers(device, current, sizes),
+            NovaBackend::OpenGl(device) => self.resize_stream_buffers(device, current, sizes),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) => self.grow_stream_buffers(device, current, sizes),
+            NovaBackend::Metal(device) => self.resize_stream_buffers(device, current, sizes),
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            NovaBackend::Vulkan(device) => self.grow_stream_buffers(device, current, sizes),
+            NovaBackend::Vulkan(device) => self.resize_stream_buffers(device, current, sizes),
             #[allow(unreachable_patterns)]
             _ => anyhow::bail!("nova backend is unavailable while growing frame buffers"),
         }
     }
 
-    fn grow_stream_buffers<D: ResourceDevice>(
+    fn resize_stream_buffers<D: ResourceDevice>(
         &mut self,
         device: &mut D,
         current: FrameResourceBuffers,
@@ -248,5 +283,16 @@ impl NovaRenderer {
             }),
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod dormant_capacity_tests {
+    use super::*;
+    #[test]
+    fn only_large_dormant_capacity_is_reclaimed() {
+        assert_eq!(dormant_animation_capacity(INITIAL_ANIMATION_VALUES), None);
+        assert_eq!(dormant_animation_capacity(INITIAL_ANIMATION_VALUES * 2), None);
+        assert_eq!(dormant_animation_capacity(INITIAL_ANIMATION_VALUES * 4), Some(INITIAL_ANIMATION_VALUES));
     }
 }

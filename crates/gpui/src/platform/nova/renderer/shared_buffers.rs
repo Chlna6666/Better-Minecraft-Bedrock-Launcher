@@ -153,7 +153,7 @@ impl NovaRenderer {
             self.activate_frame_resources(active)?;
             result?;
         }
-        Ok(())
+        self.trim_dormant_frame_capacity()
     }
 
     fn apply_static_version_actions(
