@@ -139,6 +139,7 @@ impl TextureUploadArena {
 
 struct PreparedUpload<'a> {
     desc: TextureWriteDescriptor,
+    layer: usize,
     destination: Retained<ProtocolObject<dyn MTLTexture>>,
     data: &'a [u8],
     width: usize,
@@ -153,7 +154,7 @@ struct PreparedUpload<'a> {
 impl MetalDevice {
     pub(super) fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
         desc.validate()?;
-        if matches!(desc.dimension, TextureDimension::D2Array { .. }) || !self.device.supportsTextureSampleCount(desc.sample_count as usize) {
+        if !self.device.supportsTextureSampleCount(desc.sample_count as usize) {
             return Err(Error::Unavailable("Metal texture dimension or sample count unsupported".into()));
         }
         if desc.sample_count > 1 && desc.memory_location != MemoryLocation::GpuOnly {
@@ -161,6 +162,9 @@ impl MetalDevice {
         }
         if matches!(desc.dimension, TextureDimension::D3 { .. }) {
             self.texture_volume_capabilities().validate(desc)?;
+        }
+        if let TextureDimension::D2Array { layers } = desc.dimension {
+            self.texture_array_capabilities().plan(desc.size.width(), desc.size.height(), layers, desc.mip_level_count, desc.format)?;
         }
         let transient = desc.usage.contains(TextureUsage::TRANSIENT_ATTACHMENT);
         let memoryless = transient && self.device.supportsFamily(objc2_metal::MTLGPUFamily::Apple2);
@@ -170,6 +174,7 @@ impl MetalDevice {
         let native = MTLTextureDescriptor::new();
         native.setTextureType(match desc.dimension {
             TextureDimension::D3 { .. } => MTLTextureType::Type3D,
+            TextureDimension::D2Array { .. } => MTLTextureType::Type2DArray,
             _ if desc.sample_count > 1 => MTLTextureType::Type2DMultisample,
             _ => MTLTextureType::Type2D,
         });
@@ -180,6 +185,7 @@ impl MetalDevice {
             native.setWidth(desc.size.width() as usize);
             native.setHeight(desc.size.height() as usize);
             native.setDepth(desc.dimension.mip_depth(0) as usize);
+            native.setArrayLength(match desc.dimension { TextureDimension::D2Array { layers } => layers as usize, _ => 1 });
             native.setMipmapLevelCount(desc.mip_level_count as usize);
             native.setSampleCount(desc.sample_count as usize);
         }
@@ -224,9 +230,13 @@ impl MetalDevice {
             // is single-sample 2D or 3D, with exactly one array slice.
             unsafe {
                 parent.newTextureViewWithPixelFormat_textureType_levels_slices(
-                    format_to_metal(desc.format), if matches!(texture.desc.dimension, TextureDimension::D3 { .. }) { MTLTextureType::Type3D } else { MTLTextureType::Type2D },
+                    format_to_metal(desc.format), match texture.desc.dimension {
+                        TextureDimension::D3 { .. } => MTLTextureType::Type3D,
+                        TextureDimension::D2Array { .. } => MTLTextureType::Type2DArray,
+                        _ => MTLTextureType::Type2D,
+                    },
                     NSRange { location: desc.base_mip_level as usize, length: desc.mip_level_count as usize },
-                    NSRange { location: 0, length: 1 },
+                    NSRange { location: 0, length: match texture.desc.dimension { TextureDimension::D2Array { layers } => layers as usize, _ => 1 } },
                 )
             }.ok_or_else(|| Error::Backend("failed to create Metal texture mip view".into()))?
         };
@@ -241,6 +251,22 @@ impl MetalDevice {
         let desc = write.descriptor;
         let texture = self.textures.get(desc.texture)?;
         desc.validate_against(&texture.desc, write.data.len())?;
+        self.prepare_upload_region(desc, 0, write.data)
+    }
+
+    pub(super) fn upload_array_layer(&mut self, desc: gfx_core::TextureArrayLayerWriteDescriptor, data: &[u8]) -> Result<()> {
+        desc.validate_against(&self.textures.get(desc.texture)?.desc, self.texture_array_capabilities(), data.len())?;
+        let upload = desc.upload;
+        let prepared = self.prepare_upload_region(TextureWriteDescriptor {
+            texture: desc.texture, mip_level: upload.mip_level, origin: upload.origin,
+            size: upload.extent, layout: upload.layout,
+        }, upload.layer as usize, data)?;
+        let length = prepared.length;
+        self.submit_upload_batch(std::slice::from_ref(&prepared), length)
+    }
+
+    fn prepare_upload_region<'a>(&self, desc: TextureWriteDescriptor, layer: usize, data: &'a [u8]) -> Result<PreparedUpload<'a>> {
+        let texture = self.textures.get(desc.texture)?;
         if !texture.desc.usage.contains(TextureUsage::COPY_DST) || texture.desc.format.is_depth() {
             return Err(Error::InvalidInput("Metal texture upload requires a non-depth COPY_DST texture".into()));
         }
@@ -256,7 +282,7 @@ impl MetalDevice {
             .ok_or_else(|| Error::InvalidInput("Metal upload size overflow".into()))?;
         let source_offset = usize::try_from(desc.layout.offset)
             .map_err(|_| Error::InvalidInput("Metal upload offset overflow".into()))?;
-        Ok(PreparedUpload { desc, destination, data: write.data, width, height, row_bytes,
+        Ok(PreparedUpload { desc, layer, destination, data, width, height, row_bytes,
             pitch, length, source_offset, source_pitch: desc.layout.bytes_per_row.get() as usize })
     }
 
@@ -308,7 +334,7 @@ impl MetalDevice {
                 blit.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
                     &staging, base, upload.pitch, 0,
                     MTLSize { width: upload.width, height: upload.height, depth: 1 },
-                    &upload.destination, 0, upload.desc.mip_level as usize,
+                    &upload.destination, upload.layer, upload.desc.mip_level as usize,
                     MTLOrigin { x: upload.desc.origin.x as usize, y: upload.desc.origin.y as usize, z: 0 },
                 );
             }

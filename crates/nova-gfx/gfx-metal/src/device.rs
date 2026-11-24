@@ -1015,6 +1015,15 @@ mod platform {
         fn compute_bind_group_capabilities(&self) -> gfx_core::ComputeBindGroupCapabilities {
             gfx_core::ComputeBindGroupCapabilities { buffers: true, sampled_textures: true, samplers: true, storage_textures: true }
         }
+        fn texture_array_capabilities(&self) -> gfx_core::TextureArrayCapabilities {
+            // Conservative limits supported by the desktop Metal baseline.
+            gfx_core::TextureArrayCapabilities {
+                max_dimension_2d: 16384, max_array_layers: 2048,
+                array_resources: true, layer_uploads: true,
+                // Generated-mesh selection stays gated until native shader regression passes.
+                indexed_sampling: false,
+            }
+        }
         fn texture_volume_capabilities(&self) -> gfx_core::TextureVolumeCapabilities {
             // Conservative portable Metal 3D limit, independent of 2D extent.
             gfx_core::TextureVolumeCapabilities { max_dimension_3d: 2048, sampled: true, storage: true }
@@ -1069,6 +1078,10 @@ mod platform {
 
         fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
             Self::write_texture(self, desc, data)
+        }
+
+        fn write_texture_array_layer(&mut self, desc: gfx_core::TextureArrayLayerWriteDescriptor, data: &[u8]) -> Result<()> {
+            self.upload_array_layer(desc, data)
         }
 
         fn write_texture_batch<'a>(
