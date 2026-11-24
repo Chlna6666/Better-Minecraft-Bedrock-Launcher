@@ -16,6 +16,7 @@ pub(crate) struct ResultsListView {
     pub(crate) last_observed_tab: DownloadTab,
     active: bool,
     pub(crate) last_observed_view_epoch: u64,
+    last_observed_list_seq: u64,
     pub(crate) last_observed_page_index: usize,
     pub(crate) last_observed_mod_count: usize,
     pub(crate) last_observed_results_loading: bool,
@@ -86,6 +87,7 @@ impl ResultsListView {
         let (
             last_observed_tab,
             last_observed_view_epoch,
+            last_observed_list_seq,
             last_observed_page_index,
             last_observed_mod_count,
             last_observed_results_loading,
@@ -95,6 +97,7 @@ impl ResultsListView {
             (
                 state.tab,
                 state.curseforge_view_epoch,
+                state.curseforge_results_list_seq,
                 state.curseforge_page_index,
                 state.curseforge_mods.len(),
                 state.curseforge_results_loading,
@@ -109,10 +112,12 @@ impl ResultsListView {
                 if !this.active {
                     return;
                 }
-                let (current_tab, current_view_epoch) =
+                let (current_tab, current_view_epoch, list_seq) =
                     cx.read_global(|state: &DownloadPageState, _cx| {
-                        (state.tab, state.curseforge_view_epoch)
+                        (state.tab, state.curseforge_view_epoch, state.curseforge_results_list_seq)
                     });
+                let list_changed = this.last_observed_list_seq != list_seq;
+                this.last_observed_list_seq = list_seq;
 
                 if current_view_epoch != this.last_observed_view_epoch {
                     this.release_cached_result_cards();
@@ -139,7 +144,7 @@ impl ResultsListView {
                     });
 
                 if current_tab == DownloadTab::ResourcePack
-                    && (page_index != this.last_observed_page_index
+                    && (list_changed || page_index != this.last_observed_page_index
                         || mod_count != this.last_observed_mod_count
                         || results_loading != this.last_observed_results_loading
                         || visible_slice_start != this.last_observed_visible_slice_start
@@ -213,6 +218,7 @@ impl ResultsListView {
             last_observed_tab,
             active: false,
             last_observed_view_epoch,
+            last_observed_list_seq,
             last_observed_page_index,
             last_observed_mod_count,
             last_observed_results_loading,
@@ -258,6 +264,7 @@ impl ResultsListView {
             }
             self.last_observed_tab = tab;
             self.last_observed_view_epoch = epoch;
+            self.last_observed_list_seq = cx.global::<DownloadPageState>().curseforge_results_list_seq;
             self.last_observed_page_index = page;
             self.last_observed_mod_count = count;
             self.last_observed_results_loading = loading;

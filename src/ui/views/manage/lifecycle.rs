@@ -524,7 +524,7 @@ impl ManagePageView {
             return;
         }
 
-        if snapshot.version_config_loading {
+        if snapshot.version_config_loading || cx.global::<ManagePageState>().version_config_error.is_some() {
             return;
         }
 
@@ -536,6 +536,11 @@ impl ManagePageView {
             if self.last_gdk_users_signature.as_ref() != Some(&gdk_signature) {
                 self.last_gdk_users_signature = Some(gdk_signature);
                 self.request_gdk_users_for_selected(cx);
+                return;
+            }
+            let state = cx.global::<ManagePageState>();
+            if state.gdk_users_loading || state.gdk_users_error.is_some() {
+                return;
             }
         }
 

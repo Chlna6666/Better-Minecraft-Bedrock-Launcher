@@ -115,7 +115,7 @@ fn load(page_index_override: Option<usize>, cx: &mut App) {
     ) = cx.read_global(|state: &DownloadPageState, _cx| {
         let trimmed_search_query = state.search_query.trim();
         let trimmed_game_version = state.curseforge_selected_game_version.trim();
-        let page_index = page_index_override.unwrap_or(state.curseforge_page_index);
+        let page_index = page_index_override.or(state.curseforge_pending_page_index).unwrap_or(state.curseforge_page_index);
         let key = format!(
             "root={:?};sub={:?};ver={};sort={};order={};q={};p={};ps={}",
             state.curseforge_selected_root_id,
@@ -244,7 +244,9 @@ fn load(page_index_override: Option<usize>, cx: &mut App) {
         Err(error) => {
             let _ = cx.update_global(|state: &mut DownloadPageState, _cx| {
                 state.curseforge_results_loading = false;
-                state.curseforge_pending_page_index = None;
+                if state.curseforge_pending_page_index.take().is_some() {
+                    state.curseforge_last_query_key = SharedString::from(last_key.clone());
+                }
                 state.curseforge_disable_result_logos = false;
                 state.curseforge_results_error = Some(t!(
                     "CurseForge.schedule_search_failed",
@@ -279,9 +281,8 @@ fn load(page_index_override: Option<usize>, cx: &mut App) {
                     state.curseforge_results_abort_handle = None;
 
                     state.curseforge_page_index = target_page_index;
-                    // Advance the presentation generation even if the new page has
-                    // exactly the same length and page index as the retained one.
-                    state.curseforge_results_epoch = state.curseforge_results_epoch.wrapping_add(1);
+                    // Request generation and committed presentation identity are independent.
+                    state.curseforge_results_list_seq = state.curseforge_results_list_seq.wrapping_add(1);
                     state.curseforge_mods = mods;
                     state.curseforge_total_count = total_count;
                     state.curseforge_has_more = has_more;
@@ -323,7 +324,9 @@ fn load(page_index_override: Option<usize>, cx: &mut App) {
                     state.curseforge_results_error =
                         Some(SharedString::from(error_message.clone()));
                     state.curseforge_disable_result_logos = false;
-                    state.curseforge_pending_page_index = None;
+                    if state.curseforge_pending_page_index.take().is_some() {
+                        state.curseforge_last_query_key = SharedString::from(last_key.clone());
+                    }
                     true
                 }) {
                     Ok(true) => {

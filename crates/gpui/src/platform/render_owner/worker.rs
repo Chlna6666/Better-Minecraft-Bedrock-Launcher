@@ -141,7 +141,6 @@ impl Worker {
 
 pub(super) struct Entry {
     id: u64,
-    #[cfg(target_os = "windows")]
     window_id: Option<u64>,
     #[cfg(target_os = "windows")]
     last_logged_swapchain_extent: Option<(u32, u32)>,
@@ -181,7 +180,6 @@ impl Entry {
     ) -> Self {
         Self {
             id: 0,
-            #[cfg(target_os = "windows")]
             window_id: None,
             #[cfg(target_os = "windows")]
             last_logged_swapchain_extent: None,
@@ -218,6 +216,13 @@ impl Entry {
     ) {
         if let Command::Draw { packet, .. } = &command {
             gpu_owner::bind_window(self.id, packet.window_id);
+            if self.window_id != Some(packet.window_id) {
+                self.window_id = Some(packet.window_id);
+                #[cfg(target_os = "windows")]
+                {
+                    self.last_logged_swapchain_extent = None;
+                }
+            }
         }
         let kind = match &command {
             Command::Draw { .. } => GpuOwnerJobKind::Draw,
@@ -286,7 +291,7 @@ impl Entry {
         gpu_owner::record_job(
             GpuOwnerJobSample {
                 owner_id: self.id,
-                window_id: None,
+                window_id: self.window_id,
                 job_id: 0,
                 kind,
                 outcome: if matches!(kind, GpuOwnerJobKind::Control | GpuOwnerJobKind::Resize) {
@@ -375,13 +380,6 @@ impl Entry {
                         );
                     }
                     self.resize_awaiting_draw = false;
-                }
-                #[cfg(target_os = "windows")]
-                if self.window_id != Some(packet.window_id) {
-                    self.window_id = Some(packet.window_id);
-                    // A GPU control can run before the first scene packet binds the GPUI
-                    // window ID. Emit an identified baseline on its first Draw as well.
-                    self.last_logged_swapchain_extent = None;
                 }
                 if let Some((previous, _)) = self.scene.take() {
                     packet.merge_pending_damage_from(&previous);

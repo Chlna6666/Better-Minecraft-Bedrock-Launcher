@@ -50,6 +50,7 @@ pub(crate) fn on_api_source_changed(cx: &mut App) {
         state.curseforge_total_count = None;
         // A different endpoint is not a refresh of the same data source.
         state.curseforge_mods.clear();
+        state.curseforge_results_list_seq = state.curseforge_results_list_seq.wrapping_add(1);
         state.curseforge_view_epoch = state.curseforge_view_epoch.wrapping_add(1);
         results_state::invalidate_results_now(state, cx);
     });
@@ -1654,7 +1655,13 @@ fn render_content(
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.accent)
-                .child(t!("CurseForge.updated")),
+                .child(if state.curseforge_results_error.is_some() || state.curseforge_error.is_some() {
+                    t!("DownloadPage.load_error", error = "")
+                } else if state.curseforge_results_loading || state.curseforge_loading {
+                    t!("common.loading")
+                } else {
+                    t!("CurseForge.updated")
+                }),
         );
 
     let cf_chip = |label: SharedString,
@@ -1929,7 +1936,7 @@ fn render_results_list(
             state.curseforge_results_loading,
             state.curseforge_results_error.clone(),
             state.curseforge_disable_result_logos,
-            state.curseforge_results_epoch,
+            state.curseforge_results_list_seq,
             state.curseforge_results_transition_at,
             state.curseforge_pending_page_index,
             state.curseforge_page_index,
@@ -2519,8 +2526,7 @@ fn render_pager(cx: &mut App, colors: &ThemeColors) -> Div {
             }
 
             state.curseforge_page_commit_task.take();
-            state.curseforge_pending_page_index = None;
-            state.curseforge_page_index = target_page;
+            state.curseforge_pending_page_index = Some(target_page);
             begin_page_transition(state, cx);
             true
         });

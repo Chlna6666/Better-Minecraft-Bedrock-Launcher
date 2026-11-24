@@ -224,6 +224,7 @@ impl ManagePageView {
                 state.assets_loaded = false;
                 state.assets_loading = false;
                 state.assets_error = None;
+                state.assets_request_id = state.assets_request_id.wrapping_add(1);
             }
             match tab {
                 ManageTab::Map | ManageTab::Screenshot => {

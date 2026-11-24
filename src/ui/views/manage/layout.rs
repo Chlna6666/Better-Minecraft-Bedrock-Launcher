@@ -463,11 +463,23 @@ pub(super) fn render_gdk_dropdown(
             move |index, _window, cx| {
                 let selected = users.get(index).map(|user| user.folder_name.clone());
                 cx.update_global(|state: &mut ManagePageState, _cx| {
+                    if state.selected_gdk_user == selected {
+                        return;
+                    }
                     state.selected_gdk_user = selected.clone();
                     state.selected_asset_keys.clear();
                     state.assets_loaded = false;
                     state.assets_loading = false;
                     state.assets_error = None;
+                    state.assets_request_id = state.assets_request_id.wrapping_add(1);
+                    state.screenshots_loaded = false;
+                    state.screenshots_loading = false;
+                    state.screenshots_request_id = state.screenshots_request_id.wrapping_add(1);
+                    state.servers_loaded = false;
+                    state.servers_loading = false;
+                    state.servers_request_id = state.servers_request_id.wrapping_add(1);
+                    state.server_motd_loading = false;
+                    state.server_motd_request_id = state.server_motd_request_id.wrapping_add(1);
                 });
             }
         },

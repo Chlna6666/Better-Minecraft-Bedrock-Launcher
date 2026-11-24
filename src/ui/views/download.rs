@@ -358,6 +358,7 @@ pub struct DownloadPageView {
     mod_image_cache: Entity<BoundedImageCache>,
     secondary_prefetch_scheduled: bool,
     last_observed_tab: DownloadTab,
+    last_game_refresh_busy: bool,
     active: bool,
     last_observed_curseforge_toolbar_signature: (
         bool,
@@ -423,7 +424,9 @@ impl DownloadPageView {
             match tab {
                 DownloadTab::Plugin => cx.notify(),
                 DownloadTab::Game => {
-                    if tab_changed && this.active {
+                    let busy = cx.read_global(|state: &DownloadPageState, _| state.loading || state.force_refresh_next);
+                    if tab_changed || this.last_game_refresh_busy != busy {
+                        this.last_game_refresh_busy = busy;
                         cx.notify();
                     }
                 }
@@ -482,7 +485,8 @@ impl DownloadPageView {
                         crate::ui::components::input::InputEvent::PressEnter { .. }
                     ) {
                         let raw = input.read(cx).value().to_string();
-                        cx.update_global(|s: &mut DownloadPageState, cx| match s.tab {
+                        let requested_page = cx.update_global(|s: &mut DownloadPageState, cx| {
+                            match s.tab {
                             DownloadTab::Game => {
                                 let total_pages =
                                     (s.versions.len() + s.page_size - 1) / s.page_size;
@@ -496,6 +500,9 @@ impl DownloadPageView {
                                 }
                             }
                             DownloadTab::ResourcePack => {
+                                if s.curseforge_results_loading || s.curseforge_pending_page_index.is_some() {
+                                    return None;
+                                }
                                 let page_size = s.curseforge_page_size.max(1) as usize;
                                 let total_count = s.curseforge_total_count.unwrap_or(0) as usize;
                                 let total_pages = (total_count + page_size - 1) / page_size;
@@ -504,16 +511,22 @@ impl DownloadPageView {
                                     if let Some(n) = parsed {
                                         let target = n.clamp(1, total_pages);
                                         let target_page = target.saturating_sub(1);
-                                        s.curseforge_page_index = target_page;
-                                        s.curseforge_page_commit_task.take();
-                                        s.curseforge_pending_page_index = None;
-                                        curseforge::begin_page_transition(s, cx);
-                                        curseforge::load_page_results(target_page, cx);
+                                        if target_page != s.curseforge_page_index {
+                                            s.curseforge_page_commit_task.take();
+                                            s.curseforge_pending_page_index = Some(target_page);
+                                            curseforge::begin_page_transition(s, cx);
+                                            return Some(target_page);
+                                        }
                                     }
                                 }
                             }
                             DownloadTab::Mod | DownloadTab::Plugin => {}
+                            }
+                            None
                         });
+                        if let Some(page) = requested_page {
+                            curseforge::load_page_results(page, cx);
+                        }
                         let _ = input.update(cx, |st, cx| {
                             st.set_text(SharedString::from(""), cx);
                         });
@@ -544,6 +557,7 @@ impl DownloadPageView {
             ),
             secondary_prefetch_scheduled: false,
             last_observed_tab,
+            last_game_refresh_busy: cx.read_global(|state: &DownloadPageState, _| state.loading || state.force_refresh_next),
             active: false,
             last_observed_curseforge_toolbar_signature,
             last_observed_mod_panel_signature,
@@ -599,6 +613,7 @@ impl DownloadPageView {
             // updates. The activation notification paints the current state.
             cx.read_global(|state: &DownloadPageState, _cx| {
                 self.last_observed_tab = state.tab;
+                self.last_game_refresh_busy = state.loading || state.force_refresh_next;
                 match state.tab {
                     DownloadTab::Game | DownloadTab::Plugin => {}
                     DownloadTab::Mod => {

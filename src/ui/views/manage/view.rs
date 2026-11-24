@@ -874,9 +874,11 @@ impl ManagePageView {
             ManageTab::Screenshot => filtered_screenshots.len(),
             ManageTab::Server => filtered_servers.len(),
         };
-        let active_count_string = self.pending_asset_preview.as_ref()
-            .filter(|(tab, _, _)| *tab == state.tab && !state.assets_loaded && state.assets_error.is_none())
-            .map_or_else(|| active_count.to_string(), |(_, assets, _)| assets.len().to_string());
+        let active_count_string = if self.pending_asset_preview.is_some() && !state.assets_loaded {
+            "…".to_string()
+        } else {
+            active_count.to_string()
+        };
 
         let toolbar = div()
             .flex()
@@ -957,7 +959,9 @@ impl ManagePageView {
         let preview = self.pending_asset_preview.as_ref().filter(|(tab, _, _)| *tab == state.tab);
         let content = if let Some((_, assets, indices)) = preview {
             render_pending_asset_rows(colors, assets, indices).into_any_element()
-        } else if state.version_config_loading {
+        } else if let Some(error) = &state.version_config_error {
+            empty_state(colors, "images/manage/empty.svg", t!("common.error"), error.clone()).into_any_element()
+        } else if state.version_config_loading || (version.is_gdk() && is_gdk_user_scoped_tab(state.tab) && state.gdk_users_loading) {
             render_manage_loading_rows(colors, 6).into_any_element()
         } else {
             match state.tab {
@@ -1074,7 +1078,8 @@ impl ManagePageView {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(div().relative().child(toolbar).when(preview.is_some() || state.version_config_loading, |this| {
+            .child(div().relative().child(toolbar).when(preview.is_some() || state.version_config_loading || state.version_config_error.is_some()
+                || (version.is_gdk() && is_gdk_user_scoped_tab(state.tab) && state.gdk_users_loading), |this| {
                 this.child(div().absolute().inset_0().occlude())
             }))
             .child(
