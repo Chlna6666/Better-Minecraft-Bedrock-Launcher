@@ -89,6 +89,7 @@ mod platform {
     pub struct MetalDevice {
         device: Retained<ProtocolObject<dyn MTLDevice>>,
         command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+        disabled_depth_state: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
         texture_uploads: texture::TextureUploadArena,
         texture_transfers: texture::TextureTransferTimings,
         buffers: ResourceRegistry<MetalBuffer>,
@@ -123,10 +124,19 @@ mod platform {
             let command_queue = device.newCommandQueue().ok_or_else(|| {
                 Error::Unavailable("failed to create Metal command queue".to_string())
             })?;
+            // Metal's native encoder requires a real depth/stencil state,
+            // even for a color-only pass. Share the disabled immutable state
+            // across all pipelines instead of passing nil or allocating per draw.
+            let disabled_depth = MTLDepthStencilDescriptor::new();
+            disabled_depth.setDepthCompareFunction(compare_to_metal(CompareFunction::Always));
+            disabled_depth.setDepthWriteEnabled(false);
+            let disabled_depth_state = device.newDepthStencilStateWithDescriptor(&disabled_depth)
+                .ok_or_else(|| Error::Backend("failed to create disabled Metal depth state".into()))?;
             let work_timestamps = timestamps::WorkTimestamps::new(&device);
             Ok(Self {
                 device,
                 command_queue,
+                disabled_depth_state,
                 texture_uploads: texture::TextureUploadArena::default(),
                 texture_transfers: texture::TextureTransferTimings::default(),
                 buffers: ResourceRegistry::new("buffer"),
@@ -435,15 +445,14 @@ mod platform {
                 return Err(Error::Unavailable("Metal stencil state is not implemented".into()));
             }
             let depth_format = render_pass.depth_format;
-            let depth_state = if depth_format.is_some() {
+            let depth_state = if let Some(state) = desc.depth_state {
                 let native = MTLDepthStencilDescriptor::new();
-                let compare = desc.depth_state.map_or(CompareFunction::Always, |state| state.compare);
-                native.setDepthCompareFunction(compare_to_metal(compare));
-                native.setDepthWriteEnabled(desc.depth_state.is_some_and(|state| state.write_enabled));
-                Some(self.device.newDepthStencilStateWithDescriptor(&native)
-                    .ok_or_else(|| Error::Backend("failed to create Metal depth state".into()))?)
+                native.setDepthCompareFunction(compare_to_metal(state.compare));
+                native.setDepthWriteEnabled(state.write_enabled);
+                self.device.newDepthStencilStateWithDescriptor(&native)
+                    .ok_or_else(|| Error::Backend("failed to create Metal depth state".into()))?
             } else {
-                None
+                self.disabled_depth_state.clone()
             };
             let pipeline_state = create_pipeline_state(
                 &self.device,
@@ -1601,7 +1610,7 @@ mod platform {
     struct MetalRenderPipeline {
         sample_count: u32,
         depth_format: Option<Format>,
-        depth_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
+        depth_state: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
         color_formats: Vec<Format>,
         blend_modes: Vec<BlendMode>,
         primitive_topology: PrimitiveTopology,
@@ -1883,7 +1892,7 @@ mod platform {
             let pipeline = &step.pipeline;
             let _ = (pipeline.pipeline_layout,);
             encoder.setRenderPipelineState(&pipeline.pipeline_state);
-            encoder.setDepthStencilState(pipeline.depth_state.as_deref());
+            encoder.setDepthStencilState(Some(&pipeline.depth_state));
             encoder.setFrontFacingWinding(match pipeline.raster.front_face {
                 gfx_core::FrontFace::Ccw => objc2_metal::MTLWinding::CounterClockwise,
                 gfx_core::FrontFace::Cw => objc2_metal::MTLWinding::Clockwise,
