@@ -1770,6 +1770,7 @@ impl VulkanDevice {
             fence: vk::Fence::null(),
             owns_fence: false,
             cross_queue_semaphores: None,
+            retire_primary_value: None,
             gpu_trace_query_pool,
             compute_resources: Vec::new(),
         }))
@@ -2731,9 +2732,13 @@ impl VulkanDevice {
         encoder: CommandEncoderId,
         tracked: bool,
     ) -> Result<Option<SubmissionId>> {
-        // Validate the handle before allocating its fence.
+        // Timeline-backed encoders need no private per-submit fence.
         let _ = self.command_encoders.get(encoder)?;
-        let fence = create_fence(&self.device, false)?;
+        let fence = if self.primary_timeline.is_some() {
+            vk::Fence::null()
+        } else {
+            create_fence(&self.device, false)?
+        };
         if let Err(error) = self.submit_command_buffers(
             &self.command_encoders.get(encoder)?.command_buffers,
             &[],
@@ -2746,12 +2751,14 @@ impl VulkanDevice {
         }
         let mut encoder_resource = self.command_encoders.take(encoder)?;
         encoder_resource.fence = fence;
-        encoder_resource.owns_fence = true;
+        encoder_resource.owns_fence = fence != vk::Fence::null();
+        let timeline_value = self.primary_timeline.as_ref().map(|timeline| timeline.last());
+        encoder_resource.retire_primary_value = timeline_value;
         let submission = tracked.then(|| self.submissions.insert(VulkanSubmission {
             fence,
             queue: gfx_core::GpuQueueId::PRIMARY,
             owned_by_submission: false,
-            timeline_value: self.primary_timeline.as_ref().map(|timeline| timeline.last()),
+            timeline_value,
         }));
         // Publish the association before the encoder can be recycled.
         // recycle_command_encoder records completion before destroying the fence.
@@ -2825,6 +2832,41 @@ impl VulkanDevice {
             return Err(Error::InvalidInput(
                 "Vulkan native command pool family does not match executing queue".into(),
             ));
+        }
+        if let (Some(primary), Some(secondary)) = (&self.primary_timeline, &self.secondary_timeline) {
+            let result = (|| -> Result<(u64, u64)> {
+                // Explicit release covers even earlier submissions that did
+                // not signal the primary timeline (e.g. upload commands).
+                primary.submit(&self.device, self.graphics_queue, &[], &[], &[],
+                    vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
+                let buffers = &self.command_encoders.get(encoder)?.command_buffers;
+                let produced = secondary.submit_after(
+                    &self.device, queue, buffers, primary, primary.last(),
+                )?;
+                let joined = primary.submit_after(
+                    &self.device, self.graphics_queue, &[], secondary, produced,
+                )?;
+                Ok((produced, joined))
+            })();
+            let (produced, joined) = match result {
+                Ok(values) => values,
+                Err(error) => {
+                    // A partial handoff may have submitted command buffers.
+                    // Preserve the exceptional failure retirement contract.
+                    let _ = unsafe { self.device.device_wait_idle() };
+                    return Err(error);
+                }
+            };
+            let mut resource = self.command_encoders.take(encoder)?;
+            resource.retire_primary_value = Some(joined);
+            self.deferred_destroys.retire(0, DeferredResource::CommandEncoder(resource));
+            self.submitted_frames = self.submitted_frames.saturating_add(1);
+            return Ok(track_native_producer.then(|| self.submissions.insert(VulkanSubmission {
+                fence: vk::Fence::null(),
+                queue: queue_id,
+                owned_by_submission: false,
+                timeline_value: Some(produced),
+            })));
         }
         let semaphore_info = vk::SemaphoreCreateInfo::default();
         let first = unsafe { self.device.create_semaphore(&semaphore_info, None) }
@@ -2951,6 +2993,9 @@ impl VulkanDevice {
         let submission_resource = self.submissions.get(submission)?;
         let complete = self.submission_is_complete(submission_resource)?;
         if complete {
+            // The first cleanup snapshot may precede the completion query.
+            // Collect encoder timestamps while the public ID is still live.
+            self.poll_cleanup();
             self.submission_wakes.cancel(submission);
             let completed = self.submissions.take(submission)?;
             if completed.owned_by_submission {
@@ -3510,9 +3555,23 @@ impl VulkanDevice {
                 true
             }
         });
+        // One counter snapshot per retirement pass, not one driver query
+        // per outstanding encoder. Failed queries never prove retirement.
+        let primary = self.primary_timeline.as_ref();
+        let mut completed = None;
         for resource in self
             .deferred_destroys
-            .collect_ready(|_, resource| deferred_resource_ready(&device, resource))
+            .collect_ready(|_, resource| {
+                if let DeferredResource::CommandEncoder(encoder) = resource
+                    && let Some(value) = encoder.retire_primary_value
+                {
+                    let snapshot = completed.get_or_insert_with(|| {
+                        primary.and_then(|timeline| timeline.completed_value().ok())
+                    });
+                    return snapshot.is_some_and(|completed| completed >= value);
+                }
+                deferred_resource_ready(&device, resource)
+            })
         {
             let _destroy_result = self.destroy_deferred_now(resource);
         }
@@ -4333,6 +4392,15 @@ impl VulkanDevice {
 
     fn recycle_command_encoder(&mut self, mut encoder: VulkanCommandEncoder) -> Result<()> {
         encoder.compute_resources.clear();
+        encoder.retire_primary_value = None;
+        // The consumer retirement predicate covers both binary operations.
+        // Do not retain or overwrite old semaphore handles in the pool.
+        if let Some(semaphores) = encoder.cross_queue_semaphores.take() {
+            for semaphore in semaphores {
+                // SAFETY: the consumer-side fence has completed.
+                unsafe { self.device.destroy_semaphore(semaphore, None) };
+            }
+        }
         let frame_submission = encoder.frame_submission.take();
         // The retirement predicate proved this frame complete. Retain its
         // public ID until the caller consumes it; the WSI fence is reusable.
@@ -5981,6 +6049,8 @@ struct VulkanCommandEncoder {
     /// Both binary semaphores belong to this command encoder's native fence.
     /// They are never destroyed until the consumer-side graphics wait ends.
     cross_queue_semaphores: Option<[vk::Semaphore; 2]>,
+    /// Exact primary queue completion value; never a WSI retirement proof.
+    retire_primary_value: Option<u64>,
     /// One timestamp pair per command buffer; retained until its fence completes.
     gpu_trace_query_pool: Option<vk::QueryPool>,
     gpu_trace_passes: Vec<VulkanGpuPass>,

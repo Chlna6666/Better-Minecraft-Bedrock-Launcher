@@ -7,6 +7,7 @@ pub(super) struct QueueTimeline {
     device: Arc<ash::Device>,
     semaphore: vk::Semaphore,
     last: Cell<u64>,
+    completed: Cell<u64>,
 }
 
 pub(super) struct TimelinePoint {
@@ -34,17 +35,26 @@ impl QueueTimeline {
         let semaphore = unsafe { device.create_semaphore(&info, None) }.map_err(VulkanError::from)?;
         Ok(Self {
             device: device.clone(),
-            semaphore, last: Cell::new(0),
+            semaphore, last: Cell::new(0), completed: Cell::new(0),
         })
     }
 
     pub(super) fn last(&self) -> u64 { self.last.get() }
 
     pub(super) fn is_complete(&self, value: u64) -> Result<bool> {
-        // SAFETY: this device owns the persistent semaphore until teardown.
+        if self.completed.get() >= value {
+            return Ok(true);
+        }
+        Ok(self.completed_value()? >= value)
+    }
+
+    pub(super) fn completed_value(&self) -> Result<u64> {
+        // SAFETY: the semaphore is device-owned; only this queue signals it.
         let completed = unsafe { self.device.get_semaphore_counter_value(self.semaphore) }
             .map_err(VulkanError::from)?;
-        Ok(completed >= value)
+        let completed = completed.max(self.completed.get());
+        self.completed.set(completed);
+        Ok(completed)
     }
 
     pub(super) fn wait_point(&self, value: u64) -> TimelinePoint {
@@ -62,6 +72,26 @@ impl QueueTimeline {
             wait_stage, fence, Some((self.semaphore, value)))?;
         self.last.set(value);
         Ok(())
+    }
+
+    /// Signal this queue's next value after the exact producer value.
+    /// Combine wait, work and signal into one native submission.
+    pub(super) fn submit_after(
+        &self, device: &ash::Device, queue: vk::Queue, buffers: &[vk::CommandBuffer],
+        producer: &Self, producer_value: u64,
+    ) -> Result<u64> {
+        if producer_value == 0 || producer_value > producer.last() {
+            return Err(Error::InvalidInput("Vulkan timeline dependency is not submitted".into()));
+        }
+        let value = self.last().checked_add(1)
+            .ok_or_else(|| Error::Unavailable("Vulkan queue timeline exhausted".into()))?;
+        super::submit::with_timeline_dependency(
+            device, queue, buffers, &[], &[], vk::PipelineStageFlags2::ALL_COMMANDS,
+            vk::Fence::null(), Some((self.semaphore, value)),
+            Some((producer.semaphore, producer_value)),
+        )?;
+        self.last.set(value);
+        Ok(value)
     }
 
     pub(super) fn enqueue_wait(&self, device: &ash::Device, target: vk::Queue, value: u64) -> Result<()> {

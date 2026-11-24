@@ -1090,6 +1090,13 @@ mod platform {
     }
 
     impl PresentationDevice for MetalDevice {
+        fn surface_capabilities(&self, id: SwapchainId) -> gfx_core::SurfaceCapabilities {
+            gfx_core::SurfaceCapabilities {
+                partial_presentation: false,
+                frame_ready_notification: self.swapchains.get(id).is_ok(),
+            }
+        }
+
         fn request_frame_ready(
             &mut self, id: SwapchainId, callback: ReadyCallback,
         ) -> Result<bool> {

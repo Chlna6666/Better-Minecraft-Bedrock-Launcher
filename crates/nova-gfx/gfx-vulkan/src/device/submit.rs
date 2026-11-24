@@ -14,16 +14,26 @@ pub(super) fn with_timeline(
     waits: &[vk::Semaphore], signals: &[vk::Semaphore], wait_stage: vk::PipelineStageFlags2,
     fence: vk::Fence, timeline: Option<(vk::Semaphore, u64)>,
 ) -> Result<()> {
+    with_timeline_dependency(device, queue, buffers, waits, signals, wait_stage, fence, timeline, None)
+}
+
+pub(super) fn with_timeline_dependency(
+    device: &ash::Device, queue: vk::Queue, buffers: &[vk::CommandBuffer],
+    waits: &[vk::Semaphore], signals: &[vk::Semaphore], wait_stage: vk::PipelineStageFlags2,
+    fence: vk::Fence, timeline: Option<(vk::Semaphore, u64)>,
+    dependency: Option<(vk::Semaphore, u64)>,
+) -> Result<()> {
     let mut wait_stack = [vk::SemaphoreSubmitInfo::default(); 4];
     let mut signal_stack = [vk::SemaphoreSubmitInfo::default(); 4];
     let mut buffer_stack = [vk::CommandBufferSubmitInfo::default(); 4];
     let mut wait_heap;
     let mut signal_heap;
     let mut buffer_heap;
-    let wait_infos = if waits.len() <= wait_stack.len() {
-        &mut wait_stack[..waits.len()]
+    let wait_count = waits.len() + usize::from(dependency.is_some());
+    let wait_infos = if wait_count <= wait_stack.len() {
+        &mut wait_stack[..wait_count]
     } else {
-        wait_heap = vec![vk::SemaphoreSubmitInfo::default(); waits.len()];
+        wait_heap = vec![vk::SemaphoreSubmitInfo::default(); wait_count];
         wait_heap.as_mut_slice()
     };
     let signal_count = signals.len() + usize::from(timeline.is_some());
@@ -41,6 +51,10 @@ pub(super) fn with_timeline(
     };
     for (info, semaphore) in wait_infos.iter_mut().zip(waits) {
         *info = vk::SemaphoreSubmitInfo::default().semaphore(*semaphore).stage_mask(wait_stage);
+    }
+    if let Some((semaphore, value)) = dependency {
+        wait_infos[waits.len()] = vk::SemaphoreSubmitInfo::default()
+            .semaphore(semaphore).value(value).stage_mask(wait_stage);
     }
     for (info, semaphore) in signal_infos.iter_mut().zip(signals) {
         *info = vk::SemaphoreSubmitInfo::default().semaphore(*semaphore)
