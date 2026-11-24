@@ -25,6 +25,8 @@ pub(super) struct AdaptivePacing {
     new_gpu_samples: u8,
     empty_gpu_windows: u8,
     observed_refresh: Option<Duration>,
+    // Retain measured cadence independently of the nominal display period.
+    measured_refresh: Option<Duration>,
     nominal_refresh: Option<Duration>,
 }
 
@@ -46,6 +48,7 @@ impl Default for AdaptivePacing {
             new_gpu_samples: 0,
             empty_gpu_windows: 0,
             observed_refresh: None,
+            measured_refresh: None,
             nominal_refresh: None,
         }
     }
@@ -95,6 +98,7 @@ impl AdaptivePacing {
         self.new_gpu_samples = 0;
         self.empty_gpu_windows = 0;
         self.observed_refresh = None;
+        self.measured_refresh = None;
         self.nominal_refresh = None;
         self.last_frame = None;
         self.previous = None;
@@ -145,7 +149,7 @@ impl AdaptivePacing {
     pub(super) fn observe(&mut self, feedback: Option<PresentationFeedback>) -> Option<usize> {
         let previous = self.previous;
         self.previous = feedback;
-        let prior_period = self.observed_refresh;
+        let prior_measured = self.measured_refresh;
         let prior_nominal = self.nominal_refresh;
         self.nominal_refresh = feedback.and_then(nominal_refresh);
         // Unknown nominal period is valid (e.g. VRR). A same-domain timestamp
@@ -153,8 +157,15 @@ impl AdaptivePacing {
         // cadence estimate. Never turn it into an independent display clock.
         let measured = previous.zip(feedback).and_then(|(old, new)| observed_period(old, new));
         let progressing_sample = previous.zip(feedback).is_some_and(|(old, new)| progressing(old, new));
+        self.measured_refresh = if progressing_sample { measured } else { None };
         self.observed_refresh = if progressing_sample || previous.is_none() {
-            self.nominal_refresh.or(measured)
+            // A nominal rate is a useful lower frame-budget bound, but does
+            // not prove a fixed cadence. Actual present feedback can be
+            // faster (mode transition) or slower (VRR, skipped presents).
+            match (self.nominal_refresh, self.measured_refresh) {
+                (Some(nominal), Some(actual)) => Some(nominal.min(actual)),
+                (nominal, actual) => nominal.or(actual),
+            }
         } else {
             None
         };
@@ -163,7 +174,9 @@ impl AdaptivePacing {
             (None, None) => false,
             _ => true,
         };
-        let observed_variation = prior_period.zip(self.observed_refresh)
+        // A nominal rate can remain constant while actual display cadence
+        // changes. Do not hide that evidence behind nominal.or(measured).
+        let observed_variation = prior_measured.zip(self.measured_refresh)
             .is_some_and(|(a, b)| a.max(b) - a.min(b) > a.max(b) / 4);
         // A VRR period change does not invalidate the hardware GPU duration.
         // It does invalidate a quiet-window decision to shrink admission.
