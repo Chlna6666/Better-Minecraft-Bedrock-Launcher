@@ -312,6 +312,7 @@ impl Window {
             return false;
         }
 
+        self.replayed_dependency_ranges = true;
         self.next_frame.hitboxes.extend(
             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                 .iter()
@@ -534,6 +535,7 @@ impl Window {
             return false;
         }
 
+        self.replayed_dependency_ranges = true;
         #[cfg(any(test, feature = "test-support"))]
         {
             let records: Vec<_> = self.rendered_frame.debug_bounds_records

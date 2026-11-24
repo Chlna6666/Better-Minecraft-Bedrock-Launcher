@@ -114,7 +114,10 @@ impl Window {
         self.next_frame.window_active = self.active.get();
 
         if self.draw_was_degraded && self.has_completed_rendered_frame {
-            let result = self.finish_degraded_draw(restored_input_handler_index);
+            let result = {
+                cx.entities.discard_frame_dependencies();
+                self.finish_degraded_draw(restored_input_handler_index)
+            };
             phase_metrics.build = frame_started_at.elapsed();
             record_draw_phase_metrics(phase_metrics);
             return result;
@@ -165,7 +168,8 @@ impl Window {
         }
         let directly_dirty_views = self.invalidate_entities();
         self.pending_list_measured_items = 0;
-        cx.entities.clear_accessed();
+        cx.entities.begin_frame_dependencies();
+        self.replayed_dependency_ranges = false;
         debug_assert!(self.rendered_entity_stack.is_empty());
         debug_assert!(self.view_bounds_stack.is_empty());
         // Defensive: an unwound draw could leave stale frames behind.
@@ -812,6 +816,15 @@ impl Window {
 
     fn record_entities_accessed(&mut self, cx: &mut App) {
         let mut entities = mem::take(cx.entities.accessed_entities.get_mut());
+        let mut dependencies = cx.entities.finish_frame_dependencies();
+        self.invalidator.commit_render_dependencies(
+            &mut dependencies,
+            &mut entities,
+            self.replayed_dependency_ranges,
+            |entity| cx.entities.type_name_for_id(entity).is_some(),
+            |owner| self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_some(),
+        );
+        cx.entities.recycle_frame_dependencies(dependencies);
         let handle = self.handle;
         cx.record_entities_accessed(
             handle,

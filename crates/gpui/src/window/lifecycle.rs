@@ -190,6 +190,9 @@ struct WindowInvalidatorInner {
     pub dirty_to_present_started_at: Option<Instant>,
     pub draw_phase: DrawPhase,
     pub dirty_views: FxHashSet<EntityId>,
+    // Last successfully committed Render read owners. An unknown owner
+    // requires the conservative window-wide fallback.
+    render_dependencies: FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>,
     pub dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
     /// True while the queued frame still has enough provenance to make retained replay decisions
     /// per view. Exact element targets and generic-dirty views may coexist in the same frame.
@@ -228,6 +231,7 @@ impl WindowInvalidator {
                 dirty_to_present_started_at: Some(Instant::now()),
                 draw_phase: DrawPhase::None,
                 dirty_views: FxHashSet::default(),
+                render_dependencies: FxHashMap::default(),
                 dirty_frame_diagnostics: Rc::new(RefCell::new(DirtyFrameDiagnostics::default())),
                 pending_targeted_replay: false,
                 pending_targeted_elements: FxHashMap::default(),
@@ -340,6 +344,41 @@ impl WindowInvalidator {
         self.invalidate_scoped_view(entity, cx, RetainedInvalidationScope::ReconcileSubtree)
     }
 
+    pub(in crate::window) fn commit_render_dependencies(
+        &self,
+        dependencies: &mut FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>,
+        entities: &mut FxHashSet<EntityId>,
+        replayed: bool,
+        mut is_live: impl FnMut(EntityId) -> bool,
+        mut has_route: impl FnMut(EntityId) -> bool,
+    ) {
+        let mut inner = self.inner.borrow_mut();
+        if replayed {
+            // Render always executes today, but replay can skip arbitrary
+            // prepaint/paint reads. Carry unknown dependencies until a full
+            // traversal replaces them, never narrow them to a Render owner.
+            for (&entity, owners) in &inner.render_dependencies {
+                if owners.is_none() && is_live(entity) {
+                    dependencies.insert(entity, None);
+                    entities.insert(entity);
+                }
+            }
+        }
+        for owners in dependencies.values_mut() {
+            if owners.as_ref().is_some_and(|owners| owners.is_empty() || owners.iter().any(|owner| !has_route(*owner))) {
+                *owners = None;
+            }
+        }
+        mem::swap(&mut inner.render_dependencies, dependencies);
+    }
+
+    /// Only application notifications resolve read dependencies. Direct
+    /// window invalidations still name the actual view to invalidate.
+    #[track_caller]
+    pub(crate) fn invalidate_dependency(&self, entity: EntityId, cx: &mut App) -> bool {
+        self.invalidate_entity(entity, cx, true)
+    }
+
     #[track_caller]
     pub(in crate::window) fn invalidate_scoped_view(
         &self,
@@ -347,7 +386,21 @@ impl WindowInvalidator {
         cx: &mut App,
         _scope: RetainedInvalidationScope,
     ) -> bool {
+        self.invalidate_entity(entity, cx, false)
+    }
+
+    #[track_caller]
+    fn invalidate_entity(&self, entity: EntityId, cx: &mut App, resolve_dependencies: bool) -> bool {
         let mut inner = self.inner.borrow_mut();
+        let (owners, unknown) = if resolve_dependencies {
+            match inner.render_dependencies.get(&entity) {
+                Some(Some(owners)) => (owners.clone(), false),
+                Some(None) => (smallvec::smallvec![entity], true),
+                None => (smallvec::smallvec![entity], false),
+            }
+        } else {
+            (smallvec::smallvec![entity], false)
+        };
         let location = std::panic::Location::caller();
         let mut diagnostics = inner.dirty_frame_diagnostics.borrow_mut();
         diagnostics.record_frame_request_reason_at(
@@ -360,16 +413,20 @@ impl WindowInvalidator {
         inner
             .dirty_to_present_started_at
             .get_or_insert_with(Instant::now);
-        inner.dirty_views.insert(entity);
+        inner.dirty_views.extend(owners.iter().copied());
         if inner.draw_phase == DrawPhase::None {
-            if !inner.dirty {
+            if unknown {
+                inner.pending_targeted_replay = false;
+                inner.pending_targeted_elements.clear();
+                inner.pending_generic_dirty_views.clear();
+            } else if !inner.dirty {
                 inner.pending_targeted_replay = true;
                 inner.pending_targeted_elements.clear();
                 inner.pending_generic_dirty_views.clear();
             }
 
             if inner.pending_targeted_replay {
-                inner.pending_generic_dirty_views.insert(entity);
+                inner.pending_generic_dirty_views.extend(owners.iter().copied());
             }
             inner.dirty = true;
             // Retained targeting changes only rendering provenance. Context::notify observers keep
@@ -701,6 +758,7 @@ impl WindowInvalidator {
         }
 
         trim_collection!(dirty_views);
+        trim_collection!(render_dependencies);
         trim_collection!(pending_targeted_elements);
         trim_collection!(pending_generic_dirty_views);
         trim_collection!(pending_layout_animation_frames);

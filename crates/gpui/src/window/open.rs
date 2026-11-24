@@ -516,6 +516,7 @@ impl Window {
             retained_child_slot_stack: SmallVec::default(),
             text_style_stack: Vec::new(),
             rendered_entity_stack: Vec::new(),
+            replayed_dependency_ranges: false,
             viewport_dependent_views: RefCell::new(FxHashSet::default()),
             view_bounds_stack: Vec::new(),
             element_offset_stack: Vec::new(),

@@ -1,6 +1,7 @@
 use crate::{App, AppContext, GpuiBorrow, VisualContext, Window, seal::Sealed};
 use anyhow::Result;
-use collections::FxHashSet;
+use collections::{FxHashMap, FxHashSet};
+use smallvec::SmallVec;
 use derive_more::{Deref, DerefMut};
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use slotmap::{KeyData, SecondaryMap, SlotMap};
@@ -63,6 +64,11 @@ pub(crate) struct EntityMap {
     entities: SecondaryMap<EntityId, Box<dyn Any>>,
     entity_type_names: SecondaryMap<EntityId, &'static str>,
     pub accessed_entities: RefCell<FxHashSet<EntityId>>,
+    // None is an access outside a proven Render scope. It dominates all
+    // scoped reads of the same entity for this frame.
+    render_dependencies: RefCell<FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>>,
+    tracking_frame_dependencies: bool,
+    render_dependency_owner: Option<EntityId>,
     ref_counts: Arc<RwLock<EntityRefCounts>>,
 }
 
@@ -105,6 +111,9 @@ impl EntityMap {
             entities: SecondaryMap::new(),
             entity_type_names: SecondaryMap::new(),
             accessed_entities: RefCell::new(FxHashSet::default()),
+            render_dependencies: RefCell::new(FxHashMap::default()),
+            tracking_frame_dependencies: false,
+            render_dependency_owner: None,
             ref_counts: Arc::new(RwLock::new(EntityRefCounts {
                 counts: SlotMap::with_key(),
                 dropped_entity_ids: Vec::new(),
@@ -133,7 +142,7 @@ impl EntityMap {
     where
         T: 'static,
     {
-        self.accessed_entities.get_mut().insert(slot.entity_id);
+        self.record_access(slot.entity_id);
 
         let handle = slot.0;
         self.entity_type_names
@@ -160,7 +169,7 @@ impl EntityMap {
     #[inline(always)]
     pub fn read<T: 'static>(&self, entity: &Entity<T>) -> &T {
         self.assert_valid_context(entity);
-        self.accessed_entities.borrow_mut().insert(entity.entity_id);
+        self.record_access(entity.entity_id);
         self.entities
             .get(entity.entity_id)
             .and_then(|entity| entity.downcast_ref())
@@ -170,7 +179,7 @@ impl EntityMap {
     #[track_caller]
     pub(super) fn lease_erased(&mut self, pointer: &AnyEntity) -> LeaseInner {
         self.assert_valid_context(pointer);
-        self.accessed_entities.get_mut().insert(pointer.entity_id);
+        self.record_access(pointer.entity_id);
         let entity = Some(self.entities.remove(pointer.entity_id).unwrap_or_else(|| {
             let entity_type = self
                 .entity_type_names
@@ -194,8 +203,54 @@ impl EntityMap {
         );
     }
 
+    #[inline]
+    fn record_access(&self, entity: EntityId) {
+        self.accessed_entities.borrow_mut().insert(entity);
+        if !self.tracking_frame_dependencies {
+            return;
+        }
+        let mut dependencies = self.render_dependencies.borrow_mut();
+        let Some(owner) = self.render_dependency_owner else {
+            dependencies.insert(entity, None);
+            return;
+        };
+        if let Some(owners) = dependencies.entry(entity).or_insert_with(|| Some(SmallVec::new()))
+            && !owners.contains(&owner)
+        {
+            owners.push(owner);
+        }
+    }
+
     pub fn clear_accessed(&mut self) {
         self.accessed_entities.get_mut().clear();
+    }
+
+    pub(crate) fn begin_frame_dependencies(&mut self) {
+        self.clear_accessed();
+        self.render_dependencies.get_mut().clear();
+        self.render_dependency_owner = None;
+        self.tracking_frame_dependencies = true;
+    }
+
+    pub(crate) fn set_render_dependency_owner(&mut self, owner: Option<EntityId>) -> Option<EntityId> {
+        std::mem::replace(&mut self.render_dependency_owner, owner)
+    }
+
+    pub(crate) fn finish_frame_dependencies(&mut self) -> FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>> {
+        self.tracking_frame_dependencies = false;
+        self.render_dependency_owner = None;
+        std::mem::take(self.render_dependencies.get_mut())
+    }
+
+    pub(crate) fn recycle_frame_dependencies(&mut self, mut dependencies: FxHashMap<EntityId, Option<SmallVec<[EntityId; 2]>>>) {
+        dependencies.clear();
+        *self.render_dependencies.get_mut() = dependencies;
+    }
+
+    pub(crate) fn discard_frame_dependencies(&mut self) {
+        self.tracking_frame_dependencies = false;
+        self.render_dependency_owner = None;
+        self.render_dependencies.get_mut().clear();
     }
 
     pub fn type_name_for_id(&self, entity_id: EntityId) -> Option<&'static str> {
@@ -206,6 +261,7 @@ impl EntityMap {
         let mut ref_counts = &mut *self.ref_counts.write();
         let dropped_entity_ids = ref_counts.dropped_entity_ids.drain(..);
         let accessed_entities = self.accessed_entities.get_mut();
+        let render_dependencies = self.render_dependencies.get_mut();
 
         dropped_entity_ids
             .filter_map(|entity_id| {
@@ -216,6 +272,7 @@ impl EntityMap {
                     "dropped an entity that was referenced"
                 );
                 accessed_entities.remove(&entity_id);
+                render_dependencies.remove(&entity_id);
                 self.entity_type_names.remove(entity_id);
                 // If the EntityId was allocated with `Context::reserve`,
                 // the entity may not have been inserted.

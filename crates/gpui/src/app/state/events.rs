@@ -212,7 +212,7 @@ impl App {
             }
         } else {
             for invalidator in window_invalidators.values() {
-                invalidator.invalidate_view(entity_id, self);
+                invalidator.invalidate_dependency(entity_id, self);
             }
         }
 
