@@ -195,7 +195,8 @@ pub struct VulkanDevice {
     free_command_encoders: Vec<VulkanCommandEncoder>,
     submissions: ResourceRegistry<VulkanSubmission>,
     submission_wakes: submission_wake::SubmissionWakes,
-    primary_timeline: Option<timeline::PrimaryTimeline>,
+    primary_timeline: Option<timeline::QueueTimeline>,
+    secondary_timeline: Option<timeline::QueueTimeline>,
     /// Completed via a native fence on the waiting graphics-family queue.
     /// Binary semaphores must remain alive until that GPU wait executes.
     native_queue_waits: Vec<VulkanQueueWait>,
@@ -499,10 +500,16 @@ impl VulkanDevice {
         // Timeline is a required enabled core feature, not an extension
         // negotiation. Keep the private fence wake only for allocation failure
         // and submissions not yet migrated to timeline signaling.
-        let primary_timeline = match timeline::PrimaryTimeline::new(&device) {
+        let primary_timeline = match timeline::QueueTimeline::new(&device) {
             Ok(value) => Some(value),
             Err(error) => { log::warn!("Vulkan timeline allocation failed: {error}"); None }
         };
+        let secondary_timeline = if sidecar_queue.is_some() || dedicated_compute_queue.is_some() {
+            match timeline::QueueTimeline::new(&device) {
+                Ok(value) => Some(value),
+                Err(error) => { log::warn!("Vulkan secondary timeline allocation failed: {error}"); None }
+            }
+        } else { None };
         Ok(Self {
             swapchain_maintenance,
             native_pixel_presentation,
@@ -555,6 +562,7 @@ impl VulkanDevice {
             submissions: ResourceRegistry::new("submission"),
             submission_wakes: submission_wake::SubmissionWakes::default(),
             primary_timeline,
+            secondary_timeline,
             native_queue_waits: Vec::new(),
             surfaces: ResourceRegistry::new("surface"),
             swapchains: ResourceRegistry::new("swapchain"),
@@ -2973,9 +2981,14 @@ impl VulkanDevice {
 
             // Submit 3D command buffers to queue index 1 in the same family.
             let buffers = &self.command_encoders.get(encoder)?.command_buffers;
-            submit::binary(&self.device, queue, buffers, &[first], &[second],
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                producer_fence.unwrap_or(vk::Fence::null()))?;
+            let producer_fence = producer_fence.unwrap_or(vk::Fence::null());
+            if let Some(timeline) = &self.secondary_timeline {
+                timeline.submit(&self.device, queue, buffers, &[first], &[second],
+                    vk::PipelineStageFlags2::ALL_COMMANDS, producer_fence)?;
+            } else {
+                submit::binary(&self.device, queue, buffers, &[first], &[second],
+                    vk::PipelineStageFlags2::ALL_COMMANDS, producer_fence)?;
+            }
 
             // Keep the sampled attachment unavailable to the GUI graphics
             // queue until all sidecar writes and layout transitions finish.
@@ -3015,7 +3028,7 @@ impl VulkanDevice {
                 fence: native_fence,
                 queue: queue_id,
                 owned_by_submission: true,
-                timeline_value: None,
+                timeline_value: self.secondary_timeline.as_ref().map(|timeline| timeline.last()),
             })
         }))
     }
@@ -3823,7 +3836,7 @@ impl VulkanDevice {
     ) -> Result<()> {
         if let Some(timeline) = &self.primary_timeline {
             return timeline.submit(&self.device, self.graphics_queue, command_buffers,
-                wait_semaphores, signal_semaphores, fence);
+                wait_semaphores, signal_semaphores, vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, fence);
         }
         submit::binary(&self.device, self.graphics_queue, command_buffers, wait_semaphores,
             signal_semaphores, vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, fence)
@@ -5075,6 +5088,18 @@ impl VulkanDevice {
     /// GpuQueueId::PRIMARY reserves (0,0) even when the real Vulkan graphics
     /// family isn't zero. Namespace dedicated-family IDs by adding one to
     /// the physical family index, avoiding accidental alias with PRIMARY.
+    fn timeline_for_queue(&self, queue: gfx_core::GpuQueueId) -> Option<&timeline::QueueTimeline> {
+        if queue == gfx_core::GpuQueueId::PRIMARY {
+            self.primary_timeline.as_ref()
+        } else if self.independent_queue(gfx_core::GpuWorkStage::Graphics) == Some(queue)
+            || self.dedicated_compute_queue_id() == Some(queue)
+        {
+            self.secondary_timeline.as_ref()
+        } else {
+            None
+        }
+    }
+
     fn dedicated_compute_queue_id(&self) -> Option<gfx_core::GpuQueueId> {
         self.dedicated_compute_queue?;
         Some(gfx_core::GpuQueueId {
@@ -5118,8 +5143,14 @@ impl SubmissionDevice for VulkanDevice {
             ));
         };
         let fence = create_fence(&self.device, false)?;
-        if let Err(error) = submit::binary(&self.device, secondary, &[], &[], &[],
-            vk::PipelineStageFlags2::ALL_COMMANDS, fence) {
+        let result = if let Some(timeline) = &self.secondary_timeline {
+            timeline.submit(&self.device, secondary, &[], &[], &[],
+                vk::PipelineStageFlags2::ALL_COMMANDS, fence)
+        } else {
+            submit::binary(&self.device, secondary, &[], &[], &[],
+                vk::PipelineStageFlags2::ALL_COMMANDS, fence)
+        };
+        if let Err(error) = result {
             // SAFETY: a failed native submission does not own the fence.
             unsafe { self.device.destroy_fence(fence, None) };
             return Err(error);
@@ -5128,7 +5159,7 @@ impl SubmissionDevice for VulkanDevice {
             fence,
             queue,
             owned_by_submission: true,
-            timeline_value: None,
+            timeline_value: self.secondary_timeline.as_ref().map(|timeline| timeline.last()),
         }))
     }
 
@@ -5206,6 +5237,14 @@ impl SubmissionDevice for VulkanDevice {
         let source_queue = lookup(source.queue).ok_or_else(|| {
             Error::Unavailable("Vulkan producer has no matching native queue".into())
         })?;
+
+        // Exact producer value: no extra producer submit, transient semaphore,
+        // or wait-fence allocation. The device owns the timeline until idle.
+        if let Some((value, timeline)) = source.timeline_value.zip(self.timeline_for_queue(source.queue)) {
+            timeline.enqueue_wait(&self.device, target, value)?;
+            // SAFETY: a native timeline wait covering the producer is enqueued.
+            return Ok(unsafe { gfx_core::GpuNativeWaitProof::after_native_wait(producer, target_queue) });
+        }
 
         let info = vk::SemaphoreCreateInfo::default();
         // SAFETY: Binary semaphore is allocated on this live logical device.
@@ -5313,7 +5352,7 @@ impl SubmissionDevice for VulkanDevice {
         } else {
             return Ok(false);
         };
-        let timeline = record.timeline_value.zip(self.primary_timeline.as_ref())
+        let timeline = record.timeline_value.zip(self.timeline_for_queue(queue_id))
             .map(|(value, timeline)| timeline.wait_point(value));
         self.submission_wakes.register(&self.device, queue, submission, timeline, callback)
     }
@@ -5557,6 +5596,9 @@ impl Drop for VulkanDevice {
         // Drain native wait threads before destroying any private fences or VkDevice.
         self.submission_wakes.shutdown(&self.device);
         if let Some(timeline) = self.primary_timeline.take() {
+            timeline.destroy(&self.device);
+        }
+        if let Some(timeline) = self.secondary_timeline.take() {
             timeline.destroy(&self.device);
         }
         for bridge in self.native_queue_waits.drain(..) {
@@ -7143,11 +7185,11 @@ fn create_native_render_pass(
         | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
         | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS;
     let source_access_mask =
-        vk::AccessFlags2::COLOR_ATTACHMENT_WRITE | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
-    let destination_access_mask = vk::AccessFlags2::COLOR_ATTACHMENT_READ
-        | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
-        | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
-        | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+        vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+    let destination_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_READ
+        | vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
     let dependency = vk::SubpassDependency::default()
         .src_subpass(vk::SUBPASS_EXTERNAL)
         .dst_subpass(0)
