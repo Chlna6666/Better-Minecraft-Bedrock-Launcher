@@ -664,7 +664,7 @@ mod tests {
     };
     use crate::element::text::StyledText;
     use crate::{
-        AvailableSpace, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+        AvailableSpace, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
         TestAppContext, TextOverflow, TextStyle, Window, div, point, px, rgb, size,
     };
     use std::sync::Arc;
@@ -943,19 +943,19 @@ mod tests {
         }
         let layout = TextLayout::default();
         let (view, visual) = cx.add_window_view(|_, _| Label {
-            text: "ABBA".into(),
+            text: "ABACAD".into(),
             layout: layout.clone(),
         });
         visual.update(|window, cx| window.draw(cx).clear());
         let first = layout.0.borrow().as_ref().unwrap().size;
         visual.update(|window, cx| {
             view.update(cx, |view, cx| {
-                view.text = "BAAB".into();
+                view.text = "ACABAD".into();
                 cx.notify();
             });
             window.draw(cx).clear();
         });
-        assert_eq!(layout.text(), "BAAB");
+        assert_eq!(layout.text(), "ACABAD");
         assert_eq!(layout.0.borrow().as_ref().unwrap().size, first);
     }
 
