@@ -469,57 +469,20 @@ impl Window {
                 text_valid,
             );
         }
-        valid
-            && self
-                .rendered_frame
-                .range_is_replayable(range.start.scene_index..range.end.scene_index)
-            && {
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    frame_range_is_valid(
-                        range.start.debug_bounds_index,
-                        range.end.debug_bounds_index,
-                        self.rendered_frame.debug_bounds_records.len(),
-                    )
-                }
-                #[cfg(not(any(test, feature = "test-support")))]
-                {
-                    true
-                }
+        valid && {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                frame_range_is_valid(
+                    range.start.debug_bounds_index,
+                    range.end.debug_bounds_index,
+                    self.rendered_frame.debug_bounds_records.len(),
+                )
             }
-            && frame_range_is_valid(
-                range.start.mouse_listeners_index,
-                range.end.mouse_listeners_index,
-                self.rendered_frame.mouse_listeners.len(),
-            )
-            && frame_range_is_valid(
-                range.start.input_handlers_index,
-                range.end.input_handlers_index,
-                self.rendered_frame.input_handlers.len(),
-            )
-            && frame_range_is_valid(
-                range.start.cursor_styles_index,
-                range.end.cursor_styles_index,
-                self.rendered_frame.cursor_styles.len(),
-            )
-            && frame_range_is_valid(
-                range.start.window_control_hitboxes_index,
-                range.end.window_control_hitboxes_index,
-                self.rendered_frame.window_control_hitboxes.len(),
-            )
-            && frame_range_is_valid(
-                range.start.accessed_element_states_index,
-                range.end.accessed_element_states_index,
-                self.rendered_frame.accessed_element_states.len(),
-            )
-            && frame_range_is_valid(
-                range.start.tab_handle_index,
-                range.end.tab_handle_index,
-                self.rendered_frame.tab_stops.insertion_history.len(),
-            )
-            && self.text_system.can_reuse_layouts(
-                range.start.line_layout_index.clone()..range.end.line_layout_index.clone(),
-            )
+            #[cfg(not(any(test, feature = "test-support")))]
+            {
+                true
+            }
+        }
     }
 
     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) -> bool {
@@ -743,9 +706,9 @@ impl Window {
 
     /// Returns a previously retained element range that is safe to replay in the current frame.
     ///
-    /// Generic dirty frames require exact plain-text output or a static row
-    /// with matching layout and semantic proofs. Row translation never reuses
-    /// geometry-capturing callbacks, clips or GPU chunk ordering.
+    /// Generic dirty frames admit stationary side-effect-free subtrees with
+    /// exact semantic and recursive layout proofs, not only individual text.
+    /// Translation remains restricted to proven static rows.
     pub(crate) fn reusable_retained_element(
         &self,
         retained_id: &GlobalElementId,
@@ -764,25 +727,16 @@ impl Window {
         } else {
             None
         };
-        let current_view_path =
-            current_view.map(|view| self.rendered_frame.dispatch_tree.view_path(view));
+        // Route comparison is lazy: ordinary notification/replay-only
+        // frames have no exact element targets. Never allocate a path per node.
         let target_owner_shares_current_view_route = |owner: EntityId| {
             let Some(current_view) = current_view else {
                 return false;
             };
-            if owner == current_view {
-                return true;
-            }
-            if current_view_path
-                .as_ref()
-                .is_some_and(|path| path.contains(&owner))
-            {
-                return true;
-            }
-            self.rendered_frame
-                .dispatch_tree
-                .view_path(owner)
-                .contains(&current_view)
+            let tree = &self.rendered_frame.dispatch_tree;
+            owner == current_view
+                || tree.view_path_reversed(current_view).any(|id| id == owner)
+                || tree.view_path_reversed(owner).any(|id| id == current_view)
         };
         if targeted_replay
             && self
@@ -802,15 +756,13 @@ impl Window {
                 current == previous && plain_text_range_is_side_effect_free(retained)
             });
         let div_semantics_proven = self.retained_div_semantics_match(retained, layout_id);
-        let static_row_proven = retained_id.0.iter().any(|segment| {
-            matches!(segment, ElementId::NamedInteger(name, _)
-                if matches!(name.as_str(), "__gpui_retained_list_item" | "__gpui_retained_uniform_row"))
-        }) && retained.identity_stable
+        let static_subtree_proven = retained.identity_stable
             && retained.subtree_stable
             && div_semantics_proven
             && layout_fingerprint.is_some()
             && retained.layout_fingerprint == layout_fingerprint
-            && !retained_range_has_stateful_effects(retained);
+            && !retained_range_has_stateful_effects(retained)
+            && retained.prepaint_range.start.hitboxes_index == retained.prepaint_range.end.hitboxes_index;
 
         // ReconcileSubtree means descendants may have changed even when this element's own bounds
         // are stable. Replay is admitted only by two independent proofs: recursive layout identity
@@ -844,7 +796,7 @@ impl Window {
             {
                 return None;
             }
-        } else if !plain_text_proven && !static_row_proven {
+        } else if !plain_text_proven && !static_subtree_proven {
             return None;
         }
 
@@ -859,10 +811,14 @@ impl Window {
             return None;
         }
         let delta = bounds.origin - retained.bounds.origin;
-        if (delta != Point::default() || (!targeted_replay && !plain_text_proven))
-            && (!static_row_proven || !self.can_translate_static_range(retained, bounds, delta))
-        {
-            return None;
+        if delta != Point::default() {
+            let static_row_proven = static_subtree_proven && retained_id.0.iter().any(|segment| {
+                matches!(segment, ElementId::NamedInteger(name, _)
+                    if matches!(name.as_str(), "__gpui_retained_list_item" | "__gpui_retained_uniform_row"))
+            });
+            if !static_row_proven || !self.can_translate_static_range(retained, bounds, delta) {
+                return None;
+            }
         }
         Some((RetainedReplayRanges {
             prepaint_range: retained.prepaint_range.clone(),

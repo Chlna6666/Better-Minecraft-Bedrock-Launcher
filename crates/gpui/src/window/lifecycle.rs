@@ -751,6 +751,10 @@ impl WindowInvalidator {
         self.inner.borrow().active_targeted_replay
     }
 
+    pub(in crate::window) fn has_active_generic_dirty_views(&self) -> bool {
+        !self.inner.borrow().active_generic_dirty_views.is_empty()
+    }
+
     pub(in crate::window) fn active_generic_view_is_dirty(&self, entity: EntityId) -> bool {
         self.inner
             .borrow()

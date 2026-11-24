@@ -3817,3 +3817,53 @@ fn fixed_recipe_replays_without_materializing_the_element_tree(cx: &mut TestAppC
         assert_eq!(factories.get(), materialized + 1);
     }).unwrap();
 }
+
+struct ExplicitCachedTestView {
+    model: Entity<u32>,
+    renders: Rc<Cell<usize>>,
+}
+
+impl Render for ExplicitCachedTestView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get() + 1);
+        let value = *self.model.read(cx);
+        crate::div().w_full().h_full().child(format!("{value}"))
+    }
+}
+
+struct ExplicitCachedTestRoot {
+    child: Entity<ExplicitCachedTestView>,
+}
+
+impl Render for ExplicitCachedTestRoot {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        crate::div().child(self.child.clone().cached(
+            crate::StyleRefinement::default().w(px(100.)).h(px(30.)),
+        ))
+    }
+}
+
+#[gpui::test]
+fn explicit_cached_view_reuses_lifecycle_and_rebuilds_on_dependency_notify(cx: &mut TestAppContext) {
+    let renders = Rc::new(Cell::new(0));
+    let (model, root, window) = cx.update(|cx| {
+        let model = cx.new(|_| 1u32);
+        let child = cx.new(|_| ExplicitCachedTestView { model: model.clone(), renders: renders.clone() });
+        let window = cx.open_window(WindowOptions::default(), |_, cx| {
+            cx.new(|_| ExplicitCachedTestRoot { child: child.clone() })
+        }).unwrap();
+        let root = cx.read_window(&window, |root, _| root).unwrap();
+        (model, root, AnyWindowHandle::from(window))
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear();
+        let baseline = renders.get();
+        assert!(baseline > 0);
+        root.update(cx, |_, cx| cx.notify());
+        window.draw(cx).clear();
+        assert_eq!(renders.get(), baseline);
+        model.update(cx, |value, cx| { *value = 2; cx.notify(); });
+        window.draw(cx).clear();
+        assert_eq!(renders.get(), baseline + 1);
+    }).unwrap();
+}

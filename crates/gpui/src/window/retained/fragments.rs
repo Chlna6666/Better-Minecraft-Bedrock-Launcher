@@ -26,6 +26,9 @@ impl Window {
         let Some(view_id) = self.current_view_or_root() else {
             return false;
         };
+        if !self.invalidator.has_active_generic_dirty_views() {
+            return true;
+        }
         if self.invalidator.active_generic_view_is_dirty(view_id) {
             return false;
         }
