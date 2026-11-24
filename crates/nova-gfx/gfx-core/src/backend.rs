@@ -1229,6 +1229,15 @@ pub trait PresentationDevice {
         Err(Error::Unavailable("GPU indirect count is unsupported by this backend".into()))
     }
 
+    /// Counted draw with optional native draw-loop timing. Default backends
+    /// may execute without reporting a sample, never invent a CPU duration.
+    fn render_to_texture_counted_profiled(
+        &mut self, pass: &RenderPassCommands<'_>, counts: &[crate::IndirectCountBinding],
+        _tag: Option<GpuTimestampTag>,
+    ) -> Result<()> {
+        self.render_to_texture_counted(pass, counts)
+    }
+
     /// Records ordered offscreen render passes.
     ///
     /// The default submits each pass separately and returns `None`. Backends may batch the
@@ -1350,6 +1359,14 @@ pub trait OffscreenSubmissionDevice {
         Err(Error::Unavailable("counted offscreen graphics is unsupported".into()))
     }
 
+    /// Ordered counted pass with optional native timing.
+    fn submit_counted_offscreen_profiled(
+        &mut self, pass: &RenderPassCommands<'_>, counts: &[crate::IndirectCountBinding],
+        _tag: Option<GpuTimestampTag>,
+    ) -> Result<()> {
+        self.submit_counted_offscreen_pass(pass, counts)
+    }
+
     /// Hardware-supported independent native graphics-queue availability.
     fn supports_independent_offscreen_graphics(&self) -> bool;
 }
@@ -1383,6 +1400,13 @@ impl<T: PresentationDevice> OffscreenSubmissionDevice for T {
         &mut self, pass: &RenderPassCommands<'_>, counts: &[crate::IndirectCountBinding],
     ) -> Result<()> {
         PresentationDevice::render_to_texture_counted(self, pass, counts)
+    }
+
+    fn submit_counted_offscreen_profiled(
+        &mut self, pass: &RenderPassCommands<'_>, counts: &[crate::IndirectCountBinding],
+        tag: Option<GpuTimestampTag>,
+    ) -> Result<()> {
+        PresentationDevice::render_to_texture_counted_profiled(self, pass, counts, tag)
     }
 
     fn supports_independent_offscreen_graphics(&self) -> bool {

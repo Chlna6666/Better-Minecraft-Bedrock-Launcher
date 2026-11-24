@@ -4,7 +4,7 @@
 use gfx_core::*;
 use gpui::{ExtensionDevice, RendererExtensionContext};
 use crate::NativeOffscreenPass;
-use std::sync::Arc;
+use std::{sync::Arc, time::{Duration, Instant}};
 
 const MAX_RUN: usize = 256;
 const MIN_RUN: usize = 128;
@@ -88,6 +88,111 @@ struct Prepared {
 struct Cached {
     source: Arc<[RenderCommand]>,
     prepared: Option<Prepared>,
+    cost: CostModel,
+}
+
+const MIN_SAMPLES: u32 = 6;
+const PROBE_INTERVAL: u32 = 32;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Default)]
+struct Estimate {
+    ns: u64,
+    samples: u32,
+}
+impl Estimate {
+    fn observe(&mut self, ns: u64) {
+        self.ns = if self.samples == 0 { ns } else {
+            ((u128::from(self.ns) * 7 + u128::from(ns)) / 8) as u64
+        };
+        self.samples = self.samples.saturating_add(1);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Path { Original, Compact }
+
+struct Probe {
+    id: u64,
+    path: Path,
+    started: Instant,
+    compute: Option<u64>,
+    draw: Option<u64>,
+}
+
+#[derive(Default)]
+struct CostModel {
+    original: Estimate,
+    compact: Estimate,
+    preferred_compact: bool,
+    frames: u32,
+    pending: Option<Probe>,
+    missing: u8,
+}
+
+impl CostModel {
+    fn choose(&mut self, now: Instant) -> (Path, bool) {
+        if self.pending.as_ref().is_some_and(|p| now.saturating_duration_since(p.started) >= PROBE_TIMEOUT) {
+            self.pending = None;
+            self.missing = self.missing.saturating_add(1);
+            self.preferred_compact = false;
+        }
+        self.frames = self.frames.wrapping_add(1);
+        let trained = self.original.samples >= MIN_SAMPLES && self.compact.samples >= MIN_SAMPLES;
+        let preferred = if trained && self.preferred_compact && self.missing == 0 { Path::Compact } else { Path::Original };
+        if self.pending.is_some() { return (preferred, false); }
+        if self.missing >= 3 && !self.frames.is_multiple_of(PROBE_INTERVAL * 4) {
+            return (Path::Original, false);
+        }
+        if !trained {
+            // Alternate completed samples from the exact same immutable
+            // command snapshot; never compare different draw populations.
+            return (if self.original.samples <= self.compact.samples { Path::Original } else { Path::Compact }, true);
+        }
+        if self.frames.is_multiple_of(PROBE_INTERVAL) {
+            return (if preferred == Path::Original { Path::Compact } else { Path::Original }, true);
+        }
+        if self.frames % PROBE_INTERVAL == PROBE_INTERVAL / 2 {
+            return (preferred, true);
+        }
+        (preferred, false)
+    }
+
+    fn begin(&mut self, path: Path, now: Instant) -> u64 {
+        let id = crate::gpu_submission_trace::next_section_batch();
+        self.pending = Some(Probe { id, path, started: now, compute: None, draw: None });
+        id
+    }
+
+    fn observe(&mut self, sample: GpuTimestampSample) {
+        let Some(probe) = self.pending.as_mut() else { return; };
+        if probe.id != sample.tag.batch_id { return; }
+        let Some(duration) = sample.duration() else { return; };
+        let ns = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
+        if ns == 0 { return; }
+        match sample.tag.stage {
+            GpuTimestampStage::DrawIndirect => probe.draw = Some(ns),
+            GpuTimestampStage::DrawCompaction if probe.path == Path::Compact => probe.compute = Some(ns),
+            _ => return,
+        }
+        let Some(draw) = probe.draw else { return; };
+        match probe.path {
+            Path::Original => self.original.observe(draw),
+            Path::Compact => {
+                let Some(compute) = probe.compute else { return; };
+                self.compact.observe(draw.saturating_add(compute));
+            }
+        }
+        self.pending = None;
+        self.missing = 0;
+        if self.original.samples >= MIN_SAMPLES && self.compact.samples >= MIN_SAMPLES {
+            // Enter only with >=15% measured savings; exit below 5%.
+            // Hysteresis keeps a narrow/noisy advantage from oscillating.
+            let threshold = if self.preferred_compact { 95 } else { 85 };
+            self.preferred_compact = u128::from(self.compact.ns) * 100
+                < u128::from(self.original.ns) * threshold;
+        }
+    }
 }
 
 pub(super) struct Compactor {
@@ -102,6 +207,7 @@ impl Compactor {
         if context.backend_kind() != BackendKind::Vulkan
             || std::env::var_os("GPUI_3D_DRAW_COMPACTION").as_deref() != Some(std::ffi::OsStr::new("1"))
             || device.counted_offscreen_limit().is_none()
+            || !device.gpu_work_timestamps_supported()
         { return None; }
         let caps = device.compute_capabilities();
         if caps.max_invocations_per_workgroup < 64 || caps.max_workgroup_size[0] < 64
@@ -148,6 +254,10 @@ impl Compactor {
     }
 
     fn prepare(&mut self, device: &mut dyn ExtensionDevice, pass: &NativeOffscreenPass) -> Result<Option<Prepared>> {
+        // Vulkan's native DrawIndirect query currently measures indirect-only passes.
+        if !pass.commands.iter().all(|command| matches!(command, RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_))) {
+            return Ok(None);
+        }
         let Some(limit) = device.counted_offscreen_limit() else { return Ok(None); };
         let Some(plan) = plan(&pass.commands, limit) else { return Ok(None); };
         let group_count = u32::try_from(plan.runs.len()).map_err(|_| Error::InvalidInput("compaction group count overflow".into()))?;
@@ -206,20 +316,45 @@ impl Compactor {
             // have replaced scratch storage referenced by the previous plan.
             self.cached = None;
             let prepared = self.prepare(device, pass)?;
-            self.cached = Some(Cached { source: Arc::clone(&pass.commands), prepared });
+            self.cached = Some(Cached { source: Arc::clone(&pass.commands), prepared, cost: CostModel::default() });
         }
-        let Some(prepared) = self.cached.as_ref().and_then(|cached| cached.prepared.as_ref()) else {
+        let Some(cached) = self.cached.as_mut() else { return Ok(false); };
+        let Some(prepared) = cached.prepared.as_ref() else { return Ok(false); };
+        let now = Instant::now();
+        let (path, probe) = cached.cost.choose(now);
+        let id = probe.then(|| cached.cost.begin(path, now));
+        let draw_tag = id.map(|batch_id| GpuTimestampTag { batch_id, stage: GpuTimestampStage::DrawIndirect });
+        if path == Path::Original {
+            if let Some(tag) = draw_tag {
+                device.submit_counted_offscreen_profiled(&pass.commands(), &[], Some(tag))?;
+                return Ok(true);
+            }
             return Ok(false);
-        };
+        }
         // Culling, compaction and counted drawing share the ordered owner queue.
-        // The metadata is immutable until the next command snapshot.
-        device.dispatch_compute(&ComputeDispatch {
+        let dispatch = ComputeDispatch {
             shader: self.shader, bindings: &prepared.compute, workgroups: [prepared.groups, 1, 1],
-        })?;
+        };
+        if let Some(batch_id) = id {
+            device.dispatch_compute_batch_profiled(std::slice::from_ref(&dispatch),
+                GpuTimestampTag { batch_id, stage: GpuTimestampStage::DrawCompaction })?;
+        } else {
+            device.dispatch_compute(&dispatch)?;
+        }
         let mut native = pass.commands();
         native.commands = &prepared.commands;
-        device.submit_counted_offscreen_pass(&native, &prepared.counts)?;
+        device.submit_counted_offscreen_profiled(&native, &prepared.counts, draw_tag)?;
         Ok(true)
+    }
+
+    pub(super) fn observe(&mut self, sample: GpuTimestampSample) {
+        if let Some(cached) = self.cached.as_mut() {
+            cached.cost.observe(sample);
+        }
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        self.cached = None;
     }
 
     pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> Result<()> {
@@ -262,6 +397,30 @@ mod tests {
         assert_eq!(gathered.gather, (0..128).rev().collect::<Vec<u32>>());
         assert!(plan(&commands[..127], 256).is_none());
         assert!(plan(&commands, 64).is_none());
+    }
+
+    fn sample(id: u64, stage: GpuTimestampStage, ns: u64) -> GpuTimestampSample {
+        GpuTimestampSample { tag: GpuTimestampTag { batch_id: id, stage }, duration_ticks: ns, frequency_hz: 1_000_000_000 }
+    }
+
+    #[test]
+    fn cost_model_requires_both_native_stages_and_hysteresis() {
+        let mut model = CostModel::default();
+        let now = Instant::now();
+        for _ in 0..MIN_SAMPLES {
+            let id = model.begin(Path::Original, now);
+            model.observe(sample(id, GpuTimestampStage::DrawIndirect, 1000));
+            let id = model.begin(Path::Compact, now);
+            model.observe(sample(id, GpuTimestampStage::DrawIndirect, 600));
+            assert!(model.pending.is_some());
+            model.observe(sample(id, GpuTimestampStage::DrawCompaction, 100));
+        }
+        assert!(model.preferred_compact);
+        let id = model.begin(Path::Compact, now);
+        model.observe(sample(id + 1, GpuTimestampStage::DrawIndirect, 9999));
+        assert!(model.pending.as_ref().unwrap().draw.is_none());
+        model.choose(now + PROBE_TIMEOUT);
+        assert!(!model.preferred_compact);
     }
 
     #[test]

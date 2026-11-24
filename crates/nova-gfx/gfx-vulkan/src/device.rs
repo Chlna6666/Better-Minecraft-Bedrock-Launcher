@@ -5663,8 +5663,16 @@ impl PresentationDevice for VulkanDevice {
     fn render_to_texture_counted(
         &mut self, pass: &RenderPassCommands<'_>, counts: &[gfx_core::IndirectCountBinding],
     ) -> Result<()> {
+        self.render_to_texture_counted_profiled(pass, counts, None)
+    }
+
+    fn render_to_texture_counted_profiled(
+        &mut self, pass: &RenderPassCommands<'_>, counts: &[gfx_core::IndirectCountBinding],
+        tag: Option<gfx_core::GpuTimestampTag>,
+    ) -> Result<()> {
         if counts.is_empty() {
-            return self.render_to_texture(pass);
+            return self.record_texture_passes(std::slice::from_ref(pass),
+                Some(std::slice::from_ref(&tag)), false, &[]).map(|_| ());
         }
         let limit = self.indirect_draw_count_limit().ok_or_else(|| {
             Error::Unavailable("Vulkan drawIndirectCount is unavailable".into())
@@ -5689,7 +5697,8 @@ impl PresentationDevice for VulkanDevice {
             }
             count.validate_ranges(offset, args.desc.size, counter.desc.size, stride, limit)?;
         }
-        self.record_texture_passes(std::slice::from_ref(pass), None, false, counts).map(|_| ())
+        self.record_texture_passes(std::slice::from_ref(pass),
+            Some(std::slice::from_ref(&tag)), false, counts).map(|_| ())
     }
 
     fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {

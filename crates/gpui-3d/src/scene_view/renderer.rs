@@ -950,6 +950,7 @@ impl SidecarGpuBackend {
         }
         self.resources.replace_pipelines(device, context)?;
         self.command_cache.clear();
+        if let Some(compactor) = self.draw_compaction.as_mut() { compactor.invalidate(); }
         self.render_pass = context.render_pass();
         self.color_format = context.color_format();
         self.target_extent = next_target_extent;
@@ -1018,6 +1019,9 @@ impl SidecarGpuBackend {
         device: &mut dyn ExtensionDevice,
         ids: Vec<SceneViewId>,
     ) -> gpui::Result<()> {
+        if !ids.is_empty() {
+            if let Some(compactor) = self.draw_compaction.as_mut() { compactor.invalidate(); }
+        }
         for id in ids {
             self.command_cache.remove(&id);
             self.captured_inputs.remove(&id);
@@ -1726,6 +1730,9 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 let mut feedback = self.queue_feedback.borrow_mut();
                 for &sample in &self.gpu_timestamp_scratch {
                     feedback.observe_gpu_sample(sample);
+                    if let Some(compactor) = self.draw_compaction.as_mut() {
+                        compactor.observe(sample);
+                    }
                 }
             }
             if crate::gpu_submission_trace::enabled() {

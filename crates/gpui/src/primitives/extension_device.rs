@@ -54,6 +54,14 @@ pub trait ExtensionDevice {
         Err(gfx_core::Error::Unavailable("counted offscreen graphics is unsupported".into()))
     }
 
+    /// Ordered counted pass with optional native hardware draw-loop timing.
+    fn submit_counted_offscreen_profiled(
+        &mut self, pass: &gfx_core::RenderPassCommands<'_>,
+        counts: &[gfx_core::IndirectCountBinding], _tag: Option<GpuTimestampTag>,
+    ) -> Result<()> {
+        self.submit_counted_offscreen_pass(pass, counts)
+    }
+
     /// Generic native queue lookup, with no GPUI-specific scheduling policy.
     /// A physical queue handle alone does not guarantee that the backend can
     /// submit the requested command type or transition its resources safely.
@@ -436,6 +444,13 @@ where
         counts: &[gfx_core::IndirectCountBinding],
     ) -> Result<()> {
         OffscreenSubmissionDevice::submit_counted_offscreen_pass(self, pass, counts)
+    }
+
+    fn submit_counted_offscreen_profiled(
+        &mut self, pass: &gfx_core::RenderPassCommands<'_>,
+        counts: &[gfx_core::IndirectCountBinding], tag: Option<GpuTimestampTag>,
+    ) -> Result<()> {
+        OffscreenSubmissionDevice::submit_counted_offscreen_profiled(self, pass, counts, tag)
     }
 
     fn independent_graphics_queue_available(&self) -> bool {
