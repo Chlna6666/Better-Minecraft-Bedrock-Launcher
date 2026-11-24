@@ -72,6 +72,7 @@ impl OpenGlDevice {
 #[derive(Default)]
 pub(crate) struct IndexRebase {
     program: Option<glow::NativeProgram>,
+    uniforms: [Option<glow::NativeUniformLocation>; 4],
     scratch: Option<(glow::NativeBuffer, i32)>,
 }
 
@@ -102,6 +103,11 @@ impl IndexRebase {
                     gl.delete_program(program);
                     return Err(native(error));
                 }
+                self.uniforms = ["source_word", "records", "index_base", "available"].map(|name| gl.get_uniform_location(program, name));
+                if self.uniforms.iter().any(Option::is_none) {
+                    gl.delete_program(program);
+                    return Err(Error::Backend("OpenGL index rebase uniform unavailable".into()));
+                }
                 self.program = Some(program);
                 program
             };
@@ -110,9 +116,19 @@ impl IndexRebase {
                 _ => {
                     let buffer = gl.create_buffer().map_err(native)?;
                     gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer));
-                    gl.buffer_data_size(glow::COPY_WRITE_BUFFER, plan.output_size, glow::DYNAMIC_COPY);
+                    // Geometric capacity avoids reallocating for every new
+                    // high-water mark; the bound SSBO range remains exact.
+                    let capacity = u32::try_from(plan.output_size).unwrap_or(0)
+                        .checked_next_power_of_two().and_then(|size| i32::try_from(size).ok())
+                        .unwrap_or(plan.output_size);
+                    gl.buffer_data_size(glow::COPY_WRITE_BUFFER, capacity, glow::DYNAMIC_COPY);
                     gl.bind_buffer(glow::COPY_WRITE_BUFFER, None);
-                    if let Some((old, _)) = self.scratch.replace((buffer, plan.output_size)) {
+                    let error = gl.get_error();
+                    if error != glow::NO_ERROR {
+                        gl.delete_buffer(buffer);
+                        return Err(native(format!("index rebase scratch allocation error 0x{error:x}")));
+                    }
+                    if let Some((old, _)) = self.scratch.replace((buffer, capacity)) {
                         // GL retains storage referenced by earlier commands.
                         gl.delete_buffer(old);
                     }
@@ -124,9 +140,10 @@ impl IndexRebase {
             gl.use_program(Some(program));
             gl.bind_buffer_range(glow::SHADER_STORAGE_BUFFER, 0, Some(source), plan.source_offset, plan.source_size);
             gl.bind_buffer_range(glow::SHADER_STORAGE_BUFFER, 1, Some(scratch), 0, plan.output_size);
-            for (name, value) in [("source_word", plan.source_word), ("records", plan.records),
-                ("index_base", plan.index_base), ("available", plan.available)] {
-                gl.uniform_1_u32(gl.get_uniform_location(program, name).as_ref(), value);
+            for (location, value) in self.uniforms.iter().zip([
+                plan.source_word, plan.records, plan.index_base, plan.available,
+            ]) {
+                gl.uniform_1_u32(location.as_ref(), value);
             }
             gl.dispatch_compute(plan.records.div_ceil(64), 1, 1);
             gl.memory_barrier(glow::COMMAND_BARRIER_BIT | glow::SHADER_STORAGE_BARRIER_BIT);
