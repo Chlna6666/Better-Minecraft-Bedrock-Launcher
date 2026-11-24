@@ -332,6 +332,11 @@ impl NovaBackend {
             Self::Dx11(device) => Ok(device.set_frame_latency_limit(_swapchain, _limit)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => Ok(device.set_frame_latency_limit(_swapchain, _limit)?),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(device) => Ok(device.set_frame_latency_limit(_swapchain, _limit)?),
             #[allow(unreachable_patterns)]
             _ => Ok(None),
         }

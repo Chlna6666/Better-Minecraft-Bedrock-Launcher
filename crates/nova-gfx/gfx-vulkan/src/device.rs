@@ -2689,6 +2689,8 @@ impl VulkanDevice {
             timeline_value: self.primary_timeline.as_ref().map(|timeline| timeline.last()),
         });
         encoder_resource.frame_submission = Some(submission);
+        self.swapchains.get_mut(swapchain_id)?.frame_submissions[present_frame.frame_index] =
+            Some(submission);
         self.deferred_destroys
             .retire(0, DeferredResource::CommandEncoder(encoder_resource));
         let present_started = Instant::now();
@@ -3099,6 +3101,11 @@ impl VulkanDevice {
     pub fn reserve_present_frame(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
         if self.swapchains.get(id)?.reserved_frame.is_some() {
             return Ok(true);
+        }
+        // Enforce the current native WSI credit even when callers bypass
+        // the renderer's earlier readiness probe.
+        if !PresentationDevice::poll_present_readiness(self, id)? {
+            return Ok(false);
         }
         let Some(frame) = self.acquire_present_frame(id, true)? else {
             return Ok(false);
@@ -3801,6 +3808,7 @@ impl VulkanDevice {
             framebuffers,
             image_available_semaphores,
             render_finished_semaphores,
+            frame_submissions: vec![None; in_flight_fences.len()],
             in_flight_fences,
             presentation: presentation::Retirement::default(),
             next_present_id: 1,
@@ -5395,6 +5403,48 @@ impl PresentationDevice for VulkanDevice {
         })
     }
 
+    fn set_frame_latency_limit(
+        &mut self, id: gfx_core::SwapchainId, requested: u32,
+    ) -> Result<Option<u32>> {
+        let chain = self.swapchains.get_mut(id)?;
+        let maximum = chain.in_flight_fences.len().max(1);
+        let Some(credit) = chain.present_credit.as_mut() else {
+            return Ok(None);
+        };
+        let limit = (requested as usize).clamp(1, maximum);
+        credit.set_limit(limit);
+        Ok(Some(limit as u32))
+    }
+
+    fn request_frame_ready(
+        &mut self, id: gfx_core::SwapchainId, callback: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<bool> {
+        // A blocked GPU slot has a stable logical submission; a WSI
+        // display credit alone does not. Never wait on a reusable WSI fence
+        // from a second thread, and never equate GPU completion with scanout.
+        if PresentationDevice::poll_present_readiness(self, id)? {
+            callback();
+            return Ok(true);
+        }
+        let chain = self.swapchains.get(id)?;
+        if chain.extent.width == 0 || chain.extent.height == 0 {
+            return Ok(false);
+        }
+        let slot = chain.frame_index;
+        let fence = chain.in_flight_fences[slot];
+        // SAFETY: swapchain owns this fence and this call does not reset it.
+        if unsafe { self.device.get_fence_status(fence) }.map_err(VulkanError::from)? {
+            // Only the presentation engine is backpressured. The display
+            // clock or bounded owner retry remains responsible for this case.
+            return Ok(false);
+        }
+        let Some(submission) = chain.frame_submissions[slot] else { return Ok(false); };
+        if self.submissions.get(submission).is_err() {
+            return Ok(false);
+        }
+        SubmissionDevice::request_submission_ready(self, submission, callback)
+    }
+
     fn poll_present_readiness(&mut self, id: gfx_core::SwapchainId) -> Result<bool> {
         let chain = self.swapchains.get(id)?;
         if chain.extent.width == 0 || chain.extent.height == 0 {
@@ -6307,6 +6357,7 @@ struct VulkanSurface {
 struct PresentCredit {
     next: u64,
     limit: usize,
+    history_capacity: usize,
     pending: std::collections::VecDeque<u64>,
     timeout_since: Option<Instant>,
 }
@@ -6316,6 +6367,7 @@ impl PresentCredit {
         Self {
             next: 1,
             limit: limit.max(1),
+            history_capacity: limit.max(1),
             pending: std::collections::VecDeque::with_capacity(limit.max(1)),
             timeout_since: None,
         }
@@ -6327,17 +6379,28 @@ impl PresentCredit {
         id
     }
 
+    fn set_limit(&mut self, limit: usize) {
+        // Reducing latency never fabricates completion or drops the already
+        // submitted credits. Drain them through native present feedback.
+        self.limit = limit.max(1);
+        self.timeout_since = None;
+    }
+
     fn submitted(&mut self, id: u64) {
-        // Direct gfx users can submit without GPUI's preflight; retain only
-        // the newest latency window rather than growing a history forever.
-        if self.pending.len() >= self.limit {
+        // A direct gfx client may bypass preflight. Keep a bounded history
+        // at the configured physical capacity, not the adaptive limit.
+        // Waiting for a later ID also proves every earlier presentation.
+        if self.pending.len() >= self.history_capacity {
             self.pending.pop_front();
         }
         self.pending.push_back(id);
     }
 
     fn wait_target(&self) -> Option<u64> {
-        (self.pending.len() >= self.limit).then(|| self.pending.front().copied()).flatten()
+        // If the limit was reduced with multiple outstanding presents,
+        // wait for enough of them to restore a real admission credit.
+        self.pending.len().checked_sub(self.limit)
+            .and_then(|index| self.pending.get(index).copied())
     }
 
     fn stalled(&mut self, now: Instant) -> bool {
@@ -6368,6 +6431,25 @@ mod present_credit_tests {
         assert!(credit.stalled(now + Duration::from_millis(250)));
         credit.completed(id);
         assert!(!credit.stalled(now + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn shrinking_present_limit_preserves_outstanding_native_credits() {
+        let mut credit = PresentCredit::new(2);
+        let first = credit.next_id();
+        credit.submitted(first);
+        let second = credit.next_id();
+        credit.submitted(second);
+        credit.set_limit(1);
+        assert_eq!(credit.wait_target(), Some(second));
+        credit.completed(first);
+        assert_eq!(credit.wait_target(), Some(second));
+        credit.completed(second);
+        assert_eq!(credit.wait_target(), None);
+        credit.set_limit(2);
+        let third = credit.next_id();
+        credit.submitted(third);
+        assert_eq!(credit.wait_target(), None);
     }
 
     #[test]
@@ -6410,6 +6492,8 @@ struct VulkanSwapchain {
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
+    // Logical completion identity of the last GPU reader of each slot.
+    frame_submissions: Vec<Option<SubmissionId>>,
     frame_index: usize,
     reserved_frame: Option<VulkanPresentFrame>,
     acquire_fence: vk::Fence,
