@@ -293,20 +293,18 @@ impl VulkanDevice {
             );
             // A later copy in this command buffer may read the buffer this one wrote;
             // transfer blocks are not ordered without an explicit memory barrier.
-            let barrier = vk::MemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE);
+            let barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags2::TRANSFER_READ | vk::AccessFlags2::TRANSFER_WRITE);
             // SAFETY: Recording on the owning queue; the barrier only orders transfer writes.
             unsafe {
-                self.device.cmd_pipeline_barrier(
-                    commands,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::DependencyFlags::empty(),
-                    &[barrier],
-                    &[],
-                    &[],
-                );
+                self.device.cmd_pipeline_barrier2(
+                commands,
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[barrier]).buffer_memory_barriers(&[]).image_memory_barriers(&[]),
+            );
             }
             layouts.insert(copy.texture, final_layout);
         }

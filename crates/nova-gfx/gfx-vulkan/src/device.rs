@@ -4181,20 +4181,18 @@ impl VulkanDevice {
                 .iter()
                 .any(|previous| texture_uploads_overlap(previous, upload))
             {
-                let barrier = vk::MemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+                let barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                    .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE);
                 // SAFETY: Recording on the owning queue. Order overlapping copies without a host wait.
                 unsafe {
-                    self.device.cmd_pipeline_barrier(
-                        command_buffer,
-                        vk::PipelineStageFlags::TRANSFER,
-                        vk::PipelineStageFlags::TRANSFER,
-                        vk::DependencyFlags::empty(),
-                        &[barrier],
-                        &[],
-                        &[],
-                    );
+                    self.device.cmd_pipeline_barrier2(
+                command_buffer,
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[barrier]).buffer_memory_barriers(&[]).image_memory_barriers(&[]),
+            );
                 }
                 synchronized = index;
             }
@@ -7145,11 +7143,11 @@ fn create_native_render_pass(
         | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
         | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS;
     let source_access_mask =
-        vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
-    let destination_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_READ
-        | vk::AccessFlags::COLOR_ATTACHMENT_WRITE
-        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+        vk::AccessFlags2::COLOR_ATTACHMENT_WRITE | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+    let destination_access_mask = vk::AccessFlags2::COLOR_ATTACHMENT_READ
+        | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+        | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+        | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
     let dependency = vk::SubpassDependency::default()
         .src_subpass(vk::SUBPASS_EXTERNAL)
         .dst_subpass(0)
@@ -7877,22 +7875,20 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         // across independently recorded command buffers submitted to the same
         // graphics queue. Existing image-layout barriers still handle RAW
         // render-target -> sampled-image transitions separately.
-        let barrier = vk::MemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+        let barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
             .dst_access_mask(
-                vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
             );
         // SAFETY: Command buffer recording is active; the target image and
         // previous writer belong to this same ordered queue submission.
         unsafe {
-            info.device.cmd_pipeline_barrier(
+            info.device.cmd_pipeline_barrier2(
                 info.command_buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[barrier],
-                &[],
-                &[],
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[barrier]).buffer_memory_barriers(&[]).image_memory_barriers(&[]),
             );
         }
     }
@@ -8298,124 +8294,124 @@ fn transition_image_layout_levels(
     aspect: vk::ImageAspectFlags,
 ) {
     let color_attachment_access =
-        vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
+        vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
     let (source_stage, destination_stage, source_access_mask, destination_access_mask) =
         match (old_layout, new_layout) {
             (vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL) => (
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                vk::AccessFlags::empty(),
-                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                    | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
             ),
             (
                 vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             ) => (
-                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                vk::AccessFlags2::SHADER_READ,
             ),
             (
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             ) => (
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                vk::AccessFlags::SHADER_READ,
-                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                vk::AccessFlags2::SHADER_READ,
+                vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                    | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
             ),
             (
                 vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
             ) => (
-                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                vk::AccessFlags::TRANSFER_READ,
+                vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                vk::AccessFlags2::TRANSFER_READ,
             ),
             (
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             ) => (
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                vk::AccessFlags::TRANSFER_READ,
-                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                vk::AccessFlags2::TRANSFER_READ,
+                vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                    | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
             ),
             (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::AccessFlags::empty(),
-                vk::AccessFlags::TRANSFER_WRITE,
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::TRANSFER_WRITE,
             ),
             (vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::AccessFlags::SHADER_READ,
-                vk::AccessFlags::TRANSFER_WRITE,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::AccessFlags2::SHADER_READ,
+                vk::AccessFlags2::TRANSFER_WRITE,
             ),
             (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::AccessFlags::TRANSFER_WRITE,
-                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::AccessFlags2::TRANSFER_WRITE,
+                vk::AccessFlags2::SHADER_READ,
             ),
             (vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL) => (
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::AccessFlags::SHADER_READ,
-                vk::AccessFlags::TRANSFER_READ,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::AccessFlags2::SHADER_READ,
+                vk::AccessFlags2::TRANSFER_READ,
             ),
             (vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::AccessFlags::TRANSFER_READ,
-                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::AccessFlags2::TRANSFER_READ,
+                vk::AccessFlags2::SHADER_READ,
             ),
             (vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL) => (
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags2::TRANSFER,
                 color_attachment_access,
-                vk::AccessFlags::TRANSFER_READ,
+                vk::AccessFlags2::TRANSFER_READ,
             ),
             (vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL) => (
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::AccessFlags::TRANSFER_READ,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags2::TRANSFER_READ,
                 color_attachment_access,
             ),
             (vk::ImageLayout::UNDEFINED, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL) => (
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::AccessFlags::empty(),
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags2::empty(),
                 color_attachment_access,
             ),
             (
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             ) => (
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags2::SHADER_READ,
                 color_attachment_access,
             ),
             (
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             ) => (
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
                 color_attachment_access,
-                vk::AccessFlags::SHADER_READ,
+                vk::AccessFlags2::SHADER_READ,
             ),
             // Storage images may stay in GENERAL between compute dispatches.
             // Transfers, attachments and future sampled consumers must observe
@@ -8423,24 +8419,28 @@ fn transition_image_layout_levels(
             // empty access masks, this fallback establishes a real dependency
             // for uncommon layout pairs without involving the CPU.
             _ if old_layout == vk::ImageLayout::UNDEFINED => (
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::AccessFlags::empty(),
-                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
             ),
             _ => (
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
-                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
+                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
             ),
         };
-    let barrier = vk::ImageMemoryBarrier::default()
+    let barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(source_stage)
+                .dst_stage_mask(destination_stage)
         .old_layout(old_layout)
         .new_layout(new_layout)
         .src_access_mask(source_access_mask)
         .dst_access_mask(destination_access_mask)
         .image(image)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .subresource_range(
             vk::ImageSubresourceRange::default()
                 .aspect_mask(aspect)
@@ -8451,15 +8451,11 @@ fn transition_image_layout_levels(
         );
     // SAFETY: Command buffer is recording and image barrier targets the whole image subresource.
     unsafe {
-        device.cmd_pipeline_barrier(
-            command_buffer,
-            source_stage,
-            destination_stage,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier],
-        );
+        device.cmd_pipeline_barrier2(
+                command_buffer,
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[]).buffer_memory_barriers(&[]).image_memory_barriers(&[barrier]),
+            );
     }
 }
 

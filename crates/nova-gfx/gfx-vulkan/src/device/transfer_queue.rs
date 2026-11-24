@@ -80,14 +80,16 @@ impl VulkanDevice {
                 .flat_map(|(source, destination, _, _, _)| [*source, *destination])
                 .filter(|buffer| unique.insert(*buffer))
                 .map(|buffer| {
-                    vk::BufferMemoryBarrier::default()
+                    vk::BufferMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS | vk::PipelineStageFlags2::HOST)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
                         .src_access_mask(
-                            vk::AccessFlags::MEMORY_READ
-                                | vk::AccessFlags::MEMORY_WRITE
-                                | vk::AccessFlags::HOST_WRITE,
+                            vk::AccessFlags2::MEMORY_READ
+                                | vk::AccessFlags2::MEMORY_WRITE
+                                | vk::AccessFlags2::HOST_WRITE,
                         )
                         .dst_access_mask(
-                            vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
+                            vk::AccessFlags2::TRANSFER_READ | vk::AccessFlags2::TRANSFER_WRITE,
                         )
                         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -100,36 +102,30 @@ impl VulkanDevice {
             // native GPU semaphore join establishes queue-to-queue execution
             // order; barriers make prior writes available to transfer.
             unsafe {
-                self.device.cmd_pipeline_barrier(
-                    command,
-                    vk::PipelineStageFlags::ALL_COMMANDS | vk::PipelineStageFlags::HOST,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &before,
-                    &[],
-                );
+                self.device.cmd_pipeline_barrier2(
+                command,
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[]).buffer_memory_barriers(&before).image_memory_barriers(&[]),
+            );
             }
             let mut written = std::collections::HashSet::new();
             for (source, destination, source_id, destination_id, region) in &validated {
                 if written.contains(source_id) || written.contains(destination_id) {
-                    let dependency = vk::MemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    let dependency = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
                         .dst_access_mask(
-                            vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
+                            vk::AccessFlags2::TRANSFER_READ | vk::AccessFlags2::TRANSFER_WRITE,
                         );
                     // SAFETY: Two dependent Copy commands in one command
                     // buffer need an explicit Transfer->Transfer dependency.
                     unsafe {
-                        self.device.cmd_pipeline_barrier(
-                            command,
-                            vk::PipelineStageFlags::TRANSFER,
-                            vk::PipelineStageFlags::TRANSFER,
-                            vk::DependencyFlags::empty(),
-                            &[dependency],
-                            &[],
-                            &[],
-                        );
+                        self.device.cmd_pipeline_barrier2(
+                command,
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[dependency]).buffer_memory_barriers(&[]).image_memory_barriers(&[]),
+            );
                     }
                 }
                 // SAFETY: Both native handles and non-overlapping regions have
@@ -141,21 +137,19 @@ impl VulkanDevice {
                 }
                 written.insert(*destination_id);
             }
-            let after = vk::MemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE);
+            let after = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE);
             // SAFETY: Copies finish before subsequent Graphics/Compute
             // consumers on either graphics-family queue.
             unsafe {
-                self.device.cmd_pipeline_barrier(
-                    command,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::ALL_COMMANDS,
-                    vk::DependencyFlags::empty(),
-                    &[after],
-                    &[],
-                    &[],
-                );
+                self.device.cmd_pipeline_barrier2(
+                command,
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[after]).buffer_memory_barriers(&[]).image_memory_barriers(&[]),
+            );
                 self.device
                     .end_command_buffer(command)
                     .map_err(VulkanError::from)?;

@@ -234,7 +234,9 @@ impl VulkanDevice {
                     .base_array_layer(0)
                     .layer_count(texture.desc.dimension.layers());
                 pre_images.push(
-                    vk::ImageMemoryBarrier::default()
+                    vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS | vk::PipelineStageFlags2::HOST)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                         .old_layout(texture.layout)
@@ -242,16 +244,16 @@ impl VulkanDevice {
                         .image(texture.image)
                         .subresource_range(range)
                         .src_access_mask(if texture.layout == vk::ImageLayout::UNDEFINED {
-                            vk::AccessFlags::empty()
+                            vk::AccessFlags2::empty()
                         } else {
-                            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE
+                            vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE
                         })
                         .dst_access_mask(
-                            vk::AccessFlags::SHADER_READ
+                            vk::AccessFlags2::SHADER_READ
                                 | if writable {
-                                    vk::AccessFlags::SHADER_WRITE
+                                    vk::AccessFlags2::SHADER_WRITE
                                 } else {
-                                    vk::AccessFlags::empty()
+                                    vk::AccessFlags2::empty()
                                 },
                         ),
                 );
@@ -262,7 +264,9 @@ impl VulkanDevice {
                 // read-only layout required by their sampled descriptors.
                 if writable && texture.desc.usage.contains(TextureUsage::SAMPLED) {
                     post_images.push(
-                        vk::ImageMemoryBarrier::default()
+                        vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
                             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                             .old_layout(vk::ImageLayout::GENERAL)
@@ -270,27 +274,25 @@ impl VulkanDevice {
                             .image(texture.image)
                             .subresource_range(range)
                             .src_access_mask(
-                                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                                vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE,
                             )
-                            .dst_access_mask(vk::AccessFlags::SHADER_READ),
+                            .dst_access_mask(vk::AccessFlags2::SHADER_READ),
                     );
                 }
             }
-            let before = vk::MemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE);
+            let before = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS | vk::PipelineStageFlags2::HOST)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE);
             // All dependencies remain GPU-side. Do not wait for the CPU to
             // observe completion between Compute and subsequent DrawIndirect.
             unsafe {
-                self.device.cmd_pipeline_barrier(
-                    command,
-                    vk::PipelineStageFlags::ALL_COMMANDS | vk::PipelineStageFlags::HOST,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[before],
-                    &[],
-                    &pre_images,
-                );
+                self.device.cmd_pipeline_barrier2(
+                command,
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[before]).buffer_memory_barriers(&[]).image_memory_barriers(&pre_images),
+            );
                 self.device.cmd_bind_pipeline(
                     command,
                     vk::PipelineBindPoint::COMPUTE,
@@ -327,25 +329,23 @@ impl VulkanDevice {
                     );
                 }
                 if writes_storage || !post_images.is_empty() {
-                    let after = vk::MemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                    let after = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                        .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
                         .dst_access_mask(
-                            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                            vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
                         );
                     let memory = if writes_storage {
                         std::slice::from_ref(&after)
                     } else {
                         &[]
                     };
-                    self.device.cmd_pipeline_barrier(
-                        command,
-                        vk::PipelineStageFlags::COMPUTE_SHADER,
-                        vk::PipelineStageFlags::ALL_COMMANDS,
-                        vk::DependencyFlags::empty(),
-                        memory,
-                        &[],
-                        &post_images,
-                    );
+                    self.device.cmd_pipeline_barrier2(
+                command,
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(memory).buffer_memory_barriers(&[]).image_memory_barriers(&post_images),
+            );
                 }
                 self.device
                     .end_command_buffer(command)
@@ -593,16 +593,16 @@ impl VulkanDevice {
                     for binding in dispatch.bindings {
                         let buffer = self.buffers.get(binding.buffer.buffer)?;
                         let read = if binding.access == ComputeBufferAccess::Uniform {
-                            vk::AccessFlags::UNIFORM_READ
+                            vk::AccessFlags2::UNIFORM_READ
                         } else {
-                            vk::AccessFlags::SHADER_READ
+                            vk::AccessFlags2::SHADER_READ
                         };
                         let write = if binding.access == ComputeBufferAccess::ReadWrite {
-                            vk::AccessFlags::SHADER_WRITE
+                            vk::AccessFlags2::SHADER_WRITE
                         } else {
-                            vk::AccessFlags::empty()
+                            vk::AccessFlags2::empty()
                         };
-                        let barrier = vk::BufferMemoryBarrier::default()
+                        let barrier = vk::BufferMemoryBarrier2::default()
                             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                             .buffer(buffer.buffer)
@@ -610,33 +610,33 @@ impl VulkanDevice {
                             .size(binding.buffer.size);
                         before.push(
                             barrier
+                                .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS | vk::PipelineStageFlags2::HOST)
+                                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                                 .src_access_mask(
-                                    vk::AccessFlags::MEMORY_READ
-                                        | vk::AccessFlags::MEMORY_WRITE
-                                        | vk::AccessFlags::HOST_WRITE,
+                                    vk::AccessFlags2::MEMORY_READ
+                                        | vk::AccessFlags2::MEMORY_WRITE
+                                        | vk::AccessFlags2::HOST_WRITE,
                                 )
                                 .dst_access_mask(read | write),
                         );
                         if binding.access == ComputeBufferAccess::ReadWrite {
                             after.push(
                                 barrier
-                                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                                    .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                                    .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
                                     .dst_access_mask(
-                                        vk::AccessFlags::MEMORY_READ
-                                            | vk::AccessFlags::MEMORY_WRITE,
+                                        vk::AccessFlags2::MEMORY_READ
+                                            | vk::AccessFlags2::MEMORY_WRITE,
                                     ),
                             );
                         }
                     }
-                    self.device.cmd_pipeline_barrier(
-                        command,
-                        vk::PipelineStageFlags::ALL_COMMANDS | vk::PipelineStageFlags::HOST,
-                        vk::PipelineStageFlags::COMPUTE_SHADER,
-                        vk::DependencyFlags::empty(),
-                        &[],
-                        &before,
-                        &[],
-                    );
+                    self.device.cmd_pipeline_barrier2(
+                command,
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[]).buffer_memory_barriers(&before).image_memory_barriers(&[]),
+            );
                     self.device.cmd_bind_pipeline(
                         command,
                         vk::PipelineBindPoint::COMPUTE,
@@ -661,15 +661,11 @@ impl VulkanDevice {
                     // empty ALL_COMMANDS execution dependency on the hot
                     // GPU meshing / culling batch path.
                     if !after.is_empty() {
-                        self.device.cmd_pipeline_barrier(
-                            command,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::PipelineStageFlags::ALL_COMMANDS,
-                            vk::DependencyFlags::empty(),
-                            &[],
-                            &after,
-                            &[],
-                        );
+                        self.device.cmd_pipeline_barrier2(
+                command,
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[]).buffer_memory_barriers(&after).image_memory_barriers(&[]),
+            );
                     }
                 }
                 if let Some(query) = query {

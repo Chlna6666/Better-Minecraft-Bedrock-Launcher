@@ -188,20 +188,18 @@ impl VulkanDevice {
             destroy_upload_commands(&self.device, &upload);
             return Err(error);
         }
-        let barrier = vk::MemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::MEMORY_WRITE | vk::AccessFlags::HOST_WRITE)
-            .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+        let barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS | vk::PipelineStageFlags2::HOST)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::HOST_WRITE)
+            .dst_access_mask(vk::AccessFlags2::TRANSFER_READ);
         // SAFETY: Previous submissions are complete, coherent mapped host writes are published,
         // and recording is exclusive to the owner. Every native buffer includes transfer usage.
         unsafe {
-            self.device.cmd_pipeline_barrier(
+            self.device.cmd_pipeline_barrier2(
                 commands,
-                vk::PipelineStageFlags::ALL_COMMANDS | vk::PipelineStageFlags::HOST,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[barrier],
-                &[],
-                &[],
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[barrier]).buffer_memory_barriers(&[]).image_memory_barriers(&[]),
             );
         }
         for (id, destination) in &replacement.buffers {
@@ -215,22 +213,20 @@ impl VulkanDevice {
         for (id, destination) in &replacement.textures {
             self.record_heap_image_copy(commands, self.textures.get(*id)?, destination);
         }
-        let barrier = vk::MemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        let barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS | vk::PipelineStageFlags2::HOST)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
             .dst_access_mask(
-                vk::AccessFlags::MEMORY_READ
-                    | vk::AccessFlags::MEMORY_WRITE
-                    | vk::AccessFlags::HOST_READ,
+                vk::AccessFlags2::MEMORY_READ
+                    | vk::AccessFlags2::MEMORY_WRITE
+                    | vk::AccessFlags2::HOST_READ,
             );
         unsafe {
-            self.device.cmd_pipeline_barrier(
+            self.device.cmd_pipeline_barrier2(
                 commands,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::ALL_COMMANDS | vk::PipelineStageFlags::HOST,
-                vk::DependencyFlags::empty(),
-                &[barrier],
-                &[],
-                &[],
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[barrier]).buffer_memory_barriers(&[]).image_memory_barriers(&[]),
             );
         }
         let fence = match end_submit_deferred(&self.device, self.graphics_queue, commands) {
@@ -375,29 +371,27 @@ fn heap_image_barrier(
         .aspect_mask(image_aspect_from_format(texture.desc.format))
         .level_count(texture.desc.mip_level_count)
         .layer_count(texture.desc.dimension.layers());
-    let barrier = vk::ImageMemoryBarrier::default()
+    let barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
         .image(texture.image)
         .old_layout(old)
         .new_layout(new)
         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .src_access_mask(if old == vk::ImageLayout::UNDEFINED {
-            vk::AccessFlags::empty()
+            vk::AccessFlags2::empty()
         } else {
-            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE
+            vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE
         })
-        .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
+        .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
         .subresource_range(range);
     // SAFETY: Owner-maintenance commands reference live images, preserving format aspect and mips.
     unsafe {
-        device.cmd_pipeline_barrier(
-            commands,
-            vk::PipelineStageFlags::ALL_COMMANDS,
-            vk::PipelineStageFlags::ALL_COMMANDS,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier],
-        );
+        device.cmd_pipeline_barrier2(
+                commands,
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[]).buffer_memory_barriers(&[]).image_memory_barriers(&[barrier]),
+            );
     }
 }

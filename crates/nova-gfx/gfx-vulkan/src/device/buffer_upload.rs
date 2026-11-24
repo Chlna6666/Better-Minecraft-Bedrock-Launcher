@@ -136,9 +136,11 @@ impl VulkanDevice {
             .iter()
             .filter(|copy| unique.insert(copy.destination))
             .map(|copy| {
-                vk::BufferMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                vk::BufferMemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                    .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+                    .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
                     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .buffer(copy.destination)
@@ -148,14 +150,10 @@ impl VulkanDevice {
             .collect::<Vec<_>>();
         // SAFETY: destinations are live buffers on this same ordered graphics queue.
         unsafe {
-            self.device.cmd_pipeline_barrier(
+            self.device.cmd_pipeline_barrier2(
                 commands.command_buffer,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &destinations,
-                &[],
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[]).buffer_memory_barriers(&destinations).image_memory_barriers(&[]),
             );
         }
         let mut synchronized = 0;
@@ -170,20 +168,18 @@ impl VulkanDevice {
                 .iter()
                 .any(|previous| writes_overlap(&previous.write, write))
             {
-                let barrier = vk::MemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+                let barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                    .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE);
                 // SAFETY: The list is recording; order overlapping destinations in caller order.
                 unsafe {
-                    self.device.cmd_pipeline_barrier(
-                        commands.command_buffer,
-                        vk::PipelineStageFlags::TRANSFER,
-                        vk::PipelineStageFlags::TRANSFER,
-                        vk::DependencyFlags::empty(),
-                        &[barrier],
-                        &[],
-                        &[],
-                    );
+                    self.device.cmd_pipeline_barrier2(
+                commands.command_buffer,
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[barrier]).buffer_memory_barriers(&[]).image_memory_barriers(&[]),
+            );
                 }
                 synchronized = index;
             }
@@ -201,19 +197,17 @@ impl VulkanDevice {
                 );
             }
         }
-        let barrier = vk::MemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::MEMORY_READ);
+        let barrier = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ);
         // SAFETY: Make completed transfer writes available to subsequent graphics consumers.
         unsafe {
-            self.device.cmd_pipeline_barrier(
+            self.device.cmd_pipeline_barrier2(
                 commands.command_buffer,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::DependencyFlags::empty(),
-                &[barrier],
-                &[],
-                &[],
+                &vk::DependencyInfo::default().dependency_flags(vk::DependencyFlags::empty())
+                    .memory_barriers(&[barrier]).buffer_memory_barriers(&[]).image_memory_barriers(&[]),
             );
         }
         if let Some(query) = commands.timestamp_queries.filter(|_| timed) {
