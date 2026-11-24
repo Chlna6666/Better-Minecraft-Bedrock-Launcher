@@ -683,12 +683,49 @@ impl Entry {
             // never fire again, especially across a Vulkan swapchain recreation.
             self.ready_registration.store(0, Ordering::Release);
             self.ready_poll_required = true;
+            // report() arms the exact resource notification after publishing
+            // the deferred scene state.
             return Ok(false);
         }
         // Count only native pacing preflight rejections, never resize or resource deferrals.
         crate::diagnostics::performance_metrics::record_present_preflight_deferred(self.id);
         self.arm_native_readiness()?;
         Ok(false)
+    }
+
+    /// Unlike DXGI frame latency, resource completion is not a display tick.
+    /// Serialize the continuation on the existing owner lane; a stale window
+    /// generation cannot publish or consume a newer registration.
+    fn arm_resource_readiness(&mut self) {
+        if self.ready_registration.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        self.next_ready_registration = self.next_ready_registration.wrapping_add(1).max(1);
+        let generation = self.next_ready_registration;
+        self.ready_registration.store(generation, Ordering::Release);
+        let registration = self.ready_registration.clone();
+        let queue = self.queue.clone();
+        let id = self.id;
+        let callback = Box::new(move || {
+            if registration.compare_exchange(generation, 0, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                return;
+            }
+            let result = queue.enqueue(Command::Continue(Instant::now()), || {
+                super::sender()?.send(Box::new(move |worker| worker.drain(id)))
+                    .map_err(|_| anyhow::anyhow!("GPU owner stopped"))
+            });
+            if let Err(error) = result {
+                log::trace!("discarding GPU fence readiness after shutdown: {error:#}");
+            }
+        });
+        match self.renderer.request_resource_ready(callback) {
+            Ok(true) => { self.ready_poll_required = false; }
+            Ok(false) => { self.ready_registration.store(0, Ordering::Release); }
+            Err(error) => {
+                self.ready_registration.store(0, Ordering::Release);
+                log::debug!("native resource readiness unavailable; retain bounded retry: {error:#}");
+            }
+        }
     }
 
     fn arm_native_readiness(&mut self) -> Result<()> {
@@ -813,6 +850,11 @@ impl Entry {
         // allocations behind. Keep a bounded GPU-only Fence poll active until
         // the retired generation is safe, independently of animation requests.
         let retirement_poll = result.is_ok() && self.renderer.has_pollable_offscreen_retirements();
+        if pending && result.is_ok() && !submitted && !self.schedule.is_hidden()
+            && self.renderer.has_submission_retry()
+        {
+            self.arm_resource_readiness();
+        }
         let presentation_retry = pending
             && result.is_ok()
             && !submitted

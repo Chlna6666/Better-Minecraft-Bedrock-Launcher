@@ -157,6 +157,19 @@ impl NovaRenderer {
         Ok(!self.submission_retry_pending)
     }
 
+    /// Wait on the precise oldest outstanding producer or frame identity.
+    /// Re-evaluate all dependencies after the wake; never infer completion of
+    /// another queue merely because this one signaled.
+    pub(crate) fn request_resource_ready(
+        &mut self, callback: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<bool> {
+        let submission = self.pending_submissions.first().map(|pending| {
+            pending.predecessors.first().copied().unwrap_or(pending.submission)
+        }).or_else(|| self.auxiliary_submissions.first().copied());
+        let Some(submission) = submission else { return Ok(false); };
+        lock_backend(&self.backend).request_submission_ready(submission, callback)
+    }
+
     pub(crate) fn has_submission_retry(&self) -> bool {
         self.submission_retry_pending
     }

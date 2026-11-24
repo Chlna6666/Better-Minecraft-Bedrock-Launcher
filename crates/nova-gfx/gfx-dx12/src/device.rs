@@ -45,7 +45,7 @@ mod platform {
         time::{Duration, Instant},
     };
 
-    use super::frame_pacing::FrameLatencyWait;
+    use super::frame_pacing::{FrameLatencyWait, SubmissionWake};
     use super::{Error, Result};
     use crate::error::Dx12Error;
     use crate::registry::ResourceRegistry;
@@ -2320,11 +2320,13 @@ mod platform {
                 self.submissions.insert(Dx12Submission {
                     fence_value: producer_output,
                     queue: Dx12SubmissionQueue::Sidecar,
+                    ready_wake: None,
                 })
             } else {
                 self.submissions.insert(Dx12Submission {
                     fence_value,
                     queue: Dx12SubmissionQueue::Primary,
+                    ready_wake: None,
                 })
             })
         }
@@ -2569,6 +2571,7 @@ mod platform {
             Ok(self.submissions.insert(Dx12Submission {
                 fence_value,
                 queue: kind,
+                ready_wake: None,
             }))
         }
 
@@ -2585,6 +2588,7 @@ mod platform {
             Ok(self.submissions.insert(Dx12Submission {
                 fence_value,
                 queue: Dx12SubmissionQueue::Primary,
+                ready_wake: None,
             }))
         }
 
@@ -6247,6 +6251,7 @@ mod platform {
             Ok(self.submissions.insert(Dx12Submission {
                 fence_value,
                 queue: kind,
+                ready_wake: None,
             }))
         }
 
@@ -6357,6 +6362,7 @@ mod platform {
             Ok(self.submissions.insert(Dx12Submission {
                 fence_value,
                 queue: Dx12SubmissionQueue::Primary,
+                ready_wake: None,
             }))
         }
 
@@ -6379,6 +6385,28 @@ mod platform {
 
         fn poll_submission(&mut self, submission: SubmissionId) -> Result<SubmissionStatus> {
             Self::poll_submission(self, submission)
+        }
+
+        fn request_submission_ready(
+            &mut self,
+            submission: SubmissionId,
+            callback: Box<dyn FnOnce() + Send + 'static>,
+        ) -> Result<bool> {
+            let record = self.submissions.get(submission)?;
+            if let Some(wake) = &record.ready_wake {
+                wake.arm(callback);
+                return Ok(true);
+            }
+            let fence = self.submission_fence(record.queue)?;
+            let value = record.fence_value;
+            // SAFETY: The live queue's fence is retained for this submission.
+            if unsafe { fence.GetCompletedValue() } >= value {
+                callback();
+                return Ok(true);
+            }
+            let wake = SubmissionWake::register(fence, value, callback)?;
+            self.submissions.get_mut(submission)?.ready_wake = Some(wake);
+            Ok(true)
         }
 
         fn poll_submission_with_frame_timestamps(&mut self, submission: SubmissionId)
@@ -8384,6 +8412,7 @@ mod platform {
     struct Dx12Submission {
         fence_value: u64,
         queue: Dx12SubmissionQueue,
+        ready_wake: Option<Arc<SubmissionWake>>,
     }
 
     #[derive(Clone)]

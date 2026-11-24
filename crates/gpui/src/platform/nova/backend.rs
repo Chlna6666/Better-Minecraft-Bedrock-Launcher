@@ -585,6 +585,19 @@ impl NovaBackend {
         }
     }
 
+    pub(super) fn request_submission_ready(
+        &mut self,
+        _submission: SubmissionId,
+        _callback: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<bool> {
+        match self {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(device) => Ok(device.request_submission_ready(_submission, _callback)?),
+            #[allow(unreachable_patterns)]
+            _ => Ok(false),
+        }
+    }
+
     pub(super) fn poll_submission_with_frame_timestamps(&mut self, submission: SubmissionId)
         -> Result<(SubmissionStatus, Option<gfx_core::FrameGpuTimestamps>)> {
         match self {

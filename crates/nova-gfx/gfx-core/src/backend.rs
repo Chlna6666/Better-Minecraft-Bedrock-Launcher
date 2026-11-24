@@ -911,6 +911,20 @@ pub trait SubmissionDevice {
         Ok((self.poll_submission(submission)?, None))
     }
 
+    /// Registers a one-shot wake for an exact GPU submission, not a swapchain
+    /// presentation credit. A wake is a hint to poll the submission's status.
+    /// The callback may run before this method returns; it must only enqueue work.
+    /// Unsupported backends return false and do not invoke it.
+    /// # Errors
+    /// Returns an error for an invalid submission or failed native registration.
+    fn request_submission_ready(
+        &mut self,
+        _submission: SubmissionId,
+        _callback: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Blocks until a submission has completed.
     ///
     /// # Errors
