@@ -66,13 +66,18 @@ class VarintNBT:
         return raw.decode("utf-8")
 
     def payload(self, tag: int):
-        if tag == 1:   # Byte
+        if tag == 1:   # Byte: raw signed byte, NOT a zigzag varint
+            raw = self.data[self.pos]
+            self.pos += 1
+            return raw - 256 if raw > 127 else raw
+        if tag == 2:   # Short: raw 2-byte LE, NOT a zigzag varint
+            import struct
+            value = struct.unpack_from("<h", self.data, self.pos)[0]
+            self.pos += 2
+            return value
+        if tag == 3:   # Int: zigzag varint
             return self._svar()
-        if tag == 2:   # Short
-            return self._svar()
-        if tag == 3:   # Int
-            return self._svar()
-        if tag == 4:   # Long
+        if tag == 4:   # Long: zigzag varint
             return self._svar()
         if tag == 5:   # Float
             import struct

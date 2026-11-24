@@ -133,7 +133,7 @@ def main() -> int:
         "schema_version": 1,
         "source": "pmmp/bds-mod-mapping runtime palette dumps",
         "encoding": "BMCBRP01: crc32 + zstd; pool [len+utf8]; versions [version_id, state_count, (name_id, version, prop_count, (prop_id, kind, value)*)*]; kind 0=Byte 1=Short 2=Int (i32) 3=Long (i64) 8=String (pool id)",
-        "evidence_boundary": "Runtime registry evidence with network runtime IDs and NBT storage version. No default-state field; not a legacy numeric ID table.",
+        "evidence_boundary": "Runtime registry evidence with palette indices (NOT verified wire network runtime IDs; 1.26.51+ uses hashed IDs) and NBT storage version. No default-state field; not a legacy numeric ID table.",
         "version_count": len(version_manifest),
         "versions": version_manifest,
     }, indent=2) + "\n", encoding="utf-8")
