@@ -168,6 +168,11 @@ fn main() {
                 .entry("cs_compact_draws", ShaderStage::Compute),
         )
         .shader(
+            Shader::new("indexed_draw_compaction")
+                .wgsl_file("src/scene_view/indexed_draw_compaction.wgsl")
+                .entry("cs_compact_indexed_draws", ShaderStage::Compute),
+        )
+        .shader(
             Shader::new("hiz")
                 .wgsl_file("src/scene_view/hiz.wgsl")
                 .entry("cs_hiz_clear", ShaderStage::Compute)

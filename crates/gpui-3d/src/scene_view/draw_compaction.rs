@@ -20,6 +20,7 @@ struct Run {
 }
 
 struct Plan {
+    indexed: bool,
     source: BufferId,
     source_bytes: u64,
     records: u32,
@@ -27,9 +28,21 @@ struct Plan {
     gather: Vec<u32>,
 }
 
+fn indirect_record(command: &RenderCommand, indexed: bool) -> Option<(BufferId, u64, Option<IndexBufferBinding>)> {
+    match command {
+        RenderCommand::DrawIndirect(draw) if !indexed => Some((draw.arguments, draw.offset, None)),
+        RenderCommand::DrawIndexedIndirect(draw) if indexed => Some((draw.arguments, draw.offset, Some(draw.index_buffer))),
+        _ => None,
+    }
+}
+
 fn plan(commands: &[RenderCommand], limit: u32) -> Option<Plan> {
     let max = MAX_RUN.min(limit as usize);
     if max < MIN_RUN || commands.len() < MIN_RUN { return None; }
+    // One source ABI per plan. Mixed passes retain their original indexed
+    // commands when the first command selects non-indexed compaction.
+    let indexed = matches!(commands.first(), Some(RenderCommand::DrawIndexedIndirect(_)));
+    let stride = if indexed { 20 } else { 16 };
     let mut source = None;
     let mut source_bytes = 0;
     let mut records = 0u32;
@@ -37,38 +50,42 @@ fn plan(commands: &[RenderCommand], limit: u32) -> Option<Plan> {
     let mut gather = Vec::new();
     let mut index = 0;
     while index < commands.len() {
-        let RenderCommand::DrawIndirect(first) = &commands[index] else {
+        let first = &commands[index];
+        let Some((arguments, offset, index_buffer)) = indirect_record(first, indexed) else {
             index += 1;
             continue;
         };
-        if first.offset % 16 != 0 || source.is_some_and(|id| id != first.arguments) {
+        if offset % stride != 0 || source.is_some_and(|id| id != arguments) {
             index += 1;
             continue;
         }
         let mut len = 1usize;
         while len < max {
-            let Some(RenderCommand::DrawIndirect(next)) = commands.get(index + len) else { break; };
-            if next.arguments != first.arguments || next.pipeline != first.pipeline
-                || next.bind_groups != first.bind_groups || next.scissor != first.scissor
-                || next.offset % 16 != 0
+            let Some(next) = commands.get(index + len) else { break; };
+            let Some((next_arguments, next_offset, next_index_buffer)) = indirect_record(next, indexed) else { break; };
+            if next_arguments != arguments || next_index_buffer != index_buffer
+                || next.pipeline() != first.pipeline() || next.bind_groups() != first.bind_groups()
+                || next.scissor() != first.scissor() || next_offset % stride != 0
             { break; }
             len += 1;
         }
         if len >= MIN_RUN {
             let start = records;
             records = records.checked_add(len as u32)?;
-            source = Some(first.arguments);
+            source = Some(arguments);
             for command in &commands[index..index + len] {
-                let RenderCommand::DrawIndirect(draw) = command else { unreachable!() };
-                let slot = u32::try_from(draw.offset / 16).ok()?;
-                source_bytes = source_bytes.max((u64::from(slot) + 1) * 16);
+                let (_, offset, _) = indirect_record(command, indexed)?;
+                let slot = u32::try_from(offset / stride).ok()?;
+                // Shader record addressing uses u32 words, not byte offsets.
+                if (u64::from(slot) + 1) * (stride / 4) > u64::from(u32::MAX) { return None; }
+                source_bytes = source_bytes.max((u64::from(slot) + 1) * stride);
                 gather.push(slot);
             }
             runs.push(Run { command: index, source: start, count: len as u32, destination: start });
         }
         index += len;
     }
-    Some(Plan { source: source?, source_bytes, records, runs, gather })
+    Some(Plan { indexed, source: source?, source_bytes, records, runs, gather })
 }
 
 struct Scratch {
@@ -77,6 +94,7 @@ struct Scratch {
 }
 
 struct Prepared {
+    indexed: bool,
     commands: Vec<RenderCommand>,
     counts: Vec<IndirectCountBinding>,
     compute: [ComputeBufferBinding; 4],
@@ -204,6 +222,7 @@ struct ViewCompactor {
 
 pub(super) struct Compactor {
     shader: ShaderModuleId,
+    indexed_shader: Option<ShaderModuleId>,
     argument_stride: u32,
     views: HashMap<SceneViewId, ViewCompactor>,
     probes: HashMap<u64, SceneViewId>,
@@ -235,7 +254,11 @@ impl Compactor {
             .ok().and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d draw compaction".into()), binary,
             }).ok())?;
-        Some(Self { shader, argument_stride, views: HashMap::new(), probes: HashMap::new() })
+        let indexed_shader = super::resources::embedded_shader(context, ShaderStage::Compute, "cs_compact_indexed_draws")
+            .ok().and_then(|binary| device.create_shader_module(&ShaderModuleDescriptor {
+                label: Some("gpui-3d indexed draw compaction".into()), binary,
+            }).ok());
+        Some(Self { shader, indexed_shader, argument_stride, views: HashMap::new(), probes: HashMap::new() })
     }
 
     pub(super) fn submit_batch(
@@ -258,7 +281,7 @@ impl Compactor {
             }
             let view = self.views.entry(id).or_default();
             let previous_probe = view.pending_id();
-            let decision = view.schedule(device, self.argument_stride, pass)?;
+            let decision = view.schedule(device, self.argument_stride, self.indexed_shader.is_some(), pass)?;
             let next_probe = view.pending_id();
             if previous_probe != next_probe {
                 if let Some(old) = previous_probe { self.probes.remove(&old); }
@@ -277,7 +300,8 @@ impl Compactor {
             let prepared = self.views[&id].cached.as_ref()
                 .and_then(|cache| cache.prepared.as_ref()).expect("scheduled compaction plan");
             let dispatch = ComputeDispatch {
-                shader: self.shader, bindings: &prepared.compute, workgroups: [prepared.groups, 1, 1],
+                shader: if prepared.indexed { self.indexed_shader.expect("indexed compaction shader") } else { self.shader },
+                bindings: &prepared.compute, workgroups: [prepared.groups, 1, 1],
             };
             if let Some(tag) = choice.tag {
                 if !dispatches.is_empty() {
@@ -339,6 +363,7 @@ impl Compactor {
 
     pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> Result<()> {
         for view in self.views.into_values() { view.destroy(device)?; }
+        if let Some(shader) = self.indexed_shader { device.destroy_shader_module(shader)?; }
         device.destroy_shader_module(self.shader)
     }
 }
@@ -381,14 +406,16 @@ impl ViewCompactor {
         Ok(buffers)
     }
 
-    fn prepare(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, pass: &NativeOffscreenPass) -> Result<Option<Prepared>> {
-        // Vulkan's native DrawIndirect query currently measures indirect-only passes.
-        if !pass.commands.iter().all(|command| matches!(command, RenderCommand::DrawIndirect(_))
-            || (argument_stride == 16 && matches!(command, RenderCommand::DrawIndexedIndirect(_)))) {
+    fn prepare(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, indexed_supported: bool, pass: &NativeOffscreenPass) -> Result<Option<Prepared>> {
+        // Native DrawIndirect probes measure indirect-only passes.
+        if !pass.commands.iter().all(|command| matches!(command, RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_))) {
             return Ok(None);
         }
         let Some(limit) = device.counted_offscreen_limit() else { return Ok(None); };
         let Some(plan) = plan(&pass.commands, limit) else { return Ok(None); };
+        if plan.indexed && !indexed_supported { return Ok(None); }
+        let argument_stride = if plan.indexed && argument_stride == 16 { 20 } else { argument_stride };
+        if u64::from(plan.records) * u64::from(argument_stride / 4) > u64::from(u32::MAX) { return Ok(None); }
         let group_count = u32::try_from(plan.runs.len()).map_err(|_| Error::InvalidInput("compaction group count overflow".into()))?;
         if group_count > device.compute_capabilities().max_workgroups[0] { return Ok(None); }
         let header_words = group_count.checked_mul(4)
@@ -425,26 +452,30 @@ impl ViewCompactor {
         let mut cursor = 0;
         for (index, run) in plan.runs.iter().enumerate() {
             commands.extend_from_slice(&pass.commands[cursor..run.command]);
-            let RenderCommand::DrawIndirect(mut draw) = pass.commands[run.command].clone() else { unreachable!() };
-            draw.arguments = output;
-            draw.offset = u64::from(run.destination) * u64::from(argument_stride);
+            let mut command = pass.commands[run.command].clone();
+            let offset = u64::from(run.destination) * u64::from(argument_stride);
+            match &mut command {
+                RenderCommand::DrawIndirect(draw) => { draw.arguments = output; draw.offset = offset; }
+                RenderCommand::DrawIndexedIndirect(draw) => { draw.arguments = output; draw.offset = offset; }
+                _ => unreachable!("planned indirect draw"),
+            }
             bindings.push(IndirectCountBinding {
                 command_index: commands.len(), count_buffer: counts,
                 count_offset: index as u64 * 4, max_draw_count: run.count, argument_stride,
             });
-            commands.push(RenderCommand::DrawIndirect(draw));
+            commands.push(command);
             cursor = run.command + run.count as usize;
         }
         commands.extend_from_slice(&pass.commands[cursor..]);
-        Ok(Some(Prepared { commands, counts: bindings, compute, groups: group_count }))
+        Ok(Some(Prepared { indexed: plan.indexed, commands, counts: bindings, compute, groups: group_count }))
     }
 
-    fn schedule(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
+    fn schedule(&mut self, device: &mut dyn ExtensionDevice, argument_stride: u32, indexed_supported: bool, pass: &NativeOffscreenPass) -> Result<Option<Decision>> {
         if !self.cached.as_ref().is_some_and(|cached| Arc::ptr_eq(&cached.source, &pass.commands)) {
             // Invalidate before preparing: a failed allocation or upload may
             // have replaced scratch storage referenced by the previous plan.
             self.cached = None;
-            let prepared = self.prepare(device, argument_stride, pass)?;
+            let prepared = self.prepare(device, argument_stride, indexed_supported, pass)?;
             self.cached = Some(Cached { source: Arc::clone(&pass.commands), prepared, cost: CostModel::default() });
         }
         let Some(cached) = self.cached.as_mut() else { return Ok(None); };
