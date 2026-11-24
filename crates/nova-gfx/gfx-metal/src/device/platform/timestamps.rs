@@ -69,7 +69,7 @@ impl WorkTimestamps {
                 (0..sets.count()).find_map(|index| {
                     let set = sets.objectAtIndex(index);
                     // SAFETY: Metal exports this constant for its timestamp set.
-                    (set.name().as_ref() == unsafe { MTLCommonCounterSetTimestamp }).then_some(set)
+                    (&*set.name() == unsafe { MTLCommonCounterSetTimestamp }).then_some(set)
                 })
             })
         } else { None };
