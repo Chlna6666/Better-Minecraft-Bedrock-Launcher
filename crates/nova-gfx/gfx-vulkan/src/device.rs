@@ -59,6 +59,7 @@ mod relocation;
 mod transfer_queue;
 mod submission_wake;
 mod timeline;
+mod submit;
 
 // Desktop has alternate renderers; Android 15 does not guarantee Vulkan 1.4.
 // ash 0.38 lacks the named 1.4 constant, but the API version encoding is stable.
@@ -2967,47 +2968,21 @@ impl VulkanDevice {
         };
         let result = (|| -> Result<()> {
             // Earlier GPU uploads and main GUI work must precede 3D.
-            let releases = [first];
-            let release = vk::SubmitInfo::default().signal_semaphores(&releases);
-            unsafe {
-                self.device
-                    .queue_submit(self.graphics_queue, &[release], vk::Fence::null())
-            }
-            .map_err(VulkanError::from)?;
+            submit::binary(&self.device, self.graphics_queue, &[], &[], &[first],
+                vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
 
             // Submit 3D command buffers to queue index 1 in the same family.
-            let waits = [first];
-            let signals = [second];
-            let wait_stages = [vk::PipelineStageFlags::ALL_COMMANDS];
             let buffers = &self.command_encoders.get(encoder)?.command_buffers;
-            let producer = vk::SubmitInfo::default()
-                .wait_semaphores(&waits)
-                .wait_dst_stage_mask(&wait_stages)
-                .command_buffers(buffers)
-                .signal_semaphores(&signals);
-            unsafe {
-                self.device.queue_submit(
-                    queue,
-                    &[producer],
-                    producer_fence.unwrap_or(vk::Fence::null()),
-                )
-            }
-            .map_err(VulkanError::from)?;
+            submit::binary(&self.device, queue, buffers, &[first], &[second],
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                producer_fence.unwrap_or(vk::Fence::null()))?;
 
             // Keep the sampled attachment unavailable to the GUI graphics
             // queue until all sidecar writes and layout transitions finish.
             // The fence is on the consumer queue so it protects resource
             // retirement after both queues' GPU work completes.
-            let wait_producer = [second];
-            let consumer_stages = [vk::PipelineStageFlags::ALL_COMMANDS];
-            let consumer = vk::SubmitInfo::default()
-                .wait_semaphores(&wait_producer)
-                .wait_dst_stage_mask(&consumer_stages);
-            unsafe {
-                self.device
-                    .queue_submit(self.graphics_queue, &[consumer], fence)
-            }
-            .map_err(VulkanError::from)?;
+            submit::binary(&self.device, self.graphics_queue, &[], &[second], &[],
+                vk::PipelineStageFlags2::ALL_COMMANDS, fence)?;
             Ok(())
         })();
         if let Err(error) = result {
@@ -3259,15 +3234,8 @@ impl VulkanDevice {
     }
 
     fn signal_frame_fence_after_submit_failure(&self, fence: vk::Fence) -> Result<()> {
-        let submit_info = vk::SubmitInfo::default();
-        // SAFETY: Queue and fence are owned by this device. The empty submit prevents the
-        // per-frame fence from staying unsignaled if queue_submit rejects the real frame.
-        unsafe {
-            self.device
-                .queue_submit(self.graphics_queue, &[submit_info], fence)
-        }
-        .map_err(VulkanError::from)?;
-        Ok(())
+        submit::binary(&self.device, self.graphics_queue, &[], &[], &[],
+            vk::PipelineStageFlags2::ALL_COMMANDS, fence)
     }
 
     /// Presents a swapchain image.
@@ -3857,20 +3825,8 @@ impl VulkanDevice {
             return timeline.submit(&self.device, self.graphics_queue, command_buffers,
                 wait_semaphores, signal_semaphores, fence);
         }
-        let wait_stages =
-            vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT; wait_semaphores.len()];
-        let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(wait_semaphores)
-            .wait_dst_stage_mask(&wait_stages)
-            .command_buffers(command_buffers)
-            .signal_semaphores(signal_semaphores);
-        // SAFETY: Queue, command buffers, semaphores, and fence are owned by this device.
-        unsafe {
-            self.device
-                .queue_submit(self.graphics_queue, &[submit_info], fence)
-        }
-        .map_err(VulkanError::from)?;
-        Ok(())
+        submit::binary(&self.device, self.graphics_queue, command_buffers, wait_semaphores,
+            signal_semaphores, vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, fence)
     }
 
     fn submit_command_buffer_timed(
@@ -3967,17 +3923,11 @@ impl VulkanDevice {
 
     fn signal_cleanup_fence(&self) -> Result<vk::Fence> {
         let fence = create_fence(&self.device, false)?;
-        let submit_info = vk::SubmitInfo::default();
-        // SAFETY: Queue and fence are owned by this device. An empty submit is valid and
-        // orders the fence after earlier submissions on the same queue.
-        let result = unsafe {
-            self.device
-                .queue_submit(self.graphics_queue, &[submit_info], fence)
-        };
-        if let Err(error) = result {
-            // SAFETY: The failed submit did not associate this fence with pending work.
+        if let Err(error) = submit::binary(&self.device, self.graphics_queue, &[], &[], &[],
+            vk::PipelineStageFlags2::ALL_COMMANDS, fence) {
+            // SAFETY: the failed submission did not associate the fence with GPU work.
             unsafe { self.device.destroy_fence(fence, None) };
-            return Err(VulkanError::from(error).into());
+            return Err(error);
         }
         Ok(fence)
     }
@@ -5170,14 +5120,11 @@ impl SubmissionDevice for VulkanDevice {
             ));
         };
         let fence = create_fence(&self.device, false)?;
-        let submits = [vk::SubmitInfo::default()];
-        // SAFETY: The secondary queue belongs to this Vulkan device. This
-        // fence-only submit is ordered after that queue's commands and GPU
-        // semaphore waits; no CPU wait occurs.
-        if let Err(error) = unsafe { self.device.queue_submit(secondary, &submits, fence) } {
-            // SAFETY: A failed native submission does not own the fence.
+        if let Err(error) = submit::binary(&self.device, secondary, &[], &[], &[],
+            vk::PipelineStageFlags2::ALL_COMMANDS, fence) {
+            // SAFETY: a failed native submission does not own the fence.
             unsafe { self.device.destroy_fence(fence, None) };
-            return Err(VulkanError::from(error).into());
+            return Err(error);
         }
         Ok(self.submissions.insert(VulkanSubmission {
             fence,
@@ -5275,26 +5222,10 @@ impl SubmissionDevice for VulkanDevice {
             }
         };
         let result = (|| -> Result<()> {
-            let signals = [semaphore];
-            let release = vk::SubmitInfo::default().signal_semaphores(&signals);
-            // SAFETY: The accepted producer belongs to source_queue. The
-            // binary signal is enqueued AFTER that submission on precisely
-            // its native physical queue, not on an unrelated graphics queue.
-            unsafe {
-                self.device
-                    .queue_submit(source_queue, &[release], vk::Fence::null())
-            }
-            .map_err(VulkanError::from)?;
-            let waits = [semaphore];
-            let stages = [vk::PipelineStageFlags::ALL_COMMANDS];
-            let acquire = vk::SubmitInfo::default()
-                .wait_semaphores(&waits)
-                .wait_dst_stage_mask(&stages);
-            // SAFETY: The producer and target queues belong to this device.
-            // Buffer-only separate-family work uses CONCURRENT sharing, and
-            // this binary GPU wait orders all future target-queue accesses.
-            unsafe { self.device.queue_submit(target, &[acquire], fence) }
-                .map_err(VulkanError::from)?;
+            submit::binary(&self.device, source_queue, &[], &[], &[semaphore],
+                vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
+            submit::binary(&self.device, target, &[], &[semaphore], &[],
+                vk::PipelineStageFlags2::ALL_COMMANDS, fence)?;
             Ok(())
         })();
         if let Err(error) = result {
@@ -8312,11 +8243,8 @@ fn end_submit_wait_destroy(
 ) -> Result<()> {
     // SAFETY: Command buffer is recording and can be ended.
     unsafe { device.end_command_buffer(command_buffer) }.map_err(VulkanError::from)?;
-    let command_buffers = [command_buffer];
-    let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
-    // SAFETY: Queue and command buffer belong to the same device.
-    unsafe { device.queue_submit(queue, &[submit_info], vk::Fence::null()) }
-        .map_err(VulkanError::from)?;
+    submit::binary(device, queue, &[command_buffer], &[], &[],
+        vk::PipelineStageFlags2::ALL_COMMANDS, vk::Fence::null())?;
     // SAFETY: Queue belongs to this device; waiting before destroying temporary resources is valid.
     unsafe { device.queue_wait_idle(queue) }.map_err(VulkanError::from)?;
     // SAFETY: Command pool belongs to this device and owns command_buffer.
@@ -8332,12 +8260,10 @@ fn end_submit_deferred(
     // SAFETY: Command buffer is recording and can be ended.
     unsafe { device.end_command_buffer(command_buffer) }.map_err(VulkanError::from)?;
     let fence = create_fence(device, false)?;
-    let command_buffers = [command_buffer];
-    let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
-    // SAFETY: Queue, command buffer, and fence belong to the same device.
-    if let Err(error) = unsafe { device.queue_submit(queue, &[submit_info], fence) } {
+    if let Err(error) = submit::binary(device, queue, &[command_buffer], &[], &[],
+        vk::PipelineStageFlags2::ALL_COMMANDS, fence) {
         destroy_fence(device, fence);
-        return Err(VulkanError::from(error).into());
+        return Err(error);
     }
     Ok(fence)
 }

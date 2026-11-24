@@ -1,7 +1,7 @@
 //! Owner-registered one-shot queue checkpoints. Vulkan has no general fence
 //! completion callback: one sleeping worker per active queue waits in the
 //! driver. Never wait on a reusable WSI or command-pool fence off-owner.
-use super::{Arc, Error, Result, SubmissionId, VulkanError, create_fence, fence_is_complete, vk};
+use super::{Arc, Error, Result, SubmissionId, create_fence, fence_is_complete, vk};
 use super::timeline::TimelinePoint;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -135,9 +135,10 @@ impl SubmissionWakes {
             let fence = create_fence(device, false)?;
             // SAFETY: only the owner submits to this queue. The private fence
             // is never reset or reused, even if the original ID is retired.
-            if let Err(error) = unsafe { device.queue_submit(queue, &[vk::SubmitInfo::default()], fence) } {
+            if let Err(error) = super::submit::binary(device, queue, &[], &[], &[],
+                vk::PipelineStageFlags2::ALL_COMMANDS, fence) {
                 unsafe { device.destroy_fence(fence, None) };
-                return Err(VulkanError::from(error).into());
+                return Err(error);
             }
             (fence, WaitTarget::Fence(fence))
         };
