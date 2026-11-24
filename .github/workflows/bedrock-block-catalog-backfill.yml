@@ -32,6 +32,7 @@ jobs:
       - name: Check Python import, identity rules and PDB evidence tools
         run: |
           python3 -m unittest discover -s scripts/bedrock-block-catalog -p 'test_*.py'
+          python3 -m pip install -r scripts/bedrock-block-catalog/pdb/requirements.txt
           python3 -m unittest discover -s scripts/bedrock-block-catalog/pdb -p 'test_*.py'
       - name: Validate runtime palette catalog API and decoded data
         run: cargo test --locked -p bedrock-world --test runtime_palette_catalog
