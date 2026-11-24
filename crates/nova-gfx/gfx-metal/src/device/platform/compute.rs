@@ -82,7 +82,7 @@ impl MetalDevice {
                 dispatch.group.encode_compute(&encoder, &dispatch.sizes);
                 // SAFETY: both grid and exact baked local dimensions were
                 // validated, and native resources are retained by the command buffer.
-                unsafe { encoder.dispatchThreadgroups_threadsPerThreadgroup(dispatch.grid, dispatch.local); }
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(dispatch.grid, dispatch.local);
                 encoder.endEncoding();
             }
             commands.commit();

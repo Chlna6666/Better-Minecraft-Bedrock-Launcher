@@ -1215,10 +1215,6 @@ mod platform {
             }
         }
 
-        fn dispatch_compute_batch_tracked(&mut self, dispatches: &[gfx_core::ComputeDispatch<'_>]) -> Result<SubmissionId> {
-            self.submit_compute(dispatches, true)?.ok_or_else(|| Error::InvalidInput("tracked Metal compute batch has no executable dispatches".into()))
-        }
-
         fn checkpoint_ordered_queue(&mut self, _stage: gfx_core::GpuWorkStage) -> Result<SubmissionId> {
             let commands = self.command_queue.commandBuffer()
                 .ok_or_else(|| Error::Backend("Metal queue checkpoint unavailable".into()))?;

@@ -1,5 +1,6 @@
 //! Group-zero Metal resource bindings shared with the MSL compiler ABI.
 use super::*;
+use objc2_metal::MTLComputeCommandEncoder;
 use gfx_core::{BindingType, MetalShaderBindings, ShaderStages, METAL_SIZE_BUFFER_SLOT, metal_binding_slot};
 use std::rc::Rc;
 
