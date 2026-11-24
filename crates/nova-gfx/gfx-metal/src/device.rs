@@ -1386,6 +1386,10 @@ mod platform {
         fn render_to_textures(&mut self, passes: &[RenderPassCommands<'_>]) -> Result<Option<SubmissionId>> {
             self.submit_texture_passes(passes, true)
         }
+
+        fn render_to_textures_on_queue(&mut self, passes: &[RenderPassCommands<'_>], tags: &[Option<gfx_core::GpuTimestampTag>], _queue: gfx_core::OffscreenQueuePreference) -> Result<Option<SubmissionId>> {
+            self.submit_texture_passes_timed(passes, Some(tags), true)
+        }
     }
 
     impl DiagnosticsDevice for MetalDevice {

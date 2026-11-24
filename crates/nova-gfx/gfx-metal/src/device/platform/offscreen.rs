@@ -145,15 +145,31 @@ impl MetalDevice {
         passes: &[RenderPassCommands<'_>],
         tracked: bool,
     ) -> Result<Option<SubmissionId>> {
+        self.submit_texture_passes_timed(passes, None, tracked)
+    }
+
+    pub(super) fn submit_texture_passes_timed(
+        &mut self,
+        passes: &[RenderPassCommands<'_>],
+        tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
+        tracked: bool,
+    ) -> Result<Option<SubmissionId>> {
+        if tags.is_some_and(|tags| tags.len() != passes.len()) {
+            return Err(Error::InvalidInput("Metal render tag count mismatch".into()));
+        }
         if passes.is_empty() { return Ok(None); }
         // Validate the complete batch before submitting anything. A rejected
         // later pass must never leave a partially committed producer graph.
         let prepared = passes.iter().map(|pass| self.prepare_texture_pass(pass))
             .collect::<Result<Vec<_>>>()?;
+        let ranges = tags.map(|tags| tags.iter().enumerate().filter_map(|(index, tag)| {
+            tag.map(|tag| timestamps::TaggedRange { first: index, last: index, tag })
+        }).collect::<Vec<_>>()).unwrap_or_default();
+        let probe = self.work_timestamps.acquire_render(&self.device, &ranges);
         let command_buffer = objc2::rc::autoreleasepool(|_| -> Result<_> {
             let command_buffer = self.command_queue.commandBuffer()
                 .ok_or_else(|| Error::Backend("Metal offscreen command buffer unavailable".into()))?;
-            for pass in &prepared {
+            for (pass_index, pass) in prepared.iter().enumerate() {
                 let descriptor = MTLRenderPassDescriptor::renderPassDescriptor();
                 for (index, texture) in pass.colors.iter().enumerate() {
                 // SAFETY: all attachments were validated before encoding.
@@ -188,16 +204,23 @@ impl MetalDevice {
                         }
                     }
                 }
+                if let Some(probe) = &probe { probe.configure_render(&descriptor, pass_index); }
                 let encoder = command_buffer.renderCommandEncoderWithDescriptor(&descriptor)
                     .ok_or_else(|| Error::Backend("Metal offscreen render encoder unavailable".into()))?;
+                if let Some(probe) = &probe { probe.sample_render(&encoder, pass_index, true); }
                 encode_draw_steps(&encoder, &pass.steps, pass.extent, pass.viewport);
+                if let Some(probe) = &probe { probe.sample_render(&encoder, pass_index, false); }
                 encoder.endEncoding();
             }
             // Default command buffers retain references to all native resources
             // and Metal orders successive encoders on the primary graphics queue.
+            if let Some(probe) = &probe { probe.resolve(&command_buffer)?; }
             command_buffer.commit();
             Ok(command_buffer)
         })?;
+        if let Some(probe) = probe {
+            self.work_timestamps.submitted(probe, command_buffer.clone());
+        }
         Ok(if tracked {
             Some(self.submissions.insert(MetalSubmission::new(command_buffer, false)))
         } else {

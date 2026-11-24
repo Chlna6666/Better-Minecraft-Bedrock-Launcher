@@ -33,6 +33,8 @@ pub(super) struct Probe {
 pub(super) struct WorkTimestamps {
     counter_set: Option<Retained<ProtocolObject<dyn MTLCounterSet>>>,
     stage_boundary: bool,
+    dispatch_boundary: bool,
+    draw_boundary: bool,
     pending: Vec<(Probe, Retained<ProtocolObject<dyn MTLCommandBuffer>>)>,
     free: Vec<QueryStorage>,
 }
@@ -64,7 +66,8 @@ impl WorkTimestamps {
     pub(super) fn new(device: &ProtocolObject<dyn MTLDevice>) -> Self {
         let stage_boundary = device.supportsCounterSampling(MTLCounterSamplingPoint::AtStageBoundary);
         let dispatch_boundary = device.supportsCounterSampling(MTLCounterSamplingPoint::AtDispatchBoundary);
-        let counter_set = if stage_boundary || dispatch_boundary {
+        let draw_boundary = device.supportsCounterSampling(MTLCounterSamplingPoint::AtDrawBoundary);
+        let counter_set = if stage_boundary || dispatch_boundary || draw_boundary {
             device.counterSets().and_then(|sets| {
                 (0..sets.count()).find_map(|index| {
                     let set = sets.objectAtIndex(index);
@@ -73,11 +76,21 @@ impl WorkTimestamps {
                 })
             })
         } else { None };
-        Self { counter_set, stage_boundary, pending: Vec::new(), free: Vec::new() }
+        Self { counter_set, stage_boundary, dispatch_boundary, draw_boundary, pending: Vec::new(), free: Vec::new() }
     }
     pub(super) fn supported(&self) -> bool { self.counter_set.is_some() }
 
-    pub(super) fn acquire(&mut self, device: &ProtocolObject<dyn MTLDevice>, ranges: &[TaggedRange]) -> Option<Probe> {
+    pub(super) fn acquire_compute(&mut self, device: &ProtocolObject<dyn MTLDevice>, ranges: &[TaggedRange]) -> Option<Probe> {
+        if !self.stage_boundary && !self.dispatch_boundary { return None; }
+        self.acquire(device, ranges)
+    }
+
+    pub(super) fn acquire_render(&mut self, device: &ProtocolObject<dyn MTLDevice>, ranges: &[TaggedRange]) -> Option<Probe> {
+        if !self.stage_boundary && !self.draw_boundary { return None; }
+        self.acquire(device, ranges)
+    }
+
+    fn acquire(&mut self, device: &ProtocolObject<dyn MTLDevice>, ranges: &[TaggedRange]) -> Option<Probe> {
         if ranges.is_empty() || ranges.len() > MAX_RANGES || self.pending.len() >= MAX_PENDING { return None; }
         let set = self.counter_set.as_ref()?;
         let count = ranges.len() * 2;
@@ -119,7 +132,7 @@ impl WorkTimestamps {
                     // resolve allocation contains two u64s per tagged range.
                     let values = unsafe { std::slice::from_raw_parts(probe.storage.results.contents().as_ptr().cast::<u64>(), probe.ranges.len() * 2) };
                     for (range, pair) in probe.ranges.iter().zip(values.chunks_exact(2)) {
-                        if pair[0] != 0 && pair[1] != u64::MAX && pair[1] > pair[0] {
+                        if pair[0] != 0 && pair[0] != u64::MAX && pair[1] != u64::MAX && pair[1] > pair[0] {
                             output.push(GpuTimestampSample { tag: range.tag, duration_ticks: pair[1] - pair[0], frequency_hz });
                         }
                     }
@@ -156,6 +169,30 @@ impl Probe {
         if self.stage_boundary { return; }
         if let Some(index) = self.index(dispatch, begin) {
             // SAFETY: device supports dispatch sampling and index is valid.
+            unsafe { encoder.sampleCountersInBuffer_atSampleIndex_withBarrier(&self.storage.samples, index, true); }
+        }
+    }
+
+    pub(super) fn configure_render(&self, descriptor: &MTLRenderPassDescriptor, pass: usize) {
+        if !self.stage_boundary { return; }
+        let (start, end) = (self.index(pass, true), self.index(pass, false));
+        if start.is_none() && end.is_none() { return; }
+        // SAFETY: attachment zero exists; all sample indices are within the
+        // retained allocation or use the native don't-sample sentinel.
+        unsafe {
+            let attachment = descriptor.sampleBufferAttachments().objectAtIndexedSubscript(0);
+            attachment.setSampleBuffer(Some(&self.storage.samples));
+            attachment.setStartOfVertexSampleIndex(start.unwrap_or(usize::MAX));
+            attachment.setEndOfVertexSampleIndex(usize::MAX);
+            attachment.setStartOfFragmentSampleIndex(usize::MAX);
+            attachment.setEndOfFragmentSampleIndex(end.unwrap_or(usize::MAX));
+        }
+    }
+
+    pub(super) fn sample_render(&self, encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>, pass: usize, begin: bool) {
+        if self.stage_boundary { return; }
+        if let Some(index) = self.index(pass, begin) {
+            // SAFETY: acquire_render checked draw-boundary support.
             unsafe { encoder.sampleCountersInBuffer_atSampleIndex_withBarrier(&self.storage.samples, index, true); }
         }
     }

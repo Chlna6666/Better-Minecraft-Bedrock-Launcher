@@ -78,12 +78,13 @@ impl MetalDevice {
         self.validate_shader_bindings(Some(group.layout), shader.bindings.as_ref(), ShaderStages::COMPUTE)?;
         let group = group.native.clone();
         let prepared = self.prepare_compute(dispatch.shader, dispatch.workgroups, group)?;
-        self.commit_compute(std::slice::from_ref(&prepared), false, &[]).map(|_| ())
+        let range = dispatch.gpu_work_tag.map(|tag| timestamps::TaggedRange { first: 0, last: 0, tag });
+        self.commit_compute(std::slice::from_ref(&prepared), false, range.as_slice()).map(|_| ())
     }
 
     fn commit_compute(&mut self, prepared: &[PreparedCompute], tracked: bool, ranges: &[timestamps::TaggedRange]) -> Result<Option<SubmissionId>> {
         if prepared.is_empty() { return Ok(None); }
-        let probe = self.work_timestamps.acquire(&self.device, ranges);
+        let probe = self.work_timestamps.acquire_compute(&self.device, ranges);
         let commands = objc2::rc::autoreleasepool(|_| -> Result<_> {
             let commands = self.command_queue.commandBuffer()
                 .ok_or_else(|| Error::Backend("Metal compute command buffer unavailable".into()))?;
