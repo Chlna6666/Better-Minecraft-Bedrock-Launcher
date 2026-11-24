@@ -1,6 +1,6 @@
 use crate::window::{RetainedElementIdentity, debug_visualization::ViewCacheDebugStatus};
 use crate::{
-    App, AvailableSpace, Bounds, DispatchNodeId, ElementId, InspectorElementId, LayoutId,
+    App, AvailableSpace, Bounds, DispatchNodeId, ElementId, EntityId, InspectorElementId, LayoutId,
     PaintIndex, Pixels, PrepaintStateIndex, SharedString, Size, TextLayout, TextStyle, Window,
     WrappedLineLayout,
 };
@@ -143,6 +143,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         plain_text_key: Option<RetainedPlainTextKey>,
     },
     Retained {
+        view_owner: Option<EntityId>,
         bounds: Bounds<Pixels>,
         source_prepaint_range: Range<PrepaintStateIndex>,
         source_paint_range: Range<PaintIndex>,
@@ -628,6 +629,24 @@ impl<E: Element> Drawable<E> {
                     &request_layout as &dyn Any,
                     window,
                 );
+                if identity_stable {
+                    if let Some((owner, retained)) = window.fixed_view_replay(
+                        &retained_id, bounds, layout_fingerprint,
+                    ) {
+                        let prepaint_start = window.prepaint_index();
+                        if window.reuse_prepaint(retained.prepaint_range.clone()) {
+                            self.phase = ElementDrawPhase::Retained {
+                                view_owner: Some(owner),
+                                bounds,
+                                source_prepaint_range: retained.prepaint_range,
+                                source_paint_range: retained.paint_range,
+                                source_metadata_range: retained.metadata_range,
+                                prepaint_range: prepaint_start..window.prepaint_index(),
+                            };
+                            return;
+                        }
+                    }
+                }
                 if let Some((
                     source_prepaint_range,
                     source_paint_range,
@@ -645,6 +664,7 @@ impl<E: Element> Drawable<E> {
                     window,
                 ) {
                     self.phase = ElementDrawPhase::Retained {
+                        view_owner: None,
                         bounds,
                         source_prepaint_range,
                         source_paint_range,
@@ -781,21 +801,32 @@ impl<E: Element> Drawable<E> {
                 }
             }
             ElementDrawPhase::Retained {
+                view_owner,
                 bounds,
                 source_prepaint_range,
                 source_paint_range,
                 source_metadata_range,
                 prepaint_range,
             } => {
-                paint_retained_element(
-                    bounds,
-                    source_prepaint_range,
-                    source_paint_range,
-                    source_metadata_range,
-                    prepaint_range,
-                    window,
-                    cx,
-                );
+                let replay = |window: &mut Window| {
+                    paint_retained_element(
+                        bounds,
+                        source_prepaint_range,
+                        source_paint_range,
+                        source_metadata_range,
+                        prepaint_range,
+                        window,
+                        cx,
+                    );
+                };
+                if let Some(owner) = view_owner {
+                    window.with_rendered_view(owner, replay);
+                    // Preserve the normal View boundary barrier for outer replay.
+                    window.next_frame.retained_unstable_identity_count =
+                        window.next_frame.retained_unstable_identity_count.saturating_add(1);
+                } else {
+                    replay(window);
+                }
                 self.phase = ElementDrawPhase::Painted;
             }
             _ => panic!("must call prepaint before paint"),

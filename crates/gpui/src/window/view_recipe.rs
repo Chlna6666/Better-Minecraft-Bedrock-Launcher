@@ -7,6 +7,7 @@ pub(super) struct CommittedViewRecipe {
     recipe: RetainedViewRecipe,
     context: RetainedPaintContext,
     viewport: Size<Pixels>,
+    reused: bool,
 }
 
 impl Window {
@@ -35,7 +36,8 @@ impl Window {
         {
             return None;
         }
-        let previous = previous.clone();
+        let mut previous = previous.clone();
+        previous.reused = true;
         let recipe = previous.recipe.clone();
         self.next_view_recipes.insert(key, previous);
         // Render did not repeat its dependency reads. The existing committed
@@ -51,8 +53,62 @@ impl Window {
             recipe,
             context: self.current_retained_paint_context(),
             viewport: self.viewport_size,
+            reused: false,
         };
         self.next_view_recipes.insert(key, entry);
+    }
+
+    /// Fixed slots have an independent layout root. Reuse the whole committed
+    /// lifecycle only if the slot's actual geometry and inherited paint state
+    /// match and all descendants have a known static replay contract.
+    pub(crate) fn fixed_view_replay(
+        &self,
+        key: &GlobalElementId,
+        bounds: Bounds<Pixels>,
+        fingerprint: Option<u64>,
+    ) -> Option<(EntityId, super::frame::RetainedReplayRanges)> {
+        let entry = self.next_view_recipes.get(key)?;
+        if !entry.reused || entry.recipe.fixed_size().is_none()
+            || self.force_view_cache_refresh()
+            || fingerprint.is_none()
+        {
+            return None;
+        }
+        let range = self.rendered_frame.retained_element_ranges.get(key)?;
+        if !range.identity_stable
+            || range.bounds != bounds
+            || range.layout_fingerprint != fingerprint
+            || range.paint_context != self.current_retained_paint_context()
+            || range.prepaint_range.start.deferred_draws_index != range.prepaint_range.end.deferred_draws_index
+            || range.prepaint_range.start.tooltips_index != range.prepaint_range.end.tooltips_index
+            || range.prepaint_range.start.accessed_element_states_index != range.prepaint_range.end.accessed_element_states_index
+            || range.paint_range.start.accessed_element_states_index != range.paint_range.end.accessed_element_states_index
+            || range.paint_range.start.mouse_listeners_index != range.paint_range.end.mouse_listeners_index
+            || range.paint_range.start.input_handlers_index != range.paint_range.end.input_handlers_index
+            || range.paint_range.start.tab_handle_index != range.paint_range.end.tab_handle_index
+            || range.prepaint_range.start.hitboxes_index != range.prepaint_range.end.hitboxes_index
+            || range.paint_range.start.cursor_styles_index != range.paint_range.end.cursor_styles_index
+            || range.paint_range.start.window_control_hitboxes_index != range.paint_range.end.window_control_hitboxes_index
+        {
+            return None;
+        }
+        let descendants = self.rendered_frame.retained_element_order.get(range.metadata_range.clone())?;
+        let (root, descendants) = descendants.split_last()?;
+        if self.rendered_frame.retained_element_ranges.get(root)?.metadata_range != range.metadata_range
+            || descendants.is_empty()
+            || !descendants.iter().all(|key| self.rendered_frame.retained_element_ranges.get(key).is_some_and(|child| {
+                child.identity_stable && child.subtree_stable && child.semantic_descriptor.is_some()
+            }))
+            || !self.can_reuse_prepaint(&range.prepaint_range)
+            || !self.can_reuse_paint(&range.paint_range)
+        {
+            return None;
+        }
+        Some((entry.owner, super::frame::RetainedReplayRanges {
+            prepaint_range: range.prepaint_range.clone(),
+            paint_range: range.paint_range.clone(),
+            metadata_range: range.metadata_range.clone(),
+        }))
     }
 
     pub(super) fn commit_view_recipes(&mut self) {

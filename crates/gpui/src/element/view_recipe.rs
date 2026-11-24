@@ -1,6 +1,6 @@
 use crate::{
     AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, Pixels, Window,
+    IntoElement, LayoutId, Pixels, Size, Window,
 };
 use std::rc::Rc;
 
@@ -16,6 +16,7 @@ use std::rc::Rc;
 #[derive(Clone)]
 pub struct RetainedViewRecipe {
     factory: Rc<dyn Fn() -> AnyElement>,
+    fixed_size: Option<Size<Pixels>>,
 }
 
 impl RetainedViewRecipe {
@@ -23,7 +24,25 @@ impl RetainedViewRecipe {
     pub fn new<E: IntoElement + 'static, F: Fn() -> E + 'static>(factory: F) -> Self {
         Self {
             factory: Rc::new(move || factory().into_any_element()),
+            fixed_size: None,
         }
+    }
+
+    /// Opt into an independent fixed-size layout slot. The factory must produce
+    /// content that fits the allocated slot, without relying on its parent flex/grid
+    /// constraints or providing baseline/intrinsic sizing to the parent. Only use
+    /// for static, side-effect-free content; geometry changes rebuild the inner root.
+    pub fn fixed<E: IntoElement + 'static, F: Fn() -> E + 'static>(
+        size: Size<Pixels>,
+        factory: F,
+    ) -> Self {
+        let mut recipe = Self::new(factory);
+        recipe.fixed_size = Some(size);
+        recipe
+    }
+
+    pub(crate) fn fixed_size(&self) -> Option<Size<Pixels>> {
+        self.fixed_size
     }
 
     pub(crate) fn materialize(&self) -> AnyElement {
