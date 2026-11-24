@@ -1784,7 +1784,7 @@ fn encode_batches_into(
     Ok(())
 }
 
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(all(test, any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
 #[path = "culling_tests.rs"]
 pub(super) mod tests;
 

@@ -1,5 +1,5 @@
 use swash::text::{Codepoint, Script};
-#[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(test, target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 use swash::text::BidiClass;
 
 /// Unicode script metadata attached to shaped text.
@@ -76,7 +76,7 @@ impl TextClusterProperties {
 
     /// Raster policy for dense square-script families. This is intentionally separate from script
     /// identity so the glyph/raster cache does not equate "international text" with one region.
-    #[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+    #[cfg(any(test, target_os = "linux", target_os = "freebsd", target_os = "macos"))]
     pub(crate) fn uses_stable_vertical_raster_frame(self) -> bool {
         self.script.uses_stable_vertical_raster_frame()
     }
@@ -110,7 +110,7 @@ impl TextScript {
         self.0.is_joined()
     }
 
-    #[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+    #[cfg(any(test, target_os = "linux", target_os = "freebsd", target_os = "macos"))]
     /// Some dense square-script families benefit from a stable vertical raster frame so glyph
     /// texture bounds do not visibly jump between adjacent glyphs. This is a raster policy, not a
     /// substitute for script detection: all scripts are still represented by `TextScript`.
@@ -153,7 +153,7 @@ pub(crate) fn text_script(text: &str) -> TextScript {
 }
 
 /// Resolve script, bidi and shaping-relevant Unicode properties for one cluster or short span.
-#[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(test, target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 pub(crate) fn text_cluster_properties(text: &str) -> TextClusterProperties {
     let mut properties = TextClusterProperties {
         script: TextScript::UNKNOWN,
@@ -169,7 +169,7 @@ pub(crate) fn text_cluster_properties(text: &str) -> TextClusterProperties {
 }
 
 #[inline]
-#[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(test, target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 fn accumulate_character_properties(
     properties: &mut TextClusterProperties,
     fallback_script: &mut TextScript,
@@ -195,7 +195,7 @@ fn accumulate_character_properties(
 }
 
 #[inline]
-#[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(test, target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 fn finalize_cluster_properties(
     mut properties: TextClusterProperties,
     fallback_script: TextScript,
@@ -215,7 +215,7 @@ fn finalize_cluster_properties(
 
 /// Resolve script, bidi and shaping-relevant Unicode properties for a single scalar value without
 /// encoding it into a temporary UTF-8 span first.
-#[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(test, target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 pub(crate) fn char_cluster_properties(character: char) -> TextClusterProperties {
     let mut properties = TextClusterProperties {
         script: TextScript::UNKNOWN,
@@ -228,7 +228,7 @@ pub(crate) fn char_cluster_properties(character: char) -> TextClusterProperties 
 
 /// Returns whether a single scalar value should be checked against the active font face for
 /// coverage before shaping/raster fallback chooses a substitute face.
-#[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(test, target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 pub(crate) fn character_needs_font_coverage_probe(character: char) -> bool {
     !character.is_ascii() && char_cluster_properties(character).font_coverage_probe_required()
 }
@@ -238,7 +238,7 @@ pub(crate) fn character_needs_font_coverage_probe(character: char) -> bool {
 /// This deliberately skips combining marks, joiners and other script-neutral glue when they do not
 /// themselves require coverage. Fallback selection should be driven by the base scalar or emoji in
 /// a cluster, not by a Unicode control that does not map to a visible glyph by itself.
-#[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(test, target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 pub(crate) fn text_font_coverage_probe_character(text: &str) -> Option<char> {
     text.chars()
         .find(|character| character_needs_font_coverage_probe(*character))
@@ -272,12 +272,12 @@ pub(crate) fn text_contains_missing_font_coverage(
 ///
 /// This is a raster policy for dense square-script families and must not be used as a generic
 /// international-text or fallback predicate.
-#[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(test, target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 pub(crate) fn text_uses_stable_vertical_raster_frame(text: &str) -> bool {
     text_cluster_properties(text).uses_stable_vertical_raster_frame()
 }
 
-#[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(test, target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 fn strong_direction(bidi: BidiClass) -> TextDirection {
     match bidi {
         BidiClass::L | BidiClass::LRE | BidiClass::LRI | BidiClass::LRO => {

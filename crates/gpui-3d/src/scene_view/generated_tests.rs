@@ -318,9 +318,12 @@ pub(super) fn probe_generated<D: Device + TextureTransferDevice>(
 
 fn shader<D: Device>(device: &mut D, stage: ShaderStage, entry: &str) -> ShaderModuleId {
     let artifact = match D::BACKEND_KIND {
+        #[cfg(target_os = "windows")]
         BackendKind::Dx11 => artifacts::scene_view_dx11_shader(entry),
+        #[cfg(target_os = "windows")]
         BackendKind::Dx12 => artifacts::scene_view_dx12_shader(entry),
         BackendKind::Vulkan => artifacts::scene_view_vulkan_shader(entry),
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         BackendKind::OpenGl => artifacts::scene_view_opengl_shader(entry),
         _ => None,
     }
@@ -805,6 +808,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
 }
 /// Optional native regression: two independent Generated Sections must
 /// share one face-buffer allocation without aliasing descriptors or counts.
+#[cfg(target_os = "windows")]
 #[test]
 #[ignore = "requires D3D11 device; shared GPU face pool and deferred retirement"]
 fn generated_faces_share_a_page_with_independent_section_offsets() {
@@ -895,11 +899,13 @@ fn generated_faces_share_a_page_with_independent_section_offsets() {
     assert_eq!(arguments.stats().0, 0);
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 #[ignore = "requires D3D11; offscreen GPU-generated mesh counts"]
 fn gpu_mesher_dx11() {
     verify(gfx_dx11::Dx11Device::new(&DeviceDescriptor::default()).unwrap());
 }
+#[cfg(target_os = "windows")]
 #[test]
 #[ignore = "requires D3D12; offscreen GPU-generated mesh counts"]
 fn gpu_mesher_dx12() {
@@ -910,6 +916,7 @@ fn gpu_mesher_dx12() {
 fn gpu_mesher_vulkan() {
     verify(gfx_vulkan::VulkanDevice::new(&DeviceDescriptor::default()).unwrap());
 }
+#[cfg(target_os = "windows")]
 #[test]
 #[ignore = "requires OpenGL; hidden bootstrap only, no presentation"]
 fn gpu_mesher_opengl() {

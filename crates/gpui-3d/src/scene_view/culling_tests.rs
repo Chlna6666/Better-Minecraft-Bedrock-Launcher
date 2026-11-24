@@ -11,9 +11,11 @@ use crate::{
     Transform, Vec2, Vec3, Vertex,
 };
 use gfx_core::*;
+#[cfg(target_os = "windows")]
 use gfx_dx11::Dx11Device;
 use std::{collections::HashMap, sync::Arc};
 
+#[cfg(target_os = "windows")]
 #[path = "hiz_tests.rs"]
 mod hiz_tests;
 
@@ -124,9 +126,12 @@ pub(in crate::scene_view) fn upload(
 
 fn shader<D: Device>(device: &mut D, stage: ShaderStage, entry: &str) -> ShaderModuleId {
     let artifact = match D::BACKEND_KIND {
+        #[cfg(target_os = "windows")]
         BackendKind::Dx11 => artifacts::scene_view_dx11_shader(entry),
+        #[cfg(target_os = "windows")]
         BackendKind::Dx12 => artifacts::scene_view_dx12_shader(entry),
         BackendKind::Vulkan => artifacts::scene_view_vulkan_shader(entry),
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         BackendKind::OpenGl => artifacts::scene_view_opengl_shader(entry),
         _ => None,
     }
@@ -320,6 +325,7 @@ pub(in crate::scene_view) fn graphics_group<D: Device>(
     (group, pipeline_layout)
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 #[ignore = "requires Windows D3D11 hardware; no window is created"]
 fn gpu_compacts_voxel_instances_and_camera_updates_reuse_buffers() {
@@ -335,6 +341,7 @@ fn vulkan_compacts_voxel_instances_and_camera_updates_reuse_buffers() {
     );
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 #[ignore = "requires Windows D3D12 hardware; no window is created"]
 fn dx12_compacts_voxel_instances_and_camera_updates_reuse_buffers() {
@@ -344,6 +351,7 @@ fn dx12_compacts_voxel_instances_and_camera_updates_reuse_buffers() {
     );
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 #[ignore = "requires OpenGL4.5 and ARB_shader_draw_parameters; renders only offscreen"]
 fn opengl_compacts_voxel_instances_and_camera_updates_reuse_buffers() {
@@ -366,6 +374,7 @@ fn opengl_compacts_voxel_instances_and_camera_updates_reuse_buffers() {
     verify_gpu_compaction(device, 1);
 }
 
+#[cfg(target_os = "windows")]
 #[test]
 #[ignore = "requires Windows D3D11 hardware; profiles many indirect draws without a window"]
 fn profile_many_indirect_draws() {
