@@ -103,20 +103,18 @@ pub(super) fn render_connectivity_modal(
 
 fn frame_rate_row(colors: &ThemeColors, state: &SettingsPageState) -> impl IntoElement {
     let values = vec![
-        SharedString::from("auto"),
         SharedString::from("vsync"),
         SharedString::from("custom"),
         SharedString::from("unlimited"),
     ];
     let labels = vec![
-        t!("LauncherSettings.fps.auto"),
         t!("LauncherSettings.fps.vsync"),
         t!("LauncherSettings.fps.custom"),
         t!("LauncherSettings.fps.unlimited"),
     ];
     let selected_index = values
         .iter()
-        .position(|v| v.as_ref() == state.frame_rate_mode.as_ref())
+        .position(|v| v.as_ref() == crate::frame_rate::normalized_mode(state.frame_rate_mode.as_ref()))
         .unwrap_or(0);
     let options = labels
         .iter()
@@ -135,7 +133,7 @@ fn frame_rate_row(colors: &ThemeColors, state: &SettingsPageState) -> impl IntoE
             let new_mode = values
                 .get(index)
                 .cloned()
-                .unwrap_or_else(|| SharedString::from("auto"));
+                .unwrap_or_else(|| SharedString::from("vsync"));
             let snapshot = cx.update_global(|settings: &mut SettingsPageState, _cx| {
                 settings.frame_rate_mode = new_mode;
                 super::common::snapshot_from_state(settings)

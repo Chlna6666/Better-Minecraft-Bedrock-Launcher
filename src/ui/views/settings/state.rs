@@ -245,7 +245,7 @@ impl SettingsPageState {
             gpu_adapter_options: Vec::new(),
             debug: false,
             gpui_trace: false,
-            frame_rate_mode: SharedString::from("auto"),
+            frame_rate_mode: SharedString::from("vsync"),
             frame_rate_limit: 120,
             frame_rate_limit_input: None,
             stats_upload: false,

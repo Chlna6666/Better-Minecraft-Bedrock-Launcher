@@ -84,24 +84,12 @@ fn scene_matches_committed_drawable(
 }
 
 pub(super) fn backend_present_mode(
-    backend: RendererBackend,
+    _backend: RendererBackend,
     renderer_options: &RendererOptions,
 ) -> gfx_core::PresentMode {
     match renderer_options.present_mode {
-        // Windows already paces the native owner with DwmFlush. Asking DXGI to wait for another
-        // vblank after that wake can halve the display cadence. Mailbox maps to Present(0, 0),
-        // without ALLOW_TEARING; DWM remains the pacing authority for the composed surface.
-        PresentModePreference::AutoVsync
-            if cfg!(target_os = "windows")
-                && matches!(
-                    backend,
-                    RendererBackend::NovaOpenGl
-                        | RendererBackend::NovaDx11
-                        | RendererBackend::NovaDx12
-                ) =>
-        {
-            gfx_core::PresentMode::Mailbox
-        }
+        // Native FIFO is the presentation authority on every backend. The platform
+        // frame callback schedules UI work; swapchain readiness gates submission.
         PresentModePreference::AutoVsync => gfx_core::PresentMode::Fifo,
         PresentModePreference::Mailbox => gfx_core::PresentMode::Mailbox,
         PresentModePreference::Immediate => gfx_core::PresentMode::Immediate,

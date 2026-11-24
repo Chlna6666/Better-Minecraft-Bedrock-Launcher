@@ -1,8 +1,7 @@
-//! Application-wide UI frame pacing. Display VSync remains authoritative in auto
-//! mode; explicit custom/unlimited modes opt in to Immediate presentation.
+//! Application-wide UI frame pacing. Native VSync is the default; explicit
+//! custom/unlimited modes opt in to Immediate presentation.
 use gpui::{App, AppContext as _, FrameClock, PresentModePreference};
 
-pub(crate) const DEFAULT_FPS: u32 = 120;
 pub(crate) const MAX_FPS: u32 = 1000;
 
 pub(crate) fn normalized_mode(mode: &str) -> &'static str {
@@ -10,21 +9,20 @@ pub(crate) fn normalized_mode(mode: &str) -> &'static str {
         "vsync" => "vsync",
         "custom" => "custom",
         "unlimited" => "unlimited",
-        _ => "auto",
+        _ => "vsync",
     }
 }
 
 pub(crate) fn frame_clock(mode: &str, fps: u32) -> FrameClock {
     match normalized_mode(mode) {
-        "unlimited" | "vsync" => FrameClock::System,
         "custom" => FrameClock::fixed_fps(fps.clamp(1, MAX_FPS))
             .expect("validated nonzero custom FPS"),
-        _ => FrameClock::fixed_fps(DEFAULT_FPS).expect("nonzero default FPS"),
+        _ => FrameClock::System,
     }
 }
 
 pub(crate) fn present_mode(mode: &str) -> PresentModePreference {
-    if matches!(normalized_mode(mode), "auto" | "vsync") {
+    if normalized_mode(mode) == "vsync" {
         PresentModePreference::AutoVsync
     } else {
         PresentModePreference::Immediate
@@ -63,8 +61,9 @@ pub(crate) fn apply_window_clock(mode: &str, fps: u32, cx: &mut App) {
 mod tests {
     use super::*;
     #[test]
-    fn auto_is_always_120_ceiling_without_disabling_vsync() {
-        assert_eq!(frame_clock("auto", 240).fps().unwrap().get(), 120);
+    fn legacy_auto_uses_native_vsync_without_software_cap() {
+        assert_eq!(normalized_mode("auto"), "vsync");
+        assert!(frame_clock("auto", 240).fps().is_none());
         assert_eq!(present_mode("auto"), PresentModePreference::AutoVsync);
     }
     #[test]
@@ -72,8 +71,8 @@ mod tests {
         assert_eq!(normalized_mode("vsync"), "vsync");
         assert!(frame_clock("vsync", 300).fps().is_none());
         assert_eq!(present_mode("vsync"), PresentModePreference::AutoVsync);
-        // Original default policy is unchanged.
-        assert_eq!(frame_clock("auto", 300).fps().unwrap().get(), 120);
+        assert!(frame_clock("auto", 300).fps().is_none());
+        assert!(frame_clock("unknown", 300).fps().is_none());
     }
 
     #[test]

@@ -152,6 +152,8 @@ impl Window {
             .set_frame_interval(frame_clock.interval());
         let pending_request = {
             let mut state = self.frame_clock_state.borrow_mut();
+            // The old clock phase cannot constrain the first frame of the new mode.
+            state.last_frame_started_at = None;
             state.cancel_timer();
             state.pending_request.take()
         };

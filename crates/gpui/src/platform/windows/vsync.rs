@@ -311,6 +311,11 @@ pub(super) fn spawn_vsync_thread(
                         wait_for_unpaced_tick(&thread_scheduler, &mut last_unpaced_tick)
                     } else {
                         last_unpaced_tick = None;
+                        // Use the latest reported refresh period after monitor/rate changes,
+                        // not the startup value when DWM timing temporarily fails.
+                        let interval = Duration::from_nanos(
+                            thread_scheduler.refresh_interval_ns.load(Ordering::Acquire),
+                        );
                         wait_for_vsync(interval, &mut last_foreground_tick)
                     }
                 } else {

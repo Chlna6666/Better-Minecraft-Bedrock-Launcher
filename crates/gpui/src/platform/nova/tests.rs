@@ -92,21 +92,16 @@ fn test_sprite_bind_group(
 }
 
 #[test]
-fn auto_vsync_uses_the_platform_pacing_authority() {
+fn auto_vsync_uses_native_fifo_on_all_nova_backends() {
     let options = RendererOptions::default();
-
-    assert_eq!(
-        backend_present_mode(RendererBackend::NovaDx12, &options),
-        if cfg!(target_os = "windows") {
-            gfx_core::PresentMode::Mailbox
-        } else {
-            gfx_core::PresentMode::Fifo
-        }
-    );
-    assert_eq!(
-        backend_present_mode(RendererBackend::NovaVulkan, &options),
-        gfx_core::PresentMode::Fifo
-    );
+    for backend in [
+        RendererBackend::NovaDx11,
+        RendererBackend::NovaDx12,
+        RendererBackend::NovaOpenGl,
+        RendererBackend::NovaVulkan,
+    ] {
+        assert_eq!(backend_present_mode(backend, &options), gfx_core::PresentMode::Fifo);
+    }
 }
 
 #[test]

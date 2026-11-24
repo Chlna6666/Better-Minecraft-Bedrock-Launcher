@@ -1582,8 +1582,11 @@ pub(crate) struct Callbacks {
 impl WindowsWindow {
     pub(crate) fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
         let mut cadence = self.0.ui_frame_cadence.get();
-        cadence.interval = interval;
-        self.0.ui_frame_cadence.set(cadence);
+        if cadence.interval != interval {
+            cadence = crate::platform::FrameCadence::default();
+            cadence.interval = interval;
+            self.0.ui_frame_cadence.set(cadence);
+        }
         let mut renderer_state = self.0.renderer.borrow_mut();
         if let WindowsRendererState::Ready(renderer) = &mut *renderer_state {
             renderer.set_frame_interval(interval);
