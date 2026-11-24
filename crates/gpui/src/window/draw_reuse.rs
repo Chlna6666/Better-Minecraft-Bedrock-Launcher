@@ -523,6 +523,10 @@ impl Window {
     }
 
     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) -> bool {
+        self.reuse_paint_at(range, Point::default())
+    }
+
+    pub(crate) fn reuse_paint_at(&mut self, range: Range<PaintIndex>, delta: Point<Pixels>) -> bool {
         let _work = super::element_work::begin_named(
             "reuse_paint_range",
             super::element_work::ElementWorkPhase::Replay,
@@ -541,7 +545,8 @@ impl Window {
             let records: Vec<_> = self.rendered_frame.debug_bounds_records
                 [range.start.debug_bounds_index..range.end.debug_bounds_index]
                 .to_vec();
-            for (selector, bounds) in records {
+            for (selector, mut bounds) in records {
+                bounds.origin += delta;
                 self.next_frame.record_debug_bounds(selector, bounds);
             }
         }
@@ -593,6 +598,22 @@ impl Window {
             .reuse_layouts(range.start.line_layout_index.clone()..range.end.line_layout_index);
         let old_scene_range = range.start.scene_index..range.end.scene_index;
         let replay_start = self.next_frame.painter.len();
+        if delta != Point::default() {
+            let factor = self.scale_factor();
+            let delta = point(ScaledPixels(delta.x.0 * factor), ScaledPixels(delta.y.0 * factor));
+            let operations = self.rendered_frame.scene().paint_operations.range(old_scene_range.clone());
+            for operation in operations.iter() {
+                let crate::PaintOperation::Primitive(crate::Primitive::Quad(quad)) = operation else {
+                    unreachable!("translated view paint must be prevalidated");
+                };
+                let mut quad = *quad;
+                quad.bounds.origin += delta;
+                self.next_frame.painter.insert_primitive(quad);
+            }
+            // Translated primitives have new absolute geometry and ordering.
+            // Never attach the old GPU upload chunk proof to this span.
+            return self.next_frame.painter.len() - replay_start == old_scene_range.len();
+        }
         let spans = self
             .rendered_frame
             .retained_paint
@@ -920,6 +941,15 @@ impl Window {
     ///
     /// The source metadata is post-order and contiguous, so this is O(subtree retained nodes) and
     /// never scans unrelated entries in the frame-wide retained map.
+    pub(crate) fn translate_replayed_metadata(&mut self, start: usize, delta: Point<Pixels>) {
+        if delta == Point::default() { return; }
+        for key in &self.next_frame.retained_element_order[start..] {
+            if let Some(range) = self.next_frame.retained_element_ranges.get_mut(key) {
+                range.bounds.origin += delta;
+            }
+        }
+    }
+
     pub(crate) fn replay_retained_element_metadata(
         &mut self,
         source_prepaint: &Range<PrepaintStateIndex>,

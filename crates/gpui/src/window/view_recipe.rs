@@ -66,7 +66,7 @@ impl Window {
         key: &GlobalElementId,
         bounds: Bounds<Pixels>,
         fingerprint: Option<u64>,
-    ) -> Option<(EntityId, super::frame::RetainedReplayRanges)> {
+    ) -> Option<(EntityId, super::frame::RetainedReplayRanges, Point<Pixels>)> {
         let entry = self.next_view_recipes.get(key)?;
         if !entry.reused || entry.recipe.fixed_size().is_none()
             || self.force_view_cache_refresh()
@@ -76,7 +76,7 @@ impl Window {
         }
         let range = self.rendered_frame.retained_element_ranges.get(key)?;
         if !range.identity_stable
-            || range.bounds != bounds
+            || range.bounds.size != bounds.size
             || range.layout_fingerprint != fingerprint
             || range.paint_context != self.current_retained_paint_context()
             || range.prepaint_range.start.deferred_draws_index != range.prepaint_range.end.deferred_draws_index
@@ -86,7 +86,6 @@ impl Window {
             || range.paint_range.start.mouse_listeners_index != range.paint_range.end.mouse_listeners_index
             || range.paint_range.start.input_handlers_index != range.paint_range.end.input_handlers_index
             || range.paint_range.start.tab_handle_index != range.paint_range.end.tab_handle_index
-            || range.prepaint_range.start.hitboxes_index != range.prepaint_range.end.hitboxes_index
             || range.paint_range.start.cursor_styles_index != range.paint_range.end.cursor_styles_index
             || range.paint_range.start.window_control_hitboxes_index != range.paint_range.end.window_control_hitboxes_index
         {
@@ -104,11 +103,94 @@ impl Window {
         {
             return None;
         }
+        let delta = bounds.origin - range.bounds.origin;
+        if delta != Point::default() && !self.can_translate_fixed_view(range, bounds, delta) {
+            return None;
+        }
         Some((entry.owner, super::frame::RetainedReplayRanges {
             prepaint_range: range.prepaint_range.clone(),
             paint_range: range.paint_range.clone(),
             metadata_range: range.metadata_range.clone(),
-        }))
+        }, delta))
+    }
+
+    // Translation is deliberately narrower than stationary replay: only
+    // static quads under an unchanged rectangular ancestor clip, with all
+    // pixels inside both slot positions. The paint list must keep its exact
+    // cardinality, so a newly clipped or newly visible primitive is a miss.
+    fn can_translate_fixed_view(
+        &self,
+        range: &super::frame::RetainedElementRange,
+        bounds: Bounds<Pixels>,
+        delta: Point<Pixels>,
+    ) -> bool {
+        let context = &range.paint_context;
+        let scale = context.device_scale_factor;
+        let dx = delta.x.0 * scale;
+        let dy = delta.y.0 * scale;
+        if context.scale != 1.0 || context.translation != Point::default()
+            || !dx.is_finite() || !dy.is_finite()
+            || dx != dx.round() || dy != dy.round()
+            || context.content_mask != context.visual_content_mask
+            || context.content_mask.corner_radii != Corners::default()
+            || range.bounds.intersect(&context.content_mask.bounds) != range.bounds
+            || bounds.intersect(&context.content_mask.bounds) != bounds
+        {
+            return false;
+        }
+        let clip = context.content_mask.scale(scale);
+        let old_slot = range.bounds.scale(scale);
+        let new_slot = bounds.scale(scale);
+        let scaled_delta = point(ScaledPixels(dx), ScaledPixels(dy));
+        let Some(operations) = self.rendered_frame.scene().paint_operations.get_range(
+            range.paint_range.start.scene_index..range.paint_range.end.scene_index
+        ) else { return false; };
+        if !operations.iter().all(|operation| {
+            let crate::PaintOperation::Primitive(crate::Primitive::Quad(quad)) = operation else { return false; };
+            let mut moved = quad.bounds;
+            moved.origin += scaled_delta;
+            quad.animation_id.is_none() && quad.content_mask == clip
+                && !quad.bounds.is_empty()
+                && quad.bounds.intersect(&old_slot) == quad.bounds
+                && moved.intersect(&new_slot) == moved
+                && moved.intersect(&clip.bounds) == moved
+        }) {
+            return false;
+        }
+        let hitboxes = &self.rendered_frame.hitboxes[
+            range.prepaint_range.start.hitboxes_index..range.prepaint_range.end.hitboxes_index
+        ];
+        if !hitboxes.iter().all(|hitbox| {
+            hitbox.content_mask == context.content_mask
+                && hitbox.bounds.intersect(&range.bounds) == hitbox.bounds
+        }) {
+            return false;
+        }
+        // Internal scroll clips or transformed descendants require their own
+        // coordinate spaces. Keep the initial translation implementation flat.
+        self.rendered_frame.retained_element_order[range.metadata_range.clone()].iter().all(|key| {
+            self.rendered_frame.retained_element_ranges.get(key).is_some_and(|child| {
+                child.paint_context == *context
+                    && child.bounds.intersect(&range.bounds) == child.bounds
+            })
+        })
+    }
+
+    pub(crate) fn reuse_fixed_view_prepaint(
+        &mut self,
+        range: Range<PrepaintStateIndex>,
+        delta: Point<Pixels>,
+    ) -> bool {
+        let start = self.next_frame.hitboxes.len();
+        if !self.reuse_prepaint(range) {
+            return false;
+        }
+        if delta != Point::default() {
+            for hitbox in &mut self.next_frame.hitboxes[start..] {
+                hitbox.bounds.origin += delta;
+            }
+        }
+        true
     }
 
     pub(super) fn commit_view_recipes(&mut self) {

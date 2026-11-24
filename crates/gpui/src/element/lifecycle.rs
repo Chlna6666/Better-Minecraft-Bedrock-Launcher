@@ -1,7 +1,7 @@
 use crate::window::{RetainedElementIdentity, debug_visualization::ViewCacheDebugStatus};
 use crate::{
     App, AvailableSpace, Bounds, DispatchNodeId, ElementId, EntityId, InspectorElementId, LayoutId,
-    PaintIndex, Pixels, PrepaintStateIndex, SharedString, Size, TextLayout, TextStyle, Window,
+    PaintIndex, Pixels, Point, PrepaintStateIndex, SharedString, Size, TextLayout, TextStyle, Window,
     WrappedLineLayout,
 };
 use derive_more::Deref;
@@ -144,6 +144,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
     },
     Retained {
         view_owner: Option<EntityId>,
+        translation: Point<Pixels>,
         bounds: Bounds<Pixels>,
         source_prepaint_range: Range<PrepaintStateIndex>,
         source_paint_range: Range<PaintIndex>,
@@ -485,6 +486,7 @@ fn record_retained_painted_element(
 #[inline(never)]
 fn paint_retained_element(
     bounds: Bounds<Pixels>,
+    translation: Point<Pixels>,
     source_prepaint_range: Range<PrepaintStateIndex>,
     source_paint_range: Range<PaintIndex>,
     source_metadata_range: Range<usize>,
@@ -493,7 +495,8 @@ fn paint_retained_element(
     cx: &mut App,
 ) {
     let paint_start = window.paint_index();
-    if window.reuse_paint(source_paint_range.clone()) {
+    let metadata_start = window.retained_element_metadata_len();
+    if window.reuse_paint_at(source_paint_range.clone(), translation) {
         let paint_end = window.paint_index();
         let paint_range = paint_start..paint_end;
         if window.replay_retained_element_metadata(
@@ -503,6 +506,7 @@ fn paint_retained_element(
             &prepaint_range,
             &paint_range,
         ) {
+            window.translate_replayed_metadata(metadata_start, translation);
             window.record_debug_view_cache_status(bounds, ViewCacheDebugStatus::Hit, cx);
         } else {
             window.degrade_current_draw();
@@ -630,13 +634,14 @@ impl<E: Element> Drawable<E> {
                     window,
                 );
                 if identity_stable {
-                    if let Some((owner, retained)) = window.fixed_view_replay(
+                    if let Some((owner, retained, translation)) = window.fixed_view_replay(
                         &retained_id, bounds, layout_fingerprint,
                     ) {
                         let prepaint_start = window.prepaint_index();
-                        if window.reuse_prepaint(retained.prepaint_range.clone()) {
+                        if window.reuse_fixed_view_prepaint(retained.prepaint_range.clone(), translation) {
                             self.phase = ElementDrawPhase::Retained {
                                 view_owner: Some(owner),
+                                translation,
                                 bounds,
                                 source_prepaint_range: retained.prepaint_range,
                                 source_paint_range: retained.paint_range,
@@ -665,6 +670,7 @@ impl<E: Element> Drawable<E> {
                 ) {
                     self.phase = ElementDrawPhase::Retained {
                         view_owner: None,
+                        translation: Point::default(),
                         bounds,
                         source_prepaint_range,
                         source_paint_range,
@@ -802,6 +808,7 @@ impl<E: Element> Drawable<E> {
             }
             ElementDrawPhase::Retained {
                 view_owner,
+                translation,
                 bounds,
                 source_prepaint_range,
                 source_paint_range,
@@ -811,6 +818,7 @@ impl<E: Element> Drawable<E> {
                 let replay = |window: &mut Window| {
                     paint_retained_element(
                         bounds,
+                        translation,
                         source_prepaint_range,
                         source_paint_range,
                         source_metadata_range,
