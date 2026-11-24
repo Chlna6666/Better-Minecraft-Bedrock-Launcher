@@ -321,6 +321,11 @@ impl NovaBackend {
         _limit: u32,
     ) -> Result<Option<u32>> {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(device) => Ok(device.set_frame_latency_limit(_swapchain, _limit)?),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
             Self::Dx11(device) => Ok(device.set_frame_latency_limit(_swapchain, _limit)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]

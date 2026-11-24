@@ -62,24 +62,37 @@ impl PresentationDevice for OpenGlDevice {
     }
 
     // GLsync completion is GPU backpressure, not compositor presentation feedback.
-    // FIFO keeps one submitted window frame outstanding; immediate/mailbox keep
-    // their existing policy. The owner retries without a blocking GL wait.
+    // The ordered context guarantees completion of earlier work when this fence signals.
+    // Two inline IDs suffice; no additional fences or per-frame allocation.
     fn poll_present_readiness(&mut self, swapchain: SwapchainId) -> Result<bool> {
         let chain = self.swapchains.get(swapchain)?;
         if chain.config.present_mode != PresentMode::Fifo {
             return Ok(true);
         }
-        let Some(submission) = chain.last_present else {
+        let index = chain.present_limit - 1;
+        let Some(submission) = chain.present_history[index] else {
             return Ok(true);
         };
         match self.poll_submission(submission)? {
             SubmissionStatus::Complete => {
-                self.swapchains.get_mut(swapchain)?.last_present = None;
+                let history = &mut self.swapchains.get_mut(swapchain)?.present_history;
+                history[index..].fill(None);
                 Ok(true)
             }
             SubmissionStatus::Pending => Ok(false),
             SubmissionStatus::Failed(error) => Err(Error::Backend(error)),
         }
+    }
+
+    fn set_frame_latency_limit(&mut self, swapchain: SwapchainId, requested: u32) -> Result<Option<u32>> {
+        let chain = self.swapchains.get_mut(swapchain)?;
+        if chain.config.present_mode != PresentMode::Fifo {
+            return Ok(None);
+        }
+        let limit = requested.clamp(1, 2);
+        // Never discard an outstanding fence on a budget change.
+        chain.present_limit = limit as usize;
+        Ok(Some(limit))
     }
 
     fn render_and_present(

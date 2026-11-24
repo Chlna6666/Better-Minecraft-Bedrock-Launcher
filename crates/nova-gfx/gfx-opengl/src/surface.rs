@@ -38,7 +38,8 @@ pub(crate) struct Swapchain {
     pub(crate) framebuffer: glow::NativeFramebuffer,
     pub(crate) config: SurfaceConfig,
     pub(crate) source_extent: Extent2d,
-    pub(crate) last_present: Option<SubmissionId>,
+    pub(crate) present_history: [Option<SubmissionId>; 2],
+    pub(crate) present_limit: usize,
     source: SurfaceId,
 }
 impl SurfaceDevice for OpenGlDevice {
@@ -116,7 +117,8 @@ impl SurfaceDevice for OpenGlDevice {
             framebuffer,
             config,
             source_extent,
-            last_present: None,
+            present_history: [None; 2],
+            present_limit: config.resolve_frame_latency(1, 1, 2) as usize,
             source,
         }))
     }
@@ -273,6 +275,7 @@ impl OpenGlDevice {
             )
             .map_err(native)?;
         chain.config = config;
+        chain.present_limit = config.resolve_frame_latency(1, 1, 2) as usize;
         self.park()?;
         Ok(id)
     }
@@ -419,7 +422,8 @@ impl OpenGlDevice {
         let post_present_cleanup = cleanup_started.elapsed();
         let signal_started = std::time::Instant::now();
         let submission = self.signal()?;
-        self.swapchains.get_mut(id)?.last_present = Some(submission);
+        let history = &mut self.swapchains.get_mut(id)?.present_history;
+        *history = [Some(submission), history[0]];
         Ok((
             submission,
             PresentTimings {
@@ -456,7 +460,8 @@ impl OpenGlDevice {
         chain.window.swap_buffers(&self.context).map_err(native)?;
         self.park()?;
         let submission = self.signal()?;
-        self.swapchains.get_mut(id)?.last_present = Some(submission);
+        let history = &mut self.swapchains.get_mut(id)?.present_history;
+        *history = [Some(submission), history[0]];
         Ok(())
     }
 }

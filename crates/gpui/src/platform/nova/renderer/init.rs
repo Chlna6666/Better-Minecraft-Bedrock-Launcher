@@ -101,6 +101,14 @@ impl NovaRenderer {
         let mut surface_config = SurfaceConfig::new(width, height, Format::Bgra8Unorm)
             .context("creating nova-gfx surface config")?;
         surface_config.present_mode = backend_present_mode(backend, renderer_options);
+        if backend == RendererBackend::NovaOpenGl
+            && matches!(renderer_options.present_mode, PresentModePreference::AutoVsync)
+            && submission_mode != GpuSubmissionMode::Synchronous
+        {
+            // Match the already allocated GPUI frame-resource budget.
+            // Native swap interval remains the display pacing authority.
+            surface_config.desired_maximum_frame_latency = MAX_IN_FLIGHT_SUBMISSIONS as u32;
+        }
         let surface_alpha = Self::alpha_state_on_backend(backend, transparent);
         surface_config.alpha_mode = surface_alpha.swapchain_mode;
         let present_mode = surface_config.present_mode;
