@@ -200,7 +200,7 @@ python3 scripts/bedrock-block-catalog/import_id_registry.py \
 
 `bedrock-world::block::palettes` 提供来自 **BDS 运行时逆向**的方块调色板数据，与 PDB 静态符号证据互补：
 
-- `palettes/*.nbt` 是 `pmmp/bds-mod-mapping` 在真实 BDS 中 dump 的运行时调色板（经 `opencollab-incubator/BedrockBlockPaletteArchive` 归档），共 51 个版本（1.09～1.26.60），**原始未加工**供开发者查看。`palettes/manifest.json` 记录每个文件的 SHA-256 与来源 URL。格式为拼接的 varint NBT root，**状态在文件中的索引 = 该版本的 network runtime ID**。
+- `palettes/*.nbt` 是 `pmmp/bds-mod-mapping` 在真实 BDS 中 dump 的运行时调色板（经 `opencollab-incubator/BedrockBlockPaletteArchive` 归档），共 51 个版本（1.09～1.26.60），**原始未加工**供开发者查看。`palettes/manifest.json` 记录每个文件的 SHA-256 与来源 URL。格式为拼接的 varint NBT root，**状态在文件中的索引是 palette index，不保证等于网络 runtime ID**：旧版本网络 ID 与索引相同，但 1.26.51+ 使用基于状态哈希的网络方块 ID，禁止把索引直接用于线路通信。pre-1.13 的 dump 是磁盘 blockitem 调色板，也不是网络调色板。
 - `runtime-palettes/` 是由 `scripts/bedrock-block-catalog/gen_runtime_palette_catalog.py` 烘焙的紧凑查询 blob（CRC32 + zstd，50 个可解析版本），`scripts/.../parse_runtime_palette.py` 是 varint NBT 解析器。每条状态保留**精确类型化属性**（Byte/Int/String，实测数据只有这三种）与**持久化的 NBT storage version**（不是游戏版本号）。
 - 查询 API：`runtime_palette_versions()`、`runtime_palette_for(label)`、`runtime_palette_state(label, runtime_id)`；版本 label 原样保留（大量是 beta 构建，如 `1.20.80.24_beta`），不是四段稳定版本号。
 - 证据边界：这是运行时注册表观测，**没有默认状态字段、没有 legacy numeric ID**，不得用于写世界或破坏性迁移；早期（pre-1.13）dump 是磁盘 blockitem 调色板、无 NBT version，故不进入查询 blob。
