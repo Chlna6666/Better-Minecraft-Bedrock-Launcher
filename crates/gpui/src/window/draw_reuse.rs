@@ -975,6 +975,9 @@ impl Window {
             let Some(source_range) = self.rendered_frame.retained_element_ranges.get(key) else {
                 return false;
             };
+            if self.next_frame.retained_element_ranges.contains_key(key) {
+                return false;
+            }
             if source_range.metadata_range.start < source_metadata.start
                 || source_range.metadata_range.end > source_metadata.end
                 || rebase_prepaint_range(
@@ -1028,15 +1031,25 @@ impl Window {
             moved.reserve(replayed_count);
         }
 
+        // An abortable generation cannot consume committed reconciliation
+        // metadata. Its layout liveness and retry admission still depend on
+        // the original ranges, whose indices must remain in the old frame.
+        // Non-abortable frames retain the allocation-free move path.
+        let preserve_committed = self.frame_can_degrade;
         for source_index in source_metadata.clone() {
             let key = self.rendered_frame.retained_element_order[source_index].clone();
-            let Some(range) = self.rendered_frame.retained_element_ranges.remove(&key) else {
-                // Duplicate/missing identity: restore every payload already moved and abandon replay.
-                for (key, range) in moved.drain(..) {
-                    self.rendered_frame
-                        .retained_element_ranges
-                        .insert(key, range);
+            let range = if preserve_committed {
+                self.rendered_frame.retained_element_ranges.get(&key).cloned()
+            } else {
+                self.rendered_frame.retained_element_ranges.remove(&key)
+            };
+            let Some(range) = range else {
+                if !preserve_committed {
+                    for (key, range) in moved.drain(..) {
+                        self.rendered_frame.retained_element_ranges.insert(key, range);
+                    }
                 }
+                moved.clear();
                 self.next_frame.retained_replay_scratch = moved;
                 return false;
             };
