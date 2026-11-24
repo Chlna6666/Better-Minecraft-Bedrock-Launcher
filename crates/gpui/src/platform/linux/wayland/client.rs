@@ -1164,8 +1164,8 @@ impl Dispatch<WlCallback, (ObjectId, u64)> for WaylandClientStatePtr {
         };
         drop(state);
 
-        if let wl_callback::Event::Done { .. } = event {
-            window.frame(*generation);
+        if let wl_callback::Event::Done { callback_data } = event {
+            window.frame(*generation, callback_data);
         }
     }
 }

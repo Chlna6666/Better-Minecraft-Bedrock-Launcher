@@ -268,7 +268,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
     let frame_fps =
         crate::frame_rate::effective_fps(bootstrap.config.launcher.frame_rate_limit, fps_override);
     // All BMCBL windows share one default frame clock; frame requests still
-    // coalesce per window. Explicit modes select Immediate before GPU creation.
+    // coalesce per window. Only unlimited selects Immediate before GPU creation.
     gpui::set_default_frame_clock(crate::frame_rate::frame_clock(frame_mode, frame_fps));
     let renderer_options = gpui::RendererOptions {
         present_mode: crate::frame_rate::present_mode(frame_mode),

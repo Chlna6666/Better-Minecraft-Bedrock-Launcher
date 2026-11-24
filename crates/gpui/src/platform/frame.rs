@@ -147,6 +147,13 @@ pub(crate) struct FrameCadence {
 }
 
 impl FrameCadence {
+    pub(crate) fn set_interval(&mut self, interval: Option<Duration>) {
+        if self.interval != interval {
+            self.interval = interval;
+            self.anchor = None;
+        }
+    }
+
     pub(crate) fn deadline(self) -> Option<Instant> {
         self.interval
             .zip(self.anchor)
@@ -710,6 +717,22 @@ mod tests {
         let after_stall = now + Duration::from_secs(2);
         packet.record_display_presentation(after_stall);
         assert_eq!(packet.presentation_deadline(), Some(after_stall + interval));
+    }
+
+    #[test]
+    fn changing_cap_discards_the_previous_phase() {
+        let start = Instant::now();
+        let mut cadence = FrameCadence::default();
+        cadence.set_interval(Some(Duration::from_millis(100)));
+        cadence = cadence.record(start, Some(start));
+        assert!(!cadence.is_due(start, Some(start)));
+        cadence.set_interval(Some(Duration::from_millis(10)));
+        assert!(cadence.is_due(start, Some(start)));
+        cadence = cadence.record(start, Some(start));
+        cadence.set_interval(Some(Duration::from_millis(10)));
+        assert!(!cadence.is_due(start, Some(start)));
+        cadence.set_interval(None);
+        assert!(cadence.deadline().is_none());
     }
 
     #[test]
@@ -1612,7 +1635,7 @@ impl PresentationPacket {
     }
 
     pub(crate) fn set_frame_interval(&mut self, frame_interval: Option<Duration>) {
-        self.presentation_cadence.interval = frame_interval;
+        self.presentation_cadence.set_interval(frame_interval);
     }
 
     pub(crate) fn presentation_is_due(&self, now: Instant, display_tick: Option<Instant>) -> bool {

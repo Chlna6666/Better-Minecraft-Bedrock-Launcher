@@ -163,6 +163,8 @@ pub struct WaylandWindowState {
     /// callback is committed together with the current rendered surface, rather than by an early
     /// empty wl_surface commit.
     frame_in_progress: bool,
+    ui_frame_cadence: crate::platform::FrameCadence,
+    callback_timestamp: Option<(u32, Instant)>,
     client_frame: Option<AdwaitaFrame<WaylandClientStatePtr>>,
     text_system: Arc<dyn PlatformTextSystem>,
     title: String,
@@ -298,6 +300,8 @@ impl WaylandWindowState {
             frame_callback_pending: None,
             frame_callback_generation: 0,
             frame_in_progress: false,
+            ui_frame_cadence: crate::platform::FrameCadence::default(),
+            callback_timestamp: None,
             client_frame,
             text_system,
             title,
@@ -805,7 +809,7 @@ impl WaylandWindowStatePtr {
         state.frame_callback_pending = None;
     }
 
-    pub fn frame(&self, generation: u64) {
+    pub fn frame(&self, generation: u64, callback_data: u32) {
         let callback_registered = self.callbacks.borrow().request_frame.is_some();
         let mut state = self.state.borrow_mut();
         if state.frame_callback_pending != Some(generation) {
@@ -817,6 +821,28 @@ impl WaylandWindowStatePtr {
             return;
         }
 
+        // wl_callback timestamps are compositor milliseconds with an arbitrary
+        // origin. Preserve their relative phase (including u32 wrap) rather than
+        // accumulating delivery latency on the GPUI thread.
+        let now = Instant::now();
+        let tick = state.callback_timestamp
+            .and_then(|(previous, instant)| {
+                let elapsed = callback_data.wrapping_sub(previous);
+                (elapsed > 0 && elapsed <= 60_000)
+                    .then(|| instant + Duration::from_millis(u64::from(elapsed)))
+            })
+            .unwrap_or(now);
+        state.callback_timestamp = Some((callback_data, tick));
+        // The protocol only has millisecond precision. Accept rounding within
+        // one millisecond, but carry the original deadline phase on acceptance.
+        if state.ui_frame_cadence.deadline().is_some_and(|deadline| {
+            deadline.saturating_duration_since(tick) > Duration::from_millis(1)
+        }) {
+            arm_frame_callback(&mut state);
+            state.surface.commit();
+            return;
+        }
+        state.ui_frame_cadence = state.ui_frame_cadence.record(now, Some(tick));
         let request = std::mem::take(&mut state.pending_frame_request);
         state.frame_in_progress = true;
         drop(state);
@@ -1649,11 +1675,13 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
-        self.0
-            .state
-            .borrow_mut()
-            .renderer
-            .set_frame_interval(interval);
+        let mut state = self.0.state.borrow_mut();
+        state.ui_frame_cadence.set_interval(interval);
+        state.renderer.set_frame_interval(interval);
+    }
+
+    fn native_frame_clock_interval(&self) -> Option<Duration> {
+        self.0.state.borrow().ui_frame_cadence.interval
     }
 
     fn frame_request_timed_out(&self, options: PlatformFrameRequest) {

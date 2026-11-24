@@ -377,6 +377,16 @@ impl RenderOwner {
         self.status.pending.load(Ordering::Acquire)
     }
 
+    /// The UI producer can latch dirty work instead of rebuilding a scene while
+    /// the owner is waiting on a native present credit or a resource retry.
+    /// The first-frame and native resize paths retain their separate liveness rules.
+    #[cfg(target_os = "windows")]
+    pub(super) fn ui_frame_backpressured(&self) -> bool {
+        self.status.submitted.load(Ordering::Acquire)
+            && self.status.pending.load(Ordering::Acquire)
+            && self.status.waiting_for_frame_ready.load(Ordering::Acquire)
+    }
+
     /// True when an immutable GPU frame was queued but no submission report has arrived.
     /// In particular, a Windows first frame is queued rather than synchronously presented.
     #[cfg(target_os = "windows")]

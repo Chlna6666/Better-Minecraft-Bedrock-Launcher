@@ -1119,7 +1119,10 @@ impl WindowsWindow {
         // The watchdog retry merges its original request into the same slot;
         // explicitly wake the native scheduler when the slot is already armed.
         let pending = self.0.state.borrow().pending_frame_request.get();
-        if pending.requires_frame() && !self.0.vsync_scheduler.request_frame() {
+        if pending.requires_frame()
+            && (!self.ui_frame_backpressured() || self.0.pending_renderer_size.get().is_some())
+            && !self.0.vsync_scheduler.request_frame()
+        {
             self.window().request_redraw();
         }
     }
@@ -1582,15 +1585,18 @@ pub(crate) struct Callbacks {
 impl WindowsWindow {
     pub(crate) fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
         let mut cadence = self.0.ui_frame_cadence.get();
-        if cadence.interval != interval {
-            cadence = crate::platform::FrameCadence::default();
-            cadence.interval = interval;
-            self.0.ui_frame_cadence.set(cadence);
-        }
+        cadence.set_interval(interval);
+        self.0.ui_frame_cadence.set(cadence);
         let mut renderer_state = self.0.renderer.borrow_mut();
         if let WindowsRendererState::Ready(renderer) = &mut *renderer_state {
             renderer.set_frame_interval(interval);
         }
+    }
+
+    fn ui_frame_backpressured(&self) -> bool {
+        self.0.renderer.try_borrow().ok().is_some_and(|renderer| {
+            matches!(&*renderer, WindowsRendererState::Ready(owner) if owner.ui_frame_backpressured())
+        })
     }
 
     fn claim_ui_frame(&self, display_tick: Option<Instant>, geometry_pending: bool) -> bool {
@@ -1634,6 +1640,14 @@ impl WindowsWindow {
         }
         for completion in frame.completed_animations {
             self.invoke_presentation_animation_completed(completion);
+        }
+        // Readiness reports release latched producer work even when the submitted
+        // scene has no retained animation and therefore no presentation continuation.
+        if !frame.waiting_for_frame_ready
+            && self.0.state.borrow().pending_frame_request.get().requires_frame()
+            && !self.0.vsync_scheduler.request_frame()
+        {
+            self.window().request_redraw();
         }
         if frame.failed {
             self.request_frame(PlatformFrameRequest::ui_commit());
@@ -2017,6 +2031,7 @@ impl WindowsWindow {
                         self.0.size_move_active.get() && self.0.size_move_has_resized.get(),
                     ),
                 );
+                renderer.set_frame_interval(self.0.ui_frame_cadence.get().interval);
                 *self.0.renderer.borrow_mut() = WindowsRendererState::Ready(renderer);
                 self.request_first_presentable_frame();
             }
@@ -2374,7 +2389,20 @@ impl WindowsWindow {
                 self.0.size_epoch.get(),
                 self.0.committed_epoch.get(),
             );
-            let try_animation_present = should_attempt_animation_present(
+            // Do not enter Layout/Paint while a previous scene is held by native
+            // backpressure. Dirty state stays latched; the owner report resumes it.
+            // Geometry transactions bypass this gate to keep live resize progressing.
+            if !matching_scene_pending && !resize_pending && self.ui_frame_backpressured() {
+                self.0.queue_frame_request(options);
+                self.0.frame_dispatch_in_progress.set(false);
+                return;
+            }
+            let ui_requested = options.ui_commit_required();
+            let ui_claimed = ui_requested
+                && self.claim_ui_frame(display_tick_at, matching_scene_pending);
+            // A fresh UI scene supersedes a retained-animation tick on this slot.
+            // Do not submit both the old and new scene against the same refresh.
+            let try_animation_present = !ui_claimed && should_attempt_animation_present(
                 had_active_presentation,
                 matching_scene_pending,
                 resize_pending,
@@ -2440,7 +2468,9 @@ impl WindowsWindow {
                 // GPU packet waits for readiness. The owner replaces queued
                 // Resize/Draw pairs; waiting here would force the old layout to
                 // present first and postpone its replacement to another tick.
-                if self.claim_ui_frame(display_tick_at, matching_scene_pending) {
+                if ui_claimed
+                    || (!ui_requested && self.claim_ui_frame(display_tick_at, matching_scene_pending))
+                {
                     self.invoke_request_frame(options);
                 } else {
                     // Keep both work domains pending until a usable native tick.
@@ -2468,7 +2498,8 @@ impl WindowsWindow {
         };
         self.0.pending_resize.get().is_some()
             || self.0.pending_native_size_retry.get()
-            || state.pending_frame_request.get().requires_frame()
+            || (state.pending_frame_request.get().requires_frame()
+                && (!self.ui_frame_backpressured() || self.0.pending_renderer_size.get().is_some()))
     }
 
     pub(crate) fn dispatch_pending_resize(&self) {

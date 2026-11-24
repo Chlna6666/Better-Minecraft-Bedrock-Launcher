@@ -12,7 +12,7 @@ frame_rate_limit = 120
 
 - `vsync` (default): use native FIFO/VSync presentation without a software FPS cap. The actual cadence depends on display, backend and compositor.
 - `auto`: legacy alias for `vsync`; existing settings no longer impose a 120 FPS cap.
-- `custom`: request an explicit **1–1000 FPS** upper bound, using Immediate presentation instead of VSync.
+- `custom`: request an explicit **1–1000 FPS** upper bound while keeping native FIFO/VSync. On a fixed-refresh display the effective visible rate cannot exceed the native cadence; non-integer ratios select alternating refresh slots.
 - `unlimited`: opt out of the software FPS cap and VSync. Rendering remains event-driven and may be constrained by platform/driver/compositor throughput; on Windows the native frame-request worker uses a 1 ms unpaced ceiling, not a busy loop.
 
 Custom cap examples:
@@ -35,11 +35,12 @@ BMCBL.exe --uncapped-fps
 
 In **Settings → Launcher → UI frame rate**, select Native VSync, Custom, or Unlimited. A custom cap can be entered as an integer from 1 to 1000. Input commits on Enter or focus loss.
 
-Changing a numerical cap updates the clocks of existing windows. **Switching between VSync and Immediate requires restarting the launcher** because the backend's swapchain present mode is chosen during renderer initialization.
+Changing a numerical cap updates the clocks of existing windows. **Switching to or from Unlimited requires restarting the launcher** because the backend's swapchain present mode is chosen during renderer initialization.
 
 ## Engine behavior and caveats
 
-- `FrameClock` coalesces frame requests and limits renderer-owned animations, rather than inserting `sleep` on the GPUI UI thread.
+- Windows and Wayland UI commits select eligible native display/compositor ticks before layout. The Windows GPU-owner readiness report releases latched dirty work; geometry and first-frame progress remain separate. Pending GPU scenes merge damage and supersede older queued scenes.
+- X11 still uses its existing XRandR-derived timer fallback. Wayland GPU-owner resource/deadline retries and Windows DWM phase waiting remain separate from UI tick selection; they are not hardware present timestamps.
 - On Windows, Immediate mode uses independent native scheduling instead of DWM VBlank and retains the lower background-window cadence. Native resize reconciliation remains immediate.
 - DX11/DX12/Vulkan/OpenGL may implement Immediate differently. Drivers, DXGI composition, Wayland surface frame callbacks, and compositor policies may cap actual **displayed** frames at the monitor refresh rate even when additional frames are **rendered/submitted**.
 - Do not equate the configured maximum with delivered FPS. Confirm with GPU trace, presented frames, frame-start timing, and live-resize tests. Test secondary window lifetime on DX12 and X11/Wayland separately.

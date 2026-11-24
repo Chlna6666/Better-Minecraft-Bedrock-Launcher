@@ -1,5 +1,5 @@
-//! Application-wide UI frame pacing. Native VSync is the default; explicit
-//! custom/unlimited modes opt in to Immediate presentation.
+//! Application-wide UI frame pacing. Native VSync remains enabled for custom caps;
+//! only unlimited mode opts in to Immediate presentation.
 use gpui::{App, AppContext as _, FrameClock, PresentModePreference};
 
 pub(crate) const MAX_FPS: u32 = 1000;
@@ -22,7 +22,7 @@ pub(crate) fn frame_clock(mode: &str, fps: u32) -> FrameClock {
 }
 
 pub(crate) fn present_mode(mode: &str) -> PresentModePreference {
-    if normalized_mode(mode) == "vsync" {
+    if normalized_mode(mode) != "unlimited" {
         PresentModePreference::AutoVsync
     } else {
         PresentModePreference::Immediate
@@ -76,9 +76,10 @@ mod tests {
     }
 
     #[test]
-    fn custom_bypasses_vsync_and_obeys_explicit_cap() {
+    fn custom_keeps_vsync_and_obeys_explicit_cap() {
         assert_eq!(frame_clock("custom", 360).fps().unwrap().get(), 360);
-        assert_eq!(present_mode("custom"), PresentModePreference::Immediate);
+        assert_eq!(present_mode("custom"), PresentModePreference::AutoVsync);
+        assert_eq!(present_mode("unlimited"), PresentModePreference::Immediate);
         assert_eq!(frame_clock("custom", 5000).fps().unwrap().get(), 1000);
         assert_eq!(frame_clock("custom", 0).fps().unwrap().get(), 1);
     }
