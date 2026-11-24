@@ -24,8 +24,7 @@ use wayland_client::{
 type Tick = Arc<dyn Fn() + Send + Sync>;
 
 enum Command {
-    Register(u64, Entry),
-    Request(u64, u64, mpsc::SyncSender<()>),
+    Register(u64, Entry, mpsc::SyncSender<()>),
     Remove(u64, mpsc::SyncSender<()>),
     Shutdown,
 }
@@ -43,12 +42,16 @@ struct RequestState {
 }
 
 impl Signal {
-    fn request(&self) -> Option<u64> {
+    /// Issue the native request while holding the visibility/lifetime gate.
+    /// close() cannot destroy the surface concurrently with this operation.
+    fn arm(&self, request: impl FnOnce(u64)) -> Option<u64> {
         let mut state = self.state.lock();
         if !state.visible || state.requested {
             return None;
         }
+        state.generation = state.generation.wrapping_add(1);
         state.requested = true;
+        request(state.generation);
         Some(state.generation)
     }
 
@@ -63,6 +66,7 @@ impl Signal {
         visible
     }
 
+    #[cfg(test)]
     fn is_current(&self, generation: u64) -> bool {
         let state = self.state.lock();
         state.visible && state.requested && state.generation == generation
@@ -80,6 +84,7 @@ impl Signal {
 
 pub(super) struct Clock {
     sender: channel::Sender<Command>,
+    qh: QueueHandle<State>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -95,14 +100,14 @@ impl Clock {
                     log::error!("Wayland presentation clock stopped: {error:#}");
                 }
             })?;
-        let clock = Arc::new(Self {
-            sender,
-            thread: Mutex::new(Some(thread)),
-        });
-        initialized
+        let qh = initialized
             .recv()
             .context("Wayland presentation clock initialization stopped")??;
-        Ok(clock)
+        Ok(Arc::new(Self {
+            sender,
+            qh,
+            thread: Mutex::new(Some(thread)),
+        }))
     }
 
     pub(super) fn register(
@@ -113,20 +118,24 @@ impl Clock {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let signal = Arc::new(Signal::default());
+        let (reply, registered) = mpsc::sync_channel(1);
         self.sender
             .send(Command::Register(
                 id,
                 Entry {
-                    surface,
                     signal: signal.clone(),
                     tick: tick.clone(),
-                    callback_pending: None,
                 },
+                reply,
             ))
             .map_err(|_| anyhow!("Wayland presentation clock stopped before registration"))?;
+        // Only window creation has a cross-thread handshake. The entry must
+        // exist before any frame callback is delivered to this event queue.
+        registered.recv().context("Wayland presentation registration stopped")?;
         Ok(FrameClock {
             clock: self.clone(),
             id,
+            surface,
             signal,
             tick,
             closed: false,
@@ -150,6 +159,7 @@ impl Drop for Clock {
 pub(super) struct FrameClock {
     clock: Arc<Clock>,
     id: u64,
+    surface: wl_surface::WlSurface,
     signal: Arc<Signal>,
     tick: Tick,
     closed: bool,
@@ -157,22 +167,17 @@ pub(super) struct FrameClock {
 
 impl FrameClock {
     pub(super) fn request_callback(&self) -> Tick {
-        let sender = self.clock.sender.clone();
+        let qh = self.clock.qh.clone();
+        let surface = self.surface.clone();
         let id = self.id;
         let signal = self.signal.clone();
         Arc::new(move || {
-            let Some(generation) = signal.request() else {
-                return;
-            };
-            let (reply, armed) = mpsc::sync_channel(1);
-            if sender
-                .send(Command::Request(id, generation, reply))
-                .is_err()
-                || armed.recv().is_err()
-            {
-                signal.complete(generation);
-                log::trace!("discarding Wayland frame request after shutdown");
-            }
+            // QueueHandle is thread-safe: the callback is still dispatched on
+            // the dedicated event queue, but its request is sent by the GPU
+            // owner itself, in order before the corresponding WSI commit.
+            let _ = signal.arm(|generation| {
+                surface.frame(&qh, (id, generation));
+            });
         })
     }
 
@@ -210,10 +215,8 @@ impl Drop for FrameClock {
 }
 
 struct Entry {
-    surface: wl_surface::WlSurface,
     signal: Arc<Signal>,
     tick: Tick,
-    callback_pending: Option<u64>,
 }
 
 struct State {
@@ -225,22 +228,10 @@ struct State {
 impl State {
     fn command(&mut self, command: Command) {
         match command {
-            Command::Register(id, entry) => {
+            Command::Register(id, entry, reply) => {
                 self.entries.insert(id, entry);
-            }
-            Command::Request(id, generation, reply) => {
-                if let Some(entry) = self.entries.get_mut(&id) {
-                    if entry.signal.is_current(generation)
-                        && entry.callback_pending != Some(generation)
-                    {
-                        entry.callback_pending = Some(generation);
-                        entry.surface.frame(&self.qh, (id, generation));
-                    }
-                }
-                // The GPU owner commits this callback with its next buffer. An empty commit here
-                // could apply UI scale/region/CSD state before that UI transaction is complete.
                 if reply.send(()).is_err() {
-                    log::trace!("Wayland frame arming caller dropped");
+                    self.entries.remove(&id);
                 }
             }
             Command::Remove(id, reply) => {
@@ -266,13 +257,10 @@ impl Dispatch<wl_callback::WlCallback, (u64, u64)> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let Some(entry) = state.entries.get_mut(&id) {
-            if entry.callback_pending == Some(generation) {
-                entry.callback_pending = None;
-                if entry.signal.complete(generation) {
-                    (entry.tick)();
-                }
-            }
+        if let Some(entry) = state.entries.get(&id)
+            && entry.signal.complete(generation)
+        {
+            (entry.tick)();
         }
     }
 }
@@ -284,29 +272,32 @@ mod tests {
     #[test]
     fn requests_coalesce_until_callback_completes() {
         let signal = Signal::default();
-        assert_eq!(signal.request(), None);
+        assert_eq!(signal.arm(|_| {}), None);
         assert!(signal.set_visible(true));
-        let generation = signal.request().expect("visible request");
-        assert_eq!(signal.request(), None);
+        let generation = signal.arm(|_| {}).expect("visible request");
+        assert_eq!(signal.arm(|_| {}), None);
         assert!(signal.is_current(generation));
         assert!(signal.complete(generation));
         assert!(!signal.complete(generation));
-        assert_eq!(signal.request(), Some(generation));
+        let next = signal.arm(|_| {}).expect("next request");
+        assert_ne!(next, generation);
+        assert!(!signal.complete(generation));
+        assert!(signal.complete(next));
     }
 
     #[test]
     fn restored_window_rejects_callback_from_before_hiding() {
         let signal = Signal::default();
         signal.set_visible(true);
-        let old = signal.request().expect("initial request");
+        let old = signal.arm(|_| {}).expect("initial request");
         signal.set_visible(false);
         assert!(!signal.is_current(old));
-        assert_eq!(signal.request(), None);
+        assert_eq!(signal.arm(|_| {}), None);
         signal.set_visible(true);
-        let current = signal.request().expect("restored request");
+        let current = signal.arm(|_| {}).expect("restored request");
         assert_ne!(old, current);
         assert!(!signal.complete(old));
-        assert_eq!(signal.request(), None);
+        assert_eq!(signal.arm(|_| {}), None);
         assert!(signal.complete(current));
     }
 }
@@ -314,7 +305,7 @@ mod tests {
 fn run(
     connection: Connection,
     receiver: channel::Channel<Command>,
-    ready: mpsc::SyncSender<Result<()>>,
+    ready: mpsc::SyncSender<Result<QueueHandle<State>>>,
 ) -> Result<()> {
     let initialized = (|| {
         let mut event_loop = EventLoop::<State>::try_new()?;
@@ -345,7 +336,7 @@ fn run(
     let (mut event_loop, mut state) = match initialized {
         Ok(initialized) => {
             ready
-                .send(Ok(()))
+                .send(Ok(initialized.1.qh.clone()))
                 .map_err(|_| anyhow!("Wayland frame clock caller dropped"))?;
             initialized
         }
