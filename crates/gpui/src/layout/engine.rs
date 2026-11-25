@@ -90,6 +90,7 @@ struct PersistentLayoutNode {
     element: GlobalElementId,
     measure_fingerprint: Option<u64>,
     measured: bool,
+    claimed_in_frame: u64,
     last_mounted_frame: Option<u64>,
     offscreen: bool,
     /// Fingerprint of the layout style this node currently holds.
@@ -141,6 +142,13 @@ pub struct TaffyLayoutEngine {
     anonymous_nodes: Vec<LayoutId>,
     persistent_layout_reuses: usize,
     committed_layout_frame: u64,
+    // Fast's request-generation claims are distinct from committed frame age:
+    // a speculative frame may be abandoned after its layout requests.
+    request_frame: u64,
+    claimed_this_frame: usize,
+    layout_changes: u64,
+    remeasures: u64,
+    robbed_parents: FxHashSet<LayoutId>,
     default_measured_style: Option<DefaultMeasuredStyle>,
     pub(super) absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
     unrounded_layout_origins: FxHashMap<LayoutId, (f32, f32)>,
@@ -200,6 +208,11 @@ impl TaffyLayoutEngine {
             anonymous_nodes: Vec::new(),
             persistent_layout_reuses: 0,
             committed_layout_frame: 0,
+            request_frame: 1,
+            claimed_this_frame: 0,
+            layout_changes: 0,
+            remeasures: 0,
+            robbed_parents: FxHashSet::default(),
             default_measured_style: None,
             absolute_layout_bounds: FxHashMap::default(),
             unrounded_layout_origins: FxHashMap::default(),
@@ -245,10 +258,18 @@ impl TaffyLayoutEngine {
         let mut mounted_count = 0usize;
         let mut list_mounts = FxHashMap::<Vec<ElementId>, bool>::default();
         let finished_request_ordinals = &self.finished_request_ordinals;
+        let finished_frame = self.request_frame.wrapping_sub(1);
         let taffy = &mut self.taffy;
         self.persistent_nodes.retain(|key, node| {
             let mounted = is_mounted(&node.element);
-            let requested = finished_request_ordinals.get(&key.path);
+            // Fast's claim stamp proves this particular slot was requested.
+            // Only unclaimed slots need the owner-cardinality lookup. Mount
+            // membership remains mandatory until subtree claims replace it.
+            let requested = if node.claimed_in_frame == finished_frame {
+                None
+            } else {
+                finished_request_ordinals.get(&key.path)
+            };
             if mounted {
                 // A replayed range has no new ordinal count. A committed
                 // rebuild, however, may have removed some of its local slots.
@@ -311,7 +332,9 @@ impl TaffyLayoutEngine {
         }
         for id in removed {
             self.stale_style_fingerprints.remove(&id);
+            self.robbed_parents.remove(&id);
             self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
+            self.layout_changes = self.layout_changes.wrapping_add(1);
             self.root_constraints.remove(&id);
         }
         let live = self.persistent_nodes.len();
@@ -337,13 +360,18 @@ impl TaffyLayoutEngine {
         if log::log_enabled!(log::Level::Trace) {
             log::trace!(
                 target: "gpui::diagnostics",
-                "GPUI persistent Taffy nodes: reused={} requested={} live={}",
+                "GPUI persistent Taffy nodes: reused={} requested={} live={} claimed={} layout_changes={} remeasures={}",
                 self.persistent_layout_reuses,
                 self.nodes_requested,
                 self.persistent_nodes.len(),
+                self.claimed_this_frame,
+                self.layout_changes,
+                self.remeasures,
             );
         }
         self.persistent_layout_reuses = 0;
+        self.claimed_this_frame = 0;
+        self.request_frame = self.request_frame.wrapping_add(1);
         std::mem::swap(
             &mut self.previous_root_diagnostics,
             &mut self.current_root_diagnostics,
@@ -357,7 +385,9 @@ impl TaffyLayoutEngine {
         }
         for id in self.anonymous_nodes.drain(..) {
             self.stale_style_fingerprints.remove(&id);
+            self.robbed_parents.remove(&id);
             self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
+            self.layout_changes = self.layout_changes.wrapping_add(1);
             self.root_constraints.remove(&id);
         }
         // Transfer current-frame cardinalities without copying the map.
@@ -535,10 +565,16 @@ impl TaffyLayoutEngine {
         if matches!(level, GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive) {
             let taffy = &mut self.taffy;
             let root_constraints = &mut self.root_constraints;
+            let stale_styles = &mut self.stale_style_fingerprints;
+            let robbed_parents = &mut self.robbed_parents;
+            let layout_changes = &mut self.layout_changes;
             self.persistent_nodes.retain(|_, node| {
                 if node.offscreen {
                     taffy.remove(node.id.into()).expect(EXPECT_MESSAGE);
                     root_constraints.remove(&node.id);
+                    stale_styles.remove(&node.id);
+                    robbed_parents.remove(&node.id);
+                    *layout_changes = layout_changes.wrapping_add(1);
                     false
                 } else {
                     true
@@ -592,7 +628,12 @@ impl TaffyLayoutEngine {
             // The node is being reconstructed; it is no longer eligible for
             // an idle-memory trim until the next committed lifetime check.
             node.offscreen = false;
+            if node.claimed_in_frame != self.request_frame {
+                node.claimed_in_frame = self.request_frame;
+                self.claimed_this_frame += 1;
+            }
             let id = node.id;
+            self.robbed_parents.remove(&id);
             // Compare the actual native inputs. GPUI interaction/scroll flags
             // can change without changing Taffy's layout style; they must not
             // clear native measurement caches. This also detects a child style
@@ -620,6 +661,7 @@ impl TaffyLayoutEngine {
                     .set_node_context(id.into(), None)
                     .expect(EXPECT_MESSAGE);
                 self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
+                self.layout_changes = self.layout_changes.wrapping_add(1);
             }
             // Taffy 0.14 exposes allocation-free child traversal. The old
             // children() call materialized a Vec on every stable node request,
@@ -629,12 +671,19 @@ impl TaffyLayoutEngine {
                     self.taffy.get_child_id(id.into(), index) == (*child).into()
                 });
             if !child_order_unchanged {
+                if Self::note_reparented_children(&mut self.taffy, &mut self.robbed_parents,
+                    &mut self.node_fingerprints, Some(id), children) {
+                    self.absolute_layout_bounds.clear();
+                    self.unrounded_layout_origins.clear();
+                }
+                self.layout_changes = self.layout_changes.wrapping_add(1);
                 self.taffy
                     .set_children(id.into(), LayoutId::to_taffy_slice(children))
                     .expect(EXPECT_MESSAGE);
             }
             if let Some(style) = changed_style {
                 self.taffy.set_style(id.into(), style).expect(EXPECT_MESSAGE);
+                self.layout_changes = self.layout_changes.wrapping_add(1);
             }
             if let Some(mut context) = measure {
                 // A pure measure declares that its result depends only on the fingerprint, so
@@ -654,12 +703,16 @@ impl TaffyLayoutEngine {
                     *old_context = context;
                     if !reusable {
                         self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
+                        self.layout_changes = self.layout_changes.wrapping_add(1);
+                        self.remeasures = self.remeasures.wrapping_add(1);
                     }
                 } else {
                     self.taffy
                         .set_node_context(id.into(), Some(context))
                         .expect(EXPECT_MESSAGE);
                     self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
+                    self.layout_changes = self.layout_changes.wrapping_add(1);
+                    self.remeasures = self.remeasures.wrapping_add(1);
                 }
             }
             node.measure_fingerprint = measure_fingerprint;
@@ -669,6 +722,7 @@ impl TaffyLayoutEngine {
         } else {
             let is_measured = measure.is_some();
             let id = self.create_taffy_node(build_style(), children, measure);
+            self.claimed_this_frame += 1;
             self.persistent_nodes.insert(
                 key,
                 PersistentLayoutNode {
@@ -676,6 +730,7 @@ impl TaffyLayoutEngine {
                     element,
                     measure_fingerprint,
                     measured: is_measured,
+                    claimed_in_frame: self.request_frame,
                     last_mounted_frame: None,
                     offscreen: false,
                     style_fingerprint,
@@ -685,12 +740,51 @@ impl TaffyLayoutEngine {
         }
     }
 
+    // Based on Fast's set_children / robbed_parents mechanism
+    // (longbridge/gpui-fast 1100a214532bdeac0282acd1c5c6d2062d8ab1a7, Apache-2.0).
+    // Copyright 2022 - 2025 Zed Industries, Inc. Copyright 2026 Longbridge.
+    // Invalidate already-computed recursive proofs too: BMCBL still uses
+    // these for replay until Fast's subtree claim transaction takes over.
+    fn note_reparented_children(
+        taffy: &mut TaffyTree<NodeContext>,
+        robbed_parents: &mut FxHashSet<LayoutId>,
+        fingerprints: &mut FxHashMap<LayoutId, Option<u64>>,
+        new_parent: Option<LayoutId>,
+        children: &[LayoutId],
+    ) -> bool {
+        let mut changed = false;
+        for child in children {
+            if let Some(parent) = taffy.parent((*child).into())
+                && Some(LayoutId::from(parent)) != new_parent
+            {
+                changed = true;
+                robbed_parents.insert(parent.into());
+                taffy.mark_dirty(parent).expect(EXPECT_MESSAGE);
+                let mut ancestor = Some(parent);
+                while let Some(id) = ancestor {
+                    fingerprints.remove(&LayoutId::from(id));
+                    ancestor = taffy.parent(id);
+                }
+            }
+        }
+        changed
+    }
+
     fn create_taffy_node(
         &mut self,
         style: taffy::Style,
         children: &[LayoutId],
         measure: Option<NodeContext>,
     ) -> LayoutId {
+        self.layout_changes = self.layout_changes.wrapping_add(1);
+        if measure.is_some() {
+            self.remeasures = self.remeasures.wrapping_add(1);
+        }
+        if Self::note_reparented_children(&mut self.taffy, &mut self.robbed_parents,
+            &mut self.node_fingerprints, None, children) {
+            self.absolute_layout_bounds.clear();
+            self.unrounded_layout_origins.clear();
+        }
         match measure {
             Some(context) => self
                 .taffy
@@ -939,6 +1033,7 @@ impl TaffyLayoutEngine {
         );
         let parent = self.taffy.parent(id.into());
         let reusable = parent.is_none()
+            && !self.robbed_parents.contains(&id)
             && self.root_constraints.get(&id) == Some(&constraints)
             && !self.taffy.dirty(id.into()).expect(EXPECT_MESSAGE);
         self.record_root_diagnostic(id, reusable);
@@ -1178,6 +1273,7 @@ impl TaffyLayoutEngine {
             self.taffy
                 .set_style(child_id.into(), taffy_style)
                 .expect(EXPECT_MESSAGE);
+            self.layout_changes = self.layout_changes.wrapping_add(1);
         }
         // This rewrote the child's native style behind its back. The child's stored
         // fingerprint still describes the style it asked for, so it must not be trusted to
@@ -1271,6 +1367,45 @@ mod tests {
         let mut hasher = collections::FxHasher::default();
         std::hash::Hash::hash(id.0.as_ref(), &mut hasher);
         (std::hash::Hasher::finish(&hasher), id.clone())
+    }
+
+    #[test]
+    fn claims_skip_rebuilt_slots_but_remove_unused_slots() {
+        let mut engine = TaffyLayoutEngine::new();
+        let owner_id = list_id();
+        let request = |engine: &mut TaffyLayoutEngine| {
+            engine.request_layout(Some(owner(&owner_id)), Style::default(), crate::px(16.), 1., &[])
+        };
+        let first = request(&mut engine);
+        let second = request(&mut engine);
+        assert_eq!(engine.claimed_this_frame, 2);
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &owner_id, true);
+        let changes = engine.layout_changes;
+        assert_eq!(request(&mut engine), first);
+        assert_eq!(engine.claimed_this_frame, 1);
+        assert_eq!(engine.layout_changes, changes);
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &owner_id, true);
+        assert_eq!(engine.taffy.total_node_count(), 1);
+        assert!(!engine.persistent_nodes.values().any(|node| node.id == second));
+    }
+
+    #[test]
+    fn reparenting_invalidates_previous_parent_and_ancestor_proofs() {
+        let mut engine = TaffyLayoutEngine::new();
+        let child = engine.request_layout(None, Style::default(), crate::px(16.), 1., &[]);
+        let old = engine.request_layout(None, Style::default(), crate::px(16.), 1., &[child]);
+        let ancestor = engine.request_layout(None, Style::default(), crate::px(16.), 1., &[old]);
+        assert!(engine.node_fingerprints.get(&old).copied().flatten().is_some());
+        assert!(engine.node_fingerprints.get(&ancestor).copied().flatten().is_some());
+        let next = engine.request_layout(None, Style::default(), crate::px(16.), 1., &[child]);
+        assert_eq!(engine.taffy.parent(child.into()), Some(next.into()));
+        assert!(engine.robbed_parents.contains(&old));
+        assert!(!engine.node_fingerprints.contains_key(&old));
+        assert!(!engine.node_fingerprints.contains_key(&ancestor));
+        engine.clear();
+        assert!(engine.robbed_parents.is_empty());
     }
 
     #[test]
