@@ -97,7 +97,10 @@ impl SampledTierCache {
     /// Failed native allocations are throttled without a CPU/GPU wait.
     pub(super) fn suggest(&mut self, current: u32, demand: usize, now: std::time::Instant) -> Option<u32> {
         let maximum = *self.maximum.get_or_insert(current);
-        let target = sampled_capacity_target(current, maximum, demand)?;
+        let Some(target) = sampled_capacity_target(current, maximum, demand) else {
+            self.candidate = None;
+            return None;
+        };
         let since = match self.candidate {
             Some((previous, since)) if previous == target => since,
             _ => { self.candidate = Some((target, now)); now }
