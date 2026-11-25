@@ -8,6 +8,14 @@ use std::{collections::HashMap, ops::Range, sync::Arc};
 const STRIDE: u64 = 16;
 const BUILD_CHUNK: usize = 1024;
 
+/// Explicit compatibility escape hatch; ordinary native multi-draw remains enabled.
+pub(super) fn compact_limit(device: &dyn gpui::ExtensionDevice) -> u32 {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ENABLED.get_or_init(|| std::env::var_os("GPUI_3D_COMPACT_RUNS").as_deref() != Some(std::ffi::OsStr::new("0"))) {
+        device.compact_draw_run_limit()
+    } else { 0 }
+}
+
 #[derive(Clone)]
 struct Run {
     draw: DrawIndirectCommand,
