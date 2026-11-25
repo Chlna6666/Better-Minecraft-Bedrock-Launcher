@@ -512,6 +512,7 @@ impl Window {
             layout_engine: Some(TaffyLayoutEngine::new()),
             root: None,
             element_id_stack: ElementIdStack::default(),
+            global_ids: RefCell::new(GlobalIdCache::default()),
             retained_element_id_stack: ElementIdStack::default(),
             retained_child_slot_stack: SmallVec::default(),
             layout_key_stack: SmallVec::default(),

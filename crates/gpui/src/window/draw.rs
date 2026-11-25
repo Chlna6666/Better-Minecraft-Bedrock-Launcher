@@ -119,6 +119,7 @@ impl Window {
                 self.finish_degraded_draw(restored_input_handler_index)
             };
             phase_metrics.build = frame_started_at.elapsed();
+            self.global_ids.get_mut().abort_frame();
             record_draw_phase_metrics(phase_metrics);
             return result;
         }
@@ -140,6 +141,7 @@ impl Window {
             &directly_dirty_views,
             cx,
         );
+        self.global_ids.get_mut().finish_frame();
         phase_metrics.build = frame_started_at.elapsed();
         self.record_debug_frame_time(phase_metrics.build, cx);
         record_draw_phase_metrics(phase_metrics);

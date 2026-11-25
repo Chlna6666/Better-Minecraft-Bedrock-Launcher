@@ -95,82 +95,55 @@ impl GlobalElementId {
     #[inline]
     fn with_hash(path: &[ElementId], hash: u64) -> Self {
         debug_assert_eq!(hash, path.iter().fold(EMPTY_PATH_HASH, extend_path_hash));
-        if path.is_empty() {
-            return Self(Arc::from(path), hash);
-        }
-        let interned = PATH_INTERNER.with(|interner| interner.borrow_mut().intern(path, hash));
-        Self(interned, hash)
+        Self(Arc::from(path), hash)
     }
 }
 
-thread_local! {
-    /// Frame-independent pool of element paths.
-    ///
-    /// Element identities repeat across frames, so interning them removes one allocation and
-    /// one path copy per element per frame. Entries are only dropped when the pool grows well
-    /// past its working set, so a transient page does not pin its paths forever.
-    static PATH_INTERNER: std::cell::RefCell<PathInterner> =
-        std::cell::RefCell::new(PathInterner::default());
+// GlobalIdCache from longbridge/gpui-fast (1100a214532bdeac0282acd1c5c6d2062d8ab1a7), adapted to the
+// tuple representation and BMCBL's speculative frame rollback.
+// Copyright 2022 - 2025 Zed Industries, Inc.
+// Copyright 2026 Longbridge.
+// SPDX-License-Identifier: Apache-2.0
+/// The global ids handed out this frame and the last, by the hash of their
+/// path.
+///
+/// An element whose path is the one it had on the frame before, which is
+/// nearly every element, is given the id it had then, rather than a copy of
+/// the whole element id stack to be dropped id by id when the frame is done.
+#[derive(Default)]
+pub(crate) struct GlobalIdCache {
+    previous: collections::FxHashMap<u64, GlobalElementId>,
+    current: collections::FxHashMap<u64, GlobalElementId>,
 }
 
-struct PathInterner {
-    /// Paths bucketed by hash. Collisions are rare and the vector stays tiny, so a linear
-    /// probe inside the bucket costs less than a second map level.
-    buckets: collections::FxHashMap<u64, smallvec::SmallVec<[Arc<[ElementId]>; 1]>>,
-    /// Paths handed out so far, used to bound the pool.
-    len: usize,
-    /// Frames since the last prune, in units of interner calls.
-    calls_since_prune: usize,
-    prune_at: usize,
-}
-
-impl Default for PathInterner {
-    fn default() -> Self {
-        Self {
-            buckets: Default::default(),
-            len: 0,
-            calls_since_prune: 0,
-            prune_at: Self::PRUNE_AT,
-        }
-    }
-}
-
-impl PathInterner {
-    const PRUNE_AT: usize = 4096;
-    const PRUNE_CALLS: usize = 1 << 16;
-
-    fn intern(&mut self, path: &[ElementId], hash: u64) -> Arc<[ElementId]> {
-        if let Some(bucket) = self.buckets.get(&hash)
-            && let Some(existing) = bucket.iter().find(|candidate| candidate.as_ref() == path)
+impl GlobalIdCache {
+    /// The global id of `path`: one handed out already if there is one, a
+    /// new one otherwise.
+    pub(crate) fn get(&mut self, path: &ElementIdStack) -> GlobalElementId {
+        let hash = path.hash();
+        if let Some(id) = self.current.get(&hash)
+            && id.0.as_ref() == path.as_slice()
         {
-            return Arc::clone(existing);
+            return id.clone();
         }
-        let interned: Arc<[ElementId]> = Arc::from(path);
-        self.buckets.entry(hash).or_default().push(Arc::clone(&interned));
-        self.len = self.len.saturating_add(1);
-
-        self.calls_since_prune = self.calls_since_prune.saturating_add(1);
-        if self.len >= self.prune_at || self.calls_since_prune >= Self::PRUNE_CALLS {
-            self.prune();
-        }
-        interned
+        let id = match self.previous.get(&hash) {
+            Some(id) if id.0.as_ref() == path.as_slice() => id.clone(),
+            _ => path.global_id(),
+        };
+        self.current.insert(hash, id.clone());
+        id
     }
 
-    /// Drops entries nothing else references.
-    ///
-    /// A path still held by a live identifier or map has a strong count above one; anything
-    /// at one is only reachable through this pool, so it is safe to forget. The window that
-    /// just committed keeps every path it uses alive, which is the whole working set.
-    fn prune(&mut self) {
-        self.buckets.retain(|_, bucket| {
-            bucket.retain(|path| Arc::strong_count(path) > 1);
-            !bucket.is_empty()
-        });
-        self.len = self.buckets.values().map(smallvec::SmallVec::len).sum();
-        self.calls_since_prune = 0;
-        // As in Fast's dependency interner, grow with the live working set.
-        // A large live tree must not trigger an O(n) sweep on every miss.
-        self.prune_at = self.len.saturating_mul(2).max(Self::PRUNE_AT);
+    /// Keeps this frame's ids for the next one to find, and forgets the
+    /// previous frame's.
+    pub(crate) fn finish_frame(&mut self) {
+        mem::swap(&mut self.previous, &mut self.current);
+        self.current.clear();
+    }
+
+    /// Keep the committed cache when BMCBL abandons a speculative draw.
+    pub(crate) fn abort_frame(&mut self) {
+        self.current.clear();
     }
 }
 
@@ -328,7 +301,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
 #[inline(never)]
 fn prepare_element_id(element_id: ElementId, window: &mut Window) -> GlobalElementId {
     window.element_id_stack.push(element_id);
-    window.element_id_stack.global_id()
+    window.global_ids.borrow_mut().get(&window.element_id_stack)
 }
 
 #[cfg(any(feature = "inspector", debug_assertions))]
@@ -338,7 +311,7 @@ fn prepare_inspector_id(
     window: &mut Window,
 ) -> InspectorElementId {
     let path = crate::InspectorElementPath {
-        global_id: window.element_id_stack.global_id(),
+        global_id: window.global_ids.borrow_mut().get(&window.element_id_stack),
         source_location: source,
     };
     window.build_inspector_element_id(path)
@@ -1147,7 +1120,7 @@ mod global_element_id_hash_tests {
         stack.push(ElementId::from(42u64));
         let child = stack.global_id();
         assert_eq!(child, GlobalElementId::from_path(stack.as_slice()));
-        assert!(Arc::ptr_eq(&child.0, &stack.global_id().0));
+        assert_eq!(child, stack.global_id());
         let mut deferred = stack.clone();
         deferred.pop();
         assert_eq!(deferred.global_id(), root);
@@ -1159,17 +1132,63 @@ mod global_element_id_hash_tests {
     }
 
     #[test]
-    fn equal_paths_share_one_allocation_and_remain_interchangeable() {
+    fn equal_paths_remain_interchangeable_without_interning() {
         let path = [ElementId::from("root"), ElementId::from(42u64)];
         let first = GlobalElementId::from_path(&path);
         let second = GlobalElementId::from_path(&path);
-        // Paths are interned, so the same path yields the same allocation. That is what
-        // makes the `Arc::ptr_eq` fast path in `PartialEq` reachable on the hot lookup path.
-        assert!(Arc::ptr_eq(&first.0, &second.0));
+        assert!(!Arc::ptr_eq(&first.0, &second.0));
+        assert_eq!(first, second);
         let mut map = collections::FxHashMap::default();
         map.insert(first, 7);
         assert_eq!(map.get(&second), Some(&7));
         assert_eq!(GlobalElementId::default(), GlobalElementId::from_path(&[]));
+    }
+
+    #[test]
+    fn global_id_cache_reuses_two_frames_and_releases_stale_paths() {
+        let mut stack = ElementIdStack::default();
+        stack.push(ElementId::from("root"));
+        stack.push(ElementId::from("row"));
+        let mut cache = GlobalIdCache::default();
+        let first = cache.get(&stack);
+        assert!(Arc::ptr_eq(&first.0, &cache.get(&stack).0));
+        cache.finish_frame();
+        assert!(Arc::ptr_eq(&first.0, &cache.get(&stack).0));
+        cache.finish_frame();
+        cache.finish_frame();
+        let later = cache.get(&stack);
+        assert_eq!(first, later);
+        assert!(!Arc::ptr_eq(&first.0, &later.0));
+    }
+
+    #[test]
+    fn global_id_cache_aborts_without_losing_committed_ids() {
+        let mut stack = ElementIdStack::default();
+        stack.push(ElementId::from("committed"));
+        let mut cache = GlobalIdCache::default();
+        let first = cache.get(&stack);
+        cache.finish_frame();
+        let mut transient = stack.clone();
+        transient.push(ElementId::from("aborted"));
+        let abandoned = cache.get(&transient);
+        let weak = Arc::downgrade(&abandoned.0);
+        drop(abandoned);
+        cache.abort_frame();
+        assert!(weak.upgrade().is_none());
+        assert!(Arc::ptr_eq(&first.0, &cache.get(&stack).0));
+    }
+
+    #[test]
+    fn global_id_cache_rejects_colliding_paths() {
+        let mut stack = ElementIdStack::default();
+        stack.push(ElementId::from("row"));
+        let mut cache = GlobalIdCache::default();
+        let forged = GlobalElementId(Arc::from([ElementId::from("cell")]), stack.hash());
+        cache.current.insert(stack.hash(), forged.clone());
+        assert_eq!(cache.get(&stack).0.as_ref(), stack.as_slice());
+        cache.finish_frame();
+        cache.previous.insert(stack.hash(), forged);
+        assert_eq!(cache.get(&stack).0.as_ref(), stack.as_slice());
     }
 
     #[test]

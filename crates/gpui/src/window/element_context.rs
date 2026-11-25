@@ -32,12 +32,12 @@ struct RetainedIdentityScope {
 }
 
 impl RetainedIdentityScope {
-    fn identity_for_path(&self, path: &ElementIdStack) -> GlobalElementId {
+    fn identity_for_path(&self, path: &ElementIdStack, cache: &RefCell<GlobalIdCache>) -> GlobalElementId {
         self.retained_id
             .as_ref()
             .filter(|id| id.0.as_ref() == path.as_slice())
             .cloned()
-            .unwrap_or_else(|| path.global_id())
+            .unwrap_or_else(|| cache.borrow_mut().get(path))
     }
 }
 
@@ -114,7 +114,7 @@ impl Window {
         f: impl FnOnce(&GlobalElementId, &mut Self) -> R,
     ) -> R {
         self.element_id_stack.push(element_id);
-        let global_id = self.element_id_stack.global_id();
+        let global_id = self.global_ids.borrow_mut().get(&self.element_id_stack);
         let result = f(&global_id, self);
         self.element_id_stack.pop();
         result
@@ -201,7 +201,7 @@ impl Window {
             };
 
             self.retained_element_id_stack.push(segment.clone());
-            let retained_id = self.retained_element_id_stack.global_id();
+            let retained_id = self.global_ids.borrow_mut().get(&self.retained_element_id_stack);
             scopes.push_scope(identity_stable, Some(retained_id.clone()));
             (segment, retained_id, identity_stable)
         });
@@ -246,8 +246,8 @@ impl Window {
         }
         Some(RETAINED_IDENTITY_SCOPES.with(|scopes| {
             scopes.borrow().active.last().map_or_else(
-                || path.global_id(),
-                |scope| scope.identity_for_path(path),
+                || self.global_ids.borrow_mut().get(path),
+                |scope| scope.identity_for_path(path, &self.global_ids),
             )
         }))
     }
@@ -267,7 +267,7 @@ impl Window {
             let scope = scopes.active.last()?;
             let path = &self.retained_element_id_stack;
             (!path.is_empty() && scope.identity_stable)
-                .then(|| scope.identity_for_path(path))
+                .then(|| scope.identity_for_path(path, &self.global_ids))
         })
     }
 
@@ -288,7 +288,7 @@ impl Window {
             let scope = scopes.active.last()?;
             (!self.retained_element_id_stack.is_empty()
                 && scope.identity_stable)
-            .then(|| scope.identity_for_path(&self.retained_element_id_stack))
+            .then(|| scope.identity_for_path(&self.retained_element_id_stack, &self.global_ids))
         })?;
         Some((path_key, stable))
     }
@@ -999,7 +999,7 @@ mod layout_identity_tests {
             retained_id: Some(id.clone()),
             ..Default::default()
         };
-        let reused = scope.identity_for_path(&stack_for_path(&path));
+        let reused = scope.identity_for_path(&stack_for_path(&path), &RefCell::default());
         assert!(std::sync::Arc::ptr_eq(&id.0, &reused.0));
     }
 
@@ -1012,10 +1012,11 @@ mod layout_identity_tests {
             ..Default::default()
         };
         let changed = [ElementId::from("other-root"), ElementId::from("child")];
-        let current = scope.identity_for_path(&stack_for_path(&changed));
+        let cache = RefCell::new(GlobalIdCache::default());
+        let current = scope.identity_for_path(&stack_for_path(&changed), &cache);
         assert_eq!(current.0.as_ref(), &changed);
         assert!(!std::sync::Arc::ptr_eq(&id.0, &current.0));
-        let synthetic = RetainedIdentityScope::default().identity_for_path(&stack_for_path(&changed));
+        let synthetic = RetainedIdentityScope::default().identity_for_path(&stack_for_path(&changed), &cache);
         assert_eq!(synthetic, current);
     }
 
@@ -1024,15 +1025,13 @@ mod layout_identity_tests {
         let id = GlobalElementId::from_path(&[ElementId::from("recycled-scope-probe")]);
         let weak = std::sync::Arc::downgrade(&id.0);
         // `id` is moved into the scope, so the count before and after pushing the same
-        // allocation must match; the interner's own reference is part of both.
+        // allocation must match.
         let baseline = weak.strong_count();
         let mut pool = RetainedIdentityScopePool::default();
         pool.push_scope(true, Some(id));
         assert_eq!(weak.strong_count(), baseline);
         pool.pop_scope();
-        // The scope must drop its reference. The path interner may still hold one, which is
-        // why this compares against the count before the scope was pushed rather than
-        // asserting the allocation is gone.
+        // The scope must drop its reference.
         assert_eq!(weak.strong_count(), baseline.saturating_sub(1));
         pool.push_scope(true, None);
         assert!(pool.active.last().unwrap().retained_id.is_none());

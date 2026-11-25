@@ -1,7 +1,7 @@
 #[cfg(any(feature = "inspector", debug_assertions))]
 use crate::Inspector;
 use crate::diagnostics::performance_metrics::record_visibility;
-use crate::element::ElementIdStack;
+use crate::element::{ElementIdStack, GlobalIdCache};
 use crate::{
     Action, AnimatedFrame, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App,
     AppContext, Arena, Asset, AsyncApp, AsyncWindowContext, AtlasTile, AvailableSpace,

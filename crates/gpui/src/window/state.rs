@@ -500,6 +500,7 @@ pub struct Window {
     pub(super) layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: ElementIdStack,
+    pub(crate) global_ids: RefCell<GlobalIdCache>,
     /// Retained rendering identity path. This intentionally differs from `element_id_stack`:
     /// anonymous elements receive internal `InstanceSlot` segments here but still receive no
     /// `GlobalElementId` for state storage.
