@@ -54,7 +54,22 @@ impl PresentWake {
         Ok(Self { sender: Some(sender), thread: Some(thread), pending })
     }
 
+    /// Close the channel without joining a potentially active native wait.
+    /// Resize preflight retries until the worker has left the native call.
+    pub(super) fn poll_shutdown(&mut self) -> bool {
+        self.stop();
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
+    fn stop(&mut self) {
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner).take();
+        drop(self.sender.take());
+    }
+
     pub(super) fn request(&self, target: u64, callback: PresentCallback) -> bool {
+        if self.sender.is_none() {
+            return false;
+        }
         let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((_, previous)) = pending.as_mut() {
             // An earlier wait is still a useful owner wake even if the
@@ -76,8 +91,7 @@ impl Drop for PresentWake {
     fn drop(&mut self) {
         // Clear the callback before closing the channel. Join before native
         // retirement; no new registration can occur on this owner-only object.
-        self.pending.lock().unwrap_or_else(PoisonError::into_inner).take();
-        drop(self.sender.take());
+        self.stop();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -241,6 +255,26 @@ impl VulkanDevice {
 mod retirement_tests {
     use super::*;
     use ash::vk::Handle as _;
+
+    #[test]
+    fn resize_preflight_does_not_join_an_active_present_worker() {
+        let (sender, receiver) = mpsc::channel::<u64>();
+        let (release, gate) = mpsc::channel::<()>();
+        let pending: PendingPresent = Arc::new(Mutex::new(Some((1, Box::new(|| {})))));
+        let thread = thread::spawn(move || {
+            // Model an outstanding native wait, independent of channel shutdown.
+            let _ = gate.recv();
+            assert!(receiver.recv().is_err());
+        });
+        let mut wake = PresentWake { sender: Some(sender), thread: Some(thread), pending };
+        assert!(!wake.poll_shutdown());
+        assert!(wake.sender.is_none());
+        assert!(!wake.request(2, Box::new(|| {})));
+        assert!(wake.pending.lock().unwrap().is_none());
+        release.send(()).unwrap();
+        wake.thread.take().unwrap().join().unwrap();
+        assert!(wake.poll_shutdown());
+    }
 
     #[test]
     fn wsi_rejection_keeps_the_enqueued_present_retirement() {

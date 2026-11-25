@@ -4974,6 +4974,15 @@ impl SurfaceDevice for VulkanDevice {
                 return Ok(false);
             }
         }
+        // A WSI wait can outlive a signaled present fence. Close its worker
+        // without joining on the frame owner; retry until it has exited.
+        if let Some(wake) = chain.present_wake.as_mut() {
+            if !wake.poll_shutdown() {
+                return Ok(false);
+            }
+            // The worker has finished; Drop's join cannot wait on WSI.
+            drop(chain.present_wake.take());
+        }
         Ok(true)
     }
 
