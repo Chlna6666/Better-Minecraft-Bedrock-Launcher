@@ -16,6 +16,8 @@ pub struct DescriptorIndexingCapabilities {
     pub max_sampled_images_per_stage: u32,
     /// Ordinary sampled-image descriptor limit per pipeline layout.
     pub max_sampled_images_per_set: u32,
+    /// Aggregate resource limit for a shader stage, including sampled images.
+    pub max_resources_per_stage: u32,
 }
 impl DescriptorIndexingCapabilities {
     pub(super) fn enable(
@@ -31,6 +33,7 @@ impl DescriptorIndexingCapabilities {
             variable_count: core && supported.descriptor_binding_variable_descriptor_count == vk::TRUE,
             max_sampled_images_per_stage: limits.max_per_stage_descriptor_sampled_images,
             max_sampled_images_per_set: limits.max_descriptor_set_sampled_images,
+            max_resources_per_stage: limits.max_per_stage_resources,
         };
         enabled.descriptor_indexing = u32::from(core);
         enabled.shader_sampled_image_array_non_uniform_indexing = u32::from(result.sampled_image_non_uniform);
@@ -44,7 +47,9 @@ impl DescriptorIndexingCapabilities {
     /// before accounting for other descriptors in its pipeline layout.
     pub fn sparse_sampled_image_capacity(self) -> u32 {
         if self.sampled_image_non_uniform && self.runtime_arrays && self.partially_bound && self.variable_count {
-            self.max_sampled_images_per_stage.min(self.max_sampled_images_per_set)
+            self.max_sampled_images_per_stage
+                .min(self.max_sampled_images_per_set)
+                .min(self.max_resources_per_stage)
         } else { 0 }
     }
 }
@@ -203,6 +208,7 @@ mod tests {
         let limits = vk::PhysicalDeviceLimits {
             max_per_stage_descriptor_sampled_images: 128,
             max_descriptor_set_sampled_images: 256,
+            max_per_stage_resources: 96,
             ..Default::default()
         };
         let mut enabled = vk::PhysicalDeviceVulkan12Features::default();
@@ -212,7 +218,8 @@ mod tests {
         assert_eq!(enabled.descriptor_binding_sampled_image_update_after_bind, vk::FALSE);
         supported.descriptor_binding_variable_descriptor_count = vk::TRUE;
         let full = DescriptorIndexingCapabilities::enable(&supported, &limits, &mut enabled);
-        assert_eq!(full.sparse_sampled_image_capacity(), 128);
+        // The aggregate resource limit can be smaller than either image limit.
+        assert_eq!(full.sparse_sampled_image_capacity(), 96);
         supported.descriptor_indexing = vk::FALSE;
         let disabled = DescriptorIndexingCapabilities::enable(&supported, &limits, &mut enabled);
         assert_eq!(disabled.sparse_sampled_image_capacity(), 0);
