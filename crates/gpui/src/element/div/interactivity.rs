@@ -22,7 +22,8 @@ use crate::{
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
-    ops::Range,
+    mem,
+    ops::{Deref, Range},
     rc::Rc,
     sync::Arc,
 };
@@ -41,6 +42,72 @@ use super::tooltip::TooltipBuilder;
 
 mod storage;
 pub(super) use storage::InteractivityBox;
+
+// LazyVec implementation from longbridge/gpui-fast at 1100a214532bdeac0282acd1c5c6d2062d8ab1a7.
+// Copyright 2022 - 2025 Zed Industries, Inc.
+// Copyright 2026 Longbridge.
+// SPDX-License-Identifier: Apache-2.0
+// Adapted to this module; the drop-list Vec remains at the existing runtime boundary.
+/// A list one pointer wide that allocates nothing while it is empty.
+///
+/// An [`Interactivity`] holds a score of listener lists, nearly all of them
+/// empty on any one element, and moves with its element through every call
+/// of its builder. As `Vec`s they were 500 of its bytes, copied every time.
+///
+/// [`Interactivity`]: crate::Interactivity
+// A boxed `Vec` is one pointer where a `Vec` is three, which is the point;
+// the second allocation is paid only by a list that has something in it.
+#[allow(clippy::box_collection)]
+pub(crate) struct LazyVec<T>(Option<Box<Vec<T>>>);
+
+impl<T> Default for LazyVec<T> {
+    fn default() -> Self {
+        LazyVec(None)
+    }
+}
+
+impl<T: Clone> Clone for LazyVec<T> {
+    fn clone(&self) -> Self {
+        LazyVec(self.0.clone())
+    }
+}
+
+impl<T> LazyVec<T> {
+    pub(crate) fn push(&mut self, item: T) {
+        self.0.get_or_insert_with(Default::default).push(item);
+    }
+
+    /// Takes every item out, leaving the list empty.
+    pub(crate) fn drain(&mut self, _: std::ops::RangeFull) -> std::vec::IntoIter<T> {
+        mem::take(self).into_iter()
+    }
+}
+
+impl<T> Deref for LazyVec<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        self.0.as_deref().map_or(&[], Vec::as_slice)
+    }
+}
+
+impl<T> IntoIterator for LazyVec<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.map(|items| *items).unwrap_or_default().into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a LazyVec<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
 
 /// The interactivity struct. Powers all of the general-purpose interactivity in the `Div` element.
 #[derive(Default)]
@@ -69,22 +136,22 @@ pub struct Interactivity {
     pub(crate) group_hover_style: Option<GroupStyle>,
     pub(crate) active_style: Option<Box<StyleRefinement>>,
     pub(crate) group_active_style: Option<GroupStyle>,
-    pub(crate) drag_over_styles: Vec<(
+    pub(crate) drag_over_styles: LazyVec<(
         TypeId,
         Box<dyn Fn(&dyn Any, &mut Window, &mut App) -> StyleRefinement>,
     )>,
-    pub(crate) group_drag_over_styles: Vec<(TypeId, GroupStyle)>,
-    pub(crate) mouse_down_listeners: Vec<MouseDownListener>,
-    pub(crate) mouse_up_listeners: Vec<MouseUpListener>,
-    pub(crate) mouse_move_listeners: Vec<MouseMoveListener>,
-    pub(crate) scroll_wheel_listeners: Vec<ScrollWheelListener>,
-    pub(crate) key_down_listeners: Vec<KeyDownListener>,
-    pub(crate) key_up_listeners: Vec<KeyUpListener>,
-    pub(crate) modifiers_changed_listeners: Vec<ModifiersChangedListener>,
-    pub(crate) action_listeners: Vec<(TypeId, ActionListener)>,
+    pub(crate) group_drag_over_styles: LazyVec<(TypeId, GroupStyle)>,
+    pub(crate) mouse_down_listeners: LazyVec<MouseDownListener>,
+    pub(crate) mouse_up_listeners: LazyVec<MouseUpListener>,
+    pub(crate) mouse_move_listeners: LazyVec<MouseMoveListener>,
+    pub(crate) scroll_wheel_listeners: LazyVec<ScrollWheelListener>,
+    pub(crate) key_down_listeners: LazyVec<KeyDownListener>,
+    pub(crate) key_up_listeners: LazyVec<KeyUpListener>,
+    pub(crate) modifiers_changed_listeners: LazyVec<ModifiersChangedListener>,
+    pub(crate) action_listeners: LazyVec<(TypeId, ActionListener)>,
     pub(crate) drop_listeners: Vec<(TypeId, DropListener)>,
     pub(crate) can_drop_predicate: Option<CanDropPredicate>,
-    pub(crate) click_listeners: Vec<ClickListener>,
+    pub(crate) click_listeners: LazyVec<ClickListener>,
     pub(crate) drag_listener: Option<(Arc<dyn Any>, DragListener)>,
     pub(crate) hover_listener: Option<Box<dyn Fn(&bool, &mut Window, &mut App)>>,
     pub(crate) hover_listener_mode: HoverListenerMode,
