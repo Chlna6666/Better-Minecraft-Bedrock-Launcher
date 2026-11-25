@@ -24,34 +24,86 @@ pub struct GlobalElementId(
     u64,
 );
 
+// Incremental path hashing and stack from longbridge/gpui-fast (1100a214532bdeac0282acd1c5c6d2062d8ab1a7).
+// Copyright 2022 - 2025 Zed Industries, Inc.
+// Copyright 2026 Longbridge.
+// SPDX-License-Identifier: Apache-2.0
+pub(crate) const EMPTY_PATH_HASH: u64 = 0;
+
+/// The hash of the path `prefix` + `id`, given the hash of `prefix`.
+pub(crate) fn extend_path_hash(prefix: u64, id: &ElementId) -> u64 {
+    let mut hasher = collections::FxHasher::with_seed(prefix as usize);
+    id.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ElementIdStack {
+    ids: SmallVec<[ElementId; 32]>,
+    hashes: SmallVec<[u64; 32]>,
+}
+
+impl ElementIdStack {
+    pub(crate) fn push(&mut self, id: ElementId) {
+        self.hashes.push(extend_path_hash(self.hash(), &id));
+        self.ids.push(id);
+    }
+
+    pub(crate) fn pop(&mut self) -> Option<ElementId> {
+        self.hashes.pop();
+        self.ids.pop()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.ids.clear();
+        self.hashes.clear();
+    }
+
+    /// The hash of the whole path on the stack.
+    pub(crate) fn hash(&self) -> u64 {
+        self.hashes
+            .last()
+            .copied()
+            .unwrap_or(EMPTY_PATH_HASH)
+    }
+
+    pub(crate) fn as_slice(&self) -> &[ElementId] {
+        &self.ids
+    }
+
+    pub(crate) fn global_id(&self) -> GlobalElementId {
+        GlobalElementId::with_hash(&self.ids, self.hash())
+    }
+}
+
+impl std::ops::Deref for ElementIdStack {
+    type Target = [ElementId];
+
+    fn deref(&self) -> &Self::Target {
+        &self.ids
+    }
+}
+
 impl GlobalElementId {
-    /// Builds the identifier for one element path.
-    ///
-    /// Every element builds one of these on every drawn frame, so the path allocation and
-    /// its hash are hot. Paths repeat frame to frame, so the interner hands back the same
-    /// `Arc` for an equal path instead of allocating a new one. That also makes the
-    /// `Arc::ptr_eq` fast path in `PartialEq` reachable, which in turn keeps the many maps
-    /// keyed by this type cheap to probe.
+    /// Builds an identifier for an arbitrary element path.
     #[inline]
     pub(crate) fn from_path(path: &[ElementId]) -> Self {
+        Self::with_hash(path, path.iter().fold(EMPTY_PATH_HASH, extend_path_hash))
+    }
+
+    /// Uses the prefix hash maintained by the element ID stack.
+    #[inline]
+    fn with_hash(path: &[ElementId], hash: u64) -> Self {
+        debug_assert_eq!(hash, path.iter().fold(EMPTY_PATH_HASH, extend_path_hash));
         if path.is_empty() {
-            return Self(Arc::from(path), EMPTY_PATH_HASH.with(|hash| *hash));
+            return Self(Arc::from(path), hash);
         }
-        let mut hasher = collections::FxHasher::default();
-        path.hash(&mut hasher);
-        let hash = hasher.finish();
         let interned = PATH_INTERNER.with(|interner| interner.borrow_mut().intern(path, hash));
         Self(interned, hash)
     }
 }
 
 thread_local! {
-    /// Hash of the empty path, which is constant and used for the root.
-    static EMPTY_PATH_HASH: u64 = {
-        let mut hasher = collections::FxHasher::default();
-        <[ElementId]>::hash(&[], &mut hasher);
-        hasher.finish()
-    };
     /// Frame-independent pool of element paths.
     ///
     /// Element identities repeat across frames, so interning them removes one allocation and
@@ -61,7 +113,6 @@ thread_local! {
         std::cell::RefCell::new(PathInterner::default());
 }
 
-#[derive(Default)]
 struct PathInterner {
     /// Paths bucketed by hash. Collisions are rare and the vector stays tiny, so a linear
     /// probe inside the bucket costs less than a second map level.
@@ -70,6 +121,18 @@ struct PathInterner {
     len: usize,
     /// Frames since the last prune, in units of interner calls.
     calls_since_prune: usize,
+    prune_at: usize,
+}
+
+impl Default for PathInterner {
+    fn default() -> Self {
+        Self {
+            buckets: Default::default(),
+            len: 0,
+            calls_since_prune: 0,
+            prune_at: Self::PRUNE_AT,
+        }
+    }
 }
 
 impl PathInterner {
@@ -87,7 +150,7 @@ impl PathInterner {
         self.len = self.len.saturating_add(1);
 
         self.calls_since_prune = self.calls_since_prune.saturating_add(1);
-        if self.len > Self::PRUNE_AT || self.calls_since_prune >= Self::PRUNE_CALLS {
+        if self.len >= self.prune_at || self.calls_since_prune >= Self::PRUNE_CALLS {
             self.prune();
         }
         interned
@@ -105,6 +168,9 @@ impl PathInterner {
         });
         self.len = self.buckets.values().map(smallvec::SmallVec::len).sum();
         self.calls_since_prune = 0;
+        // As in Fast's dependency interner, grow with the live working set.
+        // A large live tree must not trigger an O(n) sweep on every miss.
+        self.prune_at = self.len.saturating_mul(2).max(Self::PRUNE_AT);
     }
 }
 
@@ -262,7 +328,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
 #[inline(never)]
 fn prepare_element_id(element_id: ElementId, window: &mut Window) -> GlobalElementId {
     window.element_id_stack.push(element_id);
-    GlobalElementId::from_path(&window.element_id_stack)
+    window.element_id_stack.global_id()
 }
 
 #[cfg(any(feature = "inspector", debug_assertions))]
@@ -272,7 +338,7 @@ fn prepare_inspector_id(
     window: &mut Window,
 ) -> InspectorElementId {
     let path = crate::InspectorElementPath {
-        global_id: GlobalElementId::from_path(&window.element_id_stack),
+        global_id: window.element_id_stack.global_id(),
         source_location: source,
     };
     window.build_inspector_element_id(path)
@@ -1071,6 +1137,26 @@ where
 #[cfg(test)]
 mod global_element_id_hash_tests {
     use super::*;
+
+    #[test]
+    fn incremental_stack_matches_arbitrary_path_and_restores_prefixes() {
+        let mut stack = ElementIdStack::default();
+        assert_eq!(stack.global_id(), GlobalElementId::default());
+        stack.push(ElementId::from("root"));
+        let root = stack.global_id();
+        stack.push(ElementId::from(42u64));
+        let child = stack.global_id();
+        assert_eq!(child, GlobalElementId::from_path(stack.as_slice()));
+        assert!(Arc::ptr_eq(&child.0, &stack.global_id().0));
+        let mut deferred = stack.clone();
+        deferred.pop();
+        assert_eq!(deferred.global_id(), root);
+        deferred.push(ElementId::from(43u64));
+        assert_ne!(deferred.global_id(), child);
+        assert_eq!(stack.global_id(), child);
+        deferred.clear();
+        assert_eq!(deferred.global_id(), GlobalElementId::default());
+    }
 
     #[test]
     fn equal_paths_share_one_allocation_and_remain_interchangeable() {

@@ -499,11 +499,11 @@ pub struct Window {
     pub(crate) live_resize_image_views: FxHashSet<EntityId>,
     pub(super) layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
-    pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
+    pub(crate) element_id_stack: ElementIdStack,
     /// Retained rendering identity path. This intentionally differs from `element_id_stack`:
     /// anonymous elements receive internal `InstanceSlot` segments here but still receive no
     /// `GlobalElementId` for state storage.
-    pub(crate) retained_element_id_stack: SmallVec<[ElementId; 32]>,
+    pub(crate) retained_element_id_stack: ElementIdStack,
     /// Parent-local positional counters used only while `request_layout` constructs retained IDs.
     pub(crate) retained_child_slot_stack: SmallVec<[u32; 32]>,
     /// Incremental running hashes of the element path, used as the layout node identity.

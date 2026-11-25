@@ -32,12 +32,12 @@ struct RetainedIdentityScope {
 }
 
 impl RetainedIdentityScope {
-    fn identity_for_path(&self, path: &[ElementId]) -> GlobalElementId {
+    fn identity_for_path(&self, path: &ElementIdStack) -> GlobalElementId {
         self.retained_id
             .as_ref()
-            .filter(|id| id.0.as_ref() == path)
+            .filter(|id| id.0.as_ref() == path.as_slice())
             .cloned()
-            .unwrap_or_else(|| GlobalElementId::from_path(path))
+            .unwrap_or_else(|| path.global_id())
     }
 }
 
@@ -114,7 +114,7 @@ impl Window {
         f: impl FnOnce(&GlobalElementId, &mut Self) -> R,
     ) -> R {
         self.element_id_stack.push(element_id);
-        let global_id = GlobalElementId::from_path(&self.element_id_stack);
+        let global_id = self.element_id_stack.global_id();
         let result = f(&global_id, self);
         self.element_id_stack.pop();
         result
@@ -201,7 +201,7 @@ impl Window {
             };
 
             self.retained_element_id_stack.push(segment.clone());
-            let retained_id = GlobalElementId::from_path(&self.retained_element_id_stack);
+            let retained_id = self.retained_element_id_stack.global_id();
             scopes.push_scope(identity_stable, Some(retained_id.clone()));
             (segment, retained_id, identity_stable)
         });
@@ -240,13 +240,13 @@ impl Window {
     /// Returns the retained rendering identity of the element currently being laid out,
     /// prepainted, or painted.
     pub(crate) fn current_retained_element_id(&self) -> Option<GlobalElementId> {
-        let path = self.retained_element_id_stack.as_slice();
+        let path = &self.retained_element_id_stack;
         if path.is_empty() {
             return None;
         }
         Some(RETAINED_IDENTITY_SCOPES.with(|scopes| {
             scopes.borrow().active.last().map_or_else(
-                || GlobalElementId::from_path(path),
+                || path.global_id(),
                 |scope| scope.identity_for_path(path),
             )
         }))
@@ -265,7 +265,7 @@ impl Window {
         RETAINED_IDENTITY_SCOPES.with(|scopes| {
             let scopes = scopes.borrow();
             let scope = scopes.active.last()?;
-            let path = self.retained_element_id_stack.as_slice();
+            let path = &self.retained_element_id_stack;
             (!path.is_empty() && scope.identity_stable)
                 .then(|| scope.identity_for_path(path))
         })
@@ -288,7 +288,7 @@ impl Window {
             let scope = scopes.active.last()?;
             (!self.retained_element_id_stack.is_empty()
                 && scope.identity_stable)
-            .then(|| scope.identity_for_path(self.retained_element_id_stack.as_slice()))
+            .then(|| scope.identity_for_path(&self.retained_element_id_stack))
         })?;
         Some((path_key, stable))
     }
@@ -983,6 +983,14 @@ impl Window {
 mod layout_identity_tests {
     use super::*;
 
+    fn stack_for_path(path: &[ElementId]) -> ElementIdStack {
+        let mut stack = ElementIdStack::default();
+        for id in path {
+            stack.push(id.clone());
+        }
+        stack
+    }
+
     #[test]
     fn mounted_identity_reuses_the_path_allocation() {
         let path = [ElementId::from("root"), ElementId::from("child")];
@@ -991,7 +999,7 @@ mod layout_identity_tests {
             retained_id: Some(id.clone()),
             ..Default::default()
         };
-        let reused = scope.identity_for_path(&path);
+        let reused = scope.identity_for_path(&stack_for_path(&path));
         assert!(std::sync::Arc::ptr_eq(&id.0, &reused.0));
     }
 
@@ -1004,10 +1012,10 @@ mod layout_identity_tests {
             ..Default::default()
         };
         let changed = [ElementId::from("other-root"), ElementId::from("child")];
-        let current = scope.identity_for_path(&changed);
+        let current = scope.identity_for_path(&stack_for_path(&changed));
         assert_eq!(current.0.as_ref(), &changed);
         assert!(!std::sync::Arc::ptr_eq(&id.0, &current.0));
-        let synthetic = RetainedIdentityScope::default().identity_for_path(&changed);
+        let synthetic = RetainedIdentityScope::default().identity_for_path(&stack_for_path(&changed));
         assert_eq!(synthetic, current);
     }
 
