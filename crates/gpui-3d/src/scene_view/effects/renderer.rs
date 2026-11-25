@@ -1,6 +1,6 @@
 use super::super::{
     SceneView, SceneViewId,
-    resources::{PassKind, RendererResources},
+    resources::{PassKind, RendererResources, SampledTierCache},
 };
 use super::{
     ScreenEffects,
@@ -28,6 +28,7 @@ pub(in crate::scene_view) struct EffectsRenderer {
     hdr: RendererResources,
     attributes: RendererResources,
     shadow_resources: RendererResources,
+    sampled_tiers: SampledTierCache,
     compositor: Compositor,
     froxel_program: Option<FroxelProgram>,
     scenes: HashMap<SceneViewId, EffectScene>,
@@ -206,6 +207,7 @@ impl EffectsRenderer {
                 hdr,
                 attributes,
                 shadow_resources,
+                sampled_tiers: SampledTierCache::default(),
                 compositor: compositor
                     .take()
                     .unwrap_or_else(|| unreachable!("compositor was constructed")),
@@ -270,12 +272,6 @@ impl EffectsRenderer {
                 state.scene.reclaim_arena_after_gpu_idle();
             }
         }
-        let state = self
-            .scenes
-            .get_mut(&view.id)
-            .ok_or_else(|| anyhow::anyhow!("effect scene missing"))?;
-        state.last_seen = context.frame_time();
-        state.resize(device, context.backend_kind(), extent)?;
         let local = context.offscreen(self.pass, Format::Rgba16Float, extent);
         if self.target_extent != extent {
             self.hdr.replace_pipelines(device, &local)?;
@@ -285,6 +281,27 @@ impl EffectsRenderer {
             )?;
             self.target_extent = extent;
         }
+        // All material passes switch as one family. The cache retains old
+        // PSOs/layouts for already queued captures and migrated scene tables.
+        if let Some(current) = self.hdr.sampled_table_capacity() {
+            let demand = self.scenes.values().map(|state| state.scene.sampled_capacity_demand()).max().unwrap_or(1);
+            if let Some(target) = self.sampled_tiers.suggest(current, demand, context.frame_time())
+                && self.scenes.values().all(|state| state.scene.sampled_can_migrate(target))
+                && self.sampled_tiers.switch(device, &mut [&mut self.hdr, &mut self.attributes, &mut self.shadow_resources],
+                    &[local.clone(), local.offscreen(self.attributes_pass, Format::Rgba16Float, extent),
+                      local.offscreen(self.shadow_pass, Format::R8Unorm, Extent2d::new(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)?)],
+                    target)?
+            {
+                for state in self.scenes.values_mut() {
+                    state.targets_valid = false;
+                    state.shadow_valid.fill(false);
+                }
+            }
+        }
+        let state = self.scenes.get_mut(&view.id)
+            .ok_or_else(|| anyhow::anyhow!("effect scene missing"))?;
+        state.last_seen = context.frame_time();
+        state.resize(device, context.backend_kind(), extent)?;
         self.compositor.sync_post(device, &local)?;
         // Sun visibility is resolved once from the real material-aware shadow map below.
         state.capture_geometry(
@@ -712,6 +729,7 @@ impl RendererExtensionRenderer for EffectsRenderer {
         for (_, scene) in self.scenes.drain() {
             scene.destroy(device)?;
         }
+        self.sampled_tiers.destroy(device)?;
         self.shadow_resources.destroy(device)?;
         self.attributes.destroy(device)?;
         self.hdr.destroy(device)?;
