@@ -131,8 +131,22 @@ impl MetalDevice {
             if counts.peek().is_some_and(|count| count.command_index == index) {
                 let count = *counts.next().expect("counted command");
                 step.draw = PreparedMetalDraw::Counted(self.prepare_counted_run(command, count, &step.pipeline)?);
-            } else if remaining >= MIN_FIXED_RUN || (compact && remaining > 1) {
+            } else if remaining >= MIN_FIXED_RUN {
                 step.draw = PreparedMetalDraw::Counted(self.prepare_fixed_run(command, remaining, &step.pipeline)?);
+                consumed = remaining;
+            } else if compact && remaining > 1 {
+                // Small spans avoid ICB setup while keeping the producer compact.
+                match (command, &mut step.draw) {
+                    (RenderCommand::DrawIndirect(draw), PreparedMetalDraw::Indirect { count, .. }) => {
+                        self.indirect_arguments(draw.arguments, draw.offset, u64::from(remaining) * 16)?;
+                        *count = remaining;
+                    }
+                    (RenderCommand::DrawIndexedIndirect(draw), PreparedMetalDraw::IndexedIndirect { count, .. }) => {
+                        self.indirect_arguments(draw.arguments, draw.offset, u64::from(remaining) * 20)?;
+                        *count = remaining;
+                    }
+                    _ => return Err(Error::InvalidInput("Metal compact span requires an indirect draw".into())),
+                }
                 consumed = remaining;
             }
             index += if compact { 1 } else { consumed as usize };
