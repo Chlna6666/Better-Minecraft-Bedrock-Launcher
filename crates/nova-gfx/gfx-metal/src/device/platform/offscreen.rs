@@ -131,11 +131,16 @@ impl MetalDevice {
             if counts.peek().is_some_and(|count| count.command_index == index) {
                 let count = *counts.next().expect("counted command");
                 step.draw = PreparedMetalDraw::Counted(self.prepare_counted_run(command, count, &step.pipeline)?);
-            } else if remaining >= MIN_FIXED_RUN {
-                step.draw = PreparedMetalDraw::Counted(self.prepare_fixed_run(command, remaining, &step.pipeline)?);
-                consumed = remaining;
-            } else if compact && remaining > 1 {
-                // Small spans avoid ICB setup while keeping the producer compact.
+            } else if remaining > 1 && (compact || remaining >= MIN_FIXED_RUN) {
+                // Fixed ICB conversion is optional. Allocation or encoder
+                // limitations must not prevent a valid portable span from
+                // rendering. Counted GPU-driven draws retain their separate ABI.
+                let fixed = if self.fixed_icb && remaining >= MIN_FIXED_RUN {
+                    self.prepare_fixed_run(command, remaining, &step.pipeline).ok()
+                } else { None };
+                if let Some(run) = fixed {
+                    step.draw = PreparedMetalDraw::Counted(run);
+                } else {
                 match (command, &mut step.draw) {
                     (RenderCommand::DrawIndirect(draw), PreparedMetalDraw::Indirect { count, .. }) => {
                         self.indirect_arguments(draw.arguments, draw.offset, u64::from(remaining) * 16)?;
@@ -146,6 +151,7 @@ impl MetalDevice {
                         *count = remaining;
                     }
                     _ => return Err(Error::InvalidInput("Metal compact span requires an indirect draw".into())),
+                }
                 }
                 consumed = remaining;
             }
