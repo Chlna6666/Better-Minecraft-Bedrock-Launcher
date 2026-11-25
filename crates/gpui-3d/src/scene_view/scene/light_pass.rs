@@ -160,7 +160,8 @@ impl SceneResources {
         let mut groups = Vec::<Option<BindGroupId>>::with_capacity(self.batches.len());
         let mut active = HashSet::new();
         let fallback = renderer.fallback_texture_view()?;
-        let sampled = self.sampled_snapshot(renderer).is_some();
+        let sampled = self.sampled_snapshot(renderer).is_some()
+            || self.sampled_textures.as_ref().is_some_and(|table| table.banked());
         let layout = renderer.draw_bind_group_layout(sampled)?;
         for (index, batch) in self.batches.iter().enumerate() {
             let draw = &self.prepared.draws[batch.first_instance];
