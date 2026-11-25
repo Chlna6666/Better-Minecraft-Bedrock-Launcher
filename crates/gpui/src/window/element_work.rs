@@ -5,7 +5,6 @@
 //! nested element can perturb the very 240Hz frame budget being measured.
 
 use std::cell::RefCell;
-#[cfg(debug_assertions)]
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -29,15 +28,12 @@ struct ElementWorkFrame {
 }
 
 pub(crate) fn enabled() -> bool {
-    #[cfg(debug_assertions)]
-    {
-        static ENABLED: OnceLock<bool> = OnceLock::new();
-        *ENABLED.get_or_init(|| std::env::var("BMCBL_GPUI_ELEMENT_WORK").is_ok_and(|v| v == "1"))
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        false
-    }
+    // Two timestamps and several TLS borrows per element perturb the frame being
+    // measured, so this stays off unless explicitly requested. Release builds
+    // honour the request too: a diagnosis has to run on the optimized binary,
+    // and the absolute numbers it prints are only comparable between probe runs.
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("BMCBL_GPUI_ELEMENT_WORK").is_ok_and(|v| v == "1"))
 }
 
 /// Per-frame element work summary.
