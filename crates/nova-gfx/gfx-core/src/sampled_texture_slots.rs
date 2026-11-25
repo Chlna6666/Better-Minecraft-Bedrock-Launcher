@@ -69,6 +69,55 @@ impl SampledTextureSlots {
     #[must_use]
     pub const fn fallback_index(&self) -> u32 { 0 }
 
+    /// Current shader-visible descriptor capacity, including fallback index zero.
+    #[must_use]
+    pub fn capacity(&self) -> u32 { self.views.len() as u32 }
+
+    /// A shrink must not truncate live or GPU-retired indices. Retain the
+    /// generation tombstones above the new logical capacity so growing
+    /// again cannot resurrect a stale CPU slot handle.
+    #[must_use]
+    pub fn can_resize(&self, capacity: u32) -> bool {
+        capacity != 0 && (capacity >= self.capacity() ||
+            self.slots[capacity as usize..self.views.len()].iter().all(|slot|
+                matches!(slot.state, State::Free | State::Exhausted)))
+    }
+
+    /// Atomically migrate to a compatible new shader/table capacity.
+    ///
+    /// Native publication happens before any allocator changes. Existing
+    /// live indices, pending GPU-reader proofs and dirty values survive.
+    /// The caller owns the returned old snapshot and must retire it after
+    /// every real reader, and switch to a matching pipeline layout.
+    pub fn resize_snapshot_with(
+        &mut self, capacity: u32,
+        create: impl FnOnce(&[TextureViewId]) -> Result<BindGroupId>,
+    ) -> Result<(Option<BindGroupId>, BindGroupId)> {
+        if !self.can_resize(capacity) {
+            return Err(Error::InvalidInput("sampled table resize would truncate a live or retired slot".into()));
+        }
+        let previous_capacity = self.capacity();
+        let mut views = self.views.clone();
+        views.resize(capacity as usize, self.fallback);
+        let snapshot = create(&views)?;
+        let previous = self.current_snapshot.replace(snapshot);
+        if capacity > previous_capacity {
+            if self.slots.len() < capacity as usize {
+                self.slots.resize_with(capacity as usize, || Slot { generation: 1, state: State::Free });
+            }
+            // Prefer the already-free lower indices before growing upward.
+            let mut added: Vec<_> = (previous_capacity..capacity).rev().filter(|&index|
+                matches!(self.slots[index as usize].state, State::Free)).collect();
+            added.append(&mut self.free);
+            self.free = added;
+        } else if capacity < previous_capacity {
+            self.free.retain(|&index| index < capacity);
+        }
+        self.views = views;
+        self.dirty.clear();
+        Ok((previous, snapshot))
+    }
+
     /// Number of immediately reusable indices. Retired slots whose GPU
     /// readers have not completed are deliberately excluded.
     #[must_use]
@@ -251,6 +300,44 @@ mod tests {
         assert_eq!(slots.current_snapshot(), Some(next));
         assert!(slots.publish_with(old, |_, _| panic!("stale base must not reach backend")).is_err());
         assert!(slots.publish_with(next, |_, _| panic!("clean table must not allocate")).unwrap().is_none());
+    }
+
+    #[test]
+    fn capacity_migration_preserves_live_slots_readers_and_failed_publication() {
+        let fallback = TextureViewId::from_parts(1, 1);
+        let image = TextureViewId::from_parts(2, 1);
+        let first = BindGroupId::from_parts(1, 1);
+        let second = BindGroupId::from_parts(2, 1);
+        let third = BindGroupId::from_parts(3, 1);
+        let reader = SubmissionId::from_parts(4, 1);
+        let mut slots = SampledTextureSlots::new(2, fallback).unwrap();
+        let low = slots.allocate(image).unwrap();
+        slots.create_snapshot_with(|_| Ok(first)).unwrap();
+        assert!(slots.resize_snapshot_with(4, |_| Err(Error::Unavailable("test failure".into()))).is_err());
+        assert_eq!(slots.capacity(), 2);
+        assert_eq!(slots.current_snapshot(), Some(first));
+        assert!(slots.contains(low));
+        assert_eq!(slots.resize_snapshot_with(4, |views| {
+            assert_eq!(views, [fallback, image, fallback, fallback]);
+            Ok(second)
+        }).unwrap(), (Some(first), second));
+        let high = slots.allocate(image).unwrap();
+        assert_eq!(high.index(), 2);
+        assert!(!slots.can_resize(2));
+        slots.retire(high, &[reader]).unwrap();
+        assert!(!slots.can_resize(2));
+        slots.complete(reader);
+        assert!(slots.can_resize(2));
+        assert_eq!(slots.resize_snapshot_with(2, |views| {
+            assert_eq!(views, [fallback, image]);
+            Ok(third)
+        }).unwrap(), (Some(second), third));
+        assert!(slots.contains(low));
+        slots.resize_snapshot_with(4, |_| Ok(first)).unwrap();
+        let reused = slots.allocate(image).unwrap();
+        assert_eq!(reused.index(), high.index());
+        assert_ne!(reused.generation(), high.generation());
+        assert!(!slots.contains(high));
     }
 
     #[test]
