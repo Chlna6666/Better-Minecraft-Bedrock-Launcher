@@ -39,7 +39,6 @@ pub(in crate::scene_view) struct EffectsRenderer {
     epoch: Instant,
     textures: Option<super::textures::Textures>,
     completed: bool,
-    target_extent: Extent2d,
     msaa_sample_count: u32,
 }
 impl EffectsRenderer {
@@ -218,7 +217,6 @@ impl EffectsRenderer {
                 epoch: context.frame_time(),
                 textures: Some(textures),
                 completed: false,
-                target_extent,
                 msaa_sample_count,
             })
         })();
@@ -273,14 +271,12 @@ impl EffectsRenderer {
             }
         }
         let local = context.offscreen(self.pass, Format::Rgba16Float, extent);
-        if self.target_extent != extent {
-            self.hdr.replace_pipelines(device, &local)?;
-            self.attributes.replace_pipelines(
-                device,
-                &local.offscreen(self.attributes_pass, Format::Rgba16Float, extent),
-            )?;
-            self.target_extent = extent;
-        }
+        // The material render passes and formats are fixed; native viewport
+        // and scissor state is supplied at recording time on every backend.
+        // Resizing only reallocates attachments, never recompiles material PSOs.
+        self.hdr.release_completed(device)?;
+        self.attributes.release_completed(device)?;
+        self.shadow_resources.release_completed(device)?;
         self.sampled_tiers.release_completed(device, |layout| self.scenes.values()
             .any(|state| state.scene.references_sampled_layout(layout)))?;
         // All material passes switch as one family. The cache retains old
@@ -726,12 +722,17 @@ impl RendererExtensionRenderer for EffectsRenderer {
         }
     }
     fn needs_gpu_completion(&self) -> bool {
-        self.sampled_tiers.needs_completion() || self.scenes
+        self.hdr.has_retired_pipelines() || self.attributes.has_retired_pipelines()
+            || self.shadow_resources.has_retired_pipelines()
+            || self.sampled_tiers.needs_completion() || self.scenes
             .values()
             .any(|scene| scene.scene.has_retired_arena_ranges())
     }
     fn gpu_work_completed(&mut self) {
         self.sampled_tiers.idle();
+        self.hdr.gpu_work_completed();
+        self.attributes.gpu_work_completed();
+        self.shadow_resources.gpu_work_completed();
         self.completed = true;
     }
     fn trim_memory(
