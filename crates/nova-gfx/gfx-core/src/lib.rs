@@ -2912,6 +2912,7 @@ pub struct DrawRunPlan {
     limit: u32,
     packed: bool,
     compressed: bool,
+    logical_draw_count: usize,
 }
 
 impl DrawRunPlan {
@@ -2955,7 +2956,7 @@ impl DrawRunPlan {
             runs.push(count);
             cursor += count as usize;
         }
-        Self { source: std::sync::Arc::downgrade(commands), runs, indirect_only, limit, packed, compressed: false }
+        Self { source: std::sync::Arc::downgrade(commands), runs, indirect_only, limit, packed, compressed: false, logical_draw_count: commands.len() }
     }
 
     /// Exact allocation identity and native limit, not a content hash.
@@ -2986,10 +2987,13 @@ impl DrawRunPlan {
             return Err(Error::InvalidInput("compact draw run metadata length mismatch".into()));
         }
         let mut indirect_only = !commands.is_empty();
+        let mut logical_draw_count = 0usize;
         for (command, &length) in commands.iter().zip(&runs) {
             if length == 0 || length > limit {
                 return Err(Error::InvalidInput("compact draw run exceeds native limit".into()));
             }
+            logical_draw_count = logical_draw_count.checked_add(length as usize)
+                .ok_or_else(|| Error::InvalidInput("compact logical draw count overflow".into()))?;
             let span = match command {
                 RenderCommand::DrawIndirect(draw) => Some((draw.offset, 16u64)),
                 RenderCommand::DrawIndexedIndirect(draw) => Some((draw.offset, 20u64)),
@@ -3004,7 +3008,7 @@ impl DrawRunPlan {
             }
         }
         Ok(Self { source: std::sync::Arc::downgrade(commands), runs, indirect_only,
-            limit, packed: false, compressed: true })
+            limit, packed: false, compressed: true, logical_draw_count })
     }
 
     /// Validate the exact representative allocation and device limit.
@@ -3024,7 +3028,7 @@ impl DrawRunPlan {
 
     /// Logical draw count before run compression.
     pub fn logical_draw_count(&self) -> usize {
-        self.runs.iter().fold(0usize, |total, &count| total.saturating_add(count as usize))
+        self.logical_draw_count
     }
 
     /// Whether a producer still owns the source snapshot.
