@@ -554,11 +554,11 @@ impl NovaRenderer {
         depth_attachment: Option<DepthAttachment>,
         frame_resource_index: usize,
         damage: Option<ScissorRect>,
-    ) -> Result<Option<gfx_core::PresentedFrame>>
+    ) -> Result<gfx_core::PresentOutcome>
     where
         D: PresentationDevice + CommandDevice + SubmissionDevice,
     {
-        let mut frame = device.render_and_present(&PresentFrameDescriptor {
+        let mut frame = device.render_and_present_tracked(&PresentFrameDescriptor {
             swapchain,
             render_pass,
             commands: steps,
@@ -570,17 +570,17 @@ impl NovaRenderer {
         let use_deferred_submission = submission_mode != GpuSubmissionMode::Synchronous
             && async_capabilities.async_presentation;
         if !use_deferred_submission {
-            if let Some(submission) = frame.as_mut().and_then(|frame| frame.submission) {
+            if let Some(submission) = frame.frame().and_then(|frame| frame.submission) {
                 let wait_started = Instant::now();
                 let result = gfx_core::SubmissionDevice::wait_submission(device, submission);
                 let elapsed = wait_started.elapsed();
                 crate::diagnostics::gpu_owner::record_blocking_wait(elapsed);
                 result?;
-                if let Some(timings) = frame.as_mut().and_then(|frame| frame.timings.as_mut()) {
+                if let Some(timings) = frame.frame_mut().and_then(|frame| frame.timings.as_mut()) {
                     timings.submission_wait = elapsed;
                 }
             }
-        } else if let Some(submission) = frame.as_mut().and_then(|frame| frame.submission) {
+        } else if let Some(submission) = frame.frame().and_then(|frame| frame.submission) {
             pending_submissions.push(PendingSubmission {
                 predecessors: SmallVec::new(),
                 submission,

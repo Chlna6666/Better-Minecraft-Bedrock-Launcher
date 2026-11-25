@@ -34,7 +34,7 @@ use gfx_core::{
     DrawDescriptor, Error, FilterMode, Format, FrameGpuTimestamps, IndexBufferBinding, IndexFormat,
     LoadOp, MemoryAccounting, MemoryBudget, MemoryLocation, MemoryTrimLevel, PipelineDevice,
     PipelineLayoutDescriptor, PipelineLayoutId, PowerPreference, PresentFrameDescriptor,
-    PresentMode, PresentTimings, PresentationDevice, PresentedFrame, PrimitiveTopology,
+    PresentMode, PresentOutcome, PresentTimings, PresentationDevice, PresentedFrame, PrimitiveTopology,
     RenderCommand, RenderPassCommands, RenderPassDescriptor, RenderPassId,
     RenderPipelineDescriptor, RenderPipelineId, RenderTarget, ResourceDevice, ResourceStats,
     Result, SamplerDescriptor, SamplerId, ScissorRect, ShaderBinary, ShaderCode,
@@ -2704,7 +2704,7 @@ impl VulkanDevice {
         clear_color: ClearColor,
         depth_attachment: Option<DepthAttachment>,
         damage: Option<ScissorRect>,
-    ) -> Result<Option<PresentedFrame>> {
+    ) -> Result<PresentOutcome> {
         if self.swapchains.get(swapchain_id)?.rebuild_pending {
             // The legacy caller may already have issued producer work and
             // cannot return a skipped frame without retaining its resources.
@@ -2716,13 +2716,13 @@ impl VulkanDevice {
         let Some(present_frame) = (match reserved {
             Some(frame) => {
                 if !self.reserved_frame_ready(frame)? {
-                    return Ok(None);
+                    return Ok(PresentOutcome::Skipped);
                 }
                 Some(frame)
             },
             None => self.acquire_present_frame(swapchain_id, false)?,
         }) else {
-            return Ok(None);
+            return Ok(PresentOutcome::Skipped);
         };
         // The late-acquire API owns a real image too. Keep it reserved
         // across encoder allocation/recording failures, just like preflight.
@@ -2796,8 +2796,8 @@ impl VulkanDevice {
         let mut encoder_resource = self.command_encoders.take(encoder)?;
         encoder_resource.fence = present_frame.fence;
         encoder_resource.owns_fence = false;
-        // Publish the encoder's retire record BEFORE WSI present: an outdated
-        // surface may synchronously retire and destroy the old native fences.
+        // Publish GPU ownership before WSI present, independently of whether
+        // presentation succeeds. The tracked caller must retain this ID.
         let submission = self.submissions.insert(VulkanSubmission {
             fence: present_frame.fence,
             queue: gfx_core::GpuQueueId::PRIMARY,
@@ -2810,17 +2810,23 @@ impl VulkanDevice {
         self.deferred_destroys
             .retire(0, DeferredResource::CommandEncoder(encoder_resource));
         let present_started = Instant::now();
-        if let Err(error) = self.present(
+        let presented = match self.present(
             swapchain_id,
             present_frame.image_index,
             present_frame.render_finished,
             damage,
         ) {
-            // No submission ID escaped. The deferred encoder still retires.
-            let _ = self.submissions.take(submission);
-            self.completed_frame_probes.retain(|(id, _)| *id != submission);
-            return Err(error);
-        }
+            Ok(()) => true,
+            Err(Error::SurfaceOutdated) => false,
+            Err(error) => {
+                // No completion ID can escape on this error path. Prevent
+                // reuse of the acquired image/semaphores and retire GPU work
+                // before returning the error to an untracked caller.
+                self.swapchains.get_mut(swapchain_id)?.rebuild_pending = true;
+                self.wait_submission(submission)?;
+                return Err(error);
+            }
+        };
         timings.queue_present = present_started.elapsed();
         let post_present_cleanup_started = Instant::now();
         let swapchain = self.swapchains.get_mut(swapchain_id)?;
@@ -2829,10 +2835,15 @@ impl VulkanDevice {
         self.submitted_frames = self.submitted_frames.saturating_add(1);
         self.poll_cleanup();
         timings.post_present_cleanup = post_present_cleanup_started.elapsed();
-        Ok(Some(PresentedFrame {
+        let frame = PresentedFrame {
             submission: Some(submission),
             timings: Some(timings),
-        }))
+        };
+        Ok(if presented {
+            PresentOutcome::Presented(frame)
+        } else {
+            PresentOutcome::SurfaceOutdated(frame)
+        })
     }
 
     fn record_texture_passes(
@@ -3588,7 +3599,10 @@ impl VulkanDevice {
                 Ok(())
             }
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
-                self.reconfigure_outdated_swapchain(swapchain_id)?;
+                // Do not retire the swapchain in the post-submit path.
+                // Preflight polls acquire, GPU and present retirement before
+                // allowing the next frame to rebuild it.
+                self.swapchains.get_mut(swapchain_id)?.rebuild_pending = true;
                 Err(Error::SurfaceOutdated)
             }
             Err(error) => Err(VulkanError::from(error).into()),
@@ -5839,6 +5853,25 @@ impl PresentationDevice for VulkanDevice {
         &mut self,
         frame: &PresentFrameDescriptor<'_>,
     ) -> Result<Option<PresentedFrame>> {
+        match self.render_and_present_tracked(frame)? {
+            PresentOutcome::Skipped => Ok(None),
+            PresentOutcome::Presented(frame) => Ok(Some(frame)),
+            PresentOutcome::SurfaceOutdated(submitted) => {
+                // Legacy clients have no way to retain the submission on
+                // an error. Preserve their synchronous error contract.
+                if let Some(submission) = submitted.submission {
+                    self.wait_submission(submission)?;
+                }
+                self.reconfigure_outdated_swapchain(frame.swapchain)?;
+                Err(Error::SurfaceOutdated)
+            }
+        }
+    }
+
+    fn render_and_present_tracked(
+        &mut self,
+        frame: &PresentFrameDescriptor<'_>,
+    ) -> Result<PresentOutcome> {
         let LoadOp::Clear(clear_color) = frame.color_load_op else {
             return Err(Error::Unavailable(
                 "Vulkan swapchain LoadOp::Load is not implemented".to_string(),

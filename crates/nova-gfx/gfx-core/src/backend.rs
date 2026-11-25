@@ -1082,6 +1082,42 @@ pub struct PresentedFrame {
     pub timings: Option<PresentTimings>,
 }
 
+/// A presentation attempt has separate GPU submission and WSI outcomes.
+/// Even when WSI rejects a submitted frame, its resources remain GPU-owned
+/// until the submission completes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresentOutcome {
+    /// No main frame was submitted.
+    Skipped,
+    /// A frame was submitted and accepted for presentation.
+    Presented(PresentedFrame),
+    /// GPU work was submitted, but the swapchain must be rebuilt.
+    SurfaceOutdated(PresentedFrame),
+}
+
+impl PresentOutcome {
+    /// Whether WSI accepted the frame under the backend's presentation policy.
+    pub fn was_presented(&self) -> bool {
+        matches!(self, Self::Presented(_))
+    }
+
+    /// GPU ownership is independent of presentation success.
+    pub fn frame(&self) -> Option<&PresentedFrame> {
+        match self {
+            Self::Skipped => None,
+            Self::Presented(frame) | Self::SurfaceOutdated(frame) => Some(frame),
+        }
+    }
+
+    /// Allows synchronous clients to attach measured fence wait duration.
+    pub fn frame_mut(&mut self) -> Option<&mut PresentedFrame> {
+        match self {
+            Self::Skipped => None,
+            Self::Presented(frame) | Self::SurfaceOutdated(frame) => Some(frame),
+        }
+    }
+}
+
 /// Native display statistics, separate from GPU execution and CPU submission.
 /// A sample can describe an earlier present; clock domains must not be mixed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1228,6 +1264,24 @@ pub trait PresentationDevice {
         &mut self,
         frame: &PresentFrameDescriptor<'_>,
     ) -> Result<Option<PresentedFrame>>;
+
+    /// Tracks GPU work even when the surface rejects a submitted present.
+    ///
+    /// Callers must retain any returned submission until completion, regardless
+    /// of whether `was_presented()` is true. Backends without a distinct
+    /// recoverable WSI outcome retain their existing presentation behavior.
+    ///
+    /// # Errors
+    /// Returns an error if presentation cannot proceed.
+    fn render_and_present_tracked(
+        &mut self,
+        frame: &PresentFrameDescriptor<'_>,
+    ) -> Result<PresentOutcome> {
+        Ok(match self.render_and_present(frame)? {
+            Some(frame) => PresentOutcome::Presented(frame),
+            None => PresentOutcome::Skipped,
+        })
+    }
 
     /// Records one offscreen render pass.
     ///

@@ -160,7 +160,7 @@ fn main_frame<D>(
     device: &mut D,
     descriptor: MainPresentDescriptor<'_>,
     commands: &[RenderCommand],
-) -> Result<Option<gfx_core::PresentedFrame>>
+) -> Result<gfx_core::PresentOutcome>
 where
     D: PresentationDevice + CommandDevice + SubmissionDevice + ResourceDevice,
 {
@@ -1476,7 +1476,7 @@ impl NovaRenderer {
                         self.command_scratch.commands(),
                     )?;
                     if let Some(submission) = presentation_frame
-                        .as_ref()
+                        .frame()
                         .and_then(|frame| frame.submission)
                     {
                         // The UI consumer is the last user of any old sidecar
@@ -1491,9 +1491,9 @@ impl NovaRenderer {
                             self.renderer_registry.gpu_submission_completed(submission);
                         }
                     }
-                    let did_present = presentation_frame.is_some();
+                    let did_present = presentation_frame.was_presented();
                     let backend_presentation_timings =
-                        presentation_frame.and_then(|frame| frame.timings);
+                        presentation_frame.frame().and_then(|frame| frame.timings);
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.backend_present = present_started.elapsed();
                     }
@@ -1622,7 +1622,7 @@ impl NovaRenderer {
                         self.command_scratch.commands(),
                     )?;
                     if let Some(submission) = presentation_frame
-                        .as_ref()
+                        .frame()
                         .and_then(|frame| frame.submission)
                     {
                         // The UI consumer is the last user of any old sidecar
@@ -1637,9 +1637,9 @@ impl NovaRenderer {
                             self.renderer_registry.gpu_submission_completed(submission);
                         }
                     }
-                    let did_present = presentation_frame.is_some();
+                    let did_present = presentation_frame.was_presented();
                     let backend_presentation_timings =
-                        presentation_frame.and_then(|frame| frame.timings);
+                        presentation_frame.frame().and_then(|frame| frame.timings);
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.backend_present = present_started.elapsed();
                     }
@@ -1768,7 +1768,7 @@ impl NovaRenderer {
                         self.command_scratch.commands(),
                     )?;
                     if let Some(submission) = presentation_frame
-                        .as_ref()
+                        .frame()
                         .and_then(|frame| frame.submission)
                     {
                         // The UI consumer is the last user of any old sidecar
@@ -1783,9 +1783,9 @@ impl NovaRenderer {
                             self.renderer_registry.gpu_submission_completed(submission);
                         }
                     }
-                    let did_present = presentation_frame.is_some();
+                    let did_present = presentation_frame.was_presented();
                     let backend_presentation_timings =
-                        presentation_frame.and_then(|frame| frame.timings);
+                        presentation_frame.frame().and_then(|frame| frame.timings);
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.backend_present = present_started.elapsed();
                     }
@@ -1896,7 +1896,7 @@ impl NovaRenderer {
                         self.command_scratch.commands(),
                     )?;
                     if let Some(submission) = presentation_frame
-                        .as_ref()
+                        .frame()
                         .and_then(|frame| frame.submission)
                     {
                         // The UI consumer is the last user of any old sidecar
@@ -1911,9 +1911,9 @@ impl NovaRenderer {
                             self.renderer_registry.gpu_submission_completed(submission);
                         }
                     }
-                    let did_present = presentation_frame.is_some();
+                    let did_present = presentation_frame.was_presented();
                     let backend_presentation_timings =
-                        presentation_frame.and_then(|frame| frame.timings);
+                        presentation_frame.frame().and_then(|frame| frame.timings);
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.backend_present = present_started.elapsed();
                     }
@@ -2010,7 +2010,7 @@ impl NovaRenderer {
                         self.command_scratch.commands(),
                     )?;
                     if let Some(submission) = presentation_frame
-                        .as_ref()
+                        .frame()
                         .and_then(|frame| frame.submission)
                     {
                         // The UI consumer is the last user of any old sidecar
@@ -2025,9 +2025,9 @@ impl NovaRenderer {
                             self.renderer_registry.gpu_submission_completed(submission);
                         }
                     }
-                    let did_present = presentation_frame.is_some();
+                    let did_present = presentation_frame.was_presented();
                     let backend_presentation_timings =
-                        presentation_frame.and_then(|frame| frame.timings);
+                        presentation_frame.frame().and_then(|frame| frame.timings);
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.backend_present = present_started.elapsed();
                     }
@@ -2089,7 +2089,8 @@ impl NovaRenderer {
         drop(backend_scope);
         let frame_elapsed_ms = frame_started.elapsed().as_millis();
         // OUT_OF_DATE is a normal swapchain transition, not a failed render.
-        // The backend already rebuilds its native swapchain on this path.
+        // Legacy/pre-submit errors may rebuild immediately; tracked WSI
+        // rejection instead returns its GPU completion identity.
         // Preserve unsent damage and let the owner schedule the next frame.
         if render_result.as_ref().err().is_some_and(|error| {
             matches!(
@@ -2130,7 +2131,14 @@ impl NovaRenderer {
         }
         let (did_present, backend_presentation_timings) = render_result?;
         if !did_present {
+            // A tracked rejection may already have written offscreen data.
+            // Its slot and extension resources remain owned by the pending
+            // submission, but nothing certifies this Scene as presented.
+            self.retained_frame_valid = false;
+            self.root_color.invalidate();
+            self.filters.invalidate();
             self.path_mask_residency.invalidate();
+            self.retained_upload.invalidate_slot(self.current_frame_resource_index);
             return Ok(false);
         }
         // Sample native feedback at a bounded cadence even without diagnostics.
