@@ -263,6 +263,7 @@ mod platform {
         completed_frame_probes: std::collections::VecDeque<(u64, FrameGpuTimestamps)>,
         gpu_work_samples: Vec<gfx_core::GpuTimestampSample>,
         gpu_draw_query_pool: Vec<Dx12TimestampQueries>,
+        draw_run_plans: Vec<Arc<gfx_core::DrawRunPlan>>,
         deferred_releases: DeferredFreeQueue<DeferredDx12Release>,
         allow_tearing: bool,
         submitted_frames: u64,
@@ -488,6 +489,7 @@ mod platform {
                 completed_frame_probes: std::collections::VecDeque::new(),
                 gpu_work_samples: Vec::new(),
                 gpu_draw_query_pool: Vec::new(),
+                draw_run_plans: Vec::new(),
                 deferred_releases: DeferredFreeQueue::new(),
                 allow_tearing,
                 submitted_frames: 0,
@@ -2685,7 +2687,11 @@ mod platform {
             tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
             independent: bool,
             counts: &[&[gfx_core::IndirectCountBinding]],
+            plans: &[Arc<gfx_core::DrawRunPlan>],
         ) -> Result<Option<SubmissionId>> {
+            if !plans.is_empty() && (plans.len() != passes.len() || !counts.is_empty()) {
+                return Err(Error::InvalidInput("DX12 packed run metadata mismatch".into()));
+            }
             if !counts.is_empty() && counts.len() != passes.len() {
                 return Err(Error::InvalidInput("DX12 count table length mismatch".into()));
             }
@@ -2733,16 +2739,14 @@ mod platform {
                             pass.viewport,
                             tags.and_then(|t| t[index]).filter(|tag| {
                                 tag.stage == gfx_core::GpuTimestampStage::DrawIndirect
-                                    && !pass.commands.is_empty()
-                                    && pass.commands.iter().all(|command| {
-                                        matches!(
-                                            command,
-                                            RenderCommand::DrawIndirect(_)
-                                                | RenderCommand::DrawIndexedIndirect(_)
-                                        )
-                                    })
+                                    && plans.get(index).map_or_else(|| {
+                                        !pass.commands.is_empty() && pass.commands.iter().all(|command| {
+                                            matches!(command, RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_))
+                                        })
+                                    }, |plan| plan.indirect_only())
                             }),
                             counts.get(index).copied().unwrap_or(&[]),
+                            plans.get(index).map(Arc::as_ref),
                         )?;
                     }
                     Ok(())
@@ -3363,6 +3367,8 @@ mod platform {
 
         /// Releases completed upload/staging caches without touching live GPU resources.
         pub fn trim_memory(&mut self, level: MemoryTrimLevel) -> Result<()> {
+            if matches!(level, MemoryTrimLevel::Light) { self.draw_run_plans.retain(|plan| plan.is_live()); }
+            else { self.draw_run_plans.clear(); }
             if matches!(level, MemoryTrimLevel::Light) {
                 self.poll_cleanup();
                 return Ok(());
@@ -4080,6 +4086,7 @@ mod platform {
             viewport: Option<gfx_core::Viewport>,
             gpu_draw_tag: Option<gfx_core::GpuTimestampTag>,
             counts: &[gfx_core::IndirectCountBinding],
+            run_plan: Option<&gfx_core::DrawRunPlan>,
         ) -> Result<()> {
             self.command_encoders.get_mut(encoder_id)?.swapchain = None;
             // Empty render-step lists are valid for attachment clears. Do not
@@ -4329,7 +4336,9 @@ mod platform {
             // alongside the commands rather than binary-searching per draw.
             let mut remaining_counts = counts;
             let mut step_iter = steps.iter().enumerate().peekable();
+            let mut planned_runs = run_plan.into_iter().flat_map(|plan| plan.runs().iter().copied());
             while let Some((command_index, step)) = step_iter.next() {
+                let planned = planned_runs.next().map(|count| count as usize);
                 let count = if remaining_counts.first().is_some_and(|count| count.command_index == command_index) {
                     let count = remaining_counts[0];
                     remaining_counts = &remaining_counts[1..];
@@ -4339,7 +4348,11 @@ mod platform {
                 };
                 let indirect_index = indirect_count;
                 if count.is_none() && matches!(step, RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_)) {
-                    indirect_count += 1;
+                    let run_count = planned.unwrap_or(1);
+                    indirect_count += run_count;
+                    // Advance before scissor rejection: the packed argument
+                    // cursor includes even invisible records.
+                    for _ in 1..run_count { step_iter.next(); }
                 }
 
                 let step_scissor = if let Some(region) = step.scissor() {
@@ -4447,8 +4460,8 @@ mod platform {
                     // All indirect records were staged into adjacent native 32-byte
                     // arguments. Only consecutive draws with identical pipeline,
                     // bind groups and scissor can share one ExecuteIndirect call.
-                    let mut run_count = 1usize;
-                    while let Some(&(next_index, next)) = step_iter.peek() {
+                    let mut run_count = planned.unwrap_or(1);
+                    while planned.is_none() && let Some(&(next_index, next)) = step_iter.peek() {
                         if remaining_counts.first().is_some_and(|count| count.command_index == next_index)
                             || !matches!(next, RenderCommand::DrawIndirect(_))
                             || next.pipeline() != step.pipeline()
@@ -4471,8 +4484,8 @@ mod platform {
                         run_count,
                     )?;
                 } else if let RenderCommand::DrawIndexedIndirect(draw) = step {
-                    let mut run_count = 1usize;
-                    while let Some(&(next_index, next)) = step_iter.peek() {
+                    let mut run_count = planned.unwrap_or(1);
+                    while planned.is_none() && let Some(&(next_index, next)) = step_iter.peek() {
                         if remaining_counts.first().is_some_and(|count| count.command_index == next_index) { break; }
                         let RenderCommand::DrawIndexedIndirect(next) = next else { break; };
                         if next.index_buffer != draw.index_buffer || next.pipeline != draw.pipeline
@@ -6696,11 +6709,40 @@ mod platform {
                     count.validate_ranges(offset, args.desc.size, counter.desc.size, 32, u32::MAX)?;
                 }
             }
-            self.record_texture_passes(passes, Some(tags), false, counts)
+            self.record_texture_passes(passes, Some(tags), false, counts, &[])
+        }
+
+        fn render_to_textures_owned_profiled(
+            &mut self, passes: &[RenderPassCommands<'_>],
+            owners: &[Arc<[RenderCommand]>], tables: &[Option<BindGroupId>],
+            tags: &[Option<gfx_core::GpuTimestampTag>],
+        ) -> Result<Option<SubmissionId>> {
+            if passes.len() != owners.len() || passes.len() != tags.len()
+                || (!tables.is_empty() && tables.len() != passes.len())
+                || passes.iter().zip(owners).any(|(pass, owner)| !std::ptr::eq(pass.commands, owner.as_ref()))
+            { return Err(Error::InvalidInput("DX12 owned draw stream metadata mismatch".into())); }
+            if tables.iter().any(Option::is_some) {
+                return Err(Error::Unavailable("DX12 pass-level sampled table unsupported".into()));
+            }
+            self.draw_run_plans.retain(|plan| plan.is_live());
+            let mut plans = Vec::with_capacity(owners.len());
+            for owner in owners {
+                if let Some(index) = self.draw_run_plans.iter().position(|plan| plan.matches_packed(owner, u32::MAX)) {
+                    let plan = self.draw_run_plans.remove(index);
+                    plans.push(Arc::clone(&plan));
+                    self.draw_run_plans.push(plan);
+                } else {
+                    let plan = Arc::new(gfx_core::DrawRunPlan::new_packed(owner, u32::MAX));
+                    plans.push(Arc::clone(&plan));
+                    if self.draw_run_plans.len() >= 32 { self.draw_run_plans.remove(0); }
+                    self.draw_run_plans.push(plan);
+                }
+            }
+            self.record_texture_passes(passes, Some(tags), false, &[], &plans)
         }
 
         fn render_to_texture(&mut self, pass: &RenderPassCommands<'_>) -> Result<()> {
-            self.record_texture_passes(std::slice::from_ref(pass), None, false, &[])
+            self.record_texture_passes(std::slice::from_ref(pass), None, false, &[], &[])
                 .map(|_| ())
         }
 
@@ -6708,7 +6750,7 @@ mod platform {
             &mut self,
             passes: &[RenderPassCommands<'_>],
         ) -> Result<Option<SubmissionId>> {
-            self.record_texture_passes(passes, None, false, &[])
+            self.record_texture_passes(passes, None, false, &[], &[])
         }
 
         fn render_to_textures_on_queue(
@@ -6717,7 +6759,7 @@ mod platform {
             tags: &[Option<gfx_core::GpuTimestampTag>],
             _queue: gfx_core::OffscreenQueuePreference,
         ) -> Result<Option<SubmissionId>> {
-            self.record_texture_passes(passes, Some(tags), false, &[])
+            self.record_texture_passes(passes, Some(tags), false, &[], &[])
         }
 
         fn independent_graphics_queue_available(&self) -> bool {
@@ -6734,6 +6776,7 @@ mod platform {
                 passes,
                 Some(tags),
                 self.independent_graphics_queue_available(),
+                &[],
                 &[],
             )
         }
