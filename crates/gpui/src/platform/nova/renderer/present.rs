@@ -230,13 +230,20 @@ impl ExtensionSubmission<'_> {
         } else {
             gfx_core::OffscreenQueuePreference::OrderedGraphics
         };
-        let submission = if selected.iter().any(|pass| pass.sampled_table.is_some()) {
-            let tables = selected.iter().map(|pass| pass.sampled_table).collect::<Vec<_>>();
-            device.render_to_textures_sampled_profiled(&passes, &tables, &[], &tags)?
-        } else if independent {
+        let has_tables = selected.iter().any(|pass| pass.sampled_table.is_some());
+        let submission = if independent && !has_tables {
             device.render_to_textures_independent(&passes, &tags, preference)?
         } else {
-            device.render_to_textures_on_queue(&passes, &tags, preference)?
+            // Preserve producer Arc identity through the native ABI. Only
+            // immutable ordered streams participate; independent submission
+            // retains its existing queue and lifetime contract.
+            let owners = selected.iter().map(|pass| pass.commands.clone()).collect::<Vec<_>>();
+            let tables = if has_tables {
+                selected.iter().map(|pass| pass.sampled_table).collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            device.render_to_textures_owned_profiled(&passes, &owners, &tables, &tags)?
         };
         if let Some(submission) = submission {
             self.pending.push(PendingSubmission {
