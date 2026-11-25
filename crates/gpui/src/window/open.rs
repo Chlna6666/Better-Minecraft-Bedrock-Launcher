@@ -515,8 +515,6 @@ impl Window {
             global_ids: RefCell::new(GlobalIdCache::default()),
             retained_element_id_stack: ElementIdStack::default(),
             retained_child_slot_stack: SmallVec::default(),
-            layout_key_stack: SmallVec::default(),
-            layout_root_index: 0,
             text_style_stack: Vec::new(),
             resolved_text_style: RefCell::new(None),
             text_style_generation: Cell::new(0),

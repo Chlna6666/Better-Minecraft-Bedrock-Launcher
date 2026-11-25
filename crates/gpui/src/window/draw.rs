@@ -234,15 +234,7 @@ impl Window {
     ) -> ArenaClearNeeded {
         self.degraded_draw_count = self.degraded_draw_count.saturating_add(1);
         self.restore_input_handler_after_degraded_draw(restored_input_handler_index);
-        self.finish_layout_and_text_frame();
-        // An aborted frame never replaces the committed retained tree.
-        // Drop only newly allocated/unmounted Taffy nodes, not cached views.
-        if let Some(layout_engine) = self.layout_engine.as_mut() {
-            layout_engine.retain_committed_elements(
-                |id| self.rendered_frame.retained_element_ranges.contains_key(id),
-                false,
-            );
-        }
+        self.finish_layout_and_text_frame(false);
         let frame_retained_capacity = self.next_frame.retained_capacity();
         let scene_metrics = self.next_frame.scene().frame_metrics();
         self.last_generation_stats.scene = scene_metrics;
@@ -278,7 +270,7 @@ impl Window {
         cx: &mut App,
     ) -> Duration {
         let finalize_started_at = Instant::now();
-        self.finish_layout_and_text_frame();
+        self.finish_layout_and_text_frame(true);
         let scene_finish_started_at = Instant::now();
         self.next_frame.finish(&mut self.rendered_frame);
         let scene_finish_time = scene_finish_started_at.elapsed();
@@ -406,14 +398,6 @@ impl Window {
                 self.next_frame_epoch,
             );
         }
-        // GPU/CPU retained fragments may skip the layout traversal entirely,
-        // so native Taffy liveness follows the committed retained identities.
-        if let Some(layout_engine) = self.layout_engine.as_mut() {
-            layout_engine.retain_committed_elements(
-                |id| self.rendered_frame.retained_element_ranges.contains_key(id),
-                true,
-            );
-        }
         // Keep UI generations plus active/pending presentation snapshots live before the previous
         // frame becomes scratch. A still-active older publication keeps its payload while this frame starts a new builder.
         self.prune_static_image_atlas_residency();
@@ -491,7 +475,7 @@ impl Window {
         scene_finish_time
     }
 
-    fn finish_layout_and_text_frame(&mut self) {
+    fn finish_layout_and_text_frame(&mut self, committed: bool) {
         let mut layout_metrics = LayoutFrameMetrics::default();
         let mut layout_cache_metrics = LayoutCacheFrameMetrics::default();
         if let Some(layout_engine) = self.layout_engine.as_mut() {
@@ -503,7 +487,11 @@ impl Window {
             };
             record_layout_frame_metrics(layout_metrics);
             record_layout_cache_metrics(layout_cache_hits, layout_cache_misses);
-            layout_engine.clear();
+            if committed {
+                layout_engine.clear();
+            } else {
+                layout_engine.abort_frame();
+            }
         }
         let text_layout_metrics = self.text_system().finish_frame();
         self.last_generation_stats.layout = layout_metrics;

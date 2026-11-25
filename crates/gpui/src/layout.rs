@@ -19,7 +19,7 @@ pub use builders::{absolute_fill, center, h_stack, relative_fill, v_stack};
 pub(crate) use convert::snap_logical_to_device_pixel;
 pub use engine::TaffyLayoutEngine;
 pub(crate) use engine::LayoutClaim;
-pub(crate) use key::{LAYOUT_PREPAINT_SALT, LayoutKeyFrame, pop_layout_key, push_layout_key};
+pub(crate) use key::layout_node_key;
 pub use metrics::{AvailableSpace, LayoutId};
 
 impl TaffyLayoutEngine {

@@ -61,18 +61,6 @@ pub(super) struct NodeContext {
 pub(super) const EXPECT_MESSAGE: &str =
     "we should avoid taffy layout errors by construction if possible";
 
-/// Identity of one persistent layout node.
-///
-/// The path hash identifies the element's address in the tree, and the ordinal separates
-/// several layout nodes requested by one element in a single frame (a `Div` and the measured
-/// leaf inside it, for example). Both are plain integers, so looking a node up costs one hash
-/// probe and no path allocation.
-#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
-struct LayoutInstanceKey {
-    path: u64,
-    ordinal: u32,
-}
-
 // Adapt gpui-fast #169: bound offscreen native layout retention by both age
 // and node count. Bound spare nodes relative to the current mounted
 // working set as well, so small lists do not accumulate thousands of nodes.
@@ -84,22 +72,18 @@ const ROW_NODE_LINGER_MIN: usize = 256;
 /// key, a claim cannot silently bind to a replacement node after eviction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LayoutClaim {
-    key: LayoutInstanceKey,
+    key: u64,
     id: LayoutId,
 }
 
 struct PersistentLayoutNode {
     id: LayoutId,
-    /// The full identity of the element that owns this node.
-    ///
-    /// Lookups go through [`LayoutInstanceKey`], which is only a pair of integers, so this is
-    /// kept for the committed-lifetime check, which has to ask whether the element is still
-    /// mounted by retained range.
+    /// Structural equality guards key collisions; no frame metadata lookup.
     element: GlobalElementId,
     measure_fingerprint: Option<u64>,
     measured: bool,
     claimed_in_frame: u64,
-    last_mounted_frame: Option<u64>,
+    lingers: bool,
     offscreen: bool,
     /// Fingerprint of the layout style this node currently holds.
     ///
@@ -109,12 +93,11 @@ struct PersistentLayoutNode {
     style_fingerprint: Option<u64>,
 }
 
-fn retained_row_owner(path: &[ElementId]) -> Option<&[ElementId]> {
-    let index = path.iter().rposition(|segment| {
+fn is_list_row(path: &[ElementId]) -> bool {
+    path.iter().any(|segment| {
         matches!(segment, ElementId::NamedInteger(name, _)
             if matches!(name.as_str(), "__gpui_retained_list_item" | "__gpui_retained_uniform_row"))
-    })?;
-    (index > 0).then_some(&path[..index])
+    })
 }
 
 // Keep the youngest complete age buckets. Dropping a whole tied bucket avoids
@@ -136,22 +119,15 @@ fn row_linger_limit(by_age: &[usize; ROW_NODE_LINGER_FRAMES], budget: usize) -> 
 
 pub struct TaffyLayoutEngine {
     pub(super) taffy: TaffyTree<NodeContext>,
-    persistent_nodes: FxHashMap<LayoutInstanceKey, PersistentLayoutNode>,
+    persistent_nodes: FxHashMap<u64, PersistentLayoutNode>,
     /// Nodes whose native style was rewritten by a percentage-passthrough parent.
     ///
     /// Their stored fingerprint describes the style they asked for, not what the node holds,
     /// so it must not be trusted until the next request compares and rewrites. Kept as a set
     /// so the passthrough path does not have to search the node map.
     stale_style_fingerprints: FxHashSet<LayoutId>,
-    request_ordinals: FxHashMap<u64, u32>,
-    /// Layout slots consumed by each Element during the last finished frame.
-    /// A replayed retained range has no entry, preserving its existing native nodes.
-    finished_request_ordinals: FxHashMap<u64, u32>,
     anonymous_nodes: Vec<LayoutId>,
     persistent_layout_reuses: usize,
-    committed_layout_frame: u64,
-    // Fast's request-generation claims are distinct from committed frame age:
-    // a speculative frame may be abandoned after its layout requests.
     request_frame: u64,
     claimed_this_frame: usize,
     claimed_key_log: Vec<LayoutClaim>,
@@ -213,11 +189,8 @@ impl TaffyLayoutEngine {
             taffy,
             persistent_nodes: FxHashMap::default(),
             stale_style_fingerprints: FxHashSet::default(),
-            request_ordinals: FxHashMap::default(),
-            finished_request_ordinals: FxHashMap::default(),
             anonymous_nodes: Vec::new(),
             persistent_layout_reuses: 0,
-            committed_layout_frame: 0,
             request_frame: 1,
             claimed_this_frame: 0,
             claimed_key_log: Vec::new(),
@@ -249,75 +222,33 @@ impl TaffyLayoutEngine {
         }
     }
 
-    /// Prune native Taffy nodes only after the new retained Element tree is
-    /// committed. A replayed retained range may keep its old child scene without
-    /// requesting the child's layout again; that child is still mounted and must
-    /// keep its Taffy node, cached measurements, and parent relationship.
-    ///
-    /// A degraded draw instead supplies the last successfully committed set:
-    /// its uncommitted temporary nodes are not allowed to become retained.
-    pub(crate) fn retain_committed_elements(
-        &mut self,
-        mut is_mounted: impl FnMut(&GlobalElementId) -> bool,
-        frame_committed: bool,
-    ) {
-        if frame_committed {
-            self.committed_layout_frame = self.committed_layout_frame.saturating_add(1);
+    /// Fast's native claim-based release: no query of the rendered element
+    /// tree. Stable frames with all slots claimed do not sweep the map.
+    fn release_unclaimed_nodes(&mut self) {
+        if self.persistent_nodes.len() == self.claimed_this_frame {
+            return;
         }
-        let frame = self.committed_layout_frame;
-        let mut removed = Vec::new();
+        let frame = self.request_frame;
         let mut by_age = [0usize; ROW_NODE_LINGER_FRAMES];
-        let mut mounted_count = 0usize;
-        let mut list_mounts = FxHashMap::<Vec<ElementId>, bool>::default();
-        let finished_request_ordinals = &self.finished_request_ordinals;
-        let finished_frame = self.request_frame.wrapping_sub(1);
+        for node in self.persistent_nodes.values() {
+            let age = frame.wrapping_sub(node.claimed_in_frame);
+            if node.lingers && age > 0 && age < ROW_NODE_LINGER_FRAMES as u64 {
+                by_age[age as usize] += 1;
+            }
+        }
+        let limit = row_linger_limit(&by_age, row_linger_budget(self.claimed_this_frame));
+        let mut removed = Vec::new();
         let taffy = &mut self.taffy;
-        self.persistent_nodes.retain(|key, node| {
-            let mounted = is_mounted(&node.element);
-            // Fast's claim stamp proves this particular slot was requested.
-            // Only unclaimed slots need the owner-cardinality lookup. Mount
-            // membership remains mandatory until subtree claims replace it.
-            let requested = if node.claimed_in_frame == finished_frame {
-                None
-            } else {
-                finished_request_ordinals.get(&key.path)
-            };
-            if mounted {
-                // A replayed range has no new ordinal count. A committed
-                // rebuild, however, may have removed some of its local slots.
-                if frame_committed && requested.is_some_and(|count| key.ordinal >= *count) {
-                    removed.push(node.id);
-                    return false;
-                }
-                if frame_committed {
-                    node.last_mounted_frame = Some(frame);
-                }
-                node.offscreen = false;
-                mounted_count += 1;
+        self.persistent_nodes.retain(|_, node| {
+            if node.claimed_in_frame == frame {
                 return true;
             }
-
-            // A measurement-only sample or an aborted speculative row is not
-            // a committed row and must never acquire a cache lifetime.
-            let age = node.last_mounted_frame.map(|last| frame.saturating_sub(last));
-            let keep = age.is_some_and(|age| age > 0 && age < ROW_NODE_LINGER_FRAMES as u64)
-                && (frame_committed || (node.offscreen && requested.is_none()))
-                && retained_row_owner(&node.element.0).is_some_and(|owner| {
-                    if let Some(&mounted) = list_mounts.get(owner) {
-                        return mounted;
-                    }
-                    let mounted = is_mounted(&GlobalElementId::from_path(owner));
-                    list_mounts.insert(owner.to_vec(), mounted);
-                    mounted
-                });
-            if !keep {
+            let age = frame.wrapping_sub(node.claimed_in_frame);
+            if !node.lingers || age >= limit as u64 {
                 removed.push(node.id);
                 return false;
             }
-
-            // Never hold an unmounted row's frame-local measurement closure
-            // (text layout state, entity captures, etc.) in the cache. Pure
-            // keyed measurements are explicitly independent of paint state.
+            // Offscreen row caches must not pin a frame-local measuring closure.
             if node.measured && taffy.get_node_context_mut(node.id.into())
                 .is_some_and(|context| !context.is_pure)
             {
@@ -327,35 +258,40 @@ impl TaffyLayoutEngine {
                 node.measure_fingerprint = None;
             }
             node.offscreen = true;
-            by_age[age.expect("eligible row age") as usize] += 1;
             true
         });
-        let limit = row_linger_limit(&by_age, row_linger_budget(mounted_count));
-        if limit < ROW_NODE_LINGER_FRAMES {
-            self.persistent_nodes.retain(|_, node| {
-                if node.offscreen && node.last_mounted_frame
-                    .is_some_and(|last| frame.saturating_sub(last) >= limit as u64)
-                {
-                    removed.push(node.id);
-                    return false;
-                }
-                true
-            });
-        }
         for id in removed {
-            self.stale_style_fingerprints.remove(&id);
-            self.robbed_parents.remove(&id);
-            self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
-            self.layout_changes = self.layout_changes.wrapping_add(1);
-            self.root_constraints.remove(&id);
+            self.remove_native_node(id);
         }
-        let live = self.persistent_nodes.len();
-        if self.persistent_nodes.capacity()
-            > Self::MIN_RETAINED_CAPACITY.max(live).saturating_mul(4)
-        {
-            self.persistent_nodes
-                .shrink_to(Self::MIN_RETAINED_CAPACITY.max(live));
+        let target = Self::MIN_RETAINED_CAPACITY.max(self.persistent_nodes.len());
+        if self.persistent_nodes.capacity() > target.saturating_mul(4) {
+            self.persistent_nodes.shrink_to(target);
         }
+    }
+
+    fn remove_native_node(&mut self, id: LayoutId) {
+        if let Some(parent) = self.taffy.parent(id.into()) {
+            self.robbed_parents.insert(parent.into());
+            self.taffy.mark_dirty(parent).expect(EXPECT_MESSAGE);
+        }
+        self.stale_style_fingerprints.remove(&id);
+        self.robbed_parents.remove(&id);
+        self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
+        self.root_constraints.remove(&id);
+        self.layout_changes = self.layout_changes.wrapping_add(1);
+    }
+
+    /// An aborted candidate may have overwritten native styles, child edges
+    /// and measurement closures. Do not publish that speculative state as
+    /// committed. Discard native nodes (preserving Taffy's generational IDs)
+    /// and let the next request rebuild them; the committed paint stays intact.
+    pub(crate) fn abort_frame(&mut self) {
+        let ids: Vec<_> = self.persistent_nodes.drain().map(|(_, node)| node.id).collect();
+        for id in ids {
+            self.remove_native_node(id);
+        }
+        self.claimed_this_frame = 0;
+        self.clear();
     }
 
     pub fn clear(&mut self) {
@@ -382,11 +318,9 @@ impl TaffyLayoutEngine {
             );
         }
         self.persistent_layout_reuses = 0;
-        self.claimed_this_frame = 0;
         debug_assert_eq!(self.open_key_recordings, 0);
         self.open_key_recordings = 0;
         self.claimed_key_log.clear();
-        self.request_frame = self.request_frame.wrapping_add(1);
         std::mem::swap(
             &mut self.previous_root_diagnostics,
             &mut self.current_root_diagnostics,
@@ -398,29 +332,14 @@ impl TaffyLayoutEngine {
             self.current_root_diagnostics = FxHashMap::default();
             self.root_diagnostic_ids = FxHashMap::default();
         }
-        for id in self.anonymous_nodes.drain(..) {
-            self.stale_style_fingerprints.remove(&id);
-            self.robbed_parents.remove(&id);
-            self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
-            self.layout_changes = self.layout_changes.wrapping_add(1);
-            self.root_constraints.remove(&id);
+        let mut transient = std::mem::take(&mut self.anonymous_nodes);
+        for id in transient.drain(..) {
+            self.remove_native_node(id);
         }
-        // Transfer current-frame cardinalities without copying the map.
-        // The old finished map becomes the now-empty scratch for next frame.
-        std::mem::swap(
-            &mut self.finished_request_ordinals,
-            &mut self.request_ordinals,
-        );
-        self.request_ordinals.clear();
-        let ordinal_count = self.finished_request_ordinals.len();
-        if self.request_ordinals.capacity()
-            > Self::MIN_RETAINED_CAPACITY
-                .max(ordinal_count)
-                .saturating_mul(4)
-        {
-            self.request_ordinals
-                .shrink_to(Self::MIN_RETAINED_CAPACITY.max(ordinal_count));
-        }
+        self.anonymous_nodes = transient;
+        self.release_unclaimed_nodes();
+        self.claimed_this_frame = 0;
+        self.request_frame = self.request_frame.wrapping_add(1);
         self.absolute_layout_bounds.clear();
         self.unrounded_layout_origins.clear();
         self.computed_layouts.clear();
@@ -441,6 +360,8 @@ impl TaffyLayoutEngine {
         trim_to_working_set!(self.computed_layouts, computed_layout_count);
         trim_to_working_set!(self.node_fingerprints, fingerprint_count);
         trim_to_working_set!(self.node_layout_metadata, metadata_count);
+        trim_to_working_set!(self.root_constraints, self.persistent_nodes.len());
+        trim_to_working_set!(self.claimed_key_log, node_working_set);
         trim_to_working_set!(self.subtree_scratch, node_working_set);
         trim_to_working_set!(self.layout_bounds_scratch_space, node_working_set);
 
@@ -573,8 +494,6 @@ impl TaffyLayoutEngine {
         self.current_root_diagnostics
             .shrink_to(floor.max(self.current_root_diagnostics.len()));
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
-            self.request_ordinals.shrink_to_fit();
-            self.finished_request_ordinals.shrink_to_fit();
             self.anonymous_nodes.shrink_to_fit();
             self.claimed_key_log.shrink_to_fit();
         }
@@ -690,18 +609,12 @@ impl TaffyLayoutEngine {
         );
         // Keep the lazy conversion monomorphized. Boxing this closure allocated
         // for every request, including the fingerprint-hit path that never calls it.
-        let Some((path, element)) = owner else {
+        let Some((key, element)) = owner else {
             let style = build_style();
             let id = self.create_taffy_node(style, children, measure);
             self.anonymous_nodes.push(id);
             return id;
         };
-        let ordinal = self.request_ordinals.entry(path).or_default();
-        let key = LayoutInstanceKey {
-            path,
-            ordinal: *ordinal,
-        };
-        *ordinal = ordinal.saturating_add(1);
         // As in Fast's claim path, resolve the native node with one map probe.
         // Unlike a hash-only identity, keep the full collision check. A collided
         // slot is transient for this request; do not overwrite or leak its owner.
@@ -711,8 +624,7 @@ impl TaffyLayoutEngine {
                 self.anonymous_nodes.push(id);
                 return id;
             }
-            // The node is being reconstructed; it is no longer eligible for
-            // an idle-memory trim until the next committed lifetime check.
+            // A claimed row is active and no longer eligible for idle trim.
             node.offscreen = false;
             node.claimed_in_frame = self.request_frame;
             self.claimed_this_frame += 1;
@@ -817,11 +729,11 @@ impl TaffyLayoutEngine {
                 key,
                 PersistentLayoutNode {
                     id,
+                    lingers: is_list_row(&element.0),
                     element,
                     measure_fingerprint,
                     measured: is_measured,
                     claimed_in_frame: self.request_frame,
-                    last_mounted_frame: None,
                     offscreen: false,
                     style_fingerprint,
                 },
@@ -1474,7 +1386,6 @@ mod tests {
         assert_eq!(claims.len(), 2);
         assert_eq!(claims[1], inner_claims[0]);
         engine.clear();
-        engine.retain_committed_elements(|id| id == &root || id == &row, true);
 
         let recording = engine.record_claimed_keys();
         let mut invalid = claims.clone();
@@ -1500,30 +1411,28 @@ mod tests {
         let id = engine.request_layout(Some(owner(&root)), Style::default(), crate::px(16.), 1., &[]);
         let claims = engine.finish_recording_claimed_keys(recording);
         engine.clear();
-        engine.retain_committed_elements(|owner| owner == &root, true);
         engine.robbed_parents.insert(id);
         assert!(!engine.try_keep_retained(&claims));
         assert_eq!(engine.claimed_this_frame, 0);
     }
 
     #[test]
-    fn claims_skip_rebuilt_slots_but_remove_unused_slots() {
+    fn claims_release_unused_slots_without_mount_metadata() {
         let mut engine = TaffyLayoutEngine::new();
         let owner_id = list_id();
-        let request = |engine: &mut TaffyLayoutEngine| {
-            engine.request_layout(Some(owner(&owner_id)), Style::default(), crate::px(16.), 1., &[])
+        let request = |engine: &mut TaffyLayoutEngine, slot| {
+            let (path, id) = owner(&owner_id);
+            engine.request_layout(Some((crate::layout::layout_node_key(path, slot), id)),
+                Style::default(), crate::px(16.), 1., &[])
         };
-        let first = request(&mut engine);
-        let second = request(&mut engine);
+        let first = request(&mut engine, 0);
+        let second = request(&mut engine, 1);
         assert_eq!(engine.claimed_this_frame, 2);
         engine.clear();
-        engine.retain_committed_elements(|id| id == &owner_id, true);
         let changes = engine.layout_changes;
-        assert_eq!(request(&mut engine), first);
-        assert_eq!(engine.claimed_this_frame, 1);
+        assert_eq!(request(&mut engine, 0), first);
         assert_eq!(engine.layout_changes, changes);
         engine.clear();
-        engine.retain_committed_elements(|id| id == &owner_id, true);
         assert_eq!(engine.taffy.total_node_count(), 1);
         assert!(!engine.persistent_nodes.values().any(|node| node.id == second));
     }
@@ -1546,51 +1455,39 @@ mod tests {
     }
 
     #[test]
-    fn offscreen_rows_reuse_layout_and_expire_on_unmount_or_trim() {
+    fn offscreen_rows_reuse_layout_and_expire_on_trim() {
         let mut engine = TaffyLayoutEngine::new();
-        let list = list_id();
         let row = row_id(7);
         let first = engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
         engine.clear();
-        engine.retain_committed_elements(|id| id == &list || id == &row, true);
         engine.clear();
-        engine.retain_committed_elements(|id| id == &list, true);
         assert_eq!(engine.taffy.total_node_count(), 1);
         let again = engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
         assert_eq!(again, first);
         engine.clear();
-        engine.retain_committed_elements(|id| id == &list || id == &row, true);
         engine.clear();
-        engine.retain_committed_elements(|id| id == &list, true);
         engine.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
-        assert_eq!(engine.taffy.total_node_count(), 0);
-
-        engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
-        engine.clear();
-        engine.retain_committed_elements(|id| id == &list || id == &row, true);
-        engine.clear();
-        engine.retain_committed_elements(|_| false, true);
         assert_eq!(engine.taffy.total_node_count(), 0);
     }
 
     #[test]
-    fn offscreen_rows_expire_and_never_cache_speculative_nodes() {
+    fn offscreen_rows_expire_and_abort_discards_speculative_nodes() {
         let mut engine = TaffyLayoutEngine::new();
-        let list = list_id();
         let row = row_id(1);
         engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
         engine.clear();
-        engine.retain_committed_elements(|id| id == &list || id == &row, true);
         for _ in 0..ROW_NODE_LINGER_FRAMES {
             engine.clear();
-            engine.retain_committed_elements(|id| id == &list, true);
         }
         assert_eq!(engine.taffy.total_node_count(), 0);
-
-        engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
-        engine.clear();
-        engine.retain_committed_elements(|id| id == &list, false);
+        let start = engine.record_claimed_keys();
+        let id = engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
+        let claims = engine.finish_recording_claimed_keys(start);
+        engine.abort_frame();
         assert_eq!(engine.taffy.total_node_count(), 0);
+        assert!(!engine.try_keep_retained(&claims));
+        let new = engine.request_layout(Some(owner(&row)), Style::default(), crate::px(16.), 1., &[]);
+        assert_ne!(id, new);
     }
 
     #[test]
@@ -1623,31 +1520,31 @@ mod tests {
         let mut engine = TaffyLayoutEngine::new();
         engine.absolute_layout_bounds.reserve(4096);
         engine.node_fingerprints.reserve(4096);
-        engine.request_ordinals.reserve(4096);
+        engine.root_constraints.reserve(4096);
         let bounds_capacity = engine.absolute_layout_bounds.capacity();
         let fingerprints_capacity = engine.node_fingerprints.capacity();
-        let roots_capacity = engine.request_ordinals.capacity();
+        let roots_capacity = engine.root_constraints.capacity();
 
         engine.clear();
 
         assert!(engine.absolute_layout_bounds.capacity() < bounds_capacity);
         assert!(engine.node_fingerprints.capacity() < fingerprints_capacity);
-        assert!(engine.request_ordinals.capacity() < roots_capacity);
+        assert!(engine.root_constraints.capacity() < roots_capacity);
     }
 
     #[test]
     fn aggressive_trim_releases_layout_high_watermark_capacity() {
         let mut engine = TaffyLayoutEngine::new();
-        engine.request_ordinals.reserve(4096);
+        engine.root_constraints.reserve(4096);
         engine.subtree_scratch.reserve(4096);
         engine.absolute_layout_bounds.reserve(4096);
-        let roots_capacity = engine.request_ordinals.capacity();
+        let roots_capacity = engine.root_constraints.capacity();
         let scratch_capacity = engine.subtree_scratch.capacity();
         let bounds_capacity = engine.absolute_layout_bounds.capacity();
 
         engine.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
 
-        assert!(engine.request_ordinals.capacity() < roots_capacity);
+        assert!(engine.root_constraints.capacity() < roots_capacity);
         assert!(engine.subtree_scratch.capacity() < scratch_capacity);
         assert!(engine.absolute_layout_bounds.capacity() < bounds_capacity);
     }

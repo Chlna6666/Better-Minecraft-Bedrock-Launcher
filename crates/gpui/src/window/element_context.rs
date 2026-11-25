@@ -28,6 +28,7 @@ static NEXT_RETAINED_AUTO_IDENTITY_TOKEN: AtomicU64 = AtomicU64::new(1);
 struct RetainedIdentityScope {
     auto_occurrences: FxHashMap<RetainedAutoIdentityToken, u32>,
     identity_stable: bool,
+    next_layout_slot: u32,
     retained_id: Option<GlobalElementId>,
 }
 
@@ -56,6 +57,7 @@ impl RetainedIdentityScopePool {
         let mut scope = self.spare.pop().unwrap_or_default();
         scope.auto_occurrences.clear();
         scope.identity_stable = identity_stable;
+        scope.next_layout_slot = 0;
         scope.retained_id = retained_id;
         self.active.push(scope);
     }
@@ -71,6 +73,7 @@ impl RetainedIdentityScopePool {
         }
         scope.auto_occurrences.clear();
         scope.identity_stable = false;
+        scope.next_layout_slot = 0;
         scope.retained_id = None;
         self.spare.push(scope);
     }
@@ -206,11 +209,6 @@ impl Window {
             (segment, retained_id, identity_stable)
         });
 
-        crate::layout::push_layout_key(
-            &mut self.layout_key_stack,
-            &mut self.layout_root_index,
-            Some(&segment),
-        );
         self.retained_child_slot_stack.push(0);
         (segment, retained_id, identity_stable)
     }
@@ -218,7 +216,6 @@ impl Window {
     /// Ends the retained identity scope opened by [`Self::begin_retained_element`].
     pub(crate) fn end_retained_element(&mut self) {
         self.retained_child_slot_stack.pop();
-        crate::layout::pop_layout_key(&mut self.layout_key_stack);
         self.retained_element_id_stack.pop();
         RETAINED_IDENTITY_SCOPES.with(|scopes| {
             scopes.borrow_mut().pop_scope();
@@ -271,26 +268,27 @@ impl Window {
         })
     }
 
-    /// The stable layout identity of the element currently requesting layout, as the pair the
-    /// layout engine keys its nodes by.
-    ///
-    /// The integer path hash is what the engine looks nodes up with; the full identifier is
-    /// only carried so the committed-lifetime check can ask whether the element is still
-    /// mounted. Both come from the same decision, so an ambiguous element yields `None` once.
+    /// Allocate a native node key from the current element's incremental
+    /// path hash and local request slot. The full ID guards hash collisions.
     pub(crate) fn current_stable_layout_owner(&self) -> Option<(u64, GlobalElementId)> {
         let _work = super::element_work::begin_named(
             "layout_owner_identity",
             super::element_work::ElementWorkPhase::Layout,
         );
-        let path_key = self.layout_key_stack.last()?.key;
-        let stable = RETAINED_IDENTITY_SCOPES.with(|scopes| {
-            let scopes = scopes.borrow();
-            let scope = scopes.active.last()?;
-            (!self.retained_element_id_stack.is_empty()
-                && scope.identity_stable)
-            .then(|| scope.identity_for_path(&self.retained_element_id_stack, &self.global_ids))
-        })?;
-        Some((path_key, stable))
+        let path = &self.retained_element_id_stack;
+        RETAINED_IDENTITY_SCOPES.with(|scopes| {
+            let mut scopes = scopes.borrow_mut();
+            let scope = scopes.active.last_mut()?;
+            if path.is_empty() || !scope.identity_stable {
+                return None;
+            }
+            let slot = scope.next_layout_slot;
+            scope.next_layout_slot = slot.checked_add(1)?;
+            Some((
+                crate::layout::layout_node_key(path.hash(), slot),
+                scope.identity_for_path(path, &self.global_ids),
+            ))
+        })
     }
 
     /// Executes the provided function with the specified rem size.

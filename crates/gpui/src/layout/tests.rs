@@ -5,7 +5,7 @@ use crate::{
 };
 use std::{cell::Cell, rc::Rc};
 
-/// The plain identifier, for the committed-lifetime callback.
+/// The full structural identity used for collision checks.
 fn element_identity(name: &'static str) -> GlobalElementId {
     GlobalElementId::from_path(&[ElementId::from(name)])
 }
@@ -176,8 +176,6 @@ fn native_taffy_preserves_identity_across_sibling_insertion_and_removal(cx: &mut
             assert_eq!(removed, first);
             engine.compute_layout(removed.2, AvailableSpace::min_size(), window, cx);
             engine.clear();
-            let center_identity = element_identity("center");
-            engine.retain_committed_elements(|id| id != &center_identity, true);
             assert_eq!(engine.taffy.total_node_count(), 3);
         })
         .unwrap();
@@ -322,104 +320,49 @@ fn native_taffy_keeps_unchanged_pure_measure_when_absolute_sibling_changes(
 }
 
 #[gpui::test]
-fn native_taffy_keeps_cached_subtrees_until_committed_unmount(cx: &mut TestAppContext) {
+fn native_taffy_keeps_claimed_subtrees_and_releases_unclaimed_nodes(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
             .unwrap()
     });
-    window
-        .update(cx, |_, window, cx| {
-            let mut engine = TaffyLayoutEngine::new();
-            let child_identity = element_identity("child");
-            let root_identity = element_identity("root");
-            let child_owner = layout_identity("child").unwrap();
-            let root_owner = layout_identity("root").unwrap();
-            let child = engine.request_layout(
-                Some(child_owner),
-                Style::default(),
-                px(16.),
-                1.,
-                &[],
-            );
-            let root = engine.request_layout(
-                Some(root_owner),
-                Style::default(),
-                px(16.),
-                1.,
-                &[child],
-            );
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            engine.clear();
-            engine.retain_committed_elements(
-                |id| id == &root_identity || id == &child_identity,
-                true,
-            );
-            assert_eq!(engine.taffy.total_node_count(), 2);
-
-            // The committed view is replayed with no request_layout calls.
-            // It is still mounted, so native Taffy nodes and cached data survive.
-            engine.clear();
-            engine.retain_committed_elements(
-                |id| id == &root_identity || id == &child_identity,
-                true,
-            );
-            assert_eq!(engine.taffy.total_node_count(), 2);
-            assert_eq!(engine.taffy.children(root.into()).unwrap().len(), 1);
-
-            // Only the exact unmounted element is reclaimed.
-            engine.retain_committed_elements(|id| id == &root_identity, true);
-            assert_eq!(engine.taffy.total_node_count(), 1);
-        })
-        .unwrap();
+    window.update(cx, |_, window, cx| {
+        let mut engine = TaffyLayoutEngine::new();
+        let recording = engine.record_claimed_keys();
+        let child = engine.request_layout(layout_identity("child"), Style::default(), px(16.), 1., &[]);
+        let root = engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[child]);
+        engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
+        let claims = engine.finish_recording_claimed_keys(recording);
+        engine.clear();
+        assert_eq!(engine.taffy.total_node_count(), 2);
+        assert!(engine.try_keep_retained(&claims));
+        engine.clear();
+        assert_eq!(engine.taffy.total_node_count(), 2);
+        assert_eq!(engine.taffy.children(root.into()).unwrap().len(), 1);
+        assert_eq!(engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[]), root);
+        engine.clear();
+        assert_eq!(engine.taffy.total_node_count(), 1);
+    }).unwrap();
 }
 
 #[gpui::test]
-fn native_taffy_prunes_unused_layout_slots_but_not_replayed_or_degraded_slots(
-    cx: &mut TestAppContext,
-) {
+fn native_taffy_abort_discards_native_claims_without_reusing_ids(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
             .unwrap()
     });
-    window
-        .update(cx, |_, _, _| {
-            let mut engine = TaffyLayoutEngine::new();
-            let owner = element_identity("multi-layout-owner");
-            let owner_pair = layout_identity("multi-layout-owner").unwrap();
-            let request = |engine: &mut TaffyLayoutEngine| {
-                let pair = (
-                    owner_pair.0,
-                    owner_pair.1.clone(),
-                );
-                engine.request_layout(Some(pair), Style::default(), px(16.), 1., &[])
-            };
-
-            let first = request(&mut engine);
-            let second = request(&mut engine);
-            assert_ne!(first, second);
-            engine.clear();
-            engine.retain_committed_elements(|id| id == &owner, true);
-            assert_eq!(engine.taffy.total_node_count(), 2);
-
-            // A cached subtree can paint without requesting any layout this frame.
-            engine.clear();
-            engine.retain_committed_elements(|id| id == &owner, true);
-            assert_eq!(engine.taffy.total_node_count(), 2);
-
-            // A failed/degraded frame may have visited only some of its slots.
-            assert_eq!(request(&mut engine), first);
-            engine.clear();
-            engine.retain_committed_elements(|id| id == &owner, false);
-            assert_eq!(engine.taffy.total_node_count(), 2);
-
-            // The next committed frame visits that owner with only one slot:
-            // its old extra Taffy allocation must be released.
-            assert_eq!(request(&mut engine), first);
-            engine.clear();
-            engine.retain_committed_elements(|id| id == &owner, true);
-            assert_eq!(engine.taffy.total_node_count(), 1);
-        })
-        .unwrap();
+    window.update(cx, |_, _, _| {
+        let mut engine = TaffyLayoutEngine::new();
+        let recording = engine.record_claimed_keys();
+        let root = engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[]);
+        let claims = engine.finish_recording_claimed_keys(recording);
+        engine.clear();
+        assert!(engine.try_keep_retained(&claims));
+        engine.abort_frame();
+        assert_eq!(engine.taffy.total_node_count(), 0);
+        assert!(!engine.try_keep_retained(&claims));
+        let replacement = engine.request_layout(layout_identity("root"), Style::default(), px(16.), 1., &[]);
+        assert_ne!(root, replacement);
+    }).unwrap();
 }
 
 #[gpui::test]

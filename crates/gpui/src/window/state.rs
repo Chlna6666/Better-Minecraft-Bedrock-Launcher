@@ -507,15 +507,6 @@ pub struct Window {
     pub(crate) retained_element_id_stack: ElementIdStack,
     /// Parent-local positional counters used only while `request_layout` constructs retained IDs.
     pub(crate) retained_child_slot_stack: SmallVec<[u32; 32]>,
-    /// Incremental running hashes of the element path, used as the layout node identity.
-    ///
-    /// A `u64` per element is enough to find the node it had last frame. Building a full
-    /// `GlobalElementId` for that lookup would allocate and copy the whole path on every
-    /// element of every frame; the running hash costs one `mix` per element and nothing else.
-    pub(crate) layout_key_stack: SmallVec<[crate::layout::LayoutKeyFrame; 32]>,
-    /// How many unidentified root trees have been laid out, so the roots of separate trees
-    /// (window root, prompts, drags, tooltips) do not share layout keys.
-    pub(crate) layout_root_index: u32,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
     /// Cached result of resolving `text_style_stack` over the window's default style.
     ///
