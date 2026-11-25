@@ -336,6 +336,7 @@ mod tests {
             target: TextureViewId::from_parts(1, 1),
             color_attachments: std::sync::Arc::from([]),
             gpu_work_tag: None,
+            run_plan: None,
             sampled_table: None,
             resolve_target: None,
             render_pass: RenderPassId::from_parts(1, 1),
