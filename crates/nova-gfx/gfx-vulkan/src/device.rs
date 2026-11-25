@@ -170,6 +170,7 @@ pub struct VulkanDevice {
     multi_draw_indirect: bool,
     max_draw_indirect_count: u32,
     draw_run_plans: Vec<Arc<gfx_core::DrawRunPlan>>,
+    resolved_draw_streams: Vec<ResolvedDrawStream>,
     binding_limits: gfx_core::BufferBindingLimits,
     texture_array_limits: gfx_core::TextureArrayCapabilities,
     copy_row_pitch_alignment: u64,
@@ -558,6 +559,7 @@ impl VulkanDevice {
             multi_draw_indirect: native_features.multi_draw_indirect == vk::TRUE,
             max_draw_indirect_count: native_limits.max_draw_indirect_count.max(1),
             draw_run_plans: Vec::new(),
+            resolved_draw_streams: Vec::new(),
             binding_limits,
             texture_array_limits,
             copy_row_pitch_alignment,
@@ -2331,6 +2333,16 @@ impl VulkanDevice {
         Ok(())
     }
 
+    fn draw_identity_epochs(&self) -> [u64; 3] {
+        [self.render_pipelines.identity_epoch(), self.bind_groups.identity_epoch(), self.buffers.identity_epoch()]
+    }
+
+    fn draw_dependencies_live(&self, deps: &DrawDependencies) -> bool {
+        deps.pipelines.iter().all(|(&id, &stamp)| self.render_pipelines.native_stamp(id).ok() == Some(stamp))
+            && deps.groups.iter().all(|(&id, &stamp)| self.bind_groups.native_stamp(id).ok() == Some(stamp))
+            && deps.buffers.iter().all(|(&id, &stamp)| self.buffers.native_stamp(id).ok() == Some(stamp))
+    }
+
     fn record_render_step_list_views(
         &mut self,
         encoder_id: CommandEncoderId,
@@ -2348,7 +2360,7 @@ impl VulkanDevice {
         counts: &[gfx_core::IndirectCountBinding],
         sampled_table: Option<BindGroupId>,
         mut depth_accesses: Vec<depth::DepthAccess>,
-        run_plan: Option<&gfx_core::DrawRunPlan>,
+        run_plan: Option<&Arc<gfx_core::DrawRunPlan>>,
     ) -> Result<()> {
         if color_views.is_empty() {
             return Err(Error::InvalidInput(
@@ -2500,11 +2512,6 @@ impl VulkanDevice {
                 return Err(Error::InvalidInput("Vulkan depth attachment is smaller than the rendering area".into()));
             }
         }
-        let mut draw_steps = Vec::with_capacity(run_plan.map_or(steps.len(), |plan| plan.runs().len()));
-        let mut descriptor_sets = Vec::new();
-        // Reuse the resolved native descriptor range for consecutive draws with
-        // identical portable bindings. No repeated registry lookups or copies.
-        let mut previous_sets: Option<(&[BindGroupId], std::ops::Range<usize>)> = None;
         // Resolve the shared descriptor once per pass, not for every draw.
         // The table API accepts sampled color views only; depth_accesses
         // therefore remains driven by the draw-local geometry sets.
@@ -2521,6 +2528,28 @@ impl VulkanDevice {
             }
             Ok::<_, Error>((group.layout, group.descriptor_set))
         }).transpose()?;
+        let native_key = ResolvedDrawKey {
+            viewport, extent: target_size,
+            targets: render_target_textures.clone(), resolve: resolve_texture,
+            shared_layout: shared_sampled.map(|(layout, _)| layout),
+        };
+        let epochs = self.draw_identity_epochs();
+        let cached_index = run_plan.and_then(|plan| self.resolved_draw_streams.iter().position(|entry|
+            Arc::ptr_eq(&entry.plan, plan) && entry.key == native_key
+                && (entry.epochs == epochs || self.draw_dependencies_live(&entry.dependencies))));
+        let resolved = if let Some(index) = cached_index {
+            let mut entry = self.resolved_draw_streams.remove(index);
+            entry.epochs = epochs;
+            let resolved = Arc::clone(&entry.resolved);
+            self.resolved_draw_streams.push(entry);
+            resolved
+        } else {
+        let mut draw_steps = Vec::with_capacity(run_plan.map_or(steps.len(), |plan| plan.runs().len()));
+        let mut descriptor_sets = Vec::new();
+        let mut dependencies = DrawDependencies::default();
+        // Reuse the resolved native descriptor range for consecutive draws with
+        // identical portable bindings. No repeated registry lookups or copies.
+        let mut previous_sets: Option<(&[BindGroupId], std::ops::Range<usize>)> = None;
         let mut previous_geometry_layout = None;
         let mut previous_bank = None;
         let mut counts = counts.iter().peekable();
@@ -2550,7 +2579,25 @@ impl VulkanDevice {
                 continue;
             }
             let pipeline_record = self.render_pipelines.get(step.pipeline())?;
+            if run_plan.is_some() {
+                dependencies.pipelines.entry(step.pipeline()).or_insert(self.render_pipelines.native_stamp(step.pipeline())?);
+            }
             let groups = step.bind_groups();
+            if run_plan.is_some() {
+                for &id in groups { dependencies.groups.entry(id).or_insert(self.bind_groups.native_stamp(id)?); }
+                let mut remember = |id| -> Result<()> {
+                    if let std::collections::hash_map::Entry::Vacant(entry) = dependencies.buffers.entry(id) {
+                        entry.insert(self.buffers.native_stamp(id)?);
+                    }
+                    Ok(())
+                };
+                match step {
+                    RenderCommand::DrawIndirect(draw) => remember(draw.arguments)?,
+                    RenderCommand::DrawIndexedIndirect(draw) => { remember(draw.arguments)?; remember(draw.index_buffer.buffer)?; }
+                    RenderCommand::DrawIndexed(draw) => remember(draw.index_buffer.buffer)?,
+                    RenderCommand::Draw(_) => {}
+                }
+            }
             if let Some((table_layout, _)) = shared_sampled {
                 let [geometry] = groups else {
                     return Err(Error::InvalidInput("shared sampled pass requires exactly one draw-local set".into()));
@@ -2685,6 +2732,17 @@ impl VulkanDevice {
                 scissor,
             });
         }
+            let resolved = Arc::new(ResolvedDraws { steps: draw_steps, descriptor_sets });
+            if let Some(plan) = run_plan {
+                self.resolved_draw_streams.retain(|entry| entry.plan.is_live()
+                    && !(Arc::ptr_eq(&entry.plan, plan) && entry.key == native_key));
+                if self.resolved_draw_streams.len() >= 32 { self.resolved_draw_streams.remove(0); }
+                self.resolved_draw_streams.push(ResolvedDrawStream {
+                    plan: Arc::clone(plan), key: native_key, epochs, dependencies, resolved: Arc::clone(&resolved),
+                });
+            }
+            resolved
+        };
         // Preflight already validated the depth resources. Earlier passes may
         // have changed their layouts, so refresh only the live layout state.
         for access in &mut depth_accesses {
@@ -2736,8 +2794,8 @@ impl VulkanDevice {
             color_views: &image_views,
             depth_view: depth_view.map(|(view, _)| view),
             present_image: None,
-            steps: &draw_steps,
-            descriptor_sets: &descriptor_sets,
+            steps: &resolved.steps,
+            descriptor_sets: &resolved.descriptor_sets,
             shared_sampled_set: shared_sampled.map(|(_, set)| set),
             extent,
             viewport_extent,
@@ -3103,7 +3161,7 @@ impl VulkanDevice {
                 counts.get(index).copied().unwrap_or(&[]),
                 tables.get(index).copied().flatten(),
                 depths,
-                plans.get(index).map(Arc::as_ref),
+                plans.get(index),
             );
             if let Err(error) = result {
                 self.destroy_temporary_command_encoder_now(encoder)?;
@@ -4423,8 +4481,10 @@ impl VulkanDevice {
         // and discard all CPU-only plans under stronger memory pressure.
         if matches!(level, MemoryTrimLevel::Light) {
             self.draw_run_plans.retain(|plan| plan.is_live());
+            self.resolved_draw_streams.retain(|entry| entry.plan.is_live());
         } else {
             self.draw_run_plans.clear();
+            self.resolved_draw_streams.clear();
             if matches!(level, MemoryTrimLevel::Aggressive) {
                 self.draw_run_plans.shrink_to_fit();
             }
@@ -8576,6 +8636,35 @@ struct CommandRenderTargetTransition {
 
 /// One native draw run, validated as a complete argument span before
 /// command-buffer recording. No per-record registry resolution is needed.
+#[derive(PartialEq, Eq)]
+struct ResolvedDrawKey {
+    viewport: Option<Viewport>,
+    extent: gfx_core::Extent2d,
+    targets: Vec<TextureId>,
+    resolve: Option<TextureId>,
+    shared_layout: Option<BindGroupLayoutId>,
+}
+
+#[derive(Default)]
+struct DrawDependencies {
+    pipelines: std::collections::HashMap<RenderPipelineId, u64>,
+    groups: std::collections::HashMap<BindGroupId, u64>,
+    buffers: std::collections::HashMap<BufferId, u64>,
+}
+
+struct ResolvedDraws {
+    steps: Vec<CommandDrawStepInfo>,
+    descriptor_sets: Vec<vk::DescriptorSet>,
+}
+
+struct ResolvedDrawStream {
+    plan: Arc<gfx_core::DrawRunPlan>,
+    key: ResolvedDrawKey,
+    epochs: [u64; 3],
+    dependencies: DrawDependencies,
+    resolved: Arc<ResolvedDraws>,
+}
+
 struct CommandDrawStepInfo {
     draw_count: u32,
     count: Option<(vk::Buffer, u64, u32)>,
