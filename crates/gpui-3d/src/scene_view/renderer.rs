@@ -855,6 +855,7 @@ struct SidecarGpuBackend {
     color_format: gfx_core::Format,
     target_extent: gfx_core::Extent2d,
     resources: RendererResources,
+    sampled_tiers: super::resources::SampledTierCache,
     /// Resident writable face pages live on the renderer's GPU owner and are
     /// reused by all SceneViews that share this device.
     generated_arena: Rc<RefCell<MeshArena>>,
@@ -974,6 +975,7 @@ impl SidecarGpuBackend {
             color_format: render_context.color_format(),
             target_extent: render_context.viewport(),
             resources,
+            sampled_tiers: super::resources::SampledTierCache::default(),
             generated_arena: Rc::new(RefCell::new(MeshArena::generated_output(
                 device.buffer_binding_limits(),
             ))),
@@ -1030,6 +1032,23 @@ impl SidecarGpuBackend {
         self.render_pass = context.render_pass();
         self.color_format = context.color_format();
         self.target_extent = next_target_extent;
+        Ok(())
+    }
+
+    fn sync_sampled_capacity(
+        &mut self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
+    ) -> gpui::Result<()> {
+        let Some(current) = self.resources.sampled_table_capacity() else { return Ok(()); };
+        if !self.pending_passes.is_empty() { return Ok(()); }
+        let demand = self.scenes.values().map(SceneResources::sampled_capacity_demand).max().unwrap_or(1);
+        if let Some(target) = self.sampled_tiers.suggest(current, demand, context.frame_time())
+            && self.scenes.values().all(|scene| scene.sampled_can_migrate(target))
+            && self.sampled_tiers.switch(device, &mut [&mut self.resources], std::slice::from_ref(context), target)?
+        {
+            self.command_cache.clear();
+            self.captured_inputs.clear();
+            if let Some(compactor) = self.draw_compaction.as_mut() { compactor.invalidate(); }
+        }
         Ok(())
     }
 
@@ -1898,6 +1917,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             self.sync_pipeline(device, &render_context)?;
             self.begin_frame(context.frame_time());
             self.retire_idle_scenes(device)?;
+            self.sync_sampled_capacity(device, &render_context)?;
             // A worker may still be preparing a replacement Scene. Reposition
             // its last successfully submitted texture *before* the retained
             // frame early return, so scrolling/moving does not blank the view.
@@ -2171,6 +2191,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         if let Some(compactor) = self.draw_compaction.take() {
             compactor.destroy(device)?;
         }
+        self.sampled_tiers.destroy(device)?;
         self.resources.destroy(device)?;
         if let Some(surface) = self.offscreen.take() {
             surface.destroy(device)?;
