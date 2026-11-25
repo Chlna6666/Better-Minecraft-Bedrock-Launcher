@@ -95,6 +95,9 @@ impl VulkanDevice {
         dispatch.validate(self.compute.capabilities)?;
         let (layout_id, set_handle, desc) = {
             let set = self.bind_groups.get(dispatch.bind_group)?;
+            if set.sampled_table.is_some() {
+                return Err(Error::InvalidInput("fragment sampled table cannot be used for compute".into()));
+            }
             (set.layout, set.descriptor_set, set.desc.clone())
         };
         let (set_layout, layout) = {

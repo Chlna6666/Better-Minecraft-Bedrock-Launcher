@@ -8,6 +8,13 @@ impl VulkanDevice {
         } {
             let set = self.bind_groups.get(id)?;
             let layout = self.bind_group_layouts.get(set.layout)?;
+            if let Some(views) = &set.sampled_table {
+                self.sampled_table_infos(views)?;
+                if layout.sampled_table_capacity != Some(views.len() as u32) {
+                    return Err(Error::InvalidInput("sampled table layout mismatch".into()));
+                }
+                continue;
+            }
             set.desc.validate_against(&layout.desc)?;
             for binding in &set.desc.entries {
                 match binding.resource {
@@ -29,6 +36,15 @@ impl VulkanDevice {
     pub(super) fn rewrite_compact_set(&self, id: BindGroupId) -> Result<()> {
         let set = self.bind_groups.get(id)?;
         let layout = self.bind_group_layouts.get(set.layout)?;
+        if let Some(views) = &set.sampled_table {
+            let infos = self.sampled_table_infos(views)?;
+            let write = vk::WriteDescriptorSet::default().dst_set(set.descriptor_set)
+                .dst_binding(0).descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .image_info(&infos);
+            // Compaction has already waited for all GPU readers.
+            unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+            return Ok(());
+        }
         for binding in &set.desc.entries {
             let mut write = vk::WriteDescriptorSet::default()
                 .dst_set(set.descriptor_set)

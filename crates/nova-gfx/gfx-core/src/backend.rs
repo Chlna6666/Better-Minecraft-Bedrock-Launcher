@@ -574,6 +574,27 @@ pub trait ResourceDevice {
     /// or if bindings do not match the layout.
     fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId>;
 
+    /// Upper bound for a fragment-visible, non-uniformly indexed sampled
+    /// texture descriptor table. Zero means the backend does not support it.
+    /// Other resources in the pipeline consume part of this limit.
+    fn sampled_texture_table_capacity(&self) -> u32 { 0 }
+
+    /// Create a fragment-only sampled texture array at binding zero.
+    /// This is an array of independent D2 images, not a D2Array texture.
+    fn create_sampled_texture_table_layout(&mut self, _capacity: u32) -> Result<BindGroupLayoutId> {
+        Err(Error::Unavailable("sampled texture descriptor tables are unsupported".into()))
+    }
+
+    /// Allocate an immutable table snapshot. Every entry must name a live
+    /// sampled color D2 view, including fallback views for unoccupied slots.
+    /// The caller retains these resources until all GPU readers complete.
+    /// Retire old snapshots using destroy_bind_group; never update a live set.
+    fn create_sampled_texture_table(
+        &mut self, _layout: BindGroupLayoutId, _views: &[TextureViewId],
+    ) -> Result<BindGroupId> {
+        Err(Error::Unavailable("sampled texture descriptor tables are unsupported".into()))
+    }
+
     /// Destroys a buffer.
     ///
     /// # Errors

@@ -1474,6 +1474,7 @@ impl VulkanDevice {
         Ok(self.bind_group_layouts.insert(VulkanResourceSetLayout {
             layout,
             desc: desc.clone(),
+            sampled_table_capacity: None,
         }))
     }
 
@@ -1515,7 +1516,11 @@ impl VulkanDevice {
     fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId> {
         // Reclaim completed descriptor retirements before consuming the shared pool budget.
         self.poll_cleanup();
-        let layout_desc = self.bind_group_layouts.get(desc.layout)?.desc.clone();
+        let layout_record = self.bind_group_layouts.get(desc.layout)?;
+        if layout_record.sampled_table_capacity.is_some() {
+            return Err(Error::InvalidInput("sampled texture table requires its dedicated creation API".into()));
+        }
+        let layout_desc = layout_record.desc.clone();
         desc.validate_against(&layout_desc)?;
         let layout = self.bind_group_layouts.get(desc.layout)?.layout;
         let mut buffer_infos = Vec::new();
@@ -1682,6 +1687,7 @@ impl VulkanDevice {
         }
         Ok(self.bind_groups.insert(VulkanResourceSet {
             sampled_depth,
+            sampled_table: None,
             descriptor_set,
             descriptor_pool,
             descriptor_demand,
@@ -5408,6 +5414,18 @@ impl ResourceDevice for VulkanDevice {
         Self::create_bind_group(self, desc)
     }
 
+    fn sampled_texture_table_capacity(&self) -> u32 {
+        self.descriptor_indexing.fixed_sampled_image_capacity()
+    }
+
+    fn create_sampled_texture_table_layout(&mut self, capacity: u32) -> Result<BindGroupLayoutId> {
+        self.create_sampled_table_layout(capacity)
+    }
+
+    fn create_sampled_texture_table(&mut self, layout: BindGroupLayoutId, views: &[TextureViewId]) -> Result<BindGroupId> {
+        self.create_sampled_table(layout, views)
+    }
+
     fn destroy_buffer(&mut self, buffer: BufferId) -> Result<()> {
         Self::destroy_buffer(self, buffer)
     }
@@ -6597,11 +6615,13 @@ struct VulkanSampler {
 struct VulkanResourceSetLayout {
     layout: vk::DescriptorSetLayout,
     desc: BindGroupLayoutDescriptor,
+    sampled_table_capacity: Option<u32>,
 }
 
 #[derive(Clone)]
 struct VulkanResourceSet {
     sampled_depth: Vec<TextureId>,
+    sampled_table: Option<Vec<TextureViewId>>,
     descriptor_set: vk::DescriptorSet,
     descriptor_pool: vk::DescriptorPool,
     descriptor_demand: descriptors::Demand,

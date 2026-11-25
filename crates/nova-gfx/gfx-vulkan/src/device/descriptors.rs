@@ -43,6 +43,17 @@ impl DescriptorIndexingCapabilities {
         result
     }
 
+    /// Upper bound for a fully populated, fixed-size sampled image table.
+    /// This path requires non-uniform indexing but not variable allocation,
+    /// partially bound descriptors, or update-after-bind.
+    pub fn fixed_sampled_image_capacity(self) -> u32 {
+        if self.sampled_image_non_uniform {
+            self.max_sampled_images_per_stage
+                .min(self.max_sampled_images_per_set)
+                .min(self.max_resources_per_stage)
+        } else { 0 }
+    }
+
     /// Upper bound for an ordinary sparse variable-size sampled-image table,
     /// before accounting for other descriptors in its pipeline layout.
     pub fn sparse_sampled_image_capacity(self) -> u32 {
@@ -57,6 +68,76 @@ impl VulkanDevice {
     /// Enabled native features, without promising a bindless resource API.
     pub fn descriptor_indexing_capabilities(&self) -> DescriptorIndexingCapabilities {
         self.descriptor_indexing
+    }
+}
+
+impl VulkanDevice {
+    pub(super) fn create_sampled_table_layout(&mut self, capacity: u32) -> Result<BindGroupLayoutId> {
+        if capacity == 0 || capacity > self.descriptor_indexing.fixed_sampled_image_capacity() {
+            return Err(Error::Unavailable("sampled image table exceeds enabled Vulkan limits".into()));
+        }
+        let binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0).descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .descriptor_count(capacity).stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let bindings = [binding];
+        let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+        // SAFETY: fully populated ordinary array, no update-after-bind flags.
+        let layout = unsafe { self.device.create_descriptor_set_layout(&info, None) }
+            .map_err(VulkanError::from)?;
+        Ok(self.bind_group_layouts.insert(VulkanResourceSetLayout {
+            layout,
+            desc: BindGroupLayoutDescriptor {
+                label: Some("sampled texture table".into()),
+                entries: vec![gfx_core::BindGroupLayoutEntry {
+                    binding: 0, binding_type: BindingType::SampledTexture,
+                    stages: ShaderStages::FRAGMENT,
+                }],
+            },
+            sampled_table_capacity: Some(capacity),
+        }))
+    }
+
+    pub(super) fn sampled_table_infos(&self, views: &[TextureViewId]) -> Result<Vec<vk::DescriptorImageInfo>> {
+        views.iter().map(|&id| {
+            let view = self.texture_views.get(id)?;
+            let texture = self.textures.get(view.texture)?;
+            if !texture.desc.usage.contains(TextureUsage::SAMPLED)
+                || texture.desc.dimension != TextureDimension::D2
+                || texture.desc.sample_count != 1
+                || texture.desc.format == Format::Depth32Float
+            {
+                return Err(Error::InvalidInput("sampled table requires single-sample sampled color D2 views".into()));
+            }
+            Ok(vk::DescriptorImageInfo::default()
+                .image_view(view.view).image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL))
+        }).collect()
+    }
+
+    pub(super) fn create_sampled_table(&mut self, layout_id: BindGroupLayoutId, views: &[TextureViewId]) -> Result<BindGroupId> {
+        self.poll_cleanup();
+        let layout = self.bind_group_layouts.get(layout_id)?;
+        let capacity = layout.sampled_table_capacity.ok_or_else(||
+            Error::InvalidInput("layout is not a sampled texture table".into()))?;
+        if views.len() != capacity as usize {
+            return Err(Error::InvalidInput("sampled texture table must be fully populated".into()));
+        }
+        let native_layout = layout.layout;
+        let infos = self.sampled_table_infos(views)?;
+        let demand = Demand([0, 0, capacity, 0, 0]);
+        let (descriptor_set, descriptor_pool) =
+            self.descriptor_pools.allocate(&self.device, native_layout, demand)?;
+        let write = vk::WriteDescriptorSet::default().dst_set(descriptor_set)
+            .dst_binding(0).descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .image_info(&infos);
+        // SAFETY: this freshly allocated set has no GPU readers.
+        unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+        Ok(self.bind_groups.insert(VulkanResourceSet {
+            sampled_depth: Vec::new(),
+            sampled_table: Some(views.to_vec()),
+            descriptor_set, descriptor_pool, descriptor_demand: demand,
+            layout: layout_id,
+            desc: BindGroupDescriptor { label: None, layout: layout_id, entries: Vec::new() },
+        }))
     }
 }
 
