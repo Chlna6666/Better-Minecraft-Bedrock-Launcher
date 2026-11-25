@@ -289,9 +289,8 @@ pub(super) struct Scaling {
 }
 
 pub(super) fn instance_extension(entry: &Entry) -> Result<Option<&'static CStr>> {
-    if !cfg!(target_os = "windows") {
-        return Ok(None);
-    }
+    // Native present fences are useful on every WSI, independently of
+    // the Win32-only retained pixel scaling policy.
     // SAFETY: instance extension discovery does not submit work or require an instance.
     let extensions = unsafe { entry.enumerate_instance_extension_properties(None) }
         .map_err(VulkanError::from)?;
