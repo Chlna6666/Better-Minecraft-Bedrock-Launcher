@@ -249,7 +249,66 @@ fn gather_patches(
     Some(patches)
 }
 
+fn same_indirect_command(a: &RenderCommand, b: &RenderCommand) -> bool {
+    if a.pipeline() != b.pipeline() || a.bind_groups() != b.bind_groups()
+        || a.scissor() != b.scissor() { return false; }
+    let indexed = matches!(a, RenderCommand::DrawIndexedIndirect(_));
+    let Some(a) = indirect_record(a, indexed) else { return false; };
+    indirect_record(b, indexed) == Some(a)
+}
+
+/// Splice one changed command interval outside compacted runs. The unchanged
+/// prefix/suffix proves that every GPU gather record still has the same source,
+/// state and order. Only portable command indices move; GPU metadata is stable.
+fn splice_gather_runs(
+    previous: &[RenderCommand], next: &[RenderCommand], runs: &[Run],
+) -> Option<Vec<Run>> {
+    let prefix = previous.iter().zip(next)
+        .take_while(|(a, b)| same_indirect_command(a, b)).count();
+    let suffix = previous[prefix..].iter().rev().zip(next[prefix..].iter().rev())
+        .take_while(|(a, b)| same_indirect_command(a, b)).count();
+    let old_end = previous.len() - suffix;
+    let new_end = next.len() - suffix;
+    if next[prefix..new_end].iter().any(|command|
+        !matches!(command, RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_)))
+    { return None; }
+    runs.iter().map(|run| {
+        let end = run.command.checked_add(run.count as usize)?;
+        if end <= prefix {
+            Some(*run)
+        } else if run.command >= old_end {
+            Some(Run { command: new_end.checked_add(run.command - old_end)?, ..*run })
+        } else {
+            None
+        }
+    }).collect()
+}
+
 impl Cached {
+    fn try_splice_gaps(&mut self, next: &Arc<[RenderCommand]>) -> bool {
+        let Some(prepared) = self.prepared.as_mut() else { return false; };
+        let Some(runs) = splice_gather_runs(&self.source, next, &prepared.runs) else { return false; };
+        let mut commands = Vec::with_capacity(next.len());
+        let mut counts = Vec::with_capacity(runs.len());
+        let mut cursor = 0;
+        for (run, count) in runs.iter().zip(&prepared.counts) {
+            commands.extend_from_slice(&next[cursor..run.command]);
+            let mut binding = *count;
+            binding.command_index = commands.len();
+            // Reuse the native counted command (scratch buffer and offset).
+            commands.push(prepared.commands[count.command_index].clone());
+            counts.push(binding);
+            cursor = run.command + run.count as usize;
+        }
+        commands.extend_from_slice(&next[cursor..]);
+        prepared.commands = commands;
+        prepared.counts = counts;
+        prepared.runs = runs;
+        self.source = Arc::clone(next);
+        self.cost = CostModel::default();
+        true
+    }
+
     fn try_patch_gather(
         &mut self, device: &mut dyn ExtensionDevice, scratch: &mut Scratch,
         next: &Arc<[RenderCommand]>,
@@ -663,7 +722,9 @@ impl ViewCompactor {
                 _ => false,
             }
         } else { false };
-        if !unchanged && !rebound && !patched {
+        let spliced = !unchanged && !rebound && !patched
+            && self.cached.as_mut().is_some_and(|cached| cached.try_splice_gaps(&pass.commands));
+        if !unchanged && !rebound && !patched && !spliced {
             // Invalidate before preparing: a failed allocation or upload may
             // have replaced scratch storage referenced by the previous plan.
             self.cached = None;
@@ -764,6 +825,31 @@ mod tests {
         next[17].set_scissor(Some(ScissorRect { x: 0, y: 0, width: 1, height: 1 }));
         assert!(gather_patches(&old, &next, &planned.runs, false, planned.source_bytes).is_none());
         assert!(gather_patches(&old, &old[..255], &planned.runs, false, planned.source_bytes).is_none());
+    }
+
+    #[test]
+    fn gather_splice_preserves_native_runs_outside_changed_interval() {
+        let mut old: Vec<_> = (0..128).map(|i| draw(i * 16)).collect();
+        old.push(draw(900 * 16));
+        old.extend((200..328).map(|i| draw(i * 16)));
+        let runs = [
+            Run { command: 0, source: 0, count: 128, destination: 0 },
+            Run { command: 129, source: 128, count: 128, destination: 128 },
+        ];
+        let mut next = old.clone();
+        next.splice(128..129, [draw(901 * 16), draw(902 * 16)]);
+        let shifted = splice_gather_runs(&old, &next, &runs).unwrap();
+        assert_eq!(shifted[0], runs[0]);
+        assert_eq!(shifted[1], Run { command: 130, ..runs[1] });
+        let mut next = old.clone();
+        next.remove(128);
+        assert_eq!(splice_gather_runs(&old, &next, &runs).unwrap()[1].command, 128);
+        let mut next = old.clone();
+        next[64] = draw(999 * 16);
+        assert!(splice_gather_runs(&old, &next, &runs).is_none());
+        let mut next = old.clone();
+        next.insert(0, draw(999 * 16));
+        assert_eq!(splice_gather_runs(&old, &next, &runs).unwrap()[0].command, 1);
     }
 
     #[test]
