@@ -1408,6 +1408,24 @@ pub trait PresentationDevice {
         self.render_to_textures_sampled_profiled(passes, tables, &[], tags)
     }
 
+    /// Maximum contiguous portable draw span accepted by the compact run ABI.
+    /// Zero means the backend does not support representative commands.
+    fn compact_draw_run_limit(&self) -> u32 { 0 }
+
+    /// Submit representative commands and their validated run lengths. A
+    /// backend must reject unsupported plans before executing any work.
+    fn render_to_textures_runs_profiled(
+        &mut self, passes: &[RenderPassCommands<'_>],
+        owners: &[std::sync::Arc<[crate::RenderCommand]>],
+        plans: &[Option<std::sync::Arc<crate::DrawRunPlan>>],
+        tables: &[Option<BindGroupId>], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if plans.len() != passes.len() || plans.iter().any(Option::is_some) {
+            return Err(Error::Unavailable("compact draw runs unsupported".into()));
+        }
+        self.render_to_textures_owned_profiled(passes, owners, tables, tags)
+    }
+
     /// Records ordered offscreen render passes.
     ///
     /// The default submits each pass separately and returns `None`. Backends may batch the
@@ -1538,6 +1556,22 @@ pub trait OffscreenSubmissionDevice {
         }
     }
 
+    /// Maximum portable compact draw run length accepted by the native owner.
+    fn compact_draw_run_limit(&self) -> u32 { 0 }
+
+    /// Ordered offscreen representative stream submission.
+    fn submit_run_offscreen_batch(
+        &mut self, passes: &[RenderPassCommands<'_>],
+        owners: &[std::sync::Arc<[crate::RenderCommand]>],
+        plans: &[Option<std::sync::Arc<crate::DrawRunPlan>>],
+        tables: &[Option<BindGroupId>], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if plans.len() != passes.len() || plans.iter().any(Option::is_some) {
+            return Err(Error::Unavailable("compact draw runs unsupported".into()));
+        }
+        self.submit_owned_offscreen_batch(passes, owners, tables, tags)
+    }
+
     /// Maximum native GPU-generated draw count for ordered offscreen passes.
     fn counted_offscreen_limit(&self) -> Option<u32> { None }
 
@@ -1609,6 +1643,19 @@ impl<T: PresentationDevice> OffscreenSubmissionDevice for T {
         tables: &[Option<BindGroupId>], tags: &[Option<GpuTimestampTag>],
     ) -> Result<Option<SubmissionId>> {
         PresentationDevice::render_to_textures_owned_profiled(self, passes, owners, tables, tags)
+    }
+
+    fn compact_draw_run_limit(&self) -> u32 {
+        PresentationDevice::compact_draw_run_limit(self)
+    }
+
+    fn submit_run_offscreen_batch(
+        &mut self, passes: &[RenderPassCommands<'_>],
+        owners: &[std::sync::Arc<[crate::RenderCommand]>],
+        plans: &[Option<std::sync::Arc<crate::DrawRunPlan>>],
+        tables: &[Option<BindGroupId>], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        PresentationDevice::render_to_textures_runs_profiled(self, passes, owners, plans, tables, tags)
     }
 
     fn counted_offscreen_limit(&self) -> Option<u32> {
