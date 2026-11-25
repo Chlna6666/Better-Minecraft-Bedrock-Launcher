@@ -246,6 +246,40 @@ impl PresentationDevice for OpenGlDevice {
         Ok(None)
     }
 
+    fn compact_draw_run_limit(&self) -> u32 {
+        if self.multi_draw.is_some() { i32::MAX as u32 } else { 0 }
+    }
+
+    fn render_to_textures_runs_profiled(
+        &mut self, passes: &[RenderPassCommands<'_>],
+        owners: &[std::sync::Arc<[RenderCommand]>], supplied: &[Option<std::sync::Arc<DrawRunPlan>>],
+        tables: &[Option<BindGroupId>], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if supplied.len() != passes.len() || passes.len() != owners.len() || passes.len() != tags.len()
+            || (!tables.is_empty() && tables.len() != passes.len())
+            || passes.iter().zip(owners).any(|(pass, owner)| !std::ptr::eq(pass.commands, owner.as_ref()))
+        { return Err(Error::InvalidInput("OpenGL representative stream metadata mismatch".into())); }
+        if tables.iter().any(Option::is_some) {
+            return Err(Error::Unavailable("OpenGL pass-level sampled tables unsupported".into()));
+        }
+        let limit = PresentationDevice::compact_draw_run_limit(self);
+        if supplied.iter().zip(owners).any(|(plan, owner)| plan.as_ref().is_some_and(|plan|
+            !plan.matches_representatives(owner, limit)))
+        { return Err(Error::InvalidInput("OpenGL representative stream identity or limit mismatch".into())); }
+        if supplied.iter().all(Option::is_none) {
+            return self.render_to_textures_owned_profiled(passes, owners, tables, tags);
+        }
+        for (((pass, owner), supplied), &tag) in passes.iter().zip(owners).zip(supplied).zip(tags) {
+            let plan = supplied.clone().unwrap_or_else(|| std::sync::Arc::new(DrawRunPlan::new(owner, limit)));
+            let targets = pass.color_attachments.iter().copied().map(RenderTarget::TextureView).collect::<Vec<_>>();
+            let tag = tag.filter(|tag| tag.stage == GpuTimestampStage::DrawIndirect && plan.indirect_only());
+            self.render_target_planned(&targets, pass.resolve_target, pass.render_pass,
+                pass.commands, pass.color_load_op, pass.depth_attachment, pass.clear_region,
+                pass.viewport, tag, &[], Some(&plan))?;
+        }
+        Ok(None)
+    }
+
     fn render_to_textures_owned_profiled(
         &mut self, passes: &[RenderPassCommands<'_>],
         owners: &[std::sync::Arc<[RenderCommand]>], tables: &[Option<BindGroupId>],
