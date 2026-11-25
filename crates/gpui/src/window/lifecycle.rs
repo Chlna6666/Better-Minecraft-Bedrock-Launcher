@@ -460,8 +460,12 @@ impl WindowInvalidator {
             inner.pending_targeted_elements.clear();
             inner.pending_generic_dirty_views.clear();
         }
-        // The readers are named, so only they need to rerun Render; other subtrees still
-        // prove themselves per element. See `invalidate_entity` for the same reasoning.
+        // A notified view must rebuild its own Render, and its committed subtree may no longer
+        // match what it will paint. Recording it as generic-dirty is what keeps retained replay
+        // from admitting its old ranges on identity alone; unrelated views are unaffected.
+        if inner.pending_targeted_replay {
+            inner.pending_generic_dirty_views.extend(owners);
+        }
         inner.dirty = true;
     }
 
@@ -487,6 +491,9 @@ impl WindowInvalidator {
         }
         for owner in owners {
             inner.dirty_views.insert(owner);
+            if inner.pending_targeted_replay {
+                inner.pending_generic_dirty_views.insert(owner);
+            }
         }
         inner.dirty = true;
         true
@@ -545,12 +552,10 @@ impl WindowInvalidator {
                 inner.pending_generic_dirty_views.clear();
             }
 
-            // A resolved dependency names exactly the views that read the changed value.
-            // Those views rerun their own Render; every other committed subtree still has
-            // to prove itself per element, so recording them as generic-dirty would only
-            // disable that proof for the whole window. Keep the conservative record for
-            // reads whose owner set is unknown, which is the case this flag exists for.
-            if inner.pending_targeted_replay && unknown {
+            // A notified view must rebuild its own Render, so its committed retained ranges
+            // are no longer proven to match. Marking it generic-dirty keeps replay from
+            // admitting them on identity alone; views that were not notified are unaffected.
+            if inner.pending_targeted_replay {
                 inner.pending_generic_dirty_views.extend(owners.iter().copied());
             }
             inner.dirty = true;
