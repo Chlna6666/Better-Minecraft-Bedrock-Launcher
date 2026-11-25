@@ -2568,7 +2568,7 @@ impl VulkanDevice {
             } else if count.is_some() || !self.multi_draw_indirect { 1 } else {
                 portable_indirect_run(&steps[command_index..end], self.max_draw_indirect_count)
             };
-            command_index += draw_count as usize;
+            command_index += run_plan.map_or(draw_count as usize, |plan| plan.source_span(draw_count));
             let scissor = match (viewport, step.scissor()) {
                 (Some(viewport), Some(scissor)) => {
                     Some(viewport.map_scissor(scissor, target_size)?)
@@ -6338,6 +6338,46 @@ impl PresentationDevice for VulkanDevice {
         counts: &[&[gfx_core::IndirectCountBinding]], tags: &[Option<gfx_core::GpuTimestampTag>],
     ) -> Result<Option<SubmissionId>> {
         self.submit_counted_texture_passes(passes, tables, counts, tags, true)
+    }
+
+    fn compact_draw_run_limit(&self) -> u32 {
+        if self.multi_draw_indirect { self.max_draw_indirect_count } else { 0 }
+    }
+
+    fn render_to_textures_runs_profiled(
+        &mut self, passes: &[RenderPassCommands<'_>],
+        owners: &[Arc<[RenderCommand]>],
+        supplied: &[Option<Arc<gfx_core::DrawRunPlan>>],
+        tables: &[Option<BindGroupId>], tags: &[Option<gfx_core::GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if supplied.len() != passes.len() || owners.len() != passes.len()
+            || tags.len() != passes.len() || (!tables.is_empty() && tables.len() != passes.len())
+            || passes.iter().zip(owners).any(|(pass, owner)| !std::ptr::eq(pass.commands, owner.as_ref()))
+        { return Err(Error::InvalidInput("Vulkan representative stream metadata mismatch".into())); }
+        let limit = PresentationDevice::compact_draw_run_limit(self);
+        if supplied.iter().zip(owners).any(|(plan, owner)| plan.as_ref().is_some_and(|plan|
+            !plan.matches_representatives(owner, limit)))
+        { return Err(Error::InvalidInput("Vulkan representative stream identity or limit mismatch".into())); }
+        if supplied.iter().all(Option::is_none) {
+            return self.render_to_textures_owned_profiled(passes, owners, tables, tags);
+        }
+        self.draw_run_plans.retain(|plan| plan.is_live());
+        let mut plans = Vec::with_capacity(owners.len());
+        for (owner, supplied) in owners.iter().zip(supplied) {
+            if let Some(plan) = supplied {
+                plans.push(Arc::clone(plan));
+            } else if let Some(index) = self.draw_run_plans.iter().position(|plan| plan.matches(owner, limit)) {
+                let plan = self.draw_run_plans.remove(index);
+                plans.push(Arc::clone(&plan));
+                self.draw_run_plans.push(plan);
+            } else {
+                let plan = Arc::new(gfx_core::DrawRunPlan::new(owner, limit));
+                plans.push(Arc::clone(&plan));
+                if self.draw_run_plans.len() >= 32 { self.draw_run_plans.remove(0); }
+                self.draw_run_plans.push(plan);
+            }
+        }
+        self.record_texture_passes(passes, Some(tags), false, &[], tables, true, &plans)
     }
 
     fn render_to_textures_owned_profiled(
