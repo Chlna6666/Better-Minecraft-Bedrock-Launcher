@@ -46,6 +46,8 @@ pub struct RendererExtensionPass {
     /// Scissors are local to the target, and the GPU owner retains this Arc
     /// until its native queue accepts the producer submission.
     pub commands: Arc<[RenderCommand]>,
+    /// Compact producer run metadata; the owner must forward this with commands.
+    pub run_plan: Option<Arc<DrawRunPlan>>,
     /// Optional sampled image table at set one, shared by the entire pass.
     /// When present each command contains only its geometry set zero.
     pub sampled_table: Option<BindGroupId>,
@@ -59,7 +61,7 @@ pub struct RendererExtensionPass {
 }
 impl RendererExtensionPass {
     /// Borrows this owned plan for the host graphics submission.
-    /// The caller must also forward `sampled_table` to the native batch API.
+    /// The caller must forward both `sampled_table` and `run_plan` to the native batch API.
     pub fn commands(&self) -> RenderPassCommands<'_> {
         RenderPassCommands {
             color_attachments: if self.color_attachments.is_empty() {
