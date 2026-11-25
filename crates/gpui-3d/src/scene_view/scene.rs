@@ -914,6 +914,11 @@ impl SceneResources {
         let old_sampled = self.committed_sampled_snapshot;
         if let Some(table) = self.sampled_textures.as_mut() {
             table.release_completed(device)?;
+            if let (Some(layout), Some(capacity)) =
+                (renderer.sampled_table_layout(), renderer.sampled_table_capacity())
+            {
+                table.try_migrate_layout(device, layout, capacity);
+            }
         }
         let trace_started = trace_timings().then(Instant::now);
         let mut camera_ms = 0.0;
@@ -998,6 +1003,7 @@ impl SceneResources {
             && self.sampled_bindings == old_sampled.is_some()
             && !self.sampled_textures.as_ref().is_some_and(|table| {
                 table.needs_remap() || table.needs_publication()
+                    || table.layout_transition_pending()
                     || table.selected(renderer.sampled_table_layout()) != old_sampled
             })
         {
@@ -1186,7 +1192,8 @@ impl SceneResources {
             next_sampled = table.selected(renderer.sampled_table_layout());
         }
         let sampled_mode_changed = old_sampled.is_some() != next_sampled.is_some()
-            || self.sampled_bindings != next_sampled.is_some();
+            || self.sampled_bindings != next_sampled.is_some()
+            || self.sampled_textures.as_ref().is_some_and(|table| table.layout_transition_pending());
         self.sampled_bindings = next_sampled.is_some();
         draw_list_changed |= sampled_remapped || sampled_mode_changed;
         let shading = projection.voxel_shading();
@@ -1649,6 +1656,9 @@ impl SceneResources {
         // Removed textures remain pinned by the current immutable snapshot.
         // Their edits are published before the next frame's batch plan.
         self.committed_sampled_snapshot = next_sampled;
+        if let Some(table) = self.sampled_textures.as_mut() {
+            table.commit_snapshot(next_sampled);
+        }
         if sampled_mode_changed { self.command_delta = None; }
         // A replacement table with the same layout does not change draw
         // topology. CachedCommands patches set one independently of this
@@ -3983,7 +3993,7 @@ impl SceneResources {
 
     pub(in crate::scene_view) fn sampled_maintenance_pending(&self) -> bool {
         self.sampled_textures.as_ref().is_some_and(|table| {
-            table.needs_remap() || table.needs_publication()
+            table.needs_remap() || table.needs_publication() || table.layout_transition_pending()
         })
     }
 
