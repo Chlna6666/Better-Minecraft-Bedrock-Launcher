@@ -3952,11 +3952,14 @@ impl VulkanDevice {
     ///
     /// Returns [`Error`] when the handle is invalid.
     fn destroy_bind_group_layout(&mut self, layout_id: BindGroupLayoutId) -> Result<()> {
-        self.wait_for_pending_work()?;
         self.bind_group_layouts.get(layout_id)?;
+        // Idle cached descriptor sets are already fence-complete. Future
+        // retired sets see the invalidated layout generation and are freed.
         self.descriptor_pools.release_table_layout(&self.device, layout_id)?;
+        let retirement = self.signal_cleanup_point()?;
         let layout = self.bind_group_layouts.take(layout_id)?;
-        self.destroy_resource_set_layout_now(&layout);
+        self.deferred_destroys.retire(0, DeferredResource::BindGroupLayout { retirement, layout });
+        self.poll_cleanup();
         Ok(())
     }
 
@@ -3985,9 +3988,11 @@ impl VulkanDevice {
     ///
     /// Returns [`Error`] when the handle is invalid.
     fn destroy_pipeline_layout(&mut self, layout_id: PipelineLayoutId) -> Result<()> {
-        self.wait_for_pending_work()?;
+        self.pipeline_layouts.get(layout_id)?;
+        let retirement = self.signal_cleanup_point()?;
         let layout = self.pipeline_layouts.take(layout_id)?;
-        self.destroy_pipeline_layout_now(&layout);
+        self.deferred_destroys.retire(0, DeferredResource::PipelineLayout { retirement, layout });
+        self.poll_cleanup();
         Ok(())
     }
 
@@ -3997,9 +4002,14 @@ impl VulkanDevice {
     ///
     /// Returns [`Error`] when the handle is invalid.
     fn destroy_shader_module(&mut self, shader_id: ShaderModuleId) -> Result<()> {
-        self.wait_for_pending_work()?;
+        // Graphics shader modules are consumed at pipeline creation, not
+        // command execution. Only cached compute programs still need the
+        // existing conservative teardown path.
+        if self.shader_modules.get(shader_id)?.stage == ShaderStage::Compute {
+            self.wait_for_pending_work()?;
+            self.compute.remove_shader(shader_id);
+        }
         let shader = self.shader_modules.take(shader_id)?;
-        self.compute.remove_shader(shader_id);
         self.destroy_shader_module_now(&shader);
         Ok(())
     }
@@ -4021,9 +4031,11 @@ impl VulkanDevice {
     ///
     /// Returns [`Error`] when the handle is invalid.
     fn destroy_render_pipeline(&mut self, pipeline_id: RenderPipelineId) -> Result<()> {
-        self.wait_for_pending_work()?;
+        self.render_pipelines.get(pipeline_id)?;
+        let retirement = self.signal_cleanup_point()?;
         let pipeline = self.render_pipelines.take(pipeline_id)?;
-        self.destroy_render_pipeline_now(&pipeline);
+        self.deferred_destroys.retire(0, DeferredResource::RenderPipeline { retirement, pipeline });
+        self.poll_cleanup();
         Ok(())
     }
 
@@ -4876,6 +4888,21 @@ impl VulkanDevice {
             DeferredResource::BindGroup { retirement, set } => {
                 retirement.destroy(&self.device);
                 self.destroy_resource_set_now(&set);
+                Ok(())
+            }
+            DeferredResource::RenderPipeline { retirement, pipeline } => {
+                retirement.destroy(&self.device);
+                self.destroy_render_pipeline_now(&pipeline);
+                Ok(())
+            }
+            DeferredResource::PipelineLayout { retirement, layout } => {
+                retirement.destroy(&self.device);
+                self.destroy_pipeline_layout_now(&layout);
+                Ok(())
+            }
+            DeferredResource::BindGroupLayout { retirement, layout } => {
+                retirement.destroy(&self.device);
+                self.destroy_resource_set_layout_now(&layout);
                 Ok(())
             }
             DeferredResource::Upload {
@@ -7328,6 +7355,18 @@ enum DeferredResource {
         retirement: CleanupPoint,
         set: VulkanResourceSet,
     },
+    RenderPipeline {
+        retirement: CleanupPoint,
+        pipeline: VulkanRenderPipeline,
+    },
+    PipelineLayout {
+        retirement: CleanupPoint,
+        layout: VulkanPipelineLayout,
+    },
+    BindGroupLayout {
+        retirement: CleanupPoint,
+        layout: VulkanResourceSetLayout,
+    },
     Upload {
         retirement: CleanupPoint,
         fence_value: u64,
@@ -7344,6 +7383,9 @@ impl DeferredResource {
             | Self::Texture { retirement: CleanupPoint::Timeline(value), .. }
             | Self::TextureView { retirement: CleanupPoint::Timeline(value), .. }
             | Self::BindGroup { retirement: CleanupPoint::Timeline(value), .. }
+            | Self::RenderPipeline { retirement: CleanupPoint::Timeline(value), .. }
+            | Self::PipelineLayout { retirement: CleanupPoint::Timeline(value), .. }
+            | Self::BindGroupLayout { retirement: CleanupPoint::Timeline(value), .. }
             | Self::Upload { retirement: CleanupPoint::Timeline(value), .. } => Some(*value),
             Self::CommandEncoder(encoder) => encoder.retire_primary_value,
             _ => None,
@@ -7360,6 +7402,9 @@ fn deferred_resource_ready(device: &ash::Device, resource: &DeferredResource) ->
         | DeferredResource::Texture { retirement, .. }
         | DeferredResource::TextureView { retirement, .. }
         | DeferredResource::BindGroup { retirement, .. }
+        | DeferredResource::RenderPipeline { retirement, .. }
+        | DeferredResource::PipelineLayout { retirement, .. }
+        | DeferredResource::BindGroupLayout { retirement, .. }
         | DeferredResource::Upload { retirement, .. } => match retirement {
             CleanupPoint::Fence(fence) => *fence,
             // Only the timeline-aware owner predicate can retire this.
