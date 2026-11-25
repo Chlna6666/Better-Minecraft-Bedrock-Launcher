@@ -9590,6 +9590,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn portable_indirect_runs_respect_native_limits_and_exact_state() {
+        let draw = |offset| RenderCommand::DrawIndirect(gfx_core::DrawIndirectCommand {
+            pipeline: RenderPipelineId::from_parts(1, 1),
+            bind_groups: gfx_core::bind_group_list([BindGroupId::from_parts(1, 1)]),
+            arguments: BufferId::from_parts(1, 1),
+            offset,
+            scissor: None,
+        });
+        let mut steps: Vec<_> = (0..8).map(|i| draw(i * 16)).collect();
+        assert_eq!(portable_indirect_run(&steps, 8), 8);
+        assert_eq!(portable_indirect_run(&steps, 3), 3);
+        assert_eq!(portable_indirect_run(&steps[..4], 8), 4);
+        assert_eq!(portable_indirect_run(&steps, 1), 1);
+        steps[3] = draw(80);
+        assert_eq!(portable_indirect_run(&steps, 8), 3);
+        steps[3] = draw(48);
+        steps[4].set_scissor(Some(ScissorRect { x: 0, y: 0, width: 1, height: 1 }));
+        assert_eq!(portable_indirect_run(&steps, 8), 4);
+        let RenderCommand::DrawIndirect(ref mut different) = steps[2] else { unreachable!() };
+        different.arguments = BufferId::from_parts(2, 1);
+        assert_eq!(portable_indirect_run(&steps, 8), 2);
+        assert_eq!(portable_indirect_run(&[], 8), 0);
+    }
+
+    #[test]
+    fn portable_indexed_runs_require_the_same_index_buffer_binding() {
+        let draw = |offset, index_offset| RenderCommand::DrawIndexedIndirect(gfx_core::DrawIndexedIndirectCommand {
+            pipeline: RenderPipelineId::from_parts(1, 1),
+            bind_groups: gfx_core::bind_group_list([]),
+            arguments: BufferId::from_parts(1, 1),
+            offset,
+            index_buffer: IndexBufferBinding {
+                buffer: BufferId::from_parts(2, 1),
+                format: gfx_core::IndexFormat::Uint32,
+                offset: index_offset,
+            },
+            scissor: None,
+        });
+        let steps = [draw(0, 0), draw(20, 0), draw(40, 4), draw(60, 4)];
+        assert_eq!(portable_indirect_run(&steps, 4), 2);
+        assert_eq!(portable_indirect_run(&steps[2..], 4), 2);
+        assert_eq!(portable_indirect_run(&steps, 1), 1);
+    }
+
+    #[test]
     fn native_compute_family_selection_skips_zero_queue_and_graphics_families() {
         let with = |queue_count, queue_flags| vk::QueueFamilyProperties {
             queue_count,

@@ -113,20 +113,36 @@ impl RendererRegistry {
         // Drain keeps the TypeId vector's capacity across GUI frames. A
         // mem::take here discarded it and reallocated when the 3D producer
         // reappeared every frame (even for one SceneView).
+        let mut failure = None;
         for type_id in self.native_producers.drain(..) {
-            let renderer = self.renderers.get_mut(&type_id).ok_or_else(|| {
-                anyhow::anyhow!("native producer was removed before GPU submission")
-            })?;
+            let Some(renderer) = self.renderers.get_mut(&type_id) else {
+                if failure.is_none() {
+                    failure = Some(anyhow::anyhow!("native producer was removed before GPU submission"));
+                }
+                continue;
+            };
+            if failure.is_some() {
+                // Drain drops every remaining type on early return. Notify
+                // uninvoked producers before discarding their pending plans.
+                renderer.render_passes_abandoned(false);
+                continue;
+            }
             if !renderer.has_native_offscreen_work() {
                 continue;
             }
-            let submission = renderer.submit_native_offscreen(device)?;
-            if let Some(submission) = submission {
-                register(submission);
+            match renderer.submit_native_offscreen(device) {
+                Ok(submission) => {
+                    if let Some(submission) = submission { register(submission); }
+                    renderer.render_passes_submitted();
+                    submitted += 1;
+                }
+                Err(error) => {
+                    renderer.render_passes_abandoned(true);
+                    failure = Some(error);
+                }
             }
-            renderer.render_passes_submitted();
-            submitted += 1;
         }
+        if let Some(error) = failure { return Err(error); }
         Ok(submitted)
     }
 
@@ -380,6 +396,45 @@ mod tests {
         registry.begin_frame();
         registry.render_passes_submitted();
         assert_eq!(second.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn abandonment_is_scoped_and_distinguishes_attempted_graphics() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        struct Abandoned(Arc<AtomicUsize>);
+        impl crate::RendererExtensionRenderer for Abandoned {
+            fn render_passes_abandoned(&mut self, attempted: bool) {
+                self.0.fetch_add(if attempted { 10 } else { 1 }, Ordering::Relaxed);
+            }
+            fn render(
+                &mut self,
+                _: &dyn crate::RendererExtension,
+                _: &mut dyn ExtensionDevice,
+                _: crate::RendererExtensionContext,
+                _: &mut Vec<RenderCommand>,
+            ) -> crate::Result<()> { Ok(()) }
+            fn destroy(&mut self, _: &mut dyn ExtensionDevice) -> crate::Result<()> { Ok(()) }
+        }
+        let mut registry = RendererRegistry::default();
+        let first = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(AtomicUsize::new(0));
+        let first_id = TypeId::of::<PendingRenderer>();
+        let second_id = TypeId::of::<Abandoned>();
+        registry.renderers.insert(first_id, Box::new(Abandoned(first.clone())));
+        registry.renderers.insert(second_id, Box::new(Abandoned(second.clone())));
+        registry.submitted_types.push(first_id);
+        registry.begin_frame();
+        assert_eq!(first.load(Ordering::Relaxed), 1);
+        assert_eq!(second.load(Ordering::Relaxed), 0);
+        registry.submitted_types.push(first_id);
+        registry.native_producers.push(second_id);
+        registry.graphics_submission_started();
+        registry.begin_frame();
+        assert_eq!(first.load(Ordering::Relaxed), 11);
+        assert_eq!(second.load(Ordering::Relaxed), 1);
+        registry.begin_frame();
+        assert_eq!(first.load(Ordering::Relaxed), 11);
+        assert_eq!(second.load(Ordering::Relaxed), 1);
     }
 
     #[test]
