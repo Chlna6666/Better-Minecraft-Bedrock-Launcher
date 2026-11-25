@@ -2118,7 +2118,12 @@ impl VulkanDevice {
         // Reuse the resolved native descriptor range for consecutive draws with
         // identical portable bindings. No repeated registry lookups or copies.
         let mut previous_sets: Option<(&[BindGroupId], std::ops::Range<usize>)> = None;
-        for step in steps.iter() {
+        let mut command_index = 0;
+        while command_index < steps.len() {
+            let step = &steps[command_index];
+            let draw_count = portable_indirect_run(&steps[command_index..],
+                if self.multi_draw_indirect { self.max_draw_indirect_count } else { 1 });
+            command_index += draw_count as usize;
             let scissor = match (viewport, step.scissor()) {
                 (Some(viewport), Some(scissor)) => {
                     Some(viewport.map_scissor(scissor, target_extent)?)
@@ -2155,7 +2160,7 @@ impl VulkanDevice {
                         || step.offset % 4 != 0
                         || step
                             .offset
-                            .checked_add(16)
+                            .checked_add(u64::from(draw_count) * 16)
                             .is_none_or(|end| end > buffer.desc.size)
                     {
                         return Err(Error::InvalidInput(
@@ -2204,7 +2209,7 @@ impl VulkanDevice {
                         || step.offset % 4 != 0
                         || step
                             .offset
-                            .checked_add(20)
+                            .checked_add(u64::from(draw_count) * 20)
                             .is_none_or(|end| end > arguments.desc.size)
                     {
                         return Err(Error::InvalidInput(
@@ -2231,6 +2236,7 @@ impl VulkanDevice {
                 }
             };
             draw_steps.push(CommandDrawStepInfo {
+                draw_count,
                 count: None,
                 pipeline: pipeline_record.pipeline,
                 pipeline_layout: pipeline_record.pipeline_layout,
@@ -2254,8 +2260,6 @@ impl VulkanDevice {
             steps: &draw_steps,
             descriptor_sets: &descriptor_sets,
             shared_sampled_set: None,
-            multi_draw_indirect: self.multi_draw_indirect,
-            max_draw_indirect_count: self.max_draw_indirect_count,
             extent,
             viewport_extent,
             viewport_origin,
@@ -2484,10 +2488,19 @@ impl VulkanDevice {
         }).transpose()?;
         let mut previous_geometry_layout = None;
         let mut counts = counts.iter().peekable();
-        for (command_index, step) in steps.iter().enumerate() {
+        let mut command_index = 0;
+        while command_index < steps.len() {
+            let step = &steps[command_index];
             let count = if counts.peek().is_some_and(|count| count.command_index == command_index) {
                 counts.next().copied()
             } else { None };
+            // Count Draw is a separate ABI. Never fold across its logical
+            // command index, even when the adjacent portable state matches.
+            let end = counts.peek().map_or(steps.len(), |next| next.command_index);
+            let draw_count = if count.is_some() || !self.multi_draw_indirect { 1 } else {
+                portable_indirect_run(&steps[command_index..end], self.max_draw_indirect_count)
+            };
+            command_index += draw_count as usize;
             let scissor = match (viewport, step.scissor()) {
                 (Some(viewport), Some(scissor)) => {
                     Some(viewport.map_scissor(scissor, target_size)?)
@@ -2540,7 +2553,7 @@ impl VulkanDevice {
                         || step.offset % 4 != 0
                         || step
                             .offset
-                            .checked_add(16)
+                            .checked_add(u64::from(draw_count) * 16)
                             .is_none_or(|end| end > buffer.desc.size)
                     {
                         return Err(Error::InvalidInput(
@@ -2589,7 +2602,7 @@ impl VulkanDevice {
                         || step.offset % 4 != 0
                         || step
                             .offset
-                            .checked_add(20)
+                            .checked_add(u64::from(draw_count) * 20)
                             .is_none_or(|end| end > arguments.desc.size)
                     {
                         return Err(Error::InvalidInput(
@@ -2620,6 +2633,7 @@ impl VulkanDevice {
                 Some((buffer.buffer, count.count_offset, count.max_draw_count))
             } else { None };
             draw_steps.push(CommandDrawStepInfo {
+                draw_count,
                 count,
                 pipeline: pipeline_record.pipeline,
                 pipeline_layout: pipeline_record.pipeline_layout,
@@ -2678,8 +2692,6 @@ impl VulkanDevice {
             steps: &draw_steps,
             descriptor_sets: &descriptor_sets,
             shared_sampled_set: shared_sampled.map(|(_, set)| set),
-            multi_draw_indirect: self.multi_draw_indirect,
-            max_draw_indirect_count: self.max_draw_indirect_count,
             extent,
             viewport_extent,
             viewport_origin,
@@ -8353,8 +8365,6 @@ struct CommandRecordInfo<'a> {
     steps: &'a [CommandDrawStepInfo],
     descriptor_sets: &'a [vk::DescriptorSet],
     shared_sampled_set: Option<vk::DescriptorSet>,
-    multi_draw_indirect: bool,
-    max_draw_indirect_count: u32,
     extent: vk::Extent2D,
     viewport_extent: vk::Extent2D,
     viewport_origin: gfx_core::SignedOrigin2d,
@@ -8392,13 +8402,39 @@ struct CommandRenderTargetTransition {
     transient: bool,
 }
 
+/// One native draw run, validated as a complete argument span before
+/// command-buffer recording. No per-record registry resolution is needed.
 struct CommandDrawStepInfo {
+    draw_count: u32,
     count: Option<(vk::Buffer, u64, u32)>,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     descriptor_sets: std::ops::Range<usize>,
     draw: CommandDrawStepKind,
     scissor: Option<gfx_core::ScissorRect>,
+}
+
+/// Return the longest prefix with exactly identical portable state and
+/// consecutive argument records. The caller caps this at the native limit
+/// and at the next counted-draw boundary. No reordering or allocation.
+fn portable_indirect_run(steps: &[RenderCommand], limit: u32) -> u32 {
+    let Some(first) = steps.first() else { return 0; };
+    let mut count = 1u32;
+    for next in steps.iter().skip(1).take(limit.saturating_sub(1) as usize) {
+        if next.pipeline() != first.pipeline() || next.bind_groups() != first.bind_groups()
+            || next.scissor() != first.scissor() { break; }
+        let contiguous = match (first, next) {
+            (RenderCommand::DrawIndirect(a), RenderCommand::DrawIndirect(b)) =>
+                a.arguments == b.arguments && a.offset.checked_add(u64::from(count) * 16) == Some(b.offset),
+            (RenderCommand::DrawIndexedIndirect(a), RenderCommand::DrawIndexedIndirect(b)) =>
+                a.arguments == b.arguments && a.index_buffer == b.index_buffer
+                    && a.offset.checked_add(u64::from(count) * 20) == Some(b.offset),
+            _ => false,
+        };
+        if !contiguous { break; }
+        count += 1;
+    }
+    count
 }
 
 enum CommandDrawStepKind {
@@ -8820,7 +8856,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         let mut previous_bindings = None;
         let mut previous_sampled_layout = None;
         let mut previous_index = None;
-        let mut step_iter = info.steps.iter().peekable();
+        let mut step_iter = info.steps.iter();
         while let Some(step) = step_iter.next() {
             let scissor = step
                 .scissor
@@ -8871,33 +8907,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                         );
                         continue;
                     }
-                    let mut draw_count = 1u32;
-                    if info.multi_draw_indirect {
-                        while draw_count < info.max_draw_indirect_count {
-                            let Some(&next) = step_iter.peek() else { break };
-                            let CommandDrawStepKind::Indirect {
-                                buffer: next_buffer,
-                                offset: next_offset,
-                            } = next.draw
-                            else {
-                                break;
-                            };
-                            if next.count.is_some() || next_buffer != buffer
-                                || next.pipeline != step.pipeline
-                                || next.pipeline_layout != step.pipeline_layout
-                                || next.scissor != step.scissor
-                                || &info.descriptor_sets[next.descriptor_sets.clone()] != sets
-                                || offset.checked_add(u64::from(draw_count) * 16)
-                                    != Some(next_offset)
-                            {
-                                break;
-                            }
-                            // Skipped steps have identical native graphics state.
-                            // Their GPU records are still executed in original order.
-                            step_iter.next();
-                            draw_count += 1;
-                        }
-                    }
+                    let draw_count = step.draw_count;
                     info.device.cmd_draw_indirect(
                         info.command_buffer,
                         buffer,
@@ -8961,26 +8971,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                         );
                         continue;
                     }
-                    let mut draw_count = 1u32;
-                    if info.multi_draw_indirect {
-                        while draw_count < info.max_draw_indirect_count {
-                            let Some(&next) = step_iter.peek() else { break };
-                            let CommandDrawStepKind::IndexedIndirect {
-                                buffer: next_buffer, offset: next_offset,
-                                index_buffer: next_index, index_offset: next_index_offset,
-                                index_type: next_index_type,
-                            } = next.draw else { break };
-                            if next.count.is_some() || next_buffer != buffer
-                                || next_index != index_buffer || next_index_offset != index_offset
-                                || next_index_type != index_type || next.pipeline != step.pipeline
-                                || next.pipeline_layout != step.pipeline_layout || next.scissor != step.scissor
-                                || &info.descriptor_sets[next.descriptor_sets.clone()] != sets
-                                || offset.checked_add(u64::from(draw_count) * 20) != Some(next_offset)
-                            { break; }
-                            step_iter.next();
-                            draw_count += 1;
-                        }
-                    }
+                    let draw_count = step.draw_count;
                     info.device.cmd_draw_indexed_indirect(
                         info.command_buffer, buffer, offset, draw_count, 20,
                     );
