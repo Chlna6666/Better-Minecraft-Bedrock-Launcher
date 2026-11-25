@@ -408,7 +408,7 @@ impl VulkanDevice {
             incremental_presentation,
             supports_sampler_anisotropy,
             memory_budget_supported,
-            native_pixel_presentation,
+            swapchain_maintenance,
             display_timing_supported,
             present_wait_supported,
             host_query_reset,
@@ -438,8 +438,9 @@ impl VulkanDevice {
         } else {
             None
         };
-        let swapchain_maintenance = native_pixel_presentation;
-        let native_pixel_presentation = native_pixel_presentation
+        // Present fences are a cross-platform retirement facility. Retained
+        // pixel scaling is a separate Win32 policy; other WSI keep exact extents.
+        let native_pixel_presentation = (swapchain_maintenance && cfg!(windows))
             .then(|| khr::get_surface_capabilities2::Instance::new(&entry, &instance));
         let max_sampler_anisotropy = if supports_sampler_anisotropy {
             adapter_properties.limits.max_sampler_anisotropy.max(1.0)
@@ -7359,8 +7360,8 @@ fn create_device(
         // SAFETY: the Vulkan 1.3 core query accepts this advertised extension feature.
         unsafe { instance.get_physical_device_features2(physical_device, &mut features) };
     }
-    let native_pixel_presentation = maintenance_features.swapchain_maintenance1 == vk::TRUE;
-    if native_pixel_presentation {
+    let swapchain_maintenance = maintenance_features.swapchain_maintenance1 == vk::TRUE;
+    if swapchain_maintenance {
         device_extensions.push(
             maintenance
                 .expect("queried maintenance feature has an extension")
@@ -7425,7 +7426,7 @@ fn create_device(
         .queue_create_infos(&queue_infos)
         .enabled_extension_names(&device_extensions)
         .enabled_features(&enabled_features);
-    if native_pixel_presentation {
+    if swapchain_maintenance {
         create_info = create_info.push_next(&mut maintenance_features);
     }
     if present_wait_supported {
@@ -7471,7 +7472,7 @@ fn create_device(
         incremental_presentation,
         supports_sampler_anisotropy,
         memory_budget_supported,
-        native_pixel_presentation,
+        swapchain_maintenance,
         display_timing_supported,
         present_wait_supported,
         host_query_reset,
