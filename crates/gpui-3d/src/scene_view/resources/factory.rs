@@ -7,11 +7,29 @@ impl RendererResources {
     ) -> gpui::Result<Self> {
         Self::new_pass(device, context, None, PassKind::Color)
     }
+    #[cfg(test)]
+    pub(in crate::scene_view) fn new_legacy_for_test(
+        device: &mut dyn ExtensionDevice,
+        context: &RendererExtensionContext,
+    ) -> gpui::Result<Self> {
+        Self::new_pass_inner(device, context, None, PassKind::Color, false)
+    }
+
     pub(in crate::scene_view) fn new_pass(
         device: &mut dyn ExtensionDevice,
         context: &RendererExtensionContext,
         prototype: Option<&Self>,
         pass: PassKind,
+    ) -> gpui::Result<Self> {
+        Self::new_pass_inner(device, context, prototype, pass, true)
+    }
+
+    fn new_pass_inner(
+        device: &mut dyn ExtensionDevice,
+        context: &RendererExtensionContext,
+        prototype: Option<&Self>,
+        pass: PassKind,
+        allow_sampled: bool,
     ) -> gpui::Result<Self> {
         let vertex_binary = embedded_shader(context, ShaderStage::Vertex, "vs_main")?;
         let compute = device.compute_capabilities();
@@ -220,7 +238,8 @@ impl RendererResources {
                     format: Format::Rgba8UnormSrgb,
                 })?);
             resources.replace_pipelines(device, context)?;
-            resources.try_enable_sampled(device, context)
+            if allow_sampled { resources.try_enable_sampled(device, context)?; }
+            Ok(())
         })();
         if let Err(error) = result {
             if let Err(cleanup_error) = resources.destroy(device) {

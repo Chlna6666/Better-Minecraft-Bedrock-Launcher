@@ -69,6 +69,11 @@ impl SampledTextureSlots {
     #[must_use]
     pub const fn fallback_index(&self) -> u32 { 0 }
 
+    /// Number of immediately reusable indices. Retired slots whose GPU
+    /// readers have not completed are deliberately excluded.
+    #[must_use]
+    pub fn available_slots(&self) -> usize { self.free.len() }
+
     /// Allocate an index without scanning the entire table.
     pub fn allocate(&mut self, view: TextureViewId) -> Result<SampledTextureSlot> {
         let index = self.free.pop().ok_or_else(|| Error::Unavailable("sampled texture slots exhausted".into()))?;

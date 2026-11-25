@@ -101,6 +101,15 @@ jobs:
           set -euo pipefail
           cargo test -p gpui-3d --lib --features gpui/x11 draw_cache_
           cargo test -p gpui-3d --lib --features gpui/x11 full_material_cache_preserves_unchanged_resident_gpu_records
+      - name: Verify production Vulkan bindless Color PSOs against legacy
+        if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
+        shell: bash
+        env:
+          GPUI_3D_BINDLESS: "1"
+        run: |
+          set -euo pipefail
+          cargo test -p gpui-3d --lib --features gpui/x11 bindless_production_color_vulkan -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless.txt"
+          grep -Fq 'GPUI3D_VULKAN_PRODUCTION_BINDLESS_COLOR=pass' "$RUNNER_TEMP/production-bindless.txt"
       - name: Verify true nearest-depth Hi-Z SSR hierarchy on Vulkan
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         run: cargo test -p gpui-3d --lib --features gpui/x11 ssr_hiz_vulkan -- --ignored --nocapture

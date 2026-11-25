@@ -528,6 +528,103 @@ fn effects_dx12() {
     verify(gfx_dx12::Dx12Device::new(&DeviceDescriptor::default()).unwrap());
 }
 #[test]
+#[ignore = "requires Vulkan descriptor indexing and GPUI_3D_BINDLESS=1"]
+fn bindless_production_color_vulkan() {
+    use crate::scene_view::scene::SceneResources;
+    let mut device = gfx_vulkan::VulkanDevice::new(&DeviceDescriptor::default()).unwrap();
+    let extent = Extent2d::new(64, 64).unwrap();
+    let target = Target::create(&mut device, extent, Format::Rgba8Unorm, false, 1).unwrap();
+    let depth = Target::create(&mut device, extent, Format::Depth32Float, true, 1).unwrap();
+    let pass_id = test_render_pass(&mut device);
+    let context = RendererExtensionContext::for_target(
+        gfx_core::BackendKind::Vulkan, pass_id, Format::Rgba8Unorm, extent,
+    );
+    let mut legacy = RendererResources::new_legacy_for_test(&mut device, &context).unwrap();
+    let mut sampled = RendererResources::new(&mut device, &context).unwrap();
+    assert!(sampled.sampled_table_layout().is_some(), "production sampled PSO must be available");
+    assert!(legacy.sampled_table_layout().is_none());
+    let camera = Camera::perspective(Vec3::new(0., 0., 3.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.);
+    let mesh = Arc::new(Mesh::cube());
+    let fixture = |colors: &[[u8; 4]], voxel: bool| {
+        let mut scene = Scene::new();
+        let mut assets = Vec::new();
+        for (i, color) in colors.iter().enumerate() {
+            let texture = Arc::new(crate::TextureAsset::rgba8(1, 1, color.to_vec()).unwrap());
+            let mut material = Material::new();
+            material.shading_model = crate::ShadingModel::Unlit;
+            material.albedo_texture = Some(texture.id());
+            scene.insert(None, Node::new().with_mesh(mesh.clone())
+                .with_materials([Arc::new(material)])
+                .with_transform(crate::Transform {
+                    translation: Vec3::new(if i % 2 == 0 { -0.6 } else { 0.6 }, 0., 0.),
+                    ..crate::Transform::IDENTITY
+                })).unwrap();
+            assets.push(texture);
+        }
+        let view = SceneView::new(Arc::new(scene), camera).with_textures(assets).unwrap();
+        if voxel {
+            view.with_voxel_shader().with_voxel_shading(VoxelShading {
+                illumination: VoxelIllumination::Unlit, shadow_strength: 0.,
+                ..VoxelShading::default()
+            }).unwrap()
+        } else { view }
+    };
+    let render = |device: &mut gfx_vulkan::VulkanDevice, scene: &mut SceneResources,
+                  renderer: &mut RendererResources, view: &SceneView, set_count: usize| {
+        scene.prepare(device, renderer, view, &context).unwrap();
+        let mut commands = Vec::new();
+        scene.append_steps(renderer, view.voxel_shader, &mut commands).unwrap();
+        assert!(!commands.is_empty());
+        assert!(commands.iter().all(|command| command.bind_groups().len() == set_count),
+            "production command did not bind the expected descriptor set count");
+        PresentationDevice::render_to_textures(device, &[RenderPassCommands {
+            color_attachments: &[target.view], render_pass: pass_id, commands: &commands,
+            color_load_op: LoadOp::Clear(ClearColor::default()),
+            depth_attachment: Some(DepthAttachment {
+                target: depth.view, depth_load_op: LoadOp::Clear(1.), stencil_load_op: None,
+            }),
+            clear_region: None, viewport: None, resolve_target: None,
+        }]).unwrap();
+        TextureTransferDevice::read_texture(device, target.texture).unwrap().bytes
+    };
+    for voxel in [false, true] {
+        let mut legacy_scene = SceneResources::new(&mut device, gfx_core::BackendKind::Vulkan).unwrap();
+        let mut sampled_scene = SceneResources::new(&mut device, gfx_core::BackendKind::Vulkan).unwrap();
+        for colors in [
+            [[255, 0, 0, 255], [0, 0, 255, 255]],
+            [[0, 255, 0, 255], [255, 0, 255, 255]],
+        ] {
+            let view = fixture(&colors, voxel);
+            let expected = render(&mut device, &mut legacy_scene, &mut legacy, &view, 1);
+            let actual = render(&mut device, &mut sampled_scene, &mut sampled, &view, 2);
+            assert_eq!(actual, expected, "production bindless color mismatch, voxel={voxel}");
+            assert!(actual.chunks_exact(4).any(|pixel| pixel[0] > 200 || pixel[1] > 200));
+            assert!(actual.chunks_exact(4).any(|pixel| pixel[2] > 200));
+        }
+        // The fallback entry occupies slot zero. 64 different live images
+        // cannot all fit; no out-of-range or fallback-colored draw is allowed.
+        let overflow = (0..64u8).map(|i| [i, 255, 255 - i, 255]).collect::<Vec<_>>();
+        let view = fixture(&overflow, voxel);
+        render(&mut device, &mut sampled_scene, &mut sampled, &view, 1);
+        // Shrinking the working set retires old slots. A subsequent unchanged
+        // frame must be able to recover and use the sampled PSO again.
+        let recovered = fixture(&[[255, 0, 0, 255], [0, 0, 255, 255]], voxel);
+        render(&mut device, &mut sampled_scene, &mut sampled, &recovered, 1);
+        let actual = render(&mut device, &mut sampled_scene, &mut sampled, &recovered, 2);
+        let expected = render(&mut device, &mut legacy_scene, &mut legacy, &recovered, 1);
+        assert_eq!(actual, expected);
+        sampled_scene.destroy(&mut device).unwrap();
+        legacy_scene.destroy(&mut device).unwrap();
+    }
+    sampled.destroy(&mut device).unwrap();
+    legacy.destroy(&mut device).unwrap();
+    target.destroy(&mut device).unwrap();
+    depth.destroy(&mut device).unwrap();
+    PipelineDevice::destroy_render_pass(&mut device, pass_id).unwrap();
+    eprintln!("GPUI3D_VULKAN_PRODUCTION_BINDLESS_COLOR=pass");
+}
+
+#[test]
 #[ignore = "requires Vulkan; production screen pass color/depth and colored local lighting"]
 fn effects_vulkan() {
     verify(gfx_vulkan::VulkanDevice::new(&DeviceDescriptor::default()).unwrap());

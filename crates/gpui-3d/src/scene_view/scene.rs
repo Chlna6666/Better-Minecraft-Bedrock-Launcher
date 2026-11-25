@@ -140,6 +140,7 @@ pub(super) struct SceneResources {
     voxel_shader: bool,
     textures: HashMap<TextureAssetId, TextureResources>,
     sampled_textures: Option<sampled_textures::SceneSampledTextures>,
+    committed_sampled_snapshot: Option<BindGroupId>,
     seen_materials: HashSet<usize>,
     draw_resources: Vec<BindGroupId>,
     /// Layout stamp captured by the last full sync_draw_resources pass. The
@@ -850,6 +851,7 @@ impl SceneResources {
             voxel_shader: false,
             textures: HashMap::new(),
             sampled_textures: None,
+            committed_sampled_snapshot: None,
             seen_materials: HashSet::new(),
             draw_resources: Vec::new(),
             draw_resource_layout: 0,
@@ -894,7 +896,7 @@ impl SceneResources {
                 layout, renderer.fallback_texture_view()?,
             )?);
         }
-        let old_sampled = self.sampled_snapshot(renderer);
+        let old_sampled = self.committed_sampled_snapshot;
         if let Some(table) = self.sampled_textures.as_mut() {
             table.release_completed(device)?;
         }
@@ -978,7 +980,23 @@ impl SceneResources {
             && !sampler_changed
             && !voxel_shader_changed
             && !occlusion_changed
+            && !self.sampled_textures.as_ref().is_some_and(|table| table.needs_remap())
         {
+            // Fence completions may unblock retirements even while all
+            // visible scene data is unchanged. Retire and republish here
+            // rather than waiting for a future camera/geometry edit.
+            if let Some(table) = self.sampled_textures.as_mut()
+                && table.needs_publication()
+            {
+                table.publish(device)?;
+                let next = self.sampled_snapshot(renderer);
+                if old_sampled != next {
+                    self.command_delta = None;
+                    self.blend_only_command_change = false;
+                    self.command_revision = self.command_revision.wrapping_add(1);
+                }
+                self.committed_sampled_snapshot = next;
+            }
             return Ok(());
         }
         // Camera-only movement normally changes uniforms and GPU cull arguments, not
@@ -1149,6 +1167,12 @@ impl SceneResources {
                 gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::ResourceSync);
             self.ensure_meshes(device, context.backend_kind(), scene_view.voxel_shader)?;
         }
+        // A capacity fallback can recover without reallocating resident
+        // geometry. Any previously zero texture indices must be re-encoded
+        // before a bindless snapshot becomes selectable again.
+        let sampled_remapped = self.sampled_textures.as_mut()
+            .is_some_and(|table| table.refill(&mut self.textures));
+        draw_list_changed |= sampled_remapped;
         let shading = projection.voxel_shading();
         let shadow_enabled = scene_view.voxel_shader
             && shading.shadow_strength > 0.
@@ -1315,7 +1339,7 @@ impl SceneResources {
                 // If the CPU mirrors, capacities or layout cannot be proven
                 // stable, sync_buffers() safely re-plans the entire table.
                 let stage_started = trace_timings().then(Instant::now);
-                let result = if reused_resident_slots {
+                let result = if reused_resident_slots && !sampled_remapped {
                     self.sync_resident_draw_delta(
                         device,
                         renderer,
@@ -1336,7 +1360,7 @@ impl SceneResources {
                 }
                 if result.is_none() {
                     let stage_started = trace_timings().then(Instant::now);
-                    let structural_updated = self
+                    let structural_updated = !sampled_remapped && self
                         .culling
                         .as_ref()
                         .is_some_and(CullResources::structural_slots_committed)
@@ -1371,6 +1395,9 @@ impl SceneResources {
                             .unwrap_or(0.0);
                     }
                 }
+            }
+            if sampled_remapped && let Some(table) = self.sampled_textures.as_mut() {
+                table.draw_rows_committed();
             }
             self.draw_sync_audit.record(
                 selected_sync,
@@ -1597,7 +1624,9 @@ impl SceneResources {
         if let Some(table) = self.sampled_textures.as_mut() {
             table.publish(device)?;
         }
-        let sampled_changed = old_sampled != self.sampled_snapshot(renderer);
+        let next_sampled = self.sampled_snapshot(renderer);
+        let sampled_changed = old_sampled != next_sampled;
+        self.committed_sampled_snapshot = next_sampled;
         if sampled_changed { self.command_delta = None; }
         let command_inputs_changed = sampled_changed || (draw_list_changed && !resident_commands_stable)
             || sampler_changed

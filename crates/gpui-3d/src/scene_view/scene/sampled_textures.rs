@@ -21,6 +21,7 @@ pub(super) struct SceneSampledTextures {
     cleared: Vec<TextureResources>,
     retired: Vec<RetiredSnapshot>,
     published: bool,
+    remap_pending: bool,
 }
 
 impl SceneSampledTextures {
@@ -28,7 +29,7 @@ impl SceneSampledTextures {
         Ok(Self {
             layout, slots: SampledTextureSlots::new(super::super::resources::SAMPLED_TABLE_CAPACITY, fallback)?,
             unmapped: 0, readers: HashSet::new(), untracked: false,
-            pending: Vec::new(), cleared: Vec::new(), retired: Vec::new(), published: false,
+            pending: Vec::new(), cleared: Vec::new(), retired: Vec::new(), published: false, remap_pending: false,
         })
     }
 
@@ -47,8 +48,31 @@ impl SceneSampledTextures {
         Ok(())
     }
 
+    /// Re-enter bindless only if all currently unmapped images fit. Do not
+    /// scan a large legacy scene repeatedly for a partial, unusable mapping.
+    pub(super) fn needs_remap(&self) -> bool {
+        self.remap_pending || (self.unmapped != 0 && self.unmapped <= self.slots.available_slots())
+    }
+
+    pub(super) fn refill(&mut self, textures: &mut HashMap<TextureAssetId, TextureResources>) -> bool {
+        if self.unmapped != 0 && self.unmapped <= self.slots.available_slots() {
+            for texture in textures.values_mut().filter(|texture| texture.sampled_slot.is_none()) {
+                texture.sampled_slot = self.slots.allocate(texture.view).ok();
+                if texture.sampled_slot.is_some() {
+                    self.unmapped -= 1;
+                    self.remap_pending = true;
+                }
+            }
+        }
+        self.remap_pending
+    }
+
+    pub(super) fn draw_rows_committed(&mut self) {
+        self.remap_pending = false;
+    }
+
     pub(super) fn selected(&self, layout: Option<BindGroupLayoutId>) -> Option<BindGroupId> {
-        if self.published && self.unmapped == 0 && layout == Some(self.layout) {
+        if self.published && !self.remap_pending && self.unmapped == 0 && layout == Some(self.layout) {
             self.slots.current_snapshot()
         } else { None }
     }
@@ -107,6 +131,11 @@ impl SceneSampledTextures {
             for texture in old.textures { destroy_texture(device, texture)?; }
         }
         Ok(())
+    }
+
+    pub(super) fn needs_publication(&self) -> bool {
+        !self.published || (!self.untracked && !self.pending.is_empty())
+            || self.slots.dirty_changes().next().is_some()
     }
 
     pub(super) fn publish(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
