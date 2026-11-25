@@ -16,11 +16,12 @@ use gfx_core::{
 use gpui::Bounds;
 // The Sidecar reuses the standalone 3D data encoders without duplicating shader ABI.
 pub(crate) use crate::gpu_encoding::{
-    EncodedMesh, encode_draw_record, encode_instance_records, encode_lights_into, encode_mesh,
+    EncodedMesh, encode_instance_records, encode_lights_into, encode_mesh,
     write_matrix, write_vec4,
 };
+use crate::gpu_encoding::encode_draw_record_with_textures;
 #[cfg(test)]
-pub(crate) use crate::gpu_encoding::{encode_instances_into, transpose};
+pub(crate) use crate::gpu_encoding::{encode_draw_record, encode_instances_into, transpose};
 #[cfg(test)]
 use crate::{PreparedLight, PreparedScene};
 use gpui::ExtensionDevice;
@@ -2258,6 +2259,7 @@ struct MaterialRecord {
     // of mutating it behind a committed GPU record's identity.
     material: std::sync::Arc<crate::Material>,
     bytes: [u8; DRAW_PARAMS_STRIDE as usize],
+    texture_indices: [u32; 4],
     generation: u64,
 }
 
@@ -2290,6 +2292,23 @@ impl DrawRecordCache {
         previous_keys: &[DrawParamKey],
         previous_bytes: &[u8],
         scratch: &mut Vec<u8>,
+    ) -> gpui::Result<Vec<(usize, DrawParamKey, [u8; DRAW_PARAMS_STRIDE as usize])>> {
+        self.encode_resident_delta_with_textures(
+            draws, mapping, dirty, previous_keys, previous_bytes, scratch, |_| Ok([0; 4]),
+        )
+    }
+
+    /// The resolver must refer to the descriptor snapshot selected for this
+    /// frame. The caller must include mapping changes in the dirty draw list.
+    pub(super) fn encode_resident_delta_with_textures(
+        &mut self,
+        draws: &[PreparedDraw],
+        mapping: &[u32],
+        dirty: &[usize],
+        previous_keys: &[DrawParamKey],
+        previous_bytes: &[u8],
+        scratch: &mut Vec<u8>,
+        resolve: impl Fn(&PreparedDraw) -> gpui::Result<[u32; 4]>,
     ) -> gpui::Result<Vec<(usize, DrawParamKey, [u8; DRAW_PARAMS_STRIDE as usize])>> {
         const STRIDE: usize = DRAW_PARAMS_STRIDE as usize;
         if mapping.len() != draws.len() || previous_bytes.len() != previous_keys.len() * STRIDE {
@@ -2326,6 +2345,7 @@ impl DrawRecordCache {
             let old_bytes = previous_bytes.get(start..start + STRIDE);
             let material = draw.material.id();
             let uv_regions = draw.mesh.uses_uv_regions();
+            let texture_indices = resolve(draw)?;
             let cache_key = (
                 material,
                 uv_regions,
@@ -2333,6 +2353,7 @@ impl DrawRecordCache {
             );
             let (key, bytes) = if let Some(record) = self.records.get(&cache_key)
                 && std::sync::Arc::ptr_eq(&record.material, &draw.material)
+                && record.texture_indices == texture_indices
             {
                 (
                     DrawParamKey {
@@ -2344,7 +2365,7 @@ impl DrawRecordCache {
                 )
             } else {
                 scratch.clear();
-                encode_draw_record(draw, scratch, STRIDE)?;
+                encode_draw_record_with_textures(draw, scratch, STRIDE, texture_indices)?;
                 let bytes: [u8; STRIDE] = scratch[..STRIDE]
                     .try_into()
                     .expect("one complete resident DrawParams record");
@@ -2364,6 +2385,7 @@ impl DrawRecordCache {
                         MaterialRecord {
                             material: draw.material.clone(),
                             bytes,
+                            texture_indices,
                             generation,
                         },
                     );
@@ -2402,6 +2424,27 @@ impl DrawRecordCache {
         output: &mut Vec<u8>,
         scratch: &mut Vec<u8>,
     ) -> gpui::Result<usize> {
+        self.encode_stable_with_textures(
+            draws, mapping, high_water, previous_keys, previous_bytes,
+            next_keys, output, scratch, |_| Ok([0; 4]),
+        )
+    }
+
+    /// Encode physical rows against a selected immutable descriptor snapshot.
+    /// A remapped texture index invalidates the encoded material even when
+    /// its Arc identity and UV mode are unchanged.
+    pub(super) fn encode_stable_with_textures(
+        &mut self,
+        draws: &[PreparedDraw],
+        mapping: &[u32],
+        high_water: usize,
+        previous_keys: &[DrawParamKey],
+        previous_bytes: &[u8],
+        next_keys: &mut Vec<DrawParamKey>,
+        output: &mut Vec<u8>,
+        scratch: &mut Vec<u8>,
+        resolve: impl Fn(&PreparedDraw) -> gpui::Result<[u32; 4]>,
+    ) -> gpui::Result<usize> {
         const STRIDE: usize = DRAW_PARAMS_STRIDE as usize;
         if draws.len() != mapping.len() {
             return Err(anyhow!("GPUI 3D physical draw mapping length mismatch").into());
@@ -2428,6 +2471,7 @@ impl DrawRecordCache {
             }
             let material = draw.material.id();
             let uv_regions = draw.mesh.uses_uv_regions();
+            let texture_indices = resolve(draw)?;
             let cache_key = (
                 material,
                 uv_regions,
@@ -2436,6 +2480,7 @@ impl DrawRecordCache {
             let start = slot * STRIDE;
             let (key, record) = if let Some(cached) = self.records.get(&cache_key)
                 && std::sync::Arc::ptr_eq(&cached.material, &draw.material)
+                && cached.texture_indices == texture_indices
             {
                 (
                     DrawParamKey {
@@ -2447,7 +2492,7 @@ impl DrawRecordCache {
                 )
             } else {
                 scratch.clear();
-                encode_draw_record(draw, scratch, STRIDE)?;
+                encode_draw_record_with_textures(draw, scratch, STRIDE, texture_indices)?;
                 let record: [u8; STRIDE] = scratch[..STRIDE]
                     .try_into()
                     .expect("DrawParams encoder must write one complete record");
@@ -2473,6 +2518,7 @@ impl DrawRecordCache {
                         MaterialRecord {
                             material: draw.material.clone(),
                             bytes: record,
+                            texture_indices,
                             generation,
                         },
                     );
@@ -2518,6 +2564,16 @@ impl DrawRecordCache {
         bytes: &mut Vec<u8>,
         keys: &mut Vec<DrawParamKey>,
     ) -> gpui::Result<()> {
+        self.encode_with_textures(draws, bytes, keys, |_| Ok([0; 4]))
+    }
+
+    pub(super) fn encode_with_textures(
+        &mut self,
+        draws: &[PreparedDraw],
+        bytes: &mut Vec<u8>,
+        keys: &mut Vec<DrawParamKey>,
+        resolve: impl Fn(&PreparedDraw) -> gpui::Result<[u32; 4]>,
+    ) -> gpui::Result<()> {
         let cache_limit = material_record_cache_limit(draws.len());
         if self.records.len() >= cache_limit {
             self.records
@@ -2531,6 +2587,7 @@ impl DrawRecordCache {
         for draw in draws {
             let material = draw.material.id();
             let uv_regions = draw.mesh.uses_uv_regions();
+            let texture_indices = resolve(draw)?;
             let key = (
                 material,
                 uv_regions,
@@ -2538,6 +2595,7 @@ impl DrawRecordCache {
             );
             if let Some(record) = self.records.get(&key)
                 && std::sync::Arc::ptr_eq(&record.material, &draw.material)
+                && record.texture_indices == texture_indices
             {
                 bytes.extend_from_slice(&record.bytes);
                 keys.push(DrawParamKey {
@@ -2548,7 +2606,7 @@ impl DrawRecordCache {
                 continue;
             }
             let start = bytes.len();
-            encode_draw_record(draw, bytes, stride)?;
+            encode_draw_record_with_textures(draw, bytes, stride, texture_indices)?;
             self.next_generation = self.next_generation.wrapping_add(1);
             let generation = self.next_generation;
             let record: [u8; DRAW_PARAMS_STRIDE as usize] = bytes[start..start + stride]
@@ -2562,6 +2620,7 @@ impl DrawRecordCache {
                     MaterialRecord {
                         material: draw.material.clone(),
                         bytes: record,
+                        texture_indices,
                         generation,
                     },
                 );
@@ -2801,9 +2860,9 @@ mod tests {
         cache
             .encode(&[initial.clone()], &mut bytes, &mut keys)
             .unwrap();
-        assert_ne!(
+        assert_eq!(
             keys[0], old_key,
-            "revisited snapshot must not alias an overwritten cache generation"
+            "independent retained material snapshots keep their original generations"
         );
         assert_eq!(bytes, super::encode_draw_records(&[initial]).unwrap());
     }
@@ -2833,6 +2892,7 @@ mod tests {
                 super::MaterialRecord {
                     material: Arc::clone(&material),
                     bytes: [0; super::DRAW_PARAMS_STRIDE as usize],
+                    texture_indices: [0; 4],
                     generation: 0,
                 },
             );
@@ -2932,6 +2992,62 @@ mod tests {
         cache.encode(&draws, &mut bytes, &mut keys).unwrap();
         assert_eq!(keys[0], first);
         assert_eq!(bytes, super::encode_draw_records(&draws).unwrap());
+    }
+
+    #[test]
+    fn draw_cache_tracks_descriptor_remapping_across_all_encoding_paths() {
+        let mut scene = Scene::new();
+        scene
+            .insert(None, Node::new().with_mesh(std::sync::Arc::new(Mesh::cube())))
+            .unwrap();
+        let prepared = PreparedScene::new(
+            &scene,
+            Camera::perspective(Vec3::new(0., 0., 5.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.),
+            1.,
+        )
+        .unwrap();
+        let draws = &prepared.draws[..1];
+        let mut cache = super::DrawRecordCache::default();
+        let mut bytes = Vec::new();
+        let mut keys = Vec::new();
+        let mut scratch = Vec::new();
+        let first = [1, 2, 3, 4];
+        let second = [4, 3, 2, 1];
+        cache.encode_with_textures(draws, &mut bytes, &mut keys, |_| Ok(first)).unwrap();
+        let mut canonical = Vec::new();
+        crate::gpu_encoding::encode_draw_record_with_textures(
+            &draws[0], &mut canonical, super::DRAW_PARAMS_STRIDE as usize, first,
+        ).unwrap();
+        assert_eq!(bytes, canonical);
+
+        let mut next_keys = Vec::new();
+        let mut next_bytes = Vec::new();
+        assert_eq!(cache.encode_stable_with_textures(
+            draws, &[0], 1, &keys, &bytes, &mut next_keys, &mut next_bytes,
+            &mut scratch, |_| Ok(second),
+        ).unwrap(), 1);
+        assert_ne!(keys, next_keys);
+        canonical.clear();
+        crate::gpu_encoding::encode_draw_record_with_textures(
+            &draws[0], &mut canonical, super::DRAW_PARAMS_STRIDE as usize, second,
+        ).unwrap();
+        assert_eq!(next_bytes, canonical);
+
+        let patches = cache.encode_resident_delta_with_textures(
+            draws, &[0], &[0], &next_keys, &next_bytes, &mut scratch, |_| Ok(first),
+        ).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].0, 0);
+        assert_eq!(patches[0].2.as_slice(), bytes.as_slice());
+        assert_ne!(patches[0].1, next_keys[0]);
+        assert!(cache.encode_resident_delta_with_textures(
+            draws, &[0], &[0], &[patches[0].1], &bytes, &mut scratch, |_| Ok(first),
+        ).unwrap().is_empty());
+
+        // No stale descriptor indices may survive a switch to legacy encoding.
+        cache.encode(draws, &mut bytes, &mut keys).unwrap();
+        assert_eq!(bytes, super::encode_draw_records(draws).unwrap());
+        assert_eq!(cache.records.len(), 1);
     }
 
     #[test]
