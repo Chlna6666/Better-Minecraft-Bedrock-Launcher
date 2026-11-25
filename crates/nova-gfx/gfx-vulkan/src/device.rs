@@ -799,6 +799,13 @@ impl VulkanDevice {
                         fence != vk::Fence::null() && !fence_is_complete(&self.device, fence);
                 }
             });
+            // Retired WSI generations can still own submitted graphics work,
+            // including frames whose public submission ID was already consumed.
+            for generation in &self.retired_swapchains {
+                for &fence in &generation.in_flight_fences {
+                    pending |= !fence_is_complete(&self.device, fence);
+                }
+            }
         }
         Ok(pending)
     }

@@ -212,20 +212,29 @@ impl Retirement {
 // Only used for generations whose present-fence support is proven and
 // whose native host present-wait worker has already exited.
 pub(super) fn generation_ready(device: &ash::Device, chain: &mut VulkanSwapchain) -> Result<bool> {
-    if chain.presentation.idle_required() {
+    generation_fences_ready(device, &chain.acquire_slots, &chain.in_flight_fences, &mut chain.presentation)
+}
+
+fn generation_fences_ready(
+    device: &ash::Device,
+    acquire: &[AcquireSlot],
+    graphics: &[vk::Fence],
+    presentation: &mut Retirement,
+) -> Result<bool> {
+    if presentation.idle_required() {
         return Ok(false);
     }
-    for slot in &chain.acquire_slots {
+    for slot in acquire {
         if slot.pending && !unsafe { device.get_fence_status(slot.fence) }.map_err(VulkanError::from)? {
             return Ok(false);
         }
     }
-    for &fence in &chain.in_flight_fences {
+    for &fence in graphics {
         if !unsafe { device.get_fence_status(fence) }.map_err(VulkanError::from)? {
             return Ok(false);
         }
     }
-    chain.presentation.poll(device)
+    presentation.poll(device)
 }
 
 pub(super) fn wait_generation(device: &ash::Device, chain: &mut VulkanSwapchain) -> Result<()> {
@@ -308,6 +317,37 @@ mod retirement_tests {
         release.send(()).unwrap();
         wake.thread.take().unwrap().join().unwrap();
         assert!(wake.poll_shutdown());
+    }
+
+    #[test]
+    #[ignore = "requires native Vulkan device"]
+    fn native_generation_retirement_waits_for_all_three_fence_classes() {
+        let device = VulkanDevice::new(&DeviceDescriptor::default()).expect("Vulkan device");
+        let native = &device.device;
+        let acquire = create_fence(native, false).unwrap();
+        let graphics = create_fence(native, false).unwrap();
+        let present = create_fence(native, false).unwrap();
+        let slots = [AcquireSlot { fence: acquire, pending: true }];
+        let graphics_slots = [graphics];
+        let mut retirement = Retirement::default();
+        // Model WSI completion with a real native fence signaled by an empty
+        // queue submission. This is not an actual window-system present test.
+        retirement.record(present, Ok(false));
+        for fence in [acquire, graphics, present] {
+            assert!(!generation_fences_ready(native, &slots, &graphics_slots, &mut retirement).unwrap());
+            super::super::submit::binary(
+                native, device.graphics_queue, &[], &[], &[],
+                vk::PipelineStageFlags2::ALL_COMMANDS, fence,
+            ).unwrap();
+            unsafe { native.wait_for_fences(&[fence], true, u64::MAX) }.unwrap();
+        }
+        assert!(generation_fences_ready(native, &slots, &graphics_slots, &mut retirement).unwrap());
+        retirement.destroy(native);
+        unsafe {
+            native.destroy_fence(acquire, None);
+            native.destroy_fence(graphics, None);
+        }
+        eprintln!("NOVA_VULKAN_GENERATION_FENCES=pass");
     }
 
     #[test]

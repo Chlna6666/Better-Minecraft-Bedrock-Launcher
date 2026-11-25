@@ -128,3 +128,11 @@ jobs:
           cargo test -p gfx-vulkan --lib native_host_copy_first_write_then_staging -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/host-copy.txt"
           grep -Fq 'running 1 test' "$RUNNER_TEMP/host-copy.txt"
           grep -Fq 'NOVA_VULKAN_HOST_IMAGE_COPY=' "$RUNNER_TEMP/host-copy.txt"
+      - name: Verify native swapchain generation retirement fences
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p gfx-vulkan --lib retirement_tests
+          cargo test -p gfx-vulkan --lib native_generation_retirement_waits_for_all_three_fence_classes -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/generation-fences.txt"
+          grep -Fq 'NOVA_VULKAN_GENERATION_FENCES=pass' "$RUNNER_TEMP/generation-fences.txt"
