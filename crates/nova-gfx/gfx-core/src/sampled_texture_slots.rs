@@ -137,10 +137,16 @@ impl SampledTextureSlots {
     /// Publish the first native immutable snapshot; only clear the dirty
     /// journal after the backend successfully creates the table.
     pub fn create_snapshot<D: ResourceDevice + ?Sized>(&mut self, device: &mut D, layout: BindGroupLayoutId) -> Result<BindGroupId> {
+        self.create_snapshot_with(|views| device.create_sampled_texture_table(layout, views))
+    }
+
+    /// The same transactional publication through a restricted resource
+    /// facade (e.g. GPUI ExtensionDevice), without exposing native queues.
+    pub fn create_snapshot_with(&mut self, create: impl FnOnce(&[TextureViewId]) -> Result<BindGroupId>) -> Result<BindGroupId> {
         if self.current_snapshot.is_some() {
             return Err(Error::InvalidInput("sampled slot table already has a published snapshot".into()));
         }
-        let snapshot = device.create_sampled_texture_table(layout, &self.views)?;
+        let snapshot = create(&self.views)?;
         self.current_snapshot = Some(snapshot);
         self.dirty.clear();
         Ok(snapshot)
@@ -157,6 +163,12 @@ impl SampledTextureSlots {
     /// native allocation was needed. On failure the dirty journal is intact.
     /// The caller must retire the old snapshot separately after its last use.
     pub fn publish<D: ResourceDevice + ?Sized>(&mut self, device: &mut D, current: BindGroupId) -> Result<Option<BindGroupId>> {
+        self.publish_with(current, |source, changes| device.fork_sampled_texture_table(source, changes))
+    }
+
+    /// Publish through a restricted resource facade. Failure preserves the
+    /// current native snapshot and pending dirty journal for retry.
+    pub fn publish_with(&mut self, current: BindGroupId, fork: impl FnOnce(BindGroupId, &[(u32, TextureViewId)]) -> Result<BindGroupId>) -> Result<Option<BindGroupId>> {
         // A different or stale base can silently resurrect unchanged slots.
         // Reject it even if there are no pending dirty writes.
         if self.current_snapshot != Some(current) {
@@ -164,7 +176,7 @@ impl SampledTextureSlots {
         }
         if self.dirty.is_empty() { return Ok(None); }
         let changes: Vec<_> = self.dirty.iter().map(|(&index, &view)| (index, view)).collect();
-        let snapshot = device.fork_sampled_texture_table(current, &changes)?;
+        let snapshot = fork(current, &changes)?;
         self.current_snapshot = Some(snapshot);
         self.dirty.clear();
         Ok(Some(snapshot))
@@ -204,6 +216,36 @@ mod tests {
         assert!(!slots.contains(first));
         assert!(slots.retire(first, &[]).is_err());
         assert_eq!(slots.dirty_changes().collect::<Vec<_>>(), [(1, texture)]);
+    }
+
+    #[test]
+    fn failed_snapshot_publication_keeps_pending_edits_and_current_identity() {
+        let fallback = TextureViewId::from_parts(1, 1);
+        let texture = TextureViewId::from_parts(2, 1);
+        let old = BindGroupId::from_parts(1, 1);
+        let next = BindGroupId::from_parts(2, 1);
+        let mut slots = SampledTextureSlots::new(2, fallback).unwrap();
+        slots.allocate(texture).unwrap();
+        assert!(slots.create_snapshot_with(|_| Err(Error::Unavailable("test allocation failure".into()))).is_err());
+        assert_eq!(slots.current_snapshot(), None);
+        assert_eq!(slots.dirty_changes().collect::<Vec<_>>(), [(1, texture)]);
+        assert_eq!(slots.create_snapshot_with(|views| {
+            assert_eq!(views, [fallback, texture]);
+            Ok(old)
+        }).unwrap(), old);
+        let handle = SampledTextureSlot { index: 1, generation: 1 };
+        slots.retire(handle, &[]).unwrap();
+        assert!(slots.publish_with(old, |_, _| Err(Error::Unavailable("test fork failure".into()))).is_err());
+        assert_eq!(slots.current_snapshot(), Some(old));
+        assert_eq!(slots.dirty_changes().collect::<Vec<_>>(), [(1, fallback)]);
+        assert_eq!(slots.publish_with(old, |source, changes| {
+            assert_eq!(source, old);
+            assert_eq!(changes, [(1, fallback)]);
+            Ok(next)
+        }).unwrap(), Some(next));
+        assert_eq!(slots.current_snapshot(), Some(next));
+        assert!(slots.publish_with(old, |_, _| panic!("stale base must not reach backend")).is_err());
+        assert!(slots.publish_with(next, |_, _| panic!("clean table must not allocate")).unwrap().is_none());
     }
 
     #[test]

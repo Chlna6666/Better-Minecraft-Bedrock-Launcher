@@ -344,6 +344,25 @@ pub trait ExtensionDevice {
     /// Returns [`gfx_core::Error`] if the layout or any bound resource is invalid.
     fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId>;
 
+    /// Native non-uniform sampled-image table capacity. Zero selects the
+    /// existing per-material binding path on unsupported backends.
+    fn sampled_texture_table_capacity(&self) -> u32 { 0 }
+
+    /// Create a fragment-visible sampled descriptor array layout.
+    fn create_sampled_texture_table_layout(&mut self, _capacity: u32) -> Result<BindGroupLayoutId> {
+        Err(gfx_core::Error::Unavailable("sampled texture tables are unsupported".into()))
+    }
+
+    /// Publish a fully populated immutable descriptor snapshot.
+    fn create_sampled_texture_table(&mut self, _layout: BindGroupLayoutId, _views: &[TextureViewId]) -> Result<BindGroupId> {
+        Err(gfx_core::Error::Unavailable("sampled texture tables are unsupported".into()))
+    }
+
+    /// Fork the current snapshot without modifying pending GPU readers.
+    fn fork_sampled_texture_table(&mut self, _source: BindGroupId, _changes: &[(u32, TextureViewId)]) -> Result<BindGroupId> {
+        Err(gfx_core::Error::Unavailable("sampled texture tables are unsupported".into()))
+    }
+
     /// Creates a pipeline layout.
     ///
     /// # Errors
@@ -653,6 +672,22 @@ where
 
     fn create_bind_group(&mut self, desc: &BindGroupDescriptor) -> Result<BindGroupId> {
         ResourceDevice::create_bind_group(self, desc)
+    }
+
+    fn sampled_texture_table_capacity(&self) -> u32 {
+        ResourceDevice::sampled_texture_table_capacity(self)
+    }
+
+    fn create_sampled_texture_table_layout(&mut self, capacity: u32) -> Result<BindGroupLayoutId> {
+        ResourceDevice::create_sampled_texture_table_layout(self, capacity)
+    }
+
+    fn create_sampled_texture_table(&mut self, layout: BindGroupLayoutId, views: &[TextureViewId]) -> Result<BindGroupId> {
+        ResourceDevice::create_sampled_texture_table(self, layout, views)
+    }
+
+    fn fork_sampled_texture_table(&mut self, source: BindGroupId, changes: &[(u32, TextureViewId)]) -> Result<BindGroupId> {
+        ResourceDevice::fork_sampled_texture_table(self, source, changes)
     }
 
     fn create_pipeline_layout(
