@@ -3005,8 +3005,12 @@ impl VulkanDevice {
         let mut target_layouts = Vec::<(TextureId, vk::ImageLayout)>::new();
         let mut previous_writers = Vec::<TextureId>::new();
         let mut pass_accesses = Vec::with_capacity(passes.len());
-        for pass in passes {
-            let depths = self.depth_accesses(pass.commands, pass.depth_attachment)?;
+        for (index, pass) in passes.iter().enumerate() {
+            let depths = if let Some(plan) = plans.get(index) {
+                self.depth_accesses_for_runs(pass.commands, plan, pass.depth_attachment)?
+            } else {
+                self.depth_accesses(pass.commands, pass.depth_attachment)?
+            };
             let color_ids = pass
                 .color_attachments
                 .iter()
