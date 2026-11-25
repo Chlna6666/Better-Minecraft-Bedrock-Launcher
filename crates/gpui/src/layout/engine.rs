@@ -310,6 +310,7 @@ impl TaffyLayoutEngine {
             });
         }
         for id in removed {
+            self.stale_style_fingerprints.remove(&id);
             self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
             self.root_constraints.remove(&id);
         }
@@ -355,6 +356,7 @@ impl TaffyLayoutEngine {
             self.root_diagnostic_ids = FxHashMap::default();
         }
         for id in self.anonymous_nodes.drain(..) {
+            self.stale_style_fingerprints.remove(&id);
             self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
             self.root_constraints.remove(&id);
         }
@@ -564,10 +566,10 @@ impl TaffyLayoutEngine {
             "layout_node_reconcile",
             crate::window::element_work::ElementWorkPhase::Layout,
         );
-        let mut build_style: Option<Box<dyn FnOnce() -> taffy::Style>> =
-            Some(Box::new(build_style));
+        // Keep the lazy conversion monomorphized. Boxing this closure allocated
+        // for every request, including the fingerprint-hit path that never calls it.
         let Some((path, element)) = owner else {
-            let style = build_style.take().expect("style built once")();
+            let style = build_style();
             let id = self.create_taffy_node(style, children, measure);
             self.anonymous_nodes.push(id);
             return id;
@@ -578,18 +580,15 @@ impl TaffyLayoutEngine {
             ordinal: *ordinal,
         };
         *ordinal = ordinal.saturating_add(1);
-        // The key is a 64-bit path hash, so a collision between two different elements is
-        // possible in principle. Reusing a node across such a collision would hand one element
-        // the other's layout, so the stored full identity is checked before the node is used.
-        // A mismatch is treated as a miss: a fresh node is created and the stale entry is
-        // replaced. The cost is one pointer-and-path compare on a hit.
-        let key_matches = self
-            .persistent_nodes
-            .get(&key)
-            .is_some_and(|node| node.element == element);
-        if key_matches
-            && let Some(node) = self.persistent_nodes.get_mut(&key)
-        {
+        // As in Fast's claim path, resolve the native node with one map probe.
+        // Unlike a hash-only identity, keep the full collision check. A collided
+        // slot is transient for this request; do not overwrite or leak its owner.
+        if let Some(node) = self.persistent_nodes.get_mut(&key) {
+            if node.element != element {
+                let id = self.create_taffy_node(build_style(), children, measure);
+                self.anonymous_nodes.push(id);
+                return id;
+            }
             // The node is being reconstructed; it is no longer eligible for
             // an idle-memory trim until the next committed lifetime check.
             node.offscreen = false;
@@ -603,23 +602,18 @@ impl TaffyLayoutEngine {
             // one the node already holds, so the style is never converted to Taffy's
             // representation and the full-struct compare is skipped.
             let style_is_stale = self.stale_style_fingerprints.remove(&id);
-            let requires_style = if !style_is_stale
+            let changed_style = if !style_is_stale
                 && style_fingerprint.is_some()
                 && node.style_fingerprint == style_fingerprint
             {
-                build_style = None;
-                false
+                None
             } else {
-                let style = build_style.take().expect("style built once")();
-                let changed = self.taffy.style(id.into()).expect(EXPECT_MESSAGE) != &style;
-                if changed {
-                    build_style = Some(Box::new(move || style));
-                }
-                changed
+                let style = build_style();
+                (self.taffy.style(id.into()).expect(EXPECT_MESSAGE) != &style)
+                    .then_some(style)
             };
-            if style_fingerprint.is_some() {
-                node.style_fingerprint = style_fingerprint;
-            }
+            let requires_style = changed_style.is_some();
+            node.style_fingerprint = style_fingerprint;
             let is_measured = measure.is_some();
             if node.measured && !is_measured {
                 self.taffy
@@ -639,13 +633,8 @@ impl TaffyLayoutEngine {
                     .set_children(id.into(), LayoutId::to_taffy_slice(children))
                     .expect(EXPECT_MESSAGE);
             }
-            if requires_style {
-                self.taffy
-                    .set_style(
-                        id.into(),
-                        build_style.take().expect("a changed style is retained")(),
-                    )
-                    .expect(EXPECT_MESSAGE);
+            if let Some(style) = changed_style {
+                self.taffy.set_style(id.into(), style).expect(EXPECT_MESSAGE);
             }
             if let Some(mut context) = measure {
                 // A pure measure declares that its result depends only on the fingerprint, so
@@ -679,11 +668,7 @@ impl TaffyLayoutEngine {
             id
         } else {
             let is_measured = measure.is_some();
-            let id = self.create_taffy_node(
-                build_style.take().expect("a new node builds its style")(),
-                children,
-                measure,
-            );
+            let id = self.create_taffy_node(build_style(), children, measure);
             self.persistent_nodes.insert(
                 key,
                 PersistentLayoutNode {
