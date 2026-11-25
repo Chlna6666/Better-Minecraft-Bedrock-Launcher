@@ -1038,6 +1038,8 @@ impl SidecarGpuBackend {
     fn sync_sampled_capacity(
         &mut self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
     ) -> gpui::Result<()> {
+        self.sampled_tiers.release_completed(device, |layout| self.scenes.values()
+            .any(|scene| scene.references_sampled_layout(layout)))?;
         let Some(current) = self.resources.sampled_table_capacity() else { return Ok(()); };
         if !self.pending_passes.is_empty() || !self.sampled_tiers.begin_frame(context.frame_time()) { return Ok(()); }
         let demand = self.scenes.values().map(SceneResources::sampled_capacity_demand).max().unwrap_or(1);
@@ -1065,6 +1067,7 @@ impl SidecarGpuBackend {
     }
 
     fn abandon_pending_captures(&mut self, may_have_submitted: bool) {
+        if !self.pending_passes.is_empty() { self.sampled_tiers.abandon(may_have_submitted); }
         if let Some(surface) = self.offscreen.as_mut() {
             surface.render_passes_failed(&self.pending_capture_epochs);
         }
@@ -1714,6 +1717,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 return Err(error.into());
             }
         };
+        self.sampled_tiers.submitted(submitted);
         // All three renderer-global GPU mesh pools share the native producer
         // and can be read/written by Compute before this DrawIndirect batch.
         // The backing allocations are conservatively stamped only once per
@@ -1779,6 +1783,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
     }
 
     fn gpu_submission_accepted(&mut self, submission: gfx_core::SubmissionId) {
+        self.sampled_tiers.accepted(submission);
         self.generated_arena
             .borrow_mut()
             .gpu_submission_accepted(submission);
@@ -1806,6 +1811,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
     fn gpu_submission_completed(&mut self, submission: gfx_core::SubmissionId) {
         // Host-observed producer Fence latency includes queue scheduling AND
         // polling delay. The controller never calls this a GPU Wait timestamp.
+        self.sampled_tiers.completed(submission);
         self.queue_feedback.borrow_mut().completed(submission);
         self.generated_arena
             .borrow_mut()
@@ -1833,6 +1839,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 .values()
                 .any(SceneResources::has_retired_arena_ranges)
             || self.resources.has_retired_pipelines()
+            || self.sampled_tiers.needs_completion()
             || self
                 .offscreen
                 .as_ref()
@@ -1847,6 +1854,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             scene.reclaim_arena_after_gpu_idle();
         }
         self.resources.gpu_work_completed();
+        self.sampled_tiers.idle();
         if let Some(surface) = self.offscreen.as_mut() {
             surface.gpu_work_completed();
         }
@@ -2102,6 +2110,10 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 // previous native last-reader proof: the newer direct draws
                 // cannot be retired using an older producer's completion ID.
                 scene.draw_producer_submitted(None);
+                if steps.len() != first_step && self.resources.sampled_table_layout().is_some() {
+                    self.sampled_tiers.queue_use();
+                    self.sampled_tiers.submitted(None);
+                }
                 steps.len() - first_step
             }
         };
@@ -2143,6 +2155,9 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 );
             }
             scene.queue_sampled_capture(sampled_table);
+            if self.resources.sampled_table_layout().is_some() && commands_count != 0 {
+                self.sampled_tiers.queue_use();
+            }
             // The published input must be the one actually rendered: during
             // a pending full replacement, the producer may capture a retained
             // compatible scene instead of the incoming SceneView.
