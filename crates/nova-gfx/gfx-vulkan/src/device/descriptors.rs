@@ -541,7 +541,7 @@ mod tests {
                     // Ordered offscreen batches may deliberately return None.
                     // A real checkpoint on the same queue proves all earlier
                     // descriptor readers, without changing the production API.
-                    ResourceDevice::checkpoint_gpu_queue(device, gfx_core::GpuQueueId::PRIMARY)
+                    SubmissionDevice::checkpoint_gpu_queue(device, gfx_core::GpuQueueId::PRIMARY)
                         .expect("ordered graphics checkpoint")
                 })
         };
@@ -617,7 +617,7 @@ mod tests {
         device.destroy_bind_group(old).unwrap();
         device.destroy_bind_group(next).unwrap();
         // A same-queue completion checkpoint covers both retirement points.
-        let fence = ResourceDevice::checkpoint_gpu_queue(&mut device, gfx_core::GpuQueueId::PRIMARY).unwrap();
+        let fence = SubmissionDevice::checkpoint_gpu_queue(&mut device, gfx_core::GpuQueueId::PRIMARY).unwrap();
         SubmissionDevice::wait_submission(&mut device, fence).unwrap();
         device.poll_cleanup();
         assert_eq!(device.descriptor_pools.idle_tables.len(), 2);
