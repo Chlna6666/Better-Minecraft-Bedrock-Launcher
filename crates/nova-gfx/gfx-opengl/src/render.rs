@@ -337,7 +337,7 @@ impl OpenGlDevice {
                     remaining = &remaining[1..];
                     Some(entry)
                 } else { None };
-                index += draw_count as usize;
+                index += plan.map_or(draw_count as usize, |plan| plan.source_span(draw_count));
                 let scissor = match (viewport, step.scissor()) {
                     (Some(viewport), Some(scissor)) => Some(viewport.map_scissor(scissor, size)?),
                     (_, scissor) => scissor,
