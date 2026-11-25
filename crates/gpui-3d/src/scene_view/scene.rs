@@ -892,10 +892,10 @@ impl SceneResources {
         context: &RendererExtensionContext,
     ) -> gpui::Result<()> {
         if self.sampled_textures.is_none() && self.scene.is_none()
-            && let Some(layout) = renderer.sampled_table_layout()
+            && let (Some(layout), Some(capacity)) = (renderer.sampled_table_layout(), renderer.sampled_table_capacity())
         {
             self.sampled_textures = Some(sampled_textures::SceneSampledTextures::new(
-                layout, renderer.fallback_texture_view()?,
+                layout, capacity, renderer.fallback_texture_view()?,
             )?);
         }
         let old_sampled = self.committed_sampled_snapshot;
@@ -982,7 +982,11 @@ impl SceneResources {
             && !sampler_changed
             && !voxel_shader_changed
             && !occlusion_changed
-            && !self.sampled_textures.as_ref().is_some_and(|table| table.needs_remap() || table.needs_publication())
+            && self.sampled_bindings == old_sampled.is_some()
+            && !self.sampled_textures.as_ref().is_some_and(|table| {
+                table.needs_remap() || table.needs_publication()
+                    || table.selected(renderer.sampled_table_layout()) != old_sampled
+            })
         {
             return Ok(());
         }

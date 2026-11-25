@@ -108,6 +108,8 @@ jobs:
           GPUI_3D_BINDLESS: "1"
         run: |
           set -euo pipefail
+          cargo test -p gpui-3d --lib --features gpui/x11 sampled_table_tiers_respect_device_and_application_limits
+          cargo test -p gpui-3d --lib --features gpui/x11 distinct_texture_bindings_and_raster_states_never_merge
           cargo test -p gpui-3d --lib --features gpui/x11 bindless_production_color_vulkan -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless.txt"
           grep -Fq 'GPUI3D_VULKAN_PRODUCTION_BINDLESS_COLOR=pass' "$RUNNER_TEMP/production-bindless.txt"
       - name: Verify true nearest-depth Hi-Z SSR hierarchy on Vulkan

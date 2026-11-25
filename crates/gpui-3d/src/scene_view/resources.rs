@@ -17,8 +17,8 @@ use gfx_core::{
 use gpui::ExtensionDevice;
 use gpui::RendererExtensionContext;
 
-/// Must match the fixed-size binding_array in build.rs.
-pub(super) const SAMPLED_TABLE_CAPACITY: u32 = 64;
+#[path = "../sampled_table_capacity.rs"]
+mod sampled_table_capacity;
 
 pub(super) struct RendererResources {
     pass: PassKind,
@@ -44,6 +44,7 @@ pub(super) struct RendererResources {
 }
 
 struct SampledPipelines {
+    capacity: u32,
     geometry_layout: Option<BindGroupLayoutId>,
     layout: Option<BindGroupLayoutId>,
     pipeline_layout: Option<PipelineLayoutId>,
@@ -67,6 +68,10 @@ impl SampledPipelines {
 }
 
 impl RendererResources {
+    pub(super) fn sampled_table_capacity(&self) -> Option<u32> {
+        self.sampled.as_ref().map(|sampled| sampled.capacity)
+    }
+
     pub(super) fn sampled_table_layout(&self) -> Option<BindGroupLayoutId> {
         self.sampled.as_ref().and_then(|sampled| sampled.layout)
     }
@@ -82,21 +87,23 @@ impl RendererResources {
     /// PSOs until their own image/alpha/depth comparisons are covered.
     fn try_enable_sampled(
         &mut self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
+        max_capacity: u32,
     ) -> gpui::Result<()> {
-        // Geometry set zero has three fragment storage buffers, one
-        // sampler and one uniform; reserve their aggregate stage budget.
         if self.pass != PassKind::Color || context.backend_kind() != BackendKind::Vulkan
-            || device.sampled_texture_table_capacity() < SAMPLED_TABLE_CAPACITY + 5
             || std::env::var_os("GPUI_3D_BINDLESS").is_none_or(|value| value != "1")
         {
             return Ok(());
         }
+        let Some(capacity) = sampled_table_capacity::sampled_table_capacity(
+            device.sampled_texture_table_capacity(), max_capacity,
+        ) else { return Ok(()); };
         let mut sampled = SampledPipelines {
+            capacity,
             geometry_layout: None, layout: None, pipeline_layout: None, fragment: None, voxel_fragment: None,
             pipelines: [None; 18],
         };
         let result: gpui::Result<()> = (|| {
-            let layout = device.create_sampled_texture_table_layout(SAMPLED_TABLE_CAPACITY)?;
+            let layout = device.create_sampled_texture_table_layout(capacity)?;
             sampled.layout = Some(layout);
             let geometry = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
                 label: Some("gpui-3d sampled geometry layout".into()),
@@ -109,11 +116,11 @@ impl RendererResources {
             })?);
             sampled.fragment = Some(device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d sampled material fragment".into()),
-                binary: embedded_shader(context, ShaderStage::Fragment, "fs_main_bindless")?,
+                binary: embedded_shader(context, ShaderStage::Fragment, &format!("fs_main_bindless_{capacity}"))?,
             })?);
             sampled.voxel_fragment = Some(device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d sampled voxel fragment".into()),
-                binary: embedded_shader(context, ShaderStage::Fragment, "fs_voxel_bindless")?,
+                binary: embedded_shader(context, ShaderStage::Fragment, &format!("fs_voxel_bindless_{capacity}"))?,
             })?);
             // Every slot in the fixed array, including unused slots, must
             // reference a valid initialized sampled image.
@@ -502,7 +509,7 @@ fn create_pipeline(
         if voxel { sampled.voxel_fragment } else { sampled.fragment }
     } else if voxel { resources.voxel_fragment_shader } else { resources.fragment_shader };
     let entry = resources.pass.entries()[usize::from(voxel)];
-    let fragment_entry = if sampled.is_some() { format!("{entry}_bindless") } else { entry.into() };
+    let fragment_entry = if let Some(sampled) = sampled { format!("{entry}_bindless_{}", sampled.capacity) } else { entry.into() };
     let (label, blend, depth_write) = match (mode, voxel) {
         (PipelineMode::Opaque, false) => ("gpui-3d opaque pipeline", false, true),
         (PipelineMode::Blend, false) => ("gpui-3d blended pipeline", true, false),
@@ -585,4 +592,17 @@ mod retired_pipeline_tests {
         assert!(!resources.has_retired_pipelines());
         assert_eq!(resources.ready_pipeline_release, vec![RenderPipelineId::from_parts(4, 1)]);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn sampled_table_tiers_respect_device_and_application_limits() {
+    use sampled_table_capacity::sampled_table_capacity as select;
+    assert_eq!(select(68, u32::MAX), None);
+    assert_eq!(select(69, u32::MAX), Some(64));
+    assert_eq!(select(260, u32::MAX), Some(64));
+    assert_eq!(select(261, u32::MAX), Some(256));
+    assert_eq!(select(1029, u32::MAX), Some(1024));
+    assert_eq!(select(8192, u32::MAX), Some(4096));
+    assert_eq!(select(8192, 64), Some(64));
 }

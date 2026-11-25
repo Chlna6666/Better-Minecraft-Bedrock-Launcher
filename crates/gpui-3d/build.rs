@@ -8,10 +8,14 @@ use gfx_shader_build::{
 };
 
 #[cfg(feature = "gpui-sidecar")]
-fn sampled_table_variant(source: &str, textures: &[(&str, &str)], entries: &[&str]) -> Shader {
-    // One descriptor array, separate from the ordinary geometry/sampler
-    // group. Fixed size for the initial portable-limit Vulkan variant.
-    let mut code = String::from("@group(1) @binding(0) var material_images: binding_array<texture_2d<f32>, 64>;\n");
+#[path = "src/sampled_table_capacity.rs"]
+mod sampled_table_capacity;
+
+#[cfg(feature = "gpui-sidecar")]
+fn sampled_table_variant(source: &str, textures: &[(&str, &str)], entries: &[&str], capacity: u32) -> Shader {
+    // Fixed-size variants allow device-limit selection without runtime
+    // shader compilation or variable-descriptor-count requirements.
+    let mut code = format!("@group(1) @binding(0) var material_images: binding_array<texture_2d<f32>, {capacity}>;\n");
     let source = source.replace("draw_params", "draw");
     for line in source.lines() {
         if textures.iter().any(|(name, _)| {
@@ -34,10 +38,10 @@ fn sampled_table_variant(source: &str, textures: &[(&str, &str)], entries: &[&st
         assert!(replaced > 0, "bindless texture {name} has no sampling sites");
         assert!(!code.contains(&format!("var {name}:")), "legacy texture declaration survived");
     }
-    let mut shader = Shader::new(format!("sampled_table_{}", entries[0])).vulkan_sampled_texture_table();
+    let mut shader = Shader::new(format!("sampled_table_{}_{capacity}", entries[0])).vulkan_sampled_texture_table();
     for entry in entries {
         let from = format!("fn {entry}(");
-        let name = format!("{entry}_bindless");
+        let name = format!("{entry}_bindless_{capacity}");
         assert_eq!(code.matches(&from).count(), 1, "missing or ambiguous fragment entry {entry}");
         code = code.replace(&from, &format!("fn {name}("));
         shader = shader.entry(name, ShaderStage::Fragment);
@@ -81,12 +85,17 @@ fn main() {
         .backend_selection(BackendSelection::Platform);
     #[cfg(feature = "gpui-sidecar")]
     {
-        shaders = shaders
-        .shader(sampled_table_variant(
+        println!("cargo:rerun-if-changed=src/sampled_table_capacity.rs");
+        // Exercise the same selector in both the build script and runtime.
+        let max = *sampled_table_capacity::SAMPLED_TABLE_TIERS.last().unwrap();
+        assert_eq!(sampled_table_capacity::sampled_table_capacity(max + sampled_table_capacity::FRAGMENT_GEOMETRY_RESOURCES, max), Some(max));
+        for capacity in sampled_table_capacity::SAMPLED_TABLE_TIERS {
+            shaders = shaders.shader(sampled_table_variant(
             concat!(include_str!("src/pbr.wgsl"), "\n", include_str!("src/scene_view.wgsl")),
             &[("albedo_texture", "albedo_index"), ("normal_map_texture", "normal_index"),
                 ("occlusion_texture", "occlusion_index"), ("metallic_roughness_texture", "metallic_roughness_index")],
             &["fs_main", "fs_hdr", "fs_scene_surface", "fs_scene_albedo", "fs_scene_attributes_mrt", "fs_scene_shadow"],
+            capacity,
         ))
         .shader(sampled_table_variant(
             concat!(include_str!("src/pbr.wgsl"), "\n", include_str!("src/scene_view/voxel.wgsl"), "\n",
@@ -94,8 +103,10 @@ fn main() {
             &[("albedo_texture", "albedo_index"), ("normal_texture", "normal_index"),
                 ("material_texture", "metallic_roughness_index")],
             &["fs_voxel", "fs_voxel_capture", "fs_voxel_surface", "fs_voxel_albedo", "fs_voxel_attributes_mrt", "fs_voxel_shadow"],
-        ))
-        .shader(
+            capacity,
+        ));
+        }
+        shaders = shaders.shader(
             Shader::new("sidecar_composite")
                 .wgsl_file("src/scene_view/sidecar_composite.wgsl")
                 .entry("vs_sidecar_composite", ShaderStage::Vertex)

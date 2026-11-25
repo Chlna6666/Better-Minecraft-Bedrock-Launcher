@@ -12,7 +12,14 @@ impl RendererResources {
         device: &mut dyn ExtensionDevice,
         context: &RendererExtensionContext,
     ) -> gpui::Result<Self> {
-        Self::new_pass_inner(device, context, None, PassKind::Color, false)
+        Self::new_pass_inner(device, context, None, PassKind::Color, 0)
+    }
+
+    #[cfg(test)]
+    pub(in crate::scene_view) fn new_sampled_for_test(
+        device: &mut dyn ExtensionDevice, context: &RendererExtensionContext, capacity: u32,
+    ) -> gpui::Result<Self> {
+        Self::new_pass_inner(device, context, None, PassKind::Color, capacity)
     }
 
     pub(in crate::scene_view) fn new_pass(
@@ -21,7 +28,7 @@ impl RendererResources {
         prototype: Option<&Self>,
         pass: PassKind,
     ) -> gpui::Result<Self> {
-        Self::new_pass_inner(device, context, prototype, pass, true)
+        Self::new_pass_inner(device, context, prototype, pass, u32::MAX)
     }
 
     fn new_pass_inner(
@@ -29,7 +36,7 @@ impl RendererResources {
         context: &RendererExtensionContext,
         prototype: Option<&Self>,
         pass: PassKind,
-        allow_sampled: bool,
+        max_sampled_capacity: u32,
     ) -> gpui::Result<Self> {
         let vertex_binary = embedded_shader(context, ShaderStage::Vertex, "vs_main")?;
         let compute = device.compute_capabilities();
@@ -152,7 +159,7 @@ impl RendererResources {
                     format: Format::Rgba8UnormSrgb,
                 })?);
             resources.replace_pipelines(device, context)?;
-            if allow_sampled { resources.try_enable_sampled(device, context)?; }
+            if max_sampled_capacity != 0 { resources.try_enable_sampled(device, context, max_sampled_capacity)?; }
             Ok(())
         })();
         if let Err(error) = result {

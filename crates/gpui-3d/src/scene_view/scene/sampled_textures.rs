@@ -25,9 +25,9 @@ pub(super) struct SceneSampledTextures {
 }
 
 impl SceneSampledTextures {
-    pub(super) fn new(layout: BindGroupLayoutId, fallback: gfx_core::TextureViewId) -> gpui::Result<Self> {
+    pub(super) fn new(layout: BindGroupLayoutId, capacity: u32, fallback: gfx_core::TextureViewId) -> gpui::Result<Self> {
         Ok(Self {
-            layout, slots: SampledTextureSlots::new(super::super::resources::SAMPLED_TABLE_CAPACITY, fallback)?,
+            layout, slots: SampledTextureSlots::new(capacity, fallback)?,
             unmapped: 0, readers: HashSet::new(), untracked: false,
             pending: Vec::new(), cleared: Vec::new(), retired: Vec::new(), published: false, remap_pending: false,
         })

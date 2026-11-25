@@ -540,8 +540,8 @@ fn bindless_production_color_vulkan() {
         gfx_core::BackendKind::Vulkan, pass_id, Format::Rgba8Unorm, extent,
     );
     let mut legacy = RendererResources::new_legacy_for_test(&mut device, &context).unwrap();
-    let mut sampled = RendererResources::new(&mut device, &context).unwrap();
-    assert!(sampled.sampled_table_layout().is_some(), "production sampled PSO must be available");
+    let mut sampled = RendererResources::new_sampled_for_test(&mut device, &context, 64).unwrap();
+    assert_eq!(sampled.sampled_table_capacity(), Some(64), "production sampled PSO must be available");
     assert!(legacy.sampled_table_layout().is_none());
     let camera = Camera::perspective(Vec3::new(0., 0., 3.), Vec3::ZERO, Vec3::Y, 1., 0.1, 100.);
     let mesh = Arc::new(Mesh::cube());
@@ -570,15 +570,19 @@ fn bindless_production_color_vulkan() {
         } else { view }
     };
     let render = |device: &mut gfx_vulkan::VulkanDevice, scene: &mut SceneResources,
-                  renderer: &mut RendererResources, view: &SceneView, set_count: usize| {
+                  renderer: &mut RendererResources, view: &SceneView, set_count: Option<usize>, phase: &str| {
         scene.prepare(device, renderer, view, &context).unwrap();
         let mut commands = Vec::new();
         scene.append_steps(renderer, view.voxel_shader, &mut commands).unwrap();
         assert!(!commands.is_empty());
         let actual_sets = commands.iter().map(|command| command.bind_groups().len()).collect::<Vec<_>>();
-        assert!(actual_sets.iter().all(|&count| count == set_count),
-            "production command descriptor sets: expected={set_count}, actual={actual_sets:?}, voxel={}", view.voxel_shader);
-        if set_count == 2 {
+        assert!(actual_sets.iter().all(|&count| count == actual_sets[0]),
+            "{phase}: mixed descriptor layouts in one frame: {actual_sets:?}");
+        if let Some(set_count) = set_count {
+            assert_eq!(actual_sets[0], set_count,
+                "{phase}: production descriptor sets, voxel={}", view.voxel_shader);
+        }
+        if actual_sets[0] == 2 {
             let geometry = commands[0].bind_groups()[0];
             assert!(commands.iter().all(|command| command.bind_groups()[0] == geometry),
                 "identical resident geometry must share set zero across materials");
@@ -601,8 +605,8 @@ fn bindless_production_color_vulkan() {
             [[0, 255, 0, 255], [255, 0, 255, 255]],
         ] {
             let view = fixture(&colors, voxel);
-            let expected = render(&mut device, &mut legacy_scene, &mut legacy, &view, 1);
-            let actual = render(&mut device, &mut sampled_scene, &mut sampled, &view, 2);
+            let expected = render(&mut device, &mut legacy_scene, &mut legacy, &view, Some(1), "legacy");
+            let actual = render(&mut device, &mut sampled_scene, &mut sampled, &view, Some(2), "sampled pixels");
             assert_eq!(actual, expected, "production bindless color mismatch, voxel={voxel}");
             assert!(actual.chunks_exact(4).any(|pixel| pixel[0] > 200 || pixel[1] > 200));
             assert!(actual.chunks_exact(4).any(|pixel| pixel[2] > 200));
@@ -611,14 +615,14 @@ fn bindless_production_color_vulkan() {
         // cannot all fit; no out-of-range or fallback-colored draw is allowed.
         let overflow = (0..64u8).map(|i| [i, 255, 255 - i, 255]).collect::<Vec<_>>();
         let view = fixture(&overflow, voxel);
-        render(&mut device, &mut sampled_scene, &mut sampled, &view, 1);
+        render(&mut device, &mut sampled_scene, &mut sampled, &view, Some(1), "overflow");
         // Shrinking the working set retires old slots. A subsequent unchanged
         // frame must be able to recover and use the sampled PSO again.
         let recovered = fixture(&[[255, 0, 0, 255], [0, 0, 255, 255]], voxel);
-        render(&mut device, &mut sampled_scene, &mut sampled, &recovered, 1);
+        render(&mut device, &mut sampled_scene, &mut sampled, &recovered, None, "shrink working set");
         // Removed descriptors are processed before the next batch plan.
-        let actual = render(&mut device, &mut sampled_scene, &mut sampled, &recovered, 2);
-        let expected = render(&mut device, &mut legacy_scene, &mut legacy, &recovered, 1);
+        let actual = render(&mut device, &mut sampled_scene, &mut sampled, &recovered, Some(2), "recovered");
+        let expected = render(&mut device, &mut legacy_scene, &mut legacy, &recovered, Some(1), "recovered legacy reference");
         assert_eq!(actual, expected);
         sampled_scene.destroy(&mut device).unwrap();
         legacy_scene.destroy(&mut device).unwrap();
