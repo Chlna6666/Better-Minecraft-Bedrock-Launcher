@@ -15,6 +15,7 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum BatchKey {
     Quad {
+        bank: Option<usize>,
         textures: [Option<u64>; 4],
         page: u64,
         size_class: u32,
@@ -47,6 +48,7 @@ pub(super) struct BatchWorkspace {
     /// batch entries; a previous instanced-Quad scene invalidates this mode.
     singleton_layout: bool,
     sampled: bool,
+    banked: bool,
 }
 
 impl BatchWorkspace {
@@ -103,13 +105,36 @@ pub(super) fn group_voxel_batches(
     has_non_generated_quads: bool,
     sampled: bool,
 ) {
-    if workspace.sampled != sampled {
+    group_voxel_batches_with_banks(
+        draws, meshes, workspace, batches, has_non_generated_quads, sampled, None,
+    );
+}
+
+/// In banked mode each instanced quad batch must use exactly one sampled
+/// table. The caller must provide a complete material-to-bank mapping;
+/// missing mappings conservatively retain their material texture boundaries.
+pub(super) fn group_voxel_batches_with_banks(
+    draws: &mut [PreparedDraw],
+    meshes: &HashMap<(MeshId, bool), MeshResources>,
+    workspace: &mut BatchWorkspace,
+    batches: &mut Vec<DrawBatchRange>,
+    has_non_generated_quads: bool,
+    sampled: bool,
+    banks: Option<&dyn Fn(&PreparedDraw) -> Option<usize>>,
+) {
+    let banked = sampled && banks.is_some();
+    if workspace.sampled != sampled || workspace.banked != banked {
         workspace.buckets.clear();
         workspace.sorted_keys.clear();
         workspace.new_keys.clear();
         workspace.spare_keys.clear();
         workspace.sampled = sampled;
+        workspace.banked = banked;
     }
+    let key_for = |draw: &PreparedDraw| {
+        let bank = if sampled { banks.and_then(|lookup| lookup(draw)) } else { None };
+        batch_key_with_bank(draw, meshes, sampled && (!banked || bank.is_some()), bank)
+    };
     let opaque = draws.partition_point(|draw| draw.material.alpha_mode != AlphaMode::Blend);
 
     // Streaming GPU Generated Meshes are singleton draws: their unique template
@@ -154,10 +179,10 @@ pub(super) fn group_voxel_batches(
         workspace.buckets.clear();
         workspace.sorted_keys.clear();
         workspace.new_keys.clear();
-        draws[..opaque].sort_by_cached_key(|draw| batch_key_with_mode(draw, meshes, sampled));
+        draws[..opaque].sort_by_cached_key(|draw| key_for(draw));
         let mut last_key = None;
         for (index, draw) in draws.iter().enumerate() {
-            let key = batch_key_with_mode(draw, meshes, sampled);
+            let key = key_for(draw);
             if let Some(batch) = batches.last_mut() {
                 if draw.material.alpha_mode != AlphaMode::Blend
                     && last_key == Some(key)
@@ -187,7 +212,7 @@ pub(super) fn group_voxel_batches(
     // grouping key once rather than once during sort and again during batch
     // coalescing. Retain each equal-key input order unchanged.
     for (index, draw) in draws[..opaque].iter().enumerate() {
-        let key = batch_key_with_mode(draw, meshes, sampled);
+        let key = key_for(draw);
         match workspace.buckets.entry(key) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 entry.get_mut().push(index);
@@ -271,13 +296,14 @@ pub(super) fn group_voxel_batches(
 
 #[cfg(test)]
 fn batch_key(draw: &PreparedDraw, meshes: &HashMap<(MeshId, bool), MeshResources>) -> BatchKey {
-    batch_key_with_mode(draw, meshes, false)
+    batch_key_with_bank(draw, meshes, false, None)
 }
 
-fn batch_key_with_mode(
+fn batch_key_with_bank(
     draw: &PreparedDraw,
     meshes: &HashMap<(MeshId, bool), MeshResources>,
     sampled: bool,
+    bank: Option<usize>,
 ) -> BatchKey {
     let resource = meshes.get(&mesh_key(draw, true));
     let quad = resource.is_some_and(|mesh| mesh.procedural_quads && mesh.generated.is_none());
@@ -300,6 +326,7 @@ fn batch_key_with_mode(
         Some(gfx_core::FrontFace::Cw) => 2,
     };
     BatchKey::Quad {
+        bank,
         textures: if sampled { [None; 4] } else { [
             draw.material.albedo_texture.map(|id| id.0),
             draw.material.normal_texture.map(|id| id.0),
@@ -514,6 +541,39 @@ mod tests {
         assert_eq!(batches.iter().map(|batch| batch.instance_count).max(), Some(2));
         group_voxel_batches(&mut draws, &meshes, &mut workspace, &mut batches, true, false);
         assert_eq!(batches.len(), 4, "legacy fallback must restore texture boundaries");
+    }
+
+    #[test]
+    fn sampled_quad_batches_never_merge_across_descriptor_banks() {
+        for count in [16usize, 192] {
+            let mesh = Arc::new(Mesh::cube());
+            let mut scene = Scene::new();
+            for i in 0..count {
+                let mut material = Material::new();
+                material.albedo_texture = Some(crate::TextureAssetId((i % 2) as u64 + 1));
+                if i % 4 == 0 { material.alpha_mode = AlphaMode::Blend; }
+                scene.insert(None, Node::new().with_mesh(mesh.clone())
+                    .with_materials([Arc::new(material)])).unwrap();
+            }
+            let mut draws = prepare(&scene);
+            let mut meshes = HashMap::new();
+            meshes.insert(mesh_key(&draws[0], true), mock_quad_resources(&mesh));
+            let tail = draws.iter().filter(|d| d.material.alpha_mode == AlphaMode::Blend)
+                .map(|d| d.node).collect::<Vec<_>>();
+            let bank = |draw: &PreparedDraw| draw.material.albedo_texture.map(|id| id.0 as usize);
+            let mut workspace = BatchWorkspace::default();
+            let mut batches = Vec::new();
+            group_voxel_batches_with_banks(&mut draws, &meshes, &mut workspace, &mut batches, true, true, Some(&bank));
+            assert_eq!(batches.len(), tail.len() + 2);
+            for batch in &batches {
+                let range = &draws[batch.first_instance..batch.first_instance + batch.instance_count];
+                assert!(range.iter().all(|draw| bank(draw) == bank(&range[0])));
+            }
+            assert_eq!(draws.iter().filter(|d| d.material.alpha_mode == AlphaMode::Blend)
+                .map(|d| d.node).collect::<Vec<_>>(), tail);
+            group_voxel_batches(&mut draws, &meshes, &mut workspace, &mut batches, true, true);
+            assert_eq!(batches.len(), tail.len() + 1);
+        }
     }
 
     #[test]
