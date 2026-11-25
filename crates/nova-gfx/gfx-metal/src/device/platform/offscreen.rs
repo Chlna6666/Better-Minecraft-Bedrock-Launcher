@@ -110,16 +110,19 @@ impl MetalDevice {
             znear: 0.0, zfar: 1.0,
         };
         let mut steps = Vec::with_capacity(pass.commands.len());
+        let mut preparation = RenderStateCache::default();
         let mut counts = counts.iter().peekable();
+        let mut checked_bindings = std::collections::HashSet::new();
         for (index, command) in pass.commands.iter().enumerate() {
-            let mut step = self.prepare_render_step(layout, command)?;
+            let mut step = self.prepare_render_step(layout, command, &mut preparation)?;
             if counts.peek().is_some_and(|count| count.command_index == index) {
                 let count = *counts.next().expect("counted command");
                 step.draw = PreparedMetalDraw::Counted(self.prepare_counted_run(command, count, &step.pipeline)?);
             }
-            if color_ids.iter().any(|&id| step.bindings.samples_texture(id))
-                || resolve.as_ref().is_some_and(|(id, _, _)| step.bindings.samples_texture(*id))
-                || depth_view.as_ref().is_some_and(|(id, _, _)| step.bindings.samples_texture(*id))
+            if checked_bindings.insert(std::rc::Rc::as_ptr(&step.bindings))
+                && (color_ids.iter().any(|&id| step.bindings.samples_texture(id))
+                    || resolve.as_ref().is_some_and(|(id, _, _)| step.bindings.samples_texture(*id))
+                    || depth_view.as_ref().is_some_and(|(id, _, _)| step.bindings.samples_texture(*id)))
             {
                 return Err(Error::InvalidInput("Metal offscreen pass samples its own attachment".into()));
             }

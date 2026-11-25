@@ -734,9 +734,10 @@ mod platform {
                 }
                 _ => return Err(Error::InvalidInput("Metal render pass depth attachment mismatch".into())),
             };
+            let mut preparation = RenderStateCache::default();
             let render_steps = steps
                 .iter()
-                .map(|step| self.prepare_render_step(render_pass, step))
+                .map(|step| self.prepare_render_step(render_pass, step, &mut preparation))
                 .collect::<Result<Vec<_>>>()?;
 
             let frame = objc2::rc::autoreleasepool(|_| -> Result<Option<(Retained<ProtocolObject<dyn MTLCommandBuffer>>, PresentTimings)>> {
@@ -861,17 +862,41 @@ mod platform {
             &self,
             render_pass: &MetalRenderPass,
             step: &RenderCommand,
+            cache: &mut RenderStateCache,
         ) -> Result<PreparedMetalRenderStep> {
-            let pipeline = self.render_pipelines.get(step.pipeline())?.clone();
-            if render_pass.color_formats != pipeline.color_formats
-                || render_pass.depth_format != pipeline.depth_format
-                || render_pass.sample_count != pipeline.sample_count
-            {
-                return Err(Error::InvalidInput(
-                    "render pass and pipeline color targets do not match".to_string(),
-                ));
-            }
-            let bindings = self.prepare_bindings(&pipeline, step.bind_groups())?;
+            let pipeline_id = step.pipeline();
+            let pipeline = if let Some(pipeline) = cache.pipelines.get(&pipeline_id) {
+                pipeline.clone()
+            } else {
+                let pipeline = self.render_pipelines.get(pipeline_id)?;
+                if render_pass.color_formats != pipeline.color_formats
+                    || render_pass.depth_format != pipeline.depth_format
+                    || render_pass.sample_count != pipeline.sample_count
+                {
+                    return Err(Error::InvalidInput(
+                        "render pass and pipeline color targets do not match".to_string(),
+                    ));
+                }
+                let pipeline = std::rc::Rc::new(pipeline.clone());
+                cache.pipelines.insert(pipeline_id, pipeline.clone());
+                pipeline
+            };
+            // Metal currently supports one logical bind group. Validate this
+            // before cache lookup, so an invalid extra group cannot alias a
+            // previously validated binding set.
+            let group = match step.bind_groups() {
+                [] => None,
+                [group] => Some(*group),
+                _ => return Err(Error::InvalidInput("Metal requires at most one bind group".into())),
+            };
+            let key = (pipeline_id, group);
+            let bindings = if let Some(bindings) = cache.bindings.get(&key) {
+                bindings.clone()
+            } else {
+                let bindings = std::rc::Rc::new(self.prepare_bindings(&pipeline, step.bind_groups())?);
+                cache.bindings.insert(key, bindings.clone());
+                bindings
+            };
             let draw = match step {
                 RenderCommand::DrawIndirect(draw) => PreparedMetalDraw::Indirect {
                     arguments: self.indirect_arguments(draw.arguments, draw.offset, 16)?,
@@ -1880,9 +1905,17 @@ mod platform {
             .map_err(|error| Error::Shader(nserror_message(&error)))
     }
 
+    /// Per-pass cache: resource registries are immutable throughout preparation.
+    /// Never reuse this across resource replacement or render-pass boundaries.
+    #[derive(Default)]
+    struct RenderStateCache {
+        pipelines: std::collections::HashMap<RenderPipelineId, std::rc::Rc<MetalRenderPipeline>>,
+        bindings: std::collections::HashMap<(RenderPipelineId, Option<BindGroupId>), std::rc::Rc<PreparedBindings>>,
+    }
+
     struct PreparedMetalRenderStep {
-        pipeline: MetalRenderPipeline,
-        bindings: PreparedBindings,
+        pipeline: std::rc::Rc<MetalRenderPipeline>,
+        bindings: std::rc::Rc<PreparedBindings>,
         draw: PreparedMetalDraw,
         scissor: Option<gfx_core::ScissorRect>,
     }
@@ -1924,26 +1957,43 @@ mod platform {
         viewport: MTLViewport,
     ) {
         encoder.setViewport(viewport);
+        let mut previous_pipeline = None;
+        let mut previous_bindings = None;
+        let mut previous_scissor = None;
         for step in steps {
             let scissor = metal_scissor_rect(step.scissor, extent);
             if scissor.width == 0 || scissor.height == 0 {
                 continue;
             }
             let pipeline = &step.pipeline;
-            let _ = (pipeline.pipeline_layout,);
-            encoder.setRenderPipelineState(&pipeline.pipeline_state);
-            encoder.setDepthStencilState(Some(&pipeline.depth_state));
-            encoder.setFrontFacingWinding(match pipeline.raster.front_face {
-                gfx_core::FrontFace::Ccw => objc2_metal::MTLWinding::CounterClockwise,
-                gfx_core::FrontFace::Cw => objc2_metal::MTLWinding::Clockwise,
-            });
-            encoder.setCullMode(match pipeline.raster.cull_mode {
-                None => objc2_metal::MTLCullMode::None,
-                Some(gfx_core::Face::Front) => objc2_metal::MTLCullMode::Front,
-                Some(gfx_core::Face::Back) => objc2_metal::MTLCullMode::Back,
-            });
-            encoder.setScissorRect(scissor);
-            step.bindings.encode(encoder);
+            let pipeline_identity = std::rc::Rc::as_ptr(pipeline);
+            if previous_pipeline != Some(pipeline_identity) {
+                let _ = (pipeline.pipeline_layout,);
+                encoder.setRenderPipelineState(&pipeline.pipeline_state);
+                encoder.setDepthStencilState(Some(&pipeline.depth_state));
+                encoder.setFrontFacingWinding(match pipeline.raster.front_face {
+                    gfx_core::FrontFace::Ccw => objc2_metal::MTLWinding::CounterClockwise,
+                    gfx_core::FrontFace::Cw => objc2_metal::MTLWinding::Clockwise,
+                });
+                encoder.setCullMode(match pipeline.raster.cull_mode {
+                    None => objc2_metal::MTLCullMode::None,
+                    Some(gfx_core::Face::Front) => objc2_metal::MTLCullMode::Front,
+                    Some(gfx_core::Face::Back) => objc2_metal::MTLCullMode::Back,
+                });
+                previous_pipeline = Some(pipeline_identity);
+                // Shader reflection and runtime-array sizes are PSO-specific.
+                previous_bindings = None;
+            }
+            let rect = (scissor.x, scissor.y, scissor.width, scissor.height);
+            if previous_scissor != Some(rect) {
+                encoder.setScissorRect(scissor);
+                previous_scissor = Some(rect);
+            }
+            let binding_identity = std::rc::Rc::as_ptr(&step.bindings);
+            if previous_bindings != Some(binding_identity) {
+                step.bindings.encode(encoder);
+                previous_bindings = Some(binding_identity);
+            }
             let primitive_type = primitive_topology_to_metal(pipeline.primitive_topology);
             match &step.draw {
                 PreparedMetalDraw::Counted(run) => run.execute(encoder),
