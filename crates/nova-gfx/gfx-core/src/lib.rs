@@ -33,6 +33,8 @@ mod gpu_timestamps;
 pub mod conformance;
 mod memory;
 mod render_graph;
+mod sampled_texture_slots;
+pub use sampled_texture_slots::{SampledTextureSlot, SampledTextureSlots};
 mod texture_array;
 mod texture_copy;
 pub use buffer_texture_copy::{
