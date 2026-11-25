@@ -43,6 +43,25 @@ pub trait ExtensionDevice {
         ))
     }
 
+    /// Ordered submission retaining the immutable producer command identity.
+    fn submit_owned_offscreen_batch(
+        &mut self, passes: &[gfx_core::RenderPassCommands<'_>],
+        owners: &[std::sync::Arc<[gfx_core::RenderCommand]>],
+        tables: &[Option<BindGroupId>], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<gfx_core::SubmissionId>> {
+        if passes.len() != owners.len() || passes.len() != tags.len()
+            || (!tables.is_empty() && tables.len() != passes.len())
+            || passes.iter().zip(owners).any(|(pass, owner)| !std::ptr::eq(pass.commands, owner.as_ref()))
+        {
+            return Err(gfx_core::Error::InvalidInput("owned draw stream metadata mismatch".into()));
+        }
+        if tables.iter().any(Option::is_some) {
+            self.submit_sampled_offscreen_batch(passes, tables, &[], tags)
+        } else {
+            self.submit_offscreen_graphics(passes, tags, OffscreenQueuePreference::OrderedGraphics)
+        }
+    }
+
     /// Optional native GPU draw-count limit for an ordered offscreen pass.
     fn counted_offscreen_limit(&self) -> Option<u32> { None }
 
@@ -498,6 +517,14 @@ where
         queue: OffscreenQueuePreference,
     ) -> Result<Option<gfx_core::SubmissionId>> {
         OffscreenSubmissionDevice::submit_offscreen_graphics(self, passes, tags, queue)
+    }
+
+    fn submit_owned_offscreen_batch(
+        &mut self, passes: &[gfx_core::RenderPassCommands<'_>],
+        owners: &[std::sync::Arc<[gfx_core::RenderCommand]>],
+        tables: &[Option<BindGroupId>], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<gfx_core::SubmissionId>> {
+        OffscreenSubmissionDevice::submit_owned_offscreen_batch(self, passes, owners, tables, tags)
     }
 
     fn counted_offscreen_limit(&self) -> Option<u32> {
