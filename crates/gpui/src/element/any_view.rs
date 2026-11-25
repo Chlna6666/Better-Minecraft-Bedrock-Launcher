@@ -212,16 +212,18 @@ impl Element for ViewElement {
         window.with_rendered_view(entity_id, |window| match element {
             ViewRequestLayout::Element(element) => { element.prepaint(window, cx); }
             ViewRequestLayout::Cached { element } => {
-                let type_name = cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
-                window.record_rendered_view(entity_id, type_name);
-                let mut inner = self.view.render_element(window, cx);
-                window.with_retained_child_scope(|window| {
-                    inner.prepaint_as_root(bounds.origin, crate::size(
-                        crate::AvailableSpace::Definite(bounds.size.width),
-                        crate::AvailableSpace::Definite(bounds.size.height),
-                    ), window, cx);
-                });
-                *element = Some(inner);
+                *element = Some(window.record_cached_view_layout(|window| {
+                    let type_name = cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
+                    window.record_rendered_view(entity_id, type_name);
+                    let mut inner = self.view.render_element(window, cx);
+                    window.with_retained_child_scope(|window| {
+                        inner.prepaint_as_root(bounds.origin, crate::size(
+                            crate::AvailableSpace::Definite(bounds.size.width),
+                            crate::AvailableSpace::Definite(bounds.size.height),
+                        ), window, cx);
+                    });
+                    inner
+                }));
             }
 
         });

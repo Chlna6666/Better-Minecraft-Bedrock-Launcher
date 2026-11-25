@@ -207,6 +207,8 @@ pub(crate) struct Frame {
     retained_scene_index_spill_capacity: usize,
     pub(crate) retained_element_ranges: FxHashMap<ReconcileKey, RetainedElementRange>,
     pub(crate) retained_element_order: Vec<ReconcileKey>,
+    // Only explicit cached views record native layout claims. Do not enlarge every element range.
+    pub(crate) cached_view_layout_claims: FxHashMap<GlobalElementId, Rc<[crate::layout::LayoutClaim]>>,
     /// Consecutive records typically inherit identical clip/text/transform state.
     /// Share that immutable context instead of storing a full copy in each record.
     pub(crate) last_retained_paint_context: Option<Rc<RetainedPaintContext>>,
@@ -417,6 +419,7 @@ impl Frame {
             retained_scene_index_spill_capacity: 0,
             retained_element_ranges: FxHashMap::default(),
             retained_element_order: Vec::new(),
+            cached_view_layout_claims: FxHashMap::default(),
             last_retained_paint_context: None,
             retained_layout_semantics: FxHashMap::default(),
             retained_unstable_identity_count: 0,
@@ -469,6 +472,7 @@ impl Frame {
         self.retained_scene_index_spill_capacity = 0;
         self.retained_element_ranges.clear();
         self.retained_element_order.clear();
+        self.cached_view_layout_claims.clear();
         self.last_retained_paint_context = None;
         self.retained_layout_semantics.clear();
         self.retained_unstable_identity_count = 0;
@@ -629,6 +633,7 @@ impl Frame {
             + self.retained_scene_index_spill_capacity
             + self.retained_element_ranges.capacity()
             + self.retained_element_order.capacity()
+            + self.cached_view_layout_claims.capacity()
             + self.retained_layout_semantics.capacity()
             + self.tab_stops.retained_capacity()
             + self.debug_container_capacity()
@@ -719,6 +724,9 @@ impl Frame {
             self.retained_layout_semantics
                 .shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(self.retained_layout_semantics.len()));
         }
+        if self.cached_view_layout_claims.capacity() > FRAME_MIN_RETAINED_CAPACITY.max(self.cached_view_layout_claims.len()).saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
+            self.cached_view_layout_claims.shrink_to(FRAME_MIN_RETAINED_CAPACITY.max(self.cached_view_layout_claims.len()));
+        }
         self.tab_stops.trim_retained_capacity(false);
     }
 
@@ -775,6 +783,10 @@ impl Frame {
         {
             self.retained_element_ranges.shrink_to(ranges_target);
         }
+        let claims_target = FRAME_MIN_RETAINED_CAPACITY.max(current.cached_view_layout_claims.len());
+        if self.cached_view_layout_claims.capacity() > claims_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
+            self.cached_view_layout_claims.shrink_to(claims_target);
+        }
         self.tab_stops.trim_for_reuse(&current.tab_stops);
     }
 
@@ -799,6 +811,8 @@ impl Frame {
             .saturating_mul(std::mem::size_of::<(ReconcileKey, RetainedElementRange)>())
             .saturating_add(self.retained_element_order.capacity()
                 .saturating_mul(std::mem::size_of::<ReconcileKey>()))
+            .saturating_add(self.cached_view_layout_claims.capacity()
+                .saturating_mul(std::mem::size_of::<(GlobalElementId, Rc<[crate::layout::LayoutClaim]>)>()))
             .saturating_add(self.retained_layout_semantics.capacity()
                 .saturating_mul(std::mem::size_of::<(LayoutId, RetainedSemanticEntry)>()))
     }
@@ -831,6 +845,7 @@ impl Frame {
                 self.retained_element_ranges
                     .shrink_to(floor.max(self.retained_element_ranges.len()));
                 self.retained_element_order.shrink_to(floor);
+                self.cached_view_layout_claims.shrink_to(floor.max(self.cached_view_layout_claims.len()));
                 self.retained_layout_semantics
                     .shrink_to(floor.max(self.retained_layout_semantics.len()));
                 self.tab_stops

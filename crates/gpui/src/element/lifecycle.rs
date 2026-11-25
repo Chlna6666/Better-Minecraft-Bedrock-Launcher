@@ -778,7 +778,7 @@ impl<E: Element> Drawable<E> {
                     });
                     if let Some((owner, retained, translation)) = retained_view {
                         let prepaint_start = window.prepaint_index();
-                        if window.reuse_prepaint_at(retained.prepaint_range.clone(), translation) {
+                        if window.reuse_cached_view_prepaint(&retained_id, retained.prepaint_range.clone(), translation) {
                             self.phase = ElementDrawPhase::Retained {
                                 view_owner: Some(owner),
                                 translation,
