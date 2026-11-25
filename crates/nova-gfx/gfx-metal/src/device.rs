@@ -113,6 +113,7 @@ mod platform {
         icb: Option<indirect::IcbProgram>,
         fixed_icb: bool,
         draw_run_plans: Vec<std::sync::Arc<gfx_core::DrawRunPlan>>,
+        prepared_render_state: std::cell::RefCell<RenderStateCache>,
         gpu_driven: bool,
         submitted_frames: u64,
     }
@@ -176,6 +177,7 @@ mod platform {
                 work_timestamps,
                 fixed_icb: icb.is_some() && std::env::var_os("NOVA_GFX_METAL_ICB_FIXED").as_deref() == Some(std::ffi::OsStr::new("1")),
                 draw_run_plans: Vec::new(),
+                prepared_render_state: Default::default(),
                 icb,
                 gpu_driven,
                 submitted_frames: 0,
@@ -738,11 +740,12 @@ mod platform {
                 }
                 _ => return Err(Error::InvalidInput("Metal render pass depth attachment mismatch".into())),
             };
-            let mut preparation = RenderStateCache::default();
-            let render_steps = steps
-                .iter()
-                .map(|step| self.prepare_render_step(render_pass, step, &mut preparation))
-                .collect::<Result<Vec<_>>>()?;
+            let render_steps = {
+                let mut preparation = self.prepared_render_state.borrow_mut();
+                preparation.begin_pass();
+                steps.iter().map(|step| self.prepare_render_step(render_pass, step, &mut preparation))
+                    .collect::<Result<Vec<_>>>()?
+            };
 
             let frame = objc2::rc::autoreleasepool(|_| -> Result<Option<(Retained<ProtocolObject<dyn MTLCommandBuffer>>, PresentTimings)>> {
                 let acquire_started = Instant::now();
@@ -873,18 +876,19 @@ mod platform {
                 pipeline.clone()
             } else {
                 let pipeline = self.render_pipelines.get(pipeline_id)?;
-                if render_pass.color_formats != pipeline.color_formats
-                    || render_pass.depth_format != pipeline.depth_format
-                    || render_pass.sample_count != pipeline.sample_count
-                {
-                    return Err(Error::InvalidInput(
-                        "render pass and pipeline color targets do not match".to_string(),
-                    ));
-                }
                 let pipeline = std::rc::Rc::new(pipeline.clone());
                 cache.pipelines.insert(pipeline_id, pipeline.clone());
                 pipeline
             };
+            // The pipeline cache spans passes; attachment compatibility is
+            // still checked once per distinct pipeline in each pass.
+            if cache.checked.insert(pipeline_id)
+                && (render_pass.color_formats != pipeline.color_formats
+                    || render_pass.depth_format != pipeline.depth_format
+                    || render_pass.sample_count != pipeline.sample_count)
+            {
+                return Err(Error::InvalidInput("render pass and pipeline color targets do not match".into()));
+            }
             // Metal currently supports one logical bind group. Validate this
             // before cache lookup, so an invalid extra group cannot alias a
             // previously validated binding set.
@@ -893,12 +897,12 @@ mod platform {
                 [group] => Some(*group),
                 _ => return Err(Error::InvalidInput("Metal requires at most one bind group".into())),
             };
-            let key = (pipeline_id, group);
-            let bindings = if let Some(bindings) = cache.bindings.get(&key) {
+            let groups = cache.bindings.entry(pipeline_id).or_default();
+            let bindings = if let Some(bindings) = groups.get(&group) {
                 bindings.clone()
             } else {
                 let bindings = std::rc::Rc::new(self.prepare_bindings(&pipeline, step.bind_groups())?);
-                cache.bindings.insert(key, bindings.clone());
+                groups.insert(group, bindings.clone());
                 bindings
             };
             let draw = match step {
@@ -1017,6 +1021,9 @@ mod platform {
 
         fn destroy_bind_group(&mut self, bind_group: BindGroupId) -> Result<()> {
             let _resource_set = self.bind_groups.take(bind_group)?;
+            for groups in self.prepared_render_state.get_mut().bindings.values_mut() {
+                groups.remove(&Some(bind_group));
+            }
             Ok(())
         }
 
@@ -1038,6 +1045,10 @@ mod platform {
 
         fn destroy_render_pipeline(&mut self, pipeline: RenderPipelineId) -> Result<()> {
             let _pipeline = self.render_pipelines.take(pipeline)?;
+            let state = self.prepared_render_state.get_mut();
+            state.pipelines.remove(&pipeline);
+            state.bindings.remove(&pipeline);
+            state.checked.remove(&pipeline);
             Ok(())
         }
 
@@ -1067,7 +1078,10 @@ mod platform {
             self.texture_uploads.trim(level);
             if matches!(level, gfx_core::MemoryTrimLevel::Light) {
                 self.draw_run_plans.retain(|plan| plan.is_live());
-            } else { self.draw_run_plans.clear(); }
+            } else {
+                self.draw_run_plans.clear();
+                *self.prepared_render_state.get_mut() = RenderStateCache::default();
+            }
             if let Some(icb) = &self.icb { icb.trim(); }
             Ok(())
         }
@@ -1973,11 +1987,27 @@ mod platform {
     }
 
     /// Per-pass cache: resource registries are immutable throughout preparation.
-    /// Never reuse this across resource replacement or render-pass boundaries.
+    /// Owner-local immutable PSO and reflected binding cache. Logical
+    /// destruction removes precisely the affected generation. Attachment
+    /// compatibility is validated separately per pass.
     #[derive(Default)]
     struct RenderStateCache {
         pipelines: std::collections::HashMap<RenderPipelineId, std::rc::Rc<MetalRenderPipeline>>,
-        bindings: std::collections::HashMap<(RenderPipelineId, Option<BindGroupId>), std::rc::Rc<PreparedBindings>>,
+        bindings: std::collections::HashMap<RenderPipelineId,
+            std::collections::HashMap<Option<BindGroupId>, std::rc::Rc<PreparedBindings>>>,
+        checked: std::collections::HashSet<RenderPipelineId>,
+    }
+
+    impl RenderStateCache {
+        fn begin_pass(&mut self) {
+            self.checked.clear();
+            // Bound retained native objects under large streaming workloads.
+            // This check visits pipeline buckets, not individual draw records.
+            if self.pipelines.len() > 256 || self.bindings.values().map(|groups| groups.len()).sum::<usize>() > 8192 {
+                self.pipelines.clear();
+                self.bindings.clear();
+            }
+        }
     }
 
     struct PreparedMetalRenderStep {
