@@ -2469,7 +2469,7 @@ impl VulkanDevice {
                 return Err(Error::InvalidInput("Vulkan depth attachment is smaller than the rendering area".into()));
             }
         }
-        let mut draw_steps = Vec::with_capacity(steps.len());
+        let mut draw_steps = Vec::with_capacity(run_plan.map_or(steps.len(), |plan| plan.runs().len()));
         let mut descriptor_sets = Vec::new();
         // Reuse the resolved native descriptor range for consecutive draws with
         // identical portable bindings. No repeated registry lookups or copies.
@@ -4370,6 +4370,17 @@ impl VulkanDevice {
     /// Moderate and aggressive pressure release fully empty allocator blocks;
     /// live allocations stay put, including the moderate trim's retained upload page.
     pub fn trim_memory(&mut self, level: MemoryTrimLevel) -> Result<()> {
+        // Weak Arc references can keep the backing allocation reserved after
+        // its elements are dropped. Release expired snapshots on light trim
+        // and discard all CPU-only plans under stronger memory pressure.
+        if matches!(level, MemoryTrimLevel::Light) {
+            self.draw_run_plans.retain(|plan| plan.is_live());
+        } else {
+            self.draw_run_plans.clear();
+            if matches!(level, MemoryTrimLevel::Aggressive) {
+                self.draw_run_plans.shrink_to_fit();
+            }
+        }
         if matches!(level, MemoryTrimLevel::Light) {
             self.poll_cleanup();
             return Ok(());
@@ -6211,8 +6222,10 @@ impl PresentationDevice for VulkanDevice {
         owners: &[Arc<[RenderCommand]>],
         tables: &[Option<BindGroupId>], tags: &[Option<gfx_core::GpuTimestampTag>],
     ) -> Result<Option<SubmissionId>> {
-        if passes.len() != owners.len() || passes.iter().zip(owners)
-            .any(|(pass, owner)| !std::ptr::eq(pass.commands, owner.as_ref()))
+        if passes.len() != owners.len() || passes.len() != tags.len()
+            || (!tables.is_empty() && tables.len() != passes.len())
+            || passes.iter().zip(owners)
+                .any(|(pass, owner)| !std::ptr::eq(pass.commands, owner.as_ref()))
         {
             return Err(Error::InvalidInput("owned draw stream identity mismatch".into()));
         }
