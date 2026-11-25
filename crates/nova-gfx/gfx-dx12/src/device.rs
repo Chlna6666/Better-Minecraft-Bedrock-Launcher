@@ -3899,7 +3899,7 @@ mod platform {
                 command_list.IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
             }
             let record_started = recording::start();
-            let staged = self.stage_indirect(encoder_id, &command_list, steps, &[])?;
+            let staged = self.stage_indirect(encoder_id, &command_list, steps, &[], None)?;
             let staging_ms =
                 record_started.map_or(0., |start| start.elapsed().as_secs_f64() * 1000.);
             let mut binding_state = bindings::State::default();
@@ -4292,7 +4292,7 @@ mod platform {
                 }
             }
             let record_started = recording::start();
-            let staged = self.stage_indirect(encoder_id, &command_list, steps, counts)?;
+            let staged = self.stage_indirect(encoder_id, &command_list, steps, counts, run_plan)?;
             // Transition native packed arguments and GPU count words before the
             // draw loop. The encoder records original states for failure rollback.
             for count in counts {
@@ -4352,7 +4352,9 @@ mod platform {
                     indirect_count += run_count;
                     // Advance before scissor rejection: the packed argument
                     // cursor includes even invisible records.
-                    if run_count > 1 { let _ = step_iter.nth(run_count - 2); }
+                    if run_count > 1 && !run_plan.is_some_and(|plan| plan.is_compressed()) {
+                        let _ = step_iter.nth(run_count - 2);
+                    }
                 }
 
                 let step_scissor = if let Some(region) = step.scissor() {
@@ -6710,6 +6712,33 @@ mod platform {
                 }
             }
             self.record_texture_passes(passes, Some(tags), false, counts, &[])
+        }
+
+        fn compact_draw_run_limit(&self) -> u32 { 65535 * 64 }
+
+        fn render_to_textures_runs_profiled(
+            &mut self, passes: &[RenderPassCommands<'_>],
+            owners: &[Arc<[RenderCommand]>], supplied: &[Option<Arc<gfx_core::DrawRunPlan>>],
+            tables: &[Option<BindGroupId>], tags: &[Option<gfx_core::GpuTimestampTag>],
+        ) -> Result<Option<SubmissionId>> {
+            if supplied.len() != passes.len() || passes.len() != owners.len() || passes.len() != tags.len()
+                || (!tables.is_empty() && tables.len() != passes.len())
+                || passes.iter().zip(owners).any(|(pass, owner)| !std::ptr::eq(pass.commands, owner.as_ref()))
+            { return Err(Error::InvalidInput("DX12 representative stream metadata mismatch".into())); }
+            if tables.iter().any(Option::is_some) {
+                return Err(Error::Unavailable("DX12 pass-level sampled table unsupported".into()));
+            }
+            let limit = PresentationDevice::compact_draw_run_limit(self);
+            if supplied.iter().zip(owners).any(|(plan, owner)| plan.as_ref().is_some_and(|plan|
+                !plan.matches_representatives(owner, limit)))
+            { return Err(Error::InvalidInput("DX12 representative stream identity or limit mismatch".into())); }
+            if supplied.iter().all(Option::is_none) {
+                return self.render_to_textures_owned_profiled(passes, owners, tables, tags);
+            }
+            let plans = owners.iter().zip(supplied).map(|(owner, supplied)| {
+                supplied.clone().unwrap_or_else(|| Arc::new(gfx_core::DrawRunPlan::new_packed(owner, u32::MAX)))
+            }).collect::<Vec<_>>();
+            self.record_texture_passes(passes, Some(tags), false, &[], &plans)
         }
 
         fn render_to_textures_owned_profiled(
