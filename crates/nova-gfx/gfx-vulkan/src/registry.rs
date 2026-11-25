@@ -2,6 +2,7 @@ use gfx_core::{Error, ResourceId, Result};
 
 struct ResourceSlot<T> {
     generation: u32,
+    native_revision: u64,
     value: Option<T>,
 }
 
@@ -9,6 +10,7 @@ pub(crate) struct ResourceRegistry<T> {
     kind: &'static str,
     slots: Vec<ResourceSlot<T>>,
     free_indices: Vec<u32>,
+    identity_epoch: u64,
 }
 
 impl<T> Default for ResourceRegistry<T> {
@@ -23,6 +25,7 @@ impl<T> ResourceRegistry<T> {
             kind,
             slots: Vec::new(),
             free_indices: Vec::new(),
+            identity_epoch: 0,
         }
     }
 
@@ -35,9 +38,20 @@ impl<T> ResourceRegistry<T> {
         let index = u32::try_from(self.slots.len()).unwrap_or(u32::MAX);
         self.slots.push(ResourceSlot {
             generation: 1,
+            native_revision: 0,
             value: Some(value),
         });
         ResourceId::from_parts(index, 1)
+    }
+
+    /// Changes only when an existing native identity can become invalid.
+    /// Uploads and ordinary mutable resource state do not invalidate caches.
+    pub(crate) fn identity_epoch(&self) -> u64 { self.identity_epoch }
+
+    pub(crate) fn native_stamp<R>(&self, id: ResourceId<R>) -> Result<u64> {
+        let slot = self.valid_slot(id)?;
+        if slot.value.is_none() { return Err(stale_handle_error(self.kind, id)); }
+        Ok(slot.native_revision)
     }
 
     pub(crate) fn get<R>(&self, id: ResourceId<R>) -> Result<&T> {
@@ -65,15 +79,18 @@ impl<T> ResourceRegistry<T> {
             .ok_or_else(|| stale_handle_error(kind, id))?;
         slot.generation = slot.generation.wrapping_add(1).max(1);
         self.free_indices.push(index);
+        self.identity_epoch = self.identity_epoch.checked_add(1).expect("resource identity epoch exhausted");
         Ok(value)
     }
 
     pub(crate) fn replace_live<R>(&mut self, id: ResourceId<R>, value: T) -> Result<T> {
         let kind = self.kind;
         let slot = self.valid_slot_mut(id)?;
-        slot.value
-            .replace(value)
-            .ok_or_else(|| stale_handle_error(kind, id))
+        if slot.value.is_none() { return Err(stale_handle_error(kind, id)); }
+        slot.native_revision = slot.native_revision.checked_add(1).expect("native resource revision exhausted");
+        let previous = slot.value.replace(value).expect("validated live resource");
+        self.identity_epoch = self.identity_epoch.checked_add(1).expect("resource identity epoch exhausted");
+        Ok(previous)
     }
 
     pub(crate) fn live_len(&self) -> usize {
@@ -120,6 +137,7 @@ impl<T> ResourceRegistry<T> {
             }
         }
         self.free_indices.clear();
+        if !values.is_empty() { self.identity_epoch = self.identity_epoch.checked_add(1).expect("resource identity epoch exhausted"); }
         values
     }
 
@@ -135,6 +153,7 @@ impl<T> ResourceRegistry<T> {
                 removed += 1;
             }
         }
+        if removed != 0 { self.identity_epoch = self.identity_epoch.checked_add(1).expect("resource identity epoch exhausted"); }
         removed
     }
 
@@ -168,4 +187,27 @@ fn stale_handle_error<R>(kind: &'static str, id: ResourceId<R>) -> Error {
         id.index(),
         id.generation()
     ))
+}
+
+#[cfg(test)]
+mod native_identity_tests {
+    use super::*;
+    #[test]
+    fn native_stamp_changes_only_on_replacement_or_retirement() {
+        let mut registry = ResourceRegistry::new("test");
+        let id: ResourceId<()> = registry.insert(1u32);
+        let stamp = registry.native_stamp(id).unwrap();
+        let epoch = registry.identity_epoch();
+        *registry.get_mut(id).unwrap() = 2;
+        assert_eq!(registry.identity_epoch(), epoch);
+        assert_eq!(registry.native_stamp(id).unwrap(), stamp);
+        let other: ResourceId<()> = registry.insert(3);
+        registry.take(other).unwrap();
+        assert_ne!(registry.identity_epoch(), epoch);
+        assert_eq!(registry.native_stamp(id).unwrap(), stamp);
+        registry.replace_live(id, 4).unwrap();
+        assert_ne!(registry.native_stamp(id).unwrap(), stamp);
+        registry.take(id).unwrap();
+        assert!(registry.native_stamp(id).is_err());
+    }
 }
