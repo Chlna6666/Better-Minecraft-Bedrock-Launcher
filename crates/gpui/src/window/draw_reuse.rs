@@ -623,6 +623,7 @@ impl Window {
         plain_text_semantics: Option<(SharedString, TextStyle, Pixels)>,
         identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
     ) {
+        let previous = self.rendered_frame.retained_element_ranges.get(retained_id);
         let descriptor = if let Some((text, text_style, rem_size)) = plain_text_semantics {
             RetainedSemanticDescriptor::PlainText {
                 text,
@@ -657,25 +658,32 @@ impl Window {
         let matching_descriptor = previous
             .and_then(|range| range.semantic_descriptor.as_ref())
             .filter(|old| old.as_ref() == &descriptor);
-        let generation = if matching_descriptor.is_some() {
-            previous
-                .and_then(|range| range.semantic_generation)
-                .unwrap_or(1)
-        } else if let Some(previous_generation) =
-            previous.and_then(|range| range.semantic_generation)
-        {
-            let Some(next_generation) = previous_generation.checked_add(1) else {
-                return;
-            };
-            next_generation
-        } else {
-            1
+        // The overwhelmingly common case is an unchanged descriptor on an unchanged frame.
+        // Reusing the committed `Rc` (and its generation) skips the `Rc::new` allocation and
+        // keeps the generation stable, which is what lets descendants prove themselves
+        // without walking their whole subtree again.
+        let (descriptor, generation) = match (matching_descriptor, previous) {
+            (Some(unchanged), Some(range)) => (
+                Rc::clone(unchanged),
+                range.semantic_generation.unwrap_or(1),
+            ),
+            (_, Some(range)) => {
+                let Some(next_generation) = range
+                    .semantic_generation
+                    .unwrap_or(0)
+                    .checked_add(1)
+                else {
+                    return;
+                };
+                (Rc::new(descriptor), next_generation)
+            }
+            (_, None) => (Rc::new(descriptor), 1),
         };
 
         self.next_frame.retained_layout_semantics.insert(
             layout_id,
             RetainedSemanticEntry {
-                descriptor: Some(matching_descriptor.cloned().unwrap_or_else(|| Rc::new(descriptor))),
+                descriptor: Some(descriptor),
                 stamp: RetainedSemanticStamp {
                     segment: retained_segment.clone(),
                     generation,

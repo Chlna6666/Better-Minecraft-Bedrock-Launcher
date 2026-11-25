@@ -14,7 +14,6 @@ impl Window {
     ) -> Option<(super::frame::RetainedReplayRanges, Point<Pixels>)> {
         if cfg!(gpui_hot_reload)
             || self.force_view_cache_refresh()
-            || !self.invalidator.active_targeted_replay()
             || self.view_dirty_scope(owner).is_some()
             || cx.has_active_drag()
             || self.is_inspector_picking(cx)

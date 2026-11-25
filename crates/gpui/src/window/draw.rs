@@ -178,9 +178,19 @@ impl Window {
         // Defensive: an unwound draw could leave stale frames behind.
         self.view_bounds_stack.clear();
         self.invalidator.set_dirty(false);
-        // Window-level damage without retained provenance must still execute the root.
-        // A clean draw or a targeted child update can reuse it, but an unnamed dirty edge cannot.
-        if was_dirty && !self.invalidator.active_targeted_replay() {
+        // A window-level dirty edge that names no view has no provenance at all: there is
+        // nothing to prove any committed subtree still matches, so the conservative barrier
+        // stays. A dirty edge that does name views does not need it: each element still has
+        // to prove itself through its layout fingerprint, semantic descriptor and interaction
+        // side effects, and a view that was actually notified rebuilds its own render.
+        //
+        // This used to fire for every non-targeted dirty frame, which disabled all reuse on
+        // exactly the frames a generic `Context::notify` produces — the common case.
+        if was_dirty
+            && !self.invalidator.active_targeted_replay()
+            && directly_dirty_views.is_empty()
+            && self.dirty_views.is_empty()
+        {
             self.force_view_cache_refresh = true;
         }
         // Establish abort eligibility exactly once, before any Prepaint/Paint
@@ -1087,6 +1097,14 @@ impl Window {
                     .sum::<u128>(),
                 element_work.paint,
                 element_work.replay,
+            );
+            // The probe is opt-in, so printing it costs nothing otherwise. It runs
+            // on optimized binaries too: a diagnosis has to see the real build,
+            // and the numbers are only comparable between probe runs.
+            eprintln!(
+                "element-work: prepaint={} paint={}",
+                self.last_generation_stats.element_prepaint,
+                self.last_generation_stats.element_paint,
             );
         } else {
             // Avoid per-frame heap allocations and sorting when the invasive
