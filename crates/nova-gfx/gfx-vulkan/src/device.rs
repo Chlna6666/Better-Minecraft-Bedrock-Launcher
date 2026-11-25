@@ -2988,6 +2988,8 @@ impl VulkanDevice {
         }
 
         let mut target_layouts = Vec::<(TextureId, vk::ImageLayout)>::new();
+        let mut previous_writers = Vec::<TextureId>::new();
+        let mut graph_write_hazards = Vec::with_capacity(passes.len());
         for pass in passes {
             let depths = self.depth_accesses(pass.commands, pass.depth_attachment)?;
             let color_ids = pass
@@ -2996,6 +2998,12 @@ impl VulkanDevice {
                 .chain(pass.resolve_target.iter())
                 .map(|view| self.texture_views.get(*view).map(|v| v.texture))
                 .collect::<Result<Vec<_>>>()?;
+            // Record every physical color/resolve write, including attachments
+            // following an already-known writer. Reuse preflight identities.
+            graph_write_hazards.push(graph_pass_write_requires_barrier(
+                &mut previous_writers,
+                color_ids.iter().copied(),
+            ));
             for texture_id in color_ids
                 .into_iter()
                 .chain(depths.iter().map(|access| access.texture))
@@ -3012,17 +3020,8 @@ impl VulkanDevice {
         // one physical image. The graph marks WAW handoffs when a later pass
         // reuses its attachment; the native command buffer executes that
         // access barrier before entering the render pass.
-        let mut previous_writers = Vec::<TextureId>::new();
         for (index, pass) in passes.iter().enumerate() {
-            let graph_write_hazard = pass.color_attachments.iter().any(|view| {
-                let texture_id = self.texture_views.get(*view).map(|v| v.texture);
-                match texture_id {
-                    Ok(texture_id) => {
-                        graph_color_write_requires_barrier(&mut previous_writers, texture_id)
-                    }
-                    Err(_) => false,
-                }
-            });
+            let graph_write_hazard = graph_write_hazards[index];
             let command_buffer = self.command_encoders.get(encoder)?.command_buffers[index];
             let result = self.record_render_step_list_views(
                 encoder,
@@ -6626,6 +6625,18 @@ fn graph_color_write_requires_barrier(
     }
 }
 
+/// Accumulate all writes even after the first hazard in a multi-target pass.
+fn graph_pass_write_requires_barrier(
+    previous_writers: &mut Vec<TextureId>,
+    textures: impl IntoIterator<Item = TextureId>,
+) -> bool {
+    let mut hazard = false;
+    for texture in textures {
+        hazard |= graph_color_write_requires_barrier(previous_writers, texture);
+    }
+    hazard
+}
+
 fn texture_uploads_overlap(first: &VulkanTextureUpload, second: &VulkanTextureUpload) -> bool {
     first.mip_level == second.mip_level
         && first.layer == second.layer
@@ -9731,6 +9742,19 @@ mod tests {
         assert!(graph_color_write_requires_barrier(&mut written, x));
         assert!(!graph_color_write_requires_barrier(&mut written, y2));
         assert_eq!(written, vec![x, y1, y2]);
+    }
+
+    #[test]
+    fn native_graph_tracks_all_mrt_and_resolve_writes_after_first_hazard() {
+        let a = TextureId::from_parts(10, 1);
+        let b = TextureId::from_parts(11, 1);
+        let resolve = TextureId::from_parts(12, 1);
+        let mut written = Vec::new();
+        assert!(!graph_pass_write_requires_barrier(&mut written, [a]));
+        assert!(graph_pass_write_requires_barrier(&mut written, [a, b, resolve]));
+        assert_eq!(written, vec![a, b, resolve]);
+        assert!(graph_pass_write_requires_barrier(&mut written, [b]));
+        assert!(graph_pass_write_requires_barrier(&mut written, [resolve]));
     }
 
     #[test]
