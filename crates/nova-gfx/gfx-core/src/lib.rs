@@ -2910,11 +2910,24 @@ pub struct DrawRunPlan {
     runs: Vec<u32>,
     indirect_only: bool,
     limit: u32,
+    packed: bool,
 }
 
 impl DrawRunPlan {
     /// Build once for an immutable producer snapshot, capped at the native limit.
     pub fn new(commands: &std::sync::Arc<[RenderCommand]>, limit: u32) -> Self {
+        Self::build(commands, limit, false)
+    }
+
+    /// Run plan for a consumer that repacks every source record into a
+    /// validated contiguous native argument buffer in command order.
+    /// Source buffer identity and offset are not run boundaries in this
+    /// ABI. A consumer reading source buffers directly must use new().
+    pub fn new_packed(commands: &std::sync::Arc<[RenderCommand]>, limit: u32) -> Self {
+        Self::build(commands, limit, true)
+    }
+
+    fn build(commands: &std::sync::Arc<[RenderCommand]>, limit: u32, packed: bool) -> Self {
         let limit = limit.max(1);
         let mut runs = Vec::new();
         let mut cursor = 0;
@@ -2929,10 +2942,10 @@ impl DrawRunPlan {
                 { break; }
                 let contiguous = match (first, next) {
                     (RenderCommand::DrawIndirect(a), RenderCommand::DrawIndirect(b)) =>
-                        a.arguments == b.arguments && a.offset.checked_add(u64::from(count) * 16) == Some(b.offset),
+                        packed || (a.arguments == b.arguments && a.offset.checked_add(u64::from(count) * 16) == Some(b.offset)),
                     (RenderCommand::DrawIndexedIndirect(a), RenderCommand::DrawIndexedIndirect(b)) =>
-                        a.arguments == b.arguments && a.index_buffer == b.index_buffer
-                            && a.offset.checked_add(u64::from(count) * 20) == Some(b.offset),
+                        a.index_buffer == b.index_buffer && (packed ||
+                            (a.arguments == b.arguments && a.offset.checked_add(u64::from(count) * 20) == Some(b.offset))),
                     _ => false,
                 };
                 if !contiguous { break; }
@@ -2941,13 +2954,23 @@ impl DrawRunPlan {
             runs.push(count);
             cursor += count as usize;
         }
-        Self { source: std::sync::Arc::downgrade(commands), runs, indirect_only, limit }
+        Self { source: std::sync::Arc::downgrade(commands), runs, indirect_only, limit, packed }
     }
 
     /// Exact allocation identity and native limit, not a content hash.
     #[must_use]
     pub fn matches(&self, commands: &std::sync::Arc<[RenderCommand]>, limit: u32) -> bool {
-        self.limit == limit.max(1) && self.source.ptr_eq(&std::sync::Arc::downgrade(commands))
+        self.matches_mode(commands, limit, false)
+    }
+
+    /// Exact identity for a plan whose consumer uses staged packed arguments.
+    pub fn matches_packed(&self, commands: &std::sync::Arc<[RenderCommand]>, limit: u32) -> bool {
+        self.matches_mode(commands, limit, true)
+    }
+
+    fn matches_mode(&self, commands: &std::sync::Arc<[RenderCommand]>, limit: u32, packed: bool) -> bool {
+        self.packed == packed && self.limit == limit.max(1)
+            && self.source.ptr_eq(&std::sync::Arc::downgrade(commands))
     }
 
     /// Whether a producer still owns the source snapshot.
@@ -2973,6 +2996,21 @@ mod draw_run_plan_tests {
             pipeline: RenderPipelineId::from_parts(1, 1), bind_groups: bind_group_list([]),
             arguments: BufferId::from_parts(1, 1), offset, scissor: None,
         })
+    }
+
+    #[test]
+    fn packed_draw_runs_ignore_source_offsets_but_not_binding_boundaries() {
+        let mut commands = vec![draw(0), draw(80), draw(16), draw(48)];
+        if let RenderCommand::DrawIndirect(command) = &mut commands[2] {
+            command.arguments = BufferId::from_parts(2, 1);
+        }
+        commands[3].set_scissor(Some(ScissorRect { x: 0, y: 0, width: 1, height: 1 }));
+        let commands: Arc<[RenderCommand]> = commands.into();
+        assert_eq!(DrawRunPlan::new(&commands, 8).runs(), &[1, 1, 1, 1]);
+        let packed = DrawRunPlan::new_packed(&commands, 8);
+        assert_eq!(packed.runs(), &[3, 1]);
+        assert!(packed.matches_packed(&commands, 8));
+        assert!(!packed.matches(&commands, 8));
     }
 
     #[test]
