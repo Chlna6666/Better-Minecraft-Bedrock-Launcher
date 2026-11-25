@@ -263,11 +263,15 @@ impl SampledMaterialLease {
 struct BankImage {
     slot: SampledTextureSlot,
     references: usize,
+    // Readers from earlier released materials sharing this live slot.
+    readers: HashSet<SubmissionId>,
 }
 
 struct TextureBank {
     slots: SampledTextureSlots,
     images: HashMap<TextureViewId, BankImage>,
+    // Reverse index: a completion visits only images that depend on it.
+    image_readers: HashMap<SubmissionId, Vec<TextureViewId>>,
 }
 
 /// Material-aware bank allocator. A texture can appear in multiple banks
@@ -321,7 +325,7 @@ impl SampledTextureBanks {
             }
             let slots = SampledTextureSlots::new(self.capacity, self.fallback)?;
             let index = self.banks.len();
-            self.banks.push(TextureBank { slots, images: HashMap::new() });
+            self.banks.push(TextureBank { slots, images: HashMap::new(), image_readers: HashMap::new() });
             index
         };
         let bank = &mut self.banks[index];
@@ -334,17 +338,17 @@ impl SampledTextureBanks {
             } else {
                 // Placement checked the exact number of free slots first.
                 let slot = bank.slots.allocate(view).expect("preflighted sampled bank capacity");
-                bank.images.insert(view, BankImage { slot, references: 1 });
+                bank.images.insert(view, BankImage { slot, references: 1, readers: HashSet::new() });
             }
         }
         let indices = views.map(|view| view.map_or(0, |view| bank.images[&view].slot.index()));
         Ok(SampledMaterialLease { owner: self.owner.clone(), bank: index, views, indices })
     }
 
-    /// Release one material. The supplied readers must include ALL still
-    /// outstanding native readers of this bank's slot generations, including
-    /// earlier released materials. Unaccepted/untracked readers must be
-    /// sealed by the caller before release. This is not a GPU wait.
+    /// Release one material. Supply its outstanding native readers.
+    /// Earlier released materials' readers are accumulated until completion,
+    /// even if other materials continue sharing their slot. Unaccepted or
+    /// untracked readers must be sealed before release. This is not a GPU wait.
     pub fn release_material(&mut self, lease: SampledMaterialLease, readers: &[SubmissionId]) -> Result<()> {
         if !std::sync::Arc::ptr_eq(&self.owner, &lease.owner) {
             return Err(Error::InvalidInput("sampled material lease belongs to another bank allocator".into()));
@@ -361,9 +365,17 @@ impl SampledTextureBanks {
             let entry = bank.images.get_mut(&view).expect("validated material image");
             entry.references -= 1;
             if entry.references == 0 {
+                entry.readers.extend(readers.iter().copied());
                 let slot = entry.slot;
-                bank.slots.retire(slot, readers)?;
+                let dependencies: Vec<_> = entry.readers.iter().copied().collect();
+                bank.slots.retire(slot, &dependencies)?;
                 bank.images.remove(&view);
+            } else {
+                for &reader in readers {
+                    if entry.readers.insert(reader) {
+                        bank.image_readers.entry(reader).or_default().push(view);
+                    }
+                }
             }
         }
         Ok(())
@@ -390,12 +402,21 @@ impl SampledTextureBanks {
 
     /// Recycle only slots protected by the completed native submission.
     pub fn complete(&mut self, submission: SubmissionId) {
-        for bank in &mut self.banks { bank.slots.complete(submission); }
+        for bank in &mut self.banks {
+            bank.slots.complete(submission);
+            if let Some(images) = bank.image_readers.remove(&submission) {
+                for view in images {
+                    if let Some(image) = bank.images.get_mut(&view) {
+                        image.readers.remove(&submission);
+                    }
+                }
+            }
+        }
     }
 }
 
-fn unique_material_views(views: &[Option<TextureViewId>; 4]) -> Vec<TextureViewId> {
-    let mut unique = Vec::with_capacity(4);
+fn unique_material_views(views: &[Option<TextureViewId>; 4]) -> smallvec::SmallVec<[TextureViewId; 4]> {
+    let mut unique = smallvec::SmallVec::new();
     for view in views.iter().flatten() {
         if !unique.contains(view) { unique.push(*view); }
     }
@@ -436,6 +457,25 @@ mod tests {
         assert_eq!(banks.slots(0).unwrap().available_slots(), 2);
         assert_eq!(banks.slots(1).unwrap().available_slots(), 0);
         banks.release_material(overflow, &[]).unwrap();
+    }
+
+    #[test]
+    fn shared_bank_slot_retains_readers_from_earlier_released_materials() {
+        let fallback = TextureViewId::from_parts(1, 1);
+        let image = TextureViewId::from_parts(2, 1);
+        let a = SubmissionId::from_parts(1, 1);
+        let b = SubmissionId::from_parts(2, 1);
+        let mut banks = SampledTextureBanks::new(2, fallback, 1).unwrap();
+        let first = banks.acquire_material([Some(image), None, None, None]).unwrap();
+        let second = banks.acquire_material([Some(image), None, None, None]).unwrap();
+        let third = banks.acquire_material([Some(image), None, None, None]).unwrap();
+        banks.release_material(first, &[a]).unwrap();
+        banks.release_material(second, &[b, b]).unwrap();
+        banks.complete(a);
+        banks.release_material(third, &[]).unwrap();
+        assert_eq!(banks.slots(0).unwrap().available_slots(), 0);
+        banks.complete(b);
+        assert_eq!(banks.slots(0).unwrap().available_slots(), 1);
     }
 
     #[test]
