@@ -225,6 +225,7 @@ pub(super) struct EffectScene {
     pub(super) last_seen: Instant,
     pub(super) capture: Option<SceneView>,
     capture_commands: CaptureCommands,
+    shadow_run_cache: [super::super::command_runs::FlatRunCache; SHADOW_CASCADE_COUNT],
     pub(super) targets_valid: bool,
     pub(super) queued_capture: bool,
     pub(super) ssr_hiz: Option<SsrHiZ>,
@@ -696,6 +697,7 @@ impl EffectScene {
                 last_seen: Instant::now(),
                 capture: None,
                 capture_commands: CaptureCommands::default(),
+                shadow_run_cache: Default::default(),
                 targets_valid: false,
                 queued_capture: false,
                 ssr_hiz: None,
@@ -834,6 +836,11 @@ impl EffectScene {
             let commands = self.scene.shadow_steps(
                 device, renderer, camera, cascade, caster_bounds, &context,
             )?;
+            let (commands, run_plan) = if let Some(published) = self.shadow_run_cache[cascade]
+                .refresh(&commands, device.compact_draw_run_limit())?
+            {
+                (published.commands, Some(published.plan))
+            } else { (commands, None) };
             let mut shadow_plan = pass(
                 shadow_pass,
                 self.shadow_color[cascade].view,
@@ -843,6 +850,7 @@ impl EffectScene {
                 true,
             );
             shadow_plan.sampled_table = self.scene.sampled_snapshot(renderer);
+            shadow_plan.run_plan = run_plan;
             self.scene.queue_sampled_capture(shadow_plan.sampled_table);
             passes.push(shadow_plan);
             self.queued_shadow[cascade] = true;
