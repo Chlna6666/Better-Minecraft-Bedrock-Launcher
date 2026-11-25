@@ -2899,6 +2899,100 @@ impl RenderCommand {
     }
 }
 
+/// Immutable contiguous indirect-draw run boundaries for one published command stream.
+///
+/// The plan contains no native handles or resource-lifetime proof. The consumer
+/// must still validate the live resource IDs, full argument spans and device
+/// limits. Weak identity prevents address reuse without retaining old commands.
+#[derive(Debug)]
+pub struct DrawRunPlan {
+    source: std::sync::Weak<[RenderCommand]>,
+    runs: Vec<u32>,
+    indirect_only: bool,
+    limit: u32,
+}
+
+impl DrawRunPlan {
+    /// Build once for an immutable producer snapshot, capped at the native limit.
+    pub fn new(commands: &std::sync::Arc<[RenderCommand]>, limit: u32) -> Self {
+        let limit = limit.max(1);
+        let mut runs = Vec::new();
+        let mut cursor = 0;
+        let mut indirect_only = !commands.is_empty();
+        while cursor < commands.len() {
+            let first = &commands[cursor];
+            let mut count = 1u32;
+            indirect_only &= matches!(first, RenderCommand::DrawIndirect(_) | RenderCommand::DrawIndexedIndirect(_));
+            for next in commands[cursor + 1..].iter().take((limit - 1) as usize) {
+                if first.pipeline() != next.pipeline() || first.bind_groups() != next.bind_groups()
+                    || first.scissor() != next.scissor()
+                { break; }
+                let contiguous = match (first, next) {
+                    (RenderCommand::DrawIndirect(a), RenderCommand::DrawIndirect(b)) =>
+                        a.arguments == b.arguments && a.offset.checked_add(u64::from(count) * 16) == Some(b.offset),
+                    (RenderCommand::DrawIndexedIndirect(a), RenderCommand::DrawIndexedIndirect(b)) =>
+                        a.arguments == b.arguments && a.index_buffer == b.index_buffer
+                            && a.offset.checked_add(u64::from(count) * 20) == Some(b.offset),
+                    _ => false,
+                };
+                if !contiguous { break; }
+                count += 1;
+            }
+            runs.push(count);
+            cursor += count as usize;
+        }
+        Self { source: std::sync::Arc::downgrade(commands), runs, indirect_only, limit }
+    }
+
+    /// Exact allocation identity and native limit, not a content hash.
+    #[must_use]
+    pub fn matches(&self, commands: &std::sync::Arc<[RenderCommand]>, limit: u32) -> bool {
+        self.limit == limit.max(1) && self.source.ptr_eq(&std::sync::Arc::downgrade(commands))
+    }
+
+    /// Whether a producer still owns the source snapshot.
+    #[must_use]
+    pub fn is_live(&self) -> bool { self.source.strong_count() != 0 }
+
+    /// Ordered run lengths. Direct draws are always singletons.
+    #[must_use]
+    pub fn runs(&self) -> &[u32] { &self.runs }
+
+    /// Whether the nonempty stream contains only indirect draws.
+    #[must_use]
+    pub fn indirect_only(&self) -> bool { self.indirect_only }
+}
+
+#[cfg(test)]
+mod draw_run_plan_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn draw(offset: u64) -> RenderCommand {
+        RenderCommand::DrawIndirect(DrawIndirectCommand {
+            pipeline: RenderPipelineId::from_parts(1, 1), bind_groups: bind_group_list([]),
+            arguments: BufferId::from_parts(1, 1), offset, scissor: None,
+        })
+    }
+
+    #[test]
+    fn immutable_draw_run_plan_respects_identity_limits_and_state() {
+        let mut commands = (0..10).map(|i| draw(i * 16)).collect::<Vec<_>>();
+        commands[5].set_scissor(Some(ScissorRect { x: 0, y: 0, width: 1, height: 1 }));
+        let commands: Arc<[RenderCommand]> = commands.into();
+        let plan = DrawRunPlan::new(&commands, 4);
+        assert_eq!(plan.runs(), &[4, 1, 1, 4]);
+        assert!(plan.indirect_only());
+        assert!(plan.matches(&commands.clone(), 4));
+        assert!(!plan.matches(&commands, 3));
+        let copy: Arc<[RenderCommand]> = Arc::from(commands.as_ref());
+        assert!(!plan.matches(&copy, 4));
+        assert_eq!(DrawRunPlan::new(&commands, 1).runs(), &[1; 10]);
+        drop(commands);
+        assert!(!plan.is_live());
+    }
+}
+
 /// Integer scissor rectangle in render target coordinates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScissorRect {
