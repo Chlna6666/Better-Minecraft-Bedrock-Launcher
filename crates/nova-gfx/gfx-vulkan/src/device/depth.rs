@@ -22,8 +22,17 @@ impl VulkanDevice {
             })
             .transpose()?;
         let mut textures = Vec::new();
+        let mut previous_groups: Option<&[BindGroupId]> = None;
         for step in steps {
-            for &group in step.bind_groups() {
+            let groups = step.bind_groups();
+            // All draws sharing the same bindings have the same sampled
+            // depth resources. Keep the first occurrence's validation and
+            // discovery order without repeating registry lookups per draw.
+            if previous_groups == Some(groups) {
+                continue;
+            }
+            previous_groups = Some(groups);
+            for &group in groups {
                 for &texture in &self.bind_groups.get(group)?.sampled_depth {
                     if Some(texture) == target {
                         return Err(Error::InvalidInput(
