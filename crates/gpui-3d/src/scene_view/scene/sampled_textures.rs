@@ -4,22 +4,48 @@
 use super::*;
 use gfx_core::{SampledTextureSlots, SubmissionId};
 
+#[derive(Clone, Default)]
+struct Readers {
+    submissions: HashSet<SubmissionId>,
+    untracked: bool,
+}
+
+impl Readers {
+    fn submitted(&mut self, submission: Option<SubmissionId>) {
+        if let Some(submission) = submission {
+            self.submissions.insert(submission);
+        } else { self.untracked = true; }
+    }
+    fn accepted(&mut self, submission: SubmissionId) {
+        if std::mem::take(&mut self.untracked) { self.submissions.insert(submission); }
+    }
+    fn completed(&mut self, submission: SubmissionId) { self.submissions.remove(&submission); }
+    fn idle(&mut self) { self.submissions.clear(); self.untracked = false; }
+    fn ready(&self) -> bool { !self.untracked && self.submissions.is_empty() }
+}
+
 struct RetiredSnapshot {
     snapshot: BindGroupId,
+    readers: Readers,
+}
+
+/// Images can be shared across descriptor generations and legacy draws.
+/// Their lifetime is not the lifetime of only the latest replaced set.
+struct RetiredTextures {
     textures: Vec<TextureResources>,
-    readers: HashSet<SubmissionId>,
-    untracked: bool,
+    readers: Readers,
 }
 
 pub(super) struct SceneSampledTextures {
     layout: BindGroupLayoutId,
     slots: SampledTextureSlots,
     unmapped: usize,
-    readers: HashSet<SubmissionId>,
-    untracked: bool,
+    readers: Readers,
+    snapshot_readers: Readers,
     pending: Vec<TextureResources>,
     cleared: Vec<TextureResources>,
     retired: Vec<RetiredSnapshot>,
+    retired_textures: Vec<RetiredTextures>,
     published: bool,
     remap_pending: bool,
 }
@@ -28,8 +54,9 @@ impl SceneSampledTextures {
     pub(super) fn new(layout: BindGroupLayoutId, capacity: u32, fallback: gfx_core::TextureViewId) -> gpui::Result<Self> {
         Ok(Self {
             layout, slots: SampledTextureSlots::new(capacity, fallback)?,
-            unmapped: 0, readers: HashSet::new(), untracked: false,
-            pending: Vec::new(), cleared: Vec::new(), retired: Vec::new(), published: false, remap_pending: false,
+            unmapped: 0, readers: Readers::default(), snapshot_readers: Readers::default(),
+            pending: Vec::new(), cleared: Vec::new(), retired: Vec::new(),
+            retired_textures: Vec::new(), published: false, remap_pending: false,
         })
     }
 
@@ -84,75 +111,79 @@ impl SceneSampledTextures {
     }
 
     pub(super) fn has_completed_retirement(&self) -> bool {
-        self.retired.iter().any(|old| !old.untracked && old.readers.is_empty())
+        self.retired.iter().any(|old| old.readers.ready())
+            || self.retired_textures.iter().any(|old| old.readers.ready())
     }
 
     pub(super) fn has_retired(&self) -> bool {
         !self.pending.is_empty() || !self.cleared.is_empty() || !self.retired.is_empty()
+            || !self.retired_textures.is_empty()
     }
 
-    pub(super) fn submitted(&mut self, submission: Option<SubmissionId>) {
-        if let Some(submission) = submission {
-            self.readers.insert(submission);
-        } else {
-            self.untracked = true;
-        }
-    }
-
-    pub(super) fn accepted(&mut self, submission: SubmissionId) {
-        // Only the existing ordered Graphics owner callback may seal an
-        // untracked scene draw; an unrelated queue completion cannot.
-        if self.untracked {
-            self.readers.insert(submission);
-            self.untracked = false;
-        }
-        for old in &mut self.retired {
-            if old.untracked {
-                old.readers.insert(submission);
-                old.untracked = false;
+    pub(super) fn submitted(&mut self, submission: Option<SubmissionId>, snapshot: Option<BindGroupId>) {
+        self.readers.submitted(submission);
+        if let Some(snapshot) = snapshot {
+            if self.slots.current_snapshot() == Some(snapshot) {
+                self.snapshot_readers.submitted(submission);
+            } else if let Some(old) = self.retired.iter_mut().find(|old| old.snapshot == snapshot) {
+                old.readers.submitted(submission);
+            } else {
+                debug_assert!(false, "submitted unknown sampled snapshot");
             }
         }
     }
 
+    pub(super) fn accepted(&mut self, submission: SubmissionId) {
+        // Only the ordered Graphics owner may seal unfenced reads.
+        self.readers.accepted(submission);
+        self.snapshot_readers.accepted(submission);
+        for old in &mut self.retired { old.readers.accepted(submission); }
+        for old in &mut self.retired_textures { old.readers.accepted(submission); }
+    }
+
     pub(super) fn completed(&mut self, submission: SubmissionId) {
-        self.readers.remove(&submission);
+        self.readers.completed(submission);
+        self.snapshot_readers.completed(submission);
         self.slots.complete(submission);
-        for old in &mut self.retired { old.readers.remove(&submission); }
+        for old in &mut self.retired { old.readers.completed(submission); }
+        for old in &mut self.retired_textures { old.readers.completed(submission); }
     }
 
     pub(super) fn idle(&mut self) {
-        for reader in self.readers.drain() { self.slots.complete(reader); }
-        self.untracked = false;
-        for old in &mut self.retired {
-            old.readers.clear();
-            old.untracked = false;
-        }
+        for reader in self.readers.submissions.drain() { self.slots.complete(reader); }
+        self.readers.idle();
+        self.snapshot_readers.idle();
+        for old in &mut self.retired { old.readers.idle(); }
+        for old in &mut self.retired_textures { old.readers.idle(); }
     }
 
     pub(super) fn release_completed(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         let mut i = 0;
         while i < self.retired.len() {
-            if self.retired[i].untracked || !self.retired[i].readers.is_empty() {
-                i += 1;
-                continue;
-            }
-            let old = self.retired.swap_remove(i);
-            device.destroy_bind_group(old.snapshot)?;
+            if !self.retired[i].readers.ready() { i += 1; continue; }
+            device.destroy_bind_group(self.retired[i].snapshot)?;
+            self.retired.swap_remove(i);
+        }
+        // Destroy all ready descriptor sets before their retired images.
+        let mut i = 0;
+        while i < self.retired_textures.len() {
+            if !self.retired_textures[i].readers.ready() { i += 1; continue; }
+            let old = self.retired_textures.swap_remove(i);
             for texture in old.textures { destroy_texture(device, texture)?; }
         }
         Ok(())
     }
 
     pub(super) fn needs_publication(&self) -> bool {
-        !self.published || (!self.untracked && !self.pending.is_empty())
+        !self.published || (!self.readers.untracked && !self.pending.is_empty())
             || self.slots.dirty_changes().next().is_some()
     }
 
     pub(super) fn publish(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         // Preserve every removed image and its slot until untracked native
         // work receives an actual ordered submission fence (or idle proof).
-        if !self.untracked && !self.pending.is_empty() {
-            let readers: Vec<_> = self.readers.iter().copied().collect();
+        if !self.readers.untracked && !self.pending.is_empty() {
+            let readers: Vec<_> = self.readers.submissions.iter().copied().collect();
             for texture in self.pending.drain(..) {
                 let slot = texture.sampled_slot.expect("mapped retired texture");
                 self.slots.retire(slot, &readers)?;
@@ -170,11 +201,15 @@ impl SceneSampledTextures {
                 self.published = true;
                 if let Some(old) = previous {
                     self.retired.push(RetiredSnapshot {
-                        snapshot: old, textures: std::mem::take(&mut self.cleared),
-                        readers: self.readers.clone(), untracked: self.untracked,
+                        snapshot: old,
+                        readers: std::mem::take(&mut self.snapshot_readers),
                     });
-                } else {
-                    for texture in self.cleared.drain(..) { destroy_texture(device, texture)?; }
+                }
+                if !self.cleared.is_empty() {
+                    self.retired_textures.push(RetiredTextures {
+                        textures: std::mem::take(&mut self.cleared),
+                        readers: self.readers.clone(),
+                    });
                 }
             }
             Ok(None) => { self.published = true; }
@@ -192,6 +227,8 @@ impl SceneSampledTextures {
         if let Some(snapshot) = self.slots.current_snapshot() { device.destroy_bind_group(snapshot)?; }
         for old in self.retired.drain(..) {
             device.destroy_bind_group(old.snapshot)?;
+        }
+        for old in self.retired_textures.drain(..) {
             for texture in old.textures { destroy_texture(device, texture)?; }
         }
         for texture in self.pending.drain(..).chain(self.cleared.drain(..)) {
@@ -207,4 +244,45 @@ pub(super) fn indices(textures: &HashMap<TextureAssetId, TextureResources>, draw
         draw.material.occlusion_texture, draw.material.metallic_roughness_texture,
     ].map(|id| id.and_then(|id| textures.get(&id))
         .and_then(|texture| texture.sampled_slot).map_or(0, |slot| slot.index()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sampled_snapshot_retirement_excludes_unrelated_generations_and_legacy_reads() {
+        let mut table = SceneSampledTextures::new(
+            BindGroupLayoutId::from_parts(1, 1), 4, gfx_core::TextureViewId::from_parts(1, 1),
+        ).unwrap();
+        let first = BindGroupId::from_parts(1, 1);
+        let second = BindGroupId::from_parts(2, 1);
+        let a = SubmissionId::from_parts(10, 1);
+        let b = SubmissionId::from_parts(11, 1);
+        let legacy = SubmissionId::from_parts(12, 1);
+        let c = SubmissionId::from_parts(13, 1);
+        table.slots.create_snapshot_with(|_| Ok(first)).unwrap();
+        table.submitted(Some(a), Some(first));
+        table.submitted(Some(legacy), None);
+        table.slots.allocate(gfx_core::TextureViewId::from_parts(2, 1)).unwrap();
+        table.slots.publish_with(first, |_, _| Ok(second)).unwrap();
+        table.retired.push(RetiredSnapshot {
+            snapshot: first, readers: std::mem::take(&mut table.snapshot_readers),
+        });
+        table.submitted(Some(b), Some(second));
+        assert!(!table.retired[0].readers.ready());
+        table.completed(b);
+        assert!(!table.retired[0].readers.ready());
+        table.completed(a);
+        assert!(table.retired[0].readers.ready());
+        assert!(!table.readers.ready(), "legacy image reader remains outstanding");
+        table.submitted(None, Some(second));
+        assert!(!table.snapshot_readers.ready());
+        table.accepted(c);
+        assert!(!table.snapshot_readers.ready());
+        table.completed(c);
+        assert!(table.snapshot_readers.ready());
+        table.completed(legacy);
+        assert!(table.readers.ready());
+    }
 }

@@ -128,7 +128,7 @@ impl CachedCommands {
     /// Mode transitions instead force a full structural revision in SceneResources.
     fn refresh_sampled_snapshot(&mut self, next: Option<BindGroupId>) {
         if self.sampled_snapshot == next { return; }
-        if let (Some(old), Some(new)) = (self.sampled_snapshot, next) {
+        if self.revision.is_some() && let (Some(old), Some(new)) = (self.sampled_snapshot, next) {
             rebind_sampled_commands(&mut self.commands, old, new);
             // Take the secondary aliases first so an unshared grouped
             // allocation can be edited without cloning it twice.

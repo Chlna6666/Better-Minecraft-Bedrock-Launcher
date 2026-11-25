@@ -641,7 +641,7 @@ impl SceneResources {
         submission: Option<gfx_core::SubmissionId>,
     ) {
         self.arena.native_draw_submitted(submission);
-        if let Some(table) = self.sampled_textures.as_mut() { table.submitted(submission); }
+        if let Some(table) = self.sampled_textures.as_mut() { table.submitted(submission, self.committed_sampled_snapshot); }
         self.stable_slots.draw_producer_submitted(submission);
         if let Some(culling) = self.culling.as_mut() {
             culling.draw_producer_submitted(submission);
