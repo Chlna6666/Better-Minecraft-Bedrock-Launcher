@@ -116,7 +116,8 @@ impl MetalDevice {
             plan.runs().iter().map(|&length| if length >= MIN_FIXED_RUN { 1 } else { length as usize }).sum()
         });
         let mut steps = Vec::with_capacity(capacity);
-        let mut preparation = RenderStateCache::default();
+        let mut preparation = self.prepared_render_state.borrow_mut();
+        preparation.begin_pass();
         let mut counts = counts.iter().peekable();
         let mut checked_bindings = std::collections::HashSet::new();
         let mut runs = plan.into_iter().flat_map(|plan| plan.runs().iter().copied());
