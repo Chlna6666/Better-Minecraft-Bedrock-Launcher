@@ -2050,7 +2050,7 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         // Compaction's counted gather ABI still needs the flat logical input.
         // Prefer compact producer runs only when that optional path is off.
         let compact_limit = if self.draw_compaction.is_none() && self.offscreen.is_some() {
-            device.compact_draw_run_limit()
+            super::command_runs::compact_limit(device)
         } else { 0 };
         let commands_count = {
             // Both paths retain the same canonical native Draw command
