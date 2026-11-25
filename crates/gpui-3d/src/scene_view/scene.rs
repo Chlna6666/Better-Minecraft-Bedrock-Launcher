@@ -4000,6 +4000,10 @@ impl SceneResources {
         Ok(())
     }
 
+    pub(super) fn references_sampled_layout(&self, layout: BindGroupLayoutId) -> bool {
+        self.sampled_textures.as_ref().is_some_and(|table| table.references_layout(layout))
+    }
+
     pub(super) fn sampled_capacity_demand(&self) -> usize {
         self.textures.len().saturating_add(1)
     }
