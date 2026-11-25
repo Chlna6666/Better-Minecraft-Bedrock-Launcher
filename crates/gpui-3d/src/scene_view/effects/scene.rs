@@ -316,7 +316,7 @@ impl EffectScene {
                 scene: self.scene.command_revision,
                 pipelines: [resources[0].pipeline_revision, resources[1].pipeline_revision],
             };
-            let compact_limit = device.compact_draw_run_limit();
+            let compact_limit = super::super::command_runs::compact_limit(device);
             if self.capture_commands.run_pipelines != Some(key.pipelines) {
                 self.capture_commands.runs = Default::default();
                 self.capture_commands.run_pipelines = Some(key.pipelines);
@@ -837,7 +837,7 @@ impl EffectScene {
                 device, renderer, camera, cascade, caster_bounds, &context,
             )?;
             let (commands, run_plan) = if let Some(published) = self.shadow_run_cache[cascade]
-                .refresh(&commands, device.compact_draw_run_limit())?
+                .refresh(&commands, super::super::command_runs::compact_limit(device))?
             {
                 (published.commands, Some(published.plan))
             } else { (commands, None) };
