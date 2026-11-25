@@ -1038,12 +1038,21 @@ impl SidecarGpuBackend {
             self.frame_index = self.frame_index.wrapping_add(1);
             // A prior submission may have failed. Never acknowledge its
             // drained passes during a subsequent, unrelated GUI frame.
-            self.pending_capture_epochs.clear();
+            self.abandon_pending_captures(false);
             self.submitted_capture_epochs.clear();
-            // A failed previous native submission is not published. Never
-            // resubmit its stale work when a new SceneView frame begins.
-            self.pending_passes.clear();
         }
+    }
+
+    fn abandon_pending_captures(&mut self, may_have_submitted: bool) {
+        if let Some(surface) = self.offscreen.as_mut() {
+            surface.render_passes_failed(&self.pending_capture_epochs);
+        }
+        for (scene_id, _) in self.pending_capture_epochs.drain(..) {
+            if let Some(scene) = self.scenes.get_mut(&scene_id) {
+                scene.abandon_sampled_capture(may_have_submitted);
+            }
+        }
+        self.pending_passes.clear();
     }
 
     fn retire_idle_scenes(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
@@ -1579,6 +1588,10 @@ impl RendererExtensionRenderer for Renderer {
         self.backend.render_passes_submitted();
     }
 
+    fn render_passes_abandoned(&mut self, may_have_submitted: bool) {
+        self.backend.render_passes_abandoned(may_have_submitted);
+    }
+
     fn has_native_offscreen_work(&self) -> bool {
         self.backend.has_native_offscreen_work()
     }
@@ -1679,14 +1692,9 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
             Ok(submitted) => submitted,
             Err(error) => {
                 if let Some(compactor) = self.draw_compaction.as_mut() { compactor.invalidate(); }
-                if let Some(surface) = self.offscreen.as_mut() {
-                    surface.render_passes_failed(&self.pending_capture_epochs);
-                }
-                // A failed GPU submission cannot establish a new producer
-                // revision. Keep the old resource lifetime owner; never
-                // render its possibly overwritten texels in a future UI frame.
-                self.pending_passes.clear();
-                self.pending_capture_epochs.clear();
+                // The backend may have accepted a prefix of the requested
+                // batch. Never publish its output or drop possible readers.
+                self.abandon_pending_captures(true);
                 self.submitted_capture_epochs.clear();
                 return Err(error.into());
             }
@@ -1747,6 +1755,11 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         if let Some(surface) = self.offscreen.as_mut() {
             surface.render_passes_submitted(&self.submitted_capture_epochs);
         }
+        self.submitted_capture_epochs.clear();
+    }
+
+    fn render_passes_abandoned(&mut self, may_have_submitted: bool) {
+        self.abandon_pending_captures(may_have_submitted);
         self.submitted_capture_epochs.clear();
     }
 

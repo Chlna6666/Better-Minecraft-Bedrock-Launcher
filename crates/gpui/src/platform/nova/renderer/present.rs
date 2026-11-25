@@ -215,6 +215,7 @@ impl ExtensionSubmission<'_> {
         if range.is_empty() {
             return Ok(None);
         }
+        self.registry.graphics_submission_started();
         let selected = &self.registry.passes()[range];
         let passes = selected
             .iter()

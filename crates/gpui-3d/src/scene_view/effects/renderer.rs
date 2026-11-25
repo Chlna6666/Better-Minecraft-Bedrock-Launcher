@@ -618,6 +618,25 @@ impl RendererExtensionRenderer for EffectsRenderer {
             }
         }
     }
+    fn render_passes_abandoned(&mut self, may_have_submitted: bool) {
+        self.passes.clear();
+        self.compute_passes.clear();
+        for state in self.scenes.values_mut() {
+            // A partially accepted graphics/compute sequence is not a valid
+            // capture. Do not publish its output, but keep possible readers.
+            if may_have_submitted && (state.queued_capture || state.queued_shadow.iter().any(|&queued| queued)) {
+                state.scene.draw_producer_submitted(None);
+            }
+            state.scene.abandon_sampled_capture(may_have_submitted);
+            if std::mem::take(&mut state.queued_capture) { state.targets_valid = false; }
+            if std::mem::take(&mut state.queued_ssr_hiz) { state.ssr_hiz_valid = false; }
+            for (valid, queued) in state.shadow_valid.iter_mut().zip(&mut state.queued_shadow) {
+                if std::mem::take(queued) { *valid = false; }
+            }
+            state.tile_key = None;
+            if let Some(volume) = state.froxel.as_mut() { volume.invalidate(); }
+        }
+    }
     fn render(
         &mut self,
         input: &dyn RendererExtension,

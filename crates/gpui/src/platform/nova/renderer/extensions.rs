@@ -43,6 +43,7 @@ pub(super) struct RendererRegistry {
     /// extension must never mark another renderer's failed/old submission
     /// as published.
     submitted_types: Vec<TypeId>,
+    graphics_attempted: bool,
     /// Native producers in scene traversal order. GPUI does not build or
     /// batch their gfx-core passes; it only invokes them on the GPU owner.
     native_producers: Vec<TypeId>,
@@ -56,7 +57,12 @@ pub(super) struct RendererRegistry {
 }
 
 impl RendererRegistry {
+    pub(super) fn graphics_submission_started(&mut self) {
+        self.graphics_attempted = true;
+    }
+
     pub(super) fn render_passes_submitted(&mut self) {
+        self.graphics_attempted = false;
         for type_id in self.submitted_types.drain(..) {
             if let Some(renderer) = self.renderers.get_mut(&type_id) {
                 renderer.render_passes_submitted();
@@ -72,8 +78,18 @@ impl RendererRegistry {
         self.independent_producers_only = true;
         // A previous submit may have failed after draining producer passes.
         // Do not carry its pending acknowledgements to an unrelated frame.
-        self.submitted_types.clear();
-        self.native_producers.clear();
+        let may_have_submitted = std::mem::take(&mut self.graphics_attempted);
+        for type_id in self.submitted_types.drain(..) {
+            if let Some(renderer) = self.renderers.get_mut(&type_id) {
+                renderer.render_passes_abandoned(may_have_submitted);
+            }
+        }
+        // Native producers left in the list were never invoked.
+        for type_id in self.native_producers.drain(..) {
+            if let Some(renderer) = self.renderers.get_mut(&type_id) {
+                renderer.render_passes_abandoned(false);
+            }
+        }
         self.accepted_native_submissions.clear();
     }
     pub(super) fn passes(&self) -> &[crate::RendererExtensionPass] {
@@ -174,12 +190,25 @@ impl RendererRegistry {
         for submission in self.accepted_native_submissions.drain(..) {
             register(submission);
         }
-        result?;
+        if let Err(error) = result {
+            // A failed encoder has not submitted any graphics passes in
+            // this preparation phase. Retain the type for frame abandonment,
+            // including when an earlier view already drained a pass.
+            if !self.submitted_types.contains(&type_id) {
+                self.submitted_types.push(type_id);
+            }
+            return Err(error);
+        }
         renderer.drain_render_passes(&mut self.passes);
         let compute_before = self.compute_passes.len();
         renderer.drain_compute_passes(&mut self.compute_passes);
         let new_compute = &mut self.compute_passes[compute_before..];
-        rebase_compute_passes(new_compute, before, self.passes.len() - before)?;
+        if let Err(error) = rebase_compute_passes(new_compute, before, self.passes.len() - before) {
+            if !self.submitted_types.contains(&type_id) {
+                self.submitted_types.push(type_id);
+            }
+            return Err(error);
+        }
         if renderer.has_native_offscreen_work() && !self.native_producers.contains(&type_id) {
             self.native_producers.push(type_id);
         }

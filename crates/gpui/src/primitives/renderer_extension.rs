@@ -321,6 +321,10 @@ pub trait RendererExtensionRenderer {
     /// Confirms that this frame's offscreen commands were accepted by the GPU queue.
     /// This is submission ordering, not a resource-reclamation completion signal.
     fn render_passes_submitted(&mut self) {}
+    /// Abandon drained producer plans without publishing their output.
+    /// An attempted graphics submission may have accepted a prefix (including
+    /// backends with no SubmissionId); preserve possible readers in that case.
+    fn render_passes_abandoned(&mut self, _may_have_submitted: bool) {}
     /// Moves ordered offscreen passes to the host. They execute before this frame's UI draws.
     /// Implementations must clear their pending list here, including on subsequent empty frames.
     fn drain_render_passes(&mut self, _passes: &mut Vec<RendererExtensionPass>) {}

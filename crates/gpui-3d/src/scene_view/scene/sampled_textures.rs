@@ -141,6 +141,16 @@ impl SceneSampledTextures {
         self.queued.insert(snapshot);
     }
 
+    /// Discard only unsubmitted capture pins. An attempted batch can have
+    /// accepted some work without returning a fence, so promote those pins
+    /// to conservative readers instead of freeing them.
+    pub(super) fn abandon_capture(&mut self, may_have_submitted: bool) {
+        let queued = std::mem::take(&mut self.queued);
+        if may_have_submitted {
+            for snapshot in queued { self.submitted(None, snapshot); }
+        }
+    }
+
     /// Stamp the actual descriptor identities encoded in the drained batch.
     /// The current scene may already have published another snapshot.
     pub(super) fn capture_submitted(&mut self, submission: Option<SubmissionId>, fallback: Option<BindGroupId>) {
@@ -341,6 +351,28 @@ mod tests {
         table.completed(b);
         table.completed(legacy);
         assert!(table.image_readers(image).ready());
+    }
+
+    #[test]
+    fn abandoned_capture_drops_only_unsubmitted_pins() {
+        let mut table = SceneSampledTextures::new(
+            BindGroupLayoutId::from_parts(1, 1), 4, gfx_core::TextureViewId::from_parts(1, 1),
+        ).unwrap();
+        let snapshot = BindGroupId::from_parts(1, 1);
+        table.slots.create_snapshot_with(|_| Ok(snapshot)).unwrap();
+        table.queue_capture(Some(snapshot));
+        table.abandon_capture(false);
+        assert!(table.queued.is_empty());
+        assert!(table.snapshot_readers.ready());
+        table.queue_capture(Some(snapshot));
+        table.abandon_capture(true);
+        assert!(table.queued.is_empty());
+        assert!(!table.snapshot_readers.ready());
+        let fence = SubmissionId::from_parts(3, 1);
+        table.accepted(fence);
+        assert!(!table.snapshot_readers.ready());
+        table.completed(fence);
+        assert!(table.snapshot_readers.ready());
     }
 
     #[test]

@@ -642,6 +642,12 @@ impl SceneResources {
         if let Some(table) = self.sampled_textures.as_mut() { table.queue_capture(snapshot); }
     }
 
+    pub(super) fn abandon_sampled_capture(&mut self, may_have_submitted: bool) {
+        if let Some(table) = self.sampled_textures.as_mut() {
+            table.abandon_capture(may_have_submitted);
+        }
+    }
+
     pub(super) fn draw_producer_submitted(
         &mut self,
         submission: Option<gfx_core::SubmissionId>,
