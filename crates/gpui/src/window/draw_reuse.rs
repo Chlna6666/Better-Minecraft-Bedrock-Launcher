@@ -633,7 +633,7 @@ impl Window {
         layout_id: LayoutId,
         request_layout: &mut dyn Any,
         plain_text_semantics: Option<(SharedString, TextStyle, Pixels)>,
-        identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+        identity_stable: bool,
     ) {
         let descriptor = if let Some((text, text_style, rem_size)) = plain_text_semantics {
             RetainedSemanticDescriptor::PlainText {
@@ -672,7 +672,7 @@ impl Window {
                     RetainedSemanticEntry {
                         descriptor: Some(descriptor),
                         stamp: RetainedSemanticStamp { segment: retained_segment.clone(), generation },
-                        identity_ambiguity,
+                        identity_stable,
                     },
                 );
                 return;
@@ -722,7 +722,7 @@ impl Window {
                     segment: retained_segment.clone(),
                     generation,
                 },
-                identity_ambiguity,
+                identity_stable,
             },
         );
     }

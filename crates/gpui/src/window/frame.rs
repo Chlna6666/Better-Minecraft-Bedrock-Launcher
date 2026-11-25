@@ -126,12 +126,12 @@ pub(crate) struct RetainedSemanticEntry {
     /// bucket can be reused next frame; paint moves the descriptor into RetainedElementRange.
     pub(crate) descriptor: Option<Rc<RetainedSemanticDescriptor>>,
     pub(crate) stamp: RetainedSemanticStamp,
-    pub(crate) identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+    pub(crate) identity_stable: bool,
 }
 
 impl RetainedSemanticEntry {
     pub(crate) fn identity_is_stable(&self) -> bool {
-        self.identity_ambiguity.iter().all(|flag| !flag.get())
+        self.identity_stable
     }
 }
 
@@ -780,7 +780,7 @@ impl Frame {
 
     /// Layout semantic entries are scratch, never consumed from the committed
     /// frame. Return the entire map allocation to the next builder instead
-    /// of maintaining two alternating maps (and their ambiguity references).
+    /// of maintaining two alternating maps.
     pub(super) fn recycle_layout_semantics(&mut self, committed: &mut Self) {
         let mut entries = std::mem::take(&mut committed.retained_layout_semantics);
         let target = FRAME_MIN_RETAINED_CAPACITY.max(entries.len());

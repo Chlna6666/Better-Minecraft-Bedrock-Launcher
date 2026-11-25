@@ -27,7 +27,7 @@ static NEXT_RETAINED_AUTO_IDENTITY_TOKEN: AtomicU64 = AtomicU64::new(1);
 #[derive(Default)]
 struct RetainedIdentityScope {
     auto_occurrences: FxHashMap<RetainedAutoIdentityToken, u32>,
-    owner_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+    identity_stable: bool,
     retained_id: Option<GlobalElementId>,
 }
 
@@ -50,13 +50,12 @@ struct RetainedIdentityScopePool {
 impl RetainedIdentityScopePool {
     fn push_scope(
         &mut self,
-        owner_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+        identity_stable: bool,
         retained_id: Option<GlobalElementId>,
     ) {
         let mut scope = self.spare.pop().unwrap_or_default();
         scope.auto_occurrences.clear();
-        scope.owner_ambiguity.clear();
-        scope.owner_ambiguity.extend(owner_ambiguity);
+        scope.identity_stable = identity_stable;
         scope.retained_id = retained_id;
         self.active.push(scope);
     }
@@ -71,7 +70,7 @@ impl RetainedIdentityScopePool {
             scope.auto_occurrences.shrink_to(target);
         }
         scope.auto_occurrences.clear();
-        scope.owner_ambiguity.clear();
+        scope.identity_stable = false;
         scope.retained_id = None;
         self.spare.push(scope);
     }
@@ -133,7 +132,7 @@ impl Window {
     pub(crate) fn begin_retained_element(
         &mut self,
         identity: RetainedElementIdentity,
-    ) -> (ElementId, GlobalElementId, SmallVec<[Rc<Cell<bool>>; 4]>) {
+    ) -> (ElementId, GlobalElementId, bool) {
         let depth = self.retained_child_slot_stack.len();
         let slot = if let Some(next_slot) = self.retained_child_slot_stack.last_mut() {
             let slot = *next_slot;
@@ -143,7 +142,7 @@ impl Window {
             0
         };
 
-        let (segment, retained_id, ambiguity) = RETAINED_IDENTITY_SCOPES.with(|scopes| {
+        let (segment, retained_id, identity_stable) = RETAINED_IDENTITY_SCOPES.with(|scopes| {
             let mut scopes = scopes.borrow_mut();
 
             // Lazy containers may add a synthetic retained child scope after their own
@@ -156,29 +155,20 @@ impl Window {
             if scopes.active.len() > depth {
                 scopes.clear_active();
                 for _ in 0..depth {
-                    let mut owner_ambiguity = SmallVec::new();
-                    owner_ambiguity.push(Rc::new(Cell::new(true)));
-                    scopes.push_scope(owner_ambiguity, None);
+                    scopes.push_scope(false, None);
                 }
             } else {
                 while scopes.active.len() < depth {
                     let synthetic_depth = scopes.active.len();
                     let keyed_boundary = self.retained_element_id_stack.len() > synthetic_depth;
-                    let owner_ambiguity = if keyed_boundary {
-                        SmallVec::new()
-                    } else {
-                        scopes
-                            .active
-                            .last()
-                            .map(|scope| scope.owner_ambiguity.clone())
-                            .unwrap_or_default()
-                    };
-                    scopes.push_scope(owner_ambiguity, None);
+                    let identity_stable = keyed_boundary || scopes.active.last()
+                        .is_none_or(|scope| scope.identity_stable);
+                    scopes.push_scope(identity_stable, None);
                 }
             }
 
-            let (segment, ambiguity) = match identity {
-                RetainedElementIdentity::Explicit(explicit_id) => (explicit_id, SmallVec::new()),
+            let (segment, identity_stable) = match identity {
+                RetainedElementIdentity::Explicit(explicit_id) => (explicit_id, true),
                 RetainedElementIdentity::Auto {
                     mount,
                     source,
@@ -204,24 +194,16 @@ impl Window {
                             identity_token,
                             occurrence,
                         },
-                        SmallVec::new(),
+                        true,
                     )
                 }
-                RetainedElementIdentity::Positional => {
-                    let mut ambiguity = scopes
-                        .active
-                        .last()
-                        .map(|scope| scope.owner_ambiguity.clone())
-                        .unwrap_or_default();
-                    ambiguity.push(Rc::new(Cell::new(true)));
-                    (ElementId::InstanceSlot(slot), ambiguity)
-                }
+                RetainedElementIdentity::Positional => (ElementId::InstanceSlot(slot), false),
             };
 
             self.retained_element_id_stack.push(segment.clone());
             let retained_id = GlobalElementId::from_path(&self.retained_element_id_stack);
-            scopes.push_scope(ambiguity.clone(), Some(retained_id.clone()));
-            (segment, retained_id, ambiguity)
+            scopes.push_scope(identity_stable, Some(retained_id.clone()));
+            (segment, retained_id, identity_stable)
         });
 
         crate::layout::push_layout_key(
@@ -230,7 +212,7 @@ impl Window {
             Some(&segment),
         );
         self.retained_child_slot_stack.push(0);
-        (segment, retained_id, ambiguity)
+        (segment, retained_id, identity_stable)
     }
 
     /// Ends the retained identity scope opened by [`Self::begin_retained_element`].
@@ -284,7 +266,7 @@ impl Window {
             let scopes = scopes.borrow();
             let scope = scopes.active.last()?;
             let path = self.retained_element_id_stack.as_slice();
-            (!path.is_empty() && scope.owner_ambiguity.iter().all(|flag| !flag.get()))
+            (!path.is_empty() && scope.identity_stable)
                 .then(|| scope.identity_for_path(path))
         })
     }
@@ -305,7 +287,7 @@ impl Window {
             let scopes = scopes.borrow();
             let scope = scopes.active.last()?;
             (!self.retained_element_id_stack.is_empty()
-                && scope.owner_ambiguity.iter().all(|flag| !flag.get()))
+                && scope.identity_stable)
             .then(|| scope.identity_for_path(self.retained_element_id_stack.as_slice()))
         })?;
         Some((path_key, stable))
@@ -1037,14 +1019,14 @@ mod layout_identity_tests {
         // allocation must match; the interner's own reference is part of both.
         let baseline = weak.strong_count();
         let mut pool = RetainedIdentityScopePool::default();
-        pool.push_scope(SmallVec::new(), Some(id));
+        pool.push_scope(true, Some(id));
         assert_eq!(weak.strong_count(), baseline);
         pool.pop_scope();
         // The scope must drop its reference. The path interner may still hold one, which is
         // why this compares against the count before the scope was pushed rather than
         // asserting the allocation is gone.
         assert_eq!(weak.strong_count(), baseline.saturating_sub(1));
-        pool.push_scope(SmallVec::new(), None);
+        pool.push_scope(true, None);
         assert!(pool.active.last().unwrap().retained_id.is_none());
     }
 
@@ -1055,46 +1037,17 @@ mod layout_identity_tests {
             !pool
                 .active
                 .last()
-                .is_some_and(|scope| { scope.owner_ambiguity.iter().all(|flag| !flag.get()) })
+                .is_some_and(|scope| { scope.identity_stable })
         );
-        pool.push_scope(SmallVec::new(), None);
-        assert!(pool.active.last().unwrap().owner_ambiguity.is_empty());
+        pool.push_scope(true, None);
+        assert!(pool.active.last().unwrap().identity_stable);
 
-        let mut positional = SmallVec::new();
-        positional.push(Rc::new(Cell::new(true)));
-        pool.push_scope(positional, None);
-        assert!(
-            !pool
-                .active
-                .last()
-                .unwrap()
-                .owner_ambiguity
-                .iter()
-                .all(|flag| !flag.get())
-        );
-
-        // A latent ambiguity can be raised after an auto ID has been mounted.
-        let changed = Rc::new(Cell::new(false));
-        let mut auto = SmallVec::new();
-        auto.push(changed.clone());
-        pool.push_scope(auto, None);
-        assert!(
-            pool.active
-                .last()
-                .unwrap()
-                .owner_ambiguity
-                .iter()
-                .all(|flag| !flag.get())
-        );
-        changed.set(true);
-        assert!(
-            !pool
-                .active
-                .last()
-                .unwrap()
-                .owner_ambiguity
-                .iter()
-                .all(|flag| !flag.get())
-        );
+        pool.push_scope(false, None);
+        assert!(!pool.active.last().unwrap().identity_stable);
+        pool.pop_scope();
+        assert!(pool.active.last().unwrap().identity_stable);
+        pool.push_scope(true, None);
+        assert!(pool.active.last().unwrap().identity_stable);
+        pool.pop_scope();
     }
 }

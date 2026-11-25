@@ -8,12 +8,10 @@ use derive_more::Deref;
 use smallvec::SmallVec;
 use std::{
     any::{Any, TypeId},
-    cell::Cell,
     fmt::{self, Display},
     hash::{Hash, Hasher},
     mem,
     ops::Range,
-    rc::Rc,
     sync::Arc,
 };
 
@@ -220,7 +218,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         global_id: Option<GlobalElementId>,
         retained_segment: ElementId,
         retained_id: GlobalElementId,
-        retained_identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+        retained_identity_stable: bool,
         inspector_id: Option<InspectorElementId>,
         request_layout: RequestLayoutState,
     },
@@ -229,7 +227,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         global_id: Option<GlobalElementId>,
         retained_segment: ElementId,
         retained_id: GlobalElementId,
-        retained_identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+        retained_identity_stable: bool,
         inspector_id: Option<InspectorElementId>,
         available_space: Size<AvailableSpace>,
         request_layout: RequestLayoutState,
@@ -239,7 +237,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
         global_id: Option<GlobalElementId>,
         retained_segment: ElementId,
         retained_id: GlobalElementId,
-        retained_identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+        retained_identity_stable: bool,
         inspector_id: Option<InspectorElementId>,
         bounds: Bounds<Pixels>,
         layout_id: LayoutId,
@@ -278,11 +276,6 @@ fn prepare_inspector_id(
         source_location: source,
     };
     window.build_inspector_element_id(path)
-}
-
-#[inline(never)]
-fn retained_identity_is_stable(ambiguity: &[Rc<Cell<bool>>]) -> bool {
-    ambiguity.iter().all(|flag| !flag.get())
 }
 
 #[inline(never)]
@@ -327,7 +320,7 @@ struct RetainedElementMount {
     global_id: Option<GlobalElementId>,
     retained_segment: ElementId,
     retained_id: GlobalElementId,
-    retained_identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+    retained_identity_stable: bool,
     inspector_id: Option<InspectorElementId>,
 }
 
@@ -356,7 +349,7 @@ fn begin_retained_element_mount(
     } else {
         RetainedElementIdentity::Positional
     };
-    let (retained_segment, retained_id, retained_identity_ambiguity) =
+    let (retained_segment, retained_id, retained_identity_stable) =
         window.begin_retained_element(retained_identity);
     let global_id = element_id.map(|element_id| prepare_element_id(element_id, window));
 
@@ -378,7 +371,7 @@ fn begin_retained_element_mount(
         global_id,
         retained_segment,
         retained_id,
-        retained_identity_ambiguity,
+        retained_identity_stable,
         inspector_id,
     }
 }
@@ -401,7 +394,7 @@ fn finish_retained_element_layout(
         layout_id,
         request_layout,
         plain_text_semantics,
-        mount.retained_identity_ambiguity.clone(),
+        mount.retained_identity_stable,
     );
 
     if mount.global_id.is_some() {
@@ -704,7 +697,7 @@ impl<E: Element> Drawable<E> {
                     global_id: mount.global_id,
                     retained_segment: mount.retained_segment,
                     retained_id: mount.retained_id,
-                    retained_identity_ambiguity: mount.retained_identity_ambiguity,
+                    retained_identity_stable: mount.retained_identity_stable,
                     inspector_id: mount.inspector_id,
                     request_layout,
                 };
@@ -721,7 +714,7 @@ impl<E: Element> Drawable<E> {
                 global_id,
                 retained_segment,
                 retained_id,
-                retained_identity_ambiguity,
+                retained_identity_stable,
                 inspector_id,
                 mut request_layout,
             }
@@ -730,14 +723,14 @@ impl<E: Element> Drawable<E> {
                 global_id,
                 retained_segment,
                 retained_id,
-                retained_identity_ambiguity,
+                retained_identity_stable,
                 inspector_id,
                 mut request_layout,
                 ..
             } => {
                 let bounds = window.layout_bounds(layout_id);
                 let layout_fingerprint = window.retained_layout_fingerprint(layout_id);
-                let identity_stable = retained_identity_is_stable(&retained_identity_ambiguity);
+                let identity_stable = retained_identity_stable;
                 // ReconcileSubtree proof needs exact shaped text output. Non-text elements exit
                 // this helper after two cheap type checks; safe Divs use semantic generations.
                 let mut plain_text_key = retained_plain_text_key(
@@ -834,7 +827,7 @@ impl<E: Element> Drawable<E> {
                     global_id,
                     retained_segment,
                     retained_id,
-                    retained_identity_ambiguity,
+                    retained_identity_stable,
                     inspector_id,
                     bounds,
                     layout_id,
@@ -856,7 +849,7 @@ impl<E: Element> Drawable<E> {
                 global_id,
                 retained_segment,
                 retained_id,
-                retained_identity_ambiguity,
+                retained_identity_stable,
                 inspector_id,
                 bounds,
                 layout_id,
@@ -898,7 +891,7 @@ impl<E: Element> Drawable<E> {
                     },
                 );
                 let div_self_scene = retained_div_self_scene(&prepaint as &dyn Any);
-                let identity_stable = retained_identity_is_stable(&retained_identity_ambiguity);
+                let identity_stable = retained_identity_stable;
                 record_retained_painted_element(
                     retained_id,
                     bounds,
@@ -976,7 +969,7 @@ impl<E: Element> Drawable<E> {
             global_id,
             retained_segment,
             retained_id,
-            retained_identity_ambiguity,
+            retained_identity_stable,
             inspector_id,
             previous_available_space,
             request_layout,
@@ -986,7 +979,7 @@ impl<E: Element> Drawable<E> {
                 global_id,
                 retained_segment,
                 retained_id,
-                retained_identity_ambiguity,
+                retained_identity_stable,
                 inspector_id,
                 request_layout,
             } => (
@@ -994,7 +987,7 @@ impl<E: Element> Drawable<E> {
                 global_id,
                 retained_segment,
                 retained_id,
-                retained_identity_ambiguity,
+                retained_identity_stable,
                 inspector_id,
                 None,
                 request_layout,
@@ -1004,7 +997,7 @@ impl<E: Element> Drawable<E> {
                 global_id,
                 retained_segment,
                 retained_id,
-                retained_identity_ambiguity,
+                retained_identity_stable,
                 inspector_id,
                 available_space: previous_available_space,
                 request_layout,
@@ -1013,7 +1006,7 @@ impl<E: Element> Drawable<E> {
                 global_id,
                 retained_segment,
                 retained_id,
-                retained_identity_ambiguity,
+                retained_identity_stable,
                 inspector_id,
                 Some(previous_available_space),
                 request_layout,
@@ -1034,7 +1027,7 @@ impl<E: Element> Drawable<E> {
             global_id,
             retained_segment,
             retained_id,
-            retained_identity_ambiguity,
+            retained_identity_stable,
             inspector_id,
             available_space,
             request_layout,
