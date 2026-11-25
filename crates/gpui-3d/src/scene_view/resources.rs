@@ -80,6 +80,7 @@ impl SampledPipelines {
 #[derive(Default)]
 pub(super) struct SampledTierCache {
     maximum: Option<u32>,
+    observed_frame: Option<std::time::Instant>,
     candidate: Option<(u32, std::time::Instant)>,
     last_attempt: Option<std::time::Instant>,
     retained: Vec<SampledFamily>,
@@ -92,6 +93,22 @@ struct SampledFamily {
 }
 
 impl SampledTierCache {
+    /// One working-set observation per GPU owner frame, not per SceneView.
+    pub(super) fn begin_frame(&mut self, now: std::time::Instant) -> bool {
+        if self.observed_frame == Some(now) { return false; }
+        self.observed_frame = Some(now);
+        true
+    }
+
+    /// Select the smallest feasible shrink tier. Stable higher slot indices
+    /// may block an aggressive shrink but still permit an intermediate one.
+    pub(super) fn feasible_target(current: u32, target: u32, mut feasible: impl FnMut(u32) -> bool) -> Option<u32> {
+        if target >= current { return feasible(target).then_some(target); }
+        sampled_table_capacity::SAMPLED_TABLE_TIERS.into_iter()
+            .filter(|&tier| tier >= target && tier < current)
+            .find(|&tier| feasible(tier))
+    }
+
     /// Grow when the working set exceeds the current capacity; shrink only
     /// after ten seconds below 25% utilization, keeping 2x live headroom.
     /// Failed native allocations are throttled without a CPU/GPU wait.
@@ -193,6 +210,10 @@ mod sampled_capacity_policy_tests {
         assert_eq!(policy.suggest(64, 70, now + Duration::from_secs(12)), Some(256));
         assert_eq!(sampled_capacity_target(256, 1024, 160), None);
         assert_eq!(sampled_capacity_target(1024, 1024, 4096), None);
+        assert_eq!(SampledTierCache::feasible_target(1024, 64, |tier| tier >= 256), Some(256));
+        assert_eq!(SampledTierCache::feasible_target(1024, 64, |tier| tier >= 1024), None);
+        assert!(policy.begin_frame(now));
+        assert!(!policy.begin_frame(now));
     }
 }
 
