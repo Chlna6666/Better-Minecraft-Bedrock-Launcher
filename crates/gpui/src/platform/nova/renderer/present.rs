@@ -382,10 +382,16 @@ fn attach_extension_submission(
             .iter()
             .position(|entry| entry.submission == predecessor)
         && index + 1 < pending.len()
+        && pending[index].publication.is_none()
+        && pending.last().is_some_and(|frame| frame.frame_resource_index == pending[index].frame_resource_index)
     {
-        pending.remove(index);
+        let mut producer = pending.remove(index);
+        producer.predecessors.push(predecessor);
         if let Some(frame) = pending.last_mut() {
-            frame.predecessors.push(predecessor);
+            // Preserve transitive readers and their original completion order.
+            // A producer can already own predecessors from an earlier handoff.
+            producer.predecessors.append(&mut frame.predecessors);
+            frame.predecessors = producer.predecessors;
         }
     }
 }
