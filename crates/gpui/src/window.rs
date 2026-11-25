@@ -152,13 +152,13 @@ pub use options::*;
 pub use paint::{PaintQuad, fill, outline, quad};
 pub use paint_resources::{ImagePaintProgress, ImagePaintRequest, ImageSampling};
 pub use prompts::*;
-pub use state::Window;
+pub use state::{DispatchEventResult, Window};
 use state::{
     AnimatedImageSlotKey, DirtyFrameDiagnostics, FocusRetainedTarget, FrameGenerationStats,
     ImagePaintTileCacheKey, LayoutCacheFrameMetrics, ModifierState, PendingInput,
 };
 pub(crate) use state::{
-    DispatchEventResult, DrawPhase, ElementStateBox, ViewBoundsFrame,
+    DrawPhase, ElementStateBox, ViewBoundsFrame,
     ViewDirtyScope,
 };
 pub(crate) use tab_stop::*;

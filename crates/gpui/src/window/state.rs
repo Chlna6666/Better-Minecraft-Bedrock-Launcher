@@ -349,9 +349,16 @@ mod visual_transform_tests {
     }
 }
 
+/// What a dispatched input event did.
+///
+/// Returned by [`Window::dispatch_event`] so a caller that injects a synthetic event can see
+/// whether it was handled. It is public because the method is: a type the method returns
+/// cannot stay crate-private without making the method uncallable from outside.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct DispatchEventResult {
+pub struct DispatchEventResult {
+    /// Whether the event still propagates to the next listener.
     pub propagate: bool,
+    /// Whether a listener called `prevent_default`.
     pub default_prevented: bool,
 }
 
@@ -439,6 +446,19 @@ impl PresentationState {
     }
 }
 
+/// A resolved text style, together with what it was resolved from.
+///
+/// Cached on the window because resolving clones the default style and replays the whole
+/// refinement stack, and every painted element asks for the result more than once a frame.
+#[derive(Clone)]
+pub(super) struct ResolvedTextStyle {
+    /// Depth of the refinement stack this was resolved with.
+    pub(super) depth: usize,
+    /// Default-style generation this was resolved with.
+    pub(super) generation: u32,
+    pub(super) style: TextStyle,
+}
+
 /// Holds the state for a specific window.
 pub struct Window {
     pub(crate) handle: AnyWindowHandle,
@@ -483,7 +503,23 @@ pub struct Window {
     pub(crate) retained_element_id_stack: SmallVec<[ElementId; 32]>,
     /// Parent-local positional counters used only while `request_layout` constructs retained IDs.
     pub(crate) retained_child_slot_stack: SmallVec<[u32; 32]>,
+    /// Incremental running hashes of the element path, used as the layout node identity.
+    ///
+    /// A `u64` per element is enough to find the node it had last frame. Building a full
+    /// `GlobalElementId` for that lookup would allocate and copy the whole path on every
+    /// element of every frame; the running hash costs one `mix` per element and nothing else.
+    pub(crate) layout_key_stack: SmallVec<[crate::layout::LayoutKeyFrame; 32]>,
+    /// How many unidentified root trees have been laid out, so the roots of separate trees
+    /// (window root, prompts, drags, tooltips) do not share layout keys.
+    pub(crate) layout_root_index: u32,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
+    /// Cached result of resolving `text_style_stack` over the window's default style.
+    ///
+    /// Rebuilt only when the stack depth or the default style changes, since every painted
+    /// element asks for the resolved style at least twice per frame.
+    pub(super) resolved_text_style: RefCell<Option<ResolvedTextStyle>>,
+    /// Bumped whenever the window's default text style is replaced.
+    pub(super) text_style_generation: Cell<u32>,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     /// A retained lifecycle replay may omit unscoped reads of committed pixels.
     pub(super) replayed_dependency_ranges: bool,

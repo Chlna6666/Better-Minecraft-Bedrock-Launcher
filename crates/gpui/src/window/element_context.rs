@@ -224,6 +224,11 @@ impl Window {
             (segment, retained_id, ambiguity)
         });
 
+        crate::layout::push_layout_key(
+            &mut self.layout_key_stack,
+            &mut self.layout_root_index,
+            Some(&segment),
+        );
         self.retained_child_slot_stack.push(0);
         (segment, retained_id, ambiguity)
     }
@@ -231,6 +236,7 @@ impl Window {
     /// Ends the retained identity scope opened by [`Self::begin_retained_element`].
     pub(crate) fn end_retained_element(&mut self) {
         self.retained_child_slot_stack.pop();
+        crate::layout::pop_layout_key(&mut self.layout_key_stack);
         self.retained_element_id_stack.pop();
         RETAINED_IDENTITY_SCOPES.with(|scopes| {
             scopes.borrow_mut().pop_scope();
@@ -281,6 +287,28 @@ impl Window {
             (!path.is_empty() && scope.owner_ambiguity.iter().all(|flag| !flag.get()))
                 .then(|| scope.identity_for_path(path))
         })
+    }
+
+    /// The stable layout identity of the element currently requesting layout, as the pair the
+    /// layout engine keys its nodes by.
+    ///
+    /// The integer path hash is what the engine looks nodes up with; the full identifier is
+    /// only carried so the committed-lifetime check can ask whether the element is still
+    /// mounted. Both come from the same decision, so an ambiguous element yields `None` once.
+    pub(crate) fn current_stable_layout_owner(&self) -> Option<(u64, GlobalElementId)> {
+        let _work = super::element_work::begin_named(
+            "layout_owner_identity",
+            super::element_work::ElementWorkPhase::Layout,
+        );
+        let path_key = self.layout_key_stack.last()?.key;
+        let stable = RETAINED_IDENTITY_SCOPES.with(|scopes| {
+            let scopes = scopes.borrow();
+            let scope = scopes.active.last()?;
+            (!self.retained_element_id_stack.is_empty()
+                && scope.owner_ambiguity.iter().all(|flag| !flag.get()))
+            .then(|| scope.identity_for_path(self.retained_element_id_stack.as_slice()))
+        })?;
+        Some((path_key, stable))
     }
 
     /// Executes the provided function with the specified rem size.

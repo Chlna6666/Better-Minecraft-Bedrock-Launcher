@@ -250,6 +250,15 @@ impl TextLayout {
                 ("intrinsic_text", measured.width, measured.height),
                 move |_, _, _, _| measured,
             )
+        } else if text_layout_measurement_is_pure() {
+            // Wrapped and truncated text is still a pure function of its measurement key and
+            // the constraints Taffy hands it: the closure returns the cached size whenever
+            // the key and the wrap/truncate widths match, and otherwise shapes from state the
+            // key already covers. Taffy keys its own cache by the constraints, so a stale
+            // entry can never be served for different ones. Declaring this pure is what lets
+            // an unchanged wrapped label keep its Taffy node clean instead of dirtying the
+            // whole root every frame.
+            window.request_pure_measured_layout(measurement_key, measure)
         } else {
             window.request_default_measured_layout(measurement_key, measure)
         }
@@ -654,6 +663,17 @@ fn text_layout_measurement_fingerprint(
     } else {
         cache_key
     }
+}
+
+
+/// Whether a text measurement may be treated as a pure function of its fingerprint.
+///
+/// True for every text style. The measure closure returns the cached size whenever the
+/// measurement key and the wrap/truncate widths match, and otherwise shapes from state the
+/// key already covers. Constraints reach the closure through Taffy, which keys its cache by
+/// them, so a cached size is never served for different constraints.
+fn text_layout_measurement_is_pure() -> bool {
+    true
 }
 
 #[cfg(test)]

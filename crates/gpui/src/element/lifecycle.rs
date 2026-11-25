@@ -27,11 +27,86 @@ pub struct GlobalElementId(
 );
 
 impl GlobalElementId {
+    /// Builds the identifier for one element path.
+    ///
+    /// Every element builds one of these on every drawn frame, so the path allocation and
+    /// its hash are hot. Paths repeat frame to frame, so the interner hands back the same
+    /// `Arc` for an equal path instead of allocating a new one. That also makes the
+    /// `Arc::ptr_eq` fast path in `PartialEq` reachable, which in turn keeps the many maps
+    /// keyed by this type cheap to probe.
     #[inline]
     pub(crate) fn from_path(path: &[ElementId]) -> Self {
+        if path.is_empty() {
+            return Self(Arc::from(path), EMPTY_PATH_HASH.with(|hash| *hash));
+        }
         let mut hasher = collections::FxHasher::default();
         path.hash(&mut hasher);
-        Self(Arc::from(path), hasher.finish())
+        let hash = hasher.finish();
+        let interned = PATH_INTERNER.with(|interner| interner.borrow_mut().intern(path, hash));
+        Self(interned, hash)
+    }
+}
+
+thread_local! {
+    /// Hash of the empty path, which is constant and used for the root.
+    static EMPTY_PATH_HASH: u64 = {
+        let mut hasher = collections::FxHasher::default();
+        <[ElementId]>::hash(&[], &mut hasher);
+        hasher.finish()
+    };
+    /// Frame-independent pool of element paths.
+    ///
+    /// Element identities repeat across frames, so interning them removes one allocation and
+    /// one path copy per element per frame. Entries are only dropped when the pool grows well
+    /// past its working set, so a transient page does not pin its paths forever.
+    static PATH_INTERNER: std::cell::RefCell<PathInterner> =
+        std::cell::RefCell::new(PathInterner::default());
+}
+
+#[derive(Default)]
+struct PathInterner {
+    /// Paths bucketed by hash. Collisions are rare and the vector stays tiny, so a linear
+    /// probe inside the bucket costs less than a second map level.
+    buckets: collections::FxHashMap<u64, smallvec::SmallVec<[Arc<[ElementId]>; 1]>>,
+    /// Paths handed out so far, used to bound the pool.
+    len: usize,
+    /// Frames since the last prune, in units of interner calls.
+    calls_since_prune: usize,
+}
+
+impl PathInterner {
+    const PRUNE_AT: usize = 4096;
+    const PRUNE_CALLS: usize = 1 << 16;
+
+    fn intern(&mut self, path: &[ElementId], hash: u64) -> Arc<[ElementId]> {
+        if let Some(bucket) = self.buckets.get(&hash)
+            && let Some(existing) = bucket.iter().find(|candidate| candidate.as_ref() == path)
+        {
+            return Arc::clone(existing);
+        }
+        let interned: Arc<[ElementId]> = Arc::from(path);
+        self.buckets.entry(hash).or_default().push(Arc::clone(&interned));
+        self.len = self.len.saturating_add(1);
+
+        self.calls_since_prune = self.calls_since_prune.saturating_add(1);
+        if self.len > Self::PRUNE_AT || self.calls_since_prune >= Self::PRUNE_CALLS {
+            self.prune();
+        }
+        interned
+    }
+
+    /// Drops entries nothing else references.
+    ///
+    /// A path still held by a live identifier or map has a strong count above one; anything
+    /// at one is only reachable through this pool, so it is safe to forget. The window that
+    /// just committed keeps every path it uses alive, which is the whole working set.
+    fn prune(&mut self) {
+        self.buckets.retain(|_, bucket| {
+            bucket.retain(|path| Arc::strong_count(path) > 1);
+            !bucket.is_empty()
+        });
+        self.len = self.buckets.values().map(smallvec::SmallVec::len).sum();
+        self.calls_since_prune = 0;
     }
 }
 
@@ -1014,15 +1089,25 @@ mod global_element_id_hash_tests {
     use super::*;
 
     #[test]
-    fn equal_paths_from_distinct_allocations_are_interchangeable() {
+    fn equal_paths_share_one_allocation_and_remain_interchangeable() {
         let path = [ElementId::from("root"), ElementId::from(42u64)];
         let first = GlobalElementId::from_path(&path);
         let second = GlobalElementId::from_path(&path);
-        assert!(!Arc::ptr_eq(&first.0, &second.0));
+        // Paths are interned, so the same path yields the same allocation. That is what
+        // makes the `Arc::ptr_eq` fast path in `PartialEq` reachable on the hot lookup path.
+        assert!(Arc::ptr_eq(&first.0, &second.0));
         let mut map = collections::FxHashMap::default();
         map.insert(first, 7);
         assert_eq!(map.get(&second), Some(&7));
         assert_eq!(GlobalElementId::default(), GlobalElementId::from_path(&[]));
+    }
+
+    #[test]
+    fn distinct_paths_do_not_share_an_allocation() {
+        let first = GlobalElementId::from_path(&[ElementId::from("root"), ElementId::from(1u64)]);
+        let second = GlobalElementId::from_path(&[ElementId::from("root"), ElementId::from(2u64)]);
+        assert!(!Arc::ptr_eq(&first.0, &second.0));
+        assert_ne!(first, second);
     }
 
     #[test]
