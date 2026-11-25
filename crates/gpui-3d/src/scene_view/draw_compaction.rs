@@ -99,7 +99,52 @@ fn metadata_ranges(previous: &[u8], next: &[u8]) -> Vec<std::ops::Range<usize>> 
     super::uploads::changed_ranges(previous, next, 4, 16, 4)
 }
 
+// Gather patches arrive in command order, which is also the order of their
+// metadata words. Coalesce adjacent changes without copying the unchanged tail.
+// Validate all offsets before publishing any writes.
+fn metadata_patch_runs(
+    metadata: &[u8], patches: &[(usize, u32)],
+) -> Option<Vec<(usize, Vec<u8>)>> {
+    let mut runs: Vec<(usize, Vec<u8>)> = Vec::new();
+    let mut previous_end = 0;
+    for &(word, slot) in patches {
+        let offset = word.checked_mul(4)?;
+        let end = offset.checked_add(4)?;
+        let old = metadata.get(offset..end)?;
+        if offset < previous_end { return None; }
+        previous_end = end;
+        let bytes = slot.to_le_bytes();
+        if old == bytes.as_slice() { continue; }
+        if let Some((start, data)) = runs.last_mut() {
+            if start.checked_add(data.len()) == Some(offset) {
+                data.extend_from_slice(&bytes);
+                continue;
+            }
+        }
+        runs.push((offset, bytes.to_vec()));
+    }
+    Some(runs)
+}
+
 impl Scratch {
+    fn patch_metadata(&mut self, device: &mut dyn ExtensionDevice, patches: &[(usize, u32)]) -> Result<bool> {
+        let Some(runs) = metadata_patch_runs(&self.metadata, patches) else { return Ok(false); };
+        if runs.is_empty() { return Ok(true); }
+        let writes: Vec<_> = runs.iter().map(|(offset, data)| BufferWrite {
+            descriptor: BufferWriteDescriptor { buffer: self.buffers[0], offset: *offset as u64 },
+            data: data.as_slice(),
+        }).collect();
+        if let Err(error) = device.write_buffer_batch(&writes) {
+            // Partial acceptance invalidates the complete CPU shadow.
+            self.metadata.clear();
+            return Err(error);
+        }
+        for (offset, data) in runs {
+            self.metadata[offset..offset + data.len()].copy_from_slice(&data);
+        }
+        Ok(true)
+    }
+
     fn upload_metadata(&mut self, device: &mut dyn ExtensionDevice, next: Vec<u8>) -> Result<()> {
         let ranges = metadata_ranges(&self.metadata, &next);
         if !ranges.is_empty() {
@@ -214,12 +259,7 @@ impl Cached {
             &self.source, next, &prepared.runs, prepared.indexed, prepared.compute[0].buffer.size,
         ) else { return Ok(false); };
         if !patches.is_empty() {
-            let mut bytes = scratch.metadata.clone();
-            for (word, slot) in patches {
-                let Some(dst) = bytes.get_mut(word * 4..word * 4 + 4) else { return Ok(false); };
-                dst.copy_from_slice(&slot.to_le_bytes());
-            }
-            scratch.upload_metadata(device, bytes)?;
+            if !scratch.patch_metadata(device, &patches)? { return Ok(false); }
             // The gather population changed, so do not compare timings
             // measured for the old set of indirect arguments.
             self.cost = CostModel::default();
@@ -724,6 +764,21 @@ mod tests {
         next[17].set_scissor(Some(ScissorRect { x: 0, y: 0, width: 1, height: 1 }));
         assert!(gather_patches(&old, &next, &planned.runs, false, planned.source_bytes).is_none());
         assert!(gather_patches(&old, &old[..255], &planned.runs, false, planned.source_bytes).is_none());
+    }
+
+    #[test]
+    fn sparse_gather_patches_coalesce_without_copying_unmodified_metadata() {
+        let metadata = vec![0u8; 512];
+        let runs = metadata_patch_runs(&metadata, &[(4, 7), (5, 9), (6, 0), (100, 3)]).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].0, 16);
+        assert_eq!(runs[0].1, [7, 0, 0, 0, 9, 0, 0, 0]);
+        assert_eq!(runs[1], (400, 3u32.to_le_bytes().to_vec()));
+        assert!(metadata_patch_runs(&metadata, &[(128, 1)]).is_none());
+        assert!(metadata_patch_runs(&metadata, &[(5, 1), (4, 2)]).is_none());
+        assert!(metadata_patch_runs(&metadata, &[(5, 1), (5, 2)]).is_none());
+        assert!(metadata_patch_runs(&metadata, &[(usize::MAX, 1)]).is_none());
+        assert!(metadata_patch_runs(&metadata, &[(6, 0)]).unwrap().is_empty());
     }
 
     #[test]
