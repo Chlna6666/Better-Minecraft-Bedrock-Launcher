@@ -366,6 +366,93 @@ mod tests {
 
     #[test]
     #[ignore = "requires native Vulkan device"]
+    fn native_sampled_table_shader_reads_nonuniform_slots() {
+        use gfx_core::{ColorTargetState, ColorAttachmentDescriptor, RenderPassDescriptor,
+            PipelineLayoutDescriptor, RenderPipelineDescriptor, ShaderModuleDescriptor,
+            RenderPassCommands, RenderCommand, DrawCommand, ClearColor, LoadOp, BlendMode,
+            PrimitiveTopology, TextureViewDescriptor, TextureWriteDescriptor, TextureDataLayout,
+            Origin2d, Extent2d, ShaderStage, TextureTransferDevice, PresentationDevice};
+        const SOURCE: &str = r"
+@group(0) @binding(0) var images: binding_array<texture_2d<f32>, 4>;
+@vertex fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let p = array<vec2<f32>, 3>(vec2<f32>(-1., -1.), vec2<f32>(3., -1.), vec2<f32>(-1., 3.));
+    return vec4<f32>(p[i], 0., 1.);
+}
+@fragment fn fs_main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(images[u32(p.x)], vec2<i32>(0, 0), 0);
+}
+";
+        let mut device = VulkanDevice::new(&DeviceDescriptor::default()).expect("Vulkan device");
+        assert!(ResourceDevice::sampled_texture_table_capacity(&device) >= 4);
+        let module = gfx_shader::WgslModule::parse_sampled_texture_table(SOURCE).expect("binding array WGSL");
+        let vs = device.create_shader_module(&ShaderModuleDescriptor {
+            label: None, binary: module.compile_spirv(ShaderStage::Vertex, "vs_main").unwrap(),
+        }).unwrap();
+        let fs = device.create_shader_module(&ShaderModuleDescriptor {
+            label: None, binary: module.compile_spirv(ShaderStage::Fragment, "fs_main").unwrap(),
+        }).unwrap();
+        let mut views = Vec::new();
+        let colors = [[255u8, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 0, 255]];
+        let unit = Extent2d::new(1, 1).unwrap();
+        for color in colors {
+            let texture = device.create_texture(&TextureDescriptor {
+                label: None, size: unit, mip_level_count: 1, format: Format::Rgba8Unorm,
+                usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
+                memory_location: MemoryLocation::GpuOnly, dimension: TextureDimension::D2, sample_count: 1,
+            }).unwrap();
+            TextureTransferDevice::write_texture(&mut device, TextureWriteDescriptor {
+                texture, mip_level: 0, origin: Origin2d::ZERO, size: unit,
+                layout: TextureDataLayout::new(0, 4, 1).unwrap(),
+            }, &color).unwrap();
+            views.push(device.create_texture_view(&TextureViewDescriptor {
+                label: None, texture, base_mip_level: 0, mip_level_count: 1, format: Format::Rgba8Unorm,
+            }).unwrap());
+        }
+        let size = Extent2d::new(4, 1).unwrap();
+        let target = device.create_texture(&TextureDescriptor {
+            label: None, size, mip_level_count: 1, format: Format::Rgba8Unorm,
+            usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
+            memory_location: MemoryLocation::GpuOnly, dimension: TextureDimension::D2, sample_count: 1,
+        }).unwrap();
+        let target_view = device.create_texture_view(&TextureViewDescriptor {
+            label: None, texture: target, base_mip_level: 0, mip_level_count: 1, format: Format::Rgba8Unorm,
+        }).unwrap();
+        let layout = device.create_sampled_table_layout(4).unwrap();
+        let old = device.create_sampled_table(layout, &views).unwrap();
+        let next = device.fork_sampled_table(old, &[(1, views[3]), (3, views[1])]).unwrap();
+        let pass = device.create_render_pass(&RenderPassDescriptor {
+            label: None, color_attachments: vec![ColorAttachmentDescriptor { format: Format::Rgba8Unorm }],
+            depth_attachment: None, sample_count: 1, resolve_target: None,
+        }).unwrap();
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: None, bind_group_layouts: vec![layout],
+        }).unwrap();
+        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: None, vertex_shader: vs, vertex_entry_point: "vs_main".into(),
+            fragment_shader: fs, fragment_entry_point: "fs_main".into(), vertex_buffers: Vec::new(),
+            render_pass: pass, pipeline_layout: Some(pipeline_layout),
+            color_targets: vec![ColorTargetState::new(Format::Rgba8Unorm, BlendMode::Replace)],
+            primitive_topology: PrimitiveTopology::TriangleList, raster: Default::default(), depth_state: None,
+        }, size).unwrap();
+        for (set, order) in [(old, [0, 1, 2, 3]), (next, [0, 3, 2, 1]), (old, [0, 1, 2, 3])] {
+            let commands = [RenderCommand::Draw(DrawCommand {
+                pipeline, bind_groups: gfx_core::bind_group_list([set]),
+                vertex_count: 3, first_vertex: 0, instance_count: 1, first_instance: 0, scissor: None,
+            })];
+            PresentationDevice::render_to_textures(&mut device, &[RenderPassCommands {
+                color_attachments: &[target_view], render_pass: pass, commands: &commands,
+                color_load_op: LoadOp::Clear(ClearColor::default()), depth_attachment: None,
+                clear_region: None, viewport: None, resolve_target: None,
+            }]).unwrap();
+            let pixels = TextureTransferDevice::read_texture(&mut device, target).unwrap();
+            let expected: Vec<u8> = order.into_iter().flat_map(|i| colors[i]).collect();
+            assert_eq!(pixels.bytes, expected);
+        }
+        eprintln!("NOVA_VULKAN_SAMPLED_TABLE_PIXELS=pass");
+    }
+
+    #[test]
+    #[ignore = "requires native Vulkan device"]
     fn native_sampled_table_snapshot_preserves_old_slots() {
         let mut device = VulkanDevice::new(&DeviceDescriptor::default()).expect("Vulkan device");
         if ResourceDevice::sampled_texture_table_capacity(&device) < 4 {

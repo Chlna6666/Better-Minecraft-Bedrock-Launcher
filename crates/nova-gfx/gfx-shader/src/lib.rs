@@ -89,9 +89,22 @@ impl WgslModule {
     ///
     /// Returns [`ShaderError`] when parsing or validation fails.
     pub fn parse(source: &str) -> Result<Self> {
+        Self::parse_with_capabilities(source, Capabilities::DUAL_SOURCE_BLENDING)
+    }
+
+    /// Opt in to non-uniform sampled texture binding arrays for native
+    /// descriptor-table shaders. The caller must check device support;
+    /// ordinary cross-backend shaders keep their original validation policy.
+    pub fn parse_sampled_texture_table(source: &str) -> Result<Self> {
+        Self::parse_with_capabilities(source, Capabilities::DUAL_SOURCE_BLENDING
+            | Capabilities::TEXTURE_AND_SAMPLER_BINDING_ARRAY
+            | Capabilities::TEXTURE_AND_SAMPLER_BINDING_ARRAY_NON_UNIFORM_INDEXING)
+    }
+
+    fn parse_with_capabilities(source: &str, capabilities: Capabilities) -> Result<Self> {
         let module = naga::front::wgsl::parse_str(source)
             .map_err(|error| ShaderError::Parse(error.emit_to_string(source)))?;
-        let info = Validator::new(ValidationFlags::all(), Capabilities::DUAL_SOURCE_BLENDING)
+        let info = Validator::new(ValidationFlags::all(), capabilities)
             .validate(&module)
             .map_err(|error| ShaderError::Validate(error.to_string()))?;
         Ok(Self { module, info })

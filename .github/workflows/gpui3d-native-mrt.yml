@@ -144,3 +144,10 @@ jobs:
           cargo test -p gfx-vulkan --lib sampled_table_dirty_spans_are_exact_and_ordered
           cargo test -p gfx-vulkan --lib native_sampled_table_snapshot_preserves_old_slots -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/sampled-table.txt"
           grep -Fq 'NOVA_VULKAN_SAMPLED_TABLE=pass' "$RUNNER_TEMP/sampled-table.txt"
+      - name: Verify non-uniform descriptor table shader pixels
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p gfx-vulkan --lib native_sampled_table_shader_reads_nonuniform_slots -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/sampled-table-pixels.txt"
+          grep -Fq 'NOVA_VULKAN_SAMPLED_TABLE_PIXELS=pass' "$RUNNER_TEMP/sampled-table-pixels.txt"
