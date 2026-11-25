@@ -241,6 +241,11 @@ impl SceneSampledTextures {
         self.layout_transition_pending || self.bank_transition_pending
     }
 
+    pub(super) fn can_migrate_capacity(&self, capacity: u32) -> bool {
+        self.pending.is_empty() && self.cleared.is_empty()
+            && !self.layout_transition_pending() && self.slots.can_resize(capacity)
+    }
+
     pub(super) fn committed_banked(&self) -> bool { self.committed_bank.is_some() }
     pub(super) fn banked(&self) -> bool { self.banked.is_some() }
 
