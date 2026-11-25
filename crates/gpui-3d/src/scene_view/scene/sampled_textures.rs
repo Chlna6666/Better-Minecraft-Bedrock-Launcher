@@ -39,6 +39,11 @@ struct RetiredSnapshot {
 struct RetiredTextures {
     textures: Vec<TextureResources>,
     readers: Readers,
+    // Inclusive interval of descriptor generations that contained these
+    // images. Late submissions of a committed/queued old snapshot must
+    // extend the image proof, not merely the descriptor-set proof.
+    first_generation: u64,
+    last_generation: u64,
 }
 
 pub(super) struct SceneSampledTextures {
@@ -171,7 +176,8 @@ impl SceneSampledTextures {
     pub(super) fn has_completed_retirement(&self) -> bool {
         self.retired.iter().any(|old| old.readers.ready()
             && self.committed != Some(old.snapshot) && !self.queued.contains(&Some(old.snapshot)))
-            || (!self.committed_previous_snapshot() && self.retired_textures.iter().any(|old| old.readers.ready()))
+            || (!self.committed_previous_snapshot() && self.queued.is_empty()
+                && self.retired_textures.iter().any(|old| old.readers.ready()))
     }
 
     pub(super) fn has_retired(&self) -> bool {
@@ -225,11 +231,20 @@ impl SceneSampledTextures {
                 self.snapshot_readers.submitted(submission);
             } else if let Some(old) = self.retired.iter_mut().find(|old| old.snapshot == snapshot) {
                 old.readers.submitted(submission);
+                let generation = old.generation;
+                for textures in &mut self.retired_textures {
+                    if (textures.first_generation..=textures.last_generation).contains(&generation) {
+                        textures.readers.submitted(submission);
+                    }
+                }
             } else {
                 debug_assert!(false, "submitted unknown sampled snapshot");
+                // In release builds keep the conservative image lifetime.
+                for textures in &mut self.retired_textures { textures.readers.submitted(submission); }
             }
         } else {
             self.legacy_readers.submitted(submission);
+            for textures in &mut self.retired_textures { textures.readers.submitted(submission); }
         }
     }
 
@@ -273,7 +288,7 @@ impl SceneSampledTextures {
         }
         // A failed prepare can leave the previous descriptor generation
         // committed. Preserve its images as well as the descriptor set.
-        if self.committed_previous_snapshot() { return Ok(()); }
+        if self.committed_previous_snapshot() || !self.queued.is_empty() { return Ok(()); }
         // Destroy all ready descriptor sets before their retired images.
         let mut i = 0;
         while i < self.retired_textures.len() {
@@ -326,11 +341,17 @@ impl SceneSampledTextures {
                 // these retired image identities, even if a slot was reused.
                 for texture in std::mem::take(&mut self.cleared) {
                     let readers = self.image_readers(texture.view);
-                    self.first_generation.remove(&texture.view);
-                    if let Some(cohort) = self.retired_textures.iter_mut().find(|old| old.readers == readers) {
+                    let first_generation = self.first_generation.remove(&texture.view).unwrap_or(0);
+                    let last_generation = self.generation;
+                    if let Some(cohort) = self.retired_textures.iter_mut().find(|old|
+                        old.readers == readers && old.first_generation == first_generation
+                            && old.last_generation == last_generation)
+                    {
                         cohort.textures.push(texture);
                     } else {
-                        self.retired_textures.push(RetiredTextures { textures: vec![texture], readers });
+                        self.retired_textures.push(RetiredTextures {
+                            textures: vec![texture], readers, first_generation, last_generation,
+                        });
                     }
                 }
                 self.generation = self.generation.saturating_add(1);
@@ -372,6 +393,29 @@ pub(super) fn indices(textures: &HashMap<TextureAssetId, TextureResources>, draw
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn late_old_generation_submission_extends_retired_image_readers() {
+        let mut table = SceneSampledTextures::new(
+            BindGroupLayoutId::from_parts(1, 1), 4, gfx_core::TextureViewId::from_parts(1, 1),
+        ).unwrap();
+        let old = BindGroupId::from_parts(1, 1);
+        let next = BindGroupId::from_parts(2, 1);
+        let fence = SubmissionId::from_parts(3, 1);
+        table.slots.create_snapshot_with(|_| Ok(next)).unwrap();
+        table.retired.push(RetiredSnapshot { snapshot: old, generation: 2, readers: Readers::default() });
+        for (first_generation, last_generation) in [(1, 2), (3, 4)] {
+            table.retired_textures.push(RetiredTextures {
+                textures: Vec::new(), readers: Readers::default(), first_generation, last_generation,
+            });
+        }
+        table.queue_capture(Some(old));
+        table.capture_submitted(Some(fence), Some(next));
+        assert!(!table.retired_textures[0].readers.ready());
+        assert!(table.retired_textures[1].readers.ready());
+        table.completed(fence);
+        assert!(table.retired_textures[0].readers.ready());
+    }
 
     #[test]
     fn previous_committed_snapshot_remains_pinned_until_scene_commit() {
