@@ -1392,6 +1392,22 @@ pub trait PresentationDevice {
         }
     }
 
+    /// Submit immutable producer-owned command streams on the ordered queue.
+    /// The parallel owner array proves allocation identity for reusable run plans.
+    /// Backends without native run support preserve the ordinary submission path.
+    fn render_to_textures_owned_profiled(
+        &mut self, passes: &[RenderPassCommands<'_>],
+        owners: &[std::sync::Arc<[crate::RenderCommand]>],
+        tables: &[Option<BindGroupId>], tags: &[Option<GpuTimestampTag>],
+    ) -> Result<Option<SubmissionId>> {
+        if passes.len() != owners.len() || passes.iter().zip(owners)
+            .any(|(pass, owner)| !std::ptr::eq(pass.commands, owner.as_ref()))
+        {
+            return Err(Error::InvalidInput("owned draw stream identity mismatch".into()));
+        }
+        self.render_to_textures_sampled_profiled(passes, tables, &[], tags)
+    }
+
     /// Records ordered offscreen render passes.
     ///
     /// The default submits each pass separately and returns `None`. Backends may batch the
