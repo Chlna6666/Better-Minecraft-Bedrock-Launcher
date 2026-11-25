@@ -400,7 +400,7 @@ mod tests {
                 usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
                 memory_location: MemoryLocation::GpuOnly, dimension: TextureDimension::D2, sample_count: 1,
             }).unwrap();
-            TextureTransferDevice::write_texture(&mut device, TextureWriteDescriptor {
+            ResourceDevice::write_texture(&mut device, TextureWriteDescriptor {
                 texture, mip_level: 0, origin: Origin2d::ZERO, size: unit,
                 layout: TextureDataLayout::new(0, 4, 1).unwrap(),
             }, &color).unwrap();
@@ -418,8 +418,12 @@ mod tests {
             label: None, texture: target, base_mip_level: 0, mip_level_count: 1, format: Format::Rgba8Unorm,
         }).unwrap();
         let layout = device.create_sampled_table_layout(4).unwrap();
-        let old = device.create_sampled_table(layout, &views).unwrap();
-        let next = device.fork_sampled_table(old, &[(1, views[3]), (3, views[1])]).unwrap();
+        let mut slots = gfx_core::SampledTextureSlots::new(4, views[0]).unwrap();
+        let first = slots.allocate(views[1]).unwrap();
+        let middle = slots.allocate(views[2]).unwrap();
+        let last = slots.allocate(views[3]).unwrap();
+        assert_eq!((first.index(), middle.index(), last.index()), (1, 2, 3));
+        let old = slots.create_snapshot(&mut device, layout).unwrap();
         let pass = device.create_render_pass(&RenderPassDescriptor {
             label: None, color_attachments: vec![ColorAttachmentDescriptor { format: Format::Rgba8Unorm }],
             depth_attachment: None, sample_count: 1, resolve_target: None,
@@ -434,20 +438,45 @@ mod tests {
             color_targets: vec![ColorTargetState::new(Format::Rgba8Unorm, BlendMode::Replace)],
             primitive_topology: PrimitiveTopology::TriangleList, raster: Default::default(), depth_state: None,
         }, size).unwrap();
-        for (set, order) in [(old, [0, 1, 2, 3]), (next, [0, 3, 2, 1]), (old, [0, 1, 2, 3])] {
+        let submit = |device: &mut VulkanDevice, set| {
             let commands = [RenderCommand::Draw(DrawCommand {
                 pipeline, bind_groups: gfx_core::bind_group_list([set]),
                 vertex_count: 3, first_vertex: 0, instance_count: 1, first_instance: 0, scissor: None,
             })];
-            PresentationDevice::render_to_textures(&mut device, &[RenderPassCommands {
+            PresentationDevice::render_to_textures_on_queue(device, &[RenderPassCommands {
                 color_attachments: &[target_view], render_pass: pass, commands: &commands,
                 color_load_op: LoadOp::Clear(ClearColor::default()), depth_attachment: None,
                 clear_region: None, viewport: None, resolve_target: None,
-            }]).unwrap();
-            let pixels = TextureTransferDevice::read_texture(&mut device, target).unwrap();
+            }], &[None], gfx_core::OffscreenQueuePreference::OrderedGraphics)
+                .unwrap().expect("tracked graphics submission")
+        };
+        let check_pixels = |device: &mut VulkanDevice, order: [usize; 4]| {
+            let pixels = TextureTransferDevice::read_texture(device, target).unwrap();
             let expected: Vec<u8> = order.into_iter().flat_map(|i| colors[i]).collect();
             assert_eq!(pixels.bytes, expected);
+        };
+        let reader = submit(&mut device, old);
+        slots.retire(first, &[reader]).unwrap();
+        slots.retire(last, &[reader]).unwrap();
+        assert!(slots.allocate(views[1]).is_err());
+        // Publish a fallback snapshot while the old table is still GPU-owned.
+        let cleared = slots.publish(&mut device, old).unwrap().unwrap();
+        check_pixels(&mut device, [0, 1, 2, 3]);
+        SubmissionDevice::wait_submission(&mut device, reader).unwrap();
+        slots.complete(reader);
+        let mut reused = [slots.allocate(views[1]).unwrap(), slots.allocate(views[3]).unwrap()];
+        reused.sort_by_key(|slot| slot.index());
+        assert_eq!((reused[0].index(), reused[1].index()), (1, 3));
+        assert!(!slots.contains(first) && !slots.contains(last));
+        assert!(slots.contains(middle));
+        let next = slots.publish(&mut device, cleared).unwrap().unwrap();
+        for (set, order) in [(cleared, [0, 0, 2, 0]), (next, [0, 3, 2, 1])] {
+            let submission = submit(&mut device, set);
+            check_pixels(&mut device, order);
+            SubmissionDevice::wait_submission(&mut device, submission).unwrap();
         }
+        assert!(slots.publish(&mut device, next).unwrap().is_none());
+        for set in [old, cleared, next] { device.destroy_bind_group(set).unwrap(); }
         eprintln!("NOVA_VULKAN_SAMPLED_TABLE_PIXELS=pass");
     }
 

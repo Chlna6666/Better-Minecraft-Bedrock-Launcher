@@ -15,6 +15,8 @@ on:
       - 'crates/gpui/src/diagnostics/performance_metrics/window/native_vsync.rs'
       - 'crates/gpui/src/platform/traits.rs'
       - 'crates/nova-gfx/gfx-vulkan/src/**'
+      - 'crates/nova-gfx/gfx-core/src/**'
+      - 'crates/nova-gfx/gfx-shader/src/**'
       - 'crates/gpui-3d/src/scene_view/effects/**'
       - 'crates/gpui-3d/src/scene_view/generated_tests.rs'
       - 'crates/gpui-3d/src/scene_view/generated.rs'
@@ -149,5 +151,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cargo test -p gfx-core --lib sampled_texture_slots::tests
           cargo test -p gfx-vulkan --lib native_sampled_table_shader_reads_nonuniform_slots -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/sampled-table-pixels.txt"
           grep -Fq 'NOVA_VULKAN_SAMPLED_TABLE_PIXELS=pass' "$RUNNER_TEMP/sampled-table-pixels.txt"
