@@ -44,6 +44,7 @@ pub(super) struct RendererResources {
 }
 
 struct SampledPipelines {
+    geometry_layout: Option<BindGroupLayoutId>,
     layout: Option<BindGroupLayoutId>,
     pipeline_layout: Option<PipelineLayoutId>,
     fragment: Option<ShaderModuleId>,
@@ -60,6 +61,7 @@ impl SampledPipelines {
         if let Some(id) = self.voxel_fragment.take() { device.destroy_shader_module(id)?; }
         if let Some(id) = self.pipeline_layout.take() { device.destroy_pipeline_layout(id)?; }
         if let Some(id) = self.layout.take() { device.destroy_bind_group_layout(id)?; }
+        if let Some(id) = self.geometry_layout.take() { device.destroy_bind_group_layout(id)?; }
         Ok(())
     }
 }
@@ -69,29 +71,41 @@ impl RendererResources {
         self.sampled.as_ref().and_then(|sampled| sampled.layout)
     }
 
+    pub(super) fn draw_bind_group_layout(&self, sampled: bool) -> gpui::Result<BindGroupLayoutId> {
+        if sampled {
+            self.sampled.as_ref().and_then(|sampled| sampled.geometry_layout)
+                .ok_or_else(|| anyhow!("sampled geometry layout unavailable"))
+        } else { self.bind_group_layout() }
+    }
+
     /// Experimental production Color pass. The other passes keep their legacy
     /// PSOs until their own image/alpha/depth comparisons are covered.
     fn try_enable_sampled(
         &mut self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
     ) -> gpui::Result<()> {
-        // Set zero still declares four sampled images, three storage buffers,
-        // a sampler and a uniform in the fragment stage. Budget all nine.
+        // Geometry set zero has three fragment storage buffers, one
+        // sampler and one uniform; reserve their aggregate stage budget.
         if self.pass != PassKind::Color || context.backend_kind() != BackendKind::Vulkan
-            || device.sampled_texture_table_capacity() < SAMPLED_TABLE_CAPACITY + 9
+            || device.sampled_texture_table_capacity() < SAMPLED_TABLE_CAPACITY + 5
             || std::env::var_os("GPUI_3D_BINDLESS").is_none_or(|value| value != "1")
         {
             return Ok(());
         }
         let mut sampled = SampledPipelines {
-            layout: None, pipeline_layout: None, fragment: None, voxel_fragment: None,
+            geometry_layout: None, layout: None, pipeline_layout: None, fragment: None, voxel_fragment: None,
             pipelines: [None; 18],
         };
         let result: gpui::Result<()> = (|| {
             let layout = device.create_sampled_texture_table_layout(SAMPLED_TABLE_CAPACITY)?;
             sampled.layout = Some(layout);
+            let geometry = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: Some("gpui-3d sampled geometry layout".into()),
+                entries: factory::scene_layout_entries(true),
+            })?;
+            sampled.geometry_layout = Some(geometry);
             sampled.pipeline_layout = Some(device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("gpui-3d sampled scene pipeline layout".into()),
-                bind_group_layouts: vec![self.bind_group_layout()?, layout],
+                bind_group_layouts: vec![geometry, layout],
             })?);
             sampled.fragment = Some(device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("gpui-3d sampled material fragment".into()),

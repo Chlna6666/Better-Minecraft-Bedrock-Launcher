@@ -141,6 +141,7 @@ pub(super) struct SceneResources {
     textures: HashMap<TextureAssetId, TextureResources>,
     sampled_textures: Option<sampled_textures::SceneSampledTextures>,
     committed_sampled_snapshot: Option<BindGroupId>,
+    sampled_bindings: bool,
     seen_materials: HashSet<usize>,
     draw_resources: Vec<BindGroupId>,
     /// Layout stamp captured by the last full sync_draw_resources pass. The
@@ -852,6 +853,7 @@ impl SceneResources {
             textures: HashMap::new(),
             sampled_textures: None,
             committed_sampled_snapshot: None,
+            sampled_bindings: false,
             seen_materials: HashSet::new(),
             draw_resources: Vec::new(),
             draw_resource_layout: 0,
@@ -980,23 +982,8 @@ impl SceneResources {
             && !sampler_changed
             && !voxel_shader_changed
             && !occlusion_changed
-            && !self.sampled_textures.as_ref().is_some_and(|table| table.needs_remap())
+            && !self.sampled_textures.as_ref().is_some_and(|table| table.needs_remap() || table.needs_publication())
         {
-            // Fence completions may unblock retirements even while all
-            // visible scene data is unchanged. Retire and republish here
-            // rather than waiting for a future camera/geometry edit.
-            if let Some(table) = self.sampled_textures.as_mut()
-                && table.needs_publication()
-            {
-                table.publish(device)?;
-                let next = self.sampled_snapshot(renderer);
-                if old_sampled != next {
-                    self.command_delta = None;
-                    self.blend_only_command_change = false;
-                    self.command_revision = self.command_revision.wrapping_add(1);
-                }
-                self.committed_sampled_snapshot = next;
-            }
             return Ok(());
         }
         // Camera-only movement normally changes uniforms and GPU cull arguments, not
@@ -1170,9 +1157,21 @@ impl SceneResources {
         // A capacity fallback can recover without reallocating resident
         // geometry. Any previously zero texture indices must be re-encoded
         // before a bindless snapshot becomes selectable again.
-        let sampled_remapped = self.sampled_textures.as_mut()
-            .is_some_and(|table| table.refill(&mut self.textures));
-        draw_list_changed |= sampled_remapped;
+        // Publish a complete immutable table before planning bindings and
+        // batches. A failed publication and a capacity overflow select
+        // Legacy for the entire frame, never only for command emission.
+        let mut sampled_remapped = false;
+        let mut next_sampled = None;
+        if let Some(table) = self.sampled_textures.as_mut() {
+            if table.needs_publication() { table.publish(device)?; }
+            sampled_remapped = table.refill(&mut self.textures);
+            if sampled_remapped && table.needs_publication() { table.publish(device)?; }
+            next_sampled = table.selected(renderer.sampled_table_layout());
+        }
+        let sampled_mode_changed = old_sampled.is_some() != next_sampled.is_some()
+            || self.sampled_bindings != next_sampled.is_some();
+        self.sampled_bindings = next_sampled.is_some();
+        draw_list_changed |= sampled_remapped || sampled_mode_changed;
         let shading = projection.voxel_shading();
         let shadow_enabled = scene_view.voxel_shader
             && shading.shadow_strength > 0.
@@ -1201,6 +1200,7 @@ impl SceneResources {
                     &mut self.batch_workspace,
                     &mut self.batches,
                     native_quads,
+                    self.sampled_bindings,
                 );
             } else {
                 self.batches.clear();
@@ -1329,7 +1329,7 @@ impl SceneResources {
             let buffer_started = trace_timings().then(Instant::now);
             let _phase =
                 gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::BufferEncode);
-            let bind_group_layout = renderer.bind_group_layout()?;
+            let bind_group_layout = renderer.draw_bind_group_layout(self.sampled_bindings)?;
             let mut selected_sync = DrawSyncPath::Full;
             {
                 // Fixed-layout opaque Candidate Deltas have already updated
@@ -1339,7 +1339,7 @@ impl SceneResources {
                 // If the CPU mirrors, capacities or layout cannot be proven
                 // stable, sync_buffers() safely re-plans the entire table.
                 let stage_started = trace_timings().then(Instant::now);
-                let result = if reused_resident_slots && !sampled_remapped {
+                let result = if reused_resident_slots && !sampled_remapped && !sampled_mode_changed {
                     self.sync_resident_draw_delta(
                         device,
                         renderer,
@@ -1360,7 +1360,7 @@ impl SceneResources {
                 }
                 if result.is_none() {
                     let stage_started = trace_timings().then(Instant::now);
-                    let structural_updated = !sampled_remapped && self
+                    let structural_updated = !sampled_remapped && !sampled_mode_changed && self
                         .culling
                         .as_ref()
                         .is_some_and(CullResources::structural_slots_committed)
@@ -1386,7 +1386,7 @@ impl SceneResources {
                             renderer,
                             bind_group_layout,
                             sampler,
-                            sampler_changed,
+                            sampler_changed || sampled_mode_changed,
                             scene_view.voxel_shader,
                             assets_changed,
                         )?;
@@ -1416,7 +1416,7 @@ impl SceneResources {
             let outcome = self.sync_draw_resources(
                 device,
                 renderer,
-                renderer.bind_group_layout()?,
+                renderer.draw_bind_group_layout(self.sampled_bindings)?,
                 sampler,
                 sampler_changed,
                 scene_view.voxel_shader,
@@ -1617,14 +1617,13 @@ impl SceneResources {
             && !shadow_created
             && !voxel_shader_changed
             && !wire_changed
+            && !sampled_mode_changed
             && self.generated_singleton_command_count().is_some()
         {
             self.command_delta = self.prepared.structural_draw_delta().cloned();
         }
-        if let Some(table) = self.sampled_textures.as_mut() {
-            table.publish(device)?;
-        }
-        let next_sampled = self.sampled_snapshot(renderer);
+        // Removed textures remain pinned by the current immutable snapshot.
+        // Their edits are published before the next frame's batch plan.
         let sampled_changed = old_sampled != next_sampled;
         self.committed_sampled_snapshot = next_sampled;
         if sampled_changed { self.command_delta = None; }
@@ -1825,12 +1824,12 @@ impl SceneResources {
             };
             key.shadow == shadow
                 && key.visible_instances == visible
-                && key.has_texture_ids(
+                && (self.sampled_bindings || key.has_texture_ids(
                     draw.material.albedo_texture,
                     draw.material.normal_texture,
                     draw.material.occlusion_texture,
                     draw.material.metallic_roughness_texture,
-                )
+                ))
                 && self
                     .generated_batch_sources
                     .get(index)
@@ -3289,10 +3288,10 @@ impl SceneResources {
                     generation: draw.mesh.generation(),
                 }
             },
-            albedo_id: draw.material.albedo_texture,
-            normal_id: draw.material.normal_texture,
-            occlusion_id: draw.material.occlusion_texture,
-            metallic_roughness_id: draw.material.metallic_roughness_texture,
+            albedo_id: if self.sampled_bindings { None } else { draw.material.albedo_texture },
+            normal_id: if self.sampled_bindings { None } else { draw.material.normal_texture },
+            occlusion_id: if self.sampled_bindings { None } else { draw.material.occlusion_texture },
+            metallic_roughness_id: if self.sampled_bindings { None } else { draw.material.metallic_roughness_texture },
         };
         let native = NativeCommandSource::for_draw(draw);
         if let Some(&binding) = created.get(&key).or_else(|| self.binding_cache.get(&key)) {
@@ -3317,6 +3316,7 @@ impl SceneResources {
         let binding = create_draw_resource_set(
             device,
             DrawBindingResources {
+                sampled: self.sampled_bindings,
                 shadow: self.shadow.as_ref().map(|shadow| shadow.raster.depths),
                 bind_group_layout,
                 mesh,
@@ -3328,10 +3328,10 @@ impl SceneResources {
                 instance_count: self.instance_capacity,
                 light_buffer: self.light_buffer,
                 light_capacity: self.light_capacity,
-                albedo_view: texture_view(draw.material.albedo_texture)?,
-                normal_texture_view: texture_view(draw.material.normal_texture)?,
-                occlusion_view: texture_view(draw.material.occlusion_texture)?,
-                metallic_roughness_view: texture_view(draw.material.metallic_roughness_texture)?,
+                albedo_view: texture_view(key.albedo_id)?,
+                normal_texture_view: texture_view(key.normal_id)?,
+                occlusion_view: texture_view(key.occlusion_id)?,
+                metallic_roughness_view: texture_view(key.metallic_roughness_id)?,
                 material_sampler: sampler,
                 frame_buffer: self.frame_buffer,
                 visible_instances: self.culling.as_ref().map(|culling| {
@@ -3600,10 +3600,10 @@ impl SceneResources {
             let mesh_id = draw.mesh.id();
             let compact_voxel = mesh_key(draw, voxel_shader).1;
             let generation = draw.mesh.generation();
-            let albedo_id = draw.material.albedo_texture;
-            let normal_id = draw.material.normal_texture;
-            let occlusion_id = draw.material.occlusion_texture;
-            let metallic_roughness_id = draw.material.metallic_roughness_texture;
+            let albedo_id = if self.sampled_bindings { None } else { draw.material.albedo_texture };
+            let normal_id = if self.sampled_bindings { None } else { draw.material.normal_texture };
+            let occlusion_id = if self.sampled_bindings { None } else { draw.material.occlusion_texture };
+            let metallic_roughness_id = if self.sampled_bindings { None } else { draw.material.metallic_roughness_texture };
             let source = ((mesh_id, compact_voxel), generation);
             // Most Section deltas retain the same binding at a given batch
             // position. Match immutable source IDs and the resource-bearing
@@ -3753,6 +3753,7 @@ impl SceneResources {
             match create_draw_resource_set(
                 device,
                 DrawBindingResources {
+                    sampled: self.sampled_bindings,
                     shadow: self.shadow.as_ref().map(|shadow| shadow.raster.depths),
                     bind_group_layout,
                     mesh,
@@ -3944,7 +3945,7 @@ impl SceneResources {
     }
 
     fn sampled_snapshot(&self, renderer: &RendererResources) -> Option<BindGroupId> {
-        self.sampled_textures.as_ref().and_then(|table| table.selected(renderer.sampled_table_layout()))
+        if renderer.sampled_table_layout().is_some() { self.committed_sampled_snapshot } else { None }
     }
 
     pub(super) fn append_steps(

@@ -138,6 +138,12 @@ impl SceneResources {
             let mut key = self.draw_resource_keys[index];
             key.visible_instances = Some(pass.culling.visible_instances);
             key.shadow = None;
+            // The shadow renderer is still legacy. Its own bindings must
+            // retain texture identity even when the Color path is sampled.
+            key.albedo_id = draw.material.albedo_texture;
+            key.normal_id = draw.material.normal_texture;
+            key.occlusion_id = draw.material.occlusion_texture;
+            key.metallic_roughness_id = draw.material.metallic_roughness_texture;
             let key = (
                 key,
                 self.draw_buffer,
@@ -155,6 +161,7 @@ impl SceneResources {
                 let group = create_draw_resource_set(
                     device,
                     DrawBindingResources {
+                        sampled: false,
                         shadow: None,
                         bind_group_layout: renderer.bind_group_layout()?,
                         mesh,

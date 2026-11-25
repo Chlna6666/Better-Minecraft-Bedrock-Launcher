@@ -71,8 +71,10 @@ impl SceneSampledTextures {
         self.remap_pending = false;
     }
 
+    // Planning may select a remapped snapshot before encoding its rows;
+    // SceneResources commits it only after all draws and bindings succeed.
     pub(super) fn selected(&self, layout: Option<BindGroupLayoutId>) -> Option<BindGroupId> {
-        if self.published && !self.remap_pending && self.unmapped == 0 && layout == Some(self.layout) {
+        if self.published && self.unmapped == 0 && layout == Some(self.layout) {
             self.slots.current_snapshot()
         } else { None }
     }

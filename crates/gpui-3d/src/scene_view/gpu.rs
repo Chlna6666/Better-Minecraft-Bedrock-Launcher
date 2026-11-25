@@ -1591,6 +1591,7 @@ pub(super) struct TextureResources {
 }
 
 pub(super) struct DrawBindingResources<'a> {
+    pub(super) sampled: bool,
     pub(super) shadow: Option<BufferId>,
     pub(super) bind_group_layout: BindGroupLayoutId,
     pub(super) mesh: &'a MeshResources,
@@ -1902,6 +1903,7 @@ pub(super) fn create_draw_resource_set(
     bindings: DrawBindingResources<'_>,
 ) -> gpui::Result<BindGroupId> {
     let DrawBindingResources {
+        sampled,
         shadow,
         bind_group_layout,
         mesh,
@@ -1937,10 +1939,7 @@ pub(super) fn create_draw_resource_set(
     } else {
         (draw_buffer, 0, 16)
     };
-    Ok(device.create_bind_group(&BindGroupDescriptor {
-        label: Some("gpui-3d mesh draw resource set".into()),
-        layout: bind_group_layout,
-        entries: vec![
+    let mut entries = vec![
             BindGroupEntry {
                 binding: 16,
                 resource: BindingResource::Buffer(BufferBinding {
@@ -2106,7 +2105,14 @@ pub(super) fn create_draw_resource_set(
                     stride: Some(4),
                 }),
             },
-        ],
+        ];
+    if sampled {
+        entries.retain(|entry| !matches!(entry.binding, ALBEDO_BINDING | NORMAL_MAP_BINDING | OCCLUSION_BINDING | METALLIC_ROUGHNESS_BINDING));
+    }
+    Ok(device.create_bind_group(&BindGroupDescriptor {
+        label: Some("gpui-3d mesh draw resource set".into()),
+        layout: bind_group_layout,
+        entries,
     })?)
 }
 

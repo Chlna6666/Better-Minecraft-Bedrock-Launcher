@@ -46,6 +46,7 @@ pub(super) struct BatchWorkspace {
     /// Section insertion/removal changes only the Vec extent, not retained
     /// batch entries; a previous instanced-Quad scene invalidates this mode.
     singleton_layout: bool,
+    sampled: bool,
 }
 
 impl BatchWorkspace {
@@ -87,6 +88,7 @@ pub(super) fn group_voxel_batches_into(
         meshes
             .values()
             .any(|mesh| mesh.procedural_quads && mesh.generated.is_none()),
+        false,
     );
 }
 
@@ -99,7 +101,15 @@ pub(super) fn group_voxel_batches(
     workspace: &mut BatchWorkspace,
     batches: &mut Vec<DrawBatchRange>,
     has_non_generated_quads: bool,
+    sampled: bool,
 ) {
+    if workspace.sampled != sampled {
+        workspace.buckets.clear();
+        workspace.sorted_keys.clear();
+        workspace.new_keys.clear();
+        workspace.spare_keys.clear();
+        workspace.sampled = sampled;
+    }
     let opaque = draws.partition_point(|draw| draw.material.alpha_mode != AlphaMode::Blend);
 
     // Streaming GPU Generated Meshes are singleton draws: their unique template
@@ -144,10 +154,10 @@ pub(super) fn group_voxel_batches(
         workspace.buckets.clear();
         workspace.sorted_keys.clear();
         workspace.new_keys.clear();
-        draws[..opaque].sort_by_cached_key(|draw| batch_key(draw, meshes));
+        draws[..opaque].sort_by_cached_key(|draw| batch_key_with_mode(draw, meshes, sampled));
         let mut last_key = None;
         for (index, draw) in draws.iter().enumerate() {
-            let key = batch_key(draw, meshes);
+            let key = batch_key_with_mode(draw, meshes, sampled);
             if let Some(batch) = batches.last_mut() {
                 if draw.material.alpha_mode != AlphaMode::Blend
                     && last_key == Some(key)
@@ -177,7 +187,7 @@ pub(super) fn group_voxel_batches(
     // grouping key once rather than once during sort and again during batch
     // coalescing. Retain each equal-key input order unchanged.
     for (index, draw) in draws[..opaque].iter().enumerate() {
-        let key = batch_key(draw, meshes);
+        let key = batch_key_with_mode(draw, meshes, sampled);
         match workspace.buckets.entry(key) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 entry.get_mut().push(index);
@@ -259,9 +269,15 @@ pub(super) fn group_voxel_batches(
     }
 }
 
-fn batch_key(
+#[cfg(test)]
+fn batch_key(draw: &PreparedDraw, meshes: &HashMap<(MeshId, bool), MeshResources>) -> BatchKey {
+    batch_key_with_mode(draw, meshes, false)
+}
+
+fn batch_key_with_mode(
     draw: &PreparedDraw,
     meshes: &HashMap<(MeshId, bool), MeshResources>,
+    sampled: bool,
 ) -> BatchKey {
     let resource = meshes.get(&mesh_key(draw, true));
     let quad = resource.is_some_and(|mesh| mesh.procedural_quads && mesh.generated.is_none());
@@ -284,12 +300,12 @@ fn batch_key(
         Some(gfx_core::FrontFace::Cw) => 2,
     };
     BatchKey::Quad {
-        textures: [
+        textures: if sampled { [None; 4] } else { [
             draw.material.albedo_texture.map(|id| id.0),
             draw.material.normal_texture.map(|id| id.0),
             draw.material.occlusion_texture.map(|id| id.0),
             draw.material.metallic_roughness_texture.map(|id| id.0),
-        ],
+        ] },
         page: resource.expect("quad resource was found").vertices.raw(),
         size_class,
         raster,
@@ -488,6 +504,16 @@ mod tests {
         let batches = group_voxel_batches_from_meshes(&mut draws, &meshes);
         assert_eq!(batches.len(), 4, "texture or culling state changes need independent bindings");
         assert!(batches.iter().all(|batch| batch.instance_count == 1));
+
+        // Same geometry and raster state can now share a sampled draw;
+        // distinct winding and two-sided rendering remain isolated.
+        let mut workspace = BatchWorkspace::default();
+        let mut batches = Vec::new();
+        group_voxel_batches(&mut draws, &meshes, &mut workspace, &mut batches, true, true);
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches.iter().map(|batch| batch.instance_count).max(), Some(2));
+        group_voxel_batches(&mut draws, &meshes, &mut workspace, &mut batches, true, false);
+        assert_eq!(batches.len(), 4, "legacy fallback must restore texture boundaries");
     }
 
     #[test]
@@ -531,7 +557,7 @@ mod tests {
         let mut batches = Vec::new();
         let mut draws = prepare(&scene);
         group_voxel_batches(
-            &mut draws, &meshes, &mut workspace, &mut batches, false,
+            &mut draws, &meshes, &mut workspace, &mut batches, false, false,
         );
         assert!(workspace.singleton_layout);
         let snapshot = batches.iter().map(|b| (b.first_instance, b.instance_count))
@@ -544,7 +570,7 @@ mod tests {
         scene.remove(removed).unwrap();
         let mut draws = prepare(&scene);
         group_voxel_batches(
-            &mut draws, &meshes, &mut workspace, &mut batches, false,
+            &mut draws, &meshes, &mut workspace, &mut batches, false, false,
         );
         assert_eq!(batches.as_ptr(), existing);
         assert_eq!(batches.capacity(), previous_capacity);
@@ -558,7 +584,7 @@ mod tests {
         scene.insert(None, Node::new().with_mesh(mesh)).unwrap();
         let mut draws = prepare(&scene);
         group_voxel_batches(
-            &mut draws, &meshes, &mut workspace, &mut batches, false,
+            &mut draws, &meshes, &mut workspace, &mut batches, false, false,
         );
         assert_eq!(batches.len(), snapshot.len());
         assert_eq!(batches.as_ptr(), existing);
@@ -574,18 +600,18 @@ mod tests {
         let mut batches = Vec::new();
         let meshes = HashMap::new();
         group_voxel_batches(
-            &mut draws, &meshes, &mut workspace, &mut batches, false,
+            &mut draws, &meshes, &mut workspace, &mut batches, false, false,
         );
         assert!(workspace.singleton_layout);
         // Switching to the native grouping path invalidates the assumption.
         group_voxel_batches(
-            &mut draws, &meshes, &mut workspace, &mut batches, true,
+            &mut draws, &meshes, &mut workspace, &mut batches, true, false,
         );
         assert!(!workspace.singleton_layout);
         // Re-entering the generated-only path reconstructs all singleton
         // descriptors, even if the former grouping produced fewer batches.
         group_voxel_batches(
-            &mut draws, &meshes, &mut workspace, &mut batches, false,
+            &mut draws, &meshes, &mut workspace, &mut batches, false, false,
         );
         assert!(workspace.singleton_layout);
         assert_eq!(batches.len(), draws.len());
@@ -613,7 +639,7 @@ mod tests {
             &meshes,
             &mut workspace,
             &mut batches,
-            false,
+            false, false,
         );
         assert!(workspace.singleton_layout());
         assert_eq!(batches.len(), draws.len());

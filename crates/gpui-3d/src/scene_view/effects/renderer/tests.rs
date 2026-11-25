@@ -575,8 +575,14 @@ fn bindless_production_color_vulkan() {
         let mut commands = Vec::new();
         scene.append_steps(renderer, view.voxel_shader, &mut commands).unwrap();
         assert!(!commands.is_empty());
-        assert!(commands.iter().all(|command| command.bind_groups().len() == set_count),
-            "production command did not bind the expected descriptor set count");
+        let actual_sets = commands.iter().map(|command| command.bind_groups().len()).collect::<Vec<_>>();
+        assert!(actual_sets.iter().all(|&count| count == set_count),
+            "production command descriptor sets: expected={set_count}, actual={actual_sets:?}, voxel={}", view.voxel_shader);
+        if set_count == 2 {
+            let geometry = commands[0].bind_groups()[0];
+            assert!(commands.iter().all(|command| command.bind_groups()[0] == geometry),
+                "identical resident geometry must share set zero across materials");
+        }
         PresentationDevice::render_to_textures(device, &[RenderPassCommands {
             color_attachments: &[target.view], render_pass: pass_id, commands: &commands,
             color_load_op: LoadOp::Clear(ClearColor::default()),
@@ -610,6 +616,7 @@ fn bindless_production_color_vulkan() {
         // frame must be able to recover and use the sampled PSO again.
         let recovered = fixture(&[[255, 0, 0, 255], [0, 0, 255, 255]], voxel);
         render(&mut device, &mut sampled_scene, &mut sampled, &recovered, 1);
+        // Removed descriptors are processed before the next batch plan.
         let actual = render(&mut device, &mut sampled_scene, &mut sampled, &recovered, 2);
         let expected = render(&mut device, &mut legacy_scene, &mut legacy, &recovered, 1);
         assert_eq!(actual, expected);
