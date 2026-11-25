@@ -27,7 +27,7 @@ impl VulkanDevice {
     ) -> Result<Vec<DepthAccess>> {
         let representatives = plan.runs().iter().scan(0usize, |cursor, &count| {
             let step = &steps[*cursor];
-            *cursor += count as usize;
+            *cursor += plan.source_span(count);
             Some(step)
         });
         self.depth_accesses_for(representatives, attachment)
