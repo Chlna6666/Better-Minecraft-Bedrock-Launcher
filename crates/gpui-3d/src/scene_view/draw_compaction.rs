@@ -288,7 +288,8 @@ impl Cached {
     fn try_splice_gaps(&mut self, next: &Arc<[RenderCommand]>) -> bool {
         let Some(prepared) = self.prepared.as_mut() else { return false; };
         let Some(runs) = splice_gather_runs(&self.source, next, &prepared.runs) else { return false; };
-        let mut commands = Vec::with_capacity(next.len());
+        let removed = self.source.len() - prepared.commands.len();
+        let mut commands = Vec::with_capacity(next.len() - removed);
         let mut counts = Vec::with_capacity(runs.len());
         let mut cursor = 0;
         for (run, count) in runs.iter().zip(&prepared.counts) {
@@ -517,12 +518,15 @@ impl Compactor {
             }
             let view = self.views.entry(id).or_default();
             let previous_probe = view.pending_id();
-            let decision = view.schedule(device, self.argument_stride, self.indexed_shader.is_some(), pass)?;
+            let decision = view.schedule(device, self.argument_stride, self.indexed_shader.is_some(), pass);
             let next_probe = view.pending_id();
             if previous_probe != next_probe {
                 if let Some(old) = previous_probe { self.probes.remove(&old); }
                 if let Some(new) = next_probe { self.probes.insert(new, id); }
             }
+            // Reconcile probe ownership even if a partial metadata upload
+            // invalidated the cached plan before returning an error.
+            let decision = decision?;
             special |= decision.is_some();
             decisions.push(decision);
         }
