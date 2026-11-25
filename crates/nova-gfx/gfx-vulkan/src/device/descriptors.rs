@@ -125,7 +125,7 @@ impl VulkanDevice {
         let infos = self.sampled_table_infos(views)?;
         let demand = Demand([0, 0, capacity, 0, 0]);
         let (descriptor_set, descriptor_pool) =
-            self.descriptor_pools.allocate(&self.device, native_layout, demand)?;
+            self.descriptor_pools.allocate_table(&self.device, layout_id, native_layout, demand)?;
         let write = vk::WriteDescriptorSet::default().dst_set(descriptor_set)
             .dst_binding(0).descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
             .image_info(&infos);
@@ -184,7 +184,7 @@ impl VulkanDevice {
         let infos = self.sampled_table_infos(&dirty_views)?;
         let demand = Demand([0, 0, capacity, 0, 0]);
         let (descriptor_set, descriptor_pool) =
-            self.descriptor_pools.allocate(&self.device, layout, demand)?;
+            self.descriptor_pools.allocate_table(&self.device, layout_id, layout, demand)?;
         let mut writes = Vec::new();
         let mut copies = Vec::new();
         let mut offset = 0;
@@ -258,12 +258,73 @@ impl Page {
     }
 }
 
+// Cache only completed table snapshots. Ordinary descriptor sets retain
+// their existing free path. Keep both set count and total descriptor budget
+// bounded, even on devices advertising millions of sampled descriptors.
+const MAX_IDLE_TABLES: usize = 8;
+const MAX_IDLE_TABLES_PER_LAYOUT: usize = 2;
+const MAX_IDLE_TABLE_DESCRIPTORS: u32 = 32_768;
+
+struct IdleTable {
+    layout: BindGroupLayoutId,
+    pool: vk::DescriptorPool,
+    set: vk::DescriptorSet,
+    demand: Demand,
+}
+
 #[derive(Default)]
 pub(super) struct Pools {
     pages: Vec<Page>,
+    idle_tables: Vec<IdleTable>,
+    idle_table_descriptors: u32,
 }
 
 impl Pools {
+    pub(super) fn allocate_table(
+        &mut self, device: &ash::Device, layout_id: BindGroupLayoutId,
+        layout: vk::DescriptorSetLayout, demand: Demand,
+    ) -> Result<(vk::DescriptorSet, vk::DescriptorPool)> {
+        if let Some(index) = self.idle_tables.iter().rposition(|entry| entry.layout == layout_id) {
+            let entry = self.idle_tables.swap_remove(index);
+            debug_assert_eq!(entry.demand.0, demand.0);
+            self.idle_table_descriptors -= entry.demand.0[2];
+            // Native pool capacity is still charged to this allocation.
+            // All descriptors are overwritten/copied before publication.
+            return Ok((entry.set, entry.pool));
+        }
+        self.allocate(device, layout, demand)
+    }
+
+    pub(super) fn recycle_table(
+        &mut self, device: &ash::Device, layout: BindGroupLayoutId,
+        pool: vk::DescriptorPool, set: vk::DescriptorSet, demand: Demand,
+    ) -> Result<()> {
+        let count = demand.0[2];
+        if self.idle_tables.len() >= MAX_IDLE_TABLES
+            || self.idle_tables.iter().filter(|entry| entry.layout == layout).count() >= MAX_IDLE_TABLES_PER_LAYOUT
+            || count > MAX_IDLE_TABLE_DESCRIPTORS.saturating_sub(self.idle_table_descriptors)
+        {
+            return self.free(device, pool, set, demand);
+        }
+        self.idle_table_descriptors += count;
+        self.idle_tables.push(IdleTable { layout, pool, set, demand });
+        Ok(())
+    }
+
+    pub(super) fn release_table_layout(&mut self, device: &ash::Device, layout: BindGroupLayoutId) -> Result<()> {
+        // Cache keys include the logical generation, not a recyclable native
+        // layout pointer. Flush matching idle entries before layout destruction.
+        while let Some(index) = self.idle_tables.iter().position(|entry| entry.layout == layout) {
+            let entry = self.idle_tables.swap_remove(index);
+            if let Err(error) = self.free(device, entry.pool, entry.set, entry.demand) {
+                self.idle_tables.push(entry);
+                return Err(error);
+            }
+            self.idle_table_descriptors -= entry.demand.0[2];
+        }
+        Ok(())
+    }
+
     pub(super) fn allocate(
         &mut self,
         device: &ash::Device,
@@ -314,6 +375,8 @@ impl Pools {
 
     // Called only after device idle and all live/deferred sets have been destroyed.
     pub(super) fn destroy(&mut self, device: &ash::Device) {
+        self.idle_tables.clear();
+        self.idle_table_descriptors = 0;
         for page in self.pages.drain(..) {
             // SAFETY: Pools belong to this device and no descriptor sets remain in use.
             unsafe { device.destroy_descriptor_pool(page.pool, None) };
@@ -517,9 +580,22 @@ mod tests {
         assert_eq!(a.sampled_table.as_deref(), Some(&[views[0]; 4][..]));
         assert_eq!(b.sampled_table.as_deref(), Some(&[views[0], views[1], views[1], views[0]][..]));
         assert!(device.fork_sampled_table(old, &[(4, views[1])]).is_err());
+        let old_native = device.bind_groups.get(old).unwrap().descriptor_set;
+        let next_native = device.bind_groups.get(next).unwrap().descriptor_set;
         device.destroy_bind_group(old).unwrap();
         device.destroy_bind_group(next).unwrap();
+        // A same-queue completion checkpoint covers both retirement points.
+        let fence = ResourceDevice::checkpoint_gpu_queue(&mut device, gfx_core::GpuQueueId::PRIMARY).unwrap();
+        SubmissionDevice::wait_submission(&mut device, fence).unwrap();
+        device.poll_cleanup();
+        assert_eq!(device.descriptor_pools.idle_tables.len(), 2);
+        let reused = device.create_sampled_table(layout, &[views[1]; 4]).unwrap();
+        let native = device.bind_groups.get(reused).unwrap().descriptor_set;
+        assert!(native == old_native || native == next_native);
+        assert_eq!(device.descriptor_pools.idle_tables.len(), 1);
+        device.destroy_bind_group(reused).unwrap();
         device.destroy_bind_group_layout(layout).unwrap();
+        assert!(device.descriptor_pools.idle_tables.is_empty());
         for view in views { device.destroy_texture_view(view).unwrap(); }
         for texture in textures { device.destroy_texture(texture).unwrap(); }
         eprintln!("NOVA_VULKAN_SAMPLED_TABLE=pass");

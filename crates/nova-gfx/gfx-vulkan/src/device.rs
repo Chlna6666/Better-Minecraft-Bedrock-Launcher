@@ -3793,6 +3793,8 @@ impl VulkanDevice {
     /// Returns [`Error`] when the handle is invalid.
     fn destroy_bind_group_layout(&mut self, layout_id: BindGroupLayoutId) -> Result<()> {
         self.wait_for_pending_work()?;
+        self.bind_group_layouts.get(layout_id)?;
+        self.descriptor_pools.release_table_layout(&self.device, layout_id)?;
         let layout = self.bind_group_layouts.take(layout_id)?;
         self.destroy_resource_set_layout_now(&layout);
         Ok(())
@@ -4795,12 +4797,19 @@ impl VulkanDevice {
     }
 
     fn destroy_resource_set_now(&mut self, set: &VulkanResourceSet) {
-        let _ = set.layout;
-        // Restore capacity only when native destruction succeeds.
-        if let Err(error) = self.descriptor_pools.free(
-            &self.device, set.descriptor_pool, set.descriptor_set, set.descriptor_demand,
-        ) {
-            log::warn!("nova-gfx Vulkan descriptor free failed: {error}");
+        // Only completed table snapshots with a still-live logical layout
+        // can be reused. A stale layout falls back to native free.
+        let result = if set.sampled_table.is_some() && self.bind_group_layouts.get(set.layout).is_ok() {
+            self.descriptor_pools.recycle_table(
+                &self.device, set.layout, set.descriptor_pool, set.descriptor_set, set.descriptor_demand,
+            )
+        } else {
+            self.descriptor_pools.free(
+                &self.device, set.descriptor_pool, set.descriptor_set, set.descriptor_demand,
+            )
+        };
+        if let Err(error) = result {
+            log::warn!("nova-gfx Vulkan descriptor retirement failed: {error}");
         }
     }
 
