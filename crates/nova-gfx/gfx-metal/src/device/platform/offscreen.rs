@@ -14,7 +14,8 @@ struct PreparedPass {
 }
 
 impl MetalDevice {
-    fn prepare_texture_pass(&self, pass: &RenderPassCommands<'_>, counts: &[gfx_core::IndirectCountBinding]) -> Result<PreparedPass> {
+    fn prepare_texture_pass(&self, pass: &RenderPassCommands<'_>, counts: &[gfx_core::IndirectCountBinding],
+        plan: Option<&gfx_core::DrawRunPlan>) -> Result<PreparedPass> {
         let layout = self.render_passes.get(pass.render_pass)?;
         if pass.color_attachments.is_empty() || pass.color_attachments.len() != layout.color_formats.len() {
             return Err(Error::InvalidInput("Metal offscreen attachment count mismatch".into()));
@@ -109,16 +110,30 @@ impl MetalDevice {
             width: f64::from(viewport_extent.width()), height: f64::from(viewport_extent.height()),
             znear: 0.0, zfar: 1.0,
         };
-        let mut steps = Vec::with_capacity(pass.commands.len());
+        const MIN_FIXED_RUN: u32 = 32;
+        let capacity = plan.map_or(pass.commands.len(), |plan| plan.runs().iter()
+            .map(|&length| if length >= MIN_FIXED_RUN { 1 } else { length as usize }).sum());
+        let mut steps = Vec::with_capacity(capacity);
         let mut preparation = RenderStateCache::default();
         let mut counts = counts.iter().peekable();
         let mut checked_bindings = std::collections::HashSet::new();
-        for (index, command) in pass.commands.iter().enumerate() {
+        let mut runs = plan.into_iter().flat_map(|plan| plan.runs().iter().copied());
+        let mut remaining = 0u32;
+        let mut index = 0;
+        while index < pass.commands.len() {
+            if remaining == 0 { remaining = runs.next().unwrap_or(1); }
+            let command = &pass.commands[index];
             let mut step = self.prepare_render_step(layout, command, &mut preparation)?;
+            let mut consumed = 1;
             if counts.peek().is_some_and(|count| count.command_index == index) {
                 let count = *counts.next().expect("counted command");
                 step.draw = PreparedMetalDraw::Counted(self.prepare_counted_run(command, count, &step.pipeline)?);
+            } else if remaining >= MIN_FIXED_RUN {
+                step.draw = PreparedMetalDraw::Counted(self.prepare_fixed_run(command, remaining, &step.pipeline)?);
+                consumed = remaining;
             }
+            index += consumed as usize;
+            remaining -= consumed;
             if checked_bindings.insert(std::rc::Rc::as_ptr(&step.bindings))
                 && (color_ids.iter().any(|&id| step.bindings.samples_texture(id))
                     || resolve.as_ref().is_some_and(|(id, _, _)| step.bindings.samples_texture(*id))
@@ -171,6 +186,18 @@ impl MetalDevice {
         tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
         counts: &[&[gfx_core::IndirectCountBinding]], tracked: bool,
     ) -> Result<Option<SubmissionId>> {
+        self.submit_texture_passes_planned(passes, tags, counts, tracked, &[])
+    }
+
+    pub(super) fn submit_texture_passes_planned(
+        &mut self, passes: &[RenderPassCommands<'_>],
+        tags: Option<&[Option<gfx_core::GpuTimestampTag>]>,
+        counts: &[&[gfx_core::IndirectCountBinding]], tracked: bool,
+        plans: &[std::sync::Arc<gfx_core::DrawRunPlan>],
+    ) -> Result<Option<SubmissionId>> {
+        if !plans.is_empty() && (plans.len() != passes.len() || !counts.is_empty()) {
+            return Err(Error::InvalidInput("Metal fixed run metadata mismatch".into()));
+        }
         if !counts.is_empty() && counts.len() != passes.len() {
             return Err(Error::InvalidInput("Metal counted pass metadata length mismatch".into()));
         }
@@ -181,7 +208,8 @@ impl MetalDevice {
         if let Some(icb) = &self.icb { icb.reclaim(); }
         // Validate the complete batch before submitting anything. A rejected
         // later pass must never leave a partially committed producer graph.
-        let prepared = passes.iter().enumerate().map(|(index, pass)| self.prepare_texture_pass(pass, counts.get(index).copied().unwrap_or(&[])))
+        let prepared = passes.iter().enumerate().map(|(index, pass)| self.prepare_texture_pass(
+            pass, counts.get(index).copied().unwrap_or(&[]), plans.get(index).map(std::sync::Arc::as_ref)))
             .collect::<Result<Vec<_>>>()?;
         let ranges = tags.map(|tags| tags.iter().enumerate().filter_map(|(index, tag)| {
             tag.map(|tag| timestamps::TaggedRange { first: index, last: index, tag })
