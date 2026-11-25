@@ -72,6 +72,127 @@ impl SampledPipelines {
     }
 }
 
+/// Bounded cache of complete sampled pipeline families, one per compiled
+/// capacity tier. Old layouts remain valid for queued commands and scene
+/// descriptor generations without forcing GPU idle. Descriptor snapshots
+/// themselves retire by fence; only reusable PSOs/layouts stay cached.
+/// The cache must be destroyed before the render passes and shared shaders.
+#[derive(Default)]
+pub(super) struct SampledTierCache {
+    maximum: Option<u32>,
+    candidate: Option<(u32, std::time::Instant)>,
+    last_attempt: Option<std::time::Instant>,
+    retained: Vec<SampledFamily>,
+}
+
+struct SampledFamily {
+    capacity: u32,
+    contexts: Vec<(gfx_core::RenderPassId, Format)>,
+    passes: Vec<SampledPipelines>,
+}
+
+impl SampledTierCache {
+    /// Grow when the working set exceeds the current capacity; shrink only
+    /// after ten seconds below 25% utilization, keeping 2x live headroom.
+    /// Failed native allocations are throttled without a CPU/GPU wait.
+    pub(super) fn suggest(&mut self, current: u32, demand: usize, now: std::time::Instant) -> Option<u32> {
+        let maximum = *self.maximum.get_or_insert(current);
+        let target = sampled_capacity_target(current, maximum, demand)?;
+        let since = match self.candidate {
+            Some((previous, since)) if previous == target => since,
+            _ => { self.candidate = Some((target, now)); now }
+        };
+        if target < current && now.saturating_duration_since(since) < std::time::Duration::from_secs(10) {
+            return None;
+        }
+        if self.last_attempt.is_some_and(|last| now.saturating_duration_since(last) < std::time::Duration::from_secs(2)) {
+            return None;
+        }
+        self.last_attempt = Some(now);
+        Some(target)
+    }
+
+    /// Stage every related native pass before changing any active pipeline.
+    /// A failed child leaves the complete old family active.
+    pub(super) fn switch(
+        &mut self, device: &mut dyn ExtensionDevice,
+        renderers: &mut [&mut RendererResources], contexts: &[RendererExtensionContext],
+        capacity: u32,
+    ) -> gpui::Result<bool> {
+        let Some(current) = renderers.first().and_then(|renderer| renderer.sampled_table_capacity()) else { return Ok(false); };
+        if current == capacity || renderers.len() != contexts.len()
+            || renderers.iter().any(|renderer| renderer.sampled_table_capacity() != Some(current))
+            || !sampled_table_capacity::SAMPLED_TABLE_TIERS.contains(&capacity)
+            || capacity > self.maximum.unwrap_or(current)
+        { return Ok(false); }
+        let context_keys = contexts.iter().map(|context| (context.render_pass(), context.color_format())).collect::<Vec<_>>();
+        let next = if let Some(index) = self.retained.iter().position(|family| family.capacity == capacity) {
+            // A cached PSO must never be used with a different render pass.
+            // Leave the current family intact on incompatible context changes.
+            if self.retained[index].contexts != context_keys { return Ok(false); }
+            self.retained.swap_remove(index).passes
+        } else {
+            let mut staged = Vec::with_capacity(renderers.len());
+            for (index, (renderer, context)) in renderers.iter().zip(contexts).enumerate() {
+                let inherited = if index == 0 { None } else { staged.first() };
+                match renderer.build_sampled_tier(device, context, capacity, inherited) {
+                    Ok(Some(next)) => staged.push(next),
+                    result => {
+                        for mut pass in staged.into_iter().rev() { pass.destroy(device)?; }
+                        return result.map(|_| false);
+                    }
+                }
+            }
+            staged
+        };
+        let mut previous = Vec::with_capacity(renderers.len());
+        for (renderer, next) in renderers.iter_mut().zip(next) {
+            previous.push(renderer.sampled.replace(next).expect("validated sampled family"));
+            renderer.pipeline_revision = renderer.pipeline_revision.wrapping_add(1);
+        }
+        self.retained.push(SampledFamily { capacity: current, contexts: context_keys, passes: previous });
+        self.candidate = None;
+        Ok(true)
+    }
+
+    pub(super) fn destroy(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
+        for family in &mut self.retained {
+            for pass in family.passes.iter_mut().rev() { pass.destroy(device)?; }
+        }
+        self.retained.clear();
+        Ok(())
+    }
+}
+
+fn sampled_capacity_target(current: u32, maximum: u32, demand: usize) -> Option<u32> {
+    let demand = demand.max(1);
+    if demand <= current as usize && demand > current as usize / 4 { return None; }
+    let headroom = demand.saturating_mul(2);
+    let target = sampled_table_capacity::SAMPLED_TABLE_TIERS.into_iter()
+        .filter(|&tier| tier <= maximum)
+        .find(|&tier| tier as usize >= headroom)
+        .unwrap_or(maximum);
+    if target == current || (demand <= current as usize && target > current) { None } else { Some(target) }
+}
+
+#[cfg(test)]
+mod sampled_capacity_policy_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn sampled_capacity_policy_hysteresis_and_growth() {
+        let mut policy = SampledTierCache::default();
+        let now = Instant::now();
+        assert_eq!(policy.suggest(1024, 24, now), None);
+        assert_eq!(policy.suggest(1024, 24, now + Duration::from_secs(9)), None);
+        assert_eq!(policy.suggest(1024, 24, now + Duration::from_secs(10)), Some(64));
+        assert_eq!(policy.suggest(64, 70, now + Duration::from_secs(12)), Some(256));
+        assert_eq!(sampled_capacity_target(256, 1024, 160), None);
+        assert_eq!(sampled_capacity_target(1024, 1024, 4096), None);
+    }
+}
+
 impl RendererResources {
     pub(super) fn sampled_table_capacity(&self) -> Option<u32> {
         self.sampled.as_ref().map(|sampled| sampled.capacity)
@@ -127,6 +248,19 @@ impl RendererResources {
         &mut self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
         capacity: u32, inherited: Option<&SampledPipelines>,
     ) -> gpui::Result<bool> {
+        let next = self.build_sampled_tier(device, context, capacity, inherited)?;
+        if let Some(next) = next {
+            self.sampled = Some(next);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn build_sampled_tier(
+        &self, device: &mut dyn ExtensionDevice, context: &RendererExtensionContext,
+        capacity: u32, inherited: Option<&SampledPipelines>,
+    ) -> gpui::Result<Option<SampledPipelines>> {
         let mut sampled = SampledPipelines {
             capacity, owns_layout: inherited.is_none(),
             geometry_layout: None, layout: None, pipeline_layout: None, fragment: None, voxel_fragment: None,
@@ -161,29 +295,28 @@ impl RendererResources {
             })?);
             // Every slot in the fixed array, including unused slots, must
             // reference a valid initialized sampled image.
-            let fallback = self.fallback_texture.ok_or_else(|| anyhow!("missing fallback texture"))?;
-            device.write_texture_batch(&[gfx_core::TextureWrite {
-                descriptor: gfx_core::TextureWriteDescriptor {
-                    texture: fallback, mip_level: 0,
-                    layout: gfx_core::TextureDataLayout::new(0, 4, 1)?,
-                    origin: gfx_core::Origin2d { x: 0, y: 0 },
-                    size: Extent2d::new(1, 1)?,
-                },
-                data: &[255, 255, 255, 255],
-            }])?;
+            if self.sampled.is_none() {
+                let fallback = self.fallback_texture.ok_or_else(|| anyhow!("missing fallback texture"))?;
+                device.write_texture_batch(&[gfx_core::TextureWrite {
+                    descriptor: gfx_core::TextureWriteDescriptor {
+                        texture: fallback, mip_level: 0,
+                        layout: gfx_core::TextureDataLayout::new(0, 4, 1)?,
+                        origin: gfx_core::Origin2d { x: 0, y: 0 },
+                        size: Extent2d::new(1, 1)?,
+                    },
+                    data: &[255, 255, 255, 255],
+                }])?;
+            }
             let pipelines = self.create_pipeline_set(device, context, Some(&sampled))?;
             sampled.pipelines = pipelines;
             Ok(())
         })();
         match result {
-            Ok(()) => {
-                self.sampled = Some(sampled);
-                Ok(true)
-            }
+            Ok(()) => Ok(Some(sampled)),
             Err(error) => {
                 sampled.destroy(device)?;
                 eprintln!("gpui-3d bindless pass tier {capacity} unavailable: {error:#}");
-                Ok(false)
+                Ok(None)
             }
         }
     }
