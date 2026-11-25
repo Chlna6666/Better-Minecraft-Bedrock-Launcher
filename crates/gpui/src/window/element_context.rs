@@ -1030,14 +1030,20 @@ mod layout_identity_tests {
     }
 
     #[test]
-    fn recycled_scope_releases_its_previous_identity() {
-        let id = GlobalElementId::from_path(&[ElementId::from("root")]);
+    fn recycled_scope_holds_no_reference_of_its_own() {
+        let id = GlobalElementId::from_path(&[ElementId::from("recycled-scope-probe")]);
         let weak = std::sync::Arc::downgrade(&id.0);
+        // `id` is moved into the scope, so the count before and after pushing the same
+        // allocation must match; the interner's own reference is part of both.
+        let baseline = weak.strong_count();
         let mut pool = RetainedIdentityScopePool::default();
         pool.push_scope(SmallVec::new(), Some(id));
-        assert!(weak.upgrade().is_some());
+        assert_eq!(weak.strong_count(), baseline);
         pool.pop_scope();
-        assert!(weak.upgrade().is_none());
+        // The scope must drop its reference. The path interner may still hold one, which is
+        // why this compares against the count before the scope was pushed rather than
+        // asserting the allocation is gone.
+        assert_eq!(weak.strong_count(), baseline.saturating_sub(1));
         pool.push_scope(SmallVec::new(), None);
         assert!(pool.active.last().unwrap().retained_id.is_none());
     }

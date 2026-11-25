@@ -128,6 +128,12 @@ fn row_linger_limit(by_age: &[usize; ROW_NODE_LINGER_FRAMES], budget: usize) -> 
 pub struct TaffyLayoutEngine {
     pub(super) taffy: TaffyTree<NodeContext>,
     persistent_nodes: FxHashMap<LayoutInstanceKey, PersistentLayoutNode>,
+    /// Nodes whose native style was rewritten by a percentage-passthrough parent.
+    ///
+    /// Their stored fingerprint describes the style they asked for, not what the node holds,
+    /// so it must not be trusted until the next request compares and rewrites. Kept as a set
+    /// so the passthrough path does not have to search the node map.
+    stale_style_fingerprints: FxHashSet<LayoutId>,
     request_ordinals: FxHashMap<u64, u32>,
     /// Layout slots consumed by each Element during the last finished frame.
     /// A replayed retained range has no entry, preserving its existing native nodes.
@@ -188,6 +194,7 @@ impl TaffyLayoutEngine {
         TaffyLayoutEngine {
             taffy,
             persistent_nodes: FxHashMap::default(),
+            stale_style_fingerprints: FxHashSet::default(),
             request_ordinals: FxHashMap::default(),
             finished_request_ordinals: FxHashMap::default(),
             anonymous_nodes: Vec::new(),
@@ -595,7 +602,9 @@ impl TaffyLayoutEngine {
             // A matching fingerprint means the requested layout style is identical to the
             // one the node already holds, so the style is never converted to Taffy's
             // representation and the full-struct compare is skipped.
-            let requires_style = if style_fingerprint.is_some()
+            let style_is_stale = self.stale_style_fingerprints.remove(&id);
+            let requires_style = if !style_is_stale
+                && style_fingerprint.is_some()
                 && node.style_fingerprint == style_fingerprint
             {
                 build_style = None;
@@ -1185,6 +1194,11 @@ impl TaffyLayoutEngine {
                 .set_style(child_id.into(), taffy_style)
                 .expect(EXPECT_MESSAGE);
         }
+        // This rewrote the child's native style behind its back. The child's stored
+        // fingerprint still describes the style it asked for, so it must not be trusted to
+        // mean "the node already holds this": marking it stale forces the next request to
+        // compare, and to restore the child's own style once the passthrough parent is gone.
+        self.stale_style_fingerprints.insert(child_id);
         self.node_layout_metadata.insert(child_id, child);
     }
 
