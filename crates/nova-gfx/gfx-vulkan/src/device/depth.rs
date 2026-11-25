@@ -14,6 +14,30 @@ impl VulkanDevice {
         steps: &[RenderCommand],
         attachment: Option<DepthAttachment>,
     ) -> Result<Vec<DepthAccess>> {
+        self.depth_accesses_for(steps, attachment)
+    }
+
+    /// Resolve the binding dependencies of a validated immutable run plan.
+    /// Every skipped command has the representative's complete bind groups.
+    pub(super) fn depth_accesses_for_runs(
+        &self,
+        steps: &[RenderCommand],
+        plan: &gfx_core::DrawRunPlan,
+        attachment: Option<DepthAttachment>,
+    ) -> Result<Vec<DepthAccess>> {
+        let representatives = plan.runs().iter().scan(0usize, |cursor, &count| {
+            let step = &steps[*cursor];
+            *cursor += count as usize;
+            Some(step)
+        });
+        self.depth_accesses_for(representatives, attachment)
+    }
+
+    fn depth_accesses_for<'a>(
+        &self,
+        steps: impl IntoIterator<Item = &'a RenderCommand>,
+        attachment: Option<DepthAttachment>,
+    ) -> Result<Vec<DepthAccess>> {
         let target = attachment
             .map(|attachment| {
                 self.texture_views
