@@ -496,13 +496,9 @@ impl Compactor {
         &mut self, device: &mut dyn ExtensionDevice, passes: &[NativeOffscreenPass],
         epochs: &[(SceneViewId, u64)],
     ) -> Result<Option<SubmissionId>> {
-        let ordinary = |device: &mut dyn ExtensionDevice| crate::submit_native_offscreen_passes(
-            passes, |passes, tags, tables| {
-                if tables.iter().any(Option::is_some) {
-                    device.submit_sampled_offscreen_batch(passes, tables, &[], tags)
-                } else {
-                    device.submit_offscreen_graphics(passes, tags, OffscreenQueuePreference::OrderedGraphics)
-                }
+        let ordinary = |device: &mut dyn ExtensionDevice| crate::native_offscreen::submit_owned_native_offscreen_passes(
+            passes, |passes, owners, tags, tables| {
+                device.submit_owned_offscreen_batch(passes, owners, tables, tags)
             },
         );
         // Duplicate views could overwrite their own output before the first draw.
@@ -567,7 +563,13 @@ impl Compactor {
             counts.push(table);
             tags.push(decision.and_then(|choice| choice.tag).or(pass.gpu_work_tag));
         }
-        if passes.iter().any(|pass| pass.sampled_table.is_some()) {
+        if counts.iter().all(|table| table.is_empty()) {
+            // Original-path timing probes still refer to immutable producer
+            // commands; reuse their native run plans without changing tags.
+            let owners = passes.iter().map(|pass| Arc::clone(&pass.commands)).collect::<Vec<_>>();
+            let tables = passes.iter().map(|pass| pass.sampled_table).collect::<Vec<_>>();
+            device.submit_owned_offscreen_batch(&native, &owners, &tables, &tags)
+        } else if passes.iter().any(|pass| pass.sampled_table.is_some()) {
             let tables = passes.iter().map(|pass| pass.sampled_table).collect::<Vec<_>>();
             device.submit_sampled_offscreen_batch(&native, &tables, &counts, &tags)
         } else {
