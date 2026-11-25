@@ -4,7 +4,8 @@ use super::{
     sidecar_surface::SidecarSurface,
 };
 use crate::prepare::StructuralDrawDelta;
-use crate::{NativeOffscreenPass, submit_native_offscreen_passes};
+use crate::NativeOffscreenPass;
+use crate::native_offscreen::submit_owned_native_offscreen_passes;
 use anyhow::{anyhow, bail};
 use gfx_core::{BackendKind, BindGroupId, BindGroupList, MemoryTrimLevel, RenderCommand, RenderPassId};
 use gpui::ExtensionDevice;
@@ -1678,14 +1679,8 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
         let native_result = if let Some(compactor) = self.draw_compaction.as_mut() {
             compactor.submit_batch(device, &self.pending_passes, &self.pending_capture_epochs)
         } else {
-            submit_native_offscreen_passes(&self.pending_passes, |passes, tags, tables| {
-                if tables.iter().any(Option::is_some) {
-                    device.submit_sampled_offscreen_batch(passes, tables, &[], tags)
-                } else {
-                    device.submit_offscreen_graphics(
-                        passes, tags, gfx_core::OffscreenQueuePreference::OrderedGraphics,
-                    )
-                }
+            submit_owned_native_offscreen_passes(&self.pending_passes, |passes, owners, tags, tables| {
+                device.submit_owned_offscreen_batch(passes, owners, tables, tags)
             })
         };
         let submitted = match native_result {
