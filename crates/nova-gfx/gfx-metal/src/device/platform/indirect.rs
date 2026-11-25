@@ -7,7 +7,7 @@ use gfx_core::IndirectCountBinding;
 use objc2_metal::{
     MTLArgumentEncoder, MTLComputeCommandEncoder, MTLComputePipelineState,
     MTLIndirectCommandBuffer, MTLIndirectCommandBufferDescriptor, MTLIndirectCommandType,
-    MTLResource, MTLResourceUsage, MTLRenderStages, MTLLanguageVersion,
+    MTLResource, MTLResourceUsage, MTLRenderStages, MTLLanguageVersion, MTLFunction,
 };
 use objc2_foundation::NSRange;
 

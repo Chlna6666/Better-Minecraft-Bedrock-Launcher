@@ -35,6 +35,21 @@ const GENERATE: &str = r#"
 }
 "#;
 
+const GENERATE_COUNTED: &str = r#"
+@group(0) @binding(0) var<storage, read_write> data: array<u32, 23>;
+@compute @workgroup_size(1) fn generate_counted() {
+    // Prefix padding tests a nonzero, four-byte-aligned indirect offset.
+    data[0] = 0u;
+    data[1] = 3u; data[2] = 1u; data[3] = 0u; data[4] = 0u;
+    data[5] = 3u; data[6] = 1u; data[7] = 0u; data[8] = 1u;
+    // Indexed commands use base instances 0 and 1 and the index binding's
+    // nonzero offset. Their packed ABI begins at byte 36.
+    data[9] = 3u; data[10] = 1u; data[11] = 0u; data[12] = 0u; data[13] = 0u;
+    data[14] = 3u; data[15] = 1u; data[16] = 0u; data[17] = 0u; data[18] = 1u;
+    data[19] = 0u; data[20] = 1u; data[21] = 2u; data[22] = 99u;
+}
+"#;
+
 fn shader(device: &mut MetalDevice, source: &str, stage: ShaderStage, entry: &str) -> ShaderModuleId {
     let binary = WgslModule::parse(source).expect("WGSL")
         .compile_msl_versioned(stage, entry, MslVersion::V2_0).expect("reflected MSL");
@@ -174,4 +189,60 @@ fn gpu_generated_indirect_draws_select_array_layers_without_cpu_readback() {
         verify(&mut device, label, &[draw], expected);
     }
     eprintln!("NOVA_GFX_METAL_GPU_DRIVEN_ARRAY_DRAW=pass");
+
+    if std::env::var_os("NOVA_GFX_METAL_ICB").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+    assert!(device.indirect_draw_count_limit().is_some(), "requested experimental ICB is unavailable");
+    let counted_args = device.create_buffer(&BufferDescriptor {
+        label: Some("Metal GPU counted draw test".into()), size: 92,
+        usage: BufferUsage::INDIRECT | BufferUsage::STORAGE | BufferUsage::STORAGE_WRITE,
+        memory_location: MemoryLocation::GpuOnly,
+    }).unwrap();
+    let generate = shader(&mut device, GENERATE_COUNTED, ShaderStage::Compute, "generate_counted");
+    device.dispatch_compute(&ComputeDispatch {
+        shader: generate,
+        bindings: &[ComputeBufferBinding {
+            binding: 0, access: ComputeBufferAccess::ReadWrite,
+            buffer: BufferBinding { buffer: counted_args, offset: 0, size: 92, stride: None },
+        }],
+        workgroups: [1, 1, 1],
+    }).unwrap();
+    let draws = [
+        RenderCommand::DrawIndirect(DrawIndirectCommand {
+            pipeline, bind_groups: bind_group_list([group]), arguments: counted_args, offset: 4, scissor: None,
+        }),
+        RenderCommand::DrawIndexedIndirect(DrawIndexedIndirectCommand {
+            pipeline, bind_groups: bind_group_list([group]), arguments: counted_args, offset: 36,
+            index_buffer: IndexBufferBinding { buffer: indices, format: IndexFormat::Uint32, offset: 4 },
+            scissor: None,
+        }),
+    ];
+    for (draw, stride) in draws.iter().zip([16, 20]) {
+        let pass = RenderPassCommands {
+            color_attachments: &[target_view], render_pass, commands: std::slice::from_ref(draw),
+            color_load_op: clear, clear_region: None, depth_attachment: None, viewport: None, resolve_target: None,
+        };
+        let count = |word| IndirectCountBinding {
+            command_index: 0, count_buffer: counted_args, count_offset: word * 4,
+            max_draw_count: 2, argument_stride: stride,
+        };
+        // Reject a count whose argument range crosses the buffer boundary.
+        let invalid = IndirectCountBinding { max_draw_count: 32, ..count(21) };
+        assert!(device.render_to_textures_counted_profiled(&[pass], &[&[invalid]], &[None]).is_err());
+        // A later draw overwrites the first, so the pixel proves count and
+        // ordered base-instance execution. Oversized counts clamp on GPU.
+        for (word, expected) in [
+            (19, [0u8, 0, 255, 255]), (20, [255, 0, 0, 255]),
+            (21, [0, 255, 0, 255]), (22, [0, 255, 0, 255]),
+        ] {
+            let submitted = device.render_to_textures_counted_profiled(&[pass], &[&[count(word)]], &[None])
+                .expect("native GPU counted ICB").expect("tracked submission");
+            device.wait_submission(submitted).expect("counted ICB completed");
+            let pixels = device.read_texture(target).expect("read ICB output");
+            assert_eq!(&pixels.bytes[(4 * 8 + 4) * 4..(4 * 8 + 4) * 4 + 4], &expected,
+                "Metal ICB stride={stride} count word={word}");
+        }
+    }
+    eprintln!("NOVA_GFX_METAL_GPU_COUNTED_ICB=pass");
 }
