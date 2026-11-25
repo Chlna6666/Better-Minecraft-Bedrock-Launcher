@@ -200,6 +200,8 @@ struct CaptureCommandKey {
 #[derive(Default)]
 struct CaptureCommands {
     cached: Option<(CaptureCommandKey, [Arc<[RenderCommand]>; 2])>,
+    run_pipelines: Option<[u64; 2]>,
+    runs: [super::super::command_runs::GeneratedRunCache; 2],
 }
 
 impl CaptureCommands {
@@ -313,7 +315,31 @@ impl EffectScene {
                 scene: self.scene.command_revision,
                 pipelines: [resources[0].pipeline_revision, resources[1].pipeline_revision],
             };
-            let [opaque, attributes] = self.capture_commands.get_or_build(key, || {
+            let compact_limit = device.compact_draw_run_limit();
+            if self.capture_commands.run_pipelines != Some(key.pipelines) {
+                self.capture_commands.runs = Default::default();
+                self.capture_commands.run_pipelines = Some(key.pipelines);
+            }
+            let compact = if compact_limit > 1 && self.scene.generated_command_visibility().is_none()
+                && let Some(count) = self.scene.generated_singleton_command_count()
+            {
+                let first = self.scene.first_blended_batch_index();
+                let mut published = Vec::with_capacity(2);
+                for (index, renderer) in resources.iter().enumerate() {
+                    if let Some(stream) = self.capture_commands.runs[index].refresh(
+                        self.scene.command_revision, count, first, self.scene.native_command_delta(),
+                        self.scene.blend_only_command_change, compact_limit,
+                        |range, output| self.scene.append_offscreen_singleton_range(renderer, output, range),
+                    )? {
+                        published.push(stream);
+                    } else { break; }
+                }
+                <Vec<_> as TryInto<[_; 2]>>::try_into(published).ok()
+            } else { None };
+            let (commands, run_plans) = if let Some([opaque, attributes]) = compact {
+                ([opaque.commands, attributes.commands], [Some(opaque.plan), Some(attributes.plan)])
+            } else {
+            let commands = self.capture_commands.get_or_build(key, || {
                 let mut opaque = Vec::new();
                 self.scene.append_offscreen_steps(resources[0], true, &mut opaque)?;
                 let mut attributes = Vec::new();
@@ -331,6 +357,10 @@ impl EffectScene {
                 }
                 Ok([opaque.into(), attributes.into()])
             })?;
+            (commands, [None, None])
+            };
+            let [opaque, attributes] = commands;
+            let [opaque_runs, attributes_runs] = run_plans;
             let sampled_table = self.scene.sampled_snapshot(resources[0]);
             debug_assert_eq!(sampled_table, self.scene.sampled_snapshot(resources[1]));
             let msaa = self.targets.msaa.as_ref();
@@ -346,6 +376,7 @@ impl EffectScene {
                 true,
             );
             opaque_plan.sampled_table = sampled_table;
+            opaque_plan.run_plan = opaque_runs;
             passes.push(opaque_plan);
             let surface = msaa.map_or(self.targets.surface.view, |m| m.surface.view);
             let mut attributes_plan = pass(
@@ -358,6 +389,7 @@ impl EffectScene {
             );
             attributes_plan.color_attachments = Arc::from([surface, self.targets.albedo.view]);
             attributes_plan.sampled_table = sampled_table;
+            attributes_plan.run_plan = attributes_runs;
             passes.push(attributes_plan);
             self.scene.queue_sampled_capture(sampled_table);
             self.capture = Some(capture);
