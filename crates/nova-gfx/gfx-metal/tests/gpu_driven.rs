@@ -190,9 +190,68 @@ fn gpu_generated_indirect_draws_select_array_layers_without_cpu_readback() {
     }
     eprintln!("NOVA_GFX_METAL_GPU_DRIVEN_ARRAY_DRAW=pass");
 
+}
+
+const DRAW_COUNTED: &str = r#"
+struct Varying {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) instance: u32,
+}
+@vertex fn vs_main(@builtin(vertex_index) vertex: u32,
+                   @builtin(instance_index) instance: u32) -> Varying {
+    let points = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+    var result: Varying;
+    result.position = vec4<f32>(points[vertex], 0.0, 1.0);
+    result.instance = instance;
+    return result;
+}
+@fragment fn fs_main(in: Varying) -> @location(0) vec4<f32> {
+    return select(vec4<f32>(1.0, 0.0, 0.0, 1.0),
+                  vec4<f32>(0.0, 1.0, 0.0, 1.0), in.instance == 1u);
+}
+"#;
+
+// Do not make ICB verification depend on a currently unvalidated array
+// sampling path. This test uses no material texture and no bind group.
+#[test]
+fn gpu_counted_icb_without_texture_array() {
     if std::env::var_os("NOVA_GFX_METAL_ICB").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        eprintln!("NOVA_GFX_SKIP=experimental Metal ICB is disabled");
         return;
     }
+    let mut device = MetalDevice::new(&DeviceDescriptor::default()).expect("Metal device");
+    let extent = Extent2d::new(8, 8).unwrap();
+    let format = Format::Rgba8Unorm;
+    let target = device.create_texture(&TextureDescriptor {
+        label: None, size: extent, format, mip_level_count: 1, sample_count: 1,
+        usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
+        memory_location: MemoryLocation::GpuOnly, dimension: TextureDimension::D2,
+    }).unwrap();
+    let target_view = device.create_texture_view(&TextureViewDescriptor {
+        label: None, texture: target, format, base_mip_level: 0, mip_level_count: 1,
+    }).unwrap();
+    let render_pass = device.create_render_pass(&RenderPassDescriptor {
+        label: None, color_attachments: vec![ColorAttachmentDescriptor { format }],
+        depth_attachment: None, sample_count: 1, resolve_target: None,
+    }).unwrap();
+    let vs = shader(&mut device, DRAW_COUNTED, ShaderStage::Vertex, "vs_main");
+    let fs = shader(&mut device, DRAW_COUNTED, ShaderStage::Fragment, "fs_main");
+    let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+        label: None, vertex_shader: vs, vertex_entry_point: "vs_main".into(),
+        fragment_shader: fs, fragment_entry_point: "fs_main".into(),
+        vertex_buffers: vec![], render_pass, pipeline_layout: None,
+        color_targets: vec![ColorTargetState::new(format, BlendMode::Replace)],
+        primitive_topology: PrimitiveTopology::TriangleList, raster: RasterState::default(),
+        depth_state: None,
+    }, extent).expect("ICB-compatible render pipeline");
+    let indices = device.create_buffer(&BufferDescriptor {
+        label: None, size: 16, usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
+        memory_location: MemoryLocation::GpuOnly,
+    }).unwrap();
+    let index_bytes: Vec<u8> = [99u32, 0, 1, 2].into_iter().flat_map(u32::to_le_bytes).collect();
+    device.write_buffer(indices, 0, &index_bytes).expect("private index upload");
+    let clear = LoadOp::Clear(ClearColor { red: 0.0, green: 0.0, blue: 1.0, alpha: 1.0 });
     assert!(device.indirect_draw_count_limit().is_some(), "requested experimental ICB is unavailable");
     let counted_args = device.create_buffer(&BufferDescriptor {
         label: Some("Metal GPU counted draw test".into()), size: 92,
@@ -208,17 +267,28 @@ fn gpu_generated_indirect_draws_select_array_layers_without_cpu_readback() {
         }],
         workgroups: [1, 1, 1],
     }).unwrap();
+    let indices16 = device.create_buffer(&BufferDescriptor {
+        label: None, size: 8, usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
+        memory_location: MemoryLocation::GpuOnly,
+    }).unwrap();
+    let index_bytes: Vec<u8> = [99u16, 0, 1, 2].into_iter().flat_map(u16::to_le_bytes).collect();
+    device.write_buffer(indices16, 0, &index_bytes).expect("private u16 index upload");
     let draws = [
         RenderCommand::DrawIndirect(DrawIndirectCommand {
-            pipeline, bind_groups: bind_group_list([group]), arguments: counted_args, offset: 4, scissor: None,
+            pipeline, bind_groups: bind_group_list([]), arguments: counted_args, offset: 4, scissor: None,
         }),
         RenderCommand::DrawIndexedIndirect(DrawIndexedIndirectCommand {
-            pipeline, bind_groups: bind_group_list([group]), arguments: counted_args, offset: 36,
+            pipeline, bind_groups: bind_group_list([]), arguments: counted_args, offset: 36,
             index_buffer: IndexBufferBinding { buffer: indices, format: IndexFormat::Uint32, offset: 4 },
             scissor: None,
         }),
+        RenderCommand::DrawIndexedIndirect(DrawIndexedIndirectCommand {
+            pipeline, bind_groups: bind_group_list([]), arguments: counted_args, offset: 36,
+            index_buffer: IndexBufferBinding { buffer: indices16, format: IndexFormat::Uint16, offset: 2 },
+            scissor: None,
+        }),
     ];
-    for (draw, stride) in draws.iter().zip([16, 20]) {
+    for (draw, stride) in draws.iter().zip([16, 20, 20]) {
         let pass = RenderPassCommands {
             color_attachments: &[target_view], render_pass, commands: std::slice::from_ref(draw),
             color_load_op: clear, clear_region: None, depth_attachment: None, viewport: None, resolve_target: None,
