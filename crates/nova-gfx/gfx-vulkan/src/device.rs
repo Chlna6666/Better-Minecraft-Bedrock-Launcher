@@ -1688,6 +1688,7 @@ impl VulkanDevice {
         Ok(self.bind_groups.insert(VulkanResourceSet {
             sampled_depth,
             sampled_table: None,
+            sampled_color_attachments: Vec::new(),
             descriptor_set,
             descriptor_pool,
             descriptor_demand,
@@ -2470,19 +2471,18 @@ impl VulkanDevice {
         // therefore remains driven by the draw-local geometry sets.
         let shared_sampled = sampled_table.map(|id| {
             let group = self.bind_groups.get(id)?;
-            let views = group.sampled_table.as_ref().ok_or_else(|| {
-                Error::InvalidInput("shared set one is not a sampled image table".into())
-            })?;
-            for &view in views {
-                let image = self.texture_views.get(view)?.texture;
-                if render_target_textures.contains(&image)
-                    || resolve_view.map(|id| self.texture_views.get(id).map(|v| v.texture)).transpose()? == Some(image)
-                {
-                    return Err(Error::InvalidInput("shared sampled table aliases a color attachment".into()));
-                }
+            if group.sampled_table.is_none() {
+                return Err(Error::InvalidInput("shared set one is not a sampled image table".into()));
+            }
+            let resolve_texture = resolve_view.map(|id| self.texture_views.get(id).map(|v| v.texture)).transpose()?;
+            if group.sampled_color_attachments.iter().any(|image|
+                render_target_textures.contains(image) || resolve_texture == Some(*image))
+            {
+                return Err(Error::InvalidInput("shared sampled table aliases a color attachment".into()));
             }
             Ok::<_, Error>((group.layout, group.descriptor_set))
         }).transpose()?;
+        let mut previous_geometry_layout = None;
         let mut counts = counts.iter().peekable();
         for (command_index, step) in steps.iter().enumerate() {
             let count = if counts.peek().is_some_and(|count| count.command_index == command_index) {
@@ -2503,7 +2503,14 @@ impl VulkanDevice {
                 let [geometry] = groups else {
                     return Err(Error::InvalidInput("shared sampled pass requires exactly one draw-local set".into()));
                 };
-                let geometry_layout = self.bind_groups.get(*geometry)?.layout;
+                let geometry_layout = match previous_geometry_layout {
+                    Some((id, layout)) if id == *geometry => layout,
+                    _ => {
+                        let layout = self.bind_groups.get(*geometry)?.layout;
+                        previous_geometry_layout = Some((*geometry, layout));
+                        layout
+                    }
+                };
                 if pipeline_record.shared_sampled_layouts != Some([geometry_layout, table_layout]) {
                     return Err(Error::InvalidInput("shared sampled pass pipeline layout mismatch".into()));
                 }
@@ -6692,6 +6699,9 @@ struct VulkanResourceSetLayout {
 struct VulkanResourceSet {
     sampled_depth: Vec<TextureId>,
     sampled_table: Option<Vec<TextureViewId>>,
+    // Only sampled images that may also be render attachments. Computed at
+    // immutable table publication, never by scanning the table at draw time.
+    sampled_color_attachments: Vec<TextureId>,
     descriptor_set: vk::DescriptorSet,
     descriptor_pool: vk::DescriptorPool,
     descriptor_demand: descriptors::Demand,

@@ -599,7 +599,42 @@ fn bindless_production_color_vulkan() {
             }),
             clear_region: None, viewport: None, resolve_target: None,
         }]).unwrap();
-        TextureTransferDevice::read_texture(device, target.texture).unwrap().bytes
+        let explicit_pixels = TextureTransferDevice::read_texture(device, target.texture).unwrap().bytes;
+        if actual_sets[0] == 2 {
+            let snapshot = scene.sampled_snapshot(renderer).expect("sampled table");
+            let mut shared_commands = Vec::new();
+            scene.append_offscreen_steps(renderer, view.voxel_shader, &mut shared_commands).unwrap();
+            assert_eq!(shared_commands.len(), commands.len());
+            for (local, explicit) in shared_commands.iter().zip(&commands) {
+                assert_eq!(local.bind_groups(), &explicit.bind_groups()[..1]);
+                assert_eq!(local.pipeline(), explicit.pipeline());
+            }
+            let pass = RenderPassCommands {
+                color_attachments: &[target.view], render_pass: pass_id, commands: &shared_commands,
+                color_load_op: LoadOp::Clear(ClearColor::default()),
+                depth_attachment: Some(DepthAttachment {
+                    target: depth.view, depth_load_op: LoadOp::Clear(1.), stencil_load_op: None,
+                }),
+                clear_region: None, viewport: None, resolve_target: None,
+            };
+            // A shared table cannot silently override a draw-local second set.
+            let invalid = RenderPassCommands { commands: &commands, ..pass };
+            assert!(PresentationDevice::render_to_textures_sampled_profiled(
+                device, &[invalid], &[Some(snapshot)], &[], &[None],
+            ).is_err());
+            assert!(PresentationDevice::render_to_textures_sampled_profiled(
+                device, &[pass], &[Some(shared_commands[0].bind_groups()[0])], &[], &[None],
+            ).is_err());
+            let submitted = PresentationDevice::render_to_textures_sampled_profiled(
+                device, &[pass], &[Some(snapshot)], &[], &[None],
+            ).unwrap();
+            if let Some(id) = submitted {
+                SubmissionDevice::wait_submission(device, id).unwrap();
+            }
+            let shared_pixels = TextureTransferDevice::read_texture(device, target.texture).unwrap().bytes;
+            assert_eq!(shared_pixels, explicit_pixels, "pass-level sampled binding differs from per-draw binding");
+        }
+        explicit_pixels
     };
     for voxel in [false, true] {
         let mut legacy_scene = SceneResources::new(&mut device, gfx_core::BackendKind::Vulkan).unwrap();
@@ -637,6 +672,7 @@ fn bindless_production_color_vulkan() {
     depth.destroy(&mut device).unwrap();
     PipelineDevice::destroy_render_pass(&mut device, pass_id).unwrap();
     eprintln!("GPUI3D_VULKAN_PRODUCTION_BINDLESS_COLOR=pass");
+    eprintln!("GPUI3D_VULKAN_PASS_SAMPLED_TABLE=pass");
 }
 
 #[test]

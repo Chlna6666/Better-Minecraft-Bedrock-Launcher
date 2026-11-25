@@ -104,6 +104,7 @@ jobs:
           cargo test -p gpui-3d --lib --features gpui/x11 sampled_snapshot_rebind_preserves_grouped_command_topology
           cargo test -p gpui-3d --lib --features gpui/x11 sampled_snapshot_retirement_excludes_unrelated_generations_and_legacy_reads
           cargo test -p gpui-3d --lib --features gpui/x11 sampled_replacement_preserves_compaction_only_for_exact_native_topology
+          cargo test -p gpui-3d --lib --features gpui/x11 sampled_pass_publication_keeps_command_allocation_and_order
       - name: Verify production Vulkan bindless Color PSOs against legacy
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         shell: bash
@@ -115,6 +116,7 @@ jobs:
           cargo test -p gpui-3d --lib --features gpui/x11 distinct_texture_bindings_and_raster_states_never_merge
           cargo test -p gpui-3d --lib --features gpui/x11 scene_view::effects::renderer::tests::bindless_production_color_vulkan -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless.txt"
           grep -Fq 'GPUI3D_VULKAN_PRODUCTION_BINDLESS_COLOR=pass' "$RUNNER_TEMP/production-bindless.txt"
+          grep -Fq 'GPUI3D_VULKAN_PASS_SAMPLED_TABLE=pass' "$RUNNER_TEMP/production-bindless.txt"
           cargo test -p gpui-3d --lib --features gpui/x11 scene_view::effects::renderer::tests::bindless_production_effects_vulkan -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless-effects.txt"
           grep -Fq 'GPUI3D_VULKAN_PRODUCTION_BINDLESS_EFFECTS=pass' "$RUNNER_TEMP/production-bindless-effects.txt"
       - name: Verify true nearest-depth Hi-Z SSR hierarchy on Vulkan

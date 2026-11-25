@@ -113,6 +113,20 @@ impl VulkanDevice {
         }).collect()
     }
 
+    fn sampled_color_attachments(&self, views: &[TextureViewId]) -> Result<Vec<TextureId>> {
+        let mut attachments = Vec::new();
+        for &id in views {
+            let view = self.texture_views.get(id)?;
+            let texture = self.textures.get(view.texture)?;
+            if texture.desc.usage.contains(TextureUsage::COLOR_ATTACHMENT)
+                && !attachments.contains(&view.texture)
+            {
+                attachments.push(view.texture);
+            }
+        }
+        Ok(attachments)
+    }
+
     pub(super) fn create_sampled_table(&mut self, layout_id: BindGroupLayoutId, views: &[TextureViewId]) -> Result<BindGroupId> {
         self.poll_cleanup();
         let layout = self.bind_group_layouts.get(layout_id)?;
@@ -123,6 +137,7 @@ impl VulkanDevice {
         }
         let native_layout = layout.layout;
         let infos = self.sampled_table_infos(views)?;
+        let sampled_color_attachments = self.sampled_color_attachments(views)?;
         let demand = Demand([0, 0, capacity, 0, 0]);
         let (descriptor_set, descriptor_pool) =
             self.descriptor_pools.allocate_table(&self.device, layout_id, native_layout, demand)?;
@@ -134,6 +149,7 @@ impl VulkanDevice {
         Ok(self.bind_groups.insert(VulkanResourceSet {
             sampled_depth: Vec::new(),
             sampled_table: Some(views.to_vec()),
+            sampled_color_attachments,
             descriptor_set, descriptor_pool, descriptor_demand: demand,
             layout: layout_id,
             desc: BindGroupDescriptor { label: None, layout: layout_id, entries: Vec::new() },
@@ -176,10 +192,9 @@ impl VulkanDevice {
         let source_set = source.descriptor_set;
         let layout = self.bind_group_layouts.get(layout_id)?.layout;
         for &(slot, view) in changes { views[slot as usize] = view; }
-        for &id in &views {
-            let view = self.texture_views.get(id)?;
-            self.textures.get(view.texture)?;
-        }
+        // Validate inherited view identities and retain only potential
+        // attachment aliases. Ordinary material textures need no per-pass scan.
+        let sampled_color_attachments = self.sampled_color_attachments(&views)?;
         let dirty_views: Vec<_> = changes.iter().map(|&(_, view)| view).collect();
         let infos = self.sampled_table_infos(&dirty_views)?;
         let demand = Demand([0, 0, capacity, 0, 0]);
@@ -207,6 +222,7 @@ impl VulkanDevice {
         unsafe { self.device.update_descriptor_sets(&writes, &copies) };
         Ok(self.bind_groups.insert(VulkanResourceSet {
             sampled_depth: Vec::new(), sampled_table: Some(views),
+            sampled_color_attachments,
             descriptor_set, descriptor_pool, descriptor_demand: demand,
             layout: layout_id,
             desc: BindGroupDescriptor { label: None, layout: layout_id, entries: Vec::new() },

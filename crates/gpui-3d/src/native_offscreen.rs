@@ -152,6 +152,30 @@ mod tests {
     }
 
     #[test]
+    fn sampled_pass_publication_keeps_command_allocation_and_order() {
+        let mut pass = pass(1, true);
+        let command = RenderCommand::Draw(gfx_core::DrawCommand {
+            pipeline: gfx_core::RenderPipelineId::from_parts(1, 1),
+            bind_groups: gfx_core::bind_group_list([BindGroupId::from_parts(2, 1)]),
+            vertex_count: 3, first_vertex: 0, instance_count: 1, first_instance: 0,
+            scissor: None,
+        });
+        pass.commands = Arc::from([command]);
+        let shared = Arc::clone(&pass.commands);
+        for generation in [3, 4, 5] {
+            let table = BindGroupId::from_parts(generation, 1);
+            pass.sampled_table = Some(table);
+            submit_native_offscreen_passes(std::slice::from_ref(&pass), |commands, _, tables| {
+                assert!(std::ptr::eq(commands[0].commands.as_ptr(), shared.as_ptr()));
+                assert_eq!(commands[0].commands[0].bind_groups(), &[BindGroupId::from_parts(2, 1)]);
+                assert_eq!(tables, &[Some(table)]);
+                Ok(None)
+            }).unwrap();
+            assert!(Arc::ptr_eq(&pass.commands, &shared));
+        }
+    }
+
+    #[test]
     fn many_views_keep_painter_order_and_native_tags() {
         let passes = [pass(2, false), pass(3, true), pass(4, false)];
         let mut called = false;
