@@ -303,7 +303,6 @@ impl EffectsRenderer {
             .ok_or_else(|| anyhow::anyhow!("effect scene missing"))?;
         state.last_seen = context.frame_time();
         state.resize(device, context.backend_kind(), extent)?;
-        self.compositor.sync_post(device, &local)?;
         // Sun visibility is resolved once from the real material-aware shadow map below.
         state.capture_geometry(
             device,
@@ -506,6 +505,7 @@ impl EffectsRenderer {
         if let Some(previous) = self.last_frame.replace(now)
             && previous != now
         {
+            self.compositor.release_retired(device)?;
             let expired = self
                 .scenes
                 .iter()
