@@ -4007,23 +4007,35 @@ impl VulkanDevice {
             .map_err(VulkanError::from)?;
         let driver_elapsed = driver_started_at.elapsed();
         let resources_started_at = Instant::now();
-        // SAFETY: Swapchain belongs to this device and is valid.
-        let images = unsafe { self.swapchain_loader.get_swapchain_images(swapchain) }
-            .map_err(VulkanError::from)?;
-        let image_views = images
-            .iter()
-            .copied()
-            .map(|image| {
-                create_image_view(
-                    &self.device,
-                    image,
-                    surface_format.format,
-                    vk::ImageAspectFlags::COLOR,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
-            create_sync_objects(&self.device, images.len(), frame_slots)?;
+        // No GPU or WSI operation has been submitted to this new generation.
+        // Roll back every partially created native child on allocation failure.
+        let mut image_views = Vec::new();
+        let resources = (|| -> Result<_> {
+            let images = unsafe { self.swapchain_loader.get_swapchain_images(swapchain) }
+                .map_err(VulkanError::from)?;
+            image_views.reserve(images.len());
+            for &image in &images {
+                image_views.push(create_image_view(
+                    &self.device, image, surface_format.format, vk::ImageAspectFlags::COLOR,
+                )?);
+            }
+            let sync = create_sync_objects(&self.device, images.len(), frame_slots)?;
+            Ok((images, sync))
+        })();
+        let (images, (image_available_semaphores, render_finished_semaphores, in_flight_fences)) =
+            match resources {
+                Ok(resources) => resources,
+                Err(error) => {
+                    // SAFETY: no acquired or submitted images; all these handles are private.
+                    unsafe {
+                        for view in image_views {
+                            self.device.destroy_image_view(view, None);
+                        }
+                        self.swapchain_loader.destroy_swapchain(swapchain, None);
+                    }
+                    return Err(error);
+                }
+            };
         log::debug!(
             "nova-gfx Vulkan swapchain initialization: total_ms={} support_ms={} native_swapchain_ms={} image_resources_ms={} requested_images={} images={} format={:?} present_mode={:?} alpha={:?} extent={}x{}",
             started_at.elapsed().as_millis(),
@@ -8086,20 +8098,34 @@ fn create_sync_objects(
     let mut render_finished_semaphores = Vec::with_capacity(image_count);
     let mut in_flight_fences = Vec::with_capacity(frame_slots);
     let semaphore_info = vk::SemaphoreCreateInfo::default();
-    for _ in 0..frame_slots {
-        // SAFETY: Device is valid and creation info is well-formed.
-        image_available_semaphores.push(
-            unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(VulkanError::from)?,
-        );
-        // SAFETY: Device is valid and creation info is well-formed.
-        in_flight_fences.push(create_fence(device, true)?);
-    }
-    for _ in 0..image_count {
-        // SAFETY: Device is valid and creation info is well-formed. Each swapchain image
-        // owns its present-wait semaphore independently of the graphics frame slots.
-        render_finished_semaphores.push(
-            unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(VulkanError::from)?,
-        );
+    let result = (|| -> Result<()> {
+        for _ in 0..frame_slots {
+            // SAFETY: Device is valid and creation info is well-formed.
+            image_available_semaphores.push(
+                unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(VulkanError::from)?,
+            );
+            in_flight_fences.push(create_fence(device, true)?);
+        }
+        for _ in 0..image_count {
+            // Each swapchain image owns its present-wait semaphore independently
+            // of the graphics frame slots.
+            render_finished_semaphores.push(
+                unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(VulkanError::from)?,
+            );
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        // SAFETY: this allocation transaction has never submitted any of its handles.
+        unsafe {
+            for semaphore in image_available_semaphores.into_iter().chain(render_finished_semaphores) {
+                device.destroy_semaphore(semaphore, None);
+            }
+            for fence in in_flight_fences {
+                device.destroy_fence(fence, None);
+            }
+        }
+        return Err(error);
     }
     Ok((
         image_available_semaphores,
