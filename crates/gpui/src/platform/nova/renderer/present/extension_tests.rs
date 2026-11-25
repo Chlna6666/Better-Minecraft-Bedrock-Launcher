@@ -185,6 +185,7 @@ mod native {
                 target: view,
                 color_attachments: Arc::from([]),
                 gpu_work_tag: None,
+                run_plan: None,
                 sampled_table: None,
                 render_pass: pass,
                 commands: Vec::new().into(),
