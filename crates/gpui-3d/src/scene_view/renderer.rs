@@ -89,6 +89,7 @@ struct OffscreenCommandTraits {
 struct CachedCommands {
     revision: Option<u64>,
     sampled_snapshot: Option<BindGroupId>,
+    pass_sampled: Option<bool>,
     commands: Vec<RenderCommand>,
     /// Only this canonical layout may be remapped through logical Section deltas.
     generated_draw_count: Option<usize>,
@@ -552,7 +553,7 @@ fn generated_range_matches(commands: &[RenderCommand], range: std::ops::Range<us
 /// Opaque draws are bucketed by pipeline and bind group only before the
 /// first blended batch. Every subsequent command keeps its original order.
 /// Non-indirect lists return `None` and are published unchanged.
-fn group_indirect_commands(
+pub(super) fn group_indirect_commands(
     commands: &[RenderCommand],
     blended_batch_start: Option<usize>,
 ) -> Option<Vec<RenderCommand>> {
@@ -2012,6 +2013,9 @@ impl RendererExtensionRenderer for SidecarGpuBackend {
                 gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::CommandEncode);
             let cache = self.command_cache.entry(scene_view.id).or_default();
             let pass_sampled = self.offscreen.is_some();
+            if cache.pass_sampled != Some(pass_sampled) {
+                *cache = CachedCommands { pass_sampled: Some(pass_sampled), ..CachedCommands::default() };
+            }
             if !pass_sampled {
                 cache.refresh_sampled_snapshot(scene.sampled_snapshot(&self.resources));
             }

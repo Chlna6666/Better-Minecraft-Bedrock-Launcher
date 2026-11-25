@@ -74,6 +74,8 @@ pub(super) struct SceneResources {
     projection: Option<FrameProjection>,
     prepared: PreparedScene,
     pub(super) command_revision: u64,
+    /// Shadow casters ignore main-camera frustum and blend permutation.
+    shadow_geometry_revision: u64,
     pub(super) blend_only_command_change: bool,
     /// Increments after a successfully prepared *visible frame change*, not
     /// merely after rebuilding native draw commands. Camera/uniform changes
@@ -802,6 +804,7 @@ impl SceneResources {
             projection: None,
             prepared: PreparedScene::default(),
             command_revision: 0,
+            shadow_geometry_revision: 0,
             blend_only_command_change: false,
             capture_revision: 0,
             command_delta: None,
@@ -1187,6 +1190,13 @@ impl SceneResources {
                 .iter()
                 .all(|&size| size > 0);
         let shadow_created = shadow_enabled && self.shadow.is_none();
+        // Invalidate before mutating native tables, including on a failed
+        // prepare. A retry must never borrow a retired shadow BindGroup.
+        // Main-camera visibility and blend-only permutation do not enter
+        // this revision: neither changes the shadow caster command stream.
+        if draw_list_changed || sampler_changed || shadow_created || assets_changed {
+            self.shadow_geometry_revision = self.shadow_geometry_revision.wrapping_add(1);
+        }
         if draw_list_changed {
             let batch_started = trace_timings().then(Instant::now);
             let _phase = gpu_owner::extension_phase(gpu_owner::GpuOwnerExtensionPhase::BatchBuild);

@@ -2,11 +2,19 @@
 use super::*;
 use crate::{VoxelIllumination, VoxelShading};
 use gpui::RendererExtensionContext;
+use std::sync::Arc;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ShadowCommandKey {
+    geometry: u64,
+    pipeline: u64,
+}
 
 pub(super) struct LightPass {
     frame: BufferId,
     culling: CullResources,
-    groups: HashMap<(DrawResourceKey, BufferId, BufferId, BufferId, BindGroupLayoutId), BindGroupId>,
+    groups: HashMap<(DrawResourceKey, BufferId, BufferId, BufferId, BufferId, BindGroupLayoutId), BindGroupId>,
+    cached: Option<(ShadowCommandKey, Arc<[RenderCommand]>)>,
 }
 impl LightPass {
     pub(super) fn destroy(self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
@@ -38,7 +46,7 @@ impl SceneResources {
         cascade: usize,
         caster_bounds: Aabb,
         context: &RendererExtensionContext,
-    ) -> gpui::Result<Vec<RenderCommand>> {
+    ) -> gpui::Result<Arc<[RenderCommand]>> {
         let matrix = camera.projection_matrix(1.)? * camera.view()?;
         let mut bytes =
             encode_frame_params(matrix, camera, context.bounds(), context.viewport(), 0., 0);
@@ -76,18 +84,29 @@ impl SceneResources {
                 frame,
                 culling,
                 groups: HashMap::new(),
+                cached: None,
             });
         }
         let mut pass = self.light_pass[cascade]
             .take().ok_or_else(|| anyhow!("shadow cascade pass missing"))?;
         let result = (|| {
             device.write_buffer(pass.frame, 0, &bytes)?;
-            pass.culling.update(
-                device,
-                &self.prepared.draws,
-                &self.batches,
-                Some(&self.meshes),
-            )?;
+            let key = ShadowCommandKey {
+                geometry: self.shadow_geometry_revision,
+                pipeline: renderer.pipeline_revision,
+            };
+            let unchanged = pass.cached.as_ref().is_some_and(|(previous, _)| *previous == key);
+            if !unchanged {
+                // Only refresh the per-cascade cull input and geometry
+                // bindings when their source revision actually changes.
+                pass.cached = None;
+                pass.culling.update(
+                    device,
+                    &self.prepared.draws,
+                    &self.batches,
+                    Some(&self.meshes),
+                )?;
+            }
             pass.culling.dispatch_shadow_optimized(
                 device,
                 renderer
@@ -101,6 +120,9 @@ impl SceneResources {
                 caster_bounds,
                 self.generated_arguments,
             )?;
+            if let Some((_, commands)) = &pass.cached {
+                return Ok(Arc::clone(commands));
+            }
             let groups = self.shadow_bindings(device, renderer, &mut pass)?;
             let mut commands = Vec::new();
             self.append_pass_steps(
@@ -110,6 +132,15 @@ impl SceneResources {
                 Some((&groups, pass.culling.arguments)),
                 true,
             )?;
+            // Shadow casters are opaque or alpha-tested. Group identical
+            // geometry pages/PSOs without touching any transparent order.
+            if self.backend == BackendKind::Vulkan
+                && let Some(grouped) = super::super::renderer::group_indirect_commands(&commands, None)
+            {
+                commands = grouped;
+            }
+            let commands: Arc<[RenderCommand]> = commands.into();
+            pass.cached = Some((key, Arc::clone(&commands)));
             Ok(commands)
         })();
         self.light_pass[cascade] = Some(pass);
@@ -151,6 +182,7 @@ impl SceneResources {
                 self.draw_buffer,
                 self.instance_buffer,
                 self.draw_slot_buffer,
+                self.light_buffer,
                 layout,
             );
             active.insert(key);
