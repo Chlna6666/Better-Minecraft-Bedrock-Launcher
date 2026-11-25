@@ -61,6 +61,8 @@ pub(super) struct SceneSampledTextures {
     retired_textures: Vec<RetiredTextures>,
     published: bool,
     remap_pending: bool,
+    committed: Option<BindGroupId>,
+    layout_transition_pending: bool,
 }
 
 impl SceneSampledTextures {
@@ -72,6 +74,7 @@ impl SceneSampledTextures {
             queued: HashSet::new(),
             pending: Vec::new(), cleared: Vec::new(), retired: Vec::new(),
             retired_textures: Vec::new(), published: false, remap_pending: false,
+            committed: None, layout_transition_pending: false,
         })
     }
 
@@ -127,9 +130,48 @@ impl SceneSampledTextures {
         layout == Some(self.layout)
     }
 
+    /// The pipeline family owner must keep its previous layout and PSOs
+    /// alive independently until their native readers have retired.
+    /// This migrates only the descriptor allocation, not the pipeline family.
+    pub(super) fn try_migrate_layout(
+        &mut self, device: &mut dyn ExtensionDevice, layout: BindGroupLayoutId, capacity: u32,
+    ) {
+        if (layout == self.layout && capacity == self.slots.capacity())
+            || self.layout_transition_pending || !self.pending.is_empty() || !self.cleared.is_empty()
+            || !self.slots.can_resize(capacity)
+        { return; }
+        match self.slots.resize_snapshot_with(capacity, |views| device.create_sampled_texture_table(layout, views)) {
+            Ok((previous, _)) => {
+                if let Some(snapshot) = previous {
+                    self.retired.push(RetiredSnapshot {
+                        snapshot, generation: self.generation,
+                        readers: std::mem::take(&mut self.snapshot_readers),
+                    });
+                }
+                self.generation = self.generation.saturating_add(1);
+                self.layout = layout;
+                self.published = true;
+                self.layout_transition_pending = true;
+            }
+            Err(error) => eprintln!("gpui-3d sampled capacity migration deferred: {error:#}"),
+        }
+    }
+
+    pub(super) fn layout_transition_pending(&self) -> bool { self.layout_transition_pending }
+
+    pub(super) fn commit_snapshot(&mut self, snapshot: Option<BindGroupId>) {
+        self.committed = snapshot;
+        self.layout_transition_pending = false;
+    }
+
+    fn committed_previous_snapshot(&self) -> bool {
+        self.committed.is_some() && self.committed != self.slots.current_snapshot()
+    }
+
     pub(super) fn has_completed_retirement(&self) -> bool {
-        self.retired.iter().any(|old| old.readers.ready() && !self.queued.contains(&Some(old.snapshot)))
-            || self.retired_textures.iter().any(|old| old.readers.ready())
+        self.retired.iter().any(|old| old.readers.ready()
+            && self.committed != Some(old.snapshot) && !self.queued.contains(&Some(old.snapshot)))
+            || (!self.committed_previous_snapshot() && self.retired_textures.iter().any(|old| old.readers.ready()))
     }
 
     pub(super) fn has_retired(&self) -> bool {
@@ -221,13 +263,17 @@ impl SceneSampledTextures {
     pub(super) fn release_completed(&mut self, device: &mut dyn ExtensionDevice) -> gpui::Result<()> {
         let mut i = 0;
         while i < self.retired.len() {
-            if !self.retired[i].readers.ready() || self.queued.contains(&Some(self.retired[i].snapshot)) {
+            if !self.retired[i].readers.ready() || self.committed == Some(self.retired[i].snapshot)
+                || self.queued.contains(&Some(self.retired[i].snapshot)) {
                 i += 1;
                 continue;
             }
             device.destroy_bind_group(self.retired[i].snapshot)?;
             self.retired.swap_remove(i);
         }
+        // A failed prepare can leave the previous descriptor generation
+        // committed. Preserve its images as well as the descriptor set.
+        if self.committed_previous_snapshot() { return Ok(()); }
         // Destroy all ready descriptor sets before their retired images.
         let mut i = 0;
         while i < self.retired_textures.len() {
@@ -249,7 +295,8 @@ impl SceneSampledTextures {
         if !self.cleared.is_empty() && (self.readers.untracked || !self.queued.is_empty()) {
             return Ok(());
         }
-        if !self.readers.untracked && self.queued.is_empty() && !self.pending.is_empty() {
+        if !self.readers.untracked && self.queued.is_empty() && !self.pending.is_empty()
+            && !self.committed_previous_snapshot() {
             for texture in std::mem::take(&mut self.pending) {
                 let slot = texture.sampled_slot.expect("mapped retired texture");
                 let readers = self.image_readers(texture.view);
@@ -325,6 +372,26 @@ pub(super) fn indices(textures: &HashMap<TextureAssetId, TextureResources>, draw
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn previous_committed_snapshot_remains_pinned_until_scene_commit() {
+        let mut table = SceneSampledTextures::new(
+            BindGroupLayoutId::from_parts(1, 1), 4, gfx_core::TextureViewId::from_parts(1, 1),
+        ).unwrap();
+        let first = BindGroupId::from_parts(1, 1);
+        let second = BindGroupId::from_parts(2, 1);
+        table.slots.create_snapshot_with(|_| Ok(first)).unwrap();
+        table.commit_snapshot(Some(first));
+        table.slots.resize_snapshot_with(8, |_| Ok(second)).unwrap();
+        table.retired.push(RetiredSnapshot {
+            snapshot: first, generation: 1, readers: Readers::default(),
+        });
+        assert!(table.committed_previous_snapshot());
+        assert!(!table.has_completed_retirement());
+        table.commit_snapshot(Some(second));
+        assert!(!table.committed_previous_snapshot());
+        assert!(table.has_completed_retirement());
+    }
 
     #[test]
     fn texture_readers_exclude_snapshots_published_before_allocation() {
