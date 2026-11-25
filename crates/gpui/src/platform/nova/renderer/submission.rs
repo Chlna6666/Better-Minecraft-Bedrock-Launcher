@@ -580,13 +580,8 @@ impl NovaRenderer {
                     timings.submission_wait = elapsed;
                 }
             }
-        } else if let Some(submission) = frame.frame().and_then(|frame| frame.submission) {
-            pending_submissions.push(PendingSubmission {
-                predecessors: SmallVec::new(),
-                submission,
-                frame_resource_index,
-                publication: None,
-            });
+        } else {
+            track_deferred_present(&frame, pending_submissions, frame_resource_index);
         }
         Ok(frame)
     }
@@ -606,6 +601,22 @@ impl NovaRenderer {
             }
         }
         anyhow::bail!("no available nova frame resource slot")
+    }
+}
+
+// Presentation success never determines whether a GPU frame slot is occupied.
+fn track_deferred_present(
+    outcome: &gfx_core::PresentOutcome,
+    pending: &mut Vec<PendingSubmission>,
+    frame_resource_index: usize,
+) {
+    if let Some(submission) = outcome.frame().and_then(|frame| frame.submission) {
+        pending.push(PendingSubmission {
+            predecessors: SmallVec::new(),
+            submission,
+            frame_resource_index,
+            publication: None,
+        });
     }
 }
 
@@ -690,6 +701,38 @@ mod resource_fence_recovery_tests {
     fn physical_slot_exhaustion_is_polled_before_scene_pack() {
         assert!(should_poll_full_queue_before_pack(GpuSubmissionMode::Deferred, 1, 2, false));
         assert!(!should_poll_full_queue_before_pack(GpuSubmissionMode::Synchronous, 1, 2, false));
+    }
+
+    #[test]
+    fn outdated_present_retains_its_real_submission_and_frame_slot() {
+        let submission = SubmissionId::from_parts(7, 1);
+        let frame = gfx_core::PresentedFrame {
+            submission: Some(submission),
+            timings: None,
+        };
+        let mut pending = Vec::new();
+
+        let skipped = gfx_core::PresentOutcome::Skipped;
+        track_deferred_present(&skipped, &mut pending, 0);
+        assert!(!skipped.was_presented());
+        assert!(pending.is_empty());
+
+        let rejected = gfx_core::PresentOutcome::SurfaceOutdated(frame);
+        track_deferred_present(&rejected, &mut pending, 1);
+        assert!(!rejected.was_presented());
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].submission, submission);
+        assert_eq!(pending[0].frame_resource_index, 1);
+        assert!(pending[0].publication.is_none());
+
+        let presented = gfx_core::PresentOutcome::Presented(gfx_core::PresentedFrame {
+            submission: Some(SubmissionId::from_parts(8, 1)),
+            timings: None,
+        });
+        track_deferred_present(&presented, &mut pending, 2);
+        assert!(presented.was_presented());
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[1].frame_resource_index, 2);
     }
 
     #[test]
