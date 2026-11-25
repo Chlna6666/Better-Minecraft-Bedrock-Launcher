@@ -110,16 +110,16 @@ jobs:
           set -euo pipefail
           cargo test -p gpui-3d --lib --features gpui/x11 sampled_table_tiers_respect_device_and_application_limits
           cargo test -p gpui-3d --lib --features gpui/x11 distinct_texture_bindings_and_raster_states_never_merge
-          cargo test -p gpui-3d --lib --features gpui/x11 bindless_production_color_vulkan -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless.txt"
+          cargo test -p gpui-3d --lib --features gpui/x11 scene_view::effects::renderer::tests::bindless_production_color_vulkan -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless.txt"
           grep -Fq 'GPUI3D_VULKAN_PRODUCTION_BINDLESS_COLOR=pass' "$RUNNER_TEMP/production-bindless.txt"
-          cargo test -p gpui-3d --lib --features gpui/x11 bindless_production_effects_vulkan -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless-effects.txt"
+          cargo test -p gpui-3d --lib --features gpui/x11 scene_view::effects::renderer::tests::bindless_production_effects_vulkan -- --exact --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/production-bindless-effects.txt"
           grep -Fq 'GPUI3D_VULKAN_PRODUCTION_BINDLESS_EFFECTS=pass' "$RUNNER_TEMP/production-bindless-effects.txt"
       - name: Verify true nearest-depth Hi-Z SSR hierarchy on Vulkan
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         run: cargo test -p gpui-3d --lib --features gpui/x11 ssr_hiz_vulkan -- --ignored --nocapture
       - name: Compare MRT output against legacy Surface and Albedo captures
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
-        run: cargo test -p gpui-3d --lib --features gpui/x11 effects_vulkan -- --ignored --nocapture
+        run: cargo test -p gpui-3d --lib --features gpui/x11 scene_view::effects::renderer::tests::effects_vulkan -- --exact --ignored --nocapture
       - name: Validate 2D Greedy and uniform-light fallback GPU counts
         if: ${{ !cancelled() && steps.native_compile.outcome == 'success' }}
         shell: bash
