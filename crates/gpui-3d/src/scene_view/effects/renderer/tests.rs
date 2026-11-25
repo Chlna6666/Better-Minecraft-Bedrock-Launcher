@@ -121,7 +121,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
         viewport: None,
         resolve_target: None,
     });
-    PresentationDevice::render_to_textures(&mut device, &passes).unwrap();
+    RendererExtensionPass::submit_batch(&mut device, &owned, &passes[owned.len()..]).unwrap();
     renderer.render_passes_submitted();
     verify_attribute_mrt_matches_split(&mut device, &renderer, &context, &view);
     let pixels = TextureTransferDevice::read_texture(&mut device, target.texture).unwrap();
@@ -195,11 +195,7 @@ fn verify<D: Device + TextureTransferDevice>(mut device: D) {
     );
     assert_eq!(renderer.scenes[&view.id].retired.len(), 1);
     assert_eq!(renderer.scenes[&view.id].submitted_retirements, 0);
-    let passes = owned
-        .iter()
-        .map(RendererExtensionPass::commands)
-        .collect::<Vec<_>>();
-    PresentationDevice::render_to_textures(&mut device, &passes).unwrap();
+    RendererExtensionPass::submit_batch(&mut device, &owned, &[]).unwrap();
     renderer.render_passes_submitted();
     assert_eq!(renderer.scenes[&view.id].submitted_retirements, 1);
     let _ = TextureTransferDevice::read_texture(&mut device, target.texture).unwrap();
@@ -493,13 +489,7 @@ fn submit_draw<D: Device>(
         viewport: None,
         resolve_target: None,
     });
-    let submission = if owned.iter().any(|pass| pass.sampled_table.is_some()) {
-        let tables = owned.iter().map(|pass| pass.sampled_table).chain([None]).collect::<Vec<_>>();
-        let tags = owned.iter().map(|pass| pass.gpu_work_tag).chain([None]).collect::<Vec<_>>();
-        PresentationDevice::render_to_textures_sampled_profiled(device, &passes, &tables, &[], &tags).unwrap()
-    } else {
-        PresentationDevice::render_to_textures(device, &passes).unwrap()
-    };
+    let submission = RendererExtensionPass::submit_batch(device, &owned, &passes[owned.len()..]).unwrap();
     renderer.render_passes_submitted();
     if let Some(submission) = submission {
         renderer.gpu_submission_accepted(submission);
