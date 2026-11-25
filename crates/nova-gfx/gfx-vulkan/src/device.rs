@@ -2314,6 +2314,7 @@ impl VulkanDevice {
         gpu_draw_tag: Option<gfx_core::GpuTimestampTag>,
         counts: &[gfx_core::IndirectCountBinding],
         sampled_table: Option<BindGroupId>,
+        mut depth_accesses: Vec<depth::DepthAccess>,
     ) -> Result<()> {
         if color_views.is_empty() {
             return Err(Error::InvalidInput(
@@ -2642,7 +2643,11 @@ impl VulkanDevice {
                 scissor,
             });
         }
-        let depth_accesses = self.depth_accesses(steps, depth_attachment)?;
+        // Preflight already validated the depth resources. Earlier passes may
+        // have changed their layouts, so refresh only the live layout state.
+        for access in &mut depth_accesses {
+            access.old_layout = self.textures.get(access.texture)?.layout;
+        }
         let resolve = match resolve_view {
             Some(resolve_view_id) => {
                 let source = self.textures.get(render_target_textures[0])?;
@@ -2989,7 +2994,7 @@ impl VulkanDevice {
 
         let mut target_layouts = Vec::<(TextureId, vk::ImageLayout)>::new();
         let mut previous_writers = Vec::<TextureId>::new();
-        let mut graph_write_hazards = Vec::with_capacity(passes.len());
+        let mut pass_accesses = Vec::with_capacity(passes.len());
         for pass in passes {
             let depths = self.depth_accesses(pass.commands, pass.depth_attachment)?;
             let color_ids = pass
@@ -3000,10 +3005,10 @@ impl VulkanDevice {
                 .collect::<Result<Vec<_>>>()?;
             // Record every physical color/resolve write, including attachments
             // following an already-known writer. Reuse preflight identities.
-            graph_write_hazards.push(graph_pass_write_requires_barrier(
+            let graph_write_hazard = graph_pass_write_requires_barrier(
                 &mut previous_writers,
                 color_ids.iter().copied(),
-            ));
+            );
             for texture_id in color_ids
                 .into_iter()
                 .chain(depths.iter().map(|access| access.texture))
@@ -3012,6 +3017,7 @@ impl VulkanDevice {
                     target_layouts.push((texture_id, self.textures.get(texture_id)?.layout));
                 }
             }
+            pass_accesses.push((graph_write_hazard, depths));
         }
 
         let encoder = self.create_encoder(passes.len(), self.graphics_queue_family_index)?;
@@ -3020,8 +3026,9 @@ impl VulkanDevice {
         // one physical image. The graph marks WAW handoffs when a later pass
         // reuses its attachment; the native command buffer executes that
         // access barrier before entering the render pass.
-        for (index, pass) in passes.iter().enumerate() {
-            let graph_write_hazard = graph_write_hazards[index];
+        for (index, (pass, (graph_write_hazard, depths))) in
+            passes.iter().zip(pass_accesses).enumerate()
+        {
             let command_buffer = self.command_encoders.get(encoder)?.command_buffers[index];
             let result = self.record_render_step_list_views(
                 encoder,
@@ -3048,6 +3055,7 @@ impl VulkanDevice {
                 }),
                 counts.get(index).copied().unwrap_or(&[]),
                 tables.get(index).copied().flatten(),
+                depths,
             );
             if let Err(error) = result {
                 self.destroy_temporary_command_encoder_now(encoder)?;
