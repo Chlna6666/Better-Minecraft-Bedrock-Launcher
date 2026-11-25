@@ -156,9 +156,9 @@ pub(crate) struct RetainedElementRange {
     /// Inherited paint context under which this range was originally emitted.
     pub(crate) paint_context: Rc<RetainedPaintContext>,
     /// Exact self-scene style and child scene split for a reconciliation-safe `Div`.
-    pub(crate) div_self_scene: Option<RetainedDivSelfScene>,
+    pub(crate) div_self_scene: Option<Rc<RetainedDivSelfScene>>,
     /// Exact side-effect-free plain-text output identity used for generic dirty reconciliation.
-    pub(crate) plain_text_key: Option<RetainedPlainTextKey>,
+    pub(crate) plain_text_key: Option<Rc<RetainedPlainTextKey>>,
     /// Whether this element's retained address is unambiguous in the frame that produced it.
     pub(crate) identity_stable: bool,
     /// Whether this element and every retained descendant have unambiguous identities.

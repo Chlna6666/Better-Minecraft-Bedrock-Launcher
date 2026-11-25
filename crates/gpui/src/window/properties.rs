@@ -86,6 +86,9 @@ impl Window {
     /// against the exact stack contents, not its depth: `with_text_style` pushes a refinement
     /// and pops it again, so two different scopes can have the same depth and different styles.
     pub fn text_style(&self) -> TextStyle {
+        if self.text_style_stack.is_empty() {
+            return self.default_text_style.clone();
+        }
         let generation = self.text_style_generation.get();
         if let Some(cached) = self.resolved_text_style.borrow().as_ref()
             && cached.generation == generation
@@ -111,6 +114,9 @@ impl Window {
     /// Hot retained paths only need to compare or copy this value; they must not force a
     /// clone just to look at it.
     pub(crate) fn with_text_style_ref<R>(&self, f: impl FnOnce(&TextStyle) -> R) -> R {
+        if self.text_style_stack.is_empty() {
+            return f(&self.default_text_style);
+        }
         let generation = self.text_style_generation.get();
         {
             let cached = self.resolved_text_style.borrow();

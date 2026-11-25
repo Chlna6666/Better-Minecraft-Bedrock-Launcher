@@ -27,7 +27,7 @@ impl Window {
         if !range.explicit_cached_view || !range.identity_stable
             || range.bounds.size != bounds.size
             || range.layout_fingerprint != fingerprint
-            || range.paint_context.as_ref() != &self.current_retained_paint_context()
+            || !self.retained_paint_context_matches(range.paint_context.as_ref())
             || self.rendered_frame.dispatch_tree.view_path_reversed(owner).next().is_none()
             || range.prepaint_range.start.deferred_draws_index != range.prepaint_range.end.deferred_draws_index
             || range.prepaint_range.start.tooltips_index != range.prepaint_range.end.tooltips_index

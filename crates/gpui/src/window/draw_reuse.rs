@@ -793,7 +793,7 @@ impl Window {
             .retained_element_ranges
             .get(retained_id)?;
         let plain_text_proven = plain_text_key
-            .zip(retained.plain_text_key.as_ref())
+            .zip(retained.plain_text_key.as_deref())
             .is_some_and(|(current, previous)| {
                 current == previous && plain_text_range_is_side_effect_free(retained)
             });
@@ -931,6 +931,22 @@ impl Window {
                     paint_range.start.scene_index..paint_range.end.scene_index,
                 );
         }
+        // Most elements have neither optional payload. Keep the frame-map
+        // records compact and share exact unchanged text/scene proofs across
+        // generations rather than deep-cloning them during speculative replay.
+        let previous = self.rendered_frame.retained_element_ranges.get(&retained_id);
+        let plain_text_key = plain_text_key.map(|key| {
+            previous.and_then(|range| range.plain_text_key.as_ref())
+                .filter(|old| old.as_ref() == &key)
+                .cloned()
+                .unwrap_or_else(|| Rc::new(key))
+        });
+        let div_self_scene = div_self_scene.map(|scene| {
+            previous.and_then(|range| range.div_self_scene.as_ref())
+                .filter(|old| old.style == scene.style && old.child_scene_range == scene.child_scene_range)
+                .cloned()
+                .unwrap_or_else(|| Rc::new(scene))
+        });
         let key = ReconcileKey::from(retained_id);
         self.next_frame.retained_element_order.push(key.clone());
         let metadata_end = self.next_frame.retained_element_order.len();
@@ -1069,9 +1085,11 @@ impl Window {
             range.paint_range = rebase_paint_range(&range.paint_range, source_paint, target_paint)
                 .expect("retained metadata paint range was validated before transfer");
             if let Some(self_scene) = range.div_self_scene.as_mut() {
-                self_scene.child_scene_range =
-                    rebase_scene_range(&self_scene.child_scene_range, source_paint, target_paint)
-                        .expect("retained div scene range was validated before transfer");
+                let rebased = rebase_scene_range(&self_scene.child_scene_range, source_paint, target_paint)
+                    .expect("retained div scene range was validated before transfer");
+                if rebased != self_scene.child_scene_range {
+                    Rc::make_mut(self_scene).child_scene_range = rebased;
+                }
             }
 
             let metadata_start_offset = range
