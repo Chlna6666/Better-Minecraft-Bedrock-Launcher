@@ -4352,7 +4352,7 @@ mod platform {
                     indirect_count += run_count;
                     // Advance before scissor rejection: the packed argument
                     // cursor includes even invisible records.
-                    for _ in 1..run_count { step_iter.next(); }
+                    if run_count > 1 { let _ = step_iter.nth(run_count - 2); }
                 }
 
                 let step_scissor = if let Some(region) = step.scissor() {
