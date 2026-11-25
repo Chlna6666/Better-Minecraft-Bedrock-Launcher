@@ -571,7 +571,18 @@ impl TaffyLayoutEngine {
             ordinal: *ordinal,
         };
         *ordinal = ordinal.saturating_add(1);
-        if let Some(node) = self.persistent_nodes.get_mut(&key) {
+        // The key is a 64-bit path hash, so a collision between two different elements is
+        // possible in principle. Reusing a node across such a collision would hand one element
+        // the other's layout, so the stored full identity is checked before the node is used.
+        // A mismatch is treated as a miss: a fresh node is created and the stale entry is
+        // replaced. The cost is one pointer-and-path compare on a hit.
+        let key_matches = self
+            .persistent_nodes
+            .get(&key)
+            .is_some_and(|node| node.element == element);
+        if key_matches
+            && let Some(node) = self.persistent_nodes.get_mut(&key)
+        {
             // The node is being reconstructed; it is no longer eligible for
             // an idle-memory trim until the next committed lifetime check.
             node.offscreen = false;

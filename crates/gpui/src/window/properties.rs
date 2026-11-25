@@ -82,14 +82,14 @@ impl Window {
     /// The current text style. Which is composed of all the style refinements provided to `with_text_style`.
     ///
     /// Every painted element asks for this at least twice a frame, and building it clones the
-    /// window's default style and replays the whole refinement stack. Both the depth and the
-    /// default style are tracked, so an unchanged stack returns the cached value.
+    /// window's default style and replays the whole refinement stack. The result is cached
+    /// against the exact stack contents, not its depth: `with_text_style` pushes a refinement
+    /// and pops it again, so two different scopes can have the same depth and different styles.
     pub fn text_style(&self) -> TextStyle {
-        let depth = self.text_style_stack.len();
         let generation = self.text_style_generation.get();
         if let Some(cached) = self.resolved_text_style.borrow().as_ref()
-            && cached.depth == depth
             && cached.generation == generation
+            && cached.stack == self.text_style_stack
         {
             return cached.style.clone();
         }
@@ -99,8 +99,8 @@ impl Window {
             style.refine(refinement);
         }
         *self.resolved_text_style.borrow_mut() = Some(ResolvedTextStyle {
-            depth,
             generation,
+            stack: self.text_style_stack.clone(),
             style: style.clone(),
         });
         style
@@ -111,13 +111,12 @@ impl Window {
     /// Hot retained paths only need to compare or copy this value; they must not force a
     /// clone just to look at it.
     pub(crate) fn with_text_style_ref<R>(&self, f: impl FnOnce(&TextStyle) -> R) -> R {
-        let depth = self.text_style_stack.len();
         let generation = self.text_style_generation.get();
         {
             let cached = self.resolved_text_style.borrow();
             if let Some(cached) = cached.as_ref()
-                && cached.depth == depth
                 && cached.generation == generation
+                && cached.stack == self.text_style_stack
             {
                 return f(&cached.style);
             }

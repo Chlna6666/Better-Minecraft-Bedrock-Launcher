@@ -452,10 +452,13 @@ impl PresentationState {
 /// refinement stack, and every painted element asks for the result more than once a frame.
 #[derive(Clone)]
 pub(super) struct ResolvedTextStyle {
-    /// Depth of the refinement stack this was resolved with.
-    pub(super) depth: usize,
     /// Default-style generation this was resolved with.
     pub(super) generation: u32,
+    /// The refinement stack it was resolved from.
+    ///
+    /// Stored in full rather than as a depth: `with_text_style` pushes and pops, so two scopes
+    /// can share a depth while resolving to different styles.
+    pub(super) stack: Vec<TextStyleRefinement>,
     pub(super) style: TextStyle,
 }
 
