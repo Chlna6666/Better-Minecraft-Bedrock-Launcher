@@ -1000,7 +1000,7 @@ impl SceneResources {
             && !sampler_changed
             && !voxel_shader_changed
             && !occlusion_changed
-            && self.sampled_bindings == old_sampled.is_some()
+            && self.sampled_bindings == (old_sampled.is_some() || self.sampled_textures.as_ref().is_some_and(|table| table.committed_banked()))
             && !self.sampled_textures.as_ref().is_some_and(|table| {
                 table.needs_remap() || table.needs_publication()
                     || table.layout_transition_pending()
@@ -1185,16 +1185,22 @@ impl SceneResources {
         // Legacy for the entire frame, never only for command emission.
         let mut sampled_remapped = false;
         let mut next_sampled = None;
+        let mut banked = false;
         if let Some(table) = self.sampled_textures.as_mut() {
             if table.needs_publication() { table.publish(device)?; }
             sampled_remapped = table.refill(&mut self.textures);
             if sampled_remapped && table.needs_publication() { table.publish(device)?; }
             next_sampled = table.selected(renderer.sampled_table_layout());
+            table.prepare_banks(device, renderer.sampled_table_layout(), next_sampled,
+                &self.prepared.draws, &self.textures, draw_list_changed || assets_changed
+                    || table.layout_transition_pending());
+            banked = table.banked();
         }
+        let sampled_active = next_sampled.is_some() || banked;
         let sampled_mode_changed = old_sampled.is_some() != next_sampled.is_some()
-            || self.sampled_bindings != next_sampled.is_some()
+            || self.sampled_bindings != sampled_active
             || self.sampled_textures.as_ref().is_some_and(|table| table.layout_transition_pending());
-        self.sampled_bindings = next_sampled.is_some();
+        self.sampled_bindings = sampled_active;
         draw_list_changed |= sampled_remapped || sampled_mode_changed;
         let shading = projection.voxel_shading();
         let shadow_enabled = scene_view.voxel_shader
@@ -1225,13 +1231,16 @@ impl SceneResources {
                     // candidate indices must not be treated as GPU slots.
                     self.prepared.invalidate_resident_candidate_order();
                 }
-                super::batching::group_voxel_batches(
+                let sampled_textures = self.sampled_textures.as_ref();
+                let bank_lookup = |draw: &PreparedDraw| sampled_textures.and_then(|table| table.bank_index(draw));
+                super::batching::group_voxel_batches_with_banks(
                     &mut self.prepared.draws,
                     &self.meshes,
                     &mut self.batch_workspace,
                     &mut self.batches,
                     native_quads,
                     self.sampled_bindings,
+                    banked.then_some(&bank_lookup as &dyn Fn(&PreparedDraw) -> Option<usize>),
                 );
             } else {
                 self.batches.clear();
@@ -1935,12 +1944,12 @@ impl SceneResources {
             bindings_unchanged && self.resident_command_pipelines_unchanged(&dirty);
         let trace_started = trace_timings().then(Instant::now);
         let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
-        let draw_result = if self.sampled_textures.is_some() {
+        let draw_result = if let Some(table) = self.sampled_textures.as_ref() {
             let textures = &self.textures;
             self.draw_record_cache.encode_resident_delta_with_textures(
                 &self.prepared.draws, mapping, &dirty, &self.draw_slot_keys,
                 &self.uploaded_tables[0], &mut scratch,
-                |draw| Ok(sampled_textures::indices(textures, draw)),
+                |draw| Ok(table.draw_indices(textures, draw)),
             )
         } else {
             self.draw_record_cache.encode_resident_delta(
@@ -2141,12 +2150,12 @@ impl SceneResources {
 
         let trace_started = trace_timings().then(Instant::now);
         let mut scratch = std::mem::take(&mut self.scratch_packed_draws);
-        let draw_result = if self.sampled_textures.is_some() {
+        let draw_result = if let Some(table) = self.sampled_textures.as_ref() {
             let textures = &self.textures;
             self.draw_record_cache.encode_resident_delta_with_textures(
                 &self.prepared.draws, mapping, &dirty, &self.draw_slot_keys,
                 &self.uploaded_tables[0], &mut scratch,
-                |draw| Ok(sampled_textures::indices(textures, draw)),
+                |draw| Ok(table.draw_indices(textures, draw)),
             )
         } else {
             self.draw_record_cache.encode_resident_delta(
@@ -2417,13 +2426,13 @@ impl SceneResources {
             // Encode material snapshots directly into physical GPU slots. No
             // intermediate dense logical 80-byte table and no second reorder
             // copy are needed for the common streaming Section update.
-            if self.sampled_textures.is_some() {
+            if let Some(table) = self.sampled_textures.as_ref() {
                 let textures = &self.textures;
                 self.draw_record_cache.encode_stable_with_textures(
                     &self.prepared.draws, mapping, high_water, &self.draw_slot_keys,
                     &self.uploaded_tables[0], &mut next_draw_keys, &mut draw_bytes,
                     &mut self.scratch_packed_draws,
-                    |draw| Ok(sampled_textures::indices(textures, draw)),
+                    |draw| Ok(table.draw_indices(textures, draw)),
                 )?;
             } else {
                 self.draw_record_cache.encode_stable(
@@ -2442,11 +2451,11 @@ impl SceneResources {
                 &mut dirty_instance_run,
             )?
         } else {
-            if self.sampled_textures.is_some() {
+            if let Some(table) = self.sampled_textures.as_ref() {
                 let textures = &self.textures;
                 self.draw_record_cache.encode_with_textures(
                     &self.prepared.draws, &mut draw_bytes, &mut next_draw_keys,
-                    |draw| Ok(sampled_textures::indices(textures, draw)),
+                    |draw| Ok(table.draw_indices(textures, draw)),
                 )?;
             } else {
                 self.draw_record_cache.encode(
@@ -4026,8 +4035,7 @@ impl SceneResources {
         shadow: Option<(&[BindGroupId], BufferId)>,
         pass_sampled: bool,
     ) -> gpui::Result<()> {
-        let sampled = self.sampled_snapshot(renderer);
-        let draw_sampled = sampled.filter(|_| !pass_sampled);
+        let shared_sampled = self.sampled_snapshot(renderer);
         let command_started = trace_timings().then(Instant::now);
         let previous_step_count = steps.len();
         steps.reserve(self.batches.len());
@@ -4094,6 +4102,11 @@ impl SceneResources {
                     .get(batch_index)
                     .ok_or_else(|| anyhow!("GPUI 3D draw resources were not initialized"))?;
                 let voxel = mesh_key(draw, voxel_shader).1;
+                // Banked materials carry set one in the draw itself; only
+                // the single-table path may elide it at pass scope.
+                let bank = self.sampled_textures.as_ref().and_then(|table| table.bank_snapshot(draw));
+                let sampled = shared_sampled.or(bank);
+                let draw_sampled = bank.or(shared_sampled.filter(|_| !pass_sampled));
                 let pipeline = if sampled.is_some() {
                     renderer.sampled_pipeline(
                         if mesh.generated.is_some() { 2 } else { usize::from(voxel) },
@@ -4236,9 +4249,11 @@ impl SceneResources {
             range.end <= tail_start
                 || blend_order.iter().all(|&index| index < blend_order.len())
         });
-        let sampled = self.sampled_snapshot(renderer);
+        let shared_sampled = self.sampled_snapshot(renderer);
         let push_command = |index: usize, steps: &mut Vec<RenderCommand>| -> gpui::Result<()> {
             let draw = &self.prepared.draws[index];
+            let bank = self.sampled_textures.as_ref().and_then(|table| table.bank_snapshot(draw));
+            let sampled = shared_sampled.or(bank);
             if renderer.rejects_material(&draw.material) {
                 return Ok(());
             }
@@ -4257,7 +4272,7 @@ impl SceneResources {
             };
             steps.push(RenderCommand::DrawIndirect(DrawIndirectCommand {
                 pipeline,
-                bind_groups: bind_group_list(std::iter::once(*binding).chain(sampled.filter(|_| !pass_sampled))),
+                bind_groups: bind_group_list(std::iter::once(*binding).chain(bank.or(shared_sampled.filter(|_| !pass_sampled)))),
                 arguments,
                 offset: address.arguments_offset,
                 scissor: None,
