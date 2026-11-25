@@ -499,7 +499,16 @@ impl Window {
             );
             return false;
         }
+        self.replay_validated_paint(range, delta);
+        true
+    }
 
+    /// Copies a paint range that was validated earlier in this frame.
+    ///
+    /// A whole-view replay validates both of its ranges during prepaint; the committed frame does
+    /// not change afterwards, so paint must not pay for the validation again (and a required text
+    /// layout was already pinned by the prepaint copy).
+    pub(crate) fn replay_validated_paint(&mut self, range: Range<PaintIndex>, delta: Point<Pixels>) {
         self.replayed_dependency_ranges = true;
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -573,7 +582,11 @@ impl Window {
             }
             // Translated primitives have new absolute geometry and ordering.
             // Never attach the old GPU upload chunk proof to this span.
-            return self.next_frame.painter.len() - replay_start == old_scene_range.len();
+            debug_assert_eq!(
+                self.next_frame.painter.len() - replay_start,
+                old_scene_range.len()
+            );
+            return;
         }
         let spans = self
             .rendered_frame
@@ -592,7 +605,6 @@ impl Window {
                     replay_start,
                 );
         }
-        true
     }
 
     pub(crate) fn current_retained_paint_context(&self) -> RetainedPaintContext {
@@ -1160,7 +1172,7 @@ pub(super) fn retained_range_has_stateful_effects(retained: &RetainedElementRang
         || paint.start.tab_handle_index != paint.end.tab_handle_index
 }
 
-fn rebase_prepaint_range(
+pub(crate) fn rebase_prepaint_range(
     range: &Range<PrepaintStateIndex>,
     source: &Range<PrepaintStateIndex>,
     target: &Range<PrepaintStateIndex>,
@@ -1171,7 +1183,7 @@ fn rebase_prepaint_range(
     )
 }
 
-fn rebase_paint_range(
+pub(crate) fn rebase_paint_range(
     range: &Range<PaintIndex>,
     source: &Range<PaintIndex>,
     target: &Range<PaintIndex>,

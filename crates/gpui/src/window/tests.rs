@@ -3719,6 +3719,98 @@ fn element_blur_unmount_clears_nested_filters(cx: &mut TestAppContext) {
     });
 }
 
+struct OrdinaryRetainedChildView {
+    label: SharedString,
+    renders: Rc<Cell<usize>>,
+}
+
+impl Render for OrdinaryRetainedChildView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get() + 1);
+        crate::div()
+            .w(px(100.))
+            .h(px(30.))
+            .id("ordinary-retained-child")
+            .cursor_pointer()
+            .child(self.label.clone())
+    }
+}
+
+struct OrdinaryRetainedParentView {
+    child: Entity<OrdinaryRetainedChildView>,
+    renders: Rc<Cell<usize>>,
+}
+
+impl Render for OrdinaryRetainedParentView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get() + 1);
+        crate::div().size_full().child(self.child.clone())
+    }
+}
+
+#[gpui::test]
+fn ordinary_view_is_drawn_again_when_nothing_it_read_changed(cx: &mut TestAppContext) {
+    let child_renders = Rc::new(Cell::new(0));
+    let parent_renders = Rc::new(Cell::new(0));
+    let (child, parent, window) = cx.update(|cx| {
+        let child = cx.new(|_| OrdinaryRetainedChildView {
+            label: "child".into(),
+            renders: child_renders.clone(),
+        });
+        let window = cx
+            .open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|_| OrdinaryRetainedParentView {
+                    child: child.clone(),
+                    renders: parent_renders.clone(),
+                })
+            })
+            .unwrap();
+        let parent = cx.read_window(&window, |parent, _| parent).unwrap();
+        (child, parent, AnyWindowHandle::from(window))
+    });
+
+    cx.update_window(window, |_, window, cx| {
+        eprintln!("ORD-DRAW-1");
+        window.draw(cx).clear();
+        let child_baseline = child_renders.get();
+        let parent_baseline = parent_renders.get();
+        assert!(child_baseline > 0, "the child view renders once");
+        let hitboxes = window.rendered_frame.hitboxes.len();
+        assert!(hitboxes > 0, "the child view registered its hitbox");
+
+        // The parent is rebuilt, but the child view and everything inside it are unchanged.
+        parent.update(cx, |_, cx| cx.notify());
+        eprintln!("ORD-DRAW-2");
+        window.draw(cx).clear();
+        assert_eq!(parent_renders.get(), parent_baseline + 1);
+        assert_eq!(
+            child_renders.get(),
+            child_baseline,
+            "an unchanged view must not run Render again"
+        );
+        assert_eq!(
+            window.rendered_frame.hitboxes.len(),
+            hitboxes,
+            "a reused view keeps its committed hitboxes"
+        );
+        assert!(
+            !window
+                .rendered_frame
+                .hit_test(point(px(10.), px(10.)))
+                .ids
+                .is_empty(),
+            "a reused view still answers hit tests"
+        );
+
+        // Notifying the child view itself has to rebuild it.
+        child.update(cx, |_, cx| cx.notify());
+        eprintln!("ORD-DRAW-3");
+        window.draw(cx).clear();
+        assert_eq!(child_renders.get(), child_baseline + 1);
+    })
+    .unwrap();
+}
+
 struct ExplicitCachedTestView {
     model: Entity<u32>,
     renders: Rc<Cell<usize>>,
@@ -3726,6 +3818,7 @@ struct ExplicitCachedTestView {
 
 impl Render for ExplicitCachedTestView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        eprintln!("CHILD-RENDER count={}", self.renders.get() + 1);
         self.renders.set(self.renders.get() + 1);
         let value = *self.model.read(cx);
         crate::div().w_full().h_full().child(format!("{value}"))
@@ -3762,6 +3855,7 @@ fn explicit_cached_view_reuses_lifecycle_and_rebuilds_on_dependency_notify(cx: &
         assert!(baseline > 0);
         root.update(cx, |_, cx| cx.notify());
         window.draw(cx).clear();
+        eprintln!("AFTER-A renders={} baseline={}", renders.get(), baseline);
         assert_eq!(renders.get(), baseline);
         root.update(cx, |_, cx| cx.notify());
         window.draw(cx).clear();

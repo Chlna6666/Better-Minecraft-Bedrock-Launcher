@@ -275,7 +275,7 @@ impl LineLayoutCacheMetrics {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub(crate) struct LineLayoutIndex {
     font_generation: u64,
     lines_index: usize,

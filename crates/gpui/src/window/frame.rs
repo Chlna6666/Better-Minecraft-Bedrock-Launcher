@@ -209,6 +209,12 @@ pub(crate) struct Frame {
     pub(crate) retained_element_order: Vec<ReconcileKey>,
     // Only explicit cached views record native layout claims. Do not enlarge every element range.
     pub(crate) cached_view_layout_claims: FxHashMap<GlobalElementId, Rc<[crate::layout::LayoutClaim]>>,
+    /// Whole-view retained records. One entry per view drawn into this frame, keyed by its
+    /// element path. A view that is drawn again from the committed frame is copied from here
+    /// without running `Render` or walking its subtree.
+    pub(crate) view_retentions: FxHashMap<GlobalElementId, super::view_retention::RetainedViewRecord>,
+    /// Post-order keys of [`Self::view_retentions`], so one view's nested records form one span.
+    pub(crate) view_retention_order: Vec<GlobalElementId>,
     /// Consecutive records typically inherit identical clip/text/transform state.
     /// Share that immutable context instead of storing a full copy in each record.
     pub(crate) last_retained_paint_context: Option<Rc<RetainedPaintContext>>,
@@ -235,7 +241,7 @@ pub(super) const WINDOW_LIGHT_TRIM_IDLE_FRAMES: u16 = 300;
 pub(super) const WINDOW_STRONG_TRIM_IDLE_FRAMES: u16 = 900;
 pub(super) const DIRTY_REGION_FULL_REDRAW_RATIO: f32 = 0.6;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub(crate) struct PrepaintStateIndex {
     pub(super) hitboxes_index: usize,
     pub(super) tooltips_index: usize,
@@ -420,6 +426,8 @@ impl Frame {
             retained_element_ranges: FxHashMap::default(),
             retained_element_order: Vec::new(),
             cached_view_layout_claims: FxHashMap::default(),
+            view_retentions: FxHashMap::default(),
+            view_retention_order: Vec::new(),
             last_retained_paint_context: None,
             retained_layout_semantics: FxHashMap::default(),
             retained_unstable_identity_count: 0,
@@ -473,6 +481,8 @@ impl Frame {
         self.retained_element_ranges.clear();
         self.retained_element_order.clear();
         self.cached_view_layout_claims.clear();
+        self.view_retentions.clear();
+        self.view_retention_order.clear();
         self.last_retained_paint_context = None;
         self.retained_layout_semantics.clear();
         self.retained_unstable_identity_count = 0;
@@ -634,6 +644,8 @@ impl Frame {
             + self.retained_element_ranges.capacity()
             + self.retained_element_order.capacity()
             + self.cached_view_layout_claims.capacity()
+            + self.view_retentions.capacity()
+            + self.view_retention_order.capacity()
             + self.retained_layout_semantics.capacity()
             + self.tab_stops.retained_capacity()
             + self.debug_container_capacity()
@@ -786,6 +798,13 @@ impl Frame {
         let claims_target = FRAME_MIN_RETAINED_CAPACITY.max(current.cached_view_layout_claims.len());
         if self.cached_view_layout_claims.capacity() > claims_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER) {
             self.cached_view_layout_claims.shrink_to(claims_target);
+        }
+        trim_vec_against!(view_retention_order);
+        let view_target = FRAME_MIN_RETAINED_CAPACITY.max(current.view_retentions.len());
+        if self.view_retentions.capacity()
+            > view_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.view_retentions.shrink_to(view_target);
         }
         self.tab_stops.trim_for_reuse(&current.tab_stops);
     }

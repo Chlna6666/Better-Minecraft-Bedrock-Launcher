@@ -110,6 +110,7 @@ pub(crate) mod scroll_dependencies;
 pub(crate) mod retained;
 mod state;
 mod view_cache;
+mod view_retention;
 mod tab_stop;
 #[cfg(test)]
 mod tests;
@@ -131,7 +132,11 @@ use frame::{
     DIRTY_REGION_FULL_REDRAW_RATIO, WINDOW_LIGHT_TRIM_IDLE_FRAMES, WINDOW_STRONG_TRIM_IDLE_FRAMES,
 };
 pub(crate) use frame::{
-    DeferredDraw, Frame, Paint, PaintGeometry, PaintIndex, PrepaintStateIndex, RetainedSceneSegment,
+    DeferredDraw, Frame, Paint, PaintGeometry, PaintIndex, PrepaintStateIndex,
+    RetainedPaintContext, RetainedSceneSegment,
+};
+pub(crate) use view_retention::{
+    RetainedViewRecord, ViewRetentionCommit, ViewRetentionSlot,
 };
 pub use frame_clock::FrameClock;
 use frame_clock::{FrameClockRequest, FrameClockState, ReceivedPlatformFrame};

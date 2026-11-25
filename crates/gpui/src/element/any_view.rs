@@ -5,7 +5,8 @@ use crate::{
 };
 use anyhow::Result;
 use refineable::Refineable as _;
-use std::{any::TypeId, fmt};
+use smallvec::SmallVec;
+use std::{any::TypeId, fmt, ops::Range, rc::Rc};
 
 type RenderViewFn = fn(&mut dyn std::any::Any, AnyWeakEntity, &mut Window, &mut App) -> AnyElement;
 
@@ -150,9 +151,49 @@ impl IntoElement for ViewElement {
 
 /// Frame-local state for an ordinary or explicitly cached view.
 #[doc(hidden)]
-pub enum ViewRequestLayout {
-    Element(AnyElement),
+pub struct ViewRequestLayout {
+    kind: ViewRequestLayoutKind,
+}
+
+enum ViewRequestLayoutKind {
+    /// The explicit cached API lays the view out in a parent-supplied slot.
     Cached { element: Option<AnyElement> },
+    /// The view's committed layout was claimed and its subtree is drawn again unless prepaint
+    /// finds that what it inherits changed.
+    Retained {
+        admission: crate::window::RetainedViewRecord,
+        retention: RetentionDraft,
+        reused: Option<ReusedView>,
+    },
+    /// The view was built this frame and will be recorded for the next one.
+    Built {
+        element: AnyElement,
+        layout_root: LayoutId,
+        layout_claims: Rc<[crate::layout::LayoutClaim]>,
+        prepaint_range: Option<Range<crate::window::PrepaintStateIndex>>,
+        context: Option<Rc<crate::window::RetainedPaintContext>>,
+        element_state_start: usize,
+        cached_view_mark: u64,
+        retention: RetentionDraft,
+    },
+}
+
+/// This frame's record position and the views drawn inside it.
+#[derive(Default)]
+struct RetentionDraft {
+    slot: Option<crate::window::ViewRetentionSlot>,
+    nested: SmallVec<[crate::GlobalElementId; 4]>,
+}
+
+struct ReusedView {
+    prepaint_range: Range<crate::window::PrepaintStateIndex>,
+    context: Rc<crate::window::RetainedPaintContext>,
+}
+
+impl ViewRequestLayout {
+    fn cached() -> Self {
+        Self { kind: ViewRequestLayoutKind::Cached { element: None } }
+    }
 }
 
 impl Element for ViewElement {
@@ -160,7 +201,7 @@ impl Element for ViewElement {
     type PrepaintState = ();
     // A view's content changes are reported through entity notifications, not through element
     // semantics. An ancestor retained replay must therefore never skip this lifecycle: the view
-    // Render has to run so its dirty state and child element tree are rebuilt in the current frame.
+    // decides for itself, through its own committed record, whether it can be drawn again.
     const RETAINED_REPLAY_CAPABILITY: crate::RetainedReplayCapability =
         crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary;
 
@@ -174,7 +215,7 @@ impl Element for ViewElement {
 
     fn request_layout(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
@@ -183,69 +224,270 @@ impl Element for ViewElement {
         if let Some(refinement) = &self.cached_style {
             let mut style = crate::Style::default();
             style.refine(refinement.as_ref());
-            return (window.request_layout(style, [], cx), ViewRequestLayout::Cached { element: None });
+            window.note_cached_view_layout();
+            return (window.request_layout(style, [], cx), ViewRequestLayout::cached());
         }
+        if let Some(global_id) = window.current_retained_element_id()
+            && let Some(admission) = window.admit_retained_view(&global_id, entity_id, cx)
+        {
+            let layout_root = admission.layout_root;
+            return (
+                layout_root,
+                ViewRequestLayout {
+                    kind: ViewRequestLayoutKind::Retained {
+                        admission,
+                        retention: RetentionDraft::default(),
+                        reused: None,
+                    },
+                },
+            );
+        }
+        let claim_start = window.begin_view_record();
+        let element_state_start = window.begin_view_element_states();
+        let cached_view_mark = window.cached_view_mark();
         let type_name = cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
-        let result = window.with_rendered_view(entity_id, |window| {
+        let (layout_id, element) = window.with_rendered_view(entity_id, |window| {
             window.record_rendered_view(entity_id, type_name);
             let mut element = self.view.render_element(window, cx);
             let layout_id = element.request_layout(window, cx);
-            (layout_id, ViewRequestLayout::Element(element))
+            (layout_id, element)
         });
         let _ = cx.entities.set_render_dependency_owner(previous);
-        result
+        let layout_claims = window.finish_view_record_claims(claim_start);
+        (
+            layout_id,
+            ViewRequestLayout {
+                kind: ViewRequestLayoutKind::Built {
+                    element,
+                    layout_root: layout_id,
+                    layout_claims,
+                    prepaint_range: None,
+                    context: None,
+                    element_state_start,
+                    cached_view_mark,
+                    retention: RetentionDraft::default(),
+                },
+            },
+        )
     }
 
     fn prepaint(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<crate::Pixels>,
-        element: &mut Self::RequestLayoutState,
+        state: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) {
         let entity_id = self.view.entity_id();
         window.set_view_id(entity_id);
-        let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
-        window.with_rendered_view(entity_id, |window| match element {
-            ViewRequestLayout::Element(element) => { element.prepaint(window, cx); }
-            ViewRequestLayout::Cached { element } => {
+        if matches!(state.kind, ViewRequestLayoutKind::Cached { .. }) {
+            let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
+            window.with_rendered_view(entity_id, |window| {
+                let ViewRequestLayoutKind::Cached { element } = &mut state.kind else {
+                    unreachable!()
+                };
                 *element = Some(window.record_cached_view_layout(|window| {
                     let type_name = cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
                     window.record_rendered_view(entity_id, type_name);
                     let mut inner = self.view.render_element(window, cx);
                     window.with_retained_child_scope(|window| {
-                        inner.prepaint_as_root(bounds.origin, crate::size(
-                            crate::AvailableSpace::Definite(bounds.size.width),
-                            crate::AvailableSpace::Definite(bounds.size.height),
-                        ), window, cx);
+                        inner.prepaint_as_root(
+                            bounds.origin,
+                            crate::size(
+                                crate::AvailableSpace::Definite(bounds.size.width),
+                                crate::AvailableSpace::Definite(bounds.size.height),
+                            ),
+                            window,
+                            cx,
+                        );
                     });
                     inner
                 }));
-            }
+            });
+            let _ = cx.entities.set_render_dependency_owner(previous);
+            return;
+        }
 
+        let prepaint_start = window.prepaint_index();
+        let mut retention = Some(RetentionDraft {
+            slot: window
+                .current_retained_element_id()
+                .map(|key| window.reserve_view_retention(key)),
+            nested: SmallVec::new(),
+        });
+        let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
+        window.with_rendered_view(entity_id, |window| {
+            let context = Rc::new(window.current_retained_paint_context());
+            match &mut state.kind {
+                ViewRequestLayoutKind::Cached { .. } => unreachable!(),
+                ViewRequestLayoutKind::Retained {
+                    admission,
+                    reused,
+                    ..
+                } => {
+                    if window.retained_view_context_matches(admission, bounds)
+                        && let Some(prepaint_range) = window.reuse_retained_view_prepaint(admission)
+                    {
+                        *reused = Some(ReusedView { prepaint_range, context });
+                        return;
+                    }
+                    // The committed layout no longer describes what this view inherits. Give the
+                    // nodes back and draw the content into the slot the parent allocated.
+                    window.release_retained_view(admission);
+                    let layout_root = admission.layout_root;
+                    let claim_start = window.begin_view_record();
+                    let element_state_start = window.begin_view_element_states();
+                    let cached_view_mark = window.cached_view_mark();
+                    let layout_claims;
+                    let mut element = {
+                        let type_name =
+                            cx.entities.type_name_for_id(entity_id).unwrap_or("unknown");
+                        window.record_rendered_view(entity_id, type_name);
+                        self.view.render_element(window, cx)
+                    };
+                    window.with_retained_child_scope(|window| {
+                        element.prepaint_as_root(
+                            bounds.origin,
+                            crate::size(
+                                crate::AvailableSpace::Definite(bounds.size.width),
+                                crate::AvailableSpace::Definite(bounds.size.height),
+                            ),
+                            window,
+                            cx,
+                        );
+                    });
+                    layout_claims = window.finish_view_record_claims(claim_start);
+                    state.kind = ViewRequestLayoutKind::Built {
+                        element,
+                        layout_root,
+                        layout_claims,
+                        prepaint_range: Some(prepaint_start.clone()..window.prepaint_index()),
+                        context: Some(context),
+                        element_state_start,
+                        cached_view_mark,
+                        retention: retention.take().expect("view retention slot"),
+                    };
+                }
+                ViewRequestLayoutKind::Built {
+                    element,
+                    prepaint_range,
+                    context: recorded_context,
+                    retention: state_retention,
+                    ..
+                } => {
+                    element.prepaint(window, cx);
+                    *prepaint_range = Some(prepaint_start.clone()..window.prepaint_index());
+                    *recorded_context = Some(context);
+                    *state_retention = retention.take().expect("view retention slot");
+                }
+            }
         });
         let _ = cx.entities.set_render_dependency_owner(previous);
+
+        match &mut state.kind {
+            ViewRequestLayoutKind::Retained {
+                admission,
+                retention: state_retention,
+                reused,
+                ..
+            } => {
+                if reused.is_some() {
+                    let mut draft = retention.take().expect("view retention slot");
+                    draft.nested = admission.nested.clone();
+                    *state_retention = draft;
+                }
+            }
+            ViewRequestLayoutKind::Built {
+                retention: state_retention,
+                ..
+            } => {
+                if let Some(slot) = state_retention.slot.as_ref() {
+                    state_retention.nested = window.finish_view_retention_scope(slot);
+                }
+            }
+            ViewRequestLayoutKind::Cached { .. } => {}
+        }
     }
 
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<crate::Pixels>,
-        element: &mut Self::RequestLayoutState,
+        bounds: Bounds<crate::Pixels>,
+        state: &mut Self::RequestLayoutState,
         _prepaint: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
         let entity_id = self.view.entity_id();
         let previous = cx.entities.set_render_dependency_owner(Some(entity_id));
-        window.with_rendered_view(entity_id, |window| match element {
-            ViewRequestLayout::Element(element) => element.paint(window, cx),
-            ViewRequestLayout::Cached { element } => {
+        window.with_rendered_view(entity_id, |window| match &mut state.kind {
+            ViewRequestLayoutKind::Cached { element } => {
                 element.as_mut().expect("cached view must prepaint").paint(window, cx);
+            }
+            ViewRequestLayoutKind::Retained { admission, retention, reused } => {
+                let Some(reused) = reused.as_ref() else {
+                    unreachable!("an admitted view is either drawn again or rebuilt in prepaint")
+                };
+                let Some(slot) = retention.slot.as_ref() else {
+                    return;
+                };
+                let start = window.paint_index();
+                window.replay_validated_paint(admission.paint_range.clone(), crate::Point::default());
+                let end = window.paint_index();
+                window.commit_view_retention(
+                    slot,
+                    retention.nested.clone(),
+                    crate::window::ViewRetentionCommit {
+                        layout_root: admission.layout_root,
+                        layout_claims: admission.layout_claims.clone(),
+                        prepaint_range: reused.prepaint_range.clone(),
+                        paint_range: start..end,
+                        bounds,
+                        context: reused.context.clone(),
+                        element_state_range: 0..0,
+                        contains_cached_view: true,
+                        reused: Some(admission.clone()),
+                    },
+                );
+            }
+            ViewRequestLayoutKind::Built {
+                element,
+                layout_root,
+                layout_claims,
+                prepaint_range,
+                context,
+                element_state_start,
+                cached_view_mark,
+                retention,
+                ..
+            } => {
+                let start = window.paint_index();
+                element.paint(window, cx);
+                let end = window.paint_index();
+                let (Some(slot), Some(prepaint_range), Some(context)) =
+                    (retention.slot.as_ref(), prepaint_range.as_ref(), context.as_ref())
+                else {
+                    return;
+                };
+                window.commit_view_retention(
+                    slot,
+                    retention.nested.clone(),
+                    crate::window::ViewRetentionCommit {
+                        layout_root: *layout_root,
+                        layout_claims: layout_claims.clone(),
+                        prepaint_range: prepaint_range.clone(),
+                        paint_range: start..end,
+                        bounds,
+                        context: context.clone(),
+                        element_state_range: window.view_element_state_range(*element_state_start),
+                        contains_cached_view: window.cached_view_seen_since(*cached_view_mark),
+                        reused: None,
+                    },
+                );
             }
         });
         let _ = cx.entities.set_render_dependency_owner(previous);
