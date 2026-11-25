@@ -44,8 +44,15 @@ foreach ($relative in $viewCallers) {
 # The 3D draw path must remain native and offscreen. UI composite consumes the
 # finished TextureViewId and must not reconstruct mesh draw commands.
 $renderer = Join-Path $repo "crates/gpui-3d/src/scene_view/renderer.rs"
-if (-not (Select-String -LiteralPath $renderer -SimpleMatch -Pattern 'submit_native_offscreen_passes(' -Quiet)) {
-    $failures.Add("gpui-3d must still submit native 3D passes outside GPUI's 2D command encoder")
+# The native producer now forwards immutable command owners and optional run
+# plans through two specialized helpers. Check the actual device submissions,
+# not the obsolete generic helper name.
+$rendererSource = Get-Content -LiteralPath $renderer -Raw
+if ($rendererSource -notmatch 'submit_owned_native_offscreen_passes\s*\(' -or
+    $rendererSource -notmatch 'device\.submit_owned_offscreen_batch\s*\(' -or
+    $rendererSource -notmatch 'submit_planned_native_offscreen_passes\s*\(' -or
+    $rendererSource -notmatch 'device\.submit_run_offscreen_batch\s*\(') {
+    $failures.Add("gpui-3d must still submit owned and planned native 3D batches outside GPUI's 2D command encoder")
 }
 $sidecar = Join-Path $repo "crates/gpui-3d/src/scene_view/sidecar_surface.rs"
 if (-not (Select-String -LiteralPath $sidecar -SimpleMatch -Pattern 'TextureUsage::COLOR_ATTACHMENT | TextureUsage::SAMPLED' -Quiet)) {
