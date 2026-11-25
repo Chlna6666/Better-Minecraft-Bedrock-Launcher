@@ -59,6 +59,8 @@ pub struct OpenGlDevice {
     pub(crate) config: Config,
     pub(crate) view_texture: unsafe extern "system" fn(u32, u32, u32, u32, u32, u32, u32, u32),
     pub(crate) indirect_count: Option<IndirectCountFns>,
+    pub(crate) multi_draw: Option<MultiDrawFns>,
+    pub(crate) draw_run_plans: Vec<std::sync::Arc<gfx_core::DrawRunPlan>>,
     pub(crate) index_rebase: RefCell<crate::indirect::IndexRebase>,
     adapter: AdapterInfo,
     pub(crate) vao: glow::NativeVertexArray,
@@ -112,6 +114,12 @@ pub(crate) const PARAMETER_BUFFER: u32 = 0x80EE;
 pub(crate) struct IndirectCountFns {
     pub arrays: unsafe extern "system" fn(u32, *const std::ffi::c_void, isize, i32, i32),
     pub elements: unsafe extern "system" fn(u32, u32, *const std::ffi::c_void, isize, i32, i32),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MultiDrawFns {
+    pub arrays: unsafe extern "system" fn(u32, *const std::ffi::c_void, i32, i32),
+    pub elements: unsafe extern "system" fn(u32, u32, *const std::ffi::c_void, i32, i32),
 }
 
 // A fixed-location multisample texture is required for a device-wide
@@ -332,6 +340,17 @@ impl OpenGlDevice {
                 })
             }
         } else { None };
+        let multi_draw = if compute.capabilities.indirect_draw {
+            let arrays = display.get_proc_address(c"glMultiDrawArraysIndirect");
+            let elements = display.get_proc_address(c"glMultiDrawElementsIndirect");
+            if arrays.is_null() || elements.is_null() { None } else {
+                // SAFETY: this device requires a current OpenGL 4.5 core context.
+                Some(MultiDrawFns {
+                    arrays: unsafe { std::mem::transmute::<*const std::ffi::c_void, unsafe extern "system" fn(u32, *const std::ffi::c_void, i32, i32)>(arrays) },
+                    elements: unsafe { std::mem::transmute::<*const std::ffi::c_void, unsafe extern "system" fn(u32, u32, *const std::ffi::c_void, i32, i32)>(elements) },
+                })
+            }
+        } else { None };
         let max_color_attachments_cap = unsafe {
             let attachments = gl.get_parameter_i32(glow::MAX_COLOR_ATTACHMENTS).max(1) as u32;
             let draw_buffers = gl.get_parameter_i32(glow::MAX_DRAW_BUFFERS).max(1) as u32;
@@ -353,6 +372,8 @@ impl OpenGlDevice {
             config,
             view_texture,
             indirect_count,
+            multi_draw,
+            draw_run_plans: Vec::new(),
             adapter: AdapterInfo {
                 backend: BackendKind::OpenGl,
                 name,
@@ -640,6 +661,8 @@ impl OpenGlDevice {
     /// Returns native completion errors.
     pub fn trim_memory(&mut self, level: MemoryTrimLevel) -> Result<()> {
         self.retire()?;
+        if level == MemoryTrimLevel::Light { self.draw_run_plans.retain(|plan| plan.is_live()); }
+        else { self.draw_run_plans.clear(); }
         if level != MemoryTrimLevel::Light {
             for commands in self.encoders.values_mut() {
                 commands.shrink_to_fit();
