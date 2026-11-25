@@ -51,7 +51,8 @@ pub(super) struct Indirect {
     buffer: ID3D12Resource,
     capacity: u64,
     state: D3D12_RESOURCE_STATES,
-    signatures: Vec<ID3D12CommandSignature>,
+    signatures: Vec<(usize, ID3D12CommandSignature)>,
+    record_count: usize,
 }
 
 pub(super) fn capabilities() -> ComputeCapabilities {
@@ -89,6 +90,7 @@ impl State {
             resource.state = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
         }
         resource.signatures.clear();
+        resource.record_count = 0;
         if self.indirect_buffers.len() < DEFAULT_INDIRECT_BUFFER_POOL_CAPACITY {
             self.indirect_buffers.push(resource);
         }
@@ -133,6 +135,7 @@ impl State {
             capacity,
             state: D3D12_RESOURCE_STATE_COPY_DEST,
             signatures: Vec::new(),
+            record_count: 0,
         })
     }
 }
@@ -1078,7 +1081,9 @@ impl Dx12Device {
         command: &ID3D12GraphicsCommandList,
         steps: &[RenderCommand],
         counts: &[gfx_core::IndirectCountBinding],
+        plan: Option<&gfx_core::DrawRunPlan>,
     ) -> Result<Option<usize>> {
+        let compact = plan.filter(|plan| plan.is_compressed());
         // Each traversal has its own cursor into the validated sorted table.
         // This remains allocation-free even for thousands of counted runs.
         let portable_steps = || {
@@ -1088,7 +1093,7 @@ impl Dx12Device {
                     remaining = &remaining[1..];
                     None
                 } else {
-                    Some(step)
+                    Some((step, compact.map_or(1, |plan| plan.runs()[index])))
                 }
             })
         };
@@ -1097,7 +1102,7 @@ impl Dx12Device {
         // scanning the entire command table twice before the actual GPU
         // packing pass. Keep validation before acquiring transient storage.
         let mut count = 0usize;
-        for step in portable_steps() {
+        for (step, length) in portable_steps() {
             let (arguments, offset, stride) = match step {
                 RenderCommand::DrawIndirect(draw) => (draw.arguments, draw.offset, 16),
                 RenderCommand::DrawIndexedIndirect(draw) => {
@@ -1111,14 +1116,15 @@ impl Dx12Device {
                 if !buffer.desc.usage.contains(BufferUsage::INDIRECT)
                     || offset % 4 != 0
                     || offset
-                        .checked_add(stride)
+                        .checked_add(u64::from(length) * stride)
                         .is_none_or(|end| end > buffer.desc.size)
                 {
                     return Err(Error::InvalidInput(
                         "invalid DX12 indirect argument range or usage".into(),
                     ));
                 }
-                count += 1;
+                count = count.checked_add(length as usize)
+                    .ok_or_else(|| Error::InvalidInput("DX12 staged record count overflow".into()))?;
             }
         }
         if count == 0 {
@@ -1147,7 +1153,7 @@ impl Dx12Device {
         // One compute dispatch per contiguous source span, not three
         // CopyBufferRegion commands per DrawIndirect.
         let mut pending: Option<(BufferId, ID3D12Resource, u64, usize, u32, bool)> = None;
-        for step in portable_steps() {
+        for (step, run_length) in portable_steps() {
             let (arguments, offset, pipeline_id, indexed) = match step {
                 RenderCommand::DrawIndirect(draw) => (draw.arguments, draw.offset, draw.pipeline, false),
                 RenderCommand::DrawIndexedIndirect(draw) => {
@@ -1194,19 +1200,17 @@ impl Dx12Device {
                 .as_ref()
                 .expect("validated indirect source must be cached")
                 .1;
-            let signature = if let Some((id, was_indexed, signature)) = &last_signature
-                && *id == pipeline_id && *was_indexed == indexed
+            if !last_signature.as_ref().is_some_and(|(id, was_indexed, _)|
+                *id == pipeline_id && *was_indexed == indexed)
             {
-                signature.clone()
-            } else {
                 let pipeline = self.render_pipelines.get(pipeline_id)?;
                 let signature = if indexed { &pipeline.indirect_signature_indexed } else { &pipeline.indirect_signature }
                     .as_ref()
                     .ok_or_else(|| Error::Backend("missing indirect command signature".into()))?
                     .clone();
-                last_signature = Some((pipeline_id, indexed, signature.clone()));
-                signature
-            };
+                indirect.signatures.push((index, signature.clone()));
+                last_signature = Some((pipeline_id, indexed, signature));
+            }
             let contiguous =
                 pending
                     .as_ref()
@@ -1214,7 +1218,7 @@ impl Dx12Device {
                         *buffer == arguments && *was_indexed == indexed
                     && source_offset.checked_add(u64::from(*length) * if indexed { 20 } else { 16 }) == Some(offset)
                     // The compiled 64-thread kernel uses one dispatch grid.
-                    && *length < 65535 * 64
+                    && length.checked_add(run_length).is_some_and(|total| total <= 65535 * 64)
                     });
             if !contiguous {
                 if let Some((_, resource, source_offset, target, length, was_indexed)) = pending.take() {
@@ -1232,15 +1236,14 @@ impl Dx12Device {
                     arguments,
                     source.clone(),
                     offset,
-                    index as usize,
-                    1,
+                    index,
+                    run_length,
                     indexed,
                 ));
             } else if let Some((_, _, _, _, length, _)) = pending.as_mut() {
-                *length += 1;
+                *length += run_length;
             }
-            indirect.signatures.push(signature);
-            index += 1;
+            index += run_length as usize;
         }
         if let Some((_, resource, source_offset, target, length, was_indexed)) = pending.take() {
             self.pack_native_indirect_run(
@@ -1259,6 +1262,7 @@ impl Dx12Device {
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
         );
+        indirect.record_count = count;
         let resources = &mut self.command_encoders.get_mut(encoder)?.indirect_resources;
         let slot = resources.len();
         resources.push(indirect);
@@ -1327,17 +1331,20 @@ impl Dx12Device {
         let end = index
             .checked_add(count)
             .ok_or_else(|| Error::InvalidInput("indirect draw range overflow".into()))?;
-        if count == 0 || end > indirect.signatures.len() {
+        if count == 0 || end > indirect.record_count {
             return Err(Error::InvalidInput(
                 "invalid staged indirect draw range".into(),
             ));
         }
         let native_count = u32::try_from(count)
             .map_err(|_| Error::InvalidInput("indirect draw count exceeds u32".into()))?;
-        let signature = indirect
-            .signatures
-            .get(index)
+        let position = indirect.signatures.partition_point(|(start, _)| *start <= index);
+        let (_, signature) = indirect.signatures.get(position.checked_sub(1)
+            .ok_or_else(|| Error::InvalidInput("missing staged indirect signature".into()))?)
             .ok_or_else(|| Error::InvalidInput("invalid staged indirect index".into()))?;
+        if indirect.signatures.get(position).is_some_and(|(next, _)| end > *next) {
+            return Err(Error::InvalidInput("staged draw run crosses native signature boundary".into()));
+        }
         // SAFETY: scratch and signature are retained by the submitting encoder until its fence.
         unsafe {
             command.ExecuteIndirect(
