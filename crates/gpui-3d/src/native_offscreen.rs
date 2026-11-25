@@ -24,6 +24,8 @@ pub struct NativeOffscreenPass {
     pub render_pass: RenderPassId,
     /// Immutable draw commands, including native indirect draws.
     pub commands: Arc<[RenderCommand]>,
+    /// Compact representative metadata; None is a flat logical command stream.
+    pub run_plan: Option<Arc<gfx_core::DrawRunPlan>>,
     /// Shared sampled set one. When present, draw commands bind only set zero.
     pub sampled_table: Option<BindGroupId>,
     /// Optional hardware GPU timestamp; never substitute host/API time.
@@ -71,6 +73,9 @@ pub fn submit_native_offscreen_passes(
         &[Option<BindGroupId>],
     ) -> Result<Option<SubmissionId>>,
 ) -> Result<Option<SubmissionId>> {
+    if passes.iter().any(|pass| pass.run_plan.is_some()) {
+        return Err(gfx_core::Error::InvalidInput("compact passes require representative submission".into()));
+    }
     let Some((first, rest)) = passes.split_first() else {
         return Ok(None);
     };
@@ -106,6 +111,29 @@ pub(crate) fn submit_owned_native_offscreen_passes(
     })
 }
 
+/// Forward compact plans alongside the exact representative allocations.
+pub(crate) fn submit_planned_native_offscreen_passes(
+    passes: &[NativeOffscreenPass],
+    mut submit: impl FnMut(
+        &[RenderPassCommands<'_>], &[Arc<[RenderCommand]>],
+        &[Option<Arc<gfx_core::DrawRunPlan>>], &[Option<GpuTimestampTag>], &[Option<BindGroupId>],
+    ) -> Result<Option<SubmissionId>>,
+) -> Result<Option<SubmissionId>> {
+    let Some((first, rest)) = passes.split_first() else { return Ok(None); };
+    if rest.is_empty() {
+        let descriptor = first.commands();
+        return submit(std::slice::from_ref(&descriptor), std::slice::from_ref(&first.commands),
+            std::slice::from_ref(&first.run_plan), std::slice::from_ref(&first.gpu_work_tag),
+            std::slice::from_ref(&first.sampled_table));
+    }
+    let descriptors = passes.iter().map(NativeOffscreenPass::commands).collect::<Vec<_>>();
+    let owners = passes.iter().map(|pass| Arc::clone(&pass.commands)).collect::<Vec<_>>();
+    let plans = passes.iter().map(|pass| pass.run_plan.clone()).collect::<Vec<_>>();
+    let tags = passes.iter().map(|pass| pass.gpu_work_tag).collect::<Vec<_>>();
+    let tables = passes.iter().map(|pass| pass.sampled_table).collect::<Vec<_>>();
+    submit(&descriptors, &owners, &plans, &tags, &tables)
+}
+
 /// Submit the 3D batch directly to gfx-core without a GPUI dependency.
 ///
 /// This entry point is suitable for stand-alone games and offscreen engines
@@ -116,6 +144,11 @@ pub fn submit_native_graphics<D: OffscreenSubmissionDevice>(
     passes: &[NativeOffscreenPass],
     queue: OffscreenQueuePreference,
 ) -> Result<Option<SubmissionId>> {
+    if passes.iter().any(|pass| pass.run_plan.is_some()) {
+        return submit_planned_native_offscreen_passes(passes, |commands, owners, plans, tags, tables| {
+            device.submit_run_offscreen_batch(commands, owners, plans, tables, tags)
+        });
+    }
     submit_owned_native_offscreen_passes(passes, |commands, owners, tags, tables| {
         if queue == OffscreenQueuePreference::IndependentGraphicsIfAvailable
             && !tables.iter().any(Option::is_some)
@@ -137,6 +170,7 @@ mod tests {
             target: TextureViewId::from_parts(id, 1),
             render_pass: RenderPassId::from_parts(1, 1),
             commands: Vec::<RenderCommand>::new().into(),
+            run_plan: None,
             sampled_table: None,
             gpu_work_tag: tag.then_some(GpuTimestampTag {
                 batch_id: u64::from(id),
